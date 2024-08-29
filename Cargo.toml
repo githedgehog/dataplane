@@ -1,0 +1,32 @@
+[workspace]
+
+members = [
+	"dpdk-sys",
+	"net",
+	"re-export",
+]
+resolver = "2"
+
+[workspace.dependencies]
+thiserror = { version = "1" }
+tracing = { version = "0.1", default-features = false }
+bindgen = { version = "0.70" }
+serde = { version = "1", default-features = false }
+
+[profile.release]
+opt-level = 3
+#lto = "thin"
+codegen-units = 1
+overflow-checks = true
+
+[profile.dev]
+opt-level = 0
+lto = false
+incremental = true
+debug = true
+
+[profile.static-analysis]
+inherits = "dev"
+codegen-units = 1
+lto = "thin"
+

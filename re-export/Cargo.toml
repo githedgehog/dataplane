@@ -1,0 +1,15 @@
+[package]
+name = "hedgehog-re-export"
+version = "0.0.1"
+edition = "2021"
+resolver = "2"
+
+[features]
+default = ["thiserror"]
+thiserror = ["dep:thiserror"]
+
+[dependencies]
+thiserror = { workspace = true, optional = true }
+quote = "1"
+proc-macro2 = "1"
+syn = "2"
