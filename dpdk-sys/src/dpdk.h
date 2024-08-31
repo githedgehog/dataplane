@@ -132,6 +132,43 @@
 #include <rte_vfio.h>
 #include <rte_vxlan.h>
 
+int const rte_get_errno();
+
+long const RTE_ETH_TX_OFFLOAD_VLAN_INSERT_      = 1ul << 0;
+long const RTE_ETH_TX_OFFLOAD_IPV4_CKSUM_       = 1ul << 1;
+long const RTE_ETH_TX_OFFLOAD_UDP_CKSUM_        = 1ul << 2;
+long const RTE_ETH_TX_OFFLOAD_TCP_CKSUM_        = 1ul << 3;
+long const RTE_ETH_TX_OFFLOAD_SCTP_CKSUM_       = 1ul << 4;
+long const RTE_ETH_TX_OFFLOAD_TCP_TSO_          = 1ul << 5;
+long const RTE_ETH_TX_OFFLOAD_UDP_TSO_          = 1ul << 6;
+long const RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM_ = 1ul << 7;
+long const RTE_ETH_TX_OFFLOAD_QINQ_INSERT_      = 1ul << 8;
+long const RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO_    = 1ul << 9;
+long const RTE_ETH_TX_OFFLOAD_GRE_TNL_TSO_      = 1ul << 10;
+long const RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO_     = 1ul << 11;
+long const RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO_   = 1ul << 12;
+long const RTE_ETH_TX_OFFLOAD_MACSEC_INSERT_    = 1ul << 13;
+
+enum rte_eth_tx_offload {
+  VLAN_INSERT      = RTE_ETH_TX_OFFLOAD_VLAN_INSERT_,
+  IPV4_CKSUM       = RTE_ETH_TX_OFFLOAD_IPV4_CKSUM_,
+  UDP_CKSUM        = RTE_ETH_TX_OFFLOAD_UDP_CKSUM_,
+  TCP_CKSUM        = RTE_ETH_TX_OFFLOAD_TCP_CKSUM_,
+  SCTP_CKSUM       = RTE_ETH_TX_OFFLOAD_SCTP_CKSUM_,
+  TCP_TSO          = RTE_ETH_TX_OFFLOAD_TCP_TSO_,
+  UDP_TSO          = RTE_ETH_TX_OFFLOAD_UDP_TSO_,
+  OUTER_IPV4_CKSUM = RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM_,
+  QINQ_INSERT      = RTE_ETH_TX_OFFLOAD_QINQ_INSERT_,
+  VXLAN_TNL_TSO    = RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO_,
+  GRE_TNL_TSO      = RTE_ETH_TX_OFFLOAD_GRE_TNL_TSO_,
+  IPIP_TNL_TSO     = RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO_,
+  GENEVE_TNL_TSO   = RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO_,
+  MACSEC_INSERT    = RTE_ETH_TX_OFFLOAD_MACSEC_INSERT_,
+};
+
+
+
+
 // Things which are either duplicated, totally inapplicable or not needed
 //#include <cmdline.h>
 //#include <cmdline_cirbuf.h>

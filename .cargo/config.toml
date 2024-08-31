@@ -9,9 +9,9 @@ rustflags = [
 #	"-C", "codegen-units=1",
 #	"-C", "embed-bitcode=yes",
 #	"-C", "lto=thin",
-	"-C", "link-arg=--sysroot=/mnt/dpdk-arch-sysroot",
-	"-C", "link-arg=-Wl,--whole-archive",
-	"-C", "link-arg=-Wl,--no-as-needed",
-	"-C", "link-arg=-Wl,-no-gc-sections",
+#	"-C", "link-arg=--sysroot=/mnt/dpdk-arch-sysroot",
+#	"-C", "link-arg=-Wl,--whole-archive",
+#	"-C", "link-arg=-Wl,--no-as-needed",
+#	"-C", "link-arg=-Wl,-no-gc-sections",
 #	"-Z", "sanitizer=cfi",
 ]

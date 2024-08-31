@@ -35,7 +35,10 @@ pub enum InvalidVid {
     #[cfg_attr(feature = "thiserror", error("4095 is a reserved Vid"))]
     /// 4095 is a reserved [`Vid`] per the spec.
     Reserved,
-    #[cfg_attr(feature = "thiserror", error("{0} is too large to be a legal Vid (max is 2^12)"))]
+    #[cfg_attr(
+        feature = "thiserror",
+        error("{0} is too large to be a legal Vid (max is 2^12)")
+    )]
     /// The value is too large to be a legal VID (max is 2^12).
     TooLarge(u16),
 }
@@ -59,12 +62,14 @@ impl Vid {
             4095 => Err(InvalidVid::Reserved),
             _ => match NonZero::<u16>::new(vid) {
                 None => Err(InvalidVid::Zero),
-                Some(val) => if val.get() > Vid::MAX {
-                    Err(InvalidVid::TooLarge(val.get()))
-                } else {
-                    Ok(Vid(val))
+                Some(val) => {
+                    if val.get() > Vid::MAX {
+                        Err(InvalidVid::TooLarge(val.get()))
+                    } else {
+                        Ok(Vid(val))
+                    }
                 }
-            }
+            },
         }
     }
 

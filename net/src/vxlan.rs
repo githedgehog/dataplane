@@ -8,24 +8,24 @@ use core::fmt::{Display, Formatter};
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
 /// A VXLAN Network Identifier.
-/// 
+///
 /// The [`Vni`] is a 24-bit value that identifies a VXLAN network.
-/// 
+///
 /// Value 0 is reserved and should not be used.
 /// The maximum legal value is 2^24 - 1 (16,777,215).
-/// 
+///
 /// It is deliberately not possible to create a [`Vni`] from a `u32` directly, as this would
 /// allow the creation of illegal values.
 /// Instead, use [`Vni::new`] to create a [`Vni`] from a `u32`.
 ///
 /// # Note
-/// 
+///
 /// This type is marked `#[repr(transparent)]` to ensure that it has the same memory layout
 /// as a [`NonZero<u32>`].
 /// This means that [`Option<Vni>`] will always have the same size and alignment as
 /// [`Option<NonZero<u32>>`], and thus the same size and alignment as `u32`.
 /// The memory / compute overhead of using this type as opposed to a `u32` is then strictly
-/// limited to the price of checking that the represented value is in fact a legal [`Vni`], (which 
+/// limited to the price of checking that the represented value is in fact a legal [`Vni`], (which
 /// we should generally be doing anyway).
 pub struct Vni(NonZero<u32>);
 
@@ -37,7 +37,10 @@ pub enum InvalidVni {
     #[cfg_attr(feature = "thiserror", error("Zero is not a legal Vni"))]
     /// Zero is not a legal [`Vni`] per the spec.
     ReservedZero,
-    #[cfg_attr(feature = "thiserror", error("{0} is too large to be a legal Vni (max is 2^24)"))]
+    #[cfg_attr(
+        feature = "thiserror",
+        error("{0} is too large to be a legal Vni (max is 2^24)")
+    )]
     /// The value is too large to be a legal [`Vni`] (max is 2^24 - 1, see [`Vni::MAX`]).
     TooLarge(u32),
 }
@@ -59,10 +62,12 @@ impl Vni {
     pub fn new(vni: u32) -> Result<Vni, InvalidVni> {
         match NonZero::<u32>::new(vni) {
             None => Err(InvalidVni::ReservedZero),
-            Some(vni) => if vni.get() > Vni::MAX {
-                Err(InvalidVni::TooLarge(vni.get()))
-            } else {
-                Ok(Vni(vni))
+            Some(vni) => {
+                if vni.get() > Vni::MAX {
+                    Err(InvalidVni::TooLarge(vni.get()))
+                } else {
+                    Ok(Vni(vni))
+                }
             }
         }
     }
@@ -100,7 +105,7 @@ impl Display for Vni {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod test {
-    
+
     use super::*;
 
     #[test]
