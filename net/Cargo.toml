@@ -1,0 +1,33 @@
+[package]
+name = "net"
+version = "0.0.1"
+edition = "2021"
+
+[features]
+default = ["display", "tracing", "serde"]
+
+std = []
+thiserror = ["dep:thiserror", "std"]
+serde = ["dep:serde"]
+display = []
+tracing = ["dep:tracing"]
+
+[dependencies.serde]
+workspace = true
+optional = true
+default-features = false
+features = [
+	"derive",
+]
+
+[dependencies.thiserror]
+workspace = true
+optional = true
+
+[dependencies.tracing]
+workspace = true
+optional = true
+default-features = false
+features = [
+	"attributes",
+]

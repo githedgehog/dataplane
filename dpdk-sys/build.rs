@@ -10,8 +10,8 @@ impl ParseCallbacks for Cb {
     fn process_comment(&self, comment: &str) -> Option<String> {
         match doxygen_rs::generator::rustdoc(comment.into()) {
             Ok(transformed) => Some(transformed),
-            Err(err) => {
-                eprintln!("Error transforming comment: {:?}", err);
+            Err(_) => {
+                // eprintln!("Error transforming comment: {:?}", err);
                 Some(comment.into())
             }
         }
@@ -25,7 +25,7 @@ fn bind(path: &Path) {
         .generate_comments(true)
         .generate_inline_functions(false)
         .generate_block(true)
-        .array_pointers_in_arguments(true)
+        .array_pointers_in_arguments(false)
         .detect_include_paths(true)
         // .enable_function_attribute_detection()
         .prepend_enum_name(false)
@@ -37,8 +37,8 @@ fn bind(path: &Path) {
         .derive_partialeq(true)
         .parse_callbacks(Box::new(Cb))
         .default_enum_style(bindgen::EnumVariation::ModuleConsts)
+        .bitfield_enum("rte_eth_tx_offload")
         .allowlist_item("rte.*")
-        .allowlist_item("_rte.*")
         .allowlist_item("RTE.*")
         .opaque_type("rte_arp_hdr")
         .opaque_type("rte_arp_ipv4")
@@ -97,8 +97,8 @@ fn main() {
     println!("cargo:rustc-link-lib=static:+whole-archive=rte_telemetry");
     println!("cargo:rustc-link-lib=static:+whole-archive=rte_log");
 
-    println!("cargo:rustc-link-lib=static=ibverbs");
-    println!("cargo:rustc-link-lib=static=mlx5");
+    println!("cargo:rustc-link-lib=static:+whole-archive=ibverbs");
+    println!("cargo:rustc-link-lib=static:+whole-archive=mlx5");
 
     println!("cargo:rustc-link-lib=dylib=nl-route-3");
     println!("cargo:rustc-link-lib=dylib=nl-3");
@@ -124,6 +124,7 @@ fn main() {
     let out_path = PathBuf::from("src/dpdk_sys");
 
     bind(&out_path);
+
 }
 
 // // Skip the build script on docs.rs

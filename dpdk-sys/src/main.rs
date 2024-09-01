@@ -19,12 +19,9 @@ mod dpdk_sys;
 ///
 /// 1. The literal must not include interior null bytes.
 /// 2. The literal must not include non-ASCII bytes.
-///
-macro_rules! cstring {
-    ($l:expr) => {{
-        const _CSTR: &'static CStr =
-            unsafe { CStr::from_bytes_with_nul_unchecked(concat!($l, "\0").as_bytes()) };
-        _CSTR.as_ptr()
+macro_rules! cstr_literal {
+    ($l:literal) => {{
+        concat!($l, "\0").as_ptr().cast()
     }};
 }
 
@@ -46,10 +43,11 @@ impl Eal {
         {
             let args: Vec<_> = args.iter().map(|s| as_cstr(s.as_ref())).collect();
             let mut cargs: Vec<_> = args.iter().map(|s| s.as_ptr() as *mut c_char).collect();
-            let len = cargs.len();
-            let exit_code = unsafe { rte_eal_init(len as _, cargs.as_mut_ptr()) };
+            let len = cargs.len() as c_int;
+            let exit_code = unsafe { rte_eal_init(len, cargs.as_mut_ptr()) };
+            /// TODO: this is a poor error message
             if exit_code < 0 {
-                unsafe { rte_exit(exit_code, cstring!("Invalid EAL arguments")) };
+                unsafe { rte_exit(exit_code, cstr_literal!("Invalid EAL arguments")) };
             }
             info!("EAL initialization successful: {exit_code}");
         }
@@ -203,19 +201,16 @@ fn main() {
     };
 
     let port_id = 0;
+    init_port2(port_id, mbuf_pool);
 
-    init_port(port_id, mbuf_pool);
+    meter_stuff(port_id);
 
     {
         debug!("Setting up flow rules");
         let mut err = dpdk_sys::rte_flow_error::default();
-        let flow = generate_ipv4_flow(
+        let flow = generate_ct_flow2(
             port_id,
-            0,
-            Ipv4Addr::new(192, 168, 1, 1),
-            Ipv4Addr::new(255, 255, 255, 0),
-            Ipv4Addr::new(192, 168, 1, 2),
-            Ipv4Addr::new(255, 255, 255, 255),
+            4,
             &mut err,
         );
     }
@@ -235,26 +230,6 @@ fn main() {
     };
 }
 
-pub unsafe fn biscuit() {
-    let mut contrack = dpdk_sys::rte_flow_action_conntrack::default();
-    contrack.set_enable(1);
-    contrack.set_selective_ack(1);
-    contrack.set_live_connection(1);
-
-    let mut action = dpdk_sys::rte_flow_action_conntrack::default();
-
-    action.set_live_connection(1);
-    action.set_enable(1);
-
-    dpdk_sys::rte_flow_action_nat64 {
-        type_: dpdk_sys::rte_flow_nat64_type::RTE_FLOW_NAT64_4TO6,
-    };
-
-    dpdk_sys::rte_flow_action_nat64 {
-        type_: dpdk_sys::rte_flow_nat64_type::RTE_FLOW_NAT64_6TO4,
-    };
-}
-
 #[cfg_attr(
     feature = "tracing",
     tracing::instrument(level = "info", skip(mbuf_pool))
@@ -267,7 +242,8 @@ fn init_port(port_id: u16, mbuf_pool: &mut dpdk_sys::rte_mempool) {
                 | dpdk_sys::rte_eth_tx_offload::UDP_CKSUM
                 | dpdk_sys::rte_eth_tx_offload::TCP_CKSUM
                 | dpdk_sys::rte_eth_tx_offload::SCTP_CKSUM
-                | dpdk_sys::rte_eth_tx_offload::TCP_TSO) as u64,
+                | dpdk_sys::rte_eth_tx_offload::TCP_TSO)
+                .0,
             ..Default::default()
         },
         ..Default::default()
@@ -534,8 +510,8 @@ fn generate_ipv4_flow(
         dpdk_sys::rte_flow_validate(
             port_id,
             &attr as *const _,
-            pattern.as_ptr() as *const [_; 0],
-            action.as_ptr() as *const [_; 0],
+            pattern.as_ptr(),
+            action.as_ptr(),
             err,
         )
     };
@@ -619,4 +595,471 @@ impl Drop for RteFlow {
 #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace"))]
 fn htonl<T: Debug + Into<u32>>(x: T) -> u32 {
     u32::to_be(x.into())
+}
+
+#[cfg_attr(feature = "tracing", tracing::instrument(level = "debug"))]
+fn check_hairpin_cap(port_id: u16) {
+    let mut cap: dpdk_sys::rte_eth_hairpin_cap = Default::default();
+    let ret = unsafe { dpdk_sys::rte_eth_dev_hairpin_capability_get(port_id, &mut cap) };
+    if ret != 0 {
+        let err_msg = format!(
+            "Failed to get hairpin capability: {ret}",
+            ret = io::Error::from_raw_os_error(ret)
+        );
+        fatal_error(err_msg.as_str());
+    }
+    let locked_device_memory = cap.rx_cap.locked_device_memory();
+    let reserved = cap.rx_cap.reserved();
+    let rte_memory = cap.rx_cap.rte_memory();
+
+    info!("Hairpin cap: rx locked_device_memory: {locked_device_memory}");
+    info!("Hairpin cap: rx reserved: {reserved}");
+    info!("Hairpin cap: rx rte_memory: {rte_memory}");
+    info!(
+        "Hairpin cap: tx locked_device_memory: {}",
+        cap.tx_cap.locked_device_memory()
+    );
+    info!("Hairpin cap: tx reserved: {}", cap.tx_cap.reserved());
+    info!("Hairpin cap: tx rte_memory: {}", cap.tx_cap.rte_memory());
+    info!("Hairpin cap: max tx to rx: {}", cap.max_tx_2_rx);
+    info!("Hairpin cap: max rx to tx: {}", cap.max_rx_2_tx);
+    info!("Hairpin cap: max nb queues: {}", cap.max_nb_queues);
+    info!("Hairpin cap: max nb desc: {}", cap.max_nb_desc);
+}
+
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(level = "info", skip(mbuf_pool))
+)]
+fn init_port2(port_id: u16, mbuf_pool: &mut dpdk_sys::rte_mempool) {
+    let mut port_conf = dpdk_sys::rte_eth_conf {
+        txmode: dpdk_sys::rte_eth_txmode {
+            offloads: (dpdk_sys::rte_eth_tx_offload::VLAN_INSERT
+                | dpdk_sys::rte_eth_tx_offload::IPV4_CKSUM
+                | dpdk_sys::rte_eth_tx_offload::UDP_CKSUM
+                | dpdk_sys::rte_eth_tx_offload::TCP_CKSUM
+                | dpdk_sys::rte_eth_tx_offload::SCTP_CKSUM
+                | dpdk_sys::rte_eth_tx_offload::TCP_TSO)
+                .0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let mut txq_conf: dpdk_sys::rte_eth_txconf;
+    let mut rxq_conf: dpdk_sys::rte_eth_rxconf = unsafe { std::mem::zeroed() };
+    let mut dev_info: dpdk_sys::rte_eth_dev_info = unsafe { std::mem::zeroed() };
+
+    let ret = unsafe { rte_eth_dev_info_get(port_id, &mut dev_info as *mut _) };
+
+    if ret != 0 {
+        let err_msg = format!(
+            "Failed to get device info: {ret}",
+            ret = io::Error::from_raw_os_error(ret)
+        );
+        fatal_error(err_msg.as_str());
+    }
+
+    info!("Port ID {port_id}");
+    let driver_name = unsafe { CStr::from_ptr(dev_info.driver_name).to_str().unwrap() };
+    info!("Driver name: {driver_name}");
+
+    let nr_queues = 5;
+
+    port_conf.txmode.offloads &= dev_info.tx_offload_capa;
+    info!("Initialising port {port_id}");
+    let ret = unsafe { dpdk_sys::rte_eth_dev_configure(port_id, nr_queues, nr_queues, &port_conf) };
+
+    if ret != 0 {
+        let err_msg = format!(
+            "Failed to configure device: {ret}",
+            ret = io::Error::from_raw_os_error(ret)
+        );
+        fatal_error(err_msg.as_str());
+    }
+
+    rxq_conf = dev_info.default_rxconf;
+    rxq_conf.offloads = port_conf.rxmode.offloads;
+
+    let nr_rx_descriptors = 512;
+
+    // configure rx queues
+    for queue_num in 0..(nr_queues - 1) {
+        info!("Configuring RX queue {queue_num}");
+        let ret = unsafe {
+            dpdk_sys::rte_eth_rx_queue_setup(
+                port_id,
+                queue_num,
+                nr_rx_descriptors,
+                dpdk_sys::rte_eth_dev_socket_id(port_id) as c_uint,
+                &rxq_conf,
+                mbuf_pool,
+            )
+        };
+
+        if ret < 0 {
+            let err_msg = format!(
+                "Failed to configure RX queue {queue_num}: {ret}",
+                queue_num = queue_num,
+                ret = io::Error::from_raw_os_error(ret)
+            );
+            fatal_error(err_msg.as_str());
+        }
+        info!("RX queue {queue_num} configured");
+    }
+
+    check_hairpin_cap(port_id);
+
+    let mut rx_hairpin_conf = dpdk_sys::rte_eth_hairpin_conf::default();
+    rx_hairpin_conf.set_peer_count(1);
+    rx_hairpin_conf.peers[0].port = port_id;
+    rx_hairpin_conf.peers[0].queue = nr_queues - 1;
+
+    let ret = unsafe {
+        dpdk_sys::rte_eth_rx_hairpin_queue_setup(port_id, nr_queues - 1, 0, &rx_hairpin_conf)
+    };
+
+    if ret < 0 {
+        let err_msg = format!(
+            "Failed to configure RX hairpin queue: {ret}",
+            ret = io::Error::from_raw_os_error(ret)
+        );
+        fatal_error(err_msg.as_str());
+    }
+    info!("RX hairpin queue configured");
+
+    txq_conf = dev_info.default_txconf;
+    txq_conf.offloads = port_conf.txmode.offloads;
+
+    for queue_num in 0..(nr_queues - 1) {
+        info!("Configuring TX queue {queue_num}");
+        let ret = unsafe {
+            dpdk_sys::rte_eth_tx_queue_setup(
+                port_id,
+                queue_num,
+                nr_rx_descriptors,
+                dpdk_sys::rte_eth_dev_socket_id(port_id) as c_uint,
+                &txq_conf as *const _,
+            )
+        };
+
+        if ret < 0 {
+            let err_msg = format!(
+                "Failed to configure TX queue {queue_num}: {ret}",
+                queue_num = queue_num,
+                ret = io::Error::from_raw_os_error(ret)
+            );
+            fatal_error(err_msg.as_str());
+        }
+        info!("TX queue {queue_num} configured");
+    }
+
+    let mut tx_hairpin_conf = dpdk_sys::rte_eth_hairpin_conf::default();
+    tx_hairpin_conf.set_peer_count(1);
+    tx_hairpin_conf.peers[0].port = port_id;
+    tx_hairpin_conf.peers[0].queue = nr_queues - 1;
+
+    let ret = unsafe {
+        dpdk_sys::rte_eth_tx_hairpin_queue_setup(port_id, nr_queues - 1, 0, &tx_hairpin_conf)
+    };
+
+    if ret < 0 {
+        let err_msg = format!(
+            "Failed to configure TX hairpin queue: {ret}",
+            ret = io::Error::from_raw_os_error(ret)
+        );
+        fatal_error(err_msg.as_str());
+    }
+    info!("TX hairpin queue configured");
+
+    info!("Port {port_id} configured");
+
+    let ret = unsafe { dpdk_sys::rte_eth_promiscuous_enable(port_id) };
+    if ret != 0 {
+        let err_msg = format!(
+            "Failed to enable promiscuous mode: {ret}",
+            ret = io::Error::from_raw_os_error(ret)
+        );
+        fatal_error(err_msg.as_str());
+    }
+    info!("Port {port_id} set to promiscuous mode");
+
+    let flow_port_attr = dpdk_sys::rte_flow_port_attr {
+        nb_conn_tracks: 1,
+        host_port_id: 5,
+        // nb_meters: 1000,
+        // host_port_id: 5,
+        // nb_meters: 1,
+        // flags: dpdk_sys::rte_flow_port_flag::STRICT_QUEUE,
+        ..Default::default()
+    };
+
+    let flow_queue_attr = dpdk_sys::rte_flow_queue_attr {
+        size: 16,
+    };
+
+    let mut flow_configure_error = dpdk_sys::rte_flow_error::default();
+
+    let ret = unsafe {
+        dpdk_sys::rte_flow_configure(
+            port_id,
+            &flow_port_attr,
+            1,
+            &mut (&flow_queue_attr as *const _),
+            &mut flow_configure_error,
+        )
+    };
+
+    if ret != 0 || !flow_configure_error.message.is_null() {
+        if flow_configure_error.message.is_null() {
+            let err_str = unsafe { dpdk_sys::rte_strerror(ret) };
+            let err_msg = format!(
+                "Failed to configure flow engine: {err_str}",
+                err_str = unsafe { CStr::from_ptr(err_str) }.to_str().unwrap()
+            );
+            fatal_error(err_msg.as_str());
+        } else {
+            let err_str = unsafe { CStr::from_ptr(flow_configure_error.message) };
+            let err_msg = format!(
+                "Failed to configure flow engine: {err_str}",
+                err_str = err_str.to_str().unwrap()
+            );
+            fatal_error(err_msg.as_str());
+        }
+    }
+
+    info!("Flow engine configuration installed");
+
+    let ret = unsafe { dpdk_sys::rte_eth_dev_start(port_id) };
+    if ret != 0 {
+        let err_msg = format!(
+            "Failed to start device: {ret}",
+            ret = io::Error::from_raw_os_error(ret)
+        );
+        fatal_error(err_msg.as_str());
+    }
+
+    info!("Port {port_id} started");
+    assert_link_status(port_id);
+    info!("Port {port_id} has been initialized");
+}
+
+#[cfg_attr(feature = "tracing", tracing::instrument(level = "debug"))]
+fn generate_ct_flow(
+    port_id: u16,
+    rx_q: u16,
+    src_ip: Ipv4Addr,
+    src_mask: Ipv4Addr,
+    dest_ip: Ipv4Addr,
+    dest_mask: Ipv4Addr,
+    err: &mut dpdk_sys::rte_flow_error,
+) -> RteFlow {
+    const MAX_PATTERN_NUM: usize = 16;
+    const MAX_ACTION_NUM: usize = 16;
+    let mut attr: dpdk_sys::rte_flow_attr = Default::default();
+    let mut pattern: [dpdk_sys::rte_flow_item; MAX_PATTERN_NUM] = Default::default();
+    let mut action: [dpdk_sys::rte_flow_action; MAX_ACTION_NUM] = Default::default();
+    let queue = dpdk_sys::rte_flow_action_queue { index: rx_q };
+
+    attr.set_ingress(1);
+
+    pattern[0].type_ = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_ETH;
+    pattern[1].type_ = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_IPV4;
+
+    pattern[2].type_ = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_TCP;
+    let tcp_spec = dpdk_sys::rte_flow_item_tcp {
+        hdr: dpdk_sys::rte_tcp_hdr {
+            dst_port: 80,
+            ..Default::default()
+        },
+    };
+    pattern[2].spec = &tcp_spec as *const _ as *const _;
+
+    pattern[3].type_ = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_CONNTRACK;
+    let conntrack_spec = dpdk_sys::rte_flow_item_conntrack {
+        flags: dpdk_sys::rte_flow_conntrack_tcp_last_index::RTE_FLOW_CONNTRACK_FLAG_SYN,
+    };
+    pattern[3].spec = &conntrack_spec as *const _ as *const _;
+
+    pattern[4].type_ = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_END;
+
+
+    action[0].type_ = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_QUEUE;
+    action[0].conf = &queue as *const _ as *const _;
+    action[1].type_ = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_END;
+
+    let res = unsafe {
+        dpdk_sys::rte_flow_validate(
+            port_id,
+            &attr as *const _,
+            pattern.as_ptr(),
+            action.as_ptr(),
+            err,
+        )
+    };
+
+    if res != 0 {
+        let err_str = unsafe { dpdk_sys::rte_strerror(res) };
+        let err_msg = format!(
+            "Failed to validate flow: {err_str}",
+            err_str = unsafe { CStr::from_ptr(err_str) }.to_str().unwrap()
+        );
+        fatal_error(err_msg.as_str());
+    }
+
+    let flow = unsafe {
+        dpdk_sys::rte_flow_create(
+            port_id,
+            &attr as *const _,
+            pattern.as_ptr() as *const _,
+            action.as_ptr() as *const _,
+            err,
+        )
+    };
+
+    if flow.is_null() || !err.message.is_null() {
+        if err.message.is_null() {
+            fatal_error("Failed to create flow: unknown error");
+        }
+        let err_str = unsafe { CStr::from_ptr(err.message) };
+        fatal_error(err_str.to_str().unwrap());
+    }
+
+    debug!("Flow created");
+
+    RteFlow::new(port_id, flow)
+}
+
+#[cfg_attr(feature = "tracing", tracing::instrument(level = "debug"))]
+fn generate_ct_flow2(
+    port_id: u16,
+    rx_q: u16,
+    err: &mut dpdk_sys::rte_flow_error,
+) -> RteFlow {
+    const MAX_PATTERN_NUM: usize = 16;
+    const MAX_ACTION_NUM: usize = 16;
+    let mut attr: dpdk_sys::rte_flow_attr = Default::default();
+    attr.group = 1;
+    attr.set_ingress(1);
+    let mut pattern: [dpdk_sys::rte_flow_item; MAX_PATTERN_NUM] = Default::default();
+    let mut action: [dpdk_sys::rte_flow_action; MAX_ACTION_NUM] = Default::default();
+    let queue = dpdk_sys::rte_flow_action_queue { index: rx_q };
+
+    pattern[0].type_ = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_ETH;
+    pattern[1].type_ = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_IPV4;
+
+    pattern[2].type_ = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_TCP;
+    let tcp_spec = dpdk_sys::rte_flow_item_tcp {
+        hdr: dpdk_sys::rte_tcp_hdr {
+            dst_port: 80,
+            tcp_flags: dpdk_sys::RTE_TCP_SYN_FLAG as u8,
+            ..Default::default()
+        },
+    };
+    pattern[2].spec = &tcp_spec as *const _ as *const _;
+
+    pattern[3].type_ = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_CONNTRACK;
+    let conntrack_spec = dpdk_sys::rte_flow_item_conntrack {
+        flags: dpdk_sys::rte_flow_conntrack_tcp_last_index::RTE_FLOW_CONNTRACK_FLAG_NONE,
+    };
+    pattern[3].spec = &conntrack_spec as *const _ as *const _;
+
+    pattern[4].type_ = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_END;
+
+    action[0].type_ = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_CONNTRACK;
+    let mut contrack_action = dpdk_sys::rte_flow_action_conntrack::default();
+    contrack_action.set_enable(1);
+    // contrack_action.set_is_original_dir(1);
+    contrack_action.state = dpdk_sys::rte_flow_conntrack_state::RTE_FLOW_CONNTRACK_STATE_SYN_RECV;
+    action[0].conf = &contrack_action as *const _ as *const _;
+
+    action[1].type_ = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_QUEUE;
+    action[1].conf = &queue as *const _ as *const _;
+    action[2].type_ = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_END;
+
+    info!("Validating flow");
+
+    let res = unsafe {
+        dpdk_sys::rte_flow_validate(
+            port_id,
+            &attr as *const _,
+            pattern.as_ptr(),
+            action.as_ptr(),
+            err,
+        )
+    };
+
+    if res == 0 {
+        info!("Connection tracking flow validated");
+    }
+
+    if res != 0 {
+        let err_str = unsafe { dpdk_sys::rte_strerror(res) };
+        if err.message.is_null() {
+            let err_msg = format!(
+                "Failed to validate flow: {err_str}",
+                err_str = unsafe { CStr::from_ptr(err_str) }.to_str().unwrap()
+            );
+            fatal_error(err_msg.as_str());
+        } else {
+            let flow_err_str = unsafe { CStr::from_ptr(err.message) }.to_str().unwrap();
+            let err_msg = format!(
+                "Failed to validate flow: {flow_err_str}; {err_str}",
+                err_str = unsafe { CStr::from_ptr(err_str) }.to_str().unwrap()
+            );
+            fatal_error(err_msg.as_str());
+        }
+    }
+
+    info!("Creating flow");
+
+    let flow = unsafe {
+        dpdk_sys::rte_flow_create(
+            port_id,
+            &attr as *const _,
+            pattern.as_ptr() as *const _,
+            action.as_ptr() as *const _,
+            err,
+        )
+    };
+
+    info!("Flow create attempt result: {flow:?}, {err:?}");
+
+    if flow.is_null() || !err.message.is_null() {
+        if err.message.is_null() {
+            fatal_error("Failed to create flow: unknown error");
+        }
+        let err_str = unsafe { CStr::from_ptr(err.message) };
+        fatal_error(err_str.to_str().unwrap());
+    }
+
+    debug!("Flow created");
+
+    RteFlow::new(port_id, flow)
+}
+
+fn meter_stuff(port_id: u16) {
+    let mut caps = dpdk_sys::rte_mtr_capabilities::default();
+    let mut err = dpdk_sys::rte_mtr_error::default();
+    let ret = unsafe {
+        dpdk_sys::rte_mtr_capabilities_get(port_id, &mut caps, &mut err)
+    };
+
+    if ret != 0 || !err.message.is_null() {
+        let io_error_msg = io::Error::from_raw_os_error(ret).to_string();
+        let err_msg = if err.message.is_null() {
+            format!(
+                "Failed to get meter capabilities: {io_error_msg}",
+            )
+        } else {
+            let err_str = unsafe { CStr::from_ptr(err.message) };
+            format!(
+                "Failed to get meter capabilities: {err_str}; {io_error_msg}",
+                err_str = err_str.to_str().unwrap()
+            )
+        };
+    }
+
+    info!("Meter capabilities: {caps:?}");
+
 }
