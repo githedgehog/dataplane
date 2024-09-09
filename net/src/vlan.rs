@@ -2,15 +2,10 @@
 
 use core::num::NonZero;
 
-#[cfg(feature = "display")]
-use core::fmt::Display;
+use thiserror;
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use tracing::instrument;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[repr(transparent)]
 /// A VLAN Identifier.
 ///
 /// This type is marked `#[repr(transparent)]` to ensure that it has the same memory layout
@@ -20,26 +15,25 @@ use serde::{Deserialize, Serialize};
 /// The memory / compute overhead of using this type as opposed to a `u16` is then strictly
 /// limited to the price of checking that the represented value is in fact a legal [`Vid`]
 /// (which we should generally be doing anyway).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[repr(transparent)]
 pub struct Vid(NonZero<u16>);
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "thiserror", derive(thiserror::Error))]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[must_use]
 /// Errors which can occur when converting a `u16` to a validated [`Vid`]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[must_use]
 pub enum InvalidVid {
-    #[cfg_attr(feature = "thiserror", error("Zero is a reserved Vid"))]
     /// 0 is a reserved [`Vid`] which basically means "the native vlan."
     /// 0 is not a legal [`Vid`] for Hedgehog's purposes.
+    #[error("Zero is a reserved Vid")]
     Zero,
-    #[cfg_attr(feature = "thiserror", error("4095 is a reserved Vid"))]
     /// 4095 is a reserved [`Vid`] per the spec.
+    #[error("4095 is a reserved Vid")]
     Reserved,
-    #[cfg_attr(
-        feature = "thiserror",
-        error("{0} is too large to be a legal Vid (max is 2^12)")
-    )]
     /// The value is too large to be a legal VID (max is 2^12).
+    #[error("{0:?} is too large to be a legal Vid (max is 2^12)")]
     TooLarge(u16),
 }
 
@@ -51,12 +45,12 @@ impl Vid {
     /// The legal range of VID values.
     pub const LEGAL_RANGE: core::ops::RangeInclusive<u16> = Vid::MIN..=Vid::MAX;
 
-    #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace"))]
     /// Create a new [`Vid`] from a `u16`.
     ///
     /// # Errors
     ///
     /// Returns an error if the value is 0, 4095 (reserved), or greater than [`Vid::MAX`].
+    #[instrument(level = "trace", ret)]
     pub fn new(vid: u16) -> Result<Self, InvalidVid> {
         match vid {
             4095 => Err(InvalidVid::Reserved),
@@ -73,15 +67,16 @@ impl Vid {
         }
     }
 
-    #[must_use]
     /// Get the value of the [`Vid`] as a `u16`.
-    pub const fn as_u16(self) -> u16 {
+    #[instrument(level = "trace", ret)]
+    #[must_use]
+    pub fn as_u16(self) -> u16 {
         self.0.get()
     }
 }
 
 impl From<Vid> for u16 {
-    #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace"))]
+    #[instrument(level = "trace", ret)]
     fn from(vid: Vid) -> u16 {
         vid.as_u16()
     }
@@ -90,14 +85,13 @@ impl From<Vid> for u16 {
 impl TryFrom<u16> for Vid {
     type Error = InvalidVid;
 
-    #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace"))]
-    fn try_from(vid: u16) -> Result<Self, Self::Error> {
+    #[instrument(level = "trace", ret)]
+    fn try_from(vid: u16) -> Result<Vid, Self::Error> {
         Vid::new(vid)
     }
 }
 
-#[cfg(feature = "display")]
-impl Display for Vid {
+impl core::fmt::Display for Vid {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.as_u16())
     }

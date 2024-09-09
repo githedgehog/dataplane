@@ -1,6 +1,6 @@
 [package]
-name = "net"
-version = "0.0.1"
+name = "dpdk"
+version = "0.1.0"
 edition = "2021"
 
 [features]
@@ -25,10 +25,10 @@ tracing_release_max_level_warn = ["tracing/release_max_level_warn"]
 
 [dependencies]
 
+dpdk-sys = { path = "../dpdk-sys" }
+errno = { path = "../errno" }
+
 serde = { workspace = true, optional = true }
+syscalls = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
-
-[dev-dependencies]
-bolero = { workspace = true }
-
+tracing = { workspace = true, features = ["attributes"] }

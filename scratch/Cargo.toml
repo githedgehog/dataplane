@@ -1,0 +1,14 @@
+[package]
+name = "scratch"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+dpdk-sys = { path = "../dpdk-sys" }
+
+dpdk = { path = "../dpdk" }
+
+thiserror = { workspace = true }
+tracing = { workspace = true, features = ["attributes"] }
+tracing-subscriber = { workspace = true }

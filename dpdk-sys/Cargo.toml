@@ -1,17 +1,10 @@
 [package]
-name = "oxy-dpdk"
+name = "dpdk-sys"
 version = "0.0.1"
 edition = "2021"
-
-[features]
-default = ["tracing"]
-tracing = ["dep:tracing"]
-
-[dependencies]
-thiserror = { workspace = true }
-tracing = { workspace = true, optional = true, features = ["attributes"] }
-tracing-subscriber = { workspace = true }
+description = "Low-level bindings to the Data Plane Development Kit (DPDK)"
 
 [build-dependencies]
 bindgen = { workspace = true, features = ["runtime"] }
+cc = { workspace = true }
 doxygen-rs = { workspace = true }

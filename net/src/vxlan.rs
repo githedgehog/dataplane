@@ -1,9 +1,7 @@
 //! VXLAN validation and manipulation.
 
 use core::num::NonZero;
-
-#[cfg(feature = "display")]
-use core::fmt::{Display, Formatter};
+use tracing::instrument;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
@@ -29,20 +27,27 @@ use core::fmt::{Display, Formatter};
 /// we should generally be doing anyway).
 pub struct Vni(NonZero<u32>);
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "thiserror", derive(thiserror::Error))]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[must_use]
 /// Errors that can occur when converting a `u32` to a [`Vni`]
 pub enum InvalidVni {
-    #[cfg_attr(feature = "thiserror", error("Zero is not a legal Vni"))]
     /// Zero is not a legal [`Vni`] per the spec.
     ReservedZero,
-    #[cfg_attr(
-        feature = "thiserror",
-        error("{0} is too large to be a legal Vni (max is 2^24)")
-    )]
-    /// The value is too large to be a legal [`Vni`] (max is 2^24 - 1, see [`Vni::MAX`]).
+    /// The value is too large to be a [`Vni`] (max is 2^24 - 1, see [`Vni::MAX`]).
     TooLarge(u32),
+}
+
+impl core::fmt::Display for InvalidVni {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        match self {
+            InvalidVni::ReservedZero => {
+                write!(f, "Zero is not a legal Vni")
+            }
+            InvalidVni::TooLarge(val) => {
+                write!(f, "{val} is too large to be a legal Vni (max is 2^24)")
+            }
+        }
+    }
 }
 
 impl Vni {
@@ -50,10 +55,10 @@ impl Vni {
     pub const MIN: u32 = 1;
     /// The maximum legal [`Vni`] value (2^24 - 1).
     pub const MAX: u32 = 0x00_FF_FF_FF;
-    /// The legal range of [`Vni`] values.
+    /// The (inclusive legal range of [`Vni`] values.
     pub const LEGAL_RANGE: core::ops::RangeInclusive<u32> = Vni::MIN..=Vni::MAX;
 
-    #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace"))]
+    #[instrument(level = "trace")]
     /// Create a new [`Vni`] from a `u32`.
     ///
     /// # Errors
@@ -80,7 +85,7 @@ impl Vni {
 }
 
 impl From<Vni> for u32 {
-    #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace"))]
+    #[instrument(level = "trace")]
     fn from(vni: Vni) -> u32 {
         vni.as_u32()
     }
@@ -89,29 +94,53 @@ impl From<Vni> for u32 {
 impl TryFrom<u32> for Vni {
     type Error = InvalidVni;
 
-    #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace"))]
+    #[instrument(level = "trace")]
     fn try_from(vni: u32) -> Result<Vni, Self::Error> {
         Vni::new(vni)
     }
 }
 
-#[cfg(feature = "display")]
-impl Display for Vni {
-    fn fmt(&self, f: &mut Formatter) -> core::fmt::Result {
+impl core::fmt::Display for Vni {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(f, "{}", self.as_u32())
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_fake_kani", kani))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod test {
 
+    // This is just a hack to make the IDE chill out when using kani
+    #[cfg(all(not(kani), feature = "_fake_kani"))]
+    pub mod kani {
+        #[must_use]
+        pub fn any<T>() -> T {
+            unimplemented!("This function is only available in Kani")
+        }
+
+        pub fn assume(_condition: bool) {
+            unimplemented!("This function is only available in Kani")
+        }
+    }
+
     use super::*;
 
+    #[cfg_attr(kani, kani::proof)]
     #[test]
-    fn test_vni() {
-        assert_eq!(Vni::new(0).unwrap_err(), InvalidVni::ReservedZero);
-        assert_eq!(Vni::new(1).unwrap().as_u32(), 1);
-        assert_eq!(Vni::new(Vni::MAX).unwrap().as_u32(), Vni::MAX);
+    fn fuzz_test() {
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .for_each(|val: u32| match val {
+                0 => {
+                    assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::ReservedZero);
+                }
+                val if val > Vni::MAX => {
+                    assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::TooLarge(val));
+                }
+                _ => {
+                    assert_eq!(Vni::new(val).unwrap().as_u32(), val);
+                }
+            });
     }
 }

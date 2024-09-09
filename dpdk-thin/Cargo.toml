@@ -1,5 +1,5 @@
 [package]
-name = "net"
+name = "dpdk-thin"
 version = "0.0.1"
 edition = "2021"
 
@@ -23,12 +23,14 @@ tracing_release_max_level_off = ["tracing/release_max_level_off"]
 tracing_release_max_level_trace = ["tracing/release_max_level_trace"]
 tracing_release_max_level_warn = ["tracing/release_max_level_warn"]
 
-[dependencies]
 
-serde = { workspace = true, optional = true }
+[dependencies]
+dpdk-sys = { path = "../dpdk-sys" }
+
 thiserror = { workspace = true }
 tracing = { workspace = true }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
-bolero = { workspace = true }
-
+rstest = { workspace = true }
+tracing-test = { workspace = true }
