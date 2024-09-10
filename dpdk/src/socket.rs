@@ -11,9 +11,10 @@ use crate::dev::DevIndex;
 /// imported for rustdoc
 use crate::eal::Eal;
 use dpdk_sys::rte_socket_id;
-use std::ffi::c_uint;
-use std::marker::PhantomData;
+use core::ffi::c_uint;
+use core::marker::PhantomData;
 use tracing::debug;
+use errno::{ErrorCode, StandardErrno};
 
 #[repr(transparent)]
 #[derive(Debug)]
@@ -242,16 +243,16 @@ pub enum Preference {
 }
 
 impl TryFrom<Preference> for SocketId {
-    // TODO: this is a crap error type
-    type Error = String;
+    // TODO: this is a silly error type.  Design something better.
+    type Error = ErrorCode;
 
     fn try_from(value: Preference) -> Result<Self, Self::Error> {
         match value {
             Preference::Id(id) => Ok(id),
             Preference::Lcore(lcore_id) => {
-                SocketId::get_by_lcore(lcore_id).ok_or("Invalid lcore id".to_string())
+                SocketId::get_by_lcore(lcore_id).ok_or(ErrorCode::Standard(StandardErrno::InvalidArgument))
             }
-            Preference::Dev(dev) => dev.socket_id().map_err(|e| e.to_string()),
+            Preference::Dev(dev) => dev.socket_id(),
         }
     }
 }

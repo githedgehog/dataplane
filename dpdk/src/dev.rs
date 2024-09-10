@@ -1,18 +1,21 @@
 //! Ethernet device management.
-use std::ffi::{c_uint, CStr};
-use std::fmt::{Debug, Display, Formatter};
-use std::marker::PhantomData;
-use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
+
+use alloc::format;
+use alloc::vec::Vec;
+use core::ffi::{c_uint, CStr};
+use core::fmt::{Debug, Display, Formatter};
+use core::marker::PhantomData;
+use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 use tracing::{debug, error, info};
 
 use crate::eal::Eal;
 use crate::queue;
 use crate::queue::hairpin::{HairpinConfigFailure, HairpinQueue};
 use crate::queue::rx::{RxQueue, RxQueueConfig};
-use crate::queue::tx::{TxQueueConfig, TxQueue};
+use crate::queue::tx::{TxQueue, TxQueueConfig};
 use crate::socket::SocketId;
 use dpdk_sys::*;
-
+use errno::{Errno, ErrorCode, NegStandardErrno, StandardErrno};
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -22,9 +25,25 @@ use dpdk_sys::*;
 pub struct DevIndex(pub u16);
 
 impl Display for DevIndex {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+#[derive(Debug, thiserror::Error, Copy, Clone)]
+pub enum DevInfoError {
+    #[error("Device information not supported")]
+    NotSupported,
+    #[error("Device information not available")]
+    NotAvailable,
+    #[error("Invalid argument")]
+    InvalidArgument,
+    #[error("Unknown error which matches a standard errno")]
+    UnknownStandard(StandardErrno),
+    #[error("Unknown error which matches a negative standard errno")]
+    UnknownNegStandard(NegStandardErrno),
+    #[error("Unknown error: {0:?}")]
+    Unknown(Errno),
 }
 
 impl DevIndex {
@@ -51,18 +70,60 @@ impl DevIndex {
     /// # Safety
     ///
     /// This function should never panic assuming DPDK is correctly implemented.
-    pub fn info(&self) -> Result<DevInfo, std::io::Error> {
+    pub fn info(&self) -> Result<DevInfo, DevInfoError> {
         let mut dev_info = rte_eth_dev_info::default();
 
         let ret = unsafe { rte_eth_dev_info_get(self.0, &mut dev_info) };
 
         if ret != 0 {
-            let err = std::io::Error::from_raw_os_error(ret);
-            error!(
-                "Failed to get device info for port {index}: {err}",
-                index = self.0
-            );
-            return Err(err);
+            match ret {
+                errno::NEG_ENOTSUP => {
+                    error!(
+                        "Device information not supported for port {index}",
+                        index = self.0
+                    );
+                    return Err(DevInfoError::NotSupported);
+                }
+                errno::NEG_ENODEV => {
+                    error!(
+                        "Device information not available for port {index}",
+                        index = self.0
+                    );
+                    return Err(DevInfoError::NotAvailable);
+                }
+                errno::NEG_EINVAL => {
+                    error!(
+                        "Invalid argument when getting device info for port {index}",
+                        index = self.0
+                    );
+                    return Err(DevInfoError::InvalidArgument);
+                }
+                val => {
+                    let unknown = match StandardErrno::parse_i32(val) {
+                        Ok(standard) => {
+                            return Err(DevInfoError::UnknownStandard(standard));
+                        }
+                        Err(unknown) => unknown,
+                    };
+                    let unknown = match NegStandardErrno::parse_i32(val) {
+                        Ok(standard) => {
+                            return Err(DevInfoError::UnknownNegStandard(standard));
+                        }
+                        Err(unknown) => unknown,
+                    };
+                    error!(
+                        "Unknown error when getting device info for port {index}: {val}",
+                        index = self.0,
+                        val = val
+                    );
+                    return Err(DevInfoError::Unknown(errno::Errno(val)));
+                }
+            }
+            // error!(
+            //     "Failed to get device info for port {index}: {err}",
+            //     index = self.0
+            // );
+            // return Err(err);
         }
 
         Ok(DevInfo {
@@ -85,7 +146,7 @@ impl DevIndex {
     ///   (statically ensured).
     /// * This function may panic if DPDK returns an unexpected (undocumented) error code after
     ///   failing to determine the socket id.
-    pub fn socket_id(&self) -> Result<SocketId, std::io::Error> {
+    pub fn socket_id(&self) -> Result<SocketId, errno::ErrorCode> {
         let socket_id = unsafe { rte_eth_dev_socket_id(self.as_u16()) };
         if socket_id == -1 {
             match unsafe { wrte_errno() } {
@@ -95,10 +156,7 @@ impl DevIndex {
                 }
                 errno::EINVAL => {
                     // We are asking DPDK for the socket id of a port that doesn't exist.
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!("Invalid port index: {self}"),
-                    ));
+                    return Err(errno::ErrorCode::parse_i32(errno::EINVAL));
                 }
                 errno => {
                     // Getting here means we have an unknown error.
@@ -324,7 +382,7 @@ impl Default for TxOffloadConfig {
 }
 
 impl Display for TxOffloadConfig {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(f, "{self:?}")
     }
 }
@@ -587,7 +645,7 @@ impl Manager {
     ///
     /// This function should never panic assuming DPDK is correctly implemented.
     #[tracing::instrument(level = "trace", ret)]
-    pub fn info(&self, index: DevIndex) -> Result<DevInfo, std::io::Error> {
+    pub fn info(&self, index: DevIndex) -> Result<DevInfo, DevInfoError> {
         index.info()
     }
 
@@ -658,10 +716,9 @@ impl Dev {
         &mut self,
         config: RxQueueConfig,
     ) -> Result<(), queue::rx::ConfigFailure> {
-        todo!()
-        // let rx_queue = queue::rx::RxQueueStopped::configure(self, config)?;
-        // self.rx_queues.push(rx_queue);
-        // Ok(())
+        let rx_queue = RxQueue::configure(self, config)?;
+        self.rx_queues.push(rx_queue);
+        Ok(())
     }
 
     // TODO: return type should provide a handle back to the queue
@@ -676,31 +733,30 @@ impl Dev {
     }
 
     // TODO: return type should provide a handle back to the queue
-    /// Configure a new [`queue::hairpin::HairpinQueue`]
+    /// Configure a new [`HairpinQueue`]
     pub fn configure_hairpin_queue(
         &mut self,
         rx: RxQueueConfig,
         tx: TxQueueConfig,
     ) -> Result<(), HairpinConfigFailure> {
-        todo!()
-        // let rx = queue::rx::RxQueueStopped::configure(self, rx)
-        //     .map_err(HairpinConfigFailure::RxQueueCreationFailed)?;
-        // let tx = queue::tx::TxQueueStopped::configure(self, tx)
-        //     .map_err(HairpinConfigFailure::TxQueueCreationFailed)?;
-        // let hairpin = queue::hairpin::HairpinQueueStopped::new(self, rx, tx)?;
-        // self.hairpin_queues.push(hairpin);
-        // Ok(())
+        let rx =
+            RxQueue::configure(self, rx).map_err(HairpinConfigFailure::RxQueueCreationFailed)?;
+        let tx =
+            TxQueue::configure(self, tx).map_err(HairpinConfigFailure::TxQueueCreationFailed)?;
+        let hairpin = HairpinQueue::new(self, rx, tx)?;
+        self.hairpin_queues.push(hairpin);
+        Ok(())
     }
 
     /// Start the device.
-    pub fn start(self) -> Result<Dev, std::io::Error> {
+    pub fn start(&mut self) -> Result<(), ErrorCode> {
         let ret = unsafe { rte_eth_dev_start(self.info.index().as_u16()) };
 
         match ret {
             errno::NEG_EAGAIN => {
                 error!("Device is not ready to start");
                 // TODO:
-                return Err(std::io::Error::from_raw_os_error(ret));
+                return Err(ErrorCode::parse_i32(errno::NEG_EAGAIN));
             }
             0 => {
                 info!("Device started");
@@ -711,22 +767,10 @@ impl Dev {
                     port = self.info.index(),
                     code = ret
                 );
-                return Err(std::io::Error::from_raw_os_error(ret));
+                return Err(ErrorCode::parse_i32(ret));
             }
         };
-
-        todo!()
-        // Ok(Dev {
-        //     info: self.info,
-        //     config: self.config,
-        //     // rx_queues: self.rx_queues.into_iter().map(|rx| rx.start()).collect(),
-        //     // tx_queues: self.tx_queues.into_iter().map(|tx| tx.start()).collect(),
-        //     hairpin_queues: self
-        //         .hairpin_queues
-        //         .into_iter()
-        //         .map(|hairpin| hairpin.start())
-        //         .collect(),
-        // })
+        Ok(())
     }
 }
 
@@ -741,25 +785,14 @@ pub struct StartedDev {
 }
 
 impl Dev {
-    pub fn stop(self) -> Result<Dev, std::io::Error> {
+    pub fn stop(&mut self) -> Result<(), ErrorCode> {
         info!("Stopping device {port}", port = self.info.index());
         let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
 
         match ret {
             0 => {
                 info!("Device {port} stopped", port = self.info.index());
-                todo!()
-                // Ok(Dev {
-                //     info: self.info,
-                //     config: self.config,
-                //     // rx_queues: self.rx_queues.into_iter().map(|rx| rx.stop()).collect(),
-                //     // tx_queues: self.tx_queues.into_iter().map(|tx| tx.stop()).collect(),
-                //     hairpin_queues: self
-                //         .hairpin_queues
-                //         .into_iter()
-                //         .map(|hairpin| hairpin.stop())
-                //         .collect(),
-                // })
+                Ok(())
             }
             errno::NEG_EBUSY => {
                 // TODO, implement retry?
@@ -767,7 +800,7 @@ impl Dev {
                     "Cannot stop device {port}, port is busy",
                     port = self.info.index()
                 );
-                Err(std::io::Error::from_raw_os_error(ret))
+                Err(ErrorCode::parse_i32(errno::NEG_EBUSY))
             }
             _ => {
                 error!(
@@ -775,7 +808,7 @@ impl Dev {
                     port = self.info.index(),
                     code = ret
                 );
-                Err(std::io::Error::from_raw_os_error(ret))
+                Err(ErrorCode::parse_i32(ret))
             }
         }
     }
@@ -790,4 +823,34 @@ pub enum State {
     /// A device in the [`Started`] state is usable for packet processing but can generally not be
     /// re-configured while [`Started`].
     Started,
+}
+
+impl Drop for Dev {
+    fn drop(&mut self) {
+        info!(
+            "Closing DPDK ethernet device {port}",
+            port = self.info.index()
+        );
+        match self.stop() {
+            Ok(_) => {
+                info!("Device {port} stopped", port = self.info.index());
+            }
+            Err(err) => {
+                error!(
+                    "Failed to stop device {port}: {err}",
+                    port = self.info.index(),
+                    err = err
+                );
+            }
+        }
+    }
+}
+
+
+#[derive(Debug, thiserror::Error)]
+pub enum SocketIdLookupError {
+    #[error("Invalid port ID")]
+    DevDoesNotExist(DevIndex),
+    #[error("Unknown error code set")]
+    UnknownErrno(errno::ErrorCode),
 }

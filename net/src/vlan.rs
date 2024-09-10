@@ -20,6 +20,9 @@ use tracing::instrument;
 #[repr(transparent)]
 pub struct Vid(NonZero<u16>);
 
+/// A Priority Code Point.
+pub struct Pcp(pub u8);
+
 /// Errors which can occur when converting a `u16` to a validated [`Vid`]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

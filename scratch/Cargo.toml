@@ -12,3 +12,5 @@ dpdk = { path = "../dpdk" }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 tracing-subscriber = { workspace = true }
+
+rand = { version = "0.8" }

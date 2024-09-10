@@ -1,9 +1,13 @@
 //! DPDK Environment Abstraction Layer (EAL)
- 
+
+use alloc::format;
+use alloc::string::{String, ToString};
 use crate::{dev, mem, socket};
+use core::ffi::{c_char, c_int};
+use core::fmt::{Debug, Display};
+use alloc::ffi::CString;
+use alloc::vec::Vec;
 use dpdk_sys::*;
-use std::ffi::{c_char, c_int, CString};
-use std::fmt::{Debug, Display};
 use tracing::{error, info};
 
 /// Safe wrapper around the DPDK Environment Abstraction Layer (EAL).
@@ -40,7 +44,6 @@ impl Drop for EalPrivate {
         info!("EAL runtime environment closed");
     }
 }
-
 
 #[derive(Debug)]
 /// Error type for EAL initialization failures.
@@ -141,6 +144,15 @@ impl Eal {
         error!("{message}");
         let message_cstring = CString::new(message.as_ref()).expect("invalid error message!");
         unsafe { rte_exit(1, message_cstring.as_ptr()) }
+    }
+
+    /// Get the DPDK rte_errno and parse it as an [`errno::ErrorCode`].
+    ///
+    /// # Note
+    ///
+    /// If the err
+    pub fn errno() -> errno::ErrorCode {
+        errno::ErrorCode::parse_i32(unsafe { wrte_errno() })
     }
 }
 

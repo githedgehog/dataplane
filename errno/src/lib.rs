@@ -1,17 +1,16 @@
 //! Standard errno values, meanings, and lookups
+//!
+//! This code is tedious but quite safe.
+//!
+//! It is also perfectly happy to work in `no_std` environments, which other `errno` oriented crates
+//! do not seem to.
 
-#![no_std]
-#![deny(
-    clippy::all,
-    clippy::pedantic,
-    clippy::panic,
-)]
+#![cfg_attr(not(test), no_std)]
+#![deny(clippy::all, clippy::pedantic, clippy::panic)]
 #![forbid(unsafe_code, missing_docs)]
-#![forbid(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::missing_errors_doc,
-)]
+#![forbid(clippy::unwrap_used, clippy::expect_used, clippy::missing_errors_doc)]
+
+use core::num::NonZero;
 
 /// No error, operation succeeded
 pub const SUCCESS: i32 = 0;
@@ -248,8 +247,8 @@ pub const EUSERS: i32 = 131;
 /// The user's disk quota was exceeded.
 pub const EDQUOT: i32 = 132;
 /// Stale NFS file handle.
-/// 
-/// This indicates an internal confusion in the NFS system, which is due to file system 
+///
+/// This indicates an internal confusion in the NFS system, which is due to file system
 /// rearrangements on the server host.
 /// Repairing this condition usually requires unmounting and remounting the NFS file system on the
 /// local host.
@@ -490,18 +489,18 @@ pub const NEG_ENETRESET: i32 = -126;
 pub const NEG_EISCONN: i32 = -127;
 /// Socket is not connected
 pub const NEG_ENOTCONN: i32 = -128;
-/// This error can occur for `sendmsg(2)` when sending a file descriptor as ancillary data over a 
+/// This error can occur for `sendmsg(2)` when sending a file descriptor as ancillary data over a
 /// UNIX domain socket.
-/// 
-/// It occurs if the number of "in-flight" file descriptors exceeds the `RLIMIT_NOFILE` resource 
-/// limit and the caller does not have the `CAP_SYS_RESOURCE` capability. An in-flight file 
-/// descriptor is one that has been sent using `sendmsg(2)` but has not yet been accepted in the 
+///
+/// It occurs if the number of "in-flight" file descriptors exceeds the `RLIMIT_NOFILE` resource
+/// limit and the caller does not have the `CAP_SYS_RESOURCE` capability. An in-flight file
+/// descriptor is one that has been sent using `sendmsg(2)` but has not yet been accepted in the
 /// recipient process using `recvmsg(2)`.
 ///
-/// This error has been diagnosed since mainline Linux 4.5 (and in some earlier kernel versions 
-/// where the fix has been backported).  In earlier kernel versions, it was possible to place an 
-/// unlimited number of file descriptors in flight by sending each file descriptor with 
-/// `sendmsg(2)` and then closing the file descriptor so that it was not accounted against the 
+/// This error has been diagnosed since mainline Linux 4.5 (and in some earlier kernel versions
+/// where the fix has been backported).  In earlier kernel versions, it was possible to place an
+/// unlimited number of file descriptors in flight by sending each file descriptor with
+/// `sendmsg(2)` and then closing the file descriptor so that it was not accounted against the
 /// `RLIMIT_NOFILE` resource limit.
 pub const NEG_ETOOMANYREFS: i32 = -129;
 /// The per-user limit on the new process would be exceeded by an attempted fork.
@@ -511,8 +510,8 @@ pub const NEG_EUSERS: i32 = -131;
 /// The user's disk quota was exceeded.
 pub const NEG_EDQUOT: i32 = -132;
 /// Stale NFS file handle.
-/// 
-/// This indicates an internal confusion in the NFS system, which is due to file system 
+///
+/// This indicates an internal confusion in the NFS system, which is due to file system
 /// rearrangements on the server host.
 /// Repairing this condition usually requires unmounting and remounting the NFS file system on the
 /// local host.
@@ -916,7 +915,11 @@ impl StandardErrno {
 
     #[allow(clippy::too_many_lines)]
     /// Parse an `i32` value into a `StandardErrno`.
-    const fn parse_i32(value: i32) -> Result<StandardErrno, i32> {
+    ///
+    /// # Errors
+    ///
+    /// Returns the original `i32` value if it does not correspond to a standard errno.
+    pub const fn parse_i32(value: i32) -> Result<StandardErrno, i32> {
         match value {
             SUCCESS => Ok(Self::Success),
             EPERM => Ok(Self::PermissionDenied),
@@ -1080,6 +1083,14 @@ impl From<StandardErrno> for Errno {
     }
 }
 
+impl TryFrom<Errno> for NegStandardErrno {
+    type Error = i32;
+
+    fn try_from(value: Errno) -> Result<Self, Self::Error> {
+        Ok(StandardErrno::parse_i32(-value.0)?.neg())
+    }
+}
+
 /// Standard errno values negated
 #[derive(Debug, Copy, Clone, Eq, PartialEq, thiserror::Error)]
 #[error(transparent)]
@@ -1099,6 +1110,18 @@ impl NegStandardErrno {
     pub const fn neg(self) -> StandardErrno {
         self.0
     }
+
+    /// Parse an `i32` value into a `StandardErrno`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original `i32` value if it does not correspond to a standard errno.
+    pub const fn parse_i32(value: i32) -> Result<Self, i32> {
+        match StandardErrno::parse_i32(-value) {
+            Ok(standard) => Ok(standard.neg()),
+            Err(_) => Err(value),
+        }
+    }
 }
 
 impl core::ops::Neg for StandardErrno {
@@ -1116,4 +1139,432 @@ impl core::ops::Neg for NegStandardErrno {
     fn neg(self) -> Self::Output {
         self.neg()
     }
+}
+
+/// An "errno" error
+///
+/// This enum attempts to map `i32` values to standard (both positive and negative) values as
+/// defined in [`errno.h`].
+///
+/// The negative versions of the errors are commonly found in `C` code and often (but don't always)
+/// map to the meaning of their positive counterparts.
+/// Thus positive and negative values are kept in different arms of this enum.
+///
+/// [`errno.h`]: https://man7.org/linux/man-pages/man3/errno.3.html
+#[derive(Debug, Copy, Clone, Eq, PartialEq, thiserror::Error)]
+#[must_use]
+pub enum ErrorCode {
+    /// A standard errno value
+    #[error(transparent)]
+    Standard(StandardErrno),
+    /// A negated standard errno value
+    #[error(transparent)]
+    NegStandard(NegStandardErrno),
+    /// Any `i32` which does not map to a standard (positive or negative) Errno value
+    #[error("Unknown (non-standard) errno: {0:?}")]
+    Other(Errno),
+}
+
+impl ErrorCode {
+    /// Parse an `i32` value into an `errno::Error`.
+    pub const fn parse_i32(val: i32) -> ErrorCode {
+        match StandardErrno::parse_i32(val) {
+            Ok(standard) => ErrorCode::Standard(standard),
+            Err(_) => match NegStandardErrno::parse_i32(val) {
+                Ok(neg_standard) => ErrorCode::NegStandard(neg_standard),
+                Err(_) => ErrorCode::Other(Errno(val)),
+            },
+        }
+    }
+
+    /// Parse an `Errno` value into an `errno::Error`.
+    pub const fn parse_errno(val: Errno) -> ErrorCode {
+        Self::parse_i32(val.0)
+    }
+
+    /// Parse a `T` value into an `errno::Error` where `T` is `Into<i32>`.
+    ///
+    /// Sadly this function can't currently be `const`.
+    pub fn parse<T>(val: T) -> ErrorCode
+    where
+        T: Into<i32>,
+    {
+        Self::parse_i32(val.into())
+    }
+}
+
+/// Standard errno values
+#[derive(Debug, Copy, Clone, Eq, PartialEq, thiserror::Error)]
+#[repr(i32)]
+pub enum StandardErrnoAgain {
+    /// No error.  Successful operation.
+    #[error("No error.  Successful operation.")]
+    Success(u8) = SUCCESS,
+    /// Operation not permitted
+    #[error("Operation not permitted")]
+    PermissionDenied = EPERM,
+    /// No such file or directory
+    #[error("No such file or directory")]
+    NoSuchFileOrDirectory = ENOENT,
+    /// No such process
+    #[error("No such process")]
+    NoSuchProcess = ESRCH,
+    /// Interrupted system call
+    #[error("Interrupted system call")]
+    Interrupted = EINTR,
+    /// I/O error
+    #[error("I/O error")]
+    Io = EIO,
+    /// No such device or address
+    #[error("No such device or address")]
+    NoSuchDeviceOrAddress = ENXIO,
+    /// Argument list too long
+    #[error("Argument list too long")]
+    TooBig = E2BIG,
+    /// Exec format error
+    #[error("Exec format error")]
+    ExecFormat = ENOEXEC,
+    /// Bad file number
+    #[error("Bad file number")]
+    BadFileNumber = EBADF,
+    /// No child processes
+    #[error("No child processes")]
+    NoChildProcesses = ECHILD,
+    /// Try again
+    #[error("Try again")]
+    TryAgain = EAGAIN,
+    /// No memory available
+    #[error("No memory available")]
+    NoMemory = ENOMEM,
+    /// Access denied
+    #[error("Access denied")]
+    AccessDenied = EACCES,
+    /// Bad address
+    #[error("Bad address")]
+    BadAddress = EFAULT,
+    /// Block device required
+    #[error("Block device required")]
+    BlockDeviceRequired = ENOTBLK,
+    /// Device or resource busy
+    #[error("Device or resource busy")]
+    Busy = EBUSY,
+    /// File exists
+    #[error("File exists")]
+    FileExists = EEXIST,
+    /// Cross-device link
+    #[error("Cross-device link")]
+    CrossDeviceLink = EXDEV,
+    /// No such device
+    #[error("No such device")]
+    NoSuchDevice = ENODEV,
+    /// Not a directory
+    #[error("Not a directory")]
+    NotADirectory = ENOTDIR,
+    /// Is a directory
+    #[error("Is a directory")]
+    IsADirectory = EISDIR,
+    /// Invalid argument
+    #[error("Invalid argument")]
+    InvalidArgument = EINVAL,
+    /// File table overflow
+    #[error("File table overflow")]
+    FileTableOverflow = ENFILE,
+    /// Too many open files
+    #[error("Too many open files")]
+    TooManyOpenFiles = EMFILE,
+    /// Not a tty
+    #[error("Not a tty")]
+    NotATty = ENOTTY,
+    /// Text file busy
+    #[error("Text file busy")]
+    TextFileBusy = ETXTBSY,
+    /// File too large
+    #[error("File too large")]
+    FileTooLarge = EFBIG,
+    /// No space left on a device
+    #[error("No space left on device")]
+    NoSpaceLeftOnDevice = ENOSPC,
+    /// Illegal seek
+    #[error("Illegal seek")]
+    IllegalSeek = ESPIPE,
+    /// Read-only file system
+    #[error("Read-only file system")]
+    ReadOnlyFileSystem = EROFS,
+    /// Too many links
+    #[error("Too many links")]
+    TooManyLinks = EMLINK,
+    /// Broken pipe
+    #[error("Broken pipe")]
+    BrokenPipe = EPIPE,
+    /// Numerical argument out of domain
+    #[error("Numerical argument out of domain")]
+    NumberOutOfDomain = EDOM,
+    /// Result too large
+    #[error("Result too large")]
+    ResultTooLarge = ERANGE,
+    /// No message of desired type
+    #[error("No message of desired type")]
+    NoMessage = ENOMSG,
+    /// Identifier removed
+    #[error("Identifier removed")]
+    IdentifierRemoved = EIDRM,
+    /// Channel number out of range
+    #[error("Channel number out of range")]
+    ChannelNumberOutOfRange = ECHRNG,
+    /// Level 2 not synchronized
+    #[error("Level 2 not synchronized")]
+    Level2NotSynchronized = EL2NSYNC,
+    /// Level 3 halted
+    #[error("Level 3 halted")]
+    Level3Halted = EL3HLT,
+    /// Level 3 reset
+    #[error("Level 3 reset")]
+    Level3Reset = EL3RST,
+    /// Link number out of range
+    #[error("Link number out of range")]
+    LinkNumberOutOfRange = ELNRNG,
+    /// Protocol driver not attached
+    #[error("Protocol driver not attached")]
+    ProtocolDriverNotAttached = EUNATCH,
+    /// No CSI structure available
+    #[error("No CSI structure available")]
+    NoCsiStructureAvailable = ENOCSI,
+    /// Level 2 halted
+    #[error("Level 2 halted")]
+    Level2Halted = EL2HLT,
+    /// Deadlock condition
+    #[error("Deadlock condition")]
+    Deadlock = EDEADLK,
+    /// No record locks available
+    #[error("No record locks available")]
+    NoRecordLocksAvailable = ENOLCK,
+    /// Invalid exchange
+    #[error("Invalid exchange")]
+    InvalidExchange = EBADE,
+    /// Invalid request descriptor
+    #[error("Invalid request descriptor")]
+    InvalidRequestDescriptor = EBADR,
+    /// Exchange full
+    #[error("Exchange full")]
+    ExchangeFull = EXFULL,
+    /// No anode
+    #[error("No anode")]
+    NoAnode = ENOANO,
+    /// Invalid request code
+    #[error("Invalid request code")]
+    InvalidRequestCode = EBADRQC,
+    /// Invalid slot
+    #[error("Invalid slot")]
+    InvalidSlot = EBADSLT,
+    /// File locking deadlock error
+    #[error("File locking deadlock error")]
+    FileLockingDeadlock = EDEADLOCK,
+    /// Bad font file format
+    #[error("Bad font file format")]
+    BadFontFileFormat = EBFONT,
+    /// Device not a stream
+    #[error("Device not a stream")]
+    DeviceNotAStream = ENOSTR,
+    /// No data available
+    #[error("No data available")]
+    NoDataAvailable = ENODATA,
+    /// Timer expired
+    #[error("Timer expired")]
+    TimerExpired = ETIME,
+    /// Out of streams resources
+    #[error("Out of streams resources")]
+    OutOfStreamsResources = ENOSR,
+    /// Machine is not on the network
+    #[error("Machine is not on the network")]
+    MachineNotOnTheNetwork = ENONET,
+    /// Package not installed
+    #[error("Package not installed")]
+    PackageNotInstalled = ENOPKG,
+    /// The object is remote
+    #[error("The object is remote")]
+    ObjectIsRemote = EREMOTE,
+    /// The link has been severed
+    #[error("The link has been severed")]
+    LinkSevered = ENOLINK,
+    /// Advertise error
+    #[error("Advertise error")]
+    AdvertiseError = EADV,
+    /// Srmount error
+    #[error("Srmount error")]
+    SrmountError = ESRMNT,
+    /// Communication error on send
+    #[error("Communication error on send")]
+    CommunicationErrorOnSend = ECOMM,
+    /// Protocol error
+    #[error("Protocol error")]
+    ProtocolError = EPROTO,
+    /// Multihop attempted
+    #[error("Multihop attempted")]
+    MultihopAttempted = EMULTIHOP,
+    /// Inode is remote (not really error)
+    #[error("Inode is remote (not really error)")]
+    InodeIsRemote = ELBIN,
+    /// Cross-mount point (not really error)
+    #[error("Cross mount point (not really error)")]
+    CrossMountPoint = EDOTDOT,
+    /// Trying to read an unreadable message
+    #[error("Trying to read unreadable message")]
+    TryingToReadUnreadableMessage = EBADMSG,
+    /// Inappropriate file type or format
+    #[error("Inappropriate file type or format")]
+    InappropriateFileTypeOrFormat = EFTYPE,
+    /// Given log name not unique
+    #[error("Given log name not unique")]
+    GivenLogNameNotUnique = ENOTUNIQ,
+    /// f.d. invalid for this operation
+    #[error("f.d. invalid for this operation")]
+    FdInvalidForThisOperation = EBADFD,
+    /// Remote address changed
+    #[error("Remote address changed")]
+    RemoteAddressChanged = EREMCHG,
+    /// Can't access a necessary shared library
+    #[error("Can't access a needed shared library")]
+    CantAccessNeededSharedLibrary = ELIBACC,
+    /// Accessing a corrupted shared library
+    #[error("Accessing a corrupted shared library")]
+    AccessingCorruptedSharedLibrary = ELIBBAD,
+    /// .lib section in a.out corrupted
+    #[error(".lib section in a.out corrupted")]
+    LibSectionInAOutCorrupted = ELIBSCN,
+    /// Attempting to link in too many libs
+    #[error("Attempting to link in too many libs")]
+    AttemptingToLinkInTooManyLibs = ELIBMAX,
+    /// Attempting to exec a shared library
+    #[error("Attempting to exec a shared library")]
+    AttemptingToExecASharedLibrary = ELIBEXEC,
+    /// Function is not implemented
+    #[error("Function not implemented")]
+    FunctionNotImplemented = ENOSYS,
+    /// No more files
+    #[error("No more files")]
+    NoMoreFiles = ENMFILE,
+    /// Directory is not empty
+    #[error("Directory not empty")]
+    DirectoryNotEmpty = ENOTEMPTY,
+    /// File or path name too long
+    #[error("File or path name too long")]
+    FileOrPathNameTooLong = ENAMETOOLONG,
+    /// Too many symbolic links
+    #[error("Too many symbolic links")]
+    TooManySymbolicLinks = ELOOP,
+    /// Operation not supported on transport endpoint
+    #[error("Operation not supported on transport endpoint")]
+    OperationNotSupportedOnTransportEndpoint = EOPNOTSUPP,
+    /// Protocol family is not supported
+    #[error("Protocol family not supported")]
+    ProtocolFamilyNotSupported = EPFNOSUPPORT,
+    /// Connection reset by peer
+    #[error("Connection reset by peer")]
+    ConnectionResetByPeer = ECONNRESET,
+    /// No buffer space available
+    #[error("No buffer space available")]
+    NoBufferSpaceAvailable = ENOBUFS,
+    /// Address family not supported by protocol family
+    #[error("Address family not supported by protocol family")]
+    AddressFamilyNotSupportedByProtocolFamily = EAFNOSUPPORT,
+    /// Protocol wrong type for socket
+    #[error("Protocol wrong type for socket")]
+    ProtocolWrongTypeForSocket = EPROTOTYPE,
+    /// Socket operation on non-socket
+    #[error("Socket operation on non-socket")]
+    SocketOperationOnNonSocket = ENOTSOCK,
+    /// Protocol not available
+    #[error("Protocol not available")]
+    ProtocolNotAvailable = ENOPROTOOPT,
+    /// Can't send after socket shutdown
+    #[error("Can't send after socket shutdown")]
+    CantSendAfterSocketShutdown = ESHUTDOWN,
+    /// Connection refused
+    #[error("Connection refused")]
+    ConnectionRefused = ECONNREFUSED,
+    /// Address already in use
+    #[error("Address already in use")]
+    AddressAlreadyInUse = EADDRINUSE,
+    /// Connection aborted
+    #[error("Connection aborted")]
+    ConnectionAborted = ECONNABORTED,
+    /// Network is unreachable
+    #[error("Network is unreachable")]
+    NetworkIsUnreachable = ENETUNREACH,
+    /// Network interface is not configured
+    #[error("Network interface is not configured")]
+    NetworkInterfaceNotConfigured = ENETDOWN,
+    /// Connection timed out
+    #[error("Connection timed out")]
+    ConnectionTimedOut = ETIMEDOUT,
+    /// Host is down
+    #[error("Host is down")]
+    HostIsDown = EHOSTDOWN,
+    /// Host is unreachable
+    #[error("Host is unreachable")]
+    HostIsUnreachable = EHOSTUNREACH,
+    /// Connection already in progress
+    #[error("Connection already in progress")]
+    ConnectionAlreadyInProgress = EINPROGRESS,
+    /// Socket already connected
+    #[error("Socket already connected")]
+    SocketAlreadyConnected = EALREADY,
+    /// Destination address required
+    #[error("Destination address required")]
+    DestinationAddressRequired = EDESTADDRREQ,
+    /// Message too long
+    #[error("Message too long")]
+    MessageTooLong = EMSGSIZE,
+    /// Unknown protocol
+    #[error("Unknown protocol")]
+    UnknownProtocol = EPROTONOSUPPORT,
+    /// Socket type is not supported
+    #[error("Socket type not supported")]
+    SocketTypeNotSupported = ESOCKTNOSUPPORT,
+    /// Address not available
+    #[error("Address not available")]
+    AddressNotAvailable = EADDRNOTAVAIL,
+    /// Network dropped connection on reset
+    #[error("Network dropped connection on reset")]
+    NetworkDroppedConnectionOnReset = ENETRESET,
+    /// Socket is already connected
+    #[error("Socket is already connected")]
+    SocketIsAlreadyConnected = EISCONN,
+    /// Socket is not connected
+    #[error("Socket is not connected")]
+    SocketIsNotConnected = ENOTCONN,
+    /// Too many references: cannot splice
+    #[error("Too many references: cannot splice")]
+    TooManyReferences = ETOOMANYREFS,
+    /// The per-user limit on the new process would be exceeded by an attempted fork.
+    #[error("The per-user limit on new process would be exceeded by an attempted fork.")]
+    ProcessLimitExceeded = EPROCLIM,
+    /// The file quota system is confused because there are too many users.
+    #[error("The file quota system is confused because there are too many users.")]
+    TooManyUsers = EUSERS,
+    /// The user's disk quota was exceeded.
+    #[error("The user's disk quota was exceeded.")]
+    DiskQuotaExceeded = EDQUOT,
+    /// Stale NFS file handle
+    #[error("Stale NFS file handle")]
+    StaleNfsFileHandle = ESTALE,
+    /// Not supported
+    #[error("Not supported")]
+    NotSupported = ENOTSUP,
+    /// No medium (in tape drive)
+    #[error("No medium (in tape drive)")]
+    NoMedium = ENOMEDIUM,
+    /// No such host or network path
+    #[error("No such host or network path")]
+    NoShare = ENOSHARE,
+    /// Filename exists with different case
+    #[error("Filename exists with different case")]
+    CaseClash = ECASECLASH,
+    /// While decoding a multibyte character the function came along an invalid or an incomplete
+    /// sequence of bytes or the given wide character is invalid.
+    #[error("While decoding a multibyte character the function came along an invalid or an incomplete sequence of bytes or the given wide character is invalid.")]
+    IllegalSequence = EILSEQ,
+    /// Value too large for defined data type
+    #[error("Value too large for defined data type")]
+    Overflow = EOVERFLOW,
 }

@@ -27,7 +27,9 @@ tracing_release_max_level_warn = ["tracing/release_max_level_warn"]
 
 dpdk-sys = { path = "../dpdk-sys" }
 errno = { path = "../errno" }
+net = { path = "../net" }
 
+etherparse = { workspace = true, default-features = false, features = [] }
 serde = { workspace = true, optional = true }
 syscalls = { workspace = true }
 thiserror = { workspace = true }

@@ -3,9 +3,10 @@ use dpdk::{dev, eal, mem, queue, socket};
 use std::ffi::{c_uint, CStr, CString};
 use std::fmt::{Debug, Display};
 use std::io;
-use std::net::Ipv4Addr;
-use tracing::{debug, error, info, warn};
-
+use std::net::{IpAddr, Ipv4Addr};
+use std::time::Instant;
+use tracing::{debug, error, info, trace, warn};
+use dpdk::queue::rx::RxQueue;
 use dpdk_sys::*;
 
 #[tracing::instrument(level = "trace", ret)]
@@ -363,7 +364,7 @@ pub fn fatal_error<T: Display + AsRef<str>>(message: T) -> ! {
 //     // TODO: assert link status!
 // }
 
-const MAX_PATTERN_NUM: usize = 3;
+const MAX_PATTERN_NUM: usize = 8;
 
 #[tracing::instrument(level = "debug")]
 fn generate_ipv4_flow(
@@ -612,9 +613,8 @@ fn init_port2(port_id: u16, mbuf_pool: &mut rte_mempool) {
     rx_hairpin_conf.peers[0].port = port_id;
     rx_hairpin_conf.peers[0].queue = nr_queues - 1;
 
-    let ret = unsafe {
-        rte_eth_rx_hairpin_queue_setup(port_id, nr_queues - 1, 0, &rx_hairpin_conf)
-    };
+    let ret =
+        unsafe { rte_eth_rx_hairpin_queue_setup(port_id, nr_queues - 1, 0, &rx_hairpin_conf) };
 
     if ret < 0 {
         let err_msg = format!(
@@ -655,9 +655,8 @@ fn init_port2(port_id: u16, mbuf_pool: &mut rte_mempool) {
     tx_hairpin_conf.peers[0].port = port_id;
     tx_hairpin_conf.peers[0].queue = nr_queues - 1;
 
-    let ret = unsafe {
-        rte_eth_tx_hairpin_queue_setup(port_id, nr_queues - 1, 0, &tx_hairpin_conf)
-    };
+    let ret =
+        unsafe { rte_eth_tx_hairpin_queue_setup(port_id, nr_queues - 1, 0, &tx_hairpin_conf) };
 
     if ret < 0 {
         let err_msg = format!(
@@ -896,9 +895,7 @@ fn generate_ct_flow2(port_id: u16, rx_q: u16, err: &mut rte_flow_error) -> RteFl
 
     info!("Creating flow");
 
-    let flow = unsafe {
-        rte_flow_create(port_id, &attr, pattern.as_ptr(), action.as_ptr(), err)
-    };
+    let flow = unsafe { rte_flow_create(port_id, &attr, pattern.as_ptr(), action.as_ptr(), err) };
 
     info!("Flow create attempt result: {flow:?}, {err:?}");
 
@@ -943,7 +940,7 @@ fn main() {
 
 fn eal_main() {
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
+        .with_max_level(tracing::Level::WARN)
         .with_target(false)
         .with_thread_ids(true)
         .with_line_number(true)
@@ -957,8 +954,8 @@ fn eal_main() {
         // "/mnt/huge/2M",
         "--huge-dir",
         "/mnt/huge/1G",
-        // "--allow",
-        // "0000:02:00.0,dv_flow_en=2",
+        "--allow",
+        "0000:01:00.0,dv_flow_en=1",
         // "--trace=.*",
         // "--iova-mode=va",
         // "-l",
@@ -1030,71 +1027,389 @@ fn eal_main() {
             num_rx_queues: 5,
             num_tx_queues: 5,
             num_hairpin_queues: 1,
-            tx_offloads: Some(dev::TxOffloadConfig::default()),
+            tx_offloads: Some(TxOffloadConfig::default()),
         };
 
-        // let mut stopped_dev = match config.apply(dev) {
-        //     Ok(stopped_dev) => {
-        //         warn!("Device configured {stopped_dev:?}");
-        //         stopped_dev
-        //     }
-        //     Err(err) => {
-        //         fatal_error(format!("Failed to configure device: {err:?}"));
-        //     }
-        // };
-        // 
-        // let rx_config = queue::rx::RxQueueConfig {
-        //     dev: dev.index(),
-        //     queue_index: queue::rx::Index(0),
-        //     num_descriptors: 512,
-        //     socket_preference: socket::Preference::Dev(stopped_dev.info.index()),
-        //     config: (),
-        //     pool: pool.clone(),
-        // };
-        // 
-        // let tx_config = queue::tx::TxQueueConfig {
-        //     queue_index: queue::tx::Index(0),
-        //     num_descriptors: 512,
-        //     socket_preference: socket::Preference::Dev(stopped_dev.info.index()),
-        //     config: (),
-        // };
-        // 
-        // stopped_dev.configure_rx_queue(rx_config).unwrap();
-        // stopped_dev.configure_tx_queue(tx_config).unwrap();
-        // 
-        // let rx_config = queue::rx::RxQueueConfig {
-        //     dev: dev.index(),
-        //     queue_index: queue::rx::Index(1),
-        //     num_descriptors: 512,
-        //     socket_preference: socket::Preference::Dev(stopped_dev.info.index()),
-        //     config: (),
-        //     pool: pool.clone(),
-        // };
-        // 
-        // let tx_config = queue::tx::TxQueueConfig {
-        //     queue_index: queue::tx::Index(1),
-        //     num_descriptors: 512,
-        //     socket_preference: socket::Preference::Dev(stopped_dev.info.index()),
-        //     config: (),
-        // };
-        // 
-        // // stopped_dev.configure_rx_queue(rx_config).unwrap();
-        // // stopped_dev.configure_tx_queue(tx_config).unwrap();
-        // stopped_dev
-        //     .configure_hairpin_queue(rx_config, tx_config)
-        //     .unwrap();
-        // stopped_dev.start().unwrap();
+        let mut my_dev = match config.apply(dev) {
+            Ok(stopped_dev) => {
+                warn!("Device configured {stopped_dev:?}");
+                stopped_dev
+            }
+            Err(err) => {
+                fatal_error(format!("Failed to configure device: {err:?}"));
+            }
+        };
+
+        let rx_config = queue::rx::RxQueueConfig {
+            dev: my_dev.info.index(),
+            queue_index: queue::rx::RxQueueIndex(0),
+            num_descriptors: 512,
+            socket_preference: socket::Preference::Dev(my_dev.info.index()),
+            config: (),
+            pool: pool.clone(),
+        };
+
+        let tx_config = queue::tx::TxQueueConfig {
+            queue_index: queue::tx::TxQueueIndex(0),
+            num_descriptors: 512,
+            socket_preference: socket::Preference::Dev(my_dev.info.index()),
+            config: (),
+        };
+
+        my_dev.configure_rx_queue(rx_config).unwrap();
+        my_dev.configure_tx_queue(tx_config).unwrap();
+
+        let rx_config = queue::rx::RxQueueConfig {
+            dev: my_dev.info.index(),
+            queue_index: queue::rx::RxQueueIndex(1),
+            num_descriptors: 512,
+            socket_preference: socket::Preference::Dev(my_dev.info.index()),
+            config: (),
+            pool: pool.clone(),
+        };
+
+        let tx_config = queue::tx::TxQueueConfig {
+            queue_index: queue::tx::TxQueueIndex(1),
+            num_descriptors: 512,
+            socket_preference: socket::Preference::Dev(my_dev.info.index()),
+            config: (),
+        };
+
+        my_dev
+            .configure_hairpin_queue(rx_config, tx_config)
+            .unwrap();
+        my_dev.start().unwrap();
+
+        let mut start = Instant::now();
+
+        let flows: Vec<_> = (0..50_000_000)
+            .map(|i: u32| {
+                if i % 100_000 == 0 {
+                    let stop = Instant::now();
+                    let elapsed = stop.duration_since(start);
+                    warn!(
+                        "{i} rules installed, rate: {rate:.1}k / second",
+                        rate = 100.0 / elapsed.as_secs_f64()
+                    );
+                    start = Instant::now();
+                }
+                let src = Ipv4Addr::from(i);
+                let dst = Ipv4Addr::from(rand::random::<u32>());
+                let mut err = rte_flow_error::default();
+                generate_modify_field_flow(
+                    i,
+                    my_dev.info.index().0,
+                    0,
+                    src,
+                    Ipv4Addr::new(255, 255, 255, 255),
+                    dst,
+                    Ipv4Addr::new(255, 255, 255, 255),
+                    &mut err,
+                )
+            })
+            .collect();
+
+        warn!("Flows created");
+
+        // for i in 0..2000 {
+        //     let flow0 = generate_modify_field_flow(
+        //         my_dev.info.index().0,
+        //         0,
+        //         Ipv4Addr::new(192, 168, 1, 1),
+        //         Ipv4Addr::new(255, 255, 255, 255),
+        //         Ipv4Addr::new(192, 168, 1, 2),
+        //         Ipv4Addr::new(255, 255, 255, 255),
+        //         &mut err,
+        //     );
+        //     let flow1 = generate_modify_field_flow(
+        //         my_dev.info.index().0,
+        //         0,
+        //         Ipv4Addr::new(192, 168, 1, 1),
+        //         Ipv4Addr::new(255, 255, 255, 255),
+        //         Ipv4Addr::new(192, 168, 1, 2),
+        //         Ipv4Addr::new(255, 255, 255, 255),
+        //         &mut err,
+        //     );
+        //     let flow2 = generate_modify_field_flow(
+        //         my_dev.info.index().0,
+        //         0,
+        //         Ipv4Addr::new(192, 168, 1, 1),
+        //         Ipv4Addr::new(255, 255, 255, 255),
+        //         Ipv4Addr::new(192, 168, 1, 2),
+        //         Ipv4Addr::new(255, 255, 255, 255),
+        //         &mut err,
+        //     );
+        // }
     });
 }
 
-
 #[cfg(test)]
 mod test {
-
     use super::*;
 
     #[test]
     fn call_eal_main() {
         eal_main();
     }
+}
+
+#[tracing::instrument(level = "debug")]
+fn generate_modify_field_flow(
+    i: u32,
+    port_id: u16,
+    rx_q: u16,
+    src_ip: Ipv4Addr,
+    src_mask: Ipv4Addr,
+    dest_ip: Ipv4Addr,
+    dest_mask: Ipv4Addr,
+    err: &mut rte_flow_error,
+) -> RteFlow {
+    let mut attr: rte_flow_attr = Default::default();
+    attr.group = 99u32;
+    attr.priority = 9;
+    attr.set_ingress(1);
+    let mut pattern: [rte_flow_item; MAX_PATTERN_NUM] = Default::default();
+    let mut action: [rte_flow_action; MAX_PATTERN_NUM] = Default::default();
+    let queue = rte_flow_action_queue { index: rx_q };
+
+    pattern[0].type_ = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_ETH;
+
+    let mut eth_spec = rte_flow_item_eth::default();
+    unsafe {
+        eth_spec.annon1.hdr.dst_addr = rte_ether_addr {
+            addr_bytes: [
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+            ],
+        };
+    }
+    unsafe {
+        eth_spec.annon1.hdr.src_addr = rte_ether_addr {
+            addr_bytes: [
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+                rand::random::<u8>(),
+            ],
+        }
+    }
+    
+    let mut eth_mask = rte_flow_item_eth::default();
+    unsafe {
+        eth_mask.annon1.hdr.dst_addr = rte_ether_addr {
+            addr_bytes: [0xff; 6],
+        };
+        eth_mask.annon1.hdr.src_addr = rte_ether_addr {
+            addr_bytes: [0xff; 6],
+        };
+    };
+    
+    pattern[0].spec = &eth_spec as *const _ as *const _;
+    pattern[0].mask = &eth_mask as *const _ as *const _;
+
+    pattern[1].type_ = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_IPV4;
+    let ip_spec = rte_flow_item_ipv4 {
+        hdr: rte_ipv4_hdr {
+            src_addr: htonl(src_ip),
+            dst_addr: htonl(dest_ip),
+            ..Default::default()
+        },
+    };
+    let ip_mask = rte_flow_item_ipv4 {
+        hdr: rte_ipv4_hdr {
+            src_addr: htonl(src_mask),
+            dst_addr: htonl(dest_mask),
+            ..Default::default()
+        },
+    };
+    pattern[1].spec = &ip_spec as *const _ as *const _;
+    pattern[1].mask = &ip_mask as *const _ as *const _;
+    
+    pattern[2].type_ = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_TCP;
+    let tcp_spec = rte_flow_item_tcp {
+        hdr: rte_tcp_hdr {
+            dst_port: rand::random::<u16>(),
+            ..Default::default()
+        },
+    };
+    let tcp_mask = rte_flow_item_tcp {
+        hdr: rte_tcp_hdr {
+            dst_port: u16::MAX,
+            ..Default::default()
+        },
+    };
+    
+    pattern[2].spec = &tcp_spec as *const _ as *const _;
+    pattern[2].mask = &tcp_mask as *const _ as *const _;
+
+    pattern[3].type_ = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_END;
+
+    let new_src_ip = Ipv4Addr::from(rand::random::<u32>());
+    let mut ip_src_value = [0u8; 16];
+    ip_src_value[0..4].copy_from_slice(&new_src_ip.to_bits().to_be_bytes());
+
+    let new_dst_ip = Ipv4Addr::from(rand::random::<u32>());
+    let mut ip_dst_value = [0u8; 16];
+    ip_dst_value[0..4].copy_from_slice(&new_dst_ip.to_bits().to_be_bytes());
+    
+    let new_eth_src = [
+        rand::random::<u8>(),
+        rand::random::<u8>(),
+        rand::random::<u8>(),
+        rand::random::<u8>(),
+        rand::random::<u8>(),
+        rand::random::<u8>(),
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ];
+
+    let new_eth_dst = [
+        rand::random::<u8>(),
+        rand::random::<u8>(),
+        rand::random::<u8>(),
+        rand::random::<u8>(),
+        rand::random::<u8>(),
+        rand::random::<u8>(),
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ];
+    
+    let modify_eth_src_action_conf = rte_flow_action_modify_field {
+        operation: rte_flow_modify_op::RTE_FLOW_MODIFY_SET,
+        src: rte_flow_field_data {
+            field: rte_flow_field_id::RTE_FLOW_FIELD_VALUE,
+            annon1: rte_flow_field_data__bindgen_ty_1 { value: [0xff; 16] },
+        },
+        dst: rte_flow_field_data {
+            field: rte_flow_field_id::RTE_FLOW_FIELD_MAC_SRC,
+            annon1: rte_flow_field_data__bindgen_ty_1::default(),
+        },
+        width: size_of::<rte_ether_addr>() as u32,
+    };
+
+    let modify_eth_dst_action_conf = rte_flow_action_modify_field {
+        operation: rte_flow_modify_op::RTE_FLOW_MODIFY_SET,
+        src: rte_flow_field_data {
+            field: rte_flow_field_id::RTE_FLOW_FIELD_VALUE,
+            annon1: rte_flow_field_data__bindgen_ty_1 { value: new_eth_dst },
+        },
+        dst: rte_flow_field_data {
+            field: rte_flow_field_id::RTE_FLOW_FIELD_MAC_DST,
+            annon1: rte_flow_field_data__bindgen_ty_1::default(),
+        },
+        width: size_of::<rte_ether_addr>() as u32,
+    };
+    
+    let modify_ipv4_src_action_conf = rte_flow_action_modify_field {
+        operation: rte_flow_modify_op::RTE_FLOW_MODIFY_SET,
+        src: rte_flow_field_data {
+            field: rte_flow_field_id::RTE_FLOW_FIELD_VALUE,
+            annon1: rte_flow_field_data__bindgen_ty_1 { value: ip_src_value },
+        },
+        dst: rte_flow_field_data {
+            field: rte_flow_field_id::RTE_FLOW_FIELD_IPV4_SRC,
+            annon1: rte_flow_field_data__bindgen_ty_1::default(),
+        },
+        width: size_of::<Ipv4Addr>() as u32,
+    };
+
+    let modify_ipv4_dst_action_conf = rte_flow_action_modify_field {
+        operation: rte_flow_modify_op::RTE_FLOW_MODIFY_SET,
+        src: rte_flow_field_data {
+            field: rte_flow_field_id::RTE_FLOW_FIELD_VALUE,
+            annon1: rte_flow_field_data__bindgen_ty_1 { value: ip_dst_value },
+        },
+        dst: rte_flow_field_data {
+            field: rte_flow_field_id::RTE_FLOW_FIELD_IPV4_DST,
+            annon1: rte_flow_field_data__bindgen_ty_1::default(),
+        },
+        width: size_of::<Ipv4Addr>() as u32,
+    };
+
+    action[0].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_COUNT;
+    action[0].conf = &rte_flow_action_count { id: i } as *const _ as *const _;
+
+    action[1].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_MODIFY_FIELD;
+    action[1].conf = &modify_eth_src_action_conf as *const _ as *const _;
+
+    action[2].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_MODIFY_FIELD;
+    action[2].conf = &modify_eth_dst_action_conf as *const _ as *const _;
+    
+    action[3].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_MODIFY_FIELD;
+    action[3].conf = &modify_ipv4_src_action_conf as *const _ as *const _;
+
+    action[4].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_MODIFY_FIELD;
+    action[4].conf = &modify_ipv4_dst_action_conf as *const _ as *const _;
+    
+    action[5].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_QUEUE;
+    action[5].conf = &queue as *const _ as *const _;
+    
+    action[6].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_END;
+
+    // let res = unsafe {
+    //     rte_flow_validate(
+    //         port_id,
+    //         &attr as *const _,
+    //         pattern.as_ptr(),
+    //         action.as_ptr(),
+    //         err,
+    //     )
+    // };
+    // 
+    // if res != 0 {
+    //     let err_str = unsafe { rte_strerror(res) };
+    //     let err_msg = format!(
+    //         "Failed to validate flow: {err_str}",
+    //         err_str = unsafe { CStr::from_ptr(err_str) }.to_str().unwrap()
+    //     );
+    //     fatal_error(err_msg.as_str());
+    // } else {
+    //     trace!("Flow validated");
+    // }
+
+    let flow = unsafe {
+        rte_flow_create(
+            port_id,
+            &attr as *const _,
+            pattern.as_ptr() as *const _,
+            action.as_ptr() as *const _,
+            err,
+        )
+    };
+
+    if flow.is_null() || !err.message.is_null() {
+        if err.message.is_null() {
+            fatal_error("Failed to create flow: unknown error");
+        }
+        let err_str = unsafe { CStr::from_ptr(err.message) };
+        fatal_error(err_str.to_str().unwrap());
+    } else {
+        trace!("Flow created");
+    }
+
+    info!("Flow created");
+
+    RteFlow::new(port_id, flow)
 }

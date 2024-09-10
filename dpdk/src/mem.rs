@@ -1,14 +1,17 @@
 //! DPDK memory management wrappers.
 
+use alloc::format;
+use alloc::string::String;
 use crate::socket::SocketId;
 use dpdk_sys::*;
-use std::cell::UnsafeCell;
-use std::ffi::{c_char, c_int, CStr};
-use std::fmt::{Debug, Display};
-use std::marker::PhantomData;
-use std::ptr::NonNull;
-use std::sync::Arc;
-use tracing::{debug, error};
+use core::cell::UnsafeCell;
+use core::ffi::{c_char, c_int, CStr};
+use core::fmt::{Debug, Display};
+use core::marker::PhantomData;
+use core::ptr::NonNull;
+use tracing::{debug, error, warn};
+
+use alloc::sync::Arc;
 
 #[repr(transparent)]
 #[derive(Debug)]
@@ -58,15 +61,15 @@ impl Eq for PoolHandle {}
 impl PartialEq for PoolInner {
     fn eq(&self, other: &Self) -> bool {
         self.config == other.config
-            && std::ptr::from_ref(unsafe { self.as_ref() })
-                == std::ptr::from_ref(unsafe { other.as_ref() })
+            && core::ptr::from_ref(unsafe { self.as_ref() })
+                == core::ptr::from_ref(unsafe { other.as_ref() })
     }
 }
 
 impl Eq for PoolInner {}
 
 impl Display for PoolHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(f, "Pool({})", self.name())
     }
 }
@@ -339,5 +342,79 @@ impl Drop for PoolInner {
     fn drop(&mut self) {
         debug!("Freeing memory pool {}", self.config.name());
         unsafe { rte_mempool_free(self.as_ptr()) }
+    }
+}
+
+#[repr(transparent)]
+pub struct Mbuf {
+    pub(crate) raw: NonNull<rte_mbuf>,
+    _phantom: PhantomData<rte_mbuf>,
+}
+
+/// TODO: this is poor optimization and possibly unsafe
+impl Drop for Mbuf {
+    fn drop(&mut self) {
+        unsafe {
+            rte_pktmbuf_free_bulk(&mut self.raw.as_ptr(), 1);
+        }
+    }
+}
+
+impl Mbuf {
+    /// Create a new mbuf from an existing rte_mbuf pointer.
+    ///
+    /// # Note, this function assumes ownership of the data pointed to by raw.
+    ///
+    /// # Safety
+    ///
+    /// This function is is unsafe if passed an invalid pointer.
+    ///
+    /// The only defense made against invalid pointers here is the use of `NonNull::new` to ensure
+    /// the pointer is not null.
+    ///
+    ///
+    #[tracing::instrument(level = "trace")]
+    pub(crate) fn new_from_raw(raw: *mut rte_mbuf) -> Option<Mbuf> {
+        let raw = match NonNull::new(raw) {
+            #[cold]
+            None => {
+                warn!("Attempted to create Mbuf from null pointer");
+                return None;
+            }
+            Some(raw) => raw,
+        };
+
+        Some(Mbuf {
+            raw,
+            _phantom: PhantomData,
+        })
+    }
+
+    pub fn raw_data(&self) -> &[u8] {
+        let pkt_data_start = unsafe {
+            (self.raw.as_ref().buf_addr as *const u8)
+                .offset(self.raw.as_ref().annon1.annon1.data_off as isize)
+        };
+        unsafe {
+            core::slice::from_raw_parts(
+                pkt_data_start,
+                self.raw.as_ref().annon2.annon1.data_len as usize,
+            )
+        }
+    }
+
+    pub fn raw_data_mut(&mut self) -> &mut [u8] {
+        unsafe {
+            let data_start = self
+                .raw
+                .as_mut()
+                .buf_addr
+                .offset(self.raw.as_ref().annon1.annon1.data_off as isize)
+                as *mut u8;
+            core::slice::from_raw_parts_mut(
+                data_start,
+                self.raw.as_ref().annon2.annon1.data_len as usize,
+            )
+        }
     }
 }

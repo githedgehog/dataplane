@@ -23,6 +23,7 @@ thiserror = { version = "2", package = "thiserror-no-std" } # replace with regul
 tracing = { version = "0.1", default-features = false, features = ["attributes"] }
 tracing-subscriber = { version = "0.3" }
 tracing-test = { version = "0.2" }
+etherparse = { version = "0.15", default-features = false, features = [] }
 
 [profile.release]
 opt-level = 3

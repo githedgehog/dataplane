@@ -1,20 +1,23 @@
 //! Receive queue configuration and management.
 
 use crate::dev::DevIndex;
+use crate::mem::Mbuf;
 use crate::socket::SocketId;
 use crate::{dev, mem, socket};
-/// Imported for rustdoc
-#[allow(unused_imports)]
+use core::marker::PhantomData;
+use core::ptr::NonNull;
+use etherparse::LinkSlice::Ethernet2;
 use dpdk_sys::*;
+use tracing::{debug, info, trace, warn};
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// A DPDK receive queue index.
 ///
 /// This is a newtype around `u16` to provide type safety and prevent accidental misuse.
-pub struct Index(pub u16);
+pub struct RxQueueIndex(pub u16);
 
-impl Index {
+impl RxQueueIndex {
     /// The index of the rx queue represented as a `u16`.
     ///
     /// This function is mostly useful for interfacing with [`dpdk_sys`].
@@ -23,15 +26,15 @@ impl Index {
     }
 }
 
-impl From<Index> for u16 {
-    fn from(value: Index) -> u16 {
+impl From<RxQueueIndex> for u16 {
+    fn from(value: RxQueueIndex) -> u16 {
         value.as_u16()
     }
 }
 
-impl From<u16> for Index {
-    fn from(value: u16) -> Index {
-        Index(value)
+impl From<u16> for RxQueueIndex {
+    fn from(value: u16) -> RxQueueIndex {
+        RxQueueIndex(value)
     }
 }
 
@@ -41,7 +44,7 @@ pub struct RxQueueConfig {
     /// The index of the device this rx queue is associated with
     pub dev: DevIndex,
     /// The index of the rx queue.
-    pub queue_index: Index,
+    pub queue_index: RxQueueIndex,
     /// The number of descriptors in the rx queue.
     pub num_descriptors: u16,
     /// The socket preference for the rx queue.
@@ -89,9 +92,8 @@ impl RxQueue {
     /// This design ensures that the hairpin queue is correctly tracked in the list of queues
     /// associated with the device.
     pub(crate) fn configure(dev: &dev::Dev, config: RxQueueConfig) -> Result<Self, ConfigFailure> {
-        let socket_id = SocketId::try_from(config.socket_preference).map_err(|err| {
-            ConfigFailure::InvalidSocket(errno::Errno(errno::NEG_EINVAL))
-        })?;
+        let socket_id = SocketId::try_from(config.socket_preference)
+            .map_err(|err| ConfigFailure::InvalidSocket(errno::Errno(errno::NEG_EINVAL)))?;
 
         let rx_conf = rte_eth_rxconf {
             offloads: dev.info.inner.rx_queue_offload_capa,
@@ -108,14 +110,11 @@ impl RxQueue {
             )
         };
 
-
         match ret {
-            0 => {
-                Ok(RxQueue {
-                    dev: dev.info.index(),
-                    config,
-                })
-            }
+            0 => Ok(RxQueue {
+                dev: dev.info.index(),
+                config,
+            }),
             errno::NEG_ENODEV => Err(ConfigFailure::DeviceRemoved(errno::Errno(ret))),
             errno::NEG_EINVAL => Err(ConfigFailure::InvalidArgument(errno::Errno(ret))),
             errno::NEG_ENOMEM => Err(ConfigFailure::NoMemory(errno::Errno(ret))),
@@ -153,6 +152,30 @@ impl RxQueue {
             errno::NEG_ENOTSUP => Err(RxQueueStopError::NotSupported),
             val => Err(RxQueueStopError::Unexpected(errno::Errno(val))),
         }
+    }
+
+    // TODO: make configurable
+    const PKT_BURST_SIZE: usize = 64;
+
+    /// Receive a burst of up to `PKT_BURST_SIZE` packets from the queue
+    #[tracing::instrument(level = "trace")]
+    pub fn receive(&mut self) -> impl Iterator<Item = Mbuf> {
+        let mut pkts: [*mut rte_mbuf; Self::PKT_BURST_SIZE] = unsafe { core::mem::zeroed() };
+        trace!(
+            "Polling for packets from rx queue {queue} on dev {dev}",
+            queue = self.config.queue_index.as_u16(),
+            dev = self.dev.as_u16()
+        );
+        let nb_rx = unsafe {
+            wrte_eth_rx_burst(
+                self.dev.as_u16(),
+                self.config.queue_index.as_u16(),
+                pkts.as_mut_ptr(),
+                Self::PKT_BURST_SIZE as u16,
+            )
+        };
+        trace!("Received {} packets", nb_rx);
+        (0..nb_rx).filter_map(move |i| Mbuf::new_from_raw(pkts[i as usize]))
     }
 }
 
@@ -209,4 +232,26 @@ pub enum RxQueueState {
     Stopped,
     /// TODO
     Started,
+}
+
+
+
+fn test_burst(queue: RxQueue) {
+    let mut queue = queue;
+    let pkts = queue.receive();
+    for pkt in pkts {
+        let parsed_packet = etherparse::SlicedPacket::from_ethernet(pkt.raw_data()).expect("Failed to parse packet");
+        match parsed_packet.link {
+            None => {
+                debug!("Failed to parse packet link header");
+            }
+            Some(Ethernet2(pkt)) => {
+                pkt.ether_type();
+            }
+            pkt => {
+                debug!("Unsupported packet type {pkt:?}");
+            }
+        }
+        // info!("Received packet: {:?}", pkt);
+    }
 }

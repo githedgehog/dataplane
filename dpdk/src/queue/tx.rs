@@ -3,6 +3,7 @@
 use crate::dev::DevIndex;
 use crate::{dev, socket};
 use dpdk_sys::*;
+use errno::ErrorCode;
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -61,7 +62,7 @@ pub struct ConfigError {
     /// The error code returned by the DPDK library.
     pub code: i32,
     /// The error returned by the OS
-    pub err: std::io::Error,
+    pub err: ErrorCode,
 }
 
 /// Error type for transmit queue configuration failures.
@@ -88,7 +89,7 @@ impl TxQueue {
         let socket_id = socket::SocketId::try_from(config.socket_preference).map_err(|err| {
             ConfigFailure::InvalidSocket(ConfigError {
                 code: -1,
-                err: std::io::Error::new(std::io::ErrorKind::InvalidInput, err),
+                err,
             })
         })?;
 
@@ -116,11 +117,11 @@ impl TxQueue {
             }
             errno::ENOMEM => Err(ConfigFailure::NoMemory(ConfigError {
                 code: ret,
-                err: std::io::Error::from_raw_os_error(ret),
+                err: ErrorCode::parse(ret),
             })),
             _ => Err(ConfigFailure::Unexpected(ConfigError {
                 code: ret,
-                err: std::io::Error::from_raw_os_error(ret),
+                err: ErrorCode::parse(ret),
             })),
         }
     }

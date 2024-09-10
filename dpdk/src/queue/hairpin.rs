@@ -5,6 +5,7 @@ use crate::queue::rx::RxQueue;
 use crate::queue::tx::{TxQueue};
 use dpdk_sys::*;
 use tracing::debug;
+use errno::ErrorCode;
 
 /// A stopped DPDK hairpin queue.
 #[derive(Debug)]
@@ -43,7 +44,7 @@ pub enum HairpinConfigFailure {
     /// An error occurred while configuring the tx queue portion of the hairpin queue.
     TxQueueCreationFailed(tx::ConfigFailure),
     /// An error occurred while configuring the hairpin queue.
-    CreationFailed(std::io::Error),
+    CreationFailed(ErrorCode),
 }
 
 impl HairpinQueue {
@@ -74,7 +75,7 @@ impl HairpinQueue {
 
         if ret < 0 {
             return Err(HairpinConfigFailure::CreationFailed(
-                std::io::Error::from_raw_os_error(-ret),
+                ErrorCode::parse_i32(ret)
             ));
         }
         debug!("RX hairpin queue configured");
@@ -90,7 +91,7 @@ impl HairpinQueue {
 
         if ret < 0 {
             return Err(HairpinConfigFailure::CreationFailed(
-                std::io::Error::from_raw_os_error(-ret),
+                ErrorCode::parse_i32(ret)
             ));
         }
         debug!("TX hairpin queue configured");
