@@ -46,7 +46,7 @@ fn bind(path: &Path) {
         .opaque_type("rte_arp_ipv4")
         .opaque_type("rte_gtp_psc_generic_hdr")
         .opaque_type("rte_l2tpv2_combined_msg_hdr")
-        .clang_arg("-I/mnt/dpdk-arch-sysroot/usr/include")
+        .clang_arg("-Isysroot/usr/include")
         .clang_arg("-fretain-comments-from-system-headers")
         .clang_arg("-fparse-all-comments")
         .clang_arg("-finline-functions")
@@ -68,7 +68,7 @@ fn main() {
     let outputs = cc::Build::new()
         .file("c/wrapper.c")
         .include("c")
-        .include("/mnt/dpdk-arch-sysroot/usr/include")
+        .include("sysroot/usr/include")
         .cargo_output(false)
         .cargo_debug(false)
         .flag("-Wno-deprecated-declarations")
@@ -82,7 +82,7 @@ fn main() {
         .expect("failed to archive wrapper");
 
     std::process::Command::new("mv")
-        .args(["libdpdk_wrapper.a", "/mnt/dpdk-arch-sysroot/usr/lib"])
+        .args(["libdpdk_wrapper.a", "sysroot/usr/lib"])
         .output()
         .expect("failed to move wrapper");
 
@@ -91,7 +91,7 @@ fn main() {
     //     .output()
     //     .expect("failed to move wrapper");
 
-    println!("cargo:rustc-link-search=native=/mnt/dpdk-arch-sysroot/usr/lib");
+    println!("cargo:rustc-link-search=native=dpdk-sys/sysroot/usr/lib");
     // println!("cargo:rustc-link-search=native=/usr/lib");
 
     // NOTE: DPDK absolutely requires whole-archive in the linking command.

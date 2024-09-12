@@ -10,8 +10,6 @@
 #![forbid(unsafe_code, missing_docs)]
 #![forbid(clippy::unwrap_used, clippy::expect_used, clippy::missing_errors_doc)]
 
-use core::num::NonZero;
-
 /// No error, operation succeeded
 pub const SUCCESS: i32 = 0;
 ///  Not super-user

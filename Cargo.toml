@@ -3,7 +3,6 @@
 members = [
 	"dpdk",
 	"dpdk-sys",
-	"dpdk-thin",
 	"errno",
 	"net",
 	"scratch",
@@ -11,10 +10,12 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
+
 bindgen = { version = "0.70" }
 bolero = { version = "0.11" }
 cc = { version = "1" }
 doxygen-rs = { version = "0.4" }
+etherparse = { version = "0.15", default-features = false, features = [] }
 libc = { version = "0.2" }
 rstest = { version = "0.22", default-features = false, features = [] }
 serde = { version = "1", default-features = false, features = ["derive", "alloc", "rc"] }
@@ -23,7 +24,6 @@ thiserror = { version = "2", package = "thiserror-no-std" } # replace with regul
 tracing = { version = "0.1", default-features = false, features = ["attributes"] }
 tracing-subscriber = { version = "0.3" }
 tracing-test = { version = "0.2" }
-etherparse = { version = "0.15", default-features = false, features = [] }
 
 [profile.release]
 opt-level = 3
@@ -34,7 +34,7 @@ overflow-checks = false
 strip = "none"
 # NOTE: I expect that we will use objcopy / strip to keep the debug symbols in a separate file
 # We _could_ just compile without them, but if you need debug symbols for a release build, you
-# are already having a rough day, and if you need them and don't have them then you are having a
+# are already having a rough day, and if you need them and don't have them, then you are having a
 # worse day :)
 #
 # That said, debug-assertions should still be false so that compiler optimizations are not

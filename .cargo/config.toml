@@ -1,19 +1,26 @@
-[target.x86_64-unknown-linux-gnu]
+[target.'cfg(debug_assertions)']
 runner = 'sudo -E'
 rustflags = [
+	"-C", "linker=clang",
+	"-C", "link-arg=-fuse-ld=lld",
+	"-C", "link-arg=--ld-path=/home/dnoland/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld/ld.lld",
+	"-C", "opt-level=0",
+	"-C", "lto=false",
+]
 
-		"-C", "linker=clang",
-		"-C", "link-arg=-fuse-ld=lld",
-		"-C", "link-arg=--ld-path=/usr/bin/ld.lld",
-
+[target.'cfg(not(debug_assertions))']
+rustflags = [
+	"-C", "linker=clang",
+	"-C", "link-arg=-fuse-ld=lld",
+	"-C", "link-arg=--ld-path=/home/dnoland/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld/ld.lld",
+	"-C", "opt-level=3",
+	"-C", "codegen-units=1",
+	"-C", "linker-plugin-lto",
+	"-C", "lto=thin",
+	"-C", "embed-bitcode=yes",
 	# Full RELRO as a basic security measure
 	# <https://www.redhat.com/en/blog/hardening-elf-binaries-using-relocation-read-only-relro>
-		"-C", "relro-level=full",
-
-	#	"-C", "codegen-units=1",
-	#	"-C", "linker-plugin-lto",
-	#	"-C", "lto=thin",
-	#	"-C", "opt-level=3",
-	#	"-C", "embed-bitcode=yes",
+	"-C", "relro-level=full",
 	#	"-Z", "sanitizer=cfi",
+	#	"-Z", "sanitizer=safestack",
 ]

@@ -44,7 +44,7 @@ fn bind(path: &Path) {
         .opaque_type("rte_arp_ipv4")
         .opaque_type("rte_gtp_psc_generic_hdr")
         .opaque_type("rte_l2tpv2_combined_msg_hdr")
-        .clang_arg("-I/mnt/dpdk-arch-sysroot/usr/include")
+        .clang_arg("-I/mnt/dpdk-arch-gen-sysroot/usr/include")
         .clang_arg("-fretain-comments-from-system-headers")
         .clang_arg("-fparse-all-comments")
         .clang_arg("-finline-functions")
@@ -56,8 +56,8 @@ fn bind(path: &Path) {
 }
 
 fn main() {
-    println!("cargo:rustc-link-search=native=/mnt/dpdk-arch-sysroot/usr/lib");
-    println!("cargo:rustc-link-search=/mnt/dpdk-arch-sysroot/usr/lib");
+    println!("cargo:rustc-link-search=native=/mnt/dpdk-arch-gen-sysroot/usr/lib");
+    println!("cargo:rustc-link-search=/mnt/dpdk-arch-gen-sysroot/usr/lib");
 
     println!("cargo:rustc-link-lib=static:+whole-archive=rte_errno");
     println!("cargo:rustc-link-lib=static:+whole-archive=rte_net_mlx5");

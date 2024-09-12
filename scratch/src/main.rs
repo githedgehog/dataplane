@@ -1,13 +1,13 @@
 use dpdk::dev::TxOffloadConfig;
+use dpdk::queue::rx::RxQueue;
 use dpdk::{dev, eal, mem, queue, socket};
+use dpdk_sys::*;
 use std::ffi::{c_uint, CStr, CString};
 use std::fmt::{Debug, Display};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Instant;
 use tracing::{debug, error, info, trace, warn};
-use dpdk::queue::rx::RxQueue;
-use dpdk_sys::*;
 
 #[tracing::instrument(level = "trace", ret)]
 // TODO: proper safety.  This should return a Result but I'm being a savage for demo purposes.
@@ -108,21 +108,21 @@ pub fn fatal_error<T: Display + AsRef<str>>(message: T) -> ! {
 //         "--huge-worker-stack=8192",
 //         "--socket-mem=4096,4096,4096,4096",
 //         // "-d",
-//         // "/mnt/dpdk-arch-sysroot/usr/lib/librte_mempool.so",
+//         // "/mnt/dpdk-arch-gen-sysroot/usr/lib/librte_mempool.so",
 //         // "-d",
-//         // "/mnt/dpdk-arch-sysroot/usr/lib/librte_mempool_ring.so",
+//         // "/mnt/dpdk-arch-gen-sysroot/usr/lib/librte_mempool_ring.so",
 //         // "-d",
-//         // "/mnt/dpdk-arch-sysroot/usr/lib/librte_mempool_stack.so",
+//         // "/mnt/dpdk-arch-gen-sysroot/usr/lib/librte_mempool_stack.so",
 //         // "-d",
-//         // "/mnt/dpdk-arch-sysroot/usr/lib/dpdk/pmds-24.2/librte_bus_pci.so",
+//         // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_bus_pci.so",
 //         // "-d",
-//         // "/mnt/dpdk-arch-sysroot/usr/lib/dpdk/pmds-24.2/librte_net_mlx5.so",
+//         // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_net_mlx5.so",
 //         // "-d",
-//         // "/mnt/dpdk-arch-sysroot/usr/lib/dpdk/pmds-24.2/librte_common_mlx5.so",
+//         // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_common_mlx5.so",
 //         // "-d",
-//         // "/mnt/dpdk-arch-sysroot/usr/lib/dpdk/pmds-24.2/librte_regex_mlx5.so",
+//         // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_regex_mlx5.so",
 //         // "-d",
-//         // "/mnt/dpdk-arch-sysroot/usr/lib/dpdk/pmds-24.2/librte_vdpa_mlx5.so",
+//         // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_vdpa_mlx5.so",
 //     ];
 //     info!("DPDK arguments: {args:?}");
 //     let eal = Eal::new(args);
@@ -965,21 +965,21 @@ fn eal_main() {
         "--huge-worker-stack=8192",
         "--socket-mem=4096,4096,4096,4096",
         // "-d",
-        // "/mnt/dpdk-arch-sysroot/usr/lib/librte_mempool.so",
+        // "/mnt/dpdk-arch-gen-sysroot/usr/lib/librte_mempool.so",
         // "-d",
-        // "/mnt/dpdk-arch-sysroot/usr/lib/librte_mempool_ring.so",
+        // "/mnt/dpdk-arch-gen-sysroot/usr/lib/librte_mempool_ring.so",
         // "-d",
-        // "/mnt/dpdk-arch-sysroot/usr/lib/librte_mempool_stack.so",
+        // "/mnt/dpdk-arch-gen-sysroot/usr/lib/librte_mempool_stack.so",
         // "-d",
-        // "/mnt/dpdk-arch-sysroot/usr/lib/dpdk/pmds-24.2/librte_bus_pci.so",
+        // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_bus_pci.so",
         // "-d",
-        // "/mnt/dpdk-arch-sysroot/usr/lib/dpdk/pmds-24.2/librte_net_mlx5.so",
+        // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_net_mlx5.so",
         // "-d",
-        // "/mnt/dpdk-arch-sysroot/usr/lib/dpdk/pmds-24.2/librte_common_mlx5.so",
+        // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_common_mlx5.so",
         // "-d",
-        // "/mnt/dpdk-arch-sysroot/usr/lib/dpdk/pmds-24.2/librte_regex_mlx5.so",
+        // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_regex_mlx5.so",
         // "-d",
-        // "/mnt/dpdk-arch-sysroot/usr/lib/dpdk/pmds-24.2/librte_vdpa_mlx5.so",
+        // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_vdpa_mlx5.so",
     ];
 
     let rte = eal::init(eal_args).unwrap_or_else(|err| match err {
@@ -1199,7 +1199,7 @@ fn generate_modify_field_flow(
             ],
         }
     }
-    
+
     let mut eth_mask = rte_flow_item_eth::default();
     unsafe {
         eth_mask.annon1.hdr.dst_addr = rte_ether_addr {
@@ -1208,8 +1208,8 @@ fn generate_modify_field_flow(
         eth_mask.annon1.hdr.src_addr = rte_ether_addr {
             addr_bytes: [0xff; 6],
         };
-    };
-    
+    }
+
     pattern[0].spec = &eth_spec as *const _ as *const _;
     pattern[0].mask = &eth_mask as *const _ as *const _;
 
@@ -1230,7 +1230,7 @@ fn generate_modify_field_flow(
     };
     pattern[1].spec = &ip_spec as *const _ as *const _;
     pattern[1].mask = &ip_mask as *const _ as *const _;
-    
+
     pattern[2].type_ = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_TCP;
     let tcp_spec = rte_flow_item_tcp {
         hdr: rte_tcp_hdr {
@@ -1244,7 +1244,7 @@ fn generate_modify_field_flow(
             ..Default::default()
         },
     };
-    
+
     pattern[2].spec = &tcp_spec as *const _ as *const _;
     pattern[2].mask = &tcp_mask as *const _ as *const _;
 
@@ -1257,7 +1257,7 @@ fn generate_modify_field_flow(
     let new_dst_ip = Ipv4Addr::from(rand::random::<u32>());
     let mut ip_dst_value = [0u8; 16];
     ip_dst_value[0..4].copy_from_slice(&new_dst_ip.to_bits().to_be_bytes());
-    
+
     let new_eth_src = [
         rand::random::<u8>(),
         rand::random::<u8>(),
@@ -1295,12 +1295,12 @@ fn generate_modify_field_flow(
         0,
         0,
     ];
-    
+
     let modify_eth_src_action_conf = rte_flow_action_modify_field {
         operation: rte_flow_modify_op::RTE_FLOW_MODIFY_SET,
         src: rte_flow_field_data {
             field: rte_flow_field_id::RTE_FLOW_FIELD_VALUE,
-            annon1: rte_flow_field_data__bindgen_ty_1 { value: [0xff; 16] },
+            annon1: rte_flow_field_data__bindgen_ty_1 { value: new_eth_dst },
         },
         dst: rte_flow_field_data {
             field: rte_flow_field_id::RTE_FLOW_FIELD_MAC_SRC,
@@ -1321,12 +1321,14 @@ fn generate_modify_field_flow(
         },
         width: size_of::<rte_ether_addr>() as u32,
     };
-    
+
     let modify_ipv4_src_action_conf = rte_flow_action_modify_field {
         operation: rte_flow_modify_op::RTE_FLOW_MODIFY_SET,
         src: rte_flow_field_data {
             field: rte_flow_field_id::RTE_FLOW_FIELD_VALUE,
-            annon1: rte_flow_field_data__bindgen_ty_1 { value: ip_src_value },
+            annon1: rte_flow_field_data__bindgen_ty_1 {
+                value: ip_src_value,
+            },
         },
         dst: rte_flow_field_data {
             field: rte_flow_field_id::RTE_FLOW_FIELD_IPV4_SRC,
@@ -1339,7 +1341,9 @@ fn generate_modify_field_flow(
         operation: rte_flow_modify_op::RTE_FLOW_MODIFY_SET,
         src: rte_flow_field_data {
             field: rte_flow_field_id::RTE_FLOW_FIELD_VALUE,
-            annon1: rte_flow_field_data__bindgen_ty_1 { value: ip_dst_value },
+            annon1: rte_flow_field_data__bindgen_ty_1 {
+                value: ip_dst_value,
+            },
         },
         dst: rte_flow_field_data {
             field: rte_flow_field_id::RTE_FLOW_FIELD_IPV4_DST,
@@ -1356,16 +1360,16 @@ fn generate_modify_field_flow(
 
     action[2].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_MODIFY_FIELD;
     action[2].conf = &modify_eth_dst_action_conf as *const _ as *const _;
-    
+
     action[3].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_MODIFY_FIELD;
     action[3].conf = &modify_ipv4_src_action_conf as *const _ as *const _;
 
     action[4].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_MODIFY_FIELD;
     action[4].conf = &modify_ipv4_dst_action_conf as *const _ as *const _;
-    
+
     action[5].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_QUEUE;
     action[5].conf = &queue as *const _ as *const _;
-    
+
     action[6].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_END;
 
     // let res = unsafe {
@@ -1377,7 +1381,7 @@ fn generate_modify_field_flow(
     //         err,
     //     )
     // };
-    // 
+    //
     // if res != 0 {
     //     let err_str = unsafe { rte_strerror(res) };
     //     let err_msg = format!(
