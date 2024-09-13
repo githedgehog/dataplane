@@ -1,0 +1,17 @@
+version: 2
+
+updates:
+  - package-ecosystem: "cargo"
+    target-branch: "main"
+    directories:
+      - /
+    schedule:
+      interval: "daily"
+    groups:
+      dev-dependencies:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

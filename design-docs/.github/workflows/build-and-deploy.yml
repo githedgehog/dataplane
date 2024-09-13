@@ -1,0 +1,62 @@
+name: Build and deploy
+on:
+  pull_request:
+  push:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract branch name
+        shell: bash
+        run: echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> $GITHUB_OUTPUT
+        id: extract_branch
+
+      - name: Extract git hash
+        shell: bash
+        run: echo "git_hash=${GITHUB_SHA}" >> $GITHUB_OUTPUT
+        id: extract_hash
+
+      - name: Install nix
+        uses: cachix/install-nix-action@v27
+
+      - name: Nix cache
+        id: cache-nix-packages
+        uses: actions/cache@v4
+        with:
+          path: ~/work/nix-store
+          key: cache-nix-${{ runner.os }}-${{ hashFiles('./flake.lock') }}
+
+      - name: Build
+        run: |
+          mkdir --parent ~/work/nix-store
+          nix build '#book' --store ~/work/nix-store --out-link ~/work/out
+
+      - name: Copy build
+        run: |
+          mkdir -p ${{ github.workspace }}/publish/
+          cp -r ~/work/nix-store/nix/store/"$(basename "$(readlink ~/work/out)")"/book ${{ github.workspace }}/publish
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # Upload build directory content
+          path: 'publish/book'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
+

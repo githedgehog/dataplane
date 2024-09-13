@@ -1,0 +1,10 @@
+\func:{#1\left(#2\right)}
+\Ccancel:{
+  \let\OldcancelColor\CancelColor
+  \renewcommand\CancelColor{\color{#1}}
+  \cancel{#2}
+  \renewcommand\CancelColor{\OldcancelColor}
+}
+
+
+\label:{\htmlClass{equation-label}{\htmlId{#1}{}}}

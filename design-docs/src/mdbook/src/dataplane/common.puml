@@ -1,0 +1,12 @@
+
+!pragma use toez
+!$sty = {
+	"question": "#gold",
+	"action": "#lightblue",
+	"future": "#lightgreen",
+	"attention": "#pink"
+}
+!$action = $sty.action
+!$question = $sty.question
+!$future = $sty.future
+!$biscuit = "hello"
