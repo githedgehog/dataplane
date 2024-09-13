@@ -41,8 +41,9 @@ jobs:
 
       - name: Copy design doc build to publish directory
         run: |
-          mkdir -p ${{ github.workspace }}/publish/
-          cp -r ~/work/nix-store/nix/store/"$(basename "$(readlink ~/work/out/design-docs)")" ${{ github.workspace }}/publish
+          set -euxo pipefail
+          mkdir --parent ${{ github.workspace }}/publish/
+          cp -r ~/work/nix-store/nix/store/"$(basename "$(readlink ~/work/out/design-docs)")" ${{ github.workspace }}/publish/design-docs
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
