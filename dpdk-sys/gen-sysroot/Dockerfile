@@ -427,20 +427,16 @@ RUN rm /usr/lib/libjansson.a
 RUN rm /usr/lib/libelf.a
 
 RUN cd /usr/src/dpdk; \
-#unset CC; \
-unset CFLAGS; \
-unset LDFLAGS; \
-#unset LD; \
 meson setup --reconfigure build \
-#  -Dauto_features=auto \
-#  -Db_colorout=always \
-#  -Db_coverage=false \
-#  -Db_lto=true \
-#  -Db_lundef=true \
+  -Dauto_features=auto \
+  -Db_colorout=always \
+  -Db_coverage=false \
+  -Db_lto=true \
+  -Db_lundef=true \
   -Db_pch=true `#pch means pre-compiled headers which never seem to work out for me` \
-  -Db_pgo=generate `#turn this on later when we have a workload to test ` \
+  -Db_pgo=off `#turn this on later when we have a workload to test ` \
   -Db_pie=true `#not clear if I still need this` \
-  -Db_sanitize=undefined `#see if we can't bully DPDK et al into building with -fsanitize=cfi` \
+  -Db_sanitize=none `#see if we can't bully DPDK et al into building with -fsanitize=cfi` \
   -Dbackend=ninja \
   -Dbackend_max_links="$(nproc)" \
   -Ddefault_library=shared \
@@ -457,17 +453,15 @@ meson setup --reconfigure build \
   -Ddisable_libs="${_disabled_libs}" \
   -Denable_drivers="${_enabled_drivers}" \
   -Db_lto_mode="$([ "${IDEAL_LTO_TYPE}" = "thin" ] && echo thin || echo default)" \
-#  -Dc_args="${CFLAGS}" \
-#  -Dc_link_args="${LDFLAGS} -lasan" \
-#  -Dcpu_instruction_set="${CPU_ARCH}" \
-#  -Doptimization="${IDEAL_OPT_LEVEL}" \
+  -Dc_args="${CFLAGS}" \
+  -Dc_link_args="${LDFLAGS}" \
+  -Dcpu_instruction_set="${CPU_ARCH}" \
+  -Doptimization="${IDEAL_OPT_LEVEL}" \
 ; \
 cd /usr/src/dpdk/build; \
 nice --adjustment=15 ninja; \
 nice --adjustment=15 ninja install; \
 :;
-
-
 
 RUN pacman --sync --clean --noconfirm --clean \
  && pacman --sync --noconfirm --refresh --sysupgrade \

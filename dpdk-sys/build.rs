@@ -49,7 +49,6 @@ fn bind(path: &Path) {
         .clang_arg("-Isysroot/usr/include")
         .clang_arg("-fretain-comments-from-system-headers")
         .clang_arg("-fparse-all-comments")
-        .clang_arg("-finline-functions")
         .clang_arg("-march=native")
         .generate()
         .expect("Unable to generate bindings")
