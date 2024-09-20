@@ -21,8 +21,6 @@
    * Nobody is buying a gateway they can't monitor.
    * You need this for debugging anyway.
 4. We never really got rate limiting right
-   * CX5 was not sufficient for our needs.  We should have jumped to CX6-DX or better.
+   * CX5 was not enough for our needs.  We should have jumped to CX6-DX or better.
 5. We let Kubernetes boss us around.
    * Don't let Kubernetes boss you around!
-
-  

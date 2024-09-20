@@ -1,5 +1,5 @@
 {
-	image: "sysroot2",
+	image: "dpdk-sysroot",
 	"name": "dpdk-dev-container",
 	"mounts": [
 		"source=/mnt/huge/2M,target=/mnt/huge/2M,type=bind",

@@ -15,7 +15,7 @@ after = ["links"]
 [preprocessor.katex]
 macros = "src/macros.tex"
 after = ["links"]
-block-delimiter = { left = "``` latex", right = "```" }
+block-delimiter = { left = "``` equation", right = "```" }
 inline-delimiter = { left = "`$", right = "$`" }
 no-css = true
 trust = true
