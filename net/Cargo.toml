@@ -2,6 +2,11 @@
 name = "net"
 version = "0.0.1"
 edition = "2021"
+publish = false
+
+[[bench]]
+name = "parse"
+harness = false
 
 [features]
 default = ["serde", "tracing_max_level_trace", "tracing_release_max_level_debug"]
@@ -24,11 +29,13 @@ tracing_release_max_level_trace = ["tracing/release_max_level_trace"]
 tracing_release_max_level_warn = ["tracing/release_max_level_warn"]
 
 [dependencies]
-
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true }
+criterion = { workspace = true }
+rand = { workspace = true }
+etherparse = { workspace = true, default-features = false, features = ["std"] }
 

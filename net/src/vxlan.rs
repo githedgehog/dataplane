@@ -3,8 +3,6 @@
 use core::num::NonZero;
 use tracing::instrument;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[repr(transparent)]
 /// A VXLAN Network Identifier.
 ///
 /// The [`Vni`] is a 24-bit value that identifies a VXLAN network.
@@ -25,6 +23,8 @@ use tracing::instrument;
 /// The memory / compute overhead of using this type as opposed to a `u32` is then strictly
 /// limited to the price of checking that the represented value is in fact a legal [`Vni`], (which
 /// we should generally be doing anyway).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(transparent)]
 pub struct Vni(NonZero<u32>);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -143,4 +143,28 @@ mod test {
                 }
             });
     }
+}
+
+#[cfg(any(feature = "_fake_kani", kani))]
+mod proof {
+    
+    use super::*;
+
+    #[kani::proof]
+    fn meets_spec() {
+        let x: u32 = kani::any();
+        match Vni::new(x) {
+            Ok(vni) => {
+                assert_eq!(vni.as_u32(), x);
+                assert!(vni.as_u32() >= Vni::MIN);
+                assert!(vni.as_u32() <= Vni::MAX);
+            }
+            Err(InvalidVni::ReservedZero) => assert_eq!(x, 0),
+            Err(InvalidVni::TooLarge(too_big)) => {
+                assert_eq!(x, too_big);
+                assert!(too_big > Vni::MAX);
+            },
+        }
+    }
+    
 }

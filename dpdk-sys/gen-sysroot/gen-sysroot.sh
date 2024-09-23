@@ -23,24 +23,45 @@ die() {
 }
 
 pushd "${script_dir}"
-declare sysroot_dir
-sysroot_dir="$(readlink --canonicalize-existing "${script_dir}/..")/sysroot"
-declare -r sysroot_dir
 
-declare -r regen_sysroot="${1:-""}"
+declare compile_mode="${1:-}"
 
-if [[ "${regen_sysroot}" = "--regen-sysroot" && -d "${sysroot_dir}" ]]; then
-  printf -- "--regen-sysroot flag accepted, removing directory %s\n" "${sysroot_dir}"
-  rm -fr "${sysroot_dir}"
+
+if [[ "${compile_mode}" = "release" ]]; then
+  declare -r compile_mode="release"
+  source "./release-mode.env"
+else
+  declare -r compile_mode="debug"
+  source "./debug-mode.env"
 fi
 
-mkdir "${sysroot_dir}" \
-  || { rmdir "${sysroot_dir}" && mkdir "${sysroot_dir}"; } \
-  || die "${sysroot_dir} already exists and is not empty"
+shift
 
-docker build --pull --tag dpdk-sysroot --file "${script_dir}/Dockerfile" "${script_dir}"
+
+declare sysroot_dir
+sysroot_dir="$(readlink --canonicalize-existing "${script_dir}/../..")/sysroot/${compile_mode}"
+declare -r sysroot_dir
+
+declare -r regen_sysroot="${1:-}"
+
+if [[ "${regen_sysroot}" = "--regen-sysroot=yes" && -d "${sysroot_dir}" ]]; then
+  printf -- "--regen-sysroot flag accepted, removing directory %s\n" "${sysroot_dir}"
+  rm -fr "${sysroot_dir}"
+  shift
+fi
+
+[[ -d "${sysroot_dir}" ]] && die "Directory %s already exists, exiting\n" "${sysroot_dir}"
+
+mkdir --parent "${sysroot_dir}"
+docker build \
+  --pull \
+  --build-arg=CC="${CC}" \
+  --build-arg=CFLAGS="${CFLAGS}" \
+  --build-arg=CXX="${CXX}" \
+  --build-arg=LD="${LD}" \
+  --build-arg=LDFLAGS="${LDFLAGS}" \
+  --tag "dpdk-sysroot-${compile_mode}" --file "${script_dir}/Dockerfile" "${script_dir}"
 # clean up any prior sysroot
-docker rm dpdk-sysroot || true
-docker create --name dpdk-sysroot dpdk-sysroot true
-
-docker export dpdk-sysroot | tar xf - -C "${sysroot_dir}"
+docker rm "dpdk-sysroot-${compile_mode}" || true
+docker create --name "dpdk-sysroot-${compile_mode}" "dpdk-sysroot-${compile_mode}" true
+docker export "dpdk-sysroot-${compile_mode}" | tar xf - -C "${sysroot_dir}"

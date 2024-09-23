@@ -2,6 +2,7 @@
 name = "dpdk"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [features]
 default = ["serde", "tracing_max_level_trace", "tracing_release_max_level_debug"]
@@ -31,6 +32,8 @@ net = { path = "../net" }
 
 etherparse = { workspace = true, default-features = false, features = [] }
 serde = { workspace = true, optional = true }
-syscalls = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
+
+[build-dependencies]
+dpdk-sysroot-helper = { path = "../dpdk-sysroot-helper" }

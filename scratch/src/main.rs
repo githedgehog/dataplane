@@ -49,320 +49,6 @@ pub fn fatal_error<T: Display + AsRef<str>>(message: T) -> ! {
     unsafe { rte_exit(1, message_cstring.as_ptr()) }
 }
 
-// impl Drop for Eal {
-//     /// TODO: proper safety analysis
-//     #[tracing::instrument(level = "debug")]
-//     fn drop(&mut self) {
-//         let exit_code = unsafe { rte_eal_cleanup() };
-//         if exit_code < 0 {
-//             fatal_error("EAL cleanup failed");
-//         } else {
-//             info!("EAL cleanup successful");
-//         }
-//     }
-// }
-
-// impl Eal {
-//     #[tracing::instrument(level = "trace", ret)]
-//     /// Returns `true` if the [`Eal`] is using the PCI bus.
-//     ///
-//     /// This is mostly a safe wrapper around [`rte_eal_has_pci`] which simply converts to
-//     /// a bool instead of a `c_int`.
-//     pub fn has_pci(&self) -> bool {
-//         unsafe { rte_eal_has_pci() != 0 }
-//     }
-//
-//     #[tracing::instrument(level = "trace", ret)]
-//     /// Safe wrapper around [`rte_eth_dev_count_avail`]
-//     pub fn eth_dev_count_avail(&self) -> u16 {
-//         unsafe { rte_eth_dev_count_avail() }
-//     }
-// }
-
-// // /// Sets up flow rules for demo purposes
-// fn main() {
-//     tracing_subscriber::fmt()
-//         .with_max_level(tracing::Level::DEBUG)
-//         .with_target(false)
-//         .with_thread_ids(true)
-//         .with_line_number(true)
-//         .init();
-//     let args = vec![
-//         "-c",
-//         "0xffffffffff",
-//         "--in-memory",
-//         "--huge-dir",
-//         "/mnt/huge/2M",
-//         "--huge-dir",
-//         "/mnt/huge/1G",
-//         "--allow",
-//         "0000:01:00.0,dv_flow_en=2",
-//         "--trace=.*",
-//         "--iova-mode=va",
-//         "-l",
-//         "8,9,10,11,12,13,14,15",
-//         // "--allow",
-//         // "0000:01:00.1",
-//         // "--allow",
-//         // "0000:02:00.0",
-//         "--huge-worker-stack=8192",
-//         "--socket-mem=4096,4096,4096,4096",
-//         // "-d",
-//         // "/mnt/dpdk-arch-gen-sysroot/usr/lib/librte_mempool.so",
-//         // "-d",
-//         // "/mnt/dpdk-arch-gen-sysroot/usr/lib/librte_mempool_ring.so",
-//         // "-d",
-//         // "/mnt/dpdk-arch-gen-sysroot/usr/lib/librte_mempool_stack.so",
-//         // "-d",
-//         // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_bus_pci.so",
-//         // "-d",
-//         // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_net_mlx5.so",
-//         // "-d",
-//         // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_common_mlx5.so",
-//         // "-d",
-//         // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_regex_mlx5.so",
-//         // "-d",
-//         // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_vdpa_mlx5.so",
-//     ];
-//     info!("DPDK arguments: {args:?}");
-//     let eal = Eal::new(args);
-//     let has_pci = eal.has_pci();
-//     info!("Has PCI: {has_pci}");
-//
-//     if !has_pci {
-//         fatal_error("No PCI devices found")
-//     }
-//     let count = eal.eth_dev_count_avail();
-//
-//     info!("Available Ethernet devices: {count}");
-//     if count == 0 {
-//         return fatal_error("No Ethernet devices found");
-//     }
-//
-//     if count > 1 {
-//         return fatal_error("Multiple Ethernet devices found");
-//     }
-//
-//     let socket_id = unsafe { rte_socket_id() } as c_int;
-//
-//     info!("Socket ID: {socket_id}");
-//
-//     const MBUF_POOL_NAME: &str = "mbuf_pool";
-//     let mbuf_pool_name = as_cstr(MBUF_POOL_NAME);
-//
-//     const MBUF_POOL_SIZE: u32 = (1 << 12) - 1;
-//     const MBUF_CACHE_SIZE: u32 = 128;
-//     const MBUF_PRIV_SIZE: u16 = 0;
-//     const MBUF_DATA_SIZE: u32 = 2048 + 128;
-//
-//     let mbuf_pool = {
-//         let mbuf_pool_ptr = unsafe {
-//             rte_pktmbuf_pool_create(
-//                 mbuf_pool_name.as_ptr(),
-//                 MBUF_POOL_SIZE,
-//                 MBUF_CACHE_SIZE,
-//                 MBUF_PRIV_SIZE,
-//                 2048 + 128,
-//                 3,
-//             )
-//         };
-//
-//         if mbuf_pool_ptr.is_null() {
-//             let errno = unsafe { wrte_errno() };
-//             let c_err_str = unsafe { rte_strerror(errno) };
-//             let err_str = unsafe { std::ffi::CStr::from_ptr(c_err_str) };
-//             let err_str = err_str.to_str().unwrap();
-//             error!("Failed to create mbuf pool: errno {errno}, {err_str}");
-//             unsafe {
-//                 rte_exit(
-//                     errno,
-//                     format!("Failed to create mbuf pool: errno {errno}, {err_str}").as_ptr()
-//                         as *const _,
-//                 );
-//             }
-//         }
-//         unsafe { &mut *mbuf_pool_ptr }
-//     };
-//
-//     let port_id = 0;
-//     init_port2(port_id, mbuf_pool);
-//
-//     meter_stuff(port_id);
-//
-//     {
-//         debug!("Setting up flow rules");
-//         let mut err = rte_flow_error::default();
-//         let flow = generate_ct_flow2(port_id, 4, &mut err);
-//     }
-//
-//     debug!("Should have torn down flow rules");
-//
-//     let ret = unsafe { rte_eth_dev_stop(port_id) };
-//     if ret != 0 {
-//         let err_msg = format!(
-//             "Failed to stop device: {ret}",
-//             ret = io::Error::from_raw_os_error(ret)
-//         );
-//         fatal_error(err_msg.as_str());
-//     }
-//     unsafe {
-//         rte_mempool_free(mbuf_pool);
-//     };
-// }
-
-// #[tracing::instrument(level = "info", skip(mbuf_pool))]
-// fn init_port(port_id: u16, mbuf_pool: &mut rte_mempool) {
-//     let mut port_conf = rte_eth_conf {
-//         txmode: rte_eth_txmode {
-//             offloads: wrte_eth_tx_offload::VLAN_INSERT
-//                 | wrte_eth_tx_offload::IPV4_CKSUM
-//                 | wrte_eth_tx_offload::UDP_CKSUM
-//                 | wrte_eth_tx_offload::TCP_CKSUM
-//                 | wrte_eth_tx_offload::SCTP_CKSUM
-//                 | wrte_eth_tx_offload::TCP_TSO,
-//             ..Default::default()
-//         },
-//         ..Default::default()
-//     };
-//
-//     let mut txq_conf: rte_eth_txconf;
-//     let mut rxq_conf: rte_eth_rxconf = unsafe { std::mem::zeroed() };
-//     let mut dev_info: rte_eth_dev_info = unsafe { std::mem::zeroed() };
-//
-//     let ret = unsafe { rte_eth_dev_info_get(port_id, &mut dev_info as *mut _) };
-//
-//     if ret != 0 {
-//         let err_msg = format!(
-//             "Failed to get device info: {ret}",
-//             ret = io::Error::from_raw_os_error(ret)
-//         );
-//         fatal_error(err_msg.as_str());
-//     }
-//
-//     info!("Port ID {port_id}");
-//     let driver_name = unsafe { CStr::from_ptr(dev_info.driver_name).to_str().unwrap() };
-//     info!("Driver name: {driver_name}");
-//
-//     let nr_queues = 5;
-//
-//     port_conf.txmode.offloads &= dev_info.tx_offload_capa;
-//     info!("Initialising port {port_id}");
-//     let ret = unsafe { rte_eth_dev_configure(port_id, nr_queues, nr_queues, &port_conf) };
-//
-//     if ret != 0 {
-//         let err_msg = format!(
-//             "Failed to configure device: {ret}",
-//             ret = io::Error::from_raw_os_error(ret)
-//         );
-//         fatal_error(err_msg.as_str());
-//     }
-//
-//     rxq_conf = dev_info.default_rxconf;
-//     rxq_conf.offloads = port_conf.rxmode.offloads;
-//
-//     let nr_rx_descriptors = 512;
-//
-//     // configure rx queues
-//     for queue_num in 0..nr_queues {
-//         info!("Configuring RX queue {queue_num}");
-//         let ret = unsafe {
-//             rte_eth_rx_queue_setup(
-//                 port_id,
-//                 queue_num,
-//                 nr_rx_descriptors,
-//                 rte_eth_dev_socket_id(port_id) as c_uint,
-//                 &rxq_conf,
-//                 mbuf_pool,
-//             )
-//         };
-//
-//         if ret < 0 {
-//             let err_msg = format!(
-//                 "Failed to configure RX queue {queue_num}: {ret}",
-//                 queue_num = queue_num,
-//                 ret = io::Error::from_raw_os_error(ret)
-//             );
-//             fatal_error(err_msg.as_str());
-//         }
-//         info!("RX queue {queue_num} configured");
-//     }
-//
-//     txq_conf = dev_info.default_txconf;
-//     txq_conf.offloads = port_conf.txmode.offloads;
-//
-//     for queue_num in 0..nr_queues {
-//         info!("Configuring TX queue {queue_num}");
-//         let ret = unsafe {
-//             rte_eth_tx_queue_setup(
-//                 port_id,
-//                 queue_num,
-//                 nr_rx_descriptors,
-//                 rte_eth_dev_socket_id(port_id) as c_uint,
-//                 &txq_conf as *const _,
-//             )
-//         };
-//
-//         if ret < 0 {
-//             let err_msg = format!(
-//                 "Failed to configure TX queue {queue_num}: {ret}",
-//                 queue_num = queue_num,
-//                 ret = io::Error::from_raw_os_error(ret)
-//             );
-//             fatal_error(err_msg.as_str());
-//         }
-//         info!("TX queue {queue_num} configured");
-//     }
-//
-//     info!("Port {port_id} configured");
-//
-//     let ret = unsafe { rte_eth_promiscuous_enable(port_id) };
-//     if ret != 0 {
-//         let err_msg = format!(
-//             "Failed to enable promiscuous mode: {ret}",
-//             ret = io::Error::from_raw_os_error(ret)
-//         );
-//         fatal_error(err_msg.as_str());
-//     }
-//     info!("Port {port_id} set to promiscuous mode");
-//
-//     let ret = unsafe { rte_eth_dev_start(port_id) };
-//     if ret != 0 {
-//         let err_msg = format!(
-//             "Failed to start device: {ret}",
-//             ret = io::Error::from_raw_os_error(ret)
-//         );
-//         fatal_error(err_msg.as_str());
-//     }
-//
-//     info!("Port {port_id} started");
-//     assert_link_status(port_id);
-//     info!("Port {port_id} has been initialized");
-// }
-//
-
-// fn assert_link_status(port_id: u16) {
-//     let mut link: rte_eth_link = unsafe { std::mem::zeroed() };
-//     let rep_cnt = 900;
-//     let mut link_get_err = -EINVAL;
-//     for _cycle in 0..rep_cnt {
-//         link_get_err = unsafe { rte_eth_link_get(port_id, &mut link as *mut _) };
-//         if link_get_err == 0 {
-//             break;
-//         }
-//         std::thread::sleep(std::time::Duration::from_millis(10));
-//     }
-//
-//     if link_get_err < 0 {
-//         let err_str = unsafe { rte_strerror(-link_get_err) };
-//         let err_msg = format!(
-//             "Failed to get link status ({link_get_err}): {err_str}",
-//             err_str = unsafe { CStr::from_ptr(err_str) }.to_str().unwrap()
-//         );
-//         fatal_error(err_msg.as_str());
-//     }
-//
-//     // TODO: assert link status!
-// }
 
 const MAX_PATTERN_NUM: usize = 8;
 
@@ -947,7 +633,7 @@ fn eal_main() {
         .init();
 
     let eal_args = vec![
-        "-c",
+        "-src",
         "0xffffffffff",
         "--in-memory",
         // "--huge-dir",
@@ -955,7 +641,7 @@ fn eal_main() {
         "--huge-dir",
         "/mnt/huge/1G",
         "--allow",
-        "0000:01:00.0,dv_flow_en=1",
+        "0000:02:00.0,dv_flow_en=1",
         // "--trace=.*",
         // "--iova-mode=va",
         // "-l",
@@ -964,22 +650,6 @@ fn eal_main() {
         // "0000:01:00.1",
         "--huge-worker-stack=8192",
         "--socket-mem=4096,4096,4096,4096",
-        // "-d",
-        // "/mnt/dpdk-arch-gen-sysroot/usr/lib/librte_mempool.so",
-        // "-d",
-        // "/mnt/dpdk-arch-gen-sysroot/usr/lib/librte_mempool_ring.so",
-        // "-d",
-        // "/mnt/dpdk-arch-gen-sysroot/usr/lib/librte_mempool_stack.so",
-        // "-d",
-        // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_bus_pci.so",
-        // "-d",
-        // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_net_mlx5.so",
-        // "-d",
-        // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_common_mlx5.so",
-        // "-d",
-        // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_regex_mlx5.so",
-        // "-d",
-        // "/mnt/dpdk-arch-gen-sysroot/usr/lib/dpdk/pmds-24.2/librte_vdpa_mlx5.so",
     ];
 
     let rte = eal::init(eal_args).unwrap_or_else(|err| match err {
@@ -1081,7 +751,7 @@ fn eal_main() {
         my_dev.start().unwrap();
 
         let mut start = Instant::now();
-
+        
         let flows: Vec<_> = (0..50_000_000)
             .map(|i: u32| {
                 if i % 100_000 == 0 {
@@ -1108,7 +778,7 @@ fn eal_main() {
                 )
             })
             .collect();
-
+        
         warn!("Flows created");
 
         // for i in 0..2000 {
@@ -1141,16 +811,6 @@ fn eal_main() {
         //     );
         // }
     });
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn call_eal_main() {
-        eal_main();
-    }
 }
 
 #[tracing::instrument(level = "debug")]
@@ -1201,6 +861,7 @@ fn generate_modify_field_flow(
     }
 
     let mut eth_mask = rte_flow_item_eth::default();
+
     unsafe {
         eth_mask.annon1.hdr.dst_addr = rte_ether_addr {
             addr_bytes: [0xff; 6],

@@ -1,4 +1,12 @@
-FROM archlinux
+ARG CC=clang
+ARG CFLAGS=""
+ARG CPU_ARCH="native"
+ARG CXX=clang++
+ARG CXXFLAGS=""
+ARG LD="mold"
+ARG LDFLAGS=""
+
+FROM archlinux as base
 
 SHELL ["/bin/bash", "-eu", "-o", "pipefail", "-c"]
 
@@ -22,121 +30,24 @@ RUN pacman --sync --refresh --sysupgrade --noconfirm \
 ; \
 :;
 
+
+ARG CC
+ARG CFLAGS
+ARG CPU_ARCH
+ARG CXX
+ARG CXXFLAGS
+ARG LD
+ARG LDFLAGS
+
+ENV CC="${CC}"
+ENV CFLAGS="${CFLAGS}"
+ENV CPU_ARCH="${CPU_ARCH}"
+ENV CXX="${CXX}"
+ENV CXXFLAGS="${CXXFLAGS}"
+ENV LD="${LD}"
+ENV LDFLAGS="${LDFLAGS}"
+
 WORKDIR /usr/src
-
-ENV IDEAL_LTO_TYPE="thin"
-ENV IDEAL_OPT_LEVEL="3"
-ENV IDEAL_CPU_ARCH="x86-64-v4"
-#ENV CPU_ARCH="znver4"
-ENV IDEAL_CPU_TUNE="znver4"
-
-ENV DEV_LTO_TYPE="thin"
-# -Og optimizes for debugging
-ENV DEV_OPT_LEVEL="g"
-ENV DEV_CPU_ARCH="generic"
-ENV DEV_CPU_TUNE="generic"
-
-ENV IDEAL_CC="clang"
-ENV IDEAL_CPP="clang-cpp"
-ENV IDEAL_LD="mold"
-ENV IDEAL_CXX="clang++"
-ENV IDEAL_AR="llvm-ar"
-ENV IDEAL_NM="llvm-nm"
-ENV IDEAL_RANLIB="llvm-ranlib"
-
-ENV DEV_CC="${IDEAL_CC}"
-ENV DEV_CPP="${IDEAL_CPP}"
-ENV DEV_LD="${IDEAL_LD}"
-ENV DEV_CXX="${IDEAL_CXX}"
-ENV DEV_AR="${IDEAL_AR}"
-ENV DEV_NM="${IDEAL_NM}"
-ENV DEV_RANLIB="${IDEAL_RANLIB}"
-#
-ENV IDEAL_CFLAGS_OPT_LEVEL="-O${IDEAL_OPT_LEVEL}"
-ENV IDEAL_CFLAGS_MARCH="-march=${IDEAL_CPU_ARCH}"
-ENV IDEAL_CFLAGS_TUNE="-mtune=${IDEAL_CPU_TUNE}"
-ENV IDEAL_CFLAGS_LTO="-flto=${IDEAL_LTO_TYPE}"
-ENV IDEAL_CFLAGS_WERROR="-Werror=odr -Werror=strict-aliasing"
-ENV IDEAL_CFLAGS_PIC="-fPIC"
-# TODO: when rustc stabilizes support for safe-stack and cfi we should enable this
-# TODO: poke ibverbs and figure out why it is mad at the safe-stack and cfi sanitizers.
-# It's not a priority right now, but it would be nice to have when it stabilizes in rustc.
-#ENV IDEAL_CFLAGS_SECURITY_FLAGS="-fstack-protector-strong -fsanitize=safe-stack -fsanitize=cfi"
-ENV IDEAL_CFLAGS_SECURITY_FLAGS="-fstack-protector-strong"
-
-ENV DEV_CFLAGS_OPT_LEVEL="-O${DEV_OPT_LEVEL}"
-ENV DEV_CFLAGS_MARCH="-march=${DEV_CPU_ARCH}"
-ENV DEV_CFLAGS_TUNE="-mtune=${DEV_CPU_TUNE}"
-ENV DEV_CFLAGS_LTO="-flto=${DEV_LTO_TYPE}"
-ENV DEV_CFLAGS_WERROR="${IDEAL_CFLAGS_WERROR}"
-ENV DEV_CFLAGS_PIC="${IDEAL_CFLAGS_PIC}"
-# TODO: when rustc stabilizes support for safe-stack and cfi we should enable this
-# TODO: poke ibverbs and figure out why it is mad at the safe-stack and cfi sanitizers.
-# It's not a priority right now, but it would be nice to have when it stabilizes in rustc.
-#ENV DEV_CFLAGS_SECURITY_FLAGS="-fstack-protector-strong -fsanitize=safe-stack -fsanitize=cfi"
-#ENV DEV_CFLAGS_SANITIZE_FLAGS="-fstack-protector-all -fsanitize=address -fno-inline -fno-omit-frame-pointer"
-ENV DEV_CFLAGS_SANITIZE_FLAGS=""
-
-ENV IDEAL_CFLAGS="${IDEAL_CFLAGS} ${IDEAL_CFLAGS_OPT_LEVEL}"
-#ENV IDEAL_CFLAGS="${IDEAL_CFLAGS} ${IDEAL_CFLAGS_MARCH}"
-#ENV IDEAL_CFLAGS="${IDEAL_CFLAGS} ${IDEAL_CFLAGS_TUNE}"
-ENV IDEAL_CFLAGS="${IDEAL_CFLAGS} ${IDEAL_CFLAGS_LTO}"
-ENV IDEAL_CFLAGS="${IDEAL_CFLAGS} ${IDEAL_CFLAGS_WERROR}"
-ENV IDEAL_CFLAGS="${IDEAL_CFLAGS} ${IDEAL_CFLAGS_PIC}"
-ENV IDEAL_CFLAGS="${IDEAL_CFLAGS} ${IDEAL_CFLAGS_SECURITY_FLAGS}"
-
-ENV DEV_CFLAGS="${DEV_CFLAGS} ${DEV_CFLAGS_OPT_LEVEL}"
-#ENV DEV_CFLAGS="${DEV_CFLAGS} ${DEV_CFLAGS_MARCH}"
-#ENV DEV_CFLAGS="${DEV_CFLAGS} ${DEV_CFLAGS_TUNE}"
-ENV DEV_CFLAGS="${DEV_CFLAGS} ${DEV_CFLAGS_LTO}"
-ENV DEV_CFLAGS="${DEV_CFLAGS} ${DEV_CFLAGS_WERROR}"
-ENV DEV_CFLAGS="${DEV_CFLAGS} ${DEV_CFLAGS_PIC}"
-ENV DEV_CFLAGS="${DEV_CFLAGS} ${DEV_CFLAGS_SANITIZE_FLAGS} -ggdb3"
-
-ENV IDEAL_CXXFLAGS="${IDEAL_CFLAGS}"
-ENV DEV_CXXFLAGS="${DEV_CFLAGS}"
-
-ENV IDEAL_LDFLAGS_USE_LD="-fuse-ld=${IDEAL_LD}"
-ENV IDEAL_LDFLAGS_OPT_LEVEL="-Wl,-O2"
-ENV IDEAL_LDFLAGS_GC_SECTIONS="-Wl,-gc-sections"
-# Sadly we need this for DPDK
-ENV IDEAL_LDFLAGS_AS_WHOLE_ARCHIVE="-Wl,--whole-archive"
-ENV IDEAL_LDFLAGS_SECURITY_FLAGS="-Wl,-z,relro,-z,now"
-
-ENV IDEAL_LDFLAGS=""
-ENV IDEAL_LDFLAGS="${IDEAL_LDFLAGS} ${IDEAL_LDFLAGS_USE_LD}"
-ENV IDEAL_LDFLAGS="${IDEAL_LDFLAGS} ${IDEAL_LDFLAGS_OPT_LEVEL}"
-ENV IDEAL_LDFLAGS="${IDEAL_LDFLAGS} ${IDEAL_LDFLAGS_GC_SECTIONS}"
-ENV IDEAL_LDFLAGS="${IDEAL_LDFLAGS} ${IDEAL_LDFLAGS_AS_WHOLE_ARCHIVE}"
-ENV IDEAL_LDFLAGS="${IDEAL_LDFLAGS} ${IDEAL_LDFLAGS_SECURITY_FLAGS}"
-#ENV IDEAL_LDFLAGS="${IDEAL_LDFLAGS} -L/usr/lib"
-
-ENV DEV_LDFLAGS_USE_LD="-fuse-ld=${DEV_LD}"
-ENV DEV_LDFLAGS_OPT_LEVEL="-Wl,-O2"
-ENV DEV_LDFLAGS_GC_SECTIONS="-Wl,-gc-sections"
-# Sadly we need this for DPDK
-ENV DEV_LDFLAGS_AS_WHOLE_ARCHIVE="-Wl,--whole-archive"
-ENV DEV_LDFLAGS_SECURITY_FLAGS="${DEV_CFLAGS_SANITIZE_FLAGS} -Wl,-z,relro,-z,now"
-
-ENV DEV_LDFLAGS=""
-ENV DEV_LDFLAGS="${DEV_LDFLAGS} ${DEV_LDFLAGS_USE_LD}"
-ENV DEV_LDFLAGS="${DEV_LDFLAGS} ${DEV_LDFLAGS_OPT_LEVEL}"
-ENV DEV_LDFLAGS="${DEV_LDFLAGS} ${DEV_LDFLAGS_GC_SECTIONS}"
-ENV DEV_LDFLAGS="${DEV_LDFLAGS} ${DEV_LDFLAGS_AS_WHOLE_ARCHIVE}"
-ENV DEV_LDFLAGS="${DEV_LDFLAGS} ${DEV_LDFLAGS_SECURITY_FLAGS}"
-#ENV DEV_LDFLAGS="${DEV_LDFLAGS} -L/usr/lib"
-
-ENV CC="${IDEAL_CC}"
-ENV LD="${IDEAL_LD}"
-ENV CPP="${IDEAL_CPP}"
-ENV CXX="${IDEAL_CXX}"
-ENV AR="${IDEAL_AR}"
-ENV NM="${IDEAL_NM}"
-ENV RANLIB="${IDEAL_RANLIB}"
-
-ENV CFLAGS="${IDEAL_CFLAGS}"
-ENV CXXFLAGS="${CFLAGS}"
-ENV LDFLAGS="${IDEAL_LDFLAGS} -fuse-ld=mold"
 
 ENV NUMACTL_VERSION="2.0.18"
 RUN mkdir --parent /usr/src/ \
@@ -148,12 +59,6 @@ RUN mkdir --parent /usr/src/ \
  && make --jobs="$(nproc)" \
  && make install
 
-ENV CFLAGS="${IDEAL_CFLAGS} -ffat-lto-objects -funified-lto"
-ENV CXXFLAGS="${CFLAGS}"
-
-ENV LD="${IDEAL_LD}"
-ENV LDFLAGS="${IDEAL_LDFLAGS}"
-
 ENV RDMA_CORE_VERSION="53.0"
 RUN mkdir --parent /usr/src/ \
  && wget --output-document=- "https://github.com/linux-rdma/rdma-core/releases/download/v${RDMA_CORE_VERSION}/rdma-core-${RDMA_CORE_VERSION}.tar.gz" \
@@ -161,7 +66,7 @@ RUN mkdir --parent /usr/src/ \
  && ln --relative --symbolic /usr/src/rdma-core-"${RDMA_CORE_VERSION}" /usr/src/rdma-core \
  && mkdir /usr/src/rdma-core/build \
  && cd /usr/src/rdma-core/build \
- && cmake \
+ && CFLAGS="${CFLAGS:-""} -ffat-lto-objects" cmake \
     -DNO_PYVERBS=1 \
     -DNO_MAN_PAGES=1 \
     -DENABLE_STATIC=1 \
@@ -196,19 +101,6 @@ RUN cd /usr/src/rdma-core/build \
 #   -G Ninja \
 #   .. \
 # && ninja install
-
-ENV DEV_LDFLAGS=""
-ENV DEV_LDFLAGS="${DEV_LDFLAGS} ${DEV_LDFLAGS_USE_LD}"
-ENV DEV_LDFLAGS="${DEV_LDFLAGS} ${DEV_LDFLAGS_OPT_LEVEL}"
-ENV DEV_LDFLAGS="${DEV_LDFLAGS} ${DEV_LDFLAGS_GC_SECTIONS}"
-ENV DEV_LDFLAGS="${DEV_LDFLAGS} ${DEV_LDFLAGS_AS_WHOLE_ARCHIVE}"
-ENV DEV_LDFLAGS="${DEV_LDFLAGS} ${DEV_LDFLAGS_SECURITY_FLAGS}"
-
-ENV LD="lld"
-ENV LDFLAGS="${DEV_LDFLAGS}"
-ENV CPU_ARCH="${DEV_CPU_ARCH}"
-ENV CFLAGS="${DEV_CFLAGS}"
-ENV CXXFLAGS="${CFLAGS}"
 
 # Fetch DPDK
 ENV DPDK_ARCH="x86_64"
@@ -433,7 +325,7 @@ meson setup --reconfigure build \
   -Db_coverage=false \
   -Db_lto=true \
   -Db_lundef=true \
-  -Db_pch=true `#pch means pre-compiled headers which never seem to work out for me` \
+  -Db_pch=true `#pch means pre-compiled headers` \
   -Db_pgo=off `#turn this on later when we have a workload to test ` \
   -Db_pie=true `#not clear if I still need this` \
   -Db_sanitize=none `#see if we can't bully DPDK et al into building with -fsanitize=cfi` \
@@ -452,54 +344,43 @@ meson setup --reconfigure build \
   -Ddisable_drivers="${_disabled_drivers}" \
   -Ddisable_libs="${_disabled_libs}" \
   -Denable_drivers="${_enabled_drivers}" \
-  -Db_lto_mode="$([ "${IDEAL_LTO_TYPE}" = "thin" ] && echo thin || echo default)" \
+  -Db_lto_mode="thin" \
   -Dc_args="${CFLAGS}" \
-  -Dc_link_args="${LDFLAGS}" \
+  -Dc_link_args="${LDFLAGS} -fuse-ld=${LD}" \
   -Dcpu_instruction_set="${CPU_ARCH}" \
-  -Doptimization="${IDEAL_OPT_LEVEL}" \
+  -Doptimization="3" \
 ; \
 cd /usr/src/dpdk/build; \
 nice --adjustment=15 ninja; \
 nice --adjustment=15 ninja install; \
 :;
 
-RUN pacman --sync --clean --noconfirm --clean \
- && pacman --sync --noconfirm --refresh --sysupgrade \
- && pacman --sync --noconfirm --clean --clean \
- && pacman --sync --noconfirm jdk-openjdk
+#RUN pacman --sync --clean --noconfirm --clean \
+# && pacman --sync --noconfirm --refresh --sysupgrade \
+# && pacman --sync --noconfirm --clean --clean \
+# && pacman --sync --noconfirm jdk-openjdk
 
 
 RUN <<'EOS'
 pacman --sync --noconfirm \
+  docker \
   rustup \
+  sudo \
 ;
 rustup install stable-x86_64-unknown-linux-gnu
-rustup install stable-x86_64-unknown-linux-musl
-rustup install beta-x86_64-unknown-linux-gnu
-rustup install beta-x86_64-unknown-linux-musl
-EOS
-
-RUN <<'EOS'
-rustup install nightly-x86_64-unknown-linux-gnu
-rustup install nightly-x86_64-unknown-linux-musl
-EOS
-
-#RUN pacman -S --noconfirm libc++ libc++abi
-#RUN ln -s /usr/lib /usr/lib/x86_64-pc-linux-gnu
-#
-#RUN groupadd builder --gid 1000
-#RUN useradd --create-home --gid builder --uid 1000 --shell /bin/bash --skel /dev/null builder
-#
-#USER builder:builder
-#
-#RUN <<'EOS'
-#rustup install stable-x86_64-unknown-linux-gnu
-#rustup install stable-x86_64-unknown-linux-musl
 #rustup install beta-x86_64-unknown-linux-gnu
-#rustup install beta-x86_64-unknown-linux-musl
 #rustup install nightly-x86_64-unknown-linux-gnu
-#rustup install nightly-x86_64-unknown-linux-musl
-#EOS
+rustup +stable component add llvm-tools
+#rustup +beta component add llvm-tools
+#rustup +nightly component add llvm-tools
+rustup default stable
+EOS
 
-CMD ["sleep", "infinity"]
+RUN rm -fr /usr/share/*
+RUN rm -fr /usr/src/*
+RUN rm -fr /var/cache/*
+
+
+FROM scratch as dpdk-sysroot
+COPY --from=base / /
 

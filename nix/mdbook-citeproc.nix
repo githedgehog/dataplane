@@ -1,6 +1,4 @@
-# Builds the mdbook-alerts package for use in the mdbook preprocessor
-# I like this more than mdbook-admonish in that it uses the same syntax as
-# github (which makes our docs more portable)
+# Builds the mdbook-citeproc package for use in the mdbook preprocessor
 { lib
 , stdenv
 , rustPlatform

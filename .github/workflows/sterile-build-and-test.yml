@@ -1,0 +1,75 @@
+# This is a sterile build and test workflow that uses the `dev-env` container image
+# to build and test the project in a sterile environment.
+# Artifacts produced by this workflow are intended to be used for production.
+name: Sterile build + test
+on:
+  - push
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  just: 1.36.0
+
+permissions:
+  contents: write
+  packages: read
+  id-token: write
+jobs:
+  compile:
+    runs-on:
+      - lab
+    strategy:
+      fail-fast: false
+      matrix:
+        dpdk_sys:
+          - main
+        rust:
+          - toolchain: pinned
+          - toolchain: stable
+    steps:
+      - name: login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: install just
+        uses: extractions/setup-just@v2
+        with:
+          just-version: ${{env.just}}
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - run: just rust=${{matrix.rust.toolchain}} sterile cargo build --profile=debug --target=x86_64-unknown-linux-gnu
+      - run: just rust=${{matrix.rust.toolchain}} sterile cargo test --profile=debug --target=x86_64-unknown-linux-gnu
+      - run: just rust=${{matrix.rust.toolchain}} sterile cargo build --profile=debug --target=x86_64-unknown-linux-musl
+      - run: just rust=${{matrix.rust.toolchain}} sterile cargo test --profile=debug --target=x86_64-unknown-linux-musl
+
+      - run: just rust=${{matrix.rust.toolchain}} sterile cargo build --profile=release --target=x86_64-unknown-linux-gnu
+      - run: just rust=${{matrix.rust.toolchain}} sterile cargo test --profile=release --target=x86_64-unknown-linux-gnu
+      - run: just rust=${{matrix.rust.toolchain}} sterile cargo build --profile=release --target=x86_64-unknown-linux-musl
+      - run: just rust=${{matrix.rust.toolchain}} sterile cargo test --profile=release --target=x86_64-unknown-linux-musl
+
+      - run: |
+          tar \
+            --format=posix \
+            --sort=name \
+            --clamp-mtime \
+            --mtime=0 \
+            --numeric-owner \
+            --owner=0 \
+            --group=0 \
+            --mode='go+u,go-w' \
+            -cznf dpdk-sys-${{ matrix.dpdk_sys }}-rust-${{ matrix.rust.toolchain }}-sterile.tar.gz \
+            sterile
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dpdk-sys-${{ matrix.dpdk_sys }}-rust-${{ matrix.rust.toolchain }}-sterile.tar.gz
+          path: dpdk-sys-${{ matrix.dpdk_sys }}-rust-${{ matrix.rust.toolchain }}-sterile.tar.gz
+          include-hidden-files: true
+          retention-days: 1
+          compression-level: 0
+          overwrite: true

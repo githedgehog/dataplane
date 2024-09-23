@@ -9,16 +9,16 @@
 }: rustPlatform.buildRustPackage rec {
   owner = "lambdalisue";
   pname = "rs-mdbook-alerts";
-  version = "0.6.4";
+  version = "0.6.7";
 
   src = fetchFromGitHub {
   	inherit owner;
   	repo = pname;
     rev = "v${version}";
-    hash = "sha256-bg3X7M2H553tGxH8cEkkT0XK20fWwkp2nTVEgtZ819s=";
+    hash = "sha256-H3xpaluEUYWuP+JR4Zx8zs/EqeEZPiBa2wcaAtPdvGY=";
   };
 
-  cargoHash = "sha256-N4fSfTOocWW9RbpAc137wcehUm+j5onKGJBFL8LzwQw=";
+  cargoHash = "sha256-46IcFR5tG/AH6/Hqvc+KL4wHi2hcrcW2rAvfQF9dr7A=";
 
   buildInputs = lib.optionals stdenv.isDarwin [
     CoreServices

@@ -4,3 +4,5 @@ This directory contains [nix] build instructions for packages we would like to u
 
 Ideally this stays small and simple.
 It is a very bad sign if it does not stay small :)
+
+[nix]: https://nixos.org/nix/

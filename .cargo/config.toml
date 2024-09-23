@@ -1,26 +1,13 @@
-[target.'cfg(debug_assertions)']
-runner = 'sudo -E'
-rustflags = [
-	"-C", "linker=clang",
-	"-C", "link-arg=-fuse-ld=lld",
-	"-C", "link-arg=--ld-path=/home/dnoland/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld/ld.lld",
-	"-C", "opt-level=0",
-	"-C", "lto=false",
-]
+[env]
+DEV_ENV = { value = "compile-env", relative = true, force = false }
+SYSROOT = { value = "compile-env/sysroot", relative = true, force = false }
 
-[target.'cfg(not(debug_assertions))']
-rustflags = [
-	"-C", "linker=clang",
-	"-C", "link-arg=-fuse-ld=lld",
-	"-C", "link-arg=--ld-path=/home/dnoland/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld/ld.lld",
-	"-C", "opt-level=3",
-	"-C", "codegen-units=1",
-	"-C", "linker-plugin-lto",
-	"-C", "lto=thin",
-	"-C", "embed-bitcode=yes",
-	# Full RELRO as a basic security measure
-	# <https://www.redhat.com/en/blog/hardening-elf-binaries-using-relocation-read-only-relro>
-	"-C", "relro-level=full",
-	#	"-Z", "sanitizer=cfi",
-	#	"-Z", "sanitizer=safestack",
+PATH = { value = "compile-env/bin", relative = true, force = true }
+LD_LIBRARY_PATH = { value = "compile-env/lib", relative = true, force = true }
+LIBCLANG_PATH = { value = "compile-env/lib", relative = true, force = true }
+
+[build]
+target = [
+	"x86_64-unknown-linux-gnu",
+	"x86_64-unknown-linux-musl",
 ]
