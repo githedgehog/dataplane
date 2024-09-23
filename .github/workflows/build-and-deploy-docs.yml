@@ -1,7 +1,17 @@
-name: Build and deploy
+name: Build and deploy docs
 on:
   pull_request:
+    paths:
+      - '*.nix'
+      - 'design-docs/**'
+      - 'nix/**'
+      - '.github/workflows/build-and-deploy-docs.yml'
   push:
+    paths:
+      - '*.nix'
+      - 'design-docs/**'
+      - 'nix/**'
+      - '.github/workflows/build-and-deploy-docs.yml'
 permissions:
   contents: read
   pages: write
