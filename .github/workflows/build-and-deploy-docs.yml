@@ -25,6 +25,9 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  pull-requests: read
+  statuses: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -81,3 +84,21 @@ jobs:
         uses: actions/deploy-pages@v4
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: (PR) Deploy documentation preview
+        if: ${{ github.event.pull_request }}
+        uses: nwtgck/actions-netlify@v2
+        with:
+          publish-dir: ${{ github.workspace }}/publish/design-docs
+          alias: preview-${{ github.event.number }}
+          deploy-message: ${{ github.event.pull_request.title }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fails-without-credentials: true
+          enable-commit-status: true
+          enable-pull-request-comment: false
+          enable-commit-comment: false
+          enable-github-deployment: false
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        timeout-minutes: 5
