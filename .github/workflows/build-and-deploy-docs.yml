@@ -64,16 +64,19 @@ jobs:
           mkdir --parent ${{ github.workspace }}/publish/
           cp -r ~/work/nix-store/nix/store/"$(basename "$(readlink ~/work/out/design-docs)")" ${{ github.workspace }}/publish/design-docs
 
-      - name: Setup Pages
+      - name: (Push) Setup Pages
+        if: ${{ !github.event.pull_request }}
         uses: actions/configure-pages@v5
 
-      - name: Upload design-docs
+      - name: (Push) Upload design-docs
+        if: ${{ !github.event.pull_request }}
         uses: actions/upload-pages-artifact@v3
         with:
           # Upload design-docs build directory content
           path: 'publish/design-docs'
 
-      - name: Deploy to GitHub Pages
+      - name: (Push) Deploy to GitHub Pages
+        if: ${{ !github.event.pull_request }}
         id: deployment
         uses: actions/deploy-pages@v4
         env:
