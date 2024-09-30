@@ -1,21 +1,10 @@
 name: Build and deploy docs
+
 on:
-  pull_request:
-    paths:
-      - '*.nix'
-      - '/flake.lock'
-      - 'design-docs/**'
-      - 'nix/**'
-      - '.github/workflows/build-and-deploy-docs.yml'
+  pull_request: {}
   push:
     branches:
       - 'main'
-    paths:
-      - '*.nix'
-      - '/flake.lock'
-      - 'design-docs/**'
-      - 'nix/**'
-      - '.github/workflows/build-and-deploy-docs.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.after }}
@@ -29,7 +18,38 @@ permissions:
   statuses: write
 
 jobs:
+  check_changes:
+    name: Deduce required tests from code changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs: ${{ steps.changes.outputs.docs }}
+    steps:
+      - name: Checkout
+        if: ${{ !github.event.pull_request }}
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check code changes
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          # For "push" events, compare against the "ref" base branch.
+          # For "pull_request" events, this is ignored and will compare against
+          # the pull request base branch.
+          base: ${{ github.ref }}
+          filters: |
+            docs:
+              - '*.nix'
+              - 'flake.lock'
+              - 'design-docs/**'
+              - 'nix/**'
+              - '.github/workflows/build-and-deploy-docs.yml'
+
   build:
+    name: Build and deploy documentation
+    needs: [check_changes]
+    if: ${{ needs.check_changes.outputs.docs == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
