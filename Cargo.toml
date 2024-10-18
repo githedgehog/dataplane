@@ -16,7 +16,7 @@ bolero = { version = "0.11.1" }
 cc = { version = "1.1.30" }
 doxygen-rs = { version = "0.4.0" }
 etherparse = { version = "0.16.0", default-features = false, features = [] }
-libc = { version = "0.2.160" }
+libc = { version = "0.2.161" }
 rstest = { version = "0.22.0", default-features = false, features = [] }
 serde = { version = "1.0.210", default-features = false, features = ["derive", "alloc", "rc"] }
 syscalls = { version = "0.6.18" }
