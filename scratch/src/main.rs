@@ -636,8 +636,8 @@ fn eal_main() {
         "-src",
         "0xffffffffff",
         "--in-memory",
-        // "--huge-dir",
-        // "/mnt/huge/2M",
+        "--huge-dir",
+        "/mnt/huge/2M",
         "--huge-dir",
         "/mnt/huge/1G",
         "--allow",
@@ -649,7 +649,8 @@ fn eal_main() {
         // "--allow",
         // "0000:01:00.1",
         "--huge-worker-stack=8192",
-        "--socket-mem=4096,4096,4096,4096",
+        "--socket-mem=4096",
+        "--no-telemetry",
     ];
 
     let rte = eal::init(eal_args).unwrap_or_else(|err| match err {

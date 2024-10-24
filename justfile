@@ -34,11 +34,81 @@ _just_debuggable_ := if debug == "true" { "set -x" } else { "" }
 target := "x86_64-unknown-linux-gnu"
 profile := "debug"
 sterile_target_dir := `printf -- %s "/run/user/$(id -u)/hedgehog/dataplane/sterile"`
-_container_source := "ghcr.io/githedgehog/dpdk-sys"
+container_repo := "ghcr.io/githedgehog/dataplane"
+_dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
 rust := "pinned"
 _env_branch := "main"
-_dev_env_container := _container_source + "/dev-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
-_compile_env_container := _container_source + "/compile-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
+_dev_env_container := _dpdk_sys_container_repo + "/dev-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
+_compile_env_container := _dpdk_sys_container_repo + "/compile-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
+
+# The git commit hash of the last commit to HEAD
+
+_commit := `git rev-parse HEAD || echo "sterile"`
+
+# The git branch we are currnetly on
+
+_branch := `git rev-parse --abbrev-ref HEAD || echo "sterile"`
+
+# The git tree state (clean or dirty)
+
+_clean := ```
+  set -euo pipefail
+  (
+    git diff-index --quiet HEAD -- && \
+    test -z "$(git ls-files --exclude-standard --others)" && \
+    echo clean \
+  ) || echo dirty
+```
+
+# The slug is the branch name (sanitized) with a marker if the tree is dirty
+
+_slug := (if _clean == "clean" { "" } else { "dirty-_-" }) + _branch
+
+# This is a unique identifier for the build.
+# We temporarily tag our containers with this id so that we can be certain that we are
+# not retagging or pushing some other container.
+
+_build-id := `uuidgen --random || echo "0"`
+
+# NOTE: if USE_WORLDTIME is set to true then
+# we parse the returned date from the worldtimeapi.org API to ensure that
+# we actually got a valid iso-8601 date (and nobody is messing with clocks)
+#
+# We also diff the official worldtimeapi.org time with the system time to see if we are off by more than 5 seconds
+# If we are, then we should fail the build as either
+# 1. the system is incorrectly configured
+# 2. someone is messing with the system clock (which makes me think CA cert issues are afoot)
+# 3. the worldtimeapi.org API is down or inacurate (very unlikely)
+
+export _build_time := ```
+  set -x
+  set -euo pipefail
+  declare official_unparsed
+  if [ "${USE_WORLDTIME:-}" = "true" ]; then
+    official_unparsed="$(curl "http://worldtimeapi.org/api/timezone/utc" | jq --raw-output '.utc_datetime')"
+  else
+    official_unparsed="$(date --iso-8601=seconds --utc)"
+  fi
+  declare -r official_unparsed
+  declare official
+  official="$(date --iso-8601=seconds --utc --date="${official_unparsed}")"
+  declare -r official
+  declare system_epoch
+  system_epoch="$(date --utc +%s)"
+  declare -ri system_epoch
+  declare official_epoch
+  official_epoch="$(date --utc --date="${official}" +%s)"
+  declare -ri official_epoch
+  declare -ri clock_skew=$((system_epoch - official_epoch))
+  if [ "${clock_skew}" -gt 5 ] || [ "${clock_skew}" -lt -5 ]; then
+    >&2 echo "Clock skew detected: system time: ${system_epoch} official time: ${official_epoch}"
+    exit 1
+  fi
+  printf -- "%s" "${official}"
+```
+
+hello:
+    echo "Hello, world!"
 
 [group('ci')]
 [private]
@@ -112,10 +182,10 @@ compile-env *args: fill-out-dev-env-template
     {{ _just_debuggable_ }}
     mkdir -p "$(pwd)/sterile"
     declare tmp_link
-    tmp_link="$(mktemp -p "$(pwd)/sterile" -d --suffix=dataplane-compile-env.link)"
+    tmp_link="$(mktemp -p "$(pwd)/sterile" -d --suffix=.compile-env.link)"
     declare -r tmp_link
     declare FAKE_HOME
-    FAKE_HOME="$(pwd)/sterile/FAKE_HOME"
+    FAKE_HOME="$(mktemp -p $(pwd)/sterile --directory --suffix=.compile-env.home)"
     declare -r FAKE_HOME
     mkdir -p "${FAKE_HOME}"
     cleanup() {
@@ -124,8 +194,13 @@ compile-env *args: fill-out-dev-env-template
     }
     trap cleanup EXIT
     declare tmp_targetdir
-    tmp_targetdir="$(mktemp -p "$(pwd)/sterile" --directory --suffix=".$(date --iso-8601=s).target")"
+    tmp_targetdir="$(pwd)/sterile/target"
     declare -r tmp_targetdir
+    if [ -e "${tmp_targetdir}" ]; then
+      >&2 echo "ERROR: target directory already exists"
+      exit 1
+    fi
+    mkdir -p "${tmp_targetdir}"
     ln -s /bin "${tmp_link}/bin"
     ln -s /lib "${tmp_link}/lib"
     ln -s /sysroot "${tmp_link}/sysroot"
@@ -170,23 +245,23 @@ create-dev-env:
 [script]
 allocate-2M-hugepages:
     {{ _just_debuggable_ }}
-    pages=$(< /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages)
-    if [ "$pages" -gt {{ hugepages_2m }}} ]; then
+    pages=$(< /sys/devices/system/node/node1/hugepages/hugepages-2048kB/nr_hugepages)
+    if [ "$pages" -gt {{ hugepages_2m }} ]; then
       >&2 echo "INFO: ${pages} 2M hugepages already allocated"
       exit 0
     fi
-    printf -- "%s" {{ hugepages_2m }} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages >/dev/null
+    printf -- "%s" {{ hugepages_2m }} | sudo tee /sys/devices/system/node/node1/hugepages/hugepages-2048kB/nr_hugepages >/dev/null
 
 [private]
 [script]
 allocate-1G-hugepages:
     {{ _just_debuggable_ }}
-    pages=$(< /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages)
+    pages=$(< /sys/devices/system/node/node1/hugepages/hugepages-1048576kB/nr_hugepages)
     if [ "$pages" -gt {{ hugepages_1g }} ]; then
       >&2 echo "INFO: ${pages} 1G hugepages already allocated"
       exit 0
     fi
-    printf -- "%s" {{ hugepages_1g }} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages >/dev/null
+    printf -- "%s" {{ hugepages_1g }} | sudo tee /sys/devices/system/node/node1/hugepages/hugepages-1048576kB/nr_hugepages >/dev/null
 
 [private]
 [script]
@@ -198,15 +273,14 @@ umount-hugepages:
     declare hugemnt1G
     hugemnt1G="/run/user/$(id -u)/hedgehog/dataplane/hugepages/1G"
     declare -r hugemnt1G
-    if [ "$(findmnt -rno FSTYPE "${hugemnt2M}")" == "hugetlbfs" ]; then
+    if [ "$(findmnt -rno FSTYPE "${hugemnt2M}")" = "hugetlbfs" ]; then
       sudo umount --lazy "${hugemnt2M}"
     fi
-    if [ "$(findmnt -rno FSTYPE "${hugemnt1G}")" == "hugetlbfs" ]; then
+    if [ "$(findmnt -rno FSTYPE "${hugemnt1G}")" = "hugetlbfs" ]; then
         sudo umount --lazy "${hugemnt1G}"
     fi
     sync
 
-[private]
 [script]
 mount-hugepages:
     {{ _just_debuggable_ }}
@@ -218,10 +292,10 @@ mount-hugepages:
     declare -r hugemnt1G
     [ ! -d "$hugemnt2M" ] && mkdir --parent "$hugemnt2M"
     [ ! -d "$hugemnt1G" ] && mkdir --parent "$hugemnt1G"
-    if [ ! "$(findmnt -rno FSTYPE "${hugemnt2M}")" == "hugetlbfs" ]; then
+    if [ ! "$(findmnt -rno FSTYPE "${hugemnt2M}")" = "hugetlbfs" ]; then
       sudo mount -t hugetlbfs -o pagesize=2M,noatime hugetlbfs "$hugemnt2M"
     fi
-    if [ ! "$(findmnt -rno FSTYPE "${hugemnt1G}")" == "hugetlbfs" ]; then
+    if [ ! "$(findmnt -rno FSTYPE "${hugemnt1G}")" = "hugetlbfs" ]; then
       sudo mount -t hugetlbfs -o pagesize=1G,noatime hugetlbfs "$hugemnt1G"
     fi
     sync
@@ -296,3 +370,51 @@ fill-out-dev-env-template:
 
 [group('env')]
 sterile *args: (compile-env "just" "debug={{debug}}" "rust={{rust}}" "target={{target}}" "profile={{profile}}" args)
+
+[script]
+compress *args:
+    {{ _just_debuggable_ }}
+    zstd -T0 -19 -c "{{ args }}" > "{{ args }}.tar.zst"
+
+[private]
+sterile-build: (sterile "cargo" "build" ("--profile=" + profile) ("--target=" + target))
+    mkdir -p "artifact/{{ target }}/{{ profile }}"
+    cp -r "sterile/target/{{ target }}/{{ profile }}/scratch" "artifact/{{ target }}/{{ profile }}/scratch"
+
+[script]
+build-container: sterile-build
+    {{ _just_debuggable_ }}
+    declare build_date
+    build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
+    declare -r build_date
+    declare build_time_epoch
+    build_time_epoch="$(date --utc '+%s' --date="{{ _build_time }}")"
+    declare -r build_time_epoch
+    docker build \
+      --label "git.commit={{ _commit }}" \
+      --label "git.branch={{ _branch }}" \
+      --label "git.tree-state={{ _clean }}" \
+      --label "version.rust={{ rust }}" \
+      --label "build.date=${build_date}" \
+      --label "build.timestamp={{ _build_time }}" \
+      --label "build.time_epoch=${build_time_epoch}" \
+      --tag "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
+      --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/scratch" \
+      .
+
+    docker tag \
+      "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
+      "{{ container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
+    docker tag \
+      "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
+      "{{ container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}"
+    if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ]; then
+      docker tag \
+        "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
+        "{{ container_repo }}:{{ _slug }}.{{ profile }}"
+    fi
+    if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ] && [ "{{ profile }}" = "release" ]; then
+      docker tag \
+        "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
+        "{{ container_repo }}:{{ _slug }}"
+    fi
