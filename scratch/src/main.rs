@@ -641,7 +641,7 @@ fn eal_main() {
         "--huge-dir",
         "/mnt/huge/1G",
         "--allow",
-        "0000:02:00.0,dv_flow_en=1",
+        "0000:85:00.0,dv_flow_en=1",
         // "--trace=.*",
         // "--iova-mode=va",
         // "-l",
