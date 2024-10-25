@@ -261,7 +261,7 @@ figureBlockquoteToCaption = () => {
 	});
 	figures.forEach((figure, i) => {
 		if (!figure.id) {
-			figure.id = `figure/${figure.title.replace(/\s/g, '-').toLowerCase()}`;
+				figure.id = `figure/${figure.title.replace(/\s/g, '-').toLowerCase()}`;
 		}
 	});
 	figures.forEach((figure, i) => {
@@ -272,9 +272,10 @@ figureBlockquoteToCaption = () => {
 		}
 		const caption = document.createElement('figcaption');
 		const captionAnchor = document.createElement('a');
-		captionAnchor.setAttribute('href', `#${figure.id}`);
+		captionAnchor.setAttribute('href', `#figure/${figure.id}`);
 		captionAnchor.classList.add('header');
-		const figureLabel = document.createElement('em');
+		const figureLabel = document.createElement('a');
+		figureLabel.href = `#${figure.id}`;
 		figureLabel.classList.add('figure-label');
 		figureLabel.innerText = `Figure ${i + 1}: ${figure.getAttribute('aria-label')}`;
 		figure.prepend(figureLabel);
@@ -286,7 +287,7 @@ figureBlockquoteToCaption = () => {
 	});
 };
 
-// This should not be used in a security sensitive browsing context
+// This should not be used in a security-sensitive browsing context
 const embedPlantuml = async () => {
 	const svgImgs = document.querySelectorAll('img[src$=".svg"][src*="mdbook-plantuml"]');
 	for (const svgImg of svgImgs) {

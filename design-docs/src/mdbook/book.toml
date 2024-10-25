@@ -8,6 +8,7 @@ title = "Hedgehog Dataplane Design Notes"
 [preprocessor.plantuml]
 plantuml-cmd = "plantuml"
 after = ["links"]
+use-data-uris = false
 
 [preprocessor.mermaid]
 after = ["links"]

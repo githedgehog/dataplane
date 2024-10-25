@@ -408,3 +408,13 @@ build-container: sterile-build
         "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
         "{{ container_repo }}:{{ _slug }}"
     fi
+
+[script]
+build-docs:
+  cd design-docs/src/mdbook
+  mdbook build
+
+[script]
+serve-docs:
+  cd design-docs/src/mdbook
+  mdbook serve

@@ -683,12 +683,16 @@ figure {
     display: inline-block;
 }
 
-figure:target .figure-label::before {
+figure:target::before {
     content: var(--target-icon);
     display: inline-block;
     margin-inline-start: calc(-1 * var(--target-icon-distance));
     width: var(--target-icon-distance);
-    min-width: 100%;
+}
+
+a.figure-label, a.figure-label:visited, a.figure-label:target, a.figure-label:hover {
+    text-decoration: unset;
+    color: unset;
 }
 
 .footnote-definition:has(p > a:first-child:target)::before {
