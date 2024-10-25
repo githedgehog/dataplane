@@ -37,15 +37,15 @@ allow = [
   "EUDatagrid",
   "EUPL-1.1",
   "EUPL-1.2",
-  "GPL-2.0",
-  "GPL-3.0",
+  # "GPL-2.0", # rejected till we have a good case where we need them
+  # "GPL-3.0", # rejected till we have a good case where we need them
   "HPND",
   "Intel",
   "IPA",
   "IPL-1.0",
   "ISC",
-  "LGPL-2.1",
-  "LGPL-3.0",
+  # "LGPL-2.1", # tempory reject till clarify
+  # "LGPL-3.0", # tempory reject till clarify
   "LPL-1.02",
   "MIT",
   "MPL-1.1",
