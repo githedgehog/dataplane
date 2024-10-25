@@ -22,34 +22,7 @@ no-css = true
 trust = true
 strict = false
 
-[preprocessor.citeproc]
-
-after = ["links"]
-
-bibliography = "sources/sources.bib"
-bibliography-style = "./theme/bibliography-style.csl"
-
-backtick_code_blocks = "preserve"
-bracketed_spans = "transpile"
-citations = "transpile"
-definition_lists = "preserve"
-emoji = "transpile"
-fenced_code_attributes = "preserve"
-fenced_code_blocks = "preserve"
-fenced_divs = "transpile"
-footnotes = "preserve"
-hard_line_breaks = "preserve"
-inline_notes = "preserve"
-mark = "preserve"
-markdown_in_html_blocks = "preserve"
-link_attributes = "transpile"
-task_lists = "preserve"
-
 [preprocessor.alerts]
-
-[preprocessor.admonish]
-command = "mdbook-admonish"
-assets_version = "3.0.2" # do not edit: managed by `mdbook-admonish install`
 
 [output]
 

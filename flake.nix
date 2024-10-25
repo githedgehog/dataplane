@@ -14,7 +14,6 @@
         default = import ./default.nix { inherit pkgs; };
       in
       {
-        devShell = default.shell;
         packages.design-docs = default.design-docs;
       }
     );
