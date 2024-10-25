@@ -35,8 +35,8 @@ target := "x86_64-unknown-linux-gnu"
 profile := "debug"
 sterile_target_dir := `printf -- %s "/run/user/$(id -u)/hedgehog/dataplane/sterile"`
 container_repo := "ghcr.io/githedgehog/dataplane"
-_dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
 rust := "pinned"
+_dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
 _env_branch := "main"
 _dev_env_container := _dpdk_sys_container_repo + "/dev-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
 _compile_env_container := _dpdk_sys_container_repo + "/compile-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
@@ -64,12 +64,6 @@ _clean := ```
 
 _slug := (if _clean == "clean" { "" } else { "dirty-_-" }) + _branch
 
-# This is a unique identifier for the build.
-# We temporarily tag our containers with this id so that we can be certain that we are
-# not retagging or pushing some other container.
-
-_build-id := `uuidgen --random || echo "0"`
-
 # NOTE: if USE_WORLDTIME is set to true then
 # we parse the returned date from the worldtimeapi.org API to ensure that
 # we actually got a valid iso-8601 date (and nobody is messing with clocks)
@@ -79,8 +73,7 @@ _build-id := `uuidgen --random || echo "0"`
 # 1. the system is incorrectly configured
 # 2. someone is messing with the system clock (which makes me think CA cert issues are afoot)
 # 3. the worldtimeapi.org API is down or inacurate (very unlikely)
-
-export _build_time := ```
+_build_time := ```
   set -x
   set -euo pipefail
   declare official_unparsed
@@ -106,9 +99,6 @@ export _build_time := ```
   fi
   printf -- "%s" "${official}"
 ```
-
-hello:
-    echo "Hello, world!"
 
 [group('ci')]
 [private]
