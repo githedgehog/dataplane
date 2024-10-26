@@ -73,6 +73,7 @@ _slug := (if _clean == "clean" { "" } else { "dirty-_-" }) + _branch
 # 1. the system is incorrectly configured
 # 2. someone is messing with the system clock (which makes me think CA cert issues are afoot)
 # 3. the worldtimeapi.org API is down or inacurate (very unlikely)
+
 _build_time := ```
   set -x
   set -euo pipefail
@@ -147,14 +148,6 @@ dev-env *args="": allocate-2M-hugepages allocate-1G-hugepages mount-hugepages fi
     declare hugemnt1G
     hugemnt1G="/run/user/$(id -u)/hedgehog/dataplane/hugepages/1G"
     declare -r hugemnt1G
-    mkdir -p .fake-home
-    declare FAKE_HOME
-    FAKE_HOME="$(mktemp -p $(pwd)/.fake-home --directory --suffix=.dev-env.fake-home)"
-    declare -r FAKE_HOME
-    cleanup() {
-      rm -r "${FAKE_HOME}"
-    }
-    trap cleanup EXIT
     sudo docker run \
       --rm \
       --interactive \
@@ -163,13 +156,13 @@ dev-env *args="": allocate-2M-hugepages allocate-1G-hugepages mount-hugepages fi
       --privileged \
       --network=host \
       --security-opt seccomp=unconfined \
-      --mount "type=bind,source=${FAKE_HOME},destination=/home/${USER:-runner},bind-propagation=rprivate" \
-      --mount type=bind,source="${hugemnt2M},destination=/mnt/hugepages/2M,bind-propagation=rprivate" \
-      --mount type=bind,source="${hugemnt1G},destination=/mnt/hugepages/1G,bind-propagation=rprivate" \
-      --mount type=bind,source="$(pwd),destination=$(pwd),bind-propagation=rprivate" \
-      --mount type=bind,source=$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly \
-      --mount type=bind,source=$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly \
-      --mount type=bind,source=/var/run/docker.sock,destination=/var/run/docker.sock \
+      --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=0777" \
+      --mount "type=bind,source=${hugemnt2M},destination=/mnt/hugepages/2M,bind-propagation=rprivate" \
+      --mount "type=bind,source=${hugemnt1G},destination=/mnt/hugepages/1G,bind-propagation=rprivate" \
+      --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate" \
+      --mount "type=bind,source=$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly" \
+      --mount "type=bind,source=$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly" \
+      --mount "type=bind,source=/var/run/docker.sock,destination=/var/run/docker.sock,bind-propagation=rprivate" \
       --user "$(id -u):$(id -g)" \
       --workdir "$(pwd)" \
       "{{ _dev_env_container }}" \
@@ -182,13 +175,8 @@ compile-env *args: fill-out-dev-env-template
     declare tmp_link
     tmp_link="$(mktemp -p "$(pwd)/sterile" -d --suffix=.compile-env.link)"
     declare -r tmp_link
-    declare FAKE_HOME
-    FAKE_HOME="$(mktemp -p $(pwd)/sterile --directory --suffix=.compile-env.home)"
-    declare -r FAKE_HOME
-    mkdir -p "${FAKE_HOME}"
     cleanup() {
       rm -r "${tmp_link}"
-      rm -r "${FAKE_HOME}"
     }
     trap cleanup EXIT
     declare tmp_targetdir
@@ -204,14 +192,14 @@ compile-env *args: fill-out-dev-env-template
       --rm \
       --name dataplane-compile-env \
       --tmpfs "/tmp:uid=$(id -u),gid=$(id -g),nodev,noexec,nosuid" \
-      --mount "type=bind,source=${FAKE_HOME},destination=/home/${USER:-runner},bind-propagation=rprivate" \
-      --mount type=bind,source="$(pwd),destination=/work,bind-propagation=rprivate" \
-      --mount type=bind,source="${tmp_link},destination=/work/compile-env,bind-propagation=rprivate" \
-      --mount type=bind,source="$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly" \
-      --mount type=bind,source="$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly" \
-      --mount type=bind,source="${tmp_targetdir},destination=/work/target,bind-propagation=rprivate" \
+      --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=1777" \
+      --mount "type=bind,source=$(pwd),destination=/project,bind-propagation=rprivate,readonly" \
+      --mount "type=bind,source=${tmp_link},destination=/project/compile-env,bind-propagation=rprivate" \
+      --mount "type=bind,source=$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly" \
+      --mount "type=bind,source=$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly" \
+      --mount "type=bind,source=${tmp_targetdir},destination=/project/target,bind-propagation=rprivate" \
       --user "$(id -u):$(id -g)" \
-      --workdir /work \
+      --workdir /project \
       "{{ _compile_env_container }}" \
       {{ args }}
 
@@ -416,10 +404,10 @@ build-container: sterile-build
 
 [script]
 build-docs:
-  cd design-docs/src/mdbook
-  mdbook build
+    cd design-docs/src/mdbook
+    mdbook build
 
 [script]
 serve-docs:
-  cd design-docs/src/mdbook
-  mdbook serve
+    cd design-docs/src/mdbook
+    mdbook serve
