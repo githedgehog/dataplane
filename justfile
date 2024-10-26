@@ -23,11 +23,11 @@ set shell := [x"${SHELL:-bash}", "-euo", "pipefail", "-c"]
 set script-interpreter := [x"${SHELL:-bash}", "-euo", "pipefail"]
 set dotenv-load := true
 set dotenv-required := true
-set dotenv-filename := "just.env"
-set dotenv-path := "."
+set dotenv-path := "./scripts"
+set dotenv-filename := "./scripts/rust.env"
 
 debug := "false"
-export DPDK_SYS_COMMIT := shell("source ./just.env && echo $DPDK_SYS_COMMIT")
+export DPDK_SYS_COMMIT := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT")
 hugepages_1g := "8"
 hugepages_2m := "1024"
 _just_debuggable_ := if debug == "true" { "set -x" } else { "" }
@@ -76,7 +76,6 @@ _slug := (if _clean == "clean" { "" } else { "dirty-_-" }) + _branch
 # 3. the worldtimeapi.org API is down or inacurate (very unlikely)
 
 _build_time := ```
-  set -x
   set -euo pipefail
   declare official_unparsed
   if [ "${USE_WORLDTIME:-}" = "true" ]; then
@@ -113,7 +112,6 @@ _ci-compile-env-hack:
 [script]
 _cargo-with-rust-flags *args:
     {{ _just_debuggable_ }}
-    source ./just.env
     declare -a args=({{ args }})
     PROFILE="{{ profile }}"
     declare -a extra_args=()
@@ -122,7 +120,7 @@ _cargo-with-rust-flags *args:
         --debug|--profile=debug)
           [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
           ;;
-        --release|--profile=release)
+        --release|--profile=release|--profile=bench)
           [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_RELEASE}"
           extra_args+=("$arg")
           ;;
@@ -132,7 +130,7 @@ _cargo-with-rust-flags *args:
       esac
     done
     [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
-    >&2 echo "With RUSTFLAGS=\"${RUSTFLAGS:-}\""
+    # >&2 echo "With RUSTFLAGS=\"${RUSTFLAGS:-}\""
     cargo "${extra_args[@]}"
 
 [group('rust')]
