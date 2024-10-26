@@ -28,8 +28,8 @@ pub fn get_project_root() -> String {
     env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set")
 }
 
-pub fn get_dev_env() -> String {
-    env::var("DEV_ENV").expect("DEV_ENV not set")
+pub fn get_compile_env() -> String {
+    env::var("COMPILE_ENV").expect("COMPILE_ENV not set")
 }
 
 pub fn get_sysroot() -> String {

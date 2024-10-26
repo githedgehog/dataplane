@@ -1,5 +1,5 @@
 [env]
-DEV_ENV = { value = "compile-env", relative = true, force = false }
+COMPILE_ENV = { value = "compile-env", relative = true, force = false }
 SYSROOT = { value = "compile-env/sysroot", relative = true, force = false }
 
 PATH = { value = "compile-env/bin", relative = true, force = true }
@@ -9,5 +9,4 @@ LIBCLANG_PATH = { value = "compile-env/lib", relative = true, force = true }
 [build]
 target = [
 	"x86_64-unknown-linux-gnu",
-	"x86_64-unknown-linux-musl",
 ]

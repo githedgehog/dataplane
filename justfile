@@ -147,6 +147,14 @@ dev-env *args="": allocate-2M-hugepages allocate-1G-hugepages mount-hugepages fi
     declare hugemnt1G
     hugemnt1G="/run/user/$(id -u)/hedgehog/dataplane/hugepages/1G"
     declare -r hugemnt1G
+    mkdir -p .fake-home
+    declare FAKE_HOME
+    FAKE_HOME="$(mktemp -p $(pwd)/.fake-home --directory --suffix=.dev-env.fake-home)"
+    declare -r FAKE_HOME
+    cleanup() {
+      rm -r "${FAKE_HOME}"
+    }
+    trap cleanup EXIT
     sudo docker run \
       --rm \
       --interactive \
@@ -155,7 +163,7 @@ dev-env *args="": allocate-2M-hugepages allocate-1G-hugepages mount-hugepages fi
       --privileged \
       --network=host \
       --security-opt seccomp=unconfined \
-      --mount type=tmpfs,destination=${HOME},tmpfs-mode=1777 \
+      --mount "type=bind,source=${FAKE_HOME},destination=/home/${USER:-runner},bind-propagation=rprivate" \
       --mount type=bind,source="${hugemnt2M},destination=/mnt/hugepages/2M,bind-propagation=rprivate" \
       --mount type=bind,source="${hugemnt1G},destination=/mnt/hugepages/1G,bind-propagation=rprivate" \
       --mount type=bind,source="$(pwd),destination=$(pwd),bind-propagation=rprivate" \
@@ -186,16 +194,13 @@ compile-env *args: fill-out-dev-env-template
     declare tmp_targetdir
     tmp_targetdir="$(pwd)/sterile/target"
     declare -r tmp_targetdir
-    if [ -e "${tmp_targetdir}" ]; then
-      >&2 echo "ERROR: target directory already exists"
-      exit 1
-    fi
+    rm -fr "${tmp_targetdir}"
     mkdir -p "${tmp_targetdir}"
     ln -s /bin "${tmp_link}/bin"
     ln -s /lib "${tmp_link}/lib"
     ln -s /sysroot "${tmp_link}/sysroot"
     ln -s /nix "${tmp_link}/nix"
-    docker run \
+    sudo docker run \
       --rm \
       --name dataplane-compile-env \
       --tmpfs "/tmp:uid=$(id -u),gid=$(id -g),nodev,noexec,nosuid" \
@@ -213,12 +218,12 @@ compile-env *args: fill-out-dev-env-template
 [script]
 pull-compile-env:
     {{ _just_debuggable_ }}
-    docker pull "{{ _compile_env_container }}" || true
+    sudo docker pull "{{ _compile_env_container }}" || true
 
 [script]
 pull-dev-env:
     {{ _just_debuggable_ }}
-    docker pull "{{ _dev_env_container }}"
+    sudo docker pull "{{ _dev_env_container }}"
 
 [script]
 pull: pull-compile-env pull-dev-env
@@ -227,31 +232,31 @@ pull: pull-compile-env pull-dev-env
 create-dev-env:
     {{ _just_debuggable_ }}
     mkdir dev-env
-    docker create --name dpdk-sys-dev-env {{ _dev_env_container }} - fake
-    docker export dpdk-sys-dev-env | tar --no-same-owner --no-same-permissions -xf - -C dev-env
-    docker rm dpdk-sys-dev-env
+    sudo docker create --name dpdk-sys-dev-env {{ _dev_env_container }} - fake
+    sudo docker export dpdk-sys-dev-env | tar --no-same-owner --no-same-permissions -xf - -C dev-env
+    sudo docker rm dpdk-sys-dev-env
 
 [private]
 [script]
 allocate-2M-hugepages:
     {{ _just_debuggable_ }}
-    pages=$(< /sys/devices/system/node/node1/hugepages/hugepages-2048kB/nr_hugepages)
+    pages=$(< /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages)
     if [ "$pages" -gt {{ hugepages_2m }} ]; then
       >&2 echo "INFO: ${pages} 2M hugepages already allocated"
       exit 0
     fi
-    printf -- "%s" {{ hugepages_2m }} | sudo tee /sys/devices/system/node/node1/hugepages/hugepages-2048kB/nr_hugepages >/dev/null
+    printf -- "%s" {{ hugepages_2m }} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages >/dev/null
 
 [private]
 [script]
 allocate-1G-hugepages:
     {{ _just_debuggable_ }}
-    pages=$(< /sys/devices/system/node/node1/hugepages/hugepages-1048576kB/nr_hugepages)
+    pages=$(< /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages)
     if [ "$pages" -gt {{ hugepages_1g }} ]; then
       >&2 echo "INFO: ${pages} 1G hugepages already allocated"
       exit 0
     fi
-    printf -- "%s" {{ hugepages_1g }} | sudo tee /sys/devices/system/node/node1/hugepages/hugepages-1048576kB/nr_hugepages >/dev/null
+    printf -- "%s" {{ hugepages_1g }} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages >/dev/null
 
 [private]
 [script]
@@ -295,10 +300,10 @@ mount-hugepages:
 create-compile-env:
     {{ _just_debuggable_ }}
     mkdir compile-env
-    docker create --name dpdk-sys-compile-env "{{ _compile_env_container }}" - fake
-    docker export dpdk-sys-compile-env \
+    sudo docker create --name dpdk-sys-compile-env "{{ _compile_env_container }}" - fake
+    sudo docker export dpdk-sys-compile-env \
       | tar --no-same-owner --no-same-permissions -xf - -C compile-env
-    docker rm dpdk-sys-compile-env
+    sudo docker rm dpdk-sys-compile-env
 
 [confirm("Remove the compile environment? (yes/no)\n(you can recreate it with `just create-compile-env`)")]
 [group('env')]
@@ -380,7 +385,7 @@ build-container: sterile-build
     declare build_time_epoch
     build_time_epoch="$(date --utc '+%s' --date="{{ _build_time }}")"
     declare -r build_time_epoch
-    docker build \
+    sudo docker build \
       --label "git.commit={{ _commit }}" \
       --label "git.branch={{ _branch }}" \
       --label "git.tree-state={{ _clean }}" \
@@ -392,19 +397,19 @@ build-container: sterile-build
       --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/scratch" \
       .
 
-    docker tag \
+    sudo docker tag \
       "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
       "{{ container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
-    docker tag \
+    sudo docker tag \
       "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
       "{{ container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}"
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ]; then
-      docker tag \
+      sudo docker tag \
         "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
         "{{ container_repo }}:{{ _slug }}.{{ profile }}"
     fi
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ] && [ "{{ profile }}" = "release" ]; then
-      docker tag \
+      sudo docker tag \
         "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
         "{{ container_repo }}:{{ _slug }}"
     fi

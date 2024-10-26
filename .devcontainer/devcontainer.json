@@ -1,16 +1,20 @@
 {
-	image: "ghcr.io/githedgehog/dataplane/development-environment:debug",
-	"name": "datataplane-development-environment",
+	"image": "ghcr.io/githedgehog/dpdk-sys/dev-env:main-rust-pinned",
+	"name": "dataplane-dev-env",
 	"mounts": [
-		"source=/mnt/huge/2M,target=/mnt/huge/2M,type=bind",
-		"source=/mnt/huge/1G,target=/mnt/huge/1G,type=bind"
+		"type=bind,source=/mnt/huge/2M,target=/mnt/huge/2M,type=bind",
+		"type=bind,source=/mnt/huge/1G,target=/mnt/huge/1G,type=bind",
+		"type=bind,source=/var/run/docker.sock,destination=/var/run/docker.sock"
 	],
 	"privileged": true,
 	"containerEnv": {
-		"DPDK_INSTALL_PATH": "/",
-		"LIBRARY_PATH": "/usr/lib"
+		"PATH": "/bin:/lib/openjdk/bin"
 	},
+	"containerUser": "runner",
+	"updateRemoteUserUID": true,
+	"securityOpt": ["seccomp=unconfined"],
 	"runArgs": [
-		"--network=host"
+		"--network=host",
+		"--name=dataplane-dev-env"
 	]
 }
