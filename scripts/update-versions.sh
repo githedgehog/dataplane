@@ -10,7 +10,14 @@ declare dpdk_sys
 dpdk_sys="$(mktemp -d  --suffix=".dpdk-sys")"
 declare -r dpdk_sys
 
-git clone --branch="${DPDK_SYS_BRANCH}" --depth=1 "https://github.com/githedgehog/dpdk-sys.git" "${dpdk_sys}"
+git clone \
+  --filter=blob:none \
+  --no-checkout \
+  --single-branch \
+  --branch="${DPDK_SYS_BRANCH}" \
+  --depth=1 \
+  "https://github.com/githedgehog/dpdk-sys.git" \
+  "${dpdk_sys}"
 pushd "${dpdk_sys}"
 declare DPDK_SYS_COMMIT
 DPDK_SYS_COMMIT="$(git rev-parse HEAD)"
