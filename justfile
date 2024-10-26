@@ -23,7 +23,7 @@ set shell := [x"${SHELL:-bash}", "-euo", "pipefail", "-c"]
 set script-interpreter := [x"${SHELL:-bash}", "-euo", "pipefail"]
 set dotenv-load := true
 set dotenv-required := true
-set dotenv-path := "./scripts"
+set dotenv-path := "."
 set dotenv-filename := "./scripts/rust.env"
 
 debug := "false"
