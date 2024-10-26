@@ -40,6 +40,7 @@ _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
 _env_branch := "main"
 _dev_env_container := _dpdk_sys_container_repo + "/dev-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
 _compile_env_container := _dpdk_sys_container_repo + "/compile-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
+_network := "host"
 
 # The git commit hash of the last commit to HEAD
 
@@ -154,7 +155,7 @@ dev-env *args="": allocate-2M-hugepages allocate-1G-hugepages mount-hugepages fi
       --tty \
       --name dataplane-dev-env \
       --privileged \
-      --network=host \
+      --network="{{_network}}" \
       --security-opt seccomp=unconfined \
       --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=0777" \
       --mount "type=bind,source=${hugemnt2M},destination=/mnt/hugepages/2M,bind-propagation=rprivate" \
@@ -191,15 +192,16 @@ compile-env *args: fill-out-dev-env-template
     sudo docker run \
       --rm \
       --name dataplane-compile-env \
+      --network="{{_network}}" \
       --tmpfs "/tmp:uid=$(id -u),gid=$(id -g),nodev,noexec,nosuid" \
       --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=1777" \
-      --mount "type=bind,source=$(pwd),destination=/project,bind-propagation=rprivate,readonly" \
-      --mount "type=bind,source=${tmp_link},destination=/project/compile-env,bind-propagation=rprivate" \
+      --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate,readonly" \
+      --mount "type=bind,source=${tmp_link},destination=$(pwd)/compile-env,bind-propagation=rprivate" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly" \
-      --mount "type=bind,source=${tmp_targetdir},destination=/project/target,bind-propagation=rprivate" \
+      --mount "type=bind,source=${tmp_targetdir},destination=$(pwd)/target,bind-propagation=rprivate" \
       --user "$(id -u):$(id -g)" \
-      --workdir /project \
+      --workdir "$(pwd)" \
       "{{ _compile_env_container }}" \
       {{ args }}
 
@@ -360,7 +362,7 @@ compress *args:
     zstd -T0 -19 -c "{{ args }}" > "{{ args }}.tar.zst"
 
 [private]
-sterile-build: (sterile "cargo" "build" ("--profile=" + profile) ("--target=" + target))
+sterile-build: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target))
     mkdir -p "artifact/{{ target }}/{{ profile }}"
     cp -r "sterile/target/{{ target }}/{{ profile }}/scratch" "artifact/{{ target }}/{{ profile }}/scratch"
 
