@@ -27,7 +27,7 @@ set dotenv-path := "."
 set dotenv-filename := "./scripts/rust.env"
 
 debug := "false"
-export DPDK_SYS_COMMIT := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT")
+DPDK_SYS_COMMIT := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT")
 hugepages_1g := "8"
 hugepages_2m := "1024"
 _just_debuggable_ := if debug == "true" { "set -x" } else { "" }
@@ -35,7 +35,7 @@ target := "x86_64-unknown-linux-gnu"
 profile := "debug"
 sterile_target_dir := `printf -- %s "/run/user/$(id -u)/hedgehog/dataplane/sterile"`
 container_repo := "ghcr.io/githedgehog/dataplane"
-rust := "pinned"
+rust := "stable"
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
 _env_branch := "main"
 _dev_env_container := _dpdk_sys_container_repo + "/dev-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
@@ -44,18 +44,18 @@ _network := "host"
 
 # The git commit hash of the last commit to HEAD
 
-_commit := `git rev-parse HEAD || echo "sterile"`
+_commit := `git rev-parse HEAD 2>/dev/null || echo "sterile"`
 
 # The git branch we are currnetly on
 
-_branch := `git rev-parse --abbrev-ref HEAD || echo "sterile"`
+_branch := `git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "sterile"`
 
 # The git tree state (clean or dirty)
 
 _clean := ```
   set -euo pipefail
   (
-    git diff-index --quiet HEAD -- && \
+    git diff-index --quiet HEAD -- 2>/dev/null && \
     test -z "$(git ls-files --exclude-standard --others)" && \
     echo clean \
   ) || echo dirty
@@ -100,6 +100,10 @@ _build_time := ```
   fi
   printf -- "%s" "${official}"
 ```
+
+[private]
+@default:
+  just --list --justfile {{justfile()}}
 
 [group('ci')]
 [private]
