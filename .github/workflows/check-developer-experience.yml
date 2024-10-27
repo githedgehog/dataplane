@@ -6,8 +6,6 @@
 # ensuring that the developer experience is good.
 
 # Production artifacts are produced in a sterile environment (in another CI workflow).
-# TESTING 123
-
 
 name: Developer Experience
 on:
