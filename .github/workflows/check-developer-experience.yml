@@ -9,7 +9,10 @@
 
 name: Developer Experience
 on:
-  - push
+  pull_request:
+    branches:
+      - main
+      - dpdk-sys/update
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

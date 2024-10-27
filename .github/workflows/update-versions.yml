@@ -11,18 +11,15 @@
 name: Update Version
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - real-readme
-
-
+  schedule:
+    # Check for updates at 3:18am every day.
+    # I avoid midnight because everyone uses midnight and
+    # I don't need to contribute to load spikes.
+    - cron: '18 3 * * *'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
-env:
-  just: 1.36.0
 
 permissions:
   contents: write
@@ -42,13 +39,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - run: ./scripts/update-versions.sh
-      - run: uuidgen > biscuit
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v7
         with:
-          branch: 'update-versions'
-          title: 'Update versions'
+          branch: 'dpdk-sys/update'
+          title: 'bump dpdk-sys'
           assignees: "daniel-noland"
-          labels: "update,bot"
-          maintainer-can-modify: 'true'
+          labels: "automated,dependencies"
+          signoff: 'true'
+          commit-message: 'bump dpdk-sys'
           sign-commits: 'true'
+          body: 'bump dpdk-sys'
