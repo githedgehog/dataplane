@@ -40,10 +40,10 @@ jobs:
         rust:
           - toolchain: stable
             optional: false
-#          - toolchain: beta
-#            optional: true
-#          - toolchain: nightly
-#            optional: true
+          - toolchain: beta
+            optional: true
+          - toolchain: nightly
+            optional: true
     continue-on-error: ${{ matrix.rust.optional }}
     runs-on:
       - lab
