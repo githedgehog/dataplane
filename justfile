@@ -202,6 +202,7 @@ compile-env *args: fill-out-dev-env-template
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly" \
       --mount "type=bind,source=${tmp_targetdir},destination=$(pwd)/target,bind-propagation=rprivate" \
+      --mount "type=bind,source=/run/docker/docker.sock,destination=/var/run/docker.sock" \
       --user "$(id -u):$(id -g)" \
       --workdir "$(pwd)" \
       "{{ _compile_env_container }}" \
