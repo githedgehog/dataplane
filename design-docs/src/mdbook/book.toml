@@ -27,7 +27,7 @@ strict = false
 [output]
 
 [output.html]
-additional-css = ["./mdbook-admonish.css"]
+additional-css = []
 additional-js = ["./theme/external/mermaid.min.js", "./theme/external/mermaid-init.js"]
 curly-quotes = true
 preferrred-dark-theme = "ayu"
