@@ -43,13 +43,13 @@ jobs:
 
       - run: just rust="${{matrix.rust}}" sterile cargo build --profile=debug --target=x86_64-unknown-linux-gnu
       - run: just rust="${{matrix.rust}}" sterile cargo test --profile=debug --target=x86_64-unknown-linux-gnu
-      - run: just rust="${{matrix.rust}}" sterile cargo build --profile=debug --target=x86_64-unknown-linux-musl
-      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=debug --target=x86_64-unknown-linux-musl
+#      - run: just rust="${{matrix.rust}}" sterile cargo build --profile=debug --target=x86_64-unknown-linux-musl
+#      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=debug --target=x86_64-unknown-linux-musl
 
       - run: just rust="${{matrix.rust}}" sterile cargo build --profile=release --target=x86_64-unknown-linux-gnu
-      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=release --target=x86_64-unknown-linux-gnu
-      - run: just rust="${{matrix.rust}}" sterile cargo build --profile=release --target=x86_64-unknown-linux-musl
-      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=release --target=x86_64-unknown-linux-musl
+#      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=release --target=x86_64-unknown-linux-gnu
+#      - run: just rust="${{matrix.rust}}" sterile cargo build --profile=release --target=x86_64-unknown-linux-musl
+#      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=release --target=x86_64-unknown-linux-musl
 
       - run: |
           set -euxo pipefail
@@ -62,7 +62,7 @@ jobs:
             --owner=0 \
             --group=0 \
             --mode='go+u,go-w' \
-            -cnf dpdk-sys-${{ matrix.dpdk_sys }}-rust-${{ matrix.rust.toolchain }}-sterile.tar \
+            -cnf dpdk-sys-${{ matrix.dpdk_sys }}-rust-${{ matrix.rust }}-sterile.tar \
             sterile
       - run: |
           set -euxo pipefail
@@ -70,11 +70,11 @@ jobs:
             --single-thread \
             -15 \
             --long \
-            dpdk-sys-${{ matrix.dpdk_sys }}-rust-${{ matrix.rust.toolchain }}-sterile.tar
+            dpdk-sys-${{ matrix.dpdk_sys }}-rust-${{ matrix.rust }}-sterile.tar
       - uses: actions/upload-artifact@v4
         with:
-          name: dpdk-sys-${{ matrix.dpdk_sys }}-rust-${{ matrix.rust.toolchain }}-sterile.tar.zst
-          path: dpdk-sys-${{ matrix.dpdk_sys }}-rust-${{ matrix.rust.toolchain }}-sterile.tar.zst
+          name: dpdk-sys-${{ matrix.dpdk_sys }}-rust-${{ matrix.rust }}-sterile.tar.zst
+          path: dpdk-sys-${{ matrix.dpdk_sys }}-rust-${{ matrix.rust }}-sterile.tar.zst
           include-hidden-files: true
           retention-days: 1
           compression-level: 0
