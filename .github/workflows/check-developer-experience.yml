@@ -9,6 +9,11 @@
 
 name: Developer Experience
 on:
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: boolean
+        description: "Run with tmate enabled"
   pull_request:
     branches:
       - main
