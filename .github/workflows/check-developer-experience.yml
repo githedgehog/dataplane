@@ -38,8 +38,7 @@ jobs:
           - toolchain: nightly
             optional: true
     continue-on-error: ${{ matrix.rust.optional }}
-    runs-on:
-      - lab
+    runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
       - name: login to ghcr.io

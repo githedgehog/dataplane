@@ -197,7 +197,7 @@ compile-env *args: fill-out-dev-env-template
       --network="{{_network}}" \
       --tmpfs "/tmp:uid=$(id -u),gid=$(id -g),nodev,noexec,nosuid" \
       --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=1777" \
-      --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate,readonly" \
+      --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate" \
       --mount "type=bind,source=${tmp_link},destination=$(pwd)/compile-env,bind-propagation=rprivate" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly" \
