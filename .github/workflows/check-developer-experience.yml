@@ -85,8 +85,13 @@ jobs:
               > ci.x86_64-unknown-linux-gnu.json
           cp ci.x86_64-unknown-linux-gnu.json target/nextest/ci/ci.x86_64-unknown-linux-gnu.json
           markdown-test-report ci.x86_64-unknown-linux-gnu.json -o target/nextest/ci/ci.x86_64-unknown-linux-gnu.md
-          echo "# x86_64-unknown-linux-gnu" >> $GITHUB_STEP_SUMMARY
-          cat target/nextest/ci/ci.x86_64-unknown-linux-gnu.md >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Rust: ${{ matrix.rust.toolchain }} on x86_64-unknown-linux-gnu" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat target/nextest/ci/ci.x86_64-unknown-linux-gnu.md | sed '1{/^---$/!q;};1,/^---$/d' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
         continue-on-error: ${{ matrix.rust.optional }}
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=debug --target=x86_64-unknown-linux-musl
         continue-on-error: ${{ matrix.rust.optional }}
@@ -96,8 +101,13 @@ jobs:
               > ci.x86_64-unknown-linux-musl.json
           cp ci.x86_64-unknown-linux-musl.json target/nextest/ci/ci.x86_64-unknown-linux-musl.json
           markdown-test-report ci.x86_64-unknown-linux-musl.json -o target/nextest/ci/ci.x86_64-unknown-linux-musl.md
-          echo "# x86_64-unknown-linux-musl" >> $GITHUB_STEP_SUMMARY
-          cat target/nextest/ci/ci.x86_64-unknown-linux-musl.md >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Rust: ${{ matrix.rust.toolchain }} on x86_64-unknown-linux-musl" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat target/nextest/ci/ci.x86_64-unknown-linux-musl.md | sed '1{/^---$/!q;};1,/^---$/d' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
         continue-on-error: ${{ matrix.rust.optional }}
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
         continue-on-error: ${{ matrix.rust.optional }}
