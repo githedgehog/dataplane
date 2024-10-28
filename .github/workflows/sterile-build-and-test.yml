@@ -18,7 +18,8 @@ permissions:
   id-token: write
 jobs:
   compile:
-    runs-on: ubuntu-latest
+    runs-on:
+      - lab
     strategy:
       fail-fast: false
       matrix:
