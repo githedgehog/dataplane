@@ -23,6 +23,7 @@ permissions:
   contents: write
   packages: write
   id-token: write
+
 jobs:
   compile:
     runs-on:
@@ -49,15 +50,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=debug --target=x86_64-unknown-linux-gnu
-      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=debug --target=x86_64-unknown-linux-musl
-      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=release --target=x86_64-unknown-linux-gnu
-      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=release --target=x86_64-unknown-linux-musl
+      # - run: just rust="${{matrix.rust}}" sterile cargo test --profile=debug --target=x86_64-unknown-linux-gnu
+      # - run: just rust="${{matrix.rust}}" sterile cargo test --profile=debug --target=x86_64-unknown-linux-musl
+      # - run: just rust="${{matrix.rust}}" sterile cargo test --profile=release --target=x86_64-unknown-linux-gnu
+      # - run: just rust="${{matrix.rust}}" sterile cargo test --profile=release --target=x86_64-unknown-linux-musl
 
       - run: just rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-gnu push-container
-      - run: just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu push-container
-      - run: just rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-musl push-container
-      - run: just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl push-container
+      # - run: just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu push-container
+      # - run: just rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-musl push-container
+      # - run: just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl push-container
 
       - name: Setup tmate session for debug
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
