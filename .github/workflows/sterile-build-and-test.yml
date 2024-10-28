@@ -60,38 +60,43 @@ jobs:
       - run: npx --yes xunit-viewer -r sterile/target/nextest/default/junit.xml --output sterile/target/nextest/default/debug.x86_64-unknown-linux-musl.html
 
       - run: just rust="${{matrix.rust}}" sterile cargo nextest run --locked --profile=release --target=x86_64-unknown-linux-gnu
-      - run: npx --yes xunit-viewer -r sterile/target/nextest/default/junit.xml --output sterile/target/nextest/default/release.x86_64-unknown-linux-gnu.html
+      - run: npx --yes xunit-viewer -r sterile/target/nextest/release/junit.xml --output sterile/target/nextest/release/release.x86_64-unknown-linux-gnu.html
 
       - run: just rust="${{matrix.rust}}" sterile cargo nextest run --locked --profile=release --target=x86_64-unknown-linux-musl
-      - run: npx --yes xunit-viewer -r sterile/target/nextest/default/junit.xml --output sterile/target/nextest/default/release.x86_64-unknown-linux-musl.html
+      - run: npx --yes xunit-viewer -r sterile/target/nextest/release/junit.xml --output sterile/target/nextest/release/release.x86_64-unknown-linux-musl.html
 
       - run: just rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-gnu push-container
       - run: just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu push-container
+
       - run: just rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-musl push-container
       - run: just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl push-container
 
       - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
         with:
           name: 'debug.x86_64-unknown-linux-gnu.html'
           path: sterile/target/nextest/default/debug.x86_64-unknown-linux-gnu.html
           compression-level: '0'
 
       - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
         with:
           name: 'debug.x86_64-unknown-linux-musl.html'
           path: sterile/target/nextest/default/debug.x86_64-unknown-linux-musl.html
           compression-level: '0'
 
       - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
         with:
           name: 'release.x86_64-unknown-linux-gnu.html'
-          path: sterile/target/nextest/default/release.x86_64-unknown-linux-gnu.html
+          path: sterile/target/nextest/release/release.x86_64-unknown-linux-gnu.html
           compression-level: '0'
 
       - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
         with:
           name: 'release.x86_64-unknown-linux-musl.html'
-          path: sterile/target/nextest/default/release.x86_64-unknown-linux-musl.html
+          path: sterile/target/nextest/release/release.x86_64-unknown-linux-musl.html
           compression-level: '0'
 
       - name: Setup tmate session for debug
