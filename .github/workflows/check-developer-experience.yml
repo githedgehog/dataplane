@@ -78,69 +78,33 @@ jobs:
       - name: refresh-compile-env
         run: just --yes refresh-compile-env
       - run: just --yes fake-nix
+
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=debug --target=x86_64-unknown-linux-gnu
         continue-on-error: ${{ matrix.rust.optional }}
       - run: |
-          NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 just cargo +${{matrix.rust.toolchain}} \
-              nextest run --message-format libtest-json-plus --locked --profile=debug --target=x86_64-unknown-linux-gnu \
-              > debug.x86_64-unknown-linux-gnu.json
-          mkdir -p target/nextest/ci/
-          cp debug.x86_64-unknown-linux-gnu.json target/nextest/ci/debug.x86_64-unknown-linux-gnu.json
-          markdown-test-report debug.x86_64-unknown-linux-gnu.json -o target/nextest/ci/debug.x86_64-unknown-linux-gnu.md
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Rust: ${{ matrix.rust.toolchain }} on x86_64-unknown-linux-gnu" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          cat target/nextest/ci/debug.x86_64-unknown-linux-gnu.md | sed '1{/^---$/!q;};1,/^---$/d' >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          export GITHUB_STEP_SUMMARY
+          just rust=${{matrix.cargo.toolchain}} profile=debug target=x86_64-unknown-linux-gnu test
         continue-on-error: ${{ matrix.rust.optional }}
+
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=debug --target=x86_64-unknown-linux-musl
         continue-on-error: ${{ matrix.rust.optional }}
       - run: |
-          NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 just cargo +${{matrix.rust.toolchain}} \
-              nextest run --message-format libtest-json-plus --locked --profile=debug --target=x86_64-unknown-linux-musl \
-              > debug.x86_64-unknown-linux-musl.json
-          mkdir -p target/nextest/ci/
-          cp debug.x86_64-unknown-linux-musl.json target/nextest/ci/debug.x86_64-unknown-linux-musl.json
-          markdown-test-report debug.x86_64-unknown-linux-musl.json -o target/nextest/ci/debug.x86_64-unknown-linux-musl.md
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Rust: ${{ matrix.rust.toolchain }} on x86_64-unknown-linux-musl" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          cat target/nextest/ci/debug.x86_64-unknown-linux-musl.md | sed '1{/^---$/!q;};1,/^---$/d' >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          export GITHUB_STEP_SUMMARY
+          just rust=${{matrix.cargo.toolchain}} profile=debug target=x86_64-unknown-linux-musl test
         continue-on-error: ${{ matrix.rust.optional }}
+
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
         continue-on-error: ${{ matrix.rust.optional }}
       - run: |
-          NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 just cargo +${{matrix.rust.toolchain}} \
-              nextest run --message-format libtest-json-plus --locked --profile=release --target=x86_64-unknown-linux-gnu \
-              > release.x86_64-unknown-linux-gnu.json
-          mkdir -p target/nextest/ci/
-          cp release.x86_64-unknown-linux-gnu.json target/nextest/ci/release.x86_64-unknown-linux-gnu.json
-          markdown-test-report release.x86_64-unknown-linux-gnu.json -o target/nextest/ci/release.x86_64-unknown-linux-gnu.md
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Rust: ${{ matrix.rust.toolchain }} on x86_64-unknown-linux-gnu" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          cat target/nextest/ci/release.x86_64-unknown-linux-gnu.md | sed '1{/^---$/!q;};1,/^---$/d' >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          export GITHUB_STEP_SUMMARY
+          just rust=${{matrix.cargo.toolchain}} profile=release target=x86_64-unknown-linux-gnu test
         continue-on-error: ${{ matrix.rust.optional }}
+
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-musl
         continue-on-error: ${{ matrix.rust.optional }}
       - run: |
-          NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 just cargo +${{matrix.rust.toolchain}} \
-              nextest run --message-format libtest-json-plus --locked --profile=release --target=x86_64-unknown-linux-musl \
-              > release.x86_64-unknown-linux-musl.json
-          mkdir -p target/nextest/ci/
-          cp release.x86_64-unknown-linux-musl.json target/nextest/ci/release.x86_64-unknown-linux-musl.json
-          markdown-test-report release.x86_64-unknown-linux-musl.json -o target/nextest/ci/release.x86_64-unknown-linux-musl.md
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Rust: ${{ matrix.rust.toolchain }} on x86_64-unknown-linux-musl" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          cat target/nextest/ci/release.x86_64-unknown-linux-musl.md | sed '1{/^---$/!q;};1,/^---$/d' >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          export GITHUB_STEP_SUMMARY
+          just rust=${{matrix.cargo.toolchain}} profile=release target=x86_64-unknown-linux-musl test
         continue-on-error: ${{ matrix.rust.optional }}
 
       - uses: actions/upload-artifact@v4

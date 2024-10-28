@@ -1,14 +1,26 @@
+[profile.default]
+retries = 3
+test-threads = "num-cpus"
+status-level = "all"
+final-status-level = "all"
+failure-output = "immediate"
+success-output = "immediate"
+fail-fast = "false"
+
 [profile.default.junit]
-path = "junit.xml"
+path = "default.xml"
 store-success-output = true
 store-failure-output = true
 
-[profile.debug.junit]
-path = "junit.xml"
+[profile.dev]
+
+[profile.dev.junit]
+path = "dev.xml"
 store-success-output = true
 store-failure-output = true
 
+[profile.release]
 [profile.release.junit]
-path = "junit.xml"
+path = "release.xml"
 store-success-output = true
 store-failure-output = true

@@ -26,13 +26,14 @@ set dotenv-required := true
 set dotenv-path := "."
 set dotenv-filename := "./scripts/rust.env"
 
+export NEXTEST_EXPERIMENTAL_LIBTEST_JSON := "1"
 debug := "false"
 DPDK_SYS_COMMIT := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT")
 hugepages_1g := "8"
 hugepages_2m := "1024"
 _just_debuggable_ := if debug == "true" { "set -x" } else { "" }
 target := "x86_64-unknown-linux-gnu"
-profile := "debug"
+profile := "dev"
 sterile_target_dir := `printf -- %s "/run/user/$(id -u)/hedgehog/dataplane/sterile"`
 container_repo := "ghcr.io/githedgehog/dataplane"
 rust := "stable"
@@ -41,8 +42,6 @@ _env_branch := "main"
 _dev_env_container := _dpdk_sys_container_repo + "/dev-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
 _compile_env_container := _dpdk_sys_container_repo + "/compile-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
 _network := "host"
-
-
 export DOCKER_HOST := x"${DOCKER_HOST:-unix:///var/run/docker.sock}"
 export DOCKER_SOCK := ```
   set -x
@@ -150,7 +149,7 @@ dev-env *args="": allocate-2M-hugepages allocate-1G-hugepages mount-hugepages fi
       --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly" \
-      --mount "type=bind,source={{DOCKER_SOCK}},destination=/var/run/docker.sock,bind-propagation=rprivate" \
+      --mount "type=bind,source={{ DOCKER_SOCK }},destination=/var/run/docker.sock,bind-propagation=rprivate" \
       --user "$(id -u):$(id -g)" \
       --workdir "$(pwd)" \
       "{{ _dev_env_container }}" \
@@ -188,7 +187,7 @@ compile-env *args: fill-out-dev-env-template
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly" \
       --mount "type=bind,source=${tmp_targetdir},destination=$(pwd)/target,bind-propagation=rprivate" \
-      --mount "type=bind,source={{DOCKER_SOCK}},destination=/var/run/docker.sock" \
+      --mount "type=bind,source={{ DOCKER_SOCK }},destination=/var/run/docker.sock" \
       --user "$(id -u):$(id -g)" \
       --workdir "$(pwd)" \
       "{{ _compile_env_container }}" \
@@ -416,3 +415,71 @@ build-docs:
 serve-docs:
     cd design-docs/src/mdbook
     mdbook serve
+
+#[group("ci")]
+#[private]
+#[script]
+#report:
+#  declare report_dir="report/${{target}}/${{profile}}"
+#  mkdir -p "${report_dir}"
+#  NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 just cargo +${{matrix.rust.toolchain}} \
+#      nextest run --message-format libtest-json-plus --locked --profile={{profile}} --target={{target}} \
+#      > "$report_dir/report.json"
+#  markdown-test-report "$report_dir/report.json" -o "$report_dir/report.md"
+#  echo "---" >> $GITHUB_STEP_SUMMARY
+#  echo "" >> $GITHUB_STEP_SUMMARY
+#  echo "## Rust: ${{ matrix.rust.toolchain }} on x86_64-unknown-linux-gnu" >> $GITHUB_STEP_SUMMARY
+#  echo "" >> $GITHUB_STEP_SUMMARY
+#  cat target/nextest/ci/debug.x86_64-unknown-linux-gnu.md | sed '1{/^---$/!q;};1,/^---$/d' >> $GITHUB_STEP_SUMMARY
+#  echo "" >> $GITHUB_STEP_SUMMARY
+
+[group("test")]
+[script]
+test:
+    declare report_dir="target/nextest/{{profile}}"
+    mkdir -p "${report_dir}"
+    {{ _just_debuggable_ }}
+    PROFILE="{{ profile }}"
+    case "{{profile}}" in
+      dev|test)
+        [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
+        ;;
+      bench|release)
+        [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_RELEASE}"
+        ;;
+    esac
+    [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
+    # >&2 echo "With RUSTFLAGS=\"${RUSTFLAGS:-}\""
+    cargo +{{ rust }} nextest --profile={{profile}} run \
+          --message-format libtest-json-plus \
+          --locked \
+          --cargo-profile={{ profile }} \
+          --target={{ target }} \
+        > "$report_dir/report.json" \
+        2> "$report_dir/report.log"
+    markdown-test-report "$report_dir/report.json" -o "$report_dir/report.md"
+    if [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
+      exit 0;
+    fi
+    cat <<'EOF' >> $GITHUB_STEP_SUMMARY
+    ## Test Report
+
+    > [!NOTE]
+    > Rust: {{rust}}
+    > Profile: {{profile}}
+    > Target: {{target}}
+
+    EOF
+    declare -rx log="$(< $report_dir/report.log)"
+    cat "$report_dir/report.md" >> $GITHUB_STEP_SUMMARY
+    cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+    <details>
+    <summary>
+    Test log
+    </summary>
+
+    \`\`\`log
+    $log
+    </details>
+
+    EOF
