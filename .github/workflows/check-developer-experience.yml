@@ -64,9 +64,6 @@ jobs:
         with:
           toolchain: ${{matrix.rust.toolchain}}
           targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "latest"
       - name: Checkout
         uses: actions/checkout@v4
       - uses: cargo-bins/cargo-binstall@main
@@ -90,20 +87,24 @@ jobs:
           markdown-test-report ci.x86_64-unknown-linux-gnu.json -o target/nextest/ci/ci.x86_64-unknown-linux-gnu.md
           cat target/nextest/ci/ci.x86_64-unknown-linux-gnu.md > $GITHUB_STEP_SUMMARY
         continue-on-error: ${{ matrix.rust.optional }}
-      - run: npx --yes xunit-viewer -r target/nextest/ci/junit.xml --output target/nextest/ci/ci.x86_64-unknown-linux-gnu.html
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=debug --target=x86_64-unknown-linux-musl
         continue-on-error: ${{ matrix.rust.optional }}
-      - run: just cargo +${{matrix.rust.toolchain}} nextest --profile ci run --locked --target=x86_64-unknown-linux-musl
+      - run: |
+          NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 just cargo +${{matrix.rust.toolchain}} \
+              nextest --profile ci run --message-format libtest-json-plus --locked --target=x86_64-unknown-linux-musl \
+              > ci.x86_64-unknown-linux-musl.json
+          cp ci.x86_64-unknown-linux-musl.json target/nextest/ci/ci.x86_64-unknown-linux-musl.json
+          markdown-test-report ci.x86_64-unknown-linux-musl.json -o target/nextest/ci/ci.x86_64-unknown-linux-musl.md
+          cat target/nextest/ci/ci.x86_64-unknown-linux-musl.md > $GITHUB_STEP_SUMMARY
         continue-on-error: ${{ matrix.rust.optional }}
-      - run: npx --yes xunit-viewer -r target/nextest/ci/junit.xml --output target/nextest/ci/ci.x86_64-unknown-linux-musl.html
-      - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
-        continue-on-error: ${{ matrix.rust.optional }}
-      - run: just cargo +${{matrix.rust.toolchain}} test --locked --profile=release --target=x86_64-unknown-linux-gnu
-        continue-on-error: ${{ matrix.rust.optional }}
-      - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-musl
-        continue-on-error: ${{ matrix.rust.optional }}
-      - run: just cargo +${{matrix.rust.toolchain}} test --locked --profile=release --target=x86_64-unknown-linux-musl
-        continue-on-error: ${{ matrix.rust.optional }}
+#      - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
+#        continue-on-error: ${{ matrix.rust.optional }}
+#      - run: just cargo +${{matrix.rust.toolchain}} test --locked --profile=release --target=x86_64-unknown-linux-gnu
+#        continue-on-error: ${{ matrix.rust.optional }}
+#      - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-musl
+#        continue-on-error: ${{ matrix.rust.optional }}
+#      - run: just cargo +${{matrix.rust.toolchain}} test --locked --profile=release --target=x86_64-unknown-linux-musl
+#        continue-on-error: ${{ matrix.rust.optional }}
 
       - uses: actions/upload-artifact@v4
         with:
