@@ -1,7 +1,7 @@
 name: Build and deploy docs
 
 on:
-  pull_request: {}
+  pull_request: { }
   push:
     branches:
       - 'main'
@@ -20,7 +20,8 @@ permissions:
 jobs:
   check_changes:
     name: Deduce required tests from code changes
-    runs-on: ubuntu-latest
+    runs-on:
+      - lab
     outputs:
       docs: ${{ steps.changes.outputs.docs }}
     steps:
@@ -48,7 +49,7 @@ jobs:
 
   build:
     name: Build and deploy documentation
-    needs: [check_changes]
+    needs: [ check_changes ]
     if: ${{ needs.check_changes.outputs.docs == 'true' }}
     runs-on: ubuntu-latest
     steps:
