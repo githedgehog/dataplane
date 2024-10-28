@@ -103,7 +103,7 @@ _build_time := ```
 
 [private]
 @default:
-  just --list --justfile {{justfile()}}
+    just --list --justfile {{ justfile() }}
 
 [group('ci')]
 [private]
@@ -157,7 +157,7 @@ dev-env *args="": allocate-2M-hugepages allocate-1G-hugepages mount-hugepages fi
       --tty \
       --name dataplane-dev-env \
       --privileged \
-      --network="{{_network}}" \
+      --network="{{ _network }}" \
       --security-opt seccomp=unconfined \
       --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=0777" \
       --mount "type=bind,source=${hugemnt2M},destination=/mnt/hugepages/2M,bind-propagation=rprivate" \
@@ -194,7 +194,7 @@ compile-env *args: fill-out-dev-env-template
     sudo -E docker run \
       --rm \
       --name dataplane-compile-env \
-      --network="{{_network}}" \
+      --network="{{ _network }}" \
       --tmpfs "/tmp:uid=$(id -u),gid=$(id -g),nodev,noexec,nosuid" \
       --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=1777" \
       --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate" \
@@ -404,6 +404,24 @@ build-container: sterile-build
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ] && [ "{{ profile }}" = "release" ]; then
       sudo -E docker tag \
         "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
+        "{{ container_repo }}:{{ _slug }}"
+    fi
+
+[script]
+push-container: build-container
+    declare build_date
+    build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
+    declare -r build_date
+    sudo -E docker push \
+          "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
+    sudo -E docker push \
+          "{{ container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
+    if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ]; then
+      sudo -E docker push \
+        "{{ container_repo }}:{{ _slug }}.{{ profile }}"
+    fi
+    if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ] && [ "{{ profile }}" = "release" ]; then
+      sudo -E docker tag \
         "{{ container_repo }}:{{ _slug }}"
     fi
 

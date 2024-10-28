@@ -3,7 +3,14 @@
 # Artifacts produced by this workflow are intended to be used for production.
 name: Sterile build + test
 on:
-  - push
+  push:
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: boolean
+        description: "Run with tmate enabled"
+        required: false
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -42,41 +49,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - run: just rust="${{matrix.rust}}" sterile cargo build --profile=debug --target=x86_64-unknown-linux-gnu
       - run: just rust="${{matrix.rust}}" sterile cargo test --profile=debug --target=x86_64-unknown-linux-gnu
-      - run: just rust="${{matrix.rust}}" sterile cargo build --profile=debug --target=x86_64-unknown-linux-musl
       - run: just rust="${{matrix.rust}}" sterile cargo test --profile=debug --target=x86_64-unknown-linux-musl
-
-      - run: just rust="${{matrix.rust}}" sterile cargo build --profile=release --target=x86_64-unknown-linux-gnu
       - run: just rust="${{matrix.rust}}" sterile cargo test --profile=release --target=x86_64-unknown-linux-gnu
-      - run: just rust="${{matrix.rust}}" sterile cargo build --profile=release --target=x86_64-unknown-linux-musl
       - run: just rust="${{matrix.rust}}" sterile cargo test --profile=release --target=x86_64-unknown-linux-musl
 
-      - run: |
-          set -euxo pipefail
-          tar \
-            --format=posix \
-            --sort=name \
-            --clamp-mtime \
-            --mtime=0 \
-            --numeric-owner \
-            --owner=0 \
-            --group=0 \
-            --mode='go+u,go-w' \
-            -cnf dpdk-sys-${{ matrix.dpdk_sys }}-rust-${{ matrix.rust }}-sterile.tar \
-            sterile
-      - run: |
-          set -euxo pipefail
-          zstd \
-            --single-thread \
-            -15 \
-            --long \
-            dpdk-sys-${{ matrix.dpdk_sys }}-rust-${{ matrix.rust }}-sterile.tar
-      - uses: actions/upload-artifact@v4
+      - run: just rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-gnu push-container
+      - run: just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu push-container
+      - run: just rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-musl push-container
+      - run: just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl push-container
+
+      - name: Setup tmate session for debug
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 30
         with:
-          name: dpdk-sys-${{ matrix.dpdk_sys }}-rust-${{ matrix.rust }}-sterile.tar.zst
-          path: dpdk-sys-${{ matrix.dpdk_sys }}-rust-${{ matrix.rust }}-sterile.tar.zst
-          include-hidden-files: true
-          retention-days: 1
-          compression-level: 0
-          overwrite: true
+          limit-access-to-actor: true

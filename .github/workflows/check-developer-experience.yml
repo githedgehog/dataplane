@@ -88,6 +88,8 @@ jobs:
         continue-on-error: ${{ matrix.rust.optional }}
 
       - name: Setup tmate session for debug
-        if: ${{ failure() }}
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
         uses: mxschmitt/action-tmate@v3
         timeout-minutes: 30
+        with:
+          limit-access-to-actor: true
