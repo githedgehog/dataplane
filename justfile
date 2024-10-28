@@ -455,8 +455,8 @@ test:
           --locked \
           --cargo-profile={{ profile }} \
           --target={{ target }} \
-        > "$report_dir/report.json" \
-        2> "$report_dir/report.log"
+        > >(tee "$report_dir/report.json") \
+        2> >(tee "$report_dir/report.log")
     markdown-test-report "$report_dir/report.json" -o "$report_dir/report.md"
     if [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
       exit 0;
@@ -480,6 +480,7 @@ test:
 
     \`\`\`log
     $log
+    \`\`\`
     </details>
 
     EOF
