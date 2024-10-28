@@ -42,9 +42,18 @@ _dev_env_container := _dpdk_sys_container_repo + "/dev-env:" + _env_branch + "-r
 _compile_env_container := _dpdk_sys_container_repo + "/compile-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
 _network := "host"
 
-export DOCKER_SOCK := x"${DOCKER_SOCK:-/var/run/docker.sock}"
 
 export DOCKER_HOST := x"${DOCKER_HOST:-unix:///var/run/docker.sock}"
+export DOCKER_SOCK := ```
+  set -x
+  declare -r DOCKER_HOST="${DOCKER_HOST:-unix:///var/run/docker.sock}"
+  declare -r without_unix="${DOCKER_HOST##unix://}"
+  if [ -S "${without_unix}" ]; then
+    printf -- '%s' "${without_unix}"
+  elif [ -S /var/run/docker.sock ]; then
+    printf -- '%s' "/var/run/docker.sock"
+  fi
+```
 
 # The git commit hash of the last commit to HEAD
 # We allow this command to fail in the sterile environment because git is not available there
