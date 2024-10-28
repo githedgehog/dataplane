@@ -213,7 +213,7 @@ compile-env *args: fill-out-dev-env-template
 [script]
 pull-compile-env:
     {{ _just_debuggable_ }}
-    sudo docker pull "{{ _compile_env_container }}" || true
+    sudo DOCKER_HOST=/run/docker/docker.sock docker pull "{{ _compile_env_container }}" || true
 
 [script]
 pull-dev-env:
