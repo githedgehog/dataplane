@@ -113,9 +113,6 @@ jobs:
         with:
           name: "test-results-${{ matrix.rust.toolchain  }}"
           path: target/nextest/ci/
-          retention-days: 10
-          overwrite: 'true'
-          compression-level: '0'
       - name: Setup tmate session for debug
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
         uses: mxschmitt/action-tmate@v3
