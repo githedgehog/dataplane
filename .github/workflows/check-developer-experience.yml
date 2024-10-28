@@ -71,12 +71,19 @@ jobs:
         uses: actions/checkout@v4
       - name: install nextest
         run: cargo install cargo-nextest --locked
+      - name: install markdown-test-report
+        run: cargo install markdown-test-report --locked
       - name: refresh-compile-env
         run: just --yes refresh-compile-env
       - run: just --yes fake-nix
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=debug --target=x86_64-unknown-linux-gnu
         continue-on-error: ${{ matrix.rust.optional }}
-      - run: just cargo +${{matrix.rust.toolchain}} nextest --profile ci run --locked --target=x86_64-unknown-linux-gnu
+      - run: |
+          NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 just cargo +${{matrix.rust.toolchain}} \
+              nextest --message-format libtest-json-plus --profile ci run --locked --target=x86_64-unknown-linux-gnu \
+              > target/nextest/ci/ci.x86_64-unknown-linux-gnu.json
+          markdown-test-report target/nextest/ci/ci.x86_64-unknown-linux-gnu.json -o target/nextest/ci/ci.x86_64-unknown-linux-gnu.md
+          cat target/nextest/ci/ci.x86_64-unknown-linux-gnu.md > $GITHUB_STEP_SUMMARY
         continue-on-error: ${{ matrix.rust.optional }}
       - run: npx --yes xunit-viewer -r target/nextest/ci/junit.xml --output target/nextest/ci/ci.x86_64-unknown-linux-gnu.html
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=debug --target=x86_64-unknown-linux-musl
