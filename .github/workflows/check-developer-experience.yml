@@ -60,9 +60,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: refresh-compile-env
-        run: just --yes refresh-compile-env
+        run: DOCKER_HOST=/run/docker/docker.sock just --yes refresh-compile-env
       - run: just --yes fake-nix
-      - run: just cargo +${{matrix.rust.toolchain}} build --profile=debug --target=x86_64-unknown-linux-gnu
+      - run: DOCKER_HOST=/run/docker/docker.sock just cargo +${{matrix.rust.toolchain}} build --profile=debug --target=x86_64-unknown-linux-gnu
         continue-on-error: ${{ matrix.rust.optional }}
       - run: just cargo +${{matrix.rust.toolchain}} test --profile=debug --target=x86_64-unknown-linux-gnu
         continue-on-error: ${{ matrix.rust.optional }}

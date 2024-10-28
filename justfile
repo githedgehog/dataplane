@@ -26,6 +26,8 @@ set dotenv-required := true
 set dotenv-path := "."
 set dotenv-filename := "./scripts/rust.env"
 
+export DOCKER_HOST := "/run/docker/docker.sock"
+
 debug := "false"
 DPDK_SYS_COMMIT := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT")
 hugepages_1g := "8"
