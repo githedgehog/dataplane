@@ -67,7 +67,7 @@ jobs:
         id: extract_hash
 
       - name: Install nix
-        uses: cachix/install-nix-action@v27
+        uses: cachix/install-nix-action@v30
 
       - name: Nix cache
         id: cache-nix-packages
