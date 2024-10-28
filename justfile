@@ -412,17 +412,13 @@ push-container: build-container
     declare build_date
     build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
     declare -r build_date
-    sudo -E docker push \
-          "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
-    sudo -E docker push \
-          "{{ container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
+    sudo -E docker push "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
+    sudo -E docker push "{{ container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ]; then
-      sudo -E docker push \
-        "{{ container_repo }}:{{ _slug }}.{{ profile }}"
+      sudo -E docker push "{{ container_repo }}:{{ _slug }}.{{ profile }}"
     fi
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ] && [ "{{ profile }}" = "release" ]; then
-      sudo -E docker tag \
-        "{{ container_repo }}:{{ _slug }}"
+      sudo -E docker push "{{ container_repo }}:{{ _slug }}"
     fi
 
 [script]
