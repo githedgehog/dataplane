@@ -44,13 +44,13 @@ jobs:
 
       - run: just rust="${{matrix.rust}}" sterile cargo build --profile=debug --target=x86_64-unknown-linux-gnu
       - run: just rust="${{matrix.rust}}" sterile cargo test --profile=debug --target=x86_64-unknown-linux-gnu
-#      - run: just rust="${{matrix.rust}}" sterile cargo build --profile=debug --target=x86_64-unknown-linux-musl
-#      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=debug --target=x86_64-unknown-linux-musl
+      - run: just rust="${{matrix.rust}}" sterile cargo build --profile=debug --target=x86_64-unknown-linux-musl
+      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=debug --target=x86_64-unknown-linux-musl
 
       - run: just rust="${{matrix.rust}}" sterile cargo build --profile=release --target=x86_64-unknown-linux-gnu
-#      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=release --target=x86_64-unknown-linux-gnu
-#      - run: just rust="${{matrix.rust}}" sterile cargo build --profile=release --target=x86_64-unknown-linux-musl
-#      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=release --target=x86_64-unknown-linux-musl
+      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=release --target=x86_64-unknown-linux-gnu
+      - run: just rust="${{matrix.rust}}" sterile cargo build --profile=release --target=x86_64-unknown-linux-musl
+      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=release --target=x86_64-unknown-linux-musl
 
       - run: |
           set -euxo pipefail
