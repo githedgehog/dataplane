@@ -30,7 +30,7 @@ env:
 
 permissions:
   contents: write
-  packages: read
+  packages: write
   id-token: write
 jobs:
   build:
@@ -75,11 +75,12 @@ jobs:
         continue-on-error: ${{ matrix.rust.optional }}
       - run: just cargo +${{matrix.rust.toolchain}} nextest --profile ci run --locked --target=x86_64-unknown-linux-gnu
         continue-on-error: ${{ matrix.rust.optional }}
+      - run: npx --yes xunit-viewer -r target/nextest/ci/junit.xml --output target/nextest/ci/ci.x86_64-unknown-linux-gnu.html
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=debug --target=x86_64-unknown-linux-musl
         continue-on-error: ${{ matrix.rust.optional }}
       - run: just cargo +${{matrix.rust.toolchain}} nextest --profile ci run --locked --target=x86_64-unknown-linux-musl
         continue-on-error: ${{ matrix.rust.optional }}
-
+      - run: npx --yes xunit-viewer -r target/nextest/ci/junit.xml --output target/nextest/ci/ci.x86_64-unknown-linux-musl.html
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
         continue-on-error: ${{ matrix.rust.optional }}
       - run: just cargo +${{matrix.rust.toolchain}} test --locked --profile=release --target=x86_64-unknown-linux-gnu
@@ -89,6 +90,12 @@ jobs:
       - run: just cargo +${{matrix.rust.toolchain}} test --locked --profile=release --target=x86_64-unknown-linux-musl
         continue-on-error: ${{ matrix.rust.optional }}
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 'test-results'
+          path: target/nextest/ci/
+          retention-days: 10
+          overwrite: 'true'
       - name: Setup tmate session for debug
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
         uses: mxschmitt/action-tmate@v3
