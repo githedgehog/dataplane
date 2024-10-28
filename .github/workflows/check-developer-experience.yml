@@ -35,8 +35,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        just:
-          - version: 1.36.0
         rust:
           - toolchain: stable
             optional: false
@@ -44,6 +42,8 @@ jobs:
             optional: true
           - toolchain: nightly
             optional: true
+        just:
+          - version: 1.36.0
     continue-on-error: ${{ matrix.rust.optional }}
     runs-on:
       - lab
@@ -79,20 +79,20 @@ jobs:
         run: just --yes refresh-compile-env
       - run: just --yes fake-nix
 
-      - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=debug --target=x86_64-unknown-linux-gnu
+      - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=dev --target=x86_64-unknown-linux-gnu
         continue-on-error: ${{ matrix.rust.optional }}
-      - name: "tests: rust ${{ matrix.rust.toolchain }} profile=debug target=x86_64-unknown-linux-gnu"
+      - name: "tests: rust ${{ matrix.rust.toolchain }} profile=dev target=x86_64-unknown-linux-gnu"
         run: |
           export GITHUB_STEP_SUMMARY
-          just debug=true rust=${{matrix.rust.toolchain}} profile=debug target=x86_64-unknown-linux-gnu test
+          just debug=true rust=${{matrix.rust.toolchain}} profile=dev target=x86_64-unknown-linux-gnu test
         continue-on-error: ${{ matrix.rust.optional }}
 
-      - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=debug --target=x86_64-unknown-linux-musl
+      - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=dev --target=x86_64-unknown-linux-musl
         continue-on-error: ${{ matrix.rust.optional }}
-      - name: "tests: rust ${{ matrix.rust.toolchain }} profile=debug target=x86_64-unknown-linux-musl"
+      - name: "tests: rust ${{ matrix.rust.toolchain }} profile=dev target=x86_64-unknown-linux-musl"
         run: |
           export GITHUB_STEP_SUMMARY
-          just debug=true rust=${{matrix.rust.toolchain}} profile=debug target=x86_64-unknown-linux-musl test
+          just debug=true rust=${{matrix.rust.toolchain}} profile=dev target=x86_64-unknown-linux-musl test
         continue-on-error: ${{ matrix.rust.optional }}
 
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
