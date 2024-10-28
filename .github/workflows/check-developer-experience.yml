@@ -40,7 +40,7 @@ jobs:
     continue-on-error: ${{ matrix.rust.optional }}
     runs-on:
       - lab
-    timeout-minutes: 180
+    timeout-minutes: 45
     steps:
       - name: login to ghcr.io
         uses: docker/login-action@v3
@@ -79,3 +79,8 @@ jobs:
         continue-on-error: ${{ matrix.rust.optional }}
 #      - run: just cargo +${{matrix.rust.toolchain}} test --profile=release --target=x86_64-unknown-linux-musl
 #        continue-on-error: ${{ matrix.rust.optional }}
+
+      - name: Setup tmate session for debug
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 30
