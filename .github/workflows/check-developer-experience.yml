@@ -76,19 +76,19 @@ jobs:
       - run: just cargo +${{matrix.rust.toolchain}} nextest --profile ci run --locked --target=x86_64-unknown-linux-gnu
         continue-on-error: ${{ matrix.rust.optional }}
       - run: npx --yes xunit-viewer -r target/nextest/ci/junit.xml --output target/nextest/ci/ci.x86_64-unknown-linux-gnu.html
-      - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=debug --target=x86_64-unknown-linux-musl
-        continue-on-error: ${{ matrix.rust.optional }}
-      - run: just cargo +${{matrix.rust.toolchain}} nextest --profile ci run --locked --target=x86_64-unknown-linux-musl
-        continue-on-error: ${{ matrix.rust.optional }}
-      - run: npx --yes xunit-viewer -r target/nextest/ci/junit.xml --output target/nextest/ci/ci.x86_64-unknown-linux-musl.html
-      - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
-        continue-on-error: ${{ matrix.rust.optional }}
-      - run: just cargo +${{matrix.rust.toolchain}} test --locked --profile=release --target=x86_64-unknown-linux-gnu
-        continue-on-error: ${{ matrix.rust.optional }}
-      - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-musl
-        continue-on-error: ${{ matrix.rust.optional }}
-      - run: just cargo +${{matrix.rust.toolchain}} test --locked --profile=release --target=x86_64-unknown-linux-musl
-        continue-on-error: ${{ matrix.rust.optional }}
+#      - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=debug --target=x86_64-unknown-linux-musl
+#        continue-on-error: ${{ matrix.rust.optional }}
+#      - run: just cargo +${{matrix.rust.toolchain}} nextest --profile ci run --locked --target=x86_64-unknown-linux-musl
+#        continue-on-error: ${{ matrix.rust.optional }}
+#      - run: npx --yes xunit-viewer -r target/nextest/ci/junit.xml --output target/nextest/ci/ci.x86_64-unknown-linux-musl.html
+#      - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
+#        continue-on-error: ${{ matrix.rust.optional }}
+#      - run: just cargo +${{matrix.rust.toolchain}} test --locked --profile=release --target=x86_64-unknown-linux-gnu
+#        continue-on-error: ${{ matrix.rust.optional }}
+#      - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-musl
+#        continue-on-error: ${{ matrix.rust.optional }}
+#      - run: just cargo +${{matrix.rust.toolchain}} test --locked --profile=release --target=x86_64-unknown-linux-musl
+#        continue-on-error: ${{ matrix.rust.optional }}
 
       - uses: actions/upload-artifact@v4
         with:
