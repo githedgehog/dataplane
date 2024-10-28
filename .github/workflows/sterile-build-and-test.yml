@@ -50,10 +50,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=debug --target=x86_64-unknown-linux-gnu
-      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=debug --target=x86_64-unknown-linux-musl
-      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=release --target=x86_64-unknown-linux-gnu
-      - run: just rust="${{matrix.rust}}" sterile cargo test --profile=release --target=x86_64-unknown-linux-musl
+      - run: just rust="${{matrix.rust}}" sterile cargo test --locked --profile=debug --target=x86_64-unknown-linux-gnu
+      - run: just rust="${{matrix.rust}}" sterile cargo test --locked --profile=debug --target=x86_64-unknown-linux-musl
+      - run: just rust="${{matrix.rust}}" sterile cargo test --locked --profile=release --target=x86_64-unknown-linux-gnu
+      - run: just rust="${{matrix.rust}}" sterile cargo test --locked --profile=release --target=x86_64-unknown-linux-musl
 
       - run: just rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-gnu push-container
       - run: just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu push-container
