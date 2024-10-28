@@ -2,3 +2,13 @@
 path = "junit.xml"
 store-success-output = true
 store-failure-output = true
+
+[profile.debug.junit]
+path = "junit.xml"
+store-success-output = true
+store-failure-output = true
+
+[profile.release.junit]
+path = "junit.xml"
+store-success-output = true
+store-failure-output = true

@@ -52,12 +52,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "latest"
-      - run: just rust="${{matrix.rust}}" sterile cargo nextest --profile ci run --locked --target=x86_64-unknown-linux-gnu
-      - run: npx --yes xunit-viewer -r sterile/target/nextest/ci/junit.xml --output sterile/target/nextest/ci/ci.x86_64-unknown-linux-gnu.html
-      - run: just rust="${{matrix.rust}}" sterile cargo nextest --profile ci run --locked --target=x86_64-unknown-linux-musl
-      - run: npx --yes xunit-viewer -r sterile/target/nextest/ci/junit.xml --output sterile/target/nextest/ci/ci.x86_64-unknown-linux-musl.html
-      - run: just rust="${{matrix.rust}}" sterile cargo test --locked --profile=release --target=x86_64-unknown-linux-gnu
-      - run: just rust="${{matrix.rust}}" sterile cargo test --locked --profile=release --target=x86_64-unknown-linux-musl
+
+      - run: just rust="${{matrix.rust}}" sterile cargo nextest run --locked --profile=debug --target=x86_64-unknown-linux-gnu
+      - run: npx --yes xunit-viewer -r sterile/target/nextest/debug/junit.xml --output sterile/target/nextest/debug/debug.x86_64-unknown-linux-gnu.html
+
+      - run: just rust="${{matrix.rust}}" sterile cargo nextest run --locked --profile=debug --target=x86_64-unknown-linux-musl
+      - run: npx --yes xunit-viewer -r sterile/target/nextest/debug/junit.xml --output sterile/target/nextest/debug/debug.x86_64-unknown-linux-musl.html
+
+      - run: just rust="${{matrix.rust}}" sterile cargo nextest run --locked --profile=release --target=x86_64-unknown-linux-gnu
+      - run: npx --yes xunit-viewer -r sterile/target/nextest/release/junit.xml --output sterile/target/nextest/release/release.x86_64-unknown-linux-gnu.html
+
+      - run: just rust="${{matrix.rust}}" sterile cargo nextest run --locked --profile=release --target=x86_64-unknown-linux-musl
+      - run: npx --yes xunit-viewer -r sterile/target/nextest/release/junit.xml --output sterile/target/nextest/release/release.x86_64-unknown-linux-musl.html
 
       - run: just rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-gnu push-container
       - run: just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu push-container
@@ -67,7 +73,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: 'test-results'
-          path: sterile/target/nextest/ci/
+          path: sterile/target/nextest/default/
           retention-days: 10
           overwrite: 'true'
           compression-level: '0'
