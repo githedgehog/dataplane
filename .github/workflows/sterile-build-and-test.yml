@@ -49,9 +49,13 @@ jobs:
           just-version: ${{env.just}}
       - name: Checkout
         uses: actions/checkout@v4
-
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "latest"
       - run: just rust="${{matrix.rust}}" sterile cargo nextest --profile ci run --locked --target=x86_64-unknown-linux-gnu
+      - run: npx --yes xunit-viewer -r sterile/target/nextest/ci/junit.xml --output sterile/target/nextest/ci/ci.x86_64-unknown-linux-gnu.html
       - run: just rust="${{matrix.rust}}" sterile cargo nextest --profile ci run --locked --target=x86_64-unknown-linux-musl
+      - run: npx --yes xunit-viewer -r sterile/target/nextest/ci/junit.xml --output sterile/target/nextest/ci/ci.x86_64-unknown-linux-musl.html
       - run: just rust="${{matrix.rust}}" sterile cargo test --locked --profile=release --target=x86_64-unknown-linux-gnu
       - run: just rust="${{matrix.rust}}" sterile cargo test --locked --profile=release --target=x86_64-unknown-linux-musl
 
@@ -59,6 +63,14 @@ jobs:
       - run: just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu push-container
       - run: just rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-musl push-container
       - run: just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl push-container
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 'test-results'
+          path: sterile/target/nextest/ci/
+          retention-days: 10
+          overwrite: 'true'
+          compression-level: '0'
 
       - name: Setup tmate session for debug
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
