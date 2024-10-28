@@ -26,8 +26,6 @@ set dotenv-required := true
 set dotenv-path := "."
 set dotenv-filename := "./scripts/rust.env"
 
-export DOCKER_HOST := "/run/docker/docker.sock"
-
 debug := "false"
 DPDK_SYS_COMMIT := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT")
 hugepages_1g := "8"
@@ -153,7 +151,7 @@ dev-env *args="": allocate-2M-hugepages allocate-1G-hugepages mount-hugepages fi
     declare hugemnt1G
     hugemnt1G="/run/user/$(id -u)/hedgehog/dataplane/hugepages/1G"
     declare -r hugemnt1G
-    sudo docker run \
+    sudo -E docker run \
       --rm \
       --interactive \
       --tty \
@@ -193,7 +191,7 @@ compile-env *args: fill-out-dev-env-template
     ln -s /lib "${tmp_link}/lib"
     ln -s /sysroot "${tmp_link}/sysroot"
     ln -s /nix "${tmp_link}/nix"
-    sudo docker run \
+    sudo -E docker run \
       --rm \
       --name dataplane-compile-env \
       --network="{{_network}}" \
@@ -213,12 +211,12 @@ compile-env *args: fill-out-dev-env-template
 [script]
 pull-compile-env:
     {{ _just_debuggable_ }}
-    sudo DOCKER_HOST=/run/docker/docker.sock docker pull "{{ _compile_env_container }}" || true
+    sudo -E docker pull "{{ _compile_env_container }}" || true
 
 [script]
 pull-dev-env:
     {{ _just_debuggable_ }}
-    sudo docker pull "{{ _dev_env_container }}"
+    sudo -E docker pull "{{ _dev_env_container }}"
 
 [script]
 pull: pull-compile-env pull-dev-env
@@ -227,9 +225,9 @@ pull: pull-compile-env pull-dev-env
 create-dev-env:
     {{ _just_debuggable_ }}
     mkdir dev-env
-    sudo docker create --name dpdk-sys-dev-env {{ _dev_env_container }} - fake
-    sudo docker export dpdk-sys-dev-env | tar --no-same-owner --no-same-permissions -xf - -C dev-env
-    sudo docker rm dpdk-sys-dev-env
+    sudo -E docker create --name dpdk-sys-dev-env {{ _dev_env_container }} - fake
+    sudo -E docker export dpdk-sys-dev-env | tar --no-same-owner --no-same-permissions -xf - -C dev-env
+    sudo -E docker rm dpdk-sys-dev-env
 
 [private]
 [script]
@@ -295,10 +293,10 @@ mount-hugepages:
 create-compile-env:
     {{ _just_debuggable_ }}
     mkdir compile-env
-    sudo docker create --name dpdk-sys-compile-env "{{ _compile_env_container }}" - fake
-    sudo docker export dpdk-sys-compile-env \
+    sudo -E docker create --name dpdk-sys-compile-env "{{ _compile_env_container }}" - fake
+    sudo -E docker export dpdk-sys-compile-env \
       | tar --no-same-owner --no-same-permissions -xf - -C compile-env
-    sudo docker rm dpdk-sys-compile-env
+    sudo -E docker rm dpdk-sys-compile-env
 
 [confirm("Remove the compile environment? (yes/no)\n(you can recreate it with `just create-compile-env`)")]
 [group('env')]
@@ -380,7 +378,7 @@ build-container: sterile-build
     declare build_time_epoch
     build_time_epoch="$(date --utc '+%s' --date="{{ _build_time }}")"
     declare -r build_time_epoch
-    sudo docker build \
+    sudo -E docker build \
       --label "git.commit={{ _commit }}" \
       --label "git.branch={{ _branch }}" \
       --label "git.tree-state={{ _clean }}" \
@@ -392,19 +390,19 @@ build-container: sterile-build
       --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/scratch" \
       .
 
-    sudo docker tag \
+    sudo -E docker tag \
       "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
       "{{ container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
-    sudo docker tag \
+    sudo -E docker tag \
       "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
       "{{ container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}"
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ]; then
-      sudo docker tag \
+      sudo -E docker tag \
         "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
         "{{ container_repo }}:{{ _slug }}.{{ profile }}"
     fi
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ] && [ "{{ profile }}" = "release" ]; then
-      sudo docker tag \
+      sudo -E docker tag \
         "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
         "{{ container_repo }}:{{ _slug }}"
     fi
