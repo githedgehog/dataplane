@@ -44,7 +44,6 @@ jobs:
         with:
           branch: 'dpdk-sys/update'
           title: 'bump dpdk-sys'
-          assignees: "daniel-noland"
           labels: "automated,dependencies"
           signoff: 'true'
           commit-message: 'bump dpdk-sys'

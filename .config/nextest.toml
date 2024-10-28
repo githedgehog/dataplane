@@ -1,0 +1,4 @@
+[profile.ci.junit]  # this can be some other profile, too
+path = "junit.xml"
+store-success-output = true
+store-failure-output = true

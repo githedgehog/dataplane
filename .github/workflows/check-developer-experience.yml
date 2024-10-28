@@ -66,25 +66,27 @@ jobs:
           targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl
       - name: Checkout
         uses: actions/checkout@v4
+      - name: install nextest
+        run: cargo install cargo-nextest --locked
       - name: refresh-compile-env
         run: just --yes refresh-compile-env
       - run: just --yes fake-nix
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=debug --target=x86_64-unknown-linux-gnu
         continue-on-error: ${{ matrix.rust.optional }}
-      - run: just cargo +${{matrix.rust.toolchain}} test --locked --profile=debug --target=x86_64-unknown-linux-gnu
+      - run: just cargo +${{matrix.rust.toolchain}} nextest run --locked --profile=debug --target=x86_64-unknown-linux-gnu
         continue-on-error: ${{ matrix.rust.optional }}
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=debug --target=x86_64-unknown-linux-musl
         continue-on-error: ${{ matrix.rust.optional }}
-      - run: just cargo +${{matrix.rust.toolchain}} test --locked --profile=debug --target=x86_64-unknown-linux-musl
+      - run: just cargo +${{matrix.rust.toolchain}} nextest run --locked --profile=debug --target=x86_64-unknown-linux-musl
         continue-on-error: ${{ matrix.rust.optional }}
 
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
         continue-on-error: ${{ matrix.rust.optional }}
-      - run: just cargo +${{matrix.rust.toolchain}} test --locked --profile=release --target=x86_64-unknown-linux-gnu
+      - run: just cargo +${{matrix.rust.toolchain}} nextest run --locked --profile=release --target=x86_64-unknown-linux-gnu
         continue-on-error: ${{ matrix.rust.optional }}
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-musl
         continue-on-error: ${{ matrix.rust.optional }}
-      - run: just cargo +${{matrix.rust.toolchain}} test --locked --profile=release --target=x86_64-unknown-linux-musl
+      - run: just cargo +${{matrix.rust.toolchain}} nextest run --locked --profile=release --target=x86_64-unknown-linux-musl
         continue-on-error: ${{ matrix.rust.optional }}
 
       - name: Setup tmate session for debug

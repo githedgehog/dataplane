@@ -7,6 +7,4 @@ LD_LIBRARY_PATH = { value = "compile-env/lib", relative = true, force = true }
 LIBCLANG_PATH = { value = "compile-env/lib", relative = true, force = true }
 
 [build]
-target = [
-	"x86_64-unknown-linux-gnu",
-]
+target = "x86_64-unknown-linux-gnu"

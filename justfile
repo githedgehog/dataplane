@@ -42,15 +42,22 @@ _dev_env_container := _dpdk_sys_container_repo + "/dev-env:" + _env_branch + "-r
 _compile_env_container := _dpdk_sys_container_repo + "/compile-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
 _network := "host"
 
+export DOCKER_SOCK := x"${DOCKER_SOCK:-/var/run/docker.sock}"
+
+export DOCKER_HOST := x"${DOCKER_HOST:-unix:///var/run/docker.sock}"
+
 # The git commit hash of the last commit to HEAD
+# We allow this command to fail in the sterile environment because git is not available there
 
 _commit := `git rev-parse HEAD 2>/dev/null || echo "sterile"`
 
 # The git branch we are currnetly on
+# We allow this command to fail in the sterile environment because git is not available there
 
 _branch := `git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "sterile"`
 
 # The git tree state (clean or dirty)
+# We allow this command to fail in the sterile environment because git is not available there
 
 _clean := ```
   set -euo pipefail
@@ -65,41 +72,9 @@ _clean := ```
 
 _slug := (if _clean == "clean" { "" } else { "dirty-_-" }) + _branch
 
-# NOTE: if USE_WORLDTIME is set to true then
-# we parse the returned date from the worldtimeapi.org API to ensure that
-# we actually got a valid iso-8601 date (and nobody is messing with clocks)
-#
-# We also diff the official worldtimeapi.org time with the system time to see if we are off by more than 5 seconds
-# If we are, then we should fail the build as either
-# 1. the system is incorrectly configured
-# 2. someone is messing with the system clock (which makes me think CA cert issues are afoot)
-# 3. the worldtimeapi.org API is down or inacurate (very unlikely)
+# The time of the build (in iso8601 utc)
 
-_build_time := ```
-  set -euo pipefail
-  declare official_unparsed
-  if [ "${USE_WORLDTIME:-}" = "true" ]; then
-    official_unparsed="$(curl "http://worldtimeapi.org/api/timezone/utc" | jq --raw-output '.utc_datetime')"
-  else
-    official_unparsed="$(date --iso-8601=seconds --utc)"
-  fi
-  declare -r official_unparsed
-  declare official
-  official="$(date --iso-8601=seconds --utc --date="${official_unparsed}")"
-  declare -r official
-  declare system_epoch
-  system_epoch="$(date --utc +%s)"
-  declare -ri system_epoch
-  declare official_epoch
-  official_epoch="$(date --utc --date="${official}" +%s)"
-  declare -ri official_epoch
-  declare -ri clock_skew=$((system_epoch - official_epoch))
-  if [ "${clock_skew}" -gt 5 ] || [ "${clock_skew}" -lt -5 ]; then
-    >&2 echo "Clock skew detected: system time: ${system_epoch} official time: ${official_epoch}"
-    exit 1
-  fi
-  printf -- "%s" "${official}"
-```
+_build_time := datetime_utc("%+")
 
 [private]
 @default:
@@ -156,6 +131,7 @@ dev-env *args="": allocate-2M-hugepages allocate-1G-hugepages mount-hugepages fi
       --interactive \
       --tty \
       --name dataplane-dev-env \
+      --env DOCKER_HOST="${DOCKER_HOST}" \
       --privileged \
       --network="{{ _network }}" \
       --security-opt seccomp=unconfined \
@@ -165,7 +141,7 @@ dev-env *args="": allocate-2M-hugepages allocate-1G-hugepages mount-hugepages fi
       --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly" \
-      --mount "type=bind,source=/var/run/docker.sock,destination=/var/run/docker.sock,bind-propagation=rprivate" \
+      --mount "type=bind,source={{DOCKER_SOCK}},destination=/var/run/docker.sock,bind-propagation=rprivate" \
       --user "$(id -u):$(id -g)" \
       --workdir "$(pwd)" \
       "{{ _dev_env_container }}" \
@@ -195,6 +171,7 @@ compile-env *args: fill-out-dev-env-template
       --rm \
       --name dataplane-compile-env \
       --network="{{ _network }}" \
+      --env DOCKER_HOST="${DOCKER_HOST}" \
       --tmpfs "/tmp:uid=$(id -u),gid=$(id -g),nodev,noexec,nosuid" \
       --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=1777" \
       --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate" \
@@ -202,7 +179,7 @@ compile-env *args: fill-out-dev-env-template
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly" \
       --mount "type=bind,source=${tmp_targetdir},destination=$(pwd)/target,bind-propagation=rprivate" \
-      --mount "type=bind,source=/run/docker/docker.sock,destination=/var/run/docker.sock" \
+      --mount "type=bind,source={{DOCKER_SOCK}},destination=/var/run/docker.sock" \
       --user "$(id -u):$(id -g)" \
       --workdir "$(pwd)" \
       "{{ _compile_env_container }}" \
@@ -298,7 +275,7 @@ create-compile-env:
       | tar --no-same-owner --no-same-permissions -xf - -C compile-env
     sudo -E docker rm dpdk-sys-compile-env
 
-[confirm("Remove the compile environment? (yes/no)\n(you can recreate it with `just create-compile-env`)")]
+[confirm("Remove old compile environment? (yes/no)\n(you can recreate it with `just create-compile-env`)")]
 [group('env')]
 [script]
 remove-compile-env:
@@ -307,7 +284,7 @@ remove-compile-env:
 
 [group('env')]
 [script]
-refresh-compile-env: remove-compile-env pull-compile-env && create-compile-env
+refresh-compile-env: remove-compile-env pull-compile-env create-compile-env
 
 [confirm("Fake a nix install (yes/no)")]
 [group('env')]
