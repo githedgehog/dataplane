@@ -1,19 +1,9 @@
 {
   pkgs ? import <nixpkgs> { },
 }: rec {
-
   project-name = "hedgehog-dataplane";
-
   inherit pkgs;
-
-  mdbook-citeproc = import ./nix/mdbook-citeproc.nix (with pkgs; {
-  	inherit lib stdenv fetchFromGitHub rustPlatform CoreServices;
-  });
-
-  mdbook-alerts = import ./nix/mdbook-alerts.nix (with pkgs; {
-	inherit lib stdenv fetchFromGitHub rustPlatform CoreServices;
-  });
-
+  mdbook-alerts = pkgs.callPackage import ./nix/mdbook-alerts.nix {};
   buildDeps = pkgs: (with pkgs; [
     bash
     coreutils
@@ -26,7 +16,6 @@
   ]) ++ [
     mdbook-alerts
   ];
-
   design-docs = pkgs.stdenv.mkDerivation {
     name = "${project-name}-design-docs";
     src = ./design-docs/src/mdbook;
@@ -41,5 +30,4 @@
       cp -a book $out;
     '';
   };
-
 }

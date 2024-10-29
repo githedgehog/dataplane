@@ -1,5 +1,7 @@
 set unstable := true
 
+run_id := uuid()
+
 SHELL := shell("""
   if ! set -e; then
     >&2 echo "ERROR: failed to configure shell (set -e not supported by shell $SHELL)"
@@ -278,10 +280,10 @@ mount-hugepages:
 create-compile-env:
     {{ _just_debuggable_ }}
     mkdir compile-env
-    sudo -E docker create --name dpdk-sys-compile-env "{{ _compile_env_container }}" - fake
-    sudo -E docker export dpdk-sys-compile-env \
+    sudo -E docker create --name dpdk-sys-compile-env-{{run_id}} "{{ _compile_env_container }}" - fake
+    sudo -E docker export dpdk-sys-compile-env-{{run_id}} \
       | tar --no-same-owner --no-same-permissions -xf - -C compile-env
-    sudo -E docker rm dpdk-sys-compile-env
+    sudo -E docker rm dpdk-sys-compile-env-{{run_id}}
 
 [confirm("Remove old compile environment? (yes/no)\n(you can recreate it with `just create-compile-env`)")]
 [group('env')]

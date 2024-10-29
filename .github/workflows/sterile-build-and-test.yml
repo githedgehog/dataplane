@@ -35,7 +35,7 @@ jobs:
           - main
         rust:
           - stable
-#          - nightly
+          - nightly
     steps:
       - name: login to ghcr.io
         uses: docker/login-action@v3
@@ -56,24 +56,24 @@ jobs:
           just rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu sterile test
           mkdir dev.gnu
           cp -a ./target/nextest dev.gnu
-#      - name: dev/musl sterile test
-#        run: |
-#          export GITHUB_STEP_SUMMARY
-#          just rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl sterile test
-#          mkdir dev.musl
-#          cp -a ./target/nextest dev.musl
-#      - name: release/gnu sterile test
-#        run: |
-#          export GITHUB_STEP_SUMMARY
-#          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu sterile test
-#          mkdir release.gnu
-#          cp -a ./target/nextest release.gnu
-#      - name: release/musl sterile test
-#        run: |
-#          export GITHUB_STEP_SUMMARY
-#          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl sterile test
-#          mkdir release.musl
-#          cp -a ./target/nextest release.musl
+      - name: dev/musl sterile test
+        run: |
+          export GITHUB_STEP_SUMMARY
+          just rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl sterile test
+          mkdir dev.musl
+          cp -a ./target/nextest dev.musl
+      - name: release/gnu sterile test
+        run: |
+          export GITHUB_STEP_SUMMARY
+          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu sterile test
+          mkdir release.gnu
+          cp -a ./target/nextest release.gnu
+      - name: release/musl sterile test
+        run: |
+          export GITHUB_STEP_SUMMARY
+          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl sterile test
+          mkdir release.musl
+          cp -a ./target/nextest release.musl
 
       # NOTE: we don't even install rust till the sterile tests are done (lowers contamination risk)
       - name: install rust
@@ -99,24 +99,24 @@ jobs:
           export CARGO_TARGET_DIR=dev.gnu
           just rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu report
         if: ${{ always() }}
-#      - name: dev/musl report
-#        run: |
-#          export GITHUB_STEP_SUMMARY
-#          export CARGO_TARGET_DIR=dev.musl
-#          just rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl report
-#        if: ${{ always() }}
-#      - name: release/gnu report
-#        run: |
-#          export GITHUB_STEP_SUMMARY
-#          export CARGO_TARGET_DIR=release.gnu
-#          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu report
-#        if: ${{ always() }}
-#      - name: release/musl report
-#        run: |
-#          export GITHUB_STEP_SUMMARY
-#          export CARGO_TARGET_DIR=release.musl
-#          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl report
-#        if: ${{ always() }}
+      - name: dev/musl report
+        run: |
+          export GITHUB_STEP_SUMMARY
+          export CARGO_TARGET_DIR=dev.musl
+          just rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl report
+        if: ${{ always() }}
+      - name: release/gnu report
+        run: |
+          export GITHUB_STEP_SUMMARY
+          export CARGO_TARGET_DIR=release.gnu
+          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu report
+        if: ${{ always() }}
+      - name: release/musl report
+        run: |
+          export GITHUB_STEP_SUMMARY
+          export CARGO_TARGET_DIR=release.musl
+          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl report
+        if: ${{ always() }}
 
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
