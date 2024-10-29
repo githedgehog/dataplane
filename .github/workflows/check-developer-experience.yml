@@ -85,6 +85,7 @@ jobs:
         run: |
           export GITHUB_STEP_SUMMARY
           just debug=true rust=${{matrix.rust.toolchain}} profile=dev target=x86_64-unknown-linux-gnu test
+          just debug=true rust=${{matrix.rust.toolchain}} profile=dev target=x86_64-unknown-linux-gnu report
         continue-on-error: ${{ matrix.rust.optional }}
 
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=dev --target=x86_64-unknown-linux-musl
@@ -93,6 +94,7 @@ jobs:
         run: |
           export GITHUB_STEP_SUMMARY
           just debug=true rust=${{matrix.rust.toolchain}} profile=dev target=x86_64-unknown-linux-musl test
+          just debug=true rust=${{matrix.rust.toolchain}} profile=dev target=x86_64-unknown-linux-musl report
         continue-on-error: ${{ matrix.rust.optional }}
 
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
@@ -101,6 +103,7 @@ jobs:
         run: |
           export GITHUB_STEP_SUMMARY
           just debug=true rust=${{matrix.rust.toolchain}} profile=release target=x86_64-unknown-linux-gnu test
+          just debug=true rust=${{matrix.rust.toolchain}} profile=release target=x86_64-unknown-linux-gnu report
         continue-on-error: ${{ matrix.rust.optional }}
 
       - run: just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-musl
@@ -109,6 +112,7 @@ jobs:
         run: |
           export GITHUB_STEP_SUMMARY
           just debug=true rust=${{matrix.rust.toolchain}} profile=release target=x86_64-unknown-linux-musl test
+          just debug=true rust=${{matrix.rust.toolchain}} profile=release target=x86_64-unknown-linux-musl report
         continue-on-error: ${{ matrix.rust.optional }}
 
       - uses: actions/upload-artifact@v4

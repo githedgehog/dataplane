@@ -34,7 +34,6 @@ hugepages_2m := "1024"
 _just_debuggable_ := if debug == "true" { "set -x" } else { "" }
 target := "x86_64-unknown-linux-gnu"
 profile := "dev"
-sterile_target_dir := `printf -- %s "/run/user/$(id -u)/hedgehog/dataplane/sterile"`
 container_repo := "ghcr.io/githedgehog/dataplane"
 rust := "stable"
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
@@ -163,14 +162,14 @@ compile-env *args: fill-out-dev-env-template
     tmp_link="$(mktemp -p "$(pwd)/sterile" -d --suffix=.compile-env.link)"
     declare -r tmp_link
     cleanup() {
-      rm -r "${tmp_link}"
+      rm -fr "${tmp_link}"
     }
     trap cleanup EXIT
-    declare tmp_targetdir
-    tmp_targetdir="$(pwd)/sterile/target"
-    declare -r tmp_targetdir
-    rm -fr "${tmp_targetdir}"
-    mkdir -p "${tmp_targetdir}"
+    declare CARGO_TARGET_DIR
+    CARGO_TARGET_DIR="$(pwd)/target"
+    declare -r CARGO_TARGET_DIR
+    rm -fr "${CARGO_TARGET_DIR}"
+    mkdir -p "${CARGO_TARGET_DIR}"
     ln -s /bin "${tmp_link}/bin"
     ln -s /lib "${tmp_link}/lib"
     ln -s /sysroot "${tmp_link}/sysroot"
@@ -179,14 +178,15 @@ compile-env *args: fill-out-dev-env-template
       --rm \
       --name dataplane-compile-env \
       --network="{{ _network }}" \
-      --env DOCKER_HOST="${DOCKER_HOST}" \
+      --env DOCKER_HOST \
+      --env CARGO_TARGET_DIR \
       --tmpfs "/tmp:uid=$(id -u),gid=$(id -g),nodev,noexec,nosuid" \
       --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=1777" \
       --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate" \
       --mount "type=bind,source=${tmp_link},destination=$(pwd)/compile-env,bind-propagation=rprivate" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly" \
-      --mount "type=bind,source=${tmp_targetdir},destination=$(pwd)/target,bind-propagation=rprivate" \
+      --mount "type=bind,source=${CARGO_TARGET_DIR},destination=${CARGO_TARGET_DIR},bind-propagation=rprivate" \
       --mount "type=bind,source={{ DOCKER_SOCK }},destination=/var/run/docker.sock" \
       --user "$(id -u):$(id -g)" \
       --workdir "$(pwd)" \
@@ -342,7 +342,7 @@ fill-out-dev-env-template:
     envsubst < dev-env-template/etc.template/passwd.template > dev-env-template/etc/passwd
 
 [group('env')]
-sterile *args: (compile-env "just" "debug={{debug}}" "rust={{rust}}" "target={{target}}" "profile={{profile}}" args)
+sterile *args: (compile-env "just" ("debug=" + debug) ("rust=" + rust) ("target=" + target) ("profile=" + profile) args)
 
 [script]
 compress *args:
@@ -352,7 +352,7 @@ compress *args:
 [private]
 sterile-build: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target))
     mkdir -p "artifact/{{ target }}/{{ profile }}"
-    cp -r "sterile/target/{{ target }}/{{ profile }}/scratch" "artifact/{{ target }}/{{ profile }}/scratch"
+    cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/scratch" "artifact/{{ target }}/{{ profile }}/scratch"
 
 [script]
 build-container: sterile-build
@@ -436,11 +436,11 @@ serve-docs:
 [group("test")]
 [script]
 test:
-    declare report_dir="target/nextest/{{profile}}"
+    declare -r  report_dir="${CARGO_TARGET_DIR:-target}/nextest/{{ profile }}"
     mkdir -p "${report_dir}"
     {{ _just_debuggable_ }}
     PROFILE="{{ profile }}"
-    case "{{profile}}" in
+    case "{{ profile }}" in
       dev|test)
         [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
         ;;
@@ -450,32 +450,36 @@ test:
     esac
     [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
     # >&2 echo "With RUSTFLAGS=\"${RUSTFLAGS:-}\""
-    cargo +{{ rust }} nextest --profile={{profile}} run \
+    cargo $(if rustup -V &>/dev/null; then echo +{{ rust }}; fi) nextest --profile={{ profile }} run \
           --message-format libtest-json-plus \
           --locked \
           --cargo-profile={{ profile }} \
           --target={{ target }} \
         > >(tee "$report_dir/report.json") \
         2> >(tee "$report_dir/report.log")
+
+[group("test")]
+[script]
+report:
+    {{ _just_debuggable_ }}
+    declare -r report_dir="${CARGO_TARGET_DIR:-target}/nextest/{{ profile }}"
     markdown-test-report "$report_dir/report.json" -o "$report_dir/report.md"
-    if [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
-      exit 0;
-    fi
-    cat <<'EOF' >> $GITHUB_STEP_SUMMARY
+    cat <<'EOF' >> "${report_dir}/report.md"
     ## Test Report
 
     > [!NOTE]
-    > Rust: {{rust}}
-    > Profile: {{profile}}
-    > Target: {{target}}
+    > Rust: {{ rust }}
+    > Profile: {{ profile }}
+    > Target: {{ target }}
 
     EOF
     declare -rx log="$(ansi2txt < $report_dir/report.log)"
-    cat "$report_dir/report.md" >> $GITHUB_STEP_SUMMARY
-    cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+    cat >> "${report_dir}/report.md" <<EOF
     <details>
     <summary>
-    Test log
+
+    ## Test log
+
     </summary>
 
     \`\`\`log
@@ -484,3 +488,7 @@ test:
     </details>
 
     EOF
+
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      cat $report_dir/report.md >> $GITHUB_STEP_SUMMARY
+    fi
