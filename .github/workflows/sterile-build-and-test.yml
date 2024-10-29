@@ -49,24 +49,11 @@ jobs:
           just-version: ${{env.just}}
       - name: Checkout
         uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "latest"
-
-      - run: mkdir -p test-results
 
       - run: just rust="${{matrix.rust}}" sterile cargo nextest run --locked --profile=debug --target=x86_64-unknown-linux-gnu
-      - run: npx --yes xunit-viewer -r sterile/target/nextest/default/junit.xml --output test-results/debug.x86_64-unknown-linux-gnu.html
-
       - run: just rust="${{matrix.rust}}" sterile cargo nextest run --locked --profile=debug --target=x86_64-unknown-linux-musl
-      - run: npx --yes xunit-viewer -r sterile/target/nextest/default/junit.xml --output test-results/debug.x86_64-unknown-linux-musl.html
-
       - run: just rust="${{matrix.rust}}" sterile cargo nextest run --locked --profile=release --target=x86_64-unknown-linux-gnu
-      - run: npx --yes xunit-viewer -r sterile/target/nextest/release/junit.xml --output test-results/release.x86_64-unknown-linux-gnu.html
-
       - run: just rust="${{matrix.rust}}" sterile cargo nextest run --locked --profile=release --target=x86_64-unknown-linux-musl
-      - run: npx --yes xunit-viewer -r sterile/target/nextest/release/junit.xml --output test-results/release.x86_64-unknown-linux-musl.html
-
 
       - run: just rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-gnu push-container
       - run: just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu push-container
