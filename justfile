@@ -470,7 +470,7 @@ test:
     > Target: {{target}}
 
     EOF
-    declare -rx log="$(< $report_dir/report.log)"
+    declare -rx log="$(ansi2txt < $report_dir/report.log)"
     cat "$report_dir/report.md" >> $GITHUB_STEP_SUMMARY
     cat >> "$GITHUB_STEP_SUMMARY" <<EOF
     <details>

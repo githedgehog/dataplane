@@ -72,7 +72,7 @@ jobs:
       - name: install openssl and libssl-dev (needed for markdown-test-report)
         run: |
           sudo apt-get update
-          sudo apt-get --yes --no-install-recommends install pkg-config openssl libssl-dev
+          sudo apt-get --yes --no-install-recommends install pkg-config openssl libssl-dev colorized-logs
       - name: install markdown-test-report
         run: cargo binstall --no-confirm markdown-test-report
       - name: refresh-compile-env
