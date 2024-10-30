@@ -39,6 +39,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - run: ./scripts/update-versions.sh
+      - uses: cargo-bins/cargo-binstall@main
+      - name: install just
+        run: cargo binstall --no-confirm just
+      - name: install cargo-deny
+        run: cargo binstall --no-confirm cargo-deny
+      # Don't even bother with the PR if
+      # a) somebody introduced a license we can't accept
+      # b) some security vuln came up and cargo deny is yelling
+      - run: just cargo deny check
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v7
         with:

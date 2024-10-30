@@ -16,10 +16,7 @@ on:
         description: "Run with tmate enabled"
         required: false
         default: false
-  pull_request:
-    branches:
-      - main
-      - dpdk-sys/update
+  push: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -69,6 +66,9 @@ jobs:
       - uses: cargo-bins/cargo-binstall@main
       - name: install nextest
         run: cargo binstall --no-confirm cargo-nextest
+      - name: install cargo-deny
+        run: cargo binstall --no-confirm cargo-deny
+      - run: just cargo deny check
       - name: install openssl and libssl-dev (needed for markdown-test-report)
         run: |
           sudo apt-get update

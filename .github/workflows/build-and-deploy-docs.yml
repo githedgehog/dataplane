@@ -46,6 +46,10 @@ jobs:
               - 'design-docs/**'
               - 'nix/**'
               - '.github/workflows/build-and-deploy-docs.yml'
+      - uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall --no-confirm just
+      - run: cargo binstall --no-confirm cargo-deny
+      - run: just cargo deny check
 
   build:
     name: "Build and deploy documentation"
@@ -54,10 +58,8 @@ jobs:
     runs-on: "ubuntu-latest"
     steps:
 
-      - name: "install just"
-        uses: "extractions/setup-just@v2"
-        with:
-          just-version: "${{ matrix.just.version }}"
+      - uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall --no-confirm just
 
       - name: "Checkout"
         uses: "actions/checkout@v4"
