@@ -1,0 +1,16 @@
+name: Mergeability
+
+on:
+  pull_request:
+    types: [synchronize, opened, reopened, labeled, unlabeled]
+
+jobs:
+  check-labels:
+    runs-on: ubuntu-latest
+    name: Check mergeability based on labels
+    steps:
+      - if: ${{ contains(github.event.*.labels.*.name, 'dont-merge') }}
+        name: Fail test due to 'dont-merge' label presence
+        run: exit 1
+      - name: Allow merging
+        run: exit 0
