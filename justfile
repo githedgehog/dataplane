@@ -41,6 +41,7 @@ rust := "stable"
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
 _env_branch := "main"
 _dev_env_container := _dpdk_sys_container_repo + "/dev-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
+_doc_env_container := _dpdk_sys_container_repo + "/doc-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
 _compile_env_container := _dpdk_sys_container_repo + "/compile-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
 _network := "host"
 export DOCKER_HOST := x"${DOCKER_HOST:-unix:///var/run/docker.sock}"
@@ -494,3 +495,21 @@ report:
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
       cat $report_dir/report.md >> $GITHUB_STEP_SUMMARY
     fi
+
+[script]
+mdbook *args="build":
+  mkdir -p /tmp/doc-env
+  cd ./design-docs/src/mdbook
+  docker run \
+    --rm \
+    -it \
+    --init \
+    --volume "$(pwd):$(pwd)" \
+    --user "$(id -u):$(id -g)" \
+    --mount type=bind,source=/tmp/doc-env,target=/tmp \
+    --workdir "$(pwd)" \
+    --network=host \
+    --name design-docs \
+    --entrypoint /bin/mdbook \
+    {{ _doc_env_container }} \
+    {{ args }}
