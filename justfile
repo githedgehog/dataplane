@@ -1,7 +1,6 @@
 set unstable := true
 
 run_id := uuid()
-
 SHELL := shell("""
   if ! set -e; then
     >&2 echo "ERROR: failed to configure shell (set -e not supported by shell $SHELL)"
@@ -30,19 +29,20 @@ set dotenv-filename := "./scripts/rust.env"
 
 export NEXTEST_EXPERIMENTAL_LIBTEST_JSON := "1"
 debug := "false"
-DPDK_SYS_COMMIT := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT")
+dpdk_sys_commit := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT")
 hugepages_1g := "8"
 hugepages_2m := "1024"
 _just_debuggable_ := if debug == "true" { "set -x" } else { "" }
 target := "x86_64-unknown-linux-gnu"
 profile := "dev"
-container_repo := "ghcr.io/githedgehog/dataplane"
+_container_repo := "ghcr.io/githedgehog/dataplane"
 rust := "stable"
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
 _env_branch := "main"
-_dev_env_container := _dpdk_sys_container_repo + "/dev-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
-_doc_env_container := _dpdk_sys_container_repo + "/doc-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
-_compile_env_container := _dpdk_sys_container_repo + "/compile-env:" + _env_branch + "-rust-" + rust + "-" + DPDK_SYS_COMMIT
+_dpdk_sys_container_tag := _env_branch + "-rust-" + rust + "-" + dpdk_sys_commit
+_dev_env_container := _dpdk_sys_container_repo + "/dev-env:" + _dpdk_sys_container_tag
+_doc_env_container := _dpdk_sys_container_repo + "/doc-env:" + _dpdk_sys_container_tag
+_compile_env_container := _dpdk_sys_container_repo + "/compile-env:" + _dpdk_sys_container_tag
 _network := "host"
 export DOCKER_HOST := x"${DOCKER_HOST:-unix:///var/run/docker.sock}"
 export DOCKER_SOCK := ```
@@ -86,20 +86,20 @@ _slug := (if _clean == "clean" { "" } else { "dirty-_-" }) + _branch
 
 _build_time := datetime_utc("%+")
 
+# List out the available commands
 [private]
 @default:
     just --list --justfile {{ justfile() }}
 
-[group('ci')]
-[private]
-[script]
-_ci-compile-env-hack:
-    {{ _just_debuggable_ }}
-    ln -s / ./compile-env
 
-[private]
+
+# Run cargo with RUSTFLAGS computed based on profile.
+[group('rust')]
 [script]
-_cargo-with-rust-flags *args:
+cargo *args:
+    # Ideally this would be done via Cargo.toml and .cargo/config.toml,
+    # unfortunately passing RUSTFLAGS based on profile (rather than target or cfg)
+    # is currently unstable (nightly builds only).
     {{ _just_debuggable_ }}
     declare -a args=({{ args }})
     PROFILE="{{ profile }}"
@@ -119,13 +119,9 @@ _cargo-with-rust-flags *args:
       esac
     done
     [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
-    # >&2 echo "With RUSTFLAGS=\"${RUSTFLAGS:-}\""
     cargo "${extra_args[@]}"
 
-[group('rust')]
-[script]
-cargo *args: (_cargo-with-rust-flags args)
-
+# Run the dataplane development environment
 [group('env')]
 [script]
 dev-env *args="": allocate-2M-hugepages allocate-1G-hugepages mount-hugepages fill-out-dev-env-template && umount-hugepages
@@ -157,6 +153,7 @@ dev-env *args="": allocate-2M-hugepages allocate-1G-hugepages mount-hugepages fi
       "{{ _dev_env_container }}" \
       {{ args }}
 
+# Run the (very minimal) compile environment
 [script]
 compile-env *args: fill-out-dev-env-template
     {{ _just_debuggable_ }}
@@ -196,27 +193,23 @@ compile-env *args: fill-out-dev-env-template
       "{{ _compile_env_container }}" \
       {{ args }}
 
+# Pull the latest versions of the compile-env container
 [script]
 pull-compile-env:
     {{ _just_debuggable_ }}
     sudo -E docker pull "{{ _compile_env_container }}" || true
 
+# Pull the latest versions of the dev-env container
 [script]
 pull-dev-env:
     {{ _just_debuggable_ }}
     sudo -E docker pull "{{ _dev_env_container }}"
 
+# Pull the latest compile and dev-env containers
 [script]
 pull: pull-compile-env pull-dev-env
 
-[script]
-create-dev-env:
-    {{ _just_debuggable_ }}
-    mkdir dev-env
-    sudo -E docker create --name dpdk-sys-dev-env {{ _dev_env_container }} - fake
-    sudo -E docker export dpdk-sys-dev-env | tar --no-same-owner --no-same-permissions -xf - -C dev-env
-    sudo -E docker rm dpdk-sys-dev-env
-
+# Allocate 2M hugepages (if needed)
 [private]
 [script]
 allocate-2M-hugepages:
@@ -228,6 +221,7 @@ allocate-2M-hugepages:
     fi
     printf -- "%s" {{ hugepages_2m }} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages >/dev/null
 
+# Allocate 1G hugepages (if needed)
 [private]
 [script]
 allocate-1G-hugepages:
@@ -239,6 +233,7 @@ allocate-1G-hugepages:
     fi
     printf -- "%s" {{ hugepages_1g }} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages >/dev/null
 
+# umount hugepage mounts created by dataplane
 [private]
 [script]
 umount-hugepages:
@@ -257,6 +252,8 @@ umount-hugepages:
     fi
     sync
 
+# mount hugetlbfs
+[private]
 [script]
 mount-hugepages:
     {{ _just_debuggable_ }}
@@ -276,16 +273,18 @@ mount-hugepages:
     fi
     sync
 
+# Dump the compile-env container into a sysroot for use by the build.
 [group('env')]
 [script]
 create-compile-env:
     {{ _just_debuggable_ }}
     mkdir compile-env
-    sudo -E docker create --name dpdk-sys-compile-env-{{run_id}} "{{ _compile_env_container }}" - fake
-    sudo -E docker export dpdk-sys-compile-env-{{run_id}} \
+    sudo -E docker create --name dpdk-sys-compile-env-{{ run_id }} "{{ _compile_env_container }}" - fake
+    sudo -E docker export dpdk-sys-compile-env-{{ run_id }} \
       | tar --no-same-owner --no-same-permissions -xf - -C compile-env
-    sudo -E docker rm dpdk-sys-compile-env-{{run_id}}
+    sudo -E docker rm dpdk-sys-compile-env-{{ run_id }}
 
+# remove the compile-env directory
 [confirm("Remove old compile environment? (yes/no)\n(you can recreate it with `just create-compile-env`)")]
 [group('env')]
 [script]
@@ -293,10 +292,12 @@ remove-compile-env:
     {{ _just_debuggable_ }}
     if [ -d compile-env ]; then sudo rm -rf compile-env; fi
 
+# refresh the compile-env (clear and restore)
 [group('env')]
 [script]
 refresh-compile-env: remove-compile-env pull-compile-env create-compile-env
 
+# Install "fake-nix" (required for local builds to function)
 [confirm("Fake a nix install (yes/no)")]
 [group('env')]
 [script]
@@ -328,6 +329,7 @@ fake-nix refake="":
     fi
     sudo ln -rs ./compile-env/nix /nix
 
+# Fill out template file for the dev-env (needed to preserve user in dev-env container)
 [group('env')]
 [private]
 [script]
@@ -344,19 +346,17 @@ fill-out-dev-env-template:
     envsubst < dev-env-template/etc.template/group.template > dev-env-template/etc/group
     envsubst < dev-env-template/etc.template/passwd.template > dev-env-template/etc/passwd
 
+# Run a "sterile" command
 [group('env')]
 sterile *args: (compile-env "just" ("debug=" + debug) ("rust=" + rust) ("target=" + target) ("profile=" + profile) args)
 
-[script]
-compress *args:
-    {{ _just_debuggable_ }}
-    zstd -T0 -19 -c "{{ args }}" > "{{ args }}.tar.zst"
-
+# Run a "sterile" build
 [private]
 sterile-build: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target))
     mkdir -p "artifact/{{ target }}/{{ profile }}"
     cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/scratch" "artifact/{{ target }}/{{ profile }}/scratch"
 
+# Build containers in a sterile environment
 [script]
 build-container: sterile-build
     {{ _just_debuggable_ }}
@@ -374,69 +374,44 @@ build-container: sterile-build
       --label "build.date=${build_date}" \
       --label "build.timestamp={{ _build_time }}" \
       --label "build.time_epoch=${build_time_epoch}" \
-      --tag "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
+      --tag "{{ _container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
       --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/scratch" \
       .
 
     sudo -E docker tag \
-      "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
-      "{{ container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
+      "{{ _container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
+      "{{ _container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
     sudo -E docker tag \
-      "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
-      "{{ container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}"
+      "{{ _container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
+      "{{ _container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}"
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ]; then
       sudo -E docker tag \
-        "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
-        "{{ container_repo }}:{{ _slug }}.{{ profile }}"
+        "{{ _container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
+        "{{ _container_repo }}:{{ _slug }}.{{ profile }}"
     fi
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ] && [ "{{ profile }}" = "release" ]; then
       sudo -E docker tag \
-        "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
-        "{{ container_repo }}:{{ _slug }}"
+        "{{ _container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
+        "{{ _container_repo }}:{{ _slug }}"
     fi
 
+# Build and push containers
 [script]
 push-container: build-container
     declare build_date
     build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
     declare -r build_date
-    sudo -E docker push "{{ container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
-    sudo -E docker push "{{ container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
+    sudo -E docker push "{{ _container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
+    sudo -E docker push "{{ _container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ]; then
-      sudo -E docker push "{{ container_repo }}:{{ _slug }}.{{ profile }}"
+      sudo -E docker push "{{ _container_repo }}:{{ _slug }}.{{ profile }}"
     fi
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ] && [ "{{ profile }}" = "release" ]; then
-      sudo -E docker push "{{ container_repo }}:{{ _slug }}"
+      sudo -E docker push "{{ _container_repo }}:{{ _slug }}"
     fi
 
-[script]
-build-docs:
-    cd design-docs/src/mdbook
-    mdbook build
-
-[script]
-serve-docs:
-    cd design-docs/src/mdbook
-    mdbook serve
-
-#[group("ci")]
-#[private]
-#[script]
-#report:
-#  declare report_dir="report/${{target}}/${{profile}}"
-#  mkdir -p "${report_dir}"
-#  NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 just cargo +${{matrix.rust.toolchain}} \
-#      nextest run --message-format libtest-json-plus --locked --profile={{profile}} --target={{target}} \
-#      > "$report_dir/report.json"
-#  markdown-test-report "$report_dir/report.json" -o "$report_dir/report.md"
-#  echo "---" >> $GITHUB_STEP_SUMMARY
-#  echo "" >> $GITHUB_STEP_SUMMARY
-#  echo "## Rust: ${{ matrix.rust.toolchain }} on x86_64-unknown-linux-gnu" >> $GITHUB_STEP_SUMMARY
-#  echo "" >> $GITHUB_STEP_SUMMARY
-#  cat target/nextest/ci/debug.x86_64-unknown-linux-gnu.md | sed '1{/^---$/!q;};1,/^---$/d' >> $GITHUB_STEP_SUMMARY
-#  echo "" >> $GITHUB_STEP_SUMMARY
-
-[group("test")]
+# Run the tests (with nextest)
+[group("ci")]
 [script]
 test:
     declare -r  report_dir="${CARGO_TARGET_DIR:-target}/nextest/{{ profile }}"
@@ -461,7 +436,8 @@ test:
         > >(tee "$report_dir/report.json") \
         2> >(tee "$report_dir/report.log")
 
-[group("test")]
+# Generate a test report (does not run the tests first)
+[group("ci")]
 [script]
 report:
     {{ _just_debuggable_ }}
@@ -496,20 +472,21 @@ report:
       cat $report_dir/report.md >> $GITHUB_STEP_SUMMARY
     fi
 
+# run commands in a minimal mdbook container
 [script]
 mdbook *args="build":
-  mkdir -p /tmp/doc-env
-  cd ./design-docs/src/mdbook
-  docker run \
-    --rm \
-    -it \
-    --init \
-    --volume "$(pwd):$(pwd)" \
-    --user "$(id -u):$(id -g)" \
-    --mount type=bind,source=/tmp/doc-env,target=/tmp \
-    --workdir "$(pwd)" \
-    --network=host \
-    --name design-docs \
-    --entrypoint /bin/mdbook \
-    {{ _doc_env_container }} \
-    {{ args }}
+    mkdir -p /tmp/doc-env
+    cd ./design-docs/src/mdbook
+    docker run \
+      --rm \
+      -it \
+      --init \
+      --volume "$(pwd):$(pwd)" \
+      --user "$(id -u):$(id -g)" \
+      --mount type=bind,source=/tmp/doc-env,target=/tmp \
+      --workdir "$(pwd)" \
+      --network=host \
+      --name design-docs \
+      --entrypoint /bin/mdbook \
+      {{ _doc_env_container }} \
+      {{ args }}
