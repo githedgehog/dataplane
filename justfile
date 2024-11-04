@@ -38,8 +38,7 @@ profile := "dev"
 _container_repo := "ghcr.io/githedgehog/dataplane"
 rust := "stable"
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
-_env_branch := "main"
-_dpdk_sys_container_tag := _env_branch + "-rust-" + rust + "-" + dpdk_sys_commit
+_dpdk_sys_container_tag := dpdk_sys_commit + "-rust-" + rust
 _dev_env_container := _dpdk_sys_container_repo + "/dev-env:" + _dpdk_sys_container_tag
 _doc_env_container := _dpdk_sys_container_repo + "/doc-env:" + _dpdk_sys_container_tag
 _compile_env_container := _dpdk_sys_container_repo + "/compile-env:" + _dpdk_sys_container_tag
@@ -479,7 +478,6 @@ mdbook *args="build":
     cd ./design-docs/src/mdbook
     docker run \
       --rm \
-      -it \
       --init \
       --volume "$(pwd):$(pwd)" \
       --user "$(id -u):$(id -g)" \

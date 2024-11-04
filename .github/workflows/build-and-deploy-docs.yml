@@ -1,6 +1,11 @@
 name: Build and deploy docs
 
 on:
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: boolean
+        description: "Run the build with tmate debugging enabled"
   pull_request: { }
   push:
     branches:
@@ -20,8 +25,7 @@ permissions:
 jobs:
   check_changes:
     name: "Deduce required tests from code changes"
-    runs-on:
-      - "lab"
+    runs-on: "ubuntu-latest"
     outputs:
       docs: "${{ steps.changes.outputs.docs }}"
     steps:
@@ -46,10 +50,6 @@ jobs:
               - 'design-docs/**'
               - 'nix/**'
               - '.github/workflows/build-and-deploy-docs.yml'
-      - uses: cargo-bins/cargo-binstall@main
-      - run: cargo binstall --no-confirm just
-      - run: cargo binstall --no-confirm cargo-deny
-      - run: just cargo deny check
 
   build:
     name: "Build and deploy documentation"
@@ -121,3 +121,10 @@ jobs:
           NETLIFY_AUTH_TOKEN: "${{ secrets.NETLIFY_AUTH_TOKEN }}"
           NETLIFY_SITE_ID: "${{ secrets.NETLIFY_SITE_ID }}"
         timeout-minutes: 5
+
+      - name: Setup tmate session for debug
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 60
+        with:
+          limit-access-to-actor: true

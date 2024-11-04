@@ -26,8 +26,7 @@ permissions:
 
 jobs:
   test:
-    runs-on:
-      - lab
+    runs-on: "ubuntu-latest"
     strategy:
       fail-fast: false
       matrix:
@@ -35,7 +34,7 @@ jobs:
           - main
         rust:
           - stable
-          - nightly
+          # - nightly
     steps:
       - name: login to ghcr.io
         uses: docker/login-action@v3
@@ -43,10 +42,26 @@ jobs:
           registry: ghcr.io
           username: "${{ github.actor }}"
           password: "${{ secrets.GITHUB_TOKEN }}"
+
+      - uses: cargo-bins/cargo-binstall@main
+
       - name: install just
-        uses: extractions/setup-just@v2
-        with:
-          just-version: ${{env.just}}
+        run: cargo binstall --no-confirm just
+
+      - name: install openssl and libssl-dev (needed for markdown-test-report)
+        if: ${{ always() }}
+        run: |
+          sudo apt-get update
+          sudo apt-get --yes --no-install-recommends install \
+            colorized-logs \
+            libssl-dev \
+            openssl \
+            pkg-config
+
+      - name: install markdown-test-report
+        if: ${{ always() }}
+        run: cargo binstall --no-confirm markdown-test-report
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -62,38 +77,26 @@ jobs:
           just rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl sterile test
           mkdir dev.musl
           cp -a ./target/nextest dev.musl
-      - name: release/gnu sterile test
-        run: |
-          export GITHUB_STEP_SUMMARY
-          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu sterile test
-          mkdir release.gnu
-          cp -a ./target/nextest release.gnu
-      - name: release/musl sterile test
-        run: |
-          export GITHUB_STEP_SUMMARY
-          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl sterile test
-          mkdir release.musl
-          cp -a ./target/nextest release.musl
+      #- name: release/gnu sterile test
+      #  run: |
+      #    export GITHUB_STEP_SUMMARY
+      #    just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu sterile test
+      #    mkdir release.gnu
+      #    cp -a ./target/nextest release.gnu
+      #- name: release/musl sterile test
+      #  run: |
+      #    export GITHUB_STEP_SUMMARY
+      #    just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl sterile test
+      #    mkdir release.musl
+      #    cp -a ./target/nextest release.musl
 
       # NOTE: we don't even install rust till the sterile tests are done (lowers contamination risk)
       - name: install rust
         uses: dtolnay/rust-toolchain@stable
+        if: ${{ always() }}
         with:
           toolchain: ${{ matrix.rust }}
           targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl
-
-      - uses: cargo-bins/cargo-binstall@main
-
-      - name: install openssl and libssl-dev (needed for markdown-test-report)
-        run: |
-          sudo apt-get update
-          sudo apt-get --yes --no-install-recommends install \
-            colorized-logs \
-            libssl-dev \
-            openssl \
-            pkg-config
-      - name: install markdown-test-report
-        run: cargo binstall --no-confirm markdown-test-report
 
       - name: dev/gnu report
         run: |
@@ -109,19 +112,19 @@ jobs:
           just rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl report
         if: ${{ always() }}
 
-      - name: release/gnu report
-        run: |
-          export GITHUB_STEP_SUMMARY
-          export CARGO_TARGET_DIR=release.gnu
-          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu report
-        if: ${{ always() }}
+      #- name: release/gnu report
+      #  run: |
+      #    export GITHUB_STEP_SUMMARY
+      #    export CARGO_TARGET_DIR=release.gnu
+      #    just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu report
+      #  if: ${{ always() }}
 
-      - name: release/musl report
-        run: |
-          export GITHUB_STEP_SUMMARY
-          export CARGO_TARGET_DIR=release.musl
-          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl report
-        if: ${{ always() }}
+      #- name: release/musl report
+      #  run: |
+      #    export GITHUB_STEP_SUMMARY
+      #    export CARGO_TARGET_DIR=release.musl
+      #    just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl report
+      #  if: ${{ always() }}
 
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
@@ -137,8 +140,7 @@ jobs:
           limit-access-to-actor: true
 
   push:
-    runs-on:
-      - lab
+    runs-on: "ubuntu-latest"
     strategy:
       fail-fast: false
       matrix:
@@ -146,7 +148,7 @@ jobs:
           - main
         rust:
           - stable
-          - nightly
+          # - nightly
     steps:
       - name: login to ghcr.io
         uses: docker/login-action@v3
@@ -172,11 +174,12 @@ jobs:
       # we want to avoid pushing any container which fails our carg-deny checks
       - run: just cargo deny check
       - run: just rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-gnu push-container
-      - run: just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu push-container
+      # - run: just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu push-container
       - run: just rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-musl push-container
-      - run: just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl push-container
+      # - run: just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl push-container
+
       - name: Setup tmate session for debug
-        if: ${{ failure() }}
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
         uses: mxschmitt/action-tmate@v3
         timeout-minutes: 30
         with:

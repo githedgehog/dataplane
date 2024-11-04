@@ -11,6 +11,12 @@
 name: Update Version
 on:
   workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: boolean
+        description: "Run with tmate enabled"
+        required: false
+        default: false
   schedule:
     # Check for updates at 3:18am every day.
     # I avoid midnight because everyone uses midnight and
@@ -58,3 +64,10 @@ jobs:
           commit-message: 'bump dpdk-sys'
           sign-commits: 'true'
           body: 'bump dpdk-sys'
+
+      - name: Setup tmate session for debug
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 60
+        with:
+          limit-access-to-actor: true

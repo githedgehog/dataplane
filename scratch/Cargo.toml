@@ -8,11 +8,10 @@ publish = false
 dpdk-sys = { path = "../dpdk-sys" }
 dpdk = { path = "../dpdk" }
 
+rand = { version = "0.8.5" }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 tracing-subscriber = { workspace = true }
-
-rand = { version = "0.8" }
 
 [build-dependencies]
 dpdk-sysroot-helper = { path = "../dpdk-sysroot-helper" }

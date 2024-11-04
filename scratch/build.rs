@@ -5,6 +5,6 @@ fn main() {
     rerun_if_changed.iter().for_each(|file| {
         println!("cargo:rerun-if-changed={file}");
     });
-    println!("cargo:rustc-link-search=all={sysroot}/lib");
+    println!("cargo:rustc-link-search=native={sysroot}/lib");
     println!("cargo:rustc-link-arg=--sysroot={sysroot}");
 }

@@ -33,7 +33,8 @@ pub fn get_compile_env() -> String {
 }
 
 pub fn get_sysroot() -> String {
-    let sysroot_env = env::var("SYSROOT").expect("sysroot env not set");
+    let compile_env = env::var("COMPILE_ENV").expect("COMPILE_ENV not set");
+    let sysroot_env = format!("{compile_env}/sysroot");
     let target = get_target_name();
     let profile = get_profile_name();
     let expected_sysroot = format!("{sysroot_env}/{target}/{profile}");
