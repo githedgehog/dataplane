@@ -1,4 +1,4 @@
-/*! `fortran` grammar compiled for Highlight.js 11.9.0 */
+/*! `fortran` grammar compiled for Highlight.js 11.10.0 */
   (function(){
     var hljsGrammar = (function () {
   'use strict';
@@ -555,6 +555,7 @@
         'f95'
       ],
       keywords: {
+        $pattern: /\b[a-z][a-z0-9_]+\b|\.[a-z][a-z0-9_]+\./,
         keyword: KEYWORDS,
         literal: LITERALS,
         built_in: BUILT_INS

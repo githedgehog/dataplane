@@ -1,5 +1,4 @@
 //! DPDK Environment Abstraction Layer (EAL)
-
 use alloc::format;
 use alloc::string::{String, ToString};
 use crate::{dev, mem, socket};

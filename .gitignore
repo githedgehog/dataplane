@@ -3,4 +3,15 @@
 /result*
 /target/**
 /design-docs/src/mdbook/book/**
-/dpdk-sys/sysroot/**
+/sysroot/**
+/nix/result*
+/sysroot
+/dev-env
+/compile-env/
+/dev-env-template/etc
+/sterile
+/artifact
+/design-docs/src/mdbook/src/mdbook-plantuml-img/
+/.vscode
+/.run/
+/.bin

@@ -1,4 +1,4 @@
-/*! `x86asm` grammar compiled for Highlight.js 11.9.0 */
+/*! `x86asm` grammar compiled for Highlight.js 11.10.0 */
 var hljsGrammar = (function () {
   'use strict';
 

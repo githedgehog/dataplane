@@ -4,11 +4,8 @@ use crate::dev::DevIndex;
 use crate::mem::Mbuf;
 use crate::socket::SocketId;
 use crate::{dev, mem, socket};
-use core::marker::PhantomData;
-use core::ptr::NonNull;
-use etherparse::LinkSlice::Ethernet2;
 use dpdk_sys::*;
-use tracing::{debug, info, trace, warn};
+use tracing::{trace, warn};
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -57,12 +54,6 @@ pub struct RxQueueConfig {
 
 /// Error type for receive queue configuration failures.
 #[derive(Debug)]
-pub struct ConfigError {
-    err: errno::Errno,
-}
-
-/// Error type for receive queue configuration failures.
-#[derive(Debug)]
 pub enum ConfigFailure {
     /// The device has been removed.
     DeviceRemoved(errno::Errno),
@@ -76,6 +67,7 @@ pub enum ConfigFailure {
     InvalidSocket(errno::Errno),
 }
 
+/// DPDK rx queue
 #[derive(Debug)]
 pub struct RxQueue {
     pub(crate) config: RxQueueConfig,
@@ -93,7 +85,7 @@ impl RxQueue {
     /// associated with the device.
     pub(crate) fn configure(dev: &dev::Dev, config: RxQueueConfig) -> Result<Self, ConfigFailure> {
         let socket_id = SocketId::try_from(config.socket_preference)
-            .map_err(|err| ConfigFailure::InvalidSocket(errno::Errno(errno::NEG_EINVAL)))?;
+            .map_err(|_| ConfigFailure::InvalidSocket(errno::Errno(errno::NEG_EINVAL)))?;
 
         let rx_conf = rte_eth_rxconf {
             offloads: dev.info.inner.rx_queue_offload_capa,
@@ -232,26 +224,4 @@ pub enum RxQueueState {
     Stopped,
     /// TODO
     Started,
-}
-
-
-
-fn test_burst(queue: RxQueue) {
-    let mut queue = queue;
-    let pkts = queue.receive();
-    for pkt in pkts {
-        let parsed_packet = etherparse::SlicedPacket::from_ethernet(pkt.raw_data()).expect("Failed to parse packet");
-        match parsed_packet.link {
-            None => {
-                debug!("Failed to parse packet link header");
-            }
-            Some(Ethernet2(pkt)) => {
-                pkt.ether_type();
-            }
-            pkt => {
-                debug!("Unsupported packet type {pkt:?}");
-            }
-        }
-        // info!("Received packet: {:?}", pkt);
-    }
 }

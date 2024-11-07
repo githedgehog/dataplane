@@ -6,10 +6,11 @@ updates:
     directories:
       - /
     schedule:
-      interval: "daily"
+      interval: "weekly"
+    versioning-strategy: "widen"
     groups:
       dev-dependencies:
-        applies-to: version-updates
+        applies-to: "version-updates"
         patterns:
           - "*"
         update-types:

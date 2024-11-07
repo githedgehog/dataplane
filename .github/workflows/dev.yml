@@ -1,0 +1,138 @@
+# The primary point of this workflow is to ensure that the developer experience is good.
+# We take a very vanilla ubuntu image, install all necessary dependencies via "normal" means,
+# and then run the build and test steps as described in the README.md file.
+
+# The artifacts produced by these builds are not intended to be used for anything other than
+# ensuring that the developer experience is good.
+
+# Production artifacts are produced in a sterile environment (in another CI workflow).
+
+name: "dev.yml"
+on:
+  merge_group:
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: "boolean"
+        description: "Run with tmate enabled"
+        required: false
+        default: false
+  push: {}
+
+concurrency:
+  group: "${{ github.workflow }}:${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions:
+  contents: "read"
+  packages: "write"
+  id-token: "write"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        rust:
+          - toolchain: "stable"
+            optional: false
+          - toolchain: "beta"
+            optional: true
+          - toolchain: "nightly"
+            optional: true
+        just:
+          - version: "1.36.0"
+    continue-on-error: ${{ matrix.rust.optional }}
+    runs-on: "lab"
+    timeout-minutes: 45
+    steps:
+      - name: "login to ghcr.io"
+        uses: "docker/login-action@v3"
+        with:
+          registry: "ghcr.io"
+          username: "${{ github.actor }}"
+          password: "${{ secrets.GITHUB_TOKEN }}"
+      - name: "install rust"
+        uses: "dtolnay/rust-toolchain@stable"
+        with:
+          toolchain: "${{ matrix.rust.toolchain }}"
+          targets: "x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl"
+      - name: "Checkout"
+        uses: "actions/checkout@v4"
+      - uses: "cargo-bins/cargo-binstall@main"
+      - name: "install just"
+        run: |
+          cargo binstall --no-confirm just
+      - name: "install nextest"
+        run: |
+          cargo binstall --no-confirm cargo-nextest
+      - name: "install cargo-deny"
+        run: |
+          cargo binstall --no-confirm cargo-deny
+      - run: |
+          just cargo deny check
+      - name: "install openssl and libssl-dev (needed for markdown-test-report)"
+        run: |
+          sudo apt-get update
+          sudo apt-get --yes --no-install-recommends install pkg-config openssl libssl-dev colorized-logs
+      - name: "install markdown-test-report"
+        run: |
+          cargo binstall --no-confirm markdown-test-report
+      - name: refresh-compile-env
+        run: |
+          just --yes refresh-compile-env
+      - run: |
+          just --yes fake-nix
+
+      - run: |
+          just cargo +${{matrix.rust.toolchain}} build --locked --profile=dev --target=x86_64-unknown-linux-gnu
+        continue-on-error: ${{ matrix.rust.optional }}
+      - name: "tests: rust ${{ matrix.rust.toolchain }} profile=dev target=x86_64-unknown-linux-gnu"
+        run: |
+          export GITHUB_STEP_SUMMARY
+          just debug=true rust=${{matrix.rust.toolchain}} profile=dev target=x86_64-unknown-linux-gnu test
+          just debug=true rust=${{matrix.rust.toolchain}} profile=dev target=x86_64-unknown-linux-gnu report
+        continue-on-error: ${{ matrix.rust.optional }}
+
+      - run: |
+          just cargo +${{matrix.rust.toolchain}} build --locked --profile=dev --target=x86_64-unknown-linux-musl
+        continue-on-error: ${{ matrix.rust.optional }}
+      - name: "tests: rust ${{ matrix.rust.toolchain }} profile=dev target=x86_64-unknown-linux-musl"
+        run: |
+          export GITHUB_STEP_SUMMARY
+          just debug=true rust=${{matrix.rust.toolchain}} profile=dev target=x86_64-unknown-linux-musl test
+          just debug=true rust=${{matrix.rust.toolchain}} profile=dev target=x86_64-unknown-linux-musl report
+        continue-on-error: ${{ matrix.rust.optional }}
+
+      - run: |
+          just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
+        continue-on-error: ${{ matrix.rust.optional }}
+      - name: "tests: rust ${{ matrix.rust.toolchain }} profile=release target=x86_64-unknown-linux-gnu"
+        run: |
+          export GITHUB_STEP_SUMMARY
+          just debug=true rust=${{matrix.rust.toolchain}} profile=release target=x86_64-unknown-linux-gnu test
+          just debug=true rust=${{matrix.rust.toolchain}} profile=release target=x86_64-unknown-linux-gnu report
+        continue-on-error: ${{ matrix.rust.optional }}
+
+      - run: |
+          just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-musl
+        continue-on-error: ${{ matrix.rust.optional }}
+      - name: "tests: rust ${{ matrix.rust.toolchain }} profile=release target=x86_64-unknown-linux-musl"
+        run: |
+          export GITHUB_STEP_SUMMARY
+          just debug=true rust=${{matrix.rust.toolchain}} profile=release target=x86_64-unknown-linux-musl test
+          just debug=true rust=${{matrix.rust.toolchain}} profile=release target=x86_64-unknown-linux-musl report
+        continue-on-error: ${{ matrix.rust.optional }}
+
+      - uses: "actions/upload-artifact@v4"
+        if: ${{ always() }}
+        with:
+          name: "test-results-${{ matrix.rust.toolchain  }}"
+          path: "target/nextest/"
+
+      - name: "Setup tmate session for debug"
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: "mxschmitt/action-tmate@v3"
+        timeout-minutes: 60
+        with:
+          limit-access-to-actor: true

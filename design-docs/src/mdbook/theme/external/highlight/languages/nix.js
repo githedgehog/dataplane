@@ -1,4 +1,4 @@
-/*! `nix` grammar compiled for Highlight.js 11.9.0 */
+/*! `nix` grammar compiled for Highlight.js 11.10.0 */
   (function(){
     var hljsGrammar = (function () {
   'use strict';
