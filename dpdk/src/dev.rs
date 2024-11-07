@@ -99,13 +99,13 @@ impl DevIndex {
                     return Err(DevInfoError::InvalidArgument);
                 }
                 val => {
-                    let unknown = match StandardErrno::parse_i32(val) {
+                    let _unknown = match StandardErrno::parse_i32(val) {
                         Ok(standard) => {
                             return Err(DevInfoError::UnknownStandard(standard));
                         }
                         Err(unknown) => unknown,
                     };
-                    let unknown = match NegStandardErrno::parse_i32(val) {
+                    let _unknown = match NegStandardErrno::parse_i32(val) {
                         Ok(standard) => {
                             return Err(DevInfoError::UnknownNegStandard(standard));
                         }
@@ -779,9 +779,9 @@ pub struct StartedDev {
     pub info: DevInfo,
     /// The configuration of the device.
     pub config: DevConfig,
-    pub(crate) rx_queues: Vec<RxQueue>,
-    pub(crate) tx_queues: Vec<TxQueue>,
-    pub(crate) hairpin_queues: Vec<HairpinQueue>,
+    pub rx_queues: Vec<RxQueue>,
+    pub tx_queues: Vec<TxQueue>,
+    pub hairpin_queues: Vec<HairpinQueue>,
 }
 
 impl Dev {

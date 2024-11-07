@@ -345,6 +345,9 @@ impl Drop for PoolInner {
     }
 }
 
+/// A DPDK Mbuf (memory buffer)
+/// 
+/// Usually used to hold an ethernet frame.
 #[repr(transparent)]
 pub struct Mbuf {
     pub(crate) raw: NonNull<rte_mbuf>,
@@ -376,7 +379,6 @@ impl Mbuf {
     #[tracing::instrument(level = "trace")]
     pub(crate) fn new_from_raw(raw: *mut rte_mbuf) -> Option<Mbuf> {
         let raw = match NonNull::new(raw) {
-            #[cold]
             None => {
                 warn!("Attempted to create Mbuf from null pointer");
                 return None;
@@ -390,6 +392,7 @@ impl Mbuf {
         })
     }
 
+    /// Get an immutable ref to the raw data of an Mbuf
     pub fn raw_data(&self) -> &[u8] {
         let pkt_data_start = unsafe {
             (self.raw.as_ref().buf_addr as *const u8)
@@ -403,6 +406,7 @@ impl Mbuf {
         }
     }
 
+    /// Get a mutable ref to the raw data of an Mbuf
     pub fn raw_data_mut(&mut self) -> &mut [u8] {
         unsafe {
             let data_start = self

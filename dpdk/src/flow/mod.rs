@@ -7,7 +7,6 @@ use crate::queue::tx::TxQueueIndex;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::marker::PhantomData;
-use core::net::Ipv4Addr;
 use core::ptr::NonNull;
 use dpdk_sys::*;
 use net;
@@ -28,8 +27,8 @@ pub struct FlowRule {
     _phantom: PhantomData<rte_flow>,
 }
 
-const MAX_PATTERN_NUM: usize = 16;
-const MAX_ACTION_NUM: usize = 16;
+pub const MAX_PATTERN_NUM: usize = 16;
+pub const MAX_ACTION_NUM: usize = 16;
 
 /// TODO: convert numbers to constant references to `rte_flow_item_type`
 #[derive(Debug)]
@@ -244,7 +243,7 @@ pub enum FlowMatch {
 #[derive(Debug, Clone, Copy)]
 pub struct MatchTag {
     /// NOTE: can't be more than 2^24 - 1
-    data: u32,
+    pub data: u32,
 }
 
 /// A metadata value to match on.
@@ -261,7 +260,7 @@ pub struct Vni(pub u32);
 
 // TODO: expose remaining fields
 pub struct VxlanHeader {
-    vni: Vni,
+    pub vni: Vni,
 }
 
 pub struct UdpPort(pub u16);
@@ -269,26 +268,26 @@ pub struct TcpPort(pub u16);
 
 // TODO: expose remaining fields
 pub struct TcpHeader {
-    src_port: TcpPort,
-    dst_port: TcpPort,
+    pub src_port: TcpPort,
+    pub dst_port: TcpPort,
 }
 
 // TODO: expose remaining fields
 pub struct UdpHeader {
-    src_port: UdpPort,
-    dst_port: UdpPort,
+    pub src_port: UdpPort,
+    pub dst_port: UdpPort,
 }
 
 // TODO: expose remaining fields
 pub struct Ipv6Header {
-    src: core::net::Ipv6Addr,
-    dst: core::net::Ipv6Addr,
+    pub src: core::net::Ipv6Addr,
+    pub dst: core::net::Ipv6Addr,
 }
 
 // TODO: expose remaining fields
 pub struct Ipv4Header {
-    src: Ipv4Addr,
-    dst: Ipv4Addr,
+    pub src: core::net::Ipv4Addr,
+    pub dst: core::net::Ipv4Addr,
 }
 
 pub struct FlowSpec<T> {
@@ -359,9 +358,9 @@ impl From<EthHeader> for rte_flow_item_eth {
 pub struct VlanTci(pub u16);
 
 pub struct VlanHeader {
-    ether_type: EtherType,
-    tci: VlanTci,
-    inner_ether_type: EtherType,
+    pub ether_type: EtherType,
+    pub tci: VlanTci,
+    pub inner_ether_type: EtherType,
     // TODO: figure out why DPDK lets you spec TCI twice
 }
 
@@ -688,13 +687,19 @@ pub enum FlowAction {
     // Nat64,
 }
 
+/// Modify a field
 #[repr(u32)]
 pub enum FieldModificationOperation {
+    /// Set a field
     Set = rte_flow_modify_op::RTE_FLOW_MODIFY_SET,
+    /// Add to a field
     Add = rte_flow_modify_op::RTE_FLOW_MODIFY_ADD,
+    /// Subtract from a field
     Subtract = rte_flow_modify_op::RTE_FLOW_MODIFY_SUB,
 }
 
+/// A wrapper around a `rte_flow_action_modify_field` that specifies the
+/// field to modify and its new value.
 #[repr(u32)]
 pub enum FlowFieldId {
     /// Start of a packet.
@@ -803,41 +808,71 @@ pub enum FlowFieldId {
     VxlanLastReserved = rte_flow_field_id::RTE_FLOW_FIELD_VXLAN_LAST_RSVD,
 }
 
+/// A wrapper around a `rte_flow_action_modify_field` that specifies the
+/// field to modify and its new value.
 #[derive(Debug, Clone, Copy)]
 pub enum SetFlowField {
+    /// Dest mac
     MacDst(MacAddr),
+    /// Source mac
     MacSrc(MacAddr),
+    /// Vlan ethertype
     VlanType(EtherType),
+    /// Vlan VID
     VlanVid(net::vlan::Vid),
+    /// Ethertype
     EtherType(EtherType),
+    /// IPv4 DSCP
     Ipv4Dscp(u8),
+    /// IPv4 TTL
     Ipv4Ttl(u8),
-    Ipv4Src(Ipv4Addr),
-    Ipv4Dst(Ipv4Addr),
+    /// Ipv4 source
+    Ipv4Src(core::net::Ipv4Addr),
+    /// Ipv4 dest
+    Ipv4Dst(core::net::Ipv4Addr),
+    /// Ipv6 DSCP
     Ipv6Dscp(u8),
+    /// Ipv6 hop limit (ttl)
     Ipv6HopLimit(u8),
+    /// Ipv6 source
     Ipv6Src(core::net::Ipv6Addr),
+    /// Ipv6 dest
     Ipv6Dst(core::net::Ipv6Addr),
+    /// TCP source port
     TcpPortSrc(u16),
+    /// TCP dest port
     TcpPortDst(u16),
+    /// TCP seq number
     TcpSeqNum(u32),
+    /// TCP ack num
     TcpAckNum(u32),
+    /// TCP flags
     TcpFlags(u16),
+    /// UDP source port
     UdpPortSrc(u16),
+    /// UDP dest port
     UdpPortDst(u16),
+    /// VXLAN vni
     VxlanVni(net::vxlan::Vni),
+    /// Tag
     Tag(MatchTag),
+    /// Metadata
     Meta(MatchMeta),
+    /// Ipv4 ECN
     IpV4Ecn(u8),
+    /// IPv6 ECN
     IpV6Ecn(u8),
 }
 
+/// A wrapper around a `rte_flow_action_modify_field` that specifies the
+/// field to modify and its new value.
 pub struct SetFieldAction {
-    rule: SetFlowField,
-    conf: rte_flow_action_modify_field,
+    pub rule: SetFlowField,
+    pub conf: rte_flow_action_modify_field,
 }
 
 impl SetFlowField {
+    /// Converts the `SetFlowField` into a `SetFieldAction`.
     pub fn to_flow_rule(&self) -> SetFieldAction {
         let conf = match self {
             SetFlowField::MacDst(mac_addr) => {
@@ -895,11 +930,13 @@ impl Sealed for u32 {}
 impl Sealed for u64 {}
 impl Sealed for u128 {}
 
+/// A wrapper around unsigned numbers that specifies they are in big endian order.
 #[repr(transparent)]
 pub struct BigEndian<T>(T)
 where
     T: UnsignedNum;
 
+/// An unsigned number (e.g. u8 or u32)
 pub trait UnsignedNum: Sealed {}
 
 impl<T> UnsignedNum for T where T: Sealed {}
@@ -942,8 +979,4 @@ impl From<u128> for BigEndian<u128> {
     fn from(x: u128) -> Self {
         BigEndian(x.to_be())
     }
-}
-
-pub struct JumpAction {
-    group: u32,
 }

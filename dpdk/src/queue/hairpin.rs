@@ -1,6 +1,6 @@
 //! Hairpin queue configuration and management.
 use super::{rx, tx};
-use crate::dev::{Dev, DevConfig, DevInfo};
+use crate::dev::{Dev, DevInfo};
 use crate::queue::rx::RxQueue;
 use crate::queue::tx::{TxQueue};
 use dpdk_sys::*;
@@ -99,7 +99,7 @@ impl HairpinQueue {
         Ok(HairpinQueue { rx, tx, peering })
     }
 
-    pub(crate) fn start(self) -> HairpinQueue {
+    pub fn start(self) -> HairpinQueue {
         let rx = match self.rx.start() {
             Ok(rx) => rx,
             Err(_) => todo!(),

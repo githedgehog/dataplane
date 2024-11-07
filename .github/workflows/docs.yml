@@ -1,0 +1,132 @@
+name: "docs.yml"
+
+on:
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: "boolean"
+        description: "Run the build with tmate debugging enabled"
+  pull_request: { }
+  merge_group:
+  push:
+    branches:
+      - "main"
+
+concurrency:
+  group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.event.after }}"
+  cancel-in-progress: true
+
+permissions:
+  contents: "read"
+  pages: "write"
+  id-token: "write"
+  pull-requests: "read"
+  statuses: "write"
+
+jobs:
+  check_changes:
+    name: "Deduce required tests from code changes"
+    runs-on: "ubuntu-latest"
+    outputs:
+      docs: "${{ steps.changes.outputs.docs }}"
+    steps:
+      - name: "Checkout"
+        if: "${{ !github.event.pull_request }}"
+        uses: "actions/checkout@v4"
+        with:
+          persist-credentials: "false"
+          fetch-depth: "0"
+      - name: "Check code changes"
+        uses: "dorny/paths-filter@v3"
+        id: "changes"
+        with:
+          # For "push" events, compare against the "ref" base branch.
+          # For "pull_request" events, this is ignored and will compare against
+          # the pull request base branch.
+          base: "${{ github.ref }}"
+          filters: |
+            docs:
+              - '*.nix'
+              - 'flake.lock'
+              - 'design-docs/**'
+              - 'nix/**'
+              - '.github/workflows/build-and-deploy-docs.yml'
+
+  build:
+    name: "Build and deploy documentation"
+    needs: [ check_changes ]
+    if: "${{ needs.check_changes.outputs.docs == 'true' }}"
+    runs-on: "ubuntu-latest"
+    steps:
+
+      - uses: "cargo-bins/cargo-binstall@main"
+      - run: |
+          cargo binstall --no-confirm just
+
+      - name: "Checkout"
+        uses: "actions/checkout@v4"
+
+      - name: "Extract branch name"
+        shell: "bash"
+        run: |
+          echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> $GITHUB_OUTPUT
+        id: "extract_branch"
+
+      - name: "Extract git hash"
+        shell: "bash"
+        run: |
+          echo "git_hash=${GITHUB_SHA}" >> $GITHUB_OUTPUT
+        id: "extract_hash"
+
+      - name: "Build design docs"
+        run: |
+          just mdbook build
+
+      - name: "Copy design doc build to publish directory"
+        run: |
+          set -euxo pipefail
+          mkdir --parent "${{ github.workspace }}/publish/"
+          cp -r ./design-docs/src/mdbook/book "${{ github.workspace }}/publish/design-docs"
+
+      - name: "(Push) Setup Pages"
+        if: "${{ !github.event.pull_request }}"
+        uses: "actions/configure-pages@v5"
+
+      - name: "(Push) Upload design-docs"
+        if: "${{ !github.event.pull_request }}"
+        uses: "actions/upload-pages-artifact@v3"
+        with:
+          # Upload design-docs build directory content
+          path: 'publish/design-docs'
+
+      - name: "(Push) Deploy to GitHub Pages"
+        if: "${{ !github.event.pull_request }}"
+        id: "deployment"
+        uses: "actions/deploy-pages@v4"
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: "(PR) Deploy documentation preview"
+        if: "${{ github.event.pull_request }}"
+        uses: "nwtgck/actions-netlify@v2"
+        with:
+          publish-dir: "${{ github.workspace }}/publish/design-docs"
+          alias: "preview-${{ github.event.number }}"
+          deploy-message: "${{ github.event.pull_request.title }}"
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+          fails-without-credentials: "true"
+          enable-commit-status: "true"
+          enable-pull-request-comment: "false"
+          enable-commit-comment: "false"
+          enable-github-deployment: "false"
+        env:
+          NETLIFY_AUTH_TOKEN: "${{ secrets.NETLIFY_AUTH_TOKEN }}"
+          NETLIFY_SITE_ID: "${{ secrets.NETLIFY_SITE_ID }}"
+        timeout-minutes: 5
+
+      - name: "Setup tmate session for debug"
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: "mxschmitt/action-tmate@v3"
+        timeout-minutes: 60
+        with:
+          limit-access-to-actor: true

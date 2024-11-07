@@ -26,10 +26,7 @@
 //! encourage this practice.
 #![cfg_attr(not(test), no_std)]
 #![warn(
-    missing_docs,
     clippy::all,
-    clippy::missing_panics_doc,
-    clippy::missing_safety_doc
 )]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![allow(private_bounds)]

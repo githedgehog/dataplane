@@ -1,0 +1,198 @@
+# This is a sterile build and test workflow that uses the `dev-env` container image
+# to build and test the project in a sterile environment.
+# Artifacts produced by this workflow are intended to be used for production.
+name: "sterile.yml"
+on:
+  push:
+  merge_group:
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: "boolean"
+        description: "Run with tmate enabled"
+        required: false
+        default: false
+
+concurrency:
+  group: "${{ github.workflow }}:${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  test:
+    permissions:
+      contents: "read"
+      packages: "read"
+      id-token: "write"
+    runs-on: "lab"
+    strategy:
+      fail-fast: false
+      matrix:
+        rust:
+          - "stable"
+          - "nightly"
+    steps:
+      - name: "login to ghcr.io"
+        uses: "docker/login-action@v3"
+        with:
+          registry: "ghcr.io"
+          username: "${{ github.actor }}"
+          password: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: "install rust"
+        uses: "dtolnay/rust-toolchain@stable"
+        with:
+          toolchain: "${{ matrix.rust }}"
+          targets: "x86_64-unknown-linux-gnu"
+
+      - uses: "cargo-bins/cargo-binstall@main"
+      - name: "install just"
+        run: |
+          cargo binstall --no-confirm just
+
+      - name: "Checkout"
+        uses: "actions/checkout@v4"
+
+      - name: "dev/gnu sterile test"
+        if: ${{ always() }}
+        run: |
+          export GITHUB_STEP_SUMMARY
+          just rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu sterile test
+          mkdir dev.gnu
+          cp -a ./target/nextest dev.gnu
+
+      - name: "release/gnu sterile test"
+        if: ${{ always() }}
+        run: |
+          export GITHUB_STEP_SUMMARY
+          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu sterile test
+          mkdir release.gnu
+          cp -a ./target/nextest release.gnu
+
+      - name: "dev/musl sterile test"
+        if: ${{ always() }}
+        run: |
+          export GITHUB_STEP_SUMMARY
+          just rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl sterile test
+          mkdir dev.musl
+          cp -a ./target/nextest dev.musl
+
+      - name: "release/musl sterile test"
+        if: ${{ always() }}
+        run: |
+          export GITHUB_STEP_SUMMARY
+          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl sterile test
+          mkdir release.musl
+          cp -a ./target/nextest release.musl
+
+      - name: "install markdown-test-report"
+        if: ${{ always() }}
+        run: |
+          sudo apt-get update
+          sudo apt-get --yes --no-install-recommends install \
+            colorized-logs \
+            libssl-dev \
+            openssl \
+            pkg-config
+          cargo binstall --no-confirm markdown-test-report
+
+      - name: "dev/gnu report"
+        if: ${{ always() }}
+        run: |
+          export GITHUB_STEP_SUMMARY
+          export CARGO_TARGET_DIR=dev.gnu
+          just rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu report
+
+      - name: "dev/musl report"
+        if: ${{ always() }}
+        run: |
+          export GITHUB_STEP_SUMMARY
+          export CARGO_TARGET_DIR=dev.musl
+          just rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl report
+
+      - name: "release/gnu report"
+        if: ${{ always() }}
+        run: |
+          export GITHUB_STEP_SUMMARY
+          export CARGO_TARGET_DIR=release.gnu
+          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu report
+
+      - name: "release/musl report"
+        if: ${{ always() }}
+        run: |
+          export GITHUB_STEP_SUMMARY
+          export CARGO_TARGET_DIR=release.musl
+          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl report
+
+      - uses: "actions/upload-artifact@v4"
+        if: ${{ always() }}
+        with:
+          name: 'rust-${{matrix.rust}}-test-results'
+          path: "target/nextest"
+
+      - name: "Setup tmate session for debug"
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: "mxschmitt/action-tmate@v3"
+        timeout-minutes: 60
+        with:
+          limit-access-to-actor: true
+
+  push:
+    permissions:
+      contents: "read"
+      packages: "write"
+      id-token: "write"
+    runs-on: "lab"
+    strategy:
+      fail-fast: false
+      matrix:
+        rust:
+          - "stable"
+          - "nightly"
+    steps:
+      - name: "login to ghcr.io"
+        uses: "docker/login-action@v3"
+        with:
+          registry: "ghcr.io"
+          username: "${{ github.actor }}"
+          password: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: "install rust"
+        uses: "dtolnay/rust-toolchain@stable"
+        with:
+          toolchain: "${{ matrix.rust }}"
+          targets: "x86_64-unknown-linux-gnu"
+
+      - uses: "cargo-bins/cargo-binstall@main"
+      - name: "install just"
+        run: |
+          cargo binstall --no-confirm just
+
+      - name: "Checkout"
+        uses: "actions/checkout@v4"
+
+      - name: "install rust"
+        uses: "dtolnay/rust-toolchain@stable"
+        with:
+          toolchain: "${{ matrix.rust }}"
+          targets: "x86_64-unknown-linux-gnu"
+
+      - uses: "cargo-bins/cargo-binstall@main"
+      - run: |
+          cargo binstall --no-confirm cargo-deny
+      - run: |
+          just cargo deny check
+      - run: |
+          just rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-gnu push-container
+      - run: |
+          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu push-container
+      - run: |
+          just rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-musl push-container
+      - run: |
+          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl push-container
+
+      - name: "Setup tmate session for debug"
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: "mxschmitt/action-tmate@v3"
+        timeout-minutes: 60
+        with:
+          limit-access-to-actor: true

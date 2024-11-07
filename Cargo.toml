@@ -12,47 +12,18 @@ resolver = "2"
 [workspace.dependencies]
 
 bindgen = { version = "0.70.1" }
-bolero = { version = "0.11.1" }
-cc = { version = "1.1.36" }
+bolero = { version = "=0.10.1" } # TODO: update as soon as resolution bug with 0.11 or better is fixed
+cc = { version = "1.1.31" }
+criterion = { version = "0.5.1", default-features = true }
 doxygen-rs = { version = "0.4.0" }
 etherparse = { version = "0.16.0", default-features = false, features = [] }
 libc = { version = "0.2.161" }
-rstest = { version = "0.22.0", default-features = false, features = [] }
-serde = { version = "1.0.214", default-features = false, features = ["derive", "alloc", "rc"] }
+rand = { version = "0.8.5", default-features = false, features = [] }
+rstest = { version = "0.23.0", default-features = false, features = [] }
+serde = { version = "1.0.213", default-features = false, features = ["derive", "alloc", "rc"] }
 syscalls = { version = "0.6.18" }
 thiserror = { version = "2.0.0", package = "thiserror-no-std" } # replace with regular thiserror when https://github.com/dtolnay/thiserror/pull/304 lands
 tracing = { version = "0.1.40", default-features = false, features = ["attributes"] }
 tracing-subscriber = { version = "0.3.18" }
 tracing-test = { version = "0.2.5" }
 
-[profile.release]
-opt-level = 3
-lto = "thin"
-codegen-units = 1
-overflow-checks = false
-#split-debuginfo = "packed"
-strip = "none"
-# NOTE: I expect that we will use objcopy / strip to keep the debug symbols in a separate file
-# We _could_ just compile without them, but if you need debug symbols for a release build, you
-# are already having a rough day, and if you need them and don't have them, then you are having a
-# worse day :)
-#
-# That said, debug-assertions should still be false so that compiler optimizations are not
-# inhibited.
-debug = true
-debug-assertions = false
-
-[profile.dev]
-opt-level = 0
-lto = false
-incremental = true
-debug = true
-
-[profile.analysis]
-inherits = "dev"
-codegen-units = 1
-lto = "thin"
-incremental = false
-
-[profile.fuzz]
-inherits = "release"

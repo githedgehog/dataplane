@@ -1,12 +1,12 @@
-/*! `dockerfile` grammar compiled for Highlight.js 11.9.0 */
+/*! `dockerfile` grammar compiled for Highlight.js 11.10.0 */
 var hljsGrammar = (function () {
   'use strict';
 
   /*
-  Language: psample.Dockerfile
+  Language: Dockerfile
   Requires: bash.js
   Author: Alexis Hénaut <alexis@henaut.net>
-  Description: language definition for psample.Dockerfile files
+  Description: language definition for Dockerfile files
   Website: https://docs.docker.com/engine/reference/builder/
   Category: config
   */

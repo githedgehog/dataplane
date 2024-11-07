@@ -1,0 +1,70 @@
+name: "bump.yml"
+on:
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: "boolean"
+        description: "Run with tmate enabled"
+        required: false
+        default: false
+  schedule:
+    # Check for updates at 3:18am every day.
+    # I avoid midnight because everyone uses midnight and
+    # I don't need to contribute to load spikes.
+    - cron: "18 3 * * *"
+
+concurrency:
+  group: "${{ github.workflow }}:${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions:
+  contents: "write"
+  pull-requests: "write"
+  packages: "read"
+  id-token: "write"
+jobs:
+  update:
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: "login to ghcr.io"
+        uses: "docker/login-action@v3"
+        with:
+          registry: "ghcr.io"
+          username: "${{ github.actor }}"
+          password: "${{ secrets.GITHUB_TOKEN }}"
+      - name: "Checkout"
+        uses: "actions/checkout@v4"
+      - name: "install rust"
+        uses: "dtolnay/rust-toolchain@stable"
+      - uses: "cargo-bins/cargo-binstall@main"
+      - name: "install cargo-deny"
+        run: |
+          cargo binstall --no-confirm cargo-deny
+      - name: "deny check"
+        run: |
+          cargo deny check
+      - name: "install envsubst"
+        run: |
+          sudo apt-get update
+          sudo apt-get --yes --no-install-recommends gettext
+      - run: |
+          ./scripts/update-versions.sh
+      - name: "Create Pull Request"
+        uses: "peter-evans/create-pull-request@v7"
+        with:
+          branch: "bump/dpdk-sys"
+          title: "bump/dpdk-sys"
+          labels: |
+            automated
+            dependencies
+          signoff: "true"
+          commit-message: "bump/dpdk-sys"
+          sign-commits: "true"
+          body: "bump dpdk-sys"
+
+      - name: "Setup tmate session for debug"
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: "mxschmitt/action-tmate@v3"
+        timeout-minutes: 60
+        with:
+          limit-access-to-actor: true

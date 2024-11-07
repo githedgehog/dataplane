@@ -3,8 +3,6 @@
 use core::num::NonZero;
 use tracing::instrument;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[repr(transparent)]
 /// A VXLAN Network Identifier.
 ///
 /// The [`Vni`] is a 24-bit value that identifies a VXLAN network.
@@ -25,6 +23,8 @@ use tracing::instrument;
 /// The memory / compute overhead of using this type as opposed to a `u32` is then strictly
 /// limited to the price of checking that the represented value is in fact a legal [`Vni`], (which
 /// we should generally be doing anyway).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(transparent)]
 pub struct Vni(NonZero<u32>);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -106,26 +106,12 @@ impl core::fmt::Display for Vni {
     }
 }
 
-#[cfg(any(test, feature = "_fake_kani", kani))]
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod test {
 
-    // This is just a hack to make the IDE chill out when using kani
-    #[cfg(all(not(kani), feature = "_fake_kani"))]
-    pub mod kani {
-        #[must_use]
-        pub fn any<T>() -> T {
-            unimplemented!("This function is only available in Kani")
-        }
-
-        pub fn assume(_condition: bool) {
-            unimplemented!("This function is only available in Kani")
-        }
-    }
-
     use super::*;
 
-    #[cfg_attr(kani, kani::proof)]
     #[test]
     fn fuzz_test() {
         bolero::check!()
