@@ -63,7 +63,7 @@ _commit := `git rev-parse HEAD 2>/dev/null || echo "sterile"`
 # The git branch we are currnetly on
 # We allow this command to fail in the sterile environment because git is not available there
 
-_branch := `git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "sterile"`
+_branch := `(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "sterile") | tr -c '[:alnum:]\n' '-'`
 
 # The git tree state (clean or dirty)
 # We allow this command to fail in the sterile environment because git is not available there
