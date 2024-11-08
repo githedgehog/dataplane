@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
 //! Standard errno values, meanings, and lookups
 //!
 //! This code is tedious but quite safe.

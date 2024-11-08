@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
 //! Hairpin queue configuration and management.
 use super::{rx, tx};
 use crate::dev::{Dev, DevInfo};
