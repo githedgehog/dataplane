@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
 //! Safe DPDK bindings for Rust.
 //!
 //! This crate provides safe bindings to the DPDK library.

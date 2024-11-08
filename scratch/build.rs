@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
 fn main() {
     let sysroot = dpdk_sysroot_helper::get_sysroot();
     let project_root = dpdk_sysroot_helper::get_project_root();

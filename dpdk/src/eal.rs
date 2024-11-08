@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
 //! DPDK Environment Abstraction Layer (EAL)
 use alloc::format;
 use alloc::string::{String, ToString};

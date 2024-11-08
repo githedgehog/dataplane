@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
 use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, Criterion};
 

@@ -114,3 +114,8 @@ just cargo test --profile=release
 > `just` is computing the correct `RUSTFLAGS` for us depending on the profile.
 > After that it simply calls `cargo build`.
 > Normally we would include those kinds of setting in `Cargo.toml` but `cargo` can not currently express all the `RUSTFLAGS` we are using (thus the `just` wrapper).
+
+## License
+
+The Dataplane of the Hedgehog Open Fabric Network is licensed under the
+[Apache License, Version 2.0](LICENSE).

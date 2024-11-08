@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
 use dpdk::dev::TxOffloadConfig;
 use dpdk::{dev, eal, mem, queue, socket};
 use dpdk_sys::*;

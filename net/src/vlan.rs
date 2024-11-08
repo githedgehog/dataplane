@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
 //! VLAN validation and manipulation.
 
 use core::num::NonZero;
