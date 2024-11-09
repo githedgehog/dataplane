@@ -48,11 +48,9 @@ jobs:
         with:
           filters: |
             docs:
-              - '*.nix'
-              - 'flake.lock'
               - 'design-docs/**'
-              - 'nix/**'
-              - '.github/workflows/build-and-deploy-docs.yml'
+              - '.github/workflows/docs.yml'
+              - 'scripts/dpdk-sys.env'
 
   build:
     name: "Build and deploy documentation"
