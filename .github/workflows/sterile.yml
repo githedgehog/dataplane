@@ -196,3 +196,23 @@ jobs:
         timeout-minutes: 60
         with:
           limit-access-to-actor: true
+
+  summary:
+    name: "summary"
+    if: ${{ always() }}
+    runs-on: "ubuntu-latest"
+    needs:
+      - test
+      - push
+    steps:
+      - name: "Flag any test failures"
+        if: ${{ needs.test.result != 'success' }}
+        run: |
+          >&2 echo "One or more required tests failed"
+          exit 1
+      - name: "Flag any push failures"
+        if: ${{ needs.push.result != 'success' }}
+        run: |
+          >&2 echo "One or more required pushes failed"
+          exit 1
+    
