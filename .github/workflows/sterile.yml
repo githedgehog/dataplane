@@ -56,7 +56,7 @@ jobs:
         if: ${{ always() }}
         run: |
           export GITHUB_STEP_SUMMARY
-          just rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu sterile test
+          just debug=true rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu sterile test
           mkdir dev.gnu
           cp -a ./target/nextest dev.gnu
 
@@ -64,7 +64,7 @@ jobs:
         if: ${{ always() }}
         run: |
           export GITHUB_STEP_SUMMARY
-          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu sterile test
+          just debug=true rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu sterile test
           mkdir release.gnu
           cp -a ./target/nextest release.gnu
 
@@ -72,7 +72,7 @@ jobs:
         if: ${{ always() }}
         run: |
           export GITHUB_STEP_SUMMARY
-          just rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl sterile test
+          just debug=true rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl sterile test
           mkdir dev.musl
           cp -a ./target/nextest dev.musl
 
@@ -80,7 +80,7 @@ jobs:
         if: ${{ always() }}
         run: |
           export GITHUB_STEP_SUMMARY
-          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl sterile test
+          just debug=true rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl sterile test
           mkdir release.musl
           cp -a ./target/nextest release.musl
 
@@ -100,28 +100,28 @@ jobs:
         run: |
           export GITHUB_STEP_SUMMARY
           export CARGO_TARGET_DIR=dev.gnu
-          just rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu report
+          just debug=true rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu report
 
       - name: "dev/musl report"
         if: ${{ always() }}
         run: |
           export GITHUB_STEP_SUMMARY
           export CARGO_TARGET_DIR=dev.musl
-          just rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl report
+          just debug=true rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl report
 
       - name: "release/gnu report"
         if: ${{ always() }}
         run: |
           export GITHUB_STEP_SUMMARY
           export CARGO_TARGET_DIR=release.gnu
-          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu report
+          just debug=true rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu report
 
       - name: "release/musl report"
         if: ${{ always() }}
         run: |
           export GITHUB_STEP_SUMMARY
           export CARGO_TARGET_DIR=release.musl
-          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl report
+          just debug=true rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl report
 
       - uses: "actions/upload-artifact@v4"
         if: ${{ always() }}
@@ -180,15 +180,15 @@ jobs:
       - run: |
           cargo binstall --no-confirm cargo-deny
       - run: |
-          just cargo deny check
+          just debug=true cargo deny check
       - run: |
-          just rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-gnu push-container
+          just debug=true rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-gnu push-container
       - run: |
-          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu push-container
+          just debug=true rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu push-container
       - run: |
-          just rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-musl push-container
+          just debug=true rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-musl push-container
       - run: |
-          just rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl push-container
+          just debug=true rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl push-container
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
