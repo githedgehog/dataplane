@@ -84,6 +84,9 @@ _clean := ```
 
 _slug := (if _clean == "clean" { "" } else { "dirty-_-" }) + _branch
 
+# Define a function to truncate long lines to the limit for containers tags
+_define_truncate128 := 'truncate128() { printf -- "%s" "${1::128}" ; }'
+
 # The time of the build (in iso8601 utc)
 
 _build_time := datetime_utc("%+")
@@ -360,6 +363,7 @@ sterile-build: (sterile "_network=none" "cargo" "--locked" "build" ("--profile="
 [script]
 build-container: sterile-build
     {{ _just_debuggable_ }}
+    {{ _define_truncate128 }}
     declare build_date
     build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
     declare -r build_date
@@ -374,40 +378,41 @@ build-container: sterile-build
       --label "build.date=${build_date}" \
       --label "build.timestamp={{ _build_time }}" \
       --label "build.time_epoch=${build_time_epoch}" \
-      --tag "{{ _container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
+      --tag "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")" \
       --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/scratch" \
       .
 
     sudo -E docker tag \
-      "{{ _container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
-      "{{ _container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
+      "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")" \
+      "{{ _container_repo }}:$(truncate128 "{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")"
     sudo -E docker tag \
-      "{{ _container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
-      "{{ _container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}"
+      "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")" \
+      "{{ _container_repo }}:$(truncate128 "{{ _slug }}.{{ target }}.{{ profile }}")"
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ]; then
       sudo -E docker tag \
-        "{{ _container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
-        "{{ _container_repo }}:{{ _slug }}.{{ profile }}"
+        "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")" \
+        "{{ _container_repo }}:$(truncate128 "{{ _slug }}.{{ profile }}")"
     fi
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ] && [ "{{ profile }}" = "release" ]; then
       sudo -E docker tag \
-        "{{ _container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
-        "{{ _container_repo }}:{{ _slug }}"
+        "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")" \
+        "{{ _container_repo }}:$(truncate128 "{{ _slug }}")"
     fi
 
 # Build and push containers
 [script]
 push-container: build-container
+    {{ _define_truncate128 }}
     declare build_date
     build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
     declare -r build_date
-    sudo -E docker push "{{ _container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
-    sudo -E docker push "{{ _container_repo }}:{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
+    sudo -E docker push "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")"
+    sudo -E docker push "{{ _container_repo }}:$(truncate128 "{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")"
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ]; then
-      sudo -E docker push "{{ _container_repo }}:{{ _slug }}.{{ profile }}"
+      sudo -E docker push "{{ _container_repo }}:$(truncate128 "{{ _slug }}.{{ profile }}")"
     fi
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ] && [ "{{ profile }}" = "release" ]; then
-      sudo -E docker push "{{ _container_repo }}:{{ _slug }}"
+      sudo -E docker push "{{ _container_repo }}:$(truncate128 "{{ _slug }}")"
     fi
 
 # Run the tests (with nextest)
