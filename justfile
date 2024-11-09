@@ -366,8 +366,6 @@ build-container: sterile-build
     declare build_time_epoch
     build_time_epoch="$(date --utc '+%s' --date="{{ _build_time }}")"
     declare -r build_time_epoch
-    tag="${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}"
-    tag="${tag::128}"
     sudo -E docker build \
       --label "git.commit={{ _commit }}" \
       --label "git.branch={{ _branch }}" \
@@ -376,7 +374,7 @@ build-container: sterile-build
       --label "build.date=${build_date}" \
       --label "build.timestamp={{ _build_time }}" \
       --label "build.time_epoch=${build_time_epoch}" \
-      --tag "{{ _container_repo }}:${tag}" \
+      --tag "{{ _container_repo }}:${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}" \
       --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/scratch" \
       .
 
