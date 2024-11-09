@@ -7,7 +7,7 @@ updates:
       - /
     schedule:
       interval: "weekly"
-    versioning-strategy: "widen"
+    versioning-strategy: "lockfile-only"
     groups:
       dev-dependencies:
         applies-to: "version-updates"
