@@ -80,7 +80,7 @@ jobs:
 
       - name: "Build design docs"
         run: |
-          just mdbook build
+          just debug=true mdbook build
 
       - name: "Copy design doc build to publish directory"
         run: |

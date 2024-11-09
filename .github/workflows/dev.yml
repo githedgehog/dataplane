@@ -70,7 +70,7 @@ jobs:
         run: |
           cargo binstall --no-confirm cargo-deny
       - run: |
-          just cargo deny check
+          just debug=true cargo deny check
       - name: "install openssl and libssl-dev (needed for markdown-test-report)"
         run: |
           sudo apt-get update
@@ -80,12 +80,12 @@ jobs:
           cargo binstall --no-confirm markdown-test-report
       - name: refresh-compile-env
         run: |
-          just --yes refresh-compile-env
+          just --yes debug=true refresh-compile-env
       - run: |
-          just --yes fake-nix
+          just --yes debug=true fake-nix
 
       - run: |
-          just cargo +${{matrix.rust.toolchain}} build --locked --profile=dev --target=x86_64-unknown-linux-gnu
+          just debug=true cargo +${{matrix.rust.toolchain}} build --locked --profile=dev --target=x86_64-unknown-linux-gnu
         continue-on-error: ${{ matrix.rust.optional }}
       - name: "tests: rust ${{ matrix.rust.toolchain }} profile=dev target=x86_64-unknown-linux-gnu"
         run: |
@@ -105,7 +105,7 @@ jobs:
         continue-on-error: ${{ matrix.rust.optional }}
 
       - run: |
-          just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
+          just debug=true cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
         continue-on-error: ${{ matrix.rust.optional }}
       - name: "tests: rust ${{ matrix.rust.toolchain }} profile=release target=x86_64-unknown-linux-gnu"
         run: |
@@ -115,7 +115,7 @@ jobs:
         continue-on-error: ${{ matrix.rust.optional }}
 
       - run: |
-          just cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-musl
+          just debug=true cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-musl
         continue-on-error: ${{ matrix.rust.optional }}
       - name: "tests: rust ${{ matrix.rust.toolchain }} profile=release target=x86_64-unknown-linux-musl"
         run: |
