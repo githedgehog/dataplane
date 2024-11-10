@@ -79,27 +79,27 @@ impl DevIndex {
         let ret = unsafe { rte_eth_dev_info_get(self.0, &mut dev_info) };
 
         if ret != 0 {
-            match ret {
+            return match ret {
                 errno::NEG_ENOTSUP => {
                     error!(
                         "Device information not supported for port {index}",
                         index = self.0
                     );
-                    return Err(DevInfoError::NotSupported);
+                    Err(DevInfoError::NotSupported)
                 }
                 errno::NEG_ENODEV => {
                     error!(
                         "Device information not available for port {index}",
                         index = self.0
                     );
-                    return Err(DevInfoError::NotAvailable);
+                    Err(DevInfoError::NotAvailable)
                 }
                 errno::NEG_EINVAL => {
                     error!(
                         "Invalid argument when getting device info for port {index}",
                         index = self.0
                     );
-                    return Err(DevInfoError::InvalidArgument);
+                    Err(DevInfoError::InvalidArgument)
                 }
                 val => {
                     let _unknown = match StandardErrno::parse_i32(val) {
@@ -119,7 +119,7 @@ impl DevIndex {
                         index = self.0,
                         val = val
                     );
-                    return Err(DevInfoError::Unknown(errno::Errno(val)));
+                    Err(DevInfoError::Unknown(Errno(val)))
                 }
             }
             // error!(
@@ -149,7 +149,7 @@ impl DevIndex {
     ///   (statically ensured).
     /// * This function may panic if DPDK returns an unexpected (undocumented) error code after
     ///   failing to determine the socket id.
-    pub fn socket_id(&self) -> Result<SocketId, errno::ErrorCode> {
+    pub fn socket_id(&self) -> Result<SocketId, ErrorCode> {
         let socket_id = unsafe { rte_eth_dev_socket_id(self.as_u16()) };
         if socket_id == -1 {
             match unsafe { wrte_errno() } {
@@ -159,7 +159,7 @@ impl DevIndex {
                 }
                 errno::EINVAL => {
                     // We are asking DPDK for the socket id of a port that doesn't exist.
-                    return Err(errno::ErrorCode::parse_i32(errno::EINVAL));
+                    return Err(ErrorCode::parse_i32(errno::EINVAL));
                 }
                 errno => {
                     // Getting here means we have an unknown error.
@@ -709,7 +709,7 @@ pub struct Dev {
     pub config: DevConfig,
     pub(crate) rx_queues: Vec<RxQueue>,
     pub(crate) tx_queues: Vec<TxQueue>,
-    pub(crate) hairpin_queues: Vec<queue::hairpin::HairpinQueue>,
+    pub(crate) hairpin_queues: Vec<HairpinQueue>,
 }
 
 impl Dev {
@@ -855,5 +855,5 @@ pub enum SocketIdLookupError {
     #[error("Invalid port ID")]
     DevDoesNotExist(DevIndex),
     #[error("Unknown error code set")]
-    UnknownErrno(errno::ErrorCode),
+    UnknownErrno(ErrorCode),
 }
