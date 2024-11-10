@@ -606,7 +606,7 @@ fn main() {
 
 fn eal_main() {
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::WARN)
+        .with_max_level(tracing::Level::INFO)
         .with_target(false)
         .with_thread_ids(true)
         .with_line_number(true)
@@ -621,7 +621,7 @@ fn eal_main() {
         "--huge-dir",
         "/mnt/huge/1G",
         "--allow",
-        "0000:85:00.0,dv_flow_en=1",
+        "0000:01:00.0,dv_flow_en=1",
         // "--trace=.*",
         // "--iova-mode=va",
         // "-l",
@@ -672,6 +672,10 @@ fn eal_main() {
         info!(
             "Device rx offload capabilities: {rx_offload:?}",
             rx_offload = dev.rx_offload_caps()
+        );
+        info!(
+            "Device capas: {capas:?}",
+            capas = dev.capabilities()
         );
 
         let config = dev::DevConfig {

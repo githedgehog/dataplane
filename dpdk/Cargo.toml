@@ -32,6 +32,7 @@ etherparse = { workspace = true, default-features = false, features = [] }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
+bitflags = { workspace = true }
 
 [build-dependencies]
 dpdk-sysroot-helper = { path = "../dpdk-sysroot-helper" }

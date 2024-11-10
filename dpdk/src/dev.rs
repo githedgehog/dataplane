@@ -9,6 +9,7 @@ use core::ffi::{c_uint, CStr};
 use core::fmt::{Debug, Display, Formatter};
 use core::marker::PhantomData;
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
+use bitflags::bitflags;
 use tracing::{debug, error, info};
 
 use crate::eal::Eal;
@@ -545,13 +546,26 @@ impl BitXorAssign for TxOffload {
     }
 }
 
-#[derive(Debug, PartialEq)]
 /// Information about a DPDK ethernet device.
 ///
 /// This struct is a wrapper around the `rte_eth_dev_info` struct from DPDK.
+#[derive(Debug, PartialEq)]
 pub struct DevInfo {
     pub(crate) index: DevIndex,
     pub(crate) inner: rte_eth_dev_info,
+}
+
+bitflags! {
+    #[repr(transparent)]
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct DevCapabilities: u64 {
+        const RUNTIME_RX_QUEUE_SETUP = RTE_ETH_DEV_CAPA_RUNTIME_RX_QUEUE_SETUP as u64;
+        const RUNTIME_TX_QUEUE_SETUP = RTE_ETH_DEV_CAPA_RUNTIME_TX_QUEUE_SETUP as u64;
+        const RXQ_SHARE = RTE_ETH_DEV_CAPA_RXQ_SHARE as u64;
+        const FLOW_RULE_KEEP = RTE_ETH_DEV_CAPA_FLOW_RULE_KEEP as u64;
+        const FLOW_SHARED_OBJECT_KEEP = RTE_ETH_DEV_CAPA_FLOW_SHARED_OBJECT_KEEP as u64;
+        const _ = !0;
+    }
 }
 
 #[repr(transparent)]
@@ -674,29 +688,37 @@ impl DevInfo {
         self.inner.if_index
     }
 
-    #[allow(clippy::expect_used)]
-    #[tracing::instrument(level = "debug")]
     /// Get the driver name of the device.
     ///
     /// # Panics
     ///
     /// This function will panic if the driver name is not valid utf-8.
+    #[allow(clippy::expect_used)]
+    #[tracing::instrument(level = "debug")]
     pub fn driver_name(&self) -> &str {
         unsafe { CStr::from_ptr(self.inner.driver_name) }
             .to_str()
             .expect("driver name is not valid utf-8")
     }
 
-    #[tracing::instrument(level = "trace")]
     /// Get the maximum set of available tx offloads supported by the device.
+    #[tracing::instrument(level = "trace")]
     pub fn tx_offload_caps(&self) -> TxOffload {
         self.inner.tx_offload_capa.into()
     }
 
-    #[tracing::instrument(level = "trace")]
     /// Get the maximum set of available rx offloads supported by the device.
+    #[tracing::instrument(level = "trace")]
     pub fn rx_offload_caps(&self) -> RxOffload {
         self.inner.rx_offload_capa.into()
+    }
+
+    /// Get the capabilities of the device.
+    ///
+    /// See [`DevCapabilities`]
+    #[tracing::instrument(level = "trace")]
+    pub fn capabilities(&self) -> DevCapabilities {
+        DevCapabilities::from_bits_retain(self.inner.dev_capa)
     }
 }
 
