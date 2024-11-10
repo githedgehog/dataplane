@@ -13,23 +13,23 @@ extern crate alloc;
 pub mod vlan;
 pub mod vxlan;
 
+#[allow(clippy::unwrap_used)]
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloc::vec::Vec;
-    use etherparse::PacketBuilder;
+    use etherparse::{PacketBuilder, PacketHeaders};
 
     pub fn gen_random_udp_packet() -> Vec<u8> {
-        use etherparse::PacketBuilder;
         let src_mac: [u8; 6] = rand::random();
         let dst_mac: [u8; 6] = rand::random();
         let src_ip: [u8; 4] = rand::random();
         let dst_ip: [u8; 4] = rand::random();
         let src_port: u16 = rand::random();
         let dst_port: u16 = rand::random();
-        let tll = rand::random::<u8>();
+        let ttl = rand::random::<u8>();
         let builder = PacketBuilder::ethernet2(src_mac, dst_mac)
-            .ipv4(src_ip, dst_ip, rand::random())
+            .ipv4(src_ip, dst_ip, ttl)
             .udp(src_port, dst_port);
         let payload_length = (rand::random::<u16>() % 1200) as usize;
         let mut payload = Vec::with_capacity(payload_length + 50);
@@ -44,15 +44,13 @@ mod tests {
     #[test]
     pub fn parse_udp_packet() {
         let packet = gen_random_udp_packet();
-        use etherparse::PacketHeaders;
         let headers = PacketHeaders::from_ethernet_slice(packet.as_slice()).unwrap();
         tracing::info!("Headers: {:?}", headers);
     }
-    
+
     #[test]
     fn parse_udp_packet_bit_by_bit() {
         let packet = gen_random_udp_packet();
-        let mut cursor = 0;
-        let mut eth = etherparse::Ethernet2Header::from_slice(&packet[cursor..]).unwrap();
+        etherparse::Ethernet2Header::from_slice(packet.as_slice()).unwrap();
     }
 }
