@@ -18,7 +18,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  check_changes:
+    name: "Deduce required tests from code changes"
+    runs-on: "ubuntu-latest"
+    outputs:
+      devfiles: "${{ steps.changes.outputs.devfiles }}"
+    steps:
+      - name: "Checkout"
+        if: "${{ !github.event.pull_request }}"
+        uses: "actions/checkout@v4"
+        with:
+          persist-credentials: "true"
+          fetch-depth: "0"
+      - name: "Check code changes"
+        uses: "dorny/paths-filter@v3"
+        id: "changes"
+        with:
+          filters: |
+            devfiles:
+              - '!(README.md|LICENSE|design-docs/**|.gitignore|.github/**)'
+              - '.github/workflows/sterile.yml'
+
   test:
+    needs: [ check_changes ]
+    if: "${{ needs.check_changes.outputs.devfiles == 'true' }}"
     permissions:
       contents: "read"
       packages: "read"
@@ -137,6 +160,8 @@ jobs:
           limit-access-to-actor: true
 
   push:
+    needs: [ check_changes ]
+    if: "${{ needs.check_changes.outputs.devfiles == 'true' }}"
     permissions:
       contents: "read"
       packages: "write"
@@ -199,11 +224,11 @@ jobs:
 
   summary:
     name: "summary"
-    if: ${{ always() }}
     runs-on: "ubuntu-latest"
     needs:
       - test
       - push
+    if: ${{ always() && needs.test.result != 'skipped' && needs.push.result != 'skipped' }}
     steps:
       - name: "Flag any test failures"
         if: ${{ needs.test.result != 'success' }}
