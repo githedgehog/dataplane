@@ -63,8 +63,6 @@ jobs:
             optional: true
           - toolchain: "nightly"
             optional: true
-        just:
-          - version: "1.36.0"
     continue-on-error: ${{ matrix.rust.optional }}
     runs-on: "lab"
     timeout-minutes: 45
