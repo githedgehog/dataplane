@@ -47,17 +47,6 @@ After running `just fake-nix` you get this type of effect.
 *********_ dpdk-libs
 *********_ rdma-libs
 *********_ deps
-****** x86_64-unknown-linux-musl
-******* debug
-******** lib
-*********_ dpdk-libs
-*********_ rdma-libs
-*********_ deps
-******* release
-******** lib
-*********_ dpdk-libs
-*********_ rdma-libs
-*********_ deps
 nix_sym -> nix
 @endwbs
 ```

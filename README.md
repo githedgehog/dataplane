@@ -14,11 +14,10 @@
     ```bash
     rustup update
     ```
-  * :warning: You need to install both the glibc and musl targets to use the default builds.
+  * :warning: You need to install both the glibc target to use the default builds.
 
     ```bash
     rustup target add x86_64-unknown-linux-gnu
-    rustup target add x86_64-unknown-linux-musl
     ```
   
 - [just](https://github.com/casey/just) (install through your package manager or cargo)
@@ -40,7 +39,7 @@ just refresh-compile-env
 
 You should now have a directory called `compile-env` which contains the tools needed to build `dpdk-sys` such as `clang` and `lld`.
 You should also have `./compile-env/sysroot` which contains the libraries that `dpdk-sys` needs to link against.
-Both `x86_64-unknown-linux-gnu` and `x86_64-unknown-linux-musl` targets are currently supported.
+The `x86_64-unknown-linux-gnu` target is currently supported.
 
 ## Step 2. Fake nix
 
@@ -70,7 +69,7 @@ At this point you should be able to run
 just cargo build
 ```
 
-You should now have statically linked ELF executables in `target/x86_64-unknown-linux-gnu/debug/scratch` and `target/x86_64-unknown-linux-musl/debug/scratch`.
+You should now have a statically linked ELF executable in `target/x86_64-unknown-linux-gnu/debug/scratch`.
 
 You can build in release mode with
 
@@ -78,7 +77,7 @@ You can build in release mode with
 just cargo build --profile=release
 ```
 
-at which point the executables will be in `target/x86_64-unknown-linux-gnu/release/scratch` and `target/x86_64-unknown-linux-musl/release/scratch`.
+at which point the executables will be in `target/x86_64-unknown-linux-gnu/release/scratch`.
 
 ## Step 4. Run the tests (debug mode)
 
@@ -86,13 +85,6 @@ To run the test suite, you can run
 
 ```bash
 just cargo test
-```
-
-By default, this will run just the glibc tests.
-To run the test suite under musl, try
-
-```bash
-just cargo test --target x86_64-unknown-linux-musl
 ```
 
 To run the test suite under release mode

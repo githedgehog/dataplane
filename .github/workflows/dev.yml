@@ -56,7 +56,7 @@ jobs:
         uses: "dtolnay/rust-toolchain@stable"
         with:
           toolchain: "${{ matrix.rust.toolchain }}"
-          targets: "x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl"
+          targets: "x86_64-unknown-linux-gnu"
       - name: "Checkout"
         uses: "actions/checkout@v4"
       - uses: "cargo-bins/cargo-binstall@main"
@@ -95,16 +95,6 @@ jobs:
         continue-on-error: ${{ matrix.rust.optional }}
 
       - run: |
-          just cargo +${{matrix.rust.toolchain}} build --locked --profile=dev --target=x86_64-unknown-linux-musl
-        continue-on-error: ${{ matrix.rust.optional }}
-      - name: "tests: rust ${{ matrix.rust.toolchain }} profile=dev target=x86_64-unknown-linux-musl"
-        run: |
-          export GITHUB_STEP_SUMMARY
-          just debug=true rust=${{matrix.rust.toolchain}} profile=dev target=x86_64-unknown-linux-musl test
-          just debug=true rust=${{matrix.rust.toolchain}} profile=dev target=x86_64-unknown-linux-musl report
-        continue-on-error: ${{ matrix.rust.optional }}
-
-      - run: |
           just debug=true cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
         continue-on-error: ${{ matrix.rust.optional }}
       - name: "tests: rust ${{ matrix.rust.toolchain }} profile=release target=x86_64-unknown-linux-gnu"
@@ -112,16 +102,6 @@ jobs:
           export GITHUB_STEP_SUMMARY
           just debug=true rust=${{matrix.rust.toolchain}} profile=release target=x86_64-unknown-linux-gnu test
           just debug=true rust=${{matrix.rust.toolchain}} profile=release target=x86_64-unknown-linux-gnu report
-        continue-on-error: ${{ matrix.rust.optional }}
-
-      - run: |
-          just debug=true cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-musl
-        continue-on-error: ${{ matrix.rust.optional }}
-      - name: "tests: rust ${{ matrix.rust.toolchain }} profile=release target=x86_64-unknown-linux-musl"
-        run: |
-          export GITHUB_STEP_SUMMARY
-          just debug=true rust=${{matrix.rust.toolchain}} profile=release target=x86_64-unknown-linux-musl test
-          just debug=true rust=${{matrix.rust.toolchain}} profile=release target=x86_64-unknown-linux-musl report
         continue-on-error: ${{ matrix.rust.optional }}
 
       - uses: "actions/upload-artifact@v4"
