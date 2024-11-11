@@ -1,10 +1,8 @@
 **/result*/**
 **/target/**
-/result*
-/target/**
+/.bin/**
+/.vscode/**
+/compile-env/**
 /design-docs/src/mdbook/book/**
 /design-docs/src/mdbook/src/mdbook-plantuml-img/**
-/compile-env/**
-/.vscode/**
-/.bin/**
 /dev-env-template/**
