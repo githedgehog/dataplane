@@ -40,10 +40,6 @@ jobs:
         uses: "dorny/paths-filter@v3"
         id: "changes"
         with:
-          # For "push" events, compare against the "ref" base branch.
-          # For "pull_request" events, this is ignored and will compare against
-          # the pull request base branch.
-          base: "${{ github.ref }}"
           filters: |
             docs:
               - '*.nix'
