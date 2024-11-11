@@ -107,6 +107,7 @@ fn main() {
         "mlx5",
         "nl-route-3",
         "nl-3",
+        
         "numa",
     ];
 

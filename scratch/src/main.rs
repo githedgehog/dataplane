@@ -220,12 +220,12 @@ fn check_hairpin_cap(port_id: u16) {
 fn init_port2(port_id: u16, mbuf_pool: &mut rte_mempool) {
     let mut port_conf = rte_eth_conf {
         txmode: rte_eth_txmode {
-            offloads: wrte_eth_tx_offload::VLAN_INSERT
-                | wrte_eth_tx_offload::IPV4_CKSUM
-                | wrte_eth_tx_offload::UDP_CKSUM
-                | wrte_eth_tx_offload::TCP_CKSUM
-                | wrte_eth_tx_offload::SCTP_CKSUM
-                | wrte_eth_tx_offload::TCP_TSO,
+            offloads: wrte_eth_tx_offload::TX_OFFLOAD_VLAN_INSERT
+                | wrte_eth_tx_offload::TX_OFFLOAD_IPV4_CKSUM
+                | wrte_eth_tx_offload::TX_OFFLOAD_UDP_CKSUM
+                | wrte_eth_tx_offload::TX_OFFLOAD_TCP_CKSUM
+                | wrte_eth_tx_offload::TX_OFFLOAD_SCTP_CKSUM
+                | wrte_eth_tx_offload::TX_OFFLOAD_TCP_TSO,
             ..Default::default()
         },
         ..Default::default()
@@ -673,10 +673,7 @@ fn eal_main() {
             "Device rx offload capabilities: {rx_offload:?}",
             rx_offload = dev.rx_offload_caps()
         );
-        info!(
-            "Device capas: {capas:?}",
-            capas = dev.capabilities()
-        );
+        info!("Device capas: {capas:?}", capas = dev.capabilities());
 
         let config = dev::DevConfig {
             num_rx_queues: 5,

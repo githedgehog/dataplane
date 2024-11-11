@@ -5,11 +5,11 @@
 
 use alloc::format;
 use alloc::vec::Vec;
+use bitflags::bitflags;
 use core::ffi::{c_uint, CStr};
 use core::fmt::{Debug, Display, Formatter};
 use core::marker::PhantomData;
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
-use bitflags::bitflags;
 use tracing::{debug, error, info};
 
 use crate::eal::Eal;
@@ -59,7 +59,6 @@ impl DevIndex {
         self.0
     }
 
-    #[tracing::instrument(level = "trace", ret)]
     /// Get information about an ethernet device.
     ///
     /// # Arguments
@@ -74,6 +73,7 @@ impl DevIndex {
     /// # Safety
     ///
     /// This function should never panic assuming DPDK is correctly implemented.
+    #[tracing::instrument(level = "trace", ret)]
     pub fn info(&self) -> Result<DevInfo, DevInfoError> {
         let mut dev_info = rte_eth_dev_info::default();
 
@@ -122,7 +122,7 @@ impl DevIndex {
                     );
                     Err(DevInfoError::Unknown(Errno(val)))
                 }
-            }
+            };
             // error!(
             //     "Failed to get device info for port {index}: {err}",
             //     index = self.0
@@ -150,6 +150,7 @@ impl DevIndex {
     ///   (statically ensured).
     /// * This function may panic if DPDK returns an unexpected (undocumented) error code after
     ///   failing to determine the socket id.
+    #[tracing::instrument(level = "trace", ret)]
     pub fn socket_id(&self) -> Result<SocketId, ErrorCode> {
         let socket_id = unsafe { rte_eth_dev_socket_id(self.as_u16()) };
         if socket_id == -1 {
@@ -322,13 +323,13 @@ impl From<u64> for RxOffload {
     }
 }
 
-#[non_exhaustive]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Verbose configuration for transmit offloads.
 ///
 /// This struct is mostly for coherent reporting on network cards.
 ///
 /// TODO: fill in remaining offload types from `rte_ethdev.h`
+#[non_exhaustive]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TxOffloadConfig {
     /// GENEVE tunnel segmentation offload.
     pub geneve_tnl_tso: bool,
@@ -391,36 +392,66 @@ impl Display for TxOffloadConfig {
     }
 }
 
+bitflags! {
+    #[repr(transparent)]
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct TxOffloads: u64 {
+        const VLAN_INSERT       = wrte_eth_tx_offload::TX_OFFLOAD_VLAN_INSERT;
+        const IPV4_CKSUM        = wrte_eth_tx_offload::TX_OFFLOAD_IPV4_CKSUM;
+        const UDP_CKSUM         = wrte_eth_tx_offload::TX_OFFLOAD_UDP_CKSUM;
+        const TCP_CKSUM         = wrte_eth_tx_offload::TX_OFFLOAD_TCP_CKSUM;
+        const SCTP_CKSUM        = wrte_eth_tx_offload::TX_OFFLOAD_SCTP_CKSUM;
+        const TCP_TSO           = wrte_eth_tx_offload::TX_OFFLOAD_TCP_TSO;
+        const UDP_TSO           = wrte_eth_tx_offload::TX_OFFLOAD_UDP_TSO;
+        const OUTER_IPV4_CKSUM  = wrte_eth_tx_offload::TX_OFFLOAD_OUTER_IPV4_CKSUM;
+        const QINQ_INSERT       = wrte_eth_tx_offload::TX_OFFLOAD_QINQ_INSERT;
+        const VXLAN_TNL_TSO     = wrte_eth_tx_offload::TX_OFFLOAD_VXLAN_TNL_TSO;
+        const GRE_TNL_TSO       = wrte_eth_tx_offload::TX_OFFLOAD_GRE_TNL_TSO;
+        const IPIP_TNL_TSO      = wrte_eth_tx_offload::TX_OFFLOAD_IPIP_TNL_TSO;
+        const GENEVE_TNL_TSO    = wrte_eth_tx_offload::TX_OFFLOAD_GENEVE_TNL_TSO;
+        const MACSEC_INSERT     = wrte_eth_tx_offload::TX_OFFLOAD_MACSEC_INSERT;
+        const MT_LOCKFREE       = wrte_eth_tx_offload::TX_OFFLOAD_MT_LOCKFREE;
+        const MULTI_SEGS        = wrte_eth_tx_offload::TX_OFFLOAD_MULTI_SEGS;
+        const MBUF_FAST_FREE    = wrte_eth_tx_offload::TX_OFFLOAD_MBUF_FAST_FREE;
+        const SECURITY          = wrte_eth_tx_offload::TX_OFFLOAD_SECURITY;
+        const UDP_TNL_TSO       = wrte_eth_tx_offload::TX_OFFLOAD_UDP_TNL_TSO;
+        const IP_TNL_TSO        = wrte_eth_tx_offload::TX_OFFLOAD_IP_TNL_TSO;
+        const OUTER_UDP_CKSUM   = wrte_eth_tx_offload::TX_OFFLOAD_OUTER_UDP_CKSUM;
+        const SEND_ON_TIMESTAMP = wrte_eth_tx_offload::TX_OFFLOAD_SEND_ON_TIMESTAMP;
+        const _ = !0;
+    }
+}
+
 impl From<TxOffloadConfig> for TxOffload {
     fn from(value: TxOffloadConfig) -> Self {
         use wrte_eth_tx_offload::*;
         TxOffload(
             if value.geneve_tnl_tso {
-                GENEVE_TNL_TSO
+                TX_OFFLOAD_GENEVE_TNL_TSO
             } else {
                 0
-            } | if value.gre_tnl_tso { GRE_TNL_TSO } else { 0 }
-                | if value.ipip_tnl_tso { IPIP_TNL_TSO } else { 0 }
-                | if value.ipv4_cksum { IPV4_CKSUM } else { 0 }
+            } | if value.gre_tnl_tso { TX_OFFLOAD_GRE_TNL_TSO } else { 0 }
+                | if value.ipip_tnl_tso { TX_OFFLOAD_IPIP_TNL_TSO } else { 0 }
+                | if value.ipv4_cksum { TX_OFFLOAD_IPV4_CKSUM } else { 0 }
                 | if value.macsec_insert {
-                    MACSEC_INSERT
+                    TX_OFFLOAD_MACSEC_INSERT
                 } else {
                     0
                 }
                 | if value.outer_ipv4_cksum {
-                    OUTER_IPV4_CKSUM
+                    TX_OFFLOAD_OUTER_IPV4_CKSUM
                 } else {
                     0
                 }
-                | if value.qinq_insert { QINQ_INSERT } else { 0 }
-                | if value.sctp_cksum { SCTP_CKSUM } else { 0 }
-                | if value.tcp_cksum { TCP_CKSUM } else { 0 }
-                | if value.tcp_tso { TCP_TSO } else { 0 }
-                | if value.udp_cksum { UDP_CKSUM } else { 0 }
-                | if value.udp_tso { UDP_TSO } else { 0 }
-                | if value.vlan_insert { VLAN_INSERT } else { 0 }
+                | if value.qinq_insert { TX_OFFLOAD_QINQ_INSERT } else { 0 }
+                | if value.sctp_cksum { TX_OFFLOAD_SCTP_CKSUM } else { 0 }
+                | if value.tcp_cksum { TX_OFFLOAD_TCP_CKSUM } else { 0 }
+                | if value.tcp_tso { TX_OFFLOAD_TCP_TSO } else { 0 }
+                | if value.udp_cksum { TX_OFFLOAD_UDP_CKSUM } else { 0 }
+                | if value.udp_tso { TX_OFFLOAD_UDP_TSO } else { 0 }
+                | if value.vlan_insert { TX_OFFLOAD_VLAN_INSERT } else { 0 }
                 | if value.vxlan_tnl_tso {
-                    VXLAN_TNL_TSO
+                    TX_OFFLOAD_VXLAN_TNL_TSO
                 } else {
                     0
                 }
@@ -433,20 +464,20 @@ impl From<TxOffload> for TxOffloadConfig {
     fn from(value: TxOffload) -> Self {
         use wrte_eth_tx_offload::*;
         TxOffloadConfig {
-            geneve_tnl_tso: value.0 & GENEVE_TNL_TSO != 0,
-            gre_tnl_tso: value.0 & GRE_TNL_TSO != 0,
-            ipip_tnl_tso: value.0 & IPIP_TNL_TSO != 0,
-            ipv4_cksum: value.0 & IPV4_CKSUM != 0,
-            macsec_insert: value.0 & MACSEC_INSERT != 0,
-            outer_ipv4_cksum: value.0 & OUTER_IPV4_CKSUM != 0,
-            qinq_insert: value.0 & QINQ_INSERT != 0,
-            sctp_cksum: value.0 & SCTP_CKSUM != 0,
-            tcp_cksum: value.0 & TCP_CKSUM != 0,
-            tcp_tso: value.0 & TCP_TSO != 0,
-            udp_cksum: value.0 & UDP_CKSUM != 0,
-            udp_tso: value.0 & UDP_TSO != 0,
-            vlan_insert: value.0 & VLAN_INSERT != 0,
-            vxlan_tnl_tso: value.0 & VXLAN_TNL_TSO != 0,
+            geneve_tnl_tso: value.0 & TX_OFFLOAD_GENEVE_TNL_TSO != 0,
+            gre_tnl_tso: value.0 & TX_OFFLOAD_GRE_TNL_TSO != 0,
+            ipip_tnl_tso: value.0 & TX_OFFLOAD_IPIP_TNL_TSO != 0,
+            ipv4_cksum: value.0 & TX_OFFLOAD_IPV4_CKSUM != 0,
+            macsec_insert: value.0 & TX_OFFLOAD_MACSEC_INSERT != 0,
+            outer_ipv4_cksum: value.0 & TX_OFFLOAD_OUTER_IPV4_CKSUM != 0,
+            qinq_insert: value.0 & TX_OFFLOAD_QINQ_INSERT != 0,
+            sctp_cksum: value.0 & TX_OFFLOAD_SCTP_CKSUM != 0,
+            tcp_cksum: value.0 & TX_OFFLOAD_TCP_CKSUM != 0,
+            tcp_tso: value.0 & TX_OFFLOAD_TCP_TSO != 0,
+            udp_cksum: value.0 & TX_OFFLOAD_UDP_CKSUM != 0,
+            udp_tso: value.0 & TX_OFFLOAD_UDP_TSO != 0,
+            vlan_insert: value.0 & TX_OFFLOAD_VLAN_INSERT != 0,
+            vxlan_tnl_tso: value.0 & TX_OFFLOAD_VXLAN_TNL_TSO != 0,
             unknown: value.0 & !TxOffload::ALL_KNOWN.0,
         }
     }
@@ -454,52 +485,52 @@ impl From<TxOffload> for TxOffloadConfig {
 
 impl TxOffload {
     /// GENEVE tunnel segmentation offload.
-    pub const GENEVE_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::GENEVE_TNL_TSO);
+    pub const GENEVE_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_GENEVE_TNL_TSO);
     /// GRE tunnel segmentation offload.
-    pub const GRE_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::GRE_TNL_TSO);
+    pub const GRE_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_GRE_TNL_TSO);
     /// IPIP tunnel segmentation offload.
-    pub const IPIP_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::IPIP_TNL_TSO);
+    pub const IPIP_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_IPIP_TNL_TSO);
     /// IPv4 checksum calculation.
-    pub const IPV4_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::IPV4_CKSUM);
+    pub const IPV4_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_IPV4_CKSUM);
     /// MACsec insertion.
-    pub const MACSEC_INSERT: TxOffload = TxOffload(wrte_eth_tx_offload::MACSEC_INSERT);
+    pub const MACSEC_INSERT: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_MACSEC_INSERT);
     /// Outer IPv4 checksum calculation.
-    pub const OUTER_IPV4_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::OUTER_IPV4_CKSUM);
+    pub const OUTER_IPV4_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_OUTER_IPV4_CKSUM);
     /// QinQ (double VLAN) insertion.
-    pub const QINQ_INSERT: TxOffload = TxOffload(wrte_eth_tx_offload::QINQ_INSERT);
+    pub const QINQ_INSERT: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_QINQ_INSERT);
     /// SCTP checksum calculation.
-    pub const SCTP_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::SCTP_CKSUM);
+    pub const SCTP_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_SCTP_CKSUM);
     /// TCP checksum calculation.
-    pub const TCP_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::TCP_CKSUM);
+    pub const TCP_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_TCP_CKSUM);
     /// TCP segmentation offload.
-    pub const TCP_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TCP_TSO);
+    pub const TCP_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_TCP_TSO);
     /// UDP checksum calculation.
-    pub const UDP_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::UDP_CKSUM);
+    pub const UDP_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_UDP_CKSUM);
     /// UDP segmentation offload.
-    pub const UDP_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::UDP_TSO);
+    pub const UDP_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_UDP_TSO);
     /// VXLAN tunnel segmentation offload.
-    pub const VXLAN_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::VXLAN_TNL_TSO);
+    pub const VXLAN_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_VXLAN_TNL_TSO);
     /// VLAN tag insertion.
-    pub const VLAN_INSERT: TxOffload = TxOffload(wrte_eth_tx_offload::VLAN_INSERT);
+    pub const VLAN_INSERT: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_VLAN_INSERT);
 
     /// Union of all [`TxOffload`]s documented at the time of writing.
     pub const ALL_KNOWN: TxOffload = {
         use wrte_eth_tx_offload::*;
         TxOffload(
-            GENEVE_TNL_TSO
-                | GRE_TNL_TSO
-                | IPIP_TNL_TSO
-                | IPV4_CKSUM
-                | MACSEC_INSERT
-                | OUTER_IPV4_CKSUM
-                | QINQ_INSERT
-                | SCTP_CKSUM
-                | TCP_CKSUM
-                | TCP_TSO
-                | UDP_CKSUM
-                | UDP_TSO
-                | VLAN_INSERT
-                | VXLAN_TNL_TSO,
+            TX_OFFLOAD_GENEVE_TNL_TSO
+                | TX_OFFLOAD_GRE_TNL_TSO
+                | TX_OFFLOAD_IPIP_TNL_TSO
+                | TX_OFFLOAD_IPV4_CKSUM
+                | TX_OFFLOAD_MACSEC_INSERT
+                | TX_OFFLOAD_OUTER_IPV4_CKSUM
+                | TX_OFFLOAD_QINQ_INSERT
+                | TX_OFFLOAD_SCTP_CKSUM
+                | TX_OFFLOAD_TCP_CKSUM
+                | TX_OFFLOAD_TCP_TSO
+                | TX_OFFLOAD_UDP_CKSUM
+                | TX_OFFLOAD_UDP_TSO
+                | TX_OFFLOAD_VLAN_INSERT
+                | TX_OFFLOAD_VXLAN_TNL_TSO,
         )
     };
 }
@@ -870,7 +901,6 @@ impl Drop for Dev {
         }
     }
 }
-
 
 #[derive(Debug, thiserror::Error)]
 pub enum SocketIdLookupError {

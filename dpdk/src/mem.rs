@@ -383,7 +383,7 @@ impl Mbuf {
     pub(crate) fn new_from_raw(raw: *mut rte_mbuf) -> Option<Mbuf> {
         let raw = match NonNull::new(raw) {
             None => {
-                warn!("Attempted to create Mbuf from null pointer");
+                error!("Attempted to create Mbuf from null pointer");
                 return None;
             }
             Some(raw) => raw,

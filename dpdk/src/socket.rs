@@ -9,15 +9,17 @@
 //! we're sticking with that.
 //!
 //! [NUMA]: https://en.wikipedia.org/wiki/Non-uniform_memory_access
+
 use crate::dev::DevIndex;
 #[allow(unused_imports)]
 /// imported for rustdoc
 use crate::eal::Eal;
-use dpdk_sys::rte_socket_id;
 use core::ffi::c_uint;
+use core::fmt::{Display, Formatter};
 use core::marker::PhantomData;
-use tracing::debug;
+use dpdk_sys::rte_socket_id;
 use errno::{ErrorCode, StandardErrno};
+use tracing::debug;
 
 #[repr(transparent)]
 #[derive(Debug)]
@@ -161,6 +163,12 @@ impl Iterator for SocketIdIterator {
 /// [NUMA]: https://en.wikipedia.org/wiki/Non-uniform_memory_access
 pub struct SocketId(pub(crate) c_uint);
 
+impl Display for SocketId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 impl SocketId {
     /// A special [`SocketId`] that represents any socket.
     pub const ANY: SocketId = SocketId(c_uint::MAX /* -1 in c_int */);
@@ -176,7 +184,7 @@ impl SocketId {
     /// # Note
     ///
     /// Ideally, this method should be accessed via the [`Manager::id_for_index`] object as that
-    /// makes lifetime issues simpler.
+    /// simplifies lifetime issues.
     pub(crate) fn current() -> SocketId {
         SocketId(unsafe { rte_socket_id() })
     }
@@ -252,9 +260,8 @@ impl TryFrom<Preference> for SocketId {
     fn try_from(value: Preference) -> Result<Self, Self::Error> {
         match value {
             Preference::Id(id) => Ok(id),
-            Preference::Lcore(lcore_id) => {
-                SocketId::get_by_lcore(lcore_id).ok_or(ErrorCode::Standard(StandardErrno::InvalidArgument))
-            }
+            Preference::Lcore(lcore_id) => SocketId::get_by_lcore(lcore_id)
+                .ok_or(ErrorCode::Standard(StandardErrno::InvalidArgument)),
             Preference::Dev(dev) => dev.socket_id(),
         }
     }

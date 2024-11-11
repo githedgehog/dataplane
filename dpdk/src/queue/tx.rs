@@ -3,6 +3,7 @@
 
 //! Transmit queue configuration and management.
 
+use tracing::info;
 use crate::dev::DevIndex;
 use crate::{dev, socket};
 use dpdk_sys::*;
@@ -88,6 +89,7 @@ impl TxQueue {
     ///
     /// This design ensures that the hairpin queue is correctly tracked in the list of queues
     /// associated with the device.
+    #[tracing::instrument(level = "info")]
     pub(crate) fn configure(dev: &dev::Dev, config: TxQueueConfig) -> Result<Self, ConfigFailure> {
         let socket_id = socket::SocketId::try_from(config.socket_preference).map_err(|err| {
             ConfigFailure::InvalidSocket(ConfigError {
@@ -95,6 +97,7 @@ impl TxQueue {
                 err,
             })
         })?;
+        info!("Configuring TX queue on socket {socket_id}");
 
         let tx_conf = rte_eth_txconf {
             offloads: dev.info.inner.tx_queue_offload_capa,
@@ -131,85 +134,74 @@ impl TxQueue {
 
     /// Start the transmit queue.
     pub(crate) fn start(self) -> Result<TxQueue, TxQueueStartError> {
+        use TxQueueStartError::*;
         let ret = unsafe {
             rte_eth_dev_tx_queue_start(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
 
-
         match ret {
             errno::SUCCESS => Ok(self),
-            errno::NEG_ENODEV => Err(TxQueueStartError::DeviceRemoved),
-            errno::NEG_EINVAL => Err(TxQueueStartError::InvalidArgument),
-            errno::NEG_EIO => Err(TxQueueStartError::DeviceRemoved),
-            errno::NEG_ENOTSUP => Err(TxQueueStartError::NotSupported),
-            val => Err(TxQueueStartError::Unexpected(errno::Errno(val))),
+            errno::NEG_ENODEV => Err(DeviceRemoved),
+            errno::NEG_EINVAL => Err(InvalidArgument),
+            errno::NEG_EIO => Err(DeviceRemoved),
+            errno::NEG_ENOTSUP => Err(NotSupported),
+            val => Err(Unexpected(errno::Errno(val))),
         }
     }
 
     /// Stop the transmit queue.
     pub(crate) fn stop(self) -> Result<TxQueue, TxQueueStopError> {
+        use TxQueueStopError::*;
         let ret = unsafe {
             rte_eth_dev_tx_queue_stop(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
 
         match ret {
             errno::SUCCESS => Ok(self),
-            errno::NEG_ENODEV => Err(TxQueueStopError::DeviceRemoved),
-            errno::NEG_EINVAL => Err(TxQueueStopError::InvalidArgument),
-            errno::NEG_EIO => Err(TxQueueStopError::DeviceRemoved),
-            errno::NEG_ENOTSUP => Err(TxQueueStopError::NotSupported),
-            val => Err(TxQueueStopError::Unexpected(errno::Errno(val))),
+            errno::NEG_ENODEV => Err(DeviceRemoved),
+            errno::NEG_EINVAL => Err(InvalidArgument),
+            errno::NEG_EIO => Err(DeviceRemoved),
+            errno::NEG_ENOTSUP => Err(NotSupported),
+            val => Err(Unexpected(errno::Errno(val))),
         }
     }
 }
 
-/// TODO
+/// A DPDK transmit queue
 #[derive(Debug)]
 pub struct TxQueue {
     pub(crate) config: TxQueueConfig,
     pub(crate) dev: DevIndex,
 }
 
-/// TODO
+/// Types of errors associated with starting TX queues
 #[derive(thiserror::Error, Debug)]
 pub enum TxQueueStartError {
-    /// TODO
-    #[error("Invalid port ID")]
+    #[error("The port ID associated with this TX queue is invalid")]
     InvalidPortId,
-    /// TODO
-    #[error("Queue ID out of range")]
+    #[error("The specified queue id is outside the range of known TX queues")]
     QueueIdOutOfRange,
-    /// TODO
-    #[error("Device removed")]
+    #[error("The network device associated with this TX queue has been removed")]
     DeviceRemoved,
-    /// TODO
-    #[error("Invalid argument")]
+    #[error("Invalid arguments supplied to TX queue configuration")]
     InvalidArgument,
-    /// TODO
-    #[error("Operation not supported")]
+    #[error("Operation is not supported (check device state and rx queue config)")]
     NotSupported,
-    /// TODO
-    #[error("Unknown error")]
+    #[error("Unknown error encountered when starting TX queue")]
     Unexpected(errno::Errno),
 }
 
-/// TODO
+/// Types of errors associated with stopping TX queues
 #[derive(thiserror::Error, Debug)]
-#[repr(i32)]
 pub enum TxQueueStopError {
-    /// TODO
     #[error("Invalid port ID")]
-    InvalidPortId = errno::NEG_ENODEV,
-    /// TODO
+    InvalidPortId,
     #[error("Device removed")]
-    DeviceRemoved = errno::NEG_EIO,
-    /// TODO
+    DeviceRemoved,
     #[error("Invalid argument")]
-    InvalidArgument = errno::NEG_EINVAL,
-    /// TODO
+    InvalidArgument,
     #[error("Operation not supported")]
-    NotSupported = errno::NEG_ENOTSUP,
-    /// TODO
-    #[error("Unknown error")]
+    NotSupported,
+    #[error("Unexpected error")]
     Unexpected(errno::Errno),
 }
