@@ -111,13 +111,10 @@ impl TxQueue {
         };
 
         match ret {
-            0 => {
-                let tx_queue = TxQueue {
-                    config: config.clone(),
-                    dev: dev.info.index(),
-                };
-                Ok(tx_queue)
-            }
+            0 => Ok(TxQueue {
+                dev: dev.info.index(),
+                config,
+            }),
             errno::ENOMEM => Err(ConfigFailure::NoMemory(ConfigError {
                 code: ret,
                 err: ErrorCode::parse(ret),
