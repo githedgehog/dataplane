@@ -63,7 +63,7 @@ fn generate_ipv4_flow(
     dest_mask: Ipv4Addr,
     err: &mut rte_flow_error,
 ) -> RteFlow {
-    let mut attr: rte_flow_attr = Default::default();
+    let mut attr: rte_flow_attr = rte_flow_attr::default();
     let mut pattern: [rte_flow_item; MAX_PATTERN_NUM] = Default::default();
     let mut action: [rte_flow_action; MAX_PATTERN_NUM] = Default::default();
     let queue = rte_flow_action_queue { index: rx_q };
@@ -188,7 +188,7 @@ fn htonl<T: Debug + Into<u32>>(x: T) -> u32 {
 
 #[tracing::instrument(level = "debug")]
 fn check_hairpin_cap(port_id: u16) {
-    let mut cap: rte_eth_hairpin_cap = Default::default();
+    let mut cap: rte_eth_hairpin_cap = rte_eth_hairpin_cap::default();
     let ret = unsafe { rte_eth_dev_hairpin_capability_get(port_id, &mut cap) };
     if ret != 0 {
         let err_msg = format!(
@@ -429,7 +429,7 @@ fn init_port2(port_id: u16, mbuf_pool: &mut rte_mempool) {
 fn generate_ct_flow(port_id: u16, rx_q: u16, err: &mut rte_flow_error) -> RteFlow {
     const MAX_PATTERN_NUM: usize = 16;
     const MAX_ACTION_NUM: usize = 16;
-    let mut attr: rte_flow_attr = Default::default();
+    let mut attr: rte_flow_attr = rte_flow_attr::default();
     let mut pattern: [rte_flow_item; MAX_PATTERN_NUM] = Default::default();
     let mut action: [rte_flow_action; MAX_ACTION_NUM] = Default::default();
     let queue = rte_flow_action_queue { index: rx_q };

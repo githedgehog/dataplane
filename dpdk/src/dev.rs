@@ -248,14 +248,14 @@ impl DevConfig {
             ..Default::default()
         };
 
-        let num_rx_queues = self.num_rx_queues + self.num_hairpin_queues;
-        let num_tx_queues = self.num_tx_queues + self.num_hairpin_queues;
+        let nb_rx_queues = self.num_rx_queues + self.num_hairpin_queues;
+        let nb_tx_queues = self.num_tx_queues + self.num_hairpin_queues;
 
         let ret = unsafe {
             rte_eth_dev_configure(
                 dev.index().as_u16(),
-                num_rx_queues,
-                num_tx_queues,
+                nb_rx_queues,
+                nb_tx_queues,
                 &eth_conf,
             )
         };

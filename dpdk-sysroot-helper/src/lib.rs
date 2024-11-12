@@ -42,17 +42,15 @@ use std::path::Path;
     let profile = get_profile_name();
     let expected_sysroot = format!("{sysroot_env}/{target}/{profile}");
     let expected_sysroot_path = Path::new(&expected_sysroot);
-    match expected_sysroot_path.exists() {
-        true => expected_sysroot,
-        false => {
-            let fallback_sysroot = format!("/sysroot/{target}/{profile}");
-            let fallback_sysroot_path = Path::new(&fallback_sysroot);
-            match fallback_sysroot_path.exists() {
-                true => fallback_sysroot,
-                false => {
-                    panic!("sysroot not found at {expected_sysroot} or {fallback_sysroot}")
-                }
-            }
+    if expected_sysroot_path.exists() {
+        expected_sysroot
+    } else {
+        let fallback_sysroot = format!("/sysroot/{target}/{profile}");
+        let fallback_sysroot_path = Path::new(&fallback_sysroot);
+        if fallback_sysroot_path.exists() {
+            fallback_sysroot
+        } else {
+                panic!("sysroot not found at {expected_sysroot} or {fallback_sysroot}")
         }
     }
 }
