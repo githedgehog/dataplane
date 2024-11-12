@@ -5,7 +5,7 @@
 use alloc::format;
 use alloc::string::{String, ToString};
 use crate::{dev, mem, socket};
-use core::ffi::{c_char, c_int};
+use core::ffi::c_int;
 use core::fmt::{Debug, Display};
 use alloc::ffi::CString;
 use alloc::vec::Vec;
@@ -79,7 +79,7 @@ pub fn init<T: Debug + AsRef<str>>(args: Vec<T>) -> Result<Eal, InitError> {
     if len > c_int::MAX as usize {
         return Err(InitError::InvalidArguments(
             args.iter().map(|s| s.as_ref().to_string()).collect(),
-            format!("Too many arguments: {}", len),
+            format!("Too many arguments: {len}"),
         ));
     }
 
@@ -101,7 +101,7 @@ pub fn init<T: Debug + AsRef<str>>(args: Vec<T>) -> Result<Eal, InitError> {
 
     let mut args_as_pointers = args_as_c_strings
         .iter()
-        .map(|s| s.as_ptr() as *mut c_char)
+        .map(|s| s.as_ptr().cast_mut())
         .collect::<Vec<_>>();
 
     let ret = unsafe { rte_eal_init(len, args_as_pointers.as_mut_ptr()) };
@@ -140,7 +140,7 @@ impl Eal {
     ///
     /// # Panics
     ///
-    /// Panics if the error message cannot be converted to a CString.
+    /// Panics if the error message cannot be converted to a `CString`.
     /// This is a serious error as it means there is fundamental logic bug in DPDK.
     pub(crate) fn fatal_error<T: Display + AsRef<str>>(message: T) -> ! {
         error!("{message}");
@@ -148,7 +148,7 @@ impl Eal {
         unsafe { rte_exit(1, message_cstring.as_ptr()) }
     }
 
-    /// Get the DPDK rte_errno and parse it as an [`errno::ErrorCode`].
+    /// Get the DPDK `rte_errno` and parse it as an [`errno::ErrorCode`].
     ///
     /// # Note
     ///
@@ -177,7 +177,7 @@ impl Drop for Eal {
         info!("Closing EAL");
         let ret = unsafe { rte_eal_cleanup() };
         if ret != 0 {
-            let panic_msg = format!("Failed to cleanup EAL: error {}", ret);
+            let panic_msg = format!("Failed to cleanup EAL: error {ret}");
             error!("{panic_msg}");
             panic!("{panic_msg}");
         }

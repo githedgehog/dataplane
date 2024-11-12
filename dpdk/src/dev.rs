@@ -54,7 +54,7 @@ impl DevIndex {
     pub const MAX: u16 = RTE_MAX_ETHPORTS as u16;
 
     /// The index of the port represented as a `u16`.
-    pub fn as_u16(&self) -> u16 {
+    #[must_use] pub fn as_u16(&self) -> u16 {
         self.0
     }
 
@@ -180,8 +180,7 @@ impl DevIndex {
             // need to check for nonsense values to make a properly safe wrapper.
             // Better to panic than malfunction.
             Eal::fatal_error(format!(
-                "SocketId for port {self} is negative? {socket_id}",
-                socket_id = socket_id
+                "SocketId for port {self} is negative? {socket_id}"
             ));
         }
 
@@ -196,7 +195,7 @@ impl From<DevIndex> for u16 {
 }
 
 #[derive(Debug, PartialEq, Copy, Clone, Eq, PartialOrd, Ord, Hash)]
-/// TODO: add rx_offloads support
+/// TODO: add `rx_offloads` support
 pub struct DevConfig {
     // /// Information about the device.
     // pub info: DevInfo<'info>,
@@ -234,8 +233,7 @@ impl DevConfig {
                 offloads: {
                     let requested = self
                         .tx_offloads
-                        .map(TxOffload::from)
-                        .unwrap_or(TxOffload(ANY_SUPPORTED));
+                        .map_or(TxOffload(ANY_SUPPORTED), TxOffload::from);
                     let supported = dev.tx_offload_caps();
                     (requested & supported).0
                 },
@@ -571,10 +569,10 @@ impl Iterator for DevIterator {
         debug!("Checking port {cursor}");
 
         let port_id =
-            unsafe { rte_eth_find_next_owned_by(cursor.as_u16(), RTE_ETH_DEV_NO_OWNER as u64) };
+            unsafe { rte_eth_find_next_owned_by(cursor.as_u16(), u64::from(RTE_ETH_DEV_NO_OWNER)) };
 
         // This is the normal exit condition after we've found all the devices.
-        if port_id >= RTE_MAX_ETHPORTS as u64 {
+        if port_id >= u64::from(RTE_MAX_ETHPORTS) {
             return None;
         }
 
@@ -663,14 +661,14 @@ impl Manager {
 
 impl DevInfo {
     /// Get the port index of the device.
-    pub fn index(&self) -> DevIndex {
+    #[must_use] pub fn index(&self) -> DevIndex {
         self.index
     }
 
-    /// Get the device if_index.
+    /// Get the device `if_index`.
     ///
     /// This is the Linux interface index of the device.
-    pub fn if_index(&self) -> u32 {
+    #[must_use] pub fn if_index(&self) -> u32 {
         self.inner.if_index
     }
 
@@ -835,7 +833,7 @@ impl Drop for Dev {
             port = self.info.index()
         );
         match self.stop() {
-            Ok(_) => {
+            Ok(()) => {
                 info!("Device {port} stopped", port = self.info.index());
             }
             Err(err) => {

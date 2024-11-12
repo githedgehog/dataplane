@@ -19,7 +19,7 @@ impl TxQueueIndex {
     /// The index of the tx queue represented as a `u16`.
     ///
     /// This function is mostly useful for interfacing with `dpdk_sys`.
-    pub fn as_u16(&self) -> u16 {
+    #[must_use] pub fn as_u16(&self) -> u16 {
         self.0
     }
 }

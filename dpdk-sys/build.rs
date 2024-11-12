@@ -109,15 +109,15 @@ fn main() {
         "numa",
     ];
 
-    depends.iter().for_each(|dep| {
+    for dep in &depends {
         println!("cargo:rustc-link-lib=static:+whole-archive,+bundle={dep}");
-    });
+    }
 
     let rerun_if_changed = ["build.rs"];
 
-    rerun_if_changed.iter().for_each(|file| {
+    for file in &rerun_if_changed {
         println!("cargo:rerun-if-changed={file}");
-    });
+    }
 
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     // let out_path = PathBuf::from("src");

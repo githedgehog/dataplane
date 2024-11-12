@@ -102,7 +102,7 @@ impl HairpinQueue {
         Ok(HairpinQueue { rx, tx, peering })
     }
 
-    pub fn start(self) -> HairpinQueue {
+    #[must_use] pub fn start(self) -> HairpinQueue {
         let rx = match self.rx.start() {
             Ok(rx) => rx,
             Err(_) => todo!(),
@@ -117,7 +117,7 @@ impl HairpinQueue {
 
 impl HairpinQueue {
     /// Stop the hairpin queue.
-    pub fn stop(self) -> HairpinQueue {
+    #[must_use] pub fn stop(self) -> HairpinQueue {
         let rx = match self.rx.stop() {
             Ok(rx) => rx,
             Err(_) => todo!(),
