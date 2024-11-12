@@ -121,12 +121,12 @@ impl PoolHandle {
     }
 
     /// Get the name of the memory pool.
-    pub fn name(&self) -> &str {
+    #[must_use] pub fn name(&self) -> &str {
         self.config().name()
     }
 
     /// Get the configuration of the memory pool.
-    pub fn config(&self) -> &PoolConfig {
+    #[must_use] pub fn config(&self) -> &PoolConfig {
         &self.0.config
     }
 }
@@ -396,7 +396,7 @@ impl Mbuf {
     }
 
     /// Get an immutable ref to the raw data of an Mbuf
-    pub fn raw_data(&self) -> &[u8] {
+    #[must_use] pub fn raw_data(&self) -> &[u8] {
         let pkt_data_start = unsafe {
             (self.raw.as_ref().buf_addr as *const u8)
                 .offset(self.raw.as_ref().annon1.annon1.data_off as isize)
@@ -416,8 +416,7 @@ impl Mbuf {
                 .raw
                 .as_mut()
                 .buf_addr
-                .offset(self.raw.as_ref().annon1.annon1.data_off as isize)
-                as *mut u8;
+                .offset(self.raw.as_ref().annon1.annon1.data_off as isize).cast::<u8>();
             core::slice::from_raw_parts_mut(
                 data_start,
                 self.raw.as_ref().annon2.annon1.data_len as usize,

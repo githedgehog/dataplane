@@ -21,7 +21,7 @@ impl RxQueueIndex {
     /// The index of the rx queue represented as a `u16`.
     ///
     /// This function is mostly useful for interfacing with [`dpdk_sys`].
-    pub fn as_u16(&self) -> u16 {
+    #[must_use] pub fn as_u16(&self) -> u16 {
         self.0
     }
 }

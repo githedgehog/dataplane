@@ -17,7 +17,7 @@ pub mod vxlan;
 mod tests {
     use super::*;
     use alloc::vec::Vec;
-    use etherparse::PacketBuilder;
+    
 
     pub fn gen_random_udp_packet() -> Vec<u8> {
         use etherparse::PacketBuilder;
@@ -52,7 +52,7 @@ mod tests {
     #[test]
     fn parse_udp_packet_bit_by_bit() {
         let packet = gen_random_udp_packet();
-        let mut cursor = 0;
-        let mut eth = etherparse::Ethernet2Header::from_slice(&packet[cursor..]).unwrap();
+        let cursor = 0;
+        let eth = etherparse::Ethernet2Header::from_slice(&packet[cursor..]).unwrap();
     }
 }

@@ -57,141 +57,141 @@ pub enum MatchType {
     /// Matches any protocol in place of the current layer, a single ANY may also stand for several
     /// protocol layers.
     ///
-    /// See struct rte_flow_item_any.
+    /// See struct `rte_flow_item_any`.
     Any = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_ANY,
     /// > **Deprecated** [`RTE_FLOW_ITEM_TYPE_PORT_REPRESENTOR`]\n [`RTE_FLOW_ITEM_TYPE_REPRESENTED_PORT`]\n\n [META]\n\n Matches traffic originating from (ingress) or going to (egress) a\n given DPDK port ID.\n\n See struct rte_flow_item_port_id."]
     PortId = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_PORT_ID,
-    /// Matches a byte string of a given length at a given offset.\n\n See struct rte_flow_item_raw."]
+    /// Matches a byte string of a given length at a given offset.\n\n See struct `rte_flow_item_raw`."]
     Raw = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_RAW,
-    /// Matches an Ethernet header.\n\n See struct rte_flow_item_eth."]
+    /// Matches an Ethernet header.\n\n See struct `rte_flow_item_eth`."]
     Eth = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_ETH,
-    /// Matches an 802.1Q/ad VLAN tag.\n\n See struct rte_flow_item_vlan."]
+    /// Matches an 802.1Q/ad VLAN tag.\n\n See struct `rte_flow_item_vlan`."]
     Vlan = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_VLAN,
-    /// Matches an IPv4 header.\n\n See struct rte_flow_item_ipv4."]
+    /// Matches an IPv4 header.\n\n See struct `rte_flow_item_ipv4`."]
     Ipv4 = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_IPV4,
-    /// Matches an IPv6 header.\n\n See struct rte_flow_item_ipv6."]
+    /// Matches an IPv6 header.\n\n See struct `rte_flow_item_ipv6`."]
     Ipv6 = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_IPV6,
-    /// Matches an ICMP header.\n\n See struct rte_flow_item_icmp."]
+    /// Matches an ICMP header.\n\n See struct `rte_flow_item_icmp`."]
     Icmp = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_ICMP,
-    /// Matches a UDP header.\n\n See struct rte_flow_item_udp."]
+    /// Matches a UDP header.\n\n See struct `rte_flow_item_udp`."]
     Udp = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_UDP,
-    /// Matches a TCP header.\n\n See struct rte_flow_item_tcp."]
+    /// Matches a TCP header.\n\n See struct `rte_flow_item_tcp`."]
     Tcp = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_TCP,
-    /// Matches a SCTP header.\n\n See struct rte_flow_item_sctp."]
+    /// Matches a SCTP header.\n\n See struct `rte_flow_item_sctp`."]
     Sctp = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_SCTP,
-    /// Matches a VXLAN header.\n\n See struct rte_flow_item_vxlan."]
+    /// Matches a VXLAN header.\n\n See struct `rte_flow_item_vxlan`."]
     Vxlan = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_VXLAN,
-    /// Matches a E_TAG header.\n\n See struct rte_flow_item_e_tag."]
+    /// Matches a `E_TAG` header.\n\n See struct `rte_flow_item_e_tag`."]
     Etag = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_E_TAG,
-    /// Matches a NVGRE header.\n\n See struct rte_flow_item_nvgre."]
+    /// Matches a NVGRE header.\n\n See struct `rte_flow_item_nvgre`."]
     Nvgre = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_NVGRE,
-    /// Matches a MPLS header.\n\n See struct rte_flow_item_mpls."]
+    /// Matches a MPLS header.\n\n See struct `rte_flow_item_mpls`."]
     Mpls = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_MPLS,
-    /// Matches a GRE header.\n\n See struct rte_flow_item_gre."]
+    /// Matches a GRE header.\n\n See struct `rte_flow_item_gre`."]
     Gre = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_GRE,
-    /// [META]\n\n Fuzzy pattern match, expect faster than default.\n\n This is for device that support fuzzy matching option.\n Usually a fuzzy matching is fast but the cost is accuracy.\n\n See struct rte_flow_item_fuzzy."]
+    /// [META]\n\n Fuzzy pattern match, expect faster than default.\n\n This is for device that support fuzzy matching option.\n Usually a fuzzy matching is fast but the cost is accuracy.\n\n See struct `rte_flow_item_fuzzy`."]
     Fuzzy = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_FUZZY,
-    /// Matches a GTP header.\n\n Configure flow for GTP packets.\n\n See struct rte_flow_item_gtp."]
+    /// Matches a GTP header.\n\n Configure flow for GTP packets.\n\n See struct `rte_flow_item_gtp`."]
     Gtp = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_GTP,
-    /// Matches a GTP header.\n\n Configure flow for GTP-C packets.\n\n See struct rte_flow_item_gtp."]
+    /// Matches a GTP header.\n\n Configure flow for GTP-C packets.\n\n See struct `rte_flow_item_gtp`."]
     Gtpc = 21,
-    /// Matches a GTP header.\n\n Configure flow for GTP-U packets.\n\n See struct rte_flow_item_gtp."]
+    /// Matches a GTP header.\n\n Configure flow for GTP-U packets.\n\n See struct `rte_flow_item_gtp`."]
     Gtpu = 22,
-    /// Matches a ESP header.\n\n See struct rte_flow_item_esp."]
+    /// Matches a ESP header.\n\n See struct `rte_flow_item_esp`."]
     Esp = 23,
-    /// Matches a GENEVE header.\n\n See struct rte_flow_item_geneve."]
+    /// Matches a GENEVE header.\n\n See struct `rte_flow_item_geneve`."]
     Geneve = 24,
     /// > **Deprecated** [`RTE_FLOW_ITEM_TYPE_VXLAN`]\n\n Matches a VXLAN-GPE header.\n\n See struct rte_flow_item_vxlan_gpe."]
     VxlanGpe = 25,
-    /// Matches an ARP header for Ethernet/IPv4.\n\n See struct rte_flow_item_arp_eth_ipv4."]
+    /// Matches an ARP header for Ethernet/IPv4.\n\n See struct `rte_flow_item_arp_eth_ipv4`."]
     ArpEthIpv4 = 26,
-    /// Matches the presence of any IPv6 extension header.\n\n See struct rte_flow_item_ipv6_ext."]
+    /// Matches the presence of any IPv6 extension header.\n\n See struct `rte_flow_item_ipv6_ext`."]
     Ipv6Ext = 27,
-    /// Matches any ICMPv6 header.\n\n See struct rte_flow_item_icmp6."]
+    /// Matches any `ICMPv6` header.\n\n See struct `rte_flow_item_icmp6`."]
     Icmp6 = 28,
-    /// Matches an ICMPv6 neighbor discovery solicitation.\n\n See struct rte_flow_item_icmp6_nd_ns."]
+    /// Matches an `ICMPv6` neighbor discovery solicitation.\n\n See struct `rte_flow_item_icmp6_nd_ns`."]
     Icmp6NdNs = 29,
-    /// Matches an ICMPv6 neighbor discovery advertisement.\n\n See struct rte_flow_item_icmp6_nd_na."]
+    /// Matches an `ICMPv6` neighbor discovery advertisement.\n\n See struct `rte_flow_item_icmp6_nd_na`."]
     Icmp6NdNa = 30,
-    /// Matches the presence of any ICMPv6 neighbor discovery option.\n\n See struct rte_flow_item_icmp6_nd_opt."]
+    /// Matches the presence of any `ICMPv6` neighbor discovery option.\n\n See struct `rte_flow_item_icmp6_nd_opt`."]
     Icmp6NdOpt = 31,
-    /// Matches an ICMPv6 neighbor discovery source Ethernet link-layer\n address option.\n\n See struct rte_flow_item_icmp6_nd_opt_sla_eth."]
+    /// Matches an `ICMPv6` neighbor discovery source Ethernet link-layer\n address option.\n\n See struct `rte_flow_item_icmp6_nd_opt_sla_eth`."]
     Icmp6NdOptSlaEth = 32,
-    /// Matches an ICMPv6 neighbor discovery target Ethernet link-layer\n address option.\n\n See struct rte_flow_item_icmp6_nd_opt_tla_eth."]
+    /// Matches an `ICMPv6` neighbor discovery target Ethernet link-layer\n address option.\n\n See struct `rte_flow_item_icmp6_nd_opt_tla_eth`."]
     Icmp6NdOptTlaEth = 33,
-    /// Matches specified mark field.\n\n See struct rte_flow_item_mark."]
+    /// Matches specified mark field.\n\n See struct `rte_flow_item_mark`."]
     Mark = 34,
-    /// [META]\n\n Matches a metadata value.\n\n See struct rte_flow_item_meta."]
+    /// [META]\n\n Matches a metadata value.\n\n See struct `rte_flow_item_meta`."]
     Meta = 35,
-    /// Matches a GRE optional key field.\n\n The value should a big-endian 32bit integer.\n\n When this item present the K bit is implicitly matched as \"1\"\n in the default mask.\n\n `spec/mask` type:\n rte_be32_t * "]
+    /// Matches a GRE optional key field.\n\n The value should a big-endian 32bit integer.\n\n When this item present the K bit is implicitly matched as \"1\"\n in the default mask.\n\n `spec/mask` type:\n `rte_be32_t` * "]
     GreKey = 36,
-    /// Matches a GTP extension header: PDU session container.\n\n Configure flow for GTP packets with extension header type 0x85.\n\n See struct rte_flow_item_gtp_psc."]
+    /// Matches a GTP extension header: PDU session container.\n\n Configure flow for GTP packets with extension header type 0x85.\n\n See struct `rte_flow_item_gtp_psc`."]
     GtpPsc = 37,
-    /// Matches a PPPoE header.\n\n Configure flow for PPPoE session packets.\n\n See struct rte_flow_item_pppoe."]
+    /// Matches a `PPPoE` header.\n\n Configure flow for `PPPoE` session packets.\n\n See struct `rte_flow_item_pppoe`."]
     PppoeS = 38,
-    /// Matches a PPPoE header.\n\n Configure flow for PPPoE discovery packets.\n\n See struct rte_flow_item_pppoe."]
+    /// Matches a `PPPoE` header.\n\n Configure flow for `PPPoE` discovery packets.\n\n See struct `rte_flow_item_pppoe`."]
     PppoeD = 39,
-    /// Matches a PPPoE optional proto_id field.\n\n It only applies to PPPoE session packets.\n\n See struct rte_flow_item_pppoe_proto_id."]
+    /// Matches a `PPPoE` optional `proto_id` field.\n\n It only applies to `PPPoE` session packets.\n\n See struct `rte_flow_item_pppoe_proto_id`."]
     PppoeProtoId = 40,
-    /// Matches Network service header (NSH).\n See struct rte_flow_item_nsh.\n"]
+    /// Matches Network service header (NSH).\n See struct `rte_flow_item_nsh.\n`"]
     Nsh = 41,
-    /// Matches Internet Group Management Protocol (IGMP).\n See struct rte_flow_item_igmp.\n"]
+    /// Matches Internet Group Management Protocol (IGMP).\n See struct `rte_flow_item_igmp.\n`"]
     Igmp = 42,
-    /// Matches IP Authentication Header (AH).\n See struct rte_flow_item_ah.\n"]
+    /// Matches IP Authentication Header (AH).\n See struct `rte_flow_item_ah.\n`"]
     Ah = 43,
-    /// Matches a HIGIG header.\n see struct rte_flow_item_higig2_hdr."]
+    /// Matches a HIGIG header.\n see struct `rte_flow_item_higig2_hdr`."]
     Higig2 = 44,
-    /// [META]\n\n Matches a tag value.\n\n See struct rte_flow_item_tag."]
+    /// [META]\n\n Matches a tag value.\n\n See struct `rte_flow_item_tag`."]
     Tag = 45,
-    /// Matches a L2TPv3 over IP header.\n\n Configure flow for L2TPv3 over IP packets.\n\n See struct rte_flow_item_l2tpv3oip."]
+    /// Matches a `L2TPv3` over IP header.\n\n Configure flow for `L2TPv3` over IP packets.\n\n See struct `rte_flow_item_l2tpv3oip`."]
     L2tpv3oIp = 46,
-    /// Matches PFCP Header.\n See struct rte_flow_item_pfcp.\n"]
+    /// Matches PFCP Header.\n See struct `rte_flow_item_pfcp.\n`"]
     Pfcp = 47,
-    /// Matches eCPRI Header.\n\n Configure flow for eCPRI over ETH or UDP packets.\n\n See struct rte_flow_item_ecpri."]
+    /// Matches eCPRI Header.\n\n Configure flow for eCPRI over ETH or UDP packets.\n\n See struct `rte_flow_item_ecpri`."]
     Ecpri = 48,
-    /// Matches the presence of IPv6 fragment extension header.\n\n See struct rte_flow_item_ipv6_frag_ext."]
+    /// Matches the presence of IPv6 fragment extension header.\n\n See struct `rte_flow_item_ipv6_frag_ext`."]
     Ipv6FragExt = 49,
-    /// Matches Geneve Variable Length Option\n\n See struct rte_flow_item_geneve_opt"]
+    /// Matches Geneve Variable Length Option\n\n See struct `rte_flow_item_geneve_opt`"]
     GeneveOpt = 50,
-    /// [META]\n\n Matches on packet integrity.\n For some devices application needs to enable integration checks in HW\n before using this item.\n\n [`struct`] rte_flow_item_integrity."]
+    /// [META]\n\n Matches on packet integrity.\n For some devices application needs to enable integration checks in HW\n before using this item.\n\n [`struct`] `rte_flow_item_integrity`."]
     Integrity = 51,
-    /// [META]\n\n Matches conntrack state.\n\n [`struct`] rte_flow_item_conntrack."]
+    /// [META]\n\n Matches conntrack state.\n\n [`struct`] `rte_flow_item_conntrack`."]
     Conntrack = 52,
-    /// [META]\n\n Matches traffic entering the embedded switch from the given ethdev.\n\n [`struct`] rte_flow_item_ethdev"]
+    /// [META]\n\n Matches traffic entering the embedded switch from the given ethdev.\n\n [`struct`] `rte_flow_item_ethdev`"]
     PortRepresentor = 53,
-    /// [META]\n\n Matches traffic entering the embedded switch from\n the entity represented by the given ethdev.\n\n [`struct`] rte_flow_item_ethdev"]
+    /// [META]\n\n Matches traffic entering the embedded switch from\n the entity represented by the given ethdev.\n\n [`struct`] `rte_flow_item_ethdev`"]
     RepresentedPort = 54,
-    /// Matches a configured set of fields at runtime calculated offsets\n over the generic network header with variable length and\n flexible pattern\n\n [`struct`] rte_flow_item_flex."]
+    /// Matches a configured set of fields at runtime calculated offsets\n over the generic network header with variable length and\n flexible pattern\n\n [`struct`] `rte_flow_item_flex`."]
     Flex = 55,
-    /// Matches L2TPv2 Header.\n\n See struct rte_flow_item_l2tpv2."]
+    /// Matches `L2TPv2` Header.\n\n See struct `rte_flow_item_l2tpv2`."]
     L2tpv2 = 56,
-    /// Matches PPP Header.\n\n See struct rte_flow_item_ppp."]
+    /// Matches PPP Header.\n\n See struct `rte_flow_item_ppp`."]
     Ppp = 57,
-    /// Matches GRE optional fields.\n\n See struct rte_flow_item_gre_opt."]
+    /// Matches GRE optional fields.\n\n See struct `rte_flow_item_gre_opt`."]
     GreOption = 58,
-    /// Matches MACsec Ethernet Header.\n\n See struct rte_flow_item_macsec."]
+    /// Matches `MACsec` Ethernet Header.\n\n See struct `rte_flow_item_macsec`."]
     MacSec = 59,
-    /// Matches Meter Color Marker.\n\n See struct rte_flow_item_meter_color."]
+    /// Matches Meter Color Marker.\n\n See struct `rte_flow_item_meter_color`."]
     MeterColor = 60,
-    /// Matches the presence of IPv6 routing extension header.\n\n [`struct`] rte_flow_item_ipv6_routing_ext."]
+    /// Matches the presence of IPv6 routing extension header.\n\n [`struct`] `rte_flow_item_ipv6_routing_ext`."]
     Ipv6RoutingExt = 61,
-    /// Matches an ICMPv6 echo request.\n\n [`struct`] rte_flow_item_icmp6_echo."]
+    /// Matches an `ICMPv6` echo request.\n\n [`struct`] `rte_flow_item_icmp6_echo`."]
     Icmp6EchoRequest = 62,
-    /// Matches an ICMPv6 echo reply.\n\n [`struct`] rte_flow_item_icmp6_echo."]
+    /// Matches an `ICMPv6` echo reply.\n\n [`struct`] `rte_flow_item_icmp6_echo`."]
     Icmp6EchoReply = 63,
-    /// Match Quota state\n\n [`struct`] rte_flow_item_quota"]
+    /// Match Quota state\n\n [`struct`] `rte_flow_item_quota`"]
     Quota = 64,
-    /// Matches on the aggregated port of the received packet.\n Used in case multiple ports are aggregated to the a DPDK port.\n First port is number 1.\n\n [`struct`] rte_flow_item_aggr_affinity."]
+    /// Matches on the aggregated port of the received packet.\n Used in case multiple ports are aggregated to the a DPDK port.\n First port is number 1.\n\n [`struct`] `rte_flow_item_aggr_affinity`."]
     AggrAffinity = 65,
-    /// Match Tx queue number.\n This is valid only for egress rules.\n\n [`struct`] rte_flow_item_tx_queue"]
+    /// Match Tx queue number.\n This is valid only for egress rules.\n\n [`struct`] `rte_flow_item_tx_queue`"]
     TxQueue = 66,
-    /// Matches an InfiniBand base transport header in RoCE packet.\n\n [`struct`] rte_flow_item_ib_bth."]
+    /// Matches an `InfiniBand` base transport header in `RoCE` packet.\n\n [`struct`] `rte_flow_item_ib_bth`."]
     IbBth = 67,
-    /// Matches the packet type as defined in rte_mbuf_ptype.\n\n See struct rte_flow_item_ptype.\n"]
+    /// Matches the packet type as defined in `rte_mbuf_ptype.\n\n` See struct `rte_flow_item_ptype.\n`"]
     Ptype = 68,
-    /// [META]\n\n Matches a random value.\n\n This value is not based on the packet data/headers.\n The application shouldn't assume that this value is kept\n during the lifetime of the packet.\n\n [`struct`] rte_flow_item_random."]
+    /// [META]\n\n Matches a random value.\n\n This value is not based on the packet data/headers.\n The application shouldn't assume that this value is kept\n during the lifetime of the packet.\n\n [`struct`] `rte_flow_item_random`."]
     Random = 69,
-    /// Match packet with various comparison types.\n\n See struct rte_flow_item_compare."]
+    /// Match packet with various comparison types.\n\n See struct `rte_flow_item_compare`."]
     Compare = 70,
 }
 
@@ -501,74 +501,74 @@ pub enum FlowActionType {
     ///
     /// See struct [`rte_flow_action_jump`]
     Jump = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_JUMP,
-    /// Attaches an integer value to packets and sets RTE_MBUF_F_RX_FDIR and RTE_MBUF_F_RX_FDIR_ID mbuf flags. See struct rte_flow_action_mark. One should negotiate mark delivery from the NIC to the PMD. [`rte_eth_rx_metadata_negotiate()`] [`RTE_ETH_RX_METADATA_USER_MARK`]
+    /// Attaches an integer value to packets and sets `RTE_MBUF_F_RX_FDIR` and `RTE_MBUF_F_RX_FDIR_ID` mbuf flags. See struct `rte_flow_action_mark`. One should negotiate mark delivery from the NIC to the PMD. [`rte_eth_rx_metadata_negotiate()`] [`RTE_ETH_RX_METADATA_USER_MARK`]
     Mark = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_MARK,
-    /// Flags packets. Similar to MARK without a specific value; only sets the RTE_MBUF_F_RX_FDIR mbuf flag. No associated configuration structure. One should negotiate flag delivery from the NIC to the PMD. [`rte_eth_rx_metadata_negotiate()`] [`RTE_ETH_RX_METADATA_USER_FLAG`]
+    /// Flags packets. Similar to MARK without a specific value; only sets the `RTE_MBUF_F_RX_FDIR` mbuf flag. No associated configuration structure. One should negotiate flag delivery from the NIC to the PMD. [`rte_eth_rx_metadata_negotiate()`] [`RTE_ETH_RX_METADATA_USER_FLAG`]
     Flag = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_FLAG,
-    /// Assigns packets to a given queue index. See struct rte_flow_action_queue.
+    /// Assigns packets to a given queue index. See struct `rte_flow_action_queue`.
     Queue = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_QUEUE,
     /// Drops packets.
     ///
     /// [`FlowActionType::PassThrough`] overrides this action if both are specified.
     /// No associated configuration structure.
     Drop = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_DROP,
-    /// Enables counters for this flow rule. These counters can be retrieved and reset through rte_flow_query() or rte_flow_action_handle_query() if the action provided via handle, see struct rte_flow_query_count. See struct rte_flow_action_count.
+    /// Enables counters for this flow rule. These counters can be retrieved and reset through `rte_flow_query()` or `rte_flow_action_handle_query()` if the action provided via handle, see struct `rte_flow_query_count`. See struct `rte_flow_action_count`.
     Count = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_COUNT,
-    /// Similar to QUEUE, except RSS is additionally performed on packets to spread them among several queues according to the provided parameters. See struct rte_flow_action_rss.
+    /// Similar to QUEUE, except RSS is additionally performed on packets to spread them among several queues according to the provided parameters. See struct `rte_flow_action_rss`.
     Rss = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_RSS,
-    /// Traffic metering and policing (MTR). See struct rte_flow_action_meter. See file rte_mtr.h for MTR object configuration.
+    /// Traffic metering and policing (MTR). See struct `rte_flow_action_meter`. See file `rte_mtr.h` for MTR object configuration.
     Meter = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_METER,
-    /// Redirects packets to security engine of current device for security processing as specified by security session. See struct rte_flow_action_security.
+    /// Redirects packets to security engine of current device for security processing as specified by security session. See struct `rte_flow_action_security`.
     Security = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_SECURITY,
-    /// Implements OFPAT_POP_VLAN (\"pop the outer VLAN tag\") as defined by the OpenFlow Switch Specification. No associated configuration structure.
+    /// Implements `OFPAT_POP_VLAN` (\"pop the outer VLAN tag\") as defined by the `OpenFlow` Switch Specification. No associated configuration structure.
     PopVlan = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_OF_POP_VLAN,
-    /// Implements OFPAT_PUSH_VLAN (\"push a new VLAN tag\") as defined by the OpenFlow Switch Specification. See struct rte_flow_action_of_push_vlan.
+    /// Implements `OFPAT_PUSH_VLAN` (\"push a new VLAN tag\") as defined by the `OpenFlow` Switch Specification. See struct `rte_flow_action_of_push_vlan`.
     PushVlan = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_OF_PUSH_VLAN,
-    /// Implements OFPAT_SET_VLAN_VID (\"set the 802.1q VLAN ID\") as defined by the OpenFlow Switch Specification. See struct rte_flow_action_of_set_vlan_vid.
+    /// Implements `OFPAT_SET_VLAN_VID` (\"set the 802.1q VLAN ID\") as defined by the `OpenFlow` Switch Specification. See struct `rte_flow_action_of_set_vlan_vid`.
     SetVlanVid = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_VID,
-    /// Implements OFPAT_SET_LAN_PCP (\"set the 802.1q priority\") as defined by the OpenFlow Switch Specification. See struct rte_flow_action_of_set_vlan_pcp.
+    /// Implements `OFPAT_SET_LAN_PCP` (\"set the 802.1q priority\") as defined by the `OpenFlow` Switch Specification. See struct `rte_flow_action_of_set_vlan_pcp`.
     SetVlanPcp = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_PCP,
-    /// Implements OFPAT_POP_MPLS (\"pop the outer MPLS tag\") as defined by the OpenFlow Switch Specification. See struct rte_flow_action_of_pop_mpls.
+    /// Implements `OFPAT_POP_MPLS` (\"pop the outer MPLS tag\") as defined by the `OpenFlow` Switch Specification. See struct `rte_flow_action_of_pop_mpls`.
     PopMpls = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_OF_POP_MPLS,
-    /// Implements OFPAT_PUSH_MPLS (\"push a new MPLS tag\") as defined by the OpenFlow Switch Specification. See struct rte_flow_action_of_push_mpls.
+    /// Implements `OFPAT_PUSH_MPLS` (\"push a new MPLS tag\") as defined by the `OpenFlow` Switch Specification. See struct `rte_flow_action_of_push_mpls`.
     PushMpls = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_OF_PUSH_MPLS,
-    /// Encapsulate flow in VXLAN tunnel as defined in rte_flow_action_vxlan_encap action structure. See struct rte_flow_action_vxlan_encap.
+    /// Encapsulate flow in VXLAN tunnel as defined in `rte_flow_action_vxlan_encap` action structure. See struct `rte_flow_action_vxlan_encap`.
     VxlanEncap = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_VXLAN_ENCAP,
-    /// Decapsulate outer most VXLAN tunnel from matched flow. If flow pattern does not define a valid VXLAN tunnel (as specified by RFC7348) then the PMD should return a RTE_FLOW_ERROR_TYPE_ACTION error.
+    /// Decapsulate outer most VXLAN tunnel from matched flow. If flow pattern does not define a valid VXLAN tunnel (as specified by RFC7348) then the PMD should return a `RTE_FLOW_ERROR_TYPE_ACTION` error.
     VxlanDecap = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_VXLAN_DECAP,
-    /// Encapsulate flow in NVGRE tunnel defined in the rte_flow_action_nvgre_encap action structure. See struct rte_flow_action_nvgre_encap.
+    /// Encapsulate flow in NVGRE tunnel defined in the `rte_flow_action_nvgre_encap` action structure. See struct `rte_flow_action_nvgre_encap`.
     NvgreEncap = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_NVGRE_ENCAP,
-    /// Decapsulate outer most NVGRE tunnel from matched flow. If flow pattern does not define a valid NVGRE tunnel (as specified by RFC7637) then the PMD should return a RTE_FLOW_ERROR_TYPE_ACTION error.
+    /// Decapsulate outer most NVGRE tunnel from matched flow. If flow pattern does not define a valid NVGRE tunnel (as specified by RFC7637) then the PMD should return a `RTE_FLOW_ERROR_TYPE_ACTION` error.
     NvgreDecap = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_NVGRE_DECAP,
-    /// Add outer header whose template is provided in its data buffer See struct rte_flow_action_raw_encap.
+    /// Add outer header whose template is provided in its data buffer See struct `rte_flow_action_raw_encap`.
     RawEncap = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_RAW_ENCAP,
-    /// Remove outer header whose template is provided in its data buffer. See struct rte_flow_action_raw_decap
+    /// Remove outer header whose template is provided in its data buffer. See struct `rte_flow_action_raw_decap`
     RawDecap = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_RAW_DECAP,
-    /// Swap the source and destination MAC addresses in the outermost Ethernet header. If flow pattern does not define a valid RTE_FLOW_ITEM_TYPE_ETH, then the PMD should return a RTE_FLOW_ERROR_TYPE_ACTION error. No associated configuration structure.
+    /// Swap the source and destination MAC addresses in the outermost Ethernet header. If flow pattern does not define a valid `RTE_FLOW_ITEM_TYPE_ETH`, then the PMD should return a `RTE_FLOW_ERROR_TYPE_ACTION` error. No associated configuration structure.
     MacSwap = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_MAC_SWAP,
-    /// Report as aged flow if timeout passed without any matching on the flow. See struct rte_flow_action_age. See function rte_flow_get_q_aged_flows See function rte_flow_get_aged_flows see enum RTE_ETH_EVENT_FLOW_AGED See struct rte_flow_query_age See struct rte_flow_update_age
+    /// Report as aged flow if timeout passed without any matching on the flow. See struct `rte_flow_action_age`. See function `rte_flow_get_q_aged_flows` See function `rte_flow_get_aged_flows` see enum `RTE_ETH_EVENT_FLOW_AGED` See struct `rte_flow_query_age` See struct `rte_flow_update_age`
     Age = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_AGE,
-    /// The matching packets will be duplicated with specified ratio and applied with own set of actions with a fate action. See struct rte_flow_action_sample.
+    /// The matching packets will be duplicated with specified ratio and applied with own set of actions with a fate action. See struct `rte_flow_action_sample`.
     Sample = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_SAMPLE,
-    /// Modify a packet header field, tag, mark or metadata. Allow the modification of an arbitrary header field via set, add and sub operations or copying its content into tag, meta or mark for future processing. See struct rte_flow_action_modify_field.
+    /// Modify a packet header field, tag, mark or metadata. Allow the modification of an arbitrary header field via set, add and sub operations or copying its content into tag, meta or mark for future processing. See struct `rte_flow_action_modify_field`.
     ModifyField = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_MODIFY_FIELD,
     /// An action handle is referenced in a rule through an indirect action. The same action handle may be used in multiple rules for the same or different ethdev ports.
     Indirect = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_INDIRECT,
-    /// Color the packet to reflect the meter color result. Set the meter color in the mbuf to the selected color. See struct rte_flow_action_meter_color.
+    /// Color the packet to reflect the meter color result. Set the meter color in the mbuf to the selected color. See struct `rte_flow_action_meter_color`.
     MeterColor = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_METER_COLOR,
-    /// At embedded switch level, sends matching traffic to the given ethdev. [`struct`] rte_flow_action_ethdev
+    /// At embedded switch level, sends matching traffic to the given ethdev. [`struct`] `rte_flow_action_ethdev`
     PortRepresentor = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_PORT_REPRESENTOR,
-    /// At embedded switch level, send matching traffic to the entity represented by the given ethdev. [`struct`] rte_flow_action_ethdev
+    /// At embedded switch level, send matching traffic to the entity represented by the given ethdev. [`struct`] `rte_flow_action_ethdev`
     RepresentedPort = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_REPRESENTED_PORT,
-    /// Traffic metering and marking (MTR). [`struct`] rte_flow_action_meter_mark See file rte_mtr.h for MTR profile object configuration.
+    /// Traffic metering and marking (MTR). [`struct`] `rte_flow_action_meter_mark` See file `rte_mtr.h` for MTR profile object configuration.
     MeterMark = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_METER_MARK,
     /// Send packets to the kernel, without going to userspace at all. The packets will be received by the kernel driver sharing the same device as the DPDK port on which this action is configured. This action mostly suits bifurcated driver model. No associated configuration structure.
     SendToKernel = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_SEND_TO_KERNEL,
-    /// Apply the quota verdict (PASS or BLOCK) to a flow. [`struct`] rte_flow_action_quota [`struct`] rte_flow_query_quota [`struct`] rte_flow_update_quota
+    /// Apply the quota verdict (PASS or BLOCK) to a flow. [`struct`] `rte_flow_action_quota` [`struct`] `rte_flow_query_quota` [`struct`] `rte_flow_update_quota`
     Quota = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_QUOTA,
-    /// Action handle to reference flow actions list. [`struct`] rte_flow_action_indirect_list
+    /// Action handle to reference flow actions list. [`struct`] `rte_flow_action_indirect_list`
     IndirectList = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_INDIRECT_LIST,
-    /// NAT64 translation of IPv4/IPv6 headers. [`struct`] rte_flow_action_nat64
+    /// NAT64 translation of IPv4/IPv6 headers. [`struct`] `rte_flow_action_nat64`
     Nat64 = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_NAT64,
     // /// > **Deprecated** [`RTE_FLOW_ACTION_TYPE_PORT_REPRESENTOR`] [`RTE_FLOW_ACTION_TYPE_REPRESENTED_PORT`] Directs matching traffic to the physical function (PF) of the current device. No associated configuration structure.
     // RTE_FLOW_ACTION_TYPE_PF,
@@ -876,7 +876,7 @@ pub struct SetFieldAction {
 
 impl SetFlowField {
     /// Converts the `SetFlowField` into a `SetFieldAction`.
-    pub fn to_flow_rule(&self) -> SetFieldAction {
+    #[must_use] pub fn to_flow_rule(&self) -> SetFieldAction {
         let conf = match self {
             SetFlowField::MacDst(mac_addr) => {
                 let mut value = [0u8; 16];
