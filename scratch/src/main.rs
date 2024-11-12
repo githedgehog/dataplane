@@ -17,30 +17,6 @@ fn as_cstr(s: &str) -> CString {
     CString::new(s).unwrap()
 }
 
-// #[derive(Debug)]
-// struct Eal;
-//
-// impl Eal {
-//     #[tracing::instrument(level = "trace", ret)]
-//     /// Initializes the DPDK Environment Abstraction Layer (EAL).
-//     ///
-//     /// TODO: proper safety analysis (in a hurry for demo purposes)
-//     pub fn new<T: Debug + AsRef<str>>(args: Vec<T>) -> Eal {
-//         {
-//             let args: Vec<_> = args.iter().map(|s| as_cstr(s.as_ref())).collect();
-//             let mut cargs: Vec<_> = args.iter().map(|s| s.as_ptr() as *mut c_char).collect();
-//             let len = cargs.len() as c_int;
-//             let exit_code = unsafe { rte_eal_init(len, cargs.as_mut_ptr()) };
-//             /// TODO: this is a poor error message
-//             if exit_code < 0 {
-//                 unsafe { rte_exit(exit_code, cstr_literal!("Invalid EAL arguments")) };
-//             }
-//             info!("EAL initialization successful: {exit_code}");
-//         }
-//         Self
-//     }
-// }
-
 /// Exits the DPDK application with an error message, cleaning up the EAL as gracefully as
 /// possible (by way of [`rte_exit`]).
 ///
@@ -708,8 +684,8 @@ fn eal_main() {
             config: (),
         };
 
-        my_dev.configure_rx_queue(rx_config).unwrap();
-        my_dev.configure_tx_queue(tx_config).unwrap();
+        my_dev.create_rx_queue(rx_config).unwrap();
+        my_dev.create_tx_queue(tx_config).unwrap();
 
         let rx_config = queue::rx::RxQueueConfig {
             dev: my_dev.info.index(),
@@ -728,7 +704,7 @@ fn eal_main() {
         };
 
         my_dev
-            .configure_hairpin_queue(rx_config, tx_config)
+            .create_hairpin_queue(rx_config, tx_config)
             .unwrap();
         my_dev.start().unwrap();
 
@@ -999,27 +975,6 @@ fn generate_modify_field_flow(
     action[5].conf = &queue as *const _ as *const _;
 
     action[6].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_END;
-
-    // let res = unsafe {
-    //     rte_flow_validate(
-    //         port_id,
-    //         &attr as *const _,
-    //         pattern.as_ptr(),
-    //         action.as_ptr(),
-    //         err,
-    //     )
-    // };
-    //
-    // if res != 0 {
-    //     let err_str = unsafe { rte_strerror(res) };
-    //     let err_msg = format!(
-    //         "Failed to validate flow: {err_str}",
-    //         err_str = unsafe { CStr::from_ptr(err_str) }.to_str().unwrap()
-    //     );
-    //     fatal_error(err_msg.as_str());
-    // } else {
-    //     trace!("Flow validated");
-    // }
 
     let flow = unsafe {
         rte_flow_create(

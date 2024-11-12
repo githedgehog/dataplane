@@ -768,38 +768,38 @@ pub struct Dev {
 impl Dev {
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`queue::rx::RxQueueStopped`]
-    pub fn configure_rx_queue(
+    pub fn create_rx_queue(
         &mut self,
         config: RxQueueConfig,
     ) -> Result<(), queue::rx::ConfigFailure> {
-        let rx_queue = RxQueue::configure(self, config)?;
+        let rx_queue = RxQueue::try_new(self, config)?;
         self.rx_queues.push(rx_queue);
         Ok(())
     }
 
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`queue::tx::TxQueueStopped`]
-    pub fn configure_tx_queue(
+    pub fn create_tx_queue(
         &mut self,
         config: TxQueueConfig,
     ) -> Result<(), queue::tx::ConfigFailure> {
-        let tx_queue = TxQueue::configure(self, config)?;
+        let tx_queue = TxQueue::try_new(self, config)?;
         self.tx_queues.push(tx_queue);
         Ok(())
     }
 
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`HairpinQueue`]
-    pub fn configure_hairpin_queue(
+    pub fn create_hairpin_queue(
         &mut self,
         rx: RxQueueConfig,
         tx: TxQueueConfig,
     ) -> Result<(), HairpinConfigFailure> {
         let rx =
-            RxQueue::configure(self, rx).map_err(HairpinConfigFailure::RxQueueCreationFailed)?;
+            RxQueue::try_new(self, rx).map_err(HairpinConfigFailure::RxQueueCreationFailed)?;
         let tx =
-            TxQueue::configure(self, tx).map_err(HairpinConfigFailure::TxQueueCreationFailed)?;
-        let hairpin = HairpinQueue::new(self, rx, tx)?;
+            TxQueue::try_new(self, tx).map_err(HairpinConfigFailure::TxQueueCreationFailed)?;
+        let hairpin = HairpinQueue::try_new(self, rx, tx)?;
         self.hairpin_queues.push(hairpin);
         Ok(())
     }

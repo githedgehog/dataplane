@@ -3,11 +3,11 @@
 
 //! Transmit queue configuration and management.
 
-use tracing::info;
 use crate::dev::DevIndex;
 use crate::{dev, socket};
 use dpdk_sys::*;
 use errno::ErrorCode;
+use tracing::{error, info};
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -50,16 +50,6 @@ pub struct TxQueueConfig {
     pub config: (), // TODO
 }
 
-// impl Drop for TxQueueStopped {
-//     #[tracing::instrument(level = "debug")]
-//     fn drop(&mut self) {
-//         debug!(
-//             "Dropping stopped transmit queue {:?}",
-//             self.config.queue_index
-//         );
-//     }
-// }
-
 /// Error type for transmit queue configuration failures.
 #[derive(Debug)]
 pub struct ConfigError {
@@ -90,13 +80,9 @@ impl TxQueue {
     /// This design ensures that the hairpin queue is correctly tracked in the list of queues
     /// associated with the device.
     #[tracing::instrument(level = "info")]
-    pub(crate) fn configure(dev: &dev::Dev, config: TxQueueConfig) -> Result<Self, ConfigFailure> {
-        let socket_id = socket::SocketId::try_from(config.socket_preference).map_err(|err| {
-            ConfigFailure::InvalidSocket(ConfigError {
-                code: -1,
-                err,
-            })
-        })?;
+    pub(crate) fn try_new(dev: &dev::Dev, config: TxQueueConfig) -> Result<Self, ConfigFailure> {
+        let socket_id = socket::SocketId::try_from(config.socket_preference)
+            .map_err(|err| ConfigFailure::InvalidSocket(ConfigError { code: -1, err }))?;
         info!("Configuring TX queue on socket {socket_id}");
 
         let tx_conf = rte_eth_txconf {
@@ -118,6 +104,7 @@ impl TxQueue {
                 let tx_queue = TxQueue {
                     config: config.clone(),
                     dev: dev.info.index(),
+                    started: false,
                 };
                 Ok(tx_queue)
             }
@@ -133,14 +120,20 @@ impl TxQueue {
     }
 
     /// Start the transmit queue.
-    pub(crate) fn start(self) -> Result<TxQueue, TxQueueStartError> {
+    pub(crate) fn start(&mut self) -> Result<(), TxQueueStartError> {
         use TxQueueStartError::*;
+        if self.started {
+            error!("Attempt to start an already started RX queue: {self:?}")
+        }
         let ret = unsafe {
             rte_eth_dev_tx_queue_start(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
 
         match ret {
-            errno::SUCCESS => Ok(self),
+            errno::SUCCESS => {
+                self.started = true;
+                Ok(())
+            }
             errno::NEG_ENODEV => Err(DeviceRemoved),
             errno::NEG_EINVAL => Err(InvalidArgument),
             errno::NEG_EIO => Err(DeviceRemoved),
@@ -150,14 +143,20 @@ impl TxQueue {
     }
 
     /// Stop the transmit queue.
-    pub(crate) fn stop(self) -> Result<TxQueue, TxQueueStopError> {
+    pub(crate) fn stop(&mut self) -> Result<(), TxQueueStopError> {
         use TxQueueStopError::*;
+        if !self.started {
+            error!("Attempt to stop an already stopped RX queue: {self:?}")
+        }
         let ret = unsafe {
             rte_eth_dev_tx_queue_stop(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
 
         match ret {
-            errno::SUCCESS => Ok(self),
+            errno::SUCCESS => {
+                self.started = false;
+                Ok(())
+            }
             errno::NEG_ENODEV => Err(DeviceRemoved),
             errno::NEG_EINVAL => Err(InvalidArgument),
             errno::NEG_EIO => Err(DeviceRemoved),
@@ -167,11 +166,26 @@ impl TxQueue {
     }
 }
 
+impl Drop for TxQueue {
+    fn drop(&mut self) {
+        if !self.started {
+            return;
+        }
+        match self.stop() {
+            Ok(_) => {}
+            Err(err) => {
+                error!("{err}");
+            }
+        }
+    }
+}
+
 /// A DPDK transmit queue
 #[derive(Debug)]
 pub struct TxQueue {
     pub(crate) config: TxQueueConfig,
     pub(crate) dev: DevIndex,
+    started: bool,
 }
 
 /// Types of errors associated with starting TX queues

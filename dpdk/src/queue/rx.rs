@@ -88,12 +88,13 @@ impl RxQueue {
     /// This design ensures that the hairpin queue is correctly tracked in the list of queues
     /// associated with the device.
     #[tracing::instrument(level = "info")]
-    pub(crate) fn configure(dev: &dev::Dev, config: RxQueueConfig) -> Result<Self, ConfigFailure> {
+    pub(crate) fn try_new(dev: &dev::Dev, config: RxQueueConfig) -> Result<Self, ConfigFailure> {
         use ConfigFailure::*;
-        let socket_id =
-            SocketId::try_from(config.socket_preference).map_err(InvalidSocket)?;
-        // dev.info.index
-        // info!("Configuring RX queue on socket {socket_id} for device {dev_info}", d);
+        let socket_id = SocketId::try_from(config.socket_preference).map_err(InvalidSocket)?;
+        info!(
+            "Configuring RX queue on socket {socket_id} for device {dev_info}",
+            dev_info = dev.info.index
+        );
 
         let rx_conf = rte_eth_rxconf {
             offloads: dev.info.inner.rx_queue_offload_capa,
@@ -124,35 +125,38 @@ impl RxQueue {
 
     /// Start the receive queue.
     #[tracing::instrument(level = "info")]
-    pub(crate) fn start(self) -> Result<RxQueue, RxQueueStartError> {
+    pub(crate) fn start(&mut self) -> Result<(), RxQueueStartError> {
         let ret = unsafe {
             rte_eth_dev_rx_queue_start(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
-
-        match ret {
-            0 => Ok(self),
-            errno::NEG_ENODEV => Err(RxQueueStartError::InvalidPortId),
-            errno::NEG_EINVAL => Err(RxQueueStartError::QueueIdOutOfRange),
-            errno::NEG_EIO => Err(RxQueueStartError::DeviceRemoved),
-            errno::NEG_ENOTSUP => Err(RxQueueStartError::NotSupported),
-            val => Err(RxQueueStartError::Unexpected(errno::Errno(val))),
+        {
+            use RxQueueStartError::*;
+            match ret {
+                0 => Ok(()),
+                errno::NEG_ENODEV => Err(InvalidPortId),
+                errno::NEG_EINVAL => Err(QueueIdOutOfRange),
+                errno::NEG_EIO => Err(DeviceRemoved),
+                errno::NEG_ENOTSUP => Err(NotSupported),
+                val => Err(Unexpected(errno::Errno(val))),
+            }
         }
     }
 
     /// Start the receive queue.
     #[tracing::instrument(level = "info")]
-    pub(crate) fn stop(self) -> Result<RxQueue, RxQueueStopError> {
+    pub(crate) fn stop(&mut self) -> Result<(), RxQueueStopError> {
+        use RxQueueStopError::*;
         let ret = unsafe {
             rte_eth_dev_rx_queue_stop(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
 
         match ret {
-            0 => Ok(self),
-            errno::NEG_ENODEV => Err(RxQueueStopError::InvalidPortId),
-            errno::NEG_EINVAL => Err(RxQueueStopError::QueueIdOutOfRange),
-            errno::NEG_EIO => Err(RxQueueStopError::DeviceRemoved),
-            errno::NEG_ENOTSUP => Err(RxQueueStopError::NotSupported),
-            val => Err(RxQueueStopError::Unexpected(errno::Errno(val))),
+            0 => Ok(()),
+            errno::NEG_ENODEV => Err(InvalidPortId),
+            errno::NEG_EINVAL => Err(QueueIdOutOfRange),
+            errno::NEG_EIO => Err(DeviceRemoved),
+            errno::NEG_ENOTSUP => Err(NotSupported),
+            val => Err(Unexpected(errno::Errno(val))),
         }
     }
 

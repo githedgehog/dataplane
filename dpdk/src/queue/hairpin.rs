@@ -5,12 +5,12 @@
 use super::{rx, tx};
 use crate::dev::{Dev, DevInfo};
 use crate::queue::rx::RxQueue;
-use crate::queue::tx::{TxQueue};
+use crate::queue::tx::TxQueue;
 use dpdk_sys::*;
-use tracing::debug;
 use errno::ErrorCode;
+use tracing::{debug, error};
 
-/// A stopped DPDK hairpin queue.
+/// A DPDK hairpin queue.
 #[derive(Debug)]
 pub struct HairpinQueue {
     pub(crate) rx: RxQueue,
@@ -50,6 +50,16 @@ pub enum HairpinConfigFailure {
     CreationFailed(ErrorCode),
 }
 
+pub enum HairpinQueueStartError {
+    RxQueueStartError(rx::RxQueueStartError),
+    TxQueueStartError(tx::TxQueueStartError),
+}
+
+pub enum HairpinQueueStopError {
+    RxQueueStopError(rx::RxQueueStopError),
+    TxQueueStopError(tx::TxQueueStopError),
+}
+
 impl HairpinQueue {
     /// Create and configure a new hairpin queue.
     ///
@@ -59,77 +69,82 @@ impl HairpinQueue {
     ///
     /// This design ensures that the hairpin queue is correctly tracked in the list of queues
     /// associated with the device.
-    pub(crate) fn new(
-        dev: &Dev,
-        rx: RxQueue,
-        tx: TxQueue,
-    ) -> Result<Self, HairpinConfigFailure> {
+    pub(crate) fn try_new(dev: &Dev, rx: RxQueue, tx: TxQueue) -> Result<Self, HairpinConfigFailure> {
         let peering = HairpinPeering::define(&dev.info, &rx, &tx);
-        // configure the rx queue
+        let hp_queue = HairpinQueue { rx, tx, peering };
 
         let ret = unsafe {
             rte_eth_rx_hairpin_queue_setup(
                 dev.info.index.as_u16(),
-                rx.config.queue_index.as_u16(),
+                hp_queue.rx.config.queue_index.as_u16(),
                 0,
-                &peering.rx,
+                &hp_queue.peering.rx,
             )
         };
 
         if ret < 0 {
-            return Err(HairpinConfigFailure::CreationFailed(
-                ErrorCode::parse_i32(ret)
-            ));
+            return Err(HairpinConfigFailure::CreationFailed(ErrorCode::parse_i32(
+                ret,
+            )));
         }
         debug!("RX hairpin queue configured");
+
 
         let ret = unsafe {
             rte_eth_tx_hairpin_queue_setup(
                 dev.info.index.as_u16(),
-                tx.config.queue_index.as_u16(),
+                hp_queue.tx.config.queue_index.as_u16(),
                 0,
-                &peering.tx,
+                &hp_queue.peering.tx,
             )
         };
 
         if ret < 0 {
-            return Err(HairpinConfigFailure::CreationFailed(
-                ErrorCode::parse_i32(ret)
-            ));
+            return Err(HairpinConfigFailure::CreationFailed(ErrorCode::parse_i32(
+                ret,
+            )));
         }
         debug!("TX hairpin queue configured");
-
-        Ok(HairpinQueue { rx, tx, peering })
+        Ok(hp_queue)
     }
 
-    pub fn start(self) -> HairpinQueue {
-        let rx = match self.rx.start() {
-            Ok(rx) => rx,
-            Err(_) => todo!(),
+    #[tracing::instrument(level = "info")]
+    pub fn start(&mut self) -> Result<(), HairpinQueueStartError> {
+        match self.rx.start() {
+            Ok(_) => {}
+            Err(err) => {
+                error!("Failed to configure hairpin queue: {err:?}");
+                return Err(HairpinQueueStartError::RxQueueStartError(err));
+            }
         };
-        let tx = match self.tx.start() {
-            Ok(tx) => tx,
-            Err(_) => todo!(),
+        match self.tx.start() {
+            Ok(_) => {}
+            Err(err) => {
+                error!("Failed to configure hairpin queue: {err:?}");
+                return Err(HairpinQueueStartError::TxQueueStartError(err));
+            }
         };
-        HairpinQueue { rx, tx, peering: self.peering }
+        Ok(())
     }
 }
 
 impl HairpinQueue {
     /// Stop the hairpin queue.
-    pub fn stop(self) -> HairpinQueue {
-        let rx = match self.rx.stop() {
-            Ok(rx) => rx,
-            Err(_) => todo!(),
+    pub fn stop(&mut self) -> Result<(), HairpinQueueStopError> {
+        match self.rx.stop() {
+            Ok(()) => {}
+            Err(err) => {
+                error!("Failed to stop hairpin queue: {err:?}");
+                return Err(HairpinQueueStopError::RxQueueStopError(err));
+            }
         };
-        let tx = match self.tx.stop() {
-            Ok(tx) => tx,
-            Err(_) => todo!(),
+        match self.tx.stop() {
+            Ok(()) => {}
+            Err(err) => {
+                error!("Failed to stop hairpin queue: {err:?}");
+                return Err(HairpinQueueStopError::TxQueueStopError(err));
+            }
         };
-        HairpinQueue {
-            rx,
-            tx,
-            peering: self.peering,
-        }
+        Ok(())
     }
 }
