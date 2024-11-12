@@ -1,6 +1,6 @@
 # Block Pull Request merge (by failing the check) if specific labels are set.
 
-name: Mergeability
+name: "mergeability.yml"
 
 on:
   pull_request:
@@ -8,11 +8,13 @@ on:
 
 jobs:
   check-labels:
-    runs-on: ubuntu-latest
-    name: Check mergeability based on labels
+    runs-on: "ubuntu-latest"
+    name: "Check mergeability based on labels"
     steps:
       - if: ${{ contains(github.event.*.labels.*.name, 'dont-merge') }}
-        name: Fail test due to 'dont-merge' label presence
-        run: exit 1
-      - name: Allow merging
-        run: exit 0
+        name: "Fail test due to 'dont-merge' label presence"
+        run: |
+          exit 1
+      - name: "Allow merging"
+        run: |
+          exit 0
