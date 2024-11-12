@@ -1,0 +1,8 @@
+# Code owners file for Dataplane
+#
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Keep it simple for now: assign everything to a single team, to allow
+# automatic notifications and review assignments.
+
+* @githedgehog/dataplane-reviewers
