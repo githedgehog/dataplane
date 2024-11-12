@@ -16,7 +16,7 @@ managed by the Fabric, or to communicate with endpoints outside of the Fabric.
 - A recent `x86_64` linux machine is required for development
 - Bash (you very likely have this)
 - [Docker][docker] (install through your package manager)
-- Cargo / Rust (install via [`rustup`])
+- Cargo / Rust (install via [`rustup`][rustup])
 
   * :warning: You need a recent version of rust (1.82.0 or better) to build the project.
 
