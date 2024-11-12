@@ -9,9 +9,9 @@
 //! do not seem to.
 
 #![cfg_attr(not(test), no_std)]
-#![deny(clippy::all, clippy::pedantic, clippy::panic)]
+#![deny(clippy::all, clippy::pedantic)]
 #![forbid(unsafe_code, missing_docs)]
-#![forbid(clippy::unwrap_used, clippy::expect_used, clippy::missing_errors_doc)]
+#![forbid(clippy::panic, clippy::unwrap_used, clippy::expect_used, clippy::missing_errors_doc)]
 
 /// No error, operation succeeded
 pub const SUCCESS: i32 = 0;
@@ -905,6 +905,375 @@ pub enum StandardErrno {
     /// Value too large for defined data type
     #[error("Value too large for defined data type")]
     Overflow = EOVERFLOW,
+    
+    /// (negative) Operation not permitted
+    #[error("(negative) Operation not permitted")]
+    PermissionDeniedNeg = -EPERM,
+    /// (negative) No such file or directory
+    #[error("(negative) No such file or directory")]
+    NoSuchFileOrDirectoryNeg = -ENOENT,
+    /// (negative) No such process
+    #[error("(negative) No such process")]
+    NoSuchProcessNeg = -ESRCH,
+    /// (negative) Interrupted system call
+    #[error("(negative) Interrupted system call")]
+    InterruptedNeg = -EINTR,
+    /// (negative) I/O error
+    #[error("(negative) I/O error")]
+    IoNeg = -EIO,
+    /// (negative) No such device or address
+    #[error("(negative) No such device or address")]
+    NoSuchDeviceOrAddressNeg = -ENXIO,
+    /// (negative) Argument list too long
+    #[error("(negative) Argument list too long")]
+    TooBigNeg = -E2BIG,
+    /// (negative) Exec format error
+    #[error("(negative) Exec format error")]
+    ExecFormatNeg = -ENOEXEC,
+    /// (negative) Bad file number
+    #[error("(negative) Bad file number")]
+    BadFileNumberNeg = -EBADF,
+    /// (negative) No child processes
+    #[error("(negative) No child processes")]
+    NoChildProcessesNeg = -ECHILD,
+    /// (negative) Try again
+    #[error("(negative) Try again")]
+    TryAgainNeg = -EAGAIN,
+    /// (negative) No memory available
+    #[error("(negative) No memory available")]
+    NoMemoryNeg = -ENOMEM,
+    /// (negative) Access denied
+    #[error("(negative) Access denied")]
+    AccessDeniedNeg = -EACCES,
+    /// (negative) Bad address
+    #[error("(negative) Bad address")]
+    BadAddressNeg = -EFAULT,
+    /// (negative) Block device required
+    #[error("(negative) Block device required")]
+    BlockDeviceRequiredNeg = -ENOTBLK,
+    /// (negative) Device or resource busy
+    #[error("(negative) Device or resource busy")]
+    BusyNeg = -EBUSY,
+    /// (negative) File exists
+    #[error("(negative) File exists")]
+    FileExistsNeg = -EEXIST,
+    /// (negative) Cross-device link
+    #[error("(negative) Cross-device link")]
+    CrossDeviceLinkNeg = -EXDEV,
+    /// (negative) No such device
+    #[error("(negative) No such device")]
+    NoSuchDeviceNeg = -ENODEV,
+    /// (negative) Not a directory
+    #[error("(negative) Not a directory")]
+    NotADirectoryNeg = -ENOTDIR,
+    /// (negative) Is a directory
+    #[error("(negative) Is a directory")]
+    IsADirectoryNeg = -EISDIR,
+    /// (negative) Invalid argument
+    #[error("(negative) Invalid argument")]
+    InvalidArgumentNeg = -EINVAL,
+    /// (negative) File table overflow
+    #[error("(negative) File table overflow")]
+    FileTableOverflowNeg = -ENFILE,
+    /// (negative) Too many open files
+    #[error("(negative) Too many open files")]
+    TooManyOpenFilesNeg = -EMFILE,
+    /// (negative) Not a tty
+    #[error("(negative) Not a tty")]
+    NotATtyNeg = -ENOTTY,
+    /// (negative) Text file busy
+    #[error("(negative) Text file busy")]
+    TextFileBusyNeg = -ETXTBSY,
+    /// (negative) File too large
+    #[error("(negative) File too large")]
+    FileTooLargeNeg = -EFBIG,
+    /// (negative) No space left on a device
+    #[error("(negative) No space left on device")]
+    NoSpaceLeftOnDeviceNeg = -ENOSPC,
+    /// (negative) Illegal seek
+    #[error("(negative) Illegal seek")]
+    IllegalSeekNeg = -ESPIPE,
+    /// (negative) Read-only file system
+    #[error("(negative) Read-only file system")]
+    ReadOnlyFileSystemNeg = -EROFS,
+    /// (negative) Too many links
+    #[error("(negative) Too many links")]
+    TooManyLinksNeg = -EMLINK,
+    /// (negative) Broken pipe
+    #[error("(negative) Broken pipe")]
+    BrokenPipeNeg = -EPIPE,
+    /// (negative) Numerical argument out of domain
+    #[error("(negative) Numerical argument out of domain")]
+    NumberOutOfDomainNeg = -EDOM,
+    /// (negative) Result too large
+    #[error("(negative) Result too large")]
+    ResultTooLargeNeg = -ERANGE,
+    /// (negative) No message of desired type
+    #[error("(negative) No message of desired type")]
+    NoMessageNeg = -ENOMSG,
+    /// (negative) Identifier removed
+    #[error("(negative) Identifier removed")]
+    IdentifierRemovedNeg = -EIDRM,
+    /// (negative) Channel number out of range
+    #[error("(negative) Channel number out of range")]
+    ChannelNumberOutOfRangeNeg = -ECHRNG,
+    /// (negative) Level 2 not synchronized
+    #[error("(negative) Level 2 not synchronized")]
+    Level2NotSynchronizedNeg = -EL2NSYNC,
+    /// (negative) Level 3 halted
+    #[error("(negative) Level 3 halted")]
+    Level3HaltedNeg = -EL3HLT,
+    /// (negative) Level 3 reset
+    #[error("(negative) Level 3 reset")]
+    Level3ResetNeg = -EL3RST,
+    /// (negative) Link number out of range
+    #[error("(negative) Link number out of range")]
+    LinkNumberOutOfRangeNeg = -ELNRNG,
+    /// (negative) Protocol driver not attached
+    #[error("(negative) Protocol driver not attached")]
+    ProtocolDriverNotAttachedNeg = -EUNATCH,
+    /// (negative) No CSI structure available
+    #[error("(negative) No CSI structure available")]
+    NoCsiStructureAvailableNeg = -ENOCSI,
+    /// (negative) Level 2 halted
+    #[error("(negative) Level 2 halted")]
+    Level2HaltedNeg = -EL2HLT,
+    /// (negative) Deadlock condition
+    #[error("(negative) Deadlock condition")]
+    DeadlockNeg = -EDEADLK,
+    /// (negative) No record locks available
+    #[error("(negative) No record locks available")]
+    NoRecordLocksAvailableNeg = -ENOLCK,
+    /// (negative) Invalid exchange
+    #[error("(negative) Invalid exchange")]
+    InvalidExchangeNeg = -EBADE,
+    /// (negative) Invalid request descriptor
+    #[error("(negative) Invalid request descriptor")]
+    InvalidRequestDescriptorNeg = -EBADR,
+    /// (negative) Exchange full
+    #[error("(negative) Exchange full")]
+    ExchangeFullNeg = -EXFULL,
+    /// (negative) No anode
+    #[error("(negative) No anode")]
+    NoAnodeNeg = -ENOANO,
+    /// (negative) Invalid request code
+    #[error("(negative) Invalid request code")]
+    InvalidRequestCodeNeg = -EBADRQC,
+    /// (negative) Invalid slot
+    #[error("(negative) Invalid slot")]
+    InvalidSlotNeg = -EBADSLT,
+    /// (negative) File locking deadlock error
+    #[error("(negative) File locking deadlock error")]
+    FileLockingDeadlockNeg = -EDEADLOCK,
+    /// (negative) Bad font file format
+    #[error("(negative) Bad font file format")]
+    BadFontFileFormatNeg = -EBFONT,
+    /// (negative) Device not a stream
+    #[error("(negative) Device not a stream")]
+    DeviceNotAStreamNeg = -ENOSTR,
+    /// (negative) No data available
+    #[error("(negative) No data available")]
+    NoDataAvailableNeg = -ENODATA,
+    /// (negative) Timer expired
+    #[error("(negative) Timer expired")]
+    TimerExpiredNeg = -ETIME,
+    /// (negative) Out of streams resources
+    #[error("(negative) Out of streams resources")]
+    OutOfStreamsResourcesNeg = -ENOSR,
+    /// (negative) Machine is not on the network
+    #[error("(negative) Machine is not on the network")]
+    MachineNotOnTheNetworkNeg = -ENONET,
+    /// (negative) Package not installed
+    #[error("(negative) Package not installed")]
+    PackageNotInstalledNeg = -ENOPKG,
+    /// (negative) The object is remote
+    #[error("(negative) The object is remote")]
+    ObjectIsRemoteNeg = -EREMOTE,
+    /// (negative) The link has been severed
+    #[error("(negative) The link has been severed")]
+    LinkSeveredNeg = -ENOLINK,
+    /// (negative) Advertise error
+    #[error("(negative) Advertise error")]
+    AdvertiseErrorNeg = -EADV,
+    /// (negative) Srmount error
+    #[error("(negative) Srmount error")]
+    SrmountErrorNeg = -ESRMNT,
+    /// (negative) Communication error on send
+    #[error("(negative) Communication error on send")]
+    CommunicationErrorOnSendNeg = -ECOMM,
+    /// (negative) Protocol error
+    #[error("(negative) Protocol error")]
+    ProtocolErrorNeg = -EPROTO,
+    /// (negative) Multihop attempted
+    #[error("(negative) Multihop attempted")]
+    MultihopAttemptedNeg = -EMULTIHOP,
+    /// (negative) Inode is remote (not really error)
+    #[error("(negative) Inode is remote (not really error)")]
+    InodeIsRemoteNeg = -ELBIN,
+    /// (negative) Cross-mount point (not really error)
+    #[error("(negative) Cross mount point (not really error)")]
+    CrossMountPointNeg = -EDOTDOT,
+    /// (negative) Trying to read an unreadable message
+    #[error("(negative) Trying to read unreadable message")]
+    TryingToReadUnreadableMessageNeg = -EBADMSG,
+    /// (negative) Inappropriate file type or format
+    #[error("(negative) Inappropriate file type or format")]
+    InappropriateFileTypeOrFormatNeg = -EFTYPE,
+    /// (negative) Given log name not unique
+    #[error("(negative) Given log name not unique")]
+    GivenLogNameNotUniqueNeg = -ENOTUNIQ,
+    /// (negative) f.d. invalid for this operation
+    #[error("(negative) f.d. invalid for this operation")]
+    FdInvalidForThisOperationNeg = -EBADFD,
+    /// (negative) Remote address changed
+    #[error("(negative) Remote address changed")]
+    RemoteAddressChangedNeg = -EREMCHG,
+    /// (negative) Can't access a necessary shared library
+    #[error("(negative) Can't access a needed shared library")]
+    CantAccessNeededSharedLibraryNeg = -ELIBACC,
+    /// (negative) Accessing a corrupted shared library
+    #[error("(negative) Accessing a corrupted shared library")]
+    AccessingCorruptedSharedLibraryNeg = -ELIBBAD,
+    /// (negative) .lib section in a.out corrupted
+    #[error("(negative) .lib section in a.out corrupted")]
+    LibSectionInAOutCorruptedNeg = -ELIBSCN,
+    /// (negative) Attempting to link in too many libs
+    #[error("(negative) Attempting to link in too many libs")]
+    AttemptingToLinkInTooManyLibsNeg = -ELIBMAX,
+    /// (negative) Attempting to exec a shared library
+    #[error("(negative) Attempting to exec a shared library")]
+    AttemptingToExecASharedLibraryNeg = -ELIBEXEC,
+    /// (negative) Function is not implemented
+    #[error("(negative) Function not implemented")]
+    FunctionNotImplementedNeg = -ENOSYS,
+    /// (negative) No more files
+    #[error("(negative) No more files")]
+    NoMoreFilesNeg = -ENMFILE,
+    /// (negative) Directory is not empty
+    #[error("(negative) Directory not empty")]
+    DirectoryNotEmptyNeg = -ENOTEMPTY,
+    /// (negative) File or path name too long
+    #[error("(negative) File or path name too long")]
+    FileOrPathNameTooLongNeg = -ENAMETOOLONG,
+    /// (negative) Too many symbolic links
+    #[error("(negative) Too many symbolic links")]
+    TooManySymbolicLinksNeg = -ELOOP,
+    /// (negative) Operation not supported on transport endpoint
+    #[error("(negative) Operation not supported on transport endpoint")]
+    OperationNotSupportedOnTransportEndpointNeg = -EOPNOTSUPP,
+    /// (negative) Protocol family is not supported
+    #[error("(negative) Protocol family not supported")]
+    ProtocolFamilyNotSupportedNeg = -EPFNOSUPPORT,
+    /// (negative) Connection reset by peer
+    #[error("(negative) Connection reset by peer")]
+    ConnectionResetByPeerNeg = -ECONNRESET,
+    /// (negative) No buffer space available
+    #[error("(negative) No buffer space available")]
+    NoBufferSpaceAvailableNeg = -ENOBUFS,
+    /// (negative) Address family not supported by protocol family
+    #[error("(negative) Address family not supported by protocol family")]
+    AddressFamilyNotSupportedByProtocolFamilyNeg = -EAFNOSUPPORT,
+    /// (negative) Protocol wrong type for socket
+    #[error("(negative) Protocol wrong type for socket")]
+    ProtocolWrongTypeForSocketNeg = -EPROTOTYPE,
+    /// (negative) Socket operation on non-socket
+    #[error("(negative) Socket operation on non-socket")]
+    SocketOperationOnNonSocketNeg = -ENOTSOCK,
+    /// (negative) Protocol not available
+    #[error("(negative) Protocol not available")]
+    ProtocolNotAvailableNeg = -ENOPROTOOPT,
+    /// (negative) Can't send after socket shutdown
+    #[error("(negative) Can't send after socket shutdown")]
+    CantSendAfterSocketShutdownNeg = -ESHUTDOWN,
+    /// (negative) Connection refused
+    #[error("(negative) Connection refused")]
+    ConnectionRefusedNeg = -ECONNREFUSED,
+    /// (negative) Address already in use
+    #[error("(negative) Address already in use")]
+    AddressAlreadyInUseNeg = -EADDRINUSE,
+    /// (negative) Connection aborted
+    #[error("(negative) Connection aborted")]
+    ConnectionAbortedNeg = -ECONNABORTED,
+    /// (negative) Network is unreachable
+    #[error("(negative) Network is unreachable")]
+    NetworkIsUnreachableNeg = -ENETUNREACH,
+    /// (negative) Network interface is not configured
+    #[error("(negative) Network interface is not configured")]
+    NetworkInterfaceNotConfiguredNeg = -ENETDOWN,
+    /// (negative) Connection timed out
+    #[error("(negative) Connection timed out")]
+    ConnectionTimedOutNeg = -ETIMEDOUT,
+    /// (negative) Host is down
+    #[error("(negative) Host is down")]
+    HostIsDownNeg = -EHOSTDOWN,
+    /// (negative) Host is unreachable
+    #[error("(negative) Host is unreachable")]
+    HostIsUnreachableNeg = -EHOSTUNREACH,
+    /// (negative) Connection already in progress
+    #[error("(negative) Connection already in progress")]
+    ConnectionAlreadyInProgressNeg = -EINPROGRESS,
+    /// (negative) Socket already connected
+    #[error("(negative) Socket already connected")]
+    SocketAlreadyConnectedNeg = -EALREADY,
+    /// (negative) Destination address required
+    #[error("(negative) Destination address required")]
+    DestinationAddressRequiredNeg = -EDESTADDRREQ,
+    /// (negative) Message too long
+    #[error("(negative) Message too long")]
+    MessageTooLongNeg = -EMSGSIZE,
+    /// (negative) Unknown protocol
+    #[error("(negative) Unknown protocol")]
+    UnknownProtocolNeg = -EPROTONOSUPPORT,
+    /// (negative) Socket type is not supported
+    #[error("(negative) Socket type not supported")]
+    SocketTypeNotSupportedNeg = -ESOCKTNOSUPPORT,
+    /// (negative) Address not available
+    #[error("(negative) Address not available")]
+    AddressNotAvailableNeg = -EADDRNOTAVAIL,
+    /// (negative) Network dropped connection on reset
+    #[error("(negative) Network dropped connection on reset")]
+    NetworkDroppedConnectionOnResetNeg = -ENETRESET,
+    /// (negative) Socket is already connected
+    #[error("(negative) Socket is already connected")]
+    SocketIsAlreadyConnectedNeg = -EISCONN,
+    /// (negative) Socket is not connected
+    #[error("(negative) Socket is not connected")]
+    SocketIsNotConnectedNeg = -ENOTCONN,
+    /// (negative) Too many references: cannot splice
+    #[error("(negative) Too many references: cannot splice")]
+    TooManyReferencesNeg = -ETOOMANYREFS,
+    /// (negative) The per-user limit on the new process would be exceeded by an attempted fork.
+    #[error("(negative) The per-user limit on new process would be exceeded by an attempted fork.")]
+    ProcessLimitExceededNeg = -EPROCLIM,
+    /// (negative) The file quota system is confused because there are too many users.
+    #[error("(negative) The file quota system is confused because there are too many users.")]
+    TooManyUsersNeg = -EUSERS,
+    /// (negative) The user's disk quota was exceeded.
+    #[error("(negative) The user's disk quota was exceeded.")]
+    DiskQuotaExceededNeg = -EDQUOT,
+    /// (negative) Stale NFS file handle
+    #[error("(negative) Stale NFS file handle")]
+    StaleNfsFileHandleNeg = -ESTALE,
+    /// (negative) Not supported
+    #[error("(negative) Not supported")]
+    NotSupportedNeg = -ENOTSUP,
+    /// (negative) No medium (in tape drive)
+    #[error("(negative) No medium (in tape drive)")]
+    NoMediumNeg = -ENOMEDIUM,
+    /// (negative) No such host or network path
+    #[error("(negative) No such host or network path")]
+    NoShareNeg = -ENOSHARE,
+    /// (negative) Filename exists with different case
+    #[error("(negative) Filename exists with different case")]
+    CaseClashNeg = -ECASECLASH,
+    /// (negative) 
+    /// While decoding a multibyte character the function came along an invalid or an incomplete
+    /// sequence of bytes or the given wide character is invalid.
+    #[error("(negative) While decoding a multibyte character the function came along an invalid or an incomplete sequence of bytes or the given wide character is invalid.")]
+    IllegalSequenceNeg = -EILSEQ,
+    /// (negative) Value too large for defined data type
+    #[error("(negative) Value too large for defined data type")]
+    OverflowNeg = -EOVERFLOW,
 }
 
 impl StandardErrno {
@@ -914,12 +1283,12 @@ impl StandardErrno {
         self as i32
     }
 
-    #[allow(clippy::too_many_lines)]
     /// Parse an `i32` value into a `StandardErrno`.
     ///
     /// # Errors
     ///
     /// Returns the original `i32` value if it does not correspond to a standard errno.
+    #[allow(clippy::too_many_lines)]
     pub const fn parse_i32(value: i32) -> Result<StandardErrno, i32> {
         #[allow(clippy::enum_glob_use)]
         use StandardErrno::*;
@@ -1047,6 +1416,129 @@ impl StandardErrno {
             ECASECLASH => Ok(CaseClash),
             EILSEQ => Ok(IllegalSequence),
             EOVERFLOW => Ok(Overflow),
+
+            NEG_EPERM => Ok(PermissionDeniedNeg),
+            NEG_ENOENT => Ok(NoSuchFileOrDirectoryNeg),
+            NEG_ESRCH => Ok(NoSuchProcessNeg),
+            NEG_EINTR => Ok(InterruptedNeg),
+            NEG_EIO => Ok(IoNeg),
+            NEG_ENXIO => Ok(NoSuchDeviceOrAddressNeg),
+            NEG_E2BIG => Ok(TooBigNeg),
+            NEG_ENOEXEC => Ok(ExecFormatNeg),
+            NEG_EBADF => Ok(BadFileNumberNeg),
+            NEG_ECHILD => Ok(NoChildProcessesNeg),
+            NEG_EAGAIN => Ok(TryAgainNeg),
+            NEG_ENOMEM => Ok(NoMemoryNeg),
+            NEG_EACCES => Ok(AccessDeniedNeg),
+            NEG_EFAULT => Ok(BadAddressNeg),
+            NEG_ENOTBLK => Ok(BlockDeviceRequiredNeg),
+            NEG_EBUSY => Ok(BusyNeg),
+            NEG_EEXIST => Ok(FileExistsNeg),
+            NEG_EXDEV => Ok(CrossDeviceLinkNeg),
+            NEG_ENODEV => Ok(NoSuchDeviceNeg),
+            NEG_ENOTDIR => Ok(NotADirectoryNeg),
+            NEG_EISDIR => Ok(IsADirectoryNeg),
+            NEG_EINVAL => Ok(InvalidArgumentNeg),
+            NEG_ENFILE => Ok(FileTableOverflowNeg),
+            NEG_EMFILE => Ok(TooManyOpenFilesNeg),
+            NEG_ENOTTY => Ok(NotATtyNeg),
+            NEG_ETXTBSY => Ok(TextFileBusyNeg),
+            NEG_EFBIG => Ok(FileTooLargeNeg),
+            NEG_ENOSPC => Ok(NoSpaceLeftOnDeviceNeg),
+            NEG_ESPIPE => Ok(IllegalSeekNeg),
+            NEG_EROFS => Ok(ReadOnlyFileSystemNeg),
+            NEG_EMLINK => Ok(TooManyLinksNeg),
+            NEG_EPIPE => Ok(BrokenPipeNeg),
+            NEG_EDOM => Ok(NumberOutOfDomainNeg),
+            NEG_ERANGE => Ok(ResultTooLargeNeg),
+            NEG_ENOMSG => Ok(NoMessageNeg),
+            NEG_EIDRM => Ok(IdentifierRemovedNeg),
+            NEG_ECHRNG => Ok(ChannelNumberOutOfRangeNeg),
+            NEG_EL2NSYNC => Ok(Level2NotSynchronizedNeg),
+            NEG_EL3HLT => Ok(Level3HaltedNeg),
+            NEG_EL3RST => Ok(Level3ResetNeg),
+            NEG_ELNRNG => Ok(LinkNumberOutOfRangeNeg),
+            NEG_EUNATCH => Ok(ProtocolDriverNotAttachedNeg),
+            NEG_ENOCSI => Ok(NoCsiStructureAvailableNeg),
+            NEG_EL2HLT => Ok(Level2HaltedNeg),
+            NEG_EDEADLK => Ok(DeadlockNeg),
+            NEG_ENOLCK => Ok(NoRecordLocksAvailableNeg),
+            NEG_EBADE => Ok(InvalidExchangeNeg),
+            NEG_EBADR => Ok(InvalidRequestDescriptorNeg),
+            NEG_EXFULL => Ok(ExchangeFullNeg),
+            NEG_ENOANO => Ok(NoAnodeNeg),
+            NEG_EBADRQC => Ok(InvalidRequestCodeNeg),
+            NEG_EBADSLT => Ok(InvalidSlotNeg),
+            NEG_EDEADLOCK => Ok(FileLockingDeadlockNeg),
+            NEG_EBFONT => Ok(BadFontFileFormatNeg),
+            NEG_ENOSTR => Ok(DeviceNotAStreamNeg),
+            NEG_ENODATA => Ok(NoDataAvailableNeg),
+            NEG_ETIME => Ok(TimerExpiredNeg),
+            NEG_ENOSR => Ok(OutOfStreamsResourcesNeg),
+            NEG_ENONET => Ok(MachineNotOnTheNetworkNeg),
+            NEG_ENOPKG => Ok(PackageNotInstalledNeg),
+            NEG_EREMOTE => Ok(ObjectIsRemoteNeg),
+            NEG_ENOLINK => Ok(LinkSeveredNeg),
+            NEG_EADV => Ok(AdvertiseErrorNeg),
+            NEG_ESRMNT => Ok(SrmountErrorNeg),
+            NEG_ECOMM => Ok(CommunicationErrorOnSendNeg),
+            NEG_EPROTO => Ok(ProtocolErrorNeg),
+            NEG_EMULTIHOP => Ok(MultihopAttemptedNeg),
+            NEG_ELBIN => Ok(InodeIsRemoteNeg),
+            NEG_EDOTDOT => Ok(CrossMountPointNeg),
+            NEG_EBADMSG => Ok(TryingToReadUnreadableMessageNeg),
+            NEG_EFTYPE => Ok(InappropriateFileTypeOrFormatNeg),
+            NEG_ENOTUNIQ => Ok(GivenLogNameNotUniqueNeg),
+            NEG_EBADFD => Ok(FdInvalidForThisOperationNeg),
+            NEG_EREMCHG => Ok(RemoteAddressChangedNeg),
+            NEG_ELIBACC => Ok(CantAccessNeededSharedLibraryNeg),
+            NEG_ELIBBAD => Ok(AccessingCorruptedSharedLibraryNeg),
+            NEG_ELIBSCN => Ok(LibSectionInAOutCorruptedNeg),
+            NEG_ELIBMAX => Ok(AttemptingToLinkInTooManyLibsNeg),
+            NEG_ELIBEXEC => Ok(AttemptingToExecASharedLibraryNeg),
+            NEG_ENOSYS => Ok(FunctionNotImplementedNeg),
+            NEG_ENMFILE => Ok(NoMoreFilesNeg),
+            NEG_ENOTEMPTY => Ok(DirectoryNotEmptyNeg),
+            NEG_ENAMETOOLONG => Ok(FileOrPathNameTooLongNeg),
+            NEG_ELOOP => Ok(TooManySymbolicLinksNeg),
+            NEG_EOPNOTSUPP => Ok(OperationNotSupportedOnTransportEndpointNeg),
+            NEG_EPFNOSUPPORT => Ok(ProtocolFamilyNotSupportedNeg),
+            NEG_ECONNRESET => Ok(ConnectionResetByPeerNeg),
+            NEG_ENOBUFS => Ok(NoBufferSpaceAvailableNeg),
+            NEG_EAFNOSUPPORT => Ok(AddressFamilyNotSupportedByProtocolFamilyNeg),
+            NEG_EPROTOTYPE => Ok(ProtocolWrongTypeForSocketNeg),
+            NEG_ENOTSOCK => Ok(SocketOperationOnNonSocketNeg),
+            NEG_ENOPROTOOPT => Ok(ProtocolNotAvailableNeg),
+            NEG_ESHUTDOWN => Ok(CantSendAfterSocketShutdownNeg),
+            NEG_ECONNREFUSED => Ok(ConnectionRefusedNeg),
+            NEG_EADDRINUSE => Ok(AddressAlreadyInUseNeg),
+            NEG_ECONNABORTED => Ok(ConnectionAbortedNeg),
+            NEG_ENETUNREACH => Ok(NetworkIsUnreachableNeg),
+            NEG_ENETDOWN => Ok(NetworkInterfaceNotConfiguredNeg),
+            NEG_ETIMEDOUT => Ok(ConnectionTimedOutNeg),
+            NEG_EHOSTDOWN => Ok(HostIsDownNeg),
+            NEG_EHOSTUNREACH => Ok(HostIsUnreachableNeg),
+            NEG_EINPROGRESS => Ok(ConnectionAlreadyInProgressNeg),
+            NEG_EALREADY => Ok(SocketAlreadyConnectedNeg),
+            NEG_EDESTADDRREQ => Ok(DestinationAddressRequiredNeg),
+            NEG_EMSGSIZE => Ok(MessageTooLongNeg),
+            NEG_EPROTONOSUPPORT => Ok(UnknownProtocolNeg),
+            NEG_ESOCKTNOSUPPORT => Ok(SocketTypeNotSupportedNeg),
+            NEG_EADDRNOTAVAIL => Ok(AddressNotAvailableNeg),
+            NEG_ENETRESET => Ok(NetworkDroppedConnectionOnResetNeg),
+            NEG_EISCONN => Ok(SocketIsAlreadyConnectedNeg),
+            NEG_ENOTCONN => Ok(SocketIsNotConnectedNeg),
+            NEG_ETOOMANYREFS => Ok(TooManyReferencesNeg),
+            NEG_EPROCLIM => Ok(ProcessLimitExceededNeg),
+            NEG_EUSERS => Ok(TooManyUsersNeg),
+            NEG_EDQUOT => Ok(DiskQuotaExceededNeg),
+            NEG_ESTALE => Ok(StaleNfsFileHandleNeg),
+            NEG_ENOTSUP => Ok(NotSupportedNeg),
+            NEG_ENOMEDIUM => Ok(NoMediumNeg),
+            NEG_ENOSHARE => Ok(NoShareNeg),
+            NEG_ECASECLASH => Ok(CaseClashNeg),
+            NEG_EILSEQ => Ok(IllegalSequenceNeg),
+            NEG_EOVERFLOW => Ok(OverflowNeg),
             _ => Err(value),
         }
     }
@@ -1056,6 +1548,7 @@ impl StandardErrno {
 ///
 /// These are basically just `i32` values, but this type is used to make it clear that the value is
 /// an errno.
+#[must_use]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct Errno(pub i32);
@@ -1086,64 +1579,6 @@ impl From<StandardErrno> for Errno {
     }
 }
 
-impl TryFrom<Errno> for NegStandardErrno {
-    type Error = i32;
-
-    fn try_from(value: Errno) -> Result<Self, Self::Error> {
-        Ok(StandardErrno::parse_i32(-value.0)?.neg())
-    }
-}
-
-/// Standard errno values negated
-#[derive(Debug, Copy, Clone, Eq, PartialEq, thiserror::Error)]
-#[must_use]
-#[error(transparent)]
-pub struct NegStandardErrno(pub StandardErrno);
-
-impl StandardErrno {
-    /// Negate the errno value.
-    pub const fn neg(self) -> NegStandardErrno {
-        NegStandardErrno(self)
-    }
-}
-
-impl NegStandardErrno {
-    /// Negate the errno value.
-    #[must_use]
-    pub const fn neg(self) -> StandardErrno {
-        self.0
-    }
-
-    /// Parse an `i32` value into a `StandardErrno`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the original `i32` value if it does not correspond to a standard errno.
-    pub const fn parse_i32(value: i32) -> Result<Self, i32> {
-        match StandardErrno::parse_i32(-value) {
-            Ok(standard) => Ok(standard.neg()),
-            Err(_) => Err(value),
-        }
-    }
-}
-
-impl core::ops::Neg for StandardErrno {
-    type Output = NegStandardErrno;
-
-    fn neg(self) -> Self::Output {
-        self.neg()
-    }
-}
-
-impl core::ops::Neg for NegStandardErrno {
-    type Output = StandardErrno;
-
-    #[must_use]
-    fn neg(self) -> Self::Output {
-        self.neg()
-    }
-}
-
 /// An "errno" error
 ///
 /// This enum attempts to map `i32` values to standard (both positive and negative) values as
@@ -1161,9 +1596,6 @@ pub enum ErrorCode {
     /// A standard errno value
     #[error(transparent)]
     Standard(StandardErrno),
-    /// A negated standard errno value
-    #[error(transparent)]
-    NegStandard(NegStandardErrno),
     /// Any `i32` which does not map to a standard (positive or negative) Errno value
     #[error("Unknown (non-standard) errno: {0:?}")]
     Other(Errno),
@@ -1174,10 +1606,7 @@ impl ErrorCode {
     pub const fn parse_i32(val: i32) -> ErrorCode {
         match StandardErrno::parse_i32(val) {
             Ok(standard) => ErrorCode::Standard(standard),
-            Err(_) => match NegStandardErrno::parse_i32(val) {
-                Ok(neg_standard) => ErrorCode::NegStandard(neg_standard),
-                Err(_) => ErrorCode::Other(Errno(val)),
-            },
+            Err(code) => ErrorCode::Other(Errno(code)),
         }
     }
 

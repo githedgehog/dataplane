@@ -19,7 +19,7 @@ use crate::queue::rx::{RxQueue, RxQueueConfig};
 use crate::queue::tx::{TxQueue, TxQueueConfig};
 use crate::socket::SocketId;
 use dpdk_sys::*;
-use errno::{Errno, ErrorCode, NegStandardErrno, StandardErrno};
+use errno::{Errno, ErrorCode, StandardErrno};
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -42,12 +42,10 @@ pub enum DevInfoError {
     NotAvailable,
     #[error("Invalid argument")]
     InvalidArgument,
-    #[error("Unknown error which matches a standard errno")]
-    UnknownStandard(StandardErrno),
-    #[error("Unknown error which matches a negative standard errno")]
-    UnknownNegStandard(NegStandardErrno),
+    #[error(transparent)]
+    UnknownButStandardErrorCode(StandardErrno),
     #[error("Unknown error: {0:?}")]
-    Unknown(Errno),
+    UnknownErrorCode(Errno),
 }
 
 impl DevIndex {
@@ -103,24 +101,19 @@ impl DevIndex {
                     Err(DevInfoError::InvalidArgument)
                 }
                 val => {
-                    let _unknown = match StandardErrno::parse_i32(val) {
+                    return match StandardErrno::parse_i32(val) {
                         Ok(standard) => {
-                            return Err(DevInfoError::UnknownStandard(standard));
+                            Err(DevInfoError::UnknownButStandardErrorCode(standard))
                         }
-                        Err(unknown) => unknown,
-                    };
-                    let _unknown = match NegStandardErrno::parse_i32(val) {
-                        Ok(standard) => {
-                            return Err(DevInfoError::UnknownNegStandard(standard));
+                        Err(_) => {
+                            error!(
+                                "Unknown error when getting device info for port {index}: {val}",
+                                index = self.0,
+                                val = val
+                            );
+                            Err(DevInfoError::UnknownErrorCode(Errno(val)))
                         }
-                        Err(unknown) => unknown,
                     };
-                    error!(
-                        "Unknown error when getting device info for port {index}: {val}",
-                        index = self.0,
-                        val = val
-                    );
-                    Err(DevInfoError::Unknown(Errno(val)))
                 }
             };
             // error!(
