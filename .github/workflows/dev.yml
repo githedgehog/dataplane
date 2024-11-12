@@ -10,7 +10,10 @@
 name: "dev.yml"
 
 on:
-  push: {}
+  pull_request: {}
+  push:
+    branches:
+      - "main"
   merge_group:
   workflow_dispatch:
     inputs:
@@ -21,7 +24,7 @@ on:
         default: false
 
 concurrency:
-  group: "${{ github.workflow }}:${{ github.ref }}"
+  group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.event.after }}"
   cancel-in-progress: true
 
 permissions:
@@ -32,6 +35,8 @@ permissions:
 jobs:
   check_changes:
     name: "Deduce required tests from code changes"
+    permissions:
+      pull-requests: "read"
     runs-on: "ubuntu-latest"
     outputs:
       devfiles: "${{ steps.changes.outputs.devfiles }}"
@@ -40,7 +45,7 @@ jobs:
         if: "${{ !github.event.pull_request }}"
         uses: "actions/checkout@v4"
         with:
-          persist-credentials: "true"
+          persist-credentials: "false"
           fetch-depth: "0"
       - name: "Check code changes"
         uses: "dorny/paths-filter@v3"

@@ -5,7 +5,10 @@
 name: "sterile.yml"
 
 on:
-  push: {}
+  pull_request: {}
+  push:
+    branches:
+      - "main"
   merge_group:
   workflow_dispatch:
     inputs:
@@ -16,7 +19,7 @@ on:
         default: false
 
 concurrency:
-  group: "${{ github.workflow }}:${{ github.ref }}"
+  group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.event.after }}"
   cancel-in-progress: true
 
 jobs:
@@ -30,7 +33,7 @@ jobs:
         if: "${{ !github.event.pull_request }}"
         uses: "actions/checkout@v4"
         with:
-          persist-credentials: "true"
+          persist-credentials: "false"
           fetch-depth: "0"
       - name: "Check code changes"
         uses: "dorny/paths-filter@v3"
