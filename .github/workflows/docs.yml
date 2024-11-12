@@ -1,16 +1,22 @@
+# Build and deploy the dataplane design documentation.
+# Publish a new version of the docs for pushes to "main", or deploy a preview
+# when the workflow runs for a Pull Request.
+
 name: "docs.yml"
 
 on:
+  pull_request: {}
+  push:
+    branches:
+      - "main"
+  merge_group:
   workflow_dispatch:
     inputs:
       debug_enabled:
         type: "boolean"
-        description: "Run the build with tmate debugging enabled"
-  pull_request: { }
-  merge_group:
-  push:
-    branches:
-      - "main"
+        description: "Run with tmate enabled"
+        required: false
+        default: false
 
 concurrency:
   group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.event.after }}"
