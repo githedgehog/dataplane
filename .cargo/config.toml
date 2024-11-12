@@ -10,3 +10,6 @@ target = "x86_64-unknown-linux-gnu"
 [alias]
 just = ["just", "cargo"]
 sterile = ["just", "sterile", "cargo"]
+
+[target.x86_64-unknown-linux-gnu]
+runner = ["scripts/runner.sh"]
