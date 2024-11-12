@@ -1,4 +1,8 @@
+# Check for Cargo dependencies updates, and automatically open a Pull Request
+# if updates are found.
+
 name: "bump.yml"
+
 on:
   workflow_dispatch:
     inputs:
@@ -19,9 +23,10 @@ concurrency:
 
 permissions:
   contents: "write"
-  pull-requests: "write"
   packages: "read"
   id-token: "write"
+  pull-requests: "write"
+
 jobs:
   update:
     runs-on: "ubuntu-latest"

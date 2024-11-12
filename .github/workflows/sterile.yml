@@ -1,9 +1,11 @@
 # This is a sterile build and test workflow that uses the `dev-env` container image
 # to build and test the project in a sterile environment.
 # Artifacts produced by this workflow are intended to be used for production.
+
 name: "sterile.yml"
+
 on:
-  push:
+  push: {}
   merge_group:
   workflow_dispatch:
     inputs:
@@ -240,4 +242,3 @@ jobs:
         run: |
           >&2 echo "One or more required pushes failed"
           exit 1
-    

@@ -8,7 +8,9 @@
 # Production artifacts are produced in a sterile environment (in another CI workflow).
 
 name: "dev.yml"
+
 on:
+  push: {}
   merge_group:
   workflow_dispatch:
     inputs:
@@ -17,7 +19,6 @@ on:
         description: "Run with tmate enabled"
         required: false
         default: false
-  push: {}
 
 concurrency:
   group: "${{ github.workflow }}:${{ github.ref }}"
@@ -170,5 +171,3 @@ jobs:
         run: |
           >&2 echo "A critical step failed!"
           exit 1
-
-

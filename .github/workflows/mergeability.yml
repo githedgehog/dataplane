@@ -1,3 +1,5 @@
+# Block Pull Request merge (by failing the check) if specific labels are set.
+
 name: Mergeability
 
 on:
