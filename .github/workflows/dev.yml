@@ -64,13 +64,10 @@ jobs:
       fail-fast: false
       matrix:
         rust:
-          - toolchain: "stable"
-            optional: false
-          - toolchain: "beta"
-            optional: true
-          - toolchain: "nightly"
-            optional: true
-    continue-on-error: ${{ matrix.rust.optional }}
+          - "stable"
+          - "beta"
+          - "nightly"
+    name: "Developer build (Rust ${{ matrix.rust }})"
     runs-on: "lab"
     timeout-minutes: 45
     steps:
@@ -83,7 +80,7 @@ jobs:
       - name: "install rust"
         uses: "dtolnay/rust-toolchain@stable"
         with:
-          toolchain: "${{ matrix.rust.toolchain }}"
+          toolchain: "${{ matrix.rust }}"
           targets: "x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl"
       - name: "Checkout"
         uses: "actions/checkout@v4"
@@ -127,7 +124,7 @@ jobs:
           for commit in $COMMITS ; do
             git checkout $commit || exit 1
             printf "::group::Build commit %s\n" "$(git log --oneline --no-decorate -n 1)"
-            (just debug=true cargo +${{matrix.rust.toolchain}} build --locked --profile=dev --target=x86_64-unknown-linux-gnu) || exit 1
+            (just debug=true cargo +${{matrix.rust}} build --locked --profile=dev --target=x86_64-unknown-linux-gnu) || exit 1
             printf "::endgroup::\n"
           done
           printf "::notice::HEAD remains at %s\n" "$(git log --oneline --no-decorate -n 1)"
@@ -135,47 +132,40 @@ jobs:
 
       # At this stage, for Pull Requests, we're back to the HEAD of the branch,
       # start running tests for different configurations.
-      - name: "tests: rust ${{ matrix.rust.toolchain }} profile=dev target=x86_64-unknown-linux-gnu"
+      - name: "tests: rust ${{ matrix.rust }} profile=dev target=x86_64-unknown-linux-gnu"
         run: |
           export GITHUB_STEP_SUMMARY
-          just debug=true rust=${{matrix.rust.toolchain}} profile=dev target=x86_64-unknown-linux-gnu test
-          just debug=true rust=${{matrix.rust.toolchain}} profile=dev target=x86_64-unknown-linux-gnu report
-        continue-on-error: ${{ matrix.rust.optional }}
+          just debug=true rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-gnu test
+          just debug=true rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-gnu report
 
       - run: |
-          just cargo +${{matrix.rust.toolchain}} build --locked --profile=dev --target=x86_64-unknown-linux-musl
-        continue-on-error: ${{ matrix.rust.optional }}
-      - name: "tests: rust ${{ matrix.rust.toolchain }} profile=dev target=x86_64-unknown-linux-musl"
+          just cargo +${{matrix.rust}} build --locked --profile=dev --target=x86_64-unknown-linux-musl
+      - name: "tests: rust ${{ matrix.rust }} profile=dev target=x86_64-unknown-linux-musl"
         run: |
           export GITHUB_STEP_SUMMARY
-          just debug=true rust=${{matrix.rust.toolchain}} profile=dev target=x86_64-unknown-linux-musl test
-          just debug=true rust=${{matrix.rust.toolchain}} profile=dev target=x86_64-unknown-linux-musl report
-        continue-on-error: ${{ matrix.rust.optional }}
+          just debug=true rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-musl test
+          just debug=true rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-musl report
 
       - run: |
-          just debug=true cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
-        continue-on-error: ${{ matrix.rust.optional }}
-      - name: "tests: rust ${{ matrix.rust.toolchain }} profile=release target=x86_64-unknown-linux-gnu"
+          just debug=true cargo +${{matrix.rust}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
+      - name: "tests: rust ${{ matrix.rust }} profile=release target=x86_64-unknown-linux-gnu"
         run: |
           export GITHUB_STEP_SUMMARY
-          just debug=true rust=${{matrix.rust.toolchain}} profile=release target=x86_64-unknown-linux-gnu test
-          just debug=true rust=${{matrix.rust.toolchain}} profile=release target=x86_64-unknown-linux-gnu report
-        continue-on-error: ${{ matrix.rust.optional }}
+          just debug=true rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-gnu test
+          just debug=true rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-gnu report
 
       - run: |
-          just debug=true cargo +${{matrix.rust.toolchain}} build --locked --profile=release --target=x86_64-unknown-linux-musl
-        continue-on-error: ${{ matrix.rust.optional }}
-      - name: "tests: rust ${{ matrix.rust.toolchain }} profile=release target=x86_64-unknown-linux-musl"
+          just debug=true cargo +${{matrix.rust}} build --locked --profile=release --target=x86_64-unknown-linux-musl
+      - name: "tests: rust ${{ matrix.rust }} profile=release target=x86_64-unknown-linux-musl"
         run: |
           export GITHUB_STEP_SUMMARY
-          just debug=true rust=${{matrix.rust.toolchain}} profile=release target=x86_64-unknown-linux-musl test
-          just debug=true rust=${{matrix.rust.toolchain}} profile=release target=x86_64-unknown-linux-musl report
-        continue-on-error: ${{ matrix.rust.optional }}
+          just debug=true rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-musl test
+          just debug=true rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-musl report
 
       - uses: "actions/upload-artifact@v4"
         if: ${{ always() }}
         with:
-          name: "test-results-${{ matrix.rust.toolchain  }}"
+          name: "test-results-${{ matrix.rust }}"
           path: "target/nextest/"
 
       - name: "Setup tmate session for debug"
