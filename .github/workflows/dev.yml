@@ -87,6 +87,9 @@ jobs:
           targets: "x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl"
       - name: "Checkout"
         uses: "actions/checkout@v4"
+        with:
+          persist-credentials: "false"
+          fetch-depth: "0"
       - uses: "cargo-bins/cargo-binstall@main"
       - name: "install just"
         run: |
@@ -113,8 +116,25 @@ jobs:
           just --yes debug=true fake-nix
 
       - run: |
-          just debug=true cargo +${{matrix.rust.toolchain}} build --locked --profile=dev --target=x86_64-unknown-linux-gnu
+          # Run a simple build for each separate commit (for "pull_request")
+          # or for the HEAD of the branch (other events).
+          set -eu -o pipefail
+          COMMITS=${{ github.sha }}
+          if [[ "${{ github.event_name == 'pull_request' }}" == "true" ]]; then
+            # Get all commits from Pull Request, in chronological order
+            COMMITS=$(git rev-list --reverse ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
+          fi
+          for commit in $COMMITS ; do
+            git checkout $commit || exit 1
+            printf "::group::Build commit %s\n" "$(git log --oneline --no-decorate -n 1)"
+            (just debug=true cargo +${{matrix.rust.toolchain}} build --locked --profile=dev --target=x86_64-unknown-linux-gnu) || exit 1
+            printf "::endgroup::\n"
+          done
+          printf "::notice::HEAD remains at %s\n" "$(git log --oneline --no-decorate -n 1)"
         continue-on-error: ${{ matrix.rust.optional }}
+
+      # At this stage, for Pull Requests, we're back to the HEAD of the branch,
+      # start running tests for different configurations.
       - name: "tests: rust ${{ matrix.rust.toolchain }} profile=dev target=x86_64-unknown-linux-gnu"
         run: |
           export GITHUB_STEP_SUMMARY
