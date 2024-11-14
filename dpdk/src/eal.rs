@@ -2,13 +2,13 @@
 // Copyright Open Network Fabric Authors
 
 //! DPDK Environment Abstraction Layer (EAL)
+use crate::{dev, mem, socket};
+use alloc::ffi::CString;
 use alloc::format;
 use alloc::string::{String, ToString};
-use crate::{dev, mem, socket};
+use alloc::vec::Vec;
 use core::ffi::c_int;
 use core::fmt::{Debug, Display};
-use alloc::ffi::CString;
-use alloc::vec::Vec;
 use dpdk_sys::*;
 use tracing::{error, info};
 

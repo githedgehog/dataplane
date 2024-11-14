@@ -2,9 +2,9 @@
 // Copyright Open Network Fabric Authors
 
 //! DPDK queue abstractions.
+pub mod hairpin;
 pub mod rx;
 pub mod tx;
-pub mod hairpin;
 
 /// The possible states of a DPDK queue
 #[derive(Debug)]
@@ -16,4 +16,3 @@ pub enum QueueState {
     /// A started queue
     Started,
 }
-

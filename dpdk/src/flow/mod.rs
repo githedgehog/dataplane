@@ -876,7 +876,8 @@ pub struct SetFieldAction {
 
 impl SetFlowField {
     /// Converts the `SetFlowField` into a `SetFieldAction`.
-    #[must_use] pub fn to_flow_rule(&self) -> SetFieldAction {
+    #[must_use]
+    pub fn to_flow_rule(&self) -> SetFieldAction {
         let conf = match self {
             SetFlowField::MacDst(mac_addr) => {
                 let mut value = [0u8; 16];

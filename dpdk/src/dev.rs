@@ -54,7 +54,8 @@ impl DevIndex {
     pub const MAX: u16 = RTE_MAX_ETHPORTS as u16;
 
     /// The index of the port represented as a `u16`.
-    #[must_use] pub fn as_u16(&self) -> u16 {
+    #[must_use]
+    pub fn as_u16(&self) -> u16 {
         self.0
     }
 
@@ -179,9 +180,7 @@ impl DevIndex {
             // However, DPDK has a depressing number of sign and bit-width errors in its API, so we
             // need to check for nonsense values to make a properly safe wrapper.
             // Better to panic than malfunction.
-            Eal::fatal_error(format!(
-                "SocketId for port {self} is negative? {socket_id}"
-            ));
+            Eal::fatal_error(format!("SocketId for port {self} is negative? {socket_id}"));
         }
 
         Ok(SocketId(socket_id as c_uint))
@@ -252,12 +251,7 @@ impl DevConfig {
         let nb_tx_queues = self.num_tx_queues + self.num_hairpin_queues;
 
         let ret = unsafe {
-            rte_eth_dev_configure(
-                dev.index().as_u16(),
-                nb_rx_queues,
-                nb_tx_queues,
-                &eth_conf,
-            )
+            rte_eth_dev_configure(dev.index().as_u16(), nb_rx_queues, nb_tx_queues, &eth_conf)
         };
 
         if ret != 0 {
@@ -661,14 +655,16 @@ impl Manager {
 
 impl DevInfo {
     /// Get the port index of the device.
-    #[must_use] pub fn index(&self) -> DevIndex {
+    #[must_use]
+    pub fn index(&self) -> DevIndex {
         self.index
     }
 
     /// Get the device `if_index`.
     ///
     /// This is the Linux interface index of the device.
-    #[must_use] pub fn if_index(&self) -> u32 {
+    #[must_use]
+    pub fn if_index(&self) -> u32 {
         self.inner.if_index
     }
 
@@ -846,7 +842,6 @@ impl Drop for Dev {
         }
     }
 }
-
 
 #[derive(Debug, thiserror::Error)]
 pub enum SocketIdLookupError {

@@ -42,7 +42,6 @@ fn bind(path: &Path, sysroot: &str) {
         .allowlist_item("RTE.*")
         .blocklist_item("__*")
         .clang_macro_fallback()
-
         // Bindgen tests seem to object to the documentation in the following
         // (not the items themselves, just the documentation associated with them)
         // I suspect this is a bug in bindgen, but I'm not sure.
@@ -57,13 +56,11 @@ fn bind(path: &Path, sysroot: &str) {
         .blocklist_function("rte_dev_dma_unmap")
         .blocklist_function("rte_pci_addr_cmp")
         .blocklist_function("rte_pci_addr_parse")
-
         // rustc doesn't like repr(packed) types which contain other repr(packed) types
         .opaque_type("rte_arp_hdr")
         .opaque_type("rte_arp_ipv4")
         .opaque_type("rte_gtp_psc_generic_hdr")
         .opaque_type("rte_l2tpv2_combined_msg_hdr")
-
         .clang_arg(format!("-I{sysroot}/include"))
         .clang_arg("-fretain-comments-from-system-headers")
         .clang_arg("-fparse-all-comments")

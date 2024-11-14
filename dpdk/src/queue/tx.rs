@@ -19,7 +19,8 @@ impl TxQueueIndex {
     /// The index of the tx queue represented as a `u16`.
     ///
     /// This function is mostly useful for interfacing with `dpdk_sys`.
-    #[must_use] pub fn as_u16(&self) -> u16 {
+    #[must_use]
+    pub fn as_u16(&self) -> u16 {
         self.0
     }
 }
@@ -89,12 +90,8 @@ impl TxQueue {
     /// This design ensures that the hairpin queue is correctly tracked in the list of queues
     /// associated with the device.
     pub(crate) fn configure(dev: &dev::Dev, config: TxQueueConfig) -> Result<Self, ConfigFailure> {
-        let socket_id = socket::SocketId::try_from(config.socket_preference).map_err(|err| {
-            ConfigFailure::InvalidSocket(ConfigError {
-                code: -1,
-                err,
-            })
-        })?;
+        let socket_id = socket::SocketId::try_from(config.socket_preference)
+            .map_err(|err| ConfigFailure::InvalidSocket(ConfigError { code: -1, err }))?;
 
         let tx_conf = rte_eth_txconf {
             offloads: dev.info.inner.tx_queue_offload_capa,
@@ -131,7 +128,6 @@ impl TxQueue {
         let ret = unsafe {
             rte_eth_dev_tx_queue_start(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
-
 
         match ret {
             errno::SUCCESS => Ok(self),

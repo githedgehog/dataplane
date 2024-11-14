@@ -3,15 +3,15 @@
 
 //! DPDK memory management wrappers.
 
+use crate::socket::SocketId;
 use alloc::format;
 use alloc::string::String;
-use crate::socket::SocketId;
-use dpdk_sys::*;
 use core::cell::UnsafeCell;
 use core::ffi::{c_char, c_int, CStr};
 use core::fmt::{Debug, Display};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
+use dpdk_sys::*;
 use tracing::{debug, error, warn};
 
 use alloc::sync::Arc;
@@ -121,12 +121,14 @@ impl PoolHandle {
     }
 
     /// Get the name of the memory pool.
-    #[must_use] pub fn name(&self) -> &str {
+    #[must_use]
+    pub fn name(&self) -> &str {
         self.config().name()
     }
 
     /// Get the configuration of the memory pool.
-    #[must_use] pub fn config(&self) -> &PoolConfig {
+    #[must_use]
+    pub fn config(&self) -> &PoolConfig {
         &self.0.config
     }
 }
@@ -349,7 +351,7 @@ impl Drop for PoolInner {
 }
 
 /// A DPDK Mbuf (memory buffer)
-/// 
+///
 /// Usually used to hold an ethernet frame.
 #[repr(transparent)]
 pub struct Mbuf {
@@ -396,7 +398,8 @@ impl Mbuf {
     }
 
     /// Get an immutable ref to the raw data of an Mbuf
-    #[must_use] pub fn raw_data(&self) -> &[u8] {
+    #[must_use]
+    pub fn raw_data(&self) -> &[u8] {
         let pkt_data_start = unsafe {
             (self.raw.as_ref().buf_addr as *const u8)
                 .offset(self.raw.as_ref().annon1.annon1.data_off as isize)
@@ -416,7 +419,8 @@ impl Mbuf {
                 .raw
                 .as_mut()
                 .buf_addr
-                .offset(self.raw.as_ref().annon1.annon1.data_off as isize).cast::<u8>();
+                .offset(self.raw.as_ref().annon1.annon1.data_off as isize)
+                .cast::<u8>();
             core::slice::from_raw_parts_mut(
                 data_start,
                 self.raw.as_ref().annon2.annon1.data_len as usize,
