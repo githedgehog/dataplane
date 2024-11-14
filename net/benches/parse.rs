@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, Criterion};
+use std::hint::black_box;
 
 fn fibonacci(n: u64) -> u64 {
     match n {
         0 | 1 => 1,
-        n => fibonacci(n-1) + fibonacci(n-2),
+        n => fibonacci(n - 1) + fibonacci(n - 2),
     }
 }
 

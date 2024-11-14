@@ -5,10 +5,10 @@
 use super::{rx, tx};
 use crate::dev::{Dev, DevInfo};
 use crate::queue::rx::RxQueue;
-use crate::queue::tx::{TxQueue};
+use crate::queue::tx::TxQueue;
 use dpdk_sys::*;
-use tracing::debug;
 use errno::ErrorCode;
+use tracing::debug;
 
 /// A stopped DPDK hairpin queue.
 #[derive(Debug)]
@@ -59,11 +59,7 @@ impl HairpinQueue {
     ///
     /// This design ensures that the hairpin queue is correctly tracked in the list of queues
     /// associated with the device.
-    pub(crate) fn new(
-        dev: &Dev,
-        rx: RxQueue,
-        tx: TxQueue,
-    ) -> Result<Self, HairpinConfigFailure> {
+    pub(crate) fn new(dev: &Dev, rx: RxQueue, tx: TxQueue) -> Result<Self, HairpinConfigFailure> {
         let peering = HairpinPeering::define(&dev.info, &rx, &tx);
         // configure the rx queue
 
@@ -77,9 +73,9 @@ impl HairpinQueue {
         };
 
         if ret < 0 {
-            return Err(HairpinConfigFailure::CreationFailed(
-                ErrorCode::parse_i32(ret)
-            ));
+            return Err(HairpinConfigFailure::CreationFailed(ErrorCode::parse_i32(
+                ret,
+            )));
         }
         debug!("RX hairpin queue configured");
 
@@ -93,16 +89,17 @@ impl HairpinQueue {
         };
 
         if ret < 0 {
-            return Err(HairpinConfigFailure::CreationFailed(
-                ErrorCode::parse_i32(ret)
-            ));
+            return Err(HairpinConfigFailure::CreationFailed(ErrorCode::parse_i32(
+                ret,
+            )));
         }
         debug!("TX hairpin queue configured");
 
         Ok(HairpinQueue { rx, tx, peering })
     }
 
-    #[must_use] pub fn start(self) -> HairpinQueue {
+    #[must_use]
+    pub fn start(self) -> HairpinQueue {
         let rx = match self.rx.start() {
             Ok(rx) => rx,
             Err(_) => todo!(),
@@ -111,13 +108,18 @@ impl HairpinQueue {
             Ok(tx) => tx,
             Err(_) => todo!(),
         };
-        HairpinQueue { rx, tx, peering: self.peering }
+        HairpinQueue {
+            rx,
+            tx,
+            peering: self.peering,
+        }
     }
 }
 
 impl HairpinQueue {
     /// Stop the hairpin queue.
-    #[must_use] pub fn stop(self) -> HairpinQueue {
+    #[must_use]
+    pub fn stop(self) -> HairpinQueue {
         let rx = match self.rx.stop() {
             Ok(rx) => rx,
             Err(_) => todo!(),

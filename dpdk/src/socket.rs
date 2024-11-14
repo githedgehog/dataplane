@@ -13,11 +13,11 @@ use crate::dev::DevIndex;
 #[allow(unused_imports)]
 /// imported for rustdoc
 use crate::eal::Eal;
-use dpdk_sys::rte_socket_id;
 use core::ffi::c_uint;
 use core::marker::PhantomData;
-use tracing::debug;
+use dpdk_sys::rte_socket_id;
 use errno::{ErrorCode, StandardErrno};
+use tracing::debug;
 
 #[repr(transparent)]
 #[derive(Debug)]
@@ -50,7 +50,8 @@ impl Manager {
     }
 
     /// The number of sockets (aka NUMA nodes) on the [`Eal`].
-    #[must_use] pub fn count(&self) -> u32 {
+    #[must_use]
+    pub fn count(&self) -> u32 {
         SocketId::count()
     }
 
@@ -69,14 +70,16 @@ impl Manager {
     /// Look up a [`SocketId`] by its [`Index`].
     ///
     /// Returns `None` if the index does not map to a valid [`SocketId`].
-    #[must_use] pub fn id_for_index(&self, index: Index) -> Option<SocketId> {
+    #[must_use]
+    pub fn id_for_index(&self, index: Index) -> Option<SocketId> {
         SocketId::get_by_index(index)
     }
 
     /// Look up a [`SocketId`] by the lcore it is associated with.
     ///
     /// Returns `None` if the lcore is not valid.
-    #[must_use] pub fn id_for_lcore(&self, lcore: u32) -> Option<SocketId> {
+    #[must_use]
+    pub fn id_for_lcore(&self, lcore: u32) -> Option<SocketId> {
         if lcore >= unsafe { dpdk_sys::rte_lcore_count() } {
             return None;
         }
@@ -184,7 +187,8 @@ impl SocketId {
     /// The index of the socket represented as a [`c_uint`].
     ///
     /// This function is mostly useful for interfacing with [`dpdk_sys`].
-    #[must_use] pub fn as_c_uint(&self) -> c_uint {
+    #[must_use]
+    pub fn as_c_uint(&self) -> c_uint {
         self.0
     }
 
@@ -219,7 +223,8 @@ impl SocketId {
     /// Returns `None` if the lcore is not valid.
     ///
     /// TODO: change lcore to a proper lcore id type.
-    #[must_use] pub fn get_by_lcore(lcore: u32) -> Option<SocketId> {
+    #[must_use]
+    pub fn get_by_lcore(lcore: u32) -> Option<SocketId> {
         if lcore >= unsafe { dpdk_sys::rte_lcore_count() } {
             return None;
         }
@@ -227,7 +232,8 @@ impl SocketId {
     }
 
     /// Look up a [`SocketId`] by the device it is associated with.
-    #[must_use] pub fn get_by_dev(dev: DevIndex) -> Option<SocketId> {
+    #[must_use]
+    pub fn get_by_dev(dev: DevIndex) -> Option<SocketId> {
         dev.socket_id().ok()
     }
 }
@@ -252,9 +258,8 @@ impl TryFrom<Preference> for SocketId {
     fn try_from(value: Preference) -> Result<Self, Self::Error> {
         match value {
             Preference::Id(id) => Ok(id),
-            Preference::Lcore(lcore_id) => {
-                SocketId::get_by_lcore(lcore_id).ok_or(ErrorCode::Standard(StandardErrno::InvalidArgument))
-            }
+            Preference::Lcore(lcore_id) => SocketId::get_by_lcore(lcore_id)
+                .ok_or(ErrorCode::Standard(StandardErrno::InvalidArgument)),
             Preference::Dev(dev) => dev.socket_id(),
         }
     }

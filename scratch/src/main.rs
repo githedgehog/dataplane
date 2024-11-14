@@ -635,9 +635,7 @@ fn eal_main() {
 
     let rte = eal::init(eal_args).unwrap_or_else(|err| match err {
         eal::InitError::InvalidArguments(args, err_msg) => {
-            fatal_error(format!(
-                "Invalid arguments: {args:?}; {err_msg}"
-            ));
+            fatal_error(format!("Invalid arguments: {args:?}; {err_msg}"));
         }
         eal::InitError::AlreadyInitialized => {
             fatal_error("EAL already initialized");
