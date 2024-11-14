@@ -1,4 +1,4 @@
-#!/usr/bin/bash
+#!/bin/bash
 
 set -euo pipefail
 
@@ -15,4 +15,4 @@ else
   >&2 echo "${1} not executable"
   exit 1
 fi
-"${@}"
+exec "${@}"
