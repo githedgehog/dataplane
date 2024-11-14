@@ -1,0 +1,36 @@
+# Make sure Rust source code is consistently formatted with rustfmt.
+
+name: "lint-cargo-fmt.yml"
+
+on:
+  pull_request: {}
+
+concurrency:
+  group: "${{ github.workflow }}:${{ github.event.pull_request.number }}"
+  cancel-in-progress: true
+
+jobs:
+  format-check:
+    name: "Check formatting for Rust code"
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: "Install Rust toolchain"
+        uses: "dtolnay/rust-toolchain@stable"
+        with:
+          toolchain: "nightly"
+          components: "rustfmt"
+
+      - name: "Checkout"
+        uses: "actions/checkout@v4"
+        with:
+          fetch-depth: "1"
+          persist-credentials: "false"
+
+      - name: "Check formatting"
+        run: |
+          cargo fmt --check
+
+      - name: "How to fix"
+        if: ${{ failure() }}
+        run: |
+          echo "::notice::Try fixing the issue with 'cargo fmt --all', then commit the changes."
