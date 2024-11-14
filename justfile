@@ -41,7 +41,7 @@ profile := "dev"
 _container_repo := "ghcr.io/githedgehog/dataplane"
 rust := "stable"
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
-_dpdk_sys_container_tag := dpdk_sys_commit + "-rust-" + rust
+_dpdk_sys_container_tag := dpdk_sys_commit + ".rust-" + rust
 _dev_env_container := _dpdk_sys_container_repo + "/dev-env:" + _dpdk_sys_container_tag
 _doc_env_container := _dpdk_sys_container_repo + "/doc-env:" + _dpdk_sys_container_tag
 _compile_env_container := _dpdk_sys_container_repo + "/compile-env:" + _dpdk_sys_container_tag
@@ -402,6 +402,7 @@ build-container: sterile-build
 # Build and push containers
 [script]
 push-container: build-container
+    {{ _just_debuggable_ }}
     {{ _define_truncate128 }}
     declare build_date
     build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
@@ -419,6 +420,7 @@ push-container: build-container
 [group("ci")]
 [script]
 test:
+    {{ _just_debuggable_ }}
     declare -r  report_dir="${CARGO_TARGET_DIR:-target}/nextest/{{ profile }}"
     mkdir -p "${report_dir}"
     {{ _just_debuggable_ }}
@@ -480,6 +482,7 @@ report:
 # run commands in a minimal mdbook container
 [script]
 mdbook *args="build":
+    {{ _just_debuggable_ }}
     mkdir -p /tmp/doc-env
     cd ./design-docs/src/mdbook
     docker run \

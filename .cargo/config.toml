@@ -13,3 +13,6 @@ sterile = ["just", "sterile", "cargo"]
 
 [target.x86_64-unknown-linux-gnu]
 runner = ["scripts/runner.sh"]
+
+[target.x86_64-unknown-linux-musl]
+runner = ["scripts/runner.sh"]
