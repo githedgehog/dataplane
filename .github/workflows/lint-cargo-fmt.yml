@@ -4,6 +4,8 @@ name: "lint-cargo-fmt.yml"
 
 on:
   pull_request: {}
+  merge_group:
+    types: ["checks_requested"]
 
 concurrency:
   group: "${{ github.workflow }}:${{ github.event.pull_request.number }}"
@@ -13,6 +15,9 @@ jobs:
   format-check:
     name: "Check formatting for Rust code"
     runs-on: "ubuntu-latest"
+    # Skip this job in merge group checks; but we need the workflow to run,
+    # given that the status check is required for merging.
+    if: "${{ github.event.pull_request }}"
     steps:
       - name: "Install Rust toolchain"
         uses: "dtolnay/rust-toolchain@stable"

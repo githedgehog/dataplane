@@ -5,11 +5,16 @@ name: "mergeability.yml"
 on:
   pull_request:
     types: [synchronize, opened, reopened, labeled, unlabeled]
+  merge_group:
+    types: ["checks_requested"]
 
 jobs:
   check-labels:
     runs-on: "ubuntu-latest"
     name: "Check mergeability based on labels"
+    # Skip this job in merge group checks; but we need the workflow to run,
+    # given that the status check is required for merging.
+    if: "${{ github.event.pull_request }}"
     steps:
       - if: ${{ contains(github.event.*.labels.*.name, 'dont-merge') }}
         name: "Fail test due to 'dont-merge' label presence"
