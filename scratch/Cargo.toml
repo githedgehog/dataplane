@@ -3,15 +3,18 @@ name = "scratch"
 version = "0.1.0"
 edition = "2021"
 publish = false
+resolver = "2"
 
 [dependencies]
-dpdk-sys = { path = "../dpdk-sys" }
-dpdk = { path = "../dpdk" }
 
-rand = { version = "0.8.5" }
-thiserror = { workspace = true }
+# internal
+dpdk-sys = { workspace = true }
+dpdk = { workspace = true }
+
+# external
+rand = { version = "0.8.5", default-features = true } # non-workspace to prevent pulling in std in other crates
 tracing = { workspace = true, features = ["attributes"] }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [build-dependencies]
-dpdk-sysroot-helper = { path = "../dpdk-sysroot-helper" }
+dpdk-sysroot-helper = { workspace = true }

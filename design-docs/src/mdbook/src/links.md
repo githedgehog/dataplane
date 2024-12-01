@@ -24,6 +24,7 @@
 [LACP]: https://en.wikipedia.org/wiki/Link_aggregation#Link_Aggregation_Control_Protocol
 [MySQL]: https://www.mysql.com/
 [NAT]: https://en.wikipedia.org/wiki/Network_address_translation
+[QoS]: https://en.wikipedia.org/wiki/Quality_of_service
 [TiDB]: https://www.pingcap.com/
 [TiKV]: https://tikv.org/
 [VXLAN]: https://en.wikipedia.org/wiki/Virtual_Extensible_LAN
@@ -42,6 +43,8 @@
 [cbindgen]: https://github.com/mozilla/cbindgen
 [distributed SQL]: https://en.wikipedia.org/wiki/Distributed_SQL
 [dpdk]: https://www.dpdk.org/
+[etcd]: https://github.com/coreos/etcd
+[etherparse]: https://github.com/JulianSchmid/etherparse
 [frr]: https://frrouting.org/
 [graphana]: https://grafana.com/
 [kernel]: https://en.wikipedia.org/wiki/Linux_kernel
@@ -51,6 +54,7 @@
 [network address translation]: https://en.wikipedia.org/wiki/Network_address_translation
 [prometheus]: https://prometheus.io/
 [protobuf]: https://protobuf.dev/
+[rqlite]:  https://rqlite.io/
 [rte lcores]: https://doc.dpdk.org/api/rte__lcore_8h.html
 [serde]: https://serde.rs/
 [tracing]: https://docs.rs/tracing/latest/tracing/

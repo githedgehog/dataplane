@@ -28,14 +28,13 @@ digraph g {
   cp_api_control_investigation [label=<<b>programmatic control of frr<br/>(investigation)</b>>, $urgent, href="$ptr/programmatic-control-of-frr.html", fontcolor=blue]
   cp_dev_env [label="control plane\ndev env", href="$ptr/control-plane-dev-env.html", fontcolor=blue]
   cp_image_creation [ label="Create control plane container image", href="$ptr/create-control-plane-image.html", fontcolor=blue]
-  dp_cp_reconciliation [ label="dp/cp reconcile", href="$ptr/dataplane-control-plane-reconcile.html", fontcolor=blue ]
   dp_dev_env [label="dataplane dev env", $completed, href="../../build/index.html", fontcolor=blue]
   dp_dp_state_sync [label="state sync\n(implementation)", $difficult, href="$ptr/state-sync.html", fontcolor=blue]
   dp_dp_state_sync_design [label="state sync\n(design)", $urgent, href="$ptr/state-sync-design.html", fontcolor=blue]
     dp_image_creation [label="dataplane image build", $completed]
   fault_tolerance [label="fault tolerance (implementation)", href="$ptr/fault-tolerance-implementation.html", fontcolor=blue]
   fault_tolerance_proof [label="fault tolerance (validation)", $difficult, href="$ptr/fault-tolerance-validation.html", fontcolor=blue]
-    frr_plugin_basic [ label="frr plugin\n(basic)", href="$ptr/frr-plugin.html", fontcolor=blue ]
+    zebra_plugin_basic [ label="zebra plugin\n(basic)", href="$ptr/zebra-plugin.html", fontcolor=blue ]
   frr_programmatic_control [label=<<b>programmatic<br/>control of frr</b>>, $difficult, href="$ptr/programmatic-control-of-frr.html", fontcolor=blue]
     gw_test_env [label="gateway test env", href="$ptr/gateway-test-env.html", fontcolor=blue]
   investigate_config_persist [ label=<<b>configuration<br/>persistence<br/>(investigation)</b>>, $urgent, href="$ptr/configuration-persistence-investigation.html", fontcolor=blue ]
@@ -44,8 +43,8 @@ digraph g {
   mp_dp_interaction [ label="management plane \ndataplane interaction", href="$ptr/management-plane-dataplane-interaction.html", fontcolor=blue]
   nat64_investigation [label=<<b>NAT64 investigation</b>>, $urgent, href="$ptr/NAT64-investigation.html", fontcolor=blue]
     performance_measurement [ label="measure performance", href="$ptr/performance-measurement.html", fontcolor=blue]
-  plugin_dp_proto [ label="plugin/dp protocol", $started, href="$ptr/dataplane-control-plane-protocol.html", fontcolor=blue]
-  plugin_dp_transport [ label="plugin/dp transport", $completed, href="$ptr/dataplane-control-plane-transport.html", fontcolor=blue]
+  plugin_dp_proto [ label="plugin/dataplane protocol", $started, href="$ptr/dataplane-control-plane-protocol.html", fontcolor=blue]
+  plugin_dp_transport [ label="plugin/dataplane transport", $completed, href="$ptr/dataplane-control-plane-transport.html", fontcolor=blue]
   public_internet_access [label="public internet access", href="$ptr/public-internet-access.html", fontcolor=blue]
   rate_limiting_investigation [label="rate limiting investigation", $completed]
   routing_manager [label="routing manager", href="$ptr/route-manager.html", fontcolor=blue]
@@ -92,17 +91,16 @@ digraph g {
   cp_dev_env -> gw_test_env
   cp_image_creation -> cp_dev_env
   cp_image_creation -> separate_cp_containers
-  dp_cp_reconciliation -> frr_plugin_basic
   dp_dev_env -> gw_test_env
   dp_image_creation -> dp_dev_env
-  gw_test_env -> frr_plugin_basic
-  frr_plugin_basic -> routing_manager
+  gw_test_env -> zebra_plugin_basic
+  zebra_plugin_basic -> routing_manager
   config_db_schema -> mp_cp_interaction
   config_db_schema -> mp_dp_interaction
-  local_traffic_ident -> frr_plugin_basic
+  local_traffic_ident -> zebra_plugin_basic
   mp_dp_interaction -> vpc_routing
-  plugin_dp_proto -> dp_cp_reconciliation
-  plugin_dp_transport -> dp_cp_reconciliation
+  plugin_dp_proto -> zebra_plugin_basic
+  plugin_dp_transport -> zebra_plugin_basic
   routing_manager -> underlay_routing
   config_db_schema -> underlay_routing
   vpc_routing -> vpc_nat44
@@ -128,12 +126,13 @@ digraph g {
 }
 @enddot
 ```
+
 <figcaption>
 
 > Graph of the engineering development plan.
 > Each node on the graph represents a task or required function.
 > No task can be _completed_ without all the other tasks which point to it.
-> 
+>
 > * Tasks shown in orange are points of higher uncertainty and risk.
 > * Tasks shown in pink are points of expected higher difficulty.
 > * Tasks shown in gray are already completed.
@@ -146,3 +145,5 @@ digraph g {
 
 > [!WARNING]
 > Tasks of high expected difficulty are different from tasks which we expect will be very time-consuming.
+
+{{#include ../links.md}}

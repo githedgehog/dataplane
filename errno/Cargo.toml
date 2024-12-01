@@ -3,6 +3,7 @@ name = "errno"
 version = "0.1.0"
 edition = "2021"
 publish = false
+resolver = "2"
 
 [dependencies]
 

@@ -29,15 +29,4 @@ The remaining option I know of is [`rqlite`]. _I have not used it,_ but it seems
 
 Thus, I think the real choice is between [`etcd`] and [`rqlite`].
 
-That choice comes down to how much we value the functionality of sqlite (multiple indexes, referential integrity, strong schema) vs. the upsides of `etcd` (watches, battle tested and more widely used).
-
-
-<x-labels>
-
-- management
-- data-store
-
-</x-labels>
-
-[`rqlite`]:  https://rqlite.io/
-[`etcd`]: https://github.com/coreos/etcd
+That choice comes down to how much we value the functionality of sqlite (multiple indexes, referential integrity, strong schema) vs. the upsides of [etcd] (watches, battle tested, and more widely used).

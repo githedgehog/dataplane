@@ -8,6 +8,7 @@ use crate::mem::Mbuf;
 use crate::socket::SocketId;
 use crate::{dev, mem, socket};
 use dpdk_sys::*;
+use errno::ErrorCode;
 use tracing::{trace, warn};
 
 #[repr(transparent)]
@@ -60,15 +61,15 @@ pub struct RxQueueConfig {
 #[derive(Debug)]
 pub enum ConfigFailure {
     /// The device has been removed.
-    DeviceRemoved(errno::Errno),
-    /// Invalid arguments were passed to the receive queue configuration.
-    InvalidArgument(errno::Errno),
+    DeviceRemoved(ErrorCode),
+    /// Invalid arguments were passed to the rx queue configuration.
+    InvalidArgument(ErrorCode),
     /// Memory allocation failed.
-    NoMemory(errno::Errno),
+    NoMemory(ErrorCode),
     /// An unexpected (i.e. undocumented) error occurred.
-    Unexpected(errno::Errno),
+    Unexpected(ErrorCode),
     /// The socket preference setting did not resolve a known socket.
-    InvalidSocket(errno::Errno),
+    InvalidSocket(ErrorCode),
 }
 
 /// DPDK rx queue
@@ -87,9 +88,12 @@ impl RxQueue {
     ///
     /// This design ensures that the hairpin queue is correctly tracked in the list of queues
     /// associated with the device.
+    #[tracing::instrument(level = "info")]
     pub(crate) fn configure(dev: &dev::Dev, config: RxQueueConfig) -> Result<Self, ConfigFailure> {
-        let socket_id = SocketId::try_from(config.socket_preference)
-            .map_err(|_| ConfigFailure::InvalidSocket(errno::Errno(errno::NEG_EINVAL)))?;
+        use ConfigFailure::*;
+        let socket_id = SocketId::try_from(config.socket_preference).map_err(InvalidSocket)?;
+        // dev.info.index
+        // info!("Configuring RX queue on socket {socket_id} for device {dev_info}", d);
 
         let rx_conf = rte_eth_rxconf {
             offloads: dev.info.inner.rx_queue_offload_capa,
@@ -111,14 +115,15 @@ impl RxQueue {
                 dev: dev.info.index(),
                 config,
             }),
-            errno::NEG_ENODEV => Err(ConfigFailure::DeviceRemoved(errno::Errno(ret))),
-            errno::NEG_EINVAL => Err(ConfigFailure::InvalidArgument(errno::Errno(ret))),
-            errno::NEG_ENOMEM => Err(ConfigFailure::NoMemory(errno::Errno(ret))),
-            val => Err(ConfigFailure::Unexpected(errno::Errno(val))),
+            errno::NEG_ENODEV => Err(DeviceRemoved(ErrorCode::parse_i32(ret))),
+            errno::NEG_EINVAL => Err(InvalidArgument(ErrorCode::parse_i32(ret))),
+            errno::NEG_ENOMEM => Err(NoMemory(ErrorCode::parse_i32(ret))),
+            _ => Err(Unexpected(ErrorCode::parse_i32(ret))),
         }
     }
 
-    /// Start the receive queue.
+    /// Start the rx queue.
+    #[tracing::instrument(level = "info")]
     pub(crate) fn start(self) -> Result<RxQueue, RxQueueStartError> {
         let ret = unsafe {
             rte_eth_dev_rx_queue_start(self.dev.as_u16(), self.config.queue_index.as_u16())
@@ -134,7 +139,8 @@ impl RxQueue {
         }
     }
 
-    /// Start the receive queue.
+    /// Start the rx queue.
+    #[tracing::instrument(level = "info")]
     pub(crate) fn stop(self) -> Result<RxQueue, RxQueueStopError> {
         let ret = unsafe {
             rte_eth_dev_rx_queue_stop(self.dev.as_u16(), self.config.queue_index.as_u16())
@@ -175,57 +181,45 @@ impl RxQueue {
     }
 }
 
-/// TODO
+/// Types of errors associated with starting RX queues
 #[derive(thiserror::Error, Debug)]
 pub enum RxQueueStartError {
-    /// TODO
-    #[error("Invalid port ID")]
+    #[error("The port ID associated with this RX queue is invalid")]
     InvalidPortId,
-    /// TODO
-    #[error("Queue ID out of range")]
+    #[error("The specified queue id is outside the range of known RX queues")]
     QueueIdOutOfRange,
-    /// TODO
-    #[error("Device removed")]
+    #[error("The network device associated with this RX queue has been removed")]
     DeviceRemoved,
-    /// TODO
-    #[error("Invalid argument")]
+    #[error("Invalid arguments supplied to RX queue configuration")]
     InvalidArgument,
-    /// TODO
-    #[error("Operation not supported")]
+    #[error("Operation is not supported (check device state and rx queue config)")]
     NotSupported,
-    /// TODO
-    #[error("Unknown error")]
+    #[error("Unknown error encountered when starting RX queue")]
     Unexpected(errno::Errno),
 }
 
-/// TODO
+/// Types of errors associated with stopping RX queues
 #[derive(thiserror::Error, Debug)]
 pub enum RxQueueStopError {
-    /// TODO
     #[error("Invalid port ID")]
     InvalidPortId,
-    /// TODO
     #[error("Queue ID out of range")]
     QueueIdOutOfRange,
-    /// TODO
     #[error("Device removed")]
     DeviceRemoved,
-    /// TODO
     #[error("Invalid argument")]
     InvalidArgument,
-    /// TODO
     #[error("Operation not supported")]
     NotSupported,
-    /// TODO
     #[error("Unexpected error")]
     Unexpected(errno::Errno),
 }
 
-/// TODO
+/// States of RX queues
 #[derive(Debug)]
 pub enum RxQueueState {
-    /// TODO
+    /// Stopped RX queue
     Stopped,
-    /// TODO
+    /// Started RX queue
     Started,
 }

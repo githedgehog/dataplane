@@ -1,6 +1,6 @@
 # Control plane dev-env
 
-Create and document a development environment for the [`zebra`] [hedgehog plugin].
+Create and document a development environment for the [zebra] [hedgehog plugin].
 
 Requirements:
 
@@ -9,7 +9,6 @@ Requirements:
 - **REQUIRE**: CI runs tests in dev-env container or,
 - **IDEALLY**: tests run in a more minimal test-env container.
 
-```yaml issue-meta
-assign:
-  - @Fredi Raspall
-```
+## Likely dispatch
+
+- [@Fredi-raspall]

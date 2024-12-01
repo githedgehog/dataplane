@@ -149,7 +149,7 @@ skinparam linetype ortho
   "frr_agent": { "text": "FRR agent", "url": "#frr-agent" },
   "zebra": { "text": "zebra", "url": "https://docs.frrouting.org/en/latest/zebra.html" },
   "routing_daemons": { "text": "routing daemons", "url": "#routing-daemons" },
-  "hh_plugin": { "text": "Hedgehog\\nplugin", "url": "#hedgehog-plugin" },
+  "zebra_plugin": { "text": "Zebra\\nplugin", "url": "#zebra-plugin" },
   "kernel": { "text": "kernel", "url": "#kernel" },
   "interface_manager": { "text": "interface manager", "url": "#interface-manager" },
   "routing_manager": { "text": "routing manager", "url": "#routing-manager" },
@@ -186,7 +186,7 @@ $r(kernel)
 $r(control_plane) {
   $r(routing_daemons)
   $r(zebra) {
-    $r(hh_plugin)
+    $r(zebra_plugin)
   }
   $r(frr_agent)
 }
@@ -223,7 +223,7 @@ dataplane_model <--> nat_manager
 dataplane_model <--> routing_manager
 management_plane_interface -- dataplane_model
 nat_manager <--> dataplane_workers
-hh_plugin --- control_plane_interface : [[ https://en.wikipedia.org/wiki/Unix_domain_socket unix socket ]]
+zebra_plugin --- control_plane_interface : [[ https://en.wikipedia.org/wiki/Unix_domain_socket unix socket ]]
 routing_daemons <-> zebra
 routing_manager <--> dataplane_workers
 state_sync <-> sister_state_sync : [[ https://en.wikipedia.org/wiki/Remote_direct_memory_access rdma]]
@@ -284,11 +284,11 @@ Be afraid. Make Fredi fill in this section. But also be afraid.
 </section>
 <section>
 
-### Hedgehog Plugin
+### Zebra Plugin
 
 This is a planned [zebra] plugin in the same spirit as [`fpm`](https://docs.frrouting.org/projects/dev-guide/en/latest/fpm.html#id1) or [`dataplane_fpm_nl`](https://docs.frrouting.org/projects/dev-guide/en/latest/fpm.html#dplane-fpm-nl).
 
-The core idea is to have a plugin that can be dynamically loaded into `zebra` and will listen to the `zebra` event stream for updates.
+The core idea is to have a plugin that can be dynamically loaded into [zebra] and will listen to the [zebra event stream](https://github.com/FRRouting/frr/blob/ee5a3456d34a756c70ad8856ab7be7bed75ee31c/zebra/zebra_dplane.h#L114-L217) for updates.
 The plugin will then take those updates and push them into the dataplane agent, allowing the dataplane to react to route updates.
 
 </section>

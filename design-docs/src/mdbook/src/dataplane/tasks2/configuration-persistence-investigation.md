@@ -12,7 +12,7 @@ Rather, this store needs to hold configuration data which is
 
 ## etcd
 
-[`etcd`] is a reasonable choice because
+[etcd] is a reasonable choice because
 
 1. It is already in use in kubernetes and is therefore likely to be well-maintained and tested.
 2. we are already using / integrating with kubernetes so any flaws in `etcd` are likely to impact us anyway.

@@ -2,7 +2,7 @@
 
 It seems like we have all agreed on [unix domain sockets].
 
-## Likely assignment
+## Likely dispatch
 
 * [@Fredi-raspall]
 * coordinate with: [@daniel-noland]

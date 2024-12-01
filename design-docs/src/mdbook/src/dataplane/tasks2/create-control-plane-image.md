@@ -16,10 +16,9 @@ We need to generate a docker image to run our control plane.
 
 Both [@Fredi-raspall] and [@daniel-noland] have made some progress on this task and should sync up to get it over the line.
 
-```yaml issue-meta
-assign:
-  - @Fredi Raspall
-```
+## Likely dispatch
+
+- [@Fredi-raspall]
 
 [Lua scripting]: https://docs.frrouting.org/en/latest/scripting.html
 
