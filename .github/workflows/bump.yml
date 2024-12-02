@@ -51,7 +51,7 @@ jobs:
       - name: "install envsubst"
         run: |
           sudo apt-get update
-          sudo apt-get --yes --no-install-recommends gettext
+          sudo apt-get install --yes --no-install-recommends gettext
       - run: |
           ./scripts/update-versions.sh
       - name: "Create Pull Request"
