@@ -1,7 +1,6 @@
 [env]
 COMPILE_ENV = { value = "compile-env", relative = true, force = false }
 PATH = { value = "compile-env/bin", relative = true, force = true }
-LD_LIBRARY_PATH = { value = "compile-env/lib", relative = true, force = true }
 LIBCLANG_PATH = { value = "compile-env/lib", relative = true, force = true }
 
 [build]
@@ -10,3 +9,9 @@ target = "x86_64-unknown-linux-gnu"
 [alias]
 just = ["just", "cargo"]
 sterile = ["just", "sterile", "cargo"]
+
+[target.x86_64-unknown-linux-gnu]
+runner = "/usr/bin/sudo -E"
+
+[target.x86_64-unknown-linux-musl]
+runner = "sudo -E"

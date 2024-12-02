@@ -4,6 +4,10 @@ version = "0.0.1"
 edition = "2021"
 description = "Low-level bindings to the Data Plane Development Kit (DPDK)"
 publish = false
+resolver = "2"
+
+[lib]
+crate-type = ["rlib"]
 
 [build-dependencies]
 bindgen = { workspace = true, features = ["runtime"] }

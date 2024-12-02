@@ -5,6 +5,7 @@
 
 use alloc::format;
 use alloc::vec::Vec;
+use bitflags::*;
 use core::ffi::{c_uint, CStr};
 use core::fmt::{Debug, Display, Formatter};
 use core::marker::PhantomData;
@@ -59,7 +60,6 @@ impl DevIndex {
         self.0
     }
 
-    #[tracing::instrument(level = "trace", ret)]
     /// Get information about an ethernet device.
     ///
     /// # Arguments
@@ -74,33 +74,34 @@ impl DevIndex {
     /// # Safety
     ///
     /// This function should never panic assuming DPDK is correctly implemented.
+    #[tracing::instrument(level = "trace", ret)]
     pub fn info(&self) -> Result<DevInfo, DevInfoError> {
         let mut dev_info = rte_eth_dev_info::default();
 
         let ret = unsafe { rte_eth_dev_info_get(self.0, &mut dev_info) };
 
         if ret != 0 {
-            match ret {
+            return match ret {
                 errno::NEG_ENOTSUP => {
                     error!(
                         "Device information not supported for port {index}",
                         index = self.0
                     );
-                    return Err(DevInfoError::NotSupported);
+                    Err(DevInfoError::NotSupported)
                 }
                 errno::NEG_ENODEV => {
                     error!(
                         "Device information not available for port {index}",
                         index = self.0
                     );
-                    return Err(DevInfoError::NotAvailable);
+                    Err(DevInfoError::NotAvailable)
                 }
                 errno::NEG_EINVAL => {
                     error!(
                         "Invalid argument when getting device info for port {index}",
                         index = self.0
                     );
-                    return Err(DevInfoError::InvalidArgument);
+                    Err(DevInfoError::InvalidArgument)
                 }
                 val => {
                     let _unknown = match StandardErrno::parse_i32(val) {
@@ -120,9 +121,9 @@ impl DevIndex {
                         index = self.0,
                         val = val
                     );
-                    return Err(DevInfoError::Unknown(errno::Errno(val)));
+                    Err(DevInfoError::Unknown(Errno(val)))
                 }
-            }
+            };
             // error!(
             //     "Failed to get device info for port {index}: {err}",
             //     index = self.0
@@ -150,7 +151,8 @@ impl DevIndex {
     ///   (statically ensured).
     /// * This function may panic if DPDK returns an unexpected (undocumented) error code after
     ///   failing to determine the socket id.
-    pub fn socket_id(&self) -> Result<SocketId, errno::ErrorCode> {
+    #[tracing::instrument(level = "trace", ret)]
+    pub fn socket_id(&self) -> Result<SocketId, ErrorCode> {
         let socket_id = unsafe { rte_eth_dev_socket_id(self.as_u16()) };
         if socket_id == -1 {
             match unsafe { wrte_errno() } {
@@ -160,7 +162,7 @@ impl DevIndex {
                 }
                 errno::EINVAL => {
                     // We are asking DPDK for the socket id of a port that doesn't exist.
-                    return Err(errno::ErrorCode::parse_i32(errno::EINVAL));
+                    return Err(ErrorCode::parse_i32(errno::EINVAL));
                 }
                 errno => {
                     // Getting here means we have an unknown error.
@@ -213,7 +215,8 @@ pub struct DevConfig {
     /// Setting it to `None` should disable all offloads, but instead we default to enabling all
     /// supported.
     /// Rework this bad idea.
-    pub tx_offloads: Option<TxOffloadConfig>,
+    pub tx_offloads: Option<()>,
+    // pub tx_offloads: Option<TxOffloadConfig>,
 }
 
 #[derive(Debug)]
@@ -226,13 +229,10 @@ pub enum DevConfigError {
 impl DevConfig {
     /// Apply the configuration to the device.
     pub fn apply(&self, dev: DevInfo) -> Result<Dev, DevConfigError> {
-        const ANY_SUPPORTED: u64 = u64::MAX;
         let eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
                 offloads: {
-                    let requested = self
-                        .tx_offloads
-                        .map_or(TxOffload(ANY_SUPPORTED), TxOffload::from);
+                    let requested = TxOffload::ALL_KNOWN;
                     let supported = dev.tx_offload_caps();
                     (requested & supported).0
                 },
@@ -313,184 +313,261 @@ impl From<u64> for RxOffload {
     }
 }
 
-#[non_exhaustive]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-/// Verbose configuration for transmit offloads.
-///
-/// This struct is mostly for coherent reporting on network cards.
-///
-/// TODO: fill in remaining offload types from `rte_ethdev.h`
-pub struct TxOffloadConfig {
-    /// GENEVE tunnel segmentation offload.
-    pub geneve_tnl_tso: bool,
-    /// GRE tunnel segmentation offload.
-    pub gre_tnl_tso: bool,
-    /// IPIP tunnel segmentation offload.
-    pub ipip_tnl_tso: bool,
-    /// IPv4 checksum calculation.
-    pub ipv4_cksum: bool,
-    /// MACsec insertion.
-    pub macsec_insert: bool,
-    /// Outer IPv4 checksum calculation.
-    pub outer_ipv4_cksum: bool,
-    /// QinQ (double VLAN) insertion.
-    pub qinq_insert: bool,
-    /// SCTP checksum calculation.
-    pub sctp_cksum: bool,
-    /// TCP checksum calculation.
-    pub tcp_cksum: bool,
-    /// TCP segmentation offload.
-    pub tcp_tso: bool,
-    /// UDP checksum calculation.
-    pub udp_cksum: bool,
-    /// UDP segmentation offload.
-    pub udp_tso: bool,
-    /// VLAN tag insertion.
-    pub vlan_insert: bool,
-    /// VXLAN tunnel segmentation offload.
-    pub vxlan_tnl_tso: bool,
-    /// Any flags that are not known to map to a valid offload.
-    pub unknown: u64,
-}
+// /// Verbose configuration for transmit offloads.
+// ///
+// /// This struct is mostly for coherent reporting on network cards.
+// ///
+// /// TODO: fill in remaining offload types from `rte_ethdev.h`
+// #[non_exhaustive]
+// #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+// pub struct TxOffloadConfig {
+//     /// GENEVE tunnel segmentation offload.
+//     pub geneve_tnl_tso: bool,
+//     /// GRE tunnel segmentation offload.
+//     pub gre_tnl_tso: bool,
+//     /// IPIP tunnel segmentation offload.
+//     pub ipip_tnl_tso: bool,
+//     /// IPv4 checksum calculation.
+//     pub ipv4_cksum: bool,
+//     /// MACsec insertion.
+//     pub macsec_insert: bool,
+//     /// Outer IPv4 checksum calculation.
+//     pub outer_ipv4_cksum: bool,
+//     /// QinQ (double VLAN) insertion.
+//     pub qinq_insert: bool,
+//     /// SCTP checksum calculation.
+//     pub sctp_cksum: bool,
+//     /// TCP checksum calculation.
+//     pub tcp_cksum: bool,
+//     /// TCP segmentation offload.
+//     pub tcp_tso: bool,
+//     /// UDP checksum calculation.
+//     pub udp_cksum: bool,
+//     /// UDP segmentation offload.
+//     pub udp_tso: bool,
+//     /// VLAN tag insertion.
+//     pub vlan_insert: bool,
+//     /// VXLAN tunnel segmentation offload.
+//     pub vxlan_tnl_tso: bool,
+//     /// Any flags that are not known to map to a valid offload.
+//     pub unknown: u64,
+// }
 
-impl Default for TxOffloadConfig {
-    /// Defaults to enabling all known offloads
-    fn default() -> Self {
-        TxOffloadConfig {
-            geneve_tnl_tso: true,
-            gre_tnl_tso: true,
-            ipip_tnl_tso: true,
-            ipv4_cksum: true,
-            macsec_insert: true,
-            outer_ipv4_cksum: true,
-            qinq_insert: true,
-            sctp_cksum: true,
-            tcp_cksum: true,
-            tcp_tso: true,
-            udp_cksum: true,
-            udp_tso: true,
-            vlan_insert: true,
-            vxlan_tnl_tso: true,
-            unknown: 0,
-        }
+// impl Default for TxOffloadConfig {
+//     /// Defaults to enabling all known offloads
+//     fn default() -> Self {
+//         TxOffloadConfig {
+//             geneve_tnl_tso: true,
+//             gre_tnl_tso: true,
+//             ipip_tnl_tso: true,
+//             ipv4_cksum: true,
+//             macsec_insert: true,
+//             outer_ipv4_cksum: true,
+//             qinq_insert: true,
+//             sctp_cksum: true,
+//             tcp_cksum: true,
+//             tcp_tso: true,
+//             udp_cksum: true,
+//             udp_tso: true,
+//             vlan_insert: true,
+//             vxlan_tnl_tso: true,
+//             unknown: 0,
+//         }
+//     }
+// }
+
+// impl Display for TxOffloadConfig {
+//     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+//         write!(f, "{self:?}")
+//     }
+// }
+
+bitflags! {
+    #[repr(transparent)]
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct TxOffloads: u64 {
+        const VLAN_INSERT       = wrte_eth_tx_offload::TX_OFFLOAD_VLAN_INSERT;
+        const IPV4_CKSUM        = wrte_eth_tx_offload::TX_OFFLOAD_IPV4_CKSUM;
+        const UDP_CKSUM         = wrte_eth_tx_offload::TX_OFFLOAD_UDP_CKSUM;
+        const TCP_CKSUM         = wrte_eth_tx_offload::TX_OFFLOAD_TCP_CKSUM;
+        const SCTP_CKSUM        = wrte_eth_tx_offload::TX_OFFLOAD_SCTP_CKSUM;
+        const TCP_TSO           = wrte_eth_tx_offload::TX_OFFLOAD_TCP_TSO;
+        const UDP_TSO           = wrte_eth_tx_offload::TX_OFFLOAD_UDP_TSO;
+        const OUTER_IPV4_CKSUM  = wrte_eth_tx_offload::TX_OFFLOAD_OUTER_IPV4_CKSUM;
+        const QINQ_INSERT       = wrte_eth_tx_offload::TX_OFFLOAD_QINQ_INSERT;
+        const VXLAN_TNL_TSO     = wrte_eth_tx_offload::TX_OFFLOAD_VXLAN_TNL_TSO;
+        const GRE_TNL_TSO       = wrte_eth_tx_offload::TX_OFFLOAD_GRE_TNL_TSO;
+        const IPIP_TNL_TSO      = wrte_eth_tx_offload::TX_OFFLOAD_IPIP_TNL_TSO;
+        const GENEVE_TNL_TSO    = wrte_eth_tx_offload::TX_OFFLOAD_GENEVE_TNL_TSO;
+        const MACSEC_INSERT     = wrte_eth_tx_offload::TX_OFFLOAD_MACSEC_INSERT;
+        const MT_LOCKFREE       = wrte_eth_tx_offload::TX_OFFLOAD_MT_LOCKFREE;
+        const MULTI_SEGS        = wrte_eth_tx_offload::TX_OFFLOAD_MULTI_SEGS;
+        const MBUF_FAST_FREE    = wrte_eth_tx_offload::TX_OFFLOAD_MBUF_FAST_FREE;
+        const SECURITY          = wrte_eth_tx_offload::TX_OFFLOAD_SECURITY;
+        const UDP_TNL_TSO       = wrte_eth_tx_offload::TX_OFFLOAD_UDP_TNL_TSO;
+        const IP_TNL_TSO        = wrte_eth_tx_offload::TX_OFFLOAD_IP_TNL_TSO;
+        const OUTER_UDP_CKSUM   = wrte_eth_tx_offload::TX_OFFLOAD_OUTER_UDP_CKSUM;
+        const SEND_ON_TIMESTAMP = wrte_eth_tx_offload::TX_OFFLOAD_SEND_ON_TIMESTAMP;
+        const _ = !0;
     }
 }
 
-impl Display for TxOffloadConfig {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
+// // TODO: we have had some kind of merge issue and now this method is mostly nonsense
+// impl From<TxOffloadConfig> for TxOffload {
+//     fn from(value: TxOffloadConfig) -> Self {
+//         use wrte_eth_tx_offload::*;
+//         TxOffload(
+//             if value.geneve_tnl_tso {
+//                 TX_OFFLOAD_GENEVE_TNL_TSO
+//             } else {
+//                 0
+//             } | if value.gre_tnl_tso {
+//                 TX_OFFLOAD_GRE_TNL_TSO
+//             } else {
+//                 0
+//             } | if value.ipip_tnl_tso {
+//                 TX_OFFLOAD_IPIP_TNL_TSO
+//             } else {
+//                 0
+//             } | if value.ipv4_cksum {
+//                 TX_OFFLOAD_IPV4_CKSUM
+//             } else {
+//                 0
+//             } | if value.macsec_insert {
+//                 TX_OFFLOAD_MACSEC_INSERT
+//             } else {
+//                 0
+//             } | if value.outer_ipv4_cksum {
+//                 TX_OFFLOAD_OUTER_IPV4_CKSUM
+//             } else {
+//                 0
+//             } | if value.qinq_insert {
+//                 TX_OFFLOAD_QINQ_INSERT
+//             } else {
+//                 0
+//             } | if value.sctp_cksum {
+//                 TX_OFFLOAD_SCTP_CKSUM
+//             } else {
+//                 0
+//             } | if value.tcp_cksum {
+//                 TX_OFFLOAD_TCP_CKSUM
+//             } else {
+//                 0
+//             } | if value.tcp_tso { TX_OFFLOAD_TCP_TSO } else { 0 }
+//                 | if value.udp_cksum {
+//                     TX_OFFLOAD_UDP_CKSUM
+//                 } else {
+//                     0
+//                 }
+//                 | if value.qinq_insert {
+//                     TX_OFFLOAD_QINQ_INSERT
+//                 } else {
+//                     0
+//                 }
+//                 | if value.sctp_cksum {
+//                     TX_OFFLOAD_SCTP_CKSUM
+//                 } else {
+//                     0
+//                 }
+//                 | if value.tcp_cksum {
+//                     TX_OFFLOAD_TCP_CKSUM
+//                 } else {
+//                     0
+//                 }
+//                 | if value.tcp_tso { TX_OFFLOAD_TCP_TSO } else { 0 }
+//                 | if value.udp_cksum {
+//                     TX_OFFLOAD_UDP_CKSUM
+//                 } else {
+//                     0
+//                 }
+//                 | if value.udp_tso { TX_OFFLOAD_UDP_TSO } else { 0 }
+//                 | if value.vlan_insert {
+//                     TX_OFFLOAD_VLAN_INSERT
+//                 } else {
+//                     0
+//                 }
+//                 | if value.vxlan_tnl_tso {
+//                     TX_OFFLOAD_VXLAN_TNL_TSO
+//                 } else {
+//                     0
+//                 }
+//                 | value.unknown,
+//         )
+//     }
+// }
 
-impl From<TxOffloadConfig> for TxOffload {
-    fn from(value: TxOffloadConfig) -> Self {
-        use wrte_eth_tx_offload::*;
-        TxOffload(
-            if value.geneve_tnl_tso {
-                GENEVE_TNL_TSO
-            } else {
-                0
-            } | if value.gre_tnl_tso { GRE_TNL_TSO } else { 0 }
-                | if value.ipip_tnl_tso { IPIP_TNL_TSO } else { 0 }
-                | if value.ipv4_cksum { IPV4_CKSUM } else { 0 }
-                | if value.macsec_insert {
-                    MACSEC_INSERT
-                } else {
-                    0
-                }
-                | if value.outer_ipv4_cksum {
-                    OUTER_IPV4_CKSUM
-                } else {
-                    0
-                }
-                | if value.qinq_insert { QINQ_INSERT } else { 0 }
-                | if value.sctp_cksum { SCTP_CKSUM } else { 0 }
-                | if value.tcp_cksum { TCP_CKSUM } else { 0 }
-                | if value.tcp_tso { TCP_TSO } else { 0 }
-                | if value.udp_cksum { UDP_CKSUM } else { 0 }
-                | if value.udp_tso { UDP_TSO } else { 0 }
-                | if value.vlan_insert { VLAN_INSERT } else { 0 }
-                | if value.vxlan_tnl_tso {
-                    VXLAN_TNL_TSO
-                } else {
-                    0
-                }
-                | value.unknown,
-        )
-    }
-}
-
-impl From<TxOffload> for TxOffloadConfig {
-    fn from(value: TxOffload) -> Self {
-        use wrte_eth_tx_offload::*;
-        TxOffloadConfig {
-            geneve_tnl_tso: value.0 & GENEVE_TNL_TSO != 0,
-            gre_tnl_tso: value.0 & GRE_TNL_TSO != 0,
-            ipip_tnl_tso: value.0 & IPIP_TNL_TSO != 0,
-            ipv4_cksum: value.0 & IPV4_CKSUM != 0,
-            macsec_insert: value.0 & MACSEC_INSERT != 0,
-            outer_ipv4_cksum: value.0 & OUTER_IPV4_CKSUM != 0,
-            qinq_insert: value.0 & QINQ_INSERT != 0,
-            sctp_cksum: value.0 & SCTP_CKSUM != 0,
-            tcp_cksum: value.0 & TCP_CKSUM != 0,
-            tcp_tso: value.0 & TCP_TSO != 0,
-            udp_cksum: value.0 & UDP_CKSUM != 0,
-            udp_tso: value.0 & UDP_TSO != 0,
-            vlan_insert: value.0 & VLAN_INSERT != 0,
-            vxlan_tnl_tso: value.0 & VXLAN_TNL_TSO != 0,
-            unknown: value.0 & !TxOffload::ALL_KNOWN.0,
-        }
-    }
-}
+// impl From<TxOffload> for TxOffloadConfig {
+//     fn from(value: TxOffload) -> Self {
+//         use wrte_eth_tx_offload::*;
+//         TxOffloadConfig {
+//             geneve_tnl_tso: value.0 & TX_OFFLOAD_GENEVE_TNL_TSO != 0,
+//             gre_tnl_tso: value.0 & TX_OFFLOAD_GRE_TNL_TSO != 0,
+//             ipip_tnl_tso: value.0 & TX_OFFLOAD_IPIP_TNL_TSO != 0,
+//             ipv4_cksum: value.0 & TX_OFFLOAD_IPV4_CKSUM != 0,
+//             macsec_insert: value.0 & TX_OFFLOAD_MACSEC_INSERT != 0,
+//             outer_ipv4_cksum: value.0 & TX_OFFLOAD_OUTER_IPV4_CKSUM != 0,
+//             qinq_insert: value.0 & TX_OFFLOAD_QINQ_INSERT != 0,
+//             sctp_cksum: value.0 & TX_OFFLOAD_SCTP_CKSUM != 0,
+//             tcp_cksum: value.0 & TX_OFFLOAD_TCP_CKSUM != 0,
+//             tcp_tso: value.0 & TX_OFFLOAD_TCP_TSO != 0,
+//             udp_cksum: value.0 & TX_OFFLOAD_UDP_CKSUM != 0,
+//             udp_tso: value.0 & TX_OFFLOAD_UDP_TSO != 0,
+//             vlan_insert: value.0 & TX_OFFLOAD_VLAN_INSERT != 0,
+//             vxlan_tnl_tso: value.0 & TX_OFFLOAD_VXLAN_TNL_TSO != 0,
+//             unknown: value.0 & !TxOffload::ALL_KNOWN.0,
+//         }
+//     }
+// }
 
 impl TxOffload {
     /// GENEVE tunnel segmentation offload.
-    pub const GENEVE_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::GENEVE_TNL_TSO);
+    pub const GENEVE_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_GENEVE_TNL_TSO);
     /// GRE tunnel segmentation offload.
-    pub const GRE_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::GRE_TNL_TSO);
+    pub const GRE_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_GRE_TNL_TSO);
     /// IPIP tunnel segmentation offload.
-    pub const IPIP_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::IPIP_TNL_TSO);
+    pub const IPIP_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_IPIP_TNL_TSO);
     /// IPv4 checksum calculation.
-    pub const IPV4_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::IPV4_CKSUM);
+    pub const IPV4_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_IPV4_CKSUM);
     /// MACsec insertion.
-    pub const MACSEC_INSERT: TxOffload = TxOffload(wrte_eth_tx_offload::MACSEC_INSERT);
+    pub const MACSEC_INSERT: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_MACSEC_INSERT);
     /// Outer IPv4 checksum calculation.
-    pub const OUTER_IPV4_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::OUTER_IPV4_CKSUM);
+    pub const OUTER_IPV4_CKSUM: TxOffload =
+        TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_OUTER_IPV4_CKSUM);
     /// QinQ (double VLAN) insertion.
-    pub const QINQ_INSERT: TxOffload = TxOffload(wrte_eth_tx_offload::QINQ_INSERT);
+    pub const QINQ_INSERT: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_QINQ_INSERT);
     /// SCTP checksum calculation.
-    pub const SCTP_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::SCTP_CKSUM);
+    pub const SCTP_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_SCTP_CKSUM);
     /// TCP checksum calculation.
-    pub const TCP_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::TCP_CKSUM);
+    pub const TCP_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_TCP_CKSUM);
     /// TCP segmentation offload.
-    pub const TCP_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TCP_TSO);
+    pub const TCP_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_TCP_TSO);
     /// UDP checksum calculation.
-    pub const UDP_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::UDP_CKSUM);
+    pub const UDP_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_UDP_CKSUM);
     /// UDP segmentation offload.
-    pub const UDP_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::UDP_TSO);
+    pub const UDP_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_UDP_TSO);
     /// VXLAN tunnel segmentation offload.
-    pub const VXLAN_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::VXLAN_TNL_TSO);
+    pub const VXLAN_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_VXLAN_TNL_TSO);
     /// VLAN tag insertion.
-    pub const VLAN_INSERT: TxOffload = TxOffload(wrte_eth_tx_offload::VLAN_INSERT);
+    pub const VLAN_INSERT: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_VLAN_INSERT);
 
     /// Union of all [`TxOffload`]s documented at the time of writing.
     pub const ALL_KNOWN: TxOffload = {
         use wrte_eth_tx_offload::*;
         TxOffload(
-            GENEVE_TNL_TSO
-                | GRE_TNL_TSO
-                | IPIP_TNL_TSO
-                | IPV4_CKSUM
-                | MACSEC_INSERT
-                | OUTER_IPV4_CKSUM
-                | QINQ_INSERT
-                | SCTP_CKSUM
-                | TCP_CKSUM
-                | TCP_TSO
-                | UDP_CKSUM
-                | UDP_TSO
-                | VLAN_INSERT
-                | VXLAN_TNL_TSO,
+            TX_OFFLOAD_GENEVE_TNL_TSO
+                | TX_OFFLOAD_GRE_TNL_TSO
+                | TX_OFFLOAD_IPIP_TNL_TSO
+                | TX_OFFLOAD_IPV4_CKSUM
+                | TX_OFFLOAD_MACSEC_INSERT
+                | TX_OFFLOAD_OUTER_IPV4_CKSUM
+                | TX_OFFLOAD_QINQ_INSERT
+                | TX_OFFLOAD_SCTP_CKSUM
+                | TX_OFFLOAD_TCP_CKSUM
+                | TX_OFFLOAD_TCP_TSO
+                | TX_OFFLOAD_UDP_CKSUM
+                | TX_OFFLOAD_UDP_TSO
+                | TX_OFFLOAD_VLAN_INSERT
+                | TX_OFFLOAD_VXLAN_TNL_TSO,
         )
     };
 }
@@ -537,13 +614,26 @@ impl BitXorAssign for TxOffload {
     }
 }
 
-#[derive(Debug, PartialEq)]
 /// Information about a DPDK ethernet device.
 ///
 /// This struct is a wrapper around the `rte_eth_dev_info` struct from DPDK.
+#[derive(Debug, PartialEq)]
 pub struct DevInfo {
     pub(crate) index: DevIndex,
     pub(crate) inner: rte_eth_dev_info,
+}
+
+bitflags! {
+    #[repr(transparent)]
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct DevCapabilities: u64 {
+        const RUNTIME_RX_QUEUE_SETUP = RTE_ETH_DEV_CAPA_RUNTIME_RX_QUEUE_SETUP as u64;
+        const RUNTIME_TX_QUEUE_SETUP = RTE_ETH_DEV_CAPA_RUNTIME_TX_QUEUE_SETUP as u64;
+        const RXQ_SHARE = RTE_ETH_DEV_CAPA_RXQ_SHARE as u64;
+        const FLOW_RULE_KEEP = RTE_ETH_DEV_CAPA_FLOW_RULE_KEEP as u64;
+        const FLOW_SHARED_OBJECT_KEEP = RTE_ETH_DEV_CAPA_FLOW_SHARED_OBJECT_KEEP as u64;
+        const _ = !0;
+    }
 }
 
 #[repr(transparent)]
@@ -668,29 +758,37 @@ impl DevInfo {
         self.inner.if_index
     }
 
-    #[allow(clippy::expect_used)]
-    #[tracing::instrument(level = "debug")]
     /// Get the driver name of the device.
     ///
     /// # Panics
     ///
     /// This function will panic if the driver name is not valid utf-8.
+    #[allow(clippy::expect_used)]
+    #[tracing::instrument(level = "debug")]
     pub fn driver_name(&self) -> &str {
         unsafe { CStr::from_ptr(self.inner.driver_name) }
             .to_str()
             .expect("driver name is not valid utf-8")
     }
 
-    #[tracing::instrument(level = "trace")]
     /// Get the maximum set of available tx offloads supported by the device.
+    #[tracing::instrument(level = "trace")]
     pub fn tx_offload_caps(&self) -> TxOffload {
         self.inner.tx_offload_capa.into()
     }
 
-    #[tracing::instrument(level = "trace")]
     /// Get the maximum set of available rx offloads supported by the device.
+    #[tracing::instrument(level = "trace")]
     pub fn rx_offload_caps(&self) -> RxOffload {
         self.inner.rx_offload_capa.into()
+    }
+
+    /// Get the capabilities of the device.
+    ///
+    /// See [`DevCapabilities`]
+    #[tracing::instrument(level = "trace")]
+    pub fn capabilities(&self) -> DevCapabilities {
+        DevCapabilities::from_bits_retain(self.inner.dev_capa)
     }
 }
 
@@ -703,7 +801,7 @@ pub struct Dev {
     pub config: DevConfig,
     pub(crate) rx_queues: Vec<RxQueue>,
     pub(crate) tx_queues: Vec<TxQueue>,
-    pub(crate) hairpin_queues: Vec<queue::hairpin::HairpinQueue>,
+    pub(crate) hairpin_queues: Vec<HairpinQueue>,
 }
 
 impl Dev {
@@ -829,7 +927,7 @@ impl Drop for Dev {
             port = self.info.index()
         );
         match self.stop() {
-            Ok(()) => {
+            Ok(_) => {
                 info!("Device {port} stopped", port = self.info.index());
             }
             Err(err) => {
@@ -848,5 +946,5 @@ pub enum SocketIdLookupError {
     #[error("Invalid port ID")]
     DevDoesNotExist(DevIndex),
     #[error("Unknown error code set")]
-    UnknownErrno(errno::ErrorCode),
+    UnknownErrno(ErrorCode),
 }

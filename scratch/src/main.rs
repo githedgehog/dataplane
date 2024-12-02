@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use dpdk::dev::TxOffloadConfig;
 use dpdk::{dev, eal, mem, queue, socket};
 use dpdk_sys::*;
 use std::ffi::{c_uint, CStr, CString};
@@ -220,12 +219,12 @@ fn check_hairpin_cap(port_id: u16) {
 fn init_port2(port_id: u16, mbuf_pool: &mut rte_mempool) {
     let mut port_conf = rte_eth_conf {
         txmode: rte_eth_txmode {
-            offloads: wrte_eth_tx_offload::VLAN_INSERT
-                | wrte_eth_tx_offload::IPV4_CKSUM
-                | wrte_eth_tx_offload::UDP_CKSUM
-                | wrte_eth_tx_offload::TCP_CKSUM
-                | wrte_eth_tx_offload::SCTP_CKSUM
-                | wrte_eth_tx_offload::TCP_TSO,
+            offloads: wrte_eth_tx_offload::TX_OFFLOAD_VLAN_INSERT
+                | wrte_eth_tx_offload::TX_OFFLOAD_IPV4_CKSUM
+                | wrte_eth_tx_offload::TX_OFFLOAD_UDP_CKSUM
+                | wrte_eth_tx_offload::TX_OFFLOAD_TCP_CKSUM
+                | wrte_eth_tx_offload::TX_OFFLOAD_SCTP_CKSUM
+                | wrte_eth_tx_offload::TX_OFFLOAD_TCP_TSO,
             ..Default::default()
         },
         ..Default::default()
@@ -606,7 +605,7 @@ fn main() {
 
 fn eal_main() {
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::WARN)
+        .with_max_level(tracing::Level::INFO)
         .with_target(false)
         .with_thread_ids(true)
         .with_line_number(true)
@@ -621,7 +620,7 @@ fn eal_main() {
         "--huge-dir",
         "/mnt/huge/1G",
         "--allow",
-        "0000:85:00.0,dv_flow_en=1",
+        "0000:01:00.0,dv_flow_en=1",
         // "--trace=.*",
         // "--iova-mode=va",
         // "-l",
@@ -660,21 +659,17 @@ fn eal_main() {
     rte.dev.iter().for_each(|dev| {
         info!("Device if_index: {if_index:?}", if_index = dev.if_index());
         info!("Driver name: {name:?}", name = dev.driver_name());
-        let tx_config: TxOffloadConfig = dev.tx_offload_caps().into();
-        info!(
-            "Device tx offload capabilities: {tx_offload:?}",
-            tx_offload = tx_config
-        );
         info!(
             "Device rx offload capabilities: {rx_offload:?}",
             rx_offload = dev.rx_offload_caps()
         );
+        info!("Device capas: {capas:?}", capas = dev.capabilities());
 
         let config = dev::DevConfig {
             num_rx_queues: 5,
             num_tx_queues: 5,
             num_hairpin_queues: 1,
-            tx_offloads: Some(TxOffloadConfig::default()),
+            tx_offloads: None,
         };
 
         let mut my_dev = match config.apply(dev) {

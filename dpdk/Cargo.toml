@@ -3,6 +3,7 @@ name = "dpdk"
 version = "0.1.0"
 edition = "2021"
 publish = false
+resolver = "2"
 
 [features]
 default = ["serde", "tracing_max_level_trace", "tracing_release_max_level_debug"]
@@ -24,14 +25,14 @@ tracing_release_max_level_warn = ["tracing/release_max_level_warn"]
 
 [dependencies]
 
-dpdk-sys = { path = "../dpdk-sys" }
-errno = { path = "../errno" }
-net = { path = "../net" }
+dpdk-sys = { workspace = true }
+errno = { workspace = true }
+net = { workspace = true }
 
-etherparse = { workspace = true, default-features = false, features = [] }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
+bitflags = { workspace = true }
 
 [build-dependencies]
-dpdk-sysroot-helper = { path = "../dpdk-sysroot-helper" }
+dpdk-sysroot-helper = { workspace = true }
