@@ -68,7 +68,7 @@ jobs:
           - "stable"
           - "beta"
           - "nightly"
-    name: "Developer build (Rust ${{ matrix.rust }})"
+    name: "Developer build"
     runs-on: "lab"
     timeout-minutes: 45
     steps:
@@ -177,7 +177,7 @@ jobs:
           limit-access-to-actor: true
 
   summary:
-    name: "summary"
+    name: "Summary"
     runs-on: "ubuntu-latest"
     needs:
       - build
