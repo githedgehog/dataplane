@@ -41,7 +41,7 @@ profile := "dev"
 _container_repo := "ghcr.io/githedgehog/dataplane"
 rust := "stable"
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
-_dpdk_sys_container_tag := dpdk_sys_commit + "-rust-" + rust
+_dpdk_sys_container_tag := dpdk_sys_commit + ".rust-" + rust
 _dev_env_container := _dpdk_sys_container_repo + "/dev-env:" + _dpdk_sys_container_tag
 _doc_env_container := _dpdk_sys_container_repo + "/doc-env:" + _dpdk_sys_container_tag
 _compile_env_container := _dpdk_sys_container_repo + "/compile-env:" + _dpdk_sys_container_tag
@@ -480,12 +480,15 @@ report:
 # run commands in a minimal mdbook container
 [script]
 mdbook *args="build":
+    {{ _just_debuggable_ }}
     mkdir -p /tmp/doc-env
     cd ./design-docs/src/mdbook
+    docker pull {{ _doc_env_container }}
     docker run \
       --rm \
       --init \
       --volume "$(pwd):$(pwd)" \
+      --env HOME=/tmp \
       --user "$(id -u):$(id -g)" \
       --mount type=bind,source=/tmp/doc-env,target=/tmp \
       --workdir "$(pwd)" \

@@ -58,7 +58,6 @@ jobs:
       matrix:
         rust:
           - "stable"
-          - "nightly"
     name: "Sterile test run"
     steps:
       - name: "login to ghcr.io"
@@ -179,7 +178,6 @@ jobs:
       matrix:
         rust:
           - "stable"
-          - "nightly"
     name: "Push containers"
     steps:
       - name: "login to ghcr.io"
