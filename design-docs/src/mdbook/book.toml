@@ -27,7 +27,6 @@ strict = false
 
 [output.html]
 additional-css = []
-additional-js = ["./theme/external/mermaid.min.js", "./theme/external/mermaid-init.js"]
 smart-punctuation = true
 preferrred-dark-theme = "ayu"
 default-theme = "light"
