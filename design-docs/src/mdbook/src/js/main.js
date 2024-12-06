@@ -245,6 +245,16 @@ const embedPlantuml = async () => {
 			console.warn("No svg in wrapper: ", svgWrapper);
 			continue;
 		}
+		const width = svg.getAttribute('width');
+		const height = svg.getAttribute('height');
+		if (width) {
+			svg.removeAttribute('width');
+			svg.style.maxWidth = width;
+		}
+		if (height) {
+			svg.removeAttribute('height');
+			svg.style.maxHeight = height;
+		}
 		svgImg.replaceWith(svgWrapper);
 	}
 }

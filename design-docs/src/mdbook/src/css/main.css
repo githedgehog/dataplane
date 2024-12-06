@@ -156,21 +156,12 @@ html > body.js.sidebar-hidden {
     color: var(--links);
 }
 
-/*figure {*/
-/*    padding-left: 0.5em;*/
-/*    margin-inline: 0;*/
-/*    width: max(1000px, 50vw);*/
+figure {
+    padding-left: 0.5em;
+    margin-inline: 0;
+    width: max(200px, 50vw);
 
-/*    !*max-width: max(1000px, 100%);*!*/
-/*}*/
-
-nav:has(figure:first-child) {
-    width: 1000px;
-    height: 1000px;
-}
-
-nav > figure {
-    position: fixed;
+    max-width: max(200px, 100%);
 }
 
 figcaption {
@@ -614,12 +605,12 @@ p:hover > a.ref-paragraph:last-child::before {
 }
 
 p:target::before {
-    /*position: relative;*/
-    /*display: inline-block;*/
-    /*content: var(--target-icon);*/
-    /*margin-inline-start: calc(0px - var(--target-icon-distance));*/
-    /*width: var(--target-icon-distance);*/
-    /*border-left: 1px solid var(--links);*/
+    position: relative;
+    display: inline-block;
+    content: var(--target-icon);
+    margin-inline-start: calc(0px - var(--target-icon-distance));
+    width: var(--target-icon-distance);
+    border-left: 1px solid var(--links);
 }
 
 
@@ -667,10 +658,9 @@ p:target {
 }
 
 figure > figcaption {
-    margin-top: 1.5em;
+    margin-top: 0.0em;
     background: var(--table-alternate-bg);
     min-width: 30%;
-    /*width: calc(0.8 * var(--fig-width));*/
     width: fit-content(100%);
 }
 
@@ -679,15 +669,16 @@ figure > figcaption {
     font-style: unset;
 }
 
-figure {
-    display: inline-block;
-}
-
 figure:target::before {
     content: var(--target-icon);
     display: inline-block;
     margin-inline-start: calc(-1 * var(--target-icon-distance));
     width: var(--target-icon-distance);
+}
+
+figure {
+    border-left: 1px solid var(--links);
+    width: fit-content;
 }
 
 a.figure-label, a.figure-label:visited, a.figure-label:target, a.figure-label:hover {
