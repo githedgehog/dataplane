@@ -47,4 +47,4 @@ should take care of it for normal development flows.
 
 But there is a second level to this story.
 
-Sterile builds!
+[Sterile builds!](./sterile-build.md)
