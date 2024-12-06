@@ -1,17 +1,3 @@
-const formatBibliography = () => {
-	const referenceNumbers = document.querySelectorAll('#refs > [id^="ref-"] > p > span.csl-left-margin');
-	referenceNumbers.forEach((referenceNumberSpan) => {
-		const referenceDiv = referenceNumberSpan.parentElement.parentElement;
-		const referenceNumberText = referenceNumberSpan.innerHTML.trim()
-		const referenceAnchor = document.createElement('a');
-		referenceAnchor.setAttribute('href', `#${referenceDiv.getAttribute('id')}`);
-		referenceAnchor.classList.add('reference-anchor');
-		referenceAnchor.innerText = referenceNumberText;
-		referenceNumberSpan.childNodes.forEach(node => node.remove());
-		referenceNumberSpan.append(referenceAnchor);
-	});
-};
-
 const formatBlockcite = () => {
 	const spannedCitations = document.querySelectorAll('cite[data-scope]')
 	console.log("spannedCitations", spannedCitations);
@@ -100,7 +86,6 @@ const _replaceInQuotes = (regex, replacement) => {
 		})
 	});
 };
-// const replaceDoubleDashWithEnDashInBlockQuotes = () => _replaceInQuotes(/--/g, '–');
 
 const replaceTrippleDashWithEmDashInBlockQuotes = () => _replaceInQuotes(/---/g, '—');
 
@@ -212,44 +197,6 @@ const formatGloassary = () => {
 
 };
 
-const formatFigures = () => {
-
-	const figures = document.querySelectorAll('figure');
-	figures.forEach((figure, idx) => {
-		const figureTitleElement = figure.querySelector(':scope > h6:first-child, :scope > h5:first-child, :scope > h4:first-child, :scope > h3:first-child, :scope > h2:first-child, :scope > h1:first-child')
-		if (!figureTitleElement) {
-			figure.setAttribute('title', `Figure ${idx + 1}`);
-			figure.setAttribute('aria-description', `Figure ${idx + 1}`);
-			figureTitle = document.createElement('h6');
-			figureTitle.innerText = `Figure ${idx + 1}`;
-			figure.prepend(figureTitle);
-			return;
-		}
-		const figureTitleAnchor = figureTitleElement.querySelector('a.header');
-		if (!figureTitleAnchor) {
-			console.warn(`Figure ${idx + 1} has no title anchor`);
-			return;
-		}
-		const title = figureTitleAnchor.innerText;
-		figure.setAttribute('aria-description', `Figure ${idx + 1}: ${title}`);
-		figure.setAttribute('title', `Figure ${idx + 1}: ${title}`);
-
-		const caption = figure.querySelector(':scope > figcaption');
-		if (!caption) {
-			return;
-		}
-		caption.setAttribute("id", `figure/caption/${figureTitleElement.getAttribute("id")}`);
-		figure.setAttribute("id", `figure/${figureTitleElement.getAttribute("id")}`);
-		figure.setAttribute("aria-describedby", caption.getAttribute("id"));
-		figure.setAttribute("data-figure-number", idx + 1);
-		const figureLabel = document.createElement('span');
-		figureLabel.classList.add('figure-label');
-		figureLabel.innerText = `Figure ${idx + 1}: `;
-		figureTitleAnchor.prepend(figureLabel);
-	});
-
-};
-
 figureBlockquoteToCaption = () => {
 	const figures = document.querySelectorAll('figure');
 	figures.forEach((figure, i) => {
@@ -279,7 +226,6 @@ figureBlockquoteToCaption = () => {
 		figureLabel.classList.add('figure-label');
 		figureLabel.innerText = `Figure ${i + 1}: ${figure.getAttribute('aria-label')}`;
 		figure.prepend(figureLabel);
-		// captionAnchor.append(figureLabel);
 		caption.append(captionAnchor);
 		caption.append(...blockquote.childNodes);
 		figure.append(caption);
@@ -299,38 +245,8 @@ const embedPlantuml = async () => {
 			console.warn("No svg in wrapper: ", svgWrapper);
 			continue;
 		}
-		// svg.setAttribute('style', 'width: 100%;  height: fit-content; max-width: 30vw;')
-		// svg.removeAttribute('style');
-		// svg.removeAttribute('width');
-		// svg.removeAttribute('height');
 		svgImg.replaceWith(svgWrapper);
 	}
-}
-
-const autoEquation = () => {
-	const equationsInParagraphs = document.querySelectorAll('p > .katex-display:only-child');
-	equationsInParagraphs.forEach(equation => {
-		const equationDiv = document.createElement('div');
-		equationDiv.classList.add('equation');
-		equation.parentElement.prepend(equationDiv);
-		equationDiv.append(equation);
-	});
-}
-
-const fixIeeeBib = () => {
-	const bibEntries = document.querySelectorAll('div.csl-entry > p');
-	bibEntries.forEach(bibEntry => {
-		const parent = bibEntry.parentElement;
-		parent.innerHTML = bibEntry.innerHTML;
-	});
-};
-
-const barOverRefs = () => {
-	const referencesSection = document.querySelector('section.references');
-	if (!referencesSection) {
-		return;
-	}
-	referencesSection.parentElement.insertBefore(document.createElement('hr'), referencesSection);
 }
 
 const fixFootnotes = () => {
@@ -442,155 +358,6 @@ const drawMarkers = () => {
 	});
 }
 
-const showBubble = (targetBubbleId) => {
-	const dataOver = document.querySelector(`[data-over-note="${targetBubbleId}"]`);
-	const targetBubble = document.getElementById(targetBubbleId);
-	targetBubble.classList.add("visible");
-	const dataOverRect = dataOver.getBoundingClientRect();
-	const targetBubbleRect = targetBubble.getBoundingClientRect();
-	console.log("dataOverRect", dataOverRect);
-	console.log("target bubble rect", targetBubbleRect);
-	const position = {
-		x: -10,
-		y: -targetBubbleRect.height - 20, //dataOverRect.top - targetBubbleRect.height * 2 - 10,
-	}
-	targetBubble.setAttribute("style", `top: ${position.y}px; left: ${position.x}px;`)
-};
-
-const hideBubble = (targetBubbleId) => {
-	const targetBubble = document.getElementById(targetBubbleId);
-	if (!targetBubbleId) {
-		console.warn("no bubble with target id", targetBubbleId);
-		return;
-	}
-	targetBubble.classList.remove("visible");
-}
-
-const bubbles = () => {
-	const dataOvers = document.querySelectorAll(`[data-over]`);
-	dataOvers.forEach(dataOver => {
-		const targetBubbleId = dataOver.getAttribute("data-over");
-		if (!targetBubbleId) {
-			console.warn("data-over attribute missing value for ", dataOver);
-			return;
-		}
-		const targetBubble = document.getElementById(targetBubbleId);
-		if (!targetBubble) {
-			console.warn("no target bubble for ", dataOver, targetBubbleId);
-			return;
-		}
-		const noteIcon = document.createElement('i');
-		noteIcon.classList.add('fas', 'fa-comment-alt');
-		noteIcon.setAttribute('data-over-note', targetBubbleId);
-		noteIcon.append(targetBubble);
-		dataOver.append(noteIcon);
-		console.log("target bubble: ", targetBubble);
-		// noteIcon.setAttribute("onmouseover", `showBubble("${targetBubbleId}")`);
-		// noteIcon.setAttribute("onmouseout", `hideBubble("${targetBubbleId}")`);
-		const targetBubbleRect = targetBubble.getBoundingClientRect();
-		const position = {
-			x: -10,
-			y: -targetBubbleRect.height - 20, //dataOverRect.top - targetBubbleRect.height * 2 - 10,
-		}
-		targetBubble.setAttribute("style", `top: ${-targetBubble.clientHeight - 20}px; left: ${position.x}px;`)
-	});
-	document.styleSheets[0].insertRule(`.bubble { display: none; }`)
-};
-
-// const showNote = (targetNoteId) => {
-// 	const main = document.querySelector('#content.content main');
-// 	if (!main) {
-// 		console.warn("no main");
-// 		return;
-// 	}
-// 	const dataNote = document.querySelector(`[data-note="${targetNoteId}"]`);
-// 	const targetNote = document.getElementById(targetNoteId);
-// 	targetNote.classList.add("visible");
-// 	const dataNoteRect = dataNote.getBoundingClientRect();
-// 	const targetNoteRect = targetNote.getBoundingClientRect();
-// 	console.log("dataNoteRect", dataNoteRect);
-// 	console.log("target note rect", targetNoteRect);
-// 	// const mainRect = main.getBoundingClientRect();
-// 	main.append(targetNote);
-// 	const fixedSpan = document.querySelector(`[data-note-fixed-span="${targetNoteId}"]`);
-// 	const fixedSpanBox = fixedSpan.getBoundingClientRect();
-// 	console.log("fixedSpanBox", fixedSpanBox);// const mainX = mainRect.width + 10;
-// 	// const position = {
-// 	// 	x: mainX,
-// 	// 	// y: dataNoteRect.top - targetNoteRect.height,
-// 	// 	y: 0,
-// 	// }
-// 	//
-// 	//
-// 	targetNote.setAttribute("style", `top: ${fixedSpanBox.y}px;`)
-// };
-//
-// const hideNote = (targetNoteId) => {
-// 	const targetBubble = document.getElementById(targetNoteId);
-// 	if (!targetNoteId) {
-// 		console.warn("no note with target id", targetNoteId);
-// 		return;
-// 	}
-// 	targetBubble.classList.remove("visible");
-// };
-//
-// const drawNoteNear = (targetNoteId) => {
-// 	const main = document.querySelector('#content.content main');
-// 	if (!main) {
-// 		console.warn("no main");
-// 		return;
-// 	}
-// 	const dataNote = document.querySelector(`[data-note="${targetNoteId}"]`);
-// 	const targetNote = document.getElementById(targetNoteId);
-// 	dataNote.append(targetNote);
-// 	const dataNoteRect = dataNote.getBoundingClientRect();
-// 	const targetNoteRect = targetNote.getBoundingClientRect();
-// 	dataNote.getClientRects()
-// 	console.log("dataNoteRect", dataNoteRect);console.log("target note rect", targetNoteRect);
-// 	const position = {
-// 		// x: targetNoteRect.width + 10,
-// 		x: 0,
-// 		// width: 0,
-// 		// y: dataNoteRect.top - targetNoteRect.height,
-// 		y: 0,
-// 	}
-// 	targetNote.setAttribute("style", `position: absolute; top: ${position.y}px; left: ${position.x}px;`)
-// 	let offsetParent = targetNote.offsetParent;
-// 	while (offsetParent != null) {
-// 		console.log("offsetParent", offsetParent);
-// 		if (offsetParent === document.body) {
-// 			console.log("offsetParent is body");
-// 		}
-// 		console.log("offsetParentClientRect", offsetParent.getBoundingClientRect());
-// 		offsetParent = offsetParent.offsetParent;
-// 	}
-// 	console.log("computed style map: ", targetNote.computedStyleMap());
-// };
-//
-// const marginNotes = () => {
-// 	const fixedSpan = document.createElement('span');
-// 	const dataNotes = document.querySelectorAll(`[data-note]`);
-// 	dataNotes.forEach(dataNote => {
-// 		const targetNoteId = dataNote.getAttribute("data-note");
-// 		if (!targetNoteId) {
-// 			console.warn("data-over attribute missing value for ", dataNote);
-// 			return;
-// 		}
-// 		const targetNote = document.getElementById(targetNoteId);
-// 		if (!targetNote) {
-// 			console.warn("no target note for ", dataNote, targetNoteId);
-// 			return;
-// 		}
-// 		fixedSpan.classList.add('fixed-tag');
-// 		fixedSpan.setAttribute('data-note-fixed-span', targetNoteId);
-// 		dataNote.append(fixedSpan);
-// 		console.log("target note: ", targetNote);
-// 		dataNote.setAttribute("onmouseover", `drawNoteNear("${targetNoteId}")`);
-// 		dataNote.setAttribute("onmouseout", `showNote("${targetNoteId}")`);
-// 	});
-// };
-
-
 const fillInEquationReferences = () => {
 	const equationRefs = document.querySelectorAll('a[href^="#eq/"]');
 	equationRefs.forEach(equationRef => {
@@ -683,16 +450,12 @@ const citeParagraphs = () => {
 
 const format = async () => {
 	await embedPlantuml();
-	formatBibliography();
 	formatBlockcite();
 	referencesSection();
 	formatBlockQuotes();
 	formatEquations()
 	formatGloassary();
-	// formatFigures();
 	citationReferences();
-	fixIeeeBib();
-	barOverRefs();
 	fixFootnotes();
 	drawMarkers();
 	fillInEquationReferences();
@@ -701,9 +464,7 @@ const format = async () => {
 	footnoteBacklinks();
 	embedYoutubeVideos();
 	fixPlantumlSvgBackground();
-	bubbles();
 	citeParagraphs();
-	// marginNotes();
 }
 
 const main = async () => {
