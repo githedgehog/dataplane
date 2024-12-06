@@ -7,24 +7,28 @@ use alloc::format;
 use alloc::vec::Vec;
 use core::ffi::{c_uint, CStr};
 use core::fmt::{Debug, Display, Formatter};
-use core::marker::PhantomData;
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 use tracing::{debug, error, info};
 
 use crate::eal::Eal;
 use crate::queue;
 use crate::queue::hairpin::{HairpinConfigFailure, HairpinQueue};
-use crate::queue::rx::{RxQueue, RxQueueConfig};
-use crate::queue::tx::{TxQueue, TxQueueConfig};
+use crate::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
+use crate::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use crate::socket::SocketId;
 use dpdk_sys::*;
+use dpdk_sys::rte_eth_rx_mq_mode::RTE_ETH_MQ_RX_RSS;
+use dpdk_sys::rte_eth_tx_mq_mode::RTE_ETH_MQ_TX_NONE;
 use errno::{Errno, ErrorCode, NegStandardErrno, StandardErrno};
+use queue::{rx, tx};
+use crate::mem::Mbuf;
 
-#[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// A DPDK Ethernet port index.
 ///
 /// This is a transparent newtype around `u16` to provide type safety and prevent accidental misuse.
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+// TODO: inner value should be `pub(crate)`
 pub struct DevIndex(pub u16);
 
 impl Display for DevIndex {
@@ -68,7 +72,7 @@ impl DevIndex {
     ///
     /// # Errors
     ///
-    /// This function will return an `Err(std::io::Error)` if the device information could not be
+    /// This function will return a [`DevInfoError`] if the device information could not be
     /// retrieved.
     ///
     /// # Safety
@@ -80,27 +84,27 @@ impl DevIndex {
         let ret = unsafe { rte_eth_dev_info_get(self.0, &mut dev_info) };
 
         if ret != 0 {
-            match ret {
+            return match ret {
                 errno::NEG_ENOTSUP => {
                     error!(
                         "Device information not supported for port {index}",
                         index = self.0
                     );
-                    return Err(DevInfoError::NotSupported);
+                    Err(DevInfoError::NotSupported)
                 }
                 errno::NEG_ENODEV => {
                     error!(
                         "Device information not available for port {index}",
                         index = self.0
                     );
-                    return Err(DevInfoError::NotAvailable);
+                    Err(DevInfoError::NotAvailable)
                 }
                 errno::NEG_EINVAL => {
                     error!(
                         "Invalid argument when getting device info for port {index}",
                         index = self.0
                     );
-                    return Err(DevInfoError::InvalidArgument);
+                    Err(DevInfoError::InvalidArgument)
                 }
                 val => {
                     let _unknown = match StandardErrno::parse_i32(val) {
@@ -120,7 +124,7 @@ impl DevIndex {
                         index = self.0,
                         val = val
                     );
-                    return Err(DevInfoError::Unknown(errno::Errno(val)));
+                    Err(DevInfoError::Unknown(Errno(val)))
                 }
             }
             // error!(
@@ -150,7 +154,7 @@ impl DevIndex {
     ///   (statically ensured).
     /// * This function may panic if DPDK returns an unexpected (undocumented) error code after
     ///   failing to determine the socket id.
-    pub fn socket_id(&self) -> Result<SocketId, errno::ErrorCode> {
+    pub fn socket_id(&self) -> Result<SocketId, ErrorCode> {
         let socket_id = unsafe { rte_eth_dev_socket_id(self.as_u16()) };
         if socket_id == -1 {
             match unsafe { wrte_errno() } {
@@ -160,7 +164,7 @@ impl DevIndex {
                 }
                 errno::EINVAL => {
                     // We are asking DPDK for the socket id of a port that doesn't exist.
-                    return Err(errno::ErrorCode::parse_i32(errno::EINVAL));
+                    return Err(ErrorCode::parse_i32(errno::EINVAL));
                 }
                 errno => {
                     // Getting here means we have an unknown error.
@@ -214,6 +218,8 @@ pub struct DevConfig {
     /// supported.
     /// Rework this bad idea.
     pub tx_offloads: Option<TxOffloadConfig>,
+    // TODO: more reasonable type for [`RxOffload`] here (similar to [`TxOffloadConfig`])
+    pub rx_offloads: Option<RxOffload>,
 }
 
 #[derive(Debug)]
@@ -229,6 +235,7 @@ impl DevConfig {
         const ANY_SUPPORTED: u64 = u64::MAX;
         let eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
+                mq_mode: RTE_ETH_MQ_TX_NONE,
                 offloads: {
                     let requested = self
                         .tx_offloads
@@ -239,9 +246,16 @@ impl DevConfig {
                 ..Default::default()
             },
             rxmode: rte_eth_rxmode {
-                // TODO: let user request rx offloads instead of just enabling all supported
-                // offloads.
-                // offloads: self.info.inner.rx_offload_capa,
+                mtu: 1515,
+                mq_mode: RTE_ETH_MQ_RX_RSS,
+                max_lro_pkt_size: 8192,
+                offloads: {
+                    let requested = self
+                        .rx_offloads
+                        .unwrap_or(RxOffload(ANY_SUPPORTED));
+                    let supported = dev.rx_offload_caps();
+                    requested.0 & supported.0
+                },
                 ..Default::default()
             },
             ..Default::default()
@@ -286,8 +300,14 @@ pub struct TxOffload(u64);
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-/// Transmit offload flags for ethernet devices.
+/// Receive offload flags for ethernet devices.
 pub struct RxOffload(u64);
+
+impl RxOffload {
+    pub fn temp() -> RxOffload {
+        RxOffload(u64::MAX)
+    }
+}
 
 impl From<TxOffload> for u64 {
     fn from(value: TxOffload) -> Self {
@@ -562,14 +582,18 @@ impl BitXorAssign for TxOffload {
     }
 }
 
-#[derive(Debug, PartialEq)]
 /// Information about a DPDK ethernet device.
 ///
 /// This struct is a wrapper around the `rte_eth_dev_info` struct from DPDK.
+#[derive(Debug, PartialEq)]
 pub struct DevInfo {
     pub(crate) index: DevIndex,
     pub(crate) inner: rte_eth_dev_info,
 }
+
+unsafe impl Send for DevInfo {}
+unsafe impl Sync for DevInfo {}
+
 
 #[repr(transparent)]
 #[derive(Debug)]
@@ -611,12 +635,11 @@ impl Iterator for DevIterator {
     }
 }
 
+/// Manager of DPDK ethernet devices.
+#[non_exhaustive]
 #[repr(transparent)]
 #[derive(Debug)]
-/// Manager of DPDK ethernet devices.
-pub struct Manager {
-    _private: PhantomData<()>,
-}
+pub struct Manager;
 
 impl Drop for Manager {
     fn drop(&mut self) {
@@ -634,12 +657,8 @@ impl Manager {
     /// * The return value should only _ever_ be stored in the [`Eal`] singleton.
     ///
     /// </div>
-    #[tracing::instrument(level = "trace")]
     pub(crate) fn init() -> Manager {
-        info!("Initializing DPDK ethernet device manager");
-        Manager {
-            _private: PhantomData,
-        }
+        Manager
     }
 
     /// Iterate over all available DPDK ethernet devices and return information about each one.
@@ -658,7 +677,7 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// This function will return an `Err(std::io::Error)` if the device information could not be
+    /// This function will return an [`DevInfoError`] if the device information could not be
     /// retrieved.
     ///
     /// # Safety
@@ -728,43 +747,43 @@ pub struct Dev {
     pub config: DevConfig,
     pub(crate) rx_queues: Vec<RxQueue>,
     pub(crate) tx_queues: Vec<TxQueue>,
-    pub(crate) hairpin_queues: Vec<queue::hairpin::HairpinQueue>,
+    pub(crate) hairpin_queues: Vec<HairpinQueue>,
 }
 
 impl Dev {
     // TODO: return type should provide a handle back to the queue
-    /// Configure a new [`queue::rx::RxQueueStopped`]
-    pub fn configure_rx_queue(
+    /// Configure a new [`RxQueue`]
+    pub fn new_rx_queue(
         &mut self,
         config: RxQueueConfig,
-    ) -> Result<(), queue::rx::ConfigFailure> {
-        let rx_queue = RxQueue::configure(self, config)?;
+    ) -> Result<(), rx::ConfigFailure> {
+        let rx_queue = RxQueue::setup(self, config)?;
         self.rx_queues.push(rx_queue);
         Ok(())
     }
 
     // TODO: return type should provide a handle back to the queue
-    /// Configure a new [`queue::tx::TxQueueStopped`]
-    pub fn configure_tx_queue(
+    /// Configure a new [`TxQueue`]
+    pub fn new_tx_queue(
         &mut self,
         config: TxQueueConfig,
-    ) -> Result<(), queue::tx::ConfigFailure> {
-        let tx_queue = TxQueue::configure(self, config)?;
+    ) -> Result<(), tx::ConfigFailure> {
+        let tx_queue = TxQueue::setup(self, config)?;
         self.tx_queues.push(tx_queue);
         Ok(())
     }
 
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`HairpinQueue`]
-    pub fn configure_hairpin_queue(
+    pub fn new_hairpin_queue(
         &mut self,
         rx: RxQueueConfig,
         tx: TxQueueConfig,
     ) -> Result<(), HairpinConfigFailure> {
         let rx =
-            RxQueue::configure(self, rx).map_err(HairpinConfigFailure::RxQueueCreationFailed)?;
+            RxQueue::setup(self, rx).map_err(HairpinConfigFailure::RxQueueCreationFailed)?;
         let tx =
-            TxQueue::configure(self, tx).map_err(HairpinConfigFailure::TxQueueCreationFailed)?;
+            TxQueue::setup(self, tx).map_err(HairpinConfigFailure::TxQueueCreationFailed)?;
         let hairpin = HairpinQueue::new(self, rx, tx)?;
         self.hairpin_queues.push(hairpin);
         Ok(())
@@ -781,7 +800,7 @@ impl Dev {
                 return Err(ErrorCode::parse_i32(errno::NEG_EAGAIN));
             }
             0 => {
-                info!("Device started");
+                info!("Device {0} started", self.info.index());
             }
             _ => {
                 error!(
@@ -793,6 +812,18 @@ impl Dev {
             }
         };
         Ok(())
+    }
+
+    pub fn rx_queue(&self, index: RxQueueIndex) -> Option<&RxQueue> {
+        self.rx_queues.iter().find(|x| {
+            x.config.queue_index == index
+        })
+    }
+
+    pub fn tx_queue(&self, index: TxQueueIndex) -> Option<&TxQueue> {
+        self.tx_queues.iter().find(|x| {
+            x.config.queue_index == index
+        })
     }
 }
 
@@ -873,5 +904,5 @@ pub enum SocketIdLookupError {
     #[error("Invalid port ID")]
     DevDoesNotExist(DevIndex),
     #[error("Unknown error code set")]
-    UnknownErrno(errno::ErrorCode),
+    UnknownErrno(ErrorCode),
 }

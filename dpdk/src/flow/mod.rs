@@ -323,7 +323,7 @@ impl<T> FlowSpec<T> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Copy, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct MacAddr(pub [u8; 6]);
 
 #[derive(Debug, Clone, Copy)]
@@ -366,110 +366,6 @@ pub struct VlanHeader {
     pub inner_ether_type: EtherType,
     // TODO: figure out why DPDK lets you spec TCI twice
 }
-
-// #[tracing::instrument(level = "debug")]
-// fn generate_ipv4_flow(
-//     port_id: u16,
-//     rx_q: u16,
-//     src_ip: Ipv4Addr,
-//     src_mask: Ipv4Addr,
-//     dest_ip: Ipv4Addr,
-//     dest_mask: Ipv4Addr,
-//     err: &mut rte_flow_error,
-// ) -> Result<FlowRule, String> {
-//     let mut attr: rte_flow_attr = Default::default();
-//     let mut pattern: [rte_flow_item; MAX_PATTERN_NUM] = Default::default();
-//     let mut action: [rte_flow_action; MAX_PATTERN_NUM] = Default::default();
-//     let queue = rte_flow_action_queue { index: rx_q };
-//
-//     attr.set_ingress(1);
-//
-//     action[0].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_QUEUE;
-//     action[0].conf = &queue as *const _ as *const _;
-//     action[1].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_END;
-//
-//     pattern[0].type_ = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_ETH;
-//     pattern[1].type_ = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_IPV4;
-//     let ip_spec = rte_flow_item_ipv4 {
-//         hdr: rte_ipv4_hdr {
-//             src_addr: htonl(src_ip),
-//             dst_addr: htonl(dest_ip),
-//             ..Default::default()
-//         },
-//     };
-//     let ip_mask = rte_flow_item_ipv4 {
-//         hdr: rte_ipv4_hdr {
-//             src_addr: htonl(src_mask),
-//             dst_addr: htonl(dest_mask),
-//             ..Default::default()
-//         },
-//     };
-//     pattern[1].spec = &ip_spec as *const _ as *const _;
-//     pattern[1].mask = &ip_mask as *const _ as *const _;
-//
-//     pattern[2].type_ = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_END;
-//
-//     let res = unsafe {
-//         rte_flow_validate(
-//             port_id,
-//             &attr as *const _,
-//             pattern.as_ptr(),
-//             action.as_ptr(),
-//             err,
-//         )
-//     };
-//
-//     if res != 0 {
-//         let err_str = unsafe { rte_strerror(res) };
-//         let err_msg = format!(
-//             "Failed to validate flow: {err_str}",
-//             err_str = match unsafe { CStr::from_ptr(err_str) }.to_str() {
-//                 Ok(s) => s,
-//                 Err(nonsense) => {
-//                     let err_msg = format!("DPDK returned nonsense error string: {nonsense:?}");
-//                     error!("{err_msg}");
-//                     return Err(err_msg);
-//                 }
-//             }
-//         );
-//         return Err(err_msg);
-//     }
-//
-//     let flow = unsafe {
-//         rte_flow_create(
-//             port_id,
-//             &attr as *const _,
-//             pattern.as_ptr() as *const _,
-//             action.as_ptr() as *const _,
-//             err,
-//         )
-//     };
-//
-//     if let Some(flow_rule) = NonNull::new(flow).map(|flow| FlowRule {
-//         port: DevIndex(port_id),
-//         flow,
-//         _phantom_flow: PhantomData,
-//     }) {
-//         Ok(flow_rule)
-//     } else {
-//         if err.message.is_null() {
-//             return Err("Failed to create flow: unknown error".to_string());
-//         }
-//         let err_msg = format!(
-//             "Failed to create flow: {err_str}",
-//             err_str = match unsafe { CStr::from_ptr(err.message) }.to_str() {
-//                 Ok(s) => s,
-//                 Err(nonsense) => {
-//                     let err_msg = format!("DPDK returned nonsense error string: {nonsense:?}");
-//                     error!("{err_msg}");
-//                     return Err(err_msg);
-//                 }
-//             }
-//         );
-//         warn!("{err_msg}");
-//         Err(err_msg)
-//     }
-// }
 
 #[tracing::instrument(level = "trace")]
 fn htonl<T: Debug + Into<u32>>(x: T) -> u32 {

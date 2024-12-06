@@ -12,13 +12,11 @@
 
 //! # Safety
 //!
-//! This crate directly calls `dpdk-sys` and thus makes use of `unsafe` (read unchecked) code.
-//!
+//! This crate directly calls `dpdk-sys` and thus makes use of `unsafe` code.
 //! That said, the _purpose_ of this crate is to provide a safe interface to DPDK.
 //!
 //! So both in general, and in this case in particular, please try to avoid panicking in library
 //! code!
-//!
 //! At minimum, if you must panic (and there are times when that is the only reasonable option),
 //! please do so with
 //!
@@ -27,7 +25,6 @@
 //!
 //! This crate uses lints to discourage casual use of `unwrap`, `expect`, and `panic` to help
 //! encourage this practice.
-#![cfg_attr(not(test), no_std)]
 #![warn(clippy::all)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![allow(private_bounds)]
@@ -40,3 +37,6 @@ pub mod flow;
 pub mod mem;
 pub mod queue;
 pub mod socket;
+pub mod lcore;
+pub mod ring;
+mod scratch;

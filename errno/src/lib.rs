@@ -1071,10 +1071,10 @@ impl From<Errno> for i32 {
 }
 
 impl TryFrom<Errno> for StandardErrno {
-    type Error = i32;
+    type Error = Errno;
 
     fn try_from(value: Errno) -> Result<Self, Self::Error> {
-        StandardErrno::parse_i32(value.0)
+        StandardErrno::parse_i32(value.0).map_err(Errno)
     }
 }
 
@@ -1171,14 +1171,14 @@ impl ErrorCode {
     pub const fn parse_i32(val: i32) -> ErrorCode {
         match StandardErrno::parse_i32(val) {
             Ok(standard) => ErrorCode::Standard(standard),
-            Err(_) => match NegStandardErrno::parse_i32(val) {
+            Err(val) => match NegStandardErrno::parse_i32(val) {
                 Ok(neg_standard) => ErrorCode::NegStandard(neg_standard),
-                Err(_) => ErrorCode::Other(Errno(val)),
+                Err(val) => ErrorCode::Other(Errno(val)),
             },
         }
     }
 
-    /// Parse an `Errno` value into an `errno::Error`.
+    /// Parse an `Errno` value into an `ErrorCode`.
     pub const fn parse_errno(val: Errno) -> ErrorCode {
         Self::parse_i32(val.0)
     }

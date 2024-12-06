@@ -697,7 +697,7 @@ a.figure-label, a.figure-label:visited, a.figure-label:target, a.figure-label:ho
 a[href*="://"]::after {
     content: "\f08e";
     font-family: FontAwesome, serif;
-    /*vertical-align: super;*/
+    vertical-align: super;
     font-weight: normal;
     font-style: normal;
     display: inline-block;

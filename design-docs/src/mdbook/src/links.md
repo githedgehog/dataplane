@@ -1,17 +1,17 @@
 <!-- internal -->
 
-[configuration store]: /dataplane/design.md#configuration-store
-[control plane]: /dataplane/design.md#control-plane
-[dataplane model]: /dataplane/design.md#dataplane-model
-[dataplane worker]: /dataplane/design.md#dataplane-workers
-[dataplane]: /dataplane/design.md#dataplane
-[gateway agent]: /dataplane/design.md#gateway-agent
-[hedgehog plugin]: /dataplane/design.md#hedgehog-plugin
-[management plane interface]: /dataplane/design.md#management-plane-interface
-[management plane]: /dataplane/design.md#management-plane
-[nat manager]: /dataplane/design.md#nat-manager
-[routing manager]: /dataplane/design.md#routing-manager
-[state sync]: /dataplane/design.md#state-sync
+[configuration store]: /dataplane/design/index.md#configuration-store
+[control plane]: /dataplane/design/index.md#control-plane
+[dataplane model]: /dataplane/design/index.md#dataplane-model
+[dataplane worker]: /dataplane/design/index.md#dataplane-workers
+[dataplane]: /dataplane/design/index.md#dataplane
+[gateway agent]: /dataplane/design/index.md#gateway-agent
+[hedgehog plugin]: /dataplane/design/index.md#hedgehog-plugin
+[management plane interface]: /dataplane/design/index.md#management-plane-interface
+[management plane]: /dataplane/design/index.md#management-plane
+[nat manager]: /dataplane/design/index.md#nat-manager
+[routing manager]: /dataplane/design/index.md#routing-manager
+[state sync]: /dataplane/design/index.md#state-sync
 
 <!-- external -->
 
@@ -23,6 +23,7 @@
 [IPv6 ND]: https://en.wikipedia.org/wiki/Neighbor_Discovery_Protocol
 [LACP]: https://en.wikipedia.org/wiki/Link_aggregation#Link_Aggregation_Control_Protocol
 [MySQL]: https://www.mysql.com/
+[NAT64]: https://en.wikipedia.org/wiki/NAT64
 [NAT]: https://en.wikipedia.org/wiki/Network_address_translation
 [QoS]: https://en.wikipedia.org/wiki/Quality_of_service
 [TiDB]: https://www.pingcap.com/

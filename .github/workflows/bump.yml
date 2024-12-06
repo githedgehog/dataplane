@@ -1,4 +1,4 @@
-# Check for Cargo dependencies updates, and automatically open a Pull Request
+# Check for Cargo dependencies updates and automatically open a Pull Request
 # if updates are found.
 
 name: "bump.yml"

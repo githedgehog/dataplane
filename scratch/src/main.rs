@@ -1,15 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use dpdk::dev::TxOffloadConfig;
+use dpdk::dev::{RxOffload, TxOffloadConfig};
+use dpdk::eal::{Eal, EalErrno};
+use dpdk::lcore::{LCoreId, LCoreIndex, ServiceThread, WorkerThread};
+use dpdk::mem::{Mbuf, RteAllocator};
 use dpdk::{dev, eal, mem, queue, socket};
 use dpdk_sys::*;
-use std::ffi::{c_uint, CStr, CString};
+use std::collections::VecDeque;
+use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::fmt::{Debug, Display};
+use std::hint::spin_loop;
 use std::io;
 use std::net::Ipv4Addr;
+use std::ops::Deref;
+use std::ptr::null_mut;
+use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, info, trace, warn};
+
+#[global_allocator]
+static EAL: RteAllocator = RteAllocator::uninit();
 
 #[tracing::instrument(level = "trace", ret)]
 // TODO: proper safety.  This should return a Result but I'm being a savage for demo purposes.
@@ -47,7 +58,7 @@ fn as_cstr(s: &str) -> CString {
 /// This function never returns as it exits the application.
 pub fn fatal_error<T: Display + AsRef<str>>(message: T) -> ! {
     error!("{message}");
-    let message_cstring = as_cstr(message.as_ref());
+    let message_cstring = CString::new(message.as_ref()).unwrap();
     unsafe { rte_exit(1, message_cstring.as_ptr()) }
 }
 
@@ -216,214 +227,214 @@ fn check_hairpin_cap(port_id: u16) {
     info!("Hairpin cap: max nb desc: {}", cap.max_nb_desc);
 }
 
-#[tracing::instrument(level = "info", skip(mbuf_pool))]
-fn init_port2(port_id: u16, mbuf_pool: &mut rte_mempool) {
-    let mut port_conf = rte_eth_conf {
-        txmode: rte_eth_txmode {
-            offloads: wrte_eth_tx_offload::TX_OFFLOAD_VLAN_INSERT
-                | wrte_eth_tx_offload::TX_OFFLOAD_IPV4_CKSUM
-                | wrte_eth_tx_offload::TX_OFFLOAD_UDP_CKSUM
-                | wrte_eth_tx_offload::TX_OFFLOAD_TCP_CKSUM
-                | wrte_eth_tx_offload::TX_OFFLOAD_SCTP_CKSUM
-                | wrte_eth_tx_offload::TX_OFFLOAD_TCP_TSO,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-
-    let mut txq_conf: rte_eth_txconf;
-    #[allow(unused)]
-    let mut rxq_conf: rte_eth_rxconf = unsafe { std::mem::zeroed() };
-    let mut dev_info: rte_eth_dev_info = unsafe { std::mem::zeroed() };
-
-    let ret = unsafe { rte_eth_dev_info_get(port_id, &mut dev_info as *mut _) };
-
-    if ret != 0 {
-        let err_msg = format!(
-            "Failed to get device info: {ret}",
-            ret = io::Error::from_raw_os_error(ret)
-        );
-        fatal_error(err_msg.as_str());
-    }
-
-    info!("Port ID {port_id}");
-    let driver_name = unsafe { CStr::from_ptr(dev_info.driver_name).to_str().unwrap() };
-    info!("Driver name: {driver_name}");
-
-    let nr_queues = 5;
-
-    port_conf.txmode.offloads &= dev_info.tx_offload_capa;
-    info!("Initialising port {port_id}");
-    let ret = unsafe { rte_eth_dev_configure(port_id, nr_queues, nr_queues, &port_conf) };
-
-    if ret != 0 {
-        let err_msg = format!(
-            "Failed to configure device: {ret}",
-            ret = io::Error::from_raw_os_error(ret)
-        );
-        fatal_error(err_msg.as_str());
-    }
-
-    rxq_conf = dev_info.default_rxconf;
-    rxq_conf.offloads = port_conf.rxmode.offloads;
-
-    let nr_rx_descriptors = 512;
-
-    // configure rx queues
-    for queue_num in 0..(nr_queues - 1) {
-        info!("Configuring RX queue {queue_num}");
-        let ret = unsafe {
-            rte_eth_rx_queue_setup(
-                port_id,
-                queue_num,
-                nr_rx_descriptors,
-                rte_eth_dev_socket_id(port_id) as c_uint,
-                &rxq_conf,
-                mbuf_pool,
-            )
-        };
-
-        if ret < 0 {
-            let err_msg = format!(
-                "Failed to configure RX queue {queue_num}: {ret}",
-                queue_num = queue_num,
-                ret = io::Error::from_raw_os_error(ret)
-            );
-            fatal_error(err_msg.as_str());
-        }
-        info!("RX queue {queue_num} configured");
-    }
-
-    check_hairpin_cap(port_id);
-
-    let mut rx_hairpin_conf = rte_eth_hairpin_conf::default();
-    rx_hairpin_conf.set_peer_count(1);
-    rx_hairpin_conf.peers[0].port = port_id;
-    rx_hairpin_conf.peers[0].queue = nr_queues - 1;
-
-    let ret =
-        unsafe { rte_eth_rx_hairpin_queue_setup(port_id, nr_queues - 1, 0, &rx_hairpin_conf) };
-
-    if ret < 0 {
-        let err_msg = format!(
-            "Failed to configure RX hairpin queue: {ret}",
-            ret = io::Error::from_raw_os_error(ret)
-        );
-        fatal_error(err_msg.as_str());
-    }
-    info!("RX hairpin queue configured");
-
-    txq_conf = dev_info.default_txconf;
-    txq_conf.offloads = port_conf.txmode.offloads;
-
-    for queue_num in 0..(nr_queues - 1) {
-        info!("Configuring TX queue {queue_num}");
-        let ret = unsafe {
-            rte_eth_tx_queue_setup(
-                port_id,
-                queue_num,
-                nr_rx_descriptors,
-                rte_eth_dev_socket_id(port_id) as c_uint,
-                &txq_conf,
-            )
-        };
-
-        if ret < 0 {
-            let err_msg = format!(
-                "Failed to configure TX queue {queue_num}: {ret}",
-                ret = io::Error::from_raw_os_error(ret)
-            );
-            fatal_error(err_msg.as_str());
-        }
-        info!("TX queue {queue_num} configured");
-    }
-
-    let mut tx_hairpin_conf = rte_eth_hairpin_conf::default();
-    tx_hairpin_conf.set_peer_count(1);
-    tx_hairpin_conf.peers[0].port = port_id;
-    tx_hairpin_conf.peers[0].queue = nr_queues - 1;
-
-    let ret =
-        unsafe { rte_eth_tx_hairpin_queue_setup(port_id, nr_queues - 1, 0, &tx_hairpin_conf) };
-
-    if ret < 0 {
-        let err_msg = format!(
-            "Failed to configure TX hairpin queue: {ret}",
-            ret = io::Error::from_raw_os_error(ret)
-        );
-        fatal_error(err_msg.as_str());
-    }
-    info!("TX hairpin queue configured");
-
-    info!("Port {port_id} configured");
-
-    let ret = unsafe { rte_eth_promiscuous_enable(port_id) };
-    if ret != 0 {
-        let err_msg = format!(
-            "Failed to enable promiscuous mode: {ret}",
-            ret = io::Error::from_raw_os_error(ret)
-        );
-        fatal_error(err_msg.as_str());
-    }
-    info!("Port {port_id} set to promiscuous mode");
-
-    let flow_port_attr = rte_flow_port_attr {
-        nb_conn_tracks: 1,
-        host_port_id: 5,
-        // nb_meters: 1000,
-        // host_port_id: 5,
-        // nb_meters: 1,
-        // flags: rte_flow_port_flag::STRICT_QUEUE,
-        ..Default::default()
-    };
-
-    let flow_queue_attr = rte_flow_queue_attr { size: 16 };
-
-    let mut flow_configure_error = rte_flow_error::default();
-
-    let ret = unsafe {
-        rte_flow_configure(
-            port_id,
-            &flow_port_attr,
-            1,
-            &mut (&flow_queue_attr as *const _),
-            &mut flow_configure_error,
-        )
-    };
-
-    if ret != 0 || !flow_configure_error.message.is_null() {
-        if flow_configure_error.message.is_null() {
-            let err_str = unsafe { rte_strerror(ret) };
-            let err_msg = format!(
-                "Failed to configure flow engine: {err_str}",
-                err_str = unsafe { CStr::from_ptr(err_str) }.to_str().unwrap()
-            );
-            fatal_error(err_msg.as_str());
-        } else {
-            let err_str = unsafe { CStr::from_ptr(flow_configure_error.message) };
-            let err_msg = format!(
-                "Failed to configure flow engine: {err_str}",
-                err_str = err_str.to_str().unwrap()
-            );
-            fatal_error(err_msg.as_str());
-        }
-    }
-
-    info!("Flow engine configuration installed");
-
-    let ret = unsafe { rte_eth_dev_start(port_id) };
-    if ret != 0 {
-        let err_msg = format!(
-            "Failed to start device: {ret}",
-            ret = io::Error::from_raw_os_error(ret)
-        );
-        fatal_error(err_msg.as_str());
-    }
-
-    info!("Port {port_id} started");
-    // assert_link_status(port_id);
-    info!("Port {port_id} has been initialized");
-}
+// #[tracing::instrument(level = "info", skip(mbuf_pool))]
+// fn init_port2(port_id: u16, mbuf_pool: &mut rte_mempool) {
+//     let mut port_conf = rte_eth_conf {
+//         txmode: rte_eth_txmode {
+//             offloads: wrte_eth_tx_offload::TX_OFFLOAD_VLAN_INSERT
+//                 | wrte_eth_tx_offload::TX_OFFLOAD_IPV4_CKSUM
+//                 | wrte_eth_tx_offload::TX_OFFLOAD_UDP_CKSUM
+//                 | wrte_eth_tx_offload::TX_OFFLOAD_TCP_CKSUM
+//                 | wrte_eth_tx_offload::TX_OFFLOAD_SCTP_CKSUM
+//                 | wrte_eth_tx_offload::TX_OFFLOAD_TCP_TSO,
+//             ..Default::default()
+//         },
+//         ..Default::default()
+//     };
+//
+//     let mut txq_conf: rte_eth_txconf;
+//     #[allow(unused)]
+//     let mut rxq_conf: rte_eth_rxconf = unsafe { std::mem::zeroed() };
+//     let mut dev_info: rte_eth_dev_info = unsafe { std::mem::zeroed() };
+//
+//     let ret = unsafe { rte_eth_dev_info_get(port_id, &mut dev_info as *mut _) };
+//
+//     if ret != 0 {
+//         let err_msg = format!(
+//             "Failed to get device info: {ret}",
+//             ret = io::Error::from_raw_os_error(ret)
+//         );
+//         fatal_error(err_msg.as_str());
+//     }
+//
+//     info!("Port ID {port_id}");
+//     let driver_name = unsafe { CStr::from_ptr(dev_info.driver_name).to_str().unwrap() };
+//     info!("Driver name: {driver_name}");
+//
+//     let nr_queues = 1;
+//
+//     port_conf.txmode.offloads &= dev_info.tx_offload_capa;
+//     info!("Initialising port {port_id}");
+//     let ret = unsafe { rte_eth_dev_configure(port_id, nr_queues, nr_queues, &port_conf) };
+//
+//     if ret != 0 {
+//         let err_msg = format!(
+//             "Failed to configure device: {ret}",
+//             ret = io::Error::from_raw_os_error(ret)
+//         );
+//         fatal_error(err_msg.as_str());
+//     }
+//
+//     rxq_conf = dev_info.default_rxconf;
+//     rxq_conf.offloads = port_conf.rxmode.offloads;
+//
+//     let nr_rx_descriptors = 8192;
+//
+//     // configure rx queues
+//     for queue_num in 0..nr_queues {
+//         info!("Configuring RX queue {queue_num}");
+//         let ret = unsafe {
+//             rte_eth_rx_queue_setup(
+//                 port_id,
+//                 queue_num,
+//                 nr_rx_descriptors,
+//                 rte_eth_dev_socket_id(port_id) as c_uint,
+//                 &rxq_conf,
+//                 mbuf_pool,
+//             )
+//         };
+//
+//         if ret < 0 {
+//             let err_msg = format!(
+//                 "Failed to configure RX queue {queue_num}: {ret}",
+//                 queue_num = queue_num,
+//                 ret = io::Error::from_raw_os_error(ret)
+//             );
+//             fatal_error(err_msg.as_str());
+//         }
+//         info!("RX queue {queue_num} configured");
+//     }
+//
+//     // check_hairpin_cap(port_id);
+//     //
+//     // let mut rx_hairpin_conf = rte_eth_hairpin_conf::default();
+//     // rx_hairpin_conf.set_peer_count(1);
+//     // rx_hairpin_conf.peers[0].port = port_id;
+//     // rx_hairpin_conf.peers[0].queue = nr_queues - 1;
+//     //
+//     // let ret =
+//     //     unsafe { rte_eth_rx_hairpin_queue_setup(port_id, nr_queues - 1, 0, &rx_hairpin_conf) };
+//     //
+//     // if ret < 0 {
+//     //     let err_msg = format!(
+//     //         "Failed to configure RX hairpin queue: {ret}",
+//     //         ret = io::Error::from_raw_os_error(ret)
+//     //     );
+//     //     fatal_error(err_msg.as_str());
+//     // }
+//     // info!("RX hairpin queue configured");
+//     //
+//     txq_conf = dev_info.default_txconf;
+//     txq_conf.offloads = port_conf.txmode.offloads;
+//
+//     for queue_num in 0..nr_queues {
+//         info!("Configuring TX queue {queue_num}");
+//         let ret = unsafe {
+//             rte_eth_tx_queue_setup(
+//                 port_id,
+//                 queue_num,
+//                 nr_rx_descriptors,
+//                 rte_eth_dev_socket_id(port_id) as c_uint,
+//                 &txq_conf,
+//             )
+//         };
+//
+//         if ret < 0 {
+//             let err_msg = format!(
+//                 "Failed to configure TX queue {queue_num}: {ret}",
+//                 ret = io::Error::from_raw_os_error(ret)
+//             );
+//             fatal_error(err_msg.as_str());
+//         }
+//         info!("TX queue {queue_num} configured");
+//     }
+//     //
+//     // let mut tx_hairpin_conf = rte_eth_hairpin_conf::default();
+//     // tx_hairpin_conf.set_peer_count(1);
+//     // tx_hairpin_conf.peers[0].port = port_id;
+//     // tx_hairpin_conf.peers[0].queue = nr_queues - 1;
+//     //
+//     // let ret =
+//     //     unsafe { rte_eth_tx_hairpin_queue_setup(port_id, nr_queues - 1, 0, &tx_hairpin_conf) };
+//     //
+//     // if ret < 0 {
+//     //     let err_msg = format!(
+//     //         "Failed to configure TX hairpin queue: {ret}",
+//     //         ret = io::Error::from_raw_os_error(ret)
+//     //     );
+//     //     fatal_error(err_msg.as_str());
+//     // }
+//     // info!("TX hairpin queue configured");
+//
+//     info!("Port {port_id} configured");
+//
+//     let ret = unsafe { rte_eth_promiscuous_enable(port_id) };
+//     if ret != 0 {
+//         let err_msg = format!(
+//             "Failed to enable promiscuous mode: {ret}",
+//             ret = io::Error::from_raw_os_error(ret)
+//         );
+//         fatal_error(err_msg.as_str());
+//     }
+//     info!("Port {port_id} set to promiscuous mode");
+//
+//     let flow_port_attr = rte_flow_port_attr {
+//         nb_conn_tracks: 1,
+//         host_port_id: 5,
+//         // nb_meters: 1000,
+//         // host_port_id: 5,
+//         // nb_meters: 1,
+//         // flags: rte_flow_port_flag::STRICT_QUEUE,
+//         ..Default::default()
+//     };
+//
+//     let flow_queue_attr = rte_flow_queue_attr { size: 16 };
+//
+//     let mut flow_configure_error = rte_flow_error::default();
+//
+//     let ret = unsafe {
+//         rte_flow_configure(
+//             port_id,
+//             &flow_port_attr,
+//             1,
+//             &mut (&flow_queue_attr as *const _),
+//             &mut flow_configure_error,
+//         )
+//     };
+//
+//     if ret != 0 || !flow_configure_error.message.is_null() {
+//         if flow_configure_error.message.is_null() {
+//             let err_str = unsafe { rte_strerror(ret) };
+//             let err_msg = format!(
+//                 "Failed to configure flow engine: {err_str}",
+//                 err_str = unsafe { CStr::from_ptr(err_str) }.to_str().unwrap()
+//             );
+//             fatal_error(err_msg.as_str());
+//         } else {
+//             let err_str = unsafe { CStr::from_ptr(flow_configure_error.message) };
+//             let err_msg = format!(
+//                 "Failed to configure flow engine: {err_str}",
+//                 err_str = err_str.to_str().unwrap()
+//             );
+//             fatal_error(err_msg.as_str());
+//         }
+//     }
+//
+//     info!("Flow engine configuration installed");
+//
+//     let ret = unsafe { rte_eth_dev_start(port_id) };
+//     if ret != 0 {
+//         let err_msg = format!(
+//             "Failed to start device: {ret}",
+//             ret = io::Error::from_raw_os_error(ret)
+//         );
+//         fatal_error(err_msg.as_str());
+//     }
+//
+//     info!("Port {port_id} started");
+//     // assert_link_status(port_id);
+//     info!("Port {port_id} has been initialized");
+// }
 
 #[tracing::instrument(level = "debug")]
 fn generate_ct_flow(port_id: u16, rx_q: u16, err: &mut rte_flow_error) -> RteFlow {
@@ -601,191 +612,48 @@ fn generate_ct_flow2(port_id: u16, rx_q: u16, err: &mut rte_flow_error) -> RteFl
 }
 
 fn main() {
-    eal_main();
-}
-
-fn eal_main() {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::WARN)
-        .with_target(false)
-        .with_thread_ids(true)
-        .with_line_number(true)
-        .init();
-
-    let eal_args = vec![
-        "-src",
-        "0xffffffffff",
+    const EAL_ARGS: &[&str] = &[
+        "--main-lcore",
+        "2",
+        "--lcores",
+        "2-4",
         "--in-memory",
-        "--huge-dir",
-        "/mnt/huge/2M",
-        "--huge-dir",
-        "/mnt/huge/1G",
         "--allow",
-        "0000:85:00.0,dv_flow_en=1",
-        // "--trace=.*",
-        // "--iova-mode=va",
-        // "-l",
-        // "8,9,10,11,12,13,14,15",
-        // "--allow",
-        // "0000:01:00.1",
+        "0000:c1:00.0,dv_flow_en=1",
         "--huge-worker-stack=8192",
-        "--socket-mem=4096",
+        "--socket-mem=8192,0,0,0",
         "--no-telemetry",
+        "--trace-mode=discard",
     ];
 
-    let rte = eal::init(eal_args).unwrap_or_else(|err| match err {
-        eal::InitError::InvalidArguments(args, err_msg) => {
-            fatal_error(format!("Invalid arguments: {args:?}; {err_msg}"));
-        }
-        eal::InitError::AlreadyInitialized => {
-            fatal_error("EAL already initialized");
-        }
-        eal::InitError::InitializationFailed(err) => {
-            fatal_error(format!("EAL initialization failed: {err:?}"));
-        }
-        eal::InitError::UnknownError(code) => {
-            fatal_error(format!("Unknown error code {code}"));
-        }
+    let rte = eal::init(EAL_ARGS);
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_file(true)
+        .with_level(true)
+        .with_line_number(true)
+        .with_target(false)
+        .with_thread_ids(true)
+        .with_thread_names(true)
+        .init();
+    LCoreId::iter().for_each(|lcore| {
+        WorkerThread::launch(lcore, move || {
+            warn!("Look mom, a worker thread on {lcore:?} is alive!");
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+            warn!("finishing up on {lcore:?}");
+        });
     });
-
-    let pool = mem::PoolHandle::new_pkt_pool(
-        mem::PoolConfig::new("science", mem::PoolParams::default()).unwrap(),
-    )
-    .unwrap();
-
-    rte.socket.iter().for_each(|socket| {
-        info!("Socket: {socket:?}");
-    });
-
-    rte.dev.iter().for_each(|dev| {
-        info!("Device if_index: {if_index:?}", if_index = dev.if_index());
-        info!("Driver name: {name:?}", name = dev.driver_name());
-        let tx_config: TxOffloadConfig = dev.tx_offload_caps().into();
-        info!(
-            "Device tx offload capabilities: {tx_offload:?}",
-            tx_offload = tx_config
-        );
-        info!(
-            "Device rx offload capabilities: {rx_offload:?}",
-            rx_offload = dev.rx_offload_caps()
-        );
-
-        let config = dev::DevConfig {
-            num_rx_queues: 5,
-            num_tx_queues: 5,
-            num_hairpin_queues: 1,
-            tx_offloads: Some(TxOffloadConfig::default()),
-        };
-
-        let mut my_dev = match config.apply(dev) {
-            Ok(stopped_dev) => {
-                warn!("Device configured {stopped_dev:?}");
-                stopped_dev
-            }
-            Err(err) => {
-                fatal_error(format!("Failed to configure device: {err:?}"));
-            }
-        };
-
-        let rx_config = queue::rx::RxQueueConfig {
-            dev: my_dev.info.index(),
-            queue_index: queue::rx::RxQueueIndex(0),
-            num_descriptors: 512,
-            socket_preference: socket::Preference::Dev(my_dev.info.index()),
-            config: (),
-            pool: pool.clone(),
-        };
-
-        let tx_config = queue::tx::TxQueueConfig {
-            queue_index: queue::tx::TxQueueIndex(0),
-            num_descriptors: 512,
-            socket_preference: socket::Preference::Dev(my_dev.info.index()),
-            config: (),
-        };
-
-        my_dev.configure_rx_queue(rx_config).unwrap();
-        my_dev.configure_tx_queue(tx_config).unwrap();
-
-        let rx_config = queue::rx::RxQueueConfig {
-            dev: my_dev.info.index(),
-            queue_index: queue::rx::RxQueueIndex(1),
-            num_descriptors: 512,
-            socket_preference: socket::Preference::Dev(my_dev.info.index()),
-            config: (),
-            pool: pool.clone(),
-        };
-
-        let tx_config = queue::tx::TxQueueConfig {
-            queue_index: queue::tx::TxQueueIndex(1),
-            num_descriptors: 512,
-            socket_preference: socket::Preference::Dev(my_dev.info.index()),
-            config: (),
-        };
-
-        my_dev
-            .configure_hairpin_queue(rx_config, tx_config)
-            .unwrap();
-        my_dev.start().unwrap();
-
-        let mut start = Instant::now();
-
-        for i in 0..50_000_000 {
-            if i % 100_000 == 0 {
-                let stop = Instant::now();
-                let elapsed = stop.duration_since(start);
-                warn!(
-                    "{i} rules installed, rate: {rate:.1}k / second",
-                    rate = 100.0 / elapsed.as_secs_f64()
-                );
-                start = Instant::now();
-            }
-            let src = Ipv4Addr::from(i);
-            let dst = Ipv4Addr::from(rand::random::<u32>());
-            let mut err = rte_flow_error::default();
-            generate_modify_field_flow(
-                i,
-                my_dev.info.index().0,
-                0,
-                src,
-                Ipv4Addr::new(255, 255, 255, 255),
-                dst,
-                Ipv4Addr::new(255, 255, 255, 255),
-                &mut err,
-            );
-        }
-
-        warn!("Flows created");
-
-        // for i in 0..2000 {
-        //     let flow0 = generate_modify_field_flow(
-        //         my_dev.info.index().0,
-        //         0,
-        //         Ipv4Addr::new(192, 168, 1, 1),
-        //         Ipv4Addr::new(255, 255, 255, 255),
-        //         Ipv4Addr::new(192, 168, 1, 2),
-        //         Ipv4Addr::new(255, 255, 255, 255),
-        //         &mut err,
-        //     );
-        //     let flow1 = generate_modify_field_flow(
-        //         my_dev.info.index().0,
-        //         0,
-        //         Ipv4Addr::new(192, 168, 1, 1),
-        //         Ipv4Addr::new(255, 255, 255, 255),
-        //         Ipv4Addr::new(192, 168, 1, 2),
-        //         Ipv4Addr::new(255, 255, 255, 255),
-        //         &mut err,
-        //     );
-        //     let flow2 = generate_modify_field_flow(
-        //         my_dev.info.index().0,
-        //         0,
-        //         Ipv4Addr::new(192, 168, 1, 1),
-        //         Ipv4Addr::new(255, 255, 255, 255),
-        //         Ipv4Addr::new(192, 168, 1, 2),
-        //         Ipv4Addr::new(255, 255, 255, 255),
-        //         &mut err,
-        //     );
-        // }
-    });
+    warn!("waiting on all lcores to finish");
+    unsafe {
+        rte_eal_mp_wait_lcore();
+    }
+    warn!("all done");
+    // #[allow(clippy::panic)]
+    // let Some(lcore) = lcores.next() else {
+    //     panic!("no LCores available");
+    // };
+    // ServiceThread::new_eal(run, &rte as *const _ as *mut _, lcores.next().unwrap());
+    // ServiceThread::new_eal(run, &rte as *const _ as *mut _, LCoreId::main());
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1039,4 +907,379 @@ fn generate_modify_field_flow(
     info!("Flow created");
 
     RteFlow::new(port_id, flow)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tracing::instrument(level = "debug")]
+fn flow_metadata(i: u32, port_id: u16, rx_q: u16, err: &mut rte_flow_error) -> RteFlow {
+    let mut attr: rte_flow_attr = rte_flow_attr {
+        group: 1u32,
+        priority: 1,
+        ..Default::default()
+    };
+    attr.set_ingress(1);
+    let mut pattern: [rte_flow_item; MAX_PATTERN_NUM] = Default::default();
+    let mut action: [rte_flow_action; MAX_PATTERN_NUM] = Default::default();
+
+    pattern[0].type_ = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_ETH;
+    let mut pat0 = rte_flow_item_eth::default();
+    unsafe {
+        pat0.annon1.hdr.ether_type = 0x0000;
+        pat0.annon1.hdr.src_addr = rte_ether_addr {
+            addr_bytes: [0x0; 6],
+        };
+        pat0.annon1.hdr.dst_addr = rte_ether_addr {
+            addr_bytes: [0x0; 6],
+        };
+    };
+    let pat0_mask = pat0.clone();
+    pattern[0].spec = &pat0 as *const _ as *const _;
+    pattern[0].mask = &pat0_mask as *const _ as *const _;
+
+    pattern[1].type_ = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_END;
+
+    action[0].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_COUNT;
+    let conf0 = rte_flow_action_count { id: i };
+    action[0].conf = &conf0 as *const _ as *const _;
+
+    action[1].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_SET_META;
+    let conf1 = rte_flow_action_set_meta {
+        data: 123,
+        mask: 0xffffffff,
+    };
+    action[1].conf = &conf1 as *const _ as *const _;
+
+    action[2].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_QUEUE;
+    let conf2 = rte_flow_action_queue { index: rx_q };
+    action[2].conf = &conf2 as *const _ as *const _;
+
+    action[3].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_END;
+
+    let flow = unsafe {
+        rte_flow_create(
+            port_id,
+            &attr as *const _,
+            pattern.as_ptr() as *const _,
+            action.as_ptr() as *const _,
+            err,
+        )
+    };
+
+    if flow.is_null() || !err.message.is_null() {
+        if err.message.is_null() {
+            fatal_error("Failed to create flow: unknown error");
+        }
+        let err_str = unsafe { CStr::from_ptr(err.message) };
+        fatal_error(err_str.to_str().unwrap());
+    } else {
+        trace!("Flow created");
+    }
+
+    info!("Flow created");
+
+    RteFlow::new(port_id, flow)
+}
+
+fn jump_to_1(port_id: u16, err: &mut rte_flow_error) -> RteFlow {
+    let mut attr: rte_flow_attr = rte_flow_attr {
+        group: 0u32,
+        priority: 0,
+        ..Default::default()
+    };
+    attr.set_ingress(1);
+    let mut pattern: [rte_flow_item; MAX_PATTERN_NUM] = Default::default();
+    let mut action: [rte_flow_action; MAX_PATTERN_NUM] = Default::default();
+
+    pattern[0].type_ = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_END;
+
+    action[0].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_JUMP;
+    let conf0 = rte_flow_action_jump { group: 1 };
+    action[0].conf = &conf0 as *const _ as *const _;
+    action[1].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_END;
+
+    let flow = unsafe {
+        rte_flow_create(
+            port_id,
+            &attr as *const _,
+            pattern.as_ptr() as *const _,
+            action.as_ptr() as *const _,
+            err,
+        )
+    };
+
+    if flow.is_null() || !err.message.is_null() {
+        if err.message.is_null() {
+            fatal_error("Failed to create flow: unknown error");
+        }
+        let err_str = unsafe { CStr::from_ptr(err.message) };
+        fatal_error(err_str.to_str().unwrap());
+    } else {
+        trace!("Flow created");
+    }
+
+    info!("Flow created");
+
+    RteFlow::new(port_id, flow)
+}
+
+extern "C" fn run2(arg: *mut c_void) -> c_int {
+    // assert!(EAL, "EAL not initialized");
+    let rte = unsafe { (arg as *mut Eal).as_ref().expect("null ptr passed to run") };
+    error!("look at me");
+    0
+}
+
+extern "C" fn run(arg: *mut c_void) -> c_int {
+    let rte = unsafe { (arg as *mut Eal).as_ref().expect("null ptr passed to run") };
+    rte.socket.iter().for_each(|socket| {
+        debug!("Socket: {socket:?}");
+    });
+    rte.dev.iter().for_each(|dev| {
+        debug!("Device if_index: {if_index:?}", if_index = dev.if_index());
+        debug!("Driver name: {name:?}", name = dev.driver_name());
+        let tx_config: TxOffloadConfig = dev.tx_offload_caps().into();
+        debug!(
+                    "Device tx offload capabilities: {tx_offload:?}",
+                    tx_offload = tx_config
+                );
+        debug!(
+                    "Device rx offload capabilities: {rx_offload:?}",
+                    rx_offload = dev.rx_offload_caps()
+                );
+
+        let config = dev::DevConfig {
+            num_rx_queues: 2,
+            num_tx_queues: 2,
+            num_hairpin_queues: 0,
+            rx_offloads: Some(RxOffload::temp()),
+            tx_offloads: Some(TxOffloadConfig::default()),
+        };
+
+        let mut my_dev = match config.apply(dev) {
+            Ok(stopped_dev) => {
+                warn!("Device configured {stopped_dev:?}");
+                stopped_dev
+            }
+            Err(err) => {
+                fatal_error(format!("Failed to configure device: {err:?}"));
+            }
+        };
+
+        let i: LCoreIndex = LCoreId::current().into();
+
+        const NUM_DESCRIPTORS: u16 = 1024;
+
+        let rx_config = queue::rx::RxQueueConfig {
+            dev: my_dev.info.index(),
+            queue_index: queue::rx::RxQueueIndex(i.0 as u16 - 1),
+            num_descriptors: NUM_DESCRIPTORS,
+            socket_preference: socket::Preference::Dev(my_dev.info.index()),
+            offloads: my_dev.info.rx_offload_caps(),
+            pool: mem::Pool::new_pkt_pool(
+                mem::PoolConfig::new(format!("science{0}", i.0), mem::PoolParams::default()).unwrap(),
+            )
+                .unwrap(),
+        };
+
+        let tx_config = queue::tx::TxQueueConfig {
+            queue_index: queue::tx::TxQueueIndex(i.0 as u16 - 1),
+            num_descriptors: NUM_DESCRIPTORS,
+            socket_preference: socket::Preference::Dev(my_dev.info.index()),
+            config: (),
+        };
+
+        my_dev.new_rx_queue(rx_config).unwrap();
+        my_dev.new_tx_queue(tx_config).unwrap();
+
+
+        // let rx_config = queue::rx::RxQueueConfig {
+        //     dev: my_dev.info.index(),
+        //     queue_index: queue::rx::RxQueueIndex(1),
+        //     num_descriptors: 2048,
+        //     socket_preference: socket::Preference::Dev(my_dev.info.index()),
+        //     config: (),
+        //     pool: pool.clone(),
+        // };
+        //
+        // let tx_config = queue::tx::TxQueueConfig {
+        //     queue_index: queue::tx::TxQueueIndex(1),
+        //     num_descriptors: 2048,
+        //     socket_preference: socket::Preference::Dev(my_dev.info.index()),
+        //     config: (),
+        // };
+        //
+        // my_dev
+        //     .configure_hairpin_queue(rx_config, tx_config)
+        //     .unwrap();
+
+        // let mut start = Instant::now();
+
+        let mut err = rte_flow_error::default();
+        let ret = unsafe {
+            rte_flow_isolate(my_dev.info.index().0, 1, &mut err)
+        };
+        EalErrno::assert(ret);
+
+        warn!("device set to flow isolated mode");
+
+        // let ret = unsafe { rte_eth_promiscuous_enable(my_dev.info.index().0) };
+        // if ret != 0 {
+        //     let err_msg = format!(
+        //         "Failed to enable promiscuous mode: {ret}",
+        //         ret = io::Error::from_raw_os_error(ret)
+        //     );
+        //     fatal_error(err_msg.as_str());
+        // }
+        // warn!("Port {} set to promiscuous mode", my_dev.info.index().0);
+
+
+        my_dev.start().unwrap();
+        let mut err = rte_flow_error::default();
+        jump_to_1(my_dev.info.index().0, &mut err);
+        let mut err = rte_flow_error::default();
+        flow_metadata(100, my_dev.info.index().0, i.0 as u16 - 1, &mut err);
+
+        // for i in 0..50_000_000 {
+        //     if i % 100_000 == 0 {
+        //         let stop = Instant::now();
+        //         let elapsed = stop.duration_since(start);
+        //         warn!(
+        //             "{i} rules installed, rate: {rate:.1}k / second",
+        //             rate = 100.0 / elapsed.as_secs_f64()
+        //         );
+        //         start = Instant::now();
+        //     }
+        //     let src = Ipv4Addr::from(i);
+        //     let dst = Ipv4Addr::from(rand::random::<u32>());
+        //     let mut err = rte_flow_error::default();
+        //     generate_modify_field_flow(
+        //         i,
+        //         my_dev.info.index().0,
+        //         0,
+        //         src,
+        //         Ipv4Addr::new(255, 255, 255, 255),
+        //         dst,
+        //         Ipv4Addr::new(255, 255, 255, 255),
+        //         &mut err,
+        //     );
+        // }
+
+        warn!("Flows created");
+
+        // for i in 0..2000 {
+        //     let flow0 = generate_modify_field_flow(
+        //         my_dev.info.index().0,
+        //         0,
+        //         Ipv4Addr::new(192, 168, 1, 1),
+        //         Ipv4Addr::new(255, 255, 255, 255),
+        //         Ipv4Addr::new(192, 168, 1, 2),
+        //         Ipv4Addr::new(255, 255, 255, 255),
+        //         &mut err,
+        //     );
+        //     let flow1 = generate_modify_field_flow(
+        //         my_dev.info.index().0,
+        //         0,
+        //         Ipv4Addr::new(192, 168, 1, 1),
+        //         Ipv4Addr::new(255, 255, 255, 255),
+        //         Ipv4Addr::new(192, 168, 1, 2),
+        //         Ipv4Addr::new(255, 255, 255, 255),
+        //         &mut err,
+        //     );
+        //     let flow2 = generate_modify_field_flow(
+        //         my_dev.info.index().0,
+        //         0,
+        //         Ipv4Addr::new(192, 168, 1, 1),
+        //         Ipv4Addr::new(255, 255, 255, 255),
+        //         Ipv4Addr::new(192, 168, 1, 2),
+        //         Ipv4Addr::new(255, 255, 255, 255),
+        //         &mut err,
+        //     );
+        // }
+
+        const BATCH: u16 = 32;
+        const BATCH_SIZE: usize = BATCH as usize;
+        let mut polls: u64 = 0;
+        let mut pkts: u64 = 0;
+        let mut zeros: u64 = 0;
+        let mut avg: f64 = 0.;
+        let mut pkts_in_batch: u64 = 0;
+        let mut avg_in_batch: f64 = 0.;
+        let mut batch_start_poll = 0;
+        // let mut buffer = rte_eth_dev_tx_buffer::default();
+        // EalErrno::check(unsafe {
+        //     rte_eth_tx_buffer_init(&mut buffer, BATCH)
+        // });
+        loop {
+            // unsafe {
+            //     rte_eth_tx_buffer_flush_w(
+            //         my_dev.info.index().0,
+            //         queue::tx::TxQueueIndex(0).0,
+            //         &mut buffer,
+            //     );
+            // };
+
+            let mut batch: [*mut rte_mbuf; BATCH_SIZE] = [null_mut(); BATCH_SIZE];
+
+            let ret = unsafe {
+                rte_eth_rx_burst(
+                    my_dev.info.index().0,
+                    queue::rx::RxQueueIndex(i.0 as u16 - 1).0,
+                    batch.as_mut_ptr(),
+                    BATCH,
+                )
+            };
+
+            unsafe {
+                rte_eth_tx_burst(
+                    my_dev.info.index().0,
+                    queue::tx::TxQueueIndex(i.0 as u16 - 1).0,
+                    batch.as_mut_ptr(),
+                    ret,
+                )
+            };
+
+            // for i in 0..ret {
+            //     unsafe {
+            //         rte_eth_tx_buffer_w(
+            //             my_dev.info.index().0,
+            //             queue::tx::TxQueueIndex(0).0,
+            //             &mut buffer,
+            //             batch[i as usize]
+            //         )
+            //     };
+            // }
+
+
+            // free
+            // if ret > 0 {
+            //     unsafe {
+            //         rte_pktmbuf_free_bulk(
+            //             batch.as_mut_ptr(),
+            //             ret as c_uint,
+            //         )
+            //     }
+            // }
+
+
+            // unsafe {
+            //     rte_eth_tx_buffer_flush_w(
+            //         my_dev.info.index().0,
+            //         queue::tx::TxQueueIndex(0).0,
+            //         &mut buffer,
+            //     );
+            // }
+            pkts += ret as u64;
+            pkts_in_batch += ret as u64;
+            polls += 1;
+
+            if (polls - batch_start_poll > (16384 << 7)) && ret < 5 {
+                avg = pkts as f64 / polls as f64;
+                avg_in_batch = pkts_in_batch as f64 / (polls - batch_start_poll) as f64;
+                batch_start_poll = polls;
+                pkts_in_batch = 0;
+                warn!("ret: {ret}, total {pkts}, polls: {polls}, zeros: {zeros}, avg: {avg}, avg_in_batch: {avg_in_batch}");
+            }
+        }
+    });
+    0
 }

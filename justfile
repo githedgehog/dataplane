@@ -31,6 +31,7 @@ set dotenv-path := "."
 set dotenv-filename := "./scripts/rust.env"
 
 export NEXTEST_EXPERIMENTAL_LIBTEST_JSON := "1"
+export MIRIFLAGS := "-Zmiri-disable-isolation -Zmiri-strict-provenance"
 debug := "false"
 dpdk_sys_commit := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT")
 hugepages_1g := "8"
@@ -113,6 +114,7 @@ cargo *args:
           [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
           ;;
         --release|--profile=release|--profile=bench)
+          echo "${RUSTFLAGS_RELEASE}"
           [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_RELEASE}"
           extra_args+=("$arg")
           ;;
@@ -298,7 +300,7 @@ remove-compile-env:
 # refresh the compile-env (clear and restore)
 [group('env')]
 [script]
-refresh-compile-env: remove-compile-env pull-compile-env create-compile-env
+refresh-compile-env: remove-compile-env create-compile-env
 
 # Install "fake-nix" (required for local builds to function)
 [confirm("Fake a nix install (yes/no)")]
@@ -419,9 +421,9 @@ push-container: build-container
 [group("ci")]
 [script]
 test:
+    {{ _just_debuggable_ }}
     declare -r  report_dir="${CARGO_TARGET_DIR:-target}/nextest/{{ profile }}"
     mkdir -p "${report_dir}"
-    {{ _just_debuggable_ }}
     PROFILE="{{ profile }}"
     case "{{ profile }}" in
       dev|test)
@@ -434,6 +436,31 @@ test:
     [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
     # >&2 echo "With RUSTFLAGS=\"${RUSTFLAGS:-}\""
     cargo $(if rustup -V &>/dev/null; then echo +{{ rust }}; fi) nextest --profile={{ profile }} run \
+          --message-format libtest-json-plus \
+          --locked \
+          --cargo-profile={{ profile }} \
+          --target={{ target }} \
+        > >(tee "$report_dir/report.json") \
+        2> >(tee "$report_dir/report.log")
+
+[group("ci")]
+[script]
+miri-test:
+    {{ _just_debuggable_ }}
+    declare -r  report_dir="${CARGO_TARGET_DIR:-target}/nextest/{{ profile }}"
+    mkdir -p "${report_dir}"
+    PROFILE="{{ profile }}"
+    case "{{ profile }}" in
+      dev|test)
+        [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
+        ;;
+      bench|release)
+        [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_RELEASE}"
+        ;;
+    esac
+    [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
+    # >&2 echo "With RUSTFLAGS=\"${RUSTFLAGS:-}\""
+    MIRIFLAGS="${MIRIFLAGS}" cargo +nightly miri nextest run --profile={{ profile }} \
           --message-format libtest-json-plus \
           --locked \
           --cargo-profile={{ profile }} \

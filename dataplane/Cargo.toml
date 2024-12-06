@@ -1,0 +1,20 @@
+[package]
+name = "dataplane"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+# internal
+dpdk = { workspace = true }
+net = { workspace = true }
+
+# external
+blink-alloc = { workspace = true, features = ["alloc"] }
+crossbeam = { workspace = true, default-features = false, features = ["crossbeam-channel"] }
+etherparse = { workspace = true, features = ["std"] }
+priority-queue = { workspace = true, features = ["std"] }
+thiserror = { workspace = true }
+tracing = { workspace = true, features = ["attributes", "release_max_level_debug"] }
+tracing-subscriber = { workspace = true }
+

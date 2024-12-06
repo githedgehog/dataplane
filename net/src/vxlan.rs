@@ -1,94 +1,112 @@
-// SPDX-License-Identifier: Apache-2.0
-// Copyright Open Network Fabric Authors
-
-//! VXLAN validation and manipulation.
+//! VXLAN validation and manipulation tools.
 
 use core::num::NonZero;
-use tracing::instrument;
 
-/// A VXLAN Network Identifier.
+#[cfg(feature = "_no-panic")]
+use no_panic::no_panic;
+
+/// A [VXLAN][RFC7348] Network Identifier.
 ///
-/// The [`Vni`] is a 24-bit value that identifies a VXLAN network.
+/// A `Vni` is a 24-bit value that identifies a VXLAN [overlay network].
 ///
-/// Value 0 is reserved and should not be used.
-/// The maximum legal value is 2^24 - 1 (16,777,215).
+/// According to <cite>[RFC7348]</cite>:
 ///
-/// It is deliberately not possible to create a [`Vni`] from a `u32` directly, as this would
-/// allow the creation of illegal values.
-/// Instead, use [`Vni::new`] to create a [`Vni`] from a `u32`.
+/// > VXLAN Segment ID/VXLAN Network Identifier (VNI): this is a 24-bit value used to designate the
+/// > individual VXLAN overlay network on which the communicating VMs are situated.
+///
+/// # Legal values
+///
+/// * Value `0` is reserved by many implementations and should not be used.
+/// * The maximum legal value is <var>2<sup>24</sup> - 1 = 16,777,215 = `0x00_FF_FF_FF`</var>.
+///
+/// It is deliberately not possible to create a `Vni` from a `u32` directly, as that would
+/// allow the creation of illegal `Vni` values.
+/// Instead, use [`Vni::new`] to create a `Vni` from a `u32`.
 ///
 /// # Note
 ///
-/// This type is marked `#[repr(transparent)]` to ensure that it has the same memory layout
-/// as a [`NonZero<u32>`].
-/// This means that [`Option<Vni>`] will always have the same size and alignment as
-/// [`Option<NonZero<u32>>`], and thus the same size and alignment as `u32`.
-/// The memory / compute overhead of using this type as opposed to a `u32` is then strictly
-/// limited to the price of checking that the represented value is in fact a legal [`Vni`], (which
-/// we should generally be doing anyway).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// This type is marked [`#[repr(transparent)]`][transparent] to ensure that it has the same memory
+/// layout as a [`NonZero<u32>`].
+/// [`Option<Vni>`] will therefore have the same size and alignment as [`Option<NonZero<u32>>`], and
+/// thus the same size and alignment as `u32`.
+/// The memory / compute overhead of using `Vni` as opposed to a `u32` is then limited to the price
+/// of checking that the represented value is in fact a legal `Vni` (which we should be doing
+/// anyway).
+///
+/// [RFC7348]: https://datatracker.ietf.org/doc/html/rfc7348#section-5
+/// [overlay network]: https://en.wikipedia.org/wiki/Overlay_network
+/// [transparent]: https://doc.rust-lang.org/reference/type-layout.html#the-transparent-representation
+#[derive(
+    Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Deserialize, serde::Serialize,
+)]
 #[repr(transparent)]
+#[serde(try_from = "u32", into = "u32")]
 pub struct Vni(NonZero<u32>);
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[must_use]
-/// Errors that can occur when converting a `u32` to a [`Vni`]
-pub enum InvalidVni {
-    /// Zero is not a legal [`Vni`] per the spec.
-    ReservedZero,
-    /// The value is too large to be a [`Vni`] (max is 2^24 - 1, see [`Vni::MAX`]).
-    TooLarge(u32),
-}
-
-impl core::fmt::Display for InvalidVni {
-    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        match self {
-            InvalidVni::ReservedZero => {
-                write!(f, "Zero is not a legal Vni")
-            }
-            InvalidVni::TooLarge(val) => {
-                write!(f, "{val} is too large to be a legal Vni (max is 2^24)")
-            }
-        }
-    }
-}
 
 impl Vni {
     /// The minimum legal [`Vni`] value (1).
     pub const MIN: u32 = 1;
-    /// The maximum legal [`Vni`] value (2^24 - 1).
+    /// The maximum legal [`Vni`] value (2<sup>24</sup> - 1).
     pub const MAX: u32 = 0x00_FF_FF_FF;
-    /// The (inclusive legal range of [`Vni`] values.
-    pub const LEGAL_RANGE: core::ops::RangeInclusive<u32> = Vni::MIN..=Vni::MAX;
+    /// First value which is too large to be a legal [`Vni`]
+    const TOO_LARGE: u32 = Vni::MAX + 1;
 
-    #[instrument(level = "trace")]
     /// Create a new [`Vni`] from a `u32`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the value is 0 or greater than [`Vni::MAX`].
+    /// Returns an [`InvalidVni`] error if the value is 0 or greater than [`Vni::MAX`].
+    #[cfg_attr(feature = "_no-panic", no_panic)]
     pub fn new(vni: u32) -> Result<Vni, InvalidVni> {
         match NonZero::<u32>::new(vni) {
             None => Err(InvalidVni::ReservedZero),
-            Some(vni) => {
-                if vni.get() > Vni::MAX {
-                    Err(InvalidVni::TooLarge(vni.get()))
-                } else {
-                    Ok(Vni(vni))
-                }
-            }
+            _ if vni > Vni::MAX => Err(InvalidVni::TooLarge(vni)),
+            Some(vni) => Ok(Vni(vni)),
         }
     }
 
-    #[must_use]
     /// Get the value of the [`Vni`] as a `u32`.
+    #[must_use]
     pub const fn as_u32(self) -> u32 {
         self.0.get()
     }
 }
 
+impl AsRef<NonZero<u32>> for Vni {
+    #[must_use]
+    #[cfg_attr(feature = "_no-panic", no_panic)]
+    fn as_ref(&self) -> &NonZero<u32> {
+        &self.0
+    }
+}
+
+/// Errors that can occur when converting a `u32` to a [`Vni`]
+#[must_use]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Deserialize,
+    serde::Serialize,
+    thiserror::Error,
+)]
+pub enum InvalidVni {
+    /// Zero is not a legal Vni in many EVPN / VXLAN implementations.  Don't use it.
+    #[error("Zero is not a legal Vni")]
+    ReservedZero,
+    /// This error type contains the (illegal) value used to attempt creation of a [`Vni`].
+    /// The max legal value is found in [`Vni::MAX`].
+    #[error("The value {0} is too large to be a Vni (max is {MAX})", MAX = Vni::MAX)]
+    TooLarge(u32),
+}
+
 impl From<Vni> for u32 {
-    #[instrument(level = "trace")]
+    #[cfg_attr(feature = "_no-panic", no_panic)]
     fn from(vni: Vni) -> u32 {
         vni.as_u32()
     }
@@ -97,26 +115,57 @@ impl From<Vni> for u32 {
 impl TryFrom<u32> for Vni {
     type Error = InvalidVni;
 
-    #[instrument(level = "trace")]
+    #[cfg_attr(feature = "_no-panic", no_panic)]
     fn try_from(vni: u32) -> Result<Vni, Self::Error> {
         Vni::new(vni)
-    }
-}
-
-impl core::fmt::Display for Vni {
-    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        write!(f, "{}", self.as_u32())
     }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod test {
-
     use super::*;
 
     #[test]
-    fn fuzz_test() {
+    fn zero_is_not_a_legal_vni() {
+        assert_eq!(Vni::new(0).unwrap_err(), InvalidVni::ReservedZero);
+    }
+
+    #[test]
+    fn one_is_a_legal_vni() {
+        assert_eq!(Vni::new(1).unwrap().as_u32(), 1);
+    }
+
+    #[test]
+    fn vni_max_is_a_legal_vni() {
+        assert_eq!(Vni::new(Vni::MAX).unwrap().as_u32(), Vni::MAX);
+    }
+
+    #[test]
+    fn vni_max_plus_one_is_not_a_legal_vni() {
+        assert_eq!(
+            Vni::new(Vni::MAX + 1).unwrap_err(),
+            InvalidVni::TooLarge(Vni::MAX + 1)
+        );
+    }
+
+    #[test]
+    fn u32_max_is_not_a_legal_vni() {
+        assert_eq!(
+            Vni::new(u32::MAX).unwrap_err(),
+            InvalidVni::TooLarge(u32::MAX)
+        );
+    }
+
+    #[test]
+    fn try_from_impl() {
+        Vni::try_from(2).expect("2 is a legal Vni");
+    }
+
+    /// Checks that [`Vni::new`] satisfies its contract by generating a large number of random test
+    /// cases (fuzzing).
+    #[test]
+    fn vni_fuzz_test() {
         bolero::check!()
             .with_type()
             .cloned()
@@ -124,11 +173,11 @@ mod test {
                 0 => {
                     assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::ReservedZero);
                 }
-                val if val > Vni::MAX => {
-                    assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::TooLarge(val));
-                }
-                _ => {
+                Vni::MIN..=Vni::MAX => {
                     assert_eq!(Vni::new(val).unwrap().as_u32(), val);
+                }
+                Vni::TOO_LARGE.. => {
+                    assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::TooLarge(val));
                 }
             });
     }

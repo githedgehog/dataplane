@@ -4,13 +4,42 @@ version = "0.0.1"
 edition = "2021"
 publish = false
 
-[[bench]]
-name = "parse"
-harness = false
+[lib]
+# MIRI is not happy with doctest on x86_64-unknown-linux-gnu for some reason.
+# TODO: re-enable doctest by default as soon as miri bug is fixed
+doctest = false
+
+#[[bench]]
+#name = "parse"
+#harness = false
 
 [features]
 default = ["serde", "tracing_max_level_trace", "tracing_release_max_level_debug"]
+
+# Enable serialization and deserialization of most of the types in this crate.
 serde = ["dep:serde"]
+
+# Enable fuzz testing.
+# Enable this flag only if you wish to use the type generators defined in this crate
+# in a downstream crate.
+bolero = ["dep:bolero"]
+
+# Enable compilation settings useful for the Kani model checker.
+# This is an internal flag.
+# It should not be enabled (and makes no sense) for release builds.
+# _proof enables bolero due to the synergistic relationship between
+# bolero and kani.
+_proof = ["bolero"]
+
+# Ensure the compiler proves marked functions never panic.
+# This only works with optimization, LTO, and codegen-units=1.
+# This feature is internal.
+# It is not intended for (nor is it useful for) shipped release builds.
+_no-panic = ["dep:no-panic", "tracing_max_level_off", "tracing_release_max_level_off"]
+
+# This is internal and should not be used by end users.
+# This is exclusively intended for writing kani proofs while calming the rage of the IDE.
+_fake-kani = ["dep:kani"]
 
 tracing_max_level_debug = ["tracing/max_level_debug"]
 tracing_max_level_error = ["tracing/max_level_error"]
@@ -27,13 +56,24 @@ tracing_release_max_level_trace = ["tracing/release_max_level_trace"]
 tracing_release_max_level_warn = ["tracing/release_max_level_warn"]
 
 [dependencies]
+
+# internal
+
+# fake-kani to calm IDEs
+kani = { workspace = true, optional = true }
+
+# external
+bolero = { workspace = true, optional = true, features = [] }
+etherparse = { workspace = true, default-features = false, features = [] }
+no-panic = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-bolero = { workspace = true }
+bolero = { workspace = true, features = [] }
 criterion = { workspace = true }
-rand = { workspace = true }
 etherparse = { workspace = true, default-features = false, features = ["std"] }
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

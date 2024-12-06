@@ -1,17 +1,14 @@
-# Hedgehog Docs
+# Hedgehog Dataplane Design Docs
 
-- [Dataplane project: executive summary](./dataplane/executive-summary.md)
-  - [Reflections from last time](./dataplane/reflections-from-last-time.md)
-  - [Hardware selection for dataplane project](./dataplane/hardware.md)
-- [Offloading the dataplane](./dataplane/offloading-plan.md)
-- [DPDK abstraction map](./dataplane/map-of-dpdk.md)
 - [Build process](./build/index.md)
   - [Prerequisites](./build/prerequisites.md)
-  - [Compile env](./build/compile-env.md)
-  - [fake-nix](./build/fake-nix.md)
-  - [Build dataplane](./build/just-cargo-build.md)
+  - [Getting the compile environment](./build/compile-env.md)
+  - [`just fake-nix`](./build/fake-nix.md)
+  - [Building the dataplane](./build/just-cargo-build.md)
   - [Sterile builds](./build/sterile-build.md)
-- [Design](./dataplane/design.md)
+- [Design](./dataplane/design/index.md)
+  - [Offloading the dataplane](./dataplane/design/offloading-plan.md)
+  - [DPDK abstraction map](./dataplane/design/map-of-dpdk.md)
 - [Development Plan](./dataplane/development-plan.md)
   - [Configuration Persistence Investigation](./dataplane/tasks/configuration-persistence-investigation.md)
   - [Configuration database schema](./dataplane/tasks/config-db-schema.md)
@@ -47,3 +44,5 @@
   - [VPC routing](./dataplane/tasks/vpc-routing.md)
   - [VXLAN tunnels](./dataplane/tasks/vxlan-tunnels.md)
   - [Zebra Plugin](./dataplane/tasks/zebra-plugin.md)
+
+- [Scratch](./dataplane/design/scratch.md)

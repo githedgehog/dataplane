@@ -59,6 +59,7 @@ impl HairpinQueue {
     ///
     /// This design ensures that the hairpin queue is correctly tracked in the list of queues
     /// associated with the device.
+    #[tracing::instrument(level = "info", ret)]
     pub(crate) fn new(dev: &Dev, rx: RxQueue, tx: TxQueue) -> Result<Self, HairpinConfigFailure> {
         let peering = HairpinPeering::define(&dev.info, &rx, &tx);
         // configure the rx queue
@@ -98,40 +99,11 @@ impl HairpinQueue {
         Ok(HairpinQueue { rx, tx, peering })
     }
 
-    #[must_use]
-    pub fn start(self) -> HairpinQueue {
-        let rx = match self.rx.start() {
-            Ok(rx) => rx,
-            Err(_) => todo!(),
-        };
-        let tx = match self.tx.start() {
-            Ok(tx) => tx,
-            Err(_) => todo!(),
-        };
-        HairpinQueue {
-            rx,
-            tx,
-            peering: self.peering,
-        }
-    }
-}
-
-impl HairpinQueue {
     /// Stop the hairpin queue.
-    #[must_use]
-    pub fn stop(self) -> HairpinQueue {
-        let rx = match self.rx.stop() {
-            Ok(rx) => rx,
-            Err(_) => todo!(),
-        };
-        let tx = match self.tx.stop() {
-            Ok(tx) => tx,
-            Err(_) => todo!(),
-        };
-        HairpinQueue {
-            rx,
-            tx,
-            peering: self.peering,
-        }
+    #[allow(clippy::expect_used)]
+    pub fn start(&mut self) {
+        // TODO: proper error reporting
+        self.tx.start().expect("todo");
+        self.rx.start().expect("todo");
     }
 }
