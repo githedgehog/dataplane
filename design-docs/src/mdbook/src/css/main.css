@@ -693,3 +693,15 @@ a.figure-label, a.figure-label:visited, a.figure-label:target, a.figure-label:ho
     margin-inline-start: calc(0px - var(--target-icon-distance));
     width: var(--target-icon-distance);
 }
+
+a[href*="://"]::after {
+    content: "\f08e";
+    font-family: FontAwesome, serif;
+    /*vertical-align: super;*/
+    font-weight: normal;
+    font-style: normal;
+    display: inline-block;
+    text-decoration: none;
+    font-size: smaller;
+    padding-left: 3px;
+}
