@@ -38,6 +38,7 @@ pub mod dev;
 pub mod eal;
 pub mod flow;
 pub mod mem;
+mod mvcc;
 pub mod queue;
-pub mod socket;
 mod scratch;
+pub mod socket;

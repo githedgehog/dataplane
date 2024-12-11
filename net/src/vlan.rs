@@ -38,8 +38,8 @@ pub enum InvalidVid {
     /// 4095 is a reserved [`Vid`] per the spec.
     #[error("4095 is a reserved Vid")]
     Reserved,
-    /// The value is too large to be a legal VID (max is 2^12).
-    #[error("{0:?} is too large to be a legal Vid (max is 2^12)")]
+    /// The value is too large to be a legal VID (12-bit max).
+    #[error("{0:?} is too large to be a legal Vid (12-bit max)")]
     TooLarge(u16),
 }
 
@@ -58,25 +58,18 @@ impl Vid {
     /// Returns an error if the value is 0, 4095 (reserved), or greater than [`Vid::MAX`].
     #[instrument(level = "trace", ret)]
     pub fn new(vid: u16) -> Result<Self, InvalidVid> {
-        match vid {
-            4095 => Err(InvalidVid::Reserved),
-            _ => match NonZero::<u16>::new(vid) {
-                None => Err(InvalidVid::Zero),
-                Some(val) => {
-                    if val.get() > Vid::MAX {
-                        Err(InvalidVid::TooLarge(val.get()))
-                    } else {
-                        Ok(Vid(val))
-                    }
-                }
-            },
+        match NonZero::new(vid) {
+            None => Err(InvalidVid::Zero),
+            Some(val) if val.get() > Vid::MAX => Err(InvalidVid::TooLarge(val.get())),
+            Some(val) if val.get() == 4095 => Err(InvalidVid::Reserved),
+            Some(val) => Ok(Vid(val)),
         }
     }
 
     /// Get the value of the [`Vid`] as a `u16`.
     #[instrument(level = "trace", ret)]
     #[must_use]
-    pub fn as_u16(self) -> u16 {
+    pub fn to_u16(self) -> u16 {
         self.0.get()
     }
 }
@@ -84,7 +77,7 @@ impl Vid {
 impl From<Vid> for u16 {
     #[instrument(level = "trace", ret)]
     fn from(vid: Vid) -> u16 {
-        vid.as_u16()
+        vid.to_u16()
     }
 }
 
@@ -99,6 +92,6 @@ impl TryFrom<u16> for Vid {
 
 impl core::fmt::Display for Vid {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}", self.as_u16())
+        write!(f, "{}", self.to_u16())
     }
 }

@@ -323,7 +323,7 @@ impl<T> FlowSpec<T> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Copy, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct MacAddr(pub [u8; 6]);
 
 #[derive(Debug, Clone, Copy)]

@@ -44,3 +44,5 @@
   - [VPC routing](./dataplane/tasks/vpc-routing.md)
   - [VXLAN tunnels](./dataplane/tasks/vxlan-tunnels.md)
   - [Zebra Plugin](./dataplane/tasks/zebra-plugin.md)
+
+- [Scratch](./dataplane/design/scratch.md)

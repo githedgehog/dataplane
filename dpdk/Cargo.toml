@@ -28,6 +28,7 @@ dpdk-sys = { path = "../dpdk-sys" }
 errno = { path = "../errno" }
 net = { path = "../net" }
 
+left-right = { version = "0.11.5", default-features = false }
 etherparse = { workspace = true, default-features = false, features = [] }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
