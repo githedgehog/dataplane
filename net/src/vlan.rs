@@ -18,12 +18,17 @@ use tracing::instrument;
 /// The memory / compute overhead of using this type as opposed to a `u16` is then strictly
 /// limited to the price of checking that the represented value is in fact a legal [`Vid`]
 /// (which we should generally be doing anyway).
+#[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[repr(transparent)]
+#[cfg_attr(feature = "serde", serde(try_from = "u16", into = "u16"))]
 pub struct Vid(NonZero<u16>);
 
 /// A Priority Code Point.
+#[repr(transparent)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Pcp(pub u8);
 
 /// Errors which can occur when converting a `u16` to a validated [`Vid`]
@@ -39,7 +44,7 @@ pub enum InvalidVid {
     #[error("4095 is a reserved Vid")]
     Reserved,
     /// The value is too large to be a legal VID (12-bit max).
-    #[error("{0:?} is too large to be a legal Vid (12-bit max)")]
+    #[error("{0} is too large to be a legal Vid ({MAX} is max legal value)", MAX = Vid::MAX)]
     TooLarge(u16),
 }
 
@@ -48,15 +53,13 @@ impl Vid {
     pub const MIN: u16 = 1;
     /// The maximum legal VID value (2^12 - 2).
     pub const MAX: u16 = 4094;
-    /// The legal range of VID values.
-    pub const LEGAL_RANGE: core::ops::RangeInclusive<u16> = Vid::MIN..=Vid::MAX;
 
     /// Create a new [`Vid`] from a `u16`.
     ///
     /// # Errors
     ///
     /// Returns an error if the value is 0, 4095 (reserved), or greater than [`Vid::MAX`].
-    #[instrument(level = "trace", ret)]
+    #[instrument(level = "trace")]
     pub fn new(vid: u16) -> Result<Self, InvalidVid> {
         match NonZero::new(vid) {
             None => Err(InvalidVid::Zero),
@@ -67,15 +70,21 @@ impl Vid {
     }
 
     /// Get the value of the [`Vid`] as a `u16`.
-    #[instrument(level = "trace", ret)]
+    #[instrument(level = "trace")]
     #[must_use]
     pub fn to_u16(self) -> u16 {
         self.0.get()
     }
 }
 
+impl AsRef<NonZero<u16>> for Vid {
+    fn as_ref(&self) -> &NonZero<u16> {
+        &self.0
+    }
+}
+
 impl From<Vid> for u16 {
-    #[instrument(level = "trace", ret)]
+    #[instrument(level = "trace")]
     fn from(vid: Vid) -> u16 {
         vid.to_u16()
     }
@@ -84,7 +93,7 @@ impl From<Vid> for u16 {
 impl TryFrom<u16> for Vid {
     type Error = InvalidVid;
 
-    #[instrument(level = "trace", ret)]
+    #[instrument(level = "trace")]
     fn try_from(vid: u16) -> Result<Vid, Self::Error> {
         Vid::new(vid)
     }

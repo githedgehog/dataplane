@@ -47,7 +47,7 @@ fn as_cstr(s: &str) -> CString {
 /// This function never returns as it exits the application.
 pub fn fatal_error<T: Display + AsRef<str>>(message: T) -> ! {
     error!("{message}");
-    let message_cstring = as_cstr(message.as_ref());
+    let message_cstring = CString::new(message.as_ref()).unwrap();
     unsafe { rte_exit(1, message_cstring.as_ptr()) }
 }
 

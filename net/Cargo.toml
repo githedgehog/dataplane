@@ -4,13 +4,14 @@ version = "0.0.1"
 edition = "2021"
 publish = false
 
-[[bench]]
-name = "parse"
-harness = false
+#[[bench]]
+#name = "parse"
+#harness = false
 
 [features]
 default = ["serde", "tracing_max_level_trace", "tracing_release_max_level_debug"]
 serde = ["dep:serde"]
+_assert-no-panic = ["dep:no-panic"]
 
 tracing_max_level_debug = ["tracing/max_level_debug"]
 tracing_max_level_error = ["tracing/max_level_error"]
@@ -27,6 +28,7 @@ tracing_release_max_level_trace = ["tracing/release_max_level_trace"]
 tracing_release_max_level_warn = ["tracing/release_max_level_warn"]
 
 [dependencies]
+no-panic = { version = "0.1.32", optional = true }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -34,6 +36,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 bolero = { workspace = true }
 criterion = { workspace = true }
-rand = { workspace = true }
 etherparse = { workspace = true, default-features = false, features = ["std"] }
+rand = { workspace = true }
+tracing-test = { workspace = true }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-#![cfg_attr(not(test), no_std)] // This library should always compile without std (even if we never ship that way)
+#![cfg_attr(not(any(test, feature = "_assert-no-panic")), no_std)] // This library should always compile without std (even if we never ship that way)
 #![forbid(unsafe_code)] // Validation logic should always be strictly safe
 #![deny(missing_docs, clippy::all, clippy::pedantic)] // yeah, I'm that guy.  I'm not sorry.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // Do you know where your towel is?
@@ -14,9 +14,12 @@ pub mod vlan;
 pub mod vxlan;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use alloc::vec::Vec;
+    use tracing::info;
+    use tracing_test::traced_test;
 
     pub fn gen_random_udp_packet() -> Vec<u8> {
         use etherparse::PacketBuilder;
@@ -40,14 +43,16 @@ mod tests {
     }
 
     #[test]
+    #[traced_test]
     pub fn parse_udp_packet() {
         use etherparse::PacketHeaders;
         let packet = gen_random_udp_packet();
         let headers = PacketHeaders::from_ethernet_slice(packet.as_slice()).unwrap();
-        tracing::info!("Headers: {:?}", headers);
+        info!("Headers: {:?}", headers);
     }
 
     #[test]
+    #[traced_test]
     fn parse_udp_packet_bit_by_bit() {
         let packet = gen_random_udp_packet();
         let cursor = 0;
