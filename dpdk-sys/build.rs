@@ -110,7 +110,7 @@ fn main() {
         println!("cargo:rustc-link-lib=static:+whole-archive,+bundle={dep}");
     }
 
-    let rerun_if_changed = ["build.rs"];
+    let rerun_if_changed = ["build.rs", "../scripts/dpdk-sys.env"];
 
     for file in &rerun_if_changed {
         println!("cargo:rerun-if-changed={file}");

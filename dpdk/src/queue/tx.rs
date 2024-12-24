@@ -50,16 +50,6 @@ pub struct TxQueueConfig {
     pub config: (), // TODO
 }
 
-// impl Drop for TxQueueStopped {
-//     #[tracing::instrument(level = "debug")]
-//     fn drop(&mut self) {
-//         debug!(
-//             "Dropping stopped transmit queue {:?}",
-//             self.config.queue_index
-//         );
-//     }
-// }
-
 /// Error type for transmit queue configuration failures.
 #[derive(Debug)]
 pub struct ConfigError {
@@ -124,13 +114,13 @@ impl TxQueue {
     }
 
     /// Start the transmit queue.
-    pub(crate) fn start(self) -> Result<TxQueue, TxQueueStartError> {
+    pub(crate) fn start(&mut self) -> Result<(), TxQueueStartError> {
         let ret = unsafe {
             rte_eth_dev_tx_queue_start(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
 
         match ret {
-            errno::SUCCESS => Ok(self),
+            errno::SUCCESS => Ok(()),
             errno::NEG_ENODEV => Err(TxQueueStartError::DeviceRemoved),
             errno::NEG_EINVAL => Err(TxQueueStartError::InvalidArgument),
             errno::NEG_EIO => Err(TxQueueStartError::DeviceRemoved),
@@ -140,13 +130,13 @@ impl TxQueue {
     }
 
     /// Stop the transmit queue.
-    pub(crate) fn stop(self) -> Result<TxQueue, TxQueueStopError> {
+    pub(crate) fn stop(&mut self) -> Result<(), TxQueueStopError> {
         let ret = unsafe {
             rte_eth_dev_tx_queue_stop(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
 
         match ret {
-            errno::SUCCESS => Ok(self),
+            errno::SUCCESS => Ok(()),
             errno::NEG_ENODEV => Err(TxQueueStopError::DeviceRemoved),
             errno::NEG_EINVAL => Err(TxQueueStopError::InvalidArgument),
             errno::NEG_EIO => Err(TxQueueStopError::DeviceRemoved),
@@ -206,3 +196,10 @@ pub enum TxQueueStopError {
     #[error("Unknown error")]
     Unexpected(errno::Errno),
 }
+
+// impl Drop for TxQueue {
+//     #[allow(clippy::expect_used)]
+//     fn drop(&mut self) {
+//         self.stop().expect("failed to stop tx queue");
+//     }
+// }

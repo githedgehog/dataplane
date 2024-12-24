@@ -10,6 +10,7 @@ use alloc::vec::Vec;
 use core::ffi::c_int;
 use core::fmt::{Debug, Display};
 use dpdk_sys::*;
+use std::ffi::CStr;
 use tracing::{error, info};
 
 /// Safe wrapper around the DPDK Environment Abstraction Layer (EAL).
@@ -47,10 +48,10 @@ impl Drop for EalPrivate {
     }
 }
 
-#[derive(Debug)]
 /// Error type for EAL initialization failures.
 ///
 /// TODO: improve error type, this is a little sloppy
+#[derive(Debug)]
 pub enum InitError {
     /// Invalid arguments were passed to the EAL initialization.
     InvalidArguments(Vec<String>, String),
@@ -181,5 +182,21 @@ impl Drop for Eal {
             error!("{panic_msg}");
             panic!("{panic_msg}");
         }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+pub struct EalErrno(c_int);
+
+impl EalErrno {
+    #[allow(clippy::expect_used)]
+    pub fn check(ret: c_int) {
+        if ret == 0 {
+            return;
+        }
+        let ret_msg = unsafe { rte_strerror(ret) };
+        let ret_msg = unsafe { CStr::from_ptr(ret_msg) };
+        let ret_msg = ret_msg.to_str().expect("dpdk message is not valid unicode");
+        Eal::fatal_error(format!("failed to set rte thread attributes: {ret_msg}"))
     }
 }

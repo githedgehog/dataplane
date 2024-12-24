@@ -12,9 +12,15 @@ use core::fmt::{Debug, Display};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 use dpdk_sys::*;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
+use crate::eal::EalErrno;
 use alloc::sync::Arc;
+use std::ffi::c_uint;
+use std::intrinsics::transmute;
+use std::mem::MaybeUninit;
+use std::num::NonZero;
+use std::ptr::null_mut;
 
 #[repr(transparent)]
 #[derive(Debug)]
@@ -39,8 +45,6 @@ impl Drop for Manager {
     }
 }
 
-#[repr(transparent)]
-#[derive(Debug, Clone)]
 /// Safe wrapper around a DPDK memory pool
 ///
 /// <div class="warning">
@@ -51,6 +55,8 @@ impl Drop for Manager {
 /// It may need a refactor.
 ///
 /// </div>
+#[repr(transparent)]
+#[derive(Debug, Clone)]
 pub struct PoolHandle(Arc<PoolInner>);
 
 impl PartialEq for PoolHandle {
@@ -131,6 +137,23 @@ impl PoolHandle {
     pub fn config(&self) -> &PoolConfig {
         &self.0.config
     }
+
+    // TODO: confirm we aren't doing two allocations here.
+    pub fn alloc_bulk(&self, num: usize) -> Result<Vec<Mbuf>, ()> {
+        // SAFETY: we should never have any null ptrs come back if ret passes check
+        let mut mbufs: Vec<Mbuf> = (0..num)
+            .map(|_| unsafe { transmute(null_mut::<rte_mbuf>()) })
+            .collect();
+        let ret = unsafe {
+            wrte_pktmbuf_alloc_bulk(
+                self.0.as_mut_ptr(),
+                transmute(mbufs.as_mut_ptr()),
+                num as c_uint,
+            )
+        };
+        EalErrno::check(ret);
+        Ok(mbufs)
+    }
 }
 
 /// This value is RAII-managed and must never implement `Copy` and can likely never implement
@@ -149,7 +172,7 @@ impl PoolInner {
     ///
     /// <div class="warning">
     ///
-    /// See the safety note on [`PoolInner::as_ptr`].
+    /// See the safety note on [`PoolInner::as_mut_ptr`].
     ///
     /// </div>
     pub(crate) unsafe fn as_ref(&self) -> &rte_mempool {
@@ -175,7 +198,7 @@ impl PoolInner {
     /// </div>
     ///
     /// [RAII]: https://en.wikipedia.org/wiki/Resource_Acquisition_Is_Initialization
-    pub(crate) unsafe fn as_ptr(&self) -> *mut rte_mempool {
+    pub(crate) unsafe fn as_mut_ptr(&self) -> *mut rte_mempool {
         (*self.pool.get()).as_ptr()
     }
 }
@@ -345,8 +368,8 @@ impl PoolConfig {
 impl Drop for PoolInner {
     #[tracing::instrument(level = "debug")]
     fn drop(&mut self) {
-        debug!("Freeing memory pool {}", self.config.name());
-        unsafe { rte_mempool_free(self.as_ptr()) }
+        info!("Freeing memory pool {}", self.config.name());
+        unsafe { rte_mempool_free(self.as_mut_ptr()) }
     }
 }
 
@@ -375,12 +398,10 @@ impl Mbuf {
     ///
     /// # Safety
     ///
-    /// This function is is unsafe if passed an invalid pointer.
+    /// This function is unsafe if passed an invalid pointer.
     ///
     /// The only defense made against invalid pointers here is the use of `NonNull::new` to ensure
     /// the pointer is not null.
-    ///
-    ///
     #[tracing::instrument(level = "trace")]
     pub(crate) fn new_from_raw(raw: *mut rte_mbuf) -> Option<Mbuf> {
         let raw = match NonNull::new(raw) {
@@ -396,7 +417,12 @@ impl Mbuf {
             _phantom: PhantomData,
         })
     }
+    
+    pub fn inner(&mut self) -> *mut rte_mbuf {
+        unsafe { self.raw.as_ptr() }
+    }
 
+    // TODO: deal with multi seg packets
     /// Get an immutable ref to the raw data of an Mbuf
     #[must_use]
     pub fn raw_data(&self) -> &[u8] {
@@ -412,7 +438,9 @@ impl Mbuf {
         }
     }
 
+    // TODO: deal with multi seg packets
     /// Get a mutable ref to the raw data of an Mbuf
+    #[must_use]
     pub fn raw_data_mut(&mut self) -> &mut [u8] {
         unsafe {
             let data_start = self

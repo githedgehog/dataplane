@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use dpdk::dev::TxOffloadConfig;
+use dpdk::mem::Mbuf;
 use dpdk::{dev, eal, mem, queue, socket};
 use dpdk_sys::*;
 use std::ffi::{c_uint, CStr, CString};
@@ -601,10 +602,6 @@ fn generate_ct_flow2(port_id: u16, rx_q: u16, err: &mut rte_flow_error) -> RteFl
 }
 
 fn main() {
-    eal_main();
-}
-
-fn eal_main() {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::WARN)
         .with_target(false)
@@ -621,7 +618,7 @@ fn eal_main() {
         "--huge-dir",
         "/mnt/huge/1G",
         "--allow",
-        "0000:85:00.0,dv_flow_en=1",
+        "0000:01:00.0,dv_flow_en=1",
         // "--trace=.*",
         // "--iova-mode=va",
         // "-l",
@@ -648,143 +645,162 @@ fn eal_main() {
         }
     });
 
-    let pool = mem::PoolHandle::new_pkt_pool(
-        mem::PoolConfig::new("science", mem::PoolParams::default()).unwrap(),
-    )
-    .unwrap();
-
-    rte.socket.iter().for_each(|socket| {
-        info!("Socket: {socket:?}");
-    });
-
-    rte.dev.iter().for_each(|dev| {
-        info!("Device if_index: {if_index:?}", if_index = dev.if_index());
-        info!("Driver name: {name:?}", name = dev.driver_name());
-        let tx_config: TxOffloadConfig = dev.tx_offload_caps().into();
-        info!(
-            "Device tx offload capabilities: {tx_offload:?}",
-            tx_offload = tx_config
-        );
-        info!(
-            "Device rx offload capabilities: {rx_offload:?}",
-            rx_offload = dev.rx_offload_caps()
-        );
-
-        let config = dev::DevConfig {
-            num_rx_queues: 5,
-            num_tx_queues: 5,
-            num_hairpin_queues: 1,
-            tx_offloads: Some(TxOffloadConfig::default()),
-        };
-
-        let mut my_dev = match config.apply(dev) {
-            Ok(stopped_dev) => {
-                warn!("Device configured {stopped_dev:?}");
-                stopped_dev
-            }
-            Err(err) => {
-                fatal_error(format!("Failed to configure device: {err:?}"));
-            }
-        };
-
-        let rx_config = queue::rx::RxQueueConfig {
-            dev: my_dev.info.index(),
-            queue_index: queue::rx::RxQueueIndex(0),
-            num_descriptors: 512,
-            socket_preference: socket::Preference::Dev(my_dev.info.index()),
-            config: (),
-            pool: pool.clone(),
-        };
-
-        let tx_config = queue::tx::TxQueueConfig {
-            queue_index: queue::tx::TxQueueIndex(0),
-            num_descriptors: 512,
-            socket_preference: socket::Preference::Dev(my_dev.info.index()),
-            config: (),
-        };
-
-        my_dev.configure_rx_queue(rx_config).unwrap();
-        my_dev.configure_tx_queue(tx_config).unwrap();
-
-        let rx_config = queue::rx::RxQueueConfig {
-            dev: my_dev.info.index(),
-            queue_index: queue::rx::RxQueueIndex(1),
-            num_descriptors: 512,
-            socket_preference: socket::Preference::Dev(my_dev.info.index()),
-            config: (),
-            pool: pool.clone(),
-        };
-
-        let tx_config = queue::tx::TxQueueConfig {
-            queue_index: queue::tx::TxQueueIndex(1),
-            num_descriptors: 512,
-            socket_preference: socket::Preference::Dev(my_dev.info.index()),
-            config: (),
-        };
-
-        my_dev
-            .configure_hairpin_queue(rx_config, tx_config)
+    std::thread::scope(|scope| {
+        dpdk::lcore::ServiceThread::new(scope, "testing123", || {
+            let pool = mem::PoolHandle::new_pkt_pool(
+                mem::PoolConfig::new("science", mem::PoolParams::default()).unwrap(),
+            )
             .unwrap();
-        my_dev.start().unwrap();
-
-        let mut start = Instant::now();
-
-        for i in 0..50_000_000 {
-            if i % 100_000 == 0 {
-                let stop = Instant::now();
-                let elapsed = stop.duration_since(start);
-                warn!(
-                    "{i} rules installed, rate: {rate:.1}k / second",
-                    rate = 100.0 / elapsed.as_secs_f64()
+            rte.socket.iter().for_each(|socket| {
+                info!("Socket: {socket:?}");
+            });
+            rte.dev.iter().for_each(|dev| {
+                info!("Device if_index: {if_index:?}", if_index = dev.if_index());
+                info!("Driver name: {name:?}", name = dev.driver_name());
+                let tx_config: TxOffloadConfig = dev.tx_offload_caps().into();
+                info!(
+                    "Device tx offload capabilities: {tx_offload:?}",
+                    tx_offload = tx_config
                 );
-                start = Instant::now();
-            }
-            let src = Ipv4Addr::from(i);
-            let dst = Ipv4Addr::from(rand::random::<u32>());
-            let mut err = rte_flow_error::default();
-            generate_modify_field_flow(
-                i,
-                my_dev.info.index().0,
-                0,
-                src,
-                Ipv4Addr::new(255, 255, 255, 255),
-                dst,
-                Ipv4Addr::new(255, 255, 255, 255),
-                &mut err,
-            );
-        }
+                info!(
+                    "Device rx offload capabilities: {rx_offload:?}",
+                    rx_offload = dev.rx_offload_caps()
+                );
 
-        warn!("Flows created");
+                let config = dev::DevConfig {
+                    num_rx_queues: 5,
+                    num_tx_queues: 5,
+                    num_hairpin_queues: 1,
+                    tx_offloads: Some(TxOffloadConfig::default()),
+                };
 
-        // for i in 0..2000 {
-        //     let flow0 = generate_modify_field_flow(
-        //         my_dev.info.index().0,
-        //         0,
-        //         Ipv4Addr::new(192, 168, 1, 1),
-        //         Ipv4Addr::new(255, 255, 255, 255),
-        //         Ipv4Addr::new(192, 168, 1, 2),
-        //         Ipv4Addr::new(255, 255, 255, 255),
-        //         &mut err,
-        //     );
-        //     let flow1 = generate_modify_field_flow(
-        //         my_dev.info.index().0,
-        //         0,
-        //         Ipv4Addr::new(192, 168, 1, 1),
-        //         Ipv4Addr::new(255, 255, 255, 255),
-        //         Ipv4Addr::new(192, 168, 1, 2),
-        //         Ipv4Addr::new(255, 255, 255, 255),
-        //         &mut err,
-        //     );
-        //     let flow2 = generate_modify_field_flow(
-        //         my_dev.info.index().0,
-        //         0,
-        //         Ipv4Addr::new(192, 168, 1, 1),
-        //         Ipv4Addr::new(255, 255, 255, 255),
-        //         Ipv4Addr::new(192, 168, 1, 2),
-        //         Ipv4Addr::new(255, 255, 255, 255),
-        //         &mut err,
-        //     );
-        // }
+                let mut my_dev = match config.apply(dev) {
+                    Ok(stopped_dev) => {
+                        warn!("Device configured {stopped_dev:?}");
+                        stopped_dev
+                    }
+                    Err(err) => {
+                        fatal_error(format!("Failed to configure device: {err:?}"));
+                    }
+                };
+
+                let rx_config = queue::rx::RxQueueConfig {
+                    dev: my_dev.info.index(),
+                    queue_index: queue::rx::RxQueueIndex(0),
+                    num_descriptors: 512,
+                    socket_preference: socket::Preference::Dev(my_dev.info.index()),
+                    config: (),
+                    pool: pool.clone(),
+                };
+
+                let tx_config = queue::tx::TxQueueConfig {
+                    queue_index: queue::tx::TxQueueIndex(0),
+                    num_descriptors: 512,
+                    socket_preference: socket::Preference::Dev(my_dev.info.index()),
+                    config: (),
+                };
+
+                my_dev.configure_rx_queue(rx_config).unwrap();
+                my_dev.configure_tx_queue(tx_config).unwrap();
+
+                let rx_config = queue::rx::RxQueueConfig {
+                    dev: my_dev.info.index(),
+                    queue_index: queue::rx::RxQueueIndex(1),
+                    num_descriptors: 512,
+                    socket_preference: socket::Preference::Dev(my_dev.info.index()),
+                    config: (),
+                    pool: pool.clone(),
+                };
+
+                let tx_config = queue::tx::TxQueueConfig {
+                    queue_index: queue::tx::TxQueueIndex(1),
+                    num_descriptors: 512,
+                    socket_preference: socket::Preference::Dev(my_dev.info.index()),
+                    config: (),
+                };
+
+                my_dev
+                    .configure_hairpin_queue(rx_config, tx_config)
+                    .unwrap();
+                my_dev.start().unwrap();
+
+                let mut start = Instant::now();
+
+                let mut err = rte_flow_error::default();
+
+                let flow = flow_metadata(100, my_dev.info.index().0, 0, &mut err);
+
+                // for i in 0..50_000_000 {
+                //     if i % 100_000 == 0 {
+                //         let stop = Instant::now();
+                //         let elapsed = stop.duration_since(start);
+                //         warn!(
+                //             "{i} rules installed, rate: {rate:.1}k / second",
+                //             rate = 100.0 / elapsed.as_secs_f64()
+                //         );
+                //         start = Instant::now();
+                //     }
+                //     let src = Ipv4Addr::from(i);
+                //     let dst = Ipv4Addr::from(rand::random::<u32>());
+                //     let mut err = rte_flow_error::default();
+                //     generate_modify_field_flow(
+                //         i,
+                //         my_dev.info.index().0,
+                //         0,
+                //         src,
+                //         Ipv4Addr::new(255, 255, 255, 255),
+                //         dst,
+                //         Ipv4Addr::new(255, 255, 255, 255),
+                //         &mut err,
+                //     );
+                // }
+
+                warn!("Flows created");
+
+                // for i in 0..2000 {
+                //     let flow0 = generate_modify_field_flow(
+                //         my_dev.info.index().0,
+                //         0,
+                //         Ipv4Addr::new(192, 168, 1, 1),
+                //         Ipv4Addr::new(255, 255, 255, 255),
+                //         Ipv4Addr::new(192, 168, 1, 2),
+                //         Ipv4Addr::new(255, 255, 255, 255),
+                //         &mut err,
+                //     );
+                //     let flow1 = generate_modify_field_flow(
+                //         my_dev.info.index().0,
+                //         0,
+                //         Ipv4Addr::new(192, 168, 1, 1),
+                //         Ipv4Addr::new(255, 255, 255, 255),
+                //         Ipv4Addr::new(192, 168, 1, 2),
+                //         Ipv4Addr::new(255, 255, 255, 255),
+                //         &mut err,
+                //     );
+                //     let flow2 = generate_modify_field_flow(
+                //         my_dev.info.index().0,
+                //         0,
+                //         Ipv4Addr::new(192, 168, 1, 1),
+                //         Ipv4Addr::new(255, 255, 255, 255),
+                //         Ipv4Addr::new(192, 168, 1, 2),
+                //         Ipv4Addr::new(255, 255, 255, 255),
+                //         &mut err,
+                //     );
+                // }
+
+                let mut mbufs: Vec<Mbuf> = pool.alloc_bulk(256).expect("alloc bulk");
+                warn!("mbufs allocated");
+
+                let ret = unsafe {
+                    wrte_eth_rx_burst(
+                        my_dev.info.index().0,
+                        queue::rx::RxQueueIndex(0).0,
+                        mbufs.as_mut_slice().as_mut_ptr() as *mut *mut rte_mbuf,
+                        64,
+                    )
+                };
+                warn!("packets: {ret}")
+            });
+        });
     });
 }
 
@@ -1015,6 +1031,59 @@ fn generate_modify_field_flow(
     // } else {
     //     trace!("Flow validated");
     // }
+
+    let flow = unsafe {
+        rte_flow_create(
+            port_id,
+            &attr as *const _,
+            pattern.as_ptr() as *const _,
+            action.as_ptr() as *const _,
+            err,
+        )
+    };
+
+    if flow.is_null() || !err.message.is_null() {
+        if err.message.is_null() {
+            fatal_error("Failed to create flow: unknown error");
+        }
+        let err_str = unsafe { CStr::from_ptr(err.message) };
+        fatal_error(err_str.to_str().unwrap());
+    } else {
+        trace!("Flow created");
+    }
+
+    info!("Flow created");
+
+    RteFlow::new(port_id, flow)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tracing::instrument(level = "debug")]
+fn flow_metadata(i: u32, port_id: u16, rx_q: u16, err: &mut rte_flow_error) -> RteFlow {
+    let mut attr: rte_flow_attr = rte_flow_attr {
+        group: 0u32,
+        priority: 1,
+        ..Default::default()
+    };
+    attr.set_ingress(1);
+    let mut pattern: [rte_flow_item; MAX_PATTERN_NUM] = Default::default();
+    let mut action: [rte_flow_action; MAX_PATTERN_NUM] = Default::default();
+
+    pattern[0].type_ = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_END;
+
+    action[0].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_COUNT;
+    action[0].conf = &rte_flow_action_count { id: i } as *const _ as *const _;
+
+    action[1].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_SET_META;
+    action[1].conf = &rte_flow_action_set_meta {
+        data: 123,
+        mask: 0xffffffff,
+    } as *const _ as *const _;
+
+    action[2].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_QUEUE;
+    action[2].conf = &rte_flow_action_queue { index: rx_q } as *const _ as *const _;
+
+    action[3].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_END;
 
     let flow = unsafe {
         rte_flow_create(

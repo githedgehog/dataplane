@@ -1,12 +1,35 @@
 use crate::flow::MacAddr;
 use core::fmt::Display;
-use left_right::ReadHandle;
-use std::cell::Cell;
-use std::collections::VecDeque;
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::marker::PhantomData;
 use std::net::Ipv4Addr;
 use std::num::NonZero;
 use std::sync::Arc;
+use std::thread::ThreadId;
+use crossbeam::channel::{Receiver, Sender};
+
+pub trait Versioned {
+    type Item;
+    fn version(&self) -> Version;
+    fn item(&self) -> &Self::Item;
+}
+
+pub trait Advance {
+    type Item: Versioned;
+    fn advance_to(self, version: Version) -> Result<Arc<Self::Item>, ()>;
+}
+
+pub struct Subscribe<T> {
+    item: Arc<T>, 
+    version: Version,
+    feed: Receiver<Arc<T>>,
+}
+
+pub struct Publish<T> {
+    working_version: Arc<T>,
+    published_version: Arc<T>,
+    readers: Vec<(ThreadId, Sender<(Arc<T>, Version)>)>,
+}
 
 #[repr(transparent)]
 #[derive(Debug)]
@@ -15,7 +38,7 @@ struct AtomicVersion(core::sync::atomic::AtomicU64);
 /// A version of a configured object
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-struct Version(NonZero<u64>);
+pub struct Version(NonZero<u64>);
 
 #[derive(Debug, Clone)]
 struct RoutingTable {
@@ -102,11 +125,11 @@ struct ReadSideHistory<T> {
     tracking: VecDeque<(Version, Arc<T>)>,
 }
 
-struct Versioned<T: Clone> {
-    current_as_of: Cell<Version>,
-    target: Cell<Arc<T>>,
-    reader: ReadHandle<Versioned<T>>,
-}
+// struct Versioned<T: Clone> {
+//     current_as_of: Cell<Version>,
+//     target: Cell<Arc<T>>,
+//     reader: ReadHandle<Versioned<T>>,
+// }
 
 trait StateAsOf<T> {
     fn as_of_version(&self, version: Version) -> Option<&T>;

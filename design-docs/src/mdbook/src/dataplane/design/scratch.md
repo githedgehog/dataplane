@@ -344,7 +344,7 @@ group software
   $sty.action:read frame metadata;
   note right
     This still needs to be verified
-    although confidence is very high.
+    although confidence is high.
   end note
   switch (match (ingress interface))
     case (hit)

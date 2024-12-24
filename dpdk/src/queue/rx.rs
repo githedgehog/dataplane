@@ -102,7 +102,7 @@ impl RxQueue {
                 config.num_descriptors,
                 socket_id.as_c_uint(),
                 &rx_conf,
-                config.pool.inner().as_ptr(),
+                config.pool.inner().as_mut_ptr(),
             )
         };
 
@@ -119,13 +119,13 @@ impl RxQueue {
     }
 
     /// Start the receive queue.
-    pub(crate) fn start(self) -> Result<RxQueue, RxQueueStartError> {
+    pub(crate) fn start(&mut self) -> Result<(), RxQueueStartError> {
         let ret = unsafe {
             rte_eth_dev_rx_queue_start(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
 
         match ret {
-            0 => Ok(self),
+            0 => Ok(()),
             errno::NEG_ENODEV => Err(RxQueueStartError::InvalidPortId),
             errno::NEG_EINVAL => Err(RxQueueStartError::QueueIdOutOfRange),
             errno::NEG_EIO => Err(RxQueueStartError::DeviceRemoved),
@@ -135,13 +135,13 @@ impl RxQueue {
     }
 
     /// Start the receive queue.
-    pub(crate) fn stop(self) -> Result<RxQueue, RxQueueStopError> {
+    pub(crate) fn stop(&mut self) -> Result<(), RxQueueStopError> {
         let ret = unsafe {
             rte_eth_dev_rx_queue_stop(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
 
         match ret {
-            0 => Ok(self),
+            0 => Ok(()),
             errno::NEG_ENODEV => Err(RxQueueStopError::InvalidPortId),
             errno::NEG_EINVAL => Err(RxQueueStopError::QueueIdOutOfRange),
             errno::NEG_EIO => Err(RxQueueStopError::DeviceRemoved),
@@ -228,4 +228,12 @@ pub enum RxQueueState {
     Stopped,
     /// TODO
     Started,
+}
+
+impl Drop for RxQueue {
+    #[allow(clippy::expect_used)]
+    fn drop(&mut self) {
+        // TODO: proper error handling
+        // self.stop().expect("Failed to stop Rx queue");
+    }
 }

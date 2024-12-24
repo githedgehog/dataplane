@@ -31,7 +31,7 @@ use no_panic::no_panic;
 /// [`Option<Vni>`] will therefore have the same size and alignment as [`Option<NonZero<u32>>`], and
 /// thus the same size and alignment as `u32`.
 /// The memory / compute overhead of using `Vni` as opposed to a `u32` is then limited to the price
-/// of checking that the represented value is in fact a legal `Vni`, (which we should be doing
+/// of checking that the represented value is in fact a legal `Vni` (which we should be doing
 /// anyway).
 ///
 /// [RFC7348]: https://datatracker.ietf.org/doc/html/rfc7348#section-5
@@ -67,7 +67,6 @@ impl Vni {
 
     /// Get the value of the [`Vni`] as a `u32`.
     #[must_use]
-    #[cfg_attr(feature = "_assert-no-panic", no_panic)]
     pub const fn as_u32(self) -> u32 {
         self.0.get()
     }

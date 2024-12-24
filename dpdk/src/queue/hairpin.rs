@@ -98,40 +98,19 @@ impl HairpinQueue {
         Ok(HairpinQueue { rx, tx, peering })
     }
 
-    #[must_use]
-    pub fn start(self) -> HairpinQueue {
-        let rx = match self.rx.start() {
-            Ok(rx) => rx,
-            Err(_) => todo!(),
-        };
-        let tx = match self.tx.start() {
-            Ok(tx) => tx,
-            Err(_) => todo!(),
-        };
-        HairpinQueue {
-            rx,
-            tx,
-            peering: self.peering,
-        }
-    }
-}
-
-impl HairpinQueue {
     /// Stop the hairpin queue.
-    #[must_use]
-    pub fn stop(self) -> HairpinQueue {
-        let rx = match self.rx.stop() {
-            Ok(rx) => rx,
-            Err(_) => todo!(),
-        };
-        let tx = match self.tx.stop() {
-            Ok(tx) => tx,
-            Err(_) => todo!(),
-        };
-        HairpinQueue {
-            rx,
-            tx,
-            peering: self.peering,
-        }
+    #[allow(clippy::expect_used)]
+    pub fn start(&mut self) {
+        /// TODO: proper error reporting
+        self.tx.start().expect("todo");
+        self.rx.start().expect("todo");
     }
+
+    // /// Stop the hairpin queue.
+    // #[allow(clippy::expect_used)]
+    // pub fn stop(&mut self)  {
+    //     /// TODO: proper error reporting
+    //     self.tx.stop().expect("todo");
+    //     self.rx.stop().expect("todo");
+    // }
 }

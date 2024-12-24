@@ -17,11 +17,11 @@ use core::ffi::c_uint;
 use core::marker::PhantomData;
 use dpdk_sys::rte_socket_id;
 use errno::{ErrorCode, StandardErrno};
-use tracing::debug;
+use tracing::{debug, info};
 
+/// DPDK socket manager.
 #[repr(transparent)]
 #[derive(Debug)]
-/// DPDK socket manager.
 pub struct Manager {
     _private: PhantomData<()>,
 }
@@ -38,7 +38,7 @@ impl Manager {
     ///
     /// Only [`Eal`] should only call this function, and only during initialization.
     pub(crate) fn init() -> Manager {
-        debug!("Initializing DPDK socket manager");
+        info!("Initializing DPDK socket manager");
         Manager {
             _private: PhantomData,
         }
@@ -142,8 +142,6 @@ impl Iterator for SocketIdIterator {
     }
 }
 
-#[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// This would be more accurately called a [NUMA] node id, but DPDK calls it a socket id
 /// and things are confusing enough as it is, so I'm sticking with that.
 ///
@@ -162,6 +160,8 @@ impl Iterator for SocketIdIterator {
 /// </div>
 ///
 /// [NUMA]: https://en.wikipedia.org/wiki/Non-uniform_memory_access
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SocketId(pub(crate) c_uint);
 
 impl SocketId {
@@ -238,10 +238,10 @@ impl SocketId {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// A preference for a socket to use.
 ///
 /// This shows up in configuration preferences for things like memory pools and queues.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Preference {
     /// Use a specific socket.
     Id(SocketId),
