@@ -140,6 +140,7 @@ impl RxQueue {
             rte_eth_dev_rx_queue_stop(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
 
+
         match ret {
             0 => Ok(()),
             errno::NEG_ENODEV => Err(RxQueueStopError::InvalidPortId),
@@ -156,6 +157,7 @@ impl RxQueue {
     /// Receive a burst of up to `PKT_BURST_SIZE` packets from the queue
     #[tracing::instrument(level = "trace")]
     pub fn receive(&mut self) -> impl Iterator<Item = Mbuf> {
+        // TODO: allocate the mbufs!
         let mut pkts: [*mut rte_mbuf; Self::PKT_BURST_SIZE] = unsafe { core::mem::zeroed() };
         trace!(
             "Polling for packets from rx queue {queue} on dev {dev}",

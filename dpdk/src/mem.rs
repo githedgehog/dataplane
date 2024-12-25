@@ -376,17 +376,23 @@ impl Drop for PoolInner {
 /// A DPDK Mbuf (memory buffer)
 ///
 /// Usually used to hold an ethernet frame.
+///
+/// # Note
+///
+/// This is a 0-cost transparent wrapper around an [`rte_mbuf`] pointer.
+/// It can be "safely" transmuted _to_ an `*mut rte_mbuf` under the assumption that
+/// standard borrowing rules are observed.
 #[repr(transparent)]
 pub struct Mbuf {
     pub(crate) raw: NonNull<rte_mbuf>,
-    _phantom: PhantomData<rte_mbuf>,
+    marker: PhantomData<rte_mbuf>,
 }
 
-/// TODO: this is poor optimization and possibly unsafe
+/// TODO: this is possibly poor optimization, we should try bulk dealloc if this slows us down
 impl Drop for Mbuf {
     fn drop(&mut self) {
         unsafe {
-            rte_pktmbuf_free_bulk(&mut self.raw.as_ptr(), 1);
+            wrte_pktmbuf_free(self.raw.as_ptr());
         }
     }
 }
@@ -414,18 +420,30 @@ impl Mbuf {
 
         Some(Mbuf {
             raw,
-            _phantom: PhantomData,
+            marker: PhantomData,
         })
     }
-    
-    pub fn inner(&mut self) -> *mut rte_mbuf {
-        unsafe { self.raw.as_ptr() }
+
+    /// Get a mutable reference to the inner rte_mbuf pointer.
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because it returns a mutable reference to the inner pointer.
+    /// The caller must ensure that the pointer is not used after the Mbuf is deallocated.
+    /// The caller must also ensure that the pointer is not used to violate borrowing rules or
+    /// to violate any invariants of the [`Mbuf`].
+    #[must_use]
+    pub unsafe fn inner(&mut self) -> *mut rte_mbuf {
+        self.raw.as_ptr()
     }
 
     // TODO: deal with multi seg packets
     /// Get an immutable ref to the raw data of an Mbuf
     #[must_use]
     pub fn raw_data(&self) -> &[u8] {
+        if unsafe { self.raw.as_ref().annon1.annon1.nb_segs } > 1 {
+            error!("multi seg packets not supported yet");
+        }
         let pkt_data_start = unsafe {
             (self.raw.as_ref().buf_addr as *const u8)
                 .offset(self.raw.as_ref().annon1.annon1.data_off as isize)
@@ -439,10 +457,13 @@ impl Mbuf {
     }
 
     // TODO: deal with multi seg packets
-    /// Get a mutable ref to the raw data of an Mbuf
+    /// Get a mutable ref to the raw data of an Mbuf (usually the binary contents of a packet).
     #[must_use]
     pub fn raw_data_mut(&mut self) -> &mut [u8] {
         unsafe {
+            if self.raw.as_ref().annon1.annon1.nb_segs > 1 {
+                error!("multi seg packets not supported yet");
+            }
             let data_start = self
                 .raw
                 .as_mut()
