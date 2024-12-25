@@ -228,7 +228,7 @@ impl Default for PoolParams {
     // TODO: not sure if these defaults are sensible.
     fn default() -> PoolParams {
         PoolParams {
-            size: (1 << 13) - 1,
+            size: (1 << 14) - 1,
             cache_size: 512,
             private_size: 0,
             data_size: 2048,

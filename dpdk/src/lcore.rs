@@ -2,6 +2,7 @@ use crate::eal::{Eal, EalErrno};
 use std::ffi::{c_int, c_uint, c_void, CStr, CString};
 use std::ptr::null_mut;
 use tracing::info;
+use dpdk_sys::{rte_thread_attr_init, rte_thread_attr_t, rte_thread_create, rte_thread_join, rte_thread_t};
 
 #[repr(u32)]
 pub enum LCorePriority {
@@ -45,32 +46,6 @@ impl ServiceThread<'_> {
                     Eal::fatal_error(msg)
                 }
                 let thread_id = unsafe { dpdk_sys::rte_thread_self() };
-                // let ret = unsafe {
-                //     dpdk_sys::rte_thread_set_priority(
-                //         thread_id,
-                //         dpdk_sys::rte_thread_priority::RTE_THREAD_PRIORITY_REALTIME_CRITICAL,
-                //     )
-                // };
-                // RteErrno::check(ret);
-                
-                // if ret != 0 {
-                //     
-                //     let errno = unsafe { dpdk_sys::wrte_errno() };
-                //     let ret_msg = unsafe { dpdk_sys::rte_strerror(ret) };
-                //     let errno_msg = unsafe { dpdk_sys::rte_strerror(errno) };
-                //     let ret_msg = unsafe { CStr::from_ptr(ret_msg) };
-                //     let errno_msg = unsafe { CStr::from_ptr(errno_msg) };
-                //     let ret_msg = ret_msg
-                //         .to_str()
-                //         .expect("dpdk fatal message is not valid unicode");
-                //     let errno_msg = errno_msg
-                //         .to_str()
-                //         .expect("dpdk fatal message is not valid unicode");
-                //     let msg = format!(
-                //         "rte thread failed to set priority: {ret_msg}. Errno msg: {errno_msg}. ret: {ret}, errno: {errno}"
-                //     );
-                //     Eal::fatal_error(msg);
-                // }
                 send.send(thread_id).expect("could not send thread id");
                 run();
                 unsafe { dpdk_sys::rte_thread_unregister() };
@@ -83,12 +58,30 @@ impl ServiceThread<'_> {
             handle,
         }
     }
+    
+    pub fn new_eal(
+        run: extern "C" fn(*mut c_void) -> u32,
+        arg: *mut c_void,
+    ) {
+        let mut thread_id = rte_thread_t::default();
+        let mut attr = rte_thread_attr_t {
+            priority: LCorePriority::Normal as u32,
+        };
+        let mut val: u32 = 0;
+        unsafe {
+            EalErrno::check(rte_thread_attr_init(&mut attr));
+            EalErrno::check(rte_thread_create(&mut thread_id, &attr, Some(run), arg));
+            rte_thread_join(thread_id, &mut val);
+        }
+    }
 
     #[allow(clippy::expect_used)]
     fn join(self) {
         self.handle.join().expect("failed to join LCore");
     }
 }
+
+
 
 struct LCoreParams {
     priority: LCorePriority,

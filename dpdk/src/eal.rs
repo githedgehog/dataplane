@@ -197,6 +197,6 @@ impl EalErrno {
         let ret_msg = unsafe { rte_strerror(ret) };
         let ret_msg = unsafe { CStr::from_ptr(ret_msg) };
         let ret_msg = ret_msg.to_str().expect("dpdk message is not valid unicode");
-        Eal::fatal_error(format!("failed to set rte thread attributes: {ret_msg}"))
+        Eal::fatal_error(ret_msg)
     }
 }

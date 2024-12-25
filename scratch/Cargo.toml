@@ -10,7 +10,7 @@ dpdk = { path = "../dpdk" }
 
 rand = { version = "0.8.5" }
 thiserror = { workspace = true }
-tracing = { workspace = true, features = ["attributes"] }
+tracing = { workspace = true, features = ["attributes", "max_level_warn"] }
 tracing-subscriber = { workspace = true }
 
 [build-dependencies]
