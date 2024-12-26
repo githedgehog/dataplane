@@ -37,6 +37,7 @@ impl CheckedParams {
 impl Params {
     const MAX_NAME_LENGTH: usize = 127;
 
+    #[cold]
     fn validate(self) -> Result<CheckedParams, err::InvalidArgument> {
         if !self.size.is_power_of_two() {
             return Err(err::InvalidArgument::SizeNotPowerOfTwo(self));
@@ -59,6 +60,8 @@ impl Params {
 }
 
 impl<T> Ring<T> {
+    
+    #[cold]
     fn new(params: Params) -> Result<Self, err::RingCreateErr> {
         use dpdk_sys::_bindgen_ty_4::E_RTE_NO_CONFIG;
         use err::RingCreateErr::*;

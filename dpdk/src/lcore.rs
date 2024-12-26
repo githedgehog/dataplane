@@ -1,8 +1,8 @@
 use crate::eal::{Eal, EalErrno};
-use std::ffi::{c_int, c_uint, c_void, CStr, CString};
+use dpdk_sys::{rte_eal_remote_launch, rte_get_next_lcore, rte_lcore_count, rte_lcore_id, rte_lcore_index, rte_thread_attr_init, rte_thread_attr_t, rte_thread_create, rte_thread_func, rte_thread_join, rte_thread_t, RTE_MAX_LCORE};
+use std::ffi::{c_int, c_uint, c_void, CString};
 use std::ptr::null_mut;
 use tracing::info;
-use dpdk_sys::{rte_thread_attr_init, rte_thread_attr_t, rte_thread_create, rte_thread_join, rte_thread_t};
 
 #[repr(u32)]
 pub enum LCorePriority {
@@ -10,14 +10,53 @@ pub enum LCorePriority {
     RealTime = dpdk_sys::rte_thread_priority::RTE_THREAD_PRIORITY_REALTIME_CRITICAL as c_uint,
 }
 
-struct LCoreAttributes {
-    priority: LCorePriority,
-    name: String,
-    stack_size: usize,
+/// An iterator over the available [`LCoreId`] values.
+///
+/// # Note
+///
+/// This iterator deliberately skips the main LCore.
+struct LCoreIdIterator {
+    current: LCoreId,
+}
+
+impl LCoreIdIterator {
+    /// Start an iterator which loops over all available [`LCoreId`]
+    ///
+    /// This is internal and should not be directly exposed to the end user of this crate.
+    ///
+    /// # Note
+    ///
+    /// We start the [`LCoreId`] in an invalid condition as a signal to DPDK to
+    /// return the first actual [`LCoreId`] on the first call to `.next()`.
+    /// This value is never supposed to be exposed to the user as u32::MAX is clearly
+    /// an invalid [`LCoreId`].
+    fn new() -> Self {
+        Self {
+            current: LCoreId(u32::MAX),
+        }
+    }
+}
+
+impl Iterator for LCoreIdIterator {
+    type Item = LCoreId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let next = unsafe { rte_get_next_lcore(self.current.0 as c_uint, 1, 0) };
+        if next == RTE_MAX_LCORE {
+            return None;
+        }
+        Some(LCoreId(next))
+    }
+}
+
+/// An iterator over the available [`LCoreIndex`] values.
+#[repr(transparent)]
+struct LCoreIndexIterator {
+    inner: LCoreIdIterator,
 }
 
 pub struct ServiceThread<'scope> {
-    thread_id: dpdk_sys::rte_thread_t,
+    thread_id: rte_thread_t,
     priority: LCorePriority,
     handle: std::thread::ScopedJoinHandle<'scope, ()>,
 }
@@ -58,11 +97,8 @@ impl ServiceThread<'_> {
             handle,
         }
     }
-    
-    pub fn new_eal(
-        run: extern "C" fn(*mut c_void) -> u32,
-        arg: *mut c_void,
-    ) {
+
+    pub fn new_eal(run: extern "C" fn(*mut c_void) -> u32, arg: *mut c_void) {
         let mut thread_id = rte_thread_t::default();
         let mut attr = rte_thread_attr_t {
             priority: LCorePriority::RealTime as u32,
@@ -81,12 +117,10 @@ impl ServiceThread<'_> {
     }
 }
 
-
-
 struct LCoreParams {
     priority: LCorePriority,
     name: String,
-    thunk: extern "C" fn(*mut c_void) -> u32,
+    thunk: rte_thread_func,
 }
 
 trait LCoreParameters {
@@ -96,7 +130,7 @@ trait LCoreParameters {
 
 struct LCore {
     params: LCoreParams,
-    id: LcoreId,
+    id: RteThreadId,
 }
 
 impl LCoreParameters for LCoreParams {
@@ -119,31 +153,74 @@ impl LCoreParameters for LCore {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-pub struct LcoreId(dpdk_sys::rte_thread_t);
+#[repr(transparent)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
+pub struct LCoreId(u32);
 
-impl PartialEq for LcoreId {
+#[repr(transparent)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
+pub struct LCoreIndex(u32);
+
+pub mod err {
+    #[derive(thiserror::Error, Debug)]
+    pub enum LCoreIdError {
+        #[error("illegal lcore id: {0} (too large)")]
+        IllegalId(u32),
+    }
+
+    #[derive(thiserror::Error, Debug)]
+    pub enum LCoreIndexError {}
+}
+
+impl LCoreId {
+    pub const MAX: u32 = RTE_MAX_LCORE;
+
+    pub fn list() -> impl Iterator<Item = LCoreId> {
+        LCoreIdIterator::new()
+    }
+
+    pub(crate) fn new(inner: u32) -> Result<LCoreId, err::LCoreIdError> {
+        if inner >= Self::MAX {
+            return Err(err::LCoreIdError::IllegalId(inner));
+        }
+        Ok(LCoreId(inner))
+    }
+
+    pub(crate) fn as_u32(&self) -> u32 {
+        self.0
+    }
+
+    pub fn current() -> LCoreId {
+        LCoreId(unsafe { rte_lcore_id() })
+    }
+}
+
+impl From<LCoreId> for LCoreIndex {
+    fn from(value: LCoreId) -> Self {
+        LCoreIndex(unsafe { rte_lcore_index(value.as_u32() as c_int) as u32 })
+    }
+}
+
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone)]
+pub struct RteThreadId(pub(crate) rte_thread_t);
+
+impl PartialEq for RteThreadId {
     fn eq(&self, other: &Self) -> bool {
         unsafe { dpdk_sys::rte_thread_equal(self.0, other.0) != 0 }
     }
 }
 
-impl Eq for LcoreId {}
-
-trait AllocatedLCore {
-    fn id(&self) -> LcoreId;
-}
+impl Eq for RteThreadId {}
 
 impl LCore {
     fn allocate(params: LCoreParams) -> LCore {
-        let mut thread = dpdk_sys::rte_thread_t::default();
-        let mut attr = dpdk_sys::rte_thread_attr_t {
+        let mut thread = rte_thread_t::default();
+        let mut attr = rte_thread_attr_t {
             priority: LCorePriority::RealTime as u32,
         };
-        EalErrno::check(unsafe { dpdk_sys::rte_thread_attr_init(&mut attr) });
-        EalErrno::check(unsafe {
-            dpdk_sys::rte_thread_create(&mut thread, &attr, Some(params.thunk), null_mut())
-        });
+        EalErrno::check(unsafe { rte_thread_attr_init(&mut attr) });
+        EalErrno::check(unsafe { rte_thread_create(&mut thread, &attr, params.thunk, null_mut()) });
 
         #[allow(clippy::panic)]
         if !params.name.is_ascii() {
@@ -163,13 +240,43 @@ impl LCore {
         });
         LCore {
             params,
-            id: LcoreId(thread),
+            id: RteThreadId(thread),
         }
     }
 }
 
-impl AllocatedLCore for LCore {
-    fn id(&self) -> LcoreId {
-        self.id
+impl LCoreIndex {
+    /// Return an iterator which loops over all available [`LCoreIndex`] values.
+    ///
+    /// # Note
+    ///
+    /// This iterator deliberately skips the main LCore.
+    pub fn list() -> impl Iterator<Item = LCoreIndex> {
+        LCoreIndexIterator::new()
+    }
+}
+
+impl LCoreIndexIterator {
+    /// Start an iterator which loops over all available [`LCoreIndex`] values.
+    ///
+    /// This is internal and should not be directly exposed to the end user of this crate.
+    ///
+    /// # Note
+    ///
+    /// This iterator deliberately skips the main [`LCoreIndex`].
+    pub fn new() -> Self {
+        Self {
+            inner: LCoreIdIterator::new(),
+        }
+    }
+}
+
+impl Iterator for LCoreIndexIterator {
+    type Item = LCoreIndex;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner
+            .next()
+            .map(|id| unsafe { LCoreIndex(rte_lcore_index(id.0 as c_int) as u32) })
     }
 }
