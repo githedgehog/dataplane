@@ -1071,10 +1071,10 @@ impl From<Errno> for i32 {
 }
 
 impl TryFrom<Errno> for StandardErrno {
-    type Error = i32;
+    type Error = Errno;
 
     fn try_from(value: Errno) -> Result<Self, Self::Error> {
-        StandardErrno::parse_i32(value.0)
+        StandardErrno::parse_i32(value.0).map_err(Errno)
     }
 }
 

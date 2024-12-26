@@ -65,7 +65,7 @@ impl ServiceThread<'_> {
     ) {
         let mut thread_id = rte_thread_t::default();
         let mut attr = rte_thread_attr_t {
-            priority: LCorePriority::Normal as u32,
+            priority: LCorePriority::RealTime as u32,
         };
         let mut val: u32 = 0;
         unsafe {

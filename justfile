@@ -298,7 +298,7 @@ remove-compile-env:
 # refresh the compile-env (clear and restore)
 [group('env')]
 [script]
-refresh-compile-env: remove-compile-env pull-compile-env create-compile-env
+refresh-compile-env: remove-compile-env create-compile-env
 
 # Install "fake-nix" (required for local builds to function)
 [confirm("Fake a nix install (yes/no)")]

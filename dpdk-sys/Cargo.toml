@@ -6,6 +6,6 @@ description = "Low-level bindings to the Data Plane Development Kit (DPDK)"
 publish = false
 
 [build-dependencies]
-bindgen = { workspace = true, features = ["runtime"] }
+bindgen = { workspace = true, features = ["runtime", "experimental"] }
 doxygen-rs = { workspace = true }
 dpdk-sysroot-helper = { path = "../dpdk-sysroot-helper", version = "0.0.1" }

@@ -273,7 +273,7 @@ fn init_port2(port_id: u16, mbuf_pool: &mut rte_mempool) {
     rxq_conf = dev_info.default_rxconf;
     rxq_conf.offloads = port_conf.rxmode.offloads;
 
-    let nr_rx_descriptors = 2048;
+    let nr_rx_descriptors = 8192;
 
     // configure rx queues
     for queue_num in 0..nr_queues {
@@ -1171,7 +1171,7 @@ extern "C" fn run(arg: *mut c_void) -> u32 {
         //     );
         // }
 
-        const MAX_MBUFS: u16 = 2048;
+        const MAX_MBUFS: u16 = 512;
         let mut mbufs: [[*mut rte_mbuf; MAX_MBUFS as usize]; 1] = [[null_mut(); MAX_MBUFS as usize]; 1];
         let mut polls: u64 = 0;
         let mut pkts: u64 = 0;
@@ -1180,13 +1180,14 @@ extern "C" fn run(arg: *mut c_void) -> u32 {
         let mut pkts_in_batch: u64 = 0;
         let mut avg_in_batch: f64 = 0.;
         let mut offset = 0;
+        let mut batch_start_poll = 0;
         loop {
-            spin_loop();
+            // spin_loop();
             // let phase = (polls % 16) as usize;
             let phase = 0;
             const BATCH: u16 = 64;
             let ret = unsafe {
-                wrte_eth_rx_burst(
+                rte_eth_rx_burst(
                     my_dev.info.index().0,
                     queue::rx::RxQueueIndex(0).0,
                     mbufs[phase].as_mut_slice().as_mut_ptr().offset(offset as isize),
@@ -1195,6 +1196,19 @@ extern "C" fn run(arg: *mut c_void) -> u32 {
             };
             polls += 1;
             offset += ret;
+            // unsafe {
+            //     rte_ring
+            // }
+            // if offset >= BATCH {
+            //     let tx_ret = unsafe {
+            //         wrte_eth_tx_burst(
+            //             my_dev.info.index().0,
+            //             queue::tx::TxQueueIndex(0).0,
+            //             mbufs[phase].as_mut_slice().as_mut_ptr().offset((offset - BATCH) as isize),
+            //             BATCH,
+            //         )
+            //     };
+            // }
             if ((ret == 0) && (offset != 0)) || (offset > MAX_MBUFS - BATCH) {
                 unsafe {
                     rte_pktmbuf_free_bulk(mbufs[phase].as_mut_slice().as_mut_ptr(), offset as c_uint);
@@ -1202,22 +1216,14 @@ extern "C" fn run(arg: *mut c_void) -> u32 {
                 offset = 0;
             }
 
-            // if ret != 0 {
-            //     let tx_ret = unsafe {
-            //         wrte_eth_tx_burst(
-            //             my_dev.info.index().0,
-            //             queue::tx::TxQueueIndex(0).0,
-            //             mbufs[phase].as_mut_slice().as_mut_ptr(),
-            //             ret,
-            //         )
-            //     };
-            //     if ret - tx_ret != 0 {
-            //         unsafe {
-            //             rte_pktmbuf_free_bulk(mbufs[phase].as_mut_slice().as_mut_ptr().offset(tx_ret as isize), (ret - tx_ret) as c_uint);
-            //         }
-            //     }
-            // 
-            // }
+            if (ret == 0) && (polls - batch_start_poll > 1024) {
+                avg = pkts as f64 / polls as f64;
+                avg_in_batch = pkts_in_batch as f64 / (polls - batch_start_poll) as f64;
+                batch_start_poll = polls;
+                pkts_in_batch = 0;
+                warn!("ret: {ret}, total {pkts}, polls: {polls}, zeros: {zeros}, avg: {avg}, avg_in_batch: {avg_in_batch}");
+            }
+
 
 
             if ret == 0 {
@@ -1226,15 +1232,12 @@ extern "C" fn run(arg: *mut c_void) -> u32 {
 
             pkts += ret as u64;
             pkts_in_batch += ret as u64;
-            if polls % 512 == 0 {
-                avg = pkts as f64 / polls as f64;
-                avg_in_batch = pkts_in_batch as f64 / (512.);
-                pkts_in_batch = 0;
-                warn!("ret: {ret}, total {pkts}, polls: {polls}, zeros: {zeros}, avg: {avg}, avg_in_batch: {avg_in_batch}");
-            }
+            // if (polls % 1024 == 0) && (ret < BATCH / 8) {
+            // }
             // for i in 0..ret {
             //     unsafe { wrte_pktmbuf_free(mbufs[i as usize]) };
             // }
+            
         }
     });
     0

@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use std::env;
-
+use std::panic::catch_unwind;
 use bindgen::callbacks::ParseCallbacks;
 use std::path::{Path, PathBuf};
 
@@ -11,8 +11,13 @@ struct Cb;
 
 impl ParseCallbacks for Cb {
     fn process_comment(&self, comment: &str) -> Option<String> {
-        match doxygen_rs::generator::rustdoc(comment.into()) {
-            Ok(transformed) => Some(transformed),
+        match catch_unwind(|| {
+            match doxygen_rs::generator::rustdoc(comment.into()) {
+                Ok(transformed) => transformed,
+                Err(_) => comment.into(),
+            }
+        }) {
+            Ok(s) => Some(s),
             Err(_) => Some(comment.into()),
         }
     }
@@ -22,8 +27,15 @@ fn bind(path: &Path, sysroot: &str) {
     bindgen::Builder::default()
         .header(format!("{sysroot}/include/dpdk_wrapper.h"))
         .anon_fields_prefix("annon")
+        .use_core()
         .generate_comments(true)
-        .generate_inline_functions(false)
+        .clang_arg("-Dinline=")
+        .clang_arg("-Wno-deprecated-declarations")
+        // .clang_arg("-D_RTE_TRACE_POINT_REGISTER_H_")
+        .clang_arg("-D__rte_always_inline=")
+        .generate_inline_functions(true)
+        .wrap_static_fns(true)
+        .wrap_static_fns_suffix("_w")
         .generate_block(true)
         .array_pointers_in_arguments(false)
         .detect_include_paths(true)
@@ -42,20 +54,6 @@ fn bind(path: &Path, sysroot: &str) {
         .allowlist_item("RTE.*")
         .blocklist_item("__*")
         .clang_macro_fallback()
-        // Bindgen tests seem to object to the documentation in the following
-        // (not the items themselves, just the documentation associated with them)
-        // I suspect this is a bug in bindgen, but I'm not sure.
-        // I don't have any reason to think we need any of these functions and I'd
-        // rather have the doc comments on for the rest of the project
-        .blocklist_type("rte_bus_cmp_t")
-        .blocklist_type("rte_class_cmp_t")
-        .blocklist_function("rte_bus_find")
-        .blocklist_function("rte_bus_probe")
-        .blocklist_function("rte_class_find")
-        .blocklist_function("rte_dev_dma_map")
-        .blocklist_function("rte_dev_dma_unmap")
-        .blocklist_function("rte_pci_addr_cmp")
-        .blocklist_function("rte_pci_addr_parse")
         // rustc doesn't like repr(packed) types which contain other repr(packed) types
         .opaque_type("rte_arp_hdr")
         .opaque_type("rte_arp_ipv4")
@@ -64,7 +62,7 @@ fn bind(path: &Path, sysroot: &str) {
         .clang_arg(format!("-I{sysroot}/include"))
         .clang_arg("-fretain-comments-from-system-headers")
         .clang_arg("-fparse-all-comments")
-        .clang_arg("-march=native")
+        .clang_arg("-march=znver4")
         .generate()
         .expect("Unable to generate bindings")
         .write_to_file(path.join("generated.rs"))

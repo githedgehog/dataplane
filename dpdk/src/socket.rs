@@ -241,8 +241,10 @@ impl SocketId {
 /// A preference for a socket to use.
 ///
 /// This shows up in configuration preferences for things like memory pools and queues.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Preference {
+    #[default]
+    CurrentThread,
     /// Use a specific socket.
     Id(SocketId),
     /// Use the socket of a specific lcore.
@@ -257,6 +259,11 @@ impl TryFrom<Preference> for SocketId {
 
     fn try_from(value: Preference) -> Result<Self, Self::Error> {
         match value {
+            Preference::CurrentThread => {
+                let lcore = unsafe { dpdk_sys::rte_lcore_id() };
+                SocketId::get_by_lcore(lcore)
+                    .ok_or(ErrorCode::Standard(StandardErrno::InvalidArgument))
+            }
             Preference::Id(id) => Ok(id),
             Preference::Lcore(lcore_id) => SocketId::get_by_lcore(lcore_id)
                 .ok_or(ErrorCode::Standard(StandardErrno::InvalidArgument)),
