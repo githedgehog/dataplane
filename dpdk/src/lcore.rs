@@ -1,5 +1,5 @@
 use crate::eal::{Eal, EalErrno};
-use dpdk_sys::{lcore_function_t, rte_eal_remote_launch, rte_get_next_lcore, rte_lcore_count, rte_lcore_id_w, rte_lcore_index, rte_thread_attr_init, rte_thread_attr_t, rte_thread_create, rte_thread_func, rte_thread_join, rte_thread_t, RTE_MAX_LCORE};
+use dpdk_sys::{lcore_function_t, rte_eal_remote_launch, rte_get_next_lcore, rte_lcore_count, rte_lcore_id, rte_lcore_id_w, rte_lcore_index, rte_thread_attr_init, rte_thread_attr_t, rte_thread_create, rte_thread_func, rte_thread_join, rte_thread_t, RTE_MAX_LCORE};
 use std::ffi::{c_int, c_uint, c_void, CString};
 use std::ptr::null_mut;
 use tracing::{info, warn};
@@ -206,7 +206,7 @@ impl LCoreId {
     }
 
     pub fn current() -> LCoreId {
-        LCoreId(unsafe { rte_lcore_id_w() })
+        LCoreId(unsafe { rte_lcore_id() })
     }
 }
 

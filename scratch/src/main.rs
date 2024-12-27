@@ -1152,7 +1152,7 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
         //     );
         // }
 
-        // warn!("Flows created");
+        warn!("Flows created");
 
         // for i in 0..2000 {
         //     let flow0 = generate_modify_field_flow(
@@ -1207,9 +1207,9 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
             // };
 
             let mut batch: [*mut rte_mbuf; BATCH_SIZE] = [null_mut(); BATCH_SIZE];
-
+            
             let ret = unsafe {
-                rte_eth_rx_burst_w(
+                rte_eth_rx_burst(
                     my_dev.info.index().0,
                     queue::rx::RxQueueIndex(0).0,
                     batch.as_mut_ptr(),
@@ -1218,7 +1218,7 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
             };
 
             unsafe {
-                rte_eth_tx_burst_w(
+                rte_eth_tx_burst(
                     my_dev.info.index().0,
                     queue::rx::RxQueueIndex(0).0,
                     batch.as_mut_ptr(),
@@ -1260,7 +1260,7 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
             pkts_in_batch += ret as u64;
             polls += 1;
 
-            if (polls - batch_start_poll > (16384 << 4)) && ret < 5 {
+            if (polls - batch_start_poll > (32 << 4)) && ret < 5 {
                 avg = pkts as f64 / polls as f64;
                 avg_in_batch = pkts_in_batch as f64 / (polls - batch_start_poll) as f64;
                 batch_start_poll = polls;

@@ -19,6 +19,7 @@ use crate::queue::tx::{TxQueue, TxQueueConfig};
 use crate::socket::SocketId;
 use dpdk_sys::*;
 use dpdk_sys::rte_eth_rx_mq_mode::RTE_ETH_MQ_RX_RSS;
+use dpdk_sys::rte_eth_tx_mq_mode::RTE_ETH_MQ_TX_NONE;
 use errno::{Errno, ErrorCode, NegStandardErrno, StandardErrno};
 use queue::{rx, tx};
 
@@ -216,6 +217,7 @@ pub struct DevConfig {
     /// supported.
     /// Rework this bad idea.
     pub tx_offloads: Option<TxOffloadConfig>,
+    // TODO: more reasonable type for [`RxOffload`] here (similar to [`TxOffloadConfig`])
     pub rx_offloads: Option<RxOffload>,
 }
 
@@ -232,6 +234,7 @@ impl DevConfig {
         const ANY_SUPPORTED: u64 = u64::MAX;
         let eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
+                mq_mode: RTE_ETH_MQ_TX_NONE,
                 offloads: {
                     let requested = self
                         .tx_offloads
@@ -242,15 +245,13 @@ impl DevConfig {
                 ..Default::default()
             },
             rxmode: rte_eth_rxmode {
-                // TODO: let user request rx offloads instead of just enabling all supported
-                // offloads.
-                // offloads: self.info.inner.rx_offload_capa,
                 mtu: 1515,
                 mq_mode: RTE_ETH_MQ_RX_RSS,
+                max_lro_pkt_size: 8192,
                 offloads: {
                     let requested = self
                         .rx_offloads
-                        .map_or(RxOffload(ANY_SUPPORTED), RxOffload::from);
+                        .unwrap_or(RxOffload(ANY_SUPPORTED));
                     let supported = dev.rx_offload_caps();
                     requested.0 & supported.0
                 },
