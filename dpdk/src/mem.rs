@@ -56,8 +56,8 @@ impl Drop for Manager {
 ///
 /// </div>
 #[repr(transparent)]
-#[derive(Debug, Clone)]
-pub struct PoolHandle(Arc<PoolInner>);
+#[derive(Debug)]
+pub struct PoolHandle(PoolInner);
 
 impl PartialEq for PoolHandle {
     fn eq(&self, other: &Self) -> bool {
@@ -119,11 +119,11 @@ impl PoolHandle {
             Some(pool) => pool,
         };
 
-        Ok(PoolHandle(Arc::new(PoolInner {
+        Ok(PoolHandle(PoolInner {
             config,
             pool: UnsafeCell::new(pool),
             _marker: PhantomData,
-        })))
+        }))
     }
 
     /// Get the name of the memory pool.
@@ -228,8 +228,8 @@ impl Default for PoolParams {
     // TODO: not sure if these defaults are sensible.
     fn default() -> PoolParams {
         PoolParams {
-            size: (1 << 14) - 1,
-            cache_size: 512,
+            size: (1 << 15) - 1,
+            cache_size: 128,
             private_size: 0,
             data_size: 2048,
             socket_id: SocketId::current(),

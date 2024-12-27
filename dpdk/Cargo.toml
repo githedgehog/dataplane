@@ -45,6 +45,7 @@ tracing = { workspace = true, features = ["attributes"] }
 rand = "0.8.5"
 
 ahash = "0.8.11"
+log = "0.4.22"
 
 [build-dependencies]
 dpdk-sysroot-helper = { path = "../dpdk-sysroot-helper" }

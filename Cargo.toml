@@ -27,3 +27,10 @@ tracing = { version = "0.1.40", default-features = false, features = ["attribute
 tracing-subscriber = { version = "0.3.18" }
 tracing-test = { version = "0.2.5" }
 
+
+[profile.release]
+debug = "full"
+codegen-units = 1
+lto = "thin"
+opt-level = 3
+incremental = false

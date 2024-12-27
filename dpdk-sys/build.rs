@@ -29,14 +29,15 @@ fn bind(path: &Path, sysroot: &str) {
         .anon_fields_prefix("annon")
         .use_core()
         .generate_comments(true)
-        .clang_arg("-Dinline=")
+        .clang_arg("-URTE_ENABLE_TRACE_FP")
+        .clang_arg("-URTE_TRACE")
+        // .clang_arg("-Dinline=")
         .clang_arg("-Wno-deprecated-declarations")
-        // .clang_arg("-D_RTE_TRACE_POINT_REGISTER_H_")
-        .clang_arg("-D__rte_always_inline=")
-        .generate_inline_functions(true)
-        .wrap_static_fns(true)
-        .wrap_static_fns_suffix("_w")
-        .generate_block(true)
+        // .clang_arg("-D__rte_always_inline=")
+        // .generate_inline_functions(true)
+        // .wrap_static_fns(true)
+        // .wrap_static_fns_suffix("_w")
+        // .generate_block(true)
         .array_pointers_in_arguments(false)
         .detect_include_paths(true)
         .prepend_enum_name(false)
@@ -119,3 +120,4 @@ fn main() {
 
     bind(&out_path, sysroot.as_str());
 }
+

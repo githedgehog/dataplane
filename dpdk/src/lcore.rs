@@ -1,8 +1,8 @@
 use crate::eal::{Eal, EalErrno};
-use dpdk_sys::{rte_eal_remote_launch, rte_get_next_lcore, rte_lcore_count, rte_lcore_id, rte_lcore_index, rte_thread_attr_init, rte_thread_attr_t, rte_thread_create, rte_thread_func, rte_thread_join, rte_thread_t, RTE_MAX_LCORE};
+use dpdk_sys::{lcore_function_t, rte_eal_remote_launch, rte_get_next_lcore, rte_lcore_count, rte_lcore_id_w, rte_lcore_index, rte_thread_attr_init, rte_thread_attr_t, rte_thread_create, rte_thread_func, rte_thread_join, rte_thread_t, RTE_MAX_LCORE};
 use std::ffi::{c_int, c_uint, c_void, CString};
 use std::ptr::null_mut;
-use tracing::info;
+use tracing::{info, warn};
 
 #[repr(u32)]
 pub enum LCorePriority {
@@ -98,17 +98,31 @@ impl ServiceThread<'_> {
         }
     }
 
-    pub fn new_eal(run: extern "C" fn(*mut c_void) -> u32, arg: *mut c_void) {
+    pub fn new_eal(run: extern "C" fn(*mut c_void) -> c_int, arg: *mut c_void) {
         let mut thread_id = rte_thread_t::default();
         let mut attr = rte_thread_attr_t {
             priority: LCorePriority::RealTime as u32,
         };
         let mut val: u32 = 0;
-        unsafe {
-            EalErrno::check(rte_thread_attr_init(&mut attr));
-            EalErrno::check(rte_thread_create(&mut thread_id, &attr, Some(run), arg));
-            rte_thread_join(thread_id, &mut val);
-        }
+        let mut list = LCoreId::list();
+        list.next();
+        list.next();
+        list.next();
+        list.next();
+        #[allow(clippy::panic)]
+        let Some(lcore) = list.next() else {
+            panic!("no LCores available");
+        };
+        warn!("lanuching on on LCoreId({0})", lcore.0);
+        let ret = unsafe {
+            rte_eal_remote_launch(Some(run), arg, lcore.0 as c_uint)
+        };
+        EalErrno::check(ret);
+        // unsafe {
+        //     EalErrno::check(rte_thread_attr_init(&mut attr));
+        //     EalErrno::check(rte_thread_create(&mut thread_id, &attr, Some(run), arg));
+        //     rte_thread_join(thread_id, &mut val);
+        // }
     }
 
     #[allow(clippy::expect_used)]
@@ -121,6 +135,7 @@ struct LCoreParams {
     priority: LCorePriority,
     name: String,
     thunk: rte_thread_func,
+    thunk2: lcore_function_t,
 }
 
 trait LCoreParameters {
@@ -191,7 +206,7 @@ impl LCoreId {
     }
 
     pub fn current() -> LCoreId {
-        LCoreId(unsafe { rte_lcore_id() })
+        LCoreId(unsafe { rte_lcore_id_w() })
     }
 }
 

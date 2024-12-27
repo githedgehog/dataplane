@@ -113,6 +113,7 @@ cargo *args:
           [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
           ;;
         --release|--profile=release|--profile=bench)
+          echo "${RUSTFLAGS_RELEASE}"
           [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_RELEASE}"
           extra_args+=("$arg")
           ;;

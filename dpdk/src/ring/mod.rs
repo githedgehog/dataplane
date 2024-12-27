@@ -63,7 +63,10 @@ impl<T> Ring<T> {
     
     #[cold]
     fn new(params: Params) -> Result<Self, err::RingCreateErr> {
-        use dpdk_sys::_bindgen_ty_4::E_RTE_NO_CONFIG;
+        /// TODO: figure out why musl builds don't expose E_RTE_NO_CONFIG
+        /// likely a config error for bindgen
+        // use dpdk_sys::_bindgen_ty_4::E_RTE_NO_CONFIG;
+        const E_RTE_NO_CONFIG: u64 = 1002;
         use err::RingCreateErr::*;
         let params = params.validate().map_err(InvalidArgument)?;
         let name = CString::new(params.name())

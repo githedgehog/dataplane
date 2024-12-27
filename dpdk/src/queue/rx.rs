@@ -3,7 +3,7 @@
 
 //! Receive queue configuration and management.
 
-use crate::dev::DevIndex;
+use crate::dev::{DevIndex, RxOffload};
 use crate::mem::Mbuf;
 use crate::socket::SocketId;
 use crate::{dev, mem, socket};
@@ -52,6 +52,7 @@ pub struct RxQueueConfig {
     pub socket_preference: socket::Preference,
     /// The low-level configuration of the rx queue.
     pub config: (), // TODO
+    pub offloads: RxOffload,
     /// The memory pool to use for the rx queue.
     pub pool: mem::PoolHandle,
 }
