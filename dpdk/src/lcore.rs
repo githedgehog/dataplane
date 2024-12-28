@@ -1,13 +1,13 @@
 use crate::eal::{Eal, EalErrno};
-use dpdk_sys::{lcore_function_t, rte_eal_remote_launch, rte_get_next_lcore, rte_lcore_count, rte_lcore_id, rte_lcore_id_w, rte_lcore_index, rte_thread_attr_init, rte_thread_attr_t, rte_thread_create, rte_thread_func, rte_thread_join, rte_thread_t, RTE_MAX_LCORE};
+use dpdk_sys::*;
 use std::ffi::{c_int, c_uint, c_void, CString};
 use std::ptr::null_mut;
 use tracing::{info, warn};
 
 #[repr(u32)]
 pub enum LCorePriority {
-    Normal = dpdk_sys::rte_thread_priority::RTE_THREAD_PRIORITY_NORMAL as c_uint,
-    RealTime = dpdk_sys::rte_thread_priority::RTE_THREAD_PRIORITY_REALTIME_CRITICAL as c_uint,
+    Normal = rte_thread_priority::RTE_THREAD_PRIORITY_NORMAL as c_uint,
+    RealTime = rte_thread_priority::RTE_THREAD_PRIORITY_REALTIME_CRITICAL as c_uint,
 }
 
 /// An iterator over the available [`LCoreId`] values.
@@ -28,7 +28,7 @@ impl LCoreIdIterator {
     ///
     /// We start the [`LCoreId`] in an invalid condition as a signal to DPDK to
     /// return the first actual [`LCoreId`] on the first call to `.next()`.
-    /// This value is never supposed to be exposed to the user as u32::MAX is clearly
+    /// This value is never supposed to be exposed to the user as `u32::MAX` is
     /// an invalid [`LCoreId`].
     fn new() -> Self {
         Self {
@@ -62,7 +62,7 @@ pub struct ServiceThread<'scope> {
 }
 
 // TODO: take stack size as an EAL argument instead of hard coding it
-const STACK_SIZE: usize = 8 * 1024 * 1024;
+const STACK_SIZE: usize = 8 << 20;
 
 impl ServiceThread<'_> {
     #[cold]
@@ -78,16 +78,16 @@ impl ServiceThread<'_> {
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, move || {
                 info!("Initializing RTE Lcore");
-                let ret = unsafe { dpdk_sys::rte_thread_register() };
+                let ret = unsafe { rte_thread_register() };
                 if ret != 0 {
-                    let errno = unsafe { dpdk_sys::wrte_errno() };
+                    let errno = unsafe { wrte_errno() };
                     let msg = format!("rte thread exited with code {ret}, errno: {errno}");
                     Eal::fatal_error(msg)
                 }
-                let thread_id = unsafe { dpdk_sys::rte_thread_self() };
+                let thread_id = unsafe { rte_thread_self() };
                 send.send(thread_id).expect("could not send thread id");
                 run();
-                unsafe { dpdk_sys::rte_thread_unregister() };
+                unsafe { rte_thread_unregister() };
             })
             .expect("could not create EalThread");
         let thread_id = recv.recv().expect("could not receive thread id");
@@ -99,11 +99,6 @@ impl ServiceThread<'_> {
     }
 
     pub fn new_eal(run: extern "C" fn(*mut c_void) -> c_int, arg: *mut c_void) {
-        let mut thread_id = rte_thread_t::default();
-        let mut attr = rte_thread_attr_t {
-            priority: LCorePriority::RealTime as u32,
-        };
-        let mut val: u32 = 0;
         let mut list = LCoreId::list();
         list.next();
         list.next();
@@ -113,16 +108,9 @@ impl ServiceThread<'_> {
         let Some(lcore) = list.next() else {
             panic!("no LCores available");
         };
-        warn!("lanuching on on LCoreId({0})", lcore.0);
-        let ret = unsafe {
-            rte_eal_remote_launch(Some(run), arg, lcore.0 as c_uint)
-        };
+        warn!("launching on on LCoreId({0})", lcore.0);
+        let ret = unsafe { rte_eal_remote_launch(Some(run), arg, lcore.0 as c_uint) };
         EalErrno::check(ret);
-        // unsafe {
-        //     EalErrno::check(rte_thread_attr_init(&mut attr));
-        //     EalErrno::check(rte_thread_create(&mut thread_id, &attr, Some(run), arg));
-        //     rte_thread_join(thread_id, &mut val);
-        // }
     }
 
     #[allow(clippy::expect_used)]
@@ -222,7 +210,7 @@ pub struct RteThreadId(pub(crate) rte_thread_t);
 
 impl PartialEq for RteThreadId {
     fn eq(&self, other: &Self) -> bool {
-        unsafe { dpdk_sys::rte_thread_equal(self.0, other.0) != 0 }
+        unsafe { rte_thread_equal(self.0, other.0) != 0 }
     }
 }
 
@@ -243,7 +231,7 @@ impl LCore {
         }
         #[allow(clippy::expect_used)]
         unsafe {
-            dpdk_sys::rte_thread_set_name(
+            rte_thread_set_name(
                 thread,
                 CString::new(params.name.as_bytes().to_vec())
                     .expect("could not allocate thread name")
@@ -251,7 +239,7 @@ impl LCore {
             )
         };
         EalErrno::check(unsafe {
-            dpdk_sys::rte_thread_set_priority(thread, LCorePriority::RealTime as c_uint)
+            rte_thread_set_priority(thread, LCorePriority::RealTime as c_uint)
         });
         LCore {
             params,

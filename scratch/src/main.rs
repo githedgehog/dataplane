@@ -618,9 +618,9 @@ fn main() {
 
     let eal_args = vec![
         "--main-lcore",
-        "1",
+        "2",
         "--lcores",
-        "1-3",
+        "2-4",
         "--in-memory",
         // "--huge-dir",
         // "/mnt/huge/2M",
@@ -634,20 +634,7 @@ fn main() {
         "--trace-mode=discard",
     ];
 
-    let rte = Box::new(eal::init(eal_args).unwrap_or_else(|err| match err {
-        eal::InitError::InvalidArguments(args, err_msg) => {
-            fatal_error(format!("Invalid arguments: {args:?}; {err_msg}"));
-        }
-        eal::InitError::AlreadyInitialized => {
-            fatal_error("EAL already initialized");
-        }
-        eal::InitError::InitializationFailed(err) => {
-            fatal_error(format!("EAL initialization failed: {err:?}"));
-        }
-        eal::InitError::UnknownError(code) => {
-            fatal_error(format!("Unknown error code {code}"));
-        }
-    }));
+    let rte = Box::new(eal::init(eal_args).unwrap_or_else(|err| fatal_error(err.to_string())));
     unsafe {
         rte_trace_regexp((c".*").as_ptr(), false)
     };
@@ -919,14 +906,29 @@ fn generate_modify_field_flow(
 fn flow_metadata(i: u32, port_id: u16, rx_q: u16, err: &mut rte_flow_error) -> RteFlow {
     let mut attr: rte_flow_attr = rte_flow_attr {
         group: 1u32,
-        priority: 0,
+        priority: 1,
         ..Default::default()
     };
     attr.set_ingress(1);
     let mut pattern: [rte_flow_item; MAX_PATTERN_NUM] = Default::default();
     let mut action: [rte_flow_action; MAX_PATTERN_NUM] = Default::default();
 
-    pattern[0].type_ = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_END;
+    pattern[0].type_ = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_ETH;
+    let mut pat0 = rte_flow_item_eth::default();
+    unsafe {
+        pat0.annon1.hdr.ether_type = 0xFFFF;
+        pat0.annon1.hdr.src_addr = rte_ether_addr {
+            addr_bytes: [0xFF; 6]
+        };
+        pat0.annon1.hdr.dst_addr = rte_ether_addr {
+            addr_bytes: [0xFF; 6]
+        };
+    };
+    let pat0_mask = pat0.clone();
+    pattern[0].spec = &pat0 as *const _ as *const _;
+    pattern[0].mask = &pat0_mask as *const _ as *const _;
+
+    pattern[1].type_ = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_END;
 
     action[0].type_ = rte_flow_action_type::RTE_FLOW_ACTION_TYPE_COUNT;
     let conf0 = rte_flow_action_count { id: i };
@@ -1104,22 +1106,23 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
         // let mut start = Instant::now();
 
         let mut err = rte_flow_error::default();
-
-        let ret = unsafe { rte_eth_promiscuous_enable(my_dev.info.index().0) };
-        if ret != 0 {
-            let err_msg = format!(
-                "Failed to enable promiscuous mode: {ret}",
-                ret = io::Error::from_raw_os_error(ret)
-            );
-            fatal_error(err_msg.as_str());
-        }
-        warn!("Port {} set to promiscuous mode", my_dev.info.index().0);
-
-        let mut err = rte_flow_error::default();
         let ret = unsafe {
             rte_flow_isolate(my_dev.info.index().0, 1, &mut err)
         };
         EalErrno::check(ret);
+
+        warn!("device set to flow isolated mode");
+
+        // let ret = unsafe { rte_eth_promiscuous_enable(my_dev.info.index().0) };
+        // if ret != 0 {
+        //     let err_msg = format!(
+        //         "Failed to enable promiscuous mode: {ret}",
+        //         ret = io::Error::from_raw_os_error(ret)
+        //     );
+        //     fatal_error(err_msg.as_str());
+        // }
+        // warn!("Port {} set to promiscuous mode", my_dev.info.index().0);
+
 
         my_dev.start().unwrap();
         let mut err = rte_flow_error::default();
@@ -1193,7 +1196,7 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
         let mut pkts_in_batch: u64 = 0;
         let mut avg_in_batch: f64 = 0.;
         let mut batch_start_poll = 0;
-        let mut buffer = rte_eth_dev_tx_buffer::default();
+        // let mut buffer = rte_eth_dev_tx_buffer::default();
         // EalErrno::check(unsafe {
         //     rte_eth_tx_buffer_init(&mut buffer, BATCH)
         // });
@@ -1207,7 +1210,7 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
             // };
 
             let mut batch: [*mut rte_mbuf; BATCH_SIZE] = [null_mut(); BATCH_SIZE];
-            
+
             let ret = unsafe {
                 rte_eth_rx_burst(
                     my_dev.info.index().0,
@@ -1260,7 +1263,7 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
             pkts_in_batch += ret as u64;
             polls += 1;
 
-            if (polls - batch_start_poll > (32 << 4)) && ret < 5 {
+            if (polls - batch_start_poll > (16384 << 7)) && ret < 5 {
                 avg = pkts as f64 / polls as f64;
                 avg_in_batch = pkts_in_batch as f64 / (polls - batch_start_poll) as f64;
                 batch_start_poll = polls;

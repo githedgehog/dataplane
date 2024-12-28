@@ -5,7 +5,7 @@
 use crate::{dev, mem, socket};
 use alloc::ffi::CString;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::ffi::c_int;
 use core::fmt::{Debug, Display};
@@ -49,19 +49,60 @@ impl Drop for EalPrivate {
 }
 
 /// Error type for EAL initialization failures.
-///
-/// TODO: improve error type, this is a little sloppy
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum InitError {
-    /// Invalid arguments were passed to the EAL initialization.
-    InvalidArguments(Vec<String>, String),
-    /// The EAL has already been initialized.
+    #[error(transparent)]
+    InvalidArguments(IllegalEalArguments),
+    #[error("The EAL has already been initialized")]
     AlreadyInitialized,
-    /// The EAL initialization failed.
+    #[error("The EAL initialization failed")]
     InitializationFailed(errno::Errno),
     /// [`rte_eal_init`] returned an error code other than `0` (success) or `-1` (failure).
     /// This likely represents a bug in the DPDK library.
+    #[error("Unknown error {0} when initializing the EAL")]
     UnknownError(i32),
+}
+
+#[repr(transparent)]
+#[derive(Debug)]
+struct ValidatedEalArgs(Vec<CString>);
+
+#[derive(Debug, thiserror::Error)]
+pub enum IllegalEalArguments {
+    #[error("Too many EAL arguments: {0} is too many")]
+    TooLong(usize),
+    #[error("Found non ASCII characters in EAL arguments")]
+    NonAscii,
+    #[error("Found interior null byte in EAL arguments")]
+    NullByte,
+}
+
+impl ValidatedEalArgs {
+    #[cold]
+    #[tracing::instrument(level = "info", skip(args), ret)]
+    fn new(
+        args: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> Result<ValidatedEalArgs, IllegalEalArguments> {
+        let args: Vec<_> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
+        let len = args.len();
+        if len > c_int::MAX as usize {
+            return Err(IllegalEalArguments::TooLong(len));
+        }
+        match args.iter().find(|s| !s.is_ascii()) {
+            None => {}
+            Some(_) => return Err(IllegalEalArguments::NonAscii),
+        }
+        let args_as_c_strings: Result<Vec<_>, _> =
+            args.iter().map(|s| CString::new(s.as_bytes())).collect();
+
+        // Account for the possibility of an illegal null byte in the arguments.
+        let args_as_c_strings = match args_as_c_strings {
+            Ok(c_strs) => c_strs,
+            Err(_null_err) => return Err(IllegalEalArguments::NullByte),
+        };
+
+        Ok(ValidatedEalArgs(args_as_c_strings))
+    }
 }
 
 /// Initialize the DPDK Environment Abstraction Layer (EAL).
@@ -74,39 +115,11 @@ pub enum InitError {
 /// 2. The arguments are not valid ASCII strings.
 /// 3. The EAL initialization fails.
 /// 4. The EAL has already been initialized.
-#[tracing::instrument(level = "debug", ret)]
-pub fn init<T: Debug + AsRef<str>>(args: Vec<T>) -> Result<Eal, InitError> {
-    let len = args.len();
-    if len > c_int::MAX as usize {
-        return Err(InitError::InvalidArguments(
-            args.iter().map(|s| s.as_ref().to_string()).collect(),
-            format!("Too many arguments: {len}"),
-        ));
-    }
-
-    let len = args.len() as c_int;
-
-    let args_as_c_strings: Result<Vec<_>, _> =
-        args.iter().map(|s| CString::new(s.as_ref())).collect();
-
-    // Account for the possibility of an illegal null byte in the arguments.
-    let args_as_c_strings = match args_as_c_strings {
-        Ok(c_strs) => c_strs,
-        Err(_null_err) => {
-            return Err(InitError::InvalidArguments(
-                args.iter().map(|s| s.as_ref().to_string()).collect(),
-                "Null byte in argument".to_string(),
-            ))
-        }
-    };
-
-    let mut args_as_pointers = args_as_c_strings
-        .iter()
-        .map(|s| s.as_ptr().cast_mut())
-        .collect::<Vec<_>>();
-
-    let ret = unsafe { rte_eal_init(len, args_as_pointers.as_mut_ptr()) };
-
+#[tracing::instrument(level = "info", skip(args), ret)]
+pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Result<Eal, InitError> {
+    let mut args = ValidatedEalArgs::new(args).map_err(InitError::InvalidArguments)?;
+    let mut c_args: Vec<_> = args.0.iter_mut().map(|s| s.as_ptr().cast_mut()).collect();
+    let ret = unsafe { rte_eal_init(c_args.len() as c_int, c_args.as_mut_ptr()) };
     if ret < 0 {
         let rte_errno = unsafe { wrte_errno() };
         let error = errno::Errno::from(rte_errno);

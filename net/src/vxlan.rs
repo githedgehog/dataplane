@@ -158,7 +158,7 @@ mod test {
 
     #[test]
     #[traced_test]
-    fn u32_max_plus_one_is_not_a_legal_vni() {
+    fn u32_max_is_not_a_legal_vni() {
         assert_eq!(
             Vni::new(u32::MAX).unwrap_err(),
             InvalidVni::TooLarge(u32::MAX)
