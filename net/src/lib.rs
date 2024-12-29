@@ -18,6 +18,8 @@ pub mod vxlan;
 mod tests {
     use super::*;
     use alloc::vec::Vec;
+    use etherparse::err::packet::SliceError;
+    use etherparse::NetHeaders;
     use tracing::info;
     use tracing_test::traced_test;
 
@@ -54,8 +56,22 @@ mod tests {
     #[test]
     #[traced_test]
     fn parse_udp_packet_bit_by_bit() {
-        let packet = gen_random_udp_packet();
-        let cursor = 0;
-        let _eth = etherparse::Ethernet2Header::from_slice(&packet[cursor..]).unwrap();
+        let mut packet = gen_random_udp_packet();
+        let mut header = etherparse::Ethernet2Header::from_slice(packet.as_slice())
+            .unwrap()
+            .0;
+        header.source = [0, 1, 2, 3, 4, 5];
+        header.destination = [6, 7, 8, 9, 10, 11];
+        header.write_to_slice(packet.as_mut_slice()).unwrap();
+        match etherparse::PacketHeaders::from_ethernet_slice(&packet) {
+            Ok(headers) => {
+                let eth = headers.link.unwrap().ethernet2().unwrap();
+                assert_eq!(eth.source, [0, 1, 2, 3, 4, 5]);
+                assert_eq!(eth.destination, [6, 7, 8, 9, 10, 11]);
+            }
+            Err(err) => {
+                panic!("{err:?}");
+            }
+        };
     }
 }

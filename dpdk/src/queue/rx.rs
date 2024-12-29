@@ -3,6 +3,7 @@
 
 //! Receive queue configuration and management.
 
+use std::ffi::c_int;
 use crate::dev::{DevIndex, RxOffload};
 use crate::mem::Mbuf;
 use crate::socket::SocketId;
@@ -50,26 +51,36 @@ pub struct RxQueueConfig {
     pub num_descriptors: u16,
     /// The socket preference for the rx queue.
     pub socket_preference: socket::Preference,
-    /// The low-level configuration of the rx queue.
-    pub config: (), // TODO
     pub offloads: RxOffload,
     /// The memory pool to use for the rx queue.
     pub pool: mem::PoolHandle,
 }
 
 /// Error type for receive queue configuration failures.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ConfigFailure {
-    /// The device has been removed.
+    #[error("The device has been removed")]
     DeviceRemoved(errno::Errno),
-    /// Invalid arguments were passed to the receive queue configuration.
+    #[error("Invalid arguments were passed to the receive queue configuration")]
     InvalidArgument(errno::Errno),
-    /// Memory allocation failed.
+    #[error("Memory allocation failed")]
     NoMemory(errno::Errno),
-    /// An unexpected (i.e. undocumented) error occurred.
+    #[error("An unexpected (i.e. undocumented) error occurred")]
     Unexpected(errno::Errno),
-    /// The socket preference setting did not resolve a known socket.
+    #[error("The socket preference setting did not resolve a known socket")]
     InvalidSocket(errno::Errno),
+}
+
+impl ConfigFailure {
+    fn check(err: c_int) -> Option<ConfigFailure> {
+        match err {
+            0 => None,
+            errno::NEG_ENODEV => Some(ConfigFailure::DeviceRemoved(errno::Errno(err))),
+            errno::NEG_EINVAL => Some(ConfigFailure::InvalidArgument(errno::Errno(err))),
+            errno::NEG_ENOMEM => Some(ConfigFailure::NoMemory(errno::Errno(err))),
+            _ => Some(ConfigFailure::Unexpected(errno::Errno(err))),
+        }
+    }
 }
 
 /// DPDK rx queue
@@ -80,23 +91,22 @@ pub struct RxQueue {
 }
 
 impl RxQueue {
-    /// Create and configure a new hairpin queue.
+    /// Create and configure a new receive queue.
     ///
     /// This method is crate internal.
     /// The library end user should call this by way of the
-    /// [`dev::Dev::configure_rx_queue`] method.
+    /// [`dev::Dev::new_rx_queue`] method.
     ///
     /// This design ensures that the hairpin queue is correctly tracked in the list of queues
     /// associated with the device.
-    pub(crate) fn configure(dev: &dev::Dev, config: RxQueueConfig) -> Result<Self, ConfigFailure> {
+    pub(crate) fn setup(dev: &dev::Dev, config: RxQueueConfig) -> Result<Self, ConfigFailure> {
         let socket_id = SocketId::try_from(config.socket_preference)
             .map_err(|_| ConfigFailure::InvalidSocket(errno::Errno(errno::NEG_EINVAL)))?;
-
         let rx_conf = rte_eth_rxconf {
-            offloads: dev.info.inner.rx_queue_offload_capa,
+            offloads: config.offloads.into(),
             ..Default::default()
         };
-        let ret = unsafe {
+        match ConfigFailure::check(unsafe {
             rte_eth_rx_queue_setup(
                 dev.info.index().as_u16(),
                 config.queue_index.as_u16(),
@@ -105,17 +115,12 @@ impl RxQueue {
                 &rx_conf,
                 config.pool.inner().as_mut_ptr(),
             )
-        };
-
-        match ret {
-            0 => Ok(RxQueue {
+        }) {
+            None => Ok(RxQueue {
                 dev: dev.info.index(),
                 config,
             }),
-            errno::NEG_ENODEV => Err(ConfigFailure::DeviceRemoved(errno::Errno(ret))),
-            errno::NEG_EINVAL => Err(ConfigFailure::InvalidArgument(errno::Errno(ret))),
-            errno::NEG_ENOMEM => Err(ConfigFailure::NoMemory(errno::Errno(ret))),
-            val => Err(ConfigFailure::Unexpected(errno::Errno(val))),
+            Some(err) => Err(err)
         }
     }
 
@@ -166,7 +171,7 @@ impl RxQueue {
             dev = self.dev.as_u16()
         );
         let nb_rx = unsafe {
-            wrte_eth_rx_burst(
+            rte_eth_rx_burst(
                 self.dev.as_u16(),
                 self.config.queue_index.as_u16(),
                 pkts.as_mut_ptr(),

@@ -29,7 +29,7 @@ fn bind(path: &Path, sysroot: &str) {
         .anon_fields_prefix("annon")
         .use_core()
         .generate_comments(true)
-        .clang_arg("-Dinline=") // hack to make LTO do the inlining instead (easier FFI)
+        // .clang_arg("-Dinline=") // hack to make LTO do the inlining instead (easier FFI)
         .clang_arg("-Wno-deprecated-declarations")
         .wrap_static_fns(true)
         .wrap_static_fns_suffix("_w")
@@ -58,7 +58,10 @@ fn bind(path: &Path, sysroot: &str) {
         .clang_arg(format!("-I{sysroot}/include"))
         .clang_arg("-fretain-comments-from-system-headers")
         .clang_arg("-fparse-all-comments")
+        .clang_arg("-O3")
+        .clang_arg("-flto=thin")
         .clang_arg("-march=znver4")
+        .clang_arg("-fprofile-generate")
         .generate()
         .expect("Unable to generate bindings")
         .write_to_file(path.join("generated.rs"))
@@ -95,10 +98,28 @@ fn main() {
         "rte_log",
         "ibverbs",
         "mlx5",
+        "mlx4",
+        "efa",
+        "hns",
+        "mana",
+        "bnxt_re-rdmav34",
+        "cxgb4-rdmav34",
+        "erdma-rdmav34",
+        "hfi1verbs-rdmav34",
+        "ipathverbs-rdmav34",
+        "irdma-rdmav34",
+        "mthca-rdmav34",
+        "ocrdma-rdmav34",
+        "qedr-rdmav34",
+        "rxe-rdmav34",
+        "siw-rdmav34",
+        "vmw_pvrdma-rdmav34",
         "nl-route-3",
         "nl-3",
         "numa",
+        
     ];
+    
 
     for dep in &depends {
         println!("cargo:rustc-link-lib=static:+whole-archive,+bundle={dep}");

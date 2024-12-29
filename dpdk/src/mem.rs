@@ -7,7 +7,7 @@ use crate::socket::SocketId;
 use alloc::format;
 use alloc::string::String;
 use core::cell::UnsafeCell;
-use core::ffi::{c_char, c_int, CStr};
+use core::ffi::{c_int, CStr};
 use core::fmt::{Debug, Display};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
@@ -15,33 +15,31 @@ use dpdk_sys::*;
 use tracing::{debug, error, info, warn};
 
 use crate::eal::EalErrno;
-use alloc::sync::Arc;
-use std::ffi::c_uint;
+use std::ffi::{c_uint, CString};
 use std::intrinsics::transmute;
-use std::mem::MaybeUninit;
-use std::num::NonZero;
 use std::ptr::null_mut;
+use errno::Errno;
 
 #[repr(transparent)]
 #[derive(Debug)]
 /// DPDK memory manager
 pub struct Manager {
-    _private: PhantomData<()>,
+    _private: (),
 }
 
 impl Manager {
     #[tracing::instrument(level = "debug")]
     pub(crate) fn init() -> Manager {
-        debug!("Initializing DPDK memory manager");
+        info!("Initializing DPDK memory manager");
         Manager {
-            _private: PhantomData,
+            _private: (),
         }
     }
 }
 
 impl Drop for Manager {
     fn drop(&mut self) {
-        debug!("Closing DPDK memory manager");
+        info!("Closing DPDK memory manager");
     }
 }
 
@@ -88,8 +86,8 @@ impl PoolHandle {
         &self.0
     }
 
-    #[tracing::instrument(level = "debug")]
     /// Create a new packet memory pool.
+    #[tracing::instrument(level = "debug")]
     pub fn new_pkt_pool(config: PoolConfig) -> Result<PoolHandle, InvalidMemPoolConfig> {
         let pool = unsafe {
             rte_pktmbuf_pool_create(
@@ -108,13 +106,14 @@ impl PoolHandle {
                 let errno = unsafe { wrte_errno() };
                 let c_err_str = unsafe { rte_strerror(errno) };
                 let err_str = unsafe { CStr::from_ptr(c_err_str) };
-                #[allow(clippy::expect_used)]
+                // SAFETY:
                 // This `expect` is safe because the error string is guaranteed to be valid
-                // null-terminated ASCII,
-                let err_str = err_str.to_str().expect("valid UTF-8");
+                // null-terminated ASCII.
+                #[allow(clippy::expect_used)]
+                let err_str = err_str.to_str().expect("invalid UTF-8");
                 let err_msg = format!("Failed to create mbuf pool: {err_str}; (errno: {errno})");
                 error!("{err_msg}");
-                return Err(InvalidMemPoolConfig::InvalidParams(errno, err_msg));
+                return Err(InvalidMemPoolConfig::InvalidParams(Errno::from(errno), err_msg));
             }
             Some(pool) => pool,
         };
@@ -138,21 +137,21 @@ impl PoolHandle {
         &self.0.config
     }
 
-    // TODO: confirm we aren't doing two allocations here.
-    pub fn alloc_bulk(&self, num: usize) -> Result<Vec<Mbuf>, ()> {
+    #[must_use]
+    pub fn alloc_bulk(&self, num: usize) -> Vec<Mbuf> {
         // SAFETY: we should never have any null ptrs come back if ret passes check
         let mut mbufs: Vec<Mbuf> = (0..num)
             .map(|_| unsafe { transmute(null_mut::<rte_mbuf>()) })
             .collect();
         let ret = unsafe {
-            wrte_pktmbuf_alloc_bulk(
+            rte_pktmbuf_alloc_bulk(
                 self.0.as_mut_ptr(),
-                transmute(mbufs.as_mut_ptr()),
+                transmute::<*mut Mbuf, *mut *mut rte_mbuf>(mbufs.as_mut_ptr()),
                 num as c_uint,
             )
         };
-        EalErrno::check(ret);
-        Ok(mbufs)
+        EalErrno::assert(ret);
+        mbufs
     }
 }
 
@@ -184,7 +183,7 @@ impl PoolInner {
     /// # Safety
     ///
     /// <div class="warning">
-    /// This function is very easy to use in an unsound way!
+    /// This function is very easy to use unsoundly!
     ///
     /// You need to be careful when handing the return value to a [`dpdk_sys`] function or data
     /// structure.
@@ -229,18 +228,18 @@ impl Default for PoolParams {
     fn default() -> PoolParams {
         PoolParams {
             size: (1 << 15) - 1,
-            cache_size: 128,
-            private_size: 0,
+            cache_size: 256,
+            private_size: 256,
             data_size: 2048,
             socket_id: SocketId::current(),
         }
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Memory pool config
 pub struct PoolConfig {
-    name: [c_char; PoolConfig::MAX_NAME_LEN + 1],
+    name: CString,
     params: PoolParams,
 }
 
@@ -259,7 +258,7 @@ pub enum InvalidMemPoolName {
     ContainsNullBytes(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Ways in which a memory pool config can be invalid.
 pub enum InvalidMemPoolConfig {
     /// The name of the pool is illegal.
@@ -267,38 +266,35 @@ pub enum InvalidMemPoolConfig {
     /// The parameters of the pool are illegal.
     ///
     /// TODO: this should be a more detailed error.
-    InvalidParams(i32, String),
+    InvalidParams(Errno, String),
 }
 
 impl PoolConfig {
     /// The maximum length of a memory pool name.
     pub const MAX_NAME_LEN: usize = 25;
 
-    #[tracing::instrument(level = "trace")]
     /// Validate a memory pool name.
-    fn validate_name<Name: Debug + AsRef<str>>(
-        name: Name,
-    ) -> Result<[c_char; PoolConfig::MAX_NAME_LEN + 1], InvalidMemPoolName> {
-        let name_ref = name.as_ref();
-        if !name_ref.is_ascii() {
+    #[tracing::instrument(level = "trace")]
+    fn validate_name(name: &str) -> Result<CString, InvalidMemPoolName> {
+        if !name.is_ascii() {
             return Err(InvalidMemPoolName::NotAscii(format!(
-                "Name must be valid ASCII: {name_ref} is not ASCII."
+                "Name must be valid ASCII: {name} is not ASCII."
             )));
         }
 
-        if name_ref.len() > PoolConfig::MAX_NAME_LEN {
+        if name.len() > PoolConfig::MAX_NAME_LEN {
             return Err(InvalidMemPoolName::TooLong(
                 format!(
-                    "Memory pool name must be at most {max} characters of valid ASCII: {name_ref} is too long ({len} > {max}).",
+                    "Memory pool name must be at most {max} characters of valid ASCII: {name} is too long ({len} > {max}).",
                     max = PoolConfig::MAX_NAME_LEN,
-                    len=name_ref.len()
+                    len= name.len()
                 )
             ));
         }
 
-        if name_ref.is_empty() {
+        if name.is_empty() {
             return Err(InvalidMemPoolName::Empty(
-                format!("Memory pool name must be at least 1 character of valid ASCII: {name_ref} is too short ({len} == 0).", len=name_ref.len()))
+                format!("Memory pool name must be at least 1 character of valid ASCII: {name} is too short ({len} == 0).", len= name.len()))
             );
         }
 
@@ -309,42 +305,45 @@ impl PoolConfig {
             'Z',
         ];
 
-        if !name_ref.starts_with(ASCII_LETTERS) {
+        if !name.starts_with(ASCII_LETTERS) {
             return Err(InvalidMemPoolName::DoesNotStartWithAsciiLetter(
-                format!("Memory pool name must start with a letter: {name_ref} does not start with a letter."))
+                format!("Memory pool name must start with a letter: {name} does not start with a letter."))
             );
         }
 
-        if name_ref.contains('\0') {
-            return Err(InvalidMemPoolName::ContainsNullBytes(format!(
-                "Memory pool name must not contain null bytes: {name_ref} contains a null byte."
-            )));
-        }
+        let name = CString::new(name).map_err(|_| {
+            InvalidMemPoolName::ContainsNullBytes(
+                "Memory pool name must not contain null bytes".to_string(),
+            )
+        })?;
 
-        let mut name_chars = [0 as c_char; PoolConfig::MAX_NAME_LEN + 1];
-        for (i, c) in name_ref.chars().enumerate() {
-            name_chars[i] = c as c_char;
-        }
-        Ok(name_chars)
+        Ok(name)
     }
 
     /// Create a new memory pool config.
     ///
     /// TODO: validate the pool parameters.
-    #[tracing::instrument(level = "debug")]
+    #[tracing::instrument(level = "debug", ret)]
     pub fn new<T: Debug + AsRef<str>>(
         name: T,
         params: PoolParams,
     ) -> Result<PoolConfig, InvalidMemPoolConfig> {
-        debug!(
+        PoolConfig::new_internal(name.as_ref(), params)
+    }
+
+    /// Create a new memory pool config (de-generic)
+    ///
+    /// TODO: validate the pool parameters.
+    #[cold]
+    #[tracing::instrument(level = "debug", ret)]
+    fn new_internal(name: &str, params: PoolParams) -> Result<PoolConfig, InvalidMemPoolConfig> {
+        info!(
             "Creating memory pool config: {name}, {params:?}",
-            name = name.as_ref()
         );
-        let name = match PoolConfig::validate_name(name.as_ref()) {
+        let name = match PoolConfig::validate_name(name) {
             Ok(name) => name,
             Err(e) => return Err(InvalidMemPoolConfig::InvalidName(e)),
         };
-
         Ok(PoolConfig { name, params })
     }
 
@@ -354,6 +353,7 @@ impl PoolConfig {
     ///
     /// This function should never panic unless the config has been externally modified.
     /// Don't do that.
+    #[cold]
     #[tracing::instrument(level = "trace")]
     pub fn name(&self) -> &str {
         #[allow(clippy::expect_used)]
@@ -383,16 +383,19 @@ impl Drop for PoolInner {
 /// It can be "safely" transmuted _to_ an `*mut rte_mbuf` under the assumption that
 /// standard borrowing rules are observed.
 #[repr(transparent)]
+#[derive(Debug)]
 pub struct Mbuf {
     pub(crate) raw: NonNull<rte_mbuf>,
     marker: PhantomData<rte_mbuf>,
 }
 
 /// TODO: this is possibly poor optimization, we should try bulk dealloc if this slows us down
+/// TODO: we need to ensure that we don't call drop on Mbuf when they have been transmitted.
+///       The transmit function automatically drops such mbufs and we don't want to double free.
 impl Drop for Mbuf {
     fn drop(&mut self) {
         unsafe {
-            wrte_pktmbuf_free(self.raw.as_ptr());
+            rte_pktmbuf_free(self.raw.as_ptr());
         }
     }
 }
@@ -404,15 +407,16 @@ impl Mbuf {
     ///
     /// # Safety
     ///
-    /// This function is unsafe if passed an invalid pointer.
+    /// This function is unsound if passed an invalid pointer.
     ///
-    /// The only defense made against invalid pointers here is the use of `NonNull::new` to ensure
-    /// the pointer is not null.
-    #[tracing::instrument(level = "trace")]
+    /// The only defense made against invalid pointers is to check that the pointer is non-null.
+    #[must_use]
+    #[tracing::instrument(level = "trace", ret)]
     pub(crate) fn new_from_raw(raw: *mut rte_mbuf) -> Option<Mbuf> {
         let raw = match NonNull::new(raw) {
             None => {
-                warn!("Attempted to create Mbuf from null pointer");
+                debug_assert!(false, "Attempted to create Mbuf from null pointer");
+                error!("Attempted to create Mbuf from null pointer");
                 return None;
             }
             Some(raw) => raw,
@@ -424,22 +428,11 @@ impl Mbuf {
         })
     }
 
-    /// Get a mutable reference to the inner rte_mbuf pointer.
-    ///
-    /// # Safety
-    ///
-    /// This function is unsafe because it returns a mutable reference to the inner pointer.
-    /// The caller must ensure that the pointer is not used after the Mbuf is deallocated.
-    /// The caller must also ensure that the pointer is not used to violate borrowing rules or
-    /// to violate any invariants of the [`Mbuf`].
-    #[must_use]
-    pub unsafe fn inner(&mut self) -> *mut rte_mbuf {
-        self.raw.as_ptr()
-    }
-
-    // TODO: deal with multi seg packets
     /// Get an immutable ref to the raw data of an Mbuf
+    ///
+    /// TODO: deal with multi segment packets
     #[must_use]
+    #[tracing::instrument(level = "trace")]
     pub fn raw_data(&self) -> &[u8] {
         if unsafe { self.raw.as_ref().annon1.annon1.nb_segs } > 1 {
             error!("multi seg packets not supported yet");
@@ -459,6 +452,7 @@ impl Mbuf {
     // TODO: deal with multi seg packets
     /// Get a mutable ref to the raw data of an Mbuf (usually the binary contents of a packet).
     #[must_use]
+    #[tracing::instrument(level = "trace")]
     pub fn raw_data_mut(&mut self) -> &mut [u8] {
         unsafe {
             if self.raw.as_ref().annon1.annon1.nb_segs > 1 {

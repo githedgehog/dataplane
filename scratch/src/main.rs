@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::collections::VecDeque;
 use dpdk::dev::{RxOffload, TxOffloadConfig};
 use dpdk::eal::{Eal, EalErrno};
 use dpdk::lcore::ServiceThread;
 use dpdk::mem::Mbuf;
 use dpdk::{dev, eal, mem, queue, socket};
 use dpdk_sys::*;
+use std::collections::VecDeque;
 use std::ffi::{c_int, c_uint, c_void, CStr, CString};
 use std::fmt::{Debug, Display};
 use std::hint::spin_loop;
@@ -635,11 +635,14 @@ fn main() {
     ];
 
     let rte = Box::new(eal::init(eal_args).unwrap_or_else(|err| fatal_error(err.to_string())));
-    unsafe {
-        rte_trace_regexp((c".*").as_ptr(), false)
-    };
-
-
+    if unsafe { rte_trace_feature_is_enabled() } {
+        fatal_error("rte trace feature should be disabled!");
+    }
+    // std::thread::scope(|scope| {
+    //     ServiceThread::new(scope, "test_thread", || {
+    //         run(rte.deref() as *const _ as *mut _);
+    //     });
+    // });
     ServiceThread::new_eal(run, rte.deref() as *const _ as *mut _);
     // std::thread::scope(|scope| {
     //     dpdk::lcore::ServiceThread::new(scope, "testing123", || {
@@ -916,12 +919,12 @@ fn flow_metadata(i: u32, port_id: u16, rx_q: u16, err: &mut rte_flow_error) -> R
     pattern[0].type_ = rte_flow_item_type::RTE_FLOW_ITEM_TYPE_ETH;
     let mut pat0 = rte_flow_item_eth::default();
     unsafe {
-        pat0.annon1.hdr.ether_type = 0xFFFF;
+        pat0.annon1.hdr.ether_type = 0x0000;
         pat0.annon1.hdr.src_addr = rte_ether_addr {
-            addr_bytes: [0xFF; 6]
+            addr_bytes: [0x0; 6],
         };
         pat0.annon1.hdr.dst_addr = rte_ether_addr {
-            addr_bytes: [0xFF; 6]
+            addr_bytes: [0x0; 6],
         };
     };
     let pat0_mask = pat0.clone();
@@ -1015,17 +1018,8 @@ fn jump_to_1(port_id: u16, err: &mut rte_flow_error) -> RteFlow {
 }
 
 extern "C" fn run(arg: *mut c_void) -> c_int {
+    coz::thread_init();
     let rte = unsafe { &*(arg as *mut Eal) };
-    let ret = unsafe {
-        rte_trace_regexp((c".*").as_ptr(), false)
-    };
-    if ret == 0 {
-        warn!("trace disable 0");
-    } else if ret == 1 {
-        warn!("trace disable 1");
-    } else {
-        warn!("trace returned unexpected result {ret}");
-    }
     rte.socket.iter().for_each(|socket| {
         warn!("Socket: {socket:?}");
     });
@@ -1066,7 +1060,6 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
             num_descriptors: 8192,
             socket_preference: socket::Preference::Dev(my_dev.info.index()),
             offloads: my_dev.info.rx_offload_caps(),
-            config: (),
             pool: mem::PoolHandle::new_pkt_pool(
                 mem::PoolConfig::new("science", mem::PoolParams::default()).unwrap(),
             )
@@ -1075,12 +1068,12 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
 
         let tx_config = queue::tx::TxQueueConfig {
             queue_index: queue::tx::TxQueueIndex(0),
-            num_descriptors: 512,
+            num_descriptors: 8192,
             socket_preference: socket::Preference::Dev(my_dev.info.index()),
             config: (),
         };
 
-        my_dev.configure_rx_queue(rx_config).unwrap();
+        my_dev.new_rx_queue(rx_config).unwrap();
         my_dev.configure_tx_queue(tx_config).unwrap();
 
         // let rx_config = queue::rx::RxQueueConfig {
@@ -1109,7 +1102,7 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
         let ret = unsafe {
             rte_flow_isolate(my_dev.info.index().0, 1, &mut err)
         };
-        EalErrno::check(ret);
+        EalErrno::assert(ret);
 
         warn!("device set to flow isolated mode");
 
@@ -1212,7 +1205,7 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
             let mut batch: [*mut rte_mbuf; BATCH_SIZE] = [null_mut(); BATCH_SIZE];
 
             let ret = unsafe {
-                rte_eth_rx_burst(
+                rte_eth_rx_burst_w(
                     my_dev.info.index().0,
                     queue::rx::RxQueueIndex(0).0,
                     batch.as_mut_ptr(),
@@ -1221,7 +1214,7 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
             };
 
             unsafe {
-                rte_eth_tx_burst(
+                rte_eth_tx_burst_w(
                     my_dev.info.index().0,
                     queue::rx::RxQueueIndex(0).0,
                     batch.as_mut_ptr(),
@@ -1270,7 +1263,7 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
                 pkts_in_batch = 0;
                 warn!("ret: {ret}, total {pkts}, polls: {polls}, zeros: {zeros}, avg: {avg}, avg_in_batch: {avg_in_batch}");
             }
-
+            coz::progress!("loop");
         }
     });
     0

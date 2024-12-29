@@ -10,6 +10,7 @@ use alloc::vec::Vec;
 use core::ffi::c_int;
 use core::fmt::{Debug, Display};
 use dpdk_sys::*;
+use errno::Errno;
 use std::ffi::CStr;
 use tracing::{error, info};
 
@@ -115,6 +116,7 @@ impl ValidatedEalArgs {
 /// 2. The arguments are not valid ASCII strings.
 /// 3. The EAL initialization fails.
 /// 4. The EAL has already been initialized.
+#[cold]
 #[tracing::instrument(level = "info", skip(args), ret)]
 pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Result<Eal, InitError> {
     let mut args = ValidatedEalArgs::new(args).map_err(InitError::InvalidArguments)?;
@@ -137,16 +139,15 @@ pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Result<Eal, Init
 }
 
 impl Eal {
-    #[tracing::instrument(level = "trace", ret)]
     /// Returns `true` if the [`Eal`] is using the PCI bus.
     ///
     /// This is mostly a safe wrapper around [`rte_eal_has_pci`]
     /// which simply converts the return value to a [`bool`] instead of a [`c_int`].
+    #[tracing::instrument(level = "trace", ret)]
     pub fn has_pci(&self) -> bool {
         unsafe { rte_eal_has_pci() != 0 }
     }
 
-    #[allow(clippy::expect_used)]
     /// Exits the DPDK application with an error message, cleaning up the [`Eal`] as gracefully as
     /// possible (by way of [`rte_exit`]).
     ///
@@ -155,19 +156,18 @@ impl Eal {
     /// # Panics
     ///
     /// Panics if the error message cannot be converted to a `CString`.
-    /// This is a serious error as it means there is fundamental logic bug in DPDK.
+    #[allow(clippy::expect_used)]
     pub(crate) fn fatal_error<T: Display + AsRef<str>>(message: T) -> ! {
         error!("{message}");
-        let message_cstring = CString::new(message.as_ref()).expect("invalid error message!");
+        let message_cstring = CString::new(message.as_ref())
+            .unwrap_or_else(|_| unsafe {
+                rte_exit(1, c"Failed to convert message to CString".as_ptr())
+            });
         unsafe { rte_exit(1, message_cstring.as_ptr()) }
     }
 
     /// Get the DPDK `rte_errno` and parse it as an [`errno::ErrorCode`].
-    ///
-    /// # Note
-    ///
-    /// If the err
-    pub fn errno() -> errno::ErrorCode {
+    pub fn errno(&self) -> errno::ErrorCode {
         errno::ErrorCode::parse_i32(unsafe { wrte_errno() })
     }
 }
@@ -203,7 +203,7 @@ pub struct EalErrno(c_int);
 
 impl EalErrno {
     #[allow(clippy::expect_used)]
-    pub fn check(ret: c_int) {
+    pub fn assert(ret: c_int) {
         if ret == 0 {
             return;
         }
@@ -212,4 +212,5 @@ impl EalErrno {
         let ret_msg = ret_msg.to_str().expect("dpdk message is not valid unicode");
         Eal::fatal_error(ret_msg)
     }
+
 }

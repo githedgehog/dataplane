@@ -399,3 +399,37 @@ group software
 @enduml
 ```
 
+```puml
+@startuml
+
+rectangle agent {
+ rectangle agent_to_manager_channel as "manager channel"
+}
+
+
+rectangle worker {
+  rectangle poller {
+    rectangle rx_queue as "rx queue"
+    rectangle tx_queue as "tx queue"
+    rectangle offload_queue as "offload queue"
+  }
+  rectangle rx_buffer as "rx buffer"
+  rectangle tx_buffer as "tx buffer"
+}
+
+rectangle manager {
+  collections worker_channel as "worker channel"
+  collections manager_to_agent_channel as "agent channel"
+}
+
+rx_queue --> rx_buffer : burst
+tx_queue <-- tx_buffer : burst
+
+agent_to_manager_channel <--> manager_to_agent_channel
+
+
+
+
+
+@enduml
+```

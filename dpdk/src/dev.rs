@@ -23,11 +23,12 @@ use dpdk_sys::rte_eth_tx_mq_mode::RTE_ETH_MQ_TX_NONE;
 use errno::{Errno, ErrorCode, NegStandardErrno, StandardErrno};
 use queue::{rx, tx};
 
-#[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// A DPDK Ethernet port index.
 ///
 /// This is a transparent newtype around `u16` to provide type safety and prevent accidental misuse.
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+// TODO: inner value should be `pub(crate)`
 pub struct DevIndex(pub u16);
 
 impl Display for DevIndex {
@@ -754,18 +755,18 @@ pub struct Dev {
 
 impl Dev {
     // TODO: return type should provide a handle back to the queue
-    /// Configure a new [`rx::RxQueueStopped`]
-    pub fn configure_rx_queue(
+    /// Configure a new [`RxQueue`]
+    pub fn new_rx_queue(
         &mut self,
         config: RxQueueConfig,
     ) -> Result<(), rx::ConfigFailure> {
-        let rx_queue = RxQueue::configure(self, config)?;
+        let rx_queue = RxQueue::setup(self, config)?;
         self.rx_queues.push(rx_queue);
         Ok(())
     }
 
     // TODO: return type should provide a handle back to the queue
-    /// Configure a new [`tx::TxQueueStopped`]
+    /// Configure a new [`TxQueue`]
     pub fn configure_tx_queue(
         &mut self,
         config: TxQueueConfig,
@@ -783,7 +784,7 @@ impl Dev {
         tx: TxQueueConfig,
     ) -> Result<(), HairpinConfigFailure> {
         let rx =
-            RxQueue::configure(self, rx).map_err(HairpinConfigFailure::RxQueueCreationFailed)?;
+            RxQueue::setup(self, rx).map_err(HairpinConfigFailure::RxQueueCreationFailed)?;
         let tx =
             TxQueue::configure(self, tx).map_err(HairpinConfigFailure::TxQueueCreationFailed)?;
         let hairpin = HairpinQueue::new(self, rx, tx)?;

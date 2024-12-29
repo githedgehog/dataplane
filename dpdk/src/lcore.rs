@@ -98,19 +98,16 @@ impl ServiceThread<'_> {
         }
     }
 
+    // todo: this should be private or `pub(crate)` after we supply a higher level API
     pub fn new_eal(run: extern "C" fn(*mut c_void) -> c_int, arg: *mut c_void) {
         let mut list = LCoreId::list();
-        list.next();
-        list.next();
-        list.next();
-        list.next();
         #[allow(clippy::panic)]
         let Some(lcore) = list.next() else {
             panic!("no LCores available");
         };
         warn!("launching on on LCoreId({0})", lcore.0);
         let ret = unsafe { rte_eal_remote_launch(Some(run), arg, lcore.0 as c_uint) };
-        EalErrno::check(ret);
+        EalErrno::assert(ret);
     }
 
     #[allow(clippy::expect_used)]
@@ -215,38 +212,6 @@ impl PartialEq for RteThreadId {
 }
 
 impl Eq for RteThreadId {}
-
-impl LCore {
-    fn allocate(params: LCoreParams) -> LCore {
-        let mut thread = rte_thread_t::default();
-        let mut attr = rte_thread_attr_t {
-            priority: LCorePriority::RealTime as u32,
-        };
-        EalErrno::check(unsafe { rte_thread_attr_init(&mut attr) });
-        EalErrno::check(unsafe { rte_thread_create(&mut thread, &attr, params.thunk, null_mut()) });
-
-        #[allow(clippy::panic)]
-        if !params.name.is_ascii() {
-            panic!("invalid thread name: not ascii");
-        }
-        #[allow(clippy::expect_used)]
-        unsafe {
-            rte_thread_set_name(
-                thread,
-                CString::new(params.name.as_bytes().to_vec())
-                    .expect("could not allocate thread name")
-                    .as_ptr(),
-            )
-        };
-        EalErrno::check(unsafe {
-            rte_thread_set_priority(thread, LCorePriority::RealTime as c_uint)
-        });
-        LCore {
-            params,
-            id: RteThreadId(thread),
-        }
-    }
-}
 
 impl LCoreIndex {
     /// Return an iterator which loops over all available [`LCoreIndex`] values.
