@@ -13,27 +13,29 @@ use core::marker::PhantomData;
 use core::ptr::NonNull;
 use dpdk_sys::*;
 use tracing::{debug, error, info, warn};
-
-use crate::eal::EalErrno;
+use core::alloc::{GlobalAlloc, Layout};
+use std::alloc::System;
+use crate::eal::{Eal, EalErrno};
 use std::ffi::{c_uint, CString};
-use std::intrinsics::transmute;
-use std::ptr::null_mut;
+use core::intrinsics::transmute;
+use core::ptr::null_mut;
+use std::cell::OnceCell;
+use std::ptr::null;
+use std::sync::{Once, OnceLock};
+use std::sync::atomic::AtomicBool;
 use errno::Errno;
 
+/// DPDK memory manager
 #[repr(transparent)]
 #[derive(Debug)]
-/// DPDK memory manager
-pub struct Manager {
-    _private: (),
-}
+#[non_exhaustive]
+pub struct Manager {}
 
 impl Manager {
     #[tracing::instrument(level = "debug")]
     pub(crate) fn init() -> Manager {
         info!("Initializing DPDK memory manager");
-        Manager {
-            _private: (),
-        }
+        Manager {}
     }
 }
 
@@ -471,3 +473,83 @@ impl Mbuf {
         }
     }
 }
+
+#[non_exhaustive]
+#[repr(transparent)]
+pub struct FlexAllocator {
+    pub initialization: Once,
+}
+
+impl FlexAllocator {
+    pub const fn init() -> FlexAllocator {
+        FlexAllocator {
+            initialization: Once::new(),
+        }
+    }
+}
+
+#[repr(transparent)]
+#[non_exhaustive]
+pub struct RteAllocator;
+
+unsafe impl GlobalAlloc for RteAllocator {
+    #[inline(always)]
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        rte_malloc(null(), layout.size(), layout.align() as _) as _
+    }
+
+    #[inline(always)]
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+        rte_free(ptr as _);
+    }
+
+    #[inline(always)]
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        rte_zmalloc(null(), layout.size(), layout.align() as _) as _
+    }
+
+    #[inline(always)]
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        rte_realloc(ptr as _, new_size, layout.align() as _) as _
+    }
+}
+
+unsafe impl GlobalAlloc for FlexAllocator {
+    #[inline]
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if self.initialization.is_completed()  {
+            rte_malloc(null(), layout.size(), layout.align() as _) as _
+        } else  {
+            System.alloc(layout)
+        }
+    }
+
+    #[inline]
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        if self.initialization.is_completed()  {
+            rte_free(ptr as _);
+        } else  {
+            System.dealloc(ptr, layout)
+        }
+    }
+
+    #[inline]
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        if self.initialization.is_completed()  {
+            rte_zmalloc(null(), layout.size(), layout.align() as _) as _
+        } else  {
+            System.alloc_zeroed(layout)
+        }
+    }
+
+    #[inline]
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        if self.initialization.is_completed()  {
+            rte_realloc(ptr as _, new_size, layout.align() as _) as _
+        } else  {
+            System.realloc(ptr, layout, new_size)
+        }
+    }
+    
+}
+

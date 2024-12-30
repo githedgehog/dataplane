@@ -4,11 +4,11 @@
 use dpdk::dev::{RxOffload, TxOffloadConfig};
 use dpdk::eal::{Eal, EalErrno};
 use dpdk::lcore::ServiceThread;
-use dpdk::mem::Mbuf;
+use dpdk::mem::{FlexAllocator, Mbuf};
 use dpdk::{dev, eal, mem, queue, socket};
 use dpdk_sys::*;
 use std::collections::VecDeque;
-use std::ffi::{c_int, c_uint, c_void, CStr, CString};
+use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::fmt::{Debug, Display};
 use std::hint::spin_loop;
 use std::io;
@@ -18,6 +18,9 @@ use std::ptr::null_mut;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, info, trace, warn};
+
+#[global_allocator]
+static EAL: FlexAllocator = FlexAllocator::init();
 
 #[tracing::instrument(level = "trace", ret)]
 // TODO: proper safety.  This should return a Result but I'm being a savage for demo purposes.
@@ -609,23 +612,12 @@ fn generate_ct_flow2(port_id: u16, rx_q: u16, err: &mut rte_flow_error) -> RteFl
 }
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::WARN)
-        .with_target(false)
-        .with_thread_ids(true)
-        .with_line_number(true)
-        .init();
-
-    let eal_args = vec![
+    const EAL_ARGS: &[&str] = &[
         "--main-lcore",
         "2",
         "--lcores",
         "2-4",
         "--in-memory",
-        // "--huge-dir",
-        // "/mnt/huge/2M",
-        // "--huge-dir",
-        // "/mnt/huge/1G",
         "--allow",
         "0000:c1:00.0,dv_flow_en=1",
         "--huge-worker-stack=8192",
@@ -634,7 +626,15 @@ fn main() {
         "--trace-mode=discard",
     ];
 
-    let rte = Box::new(eal::init(eal_args).unwrap_or_else(|err| fatal_error(err.to_string())));
+    let rte = Box::new(eal::init(EAL_ARGS).unwrap_or_else(|err| fatal_error(err.to_string())));
+    EAL.initialization.call_once(|| {});
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_target(false)
+        .with_thread_ids(true)
+        .with_line_number(true)
+        .init();
+
     if unsafe { rte_trace_feature_is_enabled() } {
         fatal_error("rte trace feature should be disabled!");
     }
@@ -1018,7 +1018,7 @@ fn jump_to_1(port_id: u16, err: &mut rte_flow_error) -> RteFlow {
 }
 
 extern "C" fn run(arg: *mut c_void) -> c_int {
-    coz::thread_init();
+    assert!(EAL.initialization.is_completed(), "EAL not initialized");
     let rte = unsafe { &*(arg as *mut Eal) };
     rte.socket.iter().for_each(|socket| {
         warn!("Socket: {socket:?}");
@@ -1205,7 +1205,7 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
             let mut batch: [*mut rte_mbuf; BATCH_SIZE] = [null_mut(); BATCH_SIZE];
 
             let ret = unsafe {
-                rte_eth_rx_burst_w(
+                rte_eth_rx_burst(
                     my_dev.info.index().0,
                     queue::rx::RxQueueIndex(0).0,
                     batch.as_mut_ptr(),
@@ -1214,7 +1214,7 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
             };
 
             unsafe {
-                rte_eth_tx_burst_w(
+                rte_eth_tx_burst(
                     my_dev.info.index().0,
                     queue::rx::RxQueueIndex(0).0,
                     batch.as_mut_ptr(),
@@ -1263,7 +1263,6 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
                 pkts_in_batch = 0;
                 warn!("ret: {ret}, total {pkts}, polls: {polls}, zeros: {zeros}, avg: {avg}, avg_in_batch: {avg_in_batch}");
             }
-            coz::progress!("loop");
         }
     });
     0

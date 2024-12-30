@@ -9,10 +9,15 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::ffi::c_int;
 use core::fmt::{Debug, Display};
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::env;
 use dpdk_sys::*;
 use errno::Errno;
-use std::ffi::CStr;
+use std::ffi::{c_char, CStr};
+use allocator_api2::alloc::Allocator;
 use tracing::{error, info};
+
+type SystemVec<T> = allocator_api2::vec::Vec<T, System>;
 
 /// Safe wrapper around the DPDK Environment Abstraction Layer (EAL).
 ///
@@ -20,6 +25,7 @@ use tracing::{error, info};
 /// properly initialized and cleaned up.
 #[derive(Debug)]
 #[repr(transparent)]
+#[non_exhaustive]
 pub struct Eal {
     /// The memory manager.
     ///
@@ -35,18 +41,6 @@ pub struct Eal {
     pub socket: socket::Manager,
     // TODO: queue
     // TODO: flow
-    // ensure that this type can't be constructed outside of this module
-    _private: EalPrivate,
-}
-
-#[repr(transparent)]
-#[derive(Debug)]
-struct EalPrivate {}
-
-impl Drop for EalPrivate {
-    fn drop(&mut self) {
-        info!("EAL runtime environment closed");
-    }
 }
 
 /// Error type for EAL initialization failures.
@@ -133,7 +127,6 @@ pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Result<Eal, Init
             mem: mem::Manager::init(),
             dev: dev::Manager::init(),
             socket: socket::Manager::init(),
-            _private: EalPrivate {},
         })
     }
 }

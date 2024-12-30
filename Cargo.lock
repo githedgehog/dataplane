@@ -128,6 +128,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b048fb63fd8b5923fc5aa7b340d8e156aec7ec02f0c78fa8a6ddc2613f6f71de"
 
 [[package]]
+name = "blink-alloc"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e669f146bb8b2327006ed94c69cf78c8ec81c100192564654230a40b4f091d82"
+dependencies = [
+ "allocator-api2",
+]
+
+[[package]]
 name = "bolero"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -445,6 +454,8 @@ name = "dpdk"
 version = "0.1.0"
 dependencies = [
  "ahash",
+ "allocator-api2",
+ "blink-alloc",
  "criterion",
  "crossbeam",
  "dpdk-sys",

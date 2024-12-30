@@ -12,14 +12,13 @@ extern crate alloc;
 
 pub mod vlan;
 pub mod vxlan;
+pub mod packet;
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use alloc::vec::Vec;
-    use etherparse::err::packet::SliceError;
-    use etherparse::NetHeaders;
     use tracing::info;
     use tracing_test::traced_test;
 
