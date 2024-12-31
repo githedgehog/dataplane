@@ -13,12 +13,11 @@ use crate::dev::DevIndex;
 #[allow(unused_imports)]
 /// imported for rustdoc
 use crate::eal::Eal;
-use crate::lcore::{RteThreadId, LCoreId};
+use crate::lcore::LCoreId;
 use core::ffi::c_uint;
 use core::marker::PhantomData;
 use dpdk_sys::rte_socket_id;
-use errno::{ErrorCode, StandardErrno};
-use std::ffi::c_int;
+use errno::ErrorCode;
 use tracing::{debug, info};
 
 /// DPDK socket manager.
@@ -227,9 +226,7 @@ impl SocketId {
     /// TODO: change lcore to a proper lcore id type.
     #[must_use]
     pub fn get_by_lcore_id(id: LCoreId) -> SocketId {
-        SocketId(unsafe {
-            dpdk_sys::rte_lcore_to_socket_id(id.as_u32())
-        })
+        SocketId(unsafe { dpdk_sys::rte_lcore_to_socket_id(id.as_u32()) })
     }
 
     /// Look up a [`SocketId`] by the device it is associated with.
@@ -260,9 +257,7 @@ impl TryFrom<Preference> for SocketId {
 
     fn try_from(value: Preference) -> Result<Self, Self::Error> {
         match value {
-            Preference::CurrentThread => {
-                Ok(SocketId::get_by_lcore_id(LCoreId::current()))
-            }
+            Preference::CurrentThread => Ok(SocketId::get_by_lcore_id(LCoreId::current())),
             Preference::Id(id) => Ok(id),
             Preference::LCore(lcore_id) => Ok(SocketId::get_by_lcore_id(lcore_id)),
             Preference::Dev(dev) => dev.socket_id(),

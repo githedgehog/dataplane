@@ -1,12 +1,12 @@
 use crate::flow::MacAddr;
 use core::fmt::Display;
-use std::collections::{BinaryHeap, HashMap, VecDeque};
+use crossbeam::channel::{Receiver, Sender};
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::net::Ipv4Addr;
 use std::num::NonZero;
 use std::sync::Arc;
 use std::thread::ThreadId;
-use crossbeam::channel::{Receiver, Sender};
 
 pub trait Versioned {
     type Item;

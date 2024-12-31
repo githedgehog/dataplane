@@ -35,7 +35,7 @@ impl CheckedParams {
 }
 
 impl Params {
-    const MAX_NAME_LENGTH: usize = 127;
+    pub const MAX_NAME_LENGTH: usize = 127;
 
     #[cold]
     fn validate(self) -> Result<CheckedParams, err::InvalidArgument> {

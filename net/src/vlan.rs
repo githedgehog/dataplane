@@ -57,20 +57,18 @@ pub enum InvalidVid {
 
 impl InvalidVid {
     /// The raw `u16` value of the reserved (4095) [`Vid`]
-    pub(crate) const RESERVED: u16 = 4095;
+    pub const RESERVED: u16 = 4095;
     /// The raw `u16` value of the first truly nonsensical [`Vid`] (4096)
-    pub(crate) const TOO_LARGE: u16 = Self::RESERVED + 1;
+    pub const TOO_LARGE: u16 = Self::RESERVED + 1;
 }
 
 impl Vid {
     /// The minimum legal VID value (1).
-    #[allow(unsafe_code)] // const eval
+    #[allow(unsafe_code)] // safe due to const eval
     pub const MIN: Vid = Vid(unsafe { NonZero::new_unchecked(1) });
 
-    const MAX_U16: u16 = 4094;
-
     /// The maximum legal VID value (2^12 - 2).
-    #[allow(unsafe_code)] // const eval
+    #[allow(unsafe_code)] // safe due to const eval
     pub const MAX: Vid = Vid(unsafe { NonZero::new_unchecked(4094) });
 
     /// Create a new [`Vid`] from a `u16`.

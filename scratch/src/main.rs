@@ -1119,9 +1119,9 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
 
         my_dev.start().unwrap();
         let mut err = rte_flow_error::default();
-        let jump = jump_to_1(my_dev.info.index().0, &mut err);
+        jump_to_1(my_dev.info.index().0, &mut err);
         let mut err = rte_flow_error::default();
-        let flow = flow_metadata(100, my_dev.info.index().0, 0, &mut err);
+        flow_metadata(100, my_dev.info.index().0, 0, &mut err);
 
         // for i in 0..50_000_000 {
         //     if i % 100_000 == 0 {

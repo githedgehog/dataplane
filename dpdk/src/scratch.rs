@@ -1,21 +1,15 @@
 use crate::flow::MacAddr;
-use alloc::rc::{Rc, Weak};
+use alloc::rc::Weak;
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 use crossbeam::utils::CachePadded;
-use etherparse::{Ethernet2Header, VlanPcp};
 use left_right::{Absorb, ReadHandle, WriteHandle};
-use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
-use std::ffi::{c_uint, CStr, CString};
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::hash::Hash;
 use std::marker::PhantomData;
-use std::mem::MaybeUninit;
 use std::net::Ipv6Addr;
 use std::num::NonZero;
-use std::ptr::NonNull;
-use std::sync::mpsc::Receiver;
-use std::sync::Arc;
-use tracing::{error, info};
+use tracing::error;
 
 
 #[derive(Debug, Copy, Clone)]
@@ -414,7 +408,7 @@ struct SourceNat2 {
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
-struct TypedId<T> {
+pub struct TypedId<T> {
     raw: u64,
     marker: PhantomData<T>,
 }

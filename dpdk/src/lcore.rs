@@ -1,7 +1,6 @@
 use crate::eal::{Eal, EalErrno};
 use dpdk_sys::*;
-use std::ffi::{c_int, c_uint, c_void, CString};
-use std::ptr::null_mut;
+use std::ffi::{c_int, c_uint, c_void};
 use tracing::{info, warn};
 
 #[repr(u32)]
@@ -111,24 +110,24 @@ impl ServiceThread<'_> {
     }
 
     #[allow(clippy::expect_used)]
-    fn join(self) {
+    pub fn join(self) {
         self.handle.join().expect("failed to join LCore");
     }
 }
 
-struct LCoreParams {
+pub struct LCoreParams {
     priority: LCorePriority,
     name: String,
     thunk: rte_thread_func,
     thunk2: lcore_function_t,
 }
 
-trait LCoreParameters {
+pub trait LCoreParameters {
     fn priority(&self) -> &LCorePriority;
     fn name(&self) -> &String;
 }
 
-struct LCore {
+pub struct LCore {
     params: LCoreParams,
     id: RteThreadId,
 }

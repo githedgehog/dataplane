@@ -12,7 +12,7 @@ use etherparse::{
 
 /// TODO
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IpHeader {
+enum IpHeader {
     /// An IPv4 Header (does not include extensions)
     V4(Ipv4Header),
     /// An IPv6 Header (does not include extensions)
@@ -101,20 +101,13 @@ impl PacketHeader {
     }
 }
 
-/// TODO
-pub struct Packet {
-    ingress_interface: u32, // TODO: proper type
-    egress_interface: u32,  // TODO: proper type
-    headers: PacketHeader,
-}
-
 impl PacketHeader {
     /// TODO
     ///
     /// # Errors
     ///
     /// TODO
-    pub fn from_raw(raw: Vec<u8>) -> Result<PacketHeader, (SliceError, Layer)> {
+    pub fn parse(raw: Vec<u8>) -> Result<PacketHeader, (SliceError, Layer)> {
         let headers = LaxPacketHeaders::from_ethernet(raw.as_ref())
             .map_err(|e| (SliceError::Len(e), Layer::Ethernet2Header))?;
         if let Some((err, layer)) = headers.stop_err {
@@ -151,14 +144,8 @@ mod test {
     use crate::ipv4::Ipv4;
     use crate::packet::{IpHeader, PacketHeader};
     use alloc::vec::Vec;
-    use bolero::Driver;
-    use core::net::Ipv4Addr;
     use core::num::NonZero;
-    use core::ops::Bound;
     use etherparse::{IpNumber, PacketBuilder, TransportHeader};
-    use tracing_test::traced_test;
-
-    const MAX_PACKET_LENGTH: usize = 9200;
 
     #[derive(Clone, Debug)]
     #[cfg_attr(any(feature = "bolero", test, kani), derive(bolero::TypeGenerator))]
@@ -170,7 +157,6 @@ mod test {
         ttl: u8,
         src_port: NonZero<u16>,
         dst_port: NonZero<u16>,
-        length: usize,
         sequence_number: u32,
         window_size: u16,
     }
@@ -185,11 +171,10 @@ mod test {
         ttl: u8,
         src_port: NonZero<u16>,
         dst_port: NonZero<u16>,
-        length: usize,
     }
 
     impl Udp4TestData {
-        fn as_raw(&self) -> Vec<u8> {
+        fn serialize(&self) -> Vec<u8> {
             let builder = PacketBuilder::ethernet2(self.eth_src.into(), self.eth_dst.into())
                 .ipv4(
                     self.ip_src.addr.octets(),
@@ -197,16 +182,14 @@ mod test {
                     self.ttl,
                 )
                 .udp(self.src_port.get(), self.dst_port.get());
-            let size = builder.size(0);
-            let payload = [];
             let mut buffer = Vec::with_capacity(builder.size(0));
-            builder.write(&mut buffer, &payload).unwrap();
+            builder.write(&mut buffer, &[]).unwrap();
             buffer
         }
     }
 
     impl Tcp4TestData {
-        fn as_raw(&self) -> Vec<u8> {
+        fn serialize(&self) -> Vec<u8> {
             let builder = PacketBuilder::ethernet2(*self.eth_src.as_ref(), *self.eth_dst.as_ref())
                 .ipv4(
                     self.ip_src.addr.octets(),
@@ -219,12 +202,8 @@ mod test {
                     self.sequence_number,
                     self.window_size,
                 );
-            let mut payload = Vec::with_capacity(builder.size(self.length));
-            for _ in 0..self.length {
-                payload.push(rand::random());
-            }
-            let mut buffer = Vec::with_capacity(builder.size(payload.len()));
-            builder.write(&mut buffer, &payload).unwrap();
+            let mut buffer = Vec::with_capacity(builder.size(0));
+            builder.write(&mut buffer, &[]).unwrap();
             buffer
         }
     }
@@ -238,17 +217,17 @@ mod test {
         let ttl = 20;
         let src_port = 21;
         let dst_port = 1234;
-        let mut builder = PacketBuilder::ethernet2(eth_src, eth_dst)
+        let builder = PacketBuilder::ethernet2(eth_src, eth_dst)
             .ipv4(ip_src, ip_dst, ttl)
             .udp(src_port, dst_port);
         let mut buffer = Vec::with_capacity(builder.size(0));
         builder.write(&mut buffer, &[]).unwrap();
-        let headers = PacketHeader::from_raw(buffer).unwrap();
+        let headers = PacketHeader::parse(buffer).unwrap();
         assert_eq!(eth_src, headers.link.source);
         assert_eq!(eth_dst, headers.link.destination);
         let ip = match headers.net.expect("no ip header") {
             IpHeader::V4(v4) => v4,
-            IpHeader::V6(v6) => unreachable!("not an ipv6 packet"),
+            IpHeader::V6(_) => unreachable!("not an ipv6 packet"),
         };
         assert_eq!(ip_src, ip.source);
         assert_eq!(ip_dst, ip.destination);
@@ -264,7 +243,7 @@ mod test {
     #[test]
     fn udp4_parse_fuzz_test() {
         bolero::check!().with_type().for_each(|val: &Udp4TestData| {
-            let headers = PacketHeader::from_raw(val.as_raw()).expect("failed to parse packet");
+            let headers = PacketHeader::parse(val.serialize()).expect("failed to parse packet");
             assert_eq!(
                 val.eth_src,
                 Mac::from(headers.link.source),
@@ -299,7 +278,7 @@ mod test {
     #[test]
     fn tcp4_parse_fuzz_test() {
         bolero::check!().with_type().for_each(|val: &Tcp4TestData| {
-            let headers = PacketHeader::from_raw(val.as_raw()).expect("failed to parse packet");
+            let headers = PacketHeader::parse(val.serialize()).expect("failed to parse packet");
             assert_eq!(
                 val.eth_src,
                 Mac::from(headers.link.source),
@@ -312,7 +291,7 @@ mod test {
             );
             let ip = match headers.net.expect("no ip header") {
                 IpHeader::V4(v4) => v4,
-                IpHeader::V6(v6) => unreachable!("not an ipv6 packet"),
+                IpHeader::V6(_) => unreachable!("not an ipv6 packet"),
             };
             assert_eq!(val.ip_src.addr.octets(), ip.source);
             assert_eq!(val.ip_dst.addr.octets(), ip.destination);

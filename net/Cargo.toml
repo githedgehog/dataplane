@@ -4,6 +4,11 @@ version = "0.0.1"
 edition = "2021"
 publish = false
 
+[lib]
+# MIRI is not happy with doctest on x86_64-unknown-linux-gnu for some reason.
+# TODO: re-enable doctest by default as soon as miri bug is fixed
+doctest = false
+
 #[[bench]]
 #name = "parse"
 #harness = false
@@ -34,7 +39,7 @@ _no-panic = ["dep:no-panic"]
 
 # This is internal and should not be used by end users.
 # This is exclusively intended for writing kani proofs while calming the rage of the IDE.
-_fake-kani = []
+_fake-kani = ["dep:kani"]
 
 tracing_max_level_debug = ["tracing/max_level_debug"]
 tracing_max_level_error = ["tracing/max_level_error"]
@@ -51,7 +56,7 @@ tracing_release_max_level_trace = ["tracing/release_max_level_trace"]
 tracing_release_max_level_warn = ["tracing/release_max_level_warn"]
 
 [dependencies]
-no-panic = { version = "0.1.32", optional = true }
+no-panic = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -60,10 +65,8 @@ bolero = { workspace = true, optional = true, features = [] }
 kani = { path = "../fake-kani", optional = true, package = "fake-kani" }
 
 [dev-dependencies]
-bolero = { workspace = true }
+bolero = { workspace = true, features = [] }
 criterion = { workspace = true }
-rand = { version = "0.8.5" }
-tracing-test = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

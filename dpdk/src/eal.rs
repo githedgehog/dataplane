@@ -9,15 +9,9 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::ffi::c_int;
 use core::fmt::{Debug, Display};
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::env;
 use dpdk_sys::*;
-use errno::Errno;
-use std::ffi::{c_char, CStr};
-use allocator_api2::alloc::Allocator;
+use std::ffi::{CStr};
 use tracing::{error, info};
-
-type SystemVec<T> = allocator_api2::vec::Vec<T, System>;
 
 /// Safe wrapper around the DPDK Environment Abstraction Layer (EAL).
 ///
@@ -152,10 +146,9 @@ impl Eal {
     #[allow(clippy::expect_used)]
     pub(crate) fn fatal_error<T: Display + AsRef<str>>(message: T) -> ! {
         error!("{message}");
-        let message_cstring = CString::new(message.as_ref())
-            .unwrap_or_else(|_| unsafe {
-                rte_exit(1, c"Failed to convert message to CString".as_ptr())
-            });
+        let message_cstring = CString::new(message.as_ref()).unwrap_or_else(|_| unsafe {
+            rte_exit(1, c"Failed to convert message to CString".as_ptr())
+        });
         unsafe { rte_exit(1, message_cstring.as_ptr()) }
     }
 
@@ -205,5 +198,4 @@ impl EalErrno {
         let ret_msg = ret_msg.to_str().expect("dpdk message is not valid unicode");
         Eal::fatal_error(ret_msg)
     }
-
 }

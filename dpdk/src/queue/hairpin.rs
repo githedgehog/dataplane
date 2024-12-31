@@ -101,7 +101,7 @@ impl HairpinQueue {
     /// Stop the hairpin queue.
     #[allow(clippy::expect_used)]
     pub fn start(&mut self) {
-        /// TODO: proper error reporting
+        // TODO: proper error reporting
         self.tx.start().expect("todo");
         self.rx.start().expect("todo");
     }

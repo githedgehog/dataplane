@@ -3,27 +3,25 @@
 
 //! DPDK memory management wrappers.
 
+use crate::eal::EalErrno;
 use crate::socket::SocketId;
 use alloc::format;
 use alloc::string::String;
+use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::ffi::{c_int, CStr};
 use core::fmt::{Debug, Display};
+use core::intrinsics::transmute;
 use core::marker::PhantomData;
+use core::ptr::null_mut;
 use core::ptr::NonNull;
 use dpdk_sys::*;
-use tracing::{debug, error, info, warn};
-use core::alloc::{GlobalAlloc, Layout};
-use std::alloc::System;
-use crate::eal::{Eal, EalErrno};
-use std::ffi::{c_uint, CString};
-use core::intrinsics::transmute;
-use core::ptr::null_mut;
-use std::cell::OnceCell;
-use std::ptr::null;
-use std::sync::{Once, OnceLock};
-use std::sync::atomic::AtomicBool;
 use errno::Errno;
+use std::alloc::System;
+use std::ffi::{c_uint, CString};
+use std::ptr::null;
+use std::sync::Once;
+use tracing::{error, info, warn};
 
 /// DPDK memory manager
 #[repr(transparent)]
@@ -115,7 +113,10 @@ impl PoolHandle {
                 let err_str = err_str.to_str().expect("invalid UTF-8");
                 let err_msg = format!("Failed to create mbuf pool: {err_str}; (errno: {errno})");
                 error!("{err_msg}");
-                return Err(InvalidMemPoolConfig::InvalidParams(Errno::from(errno), err_msg));
+                return Err(InvalidMemPoolConfig::InvalidParams(
+                    Errno::from(errno),
+                    err_msg,
+                ));
             }
             Some(pool) => pool,
         };
@@ -308,9 +309,9 @@ impl PoolConfig {
         ];
 
         if !name.starts_with(ASCII_LETTERS) {
-            return Err(InvalidMemPoolName::DoesNotStartWithAsciiLetter(
-                format!("Memory pool name must start with a letter: {name} does not start with a letter."))
-            );
+            return Err(InvalidMemPoolName::DoesNotStartWithAsciiLetter(format!(
+                "Memory pool name must start with a letter: {name} does not start with a letter."
+            )));
         }
 
         let name = CString::new(name).map_err(|_| {
@@ -339,9 +340,7 @@ impl PoolConfig {
     #[cold]
     #[tracing::instrument(level = "debug", ret)]
     fn new_internal(name: &str, params: PoolParams) -> Result<PoolConfig, InvalidMemPoolConfig> {
-        info!(
-            "Creating memory pool config: {name}, {params:?}",
-        );
+        info!("Creating memory pool config: {name}, {params:?}",);
         let name = match PoolConfig::validate_name(name) {
             Ok(name) => name,
             Err(e) => return Err(InvalidMemPoolConfig::InvalidName(e)),
@@ -517,39 +516,37 @@ unsafe impl GlobalAlloc for RteAllocator {
 unsafe impl GlobalAlloc for FlexAllocator {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if self.initialization.is_completed()  {
+        if self.initialization.is_completed() {
             rte_malloc(null(), layout.size(), layout.align() as _) as _
-        } else  {
+        } else {
             System.alloc(layout)
         }
     }
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if self.initialization.is_completed()  {
+        if self.initialization.is_completed() {
             rte_free(ptr as _);
-        } else  {
+        } else {
             System.dealloc(ptr, layout)
         }
     }
 
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        if self.initialization.is_completed()  {
+        if self.initialization.is_completed() {
             rte_zmalloc(null(), layout.size(), layout.align() as _) as _
-        } else  {
+        } else {
             System.alloc_zeroed(layout)
         }
     }
 
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if self.initialization.is_completed()  {
+        if self.initialization.is_completed() {
             rte_realloc(ptr as _, new_size, layout.align() as _) as _
-        } else  {
+        } else {
             System.realloc(ptr, layout, new_size)
         }
     }
-    
 }
-

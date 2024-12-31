@@ -3,12 +3,12 @@
 
 //! Receive queue configuration and management.
 
-use std::ffi::c_int;
 use crate::dev::{DevIndex, RxOffload};
 use crate::mem::Mbuf;
 use crate::socket::SocketId;
 use crate::{dev, mem, socket};
 use dpdk_sys::*;
+use std::ffi::c_int;
 use tracing::{trace, warn};
 
 #[repr(transparent)]
@@ -120,7 +120,7 @@ impl RxQueue {
                 dev: dev.info.index(),
                 config,
             }),
-            Some(err) => Err(err)
+            Some(err) => Err(err),
         }
     }
 
@@ -145,7 +145,6 @@ impl RxQueue {
         let ret = unsafe {
             rte_eth_dev_rx_queue_stop(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
-
 
         match ret {
             0 => Ok(()),
