@@ -10,8 +10,31 @@ publish = false
 
 [features]
 default = ["serde", "tracing_max_level_trace", "tracing_release_max_level_debug"]
+
+# Enable serialization and deserialization of most of the types in this crate.
 serde = ["dep:serde"]
-_assert-no-panic = ["dep:no-panic"]
+
+# Enable fuzz testing.
+# Enable this flag only if you wish to use the type generators defined in this crate
+# in a downstream crate.
+bolero = ["dep:bolero"]
+
+# Enable compilation settings useful for the Kani model checker.
+# This is an internal flag.
+# It should not be enabled (and makes no sense) for release builds.
+# _proof enables _fuzz due to the synergistic relationship between
+# bolero and kani.
+_proof = ["bolero"]
+
+# Ensure the compiler proves marked functions never panic.
+# This only works with optimization, LTO, and codegen-units=1.
+# This feature is internal.
+# It is not intended for (nor is it useful for) release builds.
+_no-panic = ["dep:no-panic"]
+
+# This is internal and should not be used by end users.
+# This is exclusively intended for writing kani proofs while calming the rage of the IDE.
+_fake-kani = []
 
 tracing_max_level_debug = ["tracing/max_level_debug"]
 tracing_max_level_error = ["tracing/max_level_error"]
@@ -32,11 +55,15 @@ no-panic = { version = "0.1.32", optional = true }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+etherparse = { workspace = true, default-features = false, features = ["std"] }
+bolero = { workspace = true, optional = true, features = [] }
+kani = { path = "../fake-kani", optional = true, package = "fake-kani" }
 
 [dev-dependencies]
 bolero = { workspace = true }
 criterion = { workspace = true }
-etherparse = { workspace = true, default-features = false, features = ["std"] }
-rand = { workspace = true }
+rand = { version = "0.8.5" }
 tracing-test = { workspace = true }
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

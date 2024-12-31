@@ -3,7 +3,7 @@
 use core::num::NonZero;
 use tracing::instrument;
 
-#[cfg(feature = "_assert-no-panic")]
+#[cfg(feature = "_no-panic")]
 use no_panic::no_panic;
 
 /// A [VXLAN][RFC7348] Network Identifier.
@@ -56,7 +56,7 @@ impl Vni {
     ///
     /// Returns an [`InvalidVni`] error if the value is 0 or greater than [`Vni::MAX`].
     #[instrument(level = "trace")]
-    #[cfg_attr(feature = "_assert-no-panic", no_panic)]
+    #[cfg_attr(feature = "_no-panic", no_panic)]
     pub fn new(vni: u32) -> Result<Vni, InvalidVni> {
         match NonZero::<u32>::new(vni) {
             None => Err(InvalidVni::ReservedZero),
@@ -74,7 +74,7 @@ impl Vni {
 
 impl AsRef<NonZero<u32>> for Vni {
     #[must_use]
-    #[cfg_attr(feature = "_assert-no-panic", no_panic)]
+    #[cfg_attr(feature = "_no-panic", no_panic)]
     fn as_ref(&self) -> &NonZero<u32> {
         &self.0
     }
@@ -107,7 +107,7 @@ pub enum InvalidVni {
 
 impl From<Vni> for u32 {
     #[instrument(level = "trace")]
-    #[cfg_attr(feature = "_assert-no-panic", no_panic)]
+    #[cfg_attr(feature = "_no-panic", no_panic)]
     fn from(vni: Vni) -> u32 {
         vni.as_u32()
     }
@@ -117,7 +117,7 @@ impl TryFrom<u32> for Vni {
     type Error = InvalidVni;
 
     #[instrument(level = "trace")]
-    #[cfg_attr(feature = "_assert-no-panic", no_panic)]
+    #[cfg_attr(feature = "_no-panic", no_panic)]
     fn try_from(vni: u32) -> Result<Vni, Self::Error> {
         Vni::new(vni)
     }
@@ -127,28 +127,23 @@ impl TryFrom<u32> for Vni {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod test {
     use super::*;
-    use tracing_test::traced_test;
 
     #[test]
-    #[traced_test]
     fn zero_is_not_a_legal_vni() {
         assert_eq!(Vni::new(0).unwrap_err(), InvalidVni::ReservedZero);
     }
 
     #[test]
-    #[traced_test]
     fn one_is_a_legal_vni() {
         assert_eq!(Vni::new(1).unwrap().as_u32(), 1);
     }
 
     #[test]
-    #[traced_test]
     fn vni_max_is_a_legal_vni() {
         assert_eq!(Vni::new(Vni::MAX).unwrap().as_u32(), Vni::MAX);
     }
 
     #[test]
-    #[traced_test]
     fn vni_max_plus_one_is_not_a_legal_vni() {
         assert_eq!(
             Vni::new(Vni::MAX + 1).unwrap_err(),
@@ -157,7 +152,6 @@ mod test {
     }
 
     #[test]
-    #[traced_test]
     fn u32_max_is_not_a_legal_vni() {
         assert_eq!(
             Vni::new(u32::MAX).unwrap_err(),
@@ -166,15 +160,13 @@ mod test {
     }
 
     #[test]
-    #[traced_test]
     fn try_from_impl() {
-        let x = Vni::try_from(2);
+        Vni::try_from(2).expect("2 is a legal Vni");
     }
 
     /// Checks that [`Vni::new`] satisfies its contract by generating a large number of random test
     /// cases (fuzzing).
     #[test]
-    #[traced_test]
     fn vni_fuzz_test() {
         const TOO_LARGE: u32 = Vni::MAX + 1;
         bolero::check!()
