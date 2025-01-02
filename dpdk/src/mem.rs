@@ -3,7 +3,7 @@
 
 //! DPDK memory management wrappers.
 
-use crate::eal::EalErrno;
+use crate::eal::{Eal, EalErrno};
 use crate::socket::SocketId;
 use alloc::format;
 use alloc::string::String;
@@ -17,23 +17,25 @@ use core::ptr::null_mut;
 use core::ptr::NonNull;
 use dpdk_sys::*;
 use errno::Errno;
-use std::alloc::System;
-use std::ffi::{c_uint, CString};
-use std::ptr::null;
-use std::sync::Once;
+use core::cell::{Cell, OnceCell};
+use core::ffi::c_uint;
+use core::ptr::null;
 use tracing::{error, info, warn};
+
+// unfortunately, we need the standard library to swap allocators
+use std::ffi::CString;
+use std::sync::Once;
+use std::alloc::System;
 
 /// DPDK memory manager
 #[repr(transparent)]
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct Manager {}
+pub struct Manager;
 
 impl Manager {
-    #[tracing::instrument(level = "debug")]
     pub(crate) fn init() -> Manager {
-        info!("Initializing DPDK memory manager");
-        Manager {}
+        Manager
     }
 }
 
@@ -404,7 +406,9 @@ impl Drop for Mbuf {
 impl Mbuf {
     /// Create a new mbuf from an existing rte_mbuf pointer.
     ///
-    /// # Note, this function assumes ownership of the data pointed to by raw.
+    /// # Note:
+    ///
+    /// This function assumes ownership of the data pointed to it.
     ///
     /// # Safety
     ///
@@ -429,15 +433,35 @@ impl Mbuf {
         })
     }
 
+    /// Create a new mbuf from an existing rte_mbuf pointer.
+    ///
+    /// # Note
+    ///
+    /// This function assumes ownership of the data pointed to it.
+    ///
+    /// # Safety
+    ///
+    /// This function is unsound if passed an invalid pointer.
+    #[must_use]
+    #[tracing::instrument(level = "trace", ret)]
+    pub(crate) unsafe fn new_from_raw_unchecked(raw: *mut rte_mbuf) -> Mbuf {
+        let raw = unsafe { NonNull::new_unchecked(raw) };
+        Mbuf {
+            raw,
+            marker: PhantomData,
+        }
+    }
+
     /// Get an immutable ref to the raw data of an Mbuf
     ///
     /// TODO: deal with multi segment packets
     #[must_use]
     #[tracing::instrument(level = "trace")]
     pub fn raw_data(&self) -> &[u8] {
-        if unsafe { self.raw.as_ref().annon1.annon1.nb_segs } > 1 {
-            error!("multi seg packets not supported yet");
-        }
+        debug_assert!(
+            unsafe { self.raw.as_ref().annon1.annon1.nb_segs } == 1,
+            "multi seg packets not supported yet"
+        );
         let pkt_data_start = unsafe {
             (self.raw.as_ref().buf_addr as *const u8)
                 .offset(self.raw.as_ref().annon1.annon1.data_off as isize)
@@ -473,50 +497,32 @@ impl Mbuf {
     }
 }
 
-#[non_exhaustive]
-#[repr(transparent)]
-pub struct FlexAllocator {
-    pub initialization: Once,
-}
-
-impl FlexAllocator {
-    pub const fn init() -> FlexAllocator {
-        FlexAllocator {
-            initialization: Once::new(),
-        }
-    }
-}
-
-#[repr(transparent)]
-#[non_exhaustive]
+#[derive(Debug)]
 pub struct RteAllocator;
 
-unsafe impl GlobalAlloc for RteAllocator {
-    #[inline(always)]
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        rte_malloc(null(), layout.size(), layout.align() as _) as _
+#[repr(transparent)]
+struct RteInit(Cell<bool>);
+
+unsafe impl Sync for RteInit {}
+
+static RTE_INIT: RteInit = RteInit(Cell::new(false));
+
+impl RteAllocator {
+
+    pub(crate) fn mark_initialized() {
+        RTE_INIT.0.set(true);
     }
 
     #[inline(always)]
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        rte_free(ptr as _);
-    }
-
-    #[inline(always)]
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        rte_zmalloc(null(), layout.size(), layout.align() as _) as _
-    }
-
-    #[inline(always)]
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        rte_realloc(ptr as _, new_size, layout.align() as _) as _
+    pub fn is_initialized() -> bool {
+        RTE_INIT.0.get()
     }
 }
 
-unsafe impl GlobalAlloc for FlexAllocator {
+unsafe impl GlobalAlloc for RteAllocator {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if self.initialization.is_completed() {
+        if RTE_INIT.0.get() {
             rte_malloc(null(), layout.size(), layout.align() as _) as _
         } else {
             System.alloc(layout)
@@ -525,16 +531,16 @@ unsafe impl GlobalAlloc for FlexAllocator {
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if self.initialization.is_completed() {
+        if RTE_INIT.0.get() {
             rte_free(ptr as _);
         } else {
-            System.dealloc(ptr, layout)
+            System.dealloc(ptr, layout);
         }
     }
 
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        if self.initialization.is_completed() {
+        if RTE_INIT.0.get() {
             rte_zmalloc(null(), layout.size(), layout.align() as _) as _
         } else {
             System.alloc_zeroed(layout)
@@ -543,7 +549,7 @@ unsafe impl GlobalAlloc for FlexAllocator {
 
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if self.initialization.is_completed() {
+        if RTE_INIT.0.get() {
             rte_realloc(ptr as _, new_size, layout.align() as _) as _
         } else {
             System.realloc(ptr, layout, new_size)

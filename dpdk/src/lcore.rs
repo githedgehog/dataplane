@@ -1,6 +1,9 @@
 use crate::eal::{Eal, EalErrno};
+use crossbeam::channel::{RecvError, SendError};
 use dpdk_sys::*;
-use std::ffi::{c_int, c_uint, c_void};
+use hashbrown::HashMap;
+use core::ffi::{c_int, c_uint, c_void};
+use core::ptr::null_mut;
 use tracing::{info, warn};
 
 #[repr(u32)]
@@ -31,7 +34,7 @@ impl LCoreIdIterator {
     /// an invalid [`LCoreId`].
     fn new() -> Self {
         Self {
-            current: LCoreId(u32::MAX),
+            current: LCoreId::INVALID,
         }
     }
 }
@@ -41,9 +44,10 @@ impl Iterator for LCoreIdIterator {
 
     fn next(&mut self) -> Option<Self::Item> {
         let next = unsafe { rte_get_next_lcore(self.current.0 as c_uint, 1, 0) };
-        if next == RTE_MAX_LCORE {
+        if next >= RTE_MAX_LCORE {
             return None;
         }
+        self.current = LCoreId(next);
         Some(LCoreId(next))
     }
 }
@@ -55,7 +59,7 @@ struct LCoreIndexIterator {
 }
 
 pub struct ServiceThread<'scope> {
-    thread_id: rte_thread_t,
+    thread_id: RteThreadId,
     priority: LCorePriority,
     handle: std::thread::ScopedJoinHandle<'scope, ()>,
 }
@@ -89,7 +93,7 @@ impl ServiceThread<'_> {
                 unsafe { rte_thread_unregister() };
             })
             .expect("could not create EalThread");
-        let thread_id = recv.recv().expect("could not receive thread id");
+        let thread_id = RteThreadId(recv.recv().expect("could not receive thread id"));
         ServiceThread {
             thread_id,
             priority: LCorePriority::RealTime,
@@ -97,13 +101,24 @@ impl ServiceThread<'_> {
         }
     }
 
+    //
+    // pub fn launch_workers<T: Sync>(mut arg: &T) {
+    //     warn!("Launching RTE Lcores");
+    //     if unsafe {
+    //         rte_eal_mp_remote_launch(
+    //             Some(Self::spinup::<T>),
+    //             arg as *const _ as *mut T as *mut _,
+    //             rte_rmt_call_main_t::SKIP_MAIN,
+    //         )
+    //     } != 0
+    //     {
+    //         panic!("rte_eal_mp_remote_launch failed");
+    //     }
+    //     std::thread::sleep(std::time::Duration::from_secs(3));
+    // }
+
     // todo: this should be private or `pub(crate)` after we supply a higher level API
-    pub fn new_eal(run: extern "C" fn(*mut c_void) -> c_int, arg: *mut c_void) {
-        let mut list = LCoreId::list();
-        #[allow(clippy::panic)]
-        let Some(lcore) = list.next() else {
-            panic!("no LCores available");
-        };
+    pub fn new_eal(run: extern "C" fn(*mut c_void) -> c_int, arg: *mut c_void, lcore: LCoreId) {
         warn!("launching on on LCoreId({0})", lcore.0);
         let ret = unsafe { rte_eal_remote_launch(Some(run), arg, lcore.0 as c_uint) };
         EalErrno::assert(ret);
@@ -115,11 +130,88 @@ impl ServiceThread<'_> {
     }
 }
 
+pub struct MainThread {
+    lcore_id: LCoreId,
+}
+
+impl MainThread {
+    fn get() -> MainThread {
+        MainThread {
+            lcore_id: LCoreId::main(),
+        }
+    }
+
+    pub fn launch<F: FnOnce() + Send + Sync>(f: F) {
+        let main_lcore_id = LCoreId::main();
+        WorkerThread::launch_on(main_lcore_id, f);
+    }
+}
+pub struct WorkerThread {
+    lcore_id: LCoreId,
+    worker: ManagerInit,
+}
+
+struct WorkerInit {
+    from_manager: crossbeam::channel::Receiver<WorkerMessage>,
+    to_manager: crossbeam::channel::Sender<ManagerMessage>,
+}
+
+impl ManagerInit {
+    fn send(&self, message: WorkerMessage) -> Result<(), SendError<WorkerMessage>> {
+        self.to_worker.send(message)
+    }
+
+    fn recv(&self) -> Result<ManagerMessage, RecvError> {
+        self.from_worker.recv()
+    }
+}
+
+impl WorkerThread {
+    pub fn send(&self, message: WorkerMessage) -> Result<(), SendError<WorkerMessage>> {
+        self.worker.send(message)
+    }
+
+    pub fn recv(&self) -> Result<ManagerMessage, RecvError> {
+        self.worker.recv()
+    }
+}
+
+struct ManagerInit {
+    from_worker: crossbeam::channel::Receiver<ManagerMessage>,
+    to_worker: crossbeam::channel::Sender<WorkerMessage>,
+}
+
+pub enum WorkerMessage {
+    Task(Box<dyn FnOnce() + Send>),
+}
+enum ManagerMessage {
+    Register(LCoreId),
+}
+
+impl WorkerThread {
+    pub fn launch_on<T: FnOnce() + Send>(lcore: LCoreId, f: T) {
+        const CHANNEL_BOUND: usize = 1024;
+        unsafe extern "C" fn _launch<Task: FnOnce() + Send>(arg: *mut c_void) -> c_int {
+            let task = Box::from_raw(
+                arg.as_mut().expect("null argument in worker setup") as *mut _ as *mut Task,
+            );
+            task();
+            0
+        }
+        let task = Box::new(f);
+        EalErrno::assert(unsafe {
+            rte_eal_remote_launch(
+                Some(_launch::<T>),
+                Box::leak(task) as *mut _ as _,
+                lcore.0 as c_uint,
+            )
+        });
+    }
+}
+
 pub struct LCoreParams {
     priority: LCorePriority,
     name: String,
-    thunk: rte_thread_func,
-    thunk2: lcore_function_t,
 }
 
 pub trait LCoreParameters {
@@ -156,9 +248,16 @@ impl LCoreParameters for LCore {
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
 pub struct LCoreId(u32);
 
+impl LCoreId {
+    /// [`LCoreId`] in an invalid condition is used as a signal to DPDK to
+    /// return the first actual [`LCoreId`] in the [`LCoreIdIterator`].
+    /// This value is also used to indicate that iteration over `LCoreId`s is complete.
+    const INVALID: LCoreId = LCoreId(u32::MAX);
+}
+
 #[repr(transparent)]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
-pub struct LCoreIndex(u32);
+pub struct LCoreIndex(pub u32);
 
 pub mod err {
     #[derive(thiserror::Error, Debug)]
@@ -192,6 +291,10 @@ impl LCoreId {
     pub fn current() -> LCoreId {
         LCoreId(unsafe { rte_lcore_id() })
     }
+
+    pub fn main() -> LCoreId {
+        LCoreId(unsafe { rte_get_main_lcore() })
+    }
 }
 
 impl From<LCoreId> for LCoreIndex {
@@ -203,6 +306,12 @@ impl From<LCoreId> for LCoreIndex {
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone)]
 pub struct RteThreadId(pub(crate) rte_thread_t);
+
+impl RteThreadId {
+    pub fn current() -> RteThreadId {
+        RteThreadId(unsafe { rte_thread_self() })
+    }
+}
 
 impl PartialEq for RteThreadId {
     fn eq(&self, other: &Self) -> bool {
@@ -242,8 +351,6 @@ impl Iterator for LCoreIndexIterator {
     type Item = LCoreIndex;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner
-            .next()
-            .map(|id| unsafe { LCoreIndex(rte_lcore_index(id.0 as c_int) as u32) })
+        self.inner.next().map(From::from)
     }
 }

@@ -4,12 +4,13 @@ use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 use crossbeam::utils::CachePadded;
 use left_right::{Absorb, ReadHandle, WriteHandle};
-use std::collections::{BinaryHeap, HashMap, VecDeque};
-use std::hash::Hash;
-use std::marker::PhantomData;
-use std::net::Ipv6Addr;
-use std::num::NonZero;
+use core::hash::Hash;
+use core::marker::PhantomData;
+use core::net::Ipv6Addr;
+use core::num::NonZero;
 use tracing::error;
+
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 
 
 #[derive(Debug, Copy, Clone)]

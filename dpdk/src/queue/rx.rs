@@ -9,13 +9,14 @@ use crate::socket::SocketId;
 use crate::{dev, mem, socket};
 use dpdk_sys::*;
 use std::ffi::c_int;
+use std::ptr::null_mut;
 use tracing::{trace, warn};
 
-#[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// A DPDK receive queue index.
 ///
 /// This is a newtype around `u16` to provide type safety and prevent accidental misuse.
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RxQueueIndex(pub u16);
 
 impl RxQueueIndex {
@@ -40,8 +41,8 @@ impl From<u16> for RxQueueIndex {
     }
 }
 
-#[derive(Debug)]
 /// Configuration for a DPDK receive queue.
+#[derive(Debug)]
 pub struct RxQueueConfig {
     /// The index of the device this rx queue is associated with
     pub dev: DevIndex,
@@ -51,6 +52,7 @@ pub struct RxQueueConfig {
     pub num_descriptors: u16,
     /// The socket preference for the rx queue.
     pub socket_preference: socket::Preference,
+    /// Hardware offloads to use
     pub offloads: RxOffload,
     /// The memory pool to use for the rx queue.
     pub pool: mem::PoolHandle,
@@ -140,7 +142,8 @@ impl RxQueue {
         }
     }
 
-    /// Start the receive queue.
+    /// Stop the receive queue.
+    #[tracing::instrument(level = "trace")]
     pub(crate) fn stop(&mut self) -> Result<(), RxQueueStopError> {
         let ret = unsafe {
             rte_eth_dev_rx_queue_stop(self.dev.as_u16(), self.config.queue_index.as_u16())
@@ -156,14 +159,11 @@ impl RxQueue {
         }
     }
 
-    // TODO: make configurable
-    const PKT_BURST_SIZE: usize = 64;
-
-    /// Receive a burst of up to `PKT_BURST_SIZE` packets from the queue
+    /// Receive a burst of packets from the queue
     #[tracing::instrument(level = "trace")]
     pub fn receive(&mut self) -> impl Iterator<Item = Mbuf> {
-        // TODO: allocate the mbufs!
-        let mut pkts: [*mut rte_mbuf; Self::PKT_BURST_SIZE] = unsafe { core::mem::zeroed() };
+        const PKT_BURST_SIZE: usize = 64;
+        let mut pkts: [*mut rte_mbuf; PKT_BURST_SIZE] = [null_mut(); PKT_BURST_SIZE];
         trace!(
             "Polling for packets from rx queue {queue} on dev {dev}",
             queue = self.config.queue_index.as_u16(),
@@ -174,33 +174,33 @@ impl RxQueue {
                 self.dev.as_u16(),
                 self.config.queue_index.as_u16(),
                 pkts.as_mut_ptr(),
-                Self::PKT_BURST_SIZE as u16,
+                PKT_BURST_SIZE as u16,
             )
         };
-        trace!("Received {} packets", nb_rx);
-        (0..nb_rx).filter_map(move |i| Mbuf::new_from_raw(pkts[i as usize]))
+        trace!(
+            "Received {nb_rx} packets from rx queue {queue} on dev {dev}",
+            queue = self.config.queue_index.as_u16(),
+            dev = self.dev.as_u16()
+        );
+        // SAFETY: we should never get a null pointer for anything inside the advertised bounds
+        // of the receive buffer
+        (0..nb_rx).map(move |i| unsafe { Mbuf::new_from_raw_unchecked(pkts[i as usize]) })
     }
 }
 
 /// TODO
 #[derive(thiserror::Error, Debug)]
 pub enum RxQueueStartError {
-    /// TODO
     #[error("Invalid port ID")]
     InvalidPortId,
-    /// TODO
     #[error("Queue ID out of range")]
     QueueIdOutOfRange,
-    /// TODO
     #[error("Device removed")]
     DeviceRemoved,
-    /// TODO
     #[error("Invalid argument")]
     InvalidArgument,
-    /// TODO
     #[error("Operation not supported")]
     NotSupported,
-    /// TODO
     #[error("Unknown error")]
     Unexpected(errno::Errno),
 }
@@ -208,39 +208,16 @@ pub enum RxQueueStartError {
 /// TODO
 #[derive(thiserror::Error, Debug)]
 pub enum RxQueueStopError {
-    /// TODO
     #[error("Invalid port ID")]
     InvalidPortId,
-    /// TODO
     #[error("Queue ID out of range")]
     QueueIdOutOfRange,
-    /// TODO
     #[error("Device removed")]
     DeviceRemoved,
-    /// TODO
     #[error("Invalid argument")]
     InvalidArgument,
-    /// TODO
     #[error("Operation not supported")]
     NotSupported,
-    /// TODO
     #[error("Unexpected error")]
     Unexpected(errno::Errno),
-}
-
-/// TODO
-#[derive(Debug)]
-pub enum RxQueueState {
-    /// TODO
-    Stopped,
-    /// TODO
-    Started,
-}
-
-impl Drop for RxQueue {
-    #[allow(clippy::expect_used)]
-    fn drop(&mut self) {
-        // TODO: proper error handling
-        // self.stop().expect("Failed to stop Rx queue");
-    }
 }

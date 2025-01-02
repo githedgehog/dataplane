@@ -1,9 +1,10 @@
 use crate::socket;
+use core::ffi::{c_int, c_uint};
+use core::marker::PhantomData;
+use core::ptr::NonNull;
 use dpdk_sys::*;
 use errno::{Errno, ErrorCode, StandardErrno};
-use std::ffi::{c_int, c_uint, CString};
-use std::marker::PhantomData;
-use std::ptr::NonNull;
+use std::ffi::CString;
 
 #[derive(Debug)]
 pub struct Ring<T> {
@@ -60,8 +61,6 @@ impl Params {
 }
 
 impl<T> Ring<T> {
-    
-    #[cold]
     fn new(params: Params) -> Result<Self, err::RingCreateErr> {
         /// TODO: figure out why musl builds don't expose E_RTE_NO_CONFIG
         /// likely a config error for bindgen

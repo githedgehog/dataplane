@@ -21,28 +21,23 @@ use errno::ErrorCode;
 use tracing::{debug, info};
 
 /// DPDK socket manager.
+#[non_exhaustive]
 #[repr(transparent)]
 #[derive(Debug)]
-pub struct Manager {
-    _private: PhantomData<()>,
-}
+pub struct Manager;
 
 impl Drop for Manager {
     fn drop(&mut self) {
-        debug!("Closing DPDK socket manager");
+        info!("Closing DPDK socket manager");
     }
 }
 
 impl Manager {
-    #[tracing::instrument(level = "trace")]
     /// Initialize the DPDK socket manager.
     ///
     /// Only [`Eal`] should only call this function, and only during initialization.
     pub(crate) fn init() -> Manager {
-        info!("Initializing DPDK socket manager");
-        Manager {
-            _private: PhantomData,
-        }
+        Manager
     }
 
     /// [`Iterator`] over all the [`SocketId`]s available to the [`Eal`].
@@ -64,7 +59,7 @@ impl Manager {
     /// [`SocketId`] is **NOT** the same thing as [`Index`]!
     ///
     /// </div>
-    pub fn id_current(&self) -> SocketId {
+    pub fn current(&self) -> SocketId {
         SocketId::current()
     }
 
@@ -88,8 +83,6 @@ impl Manager {
     }
 }
 
-#[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// A CPU socket index.
 ///
 /// This is a newtype around `c_uint` to provide type safety and prevent accidental misuse.
@@ -101,6 +94,8 @@ impl Manager {
 /// See [`SocketId`] for more information.
 ///
 /// </div>
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Index(pub c_uint);
 
 impl From<Index> for c_uint {
@@ -180,7 +175,7 @@ impl SocketId {
     /// # Note
     ///
     /// Ideally, this method should be accessed via the [`Manager::id_for_index`] object as that
-    /// makes lifetime issues simpler.
+    /// simplifies lifetime issues.
     pub(crate) fn current() -> SocketId {
         SocketId(unsafe { rte_socket_id() })
     }

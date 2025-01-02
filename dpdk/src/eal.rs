@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 //! DPDK Environment Abstraction Layer (EAL)
+use crate::mem::RteAllocator;
 use crate::{dev, mem, socket};
 use alloc::ffi::CString;
 use alloc::format;
@@ -10,8 +11,8 @@ use alloc::vec::Vec;
 use core::ffi::c_int;
 use core::fmt::{Debug, Display};
 use dpdk_sys::*;
-use std::ffi::{CStr};
-use tracing::{error, info};
+use core::ffi::{c_char, CStr};
+use tracing::{error, info, warn};
 
 /// Safe wrapper around the DPDK Environment Abstraction Layer (EAL).
 ///
@@ -36,6 +37,8 @@ pub struct Eal {
     // TODO: queue
     // TODO: flow
 }
+
+unsafe impl Sync for Eal {}
 
 /// Error type for EAL initialization failures.
 #[derive(Debug, thiserror::Error)]
@@ -96,33 +99,42 @@ impl ValidatedEalArgs {
 
 /// Initialize the DPDK Environment Abstraction Layer (EAL).
 ///
-/// # Errors
+/// # Panics
 ///
-/// Returns an `Err` if
+/// Panics if
 ///
 /// 1. There are more than `c_int::MAX` arguments.
 /// 2. The arguments are not valid ASCII strings.
 /// 3. The EAL initialization fails.
 /// 4. The EAL has already been initialized.
 #[cold]
-#[tracing::instrument(level = "info", skip(args), ret)]
-pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Result<Eal, InitError> {
-    let mut args = ValidatedEalArgs::new(args).map_err(InitError::InvalidArguments)?;
-    let mut c_args: Vec<_> = args.0.iter_mut().map(|s| s.as_ptr().cast_mut()).collect();
-    let ret = unsafe { rte_eal_init(c_args.len() as c_int, c_args.as_mut_ptr()) };
-    if ret < 0 {
-        let rte_errno = unsafe { wrte_errno() };
-        let error = errno::Errno::from(rte_errno);
-        error!("EAL initialization failed: {error:?} (rte_errno: {rte_errno})");
-        Err(InitError::InitializationFailed(error))
-    } else {
-        info!("EAL initialized successfully");
-        Ok(Eal {
+pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
+    // NOTE: We need to be careful about freeing memory here!
+    // After _init is called, we swap to another memory allocator (the dpdk allocator).
+    // We can't free memory from the system allocator using the DPDK allocator.
+    // The easiest way around this issue is
+    // to make sure the memory used for initialization is completely freed
+    // before swapping allocators.
+    // The easiest way I know how to do that is by bundling the pre-shift logic into its own scope.
+    // The system memory will be free by the time this scope closes.
+    let eal = {
+        let mut args = ValidatedEalArgs::new(args).unwrap_or_else(|e| {
+            Eal::fatal_error(e.to_string());
+        });
+        let mut c_args: Vec<_> = args.0.iter_mut().map(|s| s.as_ptr().cast_mut()).collect();
+        let ret = unsafe { rte_eal_init(c_args.len() as _, c_args.as_mut_ptr() as _) };
+        if ret < 0 {
+            EalErrno::assert(ret);
+        }
+        Eal {
             mem: mem::Manager::init(),
             dev: dev::Manager::init(),
             socket: socket::Manager::init(),
-        })
-    }
+        }
+    };
+    // Shift to the DPDK allocator
+    RteAllocator::mark_initialized();
+    eal
 }
 
 impl Eal {
@@ -130,7 +142,8 @@ impl Eal {
     ///
     /// This is mostly a safe wrapper around [`rte_eal_has_pci`]
     /// which simply converts the return value to a [`bool`] instead of a [`c_int`].
-    #[tracing::instrument(level = "trace", ret)]
+    #[cold]
+    #[tracing::instrument(level = "trace", skip(self), ret)]
     pub fn has_pci(&self) -> bool {
         unsafe { rte_eal_has_pci() != 0 }
     }
@@ -143,8 +156,9 @@ impl Eal {
     /// # Panics
     ///
     /// Panics if the error message cannot be converted to a `CString`.
+    #[cold]
     #[allow(clippy::expect_used)]
-    pub(crate) fn fatal_error<T: Display + AsRef<str>>(message: T) -> ! {
+    pub fn fatal_error<T: Display + AsRef<str>>(message: T) -> ! {
         error!("{message}");
         let message_cstring = CString::new(message.as_ref()).unwrap_or_else(|_| unsafe {
             rte_exit(1, c"Failed to convert message to CString".as_ptr())
@@ -153,14 +167,13 @@ impl Eal {
     }
 
     /// Get the DPDK `rte_errno` and parse it as an [`errno::ErrorCode`].
+    #[tracing::instrument(level = "trace", skip(self), ret)]
     pub fn errno(&self) -> errno::ErrorCode {
         errno::ErrorCode::parse_i32(unsafe { wrte_errno() })
     }
 }
 
 impl Drop for Eal {
-    #[tracing::instrument(level = "info")]
-    #[allow(clippy::panic)]
     /// Clean up the DPDK Environment Abstraction Layer (EAL).
     ///
     /// This is called automatically when the `Eal` is dropped and generally should not be called
@@ -173,8 +186,12 @@ impl Drop for Eal {
     /// make application restart complex.
     ///
     /// Failure to clean up the EAL is almost certainly an unrecoverable error anyway.
+    #[tracing::instrument(level = "info", skip(self))]
+    #[allow(clippy::panic)]
     fn drop(&mut self) {
-        info!("Closing EAL");
+        warn!("waiting on EAL threads");
+        unsafe { rte_eal_mp_wait_lcore() };
+        warn!("Closing EAL");
         let ret = unsafe { rte_eal_cleanup() };
         if ret != 0 {
             let panic_msg = format!("Failed to cleanup EAL: error {ret}");
@@ -189,6 +206,7 @@ pub struct EalErrno(c_int);
 
 impl EalErrno {
     #[allow(clippy::expect_used)]
+    #[inline]
     pub fn assert(ret: c_int) {
         if ret == 0 {
             return;

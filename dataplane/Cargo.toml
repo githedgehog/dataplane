@@ -1,0 +1,11 @@
+[package]
+name = "dataplane"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dpdk = { path = "../dpdk" }
+tracing = { workspace = true, features = ["attributes", "max_level_debug"] }
+tracing-subscriber = { workspace = true }
+crossbeam = { workspace = true, default-features = false, features = ["crossbeam-channel"] }
+

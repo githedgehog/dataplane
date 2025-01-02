@@ -8,11 +8,11 @@ use crate::{dev, socket};
 use dpdk_sys::*;
 use errno::ErrorCode;
 
-#[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// A DPDK transmit queue index.
 ///
 /// This is a newtype around `u16` to provide type safety and prevent accidental misuse.
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TxQueueIndex(pub u16);
 
 impl TxQueueIndex {
@@ -37,8 +37,8 @@ impl From<u16> for TxQueueIndex {
     }
 }
 
-#[derive(Debug, Clone)]
 /// Configuration for a DPDK transmit queue.
+#[derive(Debug, Clone)]
 pub struct TxQueueConfig {
     /// The index of the tx queue.
     pub queue_index: TxQueueIndex,
@@ -156,50 +156,32 @@ pub struct TxQueue {
 /// TODO
 #[derive(thiserror::Error, Debug)]
 pub enum TxQueueStartError {
-    /// TODO
     #[error("Invalid port ID")]
     InvalidPortId,
-    /// TODO
     #[error("Queue ID out of range")]
     QueueIdOutOfRange,
-    /// TODO
     #[error("Device removed")]
     DeviceRemoved,
-    /// TODO
     #[error("Invalid argument")]
     InvalidArgument,
-    /// TODO
     #[error("Operation not supported")]
     NotSupported,
-    /// TODO
     #[error("Unknown error")]
     Unexpected(errno::Errno),
 }
 
 /// TODO
-#[derive(thiserror::Error, Debug)]
 #[repr(i32)]
+#[derive(thiserror::Error, Debug)]
 pub enum TxQueueStopError {
-    /// TODO
     #[error("Invalid port ID")]
     InvalidPortId = errno::NEG_ENODEV,
-    /// TODO
     #[error("Device removed")]
     DeviceRemoved = errno::NEG_EIO,
-    /// TODO
     #[error("Invalid argument")]
     InvalidArgument = errno::NEG_EINVAL,
-    /// TODO
     #[error("Operation not supported")]
     NotSupported = errno::NEG_ENOTSUP,
-    /// TODO
     #[error("Unknown error")]
     Unexpected(errno::Errno),
 }
-
-// impl Drop for TxQueue {
-//     #[allow(clippy::expect_used)]
-//     fn drop(&mut self) {
-//         self.stop().expect("failed to stop tx queue");
-//     }
-// }

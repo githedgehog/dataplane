@@ -1,6 +1,6 @@
 [workspace]
 
-members = [
+members = ["dataplane",
 	"dpdk",
 	"dpdk-sys",
 	"errno", "fake-kani", "fake-kani-macro",
@@ -23,6 +23,7 @@ tracing = { version = "0.1.40", default-features = false, features = ["attribute
 tracing-subscriber = { version = "0.3.18" }
 tracing-test = { version = "0.2.5" }
 no-panic = { version = "0.1.33", default-features = false }
+crossbeam = { version = "0.8.4", default-features = false }
 
 [profile.release]
 debug = "full"

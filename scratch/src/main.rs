@@ -3,8 +3,8 @@
 
 use dpdk::dev::{RxOffload, TxOffloadConfig};
 use dpdk::eal::{Eal, EalErrno};
-use dpdk::lcore::ServiceThread;
-use dpdk::mem::{FlexAllocator, Mbuf};
+use dpdk::lcore::{LCoreId, LCoreIndex, MainThread, ServiceThread, WorkerThread};
+use dpdk::mem::{Mbuf, RteAllocator};
 use dpdk::{dev, eal, mem, queue, socket};
 use dpdk_sys::*;
 use std::collections::VecDeque;
@@ -20,7 +20,7 @@ use std::time::Instant;
 use tracing::{debug, error, info, trace, warn};
 
 #[global_allocator]
-static EAL: FlexAllocator = FlexAllocator::init();
+static EAL: RteAllocator = RteAllocator;
 
 #[tracing::instrument(level = "trace", ret)]
 // TODO: proper safety.  This should return a Result but I'm being a savage for demo purposes.
@@ -621,34 +621,38 @@ fn main() {
         "--allow",
         "0000:c1:00.0,dv_flow_en=1",
         "--huge-worker-stack=8192",
-        "--socket-mem=16384,0,0,0",
+        "--socket-mem=8192,0,0,0",
         "--no-telemetry",
         "--trace-mode=discard",
     ];
 
-    let rte = Box::new(eal::init(EAL_ARGS).unwrap_or_else(|err| fatal_error(err.to_string())));
-    EAL.initialization.call_once(|| {});
+    let rte = eal::init(EAL_ARGS);
+    assert!(RteAllocator::is_initialized());
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::WARN)
+        .with_max_level(tracing::Level::INFO)
         .with_target(false)
         .with_thread_ids(true)
+        .with_thread_names(true)
         .with_line_number(true)
         .init();
-
-    if unsafe { rte_trace_feature_is_enabled() } {
-        fatal_error("rte trace feature should be disabled!");
+    LCoreId::list().for_each(|lcore| {
+        WorkerThread::launch_on(lcore, move || {
+            warn!("Look mom, a worker thread on {lcore:?} is alive!");
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+            warn!("finishing up on {lcore:?}");
+        });
+    });
+    warn!("waiting on all lcores to finish");
+    unsafe {
+        rte_eal_mp_wait_lcore();
     }
-    // std::thread::scope(|scope| {
-    //     ServiceThread::new(scope, "test_thread", || {
-    //         run(rte.deref() as *const _ as *mut _);
-    //     });
-    // });
-    ServiceThread::new_eal(run, rte.deref() as *const _ as *mut _);
-    // std::thread::scope(|scope| {
-    //     dpdk::lcore::ServiceThread::new(scope, "testing123", || {
-    //
-    //     });
-    // });
+    warn!("all done");
+    // #[allow(clippy::panic)]
+    // let Some(lcore) = lcores.next() else {
+    //     panic!("no LCores available");
+    // };
+    // ServiceThread::new_eal(run, &rte as *const _ as *mut _, lcores.next().unwrap());
+    // ServiceThread::new_eal(run, &rte as *const _ as *mut _, LCoreId::main());
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1017,28 +1021,35 @@ fn jump_to_1(port_id: u16, err: &mut rte_flow_error) -> RteFlow {
     RteFlow::new(port_id, flow)
 }
 
+extern "C" fn run2(arg: *mut c_void) -> c_int {
+    // assert!(EAL, "EAL not initialized");
+    let rte = unsafe { (arg as *mut Eal).as_ref().expect("null ptr passed to run") };
+    error!("look at me");
+    0
+}
+
 extern "C" fn run(arg: *mut c_void) -> c_int {
-    assert!(EAL.initialization.is_completed(), "EAL not initialized");
-    let rte = unsafe { &*(arg as *mut Eal) };
+    assert!(RteAllocator::is_initialized(), "EAL not initialized");
+    let rte = unsafe { (arg as *mut Eal).as_ref().expect("null ptr passed to run") };
     rte.socket.iter().for_each(|socket| {
-        warn!("Socket: {socket:?}");
+        debug!("Socket: {socket:?}");
     });
     rte.dev.iter().for_each(|dev| {
-        warn!("Device if_index: {if_index:?}", if_index = dev.if_index());
-        warn!("Driver name: {name:?}", name = dev.driver_name());
+        debug!("Device if_index: {if_index:?}", if_index = dev.if_index());
+        debug!("Driver name: {name:?}", name = dev.driver_name());
         let tx_config: TxOffloadConfig = dev.tx_offload_caps().into();
-        warn!(
+        debug!(
                     "Device tx offload capabilities: {tx_offload:?}",
                     tx_offload = tx_config
                 );
-        warn!(
+        debug!(
                     "Device rx offload capabilities: {rx_offload:?}",
                     rx_offload = dev.rx_offload_caps()
                 );
 
         let config = dev::DevConfig {
-            num_rx_queues: 1,
-            num_tx_queues: 1,
+            num_rx_queues: 2,
+            num_tx_queues: 2,
             num_hairpin_queues: 0,
             rx_offloads: Some(RxOffload::temp()),
             tx_offloads: Some(TxOffloadConfig::default()),
@@ -1054,27 +1065,32 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
             }
         };
 
+        let i: LCoreIndex = LCoreId::current().into();
+
+        const NUM_DESCRIPTORS: u16 = 1024;
+
         let rx_config = queue::rx::RxQueueConfig {
             dev: my_dev.info.index(),
-            queue_index: queue::rx::RxQueueIndex(0),
-            num_descriptors: 8192,
+            queue_index: queue::rx::RxQueueIndex(i.0 as u16 - 1),
+            num_descriptors: NUM_DESCRIPTORS,
             socket_preference: socket::Preference::Dev(my_dev.info.index()),
             offloads: my_dev.info.rx_offload_caps(),
             pool: mem::PoolHandle::new_pkt_pool(
-                mem::PoolConfig::new("science", mem::PoolParams::default()).unwrap(),
+                mem::PoolConfig::new(format!("science{0}", i.0), mem::PoolParams::default()).unwrap(),
             )
                 .unwrap(),
         };
 
         let tx_config = queue::tx::TxQueueConfig {
-            queue_index: queue::tx::TxQueueIndex(0),
-            num_descriptors: 8192,
+            queue_index: queue::tx::TxQueueIndex(i.0 as u16 - 1),
+            num_descriptors: NUM_DESCRIPTORS,
             socket_preference: socket::Preference::Dev(my_dev.info.index()),
             config: (),
         };
 
         my_dev.new_rx_queue(rx_config).unwrap();
         my_dev.configure_tx_queue(tx_config).unwrap();
+
 
         // let rx_config = queue::rx::RxQueueConfig {
         //     dev: my_dev.info.index(),
@@ -1121,7 +1137,7 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
         let mut err = rte_flow_error::default();
         jump_to_1(my_dev.info.index().0, &mut err);
         let mut err = rte_flow_error::default();
-        flow_metadata(100, my_dev.info.index().0, 0, &mut err);
+        flow_metadata(100, my_dev.info.index().0, i.0 as u16 - 1, &mut err);
 
         // for i in 0..50_000_000 {
         //     if i % 100_000 == 0 {
@@ -1207,7 +1223,7 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
             let ret = unsafe {
                 rte_eth_rx_burst(
                     my_dev.info.index().0,
-                    queue::rx::RxQueueIndex(0).0,
+                    queue::rx::RxQueueIndex(i.0 as u16 - 1).0,
                     batch.as_mut_ptr(),
                     BATCH,
                 )
@@ -1216,7 +1232,7 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
             unsafe {
                 rte_eth_tx_burst(
                     my_dev.info.index().0,
-                    queue::rx::RxQueueIndex(0).0,
+                    queue::tx::TxQueueIndex(i.0 as u16 - 1).0,
                     batch.as_mut_ptr(),
                     ret,
                 )

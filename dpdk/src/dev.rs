@@ -72,7 +72,7 @@ impl DevIndex {
     ///
     /// # Errors
     ///
-    /// This function will return an `Err(std::io::Error)` if the device information could not be
+    /// This function will return a [`DevInfoError`] if the device information could not be
     /// retrieved.
     ///
     /// # Safety
@@ -633,12 +633,11 @@ impl Iterator for DevIterator {
     }
 }
 
+/// Manager of DPDK ethernet devices.
+#[non_exhaustive]
 #[repr(transparent)]
 #[derive(Debug)]
-/// Manager of DPDK ethernet devices.
-pub struct Manager {
-    _private: PhantomData<()>,
-}
+pub struct Manager;
 
 impl Drop for Manager {
     fn drop(&mut self) {
@@ -656,12 +655,8 @@ impl Manager {
     /// * The return value should only _ever_ be stored in the [`Eal`] singleton.
     ///
     /// </div>
-    #[tracing::instrument(level = "trace")]
     pub(crate) fn init() -> Manager {
-        info!("Initializing DPDK ethernet device manager");
-        Manager {
-            _private: PhantomData,
-        }
+        Manager
     }
 
     /// Iterate over all available DPDK ethernet devices and return information about each one.
@@ -680,7 +675,7 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// This function will return an `Err(std::io::Error)` if the device information could not be
+    /// This function will return an [`DevInfoError`] if the device information could not be
     /// retrieved.
     ///
     /// # Safety
