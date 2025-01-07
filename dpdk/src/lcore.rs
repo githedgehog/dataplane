@@ -1,10 +1,28 @@
 use crate::eal::{Eal, EalErrno};
+use core::ffi::{c_int, c_uint, c_void};
+use std::thread::Thread;
 use crossbeam::channel::{RecvError, SendError};
 use dpdk_sys::*;
-use hashbrown::HashMap;
-use core::ffi::{c_int, c_uint, c_void};
-use core::ptr::null_mut;
 use tracing::{info, warn};
+use crate::mem::RteAllocator;
+
+#[repr(transparent)]
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct Manager;
+
+impl Manager {
+    pub(crate) fn init() -> Manager {
+        Manager
+    }
+}
+
+impl Drop for Manager {
+    #[tracing::instrument(level = "info")]
+    fn drop(&mut self) {
+        info!("Shutting down RTE LCore manager");
+    }
+}
 
 #[repr(u32)]
 pub enum LCorePriority {
@@ -101,97 +119,24 @@ impl ServiceThread<'_> {
         }
     }
 
-    //
-    // pub fn launch_workers<T: Sync>(mut arg: &T) {
-    //     warn!("Launching RTE Lcores");
-    //     if unsafe {
-    //         rte_eal_mp_remote_launch(
-    //             Some(Self::spinup::<T>),
-    //             arg as *const _ as *mut T as *mut _,
-    //             rte_rmt_call_main_t::SKIP_MAIN,
-    //         )
-    //     } != 0
-    //     {
-    //         panic!("rte_eal_mp_remote_launch failed");
-    //     }
-    //     std::thread::sleep(std::time::Duration::from_secs(3));
-    // }
-
-    // todo: this should be private or `pub(crate)` after we supply a higher level API
-    pub fn new_eal(run: extern "C" fn(*mut c_void) -> c_int, arg: *mut c_void, lcore: LCoreId) {
-        warn!("launching on on LCoreId({0})", lcore.0);
-        let ret = unsafe { rte_eal_remote_launch(Some(run), arg, lcore.0 as c_uint) };
-        EalErrno::assert(ret);
-    }
-
     #[allow(clippy::expect_used)]
     pub fn join(self) {
         self.handle.join().expect("failed to join LCore");
     }
 }
 
-pub struct MainThread {
-    lcore_id: LCoreId,
-}
-
-impl MainThread {
-    fn get() -> MainThread {
-        MainThread {
-            lcore_id: LCoreId::main(),
-        }
-    }
-
-    pub fn launch<F: FnOnce() + Send + Sync>(f: F) {
-        let main_lcore_id = LCoreId::main();
-        WorkerThread::launch_on(main_lcore_id, f);
-    }
-}
 pub struct WorkerThread {
     lcore_id: LCoreId,
-    worker: ManagerInit,
 }
 
-struct WorkerInit {
-    from_manager: crossbeam::channel::Receiver<WorkerMessage>,
-    to_manager: crossbeam::channel::Sender<ManagerMessage>,
-}
-
-impl ManagerInit {
-    fn send(&self, message: WorkerMessage) -> Result<(), SendError<WorkerMessage>> {
-        self.to_worker.send(message)
-    }
-
-    fn recv(&self) -> Result<ManagerMessage, RecvError> {
-        self.from_worker.recv()
-    }
-}
 
 impl WorkerThread {
-    pub fn send(&self, message: WorkerMessage) -> Result<(), SendError<WorkerMessage>> {
-        self.worker.send(message)
-    }
-
-    pub fn recv(&self) -> Result<ManagerMessage, RecvError> {
-        self.worker.recv()
-    }
-}
-
-struct ManagerInit {
-    from_worker: crossbeam::channel::Receiver<ManagerMessage>,
-    to_worker: crossbeam::channel::Sender<WorkerMessage>,
-}
-
-pub enum WorkerMessage {
-    Task(Box<dyn FnOnce() + Send>),
-}
-enum ManagerMessage {
-    Register(LCoreId),
-}
-
-impl WorkerThread {
-    pub fn launch_on<T: FnOnce() + Send>(lcore: LCoreId, f: T) {
-        const CHANNEL_BOUND: usize = 1024;
-        unsafe extern "C" fn _launch<Task: FnOnce() + Send>(arg: *mut c_void) -> c_int {
+    #[cold]
+    pub fn launch<T: Send + FnOnce()>(lcore: LCoreId, f: T) {
+        RteAllocator::assert_initialized();
+        #[cold]
+        unsafe extern "C" fn _launch<Task: Send + FnOnce()>(arg: *mut c_void) -> c_int {
+            RteAllocator::assert_initialized();
             let task = Box::from_raw(
                 arg.as_mut().expect("null argument in worker setup") as *mut _ as *mut Task,
             );
@@ -246,7 +191,7 @@ impl LCoreParameters for LCore {
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
-pub struct LCoreId(u32);
+pub struct LCoreId(pub u32);
 
 impl LCoreId {
     /// [`LCoreId`] in an invalid condition is used as a signal to DPDK to
@@ -265,23 +210,13 @@ pub mod err {
         #[error("illegal lcore id: {0} (too large)")]
         IllegalId(u32),
     }
-
-    #[derive(thiserror::Error, Debug)]
-    pub enum LCoreIndexError {}
 }
 
 impl LCoreId {
     pub const MAX: u32 = RTE_MAX_LCORE;
 
-    pub fn list() -> impl Iterator<Item = LCoreId> {
+    pub fn iter() -> impl Iterator<Item = LCoreId> {
         LCoreIdIterator::new()
-    }
-
-    pub(crate) fn new(inner: u32) -> Result<LCoreId, err::LCoreIdError> {
-        if inner >= Self::MAX {
-            return Err(err::LCoreIdError::IllegalId(inner));
-        }
-        Ok(LCoreId(inner))
     }
 
     pub(crate) fn as_u32(&self) -> u32 {

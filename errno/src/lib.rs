@@ -1171,14 +1171,14 @@ impl ErrorCode {
     pub const fn parse_i32(val: i32) -> ErrorCode {
         match StandardErrno::parse_i32(val) {
             Ok(standard) => ErrorCode::Standard(standard),
-            Err(_) => match NegStandardErrno::parse_i32(val) {
+            Err(val) => match NegStandardErrno::parse_i32(val) {
                 Ok(neg_standard) => ErrorCode::NegStandard(neg_standard),
-                Err(_) => ErrorCode::Other(Errno(val)),
+                Err(val) => ErrorCode::Other(Errno(val)),
             },
         }
     }
 
-    /// Parse an `Errno` value into an `errno::Error`.
+    /// Parse an `Errno` value into an `ErrorCode`.
     pub const fn parse_errno(val: Errno) -> ErrorCode {
         Self::parse_i32(val.0)
     }

@@ -28,26 +28,25 @@ tracing_release_max_level_warn = ["tracing/release_max_level_warn"]
 
 [dependencies]
 
+# internal
 dpdk-sys = { path = "../dpdk-sys" }
 net = { path = "../net" }
-
-smallvec = { version = "1.13.2", default-features = false, features = ["const_generics"]}
-
-crossbeam = { version = "0.8.4", default-features = true, features = ["crossbeam-channel"] }
-hashbrown = { version = "0.15.2", default-features = false, features = ["allocator-api2", "default-hasher"] }
-
-left-right = { version = "0.11.5", default-features = false }
-serde = { workspace = true, optional = true }
-thiserror = { workspace = true }
-tracing = { workspace = true, features = ["attributes"] }
-rand = "0.8.5"
 errno = { path = "../errno" }
 
-
-
+# external
+allocator-api2 = { workspace = true }
+blink-alloc = { workspace = true, features = ["alloc"] }
+crossbeam = { version = "0.8.4", default-features = true, features = ["crossbeam-channel"] }
+hashbrown = { version = "0.15.2", default-features = false, features = ["allocator-api2", "default-hasher"] }
+left-right = { version = "0.11.5", default-features = false }
+rand = "0.8.5"
+serde = { workspace = true, optional = true }
+smallvec = { version = "1.13.2", default-features = false, features = ["const_generics"] }
+thiserror = { workspace = true }
+tracing = { workspace = true, features = ["attributes"] }
 
 [build-dependencies]
 dpdk-sysroot-helper = { path = "../dpdk-sysroot-helper" }
 
 [dev-dependencies]
-criterion = { version = "0.5.1", default-features = true, features = ["html_reports"]}
+criterion = { version = "0.5.1", default-features = true, features = ["html_reports"] }

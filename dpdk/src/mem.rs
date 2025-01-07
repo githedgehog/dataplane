@@ -8,24 +8,28 @@ use crate::socket::SocketId;
 use alloc::format;
 use alloc::string::String;
 use core::alloc::{GlobalAlloc, Layout};
-use core::cell::UnsafeCell;
+use core::cell::Cell;
+use core::ffi::c_uint;
 use core::ffi::{c_int, CStr};
 use core::fmt::{Debug, Display};
 use core::intrinsics::transmute;
 use core::marker::PhantomData;
+use core::ptr::null;
 use core::ptr::null_mut;
 use core::ptr::NonNull;
+use core::slice::from_raw_parts_mut;
 use dpdk_sys::*;
 use errno::Errno;
-use core::cell::{Cell, OnceCell};
-use core::ffi::c_uint;
-use core::ptr::null;
 use tracing::{error, info, warn};
 
+use crate::lcore::LCoreId;
 // unfortunately, we need the standard library to swap allocators
-use std::ffi::CString;
-use std::sync::Once;
+use allocator_api2::alloc::AllocError;
+use allocator_api2::alloc::Allocator;
 use std::alloc::System;
+use std::cell::UnsafeCell;
+use std::ffi::CString;
+use std::marker::PhantomPinned;
 
 /// DPDK memory manager
 #[repr(transparent)]
@@ -57,15 +61,15 @@ impl Drop for Manager {
 /// </div>
 #[repr(transparent)]
 #[derive(Debug)]
-pub struct PoolHandle(PoolInner);
+pub struct Pool(PoolInner);
 
-impl PartialEq for PoolHandle {
+impl PartialEq for Pool {
     fn eq(&self, other: &Self) -> bool {
         self.inner() == other.inner()
     }
 }
 
-impl Eq for PoolHandle {}
+impl Eq for Pool {}
 
 impl PartialEq for PoolInner {
     fn eq(&self, other: &Self) -> bool {
@@ -77,20 +81,20 @@ impl PartialEq for PoolInner {
 
 impl Eq for PoolInner {}
 
-impl Display for PoolHandle {
+impl Display for Pool {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(f, "Pool({})", self.name())
     }
 }
 
-impl PoolHandle {
+impl Pool {
     pub(crate) fn inner(&self) -> &PoolInner {
         &self.0
     }
 
     /// Create a new packet memory pool.
     #[tracing::instrument(level = "debug")]
-    pub fn new_pkt_pool(config: PoolConfig) -> Result<PoolHandle, InvalidMemPoolConfig> {
+    pub fn new_pkt_pool(config: PoolConfig) -> Result<Pool, InvalidMemPoolConfig> {
         let pool = unsafe {
             rte_pktmbuf_pool_create(
                 config.name.as_ptr(),
@@ -123,11 +127,7 @@ impl PoolHandle {
             Some(pool) => pool,
         };
 
-        Ok(PoolHandle(PoolInner {
-            config,
-            pool: UnsafeCell::new(pool),
-            _marker: PhantomData,
-        }))
+        Ok(Pool(PoolInner { config, pool }))
     }
 
     /// Get the name of the memory pool.
@@ -162,11 +162,11 @@ impl PoolHandle {
 
 /// This value is RAII-managed and must never implement `Copy` and can likely never implement
 /// `Clone` unless the internal representation is changed to use a reference-counted pointer.
+#[non_exhaustive]
 #[derive(Debug)]
 pub(crate) struct PoolInner {
     pub(crate) config: PoolConfig,
-    pub(crate) pool: UnsafeCell<NonNull<rte_mempool>>,
-    _marker: PhantomData<rte_mempool>,
+    pub(crate) pool: NonNull<rte_mempool>,
 }
 
 impl PoolInner {
@@ -180,7 +180,7 @@ impl PoolInner {
     ///
     /// </div>
     pub(crate) unsafe fn as_ref(&self) -> &rte_mempool {
-        (*self.pool.get()).as_ref()
+        self.pool.as_ref()
     }
 
     /// Get a mutable pointer to the raw DPDK [`rte_mempool`].
@@ -192,18 +192,18 @@ impl PoolInner {
     ///
     /// You need to be careful when handing the return value to a [`dpdk_sys`] function or data
     /// structure.
-    /// In all cases you need to associate any copy of `*mut rte_mempool` back to the [`PoolHandle`]
+    /// In all cases you need to associate any copy of `*mut rte_mempool` back to the [`Pool`]
     /// object's reference count.
-    /// Failing that risks [`Drop`] ([RAII]) tearing down the [`PoolHandle`] while it is still in use.
+    /// Failing that risks [`Drop`] ([RAII]) tearing down the [`Pool`] while it is still in use.
     ///
-    /// If you duplicate the pointer and fail to associate it back with the outer [`PoolHandle`] object's
+    /// If you duplicate the pointer and fail to associate it back with the outer [`Pool`] object's
     /// reference count, you will risk tearing down the memory pool while it is still in use.
     ///
     /// </div>
     ///
     /// [RAII]: https://en.wikipedia.org/wiki/Resource_Acquisition_Is_Initialization
     pub(crate) unsafe fn as_mut_ptr(&self) -> *mut rte_mempool {
-        (*self.pool.get()).as_ptr()
+        self.pool.as_ptr()
     }
 }
 
@@ -279,7 +279,8 @@ impl PoolConfig {
     pub const MAX_NAME_LEN: usize = 25;
 
     /// Validate a memory pool name.
-    #[tracing::instrument(level = "trace")]
+    #[cold]
+    #[tracing::instrument(level = "debug")]
     fn validate_name(name: &str) -> Result<CString, InvalidMemPoolName> {
         if !name.is_ascii() {
             return Err(InvalidMemPoolName::NotAscii(format!(
@@ -292,14 +293,14 @@ impl PoolConfig {
                 format!(
                     "Memory pool name must be at most {max} characters of valid ASCII: {name} is too long ({len} > {max}).",
                     max = PoolConfig::MAX_NAME_LEN,
-                    len= name.len()
+                    len = name.len()
                 )
             ));
         }
 
         if name.is_empty() {
             return Err(InvalidMemPoolName::Empty(
-                format!("Memory pool name must be at least 1 character of valid ASCII: {name} is too short ({len} == 0).", len= name.len()))
+                format!("Memory pool name must be at least 1 character of valid ASCII: {name} is too short ({len} == 0).", len = name.len()))
             );
         }
 
@@ -328,6 +329,7 @@ impl PoolConfig {
     /// Create a new memory pool config.
     ///
     /// TODO: validate the pool parameters.
+    #[cold]
     #[tracing::instrument(level = "debug", ret)]
     pub fn new<T: Debug + AsRef<str>>(
         name: T,
@@ -360,7 +362,7 @@ impl PoolConfig {
     #[tracing::instrument(level = "trace")]
     pub fn name(&self) -> &str {
         #[allow(clippy::expect_used)]
-        // This `expect` is safe because the name is validated at creation time to be valid a valid,
+        // This `expect` is safe because the name is validated at creation time to be a valid,
         // null terminated ASCII string.
         unsafe { CStr::from_ptr(self.name.as_ptr()) }
             .to_str()
@@ -460,7 +462,7 @@ impl Mbuf {
     pub fn raw_data(&self) -> &[u8] {
         debug_assert!(
             unsafe { self.raw.as_ref().annon1.annon1.nb_segs } == 1,
-            "multi seg packets not supported yet"
+            "multi seg packets not properly supported yet"
         );
         let pkt_data_start = unsafe {
             (self.raw.as_ref().buf_addr as *const u8)
@@ -489,7 +491,7 @@ impl Mbuf {
                 .buf_addr
                 .offset(self.raw.as_ref().annon1.annon1.data_off as isize)
                 .cast::<u8>();
-            core::slice::from_raw_parts_mut(
+            from_raw_parts_mut(
                 data_start,
                 self.raw.as_ref().annon2.annon1.data_len as usize,
             )
@@ -497,25 +499,56 @@ impl Mbuf {
     }
 }
 
-#[derive(Debug)]
+#[non_exhaustive]
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone)]
 pub struct RteAllocator;
+
+unsafe impl Sync for RteAllocator {}
+
+impl RteAllocator {
+    pub const fn uninit() -> Self {
+        RteAllocator
+    }
+}
+
+pub enum Pending {}
+pub enum Activated {}
+
+pub trait AllocatorState {}
+
+impl AllocatorState for Pending {}
+impl AllocatorState for Activated {}
+
+impl<T: AllocatorState + 'static> AllocatorState for PhantomData<T> {}
 
 #[repr(transparent)]
 struct RteInit(Cell<bool>);
 
 unsafe impl Sync for RteInit {}
 
-static RTE_INIT: RteInit = RteInit(Cell::new(false));
+static RTE_INIT: RteInit = const { RteInit(Cell::new(false)) };
+
+thread_local! {
+    static RTE_SOCKET: Cell<SocketId> = const { Cell::new(SocketId::ANY) };
+}
 
 impl RteAllocator {
-
+    #[tracing::instrument(level = "info")]
     pub(crate) fn mark_initialized() {
+        if RTE_INIT.0.get() {
+            Eal::fatal_error("RTE already initialized");
+        }
+        RTE_SOCKET.set(SocketId::current());
         RTE_INIT.0.set(true);
     }
 
-    #[inline(always)]
-    pub fn is_initialized() -> bool {
-        RTE_INIT.0.get()
+    #[tracing::instrument(level = "debug")]
+    pub fn assert_initialized() {
+        if !RTE_INIT.0.get() {
+            Eal::fatal_error("RTE not initialized");
+        }
+        RTE_SOCKET.set(SocketId::current());
     }
 }
 
@@ -523,7 +556,12 @@ unsafe impl GlobalAlloc for RteAllocator {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if RTE_INIT.0.get() {
-            rte_malloc(null(), layout.size(), layout.align() as _) as _
+            rte_malloc_socket(
+                null(),
+                layout.size(),
+                layout.align() as _,
+                RTE_SOCKET.get().0 as _,
+            ) as _
         } else {
             System.alloc(layout)
         }
@@ -541,7 +579,12 @@ unsafe impl GlobalAlloc for RteAllocator {
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         if RTE_INIT.0.get() {
-            rte_zmalloc(null(), layout.size(), layout.align() as _) as _
+            rte_zmalloc_socket(
+                null(),
+                layout.size(),
+                layout.align() as _,
+                RTE_SOCKET.get().0 as _,
+            ) as _
         } else {
             System.alloc_zeroed(layout)
         }
@@ -550,9 +593,34 @@ unsafe impl GlobalAlloc for RteAllocator {
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if RTE_INIT.0.get() {
-            rte_realloc(ptr as _, new_size, layout.align() as _) as _
+            rte_realloc_socket(
+                ptr as _,
+                new_size,
+                layout.align() as _,
+                RTE_SOCKET.get().0 as _,
+            ) as _
         } else {
             System.realloc(ptr, layout, new_size)
         }
+    }
+}
+
+#[derive(Debug)]
+#[non_exhaustive]
+#[repr(transparent)]
+pub(crate) struct SystemAllocator;
+
+unsafe impl Allocator for SystemAllocator {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        match NonNull::new(unsafe { System.alloc(layout) }) {
+            None => Err(AllocError),
+            Some(ptr) => Ok(unsafe {
+                NonNull::new_unchecked(from_raw_parts_mut(ptr.as_ptr(), layout.size()))
+            }),
+        }
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        System.dealloc(ptr.as_ptr(), layout);
     }
 }

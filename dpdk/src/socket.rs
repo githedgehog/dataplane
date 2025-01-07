@@ -15,10 +15,9 @@ use crate::dev::DevIndex;
 use crate::eal::Eal;
 use crate::lcore::LCoreId;
 use core::ffi::c_uint;
-use core::marker::PhantomData;
 use dpdk_sys::rte_socket_id;
 use errno::ErrorCode;
-use tracing::{debug, info};
+use tracing::info;
 
 /// DPDK socket manager.
 #[non_exhaustive]

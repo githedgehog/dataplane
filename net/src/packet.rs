@@ -1,13 +1,12 @@
 //! Packet abstraction
 
 use crate::eth::Mac;
-use alloc::vec::Vec;
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use etherparse::err::packet::SliceError;
 use etherparse::err::Layer;
 use etherparse::{
-    EtherType, Ethernet2Header, Ipv4Header, Ipv6Header, LaxPacketHeaders, LinkHeader, NetHeaders,
-    TransportHeader, VlanHeader,
+    EtherType, Ethernet2Header, Ipv4Header, Ipv6Header, LaxPacketHeaders, LaxSlicedPacket,
+    LinkHeader, NetHeaders, TransportHeader, VlanHeader,
 };
 
 /// TODO
@@ -32,10 +31,21 @@ pub struct PacketHeader {
     transport: Option<TransportHeader>,
 }
 
+/// TODO
+pub struct PacketHeader2<'a> {
+    /// TODO
+    pub inner: LaxSlicedPacket<'a>,
+}
+
 impl PacketHeader {
     /// Return the source [`Mac`] of the parsed packet
     pub fn eth_src(&self) -> Mac {
         Mac::from(self.link.source)
+    }
+
+    /// Set the source [`Mac`] of the parsed packet
+    pub fn set_eth_src(&mut self, mac: Mac) {
+        self.link.source = mac.into();
     }
 
     /// Return the destination [`Mac`] of the parsed packet
@@ -44,12 +54,13 @@ impl PacketHeader {
     }
 
     /// Return the [`EtherType`] of the parsed packet
+    #[must_use]
     pub fn ethertype(&self) -> EtherType {
         self.link.ether_type
     }
 
     /// Return the source ip of the parsed packet if available
-    pub fn ipv4_src(&self) -> Option<Ipv4Addr> {
+    #[must_use] pub fn ipv4_src(&self) -> Option<Ipv4Addr> {
         match self.net.as_ref() {
             Some(IpHeader::V4(ip)) => Some(Ipv4Addr::from(ip.source)),
             Some(IpHeader::V6(_)) => None,
@@ -58,7 +69,7 @@ impl PacketHeader {
     }
 
     /// Return the destination ip of the parsed packet if available
-    pub fn ipv4_dst(&self) -> Option<Ipv4Addr> {
+    #[must_use] pub fn ipv4_dst(&self) -> Option<Ipv4Addr> {
         match self.net.as_ref() {
             Some(IpHeader::V4(ip)) => Some(Ipv4Addr::from(ip.destination)),
             Some(IpHeader::V6(_)) => None,
@@ -67,7 +78,7 @@ impl PacketHeader {
     }
 
     /// Return the source ip of the parsed packet if available
-    pub fn ipv6_src(&self) -> Option<Ipv6Addr> {
+    #[must_use] pub fn ipv6_src(&self) -> Option<Ipv6Addr> {
         match self.net.as_ref() {
             Some(IpHeader::V6(ip)) => Some(Ipv6Addr::from(ip.source)),
             Some(IpHeader::V4(_)) => None,
@@ -76,7 +87,7 @@ impl PacketHeader {
     }
 
     /// Return the destination ip of the parsed packet if available
-    pub fn ipv6_dst(&self) -> Option<Ipv6Addr> {
+    #[must_use] pub fn ipv6_dst(&self) -> Option<Ipv6Addr> {
         match self.net.as_ref() {
             Some(IpHeader::V6(ip)) => Some(Ipv6Addr::from(ip.destination)),
             Some(IpHeader::V4(_)) => None,
@@ -85,7 +96,7 @@ impl PacketHeader {
     }
 
     /// Return the source ip of the parsed packet if available
-    pub fn ip_src(&self) -> Option<IpAddr> {
+    #[must_use] pub fn ip_src(&self) -> Option<IpAddr> {
         self.net.as_ref().map(|ip| match ip {
             IpHeader::V4(ip) => IpAddr::from(ip.source),
             IpHeader::V6(ip) => IpAddr::from(ip.source),
@@ -93,11 +104,27 @@ impl PacketHeader {
     }
 
     /// Return the destination ip of the parsed packet if available
-    pub fn ip_dst(&self) -> Option<IpAddr> {
+    #[must_use] pub fn ip_dst(&self) -> Option<IpAddr> {
         self.net.as_ref().map(|ip| match ip {
             IpHeader::V4(ip) => IpAddr::from(ip.destination),
             IpHeader::V6(ip) => IpAddr::from(ip.destination),
         })
+    }
+}
+
+impl PacketHeader2<'_> {
+    /// TODO
+    pub fn parse(raw: &[u8]) -> Result<PacketHeader2, (SliceError, Layer)> {
+        let headers = LaxSlicedPacket::from_ethernet(raw)
+            .map_err(|e| (SliceError::Len(e), Layer::Ethernet2Header))?;
+        Ok(PacketHeader2 { inner: headers })
+    }
+
+    /// TODO
+    pub fn parse_mut(raw: &mut [u8]) -> Result<PacketHeader2, (SliceError, Layer)> {
+        let headers = LaxSlicedPacket::from_ethernet(raw)
+            .map_err(|e| (SliceError::Len(e), Layer::Ethernet2Header))?;
+        Ok(PacketHeader2 { inner: headers })
     }
 }
 
@@ -107,8 +134,8 @@ impl PacketHeader {
     /// # Errors
     ///
     /// TODO
-    pub fn parse(raw: Vec<u8>) -> Result<PacketHeader, (SliceError, Layer)> {
-        let headers = LaxPacketHeaders::from_ethernet(raw.as_ref())
+    pub fn parse(raw: &[u8]) -> Result<PacketHeader, (SliceError, Layer)> {
+        let headers = LaxPacketHeaders::from_ethernet(raw)
             .map_err(|e| (SliceError::Len(e), Layer::Ethernet2Header))?;
         if let Some((err, layer)) = headers.stop_err {
             let err = match err {
@@ -137,44 +164,59 @@ impl PacketHeader {
     }
 }
 
-#[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-mod test {
+/// Packet generation for testing / proof purposes
+#[cfg(any(feature = "bolero", feature = "_proof", test, kani))]
+pub mod generate {
     use crate::eth::Mac;
     use crate::ipv4::Ipv4;
-    use crate::packet::{IpHeader, PacketHeader};
-    use alloc::vec::Vec;
     use core::num::NonZero;
-    use etherparse::{IpNumber, PacketBuilder, TransportHeader};
+    use etherparse::PacketBuilder;
 
-    #[derive(Clone, Debug)]
-    #[cfg_attr(any(feature = "bolero", test, kani), derive(bolero::TypeGenerator))]
-    struct Tcp4TestData {
-        eth_src: Mac,
-        eth_dst: Mac,
-        ip_src: Ipv4,
-        ip_dst: Ipv4,
-        ttl: u8,
-        src_port: NonZero<u16>,
-        dst_port: NonZero<u16>,
-        sequence_number: u32,
-        window_size: u16,
+    /// Data needed to construct an IPv4 TCP packet
+    #[derive(Clone, Debug, bolero::TypeGenerator)]
+    pub struct Tcp4TestData {
+        /// The ethernet source [Mac]
+        pub eth_src: Mac,
+        /// The ethernet dest [Mac]
+        pub eth_dst: Mac,
+        /// The source ip
+        pub ip_src: Ipv4,
+        /// The dest ip
+        pub ip_dst: Ipv4,
+        /// The packets time to live
+        pub ttl: u8,
+        /// the tcp source port of the packet
+        pub src_port: NonZero<u16>,
+        /// the tcp dest port of the packet
+        pub dst_port: NonZero<u16>,
+        /// the tcp sequence number of the packet
+        pub sequence_number: u32,
+        /// the tcp window size for the packet
+        pub window_size: u16,
     }
 
-    #[derive(Clone, Debug)]
-    #[cfg_attr(any(feature = "bolero", test, kani), derive(bolero::TypeGenerator))]
-    struct Udp4TestData {
-        eth_src: Mac,
-        eth_dst: Mac,
-        ip_src: Ipv4,
-        ip_dst: Ipv4,
-        ttl: u8,
-        src_port: NonZero<u16>,
-        dst_port: NonZero<u16>,
+    /// Data needed to construct an IPv4 UDP packet
+    #[derive(Clone, Debug, bolero::TypeGenerator)]
+    pub struct Udp4TestData {
+        /// The source [Mac] of the packet
+        pub eth_src: Mac,
+        /// The dest [Mac] of the packet
+        pub eth_dst: Mac,
+        /// The source ip of the packet
+        pub ip_src: Ipv4,
+        /// The dest ip of the packet
+        pub ip_dst: Ipv4,
+        /// the time to live of the packet
+        pub ttl: u8,
+        /// the udp source port of the packet
+        pub src_port: NonZero<u16>,
+        /// the udp dest port of the packet
+        pub dst_port: NonZero<u16>,
     }
 
     impl Udp4TestData {
-        fn serialize(&self) -> Vec<u8> {
+        /// Write the test data to a packet
+        pub fn serialize(&self) -> Vec<u8> {
             let builder = PacketBuilder::ethernet2(self.eth_src.into(), self.eth_dst.into())
                 .ipv4(
                     self.ip_src.addr.octets(),
@@ -189,7 +231,8 @@ mod test {
     }
 
     impl Tcp4TestData {
-        fn serialize(&self) -> Vec<u8> {
+        /// Write the test data to a packet
+        pub fn serialize(&self) -> Vec<u8> {
             let builder = PacketBuilder::ethernet2(*self.eth_src.as_ref(), *self.eth_dst.as_ref())
                 .ipv4(
                     self.ip_src.addr.octets(),
@@ -207,6 +250,18 @@ mod test {
             buffer
         }
     }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod test {
+    use super::generate::*;
+    use crate::eth::Mac;
+    use crate::ipv4::Ipv4;
+    use crate::packet::{IpHeader, PacketHeader};
+    use alloc::vec::Vec;
+    use core::num::NonZero;
+    use etherparse::{IpNumber, PacketBuilder, TransportHeader};
 
     #[test]
     fn from_raw_parse_udp_packet() {
@@ -222,7 +277,7 @@ mod test {
             .udp(src_port, dst_port);
         let mut buffer = Vec::with_capacity(builder.size(0));
         builder.write(&mut buffer, &[]).unwrap();
-        let headers = PacketHeader::parse(buffer).unwrap();
+        let headers = PacketHeader::parse(buffer.as_ref()).unwrap();
         assert_eq!(eth_src, headers.link.source);
         assert_eq!(eth_dst, headers.link.destination);
         let ip = match headers.net.expect("no ip header") {
@@ -232,9 +287,8 @@ mod test {
         assert_eq!(ip_src, ip.source);
         assert_eq!(ip_dst, ip.destination);
         assert_eq!(ip.protocol, IpNumber::UDP);
-        let udp = match headers.transport.expect("no transport header") {
-            TransportHeader::Udp(udp) => udp,
-            _ => unreachable!("not a udp packet"),
+        let TransportHeader::Udp(udp) = headers.transport.expect("no transport header") else {
+            unreachable!("not a udp packet")
         };
         assert_eq!(src_port, udp.source_port);
         assert_eq!(dst_port, udp.destination_port);
@@ -243,7 +297,7 @@ mod test {
     #[test]
     fn udp4_parse_fuzz_test() {
         bolero::check!().with_type().for_each(|val: &Udp4TestData| {
-            let headers = PacketHeader::parse(val.serialize()).expect("failed to parse packet");
+            let headers = PacketHeader::parse(&val.serialize()).expect("failed to parse packet");
             assert_eq!(
                 val.eth_src,
                 Mac::from(headers.link.source),
@@ -262,9 +316,8 @@ mod test {
             assert_eq!(val.ip_dst.addr.octets(), ip.destination);
             assert_eq!(val.ttl, ip.time_to_live);
             assert_eq!(ip.protocol, IpNumber::UDP, "protocol mismatch");
-            let udp = match headers.transport.expect("no transport header") {
-                TransportHeader::Udp(udp) => udp,
-                _ => unreachable!("not a udp packet"),
+            let TransportHeader::Udp(udp) = headers.transport.expect("no transport header") else {
+                unreachable!("not a udp packet")
             };
             assert_eq!(val.src_port.get(), udp.source_port, "source port mismatch");
             assert_eq!(
@@ -278,7 +331,7 @@ mod test {
     #[test]
     fn tcp4_parse_fuzz_test() {
         bolero::check!().with_type().for_each(|val: &Tcp4TestData| {
-            let headers = PacketHeader::parse(val.serialize()).expect("failed to parse packet");
+            let headers = PacketHeader::parse(&val.serialize()).expect("failed to parse packet");
             assert_eq!(
                 val.eth_src,
                 Mac::from(headers.link.source),
@@ -297,9 +350,8 @@ mod test {
             assert_eq!(val.ip_dst.addr.octets(), ip.destination);
             assert_eq!(val.ttl, ip.time_to_live);
             assert_eq!(ip.protocol, IpNumber::TCP, "protocol mismatch");
-            let tcp = match headers.transport.expect("no transport header") {
-                TransportHeader::Tcp(tcp) => tcp,
-                _ => unreachable!("not a tcp packet"),
+            let TransportHeader::Tcp(tcp) = headers.transport.expect("no transport header") else {
+                unreachable!("not a tcp packet")
             };
             assert_eq!(val.src_port.get(), tcp.source_port, "source port mismatch");
             assert_eq!(

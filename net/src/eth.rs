@@ -120,7 +120,7 @@ impl Mac {
     }
 }
 
-#[cfg(any(kani, feature = "_fake-kani"))]
+#[cfg(any(kani, feature = "_proof"))]
 mod proof {
     use crate::eth::Mac;
     use kani::{proof, assume, any};

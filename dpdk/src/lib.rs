@@ -29,6 +29,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![allow(private_bounds)]
 extern crate alloc;
+extern crate core;
 
 pub mod dev;
 pub mod eal;

@@ -115,6 +115,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b048fb63fd8b5923fc5aa7b340d8e156aec7ec02f0c78fa8a6ddc2613f6f71de"
 
 [[package]]
+name = "blink-alloc"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e669f146bb8b2327006ed94c69cf78c8ec81c100192564654230a40b4f091d82"
+dependencies = [
+ "allocator-api2",
+]
+
+[[package]]
 name = "bolero"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -415,8 +424,13 @@ checksum = "7a81dae078cea95a014a339291cec439d2f232ebe854a9d672b796c6afafa9b7"
 name = "dataplane"
 version = "0.1.0"
 dependencies = [
+ "blink-alloc",
  "crossbeam",
  "dpdk",
+ "etherparse",
+ "net",
+ "priority-queue",
+ "thiserror",
  "tracing",
  "tracing-subscriber",
 ]
@@ -434,6 +448,8 @@ dependencies = [
 name = "dpdk"
 version = "0.1.0"
 dependencies = [
+ "allocator-api2",
+ "blink-alloc",
  "criterion",
  "crossbeam",
  "dpdk-sys",
@@ -888,6 +904,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "priority-queue"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "714c75db297bc88a63783ffc6ab9f830698a6705aa0201416931759ef4c8183d"
+dependencies = [
+ "autocfg",
+ "equivalent",
+ "indexmap",
+]
+
+[[package]]
 name = "proc-macro-crate"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1063,7 +1090,6 @@ version = "0.1.0"
 dependencies = [
  "dpdk",
  "dpdk-sys",
- "dpdk-sysroot-helper",
  "rand",
  "tracing",
  "tracing-subscriber",

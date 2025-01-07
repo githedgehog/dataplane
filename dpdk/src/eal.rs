@@ -2,17 +2,22 @@
 // Copyright Open Network Fabric Authors
 
 //! DPDK Environment Abstraction Layer (EAL)
-use crate::mem::RteAllocator;
-use crate::{dev, mem, socket};
+use crate::mem::{RteAllocator, SystemAllocator};
+use crate::{dev, lcore, mem, socket};
 use alloc::ffi::CString;
 use alloc::format;
 use alloc::string::ToString;
 use alloc::vec::Vec;
+use allocator_api2::alloc::Allocator;
+use blink_alloc::{Blink, BlinkAlloc};
 use core::ffi::c_int;
+use core::ffi::CStr;
 use core::fmt::{Debug, Display};
 use dpdk_sys::*;
-use core::ffi::{c_char, CStr};
-use tracing::{error, info, warn};
+use std::alloc::System;
+use std::ffi::{c_char, FromBytesUntilNulError};
+use std::ptr::null_mut;
+use tracing::{error, warn};
 
 /// Safe wrapper around the DPDK Environment Abstraction Layer (EAL).
 ///
@@ -34,6 +39,11 @@ pub struct Eal {
     ///
     /// You can find socket services here.
     pub socket: socket::Manager,
+
+    /// LCore manager
+    ///
+    /// You can manage logical cores and task dispatch here.
+    pub lcore: lcore::Manager,
     // TODO: queue
     // TODO: flow
 }
@@ -130,6 +140,7 @@ pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
             mem: mem::Manager::init(),
             dev: dev::Manager::init(),
             socket: socket::Manager::init(),
+            lcore: lcore::Manager::init(),
         }
     };
     // Shift to the DPDK allocator

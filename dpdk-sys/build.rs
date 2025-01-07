@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use bindgen::callbacks::ParseCallbacks;
 use std::env;
 use std::panic::catch_unwind;
-use bindgen::callbacks::ParseCallbacks;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -11,11 +11,9 @@ struct Cb;
 
 impl ParseCallbacks for Cb {
     fn process_comment(&self, comment: &str) -> Option<String> {
-        match catch_unwind(|| {
-            match doxygen_rs::generator::rustdoc(comment.into()) {
-                Ok(transformed) => transformed,
-                Err(_) => comment.into(),
-            }
+        match catch_unwind(|| match doxygen_rs::generator::rustdoc(comment.into()) {
+            Ok(transformed) => transformed,
+            Err(_) => comment.into(),
         }) {
             Ok(s) => Some(s),
             Err(_) => Some(comment.into()),
@@ -128,23 +126,15 @@ fn main() {
         "nl-route-3",
         "nl-3",
         "numa",
-        
     ];
-    
 
     for dep in &depends {
         println!("cargo:rustc-link-lib=static:+whole-archive,+bundle={dep}");
     }
-
     let rerun_if_changed = ["build.rs", "../scripts/dpdk-sys.env"];
-
     for file in &rerun_if_changed {
         println!("cargo:rerun-if-changed={file}");
     }
-
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    // let out_path = PathBuf::from("src");
-
     bind(&out_path, sysroot.as_str());
 }
-

@@ -25,6 +25,8 @@ use no_panic::no_panic;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(any(feature = "bolero", test, kani), derive(bolero::TypeGenerator))]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
+// SAFETY: only use of unsafe is unrelated to deserialize logic
+#[allow(clippy::unsafe_derive_deserialize)] 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "u16", into = "u16"))]
 pub struct Vid(NonZero<u16>);
@@ -50,7 +52,7 @@ pub enum InvalidVid {
     /// 4095 is a reserved [`Vid`] per the spec.
     #[error("4095 is a reserved Vid")]
     Reserved,
-    /// The value is too large to be a legal VID (12-bit max).
+    /// The value is too large to be a legal [`Vid`] (12-bit max).
     #[error("{0} is too large to be a legal Vid ({MAX} is max legal value)", MAX = Vid::MAX)]
     TooLarge(u16),
 }
@@ -63,11 +65,11 @@ impl InvalidVid {
 }
 
 impl Vid {
-    /// The minimum legal VID value (1).
+    /// The minimum legal [`Vid`] value (1).
     #[allow(unsafe_code)] // safe due to const eval
     pub const MIN: Vid = Vid(unsafe { NonZero::new_unchecked(1) });
 
-    /// The maximum legal VID value (2^12 - 2).
+    /// The maximum legal [`Vid`] value (2^12 - 2).
     #[allow(unsafe_code)] // safe due to const eval
     pub const MAX: Vid = Vid(unsafe { NonZero::new_unchecked(4094) });
 
@@ -136,7 +138,6 @@ mod test {
     #[cfg(any(kani, feature = "_proof"))]
     use kani::proof;
 
-
     #[test]
     #[cfg_attr(any(kani, feature = "_proof"), proof)]
     fn vlan_parse_contract() {
@@ -155,7 +156,7 @@ mod test {
                 Err(InvalidVid::Reserved) => assert_eq!(raw, 4095),
                 Err(InvalidVid::TooLarge(x)) => {
                     assert_eq!(x, raw);
-                    assert!(raw >= InvalidVid::TOO_LARGE)
+                    assert!(raw >= InvalidVid::TOO_LARGE);
                 }
             });
     }

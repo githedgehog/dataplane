@@ -7,21 +7,21 @@ use alloc::format;
 use alloc::vec::Vec;
 use core::ffi::{c_uint, CStr};
 use core::fmt::{Debug, Display, Formatter};
-use core::marker::PhantomData;
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 use tracing::{debug, error, info};
 
 use crate::eal::Eal;
 use crate::queue;
 use crate::queue::hairpin::{HairpinConfigFailure, HairpinQueue};
-use crate::queue::rx::{RxQueue, RxQueueConfig};
-use crate::queue::tx::{TxQueue, TxQueueConfig};
+use crate::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
+use crate::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use crate::socket::SocketId;
 use dpdk_sys::*;
 use dpdk_sys::rte_eth_rx_mq_mode::RTE_ETH_MQ_RX_RSS;
 use dpdk_sys::rte_eth_tx_mq_mode::RTE_ETH_MQ_TX_NONE;
 use errno::{Errno, ErrorCode, NegStandardErrno, StandardErrno};
 use queue::{rx, tx};
+use crate::mem::Mbuf;
 
 /// A DPDK Ethernet port index.
 ///
@@ -309,8 +309,6 @@ impl RxOffload {
     }
 }
 
-
-
 impl From<TxOffload> for u64 {
     fn from(value: TxOffload) -> Self {
         value.0
@@ -584,14 +582,18 @@ impl BitXorAssign for TxOffload {
     }
 }
 
-#[derive(Debug, PartialEq)]
 /// Information about a DPDK ethernet device.
 ///
 /// This struct is a wrapper around the `rte_eth_dev_info` struct from DPDK.
+#[derive(Debug, PartialEq)]
 pub struct DevInfo {
     pub(crate) index: DevIndex,
     pub(crate) inner: rte_eth_dev_info,
 }
+
+unsafe impl Send for DevInfo {}
+unsafe impl Sync for DevInfo {}
+
 
 #[repr(transparent)]
 #[derive(Debug)]
@@ -762,18 +764,18 @@ impl Dev {
 
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`TxQueue`]
-    pub fn configure_tx_queue(
+    pub fn new_tx_queue(
         &mut self,
         config: TxQueueConfig,
     ) -> Result<(), tx::ConfigFailure> {
-        let tx_queue = TxQueue::configure(self, config)?;
+        let tx_queue = TxQueue::setup(self, config)?;
         self.tx_queues.push(tx_queue);
         Ok(())
     }
 
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`HairpinQueue`]
-    pub fn configure_hairpin_queue(
+    pub fn new_hairpin_queue(
         &mut self,
         rx: RxQueueConfig,
         tx: TxQueueConfig,
@@ -781,7 +783,7 @@ impl Dev {
         let rx =
             RxQueue::setup(self, rx).map_err(HairpinConfigFailure::RxQueueCreationFailed)?;
         let tx =
-            TxQueue::configure(self, tx).map_err(HairpinConfigFailure::TxQueueCreationFailed)?;
+            TxQueue::setup(self, tx).map_err(HairpinConfigFailure::TxQueueCreationFailed)?;
         let hairpin = HairpinQueue::new(self, rx, tx)?;
         self.hairpin_queues.push(hairpin);
         Ok(())
@@ -798,7 +800,7 @@ impl Dev {
                 return Err(ErrorCode::parse_i32(errno::NEG_EAGAIN));
             }
             0 => {
-                info!("Device started");
+                info!("Device {0} started", self.info.index());
             }
             _ => {
                 error!(
@@ -810,6 +812,18 @@ impl Dev {
             }
         };
         Ok(())
+    }
+
+    pub fn rx_queue(&self, index: RxQueueIndex) -> Option<&RxQueue> {
+        self.rx_queues.iter().find(|x| {
+            x.config.queue_index == index
+        })
+    }
+
+    pub fn tx_queue(&self, index: TxQueueIndex) -> Option<&TxQueue> {
+        self.tx_queues.iter().find(|x| {
+            x.config.queue_index == index
+        })
     }
 }
 

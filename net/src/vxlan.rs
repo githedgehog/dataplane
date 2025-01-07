@@ -1,7 +1,6 @@
 //! VXLAN validation and manipulation tools.
 
 use core::num::NonZero;
-use tracing::instrument;
 
 #[cfg(feature = "_no-panic")]
 use no_panic::no_panic;
@@ -49,13 +48,14 @@ impl Vni {
     pub const MIN: u32 = 1;
     /// The maximum legal [`Vni`] value (2<sup>24</sup> - 1).
     pub const MAX: u32 = 0x00_FF_FF_FF;
+    /// First value which is too large to be a legal [`Vni`]
+    const TOO_LARGE: u32 = Vni::MAX + 1;
 
     /// Create a new [`Vni`] from a `u32`.
     ///
     /// # Errors
     ///
     /// Returns an [`InvalidVni`] error if the value is 0 or greater than [`Vni::MAX`].
-    #[instrument(level = "trace")]
     #[cfg_attr(feature = "_no-panic", no_panic)]
     pub fn new(vni: u32) -> Result<Vni, InvalidVni> {
         match NonZero::<u32>::new(vni) {
@@ -106,7 +106,6 @@ pub enum InvalidVni {
 }
 
 impl From<Vni> for u32 {
-    #[instrument(level = "trace")]
     #[cfg_attr(feature = "_no-panic", no_panic)]
     fn from(vni: Vni) -> u32 {
         vni.as_u32()
@@ -116,7 +115,6 @@ impl From<Vni> for u32 {
 impl TryFrom<u32> for Vni {
     type Error = InvalidVni;
 
-    #[instrument(level = "trace")]
     #[cfg_attr(feature = "_no-panic", no_panic)]
     fn try_from(vni: u32) -> Result<Vni, Self::Error> {
         Vni::new(vni)
@@ -168,7 +166,6 @@ mod test {
     /// cases (fuzzing).
     #[test]
     fn vni_fuzz_test() {
-        const TOO_LARGE: u32 = Vni::MAX + 1;
         bolero::check!()
             .with_type()
             .cloned()
@@ -179,7 +176,7 @@ mod test {
                 Vni::MIN..=Vni::MAX => {
                     assert_eq!(Vni::new(val).unwrap().as_u32(), val);
                 }
-                TOO_LARGE.. => {
+                Vni::TOO_LARGE.. => {
                     assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::TooLarge(val));
                 }
             });

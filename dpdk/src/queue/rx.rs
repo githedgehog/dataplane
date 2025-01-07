@@ -11,6 +11,7 @@ use dpdk_sys::*;
 use std::ffi::c_int;
 use std::ptr::null_mut;
 use tracing::{trace, warn};
+use errno::Errno;
 
 /// A DPDK receive queue index.
 ///
@@ -30,12 +31,14 @@ impl RxQueueIndex {
 }
 
 impl From<RxQueueIndex> for u16 {
+    #[must_use]
     fn from(value: RxQueueIndex) -> u16 {
         value.as_u16()
     }
 }
 
 impl From<u16> for RxQueueIndex {
+    #[inline]
     fn from(value: u16) -> RxQueueIndex {
         RxQueueIndex(value)
     }
@@ -55,32 +58,33 @@ pub struct RxQueueConfig {
     /// Hardware offloads to use
     pub offloads: RxOffload,
     /// The memory pool to use for the rx queue.
-    pub pool: mem::PoolHandle,
+    pub pool: mem::Pool,
 }
 
 /// Error type for receive queue configuration failures.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigFailure {
     #[error("The device has been removed")]
-    DeviceRemoved(errno::Errno),
+    DeviceRemoved(Errno),
     #[error("Invalid arguments were passed to the receive queue configuration")]
-    InvalidArgument(errno::Errno),
+    InvalidArgument(Errno),
     #[error("Memory allocation failed")]
-    NoMemory(errno::Errno),
+    NoMemory(Errno),
     #[error("An unexpected (i.e. undocumented) error occurred")]
-    Unexpected(errno::Errno),
+    Unexpected(Errno),
     #[error("The socket preference setting did not resolve a known socket")]
-    InvalidSocket(errno::Errno),
+    InvalidSocket(Errno),
 }
 
 impl ConfigFailure {
+    #[cold]
     fn check(err: c_int) -> Option<ConfigFailure> {
         match err {
             0 => None,
-            errno::NEG_ENODEV => Some(ConfigFailure::DeviceRemoved(errno::Errno(err))),
-            errno::NEG_EINVAL => Some(ConfigFailure::InvalidArgument(errno::Errno(err))),
-            errno::NEG_ENOMEM => Some(ConfigFailure::NoMemory(errno::Errno(err))),
-            _ => Some(ConfigFailure::Unexpected(errno::Errno(err))),
+            errno::NEG_ENODEV => Some(ConfigFailure::DeviceRemoved(Errno(err))),
+            errno::NEG_EINVAL => Some(ConfigFailure::InvalidArgument(Errno(err))),
+            errno::NEG_ENOMEM => Some(ConfigFailure::NoMemory(Errno(err))),
+            _ => Some(ConfigFailure::Unexpected(Errno(err))),
         }
     }
 }
@@ -101,9 +105,11 @@ impl RxQueue {
     ///
     /// This design ensures that the hairpin queue is correctly tracked in the list of queues
     /// associated with the device.
+    #[cold]
+    #[tracing::instrument(level = "info")]
     pub(crate) fn setup(dev: &dev::Dev, config: RxQueueConfig) -> Result<Self, ConfigFailure> {
         let socket_id = SocketId::try_from(config.socket_preference)
-            .map_err(|_| ConfigFailure::InvalidSocket(errno::Errno(errno::NEG_EINVAL)))?;
+            .map_err(|_| ConfigFailure::InvalidSocket(Errno(errno::NEG_EINVAL)))?;
         let rx_conf = rte_eth_rxconf {
             offloads: config.offloads.into(),
             ..Default::default()
@@ -127,6 +133,8 @@ impl RxQueue {
     }
 
     /// Start the receive queue.
+    #[cold]
+    #[tracing::instrument(level = "info")]
     pub(crate) fn start(&mut self) -> Result<(), RxQueueStartError> {
         let ret = unsafe {
             rte_eth_dev_rx_queue_start(self.dev.as_u16(), self.config.queue_index.as_u16())
@@ -138,30 +146,32 @@ impl RxQueue {
             errno::NEG_EINVAL => Err(RxQueueStartError::QueueIdOutOfRange),
             errno::NEG_EIO => Err(RxQueueStartError::DeviceRemoved),
             errno::NEG_ENOTSUP => Err(RxQueueStartError::NotSupported),
-            val => Err(RxQueueStartError::Unexpected(errno::Errno(val))),
+            val => Err(RxQueueStartError::Unexpected(Errno(val))),
         }
     }
 
     /// Stop the receive queue.
-    #[tracing::instrument(level = "trace")]
+    #[cold]
+    #[tracing::instrument(level = "info")]
     pub(crate) fn stop(&mut self) -> Result<(), RxQueueStopError> {
         let ret = unsafe {
             rte_eth_dev_rx_queue_stop(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
 
+        use errno::*;
         match ret {
             0 => Ok(()),
-            errno::NEG_ENODEV => Err(RxQueueStopError::InvalidPortId),
-            errno::NEG_EINVAL => Err(RxQueueStopError::QueueIdOutOfRange),
-            errno::NEG_EIO => Err(RxQueueStopError::DeviceRemoved),
-            errno::NEG_ENOTSUP => Err(RxQueueStopError::NotSupported),
-            val => Err(RxQueueStopError::Unexpected(errno::Errno(val))),
+            NEG_ENODEV => Err(RxQueueStopError::InvalidPortId),
+            NEG_EINVAL => Err(RxQueueStopError::QueueIdOutOfRange),
+            NEG_EIO => Err(RxQueueStopError::DeviceRemoved),
+            NEG_ENOTSUP => Err(RxQueueStopError::NotSupported),
+            val => Err(RxQueueStopError::Unexpected(Errno(val))),
         }
     }
 
     /// Receive a burst of packets from the queue
     #[tracing::instrument(level = "trace")]
-    pub fn receive(&mut self) -> impl Iterator<Item = Mbuf> {
+    pub fn receive(&self) -> impl Iterator<Item = Mbuf> {
         const PKT_BURST_SIZE: usize = 64;
         let mut pkts: [*mut rte_mbuf; PKT_BURST_SIZE] = [null_mut(); PKT_BURST_SIZE];
         trace!(
@@ -202,7 +212,7 @@ pub enum RxQueueStartError {
     #[error("Operation not supported")]
     NotSupported,
     #[error("Unknown error")]
-    Unexpected(errno::Errno),
+    Unexpected(Errno),
 }
 
 /// TODO
@@ -219,5 +229,5 @@ pub enum RxQueueStopError {
     #[error("Operation not supported")]
     NotSupported,
     #[error("Unexpected error")]
-    Unexpected(errno::Errno),
+    Unexpected(Errno),
 }

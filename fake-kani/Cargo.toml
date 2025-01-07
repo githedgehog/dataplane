@@ -5,4 +5,4 @@ edition = "2021"
 
 
 [dependencies]
-fake-kani-macro = { path = "../fake-kani-macro", version = "0.1.0" }
+fake-kani-macro = { workspace = true }

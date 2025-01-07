@@ -3,7 +3,7 @@
 
 use dpdk::dev::{RxOffload, TxOffloadConfig};
 use dpdk::eal::{Eal, EalErrno};
-use dpdk::lcore::{LCoreId, LCoreIndex, MainThread, ServiceThread, WorkerThread};
+use dpdk::lcore::{LCoreId, LCoreIndex, ServiceThread, WorkerThread};
 use dpdk::mem::{Mbuf, RteAllocator};
 use dpdk::{dev, eal, mem, queue, socket};
 use dpdk_sys::*;
@@ -20,7 +20,7 @@ use std::time::Instant;
 use tracing::{debug, error, info, trace, warn};
 
 #[global_allocator]
-static EAL: RteAllocator = RteAllocator;
+static EAL: RteAllocator = RteAllocator::uninit();
 
 #[tracing::instrument(level = "trace", ret)]
 // TODO: proper safety.  This should return a Result but I'm being a savage for demo purposes.
@@ -627,16 +627,17 @@ fn main() {
     ];
 
     let rte = eal::init(EAL_ARGS);
-    assert!(RteAllocator::is_initialized());
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
+        .with_file(true)
+        .with_level(true)
+        .with_line_number(true)
         .with_target(false)
         .with_thread_ids(true)
         .with_thread_names(true)
-        .with_line_number(true)
         .init();
-    LCoreId::list().for_each(|lcore| {
-        WorkerThread::launch_on(lcore, move || {
+    LCoreId::iter().for_each(|lcore| {
+        WorkerThread::launch(lcore, move || {
             warn!("Look mom, a worker thread on {lcore:?} is alive!");
             std::thread::sleep(std::time::Duration::from_millis(1100));
             warn!("finishing up on {lcore:?}");
@@ -1029,7 +1030,6 @@ extern "C" fn run2(arg: *mut c_void) -> c_int {
 }
 
 extern "C" fn run(arg: *mut c_void) -> c_int {
-    assert!(RteAllocator::is_initialized(), "EAL not initialized");
     let rte = unsafe { (arg as *mut Eal).as_ref().expect("null ptr passed to run") };
     rte.socket.iter().for_each(|socket| {
         debug!("Socket: {socket:?}");
@@ -1075,7 +1075,7 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
             num_descriptors: NUM_DESCRIPTORS,
             socket_preference: socket::Preference::Dev(my_dev.info.index()),
             offloads: my_dev.info.rx_offload_caps(),
-            pool: mem::PoolHandle::new_pkt_pool(
+            pool: mem::Pool::new_pkt_pool(
                 mem::PoolConfig::new(format!("science{0}", i.0), mem::PoolParams::default()).unwrap(),
             )
                 .unwrap(),
@@ -1089,7 +1089,7 @@ extern "C" fn run(arg: *mut c_void) -> c_int {
         };
 
         my_dev.new_rx_queue(rx_config).unwrap();
-        my_dev.configure_tx_queue(tx_config).unwrap();
+        my_dev.new_tx_queue(tx_config).unwrap();
 
 
         // let rx_config = queue::rx::RxQueueConfig {
