@@ -10,7 +10,6 @@
 //!
 //! [NUMA]: https://en.wikipedia.org/wiki/Non-uniform_memory_access
 use crate::dev::DevIndex;
-use crate::eal::Eal;
 use crate::lcore::LCoreId;
 use core::ffi::c_uint;
 use errno::ErrorCode;

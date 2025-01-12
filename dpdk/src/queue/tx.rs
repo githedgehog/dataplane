@@ -7,9 +7,8 @@ use crate::dev::DevIndex;
 use crate::mem::Mbuf;
 use crate::socket::SocketId;
 use crate::{dev, socket};
-use errno::{ErrorCode, NegStandardErrno, StandardErrno};
+use errno::ErrorCode;
 use std::cmp::min;
-use std::ptr::null_mut;
 use tracing::trace;
 
 /// A DPDK transmit queue index.
@@ -108,7 +107,10 @@ impl TxQueue {
     /// Start the transmit queue.
     pub(crate) fn start(&mut self) -> Result<(), TxQueueStartError> {
         match unsafe {
-            dpdk_sys::rte_eth_dev_tx_queue_start(self.dev.as_u16(), self.config.queue_index.as_u16())
+            dpdk_sys::rte_eth_dev_tx_queue_start(
+                self.dev.as_u16(),
+                self.config.queue_index.as_u16(),
+            )
         } {
             errno::SUCCESS => Ok(()),
             errno::NEG_ENODEV => Err(TxQueueStartError::DeviceRemoved),

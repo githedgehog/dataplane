@@ -2,15 +2,14 @@ use crate::socket;
 use core::ffi::{c_int, c_uint};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
-use dpdk_sys::*;
 use errno::{Errno, ErrorCode, StandardErrno};
 use std::ffi::CString;
 
 #[derive(Debug)]
 pub struct Ring<T> {
-    inner: NonNull<rte_ring>,
+    inner: NonNull<dpdk_sys::rte_ring>,
     params: CheckedParams,
-    marker: PhantomData<rte_ring>,
+    marker: PhantomData<dpdk_sys::rte_ring>,
     marker2: PhantomData<T>,
 }
 
@@ -81,7 +80,7 @@ impl<T> Ring<T> {
         // For now, 0x1 | 0x2 yields a single-producer, single-consumer queue
         const FLAGS: c_uint = 0x1 | 0x2;
         let inner = match NonNull::new(unsafe {
-            rte_ring_create(
+            dpdk_sys::rte_ring_create(
                 name.as_ptr(),
                 params.size() as c_uint,
                 socket_id.0 as c_int,
@@ -89,7 +88,7 @@ impl<T> Ring<T> {
             )
         }) {
             None => {
-                let errno = Errno::from(unsafe { wrte_errno() });
+                let errno = Errno::from(unsafe { dpdk_sys::wrte_errno() });
                 if errno.0 == E_RTE_NO_CONFIG as i32 {
                     return Err(NoConfig(params.0));
                 }

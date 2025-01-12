@@ -21,14 +21,9 @@ use core::slice::from_raw_parts_mut;
 use errno::Errno;
 use tracing::{error, info, warn};
 
-use crate::lcore::LCoreId;
 // unfortunately, we need the standard library to swap allocators
-use allocator_api2::alloc::AllocError;
-use allocator_api2::alloc::Allocator;
 use std::alloc::System;
-use std::cell::UnsafeCell;
 use std::ffi::CString;
-use std::marker::PhantomPinned;
 
 /// DPDK memory manager
 #[repr(transparent)]
@@ -221,7 +216,7 @@ pub struct PoolParams {
     pub size: u32,
     /// Size of the per-core object cache.
     pub cache_size: u32,
-    /// Size of application private are between the rte_mbuf structure and the data buffer.
+    /// Size of application private data between the rte_mbuf structure and the data buffer.
     /// This value must be a natural number multiple of `RTE_MBUF_PRIV_ALIGN` (usually 8).
     pub private_size: u16,
     /// Size of data buffer in each mbuf, including `RTE_PKTMBUF_HEADROOM` (usually 128).
@@ -604,25 +599,5 @@ unsafe impl GlobalAlloc for RteAllocator {
         } else {
             System.realloc(ptr, layout, new_size)
         }
-    }
-}
-
-#[derive(Debug)]
-#[non_exhaustive]
-#[repr(transparent)]
-pub(crate) struct SystemAllocator;
-
-unsafe impl Allocator for SystemAllocator {
-    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        match NonNull::new(unsafe { System.alloc(layout) }) {
-            None => Err(AllocError),
-            Some(ptr) => Ok(unsafe {
-                NonNull::new_unchecked(from_raw_parts_mut(ptr.as_ptr(), layout.size()))
-            }),
-        }
-    }
-
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        System.dealloc(ptr.as_ptr(), layout);
     }
 }

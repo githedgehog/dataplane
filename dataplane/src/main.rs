@@ -1,38 +1,14 @@
 mod id;
 mod work_queue;
 
-use blink_alloc::BlinkAlloc;
 use dpdk::dev::{Dev, RxOffload, TxOffloadConfig};
 use dpdk::eal::Eal;
-use dpdk::flow::MacAddr;
-use dpdk::lcore::{LCoreId, WorkerThread};
-use dpdk::mem::{AllocatorState, Mbuf, Pending, Pool, PoolConfig, PoolParams, RteAllocator};
+use dpdk::lcore::LCoreId;
+use dpdk::mem::{Pool, PoolConfig, PoolParams, RteAllocator};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, eal, socket};
-use etherparse::checksum::u32_16bit_word::add_slice;
-use etherparse::err::ip::LaxHeaderSliceError;
-use etherparse::err::LenError;
-use etherparse::LenSource::Ipv4HeaderTotalLen;
-use etherparse::{
-    ArpHardwareId, EtherPayloadSlice, EtherType, Ethernet2Header, Ethernet2HeaderSlice,
-    Ethernet2Slice, Icmpv4Header, Icmpv4Slice, Icmpv6Header, Icmpv6Slice, IpHeaders, IpNumber,
-    Ipv4Header, Ipv4HeaderSlice, Ipv6Header, Ipv6HeaderSlice, LaxIpSlice, LaxNetSlice,
-    LaxPacketHeaders, LaxPayloadSlice, LaxSlicedPacket, NetHeaders, TcpHeader, TcpHeaderSlice,
-    TcpSlice, TransportHeader, TransportSlice, UdpHeader, UdpHeaderSlice,
-};
-use net::eth::Mac;
-use std::alloc::System;
-use std::array::TryFromSliceError;
-use std::cell::Cell;
-use std::env;
-use std::ffi::{CStr, OsStr};
-use std::hash::{Hash, Hasher};
-use std::io::{Cursor, Read};
-use std::mem::ManuallyDrop;
-use std::ptr::{copy_nonoverlapping, NonNull};
-use std::slice::{from_raw_parts, from_raw_parts_mut};
-use tracing::{debug, error, info, warn};
+use tracing::warn;
 
 #[global_allocator]
 static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::uninit();
@@ -69,7 +45,7 @@ fn main() {
     //     .build()
     //     .expect("failed to async tokio runtime");
 
-    let devices: Vec<Dev> = eal
+    let _devices: Vec<Dev> = eal
         .dev
         .iter()
         .map(|dev| {

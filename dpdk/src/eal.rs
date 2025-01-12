@@ -2,20 +2,15 @@
 // Copyright Open Network Fabric Authors
 
 //! DPDK Environment Abstraction Layer (EAL)
-use crate::mem::{RteAllocator, SystemAllocator};
+use crate::mem::RteAllocator;
 use crate::{dev, lcore, mem, socket};
 use alloc::ffi::CString;
 use alloc::format;
 use alloc::string::ToString;
 use alloc::vec::Vec;
-use allocator_api2::alloc::Allocator;
-use blink_alloc::{Blink, BlinkAlloc};
 use core::ffi::c_int;
 use core::ffi::CStr;
 use core::fmt::{Debug, Display};
-use std::alloc::System;
-use std::ffi::{c_char, FromBytesUntilNulError};
-use std::ptr::null_mut;
 use tracing::{error, warn};
 
 /// Safe wrapper around the DPDK Environment Abstraction Layer (EAL).

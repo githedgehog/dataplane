@@ -2,8 +2,6 @@ use crate::eal::{Eal, EalErrno};
 use crate::mem::RteAllocator;
 use core::ffi::{c_int, c_uint, c_void};
 use core::fmt::Debug;
-use crossbeam::channel::{RecvError, SendError};
-use std::thread::Thread;
 use tracing::{info, warn};
 
 #[repr(transparent)]
@@ -126,6 +124,7 @@ impl ServiceThread<'_> {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip(self))]
     pub fn join(self) -> std::thread::Result<()> {
         self.handle.join()
     }

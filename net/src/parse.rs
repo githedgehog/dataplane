@@ -34,8 +34,7 @@ impl Cursor {
     #[allow(unsafe_code)] // TODO: explain how to use this type safely
     pub(crate) fn new(buf: &[u8]) -> Cursor {
         let range = buf.as_ptr_range();
-        let inner =
-            NonNull::from(unsafe { core::slice::from_raw_parts(range.start, buf.len()) });
+        let inner = NonNull::from(unsafe { core::slice::from_raw_parts(range.start, buf.len()) });
         Cursor { inner }
     }
 
@@ -66,7 +65,10 @@ impl Cursor {
     }
 
     #[allow(unsafe_code)] // TODO: document safe usage
-    pub(crate) fn parse_with<T: ParseWith>(&mut self, param: <T as ParseWith>::Param) -> Result<(T, NonZero<usize>), ParseError<T::Error>> {
+    pub(crate) fn parse_with<T: ParseWith>(
+        &mut self,
+        param: <T as ParseWith>::Param,
+    ) -> Result<(T, NonZero<usize>), ParseError<T::Error>> {
         let (value, len_consumed) = T::parse_with(param, unsafe { self.inner.as_mut() })?;
         match self.consume(len_consumed) {
             Ok(()) => Ok((value, len_consumed)),
