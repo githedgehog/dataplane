@@ -241,15 +241,15 @@ impl Default for PoolParams {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Memory pool config
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolConfig {
     name: CString,
     params: PoolParams,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 /// Ways in which a memory pool name can be invalid.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InvalidMemPoolName {
     /// The name is not valid ASCII.
     NotAscii(String),

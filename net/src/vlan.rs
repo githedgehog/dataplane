@@ -5,10 +5,6 @@
 
 use core::num::NonZero;
 
-use thiserror;
-
-use tracing::instrument;
-
 #[cfg(feature = "_no-panic")]
 use no_panic::no_panic;
 
@@ -26,7 +22,7 @@ use no_panic::no_panic;
 #[cfg_attr(any(feature = "bolero", test, kani), derive(bolero::TypeGenerator))]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
 // SAFETY: only use of unsafe is unrelated to deserialize logic
-#[allow(clippy::unsafe_derive_deserialize)] 
+#[allow(clippy::unsafe_derive_deserialize)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "u16", into = "u16"))]
 pub struct Vid(NonZero<u16>);
@@ -79,7 +75,7 @@ impl Vid {
     ///
     /// Returns an error if the value is 0, 4095 (reserved), or greater than [`Vid::MAX`].
     #[cfg_attr(feature = "_no-panic", no_panic)]
-    #[instrument(level = "trace")]
+    #[tracing::instrument(level = "trace")]
     pub fn new(vid: u16) -> Result<Self, InvalidVid> {
         match NonZero::new(vid) {
             None => Err(InvalidVid::Zero),
@@ -91,7 +87,6 @@ impl Vid {
 
     /// Get the value of the [`Vid`] as a `u16`.
     #[cfg_attr(feature = "_no-panic", no_panic)]
-    #[instrument(level = "trace")]
     #[must_use]
     pub fn to_u16(self) -> u16 {
         self.0.get()
@@ -100,7 +95,6 @@ impl Vid {
 
 impl AsRef<NonZero<u16>> for Vid {
     #[cfg_attr(feature = "_no-panic", no_panic)]
-    #[instrument(level = "trace")]
     fn as_ref(&self) -> &NonZero<u16> {
         &self.0
     }
@@ -108,7 +102,6 @@ impl AsRef<NonZero<u16>> for Vid {
 
 impl From<Vid> for u16 {
     #[cfg_attr(feature = "_no-panic", no_panic)]
-    #[instrument(level = "trace")]
     fn from(vid: Vid) -> u16 {
         vid.to_u16()
     }
@@ -118,14 +111,12 @@ impl TryFrom<u16> for Vid {
     type Error = InvalidVid;
 
     #[cfg_attr(feature = "_no-panic", no_panic)]
-    #[instrument(level = "trace")]
     fn try_from(vid: u16) -> Result<Vid, Self::Error> {
         Vid::new(vid)
     }
 }
 
 impl core::fmt::Display for Vid {
-    #[instrument(level = "trace", skip(f))]
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.to_u16())
     }
@@ -135,12 +126,12 @@ impl core::fmt::Display for Vid {
 mod test {
     use super::*;
     use crate::vlan::Vid;
-    #[cfg(any(kani, feature = "_proof"))]
+
     use kani::proof;
 
     #[test]
-    #[cfg_attr(any(kani, feature = "_proof"), proof)]
-    fn vlan_parse_contract() {
+    #[proof]
+    fn check_parse_contract() {
         bolero::check!()
             .with_type()
             .cloned()
@@ -153,10 +144,25 @@ mod test {
                     assert!(vid.to_u16() <= Vid::MAX.to_u16());
                 }
                 Err(InvalidVid::Zero) => assert_eq!(raw, 0),
-                Err(InvalidVid::Reserved) => assert_eq!(raw, 4095),
+                Err(InvalidVid::Reserved) => assert_eq!(raw, InvalidVid::RESERVED),
                 Err(InvalidVid::TooLarge(x)) => {
                     assert_eq!(x, raw);
                     assert!(raw >= InvalidVid::TOO_LARGE);
+                }
+            });
+    }
+
+    #[test]
+    #[proof]
+    fn check_equality_contract() {
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .for_each(|(x, y): (u16, u16)| {
+                if x == y {
+                    assert_eq!(Vid::new(x), Vid::new(y));
+                } else {
+                    assert_ne!(Vid::new(x), Vid::new(y));
                 }
             });
     }

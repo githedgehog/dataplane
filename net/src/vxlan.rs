@@ -49,6 +49,7 @@ impl Vni {
     /// The maximum legal [`Vni`] value (2<sup>24</sup> - 1).
     pub const MAX: u32 = 0x00_FF_FF_FF;
     /// First value which is too large to be a legal [`Vni`]
+    #[allow(unused)] // used in test suite
     const TOO_LARGE: u32 = Vni::MAX + 1;
 
     /// Create a new [`Vni`] from a `u32`.
@@ -67,7 +68,8 @@ impl Vni {
 
     /// Get the value of the [`Vni`] as a `u32`.
     #[must_use]
-    pub const fn as_u32(self) -> u32 {
+    #[cfg_attr(feature = "_no-panic", no_panic)]
+    pub fn as_u32(self) -> u32 {
         self.0.get()
     }
 }
@@ -125,6 +127,7 @@ impl TryFrom<u32> for Vni {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod test {
     use super::*;
+    use kani::proof;
 
     #[test]
     fn zero_is_not_a_legal_vni() {
@@ -165,19 +168,22 @@ mod test {
     /// Checks that [`Vni::new`] satisfies its contract by generating a large number of random test
     /// cases (fuzzing).
     #[test]
-    fn vni_fuzz_test() {
+    #[proof]
+    fn check_vni_contract() {
         bolero::check!()
             .with_type()
             .cloned()
-            .for_each(|val: u32| match val {
-                0 => {
-                    assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::ReservedZero);
-                }
-                Vni::MIN..=Vni::MAX => {
-                    assert_eq!(Vni::new(val).unwrap().as_u32(), val);
-                }
-                Vni::TOO_LARGE.. => {
-                    assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::TooLarge(val));
+            .for_each(|val: u32| {
+                match val {
+                    0 => {
+                        assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::ReservedZero);
+                    }
+                    Vni::MIN..=Vni::MAX => {
+                        assert_eq!(Vni::new(val).unwrap().as_u32(), val);
+                    }
+                    Vni::TOO_LARGE.. => {
+                        assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::TooLarge(val));
+                    }
                 }
             });
     }

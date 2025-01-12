@@ -22,14 +22,7 @@ serde = ["dep:serde"]
 # Enable fuzz testing.
 # Enable this flag only if you wish to use the type generators defined in this crate
 # in a downstream crate.
-bolero = ["dep:bolero"]
-
-# Enable compilation settings useful for the Kani model checker.
-# This is an internal flag.
-# It should not be enabled (and makes no sense) for release builds.
-# _proof enables bolero due to the synergistic relationship between
-# bolero and kani.
-_proof = ["bolero"]
+bolero = ["dep:bolero", "etherparse/std"]
 
 # Ensure the compiler proves marked functions never panic.
 # This only works with optimization, LTO, and codegen-units=1.
@@ -69,11 +62,14 @@ no-panic = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+arrayvec = {  workspace = true, default-features = false, features = [] }
 
 [dev-dependencies]
 bolero = { workspace = true, features = [] }
 criterion = { workspace = true }
 etherparse = { workspace = true, default-features = false, features = ["std"] }
+# fake-kani to calm IDEs
+kani = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

@@ -21,6 +21,7 @@ kani = { path = "fake-kani", package = "fake-kani" }
 net = { path = "net" }
 
 # external
+arrayvec = { version = "0.7.6", default-features = false }
 allocator-api2 = { version = "0.2.21", default-features = false }
 blink-alloc = { version = "0.3.1", default-features = false }
 bindgen = { version = "0.71.1" }

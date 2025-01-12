@@ -1,6 +1,7 @@
 //! Ethernet types
 
-pub use etherparse::EtherType;
+#[cfg(any(test, kani, feature = "bolero"))]
+use bolero::TypeGenerator;
 
 /// A [MAC Address] type.
 ///
@@ -10,12 +11,11 @@ pub use etherparse::EtherType;
 /// [MAC Address]: https://en.wikipedia.org/wiki/MAC_address
 #[must_use]
 #[repr(transparent)]
-#[cfg_attr(any(feature = "bolero", test, kani), derive(bolero::TypeGenerator))]
+#[cfg_attr(any(feature = "bolero", test, kani), derive(TypeGenerator))]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Mac(pub [u8; 6]);
-
 
 impl From<[u8; 6]> for Mac {
     fn from(value: [u8; 6]) -> Self {
@@ -54,25 +54,28 @@ impl Mac {
     /// Returns true iff the binary representation of the [`Mac`] is exclusively ones.
     #[must_use]
     pub fn is_broadcast(&self) -> bool {
-        *self == Mac::BROADCAST
+        self == &Mac::BROADCAST
     }
 
     /// Returns true iff the least significant bit of the first octet of the `[Mac]` is one.
     #[must_use]
+    #[cfg_attr(feature = "_no-panic", no_panic::no_panic)]
     pub fn is_multicast(&self) -> bool {
-        self.0[0] & 0x01 != 0
+        self.0[0] & 0x01 == 0x01
     }
 
     /// Returns true iff the least significant bit of the first octet of the `[Mac]` is zero.
     #[must_use]
+    #[cfg_attr(feature = "_no-panic", no_panic::no_panic)]
     pub fn is_unicast(&self) -> bool {
         !self.is_multicast()
     }
 
     /// Returns true iff the binary representation of the [`Mac`] is exclusively zeros.
     #[must_use]
+    #[cfg_attr(feature = "_no-panic", no_panic::no_panic)]
     pub fn is_zero(&self) -> bool {
-        self.0.iter().all(|&b| b == 0)
+        self == &Mac::ZERO
     }
 
     /// Returns true iff the second least significant bit of the first octet is one.
@@ -120,16 +123,35 @@ impl Mac {
     }
 }
 
-#[cfg(any(kani, feature = "_proof"))]
-mod proof {
+/// Proofs regarding the properties of this crate's ethernet header analysis
+#[allow(missing_docs, clippy::panic, clippy::missing_panics_doc, dead_code)]
+#[cfg(any(test, kani))]
+pub mod test {
     use crate::eth::Mac;
-    use kani::{proof, assume, any};
+    use kani::{any, assume, proof};
+
+    fn lsb_indicates_multicast(input: Mac) {
+        if input.0[0] & 1 == 1 {
+            assert!(input.is_multicast());
+        } else {
+            assert!(!input.is_multicast());
+        }
+    }
+
+    #[test]
+    #[proof]
+    fn check_lsb_indicates_multicast() {
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .for_each(lsb_indicates_multicast);
+    }
 
     #[proof]
-    fn lsb_indicates_multicast() {
+    fn not_lsb_indicates_not_multicast() {
         let input: Mac = any();
-        assume(input.0[0] & 1 == 1);
-        assert!(input.is_multicast());
+        assume(input.0[0] & 1 == 0);
+        assert!(!input.is_multicast());
     }
 
     #[proof]
@@ -178,7 +200,7 @@ mod proof {
     fn link_local_is_multicast() {
         let input: Mac = any();
         assume(input.is_link_local());
-        assert!(!input.is_multicast());
+        assert!(input.is_multicast());
     }
 
     #[proof]
