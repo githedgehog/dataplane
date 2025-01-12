@@ -6,7 +6,6 @@ use super::{rx, tx};
 use crate::dev::{Dev, DevInfo};
 use crate::queue::rx::RxQueue;
 use crate::queue::tx::TxQueue;
-use dpdk_sys::*;
 use errno::ErrorCode;
 use tracing::debug;
 
@@ -20,16 +19,16 @@ pub struct HairpinQueue {
 
 #[derive(Debug)]
 pub(crate) struct HairpinPeering {
-    pub(crate) rx: rte_eth_hairpin_conf,
-    pub(crate) tx: rte_eth_hairpin_conf,
+    pub(crate) rx: dpdk_sys::rte_eth_hairpin_conf,
+    pub(crate) tx: dpdk_sys::rte_eth_hairpin_conf,
 }
 
 impl HairpinPeering {
     /// Define a new hairpin configuration.
     fn define(dev: &DevInfo, rx_queue: &RxQueue, tx_queue: &TxQueue) -> Self {
-        let mut rx = rte_eth_hairpin_conf::default();
+        let mut rx = dpdk_sys::rte_eth_hairpin_conf::default();
         rx.set_peer_count(1);
-        let mut tx = rte_eth_hairpin_conf::default();
+        let mut tx = dpdk_sys::rte_eth_hairpin_conf::default();
         tx.set_peer_count(1);
         rx.peers[0].port = dev.index.as_u16();
         rx.peers[0].queue = tx_queue.config.queue_index.as_u16();
@@ -65,7 +64,7 @@ impl HairpinQueue {
         // configure the rx queue
 
         let ret = unsafe {
-            rte_eth_rx_hairpin_queue_setup(
+            dpdk_sys::rte_eth_rx_hairpin_queue_setup(
                 dev.info.index.as_u16(),
                 rx.config.queue_index.as_u16(),
                 0,
@@ -81,7 +80,7 @@ impl HairpinQueue {
         debug!("RX hairpin queue configured");
 
         let ret = unsafe {
-            rte_eth_tx_hairpin_queue_setup(
+            dpdk_sys::rte_eth_tx_hairpin_queue_setup(
                 dev.info.index.as_u16(),
                 tx.config.queue_index.as_u16(),
                 0,

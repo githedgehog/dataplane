@@ -1,10 +1,10 @@
 use crate::eal::{Eal, EalErrno};
-use core::ffi::{c_int, c_uint, c_void};
-use std::thread::Thread;
-use crossbeam::channel::{RecvError, SendError};
-use dpdk_sys::*;
-use tracing::{info, warn};
 use crate::mem::RteAllocator;
+use core::ffi::{c_int, c_uint, c_void};
+use core::fmt::Debug;
+use crossbeam::channel::{RecvError, SendError};
+use std::thread::Thread;
+use tracing::{info, warn};
 
 #[repr(transparent)]
 #[derive(Debug)]
@@ -12,6 +12,7 @@ use crate::mem::RteAllocator;
 pub struct Manager;
 
 impl Manager {
+    #[tracing::instrument(level = "info")]
     pub(crate) fn init() -> Manager {
         Manager
     }
@@ -26,8 +27,8 @@ impl Drop for Manager {
 
 #[repr(u32)]
 pub enum LCorePriority {
-    Normal = rte_thread_priority::RTE_THREAD_PRIORITY_NORMAL as c_uint,
-    RealTime = rte_thread_priority::RTE_THREAD_PRIORITY_REALTIME_CRITICAL as c_uint,
+    Normal = dpdk_sys::rte_thread_priority::RTE_THREAD_PRIORITY_NORMAL as c_uint,
+    RealTime = dpdk_sys::rte_thread_priority::RTE_THREAD_PRIORITY_REALTIME_CRITICAL as c_uint,
 }
 
 /// An iterator over the available [`LCoreId`] values.
@@ -35,6 +36,8 @@ pub enum LCorePriority {
 /// # Note
 ///
 /// This iterator deliberately skips the main LCore.
+#[derive(Debug)]
+#[repr(transparent)]
 struct LCoreIdIterator {
     current: LCoreId,
 }
@@ -50,6 +53,7 @@ impl LCoreIdIterator {
     /// return the first actual [`LCoreId`] on the first call to `.next()`.
     /// This value is never supposed to be exposed to the user as `u32::MAX` is
     /// an invalid [`LCoreId`].
+    #[tracing::instrument(level = "trace")]
     fn new() -> Self {
         Self {
             current: LCoreId::INVALID,
@@ -60,9 +64,10 @@ impl LCoreIdIterator {
 impl Iterator for LCoreIdIterator {
     type Item = LCoreId;
 
+    #[tracing::instrument(level = "trace")]
     fn next(&mut self) -> Option<Self::Item> {
-        let next = unsafe { rte_get_next_lcore(self.current.0 as c_uint, 1, 0) };
-        if next >= RTE_MAX_LCORE {
+        let next = unsafe { dpdk_sys::rte_get_next_lcore(self.current.0 as c_uint, 1, 0) };
+        if next >= dpdk_sys::RTE_MAX_LCORE {
             return None;
         }
         self.current = LCoreId(next);
@@ -71,6 +76,7 @@ impl Iterator for LCoreIdIterator {
 }
 
 /// An iterator over the available [`LCoreIndex`] values.
+#[derive(Debug)]
 #[repr(transparent)]
 struct LCoreIndexIterator {
     inner: LCoreIdIterator,
@@ -88,9 +94,10 @@ const STACK_SIZE: usize = 8 << 20;
 impl ServiceThread<'_> {
     #[cold]
     #[allow(clippy::expect_used)]
+    #[tracing::instrument(level = "debug", skip(run))]
     pub fn new<'scope>(
         scope: &'scope std::thread::Scope<'scope, '_>,
-        name: impl AsRef<str>,
+        name: impl AsRef<str> + Debug,
         run: impl FnOnce() + 'scope + Send,
     ) -> ServiceThread<'scope> {
         let (send, recv) = std::sync::mpsc::sync_channel(1);
@@ -99,16 +106,16 @@ impl ServiceThread<'_> {
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, move || {
                 info!("Initializing RTE Lcore");
-                let ret = unsafe { rte_thread_register() };
+                let ret = unsafe { dpdk_sys::rte_thread_register() };
                 if ret != 0 {
-                    let errno = unsafe { wrte_errno() };
+                    let errno = unsafe { dpdk_sys::wrte_errno() };
                     let msg = format!("rte thread exited with code {ret}, errno: {errno}");
                     Eal::fatal_error(msg)
                 }
-                let thread_id = unsafe { rte_thread_self() };
+                let thread_id = unsafe { dpdk_sys::rte_thread_self() };
                 send.send(thread_id).expect("could not send thread id");
                 run();
-                unsafe { rte_thread_unregister() };
+                unsafe { dpdk_sys::rte_thread_unregister() };
             })
             .expect("could not create EalThread");
         let thread_id = RteThreadId(recv.recv().expect("could not receive thread id"));
@@ -119,9 +126,8 @@ impl ServiceThread<'_> {
         }
     }
 
-    #[allow(clippy::expect_used)]
-    pub fn join(self) {
-        self.handle.join().expect("failed to join LCore");
+    pub fn join(self) -> std::thread::Result<()> {
+        self.handle.join()
     }
 }
 
@@ -129,12 +135,10 @@ pub struct WorkerThread {
     lcore_id: LCoreId,
 }
 
-
 impl WorkerThread {
-    #[cold]
     pub fn launch<T: Send + FnOnce()>(lcore: LCoreId, f: T) {
         RteAllocator::assert_initialized();
-        #[cold]
+        #[inline]
         unsafe extern "C" fn _launch<Task: Send + FnOnce()>(arg: *mut c_void) -> c_int {
             RteAllocator::assert_initialized();
             let task = Box::from_raw(
@@ -145,7 +149,7 @@ impl WorkerThread {
         }
         let task = Box::new(f);
         EalErrno::assert(unsafe {
-            rte_eal_remote_launch(
+            dpdk_sys::rte_eal_remote_launch(
                 Some(_launch::<T>),
                 Box::leak(task) as *mut _ as _,
                 lcore.0 as c_uint,
@@ -191,7 +195,7 @@ impl LCoreParameters for LCore {
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
-pub struct LCoreId(pub u32);
+pub struct LCoreId(pub u32); // TODO: remove pub from inner value
 
 impl LCoreId {
     /// [`LCoreId`] in an invalid condition is used as a signal to DPDK to
@@ -202,7 +206,7 @@ impl LCoreId {
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
-pub struct LCoreIndex(pub u32);
+pub struct LCoreIndex(u32);
 
 pub mod err {
     #[derive(thiserror::Error, Debug)]
@@ -213,8 +217,9 @@ pub mod err {
 }
 
 impl LCoreId {
-    pub const MAX: u32 = RTE_MAX_LCORE;
+    pub const MAX: u32 = dpdk_sys::RTE_MAX_LCORE;
 
+    #[tracing::instrument(level = "trace")]
     pub fn iter() -> impl Iterator<Item = LCoreId> {
         LCoreIdIterator::new()
     }
@@ -223,34 +228,47 @@ impl LCoreId {
         self.0
     }
 
+    #[tracing::instrument(level = "trace")]
     pub fn current() -> LCoreId {
-        LCoreId(unsafe { rte_lcore_id() })
+        LCoreId(unsafe { dpdk_sys::rte_lcore_id() })
     }
 
+    #[tracing::instrument(level = "trace")]
     pub fn main() -> LCoreId {
-        LCoreId(unsafe { rte_get_main_lcore() })
+        LCoreId(unsafe { dpdk_sys::rte_get_main_lcore() })
     }
 }
 
-impl From<LCoreId> for LCoreIndex {
-    fn from(value: LCoreId) -> Self {
-        LCoreIndex(unsafe { rte_lcore_index(value.as_u32() as c_int) as u32 })
+impl LCoreId {
+    /// Try to convert the [`LCoreId`] to an [`LCoreIndex`].
+    ///
+    /// This should always return `Some` but will return None if lcore indexes are not enabled.
+    #[tracing::instrument(level = "trace")]
+    fn to_index(self) -> Option<LCoreIndex> {
+        let index = unsafe { dpdk_sys::rte_lcore_index(self.as_u32() as c_int) as u32 };
+        if index == u32::MAX {
+            None
+        } else {
+            Some(LCoreIndex(index))
+        }
     }
 }
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone)]
-pub struct RteThreadId(pub(crate) rte_thread_t);
+pub struct RteThreadId(pub(crate) dpdk_sys::rte_thread_t);
 
 impl RteThreadId {
+    #[tracing::instrument(level = "trace")]
     pub fn current() -> RteThreadId {
-        RteThreadId(unsafe { rte_thread_self() })
+        RteThreadId(unsafe { dpdk_sys::rte_thread_self() })
     }
 }
 
 impl PartialEq for RteThreadId {
+    #[tracing::instrument(level = "trace")]
     fn eq(&self, other: &Self) -> bool {
-        unsafe { rte_thread_equal(self.0, other.0) != 0 }
+        unsafe { dpdk_sys::rte_thread_equal(self.0, other.0) != 0 }
     }
 }
 
@@ -262,8 +280,20 @@ impl LCoreIndex {
     /// # Note
     ///
     /// This iterator deliberately skips the main LCore.
+    #[tracing::instrument(level = "debug")]
     pub fn list() -> impl Iterator<Item = LCoreIndex> {
         LCoreIndexIterator::new()
+    }
+
+    /// Return the current [`LCoreIndex`] if enabled.  Returns `None` otherwise.
+    #[tracing::instrument(level = "debug")]
+    pub fn current() -> Option<LCoreIndex> {
+        let index = unsafe { dpdk_sys::rte_lcore_index(-1) as u32 };
+        if index == u32::MAX {
+            None
+        } else {
+            Some(LCoreIndex(index))
+        }
     }
 }
 
@@ -275,6 +305,7 @@ impl LCoreIndexIterator {
     /// # Note
     ///
     /// This iterator deliberately skips the main [`LCoreIndex`].
+    #[tracing::instrument(level = "trace")]
     pub fn new() -> Self {
         Self {
             inner: LCoreIdIterator::new(),
@@ -285,7 +316,8 @@ impl LCoreIndexIterator {
 impl Iterator for LCoreIndexIterator {
     type Item = LCoreIndex;
 
+    #[tracing::instrument(level = "trace", skip(self))]
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(From::from)
+        self.inner.next()?.to_index()
     }
 }

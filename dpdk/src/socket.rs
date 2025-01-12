@@ -10,12 +10,9 @@
 //!
 //! [NUMA]: https://en.wikipedia.org/wiki/Non-uniform_memory_access
 use crate::dev::DevIndex;
-#[allow(unused_imports)]
-/// imported for rustdoc
 use crate::eal::Eal;
 use crate::lcore::LCoreId;
 use core::ffi::c_uint;
-use dpdk_sys::rte_socket_id;
 use errno::ErrorCode;
 use tracing::info;
 
@@ -176,7 +173,7 @@ impl SocketId {
     /// Ideally, this method should be accessed via the [`Manager::id_for_index`] object as that
     /// simplifies lifetime issues.
     pub(crate) fn current() -> SocketId {
-        SocketId(unsafe { rte_socket_id() })
+        SocketId(unsafe { dpdk_sys::rte_socket_id() })
     }
 
     /// The index of the socket represented as a [`c_uint`].

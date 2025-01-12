@@ -18,7 +18,6 @@ use core::ptr::null;
 use core::ptr::null_mut;
 use core::ptr::NonNull;
 use core::slice::from_raw_parts_mut;
-use dpdk_sys::*;
 use errno::Errno;
 use tracing::{error, info, warn};
 
@@ -96,7 +95,7 @@ impl Pool {
     #[tracing::instrument(level = "debug")]
     pub fn new_pkt_pool(config: PoolConfig) -> Result<Pool, InvalidMemPoolConfig> {
         let pool = unsafe {
-            rte_pktmbuf_pool_create(
+            dpdk_sys::rte_pktmbuf_pool_create(
                 config.name.as_ptr(),
                 config.params.size,
                 config.params.cache_size,
@@ -109,8 +108,8 @@ impl Pool {
 
         let pool = match NonNull::new(pool) {
             None => {
-                let errno = unsafe { wrte_errno() };
-                let c_err_str = unsafe { rte_strerror(errno) };
+                let errno = unsafe { dpdk_sys::wrte_errno() };
+                let c_err_str = unsafe { dpdk_sys::rte_strerror(errno) };
                 let err_str = unsafe { CStr::from_ptr(c_err_str) };
                 // SAFETY:
                 // This `expect` is safe because the error string is guaranteed to be valid
@@ -146,12 +145,12 @@ impl Pool {
     pub fn alloc_bulk(&self, num: usize) -> Vec<Mbuf> {
         // SAFETY: we should never have any null ptrs come back if ret passes check
         let mut mbufs: Vec<Mbuf> = (0..num)
-            .map(|_| unsafe { transmute(null_mut::<rte_mbuf>()) })
+            .map(|_| unsafe { transmute(null_mut::<dpdk_sys::rte_mbuf>()) })
             .collect();
         let ret = unsafe {
-            rte_pktmbuf_alloc_bulk(
+            dpdk_sys::rte_pktmbuf_alloc_bulk(
                 self.0.as_mut_ptr(),
-                transmute::<*mut Mbuf, *mut *mut rte_mbuf>(mbufs.as_mut_ptr()),
+                transmute::<*mut Mbuf, *mut *mut dpdk_sys::rte_mbuf>(mbufs.as_mut_ptr()),
                 num as c_uint,
             )
         };
@@ -166,7 +165,7 @@ impl Pool {
 #[derive(Debug)]
 pub(crate) struct PoolInner {
     pub(crate) config: PoolConfig,
-    pub(crate) pool: NonNull<rte_mempool>,
+    pub(crate) pool: NonNull<dpdk_sys::rte_mempool>,
 }
 
 impl PoolInner {
@@ -179,7 +178,7 @@ impl PoolInner {
     /// See the safety note on [`PoolInner::as_mut_ptr`].
     ///
     /// </div>
-    pub(crate) unsafe fn as_ref(&self) -> &rte_mempool {
+    pub(crate) unsafe fn as_ref(&self) -> &dpdk_sys::rte_mempool {
         self.pool.as_ref()
     }
 
@@ -202,7 +201,7 @@ impl PoolInner {
     /// </div>
     ///
     /// [RAII]: https://en.wikipedia.org/wiki/Resource_Acquisition_Is_Initialization
-    pub(crate) unsafe fn as_mut_ptr(&self) -> *mut rte_mempool {
+    pub(crate) unsafe fn as_mut_ptr(&self) -> *mut dpdk_sys::rte_mempool {
         self.pool.as_ptr()
     }
 }
@@ -216,13 +215,16 @@ unsafe impl Sync for PoolInner {}
 /// TODO: implement validity checking logic.
 /// TODO: attach units to fields as helpful.
 pub struct PoolParams {
-    /// The size of the memory pool.
+    /// The number of elements in the mbuf pool.
+    /// The optimum size (in terms of memory usage) for a mempool is when n is a power of two minus
+    /// one: <var>n = 2<sup>q</sup> - 1
     pub size: u32,
-    /// The size of the memory pool cache.
+    /// Size of the per-core object cache.
     pub cache_size: u32,
-    /// The size of the private data in each memory pool object.
+    /// Size of application private are between the rte_mbuf structure and the data buffer.
+    /// This value must be a natural number multiple of `RTE_MBUF_PRIV_ALIGN` (usually 8).
     pub private_size: u16,
-    /// The size of the data in each memory pool object.
+    /// Size of data buffer in each mbuf, including `RTE_PKTMBUF_HEADROOM` (usually 128).
     pub data_size: u16,
     /// The `SocketId` on which to allocate the pool.
     pub socket_id: SocketId,
@@ -374,7 +376,7 @@ impl Drop for PoolInner {
     #[tracing::instrument(level = "debug")]
     fn drop(&mut self) {
         info!("Freeing memory pool {}", self.config.name());
-        unsafe { rte_mempool_free(self.as_mut_ptr()) }
+        unsafe { dpdk_sys::rte_mempool_free(self.as_mut_ptr()) }
     }
 }
 
@@ -390,8 +392,8 @@ impl Drop for PoolInner {
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct Mbuf {
-    pub(crate) raw: NonNull<rte_mbuf>,
-    marker: PhantomData<rte_mbuf>,
+    pub(crate) raw: NonNull<dpdk_sys::rte_mbuf>,
+    marker: PhantomData<dpdk_sys::rte_mbuf>,
 }
 
 /// TODO: this is possibly poor optimization, we should try bulk dealloc if this slows us down
@@ -400,7 +402,7 @@ pub struct Mbuf {
 impl Drop for Mbuf {
     fn drop(&mut self) {
         unsafe {
-            rte_pktmbuf_free(self.raw.as_ptr());
+            dpdk_sys::rte_pktmbuf_free(self.raw.as_ptr());
         }
     }
 }
@@ -419,7 +421,7 @@ impl Mbuf {
     /// The only defense made against invalid pointers is to check that the pointer is non-null.
     #[must_use]
     #[tracing::instrument(level = "trace", ret)]
-    pub(crate) fn new_from_raw(raw: *mut rte_mbuf) -> Option<Mbuf> {
+    pub(crate) fn new_from_raw(raw: *mut dpdk_sys::rte_mbuf) -> Option<Mbuf> {
         let raw = match NonNull::new(raw) {
             None => {
                 debug_assert!(false, "Attempted to create Mbuf from null pointer");
@@ -446,7 +448,7 @@ impl Mbuf {
     /// This function is unsound if passed an invalid pointer.
     #[must_use]
     #[tracing::instrument(level = "trace", ret)]
-    pub(crate) unsafe fn new_from_raw_unchecked(raw: *mut rte_mbuf) -> Mbuf {
+    pub(crate) unsafe fn new_from_raw_unchecked(raw: *mut dpdk_sys::rte_mbuf) -> Mbuf {
         let raw = unsafe { NonNull::new_unchecked(raw) };
         Mbuf {
             raw,
@@ -556,7 +558,7 @@ unsafe impl GlobalAlloc for RteAllocator {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if RTE_INIT.0.get() {
-            rte_malloc_socket(
+            dpdk_sys::rte_malloc_socket(
                 null(),
                 layout.size(),
                 layout.align() as _,
@@ -570,7 +572,7 @@ unsafe impl GlobalAlloc for RteAllocator {
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if RTE_INIT.0.get() {
-            rte_free(ptr as _);
+            dpdk_sys::rte_free(ptr as _);
         } else {
             System.dealloc(ptr, layout);
         }
@@ -579,7 +581,7 @@ unsafe impl GlobalAlloc for RteAllocator {
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         if RTE_INIT.0.get() {
-            rte_zmalloc_socket(
+            dpdk_sys::rte_zmalloc_socket(
                 null(),
                 layout.size(),
                 layout.align() as _,
@@ -593,7 +595,7 @@ unsafe impl GlobalAlloc for RteAllocator {
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if RTE_INIT.0.get() {
-            rte_realloc_socket(
+            dpdk_sys::rte_realloc_socket(
                 ptr as _,
                 new_size,
                 layout.align() as _,

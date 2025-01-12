@@ -814,6 +814,7 @@ impl Dev {
         Ok(())
     }
 
+    #[tracing::instrument(level = "trace")]
     pub fn rx_queue(&self, index: RxQueueIndex) -> Option<&RxQueue> {
         self.rx_queues.iter().find(|x| {
             x.config.queue_index == index

@@ -13,7 +13,6 @@ use blink_alloc::{Blink, BlinkAlloc};
 use core::ffi::c_int;
 use core::ffi::CStr;
 use core::fmt::{Debug, Display};
-use dpdk_sys::*;
 use std::alloc::System;
 use std::ffi::{c_char, FromBytesUntilNulError};
 use std::ptr::null_mut;
@@ -132,7 +131,7 @@ pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
             Eal::fatal_error(e.to_string());
         });
         let mut c_args: Vec<_> = args.0.iter_mut().map(|s| s.as_ptr().cast_mut()).collect();
-        let ret = unsafe { rte_eal_init(c_args.len() as _, c_args.as_mut_ptr() as _) };
+        let ret = unsafe { dpdk_sys::rte_eal_init(c_args.len() as _, c_args.as_mut_ptr() as _) };
         if ret < 0 {
             EalErrno::assert(ret);
         }
@@ -156,7 +155,7 @@ impl Eal {
     #[cold]
     #[tracing::instrument(level = "trace", skip(self), ret)]
     pub fn has_pci(&self) -> bool {
-        unsafe { rte_eal_has_pci() != 0 }
+        unsafe { dpdk_sys::rte_eal_has_pci() != 0 }
     }
 
     /// Exits the DPDK application with an error message, cleaning up the [`Eal`] as gracefully as
@@ -172,15 +171,15 @@ impl Eal {
     pub fn fatal_error<T: Display + AsRef<str>>(message: T) -> ! {
         error!("{message}");
         let message_cstring = CString::new(message.as_ref()).unwrap_or_else(|_| unsafe {
-            rte_exit(1, c"Failed to convert message to CString".as_ptr())
+            dpdk_sys::rte_exit(1, c"Failed to convert exit message to CString".as_ptr())
         });
-        unsafe { rte_exit(1, message_cstring.as_ptr()) }
+        unsafe { dpdk_sys::rte_exit(1, message_cstring.as_ptr()) }
     }
 
     /// Get the DPDK `rte_errno` and parse it as an [`errno::ErrorCode`].
     #[tracing::instrument(level = "trace", skip(self), ret)]
     pub fn errno(&self) -> errno::ErrorCode {
-        errno::ErrorCode::parse_i32(unsafe { wrte_errno() })
+        errno::ErrorCode::parse_i32(unsafe { dpdk_sys::wrte_errno() })
     }
 }
 
@@ -197,13 +196,14 @@ impl Drop for Eal {
     /// make application restart complex.
     ///
     /// Failure to clean up the EAL is almost certainly an unrecoverable error anyway.
-    #[tracing::instrument(level = "info", skip(self))]
+    #[cold]
     #[allow(clippy::panic)]
+    #[tracing::instrument(level = "info", skip(self))]
     fn drop(&mut self) {
         warn!("waiting on EAL threads");
-        unsafe { rte_eal_mp_wait_lcore() };
+        unsafe { dpdk_sys::rte_eal_mp_wait_lcore() };
         warn!("Closing EAL");
-        let ret = unsafe { rte_eal_cleanup() };
+        let ret = unsafe { dpdk_sys::rte_eal_cleanup() };
         if ret != 0 {
             let panic_msg = format!("Failed to cleanup EAL: error {ret}");
             error!("{panic_msg}");
@@ -212,17 +212,19 @@ impl Drop for Eal {
     }
 }
 
+#[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
 pub struct EalErrno(c_int);
 
 impl EalErrno {
     #[allow(clippy::expect_used)]
     #[inline]
+    #[tracing::instrument(level = "trace")]
     pub fn assert(ret: c_int) {
         if ret == 0 {
             return;
         }
-        let ret_msg = unsafe { rte_strerror(ret) };
+        let ret_msg = unsafe { dpdk_sys::rte_strerror(ret) };
         let ret_msg = unsafe { CStr::from_ptr(ret_msg) };
         let ret_msg = ret_msg.to_str().expect("dpdk message is not valid unicode");
         Eal::fatal_error(ret_msg)

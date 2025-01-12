@@ -7,7 +7,6 @@ use crate::dev::DevIndex;
 use crate::mem::Mbuf;
 use crate::socket::SocketId;
 use crate::{dev, socket};
-use dpdk_sys::*;
 use errno::{ErrorCode, NegStandardErrno, StandardErrno};
 use std::cmp::min;
 use std::ptr::null_mut;
@@ -82,12 +81,12 @@ impl TxQueue {
             .try_into()
             .map_err(ConfigFailure::InvalidSocket)?;
 
-        let tx_conf = rte_eth_txconf {
+        let tx_conf = dpdk_sys::rte_eth_txconf {
             offloads: dev.info.inner.tx_queue_offload_capa,
             ..Default::default()
         };
         let ret = unsafe {
-            rte_eth_tx_queue_setup(
+            dpdk_sys::rte_eth_tx_queue_setup(
                 dev.info.index().as_u16(),
                 config.queue_index.as_u16(),
                 config.num_descriptors,
@@ -109,7 +108,7 @@ impl TxQueue {
     /// Start the transmit queue.
     pub(crate) fn start(&mut self) -> Result<(), TxQueueStartError> {
         match unsafe {
-            rte_eth_dev_tx_queue_start(self.dev.as_u16(), self.config.queue_index.as_u16())
+            dpdk_sys::rte_eth_dev_tx_queue_start(self.dev.as_u16(), self.config.queue_index.as_u16())
         } {
             errno::SUCCESS => Ok(()),
             errno::NEG_ENODEV => Err(TxQueueStartError::DeviceRemoved),
@@ -123,7 +122,7 @@ impl TxQueue {
     /// Stop the transmit queue.
     pub(crate) fn stop(&mut self) -> Result<(), TxQueueStopError> {
         let ret = unsafe {
-            rte_eth_dev_tx_queue_stop(self.dev.as_u16(), self.config.queue_index.as_u16())
+            dpdk_sys::rte_eth_dev_tx_queue_stop(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
 
         match ret {
@@ -151,7 +150,7 @@ impl TxQueue {
                 dev = self.dev.as_u16()
             );
             let nb_tx = unsafe {
-                rte_eth_tx_burst(
+                dpdk_sys::rte_eth_tx_burst(
                     self.dev.as_u16(),
                     self.config.queue_index.as_u16(),
                     packets.as_mut_ptr().offset(offset as isize) as *mut _,

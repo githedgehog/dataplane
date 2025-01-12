@@ -1,17 +1,16 @@
 use crate::flow::MacAddr;
 use alloc::rc::Weak;
 use alloc::vec::Vec;
-use core::net::Ipv4Addr;
-use crossbeam::utils::CachePadded;
-use left_right::{Absorb, ReadHandle, WriteHandle};
 use core::hash::Hash;
 use core::marker::PhantomData;
+use core::net::Ipv4Addr;
 use core::net::Ipv6Addr;
 use core::num::NonZero;
+use crossbeam::utils::CachePadded;
+use left_right::{Absorb, ReadHandle, WriteHandle};
 use tracing::error;
 
 use std::collections::{BinaryHeap, HashMap, VecDeque};
-
 
 #[derive(Debug, Copy, Clone)]
 enum CounterOp {

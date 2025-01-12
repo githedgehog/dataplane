@@ -9,7 +9,7 @@
 //! making use of features like RAII (drop traits).
 //!
 //! Where possible, prefer using this crate over `dpdk-sys`.
-
+//!
 //! # Safety
 //!
 //! This crate directly calls `dpdk-sys` and thus makes use of `unsafe` code.
@@ -34,9 +34,9 @@ extern crate core;
 pub mod dev;
 pub mod eal;
 pub mod flow;
+pub mod lcore;
 pub mod mem;
 pub mod queue;
-pub mod socket;
-pub mod lcore;
 pub mod ring;
 mod scratch;
+pub mod socket;

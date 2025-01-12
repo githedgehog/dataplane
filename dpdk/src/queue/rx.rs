@@ -7,7 +7,6 @@ use crate::dev::{DevIndex, RxOffload};
 use crate::mem::Mbuf;
 use crate::socket::SocketId;
 use crate::{dev, mem, socket};
-use dpdk_sys::*;
 use std::ffi::c_int;
 use std::ptr::null_mut;
 use tracing::{trace, warn};
@@ -110,12 +109,12 @@ impl RxQueue {
     pub(crate) fn setup(dev: &dev::Dev, config: RxQueueConfig) -> Result<Self, ConfigFailure> {
         let socket_id = SocketId::try_from(config.socket_preference)
             .map_err(|_| ConfigFailure::InvalidSocket(Errno(errno::NEG_EINVAL)))?;
-        let rx_conf = rte_eth_rxconf {
+        let rx_conf = dpdk_sys::rte_eth_rxconf {
             offloads: config.offloads.into(),
             ..Default::default()
         };
         match ConfigFailure::check(unsafe {
-            rte_eth_rx_queue_setup(
+            dpdk_sys::rte_eth_rx_queue_setup(
                 dev.info.index().as_u16(),
                 config.queue_index.as_u16(),
                 config.num_descriptors,
@@ -137,7 +136,7 @@ impl RxQueue {
     #[tracing::instrument(level = "info")]
     pub(crate) fn start(&mut self) -> Result<(), RxQueueStartError> {
         let ret = unsafe {
-            rte_eth_dev_rx_queue_start(self.dev.as_u16(), self.config.queue_index.as_u16())
+            dpdk_sys::rte_eth_dev_rx_queue_start(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
 
         match ret {
@@ -155,7 +154,7 @@ impl RxQueue {
     #[tracing::instrument(level = "info")]
     pub(crate) fn stop(&mut self) -> Result<(), RxQueueStopError> {
         let ret = unsafe {
-            rte_eth_dev_rx_queue_stop(self.dev.as_u16(), self.config.queue_index.as_u16())
+            dpdk_sys::rte_eth_dev_rx_queue_stop(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
 
         use errno::*;
@@ -173,14 +172,14 @@ impl RxQueue {
     #[tracing::instrument(level = "trace")]
     pub fn receive(&self) -> impl Iterator<Item = Mbuf> {
         const PKT_BURST_SIZE: usize = 64;
-        let mut pkts: [*mut rte_mbuf; PKT_BURST_SIZE] = [null_mut(); PKT_BURST_SIZE];
+        let mut pkts: [*mut dpdk_sys::rte_mbuf; PKT_BURST_SIZE] = [null_mut(); PKT_BURST_SIZE];
         trace!(
             "Polling for packets from rx queue {queue} on dev {dev}",
             queue = self.config.queue_index.as_u16(),
             dev = self.dev.as_u16()
         );
         let nb_rx = unsafe {
-            rte_eth_rx_burst(
+            dpdk_sys::rte_eth_rx_burst(
                 self.dev.as_u16(),
                 self.config.queue_index.as_u16(),
                 pkts.as_mut_ptr(),
