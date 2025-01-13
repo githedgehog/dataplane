@@ -7,7 +7,7 @@ members = ["dataplane",
 	"net",
 	"scratch",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.dependencies]
 

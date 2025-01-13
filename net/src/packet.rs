@@ -22,8 +22,8 @@ impl Parse for Packet {
     type Error = LengthError;
 
     fn parse(buf: &[u8]) -> Result<(Self, NonZero<usize>), ParseError<Self::Error>> {
-        let (eth, _) = Eth::parse(buf)?;
         let mut cursor = Cursor::new(buf);
+        let (eth, _) = cursor.parse::<Eth>()?;
         let mut prior = Header::Eth(eth);
         let mut this = Packet {
             link: None,

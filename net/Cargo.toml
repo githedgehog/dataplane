@@ -68,6 +68,7 @@ arrayvec = {  workspace = true, default-features = false, features = [] }
 bolero = { workspace = true, features = [] }
 criterion = { workspace = true }
 etherparse = { workspace = true, default-features = false, features = ["std"] }
+tracing-test = { workspace = true }
 # fake-kani to calm IDEs
 kani = { workspace = true }
 

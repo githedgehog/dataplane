@@ -1,7 +1,10 @@
+use crate::eth::{DestinationMacAddressError, MacAddress, SourceMacAddressError};
 use crate::parse::{Cursor, LengthError, Parse, ParseError, ParseWith};
+use crate::vlan::{InvalidVid, Vid};
 use etherparse::{
-    EtherType, Ethernet2Header, Icmpv4Header, Icmpv6Header, IpAuthHeader, IpNumber, Ipv4Header,
-    Ipv6Extensions, Ipv6Header, SingleVlanHeader, TcpHeader, UdpHeader,
+    EtherType, Ethernet2Header, Icmpv4Header, Icmpv6Header, IpAuthHeader, IpFragOffset, IpNumber,
+    Ipv4Dscp, Ipv4Ecn, Ipv4Header, Ipv4Options, Ipv6Extensions, Ipv6Header, SingleVlanHeader,
+    TcpHeader, UdpHeader, VlanId, VlanPcp,
 };
 use std::num::NonZero;
 use tracing::{debug, trace};
@@ -653,9 +656,7 @@ impl Step for Header {
     fn step(&self, cursor: &mut Cursor) -> Option<Self::Next> {
         use Header::{Eth, Icmp4, Icmp6, IpAuth, IpV6Ext, Ipv4, Ipv6, Tcp, Udp, Vlan};
         match self {
-            Eth(_) => {
-                unreachable!("nested eth should not be reachable");
-            }
+            Eth(eth) => eth.step(cursor).map(Header::from),
             Vlan(vlan) => vlan.step(cursor).map(Header::from),
             Ipv4(ipv4) => ipv4.step(cursor).map(Header::from),
             Ipv6(ipv6) => ipv6.step(cursor).map(Header::from),
@@ -671,5 +672,147 @@ impl Step for Header {
             }
             Tcp(_) | Udp(_) | Icmp4(_) | Icmp6(_) => None,
         }
+    }
+}
+
+impl Eth {
+    pub fn new(source: MacAddress, destination: MacAddress, ether_type: EtherType) -> Eth {
+        Eth {
+            inner: Ethernet2Header {
+                source: source.0,
+                destination: destination.0,
+                ether_type,
+            },
+        }
+    }
+
+    pub fn source(&self) -> MacAddress {
+        MacAddress(self.inner.source)
+    }
+
+    pub fn destination(&self) -> MacAddress {
+        MacAddress(self.inner.destination)
+    }
+
+    pub fn ether_type(&self) -> EtherType {
+        self.inner.ether_type
+    }
+
+    pub fn set_source(&mut self, source: MacAddress) -> Result<&mut Eth, SourceMacAddressError> {
+        if source.is_zero() {
+            return Err(SourceMacAddressError::ZeroSource);
+        }
+        if source.is_multicast() {
+            return Err(SourceMacAddressError::MulticastSource);
+        }
+        Ok(self.set_source_unchecked(source))
+    }
+
+    pub fn set_destination(
+        &mut self,
+        destination: MacAddress,
+    ) -> Result<&mut Eth, DestinationMacAddressError> {
+        if destination.is_zero() {
+            return Err(DestinationMacAddressError::ZeroDestination);
+        }
+        Ok(self.set_destination_unchecked(destination))
+    }
+
+    pub fn set_source_unchecked(&mut self, source: MacAddress) -> &mut Eth {
+        debug_assert!(!source.is_valid_src());
+        self.inner.source = source.0;
+        self
+    }
+
+    pub fn set_destination_unchecked(&mut self, destination: MacAddress) -> &mut Eth {
+        debug_assert!(!destination.is_valid_dst());
+        self.inner.destination = destination.0;
+        self
+    }
+
+    pub fn set_ether_type(&mut self, ether_type: EtherType) -> &mut Eth {
+        self.inner.ether_type = ether_type;
+        self
+    }
+}
+
+impl Vlan {
+    pub fn new(vid: Vid, ether_type: EtherType) -> Vlan {
+        Vlan {
+            inner: SingleVlanHeader {
+                pcp: VlanPcp::ZERO,
+                drop_eligible_indicator: false,
+                #[allow(unsafe_code)] // SAFETY: overlapping check between libraries.
+                vlan_id: unsafe { VlanId::new_unchecked(vid.to_u16()) },
+                ether_type,
+            },
+        }
+    }
+
+    pub fn vid_checked(&self) -> Result<Vid, InvalidVid> {
+        Vid::new(self.inner.vlan_id.value())
+    }
+
+    /// Get the vlan id without ensuring it is a valid [`Vid`].
+    ///
+    /// # Safety
+    ///
+    /// This function does not ensure that the [`Vid`] is greater than zero or less than 4095.
+    /// Avoid using this method on untrusted data.
+    #[allow(unsafe_code)] // explicitly unsafe
+    pub unsafe fn vid_unchecked(&self) -> Vid {
+        Vid::new_unchecked(self.inner.vlan_id.value())
+    }
+}
+
+impl Ipv4 {
+    /// TODO: this is a temporary function.  Don't merge while this silly thing still exists.
+    pub fn new() -> Ipv4 {
+        Ipv4 {
+            inner: Ipv4Header {
+                dscp: Ipv4Dscp::default(),
+                ecn: Ipv4Ecn::default(),
+                total_len: 0,
+                identification: 0,
+                dont_fragment: false,
+                more_fragments: false,
+                fragment_offset: IpFragOffset::default(),
+                time_to_live: 64,
+                protocol: IpNumber::TCP,
+                header_checksum: 1234,
+                source: [1, 2, 3, 4],
+                destination: [5, 6, 7, 8],
+                options: Ipv4Options::default(),
+            },
+        }
+    }
+}
+
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[cfg(test)]
+pub mod test {
+    use super::*;
+    use crate::packet::Packet;
+    use tracing_test::traced_test;
+
+    #[test]
+    #[traced_test]
+    fn check_serialize() {
+        let eth = Eth::new(
+            MacAddress([1, 2, 3, 4, 5, 6]),
+            MacAddress([6, 5, 4, 3, 2, 1]),
+            EtherType::VLAN_TAGGED_FRAME,
+        );
+        let vlan = Vlan::new(Vid::new(2_u16).unwrap(), EtherType::IPV4);
+        let ipv4 = Ipv4::new();
+        let mut buffer = [0_u8; 128];
+        {
+            let mut cursor = std::io::Cursor::new(&mut buffer[..]);
+            eth.inner.write(&mut cursor).unwrap();
+            vlan.inner.write(&mut cursor).unwrap();
+            ipv4.inner.write(&mut cursor).unwrap();
+        }
+        let packet = Packet::parse(&buffer).unwrap();
+        debug!("{:?}", packet);
     }
 }

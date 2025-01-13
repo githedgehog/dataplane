@@ -85,6 +85,18 @@ impl Vid {
         }
     }
 
+    /// Create a new [`Vid`] from a `u16`.
+    ///
+    /// # Safety
+    ///
+    /// It is undefined behavior to pass in vid = 0 or vid >= 4094.
+    #[allow(unsafe_code)] // safety requirements documented
+    #[must_use]
+    #[cfg_attr(feature = "_no-panic", no_panic)]
+    pub unsafe fn new_unchecked(vid: u16) -> Self {
+        Vid(unsafe { NonZero::new_unchecked(vid) })
+    }
+
     /// Get the value of the [`Vid`] as a `u16`.
     #[cfg_attr(feature = "_no-panic", no_panic)]
     #[must_use]
