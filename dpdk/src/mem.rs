@@ -550,7 +550,6 @@ impl RteAllocator {
 }
 
 unsafe impl GlobalAlloc for RteAllocator {
-    #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if RTE_INIT.0.get() {
             dpdk_sys::rte_malloc_socket(
@@ -564,7 +563,6 @@ unsafe impl GlobalAlloc for RteAllocator {
         }
     }
 
-    #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if RTE_INIT.0.get() {
             dpdk_sys::rte_free(ptr as _);
@@ -573,7 +571,6 @@ unsafe impl GlobalAlloc for RteAllocator {
         }
     }
 
-    #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         if RTE_INIT.0.get() {
             dpdk_sys::rte_zmalloc_socket(
@@ -587,7 +584,6 @@ unsafe impl GlobalAlloc for RteAllocator {
         }
     }
 
-    #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if RTE_INIT.0.get() {
             dpdk_sys::rte_realloc_socket(
