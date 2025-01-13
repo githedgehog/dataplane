@@ -53,7 +53,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends gettext
       - run: |
-          ./scripts/update-versions.sh
+          ./scripts/bump.sh
       - name: "Create Pull Request"
         uses: "peter-evans/create-pull-request@v7"
         with:
