@@ -1,5 +1,5 @@
 use crate::eth::{DestinationMacAddressError, MacAddress, SourceMacAddressError};
-use crate::parse::{Cursor, LengthError, Parse, ParseError, ParseWith};
+use crate::parse::{Cursor, DeParse, DeParseError, LengthError, Parse, ParseError, ParseWith};
 use crate::vlan::{InvalidVid, Vid};
 use etherparse::{
     EtherType, Ethernet2Header, Icmpv4Header, Icmpv6Header, IpAuthHeader, IpFragOffset, IpNumber,
@@ -115,6 +115,32 @@ impl Parse for Eth {
     }
 }
 
+impl DeParse for Eth {
+    type Error = LengthError;
+
+    fn size(&self) -> NonZero<usize> {
+        NonZero::new(self.inner.header_len()).unwrap_or_else(|| unreachable!())
+    }
+
+    fn write(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
+        let len = buf.len();
+        let unused = self.inner.write_to_slice(buf).map_err(|e| {
+            let expected = NonZero::new(e.required_len).unwrap_or_else(|| unreachable!());
+            DeParseError::LengthError(LengthError {
+                expected,
+                actual: len,
+            })
+        })?;
+        assert!(
+            unused.len() < len,
+            "unused.len() >= buf.len() ({unused} >= {len})",
+            unused = unused.len(),
+        );
+        let consumed = NonZero::new(len - unused.len()).ok_or_else(|| unreachable!())?;
+        Ok(consumed)
+    }
+}
+
 impl Parse for Vlan {
     type Error = LengthError;
 
@@ -137,6 +163,26 @@ impl Parse for Vlan {
     }
 }
 
+impl DeParse for Vlan {
+    type Error = LengthError;
+
+    fn size(&self) -> NonZero<usize> {
+        NonZero::new(self.inner.header_len()).unwrap_or_else(|| unreachable!())
+    }
+
+    fn write(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
+        let len = buf.len();
+        if len < self.size().get() {
+            return Err(DeParseError::LengthError(LengthError {
+                expected: self.size(),
+                actual: len,
+            }));
+        };
+        buf[..self.size().get()].copy_from_slice(&self.inner.to_bytes());
+        Ok(self.size())
+    }
+}
+
 impl Parse for Ipv4 {
     type Error = etherparse::err::ipv4::HeaderSliceError;
 
@@ -150,6 +196,26 @@ impl Parse for Ipv4 {
         );
         let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
         Ok((Self { inner }, consumed))
+    }
+}
+
+impl DeParse for Ipv4 {
+    type Error = LengthError;
+
+    fn size(&self) -> NonZero<usize> {
+        NonZero::new(self.inner.header_len()).unwrap_or_else(|| unreachable!())
+    }
+
+    fn write(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
+        let len = buf.len();
+        if len < self.size().get() {
+            return Err(DeParseError::LengthError(LengthError {
+                expected: self.size(),
+                actual: len,
+            }));
+        };
+        buf[..self.size().get()].copy_from_slice(&self.inner.to_bytes());
+        Ok(self.size())
     }
 }
 
@@ -749,7 +815,7 @@ impl Vlan {
         }
     }
 
-    pub fn vid_checked(&self) -> Result<Vid, InvalidVid> {
+    pub fn vid(&self) -> Result<Vid, InvalidVid> {
         Vid::new(self.inner.vlan_id.value())
     }
 
@@ -779,7 +845,7 @@ impl Ipv4 {
                 fragment_offset: IpFragOffset::default(),
                 time_to_live: 64,
                 protocol: IpNumber::TCP,
-                header_checksum: 1234,
+                header_checksum: 27365,
                 source: [1, 2, 3, 4],
                 destination: [5, 6, 7, 8],
                 options: Ipv4Options::default(),
@@ -791,9 +857,9 @@ impl Ipv4 {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 pub mod test {
+    use tracing_test::traced_test;
     use super::*;
     use crate::packet::Packet;
-    use tracing_test::traced_test;
 
     #[test]
     #[traced_test]
@@ -803,16 +869,36 @@ pub mod test {
             MacAddress([6, 5, 4, 3, 2, 1]),
             EtherType::VLAN_TAGGED_FRAME,
         );
-        let vlan = Vlan::new(Vid::new(2_u16).unwrap(), EtherType::IPV4);
+        let vlan = [
+            Vlan::new(Vid::new(17).unwrap(), EtherType::VLAN_TAGGED_FRAME),
+            Vlan::new(Vid::new(27).unwrap(), EtherType::VLAN_TAGGED_FRAME),
+            Vlan::new(Vid::new(2).unwrap(), EtherType::IPV4),
+        ];
         let ipv4 = Ipv4::new();
         let mut buffer = [0_u8; 128];
         {
             let mut cursor = std::io::Cursor::new(&mut buffer[..]);
             eth.inner.write(&mut cursor).unwrap();
-            vlan.inner.write(&mut cursor).unwrap();
+            vlan[0].inner.write(&mut cursor).unwrap();
+            vlan[1].inner.write(&mut cursor).unwrap();
+            vlan[2].inner.write(&mut cursor).unwrap();
             ipv4.inner.write(&mut cursor).unwrap();
         }
-        let packet = Packet::parse(&buffer).unwrap();
-        debug!("{:?}", packet);
+        let (packet, _) = Packet::parse(&buffer).unwrap();
+        let mut buffer2 = [0_u8; 128];
+        {
+            let mut cursor = Cursor::new(&buffer2[..]);
+            cursor.write(&eth).unwrap();
+            cursor.write(&vlan[0]).unwrap();
+            cursor.write(&vlan[1]).unwrap();
+            cursor.write(&vlan[2]).unwrap();
+            cursor.write(&ipv4).unwrap();
+        }
+        let mut cursor = Cursor::new(&buffer2[..]);
+        let (packet2, size) = cursor.parse::<Packet>().unwrap();
+        assert_eq!(packet, packet2);
+        debug!("size: {size}");
+        debug!("sizeof vlan: {size}", size = size_of::<Vlan>());
+        debug!("sizeof packet: {size}", size = size_of::<Packet>());
     }
 }

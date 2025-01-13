@@ -35,33 +35,19 @@ impl Parse for Packet {
         loop {
             let header = prior.step(&mut cursor);
             match prior {
-                Header::Eth(eth) => {
-                    this.link = Some(eth);
-                }
+                Header::Eth(eth) => this.link = Some(eth),
+                Header::Ipv4(ip) => this.net = Some(Net::Ipv4(ip)),
+                Header::Ipv6(ip) => this.net = Some(Net::Ipv6(ip)),
+                Header::Tcp(tcp) => this.transport = Some(Transport::Tcp(tcp)),
+                Header::Udp(udp) => this.transport = Some(Transport::Udp(udp)),
+                Header::Icmp4(icmp4) => this.transport = Some(Transport::Icmp4(icmp4)),
+                Header::Icmp6(icmp6) => this.transport = Some(Transport::Icmp6(icmp6)),
                 Header::Vlan(vlan) => {
                     if this.vlan.len() < MAX_VLANS {
                         this.vlan.push(vlan);
                     } else {
                         break;
                     }
-                }
-                Header::Ipv4(ip) => {
-                    this.net = Some(Net::Ipv4(ip));
-                }
-                Header::Ipv6(ip) => {
-                    this.net = Some(Net::Ipv6(ip));
-                }
-                Header::Tcp(tcp) => {
-                    this.transport = Some(Transport::Tcp(tcp));
-                }
-                Header::Udp(udp) => {
-                    this.transport = Some(Transport::Udp(udp));
-                }
-                Header::Icmp4(icmp4) => {
-                    this.transport = Some(Transport::Icmp4(icmp4));
-                }
-                Header::Icmp6(icmp6) => {
-                    this.transport = Some(Transport::Icmp6(icmp6));
                 }
                 Header::IpAuth(auth) => {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {

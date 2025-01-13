@@ -6,6 +6,13 @@ pub trait Parse: Sized {
     fn parse(buf: &[u8]) -> Result<(Self, NonZero<usize>), ParseError<Self::Error>>;
 }
 
+pub trait DeParse {
+    type Error: core::error::Error;
+
+    fn size(&self) -> NonZero<usize>;
+    fn write(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>>;
+}
+
 pub trait ParseWith {
     type Error: core::error::Error;
     type Param;
@@ -75,6 +82,12 @@ impl Cursor {
             Err(e) => Err(ParseError::LengthError(e)),
         }
     }
+
+    pub(crate) fn write<T: DeParse>(&mut self, header: &T) -> Result<(), DeParseError<T::Error>> {
+        #[allow(unsafe_code)] // TODO: document safety requirements
+        let len_written = header.write(unsafe { self.inner.as_mut() })?;
+        self.consume(len_written).map_err(DeParseError::LengthError)
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -83,4 +96,12 @@ pub enum ParseError<E: core::error::Error> {
     LengthError(LengthError),
     #[error(transparent)]
     FailedToParse(E),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum DeParseError<E: core::error::Error> {
+    #[error(transparent)]
+    LengthError(LengthError),
+    #[error(transparent)]
+    FailedToDeParse(E),
 }
