@@ -33,7 +33,7 @@ permissions:
 jobs:
   check_changes:
     name: "Deduce required tests from code changes"
-    runs-on: "ubuntu-latest"
+    runs-on: "ubuntu-24.04"
     outputs:
       docs: "${{ steps.changes.outputs.docs }}"
     steps:
@@ -57,7 +57,7 @@ jobs:
     name: "Build and deploy documentation"
     needs: [ check_changes ]
     if: "${{ needs.check_changes.outputs.docs == 'true' || github.event_name == 'workflow_dispatch' }}"
-    runs-on: "ubuntu-latest"
+    runs-on: "ubuntu-24.04"
     steps:
 
       - uses: "cargo-bins/cargo-binstall@main"

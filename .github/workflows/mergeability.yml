@@ -10,7 +10,7 @@ on:
 
 jobs:
   check-labels:
-    runs-on: "ubuntu-latest"
+    runs-on: "ubuntu-24.04"
     name: "Check mergeability based on labels"
     # Skip this job in merge group checks; but we need the workflow to run,
     # given that the status check is required for merging.

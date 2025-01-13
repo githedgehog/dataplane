@@ -26,7 +26,7 @@ concurrency:
 jobs:
   check_changes:
     name: "Deduce required tests from code changes"
-    runs-on: "ubuntu-latest"
+    runs-on: "ubuntu-24.04"
     outputs:
       devfiles: "${{ steps.changes.outputs.devfiles }}"
     steps:
@@ -230,7 +230,7 @@ jobs:
 
   summary:
     name: "Summary"
-    runs-on: "ubuntu-latest"
+    runs-on: "ubuntu-24.04"
     needs:
       - test
       - push
