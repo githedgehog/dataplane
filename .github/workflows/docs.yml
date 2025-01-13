@@ -90,18 +90,18 @@ jobs:
           cp -r ./design-docs/src/mdbook/book "${{ github.workspace }}/publish/design-docs"
 
       - name: "(Push) Setup Pages"
-        if: "${{ !github.event.pull_request && !github.event_name == 'merge_group' }}"
+        if: "${{ !github.event.pull_request && github.event_name != 'merge_group' }}"
         uses: "actions/configure-pages@v5"
 
       - name: "(Push) Upload design-docs"
-        if: "${{ !github.event.pull_request && !github.event_name == 'merge_group' }}"
+        if: "${{ !github.event.pull_request && github.event_name != 'merge_group' }}"
         uses: "actions/upload-pages-artifact@v3"
         with:
           # Upload design-docs build directory content
           path: 'publish/design-docs'
 
       - name: "(Push) Deploy to GitHub Pages"
-        if: "${{ !github.event.pull_request && !github.event_name == 'merge_group' }}"
+        if: "${{ !github.event.pull_request && github.event_name != 'merge_group' }}"
         id: "deployment"
         uses: "actions/deploy-pages@v4"
         env:
