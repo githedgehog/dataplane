@@ -1,5 +1,6 @@
 <!-- internal -->
 
+
 [configuration store]: /dataplane/design.md#configuration-store
 [control plane]: /dataplane/design.md#control-plane
 [dataplane model]: /dataplane/design.md#dataplane-model

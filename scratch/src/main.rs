@@ -11,6 +11,7 @@ use std::net::Ipv4Addr;
 use std::time::Instant;
 use tracing::{debug, error, info, trace, warn};
 
+
 #[tracing::instrument(level = "trace", ret)]
 // TODO: proper safety.  This should return a Result but I'm being a savage for demo purposes.
 fn as_cstr(s: &str) -> CString {
