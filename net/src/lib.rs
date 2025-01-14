@@ -3,25 +3,31 @@
 
 //! A library for working with and validating network data
 
-#![deny(
-    unsafe_code,
-    missing_docs,
-    clippy::all,
-    clippy::pedantic,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
+// #![deny(
+//     unsafe_code,
+//     missing_docs,
+//     clippy::all,
+//     clippy::pedantic,
+//     clippy::unwrap_used,
+//     clippy::expect_used,
+//     clippy::panic
+// )] // temporary allowance (block merge)
+
+#![allow(missing_docs)] // temporary allowance (block merge)
 
 extern crate alloc;
 extern crate core;
 
 /// testing
 pub mod eth;
+pub mod icmp4;
+pub mod icmp6;
+pub mod ip_auth;
 pub mod ipv4;
 pub mod ipv6;
 pub mod packet;
+pub mod parse;
+pub mod tcp;
+pub mod udp;
 pub mod vlan;
 pub mod vxlan;
-mod header;
-mod parse;

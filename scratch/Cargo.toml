@@ -6,8 +6,8 @@ publish = false
 
 [dependencies]
 # internal
-dpdk = { workspace = true }
-dpdk-sys = { workspace = true }
+#dpdk = { workspace = true }
+#dpdk-sys = { workspace = true }
 
 # external
 rand = { workspace = true }

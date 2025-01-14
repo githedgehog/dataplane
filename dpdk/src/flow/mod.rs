@@ -552,7 +552,7 @@ pub enum FlowAction {
         ethertype: EtherType,
     },
     SetVlanVid {
-        vlan_id: net::vlan::Vid,
+        vlan_id: net::r#mod::Vid,
     },
     // SetVlanPcp { // TODO: expose PCP as an action
     //     pcp: net::vlan::Pcp,
@@ -721,7 +721,7 @@ pub enum SetFlowField {
     /// Vlan ethertype
     VlanType(EtherType),
     /// Vlan VID
-    VlanVid(net::vlan::Vid),
+    VlanVid(net::r#mod::Vid),
     /// Ethertype
     EtherType(EtherType),
     /// IPv4 DSCP
@@ -755,7 +755,7 @@ pub enum SetFlowField {
     /// UDP dest port
     UdpPortDst(u16),
     /// VXLAN vni
-    VxlanVni(net::vxlan::Vni),
+    VxlanVni(net::r#mod::Vni),
     /// Tag
     Tag(MatchTag),
     /// Metadata

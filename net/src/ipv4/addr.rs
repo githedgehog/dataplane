@@ -1,6 +1,4 @@
-//! Ipv4 Address type and manipulation
-
-use core::net::Ipv4Addr;
+use std::net::Ipv4Addr;
 #[cfg(any(test, feature = "bolero", kani))]
 use bolero::Driver;
 
@@ -55,3 +53,4 @@ impl From<Ipv4Address> for [u8; 4] {
         value.addr.octets()
     }
 }
+

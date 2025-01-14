@@ -28,11 +28,11 @@ bolero = ["dep:bolero", "etherparse/std"]
 # This only works with optimization, LTO, and codegen-units=1.
 # This feature is internal.
 # It is not intended for (nor is it useful for) shipped release builds.
-_no-panic = ["dep:no-panic", "tracing_max_level_off", "tracing_release_max_level_off"]
+_no_panic = ["dep:no-panic", "tracing_max_level_off", "tracing_release_max_level_off"]
 
 # This is internal and should not be used by end users.
 # This is exclusively intended for writing kani proofs while calming the rage of the IDE.
-_fake-kani = ["dep:kani"]
+_fake_kani = ["dep:kani"]
 
 tracing_max_level_debug = ["tracing/max_level_debug"]
 tracing_max_level_error = ["tracing/max_level_error"]
@@ -57,12 +57,12 @@ kani = { workspace = true, optional = true }
 
 # external
 bolero = { workspace = true, optional = true, features = [] }
-etherparse = { workspace = true, default-features = false, features = [] }
+etherparse = { workspace = true, default-features = false, features = ["std"] } # TODO: try to do without std feature
 no-panic = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-arrayvec = {  workspace = true, default-features = false, features = [] }
+arrayvec = { workspace = true, default-features = false, features = [] }
 
 [dev-dependencies]
 bolero = { workspace = true, features = [] }

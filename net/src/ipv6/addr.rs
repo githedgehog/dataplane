@@ -1,6 +1,4 @@
-//! Ipv6 Address type and manipulation
-
-use core::net::Ipv6Addr;
+use std::net::Ipv6Addr;
 #[cfg(any(test, feature = "bolero", kani))]
 use bolero::Driver;
 

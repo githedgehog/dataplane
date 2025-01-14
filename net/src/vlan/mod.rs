@@ -4,9 +4,11 @@
 //! VLAN validation and manipulation.
 
 use core::num::NonZero;
-
-#[cfg(feature = "_no-panic")]
+use etherparse::{EtherType, SingleVlanHeader, VlanId, VlanPcp};
+#[cfg(feature = "_no_panic")]
 use no_panic::no_panic;
+use crate::eth::{parse_from_ethertype, EthNext};
+use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, Reader, Step};
 
 /// A VLAN Identifier.
 ///
@@ -74,7 +76,7 @@ impl Vid {
     /// # Errors
     ///
     /// Returns an error if the value is 0, 4095 (reserved), or greater than [`Vid::MAX`].
-    #[cfg_attr(feature = "_no-panic", no_panic)]
+    #[cfg_attr(feature = "_no_panic", no_panic)]
     #[tracing::instrument(level = "trace")]
     pub fn new(vid: u16) -> Result<Self, InvalidVid> {
         match NonZero::new(vid) {
@@ -92,13 +94,13 @@ impl Vid {
     /// It is undefined behavior to pass in vid = 0 or vid >= 4094.
     #[allow(unsafe_code)] // safety requirements documented
     #[must_use]
-    #[cfg_attr(feature = "_no-panic", no_panic)]
+    #[cfg_attr(feature = "_no_panic", no_panic)]
     pub unsafe fn new_unchecked(vid: u16) -> Self {
         Vid(unsafe { NonZero::new_unchecked(vid) })
     }
 
     /// Get the value of the [`Vid`] as a `u16`.
-    #[cfg_attr(feature = "_no-panic", no_panic)]
+    #[cfg_attr(feature = "_no_panic", no_panic)]
     #[must_use]
     pub fn to_u16(self) -> u16 {
         self.0.get()
@@ -106,14 +108,14 @@ impl Vid {
 }
 
 impl AsRef<NonZero<u16>> for Vid {
-    #[cfg_attr(feature = "_no-panic", no_panic)]
+    #[cfg_attr(feature = "_no_panic", no_panic)]
     fn as_ref(&self) -> &NonZero<u16> {
         &self.0
     }
 }
 
 impl From<Vid> for u16 {
-    #[cfg_attr(feature = "_no-panic", no_panic)]
+    #[cfg_attr(feature = "_no_panic", no_panic)]
     fn from(vid: Vid) -> u16 {
         vid.to_u16()
     }
@@ -122,7 +124,7 @@ impl From<Vid> for u16 {
 impl TryFrom<u16> for Vid {
     type Error = InvalidVid;
 
-    #[cfg_attr(feature = "_no-panic", no_panic)]
+    #[cfg_attr(feature = "_no_panic", no_panic)]
     fn try_from(vid: u16) -> Result<Vid, Self::Error> {
         Vid::new(vid)
     }
@@ -133,6 +135,92 @@ impl core::fmt::Display for Vid {
         write!(f, "{}", self.to_u16())
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Vlan {
+    inner: SingleVlanHeader,
+}
+
+impl Vlan {
+    pub fn new(vid: Vid, ether_type: EtherType) -> Vlan {
+        Vlan {
+            inner: SingleVlanHeader {
+                pcp: VlanPcp::ZERO,
+                drop_eligible_indicator: false,
+                #[allow(unsafe_code)] // SAFETY: overlapping check between libraries.
+                vlan_id: unsafe { VlanId::new_unchecked(vid.to_u16()) },
+                ether_type,
+            },
+        }
+    }
+
+    pub fn vid(&self) -> Result<Vid, InvalidVid> {
+        Vid::new(self.inner.vlan_id.value())
+    }
+
+    /// Get the vlan id without ensuring it is a valid [`Vid`].
+    ///
+    /// # Safety
+    ///
+    /// This function does not ensure that the [`Vid`] is greater than zero or less than 4095.
+    /// Avoid using this method on untrusted data.
+    #[allow(unsafe_code)] // explicitly unsafe
+    pub unsafe fn vid_unchecked(&self) -> Vid {
+        Vid::new_unchecked(self.inner.vlan_id.value())
+    }
+}
+
+impl Parse for Vlan {
+    type Error = LengthError;
+
+    fn parse(buf: &[u8]) -> Result<(Self, NonZero<usize>), ParseError<Self::Error>> {
+        let (inner, rest) = SingleVlanHeader::from_slice(buf).map_err(|e| {
+            let expected = NonZero::new(e.required_len).unwrap_or_else(|| unreachable!());
+            ParseError::LengthError(LengthError {
+                expected,
+                actual: buf.len(),
+            })
+        })?;
+        assert!(
+            rest.len() < buf.len(),
+            "rest.len() >= buf.len() ({rest} >= {buf})",
+            rest = rest.len(),
+            buf = buf.len()
+        );
+        let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
+        Ok((Self { inner }, consumed))
+    }
+}
+
+impl DeParse for Vlan {
+    type Error = ();
+
+    fn size(&self) -> NonZero<usize> {
+        NonZero::new(self.inner.header_len()).unwrap_or_else(|| unreachable!())
+    }
+
+    fn write(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
+        let len = buf.len();
+        if len < self.size().get() {
+            return Err(DeParseError::LengthError(LengthError {
+                expected: self.size(),
+                actual: len,
+            }));
+        };
+        buf[..self.size().get()].copy_from_slice(&self.inner.to_bytes());
+        Ok(self.size())
+    }
+}
+
+impl Step for Vlan {
+    type Next = EthNext;
+
+    fn step(&self, cursor: &mut Reader) -> Option<EthNext> {
+        parse_from_ethertype(self.inner.ether_type, cursor)
+    }
+}
+
+
 
 #[cfg(any(test, kani))]
 mod test {

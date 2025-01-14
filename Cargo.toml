@@ -1,19 +1,29 @@
 [workspace]
 
-members = ["dataplane",
+members = [
+	"dataplane", "dataplane-bin",
 	"dpdk",
 	"dpdk-sys",
 	"errno", "fake-kani", "fake-kani-macro",
 	"net",
 	"scratch",
 ]
+
+default-members = [
+	"errno", "fake-kani", "fake-kani-macro",
+	"net",
+]
+
 resolver = "3"
+
+
+
 
 [workspace.dependencies]
 
 # local
-dpdk = { path = "dpdk" }
-dpdk-sys = { path = "dpdk-sys" }
+#dpdk = { path = "dpdk" }
+#dpdk-sys = { path = "dpdk-sys" }
 dpdk-sysroot-helper = { path = "dpdk-sysroot-helper" }
 errno = { path = "errno" }
 fake-kani-macro = { path = "fake-kani-macro" }
@@ -41,12 +51,12 @@ tracing = { version = "0.1.40", default-features = false, features = ["attribute
 tracing-subscriber = { version = "0.3.18" }
 tracing-test = { version = "0.2.5" }
 
-[profile.release]
-debug = "full"
-codegen-units = 1
-lto = "thin"
-opt-level = 3
-incremental = false
-
-[profile.fuzz]
-inherits = "release"
+#[profile.release]
+#debug = "full"
+#codegen-units = 1
+#lto = "thin"
+#opt-level = 3
+#incremental = false
+#
+#[profile.fuzz]
+#inherits = "release"

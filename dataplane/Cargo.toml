@@ -3,10 +3,13 @@ name = "dataplane"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+crate-type = ["rlib"]
+
 [dependencies]
 
 # internal
-dpdk = { workspace = true }
+dpdk = { path = "../dpdk" }
 net = { workspace = true }
 
 # external

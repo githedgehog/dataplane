@@ -9,7 +9,7 @@ use crate::socket::SocketId;
 use crate::{dev, mem, socket};
 use std::ffi::c_int;
 use std::ptr::null_mut;
-use tracing::{trace, warn};
+use tracing::{debug, trace, warn};
 use errno::Errno;
 
 /// A DPDK receive queue index.
@@ -178,8 +178,10 @@ impl RxQueue {
             queue = self.config.queue_index.as_u16(),
             dev = self.dev.as_u16()
         );
+        let q = unsafe { dpdk_sys::rte_cross_language_inline_test() };
+        debug!("q = {q}");
         let nb_rx = unsafe {
-            dpdk_sys::rte_eth_rx_burst(
+            dpdk_sys::rte_eth_rx_burst_w(
                 self.dev.as_u16(),
                 self.config.queue_index.as_u16(),
                 pkts.as_mut_ptr(),

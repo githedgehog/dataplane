@@ -152,7 +152,7 @@ impl TxQueue {
                 dev = self.dev.as_u16()
             );
             let nb_tx = unsafe {
-                dpdk_sys::rte_eth_tx_burst(
+                dpdk_sys::rte_eth_tx_burst_w(
                     self.dev.as_u16(),
                     self.config.queue_index.as_u16(),
                     packets.as_mut_ptr().offset(offset as isize) as *mut _,

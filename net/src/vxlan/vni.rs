@@ -1,8 +1,6 @@
-//! VXLAN validation and manipulation tools.
+use std::num::NonZero;
 
-use core::num::NonZero;
-
-#[cfg(feature = "_no-panic")]
+#[cfg(feature = "_no_panic")]
 use no_panic::no_panic;
 
 /// A [VXLAN][RFC7348] Network Identifier.
@@ -57,7 +55,7 @@ impl Vni {
     /// # Errors
     ///
     /// Returns an [`InvalidVni`] error if the value is 0 or greater than [`Vni::MAX`].
-    #[cfg_attr(feature = "_no-panic", no_panic)]
+    #[cfg_attr(feature = "_no_panic", no_panic)]
     pub fn new(vni: u32) -> Result<Vni, InvalidVni> {
         match NonZero::<u32>::new(vni) {
             None => Err(InvalidVni::ReservedZero),
@@ -68,7 +66,7 @@ impl Vni {
 
     /// Get the value of the [`Vni`] as a `u32`.
     #[must_use]
-    #[cfg_attr(feature = "_no-panic", no_panic)]
+    #[cfg_attr(feature = "_no_panic", no_panic)]
     pub fn as_u32(self) -> u32 {
         self.0.get()
     }
@@ -76,7 +74,7 @@ impl Vni {
 
 impl AsRef<NonZero<u32>> for Vni {
     #[must_use]
-    #[cfg_attr(feature = "_no-panic", no_panic)]
+    #[cfg_attr(feature = "_no_panic", no_panic)]
     fn as_ref(&self) -> &NonZero<u32> {
         &self.0
     }
@@ -108,7 +106,7 @@ pub enum InvalidVni {
 }
 
 impl From<Vni> for u32 {
-    #[cfg_attr(feature = "_no-panic", no_panic)]
+    #[cfg_attr(feature = "_no_panic", no_panic)]
     fn from(vni: Vni) -> u32 {
         vni.as_u32()
     }
@@ -117,7 +115,7 @@ impl From<Vni> for u32 {
 impl TryFrom<u32> for Vni {
     type Error = InvalidVni;
 
-    #[cfg_attr(feature = "_no-panic", no_panic)]
+    #[cfg_attr(feature = "_no_panic", no_panic)]
     fn try_from(vni: u32) -> Result<Vni, Self::Error> {
         Vni::new(vni)
     }
@@ -173,17 +171,15 @@ mod test {
         bolero::check!()
             .with_type()
             .cloned()
-            .for_each(|val: u32| {
-                match val {
-                    0 => {
-                        assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::ReservedZero);
-                    }
-                    Vni::MIN..=Vni::MAX => {
-                        assert_eq!(Vni::new(val).unwrap().as_u32(), val);
-                    }
-                    Vni::TOO_LARGE.. => {
-                        assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::TooLarge(val));
-                    }
+            .for_each(|val: u32| match val {
+                0 => {
+                    assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::ReservedZero);
+                }
+                Vni::MIN..=Vni::MAX => {
+                    assert_eq!(Vni::new(val).unwrap().as_u32(), val);
+                }
+                Vni::TOO_LARGE.. => {
+                    assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::TooLarge(val));
                 }
             });
     }

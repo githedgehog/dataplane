@@ -183,7 +183,7 @@ struct Vpc {
     id: Uuid,
     version: u64,
     vrf: u32, // TODO: write a proper type for VRF
-    vni: net::vxlan::Vni,
+    vni: net::r#mod::Vni,
     interfaces: Vec<Interface>,
 }
 

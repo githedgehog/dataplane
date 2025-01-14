@@ -143,7 +143,7 @@ impl Pool {
             .map(|_| unsafe { transmute(null_mut::<dpdk_sys::rte_mbuf>()) })
             .collect();
         let ret = unsafe {
-            dpdk_sys::rte_pktmbuf_alloc_bulk(
+            dpdk_sys::rte_pktmbuf_alloc_bulk_w(
                 self.0.as_mut_ptr(),
                 transmute::<*mut Mbuf, *mut *mut dpdk_sys::rte_mbuf>(mbufs.as_mut_ptr()),
                 num as c_uint,
@@ -397,7 +397,7 @@ pub struct Mbuf {
 impl Drop for Mbuf {
     fn drop(&mut self) {
         unsafe {
-            dpdk_sys::rte_pktmbuf_free(self.raw.as_ptr());
+            dpdk_sys::rte_pktmbuf_free_w(self.raw.as_ptr());
         }
     }
 }
@@ -528,6 +528,7 @@ static RTE_INIT: RteInit = const { RteInit(Cell::new(false)) };
 
 thread_local! {
     static RTE_SOCKET: Cell<SocketId> = const { Cell::new(SocketId::ANY) };
+    static SWITCHED: Cell<bool> = const { Cell::new(false) };
 }
 
 impl RteAllocator {
@@ -538,6 +539,7 @@ impl RteAllocator {
         }
         RTE_SOCKET.set(SocketId::current());
         RTE_INIT.0.set(true);
+        SWITCHED.set(true);
     }
 
     #[tracing::instrument(level = "debug")]
@@ -546,12 +548,14 @@ impl RteAllocator {
             Eal::fatal_error("RTE not initialized");
         }
         RTE_SOCKET.set(SocketId::current());
+        SWITCHED.set(true);
     }
 }
 
 unsafe impl GlobalAlloc for RteAllocator {
+    #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if RTE_INIT.0.get() {
+        if SWITCHED.get() {
             dpdk_sys::rte_malloc_socket(
                 null(),
                 layout.size(),
@@ -563,16 +567,18 @@ unsafe impl GlobalAlloc for RteAllocator {
         }
     }
 
+    #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if RTE_INIT.0.get() {
+        if SWITCHED.get() {
             dpdk_sys::rte_free(ptr as _);
         } else {
             System.dealloc(ptr, layout);
         }
     }
 
+    #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        if RTE_INIT.0.get() {
+        if SWITCHED.get() {
             dpdk_sys::rte_zmalloc_socket(
                 null(),
                 layout.size(),
@@ -584,8 +590,9 @@ unsafe impl GlobalAlloc for RteAllocator {
         }
     }
 
+    #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if RTE_INIT.0.get() {
+        if SWITCHED.get() {
             dpdk_sys::rte_realloc_socket(
                 ptr as _,
                 new_size,

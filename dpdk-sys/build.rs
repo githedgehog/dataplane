@@ -22,6 +22,8 @@ impl ParseCallbacks for Cb {
 }
 
 fn bind(path: &Path, sysroot: &str) {
+    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let static_fn_path = out_path.join("generated.h");
     bindgen::Builder::default()
         .header(format!("{sysroot}/include/dpdk_wrapper.h"))
         .anon_fields_prefix("annon")
@@ -31,6 +33,7 @@ fn bind(path: &Path, sysroot: &str) {
         // .clang_arg("-Dinline=") // hack to make bindgen spit out wrappers
         .wrap_static_fns(true)
         .wrap_static_fns_suffix("_w")
+        .wrap_static_fns_path(static_fn_path)
         .array_pointers_in_arguments(false)
         .detect_include_paths(true)
         .prepend_enum_name(false)
@@ -71,6 +74,9 @@ fn bind(path: &Path, sysroot: &str) {
         .clang_arg(format!("-I{sysroot}/include"))
         .clang_arg("-fretain-comments-from-system-headers")
         .clang_arg("-fparse-all-comments")
+        .clang_arg("-O3")
+        .clang_arg("-flto=thin")
+        .clang_arg("-march=znver4")
         .generate()
         .expect("Unable to generate bindings")
         .write_to_file(path.join("generated.rs"))
@@ -78,6 +84,7 @@ fn bind(path: &Path, sysroot: &str) {
 }
 
 fn main() {
+    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     let sysroot = dpdk_sysroot_helper::get_sysroot();
 
     println!("cargo:rustc-link-arg=--sysroot={sysroot}");
@@ -135,6 +142,5 @@ fn main() {
     for file in &rerun_if_changed {
         println!("cargo:rerun-if-changed={file}");
     }
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     bind(&out_path, sysroot.as_str());
 }

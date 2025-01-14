@@ -229,7 +229,7 @@ impl LCoreId {
 
     #[tracing::instrument(level = "trace")]
     pub fn current() -> LCoreId {
-        LCoreId(unsafe { dpdk_sys::rte_lcore_id() })
+        LCoreId(unsafe { dpdk_sys::rte_lcore_id_w() })
     }
 
     #[tracing::instrument(level = "trace")]
