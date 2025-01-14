@@ -33,8 +33,6 @@ set dotenv-filename := "./scripts/rust.env"
 export NEXTEST_EXPERIMENTAL_LIBTEST_JSON := "1"
 debug := "false"
 dpdk_sys_commit := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT")
-hugepages_1g := "8"
-hugepages_2m := "1024"
 _just_debuggable_ := if debug == "true" { "set -x" } else { "" }
 target := "x86_64-unknown-linux-gnu"
 profile := "dev"
@@ -42,7 +40,6 @@ _container_repo := "ghcr.io/githedgehog/dataplane"
 rust := "stable"
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
 _dpdk_sys_container_tag := dpdk_sys_commit + ".rust-" + rust
-_dev_env_container := _dpdk_sys_container_repo + "/dev-env:" + _dpdk_sys_container_tag
 _doc_env_container := _dpdk_sys_container_repo + "/doc-env:" + _dpdk_sys_container_tag
 _compile_env_container := _dpdk_sys_container_repo + "/compile-env:" + _dpdk_sys_container_tag
 _network := "host"
@@ -124,38 +121,6 @@ cargo *args:
     [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
     cargo "${extra_args[@]}"
 
-# Run the dataplane development environment
-[group('env')]
-[script]
-dev-env *args="": allocate-2M-hugepages allocate-1G-hugepages mount-hugepages fill-out-dev-env-template && umount-hugepages
-    {{ _just_debuggable_ }}
-    declare hugemnt2M
-    hugemnt2M="/run/user/$(id -u)/hedgehog/dataplane/hugepages/2M"
-    declare -r hugemnt2M
-    declare hugemnt1G
-    hugemnt1G="/run/user/$(id -u)/hedgehog/dataplane/hugepages/1G"
-    declare -r hugemnt1G
-    sudo -E docker run \
-      --rm \
-      --interactive \
-      --tty \
-      --name dataplane-dev-env \
-      --env DOCKER_HOST="${DOCKER_HOST}" \
-      --privileged \
-      --network="{{ _network }}" \
-      --security-opt seccomp=unconfined \
-      --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=0777" \
-      --mount "type=bind,source=${hugemnt2M},destination=/mnt/hugepages/2M,bind-propagation=rprivate" \
-      --mount "type=bind,source=${hugemnt1G},destination=/mnt/hugepages/1G,bind-propagation=rprivate" \
-      --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate" \
-      --mount "type=bind,source=$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly" \
-      --mount "type=bind,source=$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly" \
-      --mount "type=bind,source={{ DOCKER_SOCK }},destination=/var/run/docker.sock,bind-propagation=rprivate" \
-      --user "$(id -u):$(id -g)" \
-      --workdir "$(pwd)" \
-      "{{ _dev_env_container }}" \
-      {{ args }}
-
 # Run the (very minimal) compile environment
 [script]
 compile-env *args: fill-out-dev-env-template
@@ -202,79 +167,9 @@ pull-compile-env:
     {{ _just_debuggable_ }}
     sudo -E docker pull "{{ _compile_env_container }}" || true
 
-# Pull the latest versions of the dev-env container
+# Pull the latest versions of the containers
 [script]
-pull-dev-env:
-    {{ _just_debuggable_ }}
-    sudo -E docker pull "{{ _dev_env_container }}"
-
-# Pull the latest compile and dev-env containers
-[script]
-pull: pull-compile-env pull-dev-env
-
-# Allocate 2M hugepages (if needed)
-[private]
-[script]
-allocate-2M-hugepages:
-    {{ _just_debuggable_ }}
-    pages=$(< /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages)
-    if [ "$pages" -gt {{ hugepages_2m }} ]; then
-      >&2 echo "INFO: ${pages} 2M hugepages already allocated"
-      exit 0
-    fi
-    printf -- "%s" {{ hugepages_2m }} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages >/dev/null
-
-# Allocate 1G hugepages (if needed)
-[private]
-[script]
-allocate-1G-hugepages:
-    {{ _just_debuggable_ }}
-    pages=$(< /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages)
-    if [ "$pages" -gt {{ hugepages_1g }} ]; then
-      >&2 echo "INFO: ${pages} 1G hugepages already allocated"
-      exit 0
-    fi
-    printf -- "%s" {{ hugepages_1g }} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages >/dev/null
-
-# umount hugepage mounts created by dataplane
-[private]
-[script]
-umount-hugepages:
-    {{ _just_debuggable_ }}
-    declare hugemnt2M
-    hugemnt2M="/run/user/$(id -u)/hedgehog/dataplane/hugepages/2M"
-    declare -r hugemnt2M
-    declare hugemnt1G
-    hugemnt1G="/run/user/$(id -u)/hedgehog/dataplane/hugepages/1G"
-    declare -r hugemnt1G
-    if [ "$(findmnt -rno FSTYPE "${hugemnt2M}")" = "hugetlbfs" ]; then
-      sudo umount --lazy "${hugemnt2M}"
-    fi
-    if [ "$(findmnt -rno FSTYPE "${hugemnt1G}")" = "hugetlbfs" ]; then
-        sudo umount --lazy "${hugemnt1G}"
-    fi
-    sync
-
-# mount hugetlbfs
-[private]
-[script]
-mount-hugepages:
-    {{ _just_debuggable_ }}
-    declare hugemnt2M
-    hugemnt2M="/run/user/$(id -u)/hedgehog/dataplane/hugepages/2M"
-    declare -r hugemnt2M
-    declare hugemnt1G
-    hugemnt1G="/run/user/$(id -u)/hedgehog/dataplane/hugepages/1G"
-    declare -r hugemnt1G
-    [ ! -d "$hugemnt2M" ] && mkdir --parent "$hugemnt2M"
-    [ ! -d "$hugemnt1G" ] && mkdir --parent "$hugemnt1G"
-    if [ ! "$(findmnt -rno FSTYPE "${hugemnt2M}")" = "hugetlbfs" ]; then
-      sudo mount -t hugetlbfs -o pagesize=2M,noatime hugetlbfs "$hugemnt2M"
-    fi
-    if [ ! "$(findmnt -rno FSTYPE "${hugemnt1G}")" = "hugetlbfs" ]; then
-      sudo mount -t hugetlbfs -o pagesize=1G,noatime hugetlbfs "$hugemnt1G"
-    fi
-    sync
+pull: pull-compile-env
 
 # Dump the compile-env container into a sysroot for use by the build.
 [group('env')]

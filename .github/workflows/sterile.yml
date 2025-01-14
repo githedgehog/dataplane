@@ -1,5 +1,5 @@
-# This is a sterile build and test workflow that uses the `dev-env` container image
-# to build and test the project in a sterile environment.
+# This is a sterile build and test workflow that uses the `compile-env`
+# container image to build and test the project in a sterile environment.
 # Artifacts produced by this workflow are intended to be used for production.
 
 name: "sterile.yml"
