@@ -5,7 +5,6 @@ members = [
 	"dpdk-sys",
 	"errno",
 	"net",
-	"scratch",
 ]
 
 default-members = [
