@@ -11,8 +11,12 @@ harness = false
 [features]
 default = ["serde"]
 serde = ["dep:serde"]
+bolero = ["dep:bolero"]
 
 [dependencies]
+arrayvec = { workspace = true }
+bolero = { workspace = true, optional = true }
+etherparse = { workspace = true, default-features = false, features = ["std"] } # ideally we do without std here
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
