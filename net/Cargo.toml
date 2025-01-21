@@ -23,7 +23,5 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true }
-criterion = { workspace = true }
-rand = { workspace = true }
 etherparse = { workspace = true, default-features = false, features = ["std"] }
 
