@@ -1,6 +1,6 @@
 //! Packet definition
-#![allow(missing_docs)] // temporary
 
+use crate::encap::Encap;
 use crate::eth::Eth;
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
@@ -13,8 +13,9 @@ use crate::parse::{
 use crate::tcp::Tcp;
 use crate::udp::Udp;
 use crate::vlan::Vlan;
+use crate::vxlan::Vxlan;
 use arrayvec::ArrayVec;
-use std::num::NonZero;
+use core::num::NonZero;
 use tracing::debug;
 
 const MAX_VLANS: usize = 4;
@@ -27,6 +28,7 @@ pub struct Packet {
     transport: Option<Transport>,
     vlan: ArrayVec<Vlan, MAX_VLANS>,
     net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
+    encap: Option<Encap>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +103,7 @@ pub enum Header {
     Icmp6(Icmp6),
     IpAuth(IpAuth),
     IpV6Ext(Ipv6Ext), // TODO: break out nested enum.  Nesting is counter productive here
+    Vxlan(Vxlan),
 }
 
 impl Step for Header {
@@ -122,7 +125,9 @@ impl Step for Header {
                     None
                 }
             }
-            Tcp(_) | Udp(_) | Icmp4(_) | Icmp6(_) => None,
+            Udp(udp) => udp.step(cursor).map(Header::from),
+            Tcp(_) | Icmp4(_) | Icmp6(_) => None,
+            Header::Vxlan(_) => None,
         }
     }
 }
@@ -139,11 +144,12 @@ impl Parse for Packet {
             transport: None,
             vlan: ArrayVec::default(),
             net_ext: ArrayVec::default(),
+            encap: None,
         };
-        let mut prior = Header::Eth(eth);
+        let mut header = Header::Eth(eth);
         loop {
-            let header = prior.step(&mut cursor);
-            match prior {
+            let next = header.step(&mut cursor);
+            match header {
                 Header::Eth(eth) => this.eth = eth,
                 Header::Ipv4(ip) => this.net = Some(Net::Ipv4(ip)),
                 Header::Ipv6(ip) => this.net = Some(Net::Ipv6(ip)),
@@ -172,16 +178,16 @@ impl Parse for Packet {
                         break;
                     }
                 }
+                Header::Vxlan(vxlan) => this.encap = Some(Encap::Vxlan(vxlan)),
             }
-            match header {
-                None => {
-                    break;
-                }
-                Some(next) => {
-                    prior = next;
-                }
+            match next {
+                None => break,
+                Some(next) => header = next,
             }
         }
+        // TODO: I feel like this next bit needs a rework.
+        // This code is too high level for this type of logic.
+        // Maybe accumulate the other parse calls or have this as a method in Reader?
         #[allow(unsafe_code)] // Non zero checked by parse impl
         let consumed = unsafe { NonZero::new_unchecked(cursor.inner.len() - cursor.remaining) };
         Ok((this, consumed))

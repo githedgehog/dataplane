@@ -9,7 +9,7 @@ use crate::packet::Header;
 use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, Reader, Step};
 use crate::vlan::Vlan;
 use etherparse::{EtherType, Ethernet2Header};
-use std::num::NonZero;
+use core::num::NonZero;
 use tracing::{debug, trace};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

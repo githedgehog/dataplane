@@ -1,7 +1,7 @@
 //! Packet parsing traits
 #![allow(missing_docs)] // temporary allowance (block merge)
 
-use std::num::NonZero;
+use core::num::NonZero;
 
 pub trait Parse: Sized {
     type Error: core::error::Error;

@@ -1,6 +1,6 @@
 //! Ipv4 Address type and manipulation
 
-use std::num::NonZero;
+use core::num::NonZero;
 use etherparse::{IpNumber, Ipv4Header};
 use tracing::{debug, trace};
 use crate::icmp4::Icmp4;

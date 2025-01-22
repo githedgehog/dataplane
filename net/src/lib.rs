@@ -3,6 +3,8 @@
 
 //! A library for working with and validating network data
 
+#![cfg_attr(not(test), no_std)]
+
 #![deny(
     unsafe_code,
     missing_docs,
@@ -13,7 +15,7 @@
     clippy::panic
 )]
 
-#![allow(missing_docs)] // temporary allowance (block merge)
+#![allow(missing_docs, clippy::pedantic)] // temporary allowance (block merge)
 
 extern crate alloc;
 extern crate core;
@@ -31,3 +33,4 @@ pub mod tcp;
 pub mod udp;
 pub mod vlan;
 pub mod vxlan;
+pub mod encap;

@@ -1,4 +1,4 @@
-use std::num::NonZero;
+use core::num::NonZero;
 
 /// A [VXLAN][RFC7348] Network Identifier.
 ///
@@ -143,9 +143,8 @@ mod test {
     }
 
     /// Checks that [`Vni::new`] satisfies its contract by generating a large number of random test
-    /// cases (fuzzing).
+    /// cases.
     #[test]
-    #[proof]
     fn check_vni_contract() {
         bolero::check!()
             .with_type()

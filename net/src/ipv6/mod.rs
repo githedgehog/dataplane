@@ -1,5 +1,6 @@
 //! Ipv6 Address type and manipulation
 
+use alloc::boxed::Box;
 use crate::icmp6::Icmp6;
 use crate::ip_auth::IpAuth;
 use crate::packet::Header;
@@ -9,7 +10,7 @@ use crate::parse::{
 use crate::tcp::Tcp;
 use crate::udp::Udp;
 use etherparse::{IpNumber, Ipv6Extensions, Ipv6Header};
-use std::num::NonZero;
+use core::num::NonZero;
 use tracing::{debug, trace};
 
 pub mod addr;
@@ -61,7 +62,7 @@ impl DeParse for Ipv6 {
     }
 }
 
-pub enum Ipv6Next {
+pub(crate) enum Ipv6Next {
     Tcp(Tcp),
     Udp(Udp),
     Icmp6(Icmp6),

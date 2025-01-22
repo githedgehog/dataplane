@@ -1,6 +1,6 @@
 use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError};
 use etherparse::TcpHeader;
-use std::num::NonZero;
+use core::num::NonZero;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tcp {

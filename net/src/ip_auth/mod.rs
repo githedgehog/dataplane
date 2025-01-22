@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
 use crate::packet::Header;
@@ -5,7 +6,7 @@ use crate::parse::{Parse, ParseError, Reader, Step};
 use crate::tcp::Tcp;
 use crate::udp::Udp;
 use etherparse::{IpAuthHeader, IpNumber};
-use std::num::NonZero;
+use core::num::NonZero;
 use tracing::{debug, trace};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

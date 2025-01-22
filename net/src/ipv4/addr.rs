@@ -1,4 +1,4 @@
-use std::net::Ipv4Addr;
+use core::net::Ipv4Addr;
 #[cfg(any(test, feature = "bolero"))]
 use bolero::Driver;
 

@@ -1,6 +1,7 @@
 //! VXLAN validation and manipulation tools.
 
+mod header;
 mod vni;
 
-pub use vni::Vni;
-pub use vni::InvalidVni;
+pub use header::{Vxlan, VxlanError};
+pub use vni::{InvalidVni, Vni};

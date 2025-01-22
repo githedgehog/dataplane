@@ -3,10 +3,10 @@
 
 //! VLAN validation and manipulation.
 
-use core::num::NonZero;
-use etherparse::{EtherType, SingleVlanHeader, VlanId, VlanPcp};
 use crate::eth::{parse_from_ethertype, EthNext};
 use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, Reader, Step};
+use core::num::NonZero;
+use etherparse::{EtherType, SingleVlanHeader, VlanId, VlanPcp};
 
 /// A VLAN Identifier.
 ///
@@ -209,13 +209,10 @@ impl Step for Vlan {
     }
 }
 
-
-
 #[cfg(test)]
 mod test {
     use super::*;
     use crate::vlan::Vid;
-
 
     #[test]
     fn check_parse_contract() {

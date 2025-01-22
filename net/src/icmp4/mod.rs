@@ -1,4 +1,4 @@
-use std::num::NonZero;
+use core::num::NonZero;
 use etherparse::Icmpv4Header;
 use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError};
 
