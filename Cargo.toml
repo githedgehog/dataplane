@@ -1,11 +1,11 @@
 [workspace]
 
 members = [
+	"dataplane",
 	"dpdk",
 	"dpdk-sys",
 	"errno",
 	"net",
-	"scratch",
 ]
 resolver = "2"
 

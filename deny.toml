@@ -193,7 +193,7 @@ name = "dpdk-sys"
 reason = "workspace internal"
 
 [[bans.skip]]
-name = "scratch"
+name = "dataplane"
 reason = "workspace internal"
 
 [[bans.skip]]
