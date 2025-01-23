@@ -83,7 +83,7 @@ At this point you should be able to run
 just cargo build
 ```
 
-You should now have statically linked ELF executables in `target/x86_64-unknown-linux-gnu/debug/scratch` and `target/x86_64-unknown-linux-musl/debug/scratch`.
+You should now have statically linked ELF executables in `target/x86_64-unknown-linux-gnu/debug/dataplane` and `target/x86_64-unknown-linux-musl/debug/dataplane`.
 
 You can build in release mode with
 
@@ -91,7 +91,7 @@ You can build in release mode with
 just cargo build --profile=release
 ```
 
-at which point the executables will be in `target/x86_64-unknown-linux-gnu/release/scratch` and `target/x86_64-unknown-linux-musl/release/scratch`.
+at which point the executables will be in `target/x86_64-unknown-linux-gnu/release/dataplane` and `target/x86_64-unknown-linux-musl/release/dataplane`.
 
 ### Step 4. Run the tests (debug mode)
 
