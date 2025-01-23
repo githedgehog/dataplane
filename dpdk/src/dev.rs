@@ -153,7 +153,7 @@ impl DevIndex {
     pub fn socket_id(&self) -> Result<SocketId, errno::ErrorCode> {
         let socket_id = unsafe { rte_eth_dev_socket_id(self.as_u16()) };
         if socket_id == -1 {
-            match unsafe { wrte_errno() } {
+            match unsafe { rte_errno_get() } {
                 0 => {
                     debug!("Unable to determine SocketId for port {self}.  Using ANY",);
                     return Ok(SocketId::ANY);
@@ -384,7 +384,7 @@ impl Display for TxOffloadConfig {
 
 impl From<TxOffloadConfig> for TxOffload {
     fn from(value: TxOffloadConfig) -> Self {
-        use wrte_eth_tx_offload::*;
+        use rte_eth_tx_offload::*;
         TxOffload(
             if value.geneve_tnl_tso {
                 TX_OFFLOAD_GENEVE_TNL_TSO
@@ -446,7 +446,7 @@ impl From<TxOffloadConfig> for TxOffload {
 
 impl From<TxOffload> for TxOffloadConfig {
     fn from(value: TxOffload) -> Self {
-        use wrte_eth_tx_offload::*;
+        use rte_eth_tx_offload::*;
         TxOffloadConfig {
             geneve_tnl_tso: value.0 & TX_OFFLOAD_GENEVE_TNL_TSO != 0,
             gre_tnl_tso: value.0 & TX_OFFLOAD_GRE_TNL_TSO != 0,
@@ -469,38 +469,38 @@ impl From<TxOffload> for TxOffloadConfig {
 
 impl TxOffload {
     /// GENEVE tunnel segmentation offload.
-    pub const GENEVE_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_GENEVE_TNL_TSO);
+    pub const GENEVE_TNL_TSO: TxOffload = TxOffload(rte_eth_tx_offload::TX_OFFLOAD_GENEVE_TNL_TSO);
     /// GRE tunnel segmentation offload.
-    pub const GRE_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_GRE_TNL_TSO);
+    pub const GRE_TNL_TSO: TxOffload = TxOffload(rte_eth_tx_offload::TX_OFFLOAD_GRE_TNL_TSO);
     /// IPIP tunnel segmentation offload.
-    pub const IPIP_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_IPIP_TNL_TSO);
+    pub const IPIP_TNL_TSO: TxOffload = TxOffload(rte_eth_tx_offload::TX_OFFLOAD_IPIP_TNL_TSO);
     /// IPv4 checksum calculation.
-    pub const IPV4_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_IPV4_CKSUM);
+    pub const IPV4_CKSUM: TxOffload = TxOffload(rte_eth_tx_offload::TX_OFFLOAD_IPV4_CKSUM);
     /// MACsec insertion.
-    pub const MACSEC_INSERT: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_MACSEC_INSERT);
+    pub const MACSEC_INSERT: TxOffload = TxOffload(rte_eth_tx_offload::TX_OFFLOAD_MACSEC_INSERT);
     /// Outer IPv4 checksum calculation.
     pub const OUTER_IPV4_CKSUM: TxOffload =
-        TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_OUTER_IPV4_CKSUM);
+        TxOffload(rte_eth_tx_offload::TX_OFFLOAD_OUTER_IPV4_CKSUM);
     /// QinQ (double VLAN) insertion.
-    pub const QINQ_INSERT: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_QINQ_INSERT);
+    pub const QINQ_INSERT: TxOffload = TxOffload(rte_eth_tx_offload::TX_OFFLOAD_QINQ_INSERT);
     /// SCTP checksum calculation.
-    pub const SCTP_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_SCTP_CKSUM);
+    pub const SCTP_CKSUM: TxOffload = TxOffload(rte_eth_tx_offload::TX_OFFLOAD_SCTP_CKSUM);
     /// TCP checksum calculation.
-    pub const TCP_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_TCP_CKSUM);
+    pub const TCP_CKSUM: TxOffload = TxOffload(rte_eth_tx_offload::TX_OFFLOAD_TCP_CKSUM);
     /// TCP segmentation offload.
-    pub const TCP_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_TCP_TSO);
+    pub const TCP_TSO: TxOffload = TxOffload(rte_eth_tx_offload::TX_OFFLOAD_TCP_TSO);
     /// UDP checksum calculation.
-    pub const UDP_CKSUM: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_UDP_CKSUM);
+    pub const UDP_CKSUM: TxOffload = TxOffload(rte_eth_tx_offload::TX_OFFLOAD_UDP_CKSUM);
     /// UDP segmentation offload.
-    pub const UDP_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_UDP_TSO);
+    pub const UDP_TSO: TxOffload = TxOffload(rte_eth_tx_offload::TX_OFFLOAD_UDP_TSO);
     /// VXLAN tunnel segmentation offload.
-    pub const VXLAN_TNL_TSO: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_VXLAN_TNL_TSO);
+    pub const VXLAN_TNL_TSO: TxOffload = TxOffload(rte_eth_tx_offload::TX_OFFLOAD_VXLAN_TNL_TSO);
     /// VLAN tag insertion.
-    pub const VLAN_INSERT: TxOffload = TxOffload(wrte_eth_tx_offload::TX_OFFLOAD_VLAN_INSERT);
+    pub const VLAN_INSERT: TxOffload = TxOffload(rte_eth_tx_offload::TX_OFFLOAD_VLAN_INSERT);
 
     /// Union of all [`TxOffload`]s documented at the time of writing.
     pub const ALL_KNOWN: TxOffload = {
-        use wrte_eth_tx_offload::*;
+        use rte_eth_tx_offload::*;
         TxOffload(
             TX_OFFLOAD_GENEVE_TNL_TSO
                 | TX_OFFLOAD_GRE_TNL_TSO

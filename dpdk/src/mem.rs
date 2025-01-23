@@ -99,7 +99,7 @@ impl PoolHandle {
 
         let pool = match NonNull::new(pool) {
             None => {
-                let errno = unsafe { wrte_errno() };
+                let errno = unsafe { rte_errno_get() };
                 let c_err_str = unsafe { rte_strerror(errno) };
                 let err_str = unsafe { CStr::from_ptr(c_err_str) };
                 #[allow(clippy::expect_used)]
@@ -375,7 +375,7 @@ impl Mbuf {
     ///
     /// # Safety
     ///
-    /// This function is is unsafe if passed an invalid pointer.
+    /// This function is unsafe if passed an invalid pointer.
     ///
     /// The only defense made against invalid pointers here is the use of `NonNull::new` to ensure
     /// the pointer is not null.

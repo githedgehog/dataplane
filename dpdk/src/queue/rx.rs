@@ -163,7 +163,7 @@ impl RxQueue {
             dev = self.dev.as_u16()
         );
         let nb_rx = unsafe {
-            wrte_eth_rx_burst(
+            rte_eth_rx_burst(
                 self.dev.as_u16(),
                 self.config.queue_index.as_u16(),
                 pkts.as_mut_ptr(),

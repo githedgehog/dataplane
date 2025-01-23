@@ -165,7 +165,7 @@ impl Drop for RteFlow {
             return;
         }
 
-        let rte_err = unsafe { wrte_errno() };
+        let rte_err = unsafe { rte_errno_get() };
         let err_msg = unsafe { CStr::from_ptr(rte_strerror(res)) }
             .to_str()
             .unwrap();
@@ -220,12 +220,12 @@ fn check_hairpin_cap(port_id: u16) {
 fn init_port2(port_id: u16, mbuf_pool: &mut rte_mempool) {
     let mut port_conf = rte_eth_conf {
         txmode: rte_eth_txmode {
-            offloads: wrte_eth_tx_offload::TX_OFFLOAD_VLAN_INSERT
-                | wrte_eth_tx_offload::TX_OFFLOAD_IPV4_CKSUM
-                | wrte_eth_tx_offload::TX_OFFLOAD_UDP_CKSUM
-                | wrte_eth_tx_offload::TX_OFFLOAD_TCP_CKSUM
-                | wrte_eth_tx_offload::TX_OFFLOAD_SCTP_CKSUM
-                | wrte_eth_tx_offload::TX_OFFLOAD_TCP_TSO,
+            offloads: rte_eth_tx_offload::TX_OFFLOAD_VLAN_INSERT
+                | rte_eth_tx_offload::TX_OFFLOAD_IPV4_CKSUM
+                | rte_eth_tx_offload::TX_OFFLOAD_UDP_CKSUM
+                | rte_eth_tx_offload::TX_OFFLOAD_TCP_CKSUM
+                | rte_eth_tx_offload::TX_OFFLOAD_SCTP_CKSUM
+                | rte_eth_tx_offload::TX_OFFLOAD_TCP_TSO,
             ..Default::default()
         },
         ..Default::default()

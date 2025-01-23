@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::env;
-
 use bindgen::callbacks::ParseCallbacks;
+use std::env;
+use std::panic::catch_unwind;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -11,20 +11,29 @@ struct Cb;
 
 impl ParseCallbacks for Cb {
     fn process_comment(&self, comment: &str) -> Option<String> {
-        match doxygen_rs::generator::rustdoc(comment.into()) {
-            Ok(transformed) => Some(transformed),
+        match catch_unwind(|| match doxygen_rs::generator::rustdoc(comment.into()) {
+            Ok(transformed) => transformed,
+            Err(_) => comment.into(),
+        }) {
+            Ok(s) => Some(s),
             Err(_) => Some(comment.into()),
         }
     }
 }
 
 fn bind(path: &Path, sysroot: &str) {
+    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let static_fn_path = out_path.join("generated.h");
     bindgen::Builder::default()
         .header(format!("{sysroot}/include/dpdk_wrapper.h"))
         .anon_fields_prefix("annon")
+        .use_core()
         .generate_comments(true)
-        .generate_inline_functions(false)
-        .generate_block(true)
+        .clang_arg("-Wno-deprecated-declarations")
+        // .clang_arg("-Dinline=") // hack to make bindgen spit out wrappers
+        .wrap_static_fns(true)
+        .wrap_static_fns_suffix("_w")
+        .wrap_static_fns_path(static_fn_path)
         .array_pointers_in_arguments(false)
         .detect_include_paths(true)
         .prepend_enum_name(false)
@@ -37,6 +46,7 @@ fn bind(path: &Path, sysroot: &str) {
         .parse_callbacks(Box::new(Cb))
         .layout_tests(true)
         .default_enum_style(bindgen::EnumVariation::ModuleConsts)
+        .blocklist_item("rte_atomic.*")
         .allowlist_item("rte.*")
         .allowlist_item("wrte_.*")
         .allowlist_item("RTE.*")
@@ -64,7 +74,6 @@ fn bind(path: &Path, sysroot: &str) {
         .clang_arg(format!("-I{sysroot}/include"))
         .clang_arg("-fretain-comments-from-system-headers")
         .clang_arg("-fparse-all-comments")
-        .clang_arg("-march=native")
         .generate()
         .expect("Unable to generate bindings")
         .write_to_file(path.join("generated.rs"))
@@ -72,6 +81,7 @@ fn bind(path: &Path, sysroot: &str) {
 }
 
 fn main() {
+    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     let sysroot = dpdk_sysroot_helper::get_sysroot();
 
     println!("cargo:rustc-link-arg=--sysroot={sysroot}");
@@ -101,6 +111,22 @@ fn main() {
         "rte_log",
         "ibverbs",
         "mlx5",
+        "mlx4",
+        "efa",
+        "hns",
+        "mana",
+        "bnxt_re-rdmav34",
+        "cxgb4-rdmav34",
+        "erdma-rdmav34",
+        "hfi1verbs-rdmav34",
+        "ipathverbs-rdmav34",
+        "irdma-rdmav34",
+        "mthca-rdmav34",
+        "ocrdma-rdmav34",
+        "qedr-rdmav34",
+        "rxe-rdmav34",
+        "siw-rdmav34",
+        "vmw_pvrdma-rdmav34",
         "nl-route-3",
         "nl-3",
         "numa",
@@ -109,15 +135,9 @@ fn main() {
     for dep in &depends {
         println!("cargo:rustc-link-lib=static:+whole-archive,+bundle={dep}");
     }
-
-    let rerun_if_changed = ["build.rs"];
-
+    let rerun_if_changed = ["build.rs", "../scripts/dpdk-sys.env"];
     for file in &rerun_if_changed {
         println!("cargo:rerun-if-changed={file}");
     }
-
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    // let out_path = PathBuf::from("src");
-
     bind(&out_path, sysroot.as_str());
 }

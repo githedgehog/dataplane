@@ -107,7 +107,7 @@ pub fn init<T: Debug + AsRef<str>>(args: Vec<T>) -> Result<Eal, InitError> {
     let ret = unsafe { rte_eal_init(len, args_as_pointers.as_mut_ptr()) };
 
     if ret < 0 {
-        let rte_errno = unsafe { wrte_errno() };
+        let rte_errno = unsafe { rte_errno_get() };
         let error = errno::Errno::from(rte_errno);
         error!("EAL initialization failed: {error:?} (rte_errno: {rte_errno})");
         Err(InitError::InitializationFailed(error))
@@ -154,7 +154,7 @@ impl Eal {
     ///
     /// If the err
     pub fn errno() -> errno::ErrorCode {
-        errno::ErrorCode::parse_i32(unsafe { wrte_errno() })
+        errno::ErrorCode::parse_i32(unsafe { rte_errno_get() })
     }
 }
 
