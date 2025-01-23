@@ -22,7 +22,7 @@ rand = { version = "0.8.5", default-features = false, features = [] }
 rstest = { version = "0.23.0", default-features = false, features = [] }
 serde = { version = "1.0.213", default-features = false, features = ["derive", "alloc", "rc"] }
 syscalls = { version = "0.6.18" }
-thiserror = { version = "2.0.0", package = "thiserror-no-std" } # replace with regular thiserror when https://github.com/dtolnay/thiserror/pull/304 lands
+thiserror = { version = "2.0.11" }
 tracing = { version = "0.1.40", default-features = false, features = ["attributes"] }
 tracing-subscriber = { version = "0.3.18" }
 tracing-test = { version = "0.2.5" }
