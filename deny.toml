@@ -21,9 +21,9 @@ allow = [
   "AFL-2.1",
   "AFL-3.0",
   #	"AGPL-3.0", # Causes issues to some companies, such as Google. Deny for now.
+  "APSL-2.0",
   "Apache-1.1",
   "Apache-2.0",
-  "APSL-2.0",
   "Artistic-2.0",
   "BSD-2-Clause",
   "BSD-3-Clause",
@@ -38,13 +38,11 @@ allow = [
   "EUDatagrid",
   "EUPL-1.1",
   "EUPL-1.2",
-  # "GPL-2.0", # rejected till we have a good case where we need them
-  # "GPL-3.0", # rejected till we have a good case where we need them
   "HPND",
-  "Intel",
   "IPA",
   "IPL-1.0",
   "ISC",
+  "Intel",
   "LGPL-2.1",
   "LGPL-3.0",
   "LPL-1.02",
@@ -65,14 +63,17 @@ allow = [
   "QPL-1.0",
   "RPSL-1.0",
   "SISSL",
-  "Sleepycat",
   "SPL-1.0",
-  "Unlicense",
+  "Sleepycat",
   "UPL-1.0",
+  "Unicode-3.0",
+  "Unlicense",
   "W3C",
-  "Zlib",
   "ZPL-2.0",
   "ZPL-2.1",
+  "Zlib",
+  # "GPL-2.0", # rejected till we have a good case where we need them
+  # "GPL-3.0", # rejected till we have a good case where we need them
 ]
 # The confidence threshold for detecting a license from license text.
 # The higher the value, the more closely the license text must be to the
