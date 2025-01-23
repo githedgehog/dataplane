@@ -41,10 +41,9 @@ jobs:
         uses: "actions/checkout@v4"
       - name: "install rust"
         uses: "dtolnay/rust-toolchain@stable"
-      - uses: "cargo-bins/cargo-binstall@main"
       - name: "install cargo-deny"
         run: |
-          cargo binstall --no-confirm cargo-deny
+          cargo install cargo-deny
       - name: "deny check"
         run: |
           cargo deny check

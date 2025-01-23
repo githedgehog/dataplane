@@ -73,10 +73,9 @@ jobs:
           toolchain: "${{ matrix.rust }}"
           targets: "x86_64-unknown-linux-gnu"
 
-      - uses: "cargo-bins/cargo-binstall@main"
       - name: "install just"
         run: |
-          cargo binstall --no-confirm just
+          cargo install just
 
       - name: "Checkout"
         uses: "actions/checkout@v4"
@@ -122,7 +121,7 @@ jobs:
             libssl-dev \
             openssl \
             pkg-config
-          cargo binstall --no-confirm markdown-test-report
+          cargo install markdown-test-report
 
       - name: "dev/gnu report"
         if: ${{ always() }}
@@ -193,10 +192,9 @@ jobs:
           toolchain: "${{ matrix.rust }}"
           targets: "x86_64-unknown-linux-gnu"
 
-      - uses: "cargo-bins/cargo-binstall@main"
       - name: "install just"
         run: |
-          cargo binstall --no-confirm just
+          cargo install just
 
       - name: "Checkout"
         uses: "actions/checkout@v4"
@@ -207,9 +205,8 @@ jobs:
           toolchain: "${{ matrix.rust }}"
           targets: "x86_64-unknown-linux-gnu"
 
-      - uses: "cargo-bins/cargo-binstall@main"
       - run: |
-          cargo binstall --no-confirm cargo-deny
+          cargo install cargo-deny
       - run: |
           just debug=true cargo deny check
       - run: |
