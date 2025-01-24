@@ -13,7 +13,7 @@ use crate::dev::DevIndex;
 use crate::lcore::LCoreId;
 use core::ffi::c_uint;
 use errno::ErrorCode;
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 /// DPDK socket manager.
 #[non_exhaustive]
