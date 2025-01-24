@@ -4,15 +4,19 @@
 //! Transmit queue configuration and management.
 
 use crate::dev::DevIndex;
+use crate::mem::Mbuf;
+use crate::socket::SocketId;
 use crate::{dev, socket};
-use dpdk_sys::*;
 use errno::ErrorCode;
+use std::cmp::min;
+use tracing::trace;
 
-#[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// A DPDK transmit queue index.
 ///
 /// This is a newtype around `u16` to provide type safety and prevent accidental misuse.
+// #[non_exhaustive] // TODO: make non_exhaustive again
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TxQueueIndex(pub u16);
 
 impl TxQueueIndex {
@@ -37,8 +41,8 @@ impl From<u16> for TxQueueIndex {
     }
 }
 
-#[derive(Debug, Clone)]
 /// Configuration for a DPDK transmit queue.
+#[derive(Debug, Clone)]
 pub struct TxQueueConfig {
     /// The index of the tx queue.
     pub queue_index: TxQueueIndex,
@@ -50,34 +54,15 @@ pub struct TxQueueConfig {
     pub config: (), // TODO
 }
 
-// impl Drop for TxQueueStopped {
-//     #[tracing::instrument(level = "debug")]
-//     fn drop(&mut self) {
-//         debug!(
-//             "Dropping stopped transmit queue {:?}",
-//             self.config.queue_index
-//         );
-//     }
-// }
-
 /// Error type for transmit queue configuration failures.
-#[derive(Debug)]
-pub struct ConfigError {
-    /// The error code returned by the DPDK library.
-    pub code: i32,
-    /// The error returned by the OS
-    pub err: ErrorCode,
-}
-
-/// Error type for transmit queue configuration failures.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ConfigFailure {
-    /// Memory allocation failed.
-    NoMemory(ConfigError),
-    /// An unexpected (i.e. undocumented) error occurred.
-    Unexpected(ConfigError),
-    /// The socket preference setting did not resolve a known socket.
-    InvalidSocket(ConfigError),
+    #[error("Memory allocation failed: {0}")]
+    NoMemory(ErrorCode),
+    #[error("An unexpected error occurred {0}")]
+    Unexpected(ErrorCode),
+    #[error("The socket preference setting did not resolve a known socket: {0}")]
+    InvalidSocket(ErrorCode),
 }
 
 impl TxQueue {
@@ -89,16 +74,18 @@ impl TxQueue {
     ///
     /// This design ensures that the hairpin queue is correctly tracked in the list of queues
     /// associated with the device.
-    pub(crate) fn configure(dev: &dev::Dev, config: TxQueueConfig) -> Result<Self, ConfigFailure> {
-        let socket_id = socket::SocketId::try_from(config.socket_preference)
-            .map_err(|err| ConfigFailure::InvalidSocket(ConfigError { code: -1, err }))?;
+    pub(crate) fn setup(dev: &dev::Dev, config: TxQueueConfig) -> Result<Self, ConfigFailure> {
+        let socket_id: SocketId = config
+            .socket_preference
+            .try_into()
+            .map_err(ConfigFailure::InvalidSocket)?;
 
-        let tx_conf = rte_eth_txconf {
+        let tx_conf = dpdk_sys::rte_eth_txconf {
             offloads: dev.info.inner.tx_queue_offload_capa,
             ..Default::default()
         };
         let ret = unsafe {
-            rte_eth_tx_queue_setup(
+            dpdk_sys::rte_eth_tx_queue_setup(
                 dev.info.index().as_u16(),
                 config.queue_index.as_u16(),
                 config.num_descriptors,
@@ -108,50 +95,78 @@ impl TxQueue {
         };
 
         match ret {
-            0 => Ok(TxQueue {
+            errno::SUCCESS => Ok(TxQueue {
                 dev: dev.info.index(),
                 config,
             }),
-            errno::ENOMEM => Err(ConfigFailure::NoMemory(ConfigError {
-                code: ret,
-                err: ErrorCode::parse(ret),
-            })),
-            _ => Err(ConfigFailure::Unexpected(ConfigError {
-                code: ret,
-                err: ErrorCode::parse(ret),
-            })),
+            errno::NEG_ENOMEM => Err(ConfigFailure::NoMemory(ErrorCode::parse(ret))),
+            _ => Err(ConfigFailure::Unexpected(ErrorCode::parse(ret))),
         }
     }
 
     /// Start the transmit queue.
-    pub(crate) fn start(self) -> Result<TxQueue, TxQueueStartError> {
-        let ret = unsafe {
-            rte_eth_dev_tx_queue_start(self.dev.as_u16(), self.config.queue_index.as_u16())
-        };
-
-        match ret {
-            errno::SUCCESS => Ok(self),
+    pub(crate) fn start(&mut self) -> Result<(), TxQueueStartError> {
+        match unsafe {
+            dpdk_sys::rte_eth_dev_tx_queue_start(
+                self.dev.as_u16(),
+                self.config.queue_index.as_u16(),
+            )
+        } {
+            errno::SUCCESS => Ok(()),
             errno::NEG_ENODEV => Err(TxQueueStartError::DeviceRemoved),
             errno::NEG_EINVAL => Err(TxQueueStartError::InvalidArgument),
             errno::NEG_EIO => Err(TxQueueStartError::DeviceRemoved),
             errno::NEG_ENOTSUP => Err(TxQueueStartError::NotSupported),
-            val => Err(TxQueueStartError::Unexpected(errno::Errno(val))),
+            unexpected => Err(TxQueueStartError::Unknown(ErrorCode::parse(unexpected))),
         }
     }
 
     /// Stop the transmit queue.
-    pub(crate) fn stop(self) -> Result<TxQueue, TxQueueStopError> {
+    #[allow(unused)]
+    pub(crate) fn stop(&mut self) -> Result<(), TxQueueStopError> {
         let ret = unsafe {
-            rte_eth_dev_tx_queue_stop(self.dev.as_u16(), self.config.queue_index.as_u16())
+            dpdk_sys::rte_eth_dev_tx_queue_stop(self.dev.as_u16(), self.config.queue_index.as_u16())
         };
 
         match ret {
-            errno::SUCCESS => Ok(self),
+            errno::SUCCESS => Ok(()),
             errno::NEG_ENODEV => Err(TxQueueStopError::DeviceRemoved),
             errno::NEG_EINVAL => Err(TxQueueStopError::InvalidArgument),
             errno::NEG_EIO => Err(TxQueueStopError::DeviceRemoved),
             errno::NEG_ENOTSUP => Err(TxQueueStopError::NotSupported),
-            val => Err(TxQueueStopError::Unexpected(errno::Errno(val))),
+            val => Err(TxQueueStopError::Unknown(errno::Errno(val))),
+        }
+    }
+    
+    pub(crate) const PKT_BURST_SIZE: usize = 64;
+
+    #[tracing::instrument(level = "trace", skip(packets))]
+    pub fn transmit(&self, packets: impl IntoIterator<Item = Mbuf>) {
+        let mut packets: Vec<_> = packets.into_iter().collect();
+        let mut offset = 0;
+        if packets.is_empty() {
+            return;
+        }
+        while offset < packets.len() {
+            trace!(
+                "Transmitting packets to tx queue {queue} on dev {dev}",
+                queue = self.config.queue_index.as_u16(),
+                dev = self.dev.as_u16()
+            );
+            let nb_tx = unsafe {
+                dpdk_sys::rte_eth_tx_burst(
+                    self.dev.as_u16(),
+                    self.config.queue_index.as_u16(),
+                    packets.as_mut_ptr().add(offset) as *mut _,
+                    min(Self::PKT_BURST_SIZE, packets.len() - offset) as u16,
+                )
+            };
+            offset += nb_tx as usize;
+            trace!(
+                "Transmitted {nb_tx} packets from tx queue {queue} on dev {dev}",
+                queue = self.config.queue_index.as_u16(),
+                dev = self.dev.as_u16()
+            );
         }
     }
 }
@@ -166,43 +181,31 @@ pub struct TxQueue {
 /// TODO
 #[derive(thiserror::Error, Debug)]
 pub enum TxQueueStartError {
-    /// TODO
     #[error("Invalid port ID")]
     InvalidPortId,
-    /// TODO
     #[error("Queue ID out of range")]
     QueueIdOutOfRange,
-    /// TODO
     #[error("Device removed")]
     DeviceRemoved,
-    /// TODO
     #[error("Invalid argument")]
     InvalidArgument,
-    /// TODO
     #[error("Operation not supported")]
     NotSupported,
-    /// TODO
-    #[error("Unknown error")]
-    Unexpected(errno::Errno),
+    #[error("Unknown error: {0}")]
+    Unknown(ErrorCode),
 }
 
-/// TODO
-#[derive(thiserror::Error, Debug)]
 #[repr(i32)]
+#[derive(thiserror::Error, Debug)]
 pub enum TxQueueStopError {
-    /// TODO
     #[error("Invalid port ID")]
     InvalidPortId = errno::NEG_ENODEV,
-    /// TODO
     #[error("Device removed")]
     DeviceRemoved = errno::NEG_EIO,
-    /// TODO
     #[error("Invalid argument")]
     InvalidArgument = errno::NEG_EINVAL,
-    /// TODO
     #[error("Operation not supported")]
     NotSupported = errno::NEG_ENOTSUP,
-    /// TODO
     #[error("Unknown error")]
-    Unexpected(errno::Errno),
+    Unknown(errno::Errno),
 }
