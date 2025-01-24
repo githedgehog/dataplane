@@ -10,8 +10,8 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::ffi::c_int;
 use core::fmt::{Debug, Display};
-use std::ffi::CStr;
 use dpdk_sys;
+use std::ffi::CStr;
 use tracing::{error, info, warn};
 
 /// Safe wrapper around the DPDK Environment Abstraction Layer (EAL).
