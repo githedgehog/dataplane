@@ -56,7 +56,7 @@ pub struct RxQueueConfig {
     /// Hardware offloads to use
     pub offloads: RxOffload,
     /// The memory pool to use for the rx queue.
-    pub pool: mem::PoolHandle,
+    pub pool: mem::Pool,
 }
 
 /// Error type for receive queue configuration failures.
@@ -119,7 +119,7 @@ impl RxQueue {
                 config.num_descriptors,
                 socket_id.as_c_uint(),
                 &rx_conf,
-                config.pool.inner().as_ptr(),
+                config.pool.inner().pool.as_ptr(),
             )
         }) {
             None => Ok(RxQueue {
