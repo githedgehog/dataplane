@@ -13,13 +13,20 @@ default = ["serde"]
 serde = ["dep:serde"]
 
 [dependencies]
+bolero = { workspace = true }
+bolero-generator = { workspace = true }
+bolero-generator-derive = { workspace = true }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true }
+bolero-generator = { workspace = true }
+bolero-generator-derive = { workspace = true }
 criterion = { workspace = true }
 rand = { workspace = true }
 etherparse = { workspace = true, default-features = false, features = ["std"] }
 
+[build-dependencies]
+dpdk-sysroot-helper = { path = "../dpdk-sysroot-helper" }

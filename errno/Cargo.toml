@@ -7,3 +7,6 @@ publish = false
 [dependencies]
 
 thiserror = { workspace = true }
+
+[build-dependencies]
+dpdk-sysroot-helper = { path = "../dpdk-sysroot-helper" }
