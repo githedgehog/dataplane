@@ -21,13 +21,9 @@ use core::slice::from_raw_parts_mut;
 use errno::Errno;
 use tracing::{error, info, warn};
 
-use alloc::sync::Arc;
 // unfortunately, we need the standard library to swap allocators
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
+use std::alloc::System;
 use std::ffi::CString;
-use std::ptr::null;
-use crate::eal::Eal;
 
 /// DPDK memory manager
 #[repr(transparent)]
@@ -514,7 +510,6 @@ impl RteAllocator {
         RteAllocator
     }
 }
-
 
 #[repr(transparent)]
 struct RteInit(Cell<bool>);
