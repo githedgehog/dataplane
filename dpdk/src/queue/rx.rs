@@ -195,8 +195,9 @@ impl RxQueue {
             queue = self.config.queue_index.as_u16(),
             dev = self.dev.as_u16()
         );
-        trace!("Received {} packets", nb_rx);
-        (0..nb_rx).filter_map(move |i| Mbuf::new_from_raw(pkts[i as usize]))
+        // SAFETY: we should never get a null pointer for anything inside the advertised bounds
+        // of the receive buffer
+        (0..nb_rx).map(move |i| unsafe { Mbuf::new_from_raw_unchecked(pkts[i as usize]) })
     }
 }
 
