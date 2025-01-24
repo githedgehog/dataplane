@@ -12,6 +12,8 @@ serde = ["dep:serde"]
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+arrayvec = { version = "0.7.6" }
+etherparse = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
