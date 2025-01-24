@@ -119,7 +119,7 @@ impl RxQueue {
                 config.num_descriptors,
                 socket_id.as_c_uint(),
                 &rx_conf,
-                config.pool.inner().pool.as_ptr(),
+                config.pool.inner().as_mut_ptr(),
             )
         }) {
             None => Ok(RxQueue {
