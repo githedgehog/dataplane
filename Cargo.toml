@@ -16,7 +16,7 @@ bolero = { version = "=0.10.1" } # TODO: update as soon as resolution bug with 0
 cc = { version = "1.1.37" }
 criterion = { version = "0.5.1", default-features = true }
 doxygen-rs = { version = "0.4.0" }
-etherparse = { version = "0.16.0", default-features = false, features = [] }
+etherparse = { version = "0.17.0", default-features = false, features = [] }
 libc = { version = "0.2.161" }
 rand = { version = "0.8.5", default-features = false, features = [] }
 rstest = { version = "0.23.0", default-features = false, features = [] }
