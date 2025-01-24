@@ -7,6 +7,7 @@ publish = false
 [features]
 default = ["serde"]
 serde = ["dep:serde"]
+contract = ["proptest"]
 
 [dependencies]
 serde = { workspace = true, optional = true }
@@ -14,6 +15,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 arrayvec = { version = "0.7.6" }
 etherparse = { workspace = true, features = ["std"] }
+proptest = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -64,6 +64,33 @@ impl Vni {
     pub fn as_u32(self) -> u32 {
         self.0.get()
     }
+
+    /// Asserts all invariants of the `Vni::new` method.
+    ///
+    /// # Panics
+    ///
+    /// This should _never_ panic if
+    ///
+    /// 1. This type is implemented correctly.
+    /// 2. No unsafe methods have been used to violate any invariant constraints.
+    ///
+    /// This type should _always_ panic if any pre- or post-conditions of the `Vni::new`
+    /// function have been violated.
+    #[cfg(any(test, feature = "contract"))]
+    #[allow(clippy::unwrap_used, unused)] // method must panic if the contract is violated
+    pub fn check_new_contract(val: u32) {
+        match val {
+            0 => {
+                assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::ReservedZero);
+            }
+            Vni::MIN..=Vni::MAX => {
+                assert_eq!(Vni::new(val).unwrap().as_u32(), val);
+            }
+            Vni::TOO_LARGE.. => {
+                assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::TooLarge(val));
+            }
+        }
+    }
 }
 
 impl AsRef<NonZero<u32>> for Vni {
@@ -101,10 +128,40 @@ impl TryFrom<u32> for Vni {
     }
 }
 
+#[cfg(any(test, feature = "contract"))]
+pub mod contract {
+    use crate::contract::{CheckTypeContract, TypeGenerator};
+    use crate::vxlan::Vni;
+    use proptest::prelude::Strategy;
+
+    impl TypeGenerator for Vni {
+        fn generate_valid() -> impl Strategy<Value = Self> {
+            use proptest::prelude::*;
+            any::<u32>().prop_map(|x| {
+                if x == 0 {
+                    Vni::new(1).unwrap_or_else(|_| unreachable!())
+                } else {
+                    Vni::new(x & Vni::MAX).unwrap_or_else(|_| unreachable!())
+                }
+            })
+        }
+    }
+
+    #[cfg(any(test, feature = "contract"))]
+    impl CheckTypeContract for Vni {
+        #[allow(clippy::expect_used)] // method must panic if the contract is violated
+        fn check_type_contract(&self) {
+            let other = Vni::new(self.as_u32()).expect("Vni::new should not fail on a check Vni");
+            assert_eq!(self, &other);
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-mod test {
+pub mod test {
     use super::*;
+    use crate::contract::{CheckTypeContract, TypeGenerator};
     use proptest::prelude::*;
 
     #[test]
@@ -143,24 +200,19 @@ mod test {
         Vni::try_from(2).expect("2 is a legal Vni");
     }
 
-    fn vni_contract(val: u32) {
-        match val {
-            0 => {
-                assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::ReservedZero);
-            }
-            Vni::MIN..=Vni::MAX => {
-                assert_eq!(Vni::new(val).unwrap().as_u32(), val);
-            }
-            Vni::TOO_LARGE.. => {
-                assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::TooLarge(val));
-            }
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1 << 14))]
+        #[test]
+        fn vni_new_contract(val in any::<u32>()) {
+            Vni::check_new_contract(val);
         }
     }
 
     proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1 << 14))]
         #[test]
-        fn check_vni_contract(val in any::<u32>()) {
-            vni_contract(val);
+        fn vni_type_contract(val in Vni::generate_valid()) {
+            val.check_type_contract();
         }
     }
 }
