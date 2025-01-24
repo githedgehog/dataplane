@@ -5,22 +5,8 @@ edition = "2021"
 publish = false
 
 [features]
-default = ["serde", "tracing_max_level_trace", "tracing_release_max_level_debug"]
+default = ["serde"]
 serde = ["dep:serde"]
-
-tracing_max_level_debug = ["tracing/max_level_debug"]
-tracing_max_level_error = ["tracing/max_level_error"]
-tracing_max_level_info = ["tracing/max_level_info"]
-tracing_max_level_off = ["tracing/max_level_off"]
-tracing_max_level_trace = ["tracing/max_level_trace"]
-tracing_max_level_warn = ["tracing/max_level_warn"]
-
-tracing_release_max_level_debug = ["tracing/release_max_level_debug"]
-tracing_release_max_level_error = ["tracing/release_max_level_error"]
-tracing_release_max_level_info = ["tracing/release_max_level_info"]
-tracing_release_max_level_off = ["tracing/release_max_level_off"]
-tracing_release_max_level_trace = ["tracing/release_max_level_trace"]
-tracing_release_max_level_warn = ["tracing/release_max_level_warn"]
 
 [dependencies]
 
