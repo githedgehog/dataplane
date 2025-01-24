@@ -15,6 +15,12 @@ use dpdk_sys::*;
 use tracing::{debug, error, warn};
 
 use alloc::sync::Arc;
+// unfortunately, we need the standard library to swap allocators
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
+use std::ffi::CString;
+use std::ptr::null;
+use crate::eal::Eal;
 
 #[repr(transparent)]
 #[derive(Debug)]
@@ -425,6 +431,104 @@ impl Mbuf {
                 data_start,
                 self.raw.as_ref().annon2.annon1.data_len as usize,
             )
+        }
+    }
+}
+
+/// A global memory allocator for DPDK
+#[non_exhaustive]
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone)]
+pub struct RteAllocator;
+
+unsafe impl Sync for RteAllocator {}
+
+impl RteAllocator {
+    /// Create a new, uninitialized [`RteAllocator`].
+    pub const fn new_uninitialized() -> Self {
+        RteAllocator
+    }
+}
+
+
+#[repr(transparent)]
+struct RteInit(Cell<bool>);
+unsafe impl Sync for RteInit {}
+static RTE_INIT: RteInit = const { RteInit(Cell::new(false)) };
+
+thread_local! {
+    static RTE_SOCKET: Cell<SocketId> = const { Cell::new(SocketId::ANY) };
+    static SWITCHED: Cell<bool> = const { Cell::new(false) };
+}
+
+impl RteAllocator {
+    pub(crate) fn mark_initialized() {
+        if RTE_INIT.0.get() {
+            Eal::fatal_error("RTE already initialized");
+        }
+        RTE_SOCKET.set(SocketId::current());
+        RTE_INIT.0.set(true);
+        SWITCHED.set(true);
+    }
+
+    pub fn assert_initialized() {
+        if !RTE_INIT.0.get() {
+            Eal::fatal_error("RTE not initialized");
+        }
+        RTE_SOCKET.set(SocketId::current());
+        SWITCHED.set(true);
+    }
+}
+
+unsafe impl GlobalAlloc for RteAllocator {
+    #[inline]
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if SWITCHED.get() {
+            dpdk_sys::rte_malloc_socket(
+                null(),
+                layout.size(),
+                layout.align() as _,
+                RTE_SOCKET.get().0 as _,
+            ) as _
+        } else {
+            System.alloc(layout)
+        }
+    }
+
+    #[inline]
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        if SWITCHED.get() {
+            dpdk_sys::rte_free(ptr as _);
+        } else {
+            System.dealloc(ptr, layout);
+        }
+    }
+
+    #[inline]
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        if SWITCHED.get() {
+            dpdk_sys::rte_zmalloc_socket(
+                null(),
+                layout.size(),
+                layout.align() as _,
+                RTE_SOCKET.get().0 as _,
+            ) as _
+        } else {
+            System.alloc_zeroed(layout)
+        }
+    }
+
+    #[inline]
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        if SWITCHED.get() {
+            dpdk_sys::rte_realloc_socket(
+                ptr as _,
+                new_size,
+                layout.align() as _,
+                RTE_SOCKET.get().0 as _,
+            ) as _
+        } else {
+            System.realloc(ptr, layout, new_size)
         }
     }
 }
