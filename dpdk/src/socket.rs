@@ -10,13 +10,10 @@
 //!
 //! [NUMA]: https://en.wikipedia.org/wiki/Non-uniform_memory_access
 use crate::dev::DevIndex;
-#[allow(unused_imports)]
-/// imported for rustdoc
-use crate::eal::Eal;
+use crate::lcore::LCoreId;
 use core::ffi::c_uint;
-use dpdk_sys::rte_socket_id;
-use errno::{ErrorCode, StandardErrno};
-use tracing::debug;
+use errno::ErrorCode;
+use tracing::{info, debug};
 
 /// DPDK socket manager.
 #[non_exhaustive]
@@ -26,12 +23,11 @@ pub struct Manager;
 
 impl Drop for Manager {
     fn drop(&mut self) {
-        debug!("Closing DPDK socket manager");
+        info!("Closing DPDK socket manager");
     }
 }
 
 impl Manager {
-    #[tracing::instrument(level = "trace")]
     /// Initialize the DPDK socket manager.
     ///
     /// Only [`Eal`] should only call this function, and only during initialization.
@@ -51,7 +47,6 @@ impl Manager {
         SocketId::count()
     }
 
-    #[tracing::instrument(level = "trace")]
     /// Get the [`SocketId`] of the currently executing thread.
     ///
     /// <div class="warning">
@@ -59,7 +54,8 @@ impl Manager {
     /// [`SocketId`] is **NOT** the same thing as [`Index`]!
     ///
     /// </div>
-    pub fn id_current(&self) -> SocketId {
+    #[tracing::instrument(level = "trace")]
+    pub fn current(&self) -> SocketId {
         SocketId::current()
     }
 
@@ -83,8 +79,6 @@ impl Manager {
     }
 }
 
-#[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// A CPU socket index.
 ///
 /// This is a newtype around `c_uint` to provide type safety and prevent accidental misuse.
@@ -96,6 +90,8 @@ impl Manager {
 /// See [`SocketId`] for more information.
 ///
 /// </div>
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Index(pub c_uint);
 
 impl From<Index> for c_uint {
@@ -138,8 +134,6 @@ impl Iterator for SocketIdIterator {
     }
 }
 
-#[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// This would be more accurately called a [NUMA] node id, but DPDK calls it a socket id
 /// and things are confusing enough as it is, so I'm sticking with that.
 ///
@@ -158,6 +152,8 @@ impl Iterator for SocketIdIterator {
 /// </div>
 ///
 /// [NUMA]: https://en.wikipedia.org/wiki/Non-uniform_memory_access
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SocketId(pub(crate) c_uint);
 
 impl SocketId {
@@ -175,9 +171,9 @@ impl SocketId {
     /// # Note
     ///
     /// Ideally, this method should be accessed via the [`Manager::id_for_index`] object as that
-    /// makes lifetime issues simpler.
+    /// simplifies lifetime issues.
     pub(crate) fn current() -> SocketId {
-        SocketId(unsafe { rte_socket_id() })
+        SocketId(unsafe { dpdk_sys::rte_socket_id() })
     }
 
     /// The index of the socket represented as a [`c_uint`].
@@ -217,14 +213,9 @@ impl SocketId {
     /// Look up a [`SocketId`] by the lcore it is associated with.
     ///
     /// Returns `None` if the lcore is not valid.
-    ///
-    /// TODO: change lcore to a proper lcore id type.
     #[must_use]
-    pub fn get_by_lcore(lcore: u32) -> Option<SocketId> {
-        if lcore >= unsafe { dpdk_sys::rte_lcore_count() } {
-            return None;
-        }
-        Some(SocketId(unsafe { dpdk_sys::rte_lcore_to_socket_id(lcore) }))
+    pub fn get_by_lcore_id(id: LCoreId) -> SocketId {
+        SocketId(unsafe { dpdk_sys::rte_lcore_to_socket_id(id.as_u32()) })
     }
 
     /// Look up a [`SocketId`] by the device it is associated with.
@@ -234,15 +225,17 @@ impl SocketId {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// A preference for a socket to use.
 ///
 /// This shows up in configuration preferences for things like memory pools and queues.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Preference {
+    #[default]
+    CurrentThread,
     /// Use a specific socket.
     Id(SocketId),
-    /// Use the socket of a specific lcore.
-    Lcore(u32 /* TODO: change to a proper lcore id type */),
+    /// Use the socket of a specific lcore index.
+    LCore(LCoreId),
     /// Use the socket of the device.
     Dev(DevIndex),
 }
@@ -253,9 +246,9 @@ impl TryFrom<Preference> for SocketId {
 
     fn try_from(value: Preference) -> Result<Self, Self::Error> {
         match value {
+            Preference::CurrentThread => Ok(SocketId::get_by_lcore_id(LCoreId::current())),
             Preference::Id(id) => Ok(id),
-            Preference::Lcore(lcore_id) => SocketId::get_by_lcore(lcore_id)
-                .ok_or(ErrorCode::Standard(StandardErrno::InvalidArgument)),
+            Preference::LCore(lcore_id) => Ok(SocketId::get_by_lcore_id(lcore_id)),
             Preference::Dev(dev) => dev.socket_id(),
         }
     }
