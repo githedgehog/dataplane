@@ -1,5 +1,5 @@
 # The primary point of this workflow is to ensure that the developer experience is good.
-# We take a very vanilla ubuntu image, install all necessary dependencies via "normal" means,
+# We take a very vanilla image, install all necessary dependencies via "normal" means,
 # and then run the build and test steps as described in the README.md file.
 
 # The artifacts produced by these builds are not intended to be used for anything other than
@@ -10,12 +10,12 @@
 name: "dev.yml"
 
 on:
-  pull_request: {}
+  pull_request: { }
   push:
     branches:
       - "main"
   merge_group:
-    types: ["checks_requested"]
+    types: [ "checks_requested" ]
   workflow_dispatch:
     inputs:
       debug_enabled:
@@ -39,7 +39,7 @@ jobs:
     permissions:
       contents: "read"
       pull-requests: "read"
-    runs-on: "ubuntu-latest"
+    runs-on: "ubuntu-24.04"
     outputs:
       devfiles: "${{ steps.changes.outputs.devfiles }}"
     steps:
@@ -64,12 +64,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        runner:
+          - "ubuntu-24.04"
         rust:
           - "stable"
           - "beta"
           - "nightly"
     name: "Developer build"
-    runs-on: "lab"
+    runs-on: "${{matrix.runner}}"
     timeout-minutes: 45
     steps:
       - name: "login to ghcr.io"
@@ -91,26 +93,34 @@ jobs:
       - name: "install just"
         run: |
           cargo install just
-      - name: "install nextest"
-        run: |
-          cargo install cargo-nextest
-      - name: "install cargo-deny"
-        run: |
-          cargo install cargo-deny
-      - run: |
-          just debug=true cargo deny check
-      - name: "install openssl and libssl-dev (needed for markdown-test-report)"
-        run: |
-          sudo apt-get update
-          sudo apt-get --yes --no-install-recommends install pkg-config openssl libssl-dev colorized-logs
-      - name: "install markdown-test-report"
-        run: |
-          cargo install markdown-test-report
       - name: refresh-compile-env
         run: |
           just --yes debug=true refresh-compile-env
       - run: |
           just --yes debug=true fake-nix
+
+      # At this stage, for Pull Requests, we're back to the HEAD of the branch,
+      # start running tests for different configurations.
+      - name: "test debug (glibc)"
+        run: |
+          just cargo +${{matrix.rust}} build --locked --profile=debug --target=x86_64-unknown-linux-gnu
+          just cargo +${{matrix.rust}} test --locked --profile=debug --target=x86_64-unknown-linux-gnu
+
+      - name: "test release (glibc)"
+        run: |
+          just cargo +${{matrix.rust}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
+          just cargo +${{matrix.rust}} test --locked --profile=release --target=x86_64-unknown-linux-gnu
+
+      - name: "test debug (musl)"
+        run: |
+          just cargo +${{matrix.rust}} build --locked --profile=debug --target=x86_64-unknown-linux-musl
+          just cargo +${{matrix.rust}} test --locked --profile=debug --target=x86_64-unknown-linux-musl
+
+      - name: "test release (musl)"
+        run: |
+          just cargo +${{matrix.rust}} build --locked --profile=release --target=x86_64-unknown-linux-musl
+          just cargo +${{matrix.rust}} test --locked --profile=release --target=x86_64-unknown-linux-musl
+
 
       - run: |
           # Run a simple build for each separate commit (for "pull_request")
@@ -130,43 +140,11 @@ jobs:
           printf "::notice::HEAD remains at %s\n" "$(git log --oneline --no-decorate -n 1)"
         continue-on-error: ${{ matrix.rust.optional }}
 
-      # At this stage, for Pull Requests, we're back to the HEAD of the branch,
-      # start running tests for different configurations.
-      - name: "tests: rust ${{ matrix.rust }} profile=dev target=x86_64-unknown-linux-gnu"
+      - name: "install cargo-deny"
         run: |
-          export GITHUB_STEP_SUMMARY
-          just debug=true rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-gnu test
-          just debug=true rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-gnu report
-
+          cargo install cargo-deny
       - run: |
-          just cargo +${{matrix.rust}} build --locked --profile=dev --target=x86_64-unknown-linux-musl
-      - name: "tests: rust ${{ matrix.rust }} profile=dev target=x86_64-unknown-linux-musl"
-        run: |
-          export GITHUB_STEP_SUMMARY
-          just debug=true rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-musl test
-          just debug=true rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-musl report
-
-      - run: |
-          just debug=true cargo +${{matrix.rust}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
-      - name: "tests: rust ${{ matrix.rust }} profile=release target=x86_64-unknown-linux-gnu"
-        run: |
-          export GITHUB_STEP_SUMMARY
-          just debug=true rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-gnu test
-          just debug=true rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-gnu report
-
-      - run: |
-          just debug=true cargo +${{matrix.rust}} build --locked --profile=release --target=x86_64-unknown-linux-musl
-      - name: "tests: rust ${{ matrix.rust }} profile=release target=x86_64-unknown-linux-musl"
-        run: |
-          export GITHUB_STEP_SUMMARY
-          just debug=true rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-musl test
-          just debug=true rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-musl report
-
-      - uses: "actions/upload-artifact@v4"
-        if: ${{ always() }}
-        with:
-          name: "test-results-${{ matrix.rust }}"
-          path: "target/nextest/"
+          just debug=true cargo deny check
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
@@ -175,9 +153,10 @@ jobs:
         with:
           limit-access-to-actor: true
 
+
   summary:
     name: "Summary"
-    runs-on: "ubuntu-latest"
+    runs-on: "ubuntu-24.04"
     needs:
       - build
     if: ${{ always() && needs.build.result != 'skipped' }}

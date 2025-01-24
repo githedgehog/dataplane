@@ -129,6 +129,7 @@ registries = [
 multiple-versions = "deny"
 # Lint level for when a crate version requirement is `*`
 wildcards = "deny"
+allow-wildcard-paths = true
 # The graph highlighting used when creating dotgraphs for crates
 # with multiple versions
 # * lowest-version - The path to the lowest versioned duplicate is highlighted
