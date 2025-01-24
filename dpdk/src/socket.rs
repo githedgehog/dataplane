@@ -14,17 +14,15 @@ use crate::dev::DevIndex;
 /// imported for rustdoc
 use crate::eal::Eal;
 use core::ffi::c_uint;
-use core::marker::PhantomData;
 use dpdk_sys::rte_socket_id;
 use errno::{ErrorCode, StandardErrno};
 use tracing::debug;
 
+/// DPDK socket manager.
+#[non_exhaustive]
 #[repr(transparent)]
 #[derive(Debug)]
-/// DPDK socket manager.
-pub struct Manager {
-    _private: PhantomData<()>,
-}
+pub struct Manager;
 
 impl Drop for Manager {
     fn drop(&mut self) {
@@ -39,9 +37,7 @@ impl Manager {
     /// Only [`Eal`] should only call this function, and only during initialization.
     pub(crate) fn init() -> Manager {
         debug!("Initializing DPDK socket manager");
-        Manager {
-            _private: PhantomData,
-        }
+        Manager
     }
 
     /// [`Iterator`] over all the [`SocketId`]s available to the [`Eal`].
