@@ -5,14 +5,3 @@
 pub mod hairpin;
 pub mod rx;
 pub mod tx;
-
-/// The possible states of a DPDK queue
-#[derive(Debug)]
-pub enum QueueState {
-    /// An unconfigured queue
-    Unconfigured,
-    /// A stopped queue
-    Stopped,
-    /// A started queue
-    Started,
-}

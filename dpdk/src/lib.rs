@@ -27,7 +27,7 @@
 //!
 //! This crate uses lints to discourage casual use of `unwrap`, `expect`, and `panic` to help
 //! encourage this practice.
-#![cfg_attr(not(test), no_std)]
+
 #![warn(clippy::all)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![allow(private_bounds)]
