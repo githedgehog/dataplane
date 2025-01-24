@@ -8,6 +8,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::ffi::c_int;
+use core::ffi::CStr;
 use core::fmt::{Debug, Display};
 use dpdk_sys::*;
 use tracing::{error, info};
@@ -181,5 +182,23 @@ impl Drop for Eal {
             error!("{panic_msg}");
             panic!("{panic_msg}");
         }
+    }
+}
+
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+pub struct EalErrno(c_int);
+
+impl EalErrno {
+    #[allow(clippy::expect_used)]
+    #[inline]
+    pub fn assert(ret: c_int) {
+        if ret == 0 {
+            return;
+        }
+        let ret_msg = unsafe { dpdk_sys::rte_strerror(ret) };
+        let ret_msg = unsafe { CStr::from_ptr(ret_msg) };
+        let ret_msg = ret_msg.to_str().expect("dpdk message is not valid unicode");
+        Eal::fatal_error(ret_msg)
     }
 }
