@@ -37,6 +37,7 @@ extern crate core;
 pub mod dev;
 pub mod eal;
 pub mod flow;
+pub mod lcore;
 pub mod mem;
 pub mod queue;
 pub mod socket;
