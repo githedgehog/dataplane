@@ -12,6 +12,7 @@
     clippy::expect_used,
     clippy::panic
 )]
+#![allow(clippy::should_panic_without_expect)] // we panic in contract checks with simple unwrap()
 
 extern crate alloc;
 extern crate core;
@@ -28,3 +29,6 @@ pub mod tcp;
 pub mod udp;
 pub mod vlan;
 pub mod vxlan;
+
+#[cfg(any(test, feature = "contract"))]
+pub mod contract;

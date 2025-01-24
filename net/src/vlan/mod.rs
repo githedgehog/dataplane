@@ -93,8 +93,33 @@ impl Vid {
 
     /// Get the value of the [`Vid`] as a `u16`.
     #[must_use]
-    pub fn to_u16(self) -> u16 {
+    pub fn as_u16(self) -> u16 {
         self.0.get()
+    }
+
+    /// Check the contract of the `Vid::new` function.
+    ///
+    /// # Panics
+    ///
+    /// 1. Never panics if `Vid::new` is written correctly.
+    /// 2. Always panics if `Vid::new` violates expected invariants.
+    #[cfg(any(test, feature = "contract"))]
+    pub fn check_new_contract(raw: u16) {
+        match Vid::new(raw) {
+            Ok(vid) => {
+                assert_eq!(vid.as_u16(), raw);
+                assert!(vid >= Vid::MIN);
+                assert!(vid <= Vid::MAX);
+                assert!(vid.as_u16() >= Vid::MIN.as_u16());
+                assert!(vid.as_u16() <= Vid::MAX.as_u16());
+            }
+            Err(InvalidVid::Zero) => assert_eq!(raw, 0),
+            Err(InvalidVid::Reserved) => assert_eq!(raw, InvalidVid::RESERVED),
+            Err(InvalidVid::TooLarge(x)) => {
+                assert_eq!(x, raw);
+                assert!(raw >= InvalidVid::TOO_LARGE);
+            }
+        }
     }
 }
 
@@ -106,7 +131,7 @@ impl AsRef<NonZero<u16>> for Vid {
 
 impl From<Vid> for u16 {
     fn from(vid: Vid) -> u16 {
-        vid.to_u16()
+        vid.as_u16()
     }
 }
 
@@ -120,7 +145,7 @@ impl TryFrom<u16> for Vid {
 
 impl core::fmt::Display for Vid {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}", self.to_u16())
+        write!(f, "{}", self.as_u16())
     }
 }
 
@@ -141,7 +166,7 @@ impl Vlan {
                 pcp: VlanPcp::ZERO,
                 drop_eligible_indicator: false,
                 #[allow(unsafe_code)] // SAFETY: overlapping check between libraries.
-                vlan_id: unsafe { VlanId::new_unchecked(vid.to_u16()) },
+                vlan_id: unsafe { VlanId::new_unchecked(vid.as_u16()) },
                 ether_type,
             },
         }
@@ -220,34 +245,140 @@ impl Step for Vlan {
     }
 }
 
+/// Contracts for Vlan types
+#[cfg(any(test, feature = "contract"))]
+pub mod contract {
+    use crate::contract::{CheckTypeContract, TypeGenerator};
+    use crate::vlan::{InvalidVid, Vid};
+    use proptest::prelude::*;
+
+    impl TypeGenerator for Vid {
+        fn generate_valid() -> impl Strategy<Value = Self> {
+            any::<u16>().prop_map(|x| {
+                let x = x & InvalidVid::RESERVED;
+                if x == 0 {
+                    Vid::new(1).unwrap_or_else(|_| unreachable!())
+                } else if x == InvalidVid::RESERVED {
+                    Vid::new(InvalidVid::RESERVED - 1).unwrap_or_else(|_| unreachable!())
+                }  else {
+                    Vid::new(x).unwrap_or_else(|_| unreachable!())
+                }
+            })
+        }
+    }
+
+    #[cfg(any(test, feature = "contract"))]
+    impl CheckTypeContract for Vid {
+        #[allow(clippy::unwrap_used)] // method must panic if the contract is violated
+        fn check_type_contract(&self) {
+            let other = Vid::new(self.as_u16()).unwrap();
+            assert_eq!(self.as_u16(), other.as_u16());
+            assert_eq!(self, &other);
+        }
+    }
+}
+
 #[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod test {
     use super::*;
+    use crate::contract::{CheckTypeContract, TypeGenerator};
     use crate::vlan::Vid;
     use proptest::prelude::*;
 
-    fn vid_contract(raw: u16) {
-        match Vid::new(raw) {
-            Ok(vid) => {
-                assert_eq!(vid.to_u16(), raw);
-                assert!(vid >= Vid::MIN);
-                assert!(vid <= Vid::MAX);
-                assert!(vid.to_u16() >= Vid::MIN.to_u16());
-                assert!(vid.to_u16() <= Vid::MAX.to_u16());
-            }
-            Err(InvalidVid::Zero) => assert_eq!(raw, 0),
-            Err(InvalidVid::Reserved) => assert_eq!(raw, InvalidVid::RESERVED),
+    #[test]
+    fn vid_min_is_valid() {
+        let vid = Vid::MIN;
+        assert_eq!(vid.as_u16(), 1);
+        assert_eq!(vid, Vid::new(1).unwrap());
+        vid.check_type_contract();
+    }
+
+    #[test]
+    fn vid_max_is_valid() {
+        let vid = Vid::MAX;
+        assert_eq!(vid.as_u16(), Vid::MAX.0.get());
+        assert_eq!(vid, Vid::new(Vid::MAX.0.get()).unwrap());
+        vid.check_type_contract();
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn unsafe_vid_versions_work() {
+        let vid = unsafe { Vid::new_unchecked(1) };
+        assert_eq!(vid.as_u16(), 1);
+        assert_eq!(vid, Vid::new(1).unwrap());
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    #[should_panic]
+    fn illegal_vid_4094_contract_panics() {
+        let vid = unsafe { Vid::new_unchecked(InvalidVid::RESERVED) };
+        vid.check_type_contract();
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    #[should_panic]
+    fn illegal_vid_too_large_contract_panics() {
+        let vid = unsafe { Vid::new_unchecked(InvalidVid::TOO_LARGE) };
+        vid.check_type_contract();
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    #[should_panic]
+    fn illegal_vid_u16_max_contract_panics() {
+        let vid = unsafe { Vid::new_unchecked(u16::MAX) };
+        vid.check_type_contract();
+    }
+
+    #[test]
+    fn vid_zero_is_invalid() {
+        match Vid::new(0) {
+            Err(InvalidVid::Zero) => {}
+            e => panic!(
+                "Vid::new(0) should have failed with InvalidVid::Zero, but instead returned {e:?}",
+            ),
+        }
+    }
+
+    #[test]
+    fn vid_too_large_is_invalid() {
+        match Vid::new(InvalidVid::TOO_LARGE) {
             Err(InvalidVid::TooLarge(x)) => {
-                assert_eq!(x, raw);
-                assert!(raw >= InvalidVid::TOO_LARGE);
+                assert_eq!(x, InvalidVid::TOO_LARGE);
             }
+            e => panic!(
+                "Vid::new(InvalidVid::TOO_LARGE) should have failed with InvalidVid::TooLarge, but instead returned {e:?}",
+            ),
+        }
+    }
+
+    #[test]
+    fn vid_reserved_is_invalid() {
+        match Vid::new(InvalidVid::RESERVED) {
+            Err(InvalidVid::Reserved) => {}
+            e => panic!(
+                "Vid::new(InvalidVid::RESERVED) should have failed with InvalidVid::Reserved, but instead returned {e:?}",
+            ),
         }
     }
 
     proptest! {
+        #![proptest_config(ProptestConfig::with_cases(4096))]
         #[test]
-        fn check_vid_contract(raw in any::<u16>()) {
-            vid_contract(raw);
+        fn check_vid_new_contract(raw in any::<u16>()) {
+            Vid::check_new_contract(raw);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(4096))]
+        #[test]
+        fn check_vid_new_contract_zero(raw in Vid::generate_valid()) {
+            raw.check_type_contract();
         }
     }
 }
