@@ -176,7 +176,8 @@ impl RxQueue {
     /// Receive a burst of packets from the queue
     #[tracing::instrument(level = "trace")]
     pub fn receive(&self) -> impl Iterator<Item = Mbuf> {
-        let mut pkts: [*mut dpdk_sys::rte_mbuf; RxQueue::PKT_BURST_SIZE] = [null_mut(); RxQueue::PKT_BURST_SIZE];
+        let mut pkts: [*mut dpdk_sys::rte_mbuf; RxQueue::PKT_BURST_SIZE] =
+            [null_mut(); RxQueue::PKT_BURST_SIZE];
         trace!(
             "Polling for packets from rx queue {queue} on dev {dev}",
             queue = self.config.queue_index.as_u16(),
