@@ -137,7 +137,7 @@ impl TxQueue {
             val => Err(TxQueueStopError::Unknown(errno::Errno(val))),
         }
     }
-    
+
     pub(crate) const PKT_BURST_SIZE: usize = 64;
 
     #[tracing::instrument(level = "trace", skip(packets))]
