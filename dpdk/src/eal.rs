@@ -19,6 +19,7 @@ use tracing::{error, info};
 /// properly initialized and cleaned up.
 #[derive(Debug)]
 #[repr(transparent)]
+#[non_exhaustive]
 pub struct Eal {
     /// The memory manager.
     ///
@@ -34,8 +35,6 @@ pub struct Eal {
     pub socket: socket::Manager,
     // TODO: queue
     // TODO: flow
-    // ensure that this type can't be constructed outside of this module
-    _private: EalPrivate,
 }
 
 #[repr(transparent)]
@@ -118,7 +117,6 @@ pub fn init<T: Debug + AsRef<str>>(args: Vec<T>) -> Result<Eal, InitError> {
             mem: mem::Manager::init(),
             dev: dev::Manager::init(),
             socket: socket::Manager::init(),
-            _private: EalPrivate {},
         })
     }
 }
