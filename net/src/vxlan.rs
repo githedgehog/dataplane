@@ -114,13 +114,12 @@ impl core::fmt::Display for Vni {
 mod test {
 
     use super::*;
+    use proptest::prelude::*;
 
-    #[test]
-    fn fuzz_test() {
-        bolero::check!()
-            .with_type()
-            .cloned()
-            .for_each(|val: u32| match val {
+    proptest! {
+        #[test]
+        fn check_contract_for_vni_new(val in any::<u32>()) {
+            match val {
                 0 => {
                     assert_eq!(Vni::new(val).unwrap_err(), InvalidVni::ReservedZero);
                 }
@@ -130,6 +129,7 @@ mod test {
                 _ => {
                     assert_eq!(Vni::new(val).unwrap().as_u32(), val);
                 }
-            });
+            }
+        }
     }
 }

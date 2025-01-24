@@ -18,8 +18,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-bolero = { workspace = true }
+proptest = { workspace = true }
 criterion = { workspace = true }
-rand = { workspace = true }
 etherparse = { workspace = true, default-features = false, features = ["std"] }
 
