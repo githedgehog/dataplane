@@ -9,16 +9,14 @@
 //! making use of features like RAII (drop traits).
 //!
 //! Where possible, prefer using this crate over `dpdk-sys`.
-
+//!
 //! # Safety
 //!
-//! This crate directly calls `dpdk-sys` and thus makes use of `unsafe` (read unchecked) code.
-//!
+//! This crate directly calls `dpdk-sys` and thus makes use of `unsafe` code.
 //! That said, the _purpose_ of this crate is to provide a safe interface to DPDK.
 //!
 //! So both in general, and in this case in particular, please try to avoid panicking in library
 //! code!
-//!
 //! At minimum, if you must panic (and there are times when that is the only reasonable option),
 //! please do so with
 //!
@@ -40,4 +38,5 @@ pub mod flow;
 pub mod lcore;
 pub mod mem;
 pub mod queue;
+pub mod ring;
 pub mod socket;
