@@ -13,6 +13,7 @@ default = ["serde"]
 serde = ["dep:serde"]
 
 [dependencies]
+bolero = { workspace = true }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -23,3 +24,5 @@ criterion = { workspace = true }
 rand = { workspace = true }
 etherparse = { workspace = true, default-features = false, features = ["std"] }
 
+[build-dependencies]
+dpdk-sysroot-helper = { path = "../dpdk-sysroot-helper" }
