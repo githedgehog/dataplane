@@ -7,6 +7,12 @@ members = [
 	"errno",
 	"net",
 ]
+
+default-members = [
+	"errno",
+	"net",
+]
+
 resolver = "2"
 
 [workspace.dependencies]
