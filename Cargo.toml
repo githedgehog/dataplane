@@ -4,11 +4,13 @@ members = [
 	"dataplane",
 	"dpdk",
 	"dpdk-sys",
+	"dpdk-sysroot-helper",
 	"errno",
 	"net",
 ]
 
 default-members = [
+	"dpdk-sysroot-helper",
 	"errno",
 	"net",
 ]
