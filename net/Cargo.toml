@@ -11,7 +11,7 @@ serde = ["dep:serde"]
 contract = ["proptest"]
 
 [dependencies]
-serde = { workspace = true, optional = true }
+serde = { workspace = true, optional = true, features = ["derive"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 arrayvec = { workspace = true }

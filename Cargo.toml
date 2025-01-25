@@ -12,12 +12,14 @@ resolver = "2"
 [workspace.dependencies]
 
 arrayvec = { version = "0.7.6", default-features = false, features = [] }
-bindgen = { version = "0.71.1" }
-doxygen-rs = { version = "0.4.0" }
+bindgen = { version = "0.71.1", default-features = false, features = [] }
+doxygen-rs = { version = "0.4.0", default-features = false, features = [] }
 etherparse = { version = "0.17.0", default-features = false, features = [] }
+# proptest feature ecosystem is complex and we only use it as a dev dependency, so leave defaults on.
 proptest = { version = "1.6.0", default-features = true }
-serde = { version = "1.0.213", default-features = false, features = ["derive", "alloc", "rc"] }
-thiserror = { version = "2.0.11" }
+serde = { version = "1.0.213", default-features = false }
+thiserror = { version = "2.0.11", default-features = false, features = [] }
+# attribute feature is so commonly used that we should just leave it on globally
 tracing = { version = "0.1.40", default-features = false, features = ["attributes"] }
 
 [profile.dev]
