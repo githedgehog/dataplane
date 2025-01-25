@@ -15,7 +15,6 @@ dpdk-sys = { path = "../dpdk-sys" }
 errno = { path = "../errno" }
 net = { path = "../net" }
 
-etherparse = { workspace = true, default-features = false, features = [] }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }

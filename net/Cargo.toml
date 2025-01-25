@@ -20,5 +20,4 @@ proptest = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
-criterion = { workspace = true }
 etherparse = { workspace = true, default-features = false, features = ["std"] }
