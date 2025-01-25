@@ -14,7 +14,7 @@ contract = ["proptest"]
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-arrayvec = { version = "0.7.6" }
+arrayvec = { workspace = true }
 etherparse = { workspace = true, features = ["std"] }
 proptest = { workspace = true, optional = true }
 
