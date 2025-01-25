@@ -19,6 +19,16 @@ resolver = "2"
 
 [workspace.dependencies]
 
+# Internal
+
+dataplane = { path = "./dataplane" }
+dpdk = { path = "./dpdk" }
+dpdk-sys = { path = "./dpdk-sys" }
+dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper" }
+errno = { path = "./errno" }
+net = { path = "./net" }
+
+# External
 arrayvec = { version = "0.7.6", default-features = false, features = [] }
 bindgen = { version = "0.71.1", default-features = false, features = [] }
 doxygen-rs = { version = "0.4.0", default-features = false, features = [] }
