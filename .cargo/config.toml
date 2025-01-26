@@ -1,5 +1,7 @@
 [env]
 COMPILE_ENV = { value = "compile-env", relative = true, force = false }
+LIBCLANG_PATH = { value = "compile-env/lib", relative = true, force = true }
+PATH = { value = "compile-env/bin", relative = true, force = true }
 
 [build]
 target = "x86_64-unknown-linux-gnu"
