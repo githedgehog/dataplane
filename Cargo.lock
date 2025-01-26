@@ -381,9 +381,6 @@ checksum = "43da5946c66ffcc7745f48db692ffbb10a83bfe0afd96235c5c2a4fb23994929"
 [[package]]
 name = "dataplane"
 version = "0.1.0"
-dependencies = [
- "dpdk-sysroot-helper",
-]
 
 [[package]]
 name = "doxygen-rs"
@@ -437,7 +434,6 @@ checksum = "5443807d6dff69373d433ab9ef5378ad8df50ca6298caf15de6e52e24aaf54d5"
 name = "errno"
 version = "0.1.0"
 dependencies = [
- "dpdk-sysroot-helper",
  "thiserror",
 ]
 
@@ -594,8 +590,6 @@ name = "net"
 version = "0.0.1"
 dependencies = [
  "bolero",
- "bolero-generator",
- "bolero-generator-derive",
  "criterion",
  "dpdk-sysroot-helper",
  "etherparse",

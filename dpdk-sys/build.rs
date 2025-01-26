@@ -82,7 +82,6 @@ fn bind(path: &Path, sysroot: &str) {
 
 fn main() {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let compile_env = dpdk_sysroot_helper::get_compile_env();
     let sysroot = dpdk_sysroot_helper::get_sysroot();
 
     println!("cargo:rustc-link-arg=--sysroot={sysroot}");
