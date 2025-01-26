@@ -82,10 +82,12 @@ fn bind(path: &Path, sysroot: &str) {
 
 fn main() {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let compile_env = dpdk_sysroot_helper::get_compile_env();
     let sysroot = dpdk_sysroot_helper::get_sysroot();
 
     println!("cargo:rustc-link-arg=--sysroot={sysroot}");
     println!("cargo:rustc-link-search=all={sysroot}/lib");
+    env::set_var("LIBCLANG_PATH", format!("{compile_env}/lib"));
 
     // NOTE: DPDK absolutely requires whole-archive in the linking command.
     // While I find this very questionable, it is what it is.
