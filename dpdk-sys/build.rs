@@ -87,7 +87,7 @@ fn main() {
 
     println!("cargo:rustc-link-arg=--sysroot={sysroot}");
     println!("cargo:rustc-link-search=all={sysroot}/lib");
-    env::set_var("LIBCLANG_PATH", format!("{compile_env}/lib"));
+    println!("cargo:rustc-env=LIBCLANG_PATH={compile_env}/lib/libclang.so");
 
     // NOTE: DPDK absolutely requires whole-archive in the linking command.
     // While I find this very questionable, it is what it is.
