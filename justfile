@@ -326,7 +326,7 @@ sterile *args: (compile-env "just" ("debug=" + debug) ("rust=" + rust) ("target=
 [private]
 sterile-build: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target))
     mkdir -p "artifact/{{ target }}/{{ profile }}"
-    cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/scratch" "artifact/{{ target }}/{{ profile }}/scratch"
+    cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/dataplane" "artifact/{{ target }}/{{ profile }}/dataplane"
 
 # Build containers in a sterile environment
 [script]
@@ -348,7 +348,7 @@ build-container: sterile-build
       --label "build.timestamp={{ _build_time }}" \
       --label "build.time_epoch=${build_time_epoch}" \
       --tag "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")" \
-      --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/scratch" \
+      --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/dataplane" \
       .
 
     sudo -E docker tag \
