@@ -101,16 +101,6 @@ jobs:
       - run: |
           just --yes debug=true fake-nix
 
-      # HACK: install libclang
-      #  Ideally, this would not be required, but I can't think of a way to not need it at the moment.
-      # In the future we should statically link libclang.a into bindgen from the compile-env.
-      # Unfortunately, it will take more time than I have at the moment to make an LLVM build which actually produces a
-      # libclang.a file in the first place.
-      - name: "install libclang"
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libclang-dev
-
       # At this stage, for Pull Requests, we're back to the HEAD of the branch,
       # start running tests for different configurations.
       - name: "test debug (glibc)"
