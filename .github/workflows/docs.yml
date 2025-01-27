@@ -60,9 +60,11 @@ jobs:
     runs-on: "ubuntu-latest"
     steps:
 
-      - uses: "cargo-bins/cargo-binstall@main"
+      - name: "install rust"
+        uses: "dtolnay/rust-toolchain@stable"
+
       - run: |
-          cargo binstall --no-confirm just
+          cargo install just
 
       - name: "Checkout"
         uses: "actions/checkout@v4"
