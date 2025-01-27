@@ -3,35 +3,21 @@ name = "dpdk"
 version = "0.1.0"
 edition = "2021"
 publish = false
+license = "Apache-2.0"
 
 [features]
-default = ["serde", "tracing_max_level_trace", "tracing_release_max_level_debug"]
+default = ["serde"]
 serde = ["dep:serde"]
-
-tracing_max_level_debug = ["tracing/max_level_debug"]
-tracing_max_level_error = ["tracing/max_level_error"]
-tracing_max_level_info = ["tracing/max_level_info"]
-tracing_max_level_off = ["tracing/max_level_off"]
-tracing_max_level_trace = ["tracing/max_level_trace"]
-tracing_max_level_warn = ["tracing/max_level_warn"]
-
-tracing_release_max_level_debug = ["tracing/release_max_level_debug"]
-tracing_release_max_level_error = ["tracing/release_max_level_error"]
-tracing_release_max_level_info = ["tracing/release_max_level_info"]
-tracing_release_max_level_off = ["tracing/release_max_level_off"]
-tracing_release_max_level_trace = ["tracing/release_max_level_trace"]
-tracing_release_max_level_warn = ["tracing/release_max_level_warn"]
 
 [dependencies]
 
-dpdk-sys = { path = "../dpdk-sys" }
-errno = { path = "../errno" }
-net = { path = "../net" }
+dpdk-sys = { workspace = true }
+errno = { workspace = true }
+net = { workspace = true }
 
-etherparse = { workspace = true, default-features = false, features = [] }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 
 [build-dependencies]
-dpdk-sysroot-helper = { path = "../dpdk-sysroot-helper" }
+dpdk-sysroot-helper = { workspace = true }

@@ -88,16 +88,15 @@ jobs:
         with:
           persist-credentials: "false"
           fetch-depth: "0"
-      - uses: "cargo-bins/cargo-binstall@main"
       - name: "install just"
         run: |
-          cargo binstall --no-confirm just
+          cargo install just
       - name: "install nextest"
         run: |
-          cargo binstall --no-confirm cargo-nextest
+          cargo install cargo-nextest
       - name: "install cargo-deny"
         run: |
-          cargo binstall --no-confirm cargo-deny
+          cargo install cargo-deny
       - run: |
           just debug=true cargo deny check
       - name: "install openssl and libssl-dev (needed for markdown-test-report)"
@@ -106,7 +105,7 @@ jobs:
           sudo apt-get --yes --no-install-recommends install pkg-config openssl libssl-dev colorized-logs
       - name: "install markdown-test-report"
         run: |
-          cargo binstall --no-confirm markdown-test-report
+          cargo install markdown-test-report
       - name: refresh-compile-env
         run: |
           just --yes debug=true refresh-compile-env
