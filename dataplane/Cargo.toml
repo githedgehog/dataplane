@@ -1,0 +1,10 @@
+[package]
+name = "dataplane"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+
+[build-dependencies]
+dpdk-sysroot-helper = { path = "../dpdk-sysroot-helper" }
