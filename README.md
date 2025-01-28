@@ -128,6 +128,24 @@ just cargo test --profile=release
 > After that it simply calls `cargo build`.
 > Normally we would include those kinds of setting in `Cargo.toml` but `cargo` can not currently express all the `RUSTFLAGS` we are using (thus the `just` wrapper).
 
+## VSCode Setup
+
+Because this repository uses a custom sysroot with custom libraries and binaries, you need to make sure rust-analyzer is aware of the sysroot and runs the correct cargo binary.
+To do this, add the following to your `.vscode/settings.json` file:
+
+```json
+{
+    "rust-analyzer.server.extraEnv": {
+        "CARGO": "<absolute path to dataplane directory>/bin/cargo"
+    }
+}
+```
+
+> [!NOTE]
+> Please submit a PR if you have a way to avoid the absolute path.
+> `${workspaceRoot}` and `${workspaceFolder}` won't work since rust-analyzer has a custom function that implements env var substitution in `extraEnv`.
+> `${env:xxx}` susbstitutions only work if the variable is set in `extraEnv` itself.
+
 ## License
 
 The Dataplane of the Hedgehog Open Fabric Network is licensed under the
