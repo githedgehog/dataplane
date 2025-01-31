@@ -4,6 +4,7 @@ members = [
 	"dataplane",
 	"dpdk",
 	"dpdk-sys",
+	"dpdk-sysroot-helper",
 	"errno",
 	"net",
 ]
@@ -11,6 +12,15 @@ resolver = "2"
 
 [workspace.dependencies]
 
+# Internal
+
+dpdk = { path = "./dpdk" }
+dpdk-sys = { path = "./dpdk-sys" }
+dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper" }
+errno = { path = "./errno" }
+net = { path = "./net" }
+
+# External
 bindgen = { version = "0.70.1" }
 bolero = { version = "=0.10.1" } # TODO: update as soon as resolution bug with 0.11 or better is fixed
 cc = { version = "1.1.37" }

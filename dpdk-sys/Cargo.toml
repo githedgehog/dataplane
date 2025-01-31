@@ -4,9 +4,8 @@ version = "0.0.1"
 edition = "2021"
 description = "Low-level bindings to the Data Plane Development Kit (DPDK)"
 publish = false
-license = "Apache-2.0"
 
 [build-dependencies]
 bindgen = { version = "0.71.1", features = ["runtime", "experimental"]}
 doxygen-rs = { version = "0.4.2" }
-dpdk-sysroot-helper = { path = "../dpdk-sysroot-helper", version = "0.0.1" }
+dpdk-sysroot-helper = { workspace = true }

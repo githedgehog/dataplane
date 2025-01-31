@@ -20,7 +20,6 @@ allow = [
   "AFL-2.0",
   "AFL-2.1",
   "AFL-3.0",
-  #	"AGPL-3.0", # Causes issues to some companies, such as Google. Deny for now.
   "APSL-2.0",
   "Apache-1.1",
   "Apache-2.0",
@@ -72,6 +71,7 @@ allow = [
   "ZPL-2.0",
   "ZPL-2.1",
   "Zlib",
+  #	"AGPL-3.0", # Causes issues to some companies, such as Google. Deny for now.
   # "GPL-2.0", # rejected till we have a good case where we need them
   # "GPL-3.0", # rejected till we have a good case where we need them
 ]
@@ -87,7 +87,7 @@ exceptions = [
     # list
     #{ allow = ["Zlib"], crate = "adler32" },
   # mostly harmless
-	{ allow = ["Unicode-DFS-2016"], crate = "unicode-ident" },
+#	{ allow = ["Unicode-DFS-2016"], crate = "unicode-ident" },
 ]
 
 # Some crates don't have (easily) machine readable licensing information,
@@ -129,6 +129,7 @@ registries = [
 multiple-versions = "deny"
 # Lint level for when a crate version requirement is `*`
 wildcards = "deny"
+allow-wildcard-paths = true
 # The graph highlighting used when creating dotgraphs for crates
 # with multiple versions
 # * lowest-version - The path to the lowest versioned duplicate is highlighted
@@ -188,22 +189,6 @@ skip-tree = [
     #"ansi_term@0.11.0", # will be skipped along with _all_ of its direct and transitive dependencies
     #{ crate = "ansi_term@0.11.0", depth = 20 },
 ]
-
-[[bans.skip]]
-name = "dpdk-sys"
-reason = "workspace internal"
-
-[[bans.skip]]
-name = "dataplane"
-reason = "workspace internal"
-
-[[bans.skip]]
-name = "dpdk"
-reason = "workspace internal"
-
-[[bans.skip]]
-name = "net"
-reason = "workspace internal"
 
 [[bans.skip]]
 name = "syn"

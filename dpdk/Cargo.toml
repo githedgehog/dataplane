@@ -3,7 +3,6 @@ name = "dpdk"
 version = "0.1.0"
 edition = "2021"
 publish = false
-license = "Apache-2.0"
 
 [features]
 default = ["serde"]
@@ -11,14 +10,13 @@ serde = ["dep:serde"]
 
 [dependencies]
 
-dpdk-sys = { path = "../dpdk-sys" }
-errno = { path = "../errno" }
-net = { path = "../net" }
+dpdk-sys = { workspace = true }
+errno = { workspace = true }
+net = { workspace = true }
 
-etherparse = { workspace = true, default-features = false, features = [] }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 
 [build-dependencies]
-dpdk-sysroot-helper = { path = "../dpdk-sysroot-helper" }
+dpdk-sysroot-helper = { workspace = true }
