@@ -18,7 +18,7 @@ managed by the Fabric, or to communicate with endpoints outside of the Fabric.
 - [Docker][docker] (install through your package manager)
 - Cargo / Rust (install via [`rustup`][rustup])
 
-  * :warning: You need a recent version of rust (1.82.0 or better) to build the project.
+  * :warning: You need a recent version of rust (1.84.0 or better) to build the project.
 
     ```bash
     rustup update

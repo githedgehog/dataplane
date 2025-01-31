@@ -15,7 +15,7 @@ default-members = [
 	"net",
 ]
 
-resolver = "2"
+resolver = "3"
 
 [workspace.dependencies]
 
