@@ -4,10 +4,6 @@ version = "0.0.1"
 edition = "2021"
 publish = false
 
-[[bench]]
-name = "parse"
-harness = false
-
 [features]
 default = ["serde"]
 serde = ["dep:serde"]
@@ -19,7 +15,6 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true }
-criterion = { workspace = true }
 rand = { workspace = true }
 etherparse = { workspace = true, default-features = false, features = ["std"] }
 

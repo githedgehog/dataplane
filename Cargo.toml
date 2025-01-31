@@ -24,7 +24,6 @@ net = { path = "./net" }
 bindgen = { version = "0.70.1" }
 bolero = { version = "=0.10.1" } # TODO: update as soon as resolution bug with 0.11 or better is fixed
 cc = { version = "1.1.37" }
-criterion = { version = "0.5.1", default-features = true }
 doxygen-rs = { version = "0.4.0" }
 etherparse = { version = "0.17.0", default-features = false, features = [] }
 libc = { version = "0.2.161" }
