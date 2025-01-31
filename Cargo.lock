@@ -154,7 +154,10 @@ checksum = "6e85be107ff475ca58de17db3f6f5d6e53a6f429f54e8b25e34d235ed2cf47e6"
 dependencies = [
  "arbitrary",
  "bolero-generator-derive",
+ "either",
+ "getrandom",
  "rand_core",
+ "rand_xoshiro",
 ]
 
 [[package]]

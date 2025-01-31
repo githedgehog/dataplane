@@ -20,5 +20,5 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 arbitrary = { workspace = true, features = ["derive"] }
-bolero = { workspace = true, features = ["alloc", "arbitrary"] }
+bolero = { workspace = true, features = ["alloc", "arbitrary", "std"] }
 etherparse = { workspace = true, default-features = false, features = ["std"] }
