@@ -21,10 +21,10 @@ errno = { path = "./errno" }
 net = { path = "./net" }
 
 # External
+arbitrary = { version = "1.4.1", default-features = false, features = [] }
+arrayvec = { version = "0.7.6", default-features = false, features = [] }
 bindgen = { version = "0.71.1", default-features = false, features = [] }
-# Bolero should always be built with arbitrary support since that is our principal means of using it.
-# There is also no need to build without alloc support in any case where we need property tests.
-bolero = { version = "0.12.0", default-features = false, features = ["arbitrary", "alloc"] }
+bolero = { version = "0.12.0", default-features = false, features = [] }
 doxygen-rs = { version = "0.4.0", default-features = false, features = [] }
 etherparse = { version = "0.17.0", default-features = false, features = [] }
 rand = { version = "0.8.5", default-features = true }
