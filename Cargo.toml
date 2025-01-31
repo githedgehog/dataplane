@@ -34,7 +34,6 @@ bindgen = { version = "0.71.1", default-features = false, features = [] }
 bolero = { version = "0.12.0", default-features = false, features = [] }
 doxygen-rs = { version = "0.4.0", default-features = false, features = [] }
 etherparse = { version = "0.17.0", default-features = false, features = [] }
-rand = { version = "0.8.5", default-features = true }
 serde = { version = "1.0.213", default-features = false }
 thiserror = { version = "2.0.11", default-features = false, features = [] }
 # attribute feature is so commonly used that we should just leave it on globally
