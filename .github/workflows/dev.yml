@@ -91,28 +91,37 @@ jobs:
       - name: "install just"
         run: |
           cargo install just
-      - name: "install nextest"
-        run: |
-          cargo install cargo-nextest
       - name: "install cargo-deny"
         run: |
           cargo install cargo-deny
       - run: |
           just debug=true cargo deny check
-      - name: "install openssl and libssl-dev (needed for markdown-test-report)"
-        run: |
-          sudo apt-get update
-          sudo apt-get --yes --no-install-recommends install pkg-config openssl libssl-dev colorized-logs
-      - name: "install markdown-test-report"
-        run: |
-          cargo install markdown-test-report
       - name: refresh-compile-env
         run: |
           just --yes debug=true refresh-compile-env
       - run: |
           just --yes debug=true fake-nix
 
-      - run: |
+      # At this stage, for Pull Requests, we're back to the HEAD of the branch,
+      # start running tests for different configurations.
+      - name: "test gnu dev"
+        run: |
+          just debug=true rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-gnu cargo test
+
+      - name: "test musl dev"
+        run: |
+          just debug=true rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-musl cargo test
+
+      - name: "test gnu release"
+        run: |
+          just debug=true rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-gnu cargo test
+
+      - name: "test musl release"
+        run: |
+          just debug=true rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-musl cargo test
+
+      - name: "build each commit"
+        run: |
           # Run a simple build for each separate commit (for "pull_request")
           # or for the HEAD of the branch (other events).
           set -eu -o pipefail
@@ -130,37 +139,6 @@ jobs:
           printf "::notice::HEAD remains at %s\n" "$(git log --oneline --no-decorate -n 1)"
         continue-on-error: ${{ matrix.rust.optional }}
 
-      # At this stage, for Pull Requests, we're back to the HEAD of the branch,
-      # start running tests for different configurations.
-      - name: "tests: rust ${{ matrix.rust }} profile=dev target=x86_64-unknown-linux-gnu"
-        run: |
-          export GITHUB_STEP_SUMMARY
-          just debug=true rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-gnu test
-          just debug=true rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-gnu report
-
-      - run: |
-          just cargo +${{matrix.rust}} build --locked --profile=dev --target=x86_64-unknown-linux-musl
-      - name: "tests: rust ${{ matrix.rust }} profile=dev target=x86_64-unknown-linux-musl"
-        run: |
-          export GITHUB_STEP_SUMMARY
-          just debug=true rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-musl test
-          just debug=true rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-musl report
-
-      - run: |
-          just debug=true cargo +${{matrix.rust}} build --locked --profile=release --target=x86_64-unknown-linux-gnu
-      - name: "tests: rust ${{ matrix.rust }} profile=release target=x86_64-unknown-linux-gnu"
-        run: |
-          export GITHUB_STEP_SUMMARY
-          just debug=true rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-gnu test
-          just debug=true rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-gnu report
-
-      - run: |
-          just debug=true cargo +${{matrix.rust}} build --locked --profile=release --target=x86_64-unknown-linux-musl
-      - name: "tests: rust ${{ matrix.rust }} profile=release target=x86_64-unknown-linux-musl"
-        run: |
-          export GITHUB_STEP_SUMMARY
-          just debug=true rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-musl test
-          just debug=true rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-musl report
 
       - uses: "actions/upload-artifact@v4"
         if: ${{ always() }}
