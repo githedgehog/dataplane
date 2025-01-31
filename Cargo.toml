@@ -33,3 +33,18 @@ thiserror = { version = "2.0.11", default-features = false, features = [] }
 # attribute feature is so commonly used that we should just leave it on globally
 tracing = { version = "0.1.40", default-features = false, features = ["attributes"] }
 
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"
+
+[profile.fuzz]
+inherits = "release"
+opt-level = 3
+panic = "unwind"
+debug = "full"
+debug-assertions = true
+overflow-checks = true
+lto = "thin"
+codegen-units = 1

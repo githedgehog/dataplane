@@ -115,6 +115,10 @@ cargo *args:
           [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_RELEASE}"
           extra_args+=("$arg")
           ;;
+        --profile=fuzz)
+          [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_FUZZ}"
+          extra_args+=("$arg")
+          ;;
         *)
           extra_args+=("$arg")
           ;;
@@ -324,7 +328,7 @@ sterile *args: (compile-env "just" ("debug=" + debug) ("rust=" + rust) ("target=
 
 # Run a "sterile" build
 [private]
-sterile-build: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target))
+sterile-build: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target) "--package=dataplane")
     mkdir -p "artifact/{{ target }}/{{ profile }}"
     cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/dataplane" "artifact/{{ target }}/{{ profile }}/dataplane"
 
@@ -398,6 +402,9 @@ test:
         ;;
       bench|release)
         [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_RELEASE}"
+        ;;
+      fuzz)
+        [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_FUZZ}"
         ;;
     esac
     [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
