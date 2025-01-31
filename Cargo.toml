@@ -8,6 +8,13 @@ members = [
 	"errno",
 	"net",
 ]
+
+default-members = [
+	"dpdk-sysroot-helper",
+	"errno",
+	"net",
+]
+
 resolver = "2"
 
 [workspace.dependencies]

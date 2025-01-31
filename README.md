@@ -80,15 +80,31 @@ just fake-nix
 At this point you should be able to run
 
 ```bash
-just cargo build
+cargo build
 ```
 
-You should now have statically linked ELF executables in `target/x86_64-unknown-linux-gnu/debug/dataplane` and `target/x86_64-unknown-linux-musl/debug/dataplane`.
+to build default workspace members (dpdk-sysroot-helper, errno, and net), or
+
+```bash
+just cargo build --package="$package"
+```
+
+to build workspace members which are not compiled by default (dataplane, dpdk, dpdk-sys).
+
+These members are not enabled by default to help developers which develop on ARM machines, and which can't run (or even compile) packages reliant on the sysroot.
+
+After running
+
+```bash
+just cargo build --package=dataplane
+```
+
+You should now have ELF executables in `target/x86_64-unknown-linux-gnu/debug/dataplane` and `target/x86_64-unknown-linux-musl/debug/dataplane`.
 
 You can build in release mode with
 
 ```bash
-just cargo build --profile=release
+just cargo build --package=dataplane --profile=release
 ```
 
 at which point the executables will be in `target/x86_64-unknown-linux-gnu/release/dataplane` and `target/x86_64-unknown-linux-musl/release/dataplane`.
