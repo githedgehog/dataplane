@@ -473,3 +473,19 @@ mdbook *args="build":
       --entrypoint /bin/mdbook \
       {{ _doc_env_container }} \
       {{ args }}
+
+# Run a simple build for each separate commit (for "pull_request")
+# or for the HEAD of the branch (other events).
+[script]
+build-sweep start="main":
+    {{ _just_debuggable_ }}
+    set -eu -o pipefail
+    if [ {{_clean}} != "clean" ]; then
+      >&2 echo "can not build-sweep with dirty branch (would risk data loss)"
+      exit 1
+    fi
+    # Get all commits since {{start}}, in chronological order
+    while read -r commit; do
+      git checkout "${commit}" || exit 1
+      { just debug=true cargo +{{rust}} build --locked --profile=dev --target=x86_64-unknown-linux-gnu; } || exit 1
+    done < <(git rev-list --reverse "{{start}}".."$(git rev-parse HEAD)")
