@@ -9,7 +9,8 @@ default = []
 serde = ["dep:serde"]
 
 [dependencies]
-serde = { workspace = true, optional = true }
+etherparse = { workspace = true, features = ["std"] }
+serde = { workspace = true, optional = true, features = ["derive"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

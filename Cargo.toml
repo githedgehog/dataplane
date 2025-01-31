@@ -21,18 +21,15 @@ errno = { path = "./errno" }
 net = { path = "./net" }
 
 # External
-bindgen = { version = "0.70.1" }
-bolero = { version = "=0.10.1" } # TODO: update as soon as resolution bug with 0.11 or better is fixed
-cc = { version = "1.1.37" }
-doxygen-rs = { version = "0.4.0" }
+bindgen = { version = "0.71.1", default-features = false, features = [] }
+# Bolero should always be built with arbitrary support since that is our principal means of using it.
+# There is also no need to build without alloc support in any case where we need property tests.
+bolero = { version = "0.12.0", default-features = false, features = ["arbitrary", "alloc"] }
+doxygen-rs = { version = "0.4.0", default-features = false, features = [] }
 etherparse = { version = "0.17.0", default-features = false, features = [] }
-libc = { version = "0.2.161" }
-rand = { version = "0.8.5", default-features = false, features = [] }
-rstest = { version = "0.23.0", default-features = false, features = [] }
-serde = { version = "1.0.213", default-features = false, features = ["derive", "alloc", "rc"] }
-syscalls = { version = "0.6.18" }
-thiserror = { version = "2.0.11" }
+rand = { version = "0.8.5", default-features = true }
+serde = { version = "1.0.213", default-features = false }
+thiserror = { version = "2.0.11", default-features = false, features = [] }
+# attribute feature is so commonly used that we should just leave it on globally
 tracing = { version = "0.1.40", default-features = false, features = ["attributes"] }
-tracing-subscriber = { version = "0.3.18" }
-tracing-test = { version = "0.2.5" }
 
