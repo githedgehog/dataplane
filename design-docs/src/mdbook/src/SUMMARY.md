@@ -1,6 +1,5 @@
 # Hedgehog Docs
 
-- [Offloading the dataplane](./dataplane/offloading-plan.md)
 - [DPDK abstraction map](./dataplane/map-of-dpdk.md)
 - [Build process](./build/index.md)
   - [Prerequisites](./build/prerequisites.md)
