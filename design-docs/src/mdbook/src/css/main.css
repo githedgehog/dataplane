@@ -23,14 +23,6 @@ a[id*="citation/"]:target {
     color: var(--highlight);
 }
 
-/*a[href*="#ref-"]::before {*/
-/*    content: "[";*/
-/*}*/
-
-/*a[href*="#ref-"]::after {*/
-/*    content: "]";*/
-/*}*/
-
 a[href*="#ref-note:"]::before {
     content: "⟨";
 }
@@ -39,8 +31,7 @@ a[href*="#ref-note:"]::after {
     content: "⟩";
 }
 
-.footnote-definition::before,
-.csl-entry::before {
+.footnote-definition::before {
     content: var(--target-icon);
     color: transparent;
     display: inline-block;
@@ -48,13 +39,8 @@ a[href*="#ref-note:"]::after {
     width: var(--target-icon-distance);
 }
 
-.citation:target {
-    color: var(--highlight);
-}
 
-
-.footnote-definition:target::before,
-.csl-entry:target::before {
+.footnote-definition:target::before {
     content: var(--target-icon);
     color: var(--fg);
     display: inline-block;
@@ -76,42 +62,6 @@ a[href*="#ref-note:"]::after {
     display: inline-block;
     margin-left: 0.2em;
 }
-
-@media print {
-    .return-anchor::after {
-        display: none;
-    }
-
-    .back-reference-source {
-        display: none;
-    }
-
-    @page {
-        margin: 0.3in;
-        padding: 0;
-        min-width: 100%;
-        width: 100%;
-    }
-
-    .content,
-    main,
-    body {
-        width: 100%;
-        font-size: 10pt;
-        font-family: serif;
-    }
-
-    .equation {
-        break-inside: avoid;
-    }
-
-    .column {
-        scrollbar-width: none;
-        scrollbar-color: transparent transparent;
-    }
-
-}
-
 
 .nav-wide-wrapper {
     display: none;
@@ -144,23 +94,10 @@ html > body.js.sidebar-hidden {
     vertical-align: super;
 }
 
-/*@media print {*/
-
-/*    .back-reference-source {*/
-/*        display: none;*/
-/*    }*/
-/*}*/
-
-.bash-console-line::before {
-    content: "$ ";
-    color: var(--links);
-}
-
 figure {
     padding-left: 0.5em;
     margin-inline: 0;
     width: max(200px, 50vw);
-
     max-width: max(200px, 100%);
 }
 
@@ -206,18 +143,12 @@ figcaption {
     flex-flow: nowrap row;
 }
 
-.footnote-definition > .footnote-definition-label,
-.csl-left-margin {
+.footnote-definition > .footnote-definition-label {
     display: inline-block;
     width: var(--csl-left-margin-width);
 }
 
-.csl-left-margin {
-    font-family: monospace;
-}
-
-.footnote-definition > p,
-.csl-right-inline {
+.footnote-definition > p {
     max-width: calc(100% - var(--csl-left-margin-width));
 }
 
@@ -226,237 +157,8 @@ figcaption {
     margin-block-end: 0;
 }
 
-div.equation {
-    display: flex;
-    flex-flow: nowrap row;
-    justify-content: space-between;
-    align-items: center;
-}
-
-.equation-column {
-    height: 0;
-    max-height: 0;
-    display: flex;
-    flex-flow: nowrap column;
-    justify-content: space-between;
-    margin-right: 0.2em;
-    margin-left: 0.2em;
-    /*align-items: center;*/
-}
-
-.katex-display {
-    display: flex;
-    flex-flow: nowrap row;
-    justify-content: flex-start;
-    align-items: center;
-    overflow-x: scroll;
-    overflow-y: hidden;
-    scrollbar-width: none;
-    padding: 0.5em;
-}
-
-.equation {
-    padding-left: 0.5em;
-    padding-right: 0.5em;
-}
-
-.equation-number {
-    white-space: nowrap;
-    margin-right: var(--target-icon-distance);
-    font-family: serif;
-    margin-inline-start: var(--target-icon-distance);
-    width: calc(-1 * var(--target-icon-distance));
-}
-
-.equation-number:target::after {
-    content: var(--right-target-icon);
-    margin-inline-start: var(--target-icon-distance);
-    width: calc(-1 * var(--target-icon-distance));
-}
-
-.katex-html * {
-    pointer-events: none;
-}
-
-.equation a {
-    pointer-events: auto;
-}
-
 table {
     display: inline-block;
-}
-
-.vertical-text-lr {
-    writing-mode: vertical-lr;
-}
-
-.vertical-text-rl {
-    writing-mode: vertical-rl;
-}
-
-.left-justify {
-    text-align: left;
-}
-
-.right-justify {
-    text-align: right;
-}
-
-.cancel-1 {
-    color: red;
-}
-
-.cancel-2 {
-    color: blue;
-}
-
-.cancel-3 {
-    color: green;
-}
-
-.cancel-4 {
-    color: purple;
-}
-
-.cancel-5 {
-    color: orange;
-}
-
-.quote blockquote {
-    --webkit-white-space-collapse: preserve;
-    --moz-white-space-collapse: preserve;
-    --ms-white-space-collapse: preserve;
-    white-space-collapse: preserve;
-}
-
-.quote:has(blockquote) .attribution {
-    justify-content: flex-end;
-}
-
-blockquote {
-    min-width: fit-content;
-    max-width: 80%;
-}
-
-section.blockcite {
-    display: flex;
-    width: fit-content;
-    max-width: 80%;
-    flex-flow: nowrap column;
-    margin-inline-start: 0.5in;
-}
-
-.blockcite blockquote {
-    /*padding-left: 3.5em;*/
-}
-
-blockquote {
-    position: relative;
-}
-
-blockquote p {
-    padding-left: 20px;
-}
-
-section.blockcite > blockquote p:first-child:before {
-    position: absolute;
-    content: "“";
-    left: 0;
-    top: 20px;
-    color: var(--links);
-    font-size: 5.5em;
-    font-family: serif;
-    opacity: 0.3;
-}
-
-blockquote p:last-child:after {
-    position: relative;
-    font-family: serif;
-    color: var(--links);
-    /*font-size: 2.5em;*/
-    /*margin-inline-end: 0.5em;*/
-}
-
-section.blockcite footer {
-    justify-items: flex-end;
-    align-items: flex-end;
-    align-self: flex-end;
-}
-
-section.blockcite footer p:only-child {
-    margin-top: 0;
-}
-
-li:has([qual]:target)::before {
-    color: revert;
-}
-
-span.qual[id] {
-    font-size: 66%;
-    font-family: monospace;
-}
-
-li:has([qual])::before {
-    content: var(--target-icon);
-    color: transparent;
-    display: inline-block;
-    margin-inline-start: -40px;
-    width: 40px;
-}
-
-.marker {
-    border-color: transparent;
-    border-width: 1px;
-    border-style: dashed;
-}
-
-[data-marker]:target,
-.highlight {
-    border-color: var(--highlight);
-    border-width: 1px;
-    border-style: dashed;
-    color: var(--highlight);
-}
-
-.cite:has(> a[id^="citation/"]:hover) a,
-.cite:has(> a[id^="citation/"]:visited),
-.cite:has(> a[id^="citation/"]:active),
-.cite:has(> a[id^="citation/"]:focus),
-.cite:has(> a[id^="citation/"]:target),
-.cite:has(> a[id^="citation/"]:hover),
-.cite:has(> [id*="citation/"]:target),
-.cite:has(> [id*="citation/"]:hover) {
-    text-decoration: 1px underline var(--highlight);
-}
-
-.blockcite:has([id*="citation/ref-"]) {
-    border-left: 1px solid transparent;
-    margin-left: -1em;
-    padding-left: 1em;
-}
-
-.blockcite:target {
-    border-left-color: var(--links);
-}
-
-.blockcite:has(cite a:only-child:hover),
-.blockcite:has(cite a:only-child:target),
-.blockcite:has(cite a:only-child:focus),
-.blockcite:has([id*="citation/ref-"]:target),
-.blockcite:has([id*="citation/ref-"]:active),
-.blockcite:has([id*="citation/ref-"]:focus),
-.blockcite:has([id*="citation/ref-"]:hover) {
-    border-color: var(--highlight);
-}
-
-.blockcite:has([id*="citation/ref-"]:target) {
-    border-color: var(--highlight);
-}
-
-
-.multi-column {
-    display: flex;
-    flex-flow: wrap row;
 }
 
 aside {
@@ -510,37 +212,6 @@ dd {
     color: blue;
 }
 
-.bubble {
-    position: relative;
-    background: lightyellow;
-    color: black;
-    top: 0;
-    left: 0;
-    border-radius: .4em;
-    margin: 0;
-    padding: 12px;
-}
-
-.bubble:after {
-    content: '';
-    position: absolute;
-    display: block;
-    bottom: 0;
-    left: 50%;
-    width: 0;
-    height: 0;
-    border: 20px solid transparent;
-    border-top-color: lightyellow;
-    border-left: 1px solid black;
-    border-bottom: none;
-    margin-left: -10px;
-    margin-bottom: -20px;
-}
-
-[data-over]:hover {
-    text-decoration: underline;
-}
-
 .change del {
     text-decoration: wavy underline red;
 }
@@ -566,27 +237,12 @@ dd {
     position: relative;
 }
 
-i[data-over-note] {
-    position: relative;
-}
-
-i[data-over-note]:before {
-    vertical-align: super;
-    font-size: 66%;
-    content: "🖉";
-    color: var(--links);
-}
-
-i[data-over-note]:target .bubble,
-i[data-over-note]:hover .bubble {
-    display: block;
-}
 
 abbr[title] {
     text-decoration: unset;
 }
 
-p > a.ref-paragraph:last-child::before {
+p > a.ref-p:last-child::before {
     position: relative;
     content: "¶";
     opacity: 0.3;
@@ -602,15 +258,6 @@ p > a:focus.ref-paragraph:last-child::before,
 p > a:target.ref-paragraph:last-child::before,
 p:hover > a.ref-paragraph:last-child::before {
     color: revert;
-}
-
-p:target::before {
-    position: relative;
-    display: inline-block;
-    content: var(--target-icon);
-    margin-inline-start: calc(0px - var(--target-icon-distance));
-    width: var(--target-icon-distance);
-    border-left: 1px solid var(--links);
 }
 
 

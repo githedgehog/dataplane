@@ -12,15 +12,6 @@ after = ["links"]
 [preprocessor.mermaid]
 after = ["links"]
 
-[preprocessor.katex]
-macros = "src/macros.tex"
-after = ["links"]
-block-delimiter = { left = "``` equation", right = "```" }
-inline-delimiter = { left = "`$", right = "$`" }
-no-css = true
-trust = true
-strict = false
-
 [preprocessor.alerts]
 
 [output]
