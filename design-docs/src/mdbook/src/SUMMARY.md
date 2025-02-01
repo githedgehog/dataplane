@@ -1,6 +1,6 @@
 # Hedgehog Docs
 
-- [Design](./dataplane/design.md)
+- [Design](./design/index.md)
 - [Build process](./build/index.md)
   - [Prerequisites](./build/prerequisites.md)
   - [Compile env](./build/compile-env.md)
