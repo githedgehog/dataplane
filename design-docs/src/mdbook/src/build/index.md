@@ -69,10 +69,6 @@ container_registry -> dataplane : got it
 > Sequence diagram for dpdk-sys / dataplane interaction.
 </figure>
 
-[`dpdk-sys`]: https://github.com/githedgehog/dpdk-sys
-[`dataplane`]: https://github.com/githedgehog/dataplane
-[^um-actually]: In fact, `dpdk-sys` produces four sysroots.  One for each combination of dev/release builds and gnu64 and musl64 builds.
-
 ## Notes on code repositories architecture
 
 These are notes on the different code repositories used for the control plane
@@ -82,7 +78,7 @@ and dataplane for the Gateway, valid as of January 2025.
 
 #### Repository
 
-https://github.com/githedgehog/dataplane
+<https://github.com/githedgehog/dataplane>
 
 #### Role
 
@@ -105,7 +101,7 @@ Main workflows:
 
 #### Repository
 
-https://github.com/githedgehog/dpdk-sys
+<https://github.com/githedgehog/dpdk-sys>
 
 #### Role
 
@@ -142,7 +138,7 @@ resulting compile-env image is pulled from the dataplane repository.
 
 #### Repository
 
-https://github.com/githedgehog/tmp-nat
+<https://github.com/githedgehog/tmp-nat>
 
 #### Role
 
@@ -165,10 +161,10 @@ objects, and on the related lookups
 
 One parent repository calls the other three as Git submodules:
 
-- https://github.com/githedgehog/gw-controlplane
-    - https://github.com/githedgehog/dplane-rpc
-    - https://github.com/githedgehog/dplane-plugin
-    - https://github.com/githedgehog/frr
+- <https://github.com/githedgehog/gw-controlplane>
+    - <https://github.com/githedgehog/dplane-rpc>
+    - <https://github.com/githedgehog/dplane-plugin>
+    - <https://github.com/githedgehog/frr>
 
 #### Role
 
@@ -181,3 +177,8 @@ Control plane components
   reason for that, should be published soon
 - gw-controlplane pulls the three others as Git submodules
 - No CI to date
+
+[`dpdk-sys`]: <https://github.com/githedgehog/dpdk-sys>
+[`dataplane`]: <https://github.com/githedgehog/dataplane>
+[^um-actually]: In fact, `dpdk-sys` produces four sysroots.  One for each combination of dev/release builds and gnu64 and musl64 builds.
+
