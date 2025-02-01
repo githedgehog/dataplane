@@ -19,7 +19,7 @@ use crate::socket::SocketId;
 use dpdk_sys::rte_eth_rx_mq_mode::RTE_ETH_MQ_RX_RSS;
 use dpdk_sys::rte_eth_tx_mq_mode::RTE_ETH_MQ_TX_NONE;
 use dpdk_sys::*;
-use errno::{Errno, ErrorCode, NegStandardErrno, StandardErrno};
+use errno::{Errno, ErrorCode, StandardErrno};
 use queue::{rx, tx};
 
 /// Defaults for the RX queue
@@ -54,8 +54,6 @@ pub enum DevInfoError {
     InvalidArgument,
     #[error("Unknown error which matches a standard errno")]
     UnknownStandard(StandardErrno),
-    #[error("Unknown error which matches a negative standard errno")]
-    UnknownNegStandard(NegStandardErrno),
     #[error("Unknown error: {0:?}")]
     Unknown(Errno),
 }
@@ -114,20 +112,14 @@ impl DevIndex {
                     Err(DevInfoError::InvalidArgument)
                 }
                 val => {
-                    let _unknown = match StandardErrno::parse_i32(val) {
+                    let unknown = match StandardErrno::parse_i32(val) {
                         Ok(standard) => {
                             return Err(DevInfoError::UnknownStandard(standard));
                         }
                         Err(unknown) => unknown,
                     };
-                    let _unknown = match NegStandardErrno::parse_i32(val) {
-                        Ok(standard) => {
-                            return Err(DevInfoError::UnknownNegStandard(standard));
-                        }
-                        Err(unknown) => unknown,
-                    };
                     error!(
-                        "Unknown error when getting device info for port {index}: {val}",
+                        "Unknown error when getting device info for port {index}: {val} (error code: {unknown:?})",
                         index = self.0,
                         val = val
                     );

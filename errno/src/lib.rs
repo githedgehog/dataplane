@@ -9,9 +9,15 @@
 //! do not seem to.
 
 #![cfg_attr(not(test), no_std)]
-#![deny(clippy::all, clippy::pedantic, clippy::panic)]
-#![forbid(unsafe_code, missing_docs)]
-#![forbid(clippy::unwrap_used, clippy::expect_used, clippy::missing_errors_doc)]
+#![deny(clippy::all, clippy::pedantic)]
+#![forbid(
+    clippy::expect_used,
+    clippy::missing_errors_doc,
+    clippy::panic,
+    clippy::unwrap_used,
+    missing_docs,
+    unsafe_code
+)]
 
 /// No error, operation succeeded
 pub const SUCCESS: i32 = 0;
@@ -905,6 +911,377 @@ pub enum StandardErrno {
     /// Value too large for defined data type
     #[error("Value too large for defined data type")]
     Overflow = EOVERFLOW,
+
+    /// (negative) Operation not permitted
+    #[error("(negative) Operation not permitted")]
+    PermissionDeniedNeg = -EPERM,
+    /// (negative) No such file or directory
+    #[error("(negative) No such file or directory")]
+    NoSuchFileOrDirectoryNeg = -ENOENT,
+    /// (negative) No such process
+    #[error("(negative) No such process")]
+    NoSuchProcessNeg = -ESRCH,
+    /// (negative) Interrupted system call
+    #[error("(negative) Interrupted system call")]
+    InterruptedNeg = -EINTR,
+    /// (negative) I/O error
+    #[error("(negative) I/O error")]
+    IoNeg = -EIO,
+    /// (negative) No such device or address
+    #[error("(negative) No such device or address")]
+    NoSuchDeviceOrAddressNeg = -ENXIO,
+    /// (negative) Argument list too long
+    #[error("(negative) Argument list too long")]
+    TooBigNeg = -E2BIG,
+    /// (negative) Exec format error
+    #[error("(negative) Exec format error")]
+    ExecFormatNeg = -ENOEXEC,
+    /// (negative) Bad file number
+    #[error("(negative) Bad file number")]
+    BadFileNumberNeg = -EBADF,
+    /// (negative) No child processes
+    #[error("(negative) No child processes")]
+    NoChildProcessesNeg = -ECHILD,
+    /// (negative) Try again
+    #[error("(negative) Try again")]
+    TryAgainNeg = -EAGAIN,
+    /// (negative) No memory available
+    #[error("(negative) No memory available")]
+    NoMemoryNeg = -ENOMEM,
+    /// (negative) Access denied
+    #[error("(negative) Access denied")]
+    AccessDeniedNeg = -EACCES,
+    /// (negative) Bad address
+    #[error("(negative) Bad address")]
+    BadAddressNeg = -EFAULT,
+    /// (negative) Block device required
+    #[error("(negative) Block device required")]
+    BlockDeviceRequiredNeg = -ENOTBLK,
+    /// (negative) Device or resource busy
+    #[error("(negative) Device or resource busy")]
+    BusyNeg = -EBUSY,
+    /// (negative) File exists
+    #[error("(negative) File exists")]
+    FileExistsNeg = -EEXIST,
+    /// (negative) Cross-device link
+    #[error("(negative) Cross-device link")]
+    CrossDeviceLinkNeg = -EXDEV,
+    /// (negative) No such device
+    #[error("(negative) No such device")]
+    NoSuchDeviceNeg = -ENODEV,
+    /// (negative) Not a directory
+    #[error("(negative) Not a directory")]
+    NotADirectoryNeg = -ENOTDIR,
+    /// (negative) Is a directory
+    #[error("(negative) Is a directory")]
+    IsADirectoryNeg = -EISDIR,
+    /// (negative) Invalid argument
+    #[error("(negative) Invalid argument")]
+    InvalidArgumentNeg = -EINVAL,
+    /// (negative) File table overflow
+    #[error("(negative) File table overflow")]
+    FileTableOverflowNeg = -ENFILE,
+    /// (negative) Too many open files
+    #[error("(negative) Too many open files")]
+    TooManyOpenFilesNeg = -EMFILE,
+    /// (negative) Not a tty
+    #[error("(negative) Not a tty")]
+    NotATtyNeg = -ENOTTY,
+    /// (negative) Text file busy
+    #[error("(negative) Text file busy")]
+    TextFileBusyNeg = -ETXTBSY,
+    /// (negative) File too large
+    #[error("(negative) File too large")]
+    FileTooLargeNeg = -EFBIG,
+    /// (negative) No space left on a device
+    #[error("(negative) No space left on device")]
+    NoSpaceLeftOnDeviceNeg = -ENOSPC,
+    /// (negative) Illegal seek
+    #[error("(negative) Illegal seek")]
+    IllegalSeekNeg = -ESPIPE,
+    /// (negative) Read-only file system
+    #[error("(negative) Read-only file system")]
+    ReadOnlyFileSystemNeg = -EROFS,
+    /// (negative) Too many links
+    #[error("(negative) Too many links")]
+    TooManyLinksNeg = -EMLINK,
+    /// (negative) Broken pipe
+    #[error("(negative) Broken pipe")]
+    BrokenPipeNeg = -EPIPE,
+    /// (negative) Numerical argument out of domain
+    #[error("(negative) Numerical argument out of domain")]
+    NumberOutOfDomainNeg = -EDOM,
+    /// (negative) Result too large
+    #[error("(negative) Result too large")]
+    ResultTooLargeNeg = -ERANGE,
+    /// (negative) No message of desired type
+    #[error("(negative) No message of desired type")]
+    NoMessageNeg = -ENOMSG,
+    /// (negative) Identifier removed
+    #[error("(negative) Identifier removed")]
+    IdentifierRemovedNeg = -EIDRM,
+    /// (negative) Channel number out of range
+    #[error("(negative) Channel number out of range")]
+    ChannelNumberOutOfRangeNeg = -ECHRNG,
+    /// (negative) Level 2 not synchronized
+    #[error("(negative) Level 2 not synchronized")]
+    Level2NotSynchronizedNeg = -EL2NSYNC,
+    /// (negative) Level 3 halted
+    #[error("(negative) Level 3 halted")]
+    Level3HaltedNeg = -EL3HLT,
+    /// (negative) Level 3 reset
+    #[error("(negative) Level 3 reset")]
+    Level3ResetNeg = -EL3RST,
+    /// (negative) Link number out of range
+    #[error("(negative) Link number out of range")]
+    LinkNumberOutOfRangeNeg = -ELNRNG,
+    /// (negative) Protocol driver not attached
+    #[error("(negative) Protocol driver not attached")]
+    ProtocolDriverNotAttachedNeg = -EUNATCH,
+    /// (negative) No CSI structure available
+    #[error("(negative) No CSI structure available")]
+    NoCsiStructureAvailableNeg = -ENOCSI,
+    /// (negative) Level 2 halted
+    #[error("(negative) Level 2 halted")]
+    Level2HaltedNeg = -EL2HLT,
+    /// (negative) Deadlock condition
+    #[error("(negative) Deadlock condition")]
+    DeadlockNeg = -EDEADLK,
+    /// (negative) No record locks available
+    #[error("(negative) No record locks available")]
+    NoRecordLocksAvailableNeg = -ENOLCK,
+    /// (negative) Invalid exchange
+    #[error("(negative) Invalid exchange")]
+    InvalidExchangeNeg = -EBADE,
+    /// (negative) Invalid request descriptor
+    #[error("(negative) Invalid request descriptor")]
+    InvalidRequestDescriptorNeg = -EBADR,
+    /// (negative) Exchange full
+    #[error("(negative) Exchange full")]
+    ExchangeFullNeg = -EXFULL,
+    /// (negative) No anode
+    #[error("(negative) No anode")]
+    NoAnodeNeg = -ENOANO,
+    /// (negative) Invalid request code
+    #[error("(negative) Invalid request code")]
+    InvalidRequestCodeNeg = -EBADRQC,
+    /// (negative) Invalid slot
+    #[error("(negative) Invalid slot")]
+    InvalidSlotNeg = -EBADSLT,
+    /// (negative) File locking deadlock error
+    #[error("(negative) File locking deadlock error")]
+    FileLockingDeadlockNeg = -EDEADLOCK,
+    /// (negative) Bad font file format
+    #[error("(negative) Bad font file format")]
+    BadFontFileFormatNeg = -EBFONT,
+    /// (negative) Device not a stream
+    #[error("(negative) Device not a stream")]
+    DeviceNotAStreamNeg = -ENOSTR,
+    /// (negative) No data available
+    #[error("(negative) No data available")]
+    NoDataAvailableNeg = -ENODATA,
+    /// (negative) Timer expired
+    #[error("(negative) Timer expired")]
+    TimerExpiredNeg = -ETIME,
+    /// (negative) Out of streams resources
+    #[error("(negative) Out of streams resources")]
+    OutOfStreamsResourcesNeg = -ENOSR,
+    /// (negative) Machine is not on the network
+    #[error("(negative) Machine is not on the network")]
+    MachineNotOnTheNetworkNeg = -ENONET,
+    /// (negative) Package not installed
+    #[error("(negative) Package not installed")]
+    PackageNotInstalledNeg = -ENOPKG,
+    /// (negative) The object is remote
+    #[error("(negative) The object is remote")]
+    ObjectIsRemoteNeg = -EREMOTE,
+    /// (negative) The link has been severed
+    #[error("(negative) The link has been severed")]
+    LinkSeveredNeg = -ENOLINK,
+    /// (negative) Advertise error
+    #[error("(negative) Advertise error")]
+    AdvertiseErrorNeg = -EADV,
+    /// (negative) Srmount error
+    #[error("(negative) Srmount error")]
+    SrmountErrorNeg = -ESRMNT,
+    /// (negative) Communication error on send
+    #[error("(negative) Communication error on send")]
+    CommunicationErrorOnSendNeg = -ECOMM,
+    /// (negative) Protocol error
+    #[error("(negative) Protocol error")]
+    ProtocolErrorNeg = -EPROTO,
+    /// (negative) Multihop attempted
+    #[error("(negative) Multihop attempted")]
+    MultihopAttemptedNeg = -EMULTIHOP,
+    /// (negative) Inode is remote (not really error)
+    #[error("(negative) Inode is remote (not really error)")]
+    InodeIsRemoteNeg = -ELBIN,
+    /// (negative) Cross-mount point (not really error)
+    #[error("(negative) Cross mount point (not really error)")]
+    CrossMountPointNeg = -EDOTDOT,
+    /// (negative) Trying to read an unreadable message
+    #[error("(negative) Trying to read unreadable message")]
+    TryingToReadUnreadableMessageNeg = -EBADMSG,
+    /// (negative) Inappropriate file type or format
+    #[error("(negative) Inappropriate file type or format")]
+    InappropriateFileTypeOrFormatNeg = -EFTYPE,
+    /// (negative) Given log name not unique
+    #[error("(negative) Given log name not unique")]
+    GivenLogNameNotUniqueNeg = -ENOTUNIQ,
+    /// (negative) f.d. invalid for this operation
+    #[error("(negative) f.d. invalid for this operation")]
+    FdInvalidForThisOperationNeg = -EBADFD,
+    /// (negative) Remote address changed
+    #[error("(negative) Remote address changed")]
+    RemoteAddressChangedNeg = -EREMCHG,
+    /// (negative) Can't access a necessary shared library
+    #[error("(negative) Can't access a needed shared library")]
+    CantAccessNeededSharedLibraryNeg = -ELIBACC,
+    /// (negative) Accessing a corrupted shared library
+    #[error("(negative) Accessing a corrupted shared library")]
+    AccessingCorruptedSharedLibraryNeg = -ELIBBAD,
+    /// (negative) .lib section in a.out corrupted
+    #[error("(negative) .lib section in a.out corrupted")]
+    LibSectionInAOutCorruptedNeg = -ELIBSCN,
+    /// (negative) Attempting to link in too many libs
+    #[error("(negative) Attempting to link in too many libs")]
+    AttemptingToLinkInTooManyLibsNeg = -ELIBMAX,
+    /// (negative) Attempting to exec a shared library
+    #[error("(negative) Attempting to exec a shared library")]
+    AttemptingToExecASharedLibraryNeg = -ELIBEXEC,
+    /// (negative) Function is not implemented
+    #[error("(negative) Function not implemented")]
+    FunctionNotImplementedNeg = -ENOSYS,
+    /// (negative) No more files
+    #[error("(negative) No more files")]
+    NoMoreFilesNeg = -ENMFILE,
+    /// (negative) Directory is not empty
+    #[error("(negative) Directory not empty")]
+    DirectoryNotEmptyNeg = -ENOTEMPTY,
+    /// (negative) File or path name too long
+    #[error("(negative) File or path name too long")]
+    FileOrPathNameTooLongNeg = -ENAMETOOLONG,
+    /// (negative) Too many symbolic links
+    #[error("(negative) Too many symbolic links")]
+    TooManySymbolicLinksNeg = -ELOOP,
+    /// (negative) Operation not supported on transport endpoint
+    #[error("(negative) Operation not supported on transport endpoint")]
+    OperationNotSupportedOnTransportEndpointNeg = -EOPNOTSUPP,
+    /// (negative) Protocol family is not supported
+    #[error("(negative) Protocol family not supported")]
+    ProtocolFamilyNotSupportedNeg = -EPFNOSUPPORT,
+    /// (negative) Connection reset by peer
+    #[error("(negative) Connection reset by peer")]
+    ConnectionResetByPeerNeg = -ECONNRESET,
+    /// (negative) No buffer space available
+    #[error("(negative) No buffer space available")]
+    NoBufferSpaceAvailableNeg = -ENOBUFS,
+    /// (negative) Address family not supported by protocol family
+    #[error("(negative) Address family not supported by protocol family")]
+    AddressFamilyNotSupportedByProtocolFamilyNeg = -EAFNOSUPPORT,
+    /// (negative) Protocol wrong type for socket
+    #[error("(negative) Protocol wrong type for socket")]
+    ProtocolWrongTypeForSocketNeg = -EPROTOTYPE,
+    /// (negative) Socket operation on non-socket
+    #[error("(negative) Socket operation on non-socket")]
+    SocketOperationOnNonSocketNeg = -ENOTSOCK,
+    /// (negative) Protocol not available
+    #[error("(negative) Protocol not available")]
+    ProtocolNotAvailableNeg = -ENOPROTOOPT,
+    /// (negative) Can't send after socket shutdown
+    #[error("(negative) Can't send after socket shutdown")]
+    CantSendAfterSocketShutdownNeg = -ESHUTDOWN,
+    /// (negative) Connection refused
+    #[error("(negative) Connection refused")]
+    ConnectionRefusedNeg = -ECONNREFUSED,
+    /// (negative) Address already in use
+    #[error("(negative) Address already in use")]
+    AddressAlreadyInUseNeg = -EADDRINUSE,
+    /// (negative) Connection aborted
+    #[error("(negative) Connection aborted")]
+    ConnectionAbortedNeg = -ECONNABORTED,
+    /// (negative) Network is unreachable
+    #[error("(negative) Network is unreachable")]
+    NetworkIsUnreachableNeg = -ENETUNREACH,
+    /// (negative) Network interface is not configured
+    #[error("(negative) Network interface is not configured")]
+    NetworkInterfaceNotConfiguredNeg = -ENETDOWN,
+    /// (negative) Connection timed out
+    #[error("(negative) Connection timed out")]
+    ConnectionTimedOutNeg = -ETIMEDOUT,
+    /// (negative) Host is down
+    #[error("(negative) Host is down")]
+    HostIsDownNeg = -EHOSTDOWN,
+    /// (negative) Host is unreachable
+    #[error("(negative) Host is unreachable")]
+    HostIsUnreachableNeg = -EHOSTUNREACH,
+    /// (negative) Connection already in progress
+    #[error("(negative) Connection already in progress")]
+    ConnectionAlreadyInProgressNeg = -EINPROGRESS,
+    /// (negative) Socket already connected
+    #[error("(negative) Socket already connected")]
+    SocketAlreadyConnectedNeg = -EALREADY,
+    /// (negative) Destination address required
+    #[error("(negative) Destination address required")]
+    DestinationAddressRequiredNeg = -EDESTADDRREQ,
+    /// (negative) Message too long
+    #[error("(negative) Message too long")]
+    MessageTooLongNeg = -EMSGSIZE,
+    /// (negative) Unknown protocol
+    #[error("(negative) Unknown protocol")]
+    UnknownProtocolNeg = -EPROTONOSUPPORT,
+    /// (negative) Socket type is not supported
+    #[error("(negative) Socket type not supported")]
+    SocketTypeNotSupportedNeg = -ESOCKTNOSUPPORT,
+    /// (negative) Address not available
+    #[error("(negative) Address not available")]
+    AddressNotAvailableNeg = -EADDRNOTAVAIL,
+    /// (negative) Network dropped connection on reset
+    #[error("(negative) Network dropped connection on reset")]
+    NetworkDroppedConnectionOnResetNeg = -ENETRESET,
+    /// (negative) Socket is already connected
+    #[error("(negative) Socket is already connected")]
+    SocketIsAlreadyConnectedNeg = -EISCONN,
+    /// (negative) Socket is not connected
+    #[error("(negative) Socket is not connected")]
+    SocketIsNotConnectedNeg = -ENOTCONN,
+    /// (negative) Too many references: cannot splice
+    #[error("(negative) Too many references: cannot splice")]
+    TooManyReferencesNeg = -ETOOMANYREFS,
+    /// (negative) The per-user limit on the new process would be exceeded by an attempted fork.
+    #[error(
+        "(negative) The per-user limit on new process would be exceeded by an attempted fork."
+    )]
+    ProcessLimitExceededNeg = -EPROCLIM,
+    /// (negative) The file quota system is confused because there are too many users.
+    #[error("(negative) The file quota system is confused because there are too many users.")]
+    TooManyUsersNeg = -EUSERS,
+    /// (negative) The user's disk quota was exceeded.
+    #[error("(negative) The user's disk quota was exceeded.")]
+    DiskQuotaExceededNeg = -EDQUOT,
+    /// (negative) Stale NFS file handle
+    #[error("(negative) Stale NFS file handle")]
+    StaleNfsFileHandleNeg = -ESTALE,
+    /// (negative) Not supported
+    #[error("(negative) Not supported")]
+    NotSupportedNeg = -ENOTSUP,
+    /// (negative) No medium (in tape drive)
+    #[error("(negative) No medium (in tape drive)")]
+    NoMediumNeg = -ENOMEDIUM,
+    /// (negative) No such host or network path
+    #[error("(negative) No such host or network path")]
+    NoShareNeg = -ENOSHARE,
+    /// (negative) Filename exists with different case
+    #[error("(negative) Filename exists with different case")]
+    CaseClashNeg = -ECASECLASH,
+    /// (negative)
+    /// While decoding a multibyte character the function came along an invalid or an incomplete
+    /// sequence of bytes or the given wide character is invalid.
+    #[error("(negative) While decoding a multibyte character the function came along an invalid or an incomplete sequence of bytes or the given wide character is invalid.")]
+    IllegalSequenceNeg = -EILSEQ,
+    /// (negative) Value too large for defined data type
+    #[error("(negative) Value too large for defined data type")]
+    OverflowNeg = -EOVERFLOW,
 }
 
 impl StandardErrno {
@@ -914,137 +1291,262 @@ impl StandardErrno {
         self as i32
     }
 
-    #[allow(clippy::too_many_lines)]
     /// Parse an `i32` value into a `StandardErrno`.
     ///
     /// # Errors
     ///
     /// Returns the original `i32` value if it does not correspond to a standard errno.
+    #[allow(clippy::too_many_lines)]
     pub const fn parse_i32(value: i32) -> Result<StandardErrno, i32> {
+        #[allow(clippy::enum_glob_use)]
+        use StandardErrno::*;
         match value {
-            SUCCESS => Ok(Self::Success),
-            EPERM => Ok(Self::PermissionDenied),
-            ENOENT => Ok(Self::NoSuchFileOrDirectory),
-            ESRCH => Ok(Self::NoSuchProcess),
-            EINTR => Ok(Self::Interrupted),
-            EIO => Ok(Self::Io),
-            ENXIO => Ok(Self::NoSuchDeviceOrAddress),
-            E2BIG => Ok(Self::TooBig),
-            ENOEXEC => Ok(Self::ExecFormat),
-            EBADF => Ok(Self::BadFileNumber),
-            ECHILD => Ok(Self::NoChildProcesses),
-            EAGAIN => Ok(Self::TryAgain),
-            ENOMEM => Ok(Self::NoMemory),
-            EACCES => Ok(Self::AccessDenied),
-            EFAULT => Ok(Self::BadAddress),
-            ENOTBLK => Ok(Self::BlockDeviceRequired),
-            EBUSY => Ok(Self::Busy),
-            EEXIST => Ok(Self::FileExists),
-            EXDEV => Ok(Self::CrossDeviceLink),
-            ENODEV => Ok(Self::NoSuchDevice),
-            ENOTDIR => Ok(Self::NotADirectory),
-            EISDIR => Ok(Self::IsADirectory),
-            EINVAL => Ok(Self::InvalidArgument),
-            ENFILE => Ok(Self::FileTableOverflow),
-            EMFILE => Ok(Self::TooManyOpenFiles),
-            ENOTTY => Ok(Self::NotATty),
-            ETXTBSY => Ok(Self::TextFileBusy),
-            EFBIG => Ok(Self::FileTooLarge),
-            ENOSPC => Ok(Self::NoSpaceLeftOnDevice),
-            ESPIPE => Ok(Self::IllegalSeek),
-            EROFS => Ok(Self::ReadOnlyFileSystem),
-            EMLINK => Ok(Self::TooManyLinks),
-            EPIPE => Ok(Self::BrokenPipe),
-            EDOM => Ok(Self::NumberOutOfDomain),
-            ERANGE => Ok(Self::ResultTooLarge),
-            ENOMSG => Ok(Self::NoMessage),
-            EIDRM => Ok(Self::IdentifierRemoved),
-            ECHRNG => Ok(Self::ChannelNumberOutOfRange),
-            EL2NSYNC => Ok(Self::Level2NotSynchronized),
-            EL3HLT => Ok(Self::Level3Halted),
-            EL3RST => Ok(Self::Level3Reset),
-            ELNRNG => Ok(Self::LinkNumberOutOfRange),
-            EUNATCH => Ok(Self::ProtocolDriverNotAttached),
-            ENOCSI => Ok(Self::NoCsiStructureAvailable),
-            EL2HLT => Ok(Self::Level2Halted),
-            EDEADLK => Ok(Self::Deadlock),
-            ENOLCK => Ok(Self::NoRecordLocksAvailable),
-            EBADE => Ok(Self::InvalidExchange),
-            EBADR => Ok(Self::InvalidRequestDescriptor),
-            EXFULL => Ok(Self::ExchangeFull),
-            ENOANO => Ok(Self::NoAnode),
-            EBADRQC => Ok(Self::InvalidRequestCode),
-            EBADSLT => Ok(Self::InvalidSlot),
-            EDEADLOCK => Ok(Self::FileLockingDeadlock),
-            EBFONT => Ok(Self::BadFontFileFormat),
-            ENOSTR => Ok(Self::DeviceNotAStream),
-            ENODATA => Ok(Self::NoDataAvailable),
-            ETIME => Ok(Self::TimerExpired),
-            ENOSR => Ok(Self::OutOfStreamsResources),
-            ENONET => Ok(Self::MachineNotOnTheNetwork),
-            ENOPKG => Ok(Self::PackageNotInstalled),
-            EREMOTE => Ok(Self::ObjectIsRemote),
-            ENOLINK => Ok(Self::LinkSevered),
-            EADV => Ok(Self::AdvertiseError),
-            ESRMNT => Ok(Self::SrmountError),
-            ECOMM => Ok(Self::CommunicationErrorOnSend),
-            EPROTO => Ok(Self::ProtocolError),
-            EMULTIHOP => Ok(Self::MultihopAttempted),
-            ELBIN => Ok(Self::InodeIsRemote),
-            EDOTDOT => Ok(Self::CrossMountPoint),
-            EBADMSG => Ok(Self::TryingToReadUnreadableMessage),
-            EFTYPE => Ok(Self::InappropriateFileTypeOrFormat),
-            ENOTUNIQ => Ok(Self::GivenLogNameNotUnique),
-            EBADFD => Ok(Self::FdInvalidForThisOperation),
-            EREMCHG => Ok(Self::RemoteAddressChanged),
-            ELIBACC => Ok(Self::CantAccessNeededSharedLibrary),
-            ELIBBAD => Ok(Self::AccessingCorruptedSharedLibrary),
-            ELIBSCN => Ok(Self::LibSectionInAOutCorrupted),
-            ELIBMAX => Ok(Self::AttemptingToLinkInTooManyLibs),
-            ELIBEXEC => Ok(Self::AttemptingToExecASharedLibrary),
-            ENOSYS => Ok(Self::FunctionNotImplemented),
-            ENMFILE => Ok(Self::NoMoreFiles),
-            ENOTEMPTY => Ok(Self::DirectoryNotEmpty),
-            ENAMETOOLONG => Ok(Self::FileOrPathNameTooLong),
-            ELOOP => Ok(Self::TooManySymbolicLinks),
-            EOPNOTSUPP => Ok(Self::OperationNotSupportedOnTransportEndpoint),
-            EPFNOSUPPORT => Ok(Self::ProtocolFamilyNotSupported),
-            ECONNRESET => Ok(Self::ConnectionResetByPeer),
-            ENOBUFS => Ok(Self::NoBufferSpaceAvailable),
-            EAFNOSUPPORT => Ok(Self::AddressFamilyNotSupportedByProtocolFamily),
-            EPROTOTYPE => Ok(Self::ProtocolWrongTypeForSocket),
-            ENOTSOCK => Ok(Self::SocketOperationOnNonSocket),
-            ENOPROTOOPT => Ok(Self::ProtocolNotAvailable),
-            ESHUTDOWN => Ok(Self::CantSendAfterSocketShutdown),
-            ECONNREFUSED => Ok(Self::ConnectionRefused),
-            EADDRINUSE => Ok(Self::AddressAlreadyInUse),
-            ECONNABORTED => Ok(Self::ConnectionAborted),
-            ENETUNREACH => Ok(Self::NetworkIsUnreachable),
-            ENETDOWN => Ok(Self::NetworkInterfaceNotConfigured),
-            ETIMEDOUT => Ok(Self::ConnectionTimedOut),
-            EHOSTDOWN => Ok(Self::HostIsDown),
-            EHOSTUNREACH => Ok(Self::HostIsUnreachable),
-            EINPROGRESS => Ok(Self::ConnectionAlreadyInProgress),
-            EALREADY => Ok(Self::SocketAlreadyConnected),
-            EDESTADDRREQ => Ok(Self::DestinationAddressRequired),
-            EMSGSIZE => Ok(Self::MessageTooLong),
-            EPROTONOSUPPORT => Ok(Self::UnknownProtocol),
-            ESOCKTNOSUPPORT => Ok(Self::SocketTypeNotSupported),
-            EADDRNOTAVAIL => Ok(Self::AddressNotAvailable),
-            ENETRESET => Ok(Self::NetworkDroppedConnectionOnReset),
-            EISCONN => Ok(Self::SocketIsAlreadyConnected),
-            ENOTCONN => Ok(Self::SocketIsNotConnected),
-            ETOOMANYREFS => Ok(Self::TooManyReferences),
-            EPROCLIM => Ok(Self::ProcessLimitExceeded),
-            EUSERS => Ok(Self::TooManyUsers),
-            EDQUOT => Ok(Self::DiskQuotaExceeded),
-            ESTALE => Ok(Self::StaleNfsFileHandle),
-            ENOTSUP => Ok(Self::NotSupported),
-            ENOMEDIUM => Ok(Self::NoMedium),
-            ENOSHARE => Ok(Self::NoShare),
-            ECASECLASH => Ok(Self::CaseClash),
-            EILSEQ => Ok(Self::IllegalSequence),
-            EOVERFLOW => Ok(Self::Overflow),
+            SUCCESS => Ok(Success),
+            EPERM => Ok(PermissionDenied),
+            ENOENT => Ok(NoSuchFileOrDirectory),
+            ESRCH => Ok(NoSuchProcess),
+            EINTR => Ok(Interrupted),
+            EIO => Ok(Io),
+            ENXIO => Ok(NoSuchDeviceOrAddress),
+            E2BIG => Ok(TooBig),
+            ENOEXEC => Ok(ExecFormat),
+            EBADF => Ok(BadFileNumber),
+            ECHILD => Ok(NoChildProcesses),
+            EAGAIN => Ok(TryAgain),
+            ENOMEM => Ok(NoMemory),
+            EACCES => Ok(AccessDenied),
+            EFAULT => Ok(BadAddress),
+            ENOTBLK => Ok(BlockDeviceRequired),
+            EBUSY => Ok(Busy),
+            EEXIST => Ok(FileExists),
+            EXDEV => Ok(CrossDeviceLink),
+            ENODEV => Ok(NoSuchDevice),
+            ENOTDIR => Ok(NotADirectory),
+            EISDIR => Ok(IsADirectory),
+            EINVAL => Ok(InvalidArgument),
+            ENFILE => Ok(FileTableOverflow),
+            EMFILE => Ok(TooManyOpenFiles),
+            ENOTTY => Ok(NotATty),
+            ETXTBSY => Ok(TextFileBusy),
+            EFBIG => Ok(FileTooLarge),
+            ENOSPC => Ok(NoSpaceLeftOnDevice),
+            ESPIPE => Ok(IllegalSeek),
+            EROFS => Ok(ReadOnlyFileSystem),
+            EMLINK => Ok(TooManyLinks),
+            EPIPE => Ok(BrokenPipe),
+            EDOM => Ok(NumberOutOfDomain),
+            ERANGE => Ok(ResultTooLarge),
+            ENOMSG => Ok(NoMessage),
+            EIDRM => Ok(IdentifierRemoved),
+            ECHRNG => Ok(ChannelNumberOutOfRange),
+            EL2NSYNC => Ok(Level2NotSynchronized),
+            EL3HLT => Ok(Level3Halted),
+            EL3RST => Ok(Level3Reset),
+            ELNRNG => Ok(LinkNumberOutOfRange),
+            EUNATCH => Ok(ProtocolDriverNotAttached),
+            ENOCSI => Ok(NoCsiStructureAvailable),
+            EL2HLT => Ok(Level2Halted),
+            EDEADLK => Ok(Deadlock),
+            ENOLCK => Ok(NoRecordLocksAvailable),
+            EBADE => Ok(InvalidExchange),
+            EBADR => Ok(InvalidRequestDescriptor),
+            EXFULL => Ok(ExchangeFull),
+            ENOANO => Ok(NoAnode),
+            EBADRQC => Ok(InvalidRequestCode),
+            EBADSLT => Ok(InvalidSlot),
+            EDEADLOCK => Ok(FileLockingDeadlock),
+            EBFONT => Ok(BadFontFileFormat),
+            ENOSTR => Ok(DeviceNotAStream),
+            ENODATA => Ok(NoDataAvailable),
+            ETIME => Ok(TimerExpired),
+            ENOSR => Ok(OutOfStreamsResources),
+            ENONET => Ok(MachineNotOnTheNetwork),
+            ENOPKG => Ok(PackageNotInstalled),
+            EREMOTE => Ok(ObjectIsRemote),
+            ENOLINK => Ok(LinkSevered),
+            EADV => Ok(AdvertiseError),
+            ESRMNT => Ok(SrmountError),
+            ECOMM => Ok(CommunicationErrorOnSend),
+            EPROTO => Ok(ProtocolError),
+            EMULTIHOP => Ok(MultihopAttempted),
+            ELBIN => Ok(InodeIsRemote),
+            EDOTDOT => Ok(CrossMountPoint),
+            EBADMSG => Ok(TryingToReadUnreadableMessage),
+            EFTYPE => Ok(InappropriateFileTypeOrFormat),
+            ENOTUNIQ => Ok(GivenLogNameNotUnique),
+            EBADFD => Ok(FdInvalidForThisOperation),
+            EREMCHG => Ok(RemoteAddressChanged),
+            ELIBACC => Ok(CantAccessNeededSharedLibrary),
+            ELIBBAD => Ok(AccessingCorruptedSharedLibrary),
+            ELIBSCN => Ok(LibSectionInAOutCorrupted),
+            ELIBMAX => Ok(AttemptingToLinkInTooManyLibs),
+            ELIBEXEC => Ok(AttemptingToExecASharedLibrary),
+            ENOSYS => Ok(FunctionNotImplemented),
+            ENMFILE => Ok(NoMoreFiles),
+            ENOTEMPTY => Ok(DirectoryNotEmpty),
+            ENAMETOOLONG => Ok(FileOrPathNameTooLong),
+            ELOOP => Ok(TooManySymbolicLinks),
+            EOPNOTSUPP => Ok(OperationNotSupportedOnTransportEndpoint),
+            EPFNOSUPPORT => Ok(ProtocolFamilyNotSupported),
+            ECONNRESET => Ok(ConnectionResetByPeer),
+            ENOBUFS => Ok(NoBufferSpaceAvailable),
+            EAFNOSUPPORT => Ok(AddressFamilyNotSupportedByProtocolFamily),
+            EPROTOTYPE => Ok(ProtocolWrongTypeForSocket),
+            ENOTSOCK => Ok(SocketOperationOnNonSocket),
+            ENOPROTOOPT => Ok(ProtocolNotAvailable),
+            ESHUTDOWN => Ok(CantSendAfterSocketShutdown),
+            ECONNREFUSED => Ok(ConnectionRefused),
+            EADDRINUSE => Ok(AddressAlreadyInUse),
+            ECONNABORTED => Ok(ConnectionAborted),
+            ENETUNREACH => Ok(NetworkIsUnreachable),
+            ENETDOWN => Ok(NetworkInterfaceNotConfigured),
+            ETIMEDOUT => Ok(ConnectionTimedOut),
+            EHOSTDOWN => Ok(HostIsDown),
+            EHOSTUNREACH => Ok(HostIsUnreachable),
+            EINPROGRESS => Ok(ConnectionAlreadyInProgress),
+            EALREADY => Ok(SocketAlreadyConnected),
+            EDESTADDRREQ => Ok(DestinationAddressRequired),
+            EMSGSIZE => Ok(MessageTooLong),
+            EPROTONOSUPPORT => Ok(UnknownProtocol),
+            ESOCKTNOSUPPORT => Ok(SocketTypeNotSupported),
+            EADDRNOTAVAIL => Ok(AddressNotAvailable),
+            ENETRESET => Ok(NetworkDroppedConnectionOnReset),
+            EISCONN => Ok(SocketIsAlreadyConnected),
+            ENOTCONN => Ok(SocketIsNotConnected),
+            ETOOMANYREFS => Ok(TooManyReferences),
+            EPROCLIM => Ok(ProcessLimitExceeded),
+            EUSERS => Ok(TooManyUsers),
+            EDQUOT => Ok(DiskQuotaExceeded),
+            ESTALE => Ok(StaleNfsFileHandle),
+            ENOTSUP => Ok(NotSupported),
+            ENOMEDIUM => Ok(NoMedium),
+            ENOSHARE => Ok(NoShare),
+            ECASECLASH => Ok(CaseClash),
+            EILSEQ => Ok(IllegalSequence),
+            EOVERFLOW => Ok(Overflow),
+
+            NEG_EPERM => Ok(PermissionDeniedNeg),
+            NEG_ENOENT => Ok(NoSuchFileOrDirectoryNeg),
+            NEG_ESRCH => Ok(NoSuchProcessNeg),
+            NEG_EINTR => Ok(InterruptedNeg),
+            NEG_EIO => Ok(IoNeg),
+            NEG_ENXIO => Ok(NoSuchDeviceOrAddressNeg),
+            NEG_E2BIG => Ok(TooBigNeg),
+            NEG_ENOEXEC => Ok(ExecFormatNeg),
+            NEG_EBADF => Ok(BadFileNumberNeg),
+            NEG_ECHILD => Ok(NoChildProcessesNeg),
+            NEG_EAGAIN => Ok(TryAgainNeg),
+            NEG_ENOMEM => Ok(NoMemoryNeg),
+            NEG_EACCES => Ok(AccessDeniedNeg),
+            NEG_EFAULT => Ok(BadAddressNeg),
+            NEG_ENOTBLK => Ok(BlockDeviceRequiredNeg),
+            NEG_EBUSY => Ok(BusyNeg),
+            NEG_EEXIST => Ok(FileExistsNeg),
+            NEG_EXDEV => Ok(CrossDeviceLinkNeg),
+            NEG_ENODEV => Ok(NoSuchDeviceNeg),
+            NEG_ENOTDIR => Ok(NotADirectoryNeg),
+            NEG_EISDIR => Ok(IsADirectoryNeg),
+            NEG_EINVAL => Ok(InvalidArgumentNeg),
+            NEG_ENFILE => Ok(FileTableOverflowNeg),
+            NEG_EMFILE => Ok(TooManyOpenFilesNeg),
+            NEG_ENOTTY => Ok(NotATtyNeg),
+            NEG_ETXTBSY => Ok(TextFileBusyNeg),
+            NEG_EFBIG => Ok(FileTooLargeNeg),
+            NEG_ENOSPC => Ok(NoSpaceLeftOnDeviceNeg),
+            NEG_ESPIPE => Ok(IllegalSeekNeg),
+            NEG_EROFS => Ok(ReadOnlyFileSystemNeg),
+            NEG_EMLINK => Ok(TooManyLinksNeg),
+            NEG_EPIPE => Ok(BrokenPipeNeg),
+            NEG_EDOM => Ok(NumberOutOfDomainNeg),
+            NEG_ERANGE => Ok(ResultTooLargeNeg),
+            NEG_ENOMSG => Ok(NoMessageNeg),
+            NEG_EIDRM => Ok(IdentifierRemovedNeg),
+            NEG_ECHRNG => Ok(ChannelNumberOutOfRangeNeg),
+            NEG_EL2NSYNC => Ok(Level2NotSynchronizedNeg),
+            NEG_EL3HLT => Ok(Level3HaltedNeg),
+            NEG_EL3RST => Ok(Level3ResetNeg),
+            NEG_ELNRNG => Ok(LinkNumberOutOfRangeNeg),
+            NEG_EUNATCH => Ok(ProtocolDriverNotAttachedNeg),
+            NEG_ENOCSI => Ok(NoCsiStructureAvailableNeg),
+            NEG_EL2HLT => Ok(Level2HaltedNeg),
+            NEG_EDEADLK => Ok(DeadlockNeg),
+            NEG_ENOLCK => Ok(NoRecordLocksAvailableNeg),
+            NEG_EBADE => Ok(InvalidExchangeNeg),
+            NEG_EBADR => Ok(InvalidRequestDescriptorNeg),
+            NEG_EXFULL => Ok(ExchangeFullNeg),
+            NEG_ENOANO => Ok(NoAnodeNeg),
+            NEG_EBADRQC => Ok(InvalidRequestCodeNeg),
+            NEG_EBADSLT => Ok(InvalidSlotNeg),
+            NEG_EDEADLOCK => Ok(FileLockingDeadlockNeg),
+            NEG_EBFONT => Ok(BadFontFileFormatNeg),
+            NEG_ENOSTR => Ok(DeviceNotAStreamNeg),
+            NEG_ENODATA => Ok(NoDataAvailableNeg),
+            NEG_ETIME => Ok(TimerExpiredNeg),
+            NEG_ENOSR => Ok(OutOfStreamsResourcesNeg),
+            NEG_ENONET => Ok(MachineNotOnTheNetworkNeg),
+            NEG_ENOPKG => Ok(PackageNotInstalledNeg),
+            NEG_EREMOTE => Ok(ObjectIsRemoteNeg),
+            NEG_ENOLINK => Ok(LinkSeveredNeg),
+            NEG_EADV => Ok(AdvertiseErrorNeg),
+            NEG_ESRMNT => Ok(SrmountErrorNeg),
+            NEG_ECOMM => Ok(CommunicationErrorOnSendNeg),
+            NEG_EPROTO => Ok(ProtocolErrorNeg),
+            NEG_EMULTIHOP => Ok(MultihopAttemptedNeg),
+            NEG_ELBIN => Ok(InodeIsRemoteNeg),
+            NEG_EDOTDOT => Ok(CrossMountPointNeg),
+            NEG_EBADMSG => Ok(TryingToReadUnreadableMessageNeg),
+            NEG_EFTYPE => Ok(InappropriateFileTypeOrFormatNeg),
+            NEG_ENOTUNIQ => Ok(GivenLogNameNotUniqueNeg),
+            NEG_EBADFD => Ok(FdInvalidForThisOperationNeg),
+            NEG_EREMCHG => Ok(RemoteAddressChangedNeg),
+            NEG_ELIBACC => Ok(CantAccessNeededSharedLibraryNeg),
+            NEG_ELIBBAD => Ok(AccessingCorruptedSharedLibraryNeg),
+            NEG_ELIBSCN => Ok(LibSectionInAOutCorruptedNeg),
+            NEG_ELIBMAX => Ok(AttemptingToLinkInTooManyLibsNeg),
+            NEG_ELIBEXEC => Ok(AttemptingToExecASharedLibraryNeg),
+            NEG_ENOSYS => Ok(FunctionNotImplementedNeg),
+            NEG_ENMFILE => Ok(NoMoreFilesNeg),
+            NEG_ENOTEMPTY => Ok(DirectoryNotEmptyNeg),
+            NEG_ENAMETOOLONG => Ok(FileOrPathNameTooLongNeg),
+            NEG_ELOOP => Ok(TooManySymbolicLinksNeg),
+            NEG_EOPNOTSUPP => Ok(OperationNotSupportedOnTransportEndpointNeg),
+            NEG_EPFNOSUPPORT => Ok(ProtocolFamilyNotSupportedNeg),
+            NEG_ECONNRESET => Ok(ConnectionResetByPeerNeg),
+            NEG_ENOBUFS => Ok(NoBufferSpaceAvailableNeg),
+            NEG_EAFNOSUPPORT => Ok(AddressFamilyNotSupportedByProtocolFamilyNeg),
+            NEG_EPROTOTYPE => Ok(ProtocolWrongTypeForSocketNeg),
+            NEG_ENOTSOCK => Ok(SocketOperationOnNonSocketNeg),
+            NEG_ENOPROTOOPT => Ok(ProtocolNotAvailableNeg),
+            NEG_ESHUTDOWN => Ok(CantSendAfterSocketShutdownNeg),
+            NEG_ECONNREFUSED => Ok(ConnectionRefusedNeg),
+            NEG_EADDRINUSE => Ok(AddressAlreadyInUseNeg),
+            NEG_ECONNABORTED => Ok(ConnectionAbortedNeg),
+            NEG_ENETUNREACH => Ok(NetworkIsUnreachableNeg),
+            NEG_ENETDOWN => Ok(NetworkInterfaceNotConfiguredNeg),
+            NEG_ETIMEDOUT => Ok(ConnectionTimedOutNeg),
+            NEG_EHOSTDOWN => Ok(HostIsDownNeg),
+            NEG_EHOSTUNREACH => Ok(HostIsUnreachableNeg),
+            NEG_EINPROGRESS => Ok(ConnectionAlreadyInProgressNeg),
+            NEG_EALREADY => Ok(SocketAlreadyConnectedNeg),
+            NEG_EDESTADDRREQ => Ok(DestinationAddressRequiredNeg),
+            NEG_EMSGSIZE => Ok(MessageTooLongNeg),
+            NEG_EPROTONOSUPPORT => Ok(UnknownProtocolNeg),
+            NEG_ESOCKTNOSUPPORT => Ok(SocketTypeNotSupportedNeg),
+            NEG_EADDRNOTAVAIL => Ok(AddressNotAvailableNeg),
+            NEG_ENETRESET => Ok(NetworkDroppedConnectionOnResetNeg),
+            NEG_EISCONN => Ok(SocketIsAlreadyConnectedNeg),
+            NEG_ENOTCONN => Ok(SocketIsNotConnectedNeg),
+            NEG_ETOOMANYREFS => Ok(TooManyReferencesNeg),
+            NEG_EPROCLIM => Ok(ProcessLimitExceededNeg),
+            NEG_EUSERS => Ok(TooManyUsersNeg),
+            NEG_EDQUOT => Ok(DiskQuotaExceededNeg),
+            NEG_ESTALE => Ok(StaleNfsFileHandleNeg),
+            NEG_ENOTSUP => Ok(NotSupportedNeg),
+            NEG_ENOMEDIUM => Ok(NoMediumNeg),
+            NEG_ENOSHARE => Ok(NoShareNeg),
+            NEG_ECASECLASH => Ok(CaseClashNeg),
+            NEG_EILSEQ => Ok(IllegalSequenceNeg),
+            NEG_EOVERFLOW => Ok(OverflowNeg),
             _ => Err(value),
         }
     }
@@ -1054,6 +1556,7 @@ impl StandardErrno {
 ///
 /// These are basically just `i32` values, but this type is used to make it clear that the value is
 /// an errno.
+#[must_use]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct Errno(pub i32);
@@ -1084,64 +1587,6 @@ impl From<StandardErrno> for Errno {
     }
 }
 
-impl TryFrom<Errno> for NegStandardErrno {
-    type Error = i32;
-
-    fn try_from(value: Errno) -> Result<Self, Self::Error> {
-        Ok(StandardErrno::parse_i32(-value.0)?.neg())
-    }
-}
-
-/// Standard errno values negated
-#[derive(Debug, Copy, Clone, Eq, PartialEq, thiserror::Error)]
-#[error(transparent)]
-pub struct NegStandardErrno(StandardErrno);
-
-impl StandardErrno {
-    /// Negate the errno value.
-    #[must_use]
-    pub const fn neg(self) -> NegStandardErrno {
-        NegStandardErrno(self)
-    }
-}
-
-impl NegStandardErrno {
-    /// Negate the errno value.
-    #[must_use]
-    pub const fn neg(self) -> StandardErrno {
-        self.0
-    }
-
-    /// Parse an `i32` value into a `StandardErrno`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the original `i32` value if it does not correspond to a standard errno.
-    pub const fn parse_i32(value: i32) -> Result<Self, i32> {
-        match StandardErrno::parse_i32(-value) {
-            Ok(standard) => Ok(standard.neg()),
-            Err(_) => Err(value),
-        }
-    }
-}
-
-impl core::ops::Neg for StandardErrno {
-    type Output = NegStandardErrno;
-
-    fn neg(self) -> Self::Output {
-        self.neg()
-    }
-}
-
-impl core::ops::Neg for NegStandardErrno {
-    type Output = StandardErrno;
-
-    #[must_use]
-    fn neg(self) -> Self::Output {
-        self.neg()
-    }
-}
-
 /// An "errno" error
 ///
 /// This enum attempts to map `i32` values to standard (both positive and negative) values as
@@ -1150,6 +1595,7 @@ impl core::ops::Neg for NegStandardErrno {
 /// The negative versions of the errors are commonly found in `C` code and often (but don't always)
 /// map to the meaning of their positive counterparts.
 /// Thus positive and negative values are kept in different arms of this enum.
+/// I am aware that this is very awkward.
 ///
 /// [`errno.h`]: https://man7.org/linux/man-pages/man3/errno.3.html
 #[derive(Debug, Copy, Clone, Eq, PartialEq, thiserror::Error)]
@@ -1158,9 +1604,6 @@ pub enum ErrorCode {
     /// A standard errno value
     #[error(transparent)]
     Standard(StandardErrno),
-    /// A negated standard errno value
-    #[error(transparent)]
-    NegStandard(NegStandardErrno),
     /// Any `i32` which does not map to a standard (positive or negative) Errno value
     #[error("Unknown (non-standard) errno: {0:?}")]
     Other(Errno),
@@ -1171,10 +1614,7 @@ impl ErrorCode {
     pub const fn parse_i32(val: i32) -> ErrorCode {
         match StandardErrno::parse_i32(val) {
             Ok(standard) => ErrorCode::Standard(standard),
-            Err(_) => match NegStandardErrno::parse_i32(val) {
-                Ok(neg_standard) => ErrorCode::NegStandard(neg_standard),
-                Err(_) => ErrorCode::Other(Errno(val)),
-            },
+            Err(code) => ErrorCode::Other(Errno(code)),
         }
     }
 
@@ -1185,387 +1625,11 @@ impl ErrorCode {
 
     /// Parse a `T` value into an `errno::Error` where `T` is `Into<i32>`.
     ///
-    /// Sadly this function can't currently be `const`.
+    /// Sadly, this function can't currently be `const`.
     pub fn parse<T>(val: T) -> ErrorCode
     where
         T: Into<i32>,
     {
         Self::parse_i32(val.into())
     }
-}
-
-/// Standard errno values
-#[derive(Debug, Copy, Clone, Eq, PartialEq, thiserror::Error)]
-#[repr(i32)]
-pub enum StandardErrnoAgain {
-    /// No error.  Successful operation.
-    #[error("No error.  Successful operation.")]
-    Success(u8) = SUCCESS,
-    /// Operation not permitted
-    #[error("Operation not permitted")]
-    PermissionDenied = EPERM,
-    /// No such file or directory
-    #[error("No such file or directory")]
-    NoSuchFileOrDirectory = ENOENT,
-    /// No such process
-    #[error("No such process")]
-    NoSuchProcess = ESRCH,
-    /// Interrupted system call
-    #[error("Interrupted system call")]
-    Interrupted = EINTR,
-    /// I/O error
-    #[error("I/O error")]
-    Io = EIO,
-    /// No such device or address
-    #[error("No such device or address")]
-    NoSuchDeviceOrAddress = ENXIO,
-    /// Argument list too long
-    #[error("Argument list too long")]
-    TooBig = E2BIG,
-    /// Exec format error
-    #[error("Exec format error")]
-    ExecFormat = ENOEXEC,
-    /// Bad file number
-    #[error("Bad file number")]
-    BadFileNumber = EBADF,
-    /// No child processes
-    #[error("No child processes")]
-    NoChildProcesses = ECHILD,
-    /// Try again
-    #[error("Try again")]
-    TryAgain = EAGAIN,
-    /// No memory available
-    #[error("No memory available")]
-    NoMemory = ENOMEM,
-    /// Access denied
-    #[error("Access denied")]
-    AccessDenied = EACCES,
-    /// Bad address
-    #[error("Bad address")]
-    BadAddress = EFAULT,
-    /// Block device required
-    #[error("Block device required")]
-    BlockDeviceRequired = ENOTBLK,
-    /// Device or resource busy
-    #[error("Device or resource busy")]
-    Busy = EBUSY,
-    /// File exists
-    #[error("File exists")]
-    FileExists = EEXIST,
-    /// Cross-device link
-    #[error("Cross-device link")]
-    CrossDeviceLink = EXDEV,
-    /// No such device
-    #[error("No such device")]
-    NoSuchDevice = ENODEV,
-    /// Not a directory
-    #[error("Not a directory")]
-    NotADirectory = ENOTDIR,
-    /// Is a directory
-    #[error("Is a directory")]
-    IsADirectory = EISDIR,
-    /// Invalid argument
-    #[error("Invalid argument")]
-    InvalidArgument = EINVAL,
-    /// File table overflow
-    #[error("File table overflow")]
-    FileTableOverflow = ENFILE,
-    /// Too many open files
-    #[error("Too many open files")]
-    TooManyOpenFiles = EMFILE,
-    /// Not a tty
-    #[error("Not a tty")]
-    NotATty = ENOTTY,
-    /// Text file busy
-    #[error("Text file busy")]
-    TextFileBusy = ETXTBSY,
-    /// File too large
-    #[error("File too large")]
-    FileTooLarge = EFBIG,
-    /// No space left on a device
-    #[error("No space left on device")]
-    NoSpaceLeftOnDevice = ENOSPC,
-    /// Illegal seek
-    #[error("Illegal seek")]
-    IllegalSeek = ESPIPE,
-    /// Read-only file system
-    #[error("Read-only file system")]
-    ReadOnlyFileSystem = EROFS,
-    /// Too many links
-    #[error("Too many links")]
-    TooManyLinks = EMLINK,
-    /// Broken pipe
-    #[error("Broken pipe")]
-    BrokenPipe = EPIPE,
-    /// Numerical argument out of domain
-    #[error("Numerical argument out of domain")]
-    NumberOutOfDomain = EDOM,
-    /// Result too large
-    #[error("Result too large")]
-    ResultTooLarge = ERANGE,
-    /// No message of desired type
-    #[error("No message of desired type")]
-    NoMessage = ENOMSG,
-    /// Identifier removed
-    #[error("Identifier removed")]
-    IdentifierRemoved = EIDRM,
-    /// Channel number out of range
-    #[error("Channel number out of range")]
-    ChannelNumberOutOfRange = ECHRNG,
-    /// Level 2 not synchronized
-    #[error("Level 2 not synchronized")]
-    Level2NotSynchronized = EL2NSYNC,
-    /// Level 3 halted
-    #[error("Level 3 halted")]
-    Level3Halted = EL3HLT,
-    /// Level 3 reset
-    #[error("Level 3 reset")]
-    Level3Reset = EL3RST,
-    /// Link number out of range
-    #[error("Link number out of range")]
-    LinkNumberOutOfRange = ELNRNG,
-    /// Protocol driver not attached
-    #[error("Protocol driver not attached")]
-    ProtocolDriverNotAttached = EUNATCH,
-    /// No CSI structure available
-    #[error("No CSI structure available")]
-    NoCsiStructureAvailable = ENOCSI,
-    /// Level 2 halted
-    #[error("Level 2 halted")]
-    Level2Halted = EL2HLT,
-    /// Deadlock condition
-    #[error("Deadlock condition")]
-    Deadlock = EDEADLK,
-    /// No record locks available
-    #[error("No record locks available")]
-    NoRecordLocksAvailable = ENOLCK,
-    /// Invalid exchange
-    #[error("Invalid exchange")]
-    InvalidExchange = EBADE,
-    /// Invalid request descriptor
-    #[error("Invalid request descriptor")]
-    InvalidRequestDescriptor = EBADR,
-    /// Exchange full
-    #[error("Exchange full")]
-    ExchangeFull = EXFULL,
-    /// No anode
-    #[error("No anode")]
-    NoAnode = ENOANO,
-    /// Invalid request code
-    #[error("Invalid request code")]
-    InvalidRequestCode = EBADRQC,
-    /// Invalid slot
-    #[error("Invalid slot")]
-    InvalidSlot = EBADSLT,
-    /// File locking deadlock error
-    #[error("File locking deadlock error")]
-    FileLockingDeadlock = EDEADLOCK,
-    /// Bad font file format
-    #[error("Bad font file format")]
-    BadFontFileFormat = EBFONT,
-    /// Device not a stream
-    #[error("Device not a stream")]
-    DeviceNotAStream = ENOSTR,
-    /// No data available
-    #[error("No data available")]
-    NoDataAvailable = ENODATA,
-    /// Timer expired
-    #[error("Timer expired")]
-    TimerExpired = ETIME,
-    /// Out of streams resources
-    #[error("Out of streams resources")]
-    OutOfStreamsResources = ENOSR,
-    /// Machine is not on the network
-    #[error("Machine is not on the network")]
-    MachineNotOnTheNetwork = ENONET,
-    /// Package not installed
-    #[error("Package not installed")]
-    PackageNotInstalled = ENOPKG,
-    /// The object is remote
-    #[error("The object is remote")]
-    ObjectIsRemote = EREMOTE,
-    /// The link has been severed
-    #[error("The link has been severed")]
-    LinkSevered = ENOLINK,
-    /// Advertise error
-    #[error("Advertise error")]
-    AdvertiseError = EADV,
-    /// Srmount error
-    #[error("Srmount error")]
-    SrmountError = ESRMNT,
-    /// Communication error on send
-    #[error("Communication error on send")]
-    CommunicationErrorOnSend = ECOMM,
-    /// Protocol error
-    #[error("Protocol error")]
-    ProtocolError = EPROTO,
-    /// Multihop attempted
-    #[error("Multihop attempted")]
-    MultihopAttempted = EMULTIHOP,
-    /// Inode is remote (not really error)
-    #[error("Inode is remote (not really error)")]
-    InodeIsRemote = ELBIN,
-    /// Cross-mount point (not really error)
-    #[error("Cross mount point (not really error)")]
-    CrossMountPoint = EDOTDOT,
-    /// Trying to read an unreadable message
-    #[error("Trying to read unreadable message")]
-    TryingToReadUnreadableMessage = EBADMSG,
-    /// Inappropriate file type or format
-    #[error("Inappropriate file type or format")]
-    InappropriateFileTypeOrFormat = EFTYPE,
-    /// Given log name not unique
-    #[error("Given log name not unique")]
-    GivenLogNameNotUnique = ENOTUNIQ,
-    /// f.d. invalid for this operation
-    #[error("f.d. invalid for this operation")]
-    FdInvalidForThisOperation = EBADFD,
-    /// Remote address changed
-    #[error("Remote address changed")]
-    RemoteAddressChanged = EREMCHG,
-    /// Can't access a necessary shared library
-    #[error("Can't access a needed shared library")]
-    CantAccessNeededSharedLibrary = ELIBACC,
-    /// Accessing a corrupted shared library
-    #[error("Accessing a corrupted shared library")]
-    AccessingCorruptedSharedLibrary = ELIBBAD,
-    /// .lib section in a.out corrupted
-    #[error(".lib section in a.out corrupted")]
-    LibSectionInAOutCorrupted = ELIBSCN,
-    /// Attempting to link in too many libs
-    #[error("Attempting to link in too many libs")]
-    AttemptingToLinkInTooManyLibs = ELIBMAX,
-    /// Attempting to exec a shared library
-    #[error("Attempting to exec a shared library")]
-    AttemptingToExecASharedLibrary = ELIBEXEC,
-    /// Function is not implemented
-    #[error("Function not implemented")]
-    FunctionNotImplemented = ENOSYS,
-    /// No more files
-    #[error("No more files")]
-    NoMoreFiles = ENMFILE,
-    /// Directory is not empty
-    #[error("Directory not empty")]
-    DirectoryNotEmpty = ENOTEMPTY,
-    /// File or path name too long
-    #[error("File or path name too long")]
-    FileOrPathNameTooLong = ENAMETOOLONG,
-    /// Too many symbolic links
-    #[error("Too many symbolic links")]
-    TooManySymbolicLinks = ELOOP,
-    /// Operation not supported on transport endpoint
-    #[error("Operation not supported on transport endpoint")]
-    OperationNotSupportedOnTransportEndpoint = EOPNOTSUPP,
-    /// Protocol family is not supported
-    #[error("Protocol family not supported")]
-    ProtocolFamilyNotSupported = EPFNOSUPPORT,
-    /// Connection reset by peer
-    #[error("Connection reset by peer")]
-    ConnectionResetByPeer = ECONNRESET,
-    /// No buffer space available
-    #[error("No buffer space available")]
-    NoBufferSpaceAvailable = ENOBUFS,
-    /// Address family not supported by protocol family
-    #[error("Address family not supported by protocol family")]
-    AddressFamilyNotSupportedByProtocolFamily = EAFNOSUPPORT,
-    /// Protocol wrong type for socket
-    #[error("Protocol wrong type for socket")]
-    ProtocolWrongTypeForSocket = EPROTOTYPE,
-    /// Socket operation on non-socket
-    #[error("Socket operation on non-socket")]
-    SocketOperationOnNonSocket = ENOTSOCK,
-    /// Protocol not available
-    #[error("Protocol not available")]
-    ProtocolNotAvailable = ENOPROTOOPT,
-    /// Can't send after socket shutdown
-    #[error("Can't send after socket shutdown")]
-    CantSendAfterSocketShutdown = ESHUTDOWN,
-    /// Connection refused
-    #[error("Connection refused")]
-    ConnectionRefused = ECONNREFUSED,
-    /// Address already in use
-    #[error("Address already in use")]
-    AddressAlreadyInUse = EADDRINUSE,
-    /// Connection aborted
-    #[error("Connection aborted")]
-    ConnectionAborted = ECONNABORTED,
-    /// Network is unreachable
-    #[error("Network is unreachable")]
-    NetworkIsUnreachable = ENETUNREACH,
-    /// Network interface is not configured
-    #[error("Network interface is not configured")]
-    NetworkInterfaceNotConfigured = ENETDOWN,
-    /// Connection timed out
-    #[error("Connection timed out")]
-    ConnectionTimedOut = ETIMEDOUT,
-    /// Host is down
-    #[error("Host is down")]
-    HostIsDown = EHOSTDOWN,
-    /// Host is unreachable
-    #[error("Host is unreachable")]
-    HostIsUnreachable = EHOSTUNREACH,
-    /// Connection already in progress
-    #[error("Connection already in progress")]
-    ConnectionAlreadyInProgress = EINPROGRESS,
-    /// Socket already connected
-    #[error("Socket already connected")]
-    SocketAlreadyConnected = EALREADY,
-    /// Destination address required
-    #[error("Destination address required")]
-    DestinationAddressRequired = EDESTADDRREQ,
-    /// Message too long
-    #[error("Message too long")]
-    MessageTooLong = EMSGSIZE,
-    /// Unknown protocol
-    #[error("Unknown protocol")]
-    UnknownProtocol = EPROTONOSUPPORT,
-    /// Socket type is not supported
-    #[error("Socket type not supported")]
-    SocketTypeNotSupported = ESOCKTNOSUPPORT,
-    /// Address not available
-    #[error("Address not available")]
-    AddressNotAvailable = EADDRNOTAVAIL,
-    /// Network dropped connection on reset
-    #[error("Network dropped connection on reset")]
-    NetworkDroppedConnectionOnReset = ENETRESET,
-    /// Socket is already connected
-    #[error("Socket is already connected")]
-    SocketIsAlreadyConnected = EISCONN,
-    /// Socket is not connected
-    #[error("Socket is not connected")]
-    SocketIsNotConnected = ENOTCONN,
-    /// Too many references: cannot splice
-    #[error("Too many references: cannot splice")]
-    TooManyReferences = ETOOMANYREFS,
-    /// The per-user limit on the new process would be exceeded by an attempted fork.
-    #[error("The per-user limit on new process would be exceeded by an attempted fork.")]
-    ProcessLimitExceeded = EPROCLIM,
-    /// The file quota system is confused because there are too many users.
-    #[error("The file quota system is confused because there are too many users.")]
-    TooManyUsers = EUSERS,
-    /// The user's disk quota was exceeded.
-    #[error("The user's disk quota was exceeded.")]
-    DiskQuotaExceeded = EDQUOT,
-    /// Stale NFS file handle
-    #[error("Stale NFS file handle")]
-    StaleNfsFileHandle = ESTALE,
-    /// Not supported
-    #[error("Not supported")]
-    NotSupported = ENOTSUP,
-    /// No medium (in tape drive)
-    #[error("No medium (in tape drive)")]
-    NoMedium = ENOMEDIUM,
-    /// No such host or network path
-    #[error("No such host or network path")]
-    NoShare = ENOSHARE,
-    /// Filename exists with different case
-    #[error("Filename exists with different case")]
-    CaseClash = ECASECLASH,
-    /// While decoding a multibyte character the function came along an invalid or an incomplete
-    /// sequence of bytes or the given wide character is invalid.
-    #[error("While decoding a multibyte character the function came along an invalid or an incomplete sequence of bytes or the given wide character is invalid.")]
-    IllegalSequence = EILSEQ,
-    /// Value too large for defined data type
-    #[error("Value too large for defined data type")]
-    Overflow = EOVERFLOW,
 }
