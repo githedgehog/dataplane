@@ -74,5 +74,4 @@ With that we have distributed (to the developer) all the necessary libraries to 
 
 Unfortunately, for reasons well outside of scope here, the files in `compile-env` are broken symlinks at this point.
 
-We need to fix that.
-
+We need to fix that (see [fake-nix](./fake-nix.md)).
