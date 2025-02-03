@@ -226,7 +226,7 @@ pub struct DevConfig {
     /// Rework this bad idea.
     pub tx_offloads: Option<TxOffloadConfig>,
     // TODO: more reasonable type for [`RxOffload`] here (similar to [`TxOffloadConfig`])
-    pub(crate) rx_offloads: Option<RxOffload>,
+    pub rx_offloads: Option<RxOffload>,
 }
 
 #[derive(Debug)]
