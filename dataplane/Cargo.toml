@@ -6,3 +6,9 @@ publish = false
 license = "Apache-2.0"
 
 [dependencies]
+
+ctrlc = { workspace = true, features = ["termination"] }
+net = { workspace = true }
+dpdk = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["default"] }
