@@ -2,6 +2,7 @@
 **/target/**
 /.bin/**
 /.vscode/**
+/artifacts/**
 /compile-env/**
 /design-docs/src/mdbook/book/**
 /design-docs/src/mdbook/src/mdbook-plantuml-img/**
