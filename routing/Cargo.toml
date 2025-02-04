@@ -2,8 +2,11 @@
 name = "routing"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [dependencies]
-net = { path = "../net" }
-thiserror.workspace = true
+ipnet = "2.11.0"
+iptrie = "0.9.1"
+net = { workspace = true }
+thiserror = { workspace = true }
 
