@@ -1,3 +1,4 @@
+mod adjacency;
 mod encapsulation;
 mod errors;
 mod interface;
