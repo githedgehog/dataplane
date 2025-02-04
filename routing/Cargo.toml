@@ -3,3 +3,7 @@ name = "routing"
 version = "0.1.0"
 edition = "2021"
 
+[dependencies]
+net = { path = "../net" }
+thiserror.workspace = true
+
