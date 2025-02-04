@@ -22,9 +22,7 @@ pub mod addr;
 
 /// An IPv6 header
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Ipv6 {
-    inner: Ipv6Header,
-}
+pub struct Ipv6(Ipv6Header);
 
 impl Ipv6 {
     /// The minimum length (in bytes) of an [`Ipv6`] header.
@@ -35,25 +33,25 @@ impl Ipv6 {
     /// Get the source [`Ipv6Addr`] for this header
     #[must_use]
     pub fn source(&self) -> Ipv6Addr {
-        Ipv6Addr::from(self.inner.source)
+        Ipv6Addr::from(self.0.source)
     }
 
     /// Get the destination [`Ipv6Addr`] for this header
     #[must_use]
     pub fn destination(&self) -> Ipv6Addr {
-        Ipv6Addr::from(self.inner.destination)
+        Ipv6Addr::from(self.0.destination)
     }
 
     /// Get the [`IpNumber`] type of the next header.
     #[must_use]
     pub fn next_header(&self) -> IpNumber {
-        self.inner.next_header
+        self.0.next_header
     }
 
     /// Get the hop limit for this header (analogous to [`crate::ipv4::Ipv4::ttl`])
     #[must_use]
     pub fn hop_limit(&self) -> u8 {
-        self.inner.hop_limit
+        self.0.hop_limit
     }
 
     // TODO: proper wrapper type (low priority)
@@ -62,7 +60,7 @@ impl Ipv6 {
     /// [traffic class]: https://datatracker.ietf.org/doc/html/rfc8200#section-7
     #[must_use]
     pub fn traffic_class(&self) -> u8 {
-        self.inner.traffic_class
+        self.0.traffic_class
     }
 
     // TODO: proper wrapper type (low priority)
@@ -71,12 +69,12 @@ impl Ipv6 {
     /// [flow label]: https://datatracker.ietf.org/doc/html/rfc6437
     #[must_use]
     pub fn flow_label(&self) -> Ipv6FlowLabel {
-        self.inner.flow_label
+        self.0.flow_label
     }
 
     /// Set the source ip address of this header
     pub fn set_source(&mut self, source: UnicastIpv6Addr) -> &mut Self {
-        self.inner.source = source.inner().octets();
+        self.0.source = source.inner().octets();
         self
     }
 
@@ -89,7 +87,7 @@ impl Ipv6 {
         if source.is_multicast() {
             return Err(MulticastSourceForbidden);
         }
-        self.inner.source = source.octets();
+        self.0.source = source.octets();
         Ok(())
     }
 
@@ -100,7 +98,7 @@ impl Ipv6 {
     /// Does not confirm that the header's ip is unicast
     #[allow(unsafe_code)]
     pub unsafe fn set_source_unchecked(&mut self, source: Ipv6Addr) -> &mut Self {
-        self.inner.source = source.octets();
+        self.0.source = source.octets();
         self
     }
 
@@ -115,13 +113,13 @@ impl Ipv6 {
     /// zero destination (unlike a multicast-source).
     /// I judged it to be ok to skip the check.
     pub fn set_destination(&mut self, destination: Ipv6Addr) -> &mut Self {
-        self.inner.destination = destination.octets();
+        self.0.destination = destination.octets();
         self
     }
 
     /// Set the hop limit for this header (analogous to [`crate::ipv4::Ipv4::set_ttl`])
     pub fn set_hop_limit(&mut self, hop_limit: u8) -> &mut Self {
-        self.inner.hop_limit = hop_limit;
+        self.0.hop_limit = hop_limit;
         self
     }
 
@@ -131,10 +129,10 @@ impl Ipv6 {
     ///
     /// Will return a [`HopLimitAlreadyZero`] error if the hop limit is already zero :)
     pub fn decrement_hop_limit(&mut self) -> Result<(), HopLimitAlreadyZeroError> {
-        if self.inner.hop_limit == 0 {
+        if self.0.hop_limit == 0 {
             return Err(HopLimitAlreadyZeroError);
         }
-        self.inner.hop_limit -= 1;
+        self.0.hop_limit -= 1;
         Ok(())
     }
 
@@ -143,7 +141,7 @@ impl Ipv6 {
     ///
     /// [traffic class]: https://datatracker.ietf.org/doc/html/rfc8200#section-7
     pub fn set_traffic_class(&mut self, traffic_class: u8) -> &mut Self {
-        self.inner.traffic_class = traffic_class;
+        self.0.traffic_class = traffic_class;
         self
     }
 
@@ -151,7 +149,7 @@ impl Ipv6 {
     ///
     /// [flow label]: https://datatracker.ietf.org/doc/html/rfc6437
     pub fn set_flow_label(&mut self, flow_label: Ipv6FlowLabel) -> &mut Self {
-        self.inner.flow_label = flow_label;
+        self.0.flow_label = flow_label;
         self
     }
 
@@ -162,7 +160,7 @@ impl Ipv6 {
     /// This method makes no attempt to ensure that the supplied [`next_header`] value is valid for
     /// the packet to which this header belongs (if any).
     pub fn set_next_header(&mut self, next_header: IpNumber) -> &mut Self {
-        self.inner.next_header = next_header;
+        self.0.next_header = next_header;
         self
     }
 }
@@ -201,7 +199,7 @@ impl Parse for Ipv6 {
             buf = buf.len()
         );
         let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
-        Ok((Self { inner }, consumed))
+        Ok((Self(inner), consumed))
     }
 }
 
@@ -209,7 +207,7 @@ impl DeParse for Ipv6 {
     type Error = ();
 
     fn size(&self) -> NonZero<usize> {
-        NonZero::new(self.inner.header_len()).unwrap_or_else(|| unreachable!())
+        NonZero::new(self.0.header_len()).unwrap_or_else(|| unreachable!())
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
@@ -220,7 +218,7 @@ impl DeParse for Ipv6 {
                 actual: len,
             }));
         };
-        buf[..self.size().get()].copy_from_slice(&self.inner.to_bytes());
+        buf[..self.size().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
     }
 }
@@ -237,7 +235,7 @@ impl ParsePayload for Ipv6 {
     type Next = Ipv6Next;
 
     fn parse_payload(&self, cursor: &mut Reader) -> Option<Self::Next> {
-        match self.inner.next_header {
+        match self.0.next_header {
             IpNumber::TCP => cursor
                 .parse::<Tcp>()
                 .map_err(|e| {
@@ -270,14 +268,14 @@ impl ParsePayload for Ipv6 {
             | IpNumber::IPV6_ROUTE_HEADER
             | IpNumber::IPV6_FRAGMENTATION_HEADER
             | IpNumber::IPV6_DESTINATION_OPTIONS => cursor
-                .parse_with::<Ipv6Ext>(self.inner.next_header)
+                .parse_with::<Ipv6Ext>(self.0.next_header)
                 .map_err(|e| {
                     debug!("failed to parse ipv6 extension header: {e:?}");
                 })
                 .map(|(val, _)| Self::Next::Ipv6Ext(val))
                 .ok(),
             _ => {
-                trace!("unsupported protocol: {:?}", self.inner.next_header);
+                trace!("unsupported protocol: {:?}", self.0.next_header);
                 None
             }
         }
@@ -423,9 +421,7 @@ mod contract {
 
     impl<'a> Arbitrary<'a> for Ipv6 {
         fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-            let mut header = Ipv6 {
-                inner: Ipv6Header::default(),
-            };
+            let mut header = Ipv6(Ipv6Header::default());
             header.set_source(u.arbitrary()?);
             header.set_destination(u.arbitrary()?);
             header.set_next_header(NextHeader::arbitrary(u)?.into());

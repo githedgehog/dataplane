@@ -190,9 +190,7 @@ impl From<Vid> for VlanId {
 ///
 /// This may represent 802.1Q or 802.1AD (the outer ethtype is not stored in this struct)
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Vlan {
-    inner: SingleVlanHeader,
-}
+pub struct Vlan(SingleVlanHeader);
 
 impl Vlan {
     /// The minimum (and maximum) length of a [`Vlan`] header.
@@ -206,15 +204,13 @@ impl Vlan {
     /// Create a new [Vlan] header.
     #[must_use]
     pub fn new(vid: Vid, inner_ethtype: EthType, pcp: Pcp, dei: bool) -> Vlan {
-        Vlan {
-            inner: SingleVlanHeader {
-                pcp: pcp.into(),
-                drop_eligible_indicator: dei,
-                #[allow(unsafe_code)] // SAFETY: overlapping validity check between libraries.
-                vlan_id: unsafe { VlanId::new_unchecked(vid.as_u16()) },
-                ether_type: inner_ethtype.0,
-            },
-        }
+        Vlan(SingleVlanHeader {
+            pcp: pcp.into(),
+            drop_eligible_indicator: dei,
+            #[allow(unsafe_code)] // SAFETY: overlapping validity check between libraries.
+            vlan_id: unsafe { VlanId::new_unchecked(vid.as_u16()) },
+            ether_type: inner_ethtype.0,
+        })
     }
 
     /// Get the [`Vid`] of this `Vlan` header.
@@ -222,20 +218,20 @@ impl Vlan {
     pub fn vid(&self) -> Vid {
         #[allow(unsafe_code)] // safety: new and parse already check Vid validity
         unsafe {
-            Vid::new_unchecked(self.inner.vlan_id.value())
+            Vid::new_unchecked(self.0.vlan_id.value())
         }
     }
 
     /// Get the headers [`Pcp`]
     #[must_use]
     pub fn pcp(&self) -> Pcp {
-        self.inner.pcp.into()
+        self.0.pcp.into()
     }
 
     /// Get the headers drop eligibility indicator
     #[must_use]
     pub fn dei(&self) -> bool {
-        self.inner.drop_eligible_indicator
+        self.0.drop_eligible_indicator
     }
 
     /// Get the headers ethtype.
@@ -247,24 +243,24 @@ impl Vlan {
     /// this header.
     #[must_use]
     pub fn inner_ethtype(&self) -> EthType {
-        EthType(self.inner.ether_type)
+        EthType(self.0.ether_type)
     }
 
     /// Set the [`Vid`] of this header.
     pub fn set_vid(&mut self, vid: Vid) -> &mut Self {
-        self.inner.vlan_id = vid.into();
+        self.0.vlan_id = vid.into();
         self
     }
 
     /// Set the [`Pcp`] of this header.
     pub fn set_pcp(&mut self, pcp: Pcp) -> &mut Self {
-        self.inner.pcp = pcp.into();
+        self.0.pcp = pcp.into();
         self
     }
 
     /// Set the drop eligibility indicator of this header.
     pub fn set_dei(&mut self, dei: bool) -> &mut Self {
-        self.inner.drop_eligible_indicator = dei;
+        self.0.drop_eligible_indicator = dei;
         self
     }
 
@@ -276,7 +272,7 @@ impl Vlan {
     /// It does _not_ set the ethertype of the ethernet (or other vlan) header which contains
     /// this header.
     pub fn set_inner_ethtype(&mut self, eth_type: EthType) -> &mut Self {
-        self.inner.ether_type = eth_type.0;
+        self.0.ether_type = eth_type.0;
         self
     }
 }
@@ -301,7 +297,7 @@ impl Parse for Vlan {
         // validate vlan
         Vid::new(inner.vlan_id.value()).map_err(ParseError::Invalid)?;
         let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
-        Ok((Self { inner }, consumed))
+        Ok((Self(inner), consumed))
     }
 }
 
@@ -309,7 +305,7 @@ impl DeParse for Vlan {
     type Error = ();
 
     fn size(&self) -> NonZero<usize> {
-        NonZero::new(self.inner.header_len()).unwrap_or_else(|| unreachable!())
+        NonZero::new(self.0.header_len()).unwrap_or_else(|| unreachable!())
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
@@ -320,7 +316,7 @@ impl DeParse for Vlan {
                 actual: len,
             }));
         };
-        buf[..self.size().get()].copy_from_slice(&self.inner.to_bytes());
+        buf[..self.size().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
     }
 }
@@ -329,7 +325,7 @@ impl ParsePayload for Vlan {
     type Next = EthNext;
 
     fn parse_payload(&self, cursor: &mut Reader) -> Option<EthNext> {
-        parse_from_ethertype(self.inner.ether_type, cursor)
+        parse_from_ethertype(self.0.ether_type, cursor)
     }
 }
 

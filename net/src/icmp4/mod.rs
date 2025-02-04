@@ -9,9 +9,7 @@ use std::num::NonZero;
 
 /// An `ICMPv4` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Icmp4 {
-    inner: Icmpv4Header,
-}
+pub struct Icmp4(Icmpv4Header);
 
 impl Parse for Icmp4 {
     type Error = LengthError;
@@ -31,7 +29,7 @@ impl Parse for Icmp4 {
             buf = buf.len()
         );
         let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
-        Ok((Self { inner }, consumed))
+        Ok((Self(inner), consumed))
     }
 }
 
@@ -39,7 +37,7 @@ impl DeParse for Icmp4 {
     type Error = ();
 
     fn size(&self) -> NonZero<usize> {
-        NonZero::new(self.inner.header_len()).unwrap_or_else(|| unreachable!())
+        NonZero::new(self.0.header_len()).unwrap_or_else(|| unreachable!())
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
@@ -50,7 +48,7 @@ impl DeParse for Icmp4 {
                 actual: len,
             }));
         };
-        buf[..self.size().get()].copy_from_slice(&self.inner.to_bytes());
+        buf[..self.size().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
     }
 }

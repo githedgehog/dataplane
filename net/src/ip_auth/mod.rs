@@ -17,9 +17,7 @@ use tracing::{debug, trace};
 ///
 /// This may appear in IPv4 and IPv6 headers.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IpAuth {
-    inner: Box<IpAuthHeader>,
-}
+pub struct IpAuth(Box<IpAuthHeader>);
 
 impl Parse for IpAuth {
     type Error = etherparse::err::ip_auth::HeaderSliceError;
@@ -35,7 +33,7 @@ impl Parse for IpAuth {
             buf = buf.len()
         );
         let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
-        Ok((Self { inner }, consumed))
+        Ok((Self(inner), consumed))
     }
 }
 
@@ -51,7 +49,7 @@ impl ParsePayload for IpAuth {
     type Next = IpAuthNext;
 
     fn parse_payload(&self, cursor: &mut Reader) -> Option<Self::Next> {
-        match self.inner.next_header {
+        match self.0.next_header {
             IpNumber::TCP => cursor
                 .parse::<Tcp>()
                 .map_err(|e| {
@@ -91,7 +89,7 @@ impl ParsePayload for IpAuth {
                     .ok()
             }
             _ => {
-                trace!("unsupported protocol: {:?}", self.inner.next_header);
+                trace!("unsupported protocol: {:?}", self.0.next_header);
                 None
             }
         }

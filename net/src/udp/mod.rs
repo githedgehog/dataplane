@@ -12,9 +12,7 @@ use std::num::NonZero;
 
 /// A UDP header.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Udp {
-    inner: UdpHeader,
-}
+pub struct Udp(UdpHeader);
 
 impl Udp {
     /// The minimum length of a valid UDP header (technically also the maximum length).
@@ -25,20 +23,20 @@ impl Udp {
     /// Get the header's source port
     #[must_use]
     pub const fn source(&self) -> UdpPort {
-        debug_assert!(self.inner.source_port != 0);
+        debug_assert!(self.0.source_port != 0);
         #[allow(unsafe_code)] // non-zero checked in [`Parse`] and `new`.
         unsafe {
-            UdpPort::new_unchecked(self.inner.source_port)
+            UdpPort::new_unchecked(self.0.source_port)
         }
     }
 
     /// Get the header's dest port
     #[must_use]
     pub const fn destination(&self) -> UdpPort {
-        debug_assert!(self.inner.destination_port != 0);
+        debug_assert!(self.0.destination_port != 0);
         #[allow(unsafe_code)] // non-zero checked in [`Parse`] and `new`.
         unsafe {
-            UdpPort::new_unchecked(self.inner.destination_port)
+            UdpPort::new_unchecked(self.0.destination_port)
         }
     }
 
@@ -50,31 +48,31 @@ impl Udp {
         // safety: safety ensured by constructors
         #[allow(unsafe_code)]
         unsafe {
-            NonZero::new_unchecked(self.inner.length)
+            NonZero::new_unchecked(self.0.length)
         }
     }
 
     /// Get the header's checksum.  No attempt is made to ensure that the checksum is correct.
     #[must_use]
     pub fn checksum(&self) -> u16 {
-        self.inner.checksum
+        self.0.checksum
     }
 
     /// Set the source port.
     pub fn set_source(&mut self, port: UdpPort) -> &mut Self {
-        self.inner.source_port = port.into();
+        self.0.source_port = port.into();
         self
     }
 
     /// Set the destination port.
     pub fn set_destination(&mut self, port: UdpPort) -> &mut Self {
-        self.inner.destination_port = port.into();
+        self.0.destination_port = port.into();
         self
     }
 
     /// Set the udp checksum.  No attempt is made to ensure the checksum is correct.
     pub fn set_checksum(&mut self, checksum: u16) -> &mut Self {
-        self.inner.checksum = checksum;
+        self.0.checksum = checksum;
         self
     }
 
@@ -90,7 +88,7 @@ impl Udp {
             length >= Udp::MIN_LENGTH.get() as u16,
             "udp length must be at least 8 bytes, got: {length:#x}",
         );
-        self.inner.length = length;
+        self.0.length = length;
         self
     }
 }
@@ -113,7 +111,7 @@ impl Parse for Udp {
             buf = buf.len()
         );
         let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
-        Ok((Self { inner }, consumed))
+        Ok((Self(inner), consumed))
     }
 }
 
@@ -121,7 +119,7 @@ impl DeParse for Udp {
     type Error = ();
 
     fn size(&self) -> NonZero<usize> {
-        NonZero::new(self.inner.header_len()).unwrap_or_else(|| unreachable!())
+        NonZero::new(self.0.header_len()).unwrap_or_else(|| unreachable!())
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
@@ -132,7 +130,7 @@ impl DeParse for Udp {
                 actual: len,
             }));
         };
-        buf[..self.size().get()].copy_from_slice(&self.inner.to_bytes());
+        buf[..self.size().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
     }
 }
@@ -145,9 +143,7 @@ mod contract {
 
     impl<'a> Arbitrary<'a> for Udp {
         fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-            let mut header = Udp {
-                inner: UdpHeader::default(),
-            };
+            let mut header = Udp(UdpHeader::default());
             header.set_source(u.arbitrary()?);
             header.set_destination(u.arbitrary()?);
             header.set_checksum(u.arbitrary()?);

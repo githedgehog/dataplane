@@ -23,9 +23,7 @@ pub use contract::*;
 
 /// An ethernet header.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Eth {
-    inner: Ethernet2Header,
-}
+pub struct Eth(Ethernet2Header);
 
 /// An error which may occur in the event of an invalid ethernet header.
 #[derive(Debug, thiserror::Error)]
@@ -67,13 +65,11 @@ impl Eth {
     ///
     /// This function will return an error if the specified source or dest [Mac] are invalid.
     pub fn new(source: Mac, destination: Mac, ether_type: EthType) -> Result<Eth, EthError> {
-        let mut header = Eth {
-            inner: Ethernet2Header {
-                source: source.0,
-                destination: destination.0,
-                ether_type: ether_type.0,
-            },
-        };
+        let mut header = Eth(Ethernet2Header {
+            source: source.0,
+            destination: destination.0,
+            ether_type: ether_type.0,
+        });
         header
             .set_source_checked(source)
             .map_err(EthError::InvalidSource)?;
@@ -86,19 +82,19 @@ impl Eth {
     /// Get the source [Mac] of the header.
     #[must_use]
     pub fn source(&self) -> Mac {
-        Mac(self.inner.source)
+        Mac(self.0.source)
     }
 
     /// Get the destination [Mac] of the header.
     #[must_use]
     pub fn destination(&self) -> Mac {
-        Mac(self.inner.destination)
+        Mac(self.0.destination)
     }
 
     /// Get the ethertype of the header.
     #[must_use]
     pub fn ether_type(&self) -> EthType {
-        EthType(self.inner.ether_type)
+        EthType(self.0.ether_type)
     }
 
     /// Set the source [Mac] of the ethernet header.
@@ -150,7 +146,7 @@ impl Eth {
     #[allow(unsafe_code)] // documented unsafe
     pub unsafe fn set_source_unchecked(&mut self, source: Mac) -> &mut Eth {
         debug_assert!(source.is_valid_src());
-        self.inner.source = source.0;
+        self.0.source = source.0;
         self
     }
 
@@ -161,13 +157,13 @@ impl Eth {
     /// This method does not check that the [Mac] is a valid dest [Mac].
     pub fn set_destination_unchecked(&mut self, destination: Mac) -> &mut Eth {
         debug_assert!(destination.is_valid_dst());
-        self.inner.destination = destination.0;
+        self.0.destination = destination.0;
         self
     }
 
     /// Set the ethertype of the header.
     pub fn set_ether_type(&mut self, ether_type: EtherType) -> &mut Eth {
-        self.inner.ether_type = ether_type;
+        self.0.ether_type = ether_type;
         self
     }
 }
@@ -190,7 +186,7 @@ impl Parse for Eth {
             buf = buf.len()
         );
         let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
-        let new = Self { inner };
+        let new = Self(inner);
         // integrity check for ethernet header (slightly hacky)
         SourceMac::new(new.source())
             .map_err(|e| ParseError::Invalid(EthError::InvalidSource(e)))?;
@@ -204,12 +200,12 @@ impl DeParse for Eth {
     type Error = ();
 
     fn size(&self) -> NonZero<usize> {
-        NonZero::new(self.inner.header_len()).unwrap_or_else(|| unreachable!())
+        NonZero::new(self.0.header_len()).unwrap_or_else(|| unreachable!())
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
         let len = buf.len();
-        let unused = self.inner.write_to_slice(buf).map_err(|e| {
+        let unused = self.0.write_to_slice(buf).map_err(|e| {
             let expected = NonZero::new(e.required_len).unwrap_or_else(|| unreachable!());
             DeParseError::Length(LengthError {
                 expected,
@@ -267,7 +263,7 @@ pub(crate) enum EthNext {
 impl ParsePayload for Eth {
     type Next = EthNext;
     fn parse_payload(&self, cursor: &mut Reader) -> Option<EthNext> {
-        parse_from_ethertype(self.inner.ether_type, cursor)
+        parse_from_ethertype(self.0.ether_type, cursor)
     }
 }
 

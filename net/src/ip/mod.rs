@@ -9,13 +9,11 @@ use etherparse::IpNumber;
 ///
 /// This exists to allow us to implement [`Arbitrary`] without violating rust's orphan rules.
 #[repr(transparent)]
-pub struct NextHeader {
-    inner: IpNumber,
-}
+pub struct NextHeader(IpNumber);
 
 impl From<NextHeader> for IpNumber {
     fn from(value: NextHeader) -> Self {
-        value.inner
+        value.0
     }
 }
 
@@ -23,20 +21,18 @@ impl NextHeader {
     /// Generate a new [`NextHeader`]
     #[must_use]
     pub fn new(inner: u8) -> Self {
-        Self {
-            inner: IpNumber::from(inner),
-        }
+        Self(IpNumber::from(inner))
     }
 
     /// Return the [`NextHeader`] represented as a `u8`
     #[must_use]
     pub fn as_u8(&self) -> u8 {
-        self.inner.0
+        self.0 .0
     }
 
     /// Set the value of this [`NextHeader`] to an arbitrary `u8`
     pub fn set_u8(&mut self, inner: u8) {
-        self.inner = IpNumber::from(inner);
+        self.0 = IpNumber::from(inner);
     }
 }
 
