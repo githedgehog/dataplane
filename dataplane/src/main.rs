@@ -24,7 +24,7 @@ use crate::pipeline::{MetaPacket, Metadata, Passthrough, Pipeline};
 #[global_allocator]
 static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();
 
-fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
+fn init_eal(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
     let rte = eal::init(args);
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
@@ -48,16 +48,8 @@ fn setup_pipeline() -> Pipeline {
     pipeline
 }
 
-fn main() {
-    let args = CmdArgs::parse();
-    let eal: Eal = init(args.eal_params());
-
-    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-    ctrlc::set_handler(move || stop_tx.send(()).expect("Error sending SIGINT signal"))
-        .expect("failed to set SIGINT handler");
-
-    let devices: Vec<Dev> = eal
-        .dev
+fn init_devices(eal: &Eal) -> Vec<Dev> {
+    eal.dev
         .iter()
         .map(|dev| {
             let config = dev::DevConfig {
@@ -107,8 +99,10 @@ fn main() {
             dev.start().unwrap();
             dev
         })
-        .collect();
+        .collect()
+}
 
+fn start_rte_workers(devices: &Vec<Dev>) {
     LCoreId::iter().enumerate().for_each(|(i, lcore_id)| {
         info!("Starting RTE Worker on {lcore_id:?}");
         let rx_queue = devices[0].rx_queue(RxQueueIndex(i as u16)).unwrap();
@@ -145,6 +139,20 @@ fn main() {
             }
         });
     });
+}
+
+fn main() {
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+    ctrlc::set_handler(move || stop_tx.send(()).expect("Error sending SIGINT signal"))
+        .expect("failed to set SIGINT handler");
+
+    let args = CmdArgs::parse();
+    let eal: Eal = init_eal(args.eal_params());
+
+    let devices: Vec<Dev> = init_devices(&eal);
+
+    start_rte_workers(&devices);
+
     stop_rx.recv().expect("failed to receive stop signal");
     info!("Shutting down dataplane");
     std::process::exit(0);
