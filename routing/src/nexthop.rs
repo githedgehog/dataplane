@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
+//! Object definitions for (shared) routing next-hops. These
+//! refer to other objects like Encapsulation.
+
 use crate::encapsulation::Encapsulation;
 use std::cell::RefCell;
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};

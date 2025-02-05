@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
+//! Submodule to implement a table of EVPN router macs.
+
 use net::eth::mac::Mac;
 use net::vxlan::Vni;
 use std::collections::{hash_map::Entry, HashMap};

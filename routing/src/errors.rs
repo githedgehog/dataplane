@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
+//! The error results used by this library.
+
 use thiserror::Error;
 
 #[allow(dead_code)]

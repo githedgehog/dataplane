@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
+//! State objects to keep adjacency information
+
 use crate::interface::IfIndex;
 use net::eth::mac::Mac;
 use std::collections::HashMap;

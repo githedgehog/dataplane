@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
+//! Type to represent IP-version neutral network prefixes.
+
 use ipnet::{Ipv4Net, Ipv6Net};
 use iptrie::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
 use std::fmt::Display;

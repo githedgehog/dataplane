@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
+//! State objects for network interfaces and interface table.
+
 use crate::errors::RouterError;
 use net::eth::mac::Mac;
 use net::vlan::Vid;

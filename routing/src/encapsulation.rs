@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
+//! Objects to model packet encapsulations
+
 use net::vxlan::Vni;
 use std::net::IpAddr;
 
