@@ -5,7 +5,7 @@
 
 use crate::icmp6::Icmp6;
 use crate::ip_auth::IpAuth;
-use crate::ipv6::addr::UnicastIpv6Address;
+use crate::ipv6::addr::UnicastIpv6Addr;
 use crate::packet::Header;
 use crate::parse::{
     DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, ParsePayloadWith,
@@ -75,7 +75,7 @@ impl Ipv6 {
     }
 
     /// Set the source ip address of this header
-    pub fn set_source(&mut self, source: UnicastIpv6Address) -> &mut Self {
+    pub fn set_source(&mut self, source: UnicastIpv6Addr) -> &mut Self {
         self.inner.source = source.inner().octets();
         self
     }

@@ -12,20 +12,20 @@ use std::net::Ipv6Addr;
 #[non_exhaustive]
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct UnicastIpv6Address(Ipv6Addr);
+pub struct UnicastIpv6Addr(Ipv6Addr);
 
-impl UnicastIpv6Address {
+impl UnicastIpv6Addr {
     /// Returns the supplied [`Ipv6Addr`] as a [`UnicastIpv6Address`]
     /// after confirming that it is in fact unicast.
     ///
     /// # Errors
     ///
     /// Returns the supplied [`Ipv6Addr`] in the [`Err`] case if the supplied address is multicast.
-    pub fn new(addr: Ipv6Addr) -> Result<UnicastIpv6Address, Ipv6Addr> {
+    pub fn new(addr: Ipv6Addr) -> Result<UnicastIpv6Addr, Ipv6Addr> {
         if addr.is_multicast() {
             Err(addr)
         } else {
-            Ok(UnicastIpv6Address(addr))
+            Ok(UnicastIpv6Addr(addr))
         }
     }
 
@@ -38,16 +38,16 @@ impl UnicastIpv6Address {
 
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
-    use crate::ipv6::addr::UnicastIpv6Address;
+    use crate::ipv6::addr::UnicastIpv6Addr;
     use arbitrary::{Arbitrary, Unstructured};
     use std::net::Ipv6Addr;
 
-    impl<'a> Arbitrary<'a> for UnicastIpv6Address {
+    impl<'a> Arbitrary<'a> for UnicastIpv6Addr {
         fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
             loop {
                 let ip = Ipv6Addr::arbitrary(u)?;
                 if !ip.is_multicast() {
-                    return Ok(UnicastIpv6Address(ip));
+                    return Ok(UnicastIpv6Addr(ip));
                 }
             }
         }
