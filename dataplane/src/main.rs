@@ -13,6 +13,7 @@ use dpdk::mem::{Pool, PoolConfig, PoolParams, RteAllocator};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, eal, socket};
+use nat::NatProcessor;
 use net::packet::Packet;
 use net::parse::{DeParse, Parse};
 use tracing::{info, trace, warn};
@@ -43,6 +44,10 @@ fn setup_pipeline() -> Pipeline {
 
     let passthrough = Passthrough::new();
     pipeline.add_stage(Box::new(passthrough)).unwrap();
+
+    let nat_stage = NatProcessor::new();
+    pipeline.add_stage(Box::new(nat_stage)).unwrap();
+
     pipeline.update_config(&config).unwrap();
 
     pipeline

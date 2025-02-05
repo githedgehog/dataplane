@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use crate::pipeline::{MetaPacket, PipelineStage};
 use net::vxlan::Vni;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::error::Error;
 use std::fmt::Debug;
 use std::fs;
 use std::hash::Hash;
@@ -270,6 +272,55 @@ impl GlobalContext {
     fn find_pif_in_vpc(&self, vpc_name: &str, ip: &IpAddr) -> Option<String> {
         let vpc = self.vpcs.get(vpc_name)?;
         vpc.pif_table.find_pif_by_endpoint(ip)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct NatProcessor {}
+
+impl NatProcessor {
+    #[tracing::instrument(level = "trace")]
+    pub fn new() -> Self {
+        NatProcessor {}
+    }
+
+    #[tracing::instrument(level = "trace")]
+    fn nat_needed(&self, _pkt: &mut MetaPacket) -> bool {
+        false
+    }
+
+    #[tracing::instrument(level = "trace")]
+    fn nat(&self, _pkt: &mut MetaPacket) {
+        // Apply NAT
+    }
+
+    #[tracing::instrument(level = "trace")]
+    fn process_packet(&self, metapacket: &mut MetaPacket) {
+        if self.nat_needed(metapacket) {
+            self.nat(metapacket);
+        }
+    }
+}
+
+impl PipelineStage for NatProcessor {
+    #[tracing::instrument(level = "info")]
+    fn start(&mut self) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+
+    #[tracing::instrument(level = "trace")]
+    fn update_config(
+        &mut self,
+        config: &crate::config::Config,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
+    fn process(
+        &mut self,
+        packets: Box<dyn Iterator<Item = MetaPacket>>,
+    ) -> Box<dyn Iterator<Item = MetaPacket>> {
+        packets
     }
 }
 
