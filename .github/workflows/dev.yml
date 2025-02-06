@@ -83,6 +83,7 @@ jobs:
         with:
           toolchain: "${{ matrix.rust }}"
           targets: "x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl"
+          components: "rustfmt,clippy"
       - name: "Checkout"
         uses: "actions/checkout@v4"
         with:
@@ -119,6 +120,10 @@ jobs:
       - name: "test musl release"
         run: |
           just debug=true rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-musl cargo test
+
+      - name: "run clippy"
+        run: |
+          just debug=true rust=${{matrix.rust}} cargo clippy
 
       - name: "build each commit"
         run: |
