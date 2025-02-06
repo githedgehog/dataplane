@@ -10,3 +10,4 @@ mod interface;
 mod nexthop;
 mod prefix;
 mod rmac;
+mod vrf;
