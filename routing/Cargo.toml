@@ -9,4 +9,5 @@ ipnet = "2.11.0"
 iptrie = "0.9.1"
 net = { workspace = true }
 thiserror = { workspace = true }
+dplane-rpc = { version = "1.0.0",  git = "https://github.com/githedgehog/dplane-rpc.git" }
 
