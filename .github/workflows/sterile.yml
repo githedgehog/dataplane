@@ -100,6 +100,12 @@ jobs:
         run: |
           just debug=true rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl sterile cargo test
 
+      - name: "run clippy"
+        if: ${{ always() }}
+        run: |
+          just debug=true rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu sterile cargo clippy
+
+
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
         uses: "mxschmitt/action-tmate@v3"
