@@ -23,6 +23,11 @@ on:
         description: "Run with tmate enabled"
         required: false
         default: false
+      debug_just:
+        type: "boolean"
+        description: "enable to see debug statements from just recipes"
+        required: false
+        default: false
 
 concurrency:
   group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.event.after }}"
@@ -68,6 +73,8 @@ jobs:
           - "stable"
           - "beta"
           - "nightly"
+        debug_just:
+          - "${{inputs.debug_just || false}}"
     name: "Developer build"
     runs-on: "lab"
     timeout-minutes: 45
@@ -96,34 +103,38 @@ jobs:
         run: |
           cargo install cargo-deny
       - run: |
-          just debug=true cargo deny check
+          just debug="${{matrix.debug_just}}" cargo deny check
       - name: refresh-compile-env
         run: |
-          just --yes debug=true refresh-compile-env
+          just --yes debug="${{matrix.debug_just}}" refresh-compile-env
       - run: |
-          just --yes debug=true fake-nix
+          just --yes debug="${{matrix.debug_just}}" fake-nix
 
       # At this stage, for Pull Requests, we're back to the HEAD of the branch,
       # start running tests for different configurations.
       - name: "test gnu dev"
         run: |
-          just debug=true rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-gnu cargo test
+          just debug="${{matrix.debug_just}}" rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-gnu \
+            cargo test
 
       - name: "test musl dev"
         run: |
-          just debug=true rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-musl cargo test
+          just debug="${{matrix.debug_just}}" rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-musl \
+            cargo test
 
       - name: "test gnu release"
         run: |
-          just debug=true rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-gnu cargo test
+          just debug="${{matrix.debug_just}}" rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-gnu \
+            cargo test
 
       - name: "test musl release"
         run: |
-          just debug=true rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-musl cargo test
+          just debug="${{matrix.debug_just}}" rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-musl \
+            cargo test
 
       - name: "run clippy"
         run: |
-          just debug=true rust=${{matrix.rust}} cargo clippy
+          just debug="${{matrix.debug_just}}" rust=${{matrix.rust}} cargo clippy
 
       - name: "build each commit"
         run: |
@@ -138,7 +149,7 @@ jobs:
           for commit in $COMMITS ; do
             git checkout $commit || exit 1
             printf "::group::Build commit %s\n" "$(git log --oneline --no-decorate -n 1)"
-            (just debug=true cargo +${{matrix.rust}} build --locked --profile=dev --target=x86_64-unknown-linux-gnu) || exit 1
+            (just debug="${{matrix.debug_just}}" cargo +${{matrix.rust}} build --locked --profile=dev --target=x86_64-unknown-linux-gnu) || exit 1
             printf "::endgroup::\n"
           done
           printf "::notice::HEAD remains at %s\n" "$(git log --oneline --no-decorate -n 1)"
