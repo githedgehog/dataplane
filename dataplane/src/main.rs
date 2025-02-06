@@ -3,6 +3,8 @@
 
 mod args;
 mod config;
+// TODO: Remove this once the code is more stable
+#[allow(dead_code)]
 mod nat;
 mod pipeline;
 

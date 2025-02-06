@@ -2,6 +2,10 @@
 // Copyright Open Network Fabric Authors
 
 use crate::pipeline::{MetaPacket, PipelineStage};
+use crate::{PacketProcessor, PacketProcessorConfig};
+use cidr::{IpCidr::V4, IpCidr::V6};
+use etherparse::IpNumber;
+use net::packet::Packet;
 use net::vxlan::Vni;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -280,8 +284,36 @@ impl GlobalContext {
 }
 
 #[derive(Clone, Debug)]
+enum NatMode {
+    Stateless,
+    Stateful,
+}
+
+#[derive(Clone, Debug)]
+struct NatRuleKey {
+    src_vni: Option<Vni>,
+    cidr: cidr::IpCidr,
+    protocol: etherparse::IpNumber,
+}
+
+#[derive(Clone, Debug)]
+struct NatRuleValue {
+    dst_vni: Option<Vni>,
+    cidr: cidr::IpCidr,
+    mode: NatMode,
+}
+
+#[derive(Clone, Debug)]
+struct NatRuleSet {
+    rules: HashMap<NatRuleKey, NatRuleValue>,
+}
+
+#[derive(Clone, Debug)]
 pub struct NatProcessor {
     context: GlobalContext,
+    default_mode: NatMode,
+    src_nat_rules: NatRuleSet,
+    dst_nat_rules: NatRuleSet,
 }
 
 impl NatProcessor {
@@ -289,7 +321,16 @@ impl NatProcessor {
     pub fn new() -> Self {
         let mut context = GlobalContext::new();
         context.build();
-        Self { context }
+        Self {
+            context,
+            default_mode: NatMode::Stateless,
+            src_nat_rules: NatRuleSet {
+                rules: HashMap::new(),
+            },
+            dst_nat_rules: NatRuleSet {
+                rules: HashMap::new(),
+            },
+        }
     }
 
     #[tracing::instrument(level = "trace")]
@@ -321,11 +362,65 @@ impl NatProcessor {
     }
 
     #[tracing::instrument(level = "trace")]
+    fn src_nat_find_rule(&self, _pkt: &mut Packet) -> Option<(&NatRuleKey, &NatRuleValue)> {
+        None
+    }
+
+    #[tracing::instrument(level = "trace")]
     fn process_packet(&self, metapacket: &mut MetaPacket) {
         if self.nat_needed(metapacket) {
-            self.nat(metapacket);
+            match self.src_nat_find_rule(metapacket.packet) {
+                Some((nat_key, nat_value)) => match (nat_key.cidr, nat_value.cidr) {
+                    (V4(_), V4(_)) => match nat_value.mode {
+                        NatMode::Stateless => {
+                            src_nat_44_stateless(metapacket.packet, nat_key, nat_value);
+                        }
+                        NatMode::Stateful => unimplemented!(),
+                    },
+                    (V6(_), V6(_)) => unimplemented!(),
+                    (V4(_), V6(_)) => unimplemented!(),
+                    (V6(_), V4(_)) => unimplemented!(),
+                },
+                _ => {}
+            }
+        // TODO: destination NAT
         }
     }
+}
+
+fn translate_vni(pkt: &mut Packet, src_vni: Option<Vni>, dst_vni: Option<Vni>) {
+    match src_vni {
+        Some(src_vni) => {
+            match dst_vni {
+                Some(dst_vni) => {
+                    // TODO: Translate VNI
+                    unimplemented!()
+                }
+                None => {
+                    // TODO: Pop VXLAN
+                    unimplemented!()
+                }
+            }
+        }
+        None => {
+            match dst_vni {
+                Some(dst_vni) => {
+                    // TODO: Push VXLAN
+                    unimplemented!()
+                }
+                None => return,
+            }
+        }
+    }
+}
+
+fn translate_src_addr_stateless(pkt: &mut Packet, cidr: cidr::IpCidr) {
+    unimplemented!()
+}
+
+fn src_nat_44_stateless(pkt: &mut Packet, nat_key: &NatRuleKey, nat_value: &NatRuleValue) {
+    translate_vni(pkt, nat_key.src_vni, nat_value.dst_vni);
+    translate_src_addr_stateless(pkt, nat_value.cidr);
 }
 
 impl PipelineStage for NatProcessor {
