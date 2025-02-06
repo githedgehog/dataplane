@@ -116,21 +116,29 @@ jobs:
         run: |
           just debug="${{matrix.debug_just}}" rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-gnu \
             cargo test
+          just debug="${{matrix.debug_just}}" rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-gnu \
+            cargo doc
 
       - name: "test musl dev"
         run: |
           just debug="${{matrix.debug_just}}" rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-musl \
             cargo test
+          just debug="${{matrix.debug_just}}" rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-musl \
+            cargo doc
 
       - name: "test gnu release"
         run: |
           just debug="${{matrix.debug_just}}" rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-gnu \
             cargo test
+          just debug="${{matrix.debug_just}}" rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-gnu \
+            cargo doc
 
       - name: "test musl release"
         run: |
           just debug="${{matrix.debug_just}}" rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-musl \
             cargo test
+          just debug="${{matrix.debug_just}}" rust=${{matrix.rust}} profile=release target=x86_64-unknown-linux-musl \
+            cargo doc
 
       - name: "run clippy"
         run: |
