@@ -139,13 +139,6 @@ jobs:
           printf "::notice::HEAD remains at %s\n" "$(git log --oneline --no-decorate -n 1)"
         continue-on-error: ${{ matrix.rust.optional }}
 
-
-      - uses: "actions/upload-artifact@v4"
-        if: ${{ always() }}
-        with:
-          name: "test-results-${{ matrix.rust }}"
-          path: "target/nextest/"
-
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
         uses: "mxschmitt/action-tmate@v3"
