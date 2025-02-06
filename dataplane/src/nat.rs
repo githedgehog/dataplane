@@ -112,7 +112,6 @@ struct Vpc {
     vni: Vni,
     #[serde(skip)]
     // SMATOV: TMP: Skip serialization of PIF table cause its not present in the YAML
-    #[allow(dead_code)]
     pif_table: PifTable,
 }
 
@@ -202,8 +201,7 @@ impl<'de> Deserialize<'de> for PifTable {
     }
 }
 
-#[derive(Debug)]
-#[allow(dead_code)]
+#[derive(Clone, Debug)]
 struct GlobalContext {
     vpcs: HashMap<String, Vpc>,
     global_pif_trie: PrefixTrie<u8, String>, // Global PIF lookup by IP
@@ -216,6 +214,12 @@ impl GlobalContext {
             vpcs: HashMap::new(),
             global_pif_trie: PrefixTrie::new(),
         }
+    }
+
+    #[tracing::instrument(level = "trace")]
+    fn build(&mut self) {
+        self.load_vpcs(Path::new("src").join("nat").join("vpcs").as_path());
+        self.load_pifs(Path::new("src").join("nat").join("pifs").as_path());
     }
 
     #[tracing::instrument(level = "info")]
@@ -276,12 +280,16 @@ impl GlobalContext {
 }
 
 #[derive(Clone, Debug)]
-pub struct NatProcessor {}
+pub struct NatProcessor {
+    context: GlobalContext,
+}
 
 impl NatProcessor {
     #[tracing::instrument(level = "trace")]
     pub fn new() -> Self {
-        NatProcessor {}
+        let mut context = GlobalContext::new();
+        context.build();
+        Self { context }
     }
 
     #[tracing::instrument(level = "trace")]
@@ -290,8 +298,26 @@ impl NatProcessor {
     }
 
     #[tracing::instrument(level = "trace")]
-    fn nat(&self, _pkt: &mut MetaPacket) {
+    fn nat(&self, pkt: &mut MetaPacket) {
         // Apply NAT
+
+        println!("{:?}", self.context);
+
+        let ip = match &pkt.packet.net {
+            Some(net::packet::Net::Ipv4(ipv4)) => Some(IpAddr::V4(ipv4.source().inner())),
+            Some(net::packet::Net::Ipv6(ipv6)) => Some(IpAddr::V6(ipv6.source().inner())),
+            _ => None,
+        };
+        match ip {
+            Some(ip) => {
+                if let Some(pif_name) = self.context.find_pif_by_ip(&ip) {
+                    warn!("Found PIF for IP {ip}: {pif_name}");
+                } else {
+                    warn!("No PIF found for IP {ip}");
+                }
+            }
+            _ => warn!("No IP found in packet"),
+        }
     }
 
     #[tracing::instrument(level = "trace")]
@@ -333,15 +359,14 @@ mod tests {
     #[test]
     #[traced_test]
     fn basic_test() {
+        // Load VPCs and PIFs
         let mut context = GlobalContext::new();
+        context.build();
 
         warn!(
             "pwd: {pwd}",
             pwd = std::env::current_dir().unwrap().display()
         );
-        // Load VPCs and PIFs
-        context.load_vpcs(Path::new("src").join("nat").join("vpcs").as_path());
-        context.load_pifs(Path::new("src").join("nat").join("pifs").as_path());
 
         // Example global lookup
         let ip: IpAddr = "11.11.0.5".parse().unwrap();
