@@ -18,6 +18,11 @@ on:
         description: "Run with tmate enabled"
         required: false
         default: false
+      debug_just:
+        type: "boolean"
+        description: "enable to see debug statements from just recipes"
+        required: false
+        default: false
 
 concurrency:
   group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.event.after }}"
@@ -83,27 +88,32 @@ jobs:
       - name: "dev/gnu sterile test"
         if: ${{ always() }}
         run: |
-          just debug=true rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu sterile cargo test
+          just debug="${{inputs.debug_just}}" rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu \
+            sterile cargo test
 
       - name: "release/gnu sterile test"
         if: ${{ always() }}
         run: |
-          just debug=true rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu sterile cargo test
+          just debug="${{inputs.debug_just}}" rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu \
+            sterile cargo test
 
       - name: "dev/musl sterile test"
         if: ${{ always() }}
         run: |
-          just debug=true rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl sterile cargo test
+          just debug="${{inputs.debug_just}}" rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl \
+            sterile cargo test
 
       - name: "release/musl sterile test"
         if: ${{ always() }}
         run: |
-          just debug=true rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl sterile cargo test
+          just debug="${{inputs.debug_just}}" rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl \
+            sterile cargo test
 
       - name: "run clippy"
         if: ${{ always() }}
         run: |
-          just debug=true rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu sterile cargo clippy
+          just debug="${{inputs.debug_just}}" rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu \
+            sterile cargo clippy
 
 
       - name: "Setup tmate session for debug"
@@ -126,6 +136,8 @@ jobs:
       matrix:
         rust:
           - "stable"
+        debug_just:
+          - "${{inputs.debug_just || false}}"
     name: "Push containers"
     steps:
       - name: "login to ghcr.io"
@@ -157,15 +169,19 @@ jobs:
       - run: |
           cargo install cargo-deny
       - run: |
-          just debug=true cargo deny check
+          just debug="${{matrix.debug_just}}" cargo deny check
       - run: |
-          just debug=true rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-gnu push-container
+          just debug="${{matrix.debug_just}}" rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-gnu \
+            push-container
       - run: |
-          just debug=true rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu push-container
+          just debug="${{matrix.debug_just}}" rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu \
+            push-container
       - run: |
-          just debug=true rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-musl push-container
+          just debug="${{matrix.debug_just}}" rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-musl \
+            push-container
       - run: |
-          just debug=true rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl push-container
+          just debug="${{matrix.debug_just}}" rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl \
+            push-container
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
