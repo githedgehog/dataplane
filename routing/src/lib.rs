@@ -12,4 +12,5 @@ mod nexthop;
 mod prefix;
 mod pretty_utils;
 mod rmac;
+mod rpc_adapt;
 mod vrf;
