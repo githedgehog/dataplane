@@ -110,8 +110,6 @@ jobs:
       - run: |
           just --yes debug="${{matrix.debug_just}}" fake-nix
 
-      # At this stage, for Pull Requests, we're back to the HEAD of the branch,
-      # start running tests for different configurations.
       - name: "test gnu dev"
         run: |
           just debug="${{matrix.debug_just}}" rust=${{matrix.rust}} profile=dev target=x86_64-unknown-linux-gnu \
