@@ -15,7 +15,7 @@ pub use contract::*;
 /// The main point of wrapping this type is to
 ///
 /// 1. Eventually (potentially) 1.0 our crate without requiring the same of etherparse,
-/// 2. Permit the implementation of the [Arbitrary] trait on this type
+/// 2. Permit the implementation of the `Arbitrary` trait on this type
 ///    to allow us to property test the rest of our code.
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

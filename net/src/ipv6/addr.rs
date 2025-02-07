@@ -15,7 +15,7 @@ use std::net::Ipv6Addr;
 pub struct UnicastIpv6Addr(Ipv6Addr);
 
 impl UnicastIpv6Addr {
-    /// Returns the supplied [`Ipv6Addr`] as a [`UnicastIpv6Address`]
+    /// Returns the supplied [`Ipv6Addr`] as a [`UnicastIpv6Addr`]
     /// after confirming that it is in fact unicast.
     ///
     /// # Errors

@@ -126,7 +126,7 @@ impl Ipv6 {
     ///
     /// # Errors
     ///
-    /// Will return a [`HopLimitAlreadyZero`] error if the hop limit is already zero :)
+    /// Will return a [`HopLimitAlreadyZeroError`] error if the hop limit is already zero :)
     pub fn decrement_hop_limit(&mut self) -> Result<(), HopLimitAlreadyZeroError> {
         if self.0.hop_limit == 0 {
             return Err(HopLimitAlreadyZeroError);
@@ -158,6 +158,8 @@ impl Ipv6 {
     ///
     /// This method makes no attempt to ensure that the supplied [`next_header`] value is valid for
     /// the packet to which this header belongs (if any).
+    ///
+    /// [`next_header`]: crate::ip::NextHeader
     pub fn set_next_header(&mut self, next_header: IpNumber) -> &mut Self {
         self.0.next_header = next_header;
         self

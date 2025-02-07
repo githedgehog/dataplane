@@ -37,9 +37,11 @@ pub enum EthError {
 }
 
 /// Errors which can occur while setting the source [`Mac`] of a [`Packet`]
+///
+/// [`Packet`]: crate::packet::Packet
 #[derive(Debug, thiserror::Error)]
 pub enum SourceMacAddressError {
-    /// Multicast [`Macs`] are not legal as source [`Mac`]
+    /// Multicast [`Mac`]s are not legal as a source [`Mac`]
     #[error("invalid source mac address: multicast macs are illegal as source macs")]
     MulticastSource(Mac),
     /// Zero is not a legal source
@@ -48,6 +50,8 @@ pub enum SourceMacAddressError {
 }
 
 /// Errors which can occur while setting the destination [`Mac`] of a [`Packet`]
+///
+/// [`Packet`]: crate::packet::Packet
 #[derive(Debug, thiserror::Error)]
 pub enum DestinationMacAddressError {
     /// Zero is not a legal source

@@ -7,7 +7,7 @@ use etherparse::IpNumber;
 
 /// Thin wrapper around [`IpNumber`]
 ///
-/// This exists to allow us to implement [`Arbitrary`] without violating rust's orphan rules.
+/// This exists to allow us to implement `Arbitrary` without violating rust's orphan rules.
 #[repr(transparent)]
 pub struct NextHeader(IpNumber);
 
