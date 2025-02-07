@@ -17,8 +17,8 @@ pub struct Udp(UdpHeader);
 impl Udp {
     /// The minimum length of a valid UDP header (technically also the maximum length).
     /// The name choice here is for consistency with other header types.
-    #[allow(unsafe_code)] // trivially safe const-eval
-    pub const MIN_LENGTH: NonZero<usize> = unsafe { NonZero::new_unchecked(8) };
+    #[allow(clippy::unwrap_used)] // safe due to const-eval
+    pub const MIN_LENGTH: NonZero<usize> = NonZero::new(8).unwrap();
 
     /// Get the header's source port
     #[must_use]
@@ -129,7 +129,7 @@ impl DeParse for Udp {
                 expected: self.size(),
                 actual: len,
             }));
-        };
+        }
         buf[..self.size().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
     }

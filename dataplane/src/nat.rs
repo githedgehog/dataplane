@@ -224,7 +224,7 @@ impl GlobalContext {
             let file_path = entry.path();
             if file_path
                 .extension()
-                .map_or(false, |ext| ext == "yaml" || ext == "yml")
+                .is_some_and(|ext| ext == "yaml" || ext == "yml")
             {
                 let file_content = fs::read_to_string(&file_path).expect("Failed to read file");
                 let vpc: Vpc = serde_yml::from_str(&file_content).expect("Failed to parse YAML");
@@ -241,7 +241,7 @@ impl GlobalContext {
             let file_path = entry.path();
             if file_path
                 .extension()
-                .map_or(false, |ext| ext == "yaml" || ext == "yml")
+                .is_some_and(|ext| ext == "yaml" || ext == "yml")
             {
                 let file_content = fs::read_to_string(&file_path).expect("Failed to read file");
                 let pif: Pif = serde_yml::from_str(&file_content).expect("Failed to parse YAML");
@@ -289,8 +289,8 @@ mod tests {
             pwd = std::env::current_dir().unwrap().display()
         );
         // Load VPCs and PIFs
-        context.load_vpcs(&Path::new("src").join("nat").join("vpcs").as_path());
-        context.load_pifs(&Path::new("src").join("nat").join("pifs").as_path());
+        context.load_vpcs(Path::new("src").join("nat").join("vpcs").as_path());
+        context.load_pifs(Path::new("src").join("nat").join("pifs").as_path());
 
         // Example global lookup
         let ip: IpAddr = "11.11.0.5".parse().unwrap();

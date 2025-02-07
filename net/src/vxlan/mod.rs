@@ -34,8 +34,8 @@ impl Vxlan {
     /// The minimum (and maximum) length of a [`Vxlan`] header.
     ///
     /// Naming for consistency with other headers.
-    #[allow(unsafe_code)] // trivially safe
-    pub const MIN_LENGTH: NonZero<usize> = unsafe { NonZero::new_unchecked(8) };
+    #[allow(clippy::unwrap_used)] // trivially safe const expression
+    pub const MIN_LENGTH: NonZero<usize> = NonZero::new(8).unwrap();
 
     /// The only legal set of flags for a VXLAN header.
     ///
@@ -240,7 +240,7 @@ mod test {
                     assert_eq!(e.actual, too_small_buffer.len());
                 }
                 _ => unreachable!(),
-            };
+            }
         });
     }
 

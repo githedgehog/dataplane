@@ -24,12 +24,12 @@ pub struct Ipv4(Ipv4Header);
 
 impl Ipv4 {
     /// The minimum length of an IPv4 header (i.e., a header with no options)
-    #[allow(unsafe_code)] // const-eval and trivially safe
-    pub const MIN_LEN: NonZero<usize> = unsafe { NonZero::new_unchecked(20) };
+    #[allow(clippy::unwrap_used)] // const-eval and trivially safe
+    pub const MIN_LEN: NonZero<usize> = NonZero::new(20).unwrap();
 
     /// The maximum length of an IPv4 header (i.e., a header with full options)
-    #[allow(unsafe_code)] // const-eval and trivially safe
-    pub const MAX_LEN: NonZero<usize> = unsafe { NonZero::new_unchecked(60) };
+    #[allow(clippy::unwrap_used)] // const-eval and trivially safe
+    pub const MAX_LEN: NonZero<usize> = NonZero::new(60).unwrap();
 
     /// Get the source ip address of the header
     #[must_use]
@@ -266,7 +266,7 @@ impl DeParse for Ipv4 {
                 expected: self.size(),
                 actual: len,
             }));
-        };
+        }
         buf[..self.size().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
     }

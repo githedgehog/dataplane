@@ -92,7 +92,7 @@ impl Reader<'_> {
                 expected: n,
                 actual: self.remaining,
             });
-        };
+        }
         self.remaining -= n.get();
         Ok(())
     }
@@ -134,7 +134,7 @@ impl Writer<'_> {
                 expected: n,
                 actual: self.remaining,
             });
-        };
+        }
         self.remaining -= n.get();
         Ok(())
     }

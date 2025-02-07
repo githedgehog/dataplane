@@ -55,12 +55,12 @@ impl InvalidVid {
 
 impl Vid {
     /// The minimum legal [`Vid`] value (1).
-    #[allow(unsafe_code)] // safe due to const eval
-    pub const MIN: Vid = Vid(unsafe { NonZero::new_unchecked(1) });
+    #[allow(clippy::unwrap_used)] // safe due to const eval
+    pub const MIN: Vid = Vid(NonZero::new(1).unwrap());
 
     /// The maximum legal [`Vid`] value (2^12 - 2).
-    #[allow(unsafe_code)] // safe due to const eval
-    pub const MAX: Vid = Vid(unsafe { NonZero::new_unchecked(4094) });
+    #[allow(clippy::unwrap_used)] // safe due to const eval
+    pub const MAX: Vid = Vid(NonZero::new(4094).unwrap());
 
     /// Create a new [`Vid`] from a `u16`.
     ///
@@ -196,9 +196,8 @@ impl Vlan {
     /// The minimum (and maximum) length of a [`Vlan`] header.
     ///
     /// Name choice for consistency.
-    // safety: trivial and const-eval
-    #[allow(unsafe_code)]
-    pub const MIN_LENGTH: NonZero<usize> = unsafe { NonZero::new_unchecked(4) };
+    #[allow(clippy::unwrap_used)] // safety: trivial and const-eval
+    pub const MIN_LENGTH: NonZero<usize> = NonZero::new(4).unwrap();
 
     // TODO: non-panic proof
     /// Create a new [Vlan] header.
@@ -315,7 +314,7 @@ impl DeParse for Vlan {
                 expected: self.size(),
                 actual: len,
             }));
-        };
+        }
         buf[..self.size().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
     }
@@ -497,15 +496,15 @@ mod test {
     fn parse_noise_too_short() {
         bolero::check!()
             .with_arbitrary()
-            .for_each(|buf: &[u8; Vlan::MIN_LENGTH.get() - 1]| {
-                match Vlan::parse(buf) {
+            .for_each(
+                |buf: &[u8; Vlan::MIN_LENGTH.get() - 1]| match Vlan::parse(buf) {
                     Err(ParseError::Length(e)) => {
                         assert_eq!(e.actual, buf.len());
                         assert_eq!(e.expected, Vlan::MIN_LENGTH);
                     }
                     _ => unreachable!(),
-                };
-            });
+                },
+            );
     }
 
     #[test]

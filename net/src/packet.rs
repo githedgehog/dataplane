@@ -222,7 +222,7 @@ impl DeParse for Packet {
                 expected: self.size(),
                 actual: len,
             }));
-        };
+        }
         let mut cursor = Writer::new(buf);
         cursor.write(&self.eth)?;
         for vlan in &self.vlan {
@@ -237,7 +237,7 @@ impl DeParse for Packet {
             Some(ref net) => {
                 cursor.write(net)?;
             }
-        };
+        }
 
         match self.transport {
             None => {

@@ -26,9 +26,8 @@ pub struct Ipv6(Ipv6Header);
 
 impl Ipv6 {
     /// The minimum length (in bytes) of an [`Ipv6`] header.
-    // Safety: const-evaluated and trivially safe.
-    #[allow(unsafe_code)]
-    pub const MIN_LEN: NonZero<usize> = unsafe { NonZero::new_unchecked(40) };
+    #[allow(clippy::unwrap_used)] // safe due to const eval
+    pub const MIN_LEN: NonZero<usize> = NonZero::new(40).unwrap();
 
     /// Get the source [`Ipv6Addr`] for this header
     #[must_use]
@@ -217,7 +216,7 @@ impl DeParse for Ipv6 {
                 expected: self.size(),
                 actual: len,
             }));
-        };
+        }
         buf[..self.size().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
     }
@@ -490,15 +489,15 @@ mod test {
     fn parse_arbitrary_bytes_too_short() {
         bolero::check!()
             .with_arbitrary()
-            .for_each(|slice: &[u8; Ipv6::MIN_LEN.get() - 1]| {
-                match Ipv6::parse(slice) {
+            .for_each(
+                |slice: &[u8; Ipv6::MIN_LEN.get() - 1]| match Ipv6::parse(slice) {
                     Err(ParseError::Length(e)) => {
                         assert_eq!(e.expected, Ipv6::MIN_LEN);
                         assert_eq!(e.actual, Ipv6::MIN_LEN.get() - 1);
                     }
                     _ => unreachable!(),
-                };
-            });
+                },
+            );
     }
 
     #[test]

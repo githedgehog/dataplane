@@ -47,7 +47,7 @@ impl DeParse for Icmp4 {
                 expected: self.size(),
                 actual: len,
             }));
-        };
+        }
         buf[..self.size().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
     }
