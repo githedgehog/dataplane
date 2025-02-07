@@ -10,6 +10,7 @@ use std::str::FromStr;
 
 use crate::nexthop::{Nhop, NhopKey, NhopStore, Rc};
 use crate::prefix::Prefix;
+use crate::pretty_utils::Frame;
 use iptrie::{Ipv4Prefix, Ipv6Prefix, RTrieMap};
 use net::vxlan::Vni;
 
@@ -78,6 +79,16 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     pub fn new(name: &str, vrfid: VrfId) -> Self {
         Self::with_capacities(name, vrfid, 0, 0)
+    }
+
+    /////////////////////////////////////////////////////////////////////////
+    /// Dump the contents of a Vrf, preceded by some optional heading
+    /////////////////////////////////////////////////////////////////////////
+    pub fn dump(&self, heading: Option<&str>) {
+        if let Some(heading) = heading {
+            print!("{}", Frame(heading.to_owned()));
+        }
+        print!("{}", self);
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -291,6 +302,7 @@ pub mod tests {
         assert_eq!(vrf.routesv4.len().get(), 1, "An Ipv4 default route must exist.");
         assert_eq!(vrf.routesv6.len().get(), 1, "An Ipv6 default route must exist.");
         assert_eq!(vrf.nhstore.len(), 1, "A single 'drop' nexthop must be there.");
+        vrf.dump(Some("Brand new VRF"));
     }
 
     fn check_default_drop_v4(vrf: &Vrf) {
@@ -335,6 +347,7 @@ pub mod tests {
         vrf.add_route(&pref_v6, Route::default(), &[RouteNhop::default()]);
         check_default_drop_v4(&vrf);
         check_default_drop_v6(&vrf);
+        vrf.dump(None);
     }
 
     pub fn build_address(a: &str) -> IpAddr {
@@ -368,6 +381,7 @@ pub mod tests {
     #[test]
     fn test_default_replace_v4() {
         let mut vrf = Vrf::new("Default", 0);
+        vrf.dump(Some("Initial (clean)"));
 
         /* Add static default via 10.0.0.1 */
         let prefix: Prefix = Prefix::root_v4();
@@ -376,15 +390,19 @@ pub mod tests {
         vrf.add_route(&prefix, route, &[nhop]);
 
         assert_eq!(vrf.routesv4.len().get(), 1, "Should have replaced the default");
+        vrf.dump(Some("With static IPv4 default non-drop route"));
 
         /* delete the static default. This should put back again a default route with action DROP */
         vrf.del_route(&prefix);
         check_default_drop_v4(&vrf);
+
+        vrf.dump(Some("After removing the IPv4 static default"));
     }
 
     #[test]
     fn test_default_replace_v6() {
         let mut vrf = Vrf::new("Default", 0);
+        vrf.dump(Some("Initial (clean)"));
 
         /* Add static default via 2001::1 */
         let prefix: Prefix = Prefix::root_v4();
@@ -393,10 +411,13 @@ pub mod tests {
         vrf.add_route(&prefix, route, &[nhop]);
 
         assert_eq!(vrf.routesv6.len().get(), 1, "Should have replaced the default");
+        vrf.dump(Some("With static IPv6 default non-drop route"));
 
         /* delete the static default. This should put back again a default route with action DROP */
         vrf.del_route(&prefix);
         check_default_drop_v6(&vrf);
+
+        vrf.dump(Some("After removing the IPv6 static default"));
     }
 
     #[test]
@@ -441,6 +462,7 @@ pub mod tests {
             assert_eq!(best.s_nhops[0].rc.key.fwaction, FwAction::Drop, "Default is drop");
         }
         check_vrf_is_empty(&vrf);
+
     }
 
 
