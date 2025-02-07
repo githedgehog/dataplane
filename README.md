@@ -151,7 +151,8 @@ To do this, add the following to your `.vscode/settings.json` file:
 
 ```json
 "rust-analyzer.server.extraEnv": {
-  "CARGO": "<absolute path to dataplane directory>/bin/cargo"
+  "RUSTC": "<absolute path to dataplane directory>/compile-env/bin/rustc",
+  "CARGO": "<absolute path to dataplane directory>/compile-env/bin/cargo"
 }
 ```
 
