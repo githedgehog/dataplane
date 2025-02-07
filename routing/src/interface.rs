@@ -4,16 +4,12 @@
 //! State objects for network interfaces and interface table.
 
 use crate::errors::RouterError;
+use crate::vrf::{Vrf, VrfId};
 use net::eth::mac::Mac;
 use net::vlan::Vid;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
-
-type VrfId = u32; /* temporary */
-pub struct Vrf {
-    vrfid: VrfId,
-}
 
 /// A type to uniquely identify a network interface
 pub type IfIndex = u32;
@@ -352,7 +348,7 @@ pub mod tests {
         assert!(eth0.has_address(&address));
 
         /* Suppose a VRF exists already, somewhere... */
-        let vrf = Arc::new(Vrf { vrfid: 0 });
+        let vrf = Arc::new(Vrf::new("default-vrf", 0));
 
         /* Attach to VRF */
         let e = eth0.attach(&vrf);
