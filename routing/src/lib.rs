@@ -9,5 +9,6 @@ mod errors;
 mod interface;
 mod nexthop;
 mod prefix;
+mod pretty_utils;
 mod rmac;
 mod vrf;
