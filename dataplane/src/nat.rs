@@ -2,18 +2,18 @@
 // Copyright Open Network Fabric Authors
 
 use crate::pipeline::{MetaPacket, PipelineStage};
-use crate::{PacketProcessor, PacketProcessorConfig};
-use cidr::{IpCidr::V4, IpCidr::V6};
-use etherparse::IpNumber;
-use net::packet::Packet;
-use net::vxlan::Vni;
+use cidr::{Cidr, IpCidr::V4};
+use net::ipv4::addr::UnicastIpv4Addr;
+use net::ipv4::Ipv4;
+use net::packet::Net;
+use net::vxlan::{Vni,Vxlan};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Debug;
 use std::fs;
 use std::hash::Hash;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 use tracing::{error, warn};
 
@@ -362,65 +362,95 @@ impl NatProcessor {
     }
 
     #[tracing::instrument(level = "trace")]
-    fn src_nat_find_rule(&self, _pkt: &mut Packet) -> Option<(&NatRuleKey, &NatRuleValue)> {
+    fn src_nat_find_rule(&self, _iph: &mut Net) -> Option<(&NatRuleKey, &NatRuleValue)> {
         None
     }
 
     #[tracing::instrument(level = "trace")]
     fn process_packet(&self, metapacket: &mut MetaPacket) {
-        if self.nat_needed(metapacket) {
-            match self.src_nat_find_rule(metapacket.packet) {
-                Some((nat_key, nat_value)) => match (nat_key.cidr, nat_value.cidr) {
-                    (V4(_), V4(_)) => match nat_value.mode {
-                        NatMode::Stateless => {
-                            src_nat_44_stateless(metapacket.packet, nat_key, nat_value);
-                        }
-                        NatMode::Stateful => unimplemented!(),
-                    },
-                    (V6(_), V6(_)) => unimplemented!(),
-                    (V4(_), V6(_)) => unimplemented!(),
-                    (V6(_), V4(_)) => unimplemented!(),
+        let iph = match metapacket.packet.net {
+            Some(ref mut iph) => iph,
+            None => {
+                // Not an IP packet
+                return;
+            }
+        };
+
+        match self.src_nat_find_rule(iph) {
+            Some((nat_key, nat_value)) => match (nat_key.cidr, nat_value.cidr) {
+                (V4(_), V4(_)) => match nat_value.mode {
+                    NatMode::Stateless => {
+                        // TODO: Get VXLAN header
+                        let mut vxlan = Vxlan::new(Vni::new_checked(1).unwrap());
+                        src_nat_44_stateless(iph, &mut vxlan, nat_key, nat_value);
+                    }
+                    NatMode::Stateful => unimplemented!(),
                 },
                 _ => {}
             }
+            None => todo!(),
+        }
+
         // TODO: destination NAT
-        }
     }
 }
 
-fn translate_vni(pkt: &mut Packet, src_vni: Option<Vni>, dst_vni: Option<Vni>) {
-    match src_vni {
-        Some(src_vni) => {
-            match dst_vni {
-                Some(dst_vni) => {
-                    // TODO: Translate VNI
-                    unimplemented!()
-                }
-                None => {
-                    // TODO: Pop VXLAN
-                    unimplemented!()
-                }
-            }
-        }
-        None => {
-            match dst_vni {
-                Some(dst_vni) => {
-                    // TODO: Push VXLAN
-                    unimplemented!()
-                }
-                None => return,
-            }
-        }
-    }
+fn update_vni(vxlan: &mut Vxlan, dst_vni: Vni) {
+    vxlan.set_vni(dst_vni);
 }
 
-fn translate_src_addr_stateless(pkt: &mut Packet, cidr: cidr::IpCidr) {
+fn pop_vxlan() {
+    // Need to fingure out the right context to pop the VXLAN header from
     unimplemented!()
 }
 
-fn src_nat_44_stateless(pkt: &mut Packet, nat_key: &NatRuleKey, nat_value: &NatRuleValue) {
-    translate_vni(pkt, nat_key.src_vni, nat_value.dst_vni);
-    translate_src_addr_stateless(pkt, nat_value.cidr);
+fn push_vxlan(_vni: Vni) {
+    // Need to figure out the right context to push the VXLAN header to
+    unimplemented!()
+}
+
+fn translate_vni(vxlan: &mut Vxlan, src_vni: Option<Vni>, dst_vni: Option<Vni>) {
+    match src_vni {
+        Some(_) => match dst_vni {
+            Some(vni) => update_vni(vxlan, vni),
+            None => pop_vxlan(),
+        },
+        None => match dst_vni {
+            Some(vni) => push_vxlan(vni),
+            None => return,
+        },
+    }
+}
+
+fn stateless_map_ipv4<T: Cidr>(
+    origin_ip: &Ipv4Addr,
+    origin_cidr: &T,
+    new_cidr: &T,
+) -> UnicastIpv4Addr {
+    unimplemented!()
+}
+
+fn translate_src_addr_stateless<T: Cidr>(iph: &mut Ipv4, origin_cidr: &T, new_cidr: &T) {
+    let origin_ip: Ipv4Addr = iph.source().inner();
+    let new_ip: UnicastIpv4Addr = stateless_map_ipv4(&origin_ip, origin_cidr, new_cidr);
+    iph.set_source(new_ip);
+}
+
+fn src_nat_44_stateless(
+    iph: &mut Net,
+    vxlan: &mut Vxlan,
+    nat_key: &NatRuleKey,
+    nat_value: &NatRuleValue,
+) {
+    let ipv4_hdr = match iph {
+        Net::Ipv4(ipv4_hdr) => ipv4_hdr,
+        _ => {
+            // This should be unreachable
+            return;
+        }
+    };
+    translate_vni(vxlan, nat_key.src_vni, nat_value.dst_vni);
+    translate_src_addr_stateless(ipv4_hdr, &nat_key.cidr, &nat_value.cidr);
 }
 
 impl PipelineStage for NatProcessor {
