@@ -135,6 +135,10 @@ jobs:
       - id: "musl_dev_test"
         name: "test musl dev"
         run: |
+          # inject a fault into nightly and make sure we still pass
+          if [ "${{matrix.rust.version}}" = "nightly" ]; then
+            exit 193; # oh no... something is broken...
+          fi
           just debug="${{matrix.debug_just}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-musl \
             cargo test
           just debug="${{matrix.debug_just}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-musl \
