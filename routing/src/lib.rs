@@ -4,6 +4,7 @@
 //! A library to implement routing functions.
 
 mod adjacency;
+mod display;
 mod encapsulation;
 mod errors;
 mod interface;
