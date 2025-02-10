@@ -11,6 +11,18 @@ pub enum RouterError {
     #[error("No such interface (ifindex {0})")]
     NoSuchInterface(u32),
 
+    #[error("No such VRF")]
+    NoSuchVrf,
+
+    #[error("A VRF with id {0} already exists")]
+    VrfExists(u32),
+
+    #[error("A VRF with Vni {0} already exists")]
+    VniInUse(u32),
+
+    #[error("Invalid VNI value {0} ")]
+    VniInvalid(u32),
+
     #[error("The interface is already attached to a distinct VRF")]
     AlreadyAttached,
 }
