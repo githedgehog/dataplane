@@ -2,11 +2,11 @@
 // Copyright Open Network Fabric Authors
 
 use crate::pipeline::{MetaPacket, PipelineStage};
-use cidr::{Cidr, IpCidr::V4};
+use cidr::{IpCidr::V4, Ipv4Cidr};
 use net::ipv4::addr::UnicastIpv4Addr;
 use net::ipv4::Ipv4;
 use net::packet::Net;
-use net::vxlan::{Vni,Vxlan};
+use net::vxlan::{Vni, Vxlan};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
@@ -378,16 +378,23 @@ impl NatProcessor {
 
         match self.src_nat_find_rule(iph) {
             Some((nat_key, nat_value)) => match (nat_key.cidr, nat_value.cidr) {
-                (V4(_), V4(_)) => match nat_value.mode {
+                (V4(origin_cidr), V4(new_cidr)) => match nat_value.mode {
                     NatMode::Stateless => {
                         // TODO: Get VXLAN header
                         let mut vxlan = Vxlan::new(Vni::new_checked(1).unwrap());
-                        src_nat_44_stateless(iph, &mut vxlan, nat_key, nat_value);
+                        src_nat_44_stateless(
+                            iph,
+                            &mut vxlan,
+                            &origin_cidr,
+                            &new_cidr,
+                            nat_key,
+                            nat_value,
+                        );
                     }
                     NatMode::Stateful => unimplemented!(),
                 },
                 _ => {}
-            }
+            },
             None => todo!(),
         }
 
@@ -422,15 +429,26 @@ fn translate_vni(vxlan: &mut Vxlan, src_vni: Option<Vni>, dst_vni: Option<Vni>) 
     }
 }
 
-fn stateless_map_ipv4<T: Cidr>(
+fn stateless_map_ipv4(
     origin_ip: &Ipv4Addr,
-    origin_cidr: &T,
-    new_cidr: &T,
+    origin_cidr: &Ipv4Cidr,
+    new_cidr: &Ipv4Cidr,
 ) -> UnicastIpv4Addr {
-    unimplemented!()
+    // Implement a 1:1 mapping using the position of the origin IP in the origin
+    // CIDR range, into the new CIDR range.
+    let ip_offset: u32 = origin_ip.to_bits() - origin_cidr.first_address().to_bits();
+    let new_ip_bits: u32 = new_cidr.first_address().to_bits() + ip_offset;
+    let new_ip_res = UnicastIpv4Addr::new(Ipv4Addr::from_bits(new_ip_bits));
+    if let Ok(new_ip) = new_ip_res {
+        new_ip
+    } else {
+        // We need to validate the ranges when accepting the CIDRs to make sure
+        // this never happens.
+        unreachable!()
+    }
 }
 
-fn translate_src_addr_stateless<T: Cidr>(iph: &mut Ipv4, origin_cidr: &T, new_cidr: &T) {
+fn translate_src_ipv4_stateless(iph: &mut Ipv4, origin_cidr: &Ipv4Cidr, new_cidr: &Ipv4Cidr) {
     let origin_ip: Ipv4Addr = iph.source().inner();
     let new_ip: UnicastIpv4Addr = stateless_map_ipv4(&origin_ip, origin_cidr, new_cidr);
     iph.set_source(new_ip);
@@ -439,6 +457,8 @@ fn translate_src_addr_stateless<T: Cidr>(iph: &mut Ipv4, origin_cidr: &T, new_ci
 fn src_nat_44_stateless(
     iph: &mut Net,
     vxlan: &mut Vxlan,
+    origin_cidr: &Ipv4Cidr,
+    new_cidr: &Ipv4Cidr,
     nat_key: &NatRuleKey,
     nat_value: &NatRuleValue,
 ) {
@@ -450,7 +470,7 @@ fn src_nat_44_stateless(
         }
     };
     translate_vni(vxlan, nat_key.src_vni, nat_value.dst_vni);
-    translate_src_addr_stateless(ipv4_hdr, &nat_key.cidr, &nat_value.cidr);
+    translate_src_ipv4_stateless(ipv4_hdr, origin_cidr, new_cidr);
 }
 
 impl PipelineStage for NatProcessor {
