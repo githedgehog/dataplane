@@ -3,6 +3,7 @@
 
 use crate::pipeline::{MetaPacket, PipelineStage};
 use cidr::{IpCidr::V4, Ipv4Cidr};
+use etherparse::IpNumber;
 use net::ipv4::addr::UnicastIpv4Addr;
 use net::ipv4::Ipv4;
 use net::packet::Net;
@@ -362,7 +363,32 @@ impl NatProcessor {
     }
 
     #[tracing::instrument(level = "trace")]
-    fn src_nat_find_rule(&self, _iph: &mut Net) -> Option<(&NatRuleKey, &NatRuleValue)> {
+    fn src_nat_find_rule(
+        &self,
+        iph: &mut Net,
+        vni: Option<Vni>,
+    ) -> Option<(&NatRuleKey, &NatRuleValue)> {
+        let ipv4_hdr = match iph {
+            Net::Ipv4(ipv4_hdr) => ipv4_hdr,
+            _ => return None,
+        };
+        let protocol = match ipv4_hdr.protocol() {
+            IpNumber::TCP => IpNumber::TCP,
+            IpNumber::UDP => IpNumber::UDP,
+            _ => return None,
+        };
+        for (key, value) in self.src_nat_rules.rules.iter() {
+            if key.protocol == protocol && key.src_vni == vni {
+                match key.cidr {
+                    V4(cidr) => {
+                        if cidr.contains(&ipv4_hdr.source().inner()) && vni == key.src_vni {
+                            return Some((key, value));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         None
     }
 
@@ -376,15 +402,22 @@ impl NatProcessor {
             }
         };
 
-        match self.src_nat_find_rule(iph) {
+        // TODO: Get VXLAN header
+        let mut vxlan_inner = Vxlan::new(Vni::new_checked(1).unwrap());
+        let vxlan = Some(&mut vxlan_inner);
+
+        let vni = match vxlan {
+            Some(ref vxlan) => Some(vxlan.vni()),
+            None => None,
+        };
+
+        match self.src_nat_find_rule(iph, vni) {
             Some((nat_key, nat_value)) => match (nat_key.cidr, nat_value.cidr) {
                 (V4(origin_cidr), V4(new_cidr)) => match nat_value.mode {
                     NatMode::Stateless => {
-                        // TODO: Get VXLAN header
-                        let mut vxlan = Vxlan::new(Vni::new_checked(1).unwrap());
                         src_nat_44_stateless(
                             iph,
-                            &mut vxlan,
+                            vxlan,
                             &origin_cidr,
                             &new_cidr,
                             nat_key,
@@ -402,8 +435,16 @@ impl NatProcessor {
     }
 }
 
-fn update_vni(vxlan: &mut Vxlan, dst_vni: Vni) {
-    vxlan.set_vni(dst_vni);
+fn update_vni(vxlan: Option<&mut Vxlan>, dst_vni: Vni) {
+    let vxlan_hdr = match vxlan {
+        Some(vxlan) => vxlan,
+        None => {
+            // Something's wrong, we found a rule based on the VNI but now
+            // there's no VXLAN header
+            unreachable!()
+        }
+    };
+    vxlan_hdr.set_vni(dst_vni);
 }
 
 fn pop_vxlan() {
@@ -416,7 +457,7 @@ fn push_vxlan(_vni: Vni) {
     unimplemented!()
 }
 
-fn translate_vni(vxlan: &mut Vxlan, src_vni: Option<Vni>, dst_vni: Option<Vni>) {
+fn translate_vni(vxlan: Option<&mut Vxlan>, src_vni: Option<Vni>, dst_vni: Option<Vni>) {
     match src_vni {
         Some(_) => match dst_vni {
             Some(vni) => update_vni(vxlan, vni),
@@ -456,7 +497,7 @@ fn translate_src_ipv4_stateless(iph: &mut Ipv4, origin_cidr: &Ipv4Cidr, new_cidr
 
 fn src_nat_44_stateless(
     iph: &mut Net,
-    vxlan: &mut Vxlan,
+    vxlan: Option<&mut Vxlan>,
     origin_cidr: &Ipv4Cidr,
     new_cidr: &Ipv4Cidr,
     nat_key: &NatRuleKey,
