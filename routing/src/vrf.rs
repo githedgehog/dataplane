@@ -8,11 +8,12 @@ use std::net::IpAddr;
 #[cfg(test)]
 use std::str::FromStr;
 
-use crate::nexthop::{Nhop, NhopKey, NhopStore, Rc};
+use crate::nexthop::{Nhop, NhopKey, NhopStore};
 use crate::prefix::Prefix;
 use crate::pretty_utils::Frame;
 use iptrie::{Ipv4Prefix, Ipv6Prefix, RTrieMap};
 use net::vxlan::Vni;
+use std::sync::Arc;
 
 /// We'll use the RPC definitions for these
 use dplane_rpc::msg::{RouteDistance, RouteMetric, RouteType};
@@ -56,7 +57,7 @@ impl Default for Route {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShimNhop {
     pub shim: VrfId,
-    pub rc: Rc<Nhop>,
+    pub rc: Arc<Nhop>,
 }
 
 #[allow(unused)]
@@ -126,7 +127,7 @@ impl Vrf {
 
     #[inline(always)]
     #[must_use]
-    fn register_shared_nhop(&mut self, nhop: &RouteNhop) -> Rc<Nhop> {
+    fn register_shared_nhop(&mut self, nhop: &RouteNhop) -> Arc<Nhop> {
         self.nhstore.add_nhop(&nhop.key)
     }
 

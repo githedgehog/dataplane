@@ -12,21 +12,21 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::net::IpAddr;
 use std::option::Option;
-pub use std::rc::Rc;
 #[cfg(test)]
 use std::str::FromStr;
+use std::sync::Arc;
 
 #[derive(Debug)]
 /// A collection of unique next-hops. Next-hops are identified by a next-hop key
 /// that can contain an address, ifindex and encapsulation.
-pub(crate) struct NhopStore(pub(crate) BTreeSet<Rc<Nhop>>);
+pub(crate) struct NhopStore(pub(crate) BTreeSet<Arc<Nhop>>);
 
 #[derive(Debug, Eq)]
 /// A next-hop object that can be shared by multiple routes and that can have
 /// references to other next-hops in this (or other?) table.
 pub(crate) struct Nhop {
     pub(crate) key: NhopKey,
-    pub(crate) resolvers: RefCell<Vec<Rc<Nhop>>>,
+    pub(crate) resolvers: RefCell<Vec<Arc<Nhop>>>,
 }
 
 #[derive(Debug, Default, Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
@@ -152,7 +152,7 @@ impl Nhop {
     ///     nexthops from such references. In other words, the "resolution" in this module will be as (in)
     ///     correct as those with explicit recursion, as long as the references are kept up to date.
     //////////////////////////////////////////////////////////////////////////////////////////////////////
-    pub fn add_resolver(&self, resolver: Rc<Nhop>) -> &Self {
+    pub fn add_resolver(&self, resolver: Arc<Nhop>) -> &Self {
         self.resolvers.borrow_mut().push(resolver);
         self
     }
@@ -225,12 +225,13 @@ impl NhopStore {
     /// and return a shared reference to it.
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub(crate) fn add_nhop(&mut self, key: &NhopKey) -> Rc<Nhop> {
-        let nh = Rc::new(Nhop::new_from_key(key));
+    pub(crate) fn add_nhop(&mut self, key: &NhopKey) -> Arc<Nhop> {
+        #[allow(clippy::arc_with_non_send_sync)]
+        let nh = Arc::new(Nhop::new_from_key(key));
         if let Some(e) = self.0.get(&nh) {
-            Rc::clone(e)
+            Arc::clone(e)
         } else {
-            let out = Rc::clone(&nh);
+            let out = Arc::clone(&nh);
             self.0.insert(nh);
             out
         }
@@ -250,7 +251,7 @@ impl NhopStore {
     /// thereby not increasing the reference count of the next-hop.
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub(crate) fn get_nhop(&self, key: &NhopKey) -> Option<&Rc<Nhop>> {
+    pub(crate) fn get_nhop(&self, key: &NhopKey) -> Option<&Arc<Nhop>> {
         let nh = Nhop::new_from_key(key);
         self.0.get(&nh)
     }
@@ -261,7 +262,7 @@ impl NhopStore {
     //////////////////////////////////////////////////////////////////
     #[cfg(test)]
     pub fn get_nhop_rc_count(&self, key: &NhopKey) -> usize {
-        self.get_nhop(key).map_or(0, Rc::strong_count)
+        self.get_nhop(key).map_or(0, Arc::strong_count)
     }
 
     //////////////////////////////////////////////////////////////////
@@ -277,7 +278,7 @@ impl NhopStore {
         let target = Nhop::new_from_key(key);
         let mut remove: bool = false;
         if let Some(existing) = self.0.get(&target) {
-            if Rc::strong_count(existing) == 1 {
+            if Arc::strong_count(existing) == 1 {
                 remove = true;
             }
         }
@@ -328,7 +329,7 @@ impl NhopStore {
 #[allow(dead_code)]
 mod tests {
     use crate::nexthop::*;
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     #[test]
     fn test_nhop_store_minimal() {
@@ -343,7 +344,7 @@ mod tests {
 
         /* get it */
         let nh = store.get_nhop(&nh_key).unwrap();
-        assert_eq!(Rc::strong_count(nh), 1);
+        assert_eq!(Arc::strong_count(nh), 1);
 
         /* check refcount */
         let num_refs = store.get_nhop_rc_count(&nh_key);

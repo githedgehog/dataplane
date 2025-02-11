@@ -9,7 +9,7 @@ use crate::pretty_utils::{line, Heading};
 use crate::vrf::{Route, ShimNhop, Vrf};
 use iptrie::RTrieMap;
 use std::fmt::Display;
-use std::rc::Rc;
+use std::sync::Arc;
 
 impl Display for NhopKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -34,12 +34,12 @@ impl Display for Nhop {
     }
 }
 
-fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Rc<Nhop>, depth: u8) -> std::fmt::Result {
+fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Arc<Nhop>, depth: u8) -> std::fmt::Result {
     let tab = 8 * depth as usize;
     let indent = String::from_utf8(vec![b' '; tab]).unwrap();
 
     let sym = if depth == 0 { "NH" } else { "ref" };
-    writeln!(f, "{} ({}) {} = {}", indent, Rc::strong_count(rc), sym, rc)?;
+    writeln!(f, "{} ({}) {} = {}", indent, Arc::strong_count(rc), sym, rc)?;
 
     for r in rc.resolvers.borrow().iter() {
         fmt_nhop_rec(f, r, depth + 1)?;
