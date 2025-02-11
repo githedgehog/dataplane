@@ -41,7 +41,7 @@ fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Arc<Nhop>, depth: u8) -> s
     let sym = if depth == 0 { "NH" } else { "ref" };
     writeln!(f, "{} ({}) {} = {}", indent, Arc::strong_count(rc), sym, rc)?;
 
-    for r in rc.resolvers.borrow().iter() {
+    for r in rc.resolvers.read().expect("poisoned").iter() {
         fmt_nhop_rec(f, r, depth + 1)?;
     }
     Ok(())

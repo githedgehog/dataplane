@@ -5,7 +5,6 @@
 //! refer to other objects like Encapsulation.
 
 use crate::encapsulation::Encapsulation;
-use std::cell::RefCell;
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 pub use std::collections::BTreeSet;
 use std::fmt::Debug;
@@ -14,19 +13,19 @@ use std::net::IpAddr;
 use std::option::Option;
 #[cfg(test)]
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 #[derive(Debug)]
 /// A collection of unique next-hops. Next-hops are identified by a next-hop key
 /// that can contain an address, ifindex and encapsulation.
 pub(crate) struct NhopStore(pub(crate) BTreeSet<Arc<Nhop>>);
 
-#[derive(Debug, Eq)]
+#[derive(Debug)]
 /// A next-hop object that can be shared by multiple routes and that can have
 /// references to other next-hops in this (or other?) table.
 pub(crate) struct Nhop {
     pub(crate) key: NhopKey,
-    pub(crate) resolvers: RefCell<Vec<Arc<Nhop>>>,
+    pub(crate) resolvers: RwLock<Vec<Arc<Nhop>>>,
 }
 
 #[derive(Debug, Default, Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
@@ -106,6 +105,8 @@ impl NhopKey {
    The implementations leverage the derived trait implementations for the `NhopKey`
    (contained in the Nhop).
 */
+impl Eq for Nhop {}
+
 impl PartialEq for Nhop {
     fn eq(&self, other: &Self) -> bool {
         self.key.eq(&other.key)
@@ -138,7 +139,7 @@ impl Nhop {
     fn new_from_key(key: &NhopKey) -> Self {
         Self {
             key: *key,
-            resolvers: RefCell::new(Vec::new()),
+            resolvers: RwLock::new(Vec::new()),
         }
     }
 
@@ -153,40 +154,40 @@ impl Nhop {
     ///     correct as those with explicit recursion, as long as the references are kept up to date.
     //////////////////////////////////////////////////////////////////////////////////////////////////////
     pub fn add_resolver(&self, resolver: Arc<Nhop>) -> &Self {
-        self.resolvers.borrow_mut().push(resolver);
+        self.resolvers.write().expect("poisoned").push(resolver);
         self
     }
 
     /// Auxiliary recursive method used by Nhop::quick_resolve().
     fn quick_resolve_rec(&self, result: &mut BTreeSet<NhopKey>) {
-        let resolvers_of_this = self.resolvers.borrow();
-
-        if resolvers_of_this.len() == 0 {
-            /* next-hop has no resolvers */
-            if self.key.ifindex.is_some() || self.key.fwaction == FwAction::Drop {
-                result.insert(self.key);
-            } else {
-                // This should not happen. The vrf will be such that there's always
-                // a default route (with legitimate next-hops or a default one with action drop).
-                // So all next-hops should resolve, at the very least, to the default route.
-                // If we get here, we probably failed to update the resolution dependencies.
-                panic!("Unable to resolve next-hop {:#?}", &self.key);
-            }
-        } else {
-            /* check resolvers */
-            for r in resolvers_of_this.iter() {
-                if let Some(i) = r.key.ifindex {
-                    /* Take into account that some nhops may already be partially resolved, meaning
-                    they include an address AND an ifindex */
-                    let address = r.key.address.map_or(self.key.address, |_| r.key.address);
-                    result.insert(NhopKey::new(
-                        address,
-                        Some(i),
-                        self.key.encap,
-                        self.key.fwaction,
-                    ));
+        if let Ok(resolvers_of_this) = self.resolvers.write() {
+            if resolvers_of_this.len() == 0 {
+                /* next-hop has no resolvers */
+                if self.key.ifindex.is_some() || self.key.fwaction == FwAction::Drop {
+                    result.insert(self.key);
                 } else {
-                    r.quick_resolve_rec(result);
+                    // This should not happen. The vrf will be such that there's always
+                    // a default route (with legitimate next-hops or a default one with action drop).
+                    // So all next-hops should resolve, at the very least, to the default route.
+                    // If we get here, we probably failed to update the resolution dependencies.
+                    panic!("Unable to resolve next-hop {:#?}", &self.key);
+                }
+            } else {
+                /* check resolvers */
+                for r in resolvers_of_this.iter() {
+                    if let Some(i) = r.key.ifindex {
+                        /* Take into account that some nhops may already be partially resolved, meaning
+                        they include an address AND an ifindex */
+                        let address = r.key.address.map_or(self.key.address, |_| r.key.address);
+                        result.insert(NhopKey::new(
+                            address,
+                            Some(i),
+                            self.key.encap,
+                            self.key.fwaction,
+                        ));
+                    } else {
+                        r.quick_resolve_rec(result);
+                    }
                 }
             }
         }
@@ -296,11 +297,12 @@ impl NhopStore {
                 /* N.B. this mutable borrow should be "safe" in spite of the recursion because
                 the only case where it wouldn't would be if borrow_xx() was called for the same
                 nhop, but that should happen if its refcount is 1 and we don't keep other refs around */
-                let mut resolvers = existing.resolvers.borrow_mut();
-                while let Some(r) = resolvers.pop() {
-                    let key = r.key; /* copy the key since we'll */
-                    drop(r); /* ....drop the Rc */
-                    self.del_nhop(&key);
+                if let Ok(mut resolvers) = existing.resolvers.write() {
+                    while let Some(r) = resolvers.pop() {
+                        let key = r.key; /* copy the key since we'll */
+                        drop(r); /* ....drop the Rc */
+                        self.del_nhop(&key);
+                    }
                 }
             }
         }
