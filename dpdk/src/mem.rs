@@ -21,9 +21,11 @@ use core::slice::from_raw_parts_mut;
 use errno::Errno;
 use tracing::{error, info, warn};
 
+use dpdk_sys::{rte_pktmbuf_adj, rte_pktmbuf_prepend};
 // unfortunately, we need the standard library to swap allocators
 use std::alloc::System;
 use std::ffi::CString;
+use std::num::NonZero;
 
 /// DPDK memory manager
 #[repr(transparent)]
@@ -494,7 +496,45 @@ impl Mbuf {
             )
         }
     }
+
+    #[tracing::instrument(level = "trace")]
+    pub fn prepend(&mut self, len: NonZero<u16>) -> Result<&mut [u8], NotEnoughHeadRoom> {
+        let val = unsafe { rte_pktmbuf_prepend(self.raw.as_mut(), len.get()) };
+        NonNull::new(val)
+            .map(|ptr| unsafe {
+                from_raw_parts_mut(
+                    ptr.as_ptr().cast::<u8>(),
+                    self.raw.as_ref().annon2.annon1.data_len as usize,
+                )
+            })
+            .ok_or(NotEnoughHeadRoom)
+    }
+
+    #[tracing::instrument(level = "trace")]
+    pub fn adjust(&mut self, len: NonZero<u16>) -> Result<&mut [u8], MbufNotLongEnough> {
+        let val = unsafe { rte_pktmbuf_adj(self.raw.as_mut(), len.get()) };
+        NonNull::new(val)
+            .map(|ptr| unsafe {
+                from_raw_parts_mut(
+                    ptr.as_ptr().cast::<u8>(),
+                    self.raw.as_ref().annon2.annon1.data_len as usize,
+                )
+            })
+            .ok_or(MbufNotLongEnough)
+    }
 }
+
+#[non_exhaustive]
+#[repr(transparent)]
+#[derive(Debug, thiserror::Error)]
+#[error("Not enough head room in mbuf")]
+pub struct NotEnoughHeadRoom;
+
+#[non_exhaustive]
+#[repr(transparent)]
+#[derive(Debug, thiserror::Error)]
+#[error("Mbuf not long enough to remove required number of bytes from the start")]
+pub struct MbufNotLongEnough;
 
 /// A global memory allocator for DPDK
 #[non_exhaustive]
