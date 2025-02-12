@@ -29,7 +29,7 @@ pub mod frag_offset;
 /// An IPv4 header
 #[repr(transparent)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Ipv4(Ipv4Header);
+pub struct Ipv4(pub Ipv4Header);
 
 impl Ipv4 {
     /// The minimum length of an IPv4 header (i.e., a header with no options)
