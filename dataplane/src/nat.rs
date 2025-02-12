@@ -535,6 +535,13 @@ impl PipelineStage for NatProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrayvec::ArrayVec;
+    use cidr::IpCidr;
+    use etherparse::Ipv4Header;
+    use net::eth::ethertype::EthType;
+    use net::eth::mac::Mac;
+    use net::eth::Eth;
+    use std::str::FromStr;
     use tracing::{info, warn};
     use tracing_test::traced_test;
 
@@ -565,5 +572,151 @@ mod tests {
         } else {
             panic!("No PIF found in VPC1 for IP {ip}");
         }
+    }
+
+    fn mock_rules() -> NatRuleSet {
+        let k1 = NatRuleKey {
+            src_vni: Vni::new_checked(1001).ok(),
+            cidr: IpCidr::from_str("192.168.1.0/24").unwrap(),
+            protocol: IpNumber::TCP,
+        };
+        let v1 = NatRuleValue {
+            dst_vni: Vni::new_checked(1002).ok(),
+            cidr: IpCidr::from_str("10.0.1.0/24").unwrap(),
+            mode: NatMode::Stateless,
+        };
+
+        let k2 = NatRuleKey {
+            src_vni: Vni::new_checked(2001).ok(),
+            cidr: IpCidr::from_str("192.168.2.0/24").unwrap(),
+            protocol: IpNumber::TCP,
+        };
+        let v2 = NatRuleValue {
+            dst_vni: Vni::new_checked(2002).ok(),
+            cidr: IpCidr::from_str("10.0.2.0/24").unwrap(),
+            mode: NatMode::Stateless,
+        };
+
+        // Different CIDR sizes
+        let k3 = NatRuleKey {
+            src_vni: Vni::new_checked(3001).ok(),
+            cidr: IpCidr::from_str("192.168.3.0/24").unwrap(),
+            protocol: IpNumber::UDP,
+        };
+        let v3 = NatRuleValue {
+            dst_vni: Vni::new_checked(3002).ok(),
+            cidr: IpCidr::from_str("10.0.3.0/24").unwrap(),
+            mode: NatMode::Stateless,
+        };
+
+        /*
+        // Different CIDR sizes
+        let k4 = NatRuleKey {
+            src_vni: Some(Vni(3001)),
+            cidr: V4(Ipv4Cidr::new("192.168.4.0/24")),
+            protocol: IpNumber::TCP,
+        };
+        let v4 = NatRuleValue {
+            dst_vni: Some(Vni(3002)),
+            cidr: V4(Ipv4Cidr::new("10.0.4.0/28")),
+            mode: NatMode::Stateless,
+        };
+
+        // Overlapping with rule 1
+        let k5 = NatRuleKey {
+            src_vni: Some(Vni(4001)),
+            cidr: V4(Ipv4Cidr::new("192.168.1.0/28")),
+            protocol: IpNumber::TCP,
+        };
+        let v5 = NatRuleValue {
+            dst_vni: Some(Vni(4002)),
+            cidr: V4(Ipv4Cidr::new("10.0.1.0/28")),
+            mode: NatMode::Stateless,
+        };
+        */
+        let mut rules = Vec::new();
+        rules.push((k1, v1));
+        rules.push((k2, v2));
+        rules.push((k3, v3));
+        NatRuleSet { rules }
+    }
+
+    fn mock_packet(src_ipv4: [u8; 4]) -> Packet {
+        Packet {
+            eth: Eth::new(
+                Mac::from([0xde, 0xad, 0xbe, 0xef, 0x00, 0x00]),
+                Mac::from([0xd0, 0xbb, 0x1e, 0xc0, 0xff, 0xee]),
+                EthType::IPV4,
+            )
+            .unwrap(),
+            net: Some(Net::Ipv4(Ipv4(
+                Ipv4Header::new(20, 255, IpNumber::TCP, src_ipv4, [10, 0, 1, 27]).unwrap(),
+            ))),
+            transport: None,
+            vlan: ArrayVec::<_, 4>::new(),
+            net_ext: ArrayVec::<_, 2>::new(),
+        }
+    }
+
+    fn mock_vxlan(vni: u32) -> Vxlan {
+        Vxlan::new(Vni::new_checked(vni).unwrap())
+    }
+
+    #[test]
+    #[traced_test]
+    fn testtest() {
+        fn get_src_ip(pkt: &Packet) -> Ipv4Addr {
+            match &pkt.net {
+                Some(Net::Ipv4(ipv4_hdr)) => ipv4_hdr.source().inner(),
+                _ => panic!("Not an IPv4 packet"),
+            }
+        }
+
+        // Test simple stateless NAT44 based on rule 1
+
+        let mut pkt1 = mock_packet([192, 168, 1, 5]);
+        let mut vxlan1 = mock_vxlan(1001);
+        let expected_ip1 = Ipv4Addr::new(10, 0, 1, 5);
+
+        let mut nat = NatProcessor::new();
+        nat.src_nat_rules = mock_rules();
+
+        nat.run(&mut pkt1, Some(&mut vxlan1));
+
+        assert_eq!(get_src_ip(&pkt1), expected_ip1);
+        assert_eq!(vxlan1.vni().as_u32(), 1002);
+
+        // Test simple stateless NAT44 based on rule 2
+
+        let mut pkt2 = mock_packet([192, 168, 2, 95]);
+        let mut vxlan2 = mock_vxlan(2001);
+        let expected_ip2 = Ipv4Addr::new(10, 0, 2, 95);
+
+        nat.run(&mut pkt2, Some(&mut vxlan2));
+
+        assert_eq!(get_src_ip(&pkt2), expected_ip2);
+        assert_eq!(vxlan2.vni().as_u32(), 2002);
+
+        // Incompatible VNI, no translation
+
+        let mut pkt3 = mock_packet([192, 168, 3, 1]);
+        let mut vxlan3 = None;
+        let expected_ip3 = Ipv4Addr::new(192, 168, 3, 1);
+
+        nat.run(&mut pkt3, vxlan3.as_mut());
+
+        assert_eq!(get_src_ip(&pkt3), expected_ip3);
+        assert_eq!(vxlan3, None);
+
+        // Incompatible protocol (TCP vs. UDP), no translation
+
+        let mut pkt4 = mock_packet([192, 168, 3, 1]);
+        let mut vxlan4 = mock_vxlan(3001);
+        let expected_ip4 = Ipv4Addr::new(192, 168, 3, 1);
+
+        nat.run(&mut pkt4, Some(&mut vxlan4));
+
+        assert_eq!(get_src_ip(&pkt4), expected_ip4);
+        assert_eq!(vxlan4.vni().as_u32(), 3001);
     }
 }
