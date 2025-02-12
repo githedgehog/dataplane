@@ -280,6 +280,7 @@ pub struct TooManyVlans;
 
 impl Packet {
     /// Create a new packet with the supplied `Eth` header.
+    #[allow(dead_code)]
     fn new(eth: Eth) -> Packet {
         Packet {
             eth,
@@ -308,6 +309,7 @@ impl Packet {
     /// `Eth` header or prior [`Vlan`] in the stack) is not some flavor of `Vlan` ethtype (e.g.
     /// [`EthType::VLAN`] or [`EthType::VLAN_QINQ`])
     #[allow(unsafe_code)]
+    #[allow(dead_code)]
     unsafe fn push_vlan_header_unchecked(&mut self, vlan: Vlan) -> Result<(), TooManyVlans> {
         if self.vlan.len() < MAX_VLANS {
             self.vlan.push(vlan);

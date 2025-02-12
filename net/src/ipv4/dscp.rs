@@ -34,6 +34,7 @@ impl Dscp {
     /// # Errors
     ///
     /// Will return an [`InvalidDscpError`] if the supplied value for `raw` exceeds 6-bits.
+    #[allow(dead_code)]
     fn new(raw: u8) -> Result<Dscp, InvalidDscpError> {
         Ok(Dscp(
             Ipv4Dscp::try_new(raw).map_err(|e| InvalidDscpError::TooBig(e.actual))?,
