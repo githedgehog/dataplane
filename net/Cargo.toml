@@ -7,10 +7,11 @@ publish = false
 [features]
 default = []
 serde = ["dep:serde"]
-arbitrary = ["dep:arbitrary"]
+arbitrary = ["dep:arbitrary", "dep:bolero"]
 
 [dependencies]
 arbitrary = { workspace = true, features = ["derive"], optional = true }
+bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional = true }
 arrayvec = { workspace = true }
 # ideally, we would do without "std" for etherparse, but we need it for error types.
 etherparse = { workspace = true, features = ["std"] }
