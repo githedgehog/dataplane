@@ -58,7 +58,7 @@ impl CmdArgs {
         }
 
         // To be removed
-        if self.allow.len() == 0 {
+        if self.allow.is_empty() {
             out.push("--allow".to_string());
             out.push("0000:01:00.0,dv_flow_en=1".to_string());
         }
