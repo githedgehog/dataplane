@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+mod args;
+mod config;
+mod nat;
+mod pipeline;
+
 use dpdk::dev::{Dev, TxOffloadConfig};
 use dpdk::eal::Eal;
 use dpdk::lcore::{LCoreId, WorkerThread};
@@ -9,12 +14,12 @@ use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, eal, socket};
 use net::packet::Packet;
-use net::parse::Parse;
-use tracing::{info, warn};
-mod args;
-mod nat;
+use net::parse::{DeParse, Parse};
+use tracing::{info, trace, warn};
 
-use args::{CmdArgs, Parser};
+use crate::args::{CmdArgs, Parser};
+use crate::config::Config;
+use crate::pipeline::{MetaPacket, Metadata, Passthrough, Pipeline};
 
 #[global_allocator]
 static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();
@@ -29,6 +34,18 @@ fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
         .with_thread_names(true)
         .init();
     rte
+}
+
+// FIXME(mvachhar) construct pipline elsewhere, ideally from config file
+fn setup_pipeline() -> Pipeline {
+    let mut pipeline = Pipeline::new();
+    let config = Config::new();
+
+    let passthrough = Passthrough::new();
+    pipeline.add_stage(Box::new(passthrough)).unwrap();
+    pipeline.update_config(&config).unwrap();
+
+    pipeline
 }
 
 fn main() {
@@ -96,16 +113,36 @@ fn main() {
         info!("Starting RTE Worker on {lcore_id:?}");
         let rx_queue = devices[0].rx_queue(RxQueueIndex(i as u16)).unwrap();
         let tx_queue = devices[0].tx_queue(TxQueueIndex(i as u16)).unwrap();
-        WorkerThread::launch(lcore_id, move || loop {
-            let mut pkts: Vec<_> = rx_queue.receive().collect();
-            for pkt in pkts.iter_mut() {
-                let Ok((packet, _rest)) = Packet::parse(pkt.raw_data_mut()) else {
-                    info!("failed to parse packet");
-                    continue;
-                };
-                info!("received packet: {packet:?}");
+        WorkerThread::launch(lcore_id, move || {
+            let mut pipeline = setup_pipeline();
+            pipeline.start().unwrap();
+
+            loop {
+                let mbufs = rx_queue.receive();
+                let pkts = mbufs.filter_map(|mut mbuf| {
+                    let packet_result = Packet::parse(mbuf.raw_data_mut());
+                    let packet = match packet_result {
+                        Ok(packet) => packet.0,
+                        Err(e) => {
+                            trace!("Failed to parse packet {e:?}");
+                            return None;
+                        }
+                    };
+                    Some(MetaPacket {
+                        packet,
+                        metadata: Metadata { vni: None },
+                        outer_packet: None,
+                        mbuf,
+                    })
+                });
+
+                let pkts_out = pipeline.process_packets(Box::new(pkts));
+                tx_queue.transmit(pkts_out.map(|pkt| {
+                    let mut mbuf = pkt.mbuf;
+                    pkt.packet.deparse(mbuf.raw_data_mut()).unwrap();
+                    mbuf
+                }));
             }
-            tx_queue.transmit(pkts);
         });
     });
     stop_rx.recv().expect("failed to receive stop signal");
