@@ -3,7 +3,6 @@
 
 //! Mac address type and logic.
 
-use crate::eth::{DestinationMacAddressError, SourceMacAddressError};
 use std::fmt::Display;
 
 /// A [MAC Address] type.
@@ -13,7 +12,7 @@ use std::fmt::Display;
 ///
 /// [MAC Address]: https://en.wikipedia.org/wiki/MAC_address
 #[repr(transparent)]
-#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(bolero::TypeGenerator))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Mac(pub [u8; 6]);
@@ -100,18 +99,32 @@ impl Mac {
         (bytes[0..5] == [0x01, 0x80, 0xc2, 0x00, 0x00]) && (bytes[5] & 0x0f == bytes[5])
     }
 
-    /// Returns true iff the [`Mac`] is a legal source `Mac`.
+    /// Returns `Ok(())` iff the [`Mac`] is a legal source `Mac`.
+    ///
+    /// # Errors
     ///
     /// Multicast and zero are not legal source [`Mac`].
-    #[must_use]
-    pub fn is_valid_src(&self) -> bool {
-        !self.is_zero() && !self.is_multicast()
+    pub fn valid_src(&self) -> Result<(), SourceMacAddressError> {
+        if self.is_zero() {
+            Err(SourceMacAddressError::ZeroSource(*self))
+        } else if self.is_multicast() {
+            Err(SourceMacAddressError::MulticastSource(*self))
+        } else {
+            Ok(())
+        }
     }
 
-    /// Returns true iff the [`Mac`] is a legal destination [`Mac`].
-    #[must_use]
-    pub fn is_valid_dst(&self) -> bool {
-        self.is_valid()
+    /// Returns `Ok(())` iff the [`Mac`] is a legal destination [`Mac`].
+    ///
+    /// # Errors
+    ///
+    /// Zero is not a legal destination [`Mac`].
+    pub fn valid_dst(&self) -> Result<(), DestinationMacAddressError> {
+        if self.is_zero() {
+            Err(DestinationMacAddressError::ZeroDestination(*self))
+        } else {
+            Ok(())
+        }
     }
 
     /// Return true iff the [`Mac`] is not zero.
@@ -135,22 +148,29 @@ impl Display for Mac {
 pub struct SourceMac(Mac);
 
 impl SourceMac {
-    // TODO: proof of non-panic behavior
     /// Map a [`Mac`] to a [`SourceMac`]
     ///
     /// # Errors
     ///
     /// Will return a [`SourceMacAddressError`] if the supplied [`Mac`] is not a legal source [`Mac`].
-    pub fn new(inner: Mac) -> Result<SourceMac, SourceMacAddressError> {
-        if inner.is_valid_src() {
-            Ok(SourceMac(inner))
-        } else if inner.is_zero() {
-            Err(SourceMacAddressError::ZeroSource(inner))
-        } else if inner.is_multicast() {
-            Err(SourceMacAddressError::MulticastSource(inner))
+    pub fn new(mac: Mac) -> Result<SourceMac, SourceMacAddressError> {
+        if mac.is_zero() {
+            Err(SourceMacAddressError::ZeroSource(mac))
+        } else if mac.is_multicast() {
+            Err(SourceMacAddressError::MulticastSource(mac))
         } else {
-            unreachable!()
+            Ok(SourceMac(mac))
         }
+    }
+
+    /// Map a [`Mac`] to a [`SourceMac`] without checking validity.
+    ///
+    /// # Safety
+    ///
+    /// Supplied [`Mac`] must be a valid source [`Mac`].
+    #[allow(unsafe_code)]
+    pub(crate) unsafe fn new_unchecked(mac: Mac) -> SourceMac {
+        SourceMac(mac)
     }
 
     /// Map the [`SourceMac`] back to an unqualified [`Mac`]
@@ -165,21 +185,28 @@ impl SourceMac {
 pub struct DestinationMac(Mac);
 
 impl DestinationMac {
-    // TODO: proof of non-panic behavior
     /// Map a [`Mac`] to a [`DestinationMac`]
     ///
     /// # Errors
     ///
     /// Will return a [`DestinationMacAddressError`] if the supplied [`Mac`] is not legal as a
     /// destination.
-    pub fn new(inner: Mac) -> Result<DestinationMac, DestinationMacAddressError> {
-        if inner.is_valid_dst() {
-            Ok(DestinationMac(inner))
-        } else if inner.is_zero() {
-            Err(DestinationMacAddressError::ZeroDestination(inner))
+    pub fn new(mac: Mac) -> Result<DestinationMac, DestinationMacAddressError> {
+        if mac.is_zero() {
+            Err(DestinationMacAddressError::ZeroDestination(mac))
         } else {
-            unreachable!()
+            Ok(DestinationMac(mac))
         }
+    }
+
+    /// Map a [`Mac`] to a [`DestinationMac`] without checking validity.
+    ///
+    /// # Safety
+    ///
+    /// Supplied [`Mac`] must be a valid destination [`Mac`].
+    #[allow(unsafe_code)]
+    pub(crate) unsafe fn new_unchecked(mac: Mac) -> DestinationMac {
+        DestinationMac(mac)
     }
 
     /// Map the [`DestinationMac`] back to an unqualified [`Mac`]
@@ -189,29 +216,52 @@ impl DestinationMac {
     }
 }
 
+/// Errors which can occur while setting the source [`Mac`] of a [`Packet`]
+///
+/// [`Packet`]: crate::packet::Packet
+#[derive(Debug, thiserror::Error)]
+pub enum SourceMacAddressError {
+    /// Multicast [`Mac`]s are not legal as a source [`Mac`]
+    #[error("invalid source MAC address: multicast MACs are illegal as source macs")]
+    MulticastSource(Mac),
+    /// Zero is not a legal source
+    #[error("invalid source MAC address: zero MAC is illegal as source MAC")]
+    ZeroSource(Mac),
+}
+
+/// Errors which can occur while setting the destination [`Mac`] of a [`Packet`]
+///
+/// [`Packet`]: crate::packet::Packet
+#[derive(Debug, thiserror::Error)]
+pub enum DestinationMacAddressError {
+    /// Zero is not a legal source
+    #[error("invalid destination mac address: zero mac is illegal as destination mac")]
+    ZeroDestination(Mac),
+}
+
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
     use crate::eth::mac::{DestinationMac, Mac, SourceMac};
-    use arbitrary::{Arbitrary, Unstructured};
+    use bolero::{Driver, TypeGenerator};
 
-    impl<'a> Arbitrary<'a> for SourceMac {
-        fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-            let mut mac: Mac = u.arbitrary()?;
+    impl TypeGenerator for SourceMac {
+        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+            let mut mac: Mac = u.gen()?;
             mac.0[0] &= 0b1111_1110;
             if mac.is_zero() {
                 mac.0[5] = 1;
             }
-            Ok(SourceMac(mac))
+            Some(SourceMac(mac))
         }
     }
 
-    impl<'a> Arbitrary<'a> for DestinationMac {
-        fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-            let mut mac: Mac = u.arbitrary()?;
+    impl TypeGenerator for DestinationMac {
+        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+            let mut mac: Mac = u.gen()?;
             if mac.is_zero() {
                 mac.0[5] = 1;
             }
-            Ok(DestinationMac(mac))
+            Some(DestinationMac(mac))
         }
     }
 }

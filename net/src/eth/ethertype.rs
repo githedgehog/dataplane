@@ -15,7 +15,7 @@ pub use contract::*;
 /// The main point of wrapping this type is to
 ///
 /// 1. Eventually (potentially) 1.0 our crate without requiring the same of etherparse,
-/// 2. Permit the implementation of the `Arbitrary` trait on this type
+/// 2. Permit the implementation of the `TypeGenerator` trait on this type
 ///    to allow us to property test the rest of our code.
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -57,15 +57,11 @@ impl EthType {
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
     use super::EthType;
-    use arbitrary::{Arbitrary, Unstructured};
+    use bolero::{Driver, TypeGenerator};
 
-    impl<'a> Arbitrary<'a> for EthType {
-        fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-            u.int_in_range(0..=u16::MAX).map(EthType::new)
-        }
-
-        fn size_hint(_depth: usize) -> (usize, Option<usize>) {
-            (size_of::<EthType>(), Some(size_of::<EthType>()))
+    impl TypeGenerator for EthType {
+        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+            Some(EthType::new(u.gen()?))
         }
     }
 }

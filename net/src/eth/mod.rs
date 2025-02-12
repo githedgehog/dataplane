@@ -7,7 +7,9 @@ pub mod ethertype;
 pub mod mac;
 
 use crate::eth::ethertype::EthType;
-use crate::eth::mac::{DestinationMac, Mac, SourceMac};
+use crate::eth::mac::{
+    DestinationMac, DestinationMacAddressError, Mac, SourceMac, SourceMacAddressError,
+};
 use crate::ipv4::Ipv4;
 use crate::ipv6::Ipv6;
 use crate::packet::Header;
@@ -21,7 +23,9 @@ use tracing::{debug, trace};
 #[cfg(any(test, feature = "arbitrary"))]
 pub use contract::*;
 
-/// An ethernet header.
+/// An [ethernet header]
+///
+/// [ethernet header]: https://en.wikipedia.org/wiki/Ethernet_frame
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Eth(Ethernet2Header);
 
@@ -36,138 +40,59 @@ pub enum EthError {
     InvalidDestination(DestinationMacAddressError),
 }
 
-/// Errors which can occur while setting the source [`Mac`] of a [`Packet`]
-///
-/// [`Packet`]: crate::packet::Packet
-#[derive(Debug, thiserror::Error)]
-pub enum SourceMacAddressError {
-    /// Multicast [`Mac`]s are not legal as a source [`Mac`]
-    #[error("invalid source mac address: multicast macs are illegal as source macs")]
-    MulticastSource(Mac),
-    /// Zero is not a legal source
-    #[error("invalid source mac address: zero mac is illegal as source mac")]
-    ZeroSource(Mac),
-}
-
-/// Errors which can occur while setting the destination [`Mac`] of a [`Packet`]
-///
-/// [`Packet`]: crate::packet::Packet
-#[derive(Debug, thiserror::Error)]
-pub enum DestinationMacAddressError {
-    /// Zero is not a legal source
-    #[error("invalid destination mac address: zero mac is illegal as destination mac")]
-    ZeroDestination(Mac),
-}
-
 impl Eth {
     /// The length (in bytes) of an [`Eth`] header
     pub const HEADER_LEN: usize = 14;
 
     /// Create a new [Eth] header.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if the specified source or dest [Mac] are invalid.
-    pub fn new(source: Mac, destination: Mac, ether_type: EthType) -> Result<Eth, EthError> {
-        let mut header = Eth(Ethernet2Header {
-            source: source.0,
-            destination: destination.0,
+    #[must_use]
+    pub fn new(source: SourceMac, destination: DestinationMac, ether_type: EthType) -> Eth {
+        Eth(Ethernet2Header {
+            source: source.inner().0,
+            destination: destination.inner().0,
             ether_type: ether_type.0,
-        });
-        header
-            .set_source_checked(source)
-            .map_err(EthError::InvalidSource)?;
-        header
-            .set_destination(destination)
-            .map_err(EthError::InvalidDestination)?;
-        Ok(header)
+        })
     }
 
-    /// Get the source [Mac] of the header.
+    /// Get the source [`Mac`] of the header.
     #[must_use]
-    pub fn source(&self) -> Mac {
-        Mac(self.0.source)
+    pub fn source(&self) -> SourceMac {
+        #[allow(unsafe_code)] // checked in ctor and parse methods
+        unsafe {
+            SourceMac::new_unchecked(Mac(self.0.source))
+        }
     }
 
-    /// Get the destination [Mac] of the header.
+    /// Get the destination [`Mac`] of the header.
     #[must_use]
-    pub fn destination(&self) -> Mac {
-        Mac(self.0.destination)
+    pub fn destination(&self) -> DestinationMac {
+        #[allow(unsafe_code)] // checked in ctor and parse methods
+        unsafe {
+            DestinationMac::new_unchecked(Mac(self.0.source))
+        }
     }
 
-    /// Get the ethertype of the header.
+    /// Get the [`EthType`] of the header.
     #[must_use]
     pub fn ether_type(&self) -> EthType {
         EthType(self.0.ether_type)
     }
 
-    /// Set the source [Mac] of the ethernet header.
-    ///
-    /// # Errors
-    ///
-    /// Will refuse to set an invalid source [`Mac`] (e.g., multicast or zero).
-    pub fn set_source(&mut self, source: SourceMac) -> Result<&mut Eth, SourceMacAddressError> {
-        #[allow(unsafe_code)] // check immediately above
-        Ok(unsafe { self.set_source_unchecked(source.inner()) })
-    }
-
-    /// Set the source [Mac] of the ethernet header.
-    ///
-    /// # Errors
-    ///
-    /// Will refuse to set an invalid source [`Mac`] (e.g., multicast or zero).
-    pub fn set_source_checked(&mut self, source: Mac) -> Result<&mut Eth, SourceMacAddressError> {
-        if source.is_zero() {
-            return Err(SourceMacAddressError::ZeroSource(source));
-        }
-        if source.is_multicast() {
-            return Err(SourceMacAddressError::MulticastSource(source));
-        }
-        #[allow(unsafe_code)] // check immediately above
-        Ok(unsafe { self.set_source_unchecked(source) })
-    }
-
-    /// Set the destination [Mac] of the ethernet header.
-    ///
-    /// # Errors
-    ///
-    /// Will refuse to set zero as the dest [Mac].
-    pub fn set_destination(
-        &mut self,
-        destination: Mac,
-    ) -> Result<&mut Eth, DestinationMacAddressError> {
-        if !destination.is_valid_dst() {
-            return Err(DestinationMacAddressError::ZeroDestination(destination));
-        }
-        Ok(self.set_destination_unchecked(destination))
-    }
-
-    /// Set the source [Mac] of the header.
-    ///
-    /// # Safety
-    ///
-    /// This method does not check that the [Mac] is a valid source [Mac].
-    #[allow(unsafe_code)] // documented unsafe
-    pub unsafe fn set_source_unchecked(&mut self, source: Mac) -> &mut Eth {
-        debug_assert!(source.is_valid_src());
-        self.0.source = source.0;
+    /// Set the source [`Mac`] of the ethernet header.
+    pub fn set_source(&mut self, source: SourceMac) -> &mut Self {
+        self.0.source = source.inner().0;
         self
     }
 
-    /// Set the destination [Mac] of the header.
-    ///
-    /// # Safety
-    ///
-    /// This method does not check that the [Mac] is a valid dest [Mac].
-    pub fn set_destination_unchecked(&mut self, destination: Mac) -> &mut Eth {
-        debug_assert!(destination.is_valid_dst());
-        self.0.destination = destination.0;
+    /// Set the destination [`Mac`] of the ethernet header.
+    pub fn set_destination(&mut self, destination: DestinationMac) -> &mut Self {
+        self.0.destination = destination.inner().0;
         self
     }
 
     /// Set the ethertype of the header.
-    pub fn set_ether_type(&mut self, ether_type: EtherType) -> &mut Eth {
-        self.0.ether_type = ether_type;
+    pub(crate) fn set_ether_type(&mut self, ether_type: EthType) -> &mut Self {
+        self.0.ether_type = ether_type.0;
         self
     }
 }
@@ -191,11 +116,15 @@ impl Parse for Eth {
         );
         let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
         let new = Self(inner);
-        // integrity check for ethernet header (slightly hacky)
-        SourceMac::new(new.source())
-            .map_err(|e| ParseError::Invalid(EthError::InvalidSource(e)))?;
-        DestinationMac::new(new.destination())
+        // integrity check for ethernet header
+        new.destination()
+            .inner()
+            .valid_dst()
             .map_err(|e| ParseError::Invalid(EthError::InvalidDestination(e)))?;
+        new.source()
+            .inner()
+            .valid_src()
+            .map_err(|e| ParseError::Invalid(EthError::InvalidSource(e)))?;
         Ok((new, consumed))
     }
 }
@@ -286,16 +215,15 @@ mod contract {
     use crate::eth::ethertype::EthType;
     use crate::eth::mac::{DestinationMac, SourceMac};
     use crate::eth::Eth;
-    use arbitrary::{Arbitrary, Unstructured};
+    use bolero::{Driver, TypeGenerator};
 
-    impl<'a> Arbitrary<'a> for Eth {
-        fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-            let source_mac: SourceMac = u.arbitrary()?;
-            let destination_mac: DestinationMac = u.arbitrary()?;
-            let ether_type: EthType = u.arbitrary()?;
-            let eth = Eth::new(source_mac.inner(), destination_mac.inner(), ether_type)
-                .unwrap_or_else(|e| unreachable!("{e:?}"));
-            Ok(eth)
+    impl TypeGenerator for Eth {
+        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+            let source_mac: SourceMac = u.gen()?;
+            let destination_mac: DestinationMac = u.gen()?;
+            let ether_type: EthType = u.gen()?;
+            let eth = Eth::new(source_mac, destination_mac, ether_type);
+            Some(eth)
         }
     }
 }
@@ -308,9 +236,9 @@ mod test {
 
     #[test]
     fn eth_parse_back() {
-        bolero::check!().with_arbitrary().for_each(|eth: &Eth| {
-            assert!(eth.source().is_valid_src());
-            assert!(eth.destination().is_valid_dst());
+        bolero::check!().with_type().for_each(|eth: &Eth| {
+            assert!(eth.source().inner().valid_src().is_ok());
+            assert!(eth.destination().inner().valid_dst().is_ok());
             let mut buf = [0u8; Eth::HEADER_LEN];
             eth.deparse(&mut buf).unwrap();
             let (eth2, consumed) = Eth::parse(&buf).unwrap();
@@ -325,8 +253,8 @@ mod test {
             Ok((eth, consumed)) => {
                 assert!(buf.len() >= Eth::HEADER_LEN);
                 assert_eq!(consumed.get(), Eth::HEADER_LEN);
-                assert!(eth.source().is_valid_src());
-                assert!(eth.destination().is_valid_dst());
+                assert!(eth.source().inner().valid_src().is_ok());
+                assert!(eth.destination().inner().valid_dst().is_ok());
                 let mut buf2 = [0u8; 14];
                 eth.deparse(&mut buf2).unwrap();
                 let (eth2, consumed2) = Eth::parse(&buf2).unwrap();
@@ -357,21 +285,21 @@ mod test {
     #[test]
     fn parse_prop_test_basic() {
         bolero::check!()
-            .with_arbitrary()
+            .with_type()
             .for_each(parse_buffer_of_fixed_length::<{ Eth::HEADER_LEN }>);
     }
 
     #[test]
     fn parse_prop_test_buffer_too_short() {
         bolero::check!()
-            .with_arbitrary()
+            .with_type()
             .for_each(parse_buffer_of_fixed_length::<{ Eth::HEADER_LEN - 1 }>);
     }
 
     #[test]
     fn parse_prop_test_excess_buffer() {
         bolero::check!()
-            .with_arbitrary()
+            .with_type()
             .for_each(parse_buffer_of_fixed_length::<{ Eth::HEADER_LEN + 1 }>);
     }
 }
