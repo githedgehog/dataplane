@@ -3,7 +3,7 @@
 
 //! `ICMPv6` header type and logic.
 
-use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError};
+use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, Reader};
 use etherparse::Icmpv6Header;
 use std::num::NonZero;
 
@@ -30,6 +30,15 @@ impl Parse for Icmp6 {
         );
         let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
         Ok((Self(inner), consumed))
+    }
+}
+
+impl ParsePayload for Icmp6 {
+    type Next = ();
+
+    /// We don't currently support parsing below the Icmp6 layer
+    fn parse_payload(&self, _cursor: &mut Reader) -> Option<Self::Next> {
+        None
     }
 }
 
