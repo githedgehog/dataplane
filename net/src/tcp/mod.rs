@@ -3,14 +3,16 @@
 
 //! TCP header type and logic.
 
+mod checksum;
 mod port;
 
-use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError};
+use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, Reader};
 use crate::tcp::port::TcpPort;
 use etherparse::err::tcp::{HeaderError, HeaderSliceError};
 use etherparse::TcpHeader;
 use std::num::NonZero;
 
+use crate::tcp::checksum::TcpChecksum;
 #[allow(unused_imports)] // re-export
 #[cfg(any(test, feature = "arbitrary"))]
 pub use contract::*;
@@ -71,11 +73,10 @@ impl Tcp {
         NonZero::new(self.0.header_len()).unwrap_or_else(|| unreachable!())
     }
 
-    // TODO: wrapper type for checksum
     /// get the checksum of the header as a `u16`
     #[must_use]
-    pub const fn checksum(&self) -> u16 {
-        self.0.checksum
+    pub const fn checksum(&self) -> TcpChecksum {
+        TcpChecksum::new(self.0.checksum)
     }
 
     /// Get the sequence number of the header.
@@ -94,6 +95,12 @@ impl Tcp {
     #[must_use]
     pub const fn ack(&self) -> bool {
         self.0.ack
+    }
+
+    /// Returns the acknowledgment number of the header.
+    #[must_use]
+    pub const fn ack_number(&self) -> u32 {
+        self.0.acknowledgment_number
     }
 
     /// Returns true if the fin flag is set in this header
@@ -240,8 +247,8 @@ impl Tcp {
     }
 
     /// Set the checksum
-    pub fn set_checksum(&mut self, checksum: u16) -> &mut Self {
-        self.0.checksum = checksum;
+    pub fn set_checksum(&mut self, checksum: TcpChecksum) -> &mut Self {
+        self.0.checksum = checksum.0;
         self
     }
 
@@ -340,33 +347,41 @@ impl DeParse for Tcp {
     }
 }
 
+impl ParsePayload for Tcp {
+    type Next = ();
+
+    /// We don't currently support parsing below the TCP layer
+    fn parse_payload(&self, _cursor: &mut Reader) -> Option<Self::Next> {
+        None
+    }
+}
+
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
     use crate::tcp::Tcp;
-    use arbitrary::{Arbitrary, Unstructured};
+    use bolero::{Driver, TypeGenerator};
     use etherparse::TcpHeader;
 
-    impl<'a> Arbitrary<'a> for Tcp {
-        // TODO: add support for arbitrary tcp options
-        fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+    impl TypeGenerator for Tcp {
+        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
             let mut header = Tcp(TcpHeader::default());
             header
-                .set_source(u.arbitrary()?)
-                .set_destination(u.arbitrary()?)
-                .set_checksum(u.arbitrary()?)
-                .set_sequence_number(u.arbitrary()?)
-                .set_ack(u.arbitrary()?)
-                .set_ack_number(u.arbitrary()?)
-                .set_cwr(u.arbitrary()?)
-                .set_ece(u.arbitrary()?)
-                .set_fin(u.arbitrary()?)
-                .set_psh(u.arbitrary()?)
-                .set_rst(u.arbitrary()?)
-                .set_syn(u.arbitrary()?)
-                .set_urg(u.arbitrary()?)
-                .set_window_size(u.arbitrary()?)
-                .set_urgent_pointer(u.arbitrary()?);
-            Ok(header)
+                .set_source(u.gen()?)
+                .set_destination(u.gen()?)
+                .set_checksum(u.gen()?)
+                .set_sequence_number(u.gen()?)
+                .set_ack(u.gen()?)
+                .set_ack_number(u.gen()?)
+                .set_cwr(u.gen()?)
+                .set_ece(u.gen()?)
+                .set_fin(u.gen()?)
+                .set_psh(u.gen()?)
+                .set_rst(u.gen()?)
+                .set_syn(u.gen()?)
+                .set_urg(u.gen()?)
+                .set_window_size(u.gen()?)
+                .set_urgent_pointer(u.gen()?);
+            Some(header)
         }
     }
 }
@@ -379,7 +394,7 @@ mod test {
 
     #[test]
     fn parse_back() {
-        bolero::check!().with_arbitrary().for_each(|tcp: &Tcp| {
+        bolero::check!().with_type().for_each(|tcp: &Tcp| {
             let mut buffer = [0u8; 64];
             let consumed = match tcp.deparse(&mut buffer) {
                 Ok(consumed) => consumed,
@@ -389,16 +404,31 @@ mod test {
             };
             assert!(consumed.get() <= buffer.len());
             let (parsed, consumed2) = Tcp::parse(&buffer[..consumed.get()]).unwrap();
+            assert_eq!(tcp.source(), parsed.source());
+            assert_eq!(tcp.destination(), parsed.destination());
+            assert_eq!(tcp.checksum(), parsed.checksum());
+            assert_eq!(tcp.sequence_number(), parsed.sequence_number());
+            assert_eq!(tcp.ack_number(), parsed.ack_number());
+            assert_eq!(tcp.ack(), parsed.ack());
+            assert_eq!(tcp.ack(), parsed.ack());
+            assert_eq!(tcp.cwr(), parsed.cwr());
+            assert_eq!(tcp.ece(), parsed.ece());
+            assert_eq!(tcp.fin(), parsed.fin());
+            assert_eq!(tcp.psh(), parsed.psh());
+            assert_eq!(tcp.rst(), parsed.rst());
+            assert_eq!(tcp.syn(), parsed.syn());
+            assert_eq!(tcp.urg(), parsed.urg());
+            assert_eq!(tcp.window_size(), parsed.window_size());
+            assert_eq!(tcp.urgent_pointer(), parsed.urgent_pointer());
             assert_eq!(tcp, &parsed);
             assert_eq!(consumed, consumed2);
         });
     }
 
-    /// Known failing at the moment
     #[test]
     fn parse_noise() {
         bolero::check!()
-            .with_arbitrary()
+            .with_type()
             .for_each(|slice: &[u8; Tcp::MIN_LENGTH]| {
                 let (parsed, consumed1) = match Tcp::parse(slice) {
                     Ok((parsed, consumed)) => (parsed, consumed),
@@ -428,7 +458,11 @@ mod test {
                 assert_eq!(&slice[..12], &slice2[..12]);
                 // check for reserved bits getting zeroed by `write` (regardless of inputs)
                 assert_eq!(slice[12] & 0b1111_0001, slice2[12]);
-                assert_eq!(&slice[13..consumed1.get()], &slice2[13..consumed1.get()]);
+                assert_eq!(&slice[13..Tcp::MIN_LENGTH], &slice2[13..Tcp::MIN_LENGTH]);
+                assert_eq!(
+                    &slice[Tcp::MIN_LENGTH..consumed1.get()],
+                    &slice2[Tcp::MIN_LENGTH..consumed1.get()]
+                );
             });
     }
 }
