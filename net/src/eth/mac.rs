@@ -4,6 +4,7 @@
 //! Mac address type and logic.
 
 use crate::eth::{DestinationMacAddressError, SourceMacAddressError};
+use std::fmt::Display;
 
 /// A [MAC Address] type.
 ///
@@ -120,6 +121,15 @@ impl Mac {
     }
 }
 
+impl Display for Mac {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:<02X}:{:<02X}:{:<02X}:{:<02X}:{:<02X}:{:<02X}",
+            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4], self.0[5]
+        )
+    }
+}
 /// A [`Mac`] which is legal as a source in an ethernet header.
 #[repr(transparent)]
 pub struct SourceMac(Mac);
