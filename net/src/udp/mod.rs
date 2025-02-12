@@ -3,16 +3,28 @@
 
 //! UDP header type and logic.
 
+pub mod checksum;
 pub mod port;
 
-use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError};
+use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, Reader};
 use crate::udp::port::UdpPort;
+use crate::vxlan::Vxlan;
 use etherparse::UdpHeader;
 use std::num::NonZero;
+use tracing::debug;
 
 /// A UDP header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Udp(UdpHeader);
+
+/// A UDP encapsulation.
+///
+/// At this point we only support VXLAN, but Geneve and others can be added as needed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Encap {
+    /// A VXLAN header in a UDP packet
+    Vxlan(Vxlan),
+}
 
 impl Udp {
     /// The minimum length of a valid UDP header (technically also the maximum length).
@@ -83,12 +95,12 @@ impl Udp {
     /// If you set the length to zero (or anything less than 8) then this is sure to be unsound.
     #[allow(unsafe_code)]
     #[allow(clippy::cast_possible_truncation)] // trivially valid since MIN_LENGTH is small
-    pub unsafe fn set_length(&mut self, length: u16) -> &mut Self {
+    pub unsafe fn set_length(&mut self, length: NonZero<u16>) -> &mut Self {
         debug_assert!(
-            length >= Udp::MIN_LENGTH.get() as u16,
+            length.get() >= Udp::MIN_LENGTH.get() as u16,
             "udp length must be at least 8 bytes, got: {length:#x}",
         );
-        self.0.length = length;
+        self.0.length = length.get();
         self
     }
 }
@@ -135,18 +147,41 @@ impl DeParse for Udp {
     }
 }
 
+impl ParsePayload for Udp {
+    type Next = Encap;
+
+    fn parse_payload(&self, cursor: &mut Reader) -> Option<Encap> {
+        match self.destination() {
+            Vxlan::PORT => {
+                let (vxlan, _) = match cursor.parse::<Vxlan>() {
+                    Ok((vxlan, consumed)) => (vxlan, consumed),
+                    Err(e) => {
+                        debug!("vxlan parse error: {e:?}");
+                        return None;
+                    }
+                };
+                Some(Encap::Vxlan(vxlan))
+            }
+            _ => None,
+        }
+    }
+}
+
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
     use crate::udp::Udp;
-    use arbitrary::{Arbitrary, Unstructured};
+    use bolero::{Driver, TypeGenerator};
     use etherparse::UdpHeader;
+    use std::num::NonZero;
 
-    impl<'a> Arbitrary<'a> for Udp {
-        fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+    impl TypeGenerator for Udp {
+        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+            #[allow(clippy::cast_possible_truncation)] // trivially safe
+            const MIN_LENGTH: u16 = Udp::MIN_LENGTH.get() as u16;
             let mut header = Udp(UdpHeader::default());
-            header.set_source(u.arbitrary()?);
-            header.set_destination(u.arbitrary()?);
-            header.set_checksum(u.arbitrary()?);
+            header.set_source(u.gen()?);
+            header.set_destination(u.gen()?);
+            header.set_checksum(u.gen()?);
             // Safety:
             // This is sound in-so-far as the whole point of this method is to generate potentially
             // hostile values which are used to test the soundness of the code.
@@ -154,10 +189,21 @@ mod contract {
             #[allow(unsafe_code)]
             #[allow(clippy::cast_possible_truncation)]
             // trivially sound since MIN_LENGTH is small
-            unsafe {
-                header.set_length(u.int_in_range((Self::MIN_LENGTH.get() as u16)..=u16::MAX)?);
+            let length = u.gen::<u16>()?;
+            match length {
+                #[allow(unsafe_code)] // trivially safe const-eval
+                0..MIN_LENGTH => unsafe {
+                    #[allow(clippy::unwrap_used)] // trivially safe const eval
+                    header.set_length(const { NonZero::new(MIN_LENGTH).unwrap() });
+                },
+                MIN_LENGTH..=u16::MAX => {
+                    #[allow(unsafe_code)] // trivially safe based on current branch condition
+                    unsafe {
+                        header.set_length(NonZero::new(length).unwrap_or_else(|| unreachable!()));
+                    }
+                }
             }
-            Ok(header)
+            Some(header)
         }
     }
 }
@@ -170,7 +216,7 @@ mod test {
 
     #[test]
     fn parse_back() {
-        bolero::check!().with_arbitrary().for_each(|input: &Udp| {
+        bolero::check!().with_type().for_each(|input: &Udp| {
             let mut buffer = [0u8; 8];
             let consumed = match input.deparse(&mut buffer) {
                 Ok(consumed) => consumed,
@@ -186,10 +232,10 @@ mod test {
     }
 
     #[test]
-    fn parse_noise() {
+    fn parse_arbitrary_bytes() {
         bolero::check!()
-            .with_arbitrary()
-            .for_each(|slice: &[u8; 8]| {
+            .with_type()
+            .for_each(|slice: &[u8; Udp::MIN_LENGTH.get()]| {
                 let (parsed, bytes_read) =
                     Udp::parse(slice).unwrap_or_else(|e| unreachable!("{e:?}"));
                 let mut slice2 = [0u8; 8];
