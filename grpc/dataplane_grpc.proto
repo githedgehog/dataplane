@@ -1,0 +1,120 @@
+syntax = "proto3";
+
+package network;
+
+option go_package = "smatov/dataplane";
+
+service NetworkService {
+    rpc AddVPC(AddVPCRequest) returns (VPCResponse);
+    rpc UpdateVPC(UpdateVPCRequest) returns (VPCResponse);
+    rpc DeleteVPC(DeleteVPCRequest) returns (DeleteResponse);
+    rpc ListVPCs(ListVPCsRequest) returns (ListVPCsResponse);
+
+    rpc AddPeeringInterface(AddPIFRequest) returns (PIFResponse);
+    rpc UpdatePeeringInterface(UpdatePIFRequest) returns (PIFResponse);
+    rpc DeletePeeringInterface(DeletePIFRequest) returns (DeleteResponse);
+    rpc ListPeeringInterfaces(ListPIFsRequest) returns (ListPIFsResponse);
+
+    rpc AddPeeringPolicy(AddPeeringPolicyRequest) returns (PeeringPolicyResponse);
+    rpc UpdatePeeringPolicy(UpdatePeeringPolicyRequest) returns (PeeringPolicyResponse);
+    rpc DeletePeeringPolicy(DeletePeeringPolicyRequest) returns (DeleteResponse);
+    rpc ListPeeringPolicies(ListPeeringPoliciesRequest) returns (ListPeeringPoliciesResponse);
+}
+
+message VPC {
+    string vpc_name = 1;
+    repeated Subnet subnets = 2;
+}
+
+message Subnet {
+    string subnet_name = 1;
+    string cidr = 2;
+    uint32 vni = 3;
+}
+
+message PeeringInterface {
+    string pif_name = 1;
+    string vpc_name = 2;
+    string type = 3;
+    repeated string endpoints = 4;
+    repeated string ips = 5;
+}
+
+message PeeringPolicy {
+    string policy_name = 1;
+    repeated string peered_interfaces = 2;
+}
+
+message AddVPCRequest {
+    VPC vpc = 1;
+}
+
+message UpdateVPCRequest {
+    VPC vpc = 1;
+}
+
+message DeleteVPCRequest {
+    string vpc_name = 1;
+}
+
+message VPCResponse {
+    string message = 1;
+    VPC vpc = 2;
+}
+
+message AddPIFRequest {
+    PeeringInterface pif = 1;
+}
+
+message UpdatePIFRequest {
+    PeeringInterface pif = 1;
+}
+
+message DeletePIFRequest {
+    string pif_name = 1;
+}
+
+message PIFResponse {
+    string message = 1;
+    PeeringInterface pif = 2;
+}
+
+message AddPeeringPolicyRequest {
+    PeeringPolicy policy = 1;
+}
+
+message UpdatePeeringPolicyRequest {
+    PeeringPolicy policy = 1;
+}
+
+message DeletePeeringPolicyRequest {
+    string policy_name = 1;
+}
+
+message PeeringPolicyResponse {
+    string message = 1;
+    PeeringPolicy policy = 2;
+}
+
+message DeleteResponse {
+    string message = 1;
+}
+
+message ListVPCsRequest {}
+
+message ListVPCsResponse {
+    repeated VPC vpcs = 1;
+}
+
+message ListPIFsRequest {}
+
+message ListPIFsResponse {
+    repeated PeeringInterface pifs = 1;
+}
+
+message ListPeeringPoliciesRequest {}
+
+message ListPeeringPoliciesResponse {
+    repeated PeeringPolicy policies = 1;
+}
+
