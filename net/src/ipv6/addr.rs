@@ -39,21 +39,20 @@ impl UnicastIpv6Addr {
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
     use crate::ipv6::addr::UnicastIpv6Addr;
-    use arbitrary::{Arbitrary, Unstructured};
+    use bolero::{Driver, TypeGenerator};
     use std::net::Ipv6Addr;
 
-    impl<'a> Arbitrary<'a> for UnicastIpv6Addr {
-        fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-            loop {
-                let ip = Ipv6Addr::arbitrary(u)?;
-                if !ip.is_multicast() {
-                    return Ok(UnicastIpv6Addr(ip));
-                }
+    impl TypeGenerator for UnicastIpv6Addr {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let ip = Ipv6Addr::from(driver.gen::<u128>()?);
+            // multicast ipv6 addresses begin with 0xFF
+            // map back to unicast space if we hit a multicast address
+            if ip.is_multicast() {
+                let mut octets = ip.octets();
+                octets[0] ^= 1;
+                return Some(UnicastIpv6Addr(Ipv6Addr::from(octets)));
             }
-        }
-
-        fn size_hint(_depth: usize) -> (usize, Option<usize>) {
-            (size_of::<Ipv6Addr>(), None) // no formal upper bound on the number of attempts required
+            Some(UnicastIpv6Addr(ip))
         }
     }
 }
@@ -63,9 +62,10 @@ mod test {
     use crate::ipv4::addr::UnicastIpv4Addr;
 
     #[test]
+    #[cfg_attr(kani, kani::proof)]
     fn generated_unicast_ipv4_address_is_unicast() {
         bolero::check!()
-            .with_arbitrary()
+            .with_type()
             .for_each(|unicast: &UnicastIpv4Addr| assert!(!unicast.inner().is_multicast()));
     }
 }

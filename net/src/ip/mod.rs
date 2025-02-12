@@ -7,9 +7,10 @@ use etherparse::IpNumber;
 
 /// Thin wrapper around [`IpNumber`]
 ///
-/// This exists to allow us to implement `Arbitrary` without violating rust's orphan rules.
+/// This exists to allow us to implement `TypeGenerator` without violating rust's orphan rules.
 #[repr(transparent)]
-pub struct NextHeader(IpNumber);
+#[derive(PartialEq, Eq, Clone, Copy, Hash, Ord, PartialOrd)]
+pub struct NextHeader(pub(crate) IpNumber);
 
 impl From<NextHeader> for IpNumber {
     fn from(value: NextHeader) -> Self {
@@ -18,6 +19,11 @@ impl From<NextHeader> for IpNumber {
 }
 
 impl NextHeader {
+    /// Get the inner (wrapped) `etherparse` [`IpNumber`] type
+    pub(crate) fn inner(self) -> IpNumber {
+        self.0
+    }
+
     /// Generate a new [`NextHeader`]
     #[must_use]
     pub fn new(inner: u8) -> Self {
@@ -39,15 +45,11 @@ impl NextHeader {
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
     use crate::ip::NextHeader;
-    use arbitrary::{Arbitrary, Unstructured};
+    use bolero::{Driver, TypeGenerator};
 
-    impl<'a> Arbitrary<'a> for NextHeader {
-        fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-            Ok(NextHeader::new(u.arbitrary()?))
-        }
-
-        fn size_hint(_depth: usize) -> (usize, Option<usize>) {
-            (1, Some(1))
+    impl TypeGenerator for NextHeader {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            Some(NextHeader::new(driver.gen()?))
         }
     }
 }

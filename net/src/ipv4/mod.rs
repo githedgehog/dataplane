@@ -4,8 +4,12 @@
 //! Ipv4 Address type and manipulation
 
 use crate::icmp4::Icmp4;
+use crate::ip::NextHeader;
 use crate::ip_auth::IpAuth;
 use crate::ipv4::addr::UnicastIpv4Addr;
+use crate::ipv4::dscp::Dscp;
+use crate::ipv4::ecn::Ecn;
+use crate::ipv4::frag_offset::FragOffset;
 use crate::packet::Header;
 use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, Reader};
 use crate::tcp::Tcp;
@@ -16,6 +20,11 @@ use std::num::NonZero;
 use tracing::{debug, trace};
 
 pub mod addr;
+pub mod dscp;
+
+pub mod ecn;
+
+pub mod frag_offset;
 
 /// An IPv4 header
 #[repr(transparent)]
@@ -177,16 +186,16 @@ impl Ipv4 {
     /// Set the header's [explicit congestion notification]
     ///
     /// [explicit congestion notification]: https://en.wikipedia.org/wiki/Explicit_Congestion_Notification
-    pub fn set_ecn(&mut self, ecn: Ipv4Ecn) -> &mut Self {
-        self.0.ecn = ecn;
+    pub fn set_ecn(&mut self, ecn: Ecn) -> &mut Self {
+        self.0.ecn = ecn.0;
         self
     }
 
     /// Set the header's [differentiated services code point].
     ///
     /// [differentiated services code point]: https://en.wikipedia.org/wiki/Differentiated_services
-    pub fn set_dscp(&mut self, dscp: Ipv4Dscp) -> &mut Self {
-        self.0.dscp = dscp;
+    pub fn set_dscp(&mut self, dscp: Dscp) -> &mut Self {
+        self.0.dscp = dscp.0;
         self
     }
 
@@ -221,8 +230,8 @@ impl Ipv4 {
     ///
     /// This function does not (and can-not) check if the assigned fragment offset is valid or even
     /// reasonable.
-    pub fn set_fragment_offset(&mut self, fragment_offset: IpFragOffset) -> &mut Self {
-        self.0.fragment_offset = fragment_offset;
+    pub fn set_fragment_offset(&mut self, fragment_offset: FragOffset) -> &mut Self {
+        self.0.fragment_offset = fragment_offset.0;
         self
     }
 
@@ -233,8 +242,8 @@ impl Ipv4 {
     /// This function does not (and can-not)
     /// check if the assigned [`IpNumber`] is valid for this packet.
     #[allow(unsafe_code)]
-    pub unsafe fn set_next_header(&mut self, next_header: IpNumber) -> &mut Self {
-        self.0.protocol = next_header;
+    pub unsafe fn set_next_header(&mut self, next_header: NextHeader) -> &mut Self {
+        self.0.protocol = next_header.0;
         self
     }
 }
@@ -356,26 +365,26 @@ impl From<Ipv4Next> for Header {
 
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
-    use crate::ip::NextHeader;
     use crate::ipv4::Ipv4;
-    use arbitrary::{Arbitrary, Unstructured};
-    use etherparse::{IpFragOffset, Ipv4Dscp, Ipv4Ecn, Ipv4Header};
+    use bolero::{Driver, TypeGenerator};
+    use etherparse::Ipv4Header;
+    use std::net::Ipv4Addr;
 
-    impl<'a> Arbitrary<'a> for Ipv4 {
+    impl TypeGenerator for Ipv4 {
         /// Generates an arbitrary [`Ipv4`] header.
         ///
         /// # Note
         ///
         /// Ideally, the generated header would cover the space of all possible [`Ipv4`] headers.
-        /// That is, if you called [`Ipv4::arbitrary`] a (very) large number of times,
-        /// you would eventually reach the set of all [`Ipv4`]
-        /// (as should be true with any implementation of [`Arbitrary`]).
+        /// That is, if you called `generate` a (very) large number of times, you would eventually
+        /// reach the set of all [`Ipv4`] (as should be true with any implementation of
+        /// [`TypeGenerator`]).
         ///
         /// Unfortunately, the current implementation does not cover [`Ipv4::options`].
-        fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
             let mut header = Ipv4(Ipv4Header::default());
-            header.set_source(u.arbitrary()?);
-            header.set_destination(u.arbitrary()?);
+            header.set_source(u.gen()?);
+            header.set_destination(Ipv4Addr::from(u.gen::<u32>()?));
 
             // safety:
             // safe in-so-far as
@@ -384,31 +393,17 @@ mod contract {
             // 2. this code is not shipped in production builds in the first place.
             #[allow(unsafe_code)]
             unsafe {
-                header.set_next_header(NextHeader::arbitrary(u)?.into());
+                header.set_next_header(u.gen()?);
             }
-            // DSCP is a 6-bit field, so ignore the top two bits.
-            let dscp = Ipv4Dscp::try_new(u.arbitrary::<u8>()? & 0b0011_1111)
-                .unwrap_or_else(|e| unreachable!("{e:?}"));
-            // ECN is a 2-bit field, so ignore the top 6 bits.
-            let ecn = Ipv4Ecn::try_new(u.arbitrary::<u8>()? & 0b0000_0011)
-                .unwrap_or_else(|e| unreachable!("{e:?}"));
-            header.set_ttl(u.arbitrary()?);
-            header.set_dscp(dscp).set_ecn(ecn);
-            header.set_dont_fragment(u.arbitrary()?);
-            header.set_more_fragments(u.arbitrary()?);
-            header.set_identification(u.arbitrary()?);
-            // IP fragment offset is a 13-bit field, so ignore the top 3 bits.
-            let ip_frag_offset =
-                IpFragOffset::try_new(u.arbitrary::<u16>()? & 0b0001_1111_1111_1111)
-                    .unwrap_or_else(|e| unreachable!("{e:?}"));
-            header.set_fragment_offset(ip_frag_offset);
-            Ok(header)
-        }
-
-        fn size_hint(_depth: usize) -> (usize, Option<usize>) {
-            // When we start supporting the generation of arbitrary [`Ipv4::options`], this next
-            // line needs to be changed to `(Ipv4::MIN_LEN, Some(Ipv4::MAX_LEN))`
-            (Ipv4::MIN_LEN.get(), Some(Ipv4::MIN_LEN.get()))
+            header
+                .set_ttl(u.gen()?)
+                .set_dscp(u.gen()?)
+                .set_ecn(u.gen()?)
+                .set_dont_fragment(u.gen()?)
+                .set_more_fragments(u.gen()?)
+                .set_identification(u.gen()?)
+                .set_fragment_offset(u.gen()?);
+            Some(header)
         }
     }
 }
@@ -422,7 +417,7 @@ mod test {
 
     #[test]
     fn parse_back() {
-        bolero::check!().with_arbitrary().for_each(|header: &Ipv4| {
+        bolero::check!().with_type().for_each(|header: &Ipv4| {
             let mut buffer = [0u8; Ipv4::MIN_LEN.get()];
             let bytes_written = header
                 .deparse(&mut buffer)
@@ -430,6 +425,11 @@ mod test {
             assert_eq!(bytes_written, Ipv4::MIN_LEN);
             let (parse_back, bytes_read) = Ipv4::parse(&buffer[..bytes_written.get()])
                 .unwrap_or_else(|e| unreachable!("{e:?}"));
+            assert_eq!(header.source(), parse_back.source());
+            assert_eq!(header.destination(), parse_back.destination());
+            assert_eq!(header.protocol(), parse_back.protocol());
+            assert_eq!(header.ecn(), parse_back.ecn());
+            assert_eq!(header.dscp(), parse_back.dscp());
             assert_eq!(header, &parse_back);
             assert_eq!(bytes_written, bytes_read);
         });
@@ -438,7 +438,7 @@ mod test {
     #[test]
     fn parse_arbitrary_bytes() {
         bolero::check!()
-            .with_arbitrary()
+            .with_type()
             .for_each(|slice: &[u8; Ipv4::MAX_LEN.get()]| {
                 match Ipv4::parse(slice) {
                     Ok((header, consumed)) => {
@@ -449,8 +449,12 @@ mod test {
                         // reserved bit in ipv4 flags should serialize to zero
                         assert_eq!(slice[6] & 0b0111_1111, buf[6]);
                         assert_eq!(
-                            &slice[7..consumed.get()],
-                            &buf.as_slice()[7..consumed.get()]
+                            &slice[7..Ipv4::MIN_LEN.get()],
+                            &buf.as_slice()[7..Ipv4::MIN_LEN.get()]
+                        );
+                        assert_eq!(
+                            &slice[Ipv4::MIN_LEN.get()..consumed.get()],
+                            &buf.as_slice()[Ipv4::MIN_LEN.get()..consumed.get()]
                         );
                     }
                     Err(e) => match e {

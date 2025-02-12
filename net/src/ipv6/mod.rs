@@ -4,8 +4,10 @@
 //! Ipv6 Address type and manipulation
 
 use crate::icmp6::Icmp6;
+use crate::ip::NextHeader;
 use crate::ip_auth::IpAuth;
 use crate::ipv6::addr::UnicastIpv6Addr;
+use crate::ipv6::flow_label::FlowLabel;
 use crate::packet::Header;
 use crate::parse::{
     DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, ParsePayloadWith,
@@ -13,12 +15,13 @@ use crate::parse::{
 };
 use crate::tcp::Tcp;
 use crate::udp::Udp;
-use etherparse::{IpNumber, Ipv6Extensions, Ipv6FlowLabel, Ipv6Header};
+use etherparse::{IpNumber, Ipv6Extensions, Ipv6Header};
 use std::net::Ipv6Addr;
 use std::num::NonZero;
 use tracing::{debug, trace};
 
 pub mod addr;
+pub mod flow_label;
 
 /// An IPv6 header
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,8 +56,8 @@ impl Ipv6 {
 
     /// Get the [`IpNumber`] type of the next header.
     #[must_use]
-    pub fn next_header(&self) -> IpNumber {
-        self.0.next_header
+    pub fn next_header(&self) -> NextHeader {
+        NextHeader::new(self.0.next_header.0)
     }
 
     /// Get the hop limit for this header (analogous to [`crate::ipv4::Ipv4::ttl`])
@@ -77,8 +80,8 @@ impl Ipv6 {
     ///
     /// [flow label]: https://datatracker.ietf.org/doc/html/rfc6437
     #[must_use]
-    pub fn flow_label(&self) -> Ipv6FlowLabel {
-        self.0.flow_label
+    pub fn flow_label(&self) -> FlowLabel {
+        FlowLabel::new(self.0.flow_label.value()).unwrap_or_else(|_| unreachable!())
     }
 
     /// Set the source ip address of this header
@@ -147,8 +150,8 @@ impl Ipv6 {
     /// Set this header's [flow label].
     ///
     /// [flow label]: https://datatracker.ietf.org/doc/html/rfc6437
-    pub fn set_flow_label(&mut self, flow_label: Ipv6FlowLabel) -> &mut Self {
-        self.0.flow_label = flow_label;
+    pub fn set_flow_label(&mut self, flow_label: FlowLabel) -> &mut Self {
+        self.0.flow_label = flow_label.0;
         self
     }
 
@@ -159,9 +162,9 @@ impl Ipv6 {
     /// This method makes no attempt to ensure that the supplied [`next_header`] value is valid for
     /// the packet to which this header belongs (if any).
     ///
-    /// [`next_header`]: crate::ip::NextHeader
-    pub fn set_next_header(&mut self, next_header: IpNumber) -> &mut Self {
-        self.0.next_header = next_header;
+    /// [`next_header`]: NextHeader
+    pub fn set_next_header(&mut self, next_header: NextHeader) -> &mut Self {
+        self.0.next_header = next_header.0;
         self
     }
 }
@@ -177,10 +180,10 @@ pub struct HopLimitAlreadyZeroError;
 /// Error which is triggered during construction of an [`Ipv6`] object.
 #[derive(thiserror::Error, Debug)]
 pub enum Ipv6Error {
-    /// Source address is invalid because it is multicast.
+    /// source-address is invalid because it is a multicast address
     #[error("multicast source forbidden (received {0})")]
     InvalidSourceAddr(Ipv6Addr),
-    /// Error triggered when etherparse fails to parse the header.
+    /// error triggered when etherparse fails to parse the header
     #[error(transparent)]
     Invalid(etherparse::err::ipv6::HeaderSliceError),
 }
@@ -338,12 +341,12 @@ impl From<Ipv6Next> for Header {
 }
 
 impl ParsePayloadWith for Ipv6Ext {
-    type Param = IpNumber;
+    type Param = NextHeader;
     type Next = Ipv6ExtNext;
 
     fn parse_payload_with(
         &self,
-        first_ip_number: &IpNumber,
+        first_ip_number: &NextHeader,
         cursor: &mut Reader,
     ) -> Option<Self::Next> {
         use etherparse::ip_number::{
@@ -352,7 +355,7 @@ impl ParsePayloadWith for Ipv6Ext {
         };
         let next_header = self
             .inner
-            .next_header(*first_ip_number)
+            .next_header(first_ip_number.inner())
             .map_err(|e| debug!("failed to parse: {e:?}"))
             .ok()?;
         match next_header {
@@ -419,28 +422,22 @@ impl From<Ipv6ExtNext> for Header {
 
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
-    use crate::ip::NextHeader;
     use crate::ipv6::Ipv6;
-    use arbitrary::{Arbitrary, Unstructured};
-    use etherparse::{Ipv6FlowLabel, Ipv6Header};
+    use bolero::{Driver, TypeGenerator};
+    use etherparse::Ipv6Header;
+    use std::net::Ipv6Addr;
 
-    impl<'a> Arbitrary<'a> for Ipv6 {
-        fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+    impl TypeGenerator for Ipv6 {
+        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
             let mut header = Ipv6(Ipv6Header::default());
-            header.set_source(u.arbitrary()?);
-            header.set_destination(u.arbitrary()?);
-            header.set_next_header(NextHeader::arbitrary(u)?.into());
-            // [`Ipv6FlowLabel`] is a 20-bit field so `&` the excess bits to zero
-            let flow_label = Ipv6FlowLabel::try_new(u.arbitrary::<u32>()? & 0xfffff)
-                .unwrap_or_else(|e| unreachable!("{e}"));
-            header.set_flow_label(flow_label);
-            header.set_traffic_class(u.arbitrary()?);
-            header.set_hop_limit(u.arbitrary()?);
-            Ok(header)
-        }
-
-        fn size_hint(_depth: usize) -> (usize, Option<usize>) {
-            (Ipv6::MIN_LEN.get(), Some(Ipv6::MIN_LEN.get()))
+            header
+                .set_source(u.gen()?)
+                .set_destination(Ipv6Addr::from(u.gen::<u128>()?))
+                .set_next_header(u.gen()?)
+                .set_flow_label(u.gen()?)
+                .set_traffic_class(u.gen()?)
+                .set_hop_limit(u.gen()?);
+            Some(header)
         }
     }
 }
@@ -453,8 +450,9 @@ mod test {
     use etherparse::err::ipv6::{HeaderError, HeaderSliceError};
 
     #[test]
+    #[cfg_attr(kani, kani::proof)]
     fn parse_back() {
-        bolero::check!().with_arbitrary().for_each(|header: &Ipv6| {
+        bolero::check!().with_type().for_each(|header: &Ipv6| {
             let mut buf = [0u8; Ipv6::MIN_LEN.get()];
             let len = header.deparse(&mut buf).unwrap().get();
             let (header2, consumed) = crate::ipv6::Ipv6::parse(&buf[..len]).unwrap();
@@ -466,7 +464,7 @@ mod test {
     #[test]
     fn parse_arbitrary_bytes() {
         bolero::check!()
-            .with_arbitrary()
+            .with_type()
             .for_each(|slice: &[u8; Ipv6::MIN_LEN.get()]| {
                 let (header, bytes_read) = match Ipv6::parse(slice) {
                     Ok((header, bytes_read)) => (header, bytes_read),
@@ -498,7 +496,7 @@ mod test {
     #[test]
     fn parse_arbitrary_bytes_too_short() {
         bolero::check!()
-            .with_arbitrary()
+            .with_type()
             .for_each(
                 |slice: &[u8; Ipv6::MIN_LEN.get() - 1]| match Ipv6::parse(slice) {
                     Err(ParseError::Length(e)) => {
@@ -513,7 +511,7 @@ mod test {
     #[test]
     fn parse_arbitrary_bytes_above_minimum() {
         bolero::check!()
-            .with_arbitrary()
+            .with_type()
             .for_each(|slice: &[u8; 4 * Ipv6::MIN_LEN.get()]| {
                 let (header, bytes_read) = match Ipv6::parse(slice) {
                     Ok((header, bytes_read)) => (header, bytes_read),
