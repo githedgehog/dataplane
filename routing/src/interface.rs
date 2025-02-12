@@ -4,12 +4,13 @@
 //! State objects for network interfaces and interface table.
 
 use crate::errors::RouterError;
-use crate::vrf::{Vrf, VrfId};
+use crate::vrf::Vrf;
 use net::eth::mac::Mac;
 use net::vlan::Vid;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 /// A type to uniquely identify a network interface
 pub type IfIndex = u32;
@@ -59,7 +60,7 @@ pub struct Interface {
     admin_state: IfState,
     oper_state: IfState,
     pub addresses: HashSet<IfAddress>,
-    pub vrf: Option<Arc<Vrf>>,
+    pub vrf: Option<Arc<RwLock<Vrf>>>,
 }
 
 #[allow(dead_code)]
@@ -124,7 +125,7 @@ impl Interface {
     /// Attach an interface to a VRF. It is assumed that both the
     /// interface and the VRF exist.
     //////////////////////////////////////////////////////////////////
-    pub fn attach(&mut self, vrf: &Arc<Vrf>) -> Result<(), RouterError> {
+    pub fn attach(&mut self, vrf: &Arc<RwLock<Vrf>>) -> Result<(), RouterError> {
         if let Some(exist_vrf) = &self.vrf {
             if !Arc::ptr_eq(exist_vrf, vrf) {
                 Err(RouterError::AlreadyAttached)
@@ -147,7 +148,7 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Get the VRF that an interface is attached to, or None otherwise
     //////////////////////////////////////////////////////////////////
-    pub fn get_vrf(&self) -> Option<&Vrf> {
+    pub fn get_vrf(&self) -> Option<&RwLock<Vrf>> {
         self.vrf.as_deref()
     }
 
@@ -246,11 +247,14 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     /// Detach all interfaces attached to some VRF
     //////////////////////////////////////////////////////////////////
-    pub fn detach_vrf_interfaces(&mut self, vrfid: VrfId) {
-        self.0
-            .values_mut()
-            .filter(|iface| iface.get_vrf().is_some_and(|vrf| vrf.vrfid == vrfid))
-            .for_each(|iface| iface.detach());
+    pub fn detach_vrf_interfaces(&mut self, vrf: &Arc<RwLock<Vrf>>) {
+        for iface in self.0.values_mut() {
+            if let Some(if_vrf) = &iface.vrf {
+                if Arc::ptr_eq(if_vrf, vrf) {
+                    iface.detach();
+                }
+            }
+        }
     }
 }
 
@@ -261,7 +265,7 @@ pub mod tests {
     use net::vlan::Vid;
     use std::net::IpAddr;
     use std::str::FromStr;
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     // create a test interface table
     pub fn build_test_iftable() -> IfTable {
@@ -348,7 +352,7 @@ pub mod tests {
         assert!(eth0.has_address(&address));
 
         /* Suppose a VRF exists already, somewhere... */
-        let vrf = Arc::new(Vrf::new("default-vrf", 0));
+        let vrf = Arc::new(RwLock::new(Vrf::new("default-vrf", 0)));
 
         /* Attach to VRF */
         let e = eth0.attach(&vrf);
