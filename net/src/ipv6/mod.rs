@@ -462,6 +462,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(kani, kani::proof)]
     fn parse_arbitrary_bytes() {
         bolero::check!()
             .with_type()
@@ -494,6 +495,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(kani, kani::proof)]
     fn parse_arbitrary_bytes_too_short() {
         bolero::check!()
             .with_type()
@@ -509,6 +511,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(kani, kani::proof)]
     fn parse_arbitrary_bytes_above_minimum() {
         bolero::check!()
             .with_type()

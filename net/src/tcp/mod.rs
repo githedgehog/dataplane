@@ -393,6 +393,7 @@ mod test {
     use crate::tcp::Tcp;
 
     #[test]
+    #[cfg_attr(kani, kani::proof)]
     fn parse_back() {
         bolero::check!().with_type().for_each(|tcp: &Tcp| {
             let mut buffer = [0u8; 64];
@@ -420,12 +421,14 @@ mod test {
             assert_eq!(tcp.urg(), parsed.urg());
             assert_eq!(tcp.window_size(), parsed.window_size());
             assert_eq!(tcp.urgent_pointer(), parsed.urgent_pointer());
+            #[cfg(not(kani))] // remove after fixing options
             assert_eq!(tcp, &parsed);
             assert_eq!(consumed, consumed2);
         });
     }
 
     #[test]
+    #[cfg_attr(kani, kani::proof)]
     fn parse_noise() {
         bolero::check!()
             .with_type()
@@ -454,11 +457,13 @@ mod test {
                 assert_eq!(consumed2, consumed1);
                 let (parsed_back, consumed3) = Tcp::parse(&slice2[..consumed2.get()]).unwrap();
                 assert_eq!(consumed2, consumed3);
+                #[cfg(not(kani))] // remove after fixing options
                 assert_eq!(parsed, parsed_back);
                 assert_eq!(&slice[..12], &slice2[..12]);
                 // check for reserved bits getting zeroed by `write` (regardless of inputs)
                 assert_eq!(slice[12] & 0b1111_0001, slice2[12]);
                 assert_eq!(&slice[13..Tcp::MIN_LENGTH], &slice2[13..Tcp::MIN_LENGTH]);
+                #[cfg(not(kani))] // remove after fixing options
                 assert_eq!(
                     &slice[Tcp::MIN_LENGTH..consumed1.get()],
                     &slice2[Tcp::MIN_LENGTH..consumed1.get()]

@@ -416,6 +416,7 @@ mod test {
     use etherparse::err::ipv4::{HeaderError, HeaderSliceError};
 
     #[test]
+    #[cfg_attr(kani, kani::proof)]
     fn parse_back() {
         bolero::check!().with_type().for_each(|header: &Ipv4| {
             let mut buffer = [0u8; Ipv4::MIN_LEN.get()];
@@ -430,12 +431,14 @@ mod test {
             assert_eq!(header.protocol(), parse_back.protocol());
             assert_eq!(header.ecn(), parse_back.ecn());
             assert_eq!(header.dscp(), parse_back.dscp());
+            #[cfg(not(kani))] // remove when we fix options generation
             assert_eq!(header, &parse_back);
             assert_eq!(bytes_written, bytes_read);
         });
     }
 
     #[test]
+    #[cfg_attr(kani, kani::proof)]
     fn parse_arbitrary_bytes() {
         bolero::check!()
             .with_type()
@@ -452,6 +455,7 @@ mod test {
                             &slice[7..Ipv4::MIN_LEN.get()],
                             &buf.as_slice()[7..Ipv4::MIN_LEN.get()]
                         );
+                        #[cfg(not(kani))] // remove when we fix options generation
                         assert_eq!(
                             &slice[Ipv4::MIN_LEN.get()..consumed.get()],
                             &buf.as_slice()[Ipv4::MIN_LEN.get()..consumed.get()]

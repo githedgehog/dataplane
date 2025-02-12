@@ -215,6 +215,7 @@ mod test {
     use crate::udp::Udp;
 
     #[test]
+    #[cfg_attr(kani, kani::proof)]
     fn parse_back() {
         bolero::check!().with_type().for_each(|input: &Udp| {
             let mut buffer = [0u8; 8];
@@ -232,6 +233,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(kani, kani::proof)]
     fn parse_arbitrary_bytes() {
         bolero::check!()
             .with_type()
