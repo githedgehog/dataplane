@@ -116,7 +116,6 @@ impl VrfTable {
     }
 }
 
-
 #[allow(unused)]
 /// Routing database
 pub struct RoutingDb {

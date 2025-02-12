@@ -4,12 +4,15 @@
 //! Module that implements Display for routing objects
 
 use crate::encapsulation::Encapsulation;
+use crate::interface::{IfDataDot1q, IfDataEthernet, IfState, IfTable, IfType, Interface};
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::pretty_utils::{line, Heading};
 use crate::vrf::{Route, ShimNhop, Vrf};
 use iptrie::RTrieMap;
 use std::fmt::Display;
 use std::sync::Arc;
+
+//=================== VRFs, routes and next-hops ====================//
 
 impl Display for NhopKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -100,6 +103,77 @@ impl Display for Vrf {
         fmt_vrf_trie(f, "Ipv4", &self.routesv4)?;
         fmt_vrf_trie(f, "Ipv6", &self.routesv6)?;
         self.nhstore.fmt(f)?;
+        Ok(())
+    }
+}
+
+//========================= Interfaces ================================//
+
+impl Display for IfState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            IfState::Unknown => write!(f, "unknown")?,
+            IfState::Up => write!(f, "up")?,
+            IfState::Down => write!(f, "down")?,
+        }
+        Ok(())
+    }
+}
+impl Display for IfDataEthernet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "mac:{}", self.mac)
+    }
+}
+impl Display for IfDataDot1q {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "mac:{} vlanid:{}", self.mac, self.vlanid)
+    }
+}
+fn fmt_iftype_name(f: &mut std::fmt::Formatter<'_>, t: &str) -> std::fmt::Result {
+    write!(f, "{:width$}", t, width = 16)
+}
+impl Display for IfType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IfType::Unknown => fmt_iftype_name(f, "Unknown"),
+            IfType::Loopback => fmt_iftype_name(f, "Loopback"),
+            IfType::Ethernet(e) => {
+                fmt_iftype_name(f, "Ethernet")?;
+                e.fmt(f)
+            }
+            IfType::Dot1q(e) => {
+                fmt_iftype_name(f, "802.1q")?;
+                e.fmt(f)
+            }
+            IfType::Vxlan => fmt_iftype_name(f, "VxLAN"),
+        }
+    }
+}
+impl Display for Interface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let vrf_name = self
+            .get_vrf_name()
+            .map_or_else(|| "-detached-".to_owned(), |name| name);
+        f.pad(&format!(
+            "  {:>12} ({}) {}|{} {:<16} ",
+            self.name, self.ifindex, self.admin_state, self.oper_state, vrf_name,
+        ))?;
+        self.iftype.fmt(f)?;
+        if !self.addresses.is_empty() {
+            write!(f, "      addresses:")?;
+            for (addr, mask_len) in self.addresses.iter() {
+                write!(f, " {}/{}", addr, mask_len)?;
+            }
+        }
+        Ok(())
+    }
+}
+impl Display for IfTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Heading(format!("interfaces ({})", self.0.len())).fmt(f)?;
+        for iface in self.0.values() {
+            writeln!(f, " {}", iface)?;
+        }
         Ok(())
     }
 }
