@@ -162,6 +162,12 @@ impl Pcp {
     }
 }
 
+impl Default for Pcp {
+    fn default() -> Self {
+        Pcp::new(0).unwrap_or_else(|_| unreachable!())
+    }
+}
+
 impl From<Pcp> for VlanPcp {
     fn from(value: Pcp) -> Self {
         #[allow(unsafe_code)] // SAFETY: overlapping check between libraries.
@@ -331,47 +337,37 @@ impl ParsePayload for Vlan {
 /// Contracts for Vlan types
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
-    use crate::eth::ethertype::EthType;
-    use crate::vlan::{Pcp, Vid, Vlan};
-    use arbitrary::{Arbitrary, Unstructured};
+    use crate::vlan::{InvalidPcp, InvalidVid, Pcp, Vid, Vlan};
+    use bolero::{Driver, TypeGenerator};
 
-    impl<'a> Arbitrary<'a> for Vid {
-        fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-            let raw = u.int_in_range(Vid::MIN.0.get()..=Vid::MAX.0.get())?;
-            Ok(Vid::new(raw).unwrap_or_else(|_| unreachable!()))
-        }
-
-        fn size_hint(_depth: usize) -> (usize, Option<usize>) {
-            (size_of::<u16>(), Some(size_of::<u16>()))
-        }
-    }
-
-    impl<'a> Arbitrary<'a> for Pcp {
-        fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-            Ok(Pcp::new(u.int_in_range(Pcp::MIN.0..=Pcp::MAX.0)?)
-                .unwrap_or_else(|_| unreachable!()))
-        }
-
-        fn size_hint(_depth: usize) -> (usize, Option<usize>) {
-            (1, Some(1))
+    impl TypeGenerator for Vid {
+        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+            let raw = u.gen::<u16>()? & Vid::MAX.0.get();
+            match Vid::new(raw) {
+                Ok(vid) => Some(vid),
+                Err(InvalidVid::Zero) => Some(Vid::MIN),
+                Err(InvalidVid::Reserved) => Some(Vid::MAX),
+                Err(InvalidVid::TooLarge(_)) => unreachable!(),
+            }
         }
     }
 
-    impl<'a> Arbitrary<'a> for Vlan {
-        fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-            let vid = u.arbitrary()?;
-            let ethertype = u.arbitrary()?;
-            let pcp = u.arbitrary()?;
-            let dei = u.arbitrary()?;
-            Ok(Vlan::new(vid, ethertype, pcp, dei))
+    impl TypeGenerator for Pcp {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            match Pcp::new(driver.gen::<u8>()? & Pcp::MAX.0) {
+                Ok(pcp) => Some(pcp),
+                Err(InvalidPcp(_)) => unreachable!(),
+            }
         }
+    }
 
-        fn size_hint(_depth: usize) -> (usize, Option<usize>) {
-            let low = Vid::size_hint(0).0
-                + EthType::size_hint(0).0
-                + Pcp::size_hint(0).0
-                + size_of::<bool>();
-            (low, Some(low))
+    impl TypeGenerator for Vlan {
+        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+            let vid = u.gen()?;
+            let ethertype = u.gen()?;
+            let pcp = u.gen()?;
+            let dei = u.gen()?;
+            Some(Vlan::new(vid, ethertype, pcp, dei))
         }
     }
 }
@@ -437,9 +433,10 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(kani, kani::proof)]
     fn pcp_bounds_respected() {
         bolero::check!()
-            .with_arbitrary()
+            .with_type()
             .cloned()
             .for_each(|byte: u8| match Pcp::new(byte) {
                 Ok(pcp) => {
@@ -455,8 +452,9 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(kani, kani::proof)]
     fn parse_back() {
-        bolero::check!().with_arbitrary().for_each(|vlan: &Vlan| {
+        bolero::check!().with_type().for_each(|vlan: &Vlan| {
             let mut buf = [0u8; Vlan::MIN_LENGTH.get()]; // vlan headers are always 4 bytes long
             let written = vlan.deparse(&mut buf).unwrap();
             assert_eq!(written, vlan.size());
@@ -472,8 +470,9 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(kani, kani::proof)]
     fn parse_noise() {
-        bolero::check!().with_arbitrary().for_each(|buf: &[u8; Vlan::MIN_LENGTH.get()]| {
+        bolero::check!().with_type().for_each(|buf: &[u8; Vlan::MIN_LENGTH.get()]| {
             let (vlan, consumed) = match Vlan::parse(buf) {
                 Ok((vlan, consumed)) => (vlan, consumed),
                 Err(ParseError::Invalid(InvalidVid::Zero | InvalidVid::Reserved)) => { return; }
@@ -493,9 +492,10 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(kani, kani::proof)]
     fn parse_noise_too_short() {
         bolero::check!()
-            .with_arbitrary()
+            .with_type()
             .for_each(
                 |buf: &[u8; Vlan::MIN_LENGTH.get() - 1]| match Vlan::parse(buf) {
                     Err(ParseError::Length(e)) => {
@@ -508,9 +508,10 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(kani, kani::proof)]
     fn arbitrary_mutation() {
         bolero::check!()
-            .with_arbitrary()
+            .with_type()
             .for_each(|(from, into): &(Vlan, Vlan)| {
                 let mut from = from.clone();
                 from.set_vid(into.vid());
@@ -527,8 +528,9 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(kani, kani::proof)]
     fn deparse_to_insufficient_buffer_is_graceful() {
-        bolero::check!().with_arbitrary().for_each(|vlan: &Vlan| {
+        bolero::check!().with_type().for_each(|vlan: &Vlan| {
             let mut buf = [0u8; Vlan::MIN_LENGTH.get() - 1];
             match vlan.deparse(&mut buf) {
                 Err(DeParseError::Length(e)) => {
