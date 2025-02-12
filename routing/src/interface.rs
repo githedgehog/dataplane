@@ -21,14 +21,14 @@ type IfAddress = (IpAddr, u8);
 #[allow(dead_code)]
 /// Specific data for ethernet interfaces
 pub struct IfDataEthernet {
-    mac: Mac,
+    pub mac: Mac,
 }
 
 /// Specific data for vlan (sub)interfaces
 #[allow(dead_code)]
 pub struct IfDataDot1q {
-    mac: Mac,
-    vlanid: Vid,
+    pub mac: Mac,
+    pub vlanid: Vid,
 }
 
 /// Type that contains data specific to the type of interface
@@ -57,8 +57,8 @@ pub struct Interface {
     pub description: Option<String>,
     pub ifindex: IfIndex,
     pub iftype: IfType,
-    admin_state: IfState,
-    oper_state: IfState,
+    pub admin_state: IfState,
+    pub oper_state: IfState,
     pub addresses: HashSet<IfAddress>,
     pub vrf: Option<Arc<RwLock<Vrf>>>,
 }
@@ -153,6 +153,14 @@ impl Interface {
     }
 
     //////////////////////////////////////////////////////////////////
+    /// Get the name of the VRF that an interface is attached to or None
+    //////////////////////////////////////////////////////////////////
+    pub fn get_vrf_name(&self) -> Option<String> {
+        self.get_vrf()
+            .map(|vrf| vrf.read().expect("RWlock-error").name.to_owned())
+    }
+
+    //////////////////////////////////////////////////////////////////
     /// Add (assign) an IP address to an interface
     //////////////////////////////////////////////////////////////////
     pub fn add_ifaddr(&mut self, ifaddr: &IfAddress) {
@@ -181,7 +189,7 @@ impl Interface {
 }
 
 /// A table of network interface objects, keyed by some ifindex (u32)
-pub struct IfTable(HashMap<u32, Interface>);
+pub struct IfTable(pub(crate) HashMap<u32, Interface>);
 
 #[allow(dead_code)]
 impl IfTable {
