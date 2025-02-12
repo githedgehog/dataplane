@@ -7,7 +7,7 @@
 
 mod vni;
 
-use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError};
+use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, Reader};
 use crate::udp::port::UdpPort;
 use core::num::NonZero;
 use tracing::trace;
@@ -18,7 +18,7 @@ pub use vni::{InvalidVni, Vni};
 /// [VXLAN]: https://en.wikipedia.org/wiki/Virtual_Extensible_LAN
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
-#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(bolero::TypeGenerator))]
 #[allow(clippy::unsafe_derive_deserialize)] // all uses of unsafe are compile time and trivial
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
@@ -44,16 +44,7 @@ impl Vxlan {
     /// > Flags (8-bits): where the I flag MUST be set to 1 for a valid VXLAN Network ID (VNI).
     /// > The other 7-bits (designated "R") are reserved fields and MUST be set to zero on
     /// > transmission and ignored on receipt.
-    /// >
-    /// > ...
-    /// >
-    /// >    VXLAN Header:
-    /// > +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    /// > |R|R|R|R|I|R|R|R|            Reserved                           |
-    /// > +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    /// > |                VXLAN Network Identifier (VNI) |   Reserved    |
-    /// > +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    pub const LEGAL_FLAGS: u8 = 0b0000_0100;
+    pub const LEGAL_FLAGS: u8 = 0b0000_1000;
 
     /// Create a new VXLAN header.
     #[must_use]
@@ -135,7 +126,7 @@ impl Parse for Vxlan {
 }
 
 impl DeParse for Vxlan {
-    type Error = VxlanError;
+    type Error = ();
 
     fn size(&self) -> NonZero<usize> {
         Vxlan::MIN_LENGTH
@@ -157,6 +148,16 @@ impl DeParse for Vxlan {
     }
 }
 
+impl ParsePayload for Vxlan {
+    type Next = ();
+
+    /// We don't currently support parsing below the Vxlan layer
+    /// (you would instead call [`Packet::parse`] on the rest of the buffer)
+    fn parse_payload(&self, _cursor: &mut Reader) -> Option<Self::Next> {
+        None
+    }
+}
+
 #[allow(clippy::unwrap_used, clippy::expect_used)] // valid in test code
 #[cfg(test)]
 mod test {
@@ -165,7 +166,7 @@ mod test {
 
     #[test]
     fn parse_back() {
-        bolero::check!().with_arbitrary().for_each(|vxlan: &Vxlan| {
+        bolero::check!().with_type().for_each(|vxlan: &Vxlan| {
             assert_eq!(vxlan.size(), Vxlan::MIN_LENGTH);
             let mut buf = [0u8; Vxlan::MIN_LENGTH.get()];
             let bytes_written = vxlan.deparse(&mut buf).unwrap_or_else(|_| unreachable!());
@@ -179,7 +180,7 @@ mod test {
 
     #[test]
     fn creation_identity_check() {
-        bolero::check!().with_arbitrary().for_each(|vxlan: &Vxlan| {
+        bolero::check!().with_type().for_each(|vxlan: &Vxlan| {
             assert_eq!(vxlan, &Vxlan::new(vxlan.vni()));
             assert_eq!(vxlan.size(), Vxlan::MIN_LENGTH);
         });
@@ -188,7 +189,7 @@ mod test {
     #[test]
     fn parse_noise() {
         bolero::check!()
-            .with_arbitrary()
+            .with_type()
             .for_each(|slice: &[u8; Vxlan::MIN_LENGTH.get()]| {
                 let (parsed, bytes_parsed) = match Vxlan::parse(slice) {
                     Ok((parsed, bytes_parsed)) => (parsed, bytes_parsed),
@@ -232,7 +233,7 @@ mod test {
 
     #[test]
     fn write_to_insufficient_buffer_fails_gracefully() {
-        bolero::check!().with_arbitrary().for_each(|vni: &Vxlan| {
+        bolero::check!().with_type().for_each(|vni: &Vxlan| {
             let mut too_small_buffer = [0u8; Vxlan::MIN_LENGTH.get() - 1];
             match vni.deparse(&mut too_small_buffer) {
                 Err(DeParseError::Length(e)) => {
@@ -247,7 +248,7 @@ mod test {
     #[test]
     fn parse_of_insufficient_buffer_fails_gracefully() {
         bolero::check!()
-            .with_arbitrary()
+            .with_type()
             .for_each(
                 |slice: &[u8; Vxlan::MIN_LENGTH.get() - 1]| match Vxlan::parse(slice) {
                     Err(ParseError::Length(e)) => {
@@ -262,7 +263,7 @@ mod test {
     #[test]
     fn mutation_of_header_preserves_contract() {
         bolero::check!()
-            .with_arbitrary()
+            .with_type()
             .for_each(|(vxlan, new_vni): &(Vxlan, Vni)| {
                 if vxlan.vni() == *new_vni {
                     return;

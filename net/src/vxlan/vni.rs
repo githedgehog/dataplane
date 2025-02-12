@@ -111,20 +111,16 @@ impl TryFrom<u32> for Vni {
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
     use crate::vxlan::Vni;
-    use arbitrary::{Arbitrary, Unstructured};
+    use bolero::{Driver, TypeGenerator};
 
-    impl<'a> Arbitrary<'a> for Vni {
-        fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-            let raw: u32 = u.arbitrary::<u32>()? & Vni::MAX;
+    impl TypeGenerator for Vni {
+        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+            let raw: u32 = u.gen::<u32>()? & Vni::MAX;
             if raw == 0 {
-                Ok(Vni::new_checked(1).unwrap_or_else(|e| unreachable!("{e:?}")))
+                Some(Vni::new_checked(1).unwrap_or_else(|e| unreachable!("{e:?}")))
             } else {
-                Ok(Vni::new_checked(raw).unwrap_or_else(|e| unreachable!("{e:?}")))
+                Some(Vni::new_checked(raw).unwrap_or_else(|e| unreachable!("{e:?}")))
             }
-        }
-
-        fn size_hint(_depth: usize) -> (usize, Option<usize>) {
-            (size_of::<Vni>(), Some(size_of::<Vni>()))
         }
     }
 }
@@ -172,19 +168,16 @@ mod test {
 
     #[test]
     fn arbitrary_value_complies_with_contract() {
-        bolero::check!()
-            .with_arbitrary()
-            .cloned()
-            .for_each(|vni: Vni| {
-                assert_ne!(vni.as_u32(), 0);
-                assert!(vni.as_u32() <= Vni::MAX);
-            });
+        bolero::check!().with_type().cloned().for_each(|vni: Vni| {
+            assert_ne!(vni.as_u32(), 0);
+            assert!(vni.as_u32() <= Vni::MAX);
+        });
     }
 
     #[test]
     fn try_from_produces_only_values_which_comply_with_contract_or_which_return_correct_errors() {
         bolero::check!()
-            .with_arbitrary()
+            .with_type()
             .cloned()
             .for_each(|raw: u32| match Vni::try_from(raw) {
                 Ok(vni) => {

@@ -15,8 +15,9 @@ use crate::parse::{
     Writer,
 };
 use crate::tcp::Tcp;
-use crate::udp::Udp;
-use crate::vlan::Vlan;
+use crate::udp::{Udp, Encap};
+use crate::vlan::{Pcp, Vid, Vlan};
+use crate::vxlan::Vxlan;
 use arrayvec::ArrayVec;
 use std::num::NonZero;
 use tracing::debug;
