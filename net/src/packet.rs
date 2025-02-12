@@ -2,8 +2,9 @@
 // Copyright Open Network Fabric Authors
 
 //! Packet definition
-#![allow(missing_docs)] // temporary
+#![allow(missing_docs, clippy::pedantic)] // temporary
 
+use crate::eth::ethertype::EthType;
 use crate::eth::{Eth, EthError};
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
@@ -25,13 +26,15 @@ use tracing::debug;
 const MAX_VLANS: usize = 4;
 const MAX_NET_EXTENSIONS: usize = 2;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+// TODO: remove `pub` from all fields
+#[derive(Debug)]
 pub struct Packet {
     pub eth: Eth,
     pub net: Option<Net>,
     pub transport: Option<Transport>,
     pub vlan: ArrayVec<Vlan, MAX_VLANS>,
     pub net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
+    pub encap: Option<Encap>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,13 +109,14 @@ pub enum Header {
     Icmp6(Icmp6),
     IpAuth(IpAuth),
     IpV6Ext(Ipv6Ext), // TODO: break out nested enum.  Nesting is counter productive here
+    Encap(Encap),
 }
 
 impl ParsePayload for Header {
     type Next = Header;
 
-    fn parse_payload(&self, cursor: &mut Reader) -> Option<Self::Next> {
-        use Header::{Eth, Icmp4, Icmp6, IpAuth, IpV6Ext, Ipv4, Ipv6, Tcp, Udp, Vlan};
+    fn parse_payload(&self, cursor: &mut Reader) -> Option<Header> {
+        use Header::{Encap, Eth, Icmp4, Icmp6, IpAuth, IpV6Ext, Ipv4, Ipv6, Tcp, Udp, Vlan};
         match self {
             Eth(eth) => eth.parse_payload(cursor).map(Header::from),
             Vlan(vlan) => vlan.parse_payload(cursor).map(Header::from),
@@ -128,7 +132,8 @@ impl ParsePayload for Header {
                     None
                 }
             }
-            Tcp(_) | Udp(_) | Icmp4(_) | Icmp6(_) => None,
+            Udp(udp) => udp.parse_payload(cursor).map(Header::from),
+            Encap(_) | Tcp(_) | Icmp4(_) | Icmp6(_) => None,
         }
     }
 }
@@ -145,6 +150,7 @@ impl Parse for Packet {
             transport: None,
             vlan: ArrayVec::default(),
             net_ext: ArrayVec::default(),
+            encap: None,
         };
         let mut prior = Header::Eth(eth);
         loop {
@@ -157,6 +163,7 @@ impl Parse for Packet {
                 Header::Udp(udp) => this.transport = Some(Transport::Udp(udp)),
                 Header::Icmp4(icmp4) => this.transport = Some(Transport::Icmp4(icmp4)),
                 Header::Icmp6(icmp6) => this.transport = Some(Transport::Icmp6(icmp6)),
+                Header::Encap(encap) => this.encap = Some(encap),
                 Header::Vlan(vlan) => {
                     if this.vlan.len() < MAX_VLANS {
                         this.vlan.push(vlan);
@@ -212,7 +219,11 @@ impl DeParse for Packet {
             None => 0,
             Some(ref t) => t.size().get(),
         };
-        NonZero::new(eth + vlan + net + transport).unwrap_or_else(|| unreachable!())
+        let encap = match self.encap {
+            None => 0,
+            Some(Encap::Vxlan(vxlan)) => vxlan.size().get(),
+        };
+        NonZero::new(eth + vlan + net + transport + encap).unwrap_or_else(|| unreachable!())
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
@@ -226,7 +237,7 @@ impl DeParse for Packet {
         }
         let mut cursor = Writer::new(buf);
         cursor.write(&self.eth)?;
-        for vlan in &self.vlan {
+        for vlan in self.vlan.iter().rev() {
             cursor.write(vlan)?;
         }
         match self.net {
@@ -249,6 +260,199 @@ impl DeParse for Packet {
                 cursor.write(transport)?;
             }
         }
+
+        match self.encap {
+            None => {
+                return Ok(NonZero::new(cursor.inner.len() - cursor.remaining)
+                    .unwrap_or_else(|| unreachable!()))
+            }
+            Some(Encap::Vxlan(ref vxlan)) => {
+                cursor.write(vxlan)?;
+            }
+        }
         Ok(NonZero::new(cursor.inner.len() - cursor.remaining).unwrap_or_else(|| unreachable!()))
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Packet already has as many VLAN headers as parser can support (max is {MAX_VLANS})")]
+pub struct TooManyVlans;
+
+impl Packet {
+    /// Create a new packet with the supplied `Eth` header.
+    fn new(eth: Eth) -> Packet {
+        Packet {
+            eth,
+            vlan: ArrayVec::default(),
+            net: None,
+            net_ext: ArrayVec::default(),
+            transport: None,
+            encap: None,
+        }
+    }
+
+    /// Push a VLAN header to the top of the stack.
+    ///
+    /// # Errors:
+    ///
+    /// Will return a [`TooManyVlans`] error if there are already more VLANs in the stack than are
+    /// supported in this configuration of the parser.
+    /// See [`MAX_VLANS`].
+    ///
+    /// # Safety:
+    ///
+    /// This method will create an invalid packet if the header you push has an _inner_ ethtype
+    /// which does not align with the next header below it.
+    ///
+    /// This method will create an invalid packet if the _outer_ ethtype (i.e. the ethtype of the
+    /// `Eth` header or prior [`Vlan`] in the stack) is not some flavor of `Vlan` ethtype (e.g.
+    /// [`EthType::VLAN`] or [`EthType::VLAN_QINQ`])
+    #[allow(unsafe_code)]
+    unsafe fn push_vlan_header_unchecked(&mut self, vlan: Vlan) -> Result<(), TooManyVlans> {
+        if self.vlan.len() < MAX_VLANS {
+            self.vlan.push(vlan);
+            Ok(())
+        } else {
+            Err(TooManyVlans)
+        }
+    }
+
+    /// Push a vlan header onto the VLAN stack of this packet.
+    ///
+    /// This method will ensure that the `eth` field has its [`EthType`] adjusted to
+    /// [`EthType::VLAN`] if there are no [`Vlan`]s on the stack at the time this method was called.
+    pub fn push_vlan(&mut self, vid: Vid) -> Result<(), TooManyVlans> {
+        if self.vlan.len() >= MAX_VLANS {
+            return Err(TooManyVlans);
+        }
+        let old_eth_type = self.eth.ether_type();
+        self.eth.set_ether_type(EthType::VLAN);
+        let new_vlan_header = Vlan::new(vid, old_eth_type, Pcp::default(), false);
+        self.vlan.push(new_vlan_header);
+        Ok(())
+    }
+
+    /// Pop a vlan header from the stack.
+    ///
+    /// Returns [`None`] if no [`Vlan`]s are on the stack.
+    ///
+    /// If `Some` is returned, the popped [`Vlan`]s ethtype is assigned to the `eth` header to
+    /// preserve packet structure.
+    ///
+    /// If `None` is returned, the `Packet` is not modified.
+    pub fn pop_vlan(&mut self) -> Option<Vlan> {
+        match self.vlan.pop() {
+            None => None,
+            Some(vlan) => {
+                self.eth.set_ether_type(vlan.inner_ethtype());
+                Some(vlan)
+            }
+        }
+    }
+
+    pub fn eth(&self) -> &Eth {
+        &self.eth
+    }
+
+    pub fn eth_mut(&mut self) -> &mut Eth {
+        &mut self.eth
+    }
+
+    pub fn ipv4(&self) -> Option<&Ipv4> {
+        match &self.net {
+            Some(Net::Ipv4(header)) => Some(header),
+            _ => None,
+        }
+    }
+
+    pub fn ipv4_mut(&mut self) -> Option<&mut Ipv4> {
+        match &mut self.net {
+            Some(Net::Ipv4(header)) => Some(header),
+            _ => None,
+        }
+    }
+
+    pub fn ipv6(&self) -> Option<&Ipv6> {
+        match &self.net {
+            Some(Net::Ipv6(header)) => Some(header),
+            _ => None,
+        }
+    }
+
+    pub fn ipv6_mut(&mut self) -> Option<&mut Ipv6> {
+        match &mut self.net {
+            Some(Net::Ipv6(header)) => Some(header),
+            _ => None,
+        }
+    }
+
+    pub fn tcp(&self) -> Option<&Tcp> {
+        match &self.transport {
+            Some(Transport::Tcp(header)) => Some(header),
+            _ => None,
+        }
+    }
+
+    pub fn tcp_mut(&mut self) -> Option<&mut Tcp> {
+        match &mut self.transport {
+            Some(Transport::Tcp(header)) => Some(header),
+            _ => None,
+        }
+    }
+
+    pub fn udp(&self) -> Option<&Udp> {
+        match &self.transport {
+            Some(Transport::Udp(header)) => Some(header),
+            _ => None,
+        }
+    }
+
+    pub fn udp_mut(&mut self) -> Option<&mut Udp> {
+        match &mut self.transport {
+            Some(Transport::Udp(header)) => Some(header),
+            _ => None,
+        }
+    }
+
+    pub fn icmp(&self) -> Option<&Icmp4> {
+        match &self.transport {
+            Some(Transport::Icmp4(header)) => Some(header),
+            _ => None,
+        }
+    }
+
+    pub fn icmp_mut(&mut self) -> Option<&mut Icmp4> {
+        match &mut self.transport {
+            Some(Transport::Icmp4(header)) => Some(header),
+            _ => None,
+        }
+    }
+
+    pub fn icmp6(&self) -> Option<&Icmp6> {
+        match &self.transport {
+            Some(Transport::Icmp6(header)) => Some(header),
+            _ => None,
+        }
+    }
+
+    pub fn icmp6_mut(&mut self) -> Option<&mut Icmp6> {
+        match &mut self.transport {
+            Some(Transport::Icmp6(header)) => Some(header),
+            _ => None,
+        }
+    }
+
+    pub fn vxlan(&self) -> Option<&Vxlan> {
+        match &self.encap {
+            Some(Encap::Vxlan(vxlan)) => Some(vxlan),
+            _ => None,
+        }
+    }
+
+    pub fn vxlan_mut(&mut self) -> Option<&mut Vxlan> {
+        match &mut self.encap {
+            Some(Encap::Vxlan(vxlan)) => Some(vxlan),
+            _ => None,
+        }
     }
 }

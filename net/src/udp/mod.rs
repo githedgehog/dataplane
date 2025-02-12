@@ -6,6 +6,7 @@
 pub mod checksum;
 pub mod port;
 
+use crate::packet::Header;
 use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, Reader};
 use crate::udp::port::UdpPort;
 use crate::vxlan::Vxlan;
@@ -164,6 +165,12 @@ impl ParsePayload for Udp {
             }
             _ => None,
         }
+    }
+}
+
+impl From<Encap> for Header {
+    fn from(value: Encap) -> Self {
+        Header::Encap(value)
     }
 }
 
