@@ -5,6 +5,7 @@ mod args;
 mod config;
 mod nat;
 mod pipeline;
+mod vpc;
 
 use dpdk::dev::{Dev, TxOffloadConfig};
 use dpdk::eal::Eal;
