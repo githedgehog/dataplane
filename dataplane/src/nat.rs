@@ -306,7 +306,7 @@ struct NatRuleValue {
 
 #[derive(Clone, Debug)]
 struct NatRuleSet {
-    rules: HashMap<NatRuleKey, NatRuleValue>,
+    rules: Vec<(NatRuleKey, NatRuleValue)>,
 }
 
 #[derive(Clone, Debug)]
@@ -325,12 +325,8 @@ impl NatProcessor {
         Self {
             context,
             default_mode: NatMode::Stateless,
-            src_nat_rules: NatRuleSet {
-                rules: HashMap::new(),
-            },
-            dst_nat_rules: NatRuleSet {
-                rules: HashMap::new(),
-            },
+            src_nat_rules: NatRuleSet { rules: Vec::new() },
+            dst_nat_rules: NatRuleSet { rules: Vec::new() },
         }
     }
 
