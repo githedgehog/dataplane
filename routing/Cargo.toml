@@ -7,7 +7,12 @@ publish = false
 [dependencies]
 ipnet = "2.11.0"
 iptrie = "0.9.1"
+mio = { workspace = true, features = ["os-ext", "net"] }
 net = { workspace = true }
 thiserror = { workspace = true }
-dplane-rpc = { version = "1.0.0",  git = "https://github.com/githedgehog/dplane-rpc.git" }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", branch = "master" }
+bytes = {version = "1.9.0", features = ["serde"] }
+
 

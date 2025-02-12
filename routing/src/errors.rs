@@ -25,4 +25,13 @@ pub enum RouterError {
 
     #[error("The interface is already attached to a distinct VRF")]
     AlreadyAttached,
+
+    #[error("Some internal error ocurred")]
+    CpiFailure,
+
+    #[error("Invalid socket path")]
+    InvalidSockPath,
+
+    #[error("Permission errors")]
+    PermError,
 }
