@@ -13,6 +13,7 @@ net = { workspace = true, features = ["serde"] }
 dpdk = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_yml = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["default"] }
 

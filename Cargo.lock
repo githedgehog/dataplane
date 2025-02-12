@@ -303,6 +303,7 @@ dependencies = [
  "net",
  "serde",
  "serde_yml",
+ "thiserror",
  "tracing",
  "tracing-subscriber",
  "tracing-test",
