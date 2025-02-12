@@ -168,6 +168,14 @@ To do this, add the following to your `.vscode/settings.json` file:
 > `${workspaceRoot}` and `${workspaceFolder}` won't work since rust-analyzer has a custom function that implements env var substitution in `extraEnv`.
 > `${env:xxx}` susbstitutions only work if the variable is set in `extraEnv` itself.
 
+Finally, you want to format code using rust analyzer, and to format on save to make sure your code is always formatted.
+To do this, add the following to your `.vscode/settings.json` file:
+```json
+"[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer",
+    "editor.formatOnSave": true
+},
+```
 ## License
 
 The Dataplane of the Hedgehog Open Fabric Network is licensed under the
