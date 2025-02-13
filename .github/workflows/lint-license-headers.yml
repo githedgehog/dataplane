@@ -1,0 +1,41 @@
+# Make sure source code has SPDX license headers and copyright notices.
+
+name: "lint-license-headers.yml"
+
+on:
+  pull_request: {}
+  merge_group:
+    types: ["checks_requested"]
+
+concurrency:
+  group: "${{ github.workflow }}:${{ github.event.pull_request.number }}"
+  cancel-in-progress: true
+
+jobs:
+  format-check:
+    name: "Check for SPDX license headers and copyright notices"
+    runs-on: "ubuntu-latest"
+    # Skip this job in merge group checks; but we need the workflow to run,
+    # given that the status check is required for merging.
+    if: "${{ github.event.pull_request }}"
+    steps:
+      - name: "Checkout"
+        uses: "actions/checkout@v4"
+        with:
+          fetch-depth: "1"
+          persist-credentials: "false"
+
+      - name: "Grep for SPDX and copyright on source files"
+        run: |
+          res=0
+          for f in $(git ls-files '*.rs' '*.sh' justfile); do
+              if ! head "${f}" | grep -wq 'SPDX'; then
+                  echo "::error::Missing SPDX license header in file ${f}"
+                  res=1
+              fi
+              if ! head "${f}" | grep -wqi 'copyright'; then
+                  echo "::error::Missing copyright notice in file ${f}"
+                  res=1
+              fi
+          done
+          exit ${res}
