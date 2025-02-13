@@ -7,6 +7,7 @@ use crate::encapsulation::Encapsulation;
 use crate::interface::{IfDataDot1q, IfDataEthernet, IfState, IfTable, IfType, Interface};
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::pretty_utils::{line, Heading};
+use crate::rmac::{RmacEntry, RmacStore};
 use crate::vrf::{Route, ShimNhop, Vrf};
 use iptrie::RTrieMap;
 use std::fmt::Display;
@@ -173,6 +174,23 @@ impl Display for IfTable {
         Heading(format!("interfaces ({})", self.0.len())).fmt(f)?;
         for iface in self.0.values() {
             writeln!(f, " {}", iface)?;
+        }
+        Ok(())
+    }
+}
+
+//========================= Rmac Store ================================//
+
+impl Display for RmacEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, " {} {} ── {}", self.vni.as_u32(), self.address, self.mac)
+    }
+}
+impl Display for RmacStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Heading(format!("Rmac store ({})", self.len())).fmt(f)?;
+        for rmac in self.values() {
+            writeln!(f, " {}", rmac)?;
         }
         Ok(())
     }
