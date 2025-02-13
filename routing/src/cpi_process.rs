@@ -4,6 +4,8 @@
 //! Main processing functions of the CPI
 
 use crate::interface::IfTable;
+#[cfg(feature = "auto-learn")]
+use crate::interface::Interface;
 use crate::rmac::{RmacEntry, RmacStore};
 use crate::routingdb::{RoutingDb, VrfTable};
 use bytes::Bytes;
@@ -56,6 +58,16 @@ impl RpcOperation for ConnectInfo {
 impl RpcOperation for IpRoute {
     type ObjectStore = VrfTable;
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
+        #[cfg(feature = "auto-learn")]
+        if db.get_vrf(self.vrfid).is_err() {
+            let vni = &self.nhops[0].encap.as_ref().and_then(|e| match e {
+                NextHopEncap::VXLAN(vxlan) => Some(vxlan.vni),
+                #[allow(unreachable_patterns)]
+                _ => None,
+            });
+            let _ = db.add_vrf("unnamed-vrf", self.vrfid, *vni);
+        }
+
         if let Ok(vrf) = db.get_vrf(self.vrfid) {
             if let Ok(mut vrf) = vrf.write() {
                 vrf.add_route_rpc(self);
@@ -100,6 +112,10 @@ impl RpcOperation for Rmac {
 impl RpcOperation for IfAddress {
     type ObjectStore = IfTable;
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
+        #[cfg(feature = "auto-learn")]
+        if db.get_interface(self.ifindex).is_none() {
+            db.add_interface(Interface::new(self.ifname.as_str(), self.ifindex));
+        }
         if let Err(e) = db.add_ifaddr(self.ifindex, &(self.address, self.mask_len)) {
             error!("Failed to add address to interface {}:{e}", self.ifname);
             RpcResultCode::Failure
