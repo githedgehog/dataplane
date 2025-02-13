@@ -6,6 +6,7 @@
 
 use crate::encapsulation::Encapsulation;
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
+use std::collections::btree_set;
 pub use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -18,12 +19,12 @@ use std::sync::{Arc, RwLock};
 #[derive(Debug)]
 /// A collection of unique next-hops. Next-hops are identified by a next-hop key
 /// that can contain an address, ifindex and encapsulation.
-pub(crate) struct NhopStore(pub(crate) BTreeSet<Arc<Nhop>>);
+pub(crate) struct NhopStore(BTreeSet<Arc<Nhop>>);
 
 #[derive(Debug)]
 /// A next-hop object that can be shared by multiple routes and that can have
 /// references to other next-hops in this (or other?) table.
-pub(crate) struct Nhop {
+pub struct Nhop {
     pub(crate) key: NhopKey,
     pub(crate) resolvers: RwLock<Vec<Arc<Nhop>>>,
 }
@@ -39,11 +40,11 @@ pub enum FwAction {
 /// make a shared next-hop unique and distinguishable from the rest. This type is also used
 /// as return value in next-hop resolution routines.
 #[derive(Debug, Default, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) struct NhopKey {
-    pub(crate) address: Option<IpAddr>,
-    pub(crate) ifindex: Option<u32>,
-    pub(crate) encap: Option<Encapsulation>,
-    pub(crate) fwaction: FwAction,
+pub struct NhopKey {
+    pub address: Option<IpAddr>,
+    pub ifindex: Option<u32>,
+    pub encap: Option<Encapsulation>,
+    pub fwaction: FwAction,
 }
 
 #[allow(dead_code)]
@@ -318,6 +319,13 @@ impl NhopStore {
     pub(crate) fn resolve_by_addr(&self, address: &IpAddr) -> Option<BTreeSet<NhopKey>> {
         let key = NhopKey::with_address(address);
         self.get_nhop(&key).map(|nh| nh.quick_resolve())
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Iterate over all next-hops in the next-hop store
+    //////////////////////////////////////////////////////////////////
+    pub(crate) fn iter(&self) -> btree_set::Iter<'_, Arc<Nhop>> {
+        self.0.iter()
     }
 
     /// Dump the contents of the next-hop map

@@ -54,8 +54,8 @@ fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Arc<Nhop>, depth: u8) -> s
 }
 impl Display for NhopStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Heading(format!("Next-hop Store ({})", self.0.len())).fmt(f)?;
-        for nhop in self.0.iter() {
+        Heading(format!("Next-hop Store ({})", self.len())).fmt(f)?;
+        for nhop in self.iter() {
             fmt_nhop_rec(f, nhop, 0)?;
         }
         line(f)
