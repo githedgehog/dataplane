@@ -300,6 +300,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "dpdk",
+ "iptrie",
  "net",
  "serde",
  "serde_yml",
@@ -426,6 +427,21 @@ checksum = "8c9c992b02b5b4c94ea26e32fe5bccb7aa7d9f390ab5c1221ff895bc7ea8b652"
 dependencies = [
  "equivalent",
  "hashbrown",
+]
+
+[[package]]
+name = "ipnet"
+version = "2.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "469fb0b9cefa57e3ef31275ee7cacb78f2fdca44e4765491884a2b119d4eb130"
+
+[[package]]
+name = "iptrie"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b2688e40b354466a90b89a55f8ce68acd0022f7f73aabd9968128ceafa7e239"
+dependencies = [
+ "ipnet",
 ]
 
 [[package]]
