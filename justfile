@@ -479,7 +479,6 @@ mdbook *args="build":
 [script]
 build-sweep start="main":
     {{ _just_debuggable_ }}
-    set -eu -o pipefail
     if [ {{_clean}} != "clean" ]; then
       >&2 echo "can not build-sweep with dirty branch (would risk data loss)"
       exit 1
