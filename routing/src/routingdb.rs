@@ -8,6 +8,7 @@ use crate::interface::IfTable;
 use crate::rmac::RmacStore;
 use crate::vrf::{Vrf, VrfId};
 use net::vxlan::Vni;
+use std::collections::hash_map;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -113,6 +114,27 @@ impl VrfTable {
         } else {
             Err(RouterError::NoSuchVrf)
         }
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Iterate over all VRFs
+    //////////////////////////////////////////////////////////////////
+    pub fn values(&self) -> hash_map::Values<'_, VrfId, Arc<RwLock<Vrf>>> {
+        self.by_id.values()
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Get the number of VRFs in the vrf table
+    //////////////////////////////////////////////////////////////////
+    pub fn len(&self) -> usize {
+        self.by_id.len()
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Get the number of VRFs that have a Vxlan associated to them
+    //////////////////////////////////////////////////////////////////
+    pub fn len_with_vni(&self) -> usize {
+        self.by_vni.len()
     }
 }
 
