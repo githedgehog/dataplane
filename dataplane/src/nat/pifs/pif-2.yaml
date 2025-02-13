@@ -1,8 +1,14 @@
 name: PIF2
 vni: 4000
 endpoints:
-  - [10.0.0.1, 32]
-  - [10.0.0.0, 24]
+  - !IPV4
+    address: 10.0.0.1
+    length: 32
+  - !IPV4
+    address: 10.0.0.0
+    length: 24
 ips:
-  - [11.11.0.0, 24]
+  - !IPV4
+    address: 11.11.0.0
+    length: 24
 vpc: VPC2

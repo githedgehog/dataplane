@@ -6,11 +6,12 @@ publish = false
 license = "Apache-2.0"
 
 [dependencies]
-
 clap = { workspace = true, features = ["derive"] }
 ctrlc = { workspace = true, features = ["termination"] }
 dpdk = { workspace = true }
+iptrie = { workspace = true }
 net = { workspace = true, features = ["serde"] }
+routing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_yml = { workspace = true }
 thiserror = { workspace = true }

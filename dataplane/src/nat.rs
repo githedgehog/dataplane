@@ -1,106 +1,118 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use iptrie::{map::RTrieMap, Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
+use routing::prefix::Prefix;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs;
-use std::hash::Hash;
 use std::net::IpAddr;
 use std::path::Path;
 use tracing::{error, warn};
 
+#[derive(thiserror::Error, Debug)]
+pub enum NatError {
+    #[error("PIF already exists")]
+    PifExists,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 struct Pif {
     name: String,
-    endpoints: Vec<(IpAddr, u8)>, // List of (IP or Prefix, length) -- SMATOV: TODO: Change to CIDR
-    ips: Vec<(IpAddr, u8)>,       // List of (IP or Prefix, length) SMATOV: TODO: Change to CIDR
-    vpc: String,                  // Name of the associated VPC
+    endpoints: Vec<Prefix>,
+    ips: Vec<Prefix>,
+    vpc: String,
 }
 
-#[derive(Default, Debug, Clone)]
-struct TrieNode<K, V>
-where
-    K: Clone + Eq + Hash,
-    V: Clone,
-{
-    children: HashMap<K, TrieNode<K, V>>,
-    value: Option<V>,
+#[derive(Default, Clone)]
+struct PrefixTrie {
+    trie_ipv4: RTrieMap<Ipv4Prefix, String>,
+    trie_ipv6: RTrieMap<Ipv6Prefix, String>,
 }
 
-#[derive(Default, Debug, Clone)]
-struct PrefixTrie<K, V>
-where
-    K: Clone + Eq + Hash,
-    V: Clone,
-{
-    root: TrieNode<K, V>,
-}
-
-impl<K, V> PrefixTrie<K, V>
-where
-    K: Clone + Eq + Hash + Default + Debug,
-    V: Clone + Default + Debug,
-{
+impl PrefixTrie {
     #[tracing::instrument(level = "trace")]
     fn new() -> Self {
         Self {
-            root: TrieNode::default(),
+            trie_ipv4: RTrieMap::new(),
+            trie_ipv6: RTrieMap::new(),
+        }
+    }
+
+    #[inline(always)]
+    fn insert_ipv4(&mut self, prefix: &Ipv4Prefix, value: String) -> Result<(), NatError> {
+        // Insertion always succeeds even if the key already in the map.
+        // So we first need to ensure the key is not already in use.
+        //
+        // TODO: This is not thread-safe.
+        if self.trie_ipv4.get(prefix).is_some() {
+            return Err(NatError::PifExists);
+        }
+        self.trie_ipv4.insert(*prefix, value);
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn insert_ipv6(&mut self, prefix: &Ipv6Prefix, value: String) -> Result<(), NatError> {
+        // See comment for IPv4
+        if self.trie_ipv6.get(prefix).is_some() {
+            return Err(NatError::PifExists);
+        }
+        self.trie_ipv6.insert(*prefix, value);
+        Ok(())
+    }
+
+    #[tracing::instrument(level = "trace")]
+    fn insert(&mut self, prefix: &Prefix, value: String) -> Result<(), NatError> {
+        match prefix {
+            Prefix::IPV4(p) => self.insert_ipv4(p, value),
+            Prefix::IPV6(p) => self.insert_ipv6(p, value),
         }
     }
 
     #[tracing::instrument(level = "trace")]
-    fn insert(&mut self, keys: Vec<K>, value: V) -> bool {
-        let mut node = &mut self.root;
-
-        for key in keys {
-            node = node.children.entry(key).or_default();
-        }
-
-        if node.value.is_some() {
-            return false; // Prefix already exists
-        }
-
-        node.value = Some(value);
-        true
-    }
-
-    #[tracing::instrument(level = "trace")]
-    fn find(&self, keys: Vec<K>) -> Option<V> {
-        let mut node = &self.root;
-        let mut best_match = None;
-
-        for key in keys {
-            if let Some(val) = &node.value {
-                best_match = Some(val.clone());
+    fn find(&self, prefix: &Prefix) -> Option<String> {
+        match prefix {
+            Prefix::IPV4(p) => {
+                let (k, v) = self.trie_ipv4.lookup(p);
+                // The RTrieMap lookup always return an entry; if no better
+                // match, it returns the root of the map, which always exists.
+                // This means that to check if the result is "empty", we need to
+                // check whether the returned entry is the root for the map.
+                if Prefix::IPV4(*k).is_root() {
+                    None
+                } else {
+                    Some(v.to_string())
+                }
             }
-            if let Some(child) = node.children.get(&key) {
-                node = child;
-            } else {
-                break;
+            Prefix::IPV6(p) => {
+                let (k, v) = self.trie_ipv6.lookup(p);
+                if Prefix::IPV6(*k).is_root() {
+                    None
+                } else {
+                    Some(v.to_string())
+                }
             }
         }
-
-        best_match
     }
 
     #[tracing::instrument(level = "trace")]
-    fn ip_to_bits(ip: &IpAddr, prefix_len: u8) -> Vec<u8> {
-        let mut bits = Vec::new();
+    fn find_ip(&self, ip: &IpAddr) -> Option<String> {
         match ip {
-            IpAddr::V4(ipv4) => {
-                for i in 0..prefix_len {
-                    bits.push((ipv4.octets()[i as usize / 8] >> (7 - (i % 8))) & 1);
-                }
-            }
-            IpAddr::V6(ipv6) => {
-                for i in 0..prefix_len {
-                    bits.push((ipv6.octets()[i as usize / 8] >> (7 - (i % 8))) & 1);
-                }
-            }
+            IpAddr::V4(_) => self.find(&Prefix::from((*ip, 32))),
+            IpAddr::V6(_) => self.find(&Prefix::from((*ip, 128))),
         }
-        bits
+    }
+}
+
+impl Debug for PrefixTrie {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_map()
+            .entries(self.trie_ipv4.iter())
+            .entries(self.trie_ipv6.iter())
+            .finish()
     }
 }
 
@@ -125,10 +137,10 @@ impl Vpc {
     }
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 struct PifTable {
     pifs: HashMap<String, Pif>,
-    endpoint_trie: PrefixTrie<u8, String>, // Trie for endpoint-based lookups
+    endpoint_trie: PrefixTrie,
 }
 
 impl PifTable {
@@ -141,26 +153,23 @@ impl PifTable {
     }
 
     #[tracing::instrument(level = "info")]
-    fn add_pif(&mut self, pif: Pif) -> bool {
+    fn add_pif(&mut self, pif: Pif) -> Result<(), NatError> {
         if self.pifs.contains_key(&pif.name) {
-            return false; // Duplicate PIF name
+            return Err(NatError::PifExists);
         }
 
-        for (endpoint, prefix_len) in &pif.endpoints {
-            let bits = PrefixTrie::<u8, String>::ip_to_bits(endpoint, *prefix_len);
-            if !self.endpoint_trie.insert(bits, pif.name.clone()) {
-                return false; // Overlapping endpoints
-            }
+        for prefix in &pif.endpoints {
+            self.endpoint_trie.insert(prefix, pif.name.clone())?;
+            // TODO: Rollback on error?
         }
 
         self.pifs.insert(pif.name.clone(), pif);
-        true
+        Ok(())
     }
 
     #[tracing::instrument(level = "trace")]
     fn find_pif_by_endpoint(&self, ip: &IpAddr) -> Option<String> {
-        let bits = PrefixTrie::<u8, String>::ip_to_bits(ip, 32);
-        self.endpoint_trie.find(bits)
+        self.endpoint_trie.find_ip(ip)
     }
 }
 
@@ -189,9 +198,13 @@ impl<'de> Deserialize<'de> for PifTable {
 
         // Rebuild the endpoint trie
         for pif in pifs.values() {
-            for (endpoint, prefix_len) in &pif.endpoints {
-                let bits = PrefixTrie::<u8, String>::ip_to_bits(endpoint, *prefix_len);
-                pif_table.endpoint_trie.insert(bits, pif.name.clone());
+            for prefix in &pif.endpoints {
+                pif_table
+                    .endpoint_trie
+                    .insert(prefix, pif.name.clone())
+                    .or(Err(serde::de::Error::custom(
+                        "Failed to insert endpoint into trie",
+                    )))?;
             }
         }
 
@@ -204,7 +217,7 @@ impl<'de> Deserialize<'de> for PifTable {
 #[allow(dead_code)]
 struct GlobalContext {
     vpcs: HashMap<String, Vpc>,
-    global_pif_trie: PrefixTrie<u8, String>, // Global PIF lookup by IP
+    global_pif_trie: PrefixTrie,
 }
 
 impl GlobalContext {
@@ -247,14 +260,24 @@ impl GlobalContext {
                 let pif: Pif = serde_yml::from_str(&file_content).expect("Failed to parse YAML");
 
                 if let Some(vpc) = self.vpcs.get_mut(&pif.vpc) {
-                    vpc.pif_table.add_pif(pif.clone());
+                    if vpc.pif_table.add_pif(pif.clone()).is_err() {
+                        error!("Failed to add PIF {} to table", pif.name);
+                    }
                 } else {
                     error!("VPC {} not found for PIF {}", pif.vpc, pif.name);
                 }
 
-                for (ip, prefix_len) in &pif.ips {
-                    let bits = PrefixTrie::<u8, String>::ip_to_bits(ip, *prefix_len);
-                    self.global_pif_trie.insert(bits, pif.name.clone());
+                for prefix in &pif.ips {
+                    if self
+                        .global_pif_trie
+                        .insert(prefix, pif.name.clone())
+                        .is_err()
+                    {
+                        error!(
+                            "Failed to insert endpoint {} for PIF {} into global trie",
+                            prefix, pif.name
+                        );
+                    }
                 }
             }
         }
@@ -262,8 +285,7 @@ impl GlobalContext {
 
     #[tracing::instrument(level = "trace")]
     fn find_pif_by_ip(&self, ip: &IpAddr) -> Option<String> {
-        let bits = PrefixTrie::<u8, String>::ip_to_bits(ip, 32);
-        self.global_pif_trie.find(bits)
+        self.global_pif_trie.find_ip(ip)
     }
 
     #[tracing::instrument(level = "trace")]
