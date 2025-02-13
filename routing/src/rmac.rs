@@ -5,6 +5,7 @@
 
 use net::eth::mac::Mac;
 use net::vxlan::Vni;
+use std::collections::hash_map;
 use std::collections::{hash_map::Entry, HashMap};
 use std::net::IpAddr;
 
@@ -63,9 +64,19 @@ impl RmacStore {
         }
     }
 
-    // Get an rmac entry
+    /// Get an rmac entry
     pub fn get_rmac(&self, vni: Vni, address: IpAddr) -> Option<&RmacEntry> {
         self.0.get(&(address, vni))
+    }
+
+    /// iterator
+    pub fn values(&self) -> hash_map::Values<'_, (IpAddr, Vni), RmacEntry> {
+        self.0.values()
+    }
+
+    /// number of rmac entries
+    pub fn len(&self) -> usize {
+        self.0.len()
     }
 }
 
