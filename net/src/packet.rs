@@ -16,7 +16,7 @@ use crate::parse::{
     Writer,
 };
 use crate::tcp::Tcp;
-use crate::udp::{Udp, Encap};
+use crate::udp::{Udp, UdpEncap};
 use crate::vlan::{Pcp, Vid, Vlan};
 use crate::vxlan::Vxlan;
 use arrayvec::ArrayVec;
@@ -30,11 +30,11 @@ const MAX_NET_EXTENSIONS: usize = 2;
 #[derive(Debug)]
 pub struct Packet {
     pub eth: Eth,
-    pub net: Option<Net>,
-    pub transport: Option<Transport>,
     pub vlan: ArrayVec<Vlan, MAX_VLANS>,
+    pub net: Option<Net>,
     pub net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
-    pub encap: Option<Encap>,
+    pub transport: Option<Transport>,
+    pub udp_encap: Option<UdpEncap>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,7 +109,7 @@ pub enum Header {
     Icmp6(Icmp6),
     IpAuth(IpAuth),
     IpV6Ext(Ipv6Ext), // TODO: break out nested enum.  Nesting is counter productive here
-    Encap(Encap),
+    Encap(UdpEncap),
 }
 
 impl ParsePayload for Header {
@@ -150,7 +150,7 @@ impl Parse for Packet {
             transport: None,
             vlan: ArrayVec::default(),
             net_ext: ArrayVec::default(),
-            encap: None,
+            udp_encap: None,
         };
         let mut prior = Header::Eth(eth);
         loop {
@@ -163,7 +163,7 @@ impl Parse for Packet {
                 Header::Udp(udp) => this.transport = Some(Transport::Udp(udp)),
                 Header::Icmp4(icmp4) => this.transport = Some(Transport::Icmp4(icmp4)),
                 Header::Icmp6(icmp6) => this.transport = Some(Transport::Icmp6(icmp6)),
-                Header::Encap(encap) => this.encap = Some(encap),
+                Header::Encap(encap) => this.udp_encap = Some(encap),
                 Header::Vlan(vlan) => {
                     if this.vlan.len() < MAX_VLANS {
                         this.vlan.push(vlan);
@@ -219,9 +219,9 @@ impl DeParse for Packet {
             None => 0,
             Some(ref t) => t.size().get(),
         };
-        let encap = match self.encap {
+        let encap = match self.udp_encap {
             None => 0,
-            Some(Encap::Vxlan(vxlan)) => vxlan.size().get(),
+            Some(UdpEncap::Vxlan(vxlan)) => vxlan.size().get(),
         };
         NonZero::new(eth + vlan + net + transport + encap).unwrap_or_else(|| unreachable!())
     }
@@ -261,12 +261,12 @@ impl DeParse for Packet {
             }
         }
 
-        match self.encap {
+        match self.udp_encap {
             None => {
                 return Ok(NonZero::new(cursor.inner.len() - cursor.remaining)
                     .unwrap_or_else(|| unreachable!()))
             }
-            Some(Encap::Vxlan(ref vxlan)) => {
+            Some(UdpEncap::Vxlan(ref vxlan)) => {
                 cursor.write(vxlan)?;
             }
         }
@@ -288,7 +288,7 @@ impl Packet {
             net: None,
             net_ext: ArrayVec::default(),
             transport: None,
-            encap: None,
+            udp_encap: None,
         }
     }
 
@@ -305,7 +305,7 @@ impl Packet {
     /// This method will create an invalid packet if the header you push has an _inner_ ethtype
     /// which does not align with the next header below it.
     ///
-    /// This method will create an invalid packet if the _outer_ ethtype (i.e. the ethtype of the
+    /// This method will create an invalid packet if the _outer_ ethtype (i.e., the ethtype of the
     /// `Eth` header or prior [`Vlan`] in the stack) is not some flavor of `Vlan` ethtype (e.g.
     /// [`EthType::VLAN`] or [`EthType::VLAN_QINQ`])
     #[allow(unsafe_code)]
@@ -445,15 +445,15 @@ impl Packet {
     }
 
     pub fn vxlan(&self) -> Option<&Vxlan> {
-        match &self.encap {
-            Some(Encap::Vxlan(vxlan)) => Some(vxlan),
+        match &self.udp_encap {
+            Some(UdpEncap::Vxlan(vxlan)) => Some(vxlan),
             _ => None,
         }
     }
 
     pub fn vxlan_mut(&mut self) -> Option<&mut Vxlan> {
-        match &mut self.encap {
-            Some(Encap::Vxlan(vxlan)) => Some(vxlan),
+        match &mut self.udp_encap {
+            Some(UdpEncap::Vxlan(vxlan)) => Some(vxlan),
             _ => None,
         }
     }

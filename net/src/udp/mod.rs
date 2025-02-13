@@ -22,7 +22,7 @@ pub struct Udp(UdpHeader);
 ///
 /// At this point we only support VXLAN, but Geneve and others can be added as needed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Encap {
+pub enum UdpEncap {
     /// A VXLAN header in a UDP packet
     Vxlan(Vxlan),
 }
@@ -149,9 +149,9 @@ impl DeParse for Udp {
 }
 
 impl ParsePayload for Udp {
-    type Next = Encap;
+    type Next = UdpEncap;
 
-    fn parse_payload(&self, cursor: &mut Reader) -> Option<Encap> {
+    fn parse_payload(&self, cursor: &mut Reader) -> Option<UdpEncap> {
         match self.destination() {
             Vxlan::PORT => {
                 let (vxlan, _) = match cursor.parse::<Vxlan>() {
@@ -161,15 +161,15 @@ impl ParsePayload for Udp {
                         return None;
                     }
                 };
-                Some(Encap::Vxlan(vxlan))
+                Some(UdpEncap::Vxlan(vxlan))
             }
             _ => None,
         }
     }
 }
 
-impl From<Encap> for Header {
-    fn from(value: Encap) -> Self {
+impl From<UdpEncap> for Header {
+    fn from(value: UdpEncap) -> Self {
         Header::Encap(value)
     }
 }
