@@ -8,10 +8,12 @@ use crate::interface::{IfDataDot1q, IfDataEthernet, IfState, IfTable, IfType, In
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::pretty_utils::{line, Heading};
 use crate::rmac::{RmacEntry, RmacStore};
+use crate::routingdb::VrfTable;
 use crate::vrf::{Route, ShimNhop, Vrf};
 use iptrie::RTrieMap;
 use std::fmt::Display;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 //=================== VRFs, routes and next-hops ====================//
 
@@ -75,7 +77,6 @@ impl Display for Encapsulation {
         Ok(())
     }
 }
-
 impl Display for Route {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "{:?} [{}/{}]", self.rtype, self.distance, self.metric)?;
@@ -104,6 +105,47 @@ impl Display for Vrf {
         fmt_vrf_trie(f, "Ipv4", &self.routesv4)?;
         fmt_vrf_trie(f, "Ipv6", &self.routesv6)?;
         self.nhstore.fmt(f)?;
+        Ok(())
+    }
+}
+
+macro_rules! VRF_TBL_FMT {
+    () => {
+        "{:>16} {:>8} {:>8} {:>12} {:>12}"
+    };
+}
+fn fmt_vrf_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    writeln!(
+        f,
+        "{}",
+        format_args!(VRF_TBL_FMT!(), "name", "id", "vni", "Ipv4", "Ipv6")
+    )
+}
+fn fmt_vrf_summary(f: &mut std::fmt::Formatter<'_>, vrf: &Arc<RwLock<Vrf>>) -> std::fmt::Result {
+    if let Ok(vrf) = vrf.read() {
+        writeln!(
+            f,
+            "{}",
+            format_args!(
+                VRF_TBL_FMT!(),
+                vrf.name,
+                vrf.vrfid,
+                vrf.vni.map_or_else(|| 0, |vni| vni.as_u32()),
+                vrf.routesv4.len(),
+                vrf.routesv6.len()
+            )
+        )?;
+    }
+    Ok(())
+}
+
+impl Display for VrfTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Heading(format!("VRFs ({})", self.len())).fmt(f)?;
+        fmt_vrf_summary_heading(f)?;
+        for vrf in self.values() {
+            fmt_vrf_summary(f, vrf)?;
+        }
         Ok(())
     }
 }
