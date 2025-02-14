@@ -19,3 +19,6 @@ tracing-subscriber = { workspace = true, features = ["default"] }
 
 [dev-dependencies]
 tracing-test = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(none)'] }

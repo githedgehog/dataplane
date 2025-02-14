@@ -129,3 +129,45 @@ impl PipelineStage for Passthrough {
         packets
     }
 }
+
+// #[cfg(test)]
+// FIXME(mvachhar) remove this once we have a proper fake interface for packet/mbuf
+#[cfg(none)]
+#[allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
+mod test {
+    use super::{MetaPacket, Metadata, Passthrough, Pipeline};
+    use dpdk::mem::Mbuf;
+    use net::eth::ethertype::EthType;
+    use net::eth::mac::{DestinationMac, Mac, SourceMac};
+    use net::eth::Eth;
+    use net::packet::Packet;
+
+    #[test]
+    fn test_passthrough_process() {
+        let mut pipeline = Pipeline::new();
+        let passthrough = Passthrough::new();
+        pipeline.add_stage(Box::new(passthrough)).unwrap();
+
+        let src_mac = SourceMac::new(Mac::from([0x00, 0x00, 0x00, 0x00, 0x00, 0x01])).unwrap();
+        let dst_mac = DestinationMac::new(Mac::from([0x00, 0x00, 0x00, 0x00, 0x00, 0x02])).unwrap();
+        let test_packet = MetaPacket {
+            packet: Packet::new(Eth::new(src_mac, dst_mac, EthType::IPV4)),
+            metadata: Metadata { vni: None },
+            outer_packet: None,
+            // Temporary mbuf fake, need to have a proper mockable interface
+            #[allow(unsafe_code)]
+            mbuf: unsafe {
+                Mbuf::new_from_raw_unchecked(std::ptr::null_mut::<dpdk_sys::rte_mbuf>().offset(1))
+            },
+        };
+
+        let input_packets = vec![test_packet];
+        let output: Vec<_> = pipeline
+            .process_packets(Box::new(input_packets.into_iter()))
+            .collect();
+
+        assert_eq!(1, output.len());
+        assert_eq!(src_mac, output[0].packet.eth.source());
+        assert_eq!(dst_mac, output[0].packet.eth.destination());
+    }
+}
