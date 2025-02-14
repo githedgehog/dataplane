@@ -216,7 +216,7 @@ allow-git = []
 
 [sources.allow-org]
 # github.com organizations to allow git sources for
-github = []
+github = ["githedgehog"]
 # gitlab.com organizations to allow git sources for
 gitlab = []
 # bitbucket.org organizations to allow git sources for
