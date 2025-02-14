@@ -280,8 +280,7 @@ pub struct TooManyVlans;
 
 impl Packet {
     /// Create a new packet with the supplied `Eth` header.
-    #[allow(dead_code)]
-    fn new(eth: Eth) -> Packet {
+    pub fn new(eth: Eth) -> Packet {
         Packet {
             eth,
             vlan: ArrayVec::default(),
