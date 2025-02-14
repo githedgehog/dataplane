@@ -144,6 +144,7 @@ impl Display for Mac {
     }
 }
 /// A [`Mac`] which is legal as a source in an ethernet header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct SourceMac(Mac);
 
@@ -181,6 +182,7 @@ impl SourceMac {
 }
 
 /// A [`Mac`] which is legal as a destination in an ethernet header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct DestinationMac(Mac);
 
