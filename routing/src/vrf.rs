@@ -467,4 +467,12 @@ pub mod tests {
     }
 
 
+    #[test]
+    fn test_patricia () {
+        let mut trie:RTrieMap<Ipv4Prefix, ()> = RTrieMap::new();
+        let prefix1 = Ipv4Prefix::from_str("10.0.0.1/32").unwrap();
+        trie.insert(prefix1, ());
+        trie.remove(&prefix1);
+    }
+
 }
