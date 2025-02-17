@@ -5,8 +5,11 @@
 
 use ipnet::{Ipv4Net, Ipv6Net};
 use iptrie::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
+use serde::ser::SerializeStructVariant;
+use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 pub use std::net::IpAddr;
+pub use std::net::{Ipv4Addr, Ipv6Addr};
 #[cfg(test)]
 use std::str::FromStr;
 
@@ -55,6 +58,13 @@ impl Prefix {
         match *self {
             Prefix::IPV4(p) => p.network().into(),
             Prefix::IPV6(p) => p.network().into(),
+        }
+    }
+    /// Get prefix length
+    pub fn length(&self) -> u8 {
+        match *self {
+            Prefix::IPV4(p) => p.len(),
+            Prefix::IPV6(p) => p.len(),
         }
     }
 }
@@ -121,10 +131,68 @@ impl Display for Prefix {
     }
 }
 
+impl Serialize for Prefix {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match *self {
+            Prefix::IPV4(_) => {
+                let mut s = serializer.serialize_struct_variant("Prefix", 0, "IPV4", 2)?;
+                s.serialize_field("address", &self.as_address())?;
+                s.serialize_field("length", &self.length())?;
+                s.end()
+            }
+            Prefix::IPV6(_) => {
+                let mut s = serializer.serialize_struct_variant("Prefix", 1, "IPV6", 2)?;
+                s.serialize_field("address", &self.as_address())?;
+                s.serialize_field("length", &self.length())?;
+                s.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Prefix {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Debug, Deserialize)]
+        struct Ipv4PrefixSerialized {
+            address: Ipv4Addr,
+            length: u8,
+        }
+        #[derive(Debug, Deserialize)]
+        struct Ipv6PrefixSerialized {
+            address: Ipv6Addr,
+            length: u8,
+        }
+        #[derive(Debug, Deserialize)]
+        enum PrefixSerialized {
+            IPV4(Ipv4PrefixSerialized),
+            IPV6(Ipv6PrefixSerialized),
+        }
+
+        let prefix = PrefixSerialized::deserialize(deserializer)?;
+        match prefix {
+            PrefixSerialized::IPV4(ps) => {
+                let p = Ipv4Prefix::new(ps.address, ps.length).map_err(serde::de::Error::custom)?;
+                Ok(Prefix::IPV4(p))
+            }
+            PrefixSerialized::IPV6(ps) => {
+                let p = Ipv6Prefix::new(ps.address, ps.length).map_err(serde::de::Error::custom)?;
+                Ok(Prefix::IPV6(p))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
     use crate::prefix::*;
+    use serde_yml;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[test]
@@ -163,5 +231,28 @@ mod tests {
         let iptrie_pfx = Ipv6Prefix::new(address, 0).unwrap();
         let prefix = Prefix::from(iptrie_pfx);
         assert_eq!(prefix, Prefix::root_v6());
+    }
+
+    #[test]
+    fn test_serde() {
+        let ipv4_addr: Ipv4Addr = "1.2.3.0".parse().expect("Bad address");
+        let ipv4_pfx = Ipv4Prefix::new(ipv4_addr, 24).expect("Should succeed");
+        let prefix = Prefix::from(ipv4_pfx);
+
+        // serialize prefix as YAML
+        let yaml = serde_yml::to_string(&prefix).unwrap();
+        assert_eq!(yaml, "!IPV4\naddress: '1.2.3.0'\nlength: 24\n");
+        let deserialized_yaml: Prefix = serde_yml::from_str(&yaml).unwrap();
+        assert_eq!(prefix, deserialized_yaml);
+
+        let ipv6_addr: Ipv6Addr = "f00:baa::".parse().expect("Bad address");
+        let ipv6_pfx = Ipv6Prefix::new(ipv6_addr, 64).expect("Should succeed");
+        let prefix = Prefix::from(ipv6_pfx);
+
+        // serialize prefix as YAML
+        let yaml = serde_yml::to_string(&prefix).unwrap();
+        assert_eq!(yaml, "!IPV6\naddress: 'f00:baa::'\nlength: 64\n");
+        let deserialized_yaml: Prefix = serde_yml::from_str(&yaml).unwrap();
+        assert_eq!(prefix, deserialized_yaml);
     }
 }

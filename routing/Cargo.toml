@@ -12,10 +12,12 @@ ipnet = { workspace = true }
 iptrie = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
 net = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dplane-rpc = { workspace = true }
 bytes = { workspace = true, features = ["serde"] }
 
-
+[dev-dependencies]
+serde_yml = { workspace = true }

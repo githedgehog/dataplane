@@ -973,6 +973,8 @@ dependencies = [
  "iptrie",
  "mio",
  "net",
+ "serde",
+ "serde_yml",
  "thiserror",
  "tracing",
  "tracing-subscriber",
