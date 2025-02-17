@@ -20,11 +20,13 @@ use net::vxlan::Vni;
 use crate::config::Config;
 
 // FIXME(mvachhar) add actual data here
+#[derive(Debug)]
 pub struct Metadata {
     #[allow(dead_code)]
     pub vni: Option<Vni>,
 }
 
+#[derive(Debug)]
 pub struct MetaPacket {
     pub packet: Packet,
     #[allow(dead_code)]

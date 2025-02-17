@@ -3,11 +3,13 @@
 
 use std::collections::HashMap;
 
+#[derive(Debug)]
 pub struct Vpc {
     #[allow(dead_code)]
     pub vni: u32,
 }
 
+#[derive(Debug)]
 pub struct Config {
     // Add appropriate configuration fields here
     #[allow(dead_code)]
