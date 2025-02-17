@@ -11,7 +11,7 @@ mod encapsulation;
 mod errors;
 mod interface;
 mod nexthop;
-mod prefix;
+pub mod prefix;
 mod pretty_utils;
 mod rmac;
 mod routingdb;
