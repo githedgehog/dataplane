@@ -4,7 +4,7 @@
 //! Packet definition
 #![allow(missing_docs, clippy::pedantic)] // temporary
 
-use crate::eth::ethertype::EthType;
+use crate::eth::ethtype::EthType;
 use crate::eth::{Eth, EthError};
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
