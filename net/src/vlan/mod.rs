@@ -337,8 +337,9 @@ impl ParsePayload for Vlan {
 /// Contracts for Vlan types
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
+    use crate::eth::ethtype::{CommonEthType, EthType};
     use crate::vlan::{InvalidPcp, InvalidVid, Pcp, Vid, Vlan};
-    use bolero::{Driver, TypeGenerator};
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
 
     impl TypeGenerator for Vid {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
@@ -361,13 +362,38 @@ mod contract {
         }
     }
 
-    impl TypeGenerator for Vlan {
-        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+    /// Generate an arbitrary [`Vlan`] header with the specified [`EthType`] (inner)
+    pub struct GenWithEthType(pub EthType);
+
+    impl ValueGenerator for GenWithEthType {
+        type Output = Vlan;
+
+        fn generate<D: Driver>(&self, u: &mut D) -> Option<Self::Output> {
+            let ethertype = self.0;
             let vid = u.gen()?;
-            let ethertype = u.gen()?;
             let pcp = u.gen()?;
             let dei = u.gen()?;
             Some(Vlan::new(vid, ethertype, pcp, dei))
+        }
+    }
+
+    impl TypeGenerator for Vlan {
+        /// Generate a completely arbitrary [`Vlan`] header
+        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+            GenWithEthType(EthType::generate(u)?).generate(u)
+        }
+    }
+
+    /// Generate a [`Vlan`] header with a [`CommonEthType`]
+    #[non_exhaustive]
+    #[repr(transparent)]
+    pub struct CommonVlan;
+
+    impl ValueGenerator for CommonVlan {
+        type Output = Vlan;
+        /// Generate a [`Vlan`] header with a [`CommonEthType`]
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vlan> {
+            GenWithEthType(driver.gen::<CommonEthType>()?.into()).generate(driver)
         }
     }
 }
