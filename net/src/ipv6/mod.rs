@@ -258,10 +258,10 @@ impl ParsePayload for Ipv6 {
                 })
                 .map(|(val, _)| Ipv6Next::Udp(val))
                 .ok(),
-            IpNumber::ICMP => cursor
+            IpNumber::IPV6_ICMP => cursor
                 .parse::<Icmp6>()
                 .map_err(|e| {
-                    debug!("failed to parse icmp4: {e:?}");
+                    debug!("failed to parse icmp6: {e:?}");
                 })
                 .map(|(val, _)| Ipv6Next::Icmp6(val))
                 .ok(),
