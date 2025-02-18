@@ -111,8 +111,19 @@ impl Udp {
     }
 }
 
+/// Errors which may occur when parsing a UDP header
+#[derive(Debug, thiserror::Error)]
+pub enum UdpParseError {
+    /// Zero is not a legal udp port
+    #[error("zero source port")]
+    ZeroSourcePort,
+    /// Zero is not a legal udp port
+    #[error("zero destination port")]
+    ZeroDestinationPort,
+}
+
 impl Parse for Udp {
-    type Error = LengthError;
+    type Error = UdpParseError;
 
     fn parse<T: AsRef<[u8]>>(buf: T) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
         let buf = buf.as_ref();
@@ -135,6 +146,12 @@ impl Parse for Udp {
         #[allow(clippy::cast_possible_truncation)] // size of buffer bounded above
         let consumed =
             NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
+        if inner.source_port == 0 {
+            return Err(ParseError::Invalid(UdpParseError::ZeroSourcePort));
+        }
+        if inner.destination_port == 0 {
+            return Err(ParseError::Invalid(UdpParseError::ZeroDestinationPort));
+        }
         Ok((Self(inner), consumed))
     }
 }
@@ -219,8 +236,8 @@ mod contract {
 #[allow(clippy::unwrap_used, clippy::expect_used)] // valid in test code
 #[cfg(test)]
 mod test {
-    use crate::parse::{DeParse, Parse};
-    use crate::udp::Udp;
+    use crate::parse::{DeParse, NonZeroUnSizedNumericUpcast, Parse, ParseError};
+    use crate::udp::{Udp, UdpParseError};
 
     #[test]
     #[cfg_attr(kani, kani::proof)]
@@ -236,6 +253,10 @@ mod test {
             assert_eq!(consumed.cast().get(), buffer.len());
             let (parse_back, consumed2) = Udp::parse(&buffer[..consumed.cast().get()]).unwrap();
             assert_eq!(input, &parse_back);
+            assert_eq!(input.source(), parse_back.source());
+            assert_eq!(input.destination(), parse_back.destination());
+            assert_eq!(input.length(), parse_back.length());
+            assert_eq!(input.checksum(), parse_back.checksum());
             assert_eq!(consumed, consumed2);
         });
     }
@@ -246,8 +267,19 @@ mod test {
         bolero::check!()
             .with_type()
             .for_each(|slice: &[u8; Udp::MIN_LENGTH_USIZE]| {
-                let (parsed, bytes_read) =
-                    Udp::parse(slice).unwrap_or_else(|e| unreachable!("{e:?}"));
+                let (parsed, bytes_read) = match Udp::parse(slice) {
+                    Ok(x) => x,
+                    Err(ParseError::Length(e)) => unreachable!("{e:?}", e = e),
+                    Err(ParseError::Invalid(UdpParseError::ZeroSourcePort)) => {
+                        assert_eq!(slice[0..=1], [0, 0]);
+                        return;
+                    }
+                    Err(ParseError::Invalid(UdpParseError::ZeroDestinationPort)) => {
+                        assert_eq!(slice[2..=3], [0, 0]);
+                        return;
+                    }
+                    Err(ParseError::BufferTooLong(_)) => unreachable!(),
+                };
                 let mut slice2 = [0u8; 8];
                 let bytes_written = parsed.deparse(&mut slice2).unwrap_or_else(|e| {
                     unreachable!("{e:?}");
@@ -255,6 +287,90 @@ mod test {
                 assert_eq!(bytes_read.cast().get(), slice.len());
                 assert_eq!(bytes_written.cast().get(), slice.len());
                 assert_eq!(slice, &slice2);
+            });
+    }
+
+    #[test]
+    #[cfg_attr(kani, kani::proof)]
+    fn too_short_buffer_parse_fails_gracefully() {
+        bolero::check!()
+            .with_type()
+            .for_each(|slice: &[u8; Udp::MIN_LENGTH_USIZE - 1]| {
+                for i in 0..slice.len() {
+                    match Udp::parse(&slice[..i]) {
+                        Err(ParseError::Length(e)) => {
+                            assert_eq!(e.expected, Udp::MIN_LENGTH.cast());
+                            assert_eq!(e.actual, i);
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            });
+    }
+
+    #[test]
+    #[cfg_attr(kani, kani::proof)]
+    fn longer_buffer_parses_ok() {
+        bolero::check!()
+            .with_type()
+            .for_each(|slice: &[u8; 2 * Udp::MIN_LENGTH_USIZE]| {
+                for _ in Udp::MIN_LENGTH_USIZE..slice.len() {
+                    let (parsed, bytes_read) = match Udp::parse(slice) {
+                        Ok(x) => x,
+                        Err(ParseError::Length(e)) => unreachable!("{e:?}", e = e),
+                        Err(ParseError::Invalid(UdpParseError::ZeroSourcePort)) => {
+                            assert_eq!(slice[0..=1], [0, 0]);
+                            return;
+                        }
+                        Err(ParseError::Invalid(UdpParseError::ZeroDestinationPort)) => {
+                            assert_eq!(slice[2..=3], [0, 0]);
+                            return;
+                        }
+                        Err(ParseError::BufferTooLong(_)) => unreachable!(),
+                    };
+                    let mut slice2 = [0u8; Udp::MIN_LENGTH_USIZE];
+                    let bytes_written = parsed.deparse(&mut slice2).unwrap_or_else(|e| {
+                        unreachable!("{e:?}");
+                    });
+                    assert_eq!(bytes_read, Udp::MIN_LENGTH);
+                    assert_eq!(bytes_written, Udp::MIN_LENGTH);
+                    assert_eq!(&slice[..Udp::MIN_LENGTH_USIZE], &slice2);
+                }
+            });
+    }
+
+    // evolve an arbitrary source towards an arbitrary target to make sure mutation methods work
+    #[test]
+    #[cfg_attr(kani, kani::proof)]
+    fn arbitrary_mutation() {
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .for_each(|(mut source, target): (Udp, Udp)| {
+                if source == target {
+                    return;
+                }
+                let mut target_bytes = [0u8; Udp::MIN_LENGTH_USIZE];
+                target
+                    .deparse(&mut target_bytes)
+                    .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
+                source.set_source(target.source());
+                assert_eq!(source.source(), target.source());
+                source.set_destination(target.destination());
+                assert_eq!(source.destination(), target.destination());
+                #[allow(unsafe_code)] // valid in test context
+                unsafe {
+                    source.set_length(target.length());
+                }
+                assert_eq!(source.length(), target.length());
+                source.set_checksum(target.checksum());
+                assert_eq!(source.checksum(), target.checksum());
+                assert_eq!(source, target);
+                let mut source_bytes = [0u8; Udp::MIN_LENGTH_USIZE];
+                source
+                    .deparse(&mut source_bytes)
+                    .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
+                assert_eq!(source_bytes, target_bytes);
             });
     }
 }
