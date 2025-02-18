@@ -15,7 +15,7 @@ net = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", branch = "master" }
-bytes = {version = "1.9.0", features = ["serde"] }
+dplane-rpc = { workspace = true }
+bytes = { workspace = true, features = ["serde"] }
 
 
