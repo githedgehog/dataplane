@@ -279,7 +279,7 @@ mod test {
     use crate::parse::{DeParse, NonZeroUnSizedNumericUpcast, Parse, ParseError};
 
     #[test]
-    fn eth_parse_back() {
+    fn parse_back() {
         bolero::check!().with_type().for_each(|eth: &Eth| {
             assert!(eth.source().inner().valid_src().is_ok());
             assert!(eth.destination().inner().valid_dst().is_ok());
@@ -330,7 +330,7 @@ mod test {
     }
 
     #[test]
-    fn parse_prop_test_basic() {
+    fn parse_arbitrary_bytes() {
         bolero::check!()
             .with_type()
             .for_each(parse_buffer_of_fixed_length::<{ HEADER_LEN_USIZE }>);
