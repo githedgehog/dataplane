@@ -5,6 +5,10 @@ edition = "2024"
 publish = false
 license = "Apache-2.0"
 
+[[bin]]
+name = "cli"
+path = "src/bin/cli.rs"
+
 [dependencies]
 colored = "3.0.0"
 bincode2 = "2.0.1"
