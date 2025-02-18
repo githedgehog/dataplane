@@ -165,3 +165,14 @@ pub enum DeParseError<E> {
     #[error(transparent)]
     Invalid(E),
 }
+
+pub trait NonZeroUnSizedNumericUpcast {
+    fn cast(self) -> NonZero<usize>;
+}
+
+impl NonZeroUnSizedNumericUpcast for NonZero<u16> {
+    fn cast(self) -> NonZero<usize> {
+        #[allow(unsafe_code)] // trivially sound since input is already non-zero
+        unsafe { NonZero::new_unchecked(self.get() as usize) }
+    }
+}
