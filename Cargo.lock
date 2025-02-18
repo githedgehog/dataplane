@@ -571,9 +571,9 @@ checksum = "469fb0b9cefa57e3ef31275ee7cacb78f2fdca44e4765491884a2b119d4eb130"
 
 [[package]]
 name = "iptrie"
-version = "0.9.2"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db170f9cb5ebafc6762e7dd1051e17275e771294cd9f2d7efe66ae47b7ae01be"
+checksum = "0d988adb790e4b83662e499e25a565af5ff5a3c9de9e896ecf4444608f0778ef"
 dependencies = [
  "ipnet",
 ]

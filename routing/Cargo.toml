@@ -9,7 +9,7 @@ auto-learn = []
 
 [dependencies]
 ipnet = { workspace = true }
-iptrie = "0.9.1"
+iptrie = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
 net = { workspace = true }
 thiserror = { workspace = true }

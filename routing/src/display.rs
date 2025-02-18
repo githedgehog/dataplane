@@ -10,7 +10,7 @@ use crate::pretty_utils::{line, Heading};
 use crate::rmac::{RmacEntry, RmacStore};
 use crate::routingdb::VrfTable;
 use crate::vrf::{Route, ShimNhop, Vrf};
-use iptrie::RTrieMap;
+use iptrie::map::RTrieMap;
 use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::RwLock;

@@ -9,7 +9,8 @@ use std::net::IpAddr;
 use crate::nexthop::{Nhop, NhopKey, NhopStore};
 use crate::prefix::Prefix;
 use crate::pretty_utils::Frame;
-use iptrie::{Ipv4Prefix, Ipv6Prefix, RTrieMap};
+use iptrie::map::RTrieMap;
+use iptrie::{Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
 use std::sync::Arc;
 
