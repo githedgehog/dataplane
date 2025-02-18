@@ -26,6 +26,9 @@ pub mod ecn;
 
 pub mod frag_offset;
 
+#[cfg(any(test, feature = "arbitrary"))]
+pub use contract::*;
+
 /// An IPv4 header
 #[repr(transparent)]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -365,10 +368,62 @@ impl From<Ipv4Next> for Header {
 
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
+    use crate::ip::NextHeader;
     use crate::ipv4::Ipv4;
-    use bolero::{Driver, TypeGenerator};
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
     use etherparse::Ipv4Header;
     use std::net::Ipv4Addr;
+
+    /// A [`bolero::TypeGenerator`] for common (and supported) [`NextHeader`] values
+    #[derive(Copy, Clone, Debug, bolero::TypeGenerator)]
+    pub enum CommonNextHeader {
+        /// TCP next header (see [`NextHeader::TCP`]
+        Tcp,
+        /// UDP next header (see [`NextHeader::UDP`]
+        Udp,
+        /// ICMP next header (see [`NextHeader::ICMP`]
+        Icmp4,
+    }
+
+    impl From<CommonNextHeader> for NextHeader {
+        fn from(value: CommonNextHeader) -> Self {
+            match value {
+                CommonNextHeader::Tcp => NextHeader::TCP,
+                CommonNextHeader::Udp => NextHeader::UDP,
+                CommonNextHeader::Icmp4 => NextHeader::ICMP,
+            }
+        }
+    }
+
+    /// [`ValueGenerator`] for an (otherwise) arbitrary [`Ipv4`] with a specified [`NextHeader`].
+    pub struct GenWithNextHeader(pub NextHeader);
+
+    impl ValueGenerator for GenWithNextHeader {
+        type Output = Ipv4;
+
+        /// Generates an arbitrary [`Ipv4`] header with the [`NextHeader`] specified in `self`.
+        fn generate<D: Driver>(&self, u: &mut D) -> Option<Self::Output> {
+            let mut header = Ipv4(Ipv4Header::default());
+            header.set_source(u.gen()?);
+            header.set_destination(Ipv4Addr::from(u.gen::<u32>()?));
+
+            // safe in so far as the whole point of this method is to generate a header with
+            // the specified `NextHeader`.
+            #[allow(unsafe_code)]
+            unsafe {
+                header.set_next_header(self.0);
+            }
+            header
+                .set_ttl(u.gen()?)
+                .set_dscp(u.gen()?)
+                .set_ecn(u.gen()?)
+                .set_dont_fragment(u.gen()?)
+                .set_more_fragments(u.gen()?)
+                .set_identification(u.gen()?)
+                .set_fragment_offset(u.gen()?);
+            Some(header)
+        }
+    }
 
     impl TypeGenerator for Ipv4 {
         /// Generates an arbitrary [`Ipv4`] header.
@@ -382,28 +437,7 @@ mod contract {
         ///
         /// Unfortunately, the current implementation does not cover [`Ipv4::options`].
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
-            let mut header = Ipv4(Ipv4Header::default());
-            header.set_source(u.gen()?);
-            header.set_destination(Ipv4Addr::from(u.gen::<u32>()?));
-
-            // safety:
-            // safe in-so-far as
-            // 1. the entire point of this code is to test the integrity of the rest of the system
-            //    by generating untrustworthy headers.
-            // 2. this code is not shipped in production builds in the first place.
-            #[allow(unsafe_code)]
-            unsafe {
-                header.set_next_header(u.gen()?);
-            }
-            header
-                .set_ttl(u.gen()?)
-                .set_dscp(u.gen()?)
-                .set_ecn(u.gen()?)
-                .set_dont_fragment(u.gen()?)
-                .set_more_fragments(u.gen()?)
-                .set_identification(u.gen()?)
-                .set_fragment_offset(u.gen()?);
-            Some(header)
+            GenWithNextHeader(u.gen()?).generate(u)
         }
     }
 }
