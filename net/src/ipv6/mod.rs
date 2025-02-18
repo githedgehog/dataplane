@@ -445,13 +445,40 @@ impl From<Ipv6ExtNext> for Header {
 
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
+    use crate::ip::NextHeader;
     use crate::ipv6::Ipv6;
-    use bolero::{Driver, TypeGenerator};
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
     use etherparse::Ipv6Header;
     use std::net::Ipv6Addr;
 
-    impl TypeGenerator for Ipv6 {
-        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+    /// A [`bolero::TypeGenerator`] for common (and supported) [`NextHeader`] values
+    #[derive(Copy, Clone, Debug, bolero::TypeGenerator)]
+    pub enum CommonNextHeader {
+        /// TCP next header (see [`NextHeader::TCP`]
+        Tcp,
+        /// UDP next header (see [`NextHeader::UDP`]
+        Udp,
+        /// ICMP v6 next header (see [`NextHeader::ICMP6`]
+        Icmp6,
+    }
+
+    impl From<CommonNextHeader> for NextHeader {
+        fn from(value: CommonNextHeader) -> Self {
+            match value {
+                CommonNextHeader::Tcp => NextHeader::TCP,
+                CommonNextHeader::Udp => NextHeader::UDP,
+                CommonNextHeader::Icmp6 => NextHeader::ICMP6,
+            }
+        }
+    }
+
+    /// [`ValueGenerator`] for an (otherwise) arbitrary [`Ipv6`] with a specified [`NextHeader`].
+    pub struct GenWithNextHeader(pub NextHeader);
+
+    impl ValueGenerator for GenWithNextHeader {
+        type Output = Ipv6;
+
+        fn generate<D: Driver>(&self, u: &mut D) -> Option<Ipv6> {
             let mut header = Ipv6(Ipv6Header::default());
             #[allow(unsafe_code)] // safe in test context
             unsafe {
@@ -463,7 +490,20 @@ mod contract {
                 .set_flow_label(u.gen()?)
                 .set_traffic_class(u.gen()?)
                 .set_hop_limit(u.gen()?);
+            // Safe in so far as generating a header with the specified `NextHeader` is the point.
+            // There isn't (yet) a packet to corrupt.
+            #[allow(unsafe_code)]
+            unsafe {
+                header.set_next_header(self.0);
+            }
             Some(header)
+        }
+    }
+
+    impl TypeGenerator for Ipv6 {
+        /// Generate a completely arbitrary [`Ipv6`] header.
+        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+            GenWithNextHeader(u.gen()?).generate(u)
         }
     }
 }
