@@ -68,7 +68,7 @@ impl Eth {
     pub fn destination(&self) -> DestinationMac {
         #[allow(unsafe_code)] // checked in ctor and parse methods
         unsafe {
-            DestinationMac::new_unchecked(Mac(self.0.source))
+            DestinationMac::new_unchecked(Mac(self.0.destination))
         }
     }
 
