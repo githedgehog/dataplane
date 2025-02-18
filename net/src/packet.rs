@@ -12,8 +12,8 @@ use crate::ip_auth::IpAuth;
 use crate::ipv4::Ipv4;
 use crate::ipv6::{Ipv6, Ipv6Ext};
 use crate::parse::{
-    DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, ParsePayloadWith, Reader,
-    Writer,
+    DeParse, DeParseError, IllegalBufferLength, IntoNonZeroUSize, LengthError, Parse, ParseError,
+    ParsePayload, ParsePayloadWith, Reader, Writer,
 };
 use crate::tcp::Tcp;
 use crate::udp::{Udp, UdpEncap};
@@ -46,14 +46,14 @@ pub enum Net {
 impl DeParse for Net {
     type Error = ();
 
-    fn size(&self) -> NonZero<usize> {
+    fn size(&self) -> NonZero<u16> {
         match self {
             Net::Ipv4(ip) => ip.size(),
             Net::Ipv6(ip) => ip.size(),
         }
     }
 
-    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
+    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
         match self {
             Net::Ipv4(ip) => ip.deparse(buf),
             Net::Ipv6(ip) => ip.deparse(buf),
@@ -78,7 +78,7 @@ pub enum Transport {
 impl DeParse for Transport {
     type Error = ();
 
-    fn size(&self) -> NonZero<usize> {
+    fn size(&self) -> NonZero<u16> {
         match self {
             Transport::Tcp(x) => x.size(),
             Transport::Udp(x) => x.size(),
@@ -87,7 +87,7 @@ impl DeParse for Transport {
         }
     }
 
-    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
+    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
         match self {
             Transport::Tcp(x) => x.deparse(buf),
             Transport::Udp(x) => x.deparse(buf),
@@ -141,8 +141,9 @@ impl ParsePayload for Header {
 impl Parse for Packet {
     type Error = EthError;
 
-    fn parse(buf: &[u8]) -> Result<(Self, NonZero<usize>), ParseError<Self::Error>> {
-        let mut cursor = Reader::new(buf);
+    fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
+        let mut cursor =
+            Reader::new(buf).map_err(|IllegalBufferLength(len)| ParseError::BufferTooLong(len))?;
         let (eth, _) = cursor.parse::<Eth>()?;
         let mut this = Packet {
             eth: eth.clone(),
@@ -195,8 +196,10 @@ impl Parse for Packet {
                 }
             }
         }
-        #[allow(unsafe_code)] // Non zero checked by parse impl
-        let consumed = unsafe { NonZero::new_unchecked(cursor.inner.len() - cursor.remaining) };
+        #[allow(unsafe_code, clippy::cast_possible_truncation)] // Non zero checked by parse impl
+        let consumed = unsafe {
+            NonZero::new_unchecked((cursor.inner.len() - cursor.remaining as usize) as u16)
+        };
         Ok((this, consumed))
     }
 }
@@ -204,10 +207,10 @@ impl Parse for Packet {
 impl DeParse for Packet {
     type Error = ();
 
-    fn size(&self) -> NonZero<usize> {
+    fn size(&self) -> NonZero<u16> {
         // TODO(blocking): Deal with ip{v4,v6} extensions
         let eth = self.eth.size().get();
-        let vlan = self.vlan.iter().map(|v| v.size().get()).sum::<usize>();
+        let vlan = self.vlan.iter().map(|v| v.size().get()).sum::<u16>();
         let net = match self.net {
             None => {
                 debug_assert!(self.transport.is_none());
@@ -226,16 +229,17 @@ impl DeParse for Packet {
         NonZero::new(eth + vlan + net + transport + encap).unwrap_or_else(|| unreachable!())
     }
 
-    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
+    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
         // TODO(blocking): Deal with ip{v4,v6} extensions
         let len = buf.len();
-        if len < self.size().get() {
+        if len < self.size().into_non_zero_usize().get() {
             return Err(DeParseError::Length(LengthError {
-                expected: self.size(),
+                expected: self.size().into_non_zero_usize(),
                 actual: len,
             }));
         }
-        let mut cursor = Writer::new(buf);
+        let mut cursor = Writer::new(buf)
+            .map_err(|IllegalBufferLength(len)| DeParseError::BufferTooLong(len))?;
         cursor.write(&self.eth)?;
         for vlan in self.vlan.iter().rev() {
             cursor.write(vlan)?;
@@ -243,8 +247,11 @@ impl DeParse for Packet {
         match self.net {
             None => {
                 debug_assert!(self.transport.is_none());
-                return Ok(NonZero::new(cursor.inner.len() - cursor.remaining)
-                    .unwrap_or_else(|| unreachable!()));
+                #[allow(clippy::cast_possible_truncation)] // length bounded on cursor creation
+                return Ok(
+                    NonZero::new((cursor.inner.len() - cursor.remaining as usize) as u16)
+                        .unwrap_or_else(|| unreachable!()),
+                );
             }
             Some(ref net) => {
                 cursor.write(net)?;
@@ -253,8 +260,11 @@ impl DeParse for Packet {
 
         match self.transport {
             None => {
-                return Ok(NonZero::new(cursor.inner.len() - cursor.remaining)
-                    .unwrap_or_else(|| unreachable!()))
+                #[allow(clippy::cast_possible_truncation)] // length bounded on cursor creation
+                return Ok(
+                    NonZero::new((cursor.inner.len() - cursor.remaining as usize) as u16)
+                        .unwrap_or_else(|| unreachable!()),
+                );
             }
             Some(ref transport) => {
                 cursor.write(transport)?;
@@ -263,14 +273,21 @@ impl DeParse for Packet {
 
         match self.udp_encap {
             None => {
-                return Ok(NonZero::new(cursor.inner.len() - cursor.remaining)
-                    .unwrap_or_else(|| unreachable!()))
+                #[allow(clippy::cast_possible_truncation)] // length bounded on cursor creation
+                return Ok(
+                    NonZero::new((cursor.inner.len() - cursor.remaining as usize) as u16)
+                        .unwrap_or_else(|| unreachable!()),
+                );
             }
             Some(UdpEncap::Vxlan(ref vxlan)) => {
                 cursor.write(vxlan)?;
             }
         }
-        Ok(NonZero::new(cursor.inner.len() - cursor.remaining).unwrap_or_else(|| unreachable!()))
+        #[allow(clippy::cast_possible_truncation)] // length bounded on cursor creation
+        Ok(
+            NonZero::new((cursor.inner.len() - cursor.remaining as usize) as u16)
+                .unwrap_or_else(|| unreachable!()),
+        )
     }
 }
 

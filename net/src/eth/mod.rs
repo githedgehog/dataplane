@@ -42,7 +42,8 @@ pub enum EthError {
 
 impl Eth {
     /// The length (in bytes) of an [`Eth`] header
-    pub const HEADER_LEN: usize = 14;
+    #[allow(clippy::unwrap_used)] // trivially safe const eval
+    pub const HEADER_LEN: NonZero<u16> = NonZero::new(14).unwrap();
 
     /// Create a new [Eth] header.
     #[must_use]
@@ -100,7 +101,10 @@ impl Eth {
 impl Parse for Eth {
     type Error = EthError;
 
-    fn parse(buf: &[u8]) -> Result<(Self, NonZero<usize>), ParseError<Self::Error>> {
+    fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
+        if buf.len() > u16::MAX as usize {
+            return Err(ParseError::BufferTooLong(buf.len()));
+        }
         let (inner, rest) = Ethernet2Header::from_slice(buf).map_err(|e| {
             let expected = NonZero::new(e.required_len).unwrap_or_else(|| unreachable!());
             ParseError::Length(LengthError {
@@ -114,7 +118,9 @@ impl Parse for Eth {
             rest = rest.len(),
             buf = buf.len()
         );
-        let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
+        #[allow(clippy::cast_possible_truncation)] // buffer length bounded above
+        let consumed =
+            NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
         let new = Self(inner);
         // integrity check for ethernet header
         new.destination()
@@ -132,12 +138,16 @@ impl Parse for Eth {
 impl DeParse for Eth {
     type Error = ();
 
-    fn size(&self) -> NonZero<usize> {
-        NonZero::new(self.0.header_len()).unwrap_or_else(|| unreachable!())
+    fn size(&self) -> NonZero<u16> {
+        #[allow(clippy::cast_possible_truncation)] // Eth headers have fixed length
+        NonZero::new(self.0.header_len() as u16).unwrap_or_else(|| unreachable!())
     }
 
-    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
+    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
         let len = buf.len();
+        if buf.len() > u16::MAX as usize {
+            return Err(DeParseError::BufferTooLong(len));
+        }
         let unused = self.0.write_to_slice(buf).map_err(|e| {
             let expected = NonZero::new(e.required_len).unwrap_or_else(|| unreachable!());
             DeParseError::Length(LengthError {
@@ -150,7 +160,8 @@ impl DeParse for Eth {
             "unused.len() >= buf.len() ({unused} >= {len})",
             unused = unused.len(),
         );
-        let consumed = NonZero::new(len - unused.len()).ok_or_else(|| unreachable!())?;
+        #[allow(clippy::cast_possible_truncation)] // buffer len upper bounded already
+        let consumed = NonZero::new((len - unused.len()) as u16).ok_or_else(|| unreachable!())?;
         Ok(consumed)
     }
 }
@@ -231,19 +242,20 @@ mod contract {
 #[allow(clippy::unwrap_used, clippy::expect_used)] // valid in test code for unreachable cases
 #[cfg(test)]
 mod test {
+    const HEADER_LEN_USIZE: usize = Eth::HEADER_LEN.get() as usize;
     use crate::eth::{DestinationMacAddressError, Eth, EthError, SourceMacAddressError};
-    use crate::parse::{DeParse, Parse, ParseError};
+    use crate::parse::{DeParse, IntoNonZeroUSize, Parse, ParseError};
 
     #[test]
     fn parse_back() {
         bolero::check!().with_type().for_each(|eth: &Eth| {
             assert!(eth.source().inner().valid_src().is_ok());
             assert!(eth.destination().inner().valid_dst().is_ok());
-            let mut buf = [0u8; Eth::HEADER_LEN];
+            let mut buf = [0u8; HEADER_LEN_USIZE];
             eth.deparse(&mut buf).unwrap();
             let (eth2, consumed) = Eth::parse(&buf).unwrap();
             assert_eq!(eth, &eth2);
-            assert_eq!(consumed.get(), Eth::HEADER_LEN);
+            assert_eq!(consumed, Eth::HEADER_LEN);
         });
     }
 
@@ -251,33 +263,36 @@ mod test {
         let outcome = Eth::parse(buf);
         match outcome {
             Ok((eth, consumed)) => {
-                assert!(buf.len() >= Eth::HEADER_LEN);
-                assert_eq!(consumed.get(), Eth::HEADER_LEN);
+                assert!(buf.len() >= Eth::HEADER_LEN.into_non_zero_usize().get());
+                assert_eq!(consumed, Eth::HEADER_LEN);
                 assert!(eth.source().inner().valid_src().is_ok());
                 assert!(eth.destination().inner().valid_dst().is_ok());
-                let mut buf2 = [0u8; 14];
+                let mut buf2 = [0u8; HEADER_LEN_USIZE];
                 eth.deparse(&mut buf2).unwrap();
                 let (eth2, consumed2) = Eth::parse(&buf2).unwrap();
                 assert_eq!(eth, eth2);
-                assert_eq!(consumed2.get(), Eth::HEADER_LEN);
+                assert_eq!(consumed2, Eth::HEADER_LEN);
             }
             Err(ParseError::Length(e)) => {
-                assert_eq!(e.expected.get(), Eth::HEADER_LEN);
+                assert_eq!(e.expected, Eth::HEADER_LEN.into_non_zero_usize());
                 assert_eq!(e.actual, buf.len());
-                assert!(buf.len() < Eth::HEADER_LEN);
+                assert!(buf.len() < Eth::HEADER_LEN.into_non_zero_usize().get());
             }
             Err(ParseError::Invalid(
                 EthError::InvalidDestination(DestinationMacAddressError::ZeroDestination(z))
                 | EthError::InvalidSource(SourceMacAddressError::ZeroSource(z)),
             )) => {
-                assert!(buf.len() >= Eth::HEADER_LEN);
+                assert!(buf.len() >= Eth::HEADER_LEN.into_non_zero_usize().get());
                 assert!(z.is_zero());
             }
             Err(ParseError::Invalid(EthError::InvalidSource(
                 SourceMacAddressError::MulticastSource(m),
             ))) => {
-                assert!(buf.len() >= Eth::HEADER_LEN);
+                assert!(buf.len() >= Eth::HEADER_LEN.into_non_zero_usize().get());
                 assert!(m.is_multicast());
+            }
+            Err(ParseError::BufferTooLong(e)) => {
+                assert_eq!(e, buf.len());
             }
         }
     }
@@ -286,20 +301,20 @@ mod test {
     fn parse_arbitrary_bytes() {
         bolero::check!()
             .with_type()
-            .for_each(parse_buffer_of_fixed_length::<{ Eth::HEADER_LEN }>);
+            .for_each(parse_buffer_of_fixed_length::<{ HEADER_LEN_USIZE }>);
     }
 
     #[test]
     fn parse_prop_test_buffer_too_short() {
         bolero::check!()
             .with_type()
-            .for_each(parse_buffer_of_fixed_length::<{ Eth::HEADER_LEN - 1 }>);
+            .for_each(parse_buffer_of_fixed_length::<{ HEADER_LEN_USIZE - 1 }>);
     }
 
     #[test]
     fn parse_prop_test_excess_buffer() {
         bolero::check!()
             .with_type()
-            .for_each(parse_buffer_of_fixed_length::<{ Eth::HEADER_LEN + 1 }>);
+            .for_each(parse_buffer_of_fixed_length::<{ HEADER_LEN_USIZE + 1 }>);
     }
 }

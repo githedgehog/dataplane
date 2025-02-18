@@ -3,7 +3,9 @@
 
 //! `ICMPv4` header type and logic.
 
-use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, Reader};
+use crate::parse::{
+    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
+};
 use etherparse::Icmpv4Header;
 use std::num::NonZero;
 
@@ -18,7 +20,10 @@ pub struct Icmp4(Icmpv4Header);
 impl Parse for Icmp4 {
     type Error = LengthError;
 
-    fn parse(buf: &[u8]) -> Result<(Self, NonZero<usize>), ParseError<Self::Error>> {
+    fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
+        if buf.len() > u16::MAX as usize {
+            return Err(ParseError::BufferTooLong(buf.len()));
+        }
         let (inner, rest) = Icmpv4Header::from_slice(buf).map_err(|e| {
             let expected = NonZero::new(e.required_len).unwrap_or_else(|| unreachable!());
             ParseError::Length(LengthError {
@@ -32,7 +37,9 @@ impl Parse for Icmp4 {
             rest = rest.len(),
             buf = buf.len()
         );
-        let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
+        #[allow(clippy::cast_possible_truncation)] // checked above
+        let consumed =
+            NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
         Ok((Self(inner), consumed))
     }
 }
@@ -40,19 +47,20 @@ impl Parse for Icmp4 {
 impl DeParse for Icmp4 {
     type Error = ();
 
-    fn size(&self) -> NonZero<usize> {
-        NonZero::new(self.0.header_len()).unwrap_or_else(|| unreachable!())
+    fn size(&self) -> NonZero<u16> {
+        #[allow(clippy::cast_possible_truncation)] // header length bounded
+        NonZero::new(self.0.header_len() as u16).unwrap_or_else(|| unreachable!())
     }
 
-    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
+    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
         let len = buf.len();
-        if len < self.size().get() {
+        if len < self.size().into_non_zero_usize().get() {
             return Err(DeParseError::Length(LengthError {
-                expected: self.size(),
+                expected: self.size().into_non_zero_usize(),
                 actual: len,
             }));
         }
-        buf[..self.size().get()].copy_from_slice(&self.0.to_bytes());
+        buf[..self.size().into_non_zero_usize().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
     }
 }
@@ -81,6 +89,9 @@ mod contract {
                 Ok((icmp4, _)) => icmp4,
                 Err(ParseError::Length(l)) => unreachable!("{:?}", l),
                 Err(ParseError::Invalid(e)) => unreachable!("{:?}", e),
+                Err(ParseError::BufferTooLong(_)) => {
+                    unreachable!()
+                }
             };
             Some(icmp4)
         }
@@ -104,11 +115,13 @@ mod test {
                 Err(DeParseError::Invalid(())) => {
                     unreachable!()
                 }
+                Err(DeParseError::BufferTooLong(_)) => unreachable!(),
             };
             let (parsed, bytes_read) = match Icmp4::parse(&buffer) {
                 Ok((parsed, bytes_read)) => (parsed, bytes_read),
                 Err(ParseError::Invalid(e)) => unreachable!("{e:?}"),
                 Err(ParseError::Length(l)) => unreachable!("{l:?}"),
+                Err(ParseError::BufferTooLong(_)) => unreachable!(),
             };
             assert_eq!(input, &parsed);
             assert_eq!(bytes_written, bytes_read);

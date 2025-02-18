@@ -9,7 +9,9 @@ pub use contract::*;
 
 use crate::eth::ethtype::EthType;
 use crate::eth::{parse_from_ethertype, EthNext};
-use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, Reader};
+use crate::parse::{
+    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
+};
 use core::num::NonZero;
 use etherparse::{SingleVlanHeader, VlanId, VlanPcp};
 
@@ -203,7 +205,7 @@ impl Vlan {
     ///
     /// Name choice for consistency.
     #[allow(clippy::unwrap_used)] // safety: trivial and const-eval
-    pub const MIN_LENGTH: NonZero<usize> = NonZero::new(4).unwrap();
+    pub const MIN_LENGTH: NonZero<u16> = NonZero::new(4).unwrap();
 
     // TODO: non-panic proof
     /// Create a new [Vlan] header.
@@ -285,7 +287,10 @@ impl Vlan {
 impl Parse for Vlan {
     type Error = InvalidVid;
 
-    fn parse(buf: &[u8]) -> Result<(Self, NonZero<usize>), ParseError<Self::Error>> {
+    fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
+        if buf.len() > u16::MAX as usize {
+            return Err(ParseError::BufferTooLong(buf.len()));
+        }
         let (inner, rest) = SingleVlanHeader::from_slice(buf).map_err(|e| {
             let expected = NonZero::new(e.required_len).unwrap_or_else(|| unreachable!());
             ParseError::Length(LengthError {
@@ -301,7 +306,9 @@ impl Parse for Vlan {
         );
         // validate vlan
         Vid::new(inner.vlan_id.value()).map_err(ParseError::Invalid)?;
-        let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
+        #[allow(clippy::cast_possible_truncation)] // buffer length bounded above
+        let consumed =
+            NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
         Ok((Self(inner), consumed))
     }
 }
@@ -309,19 +316,20 @@ impl Parse for Vlan {
 impl DeParse for Vlan {
     type Error = ();
 
-    fn size(&self) -> NonZero<usize> {
-        NonZero::new(self.0.header_len()).unwrap_or_else(|| unreachable!())
+    fn size(&self) -> NonZero<u16> {
+        #[allow(clippy::cast_possible_truncation)] // bounded header length
+        NonZero::new(self.0.header_len() as u16).unwrap_or_else(|| unreachable!())
     }
 
-    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
+    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
         let len = buf.len();
-        if len < self.size().get() {
+        if len < self.size().into_non_zero_usize().get() {
             return Err(DeParseError::Length(LengthError {
-                expected: self.size(),
+                expected: self.size().into_non_zero_usize(),
                 actual: len,
             }));
         }
-        buf[..self.size().get()].copy_from_slice(&self.0.to_bytes());
+        buf[..self.size().into_non_zero_usize().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
     }
 }
@@ -404,6 +412,8 @@ mod test {
     use super::*;
     use crate::vlan::Vid;
 
+    const MIN_LENGTH_USIZE: usize = 4;
+
     #[test]
     fn vid_min_is_valid() {
         let vid = Vid::MIN;
@@ -481,10 +491,11 @@ mod test {
     #[cfg_attr(kani, kani::proof)]
     fn parse_back() {
         bolero::check!().with_type().for_each(|vlan: &Vlan| {
-            let mut buf = [0u8; Vlan::MIN_LENGTH.get()]; // vlan headers are always 4 bytes long
+            let mut buf = [0u8; MIN_LENGTH_USIZE]; // vlan headers are always 4 bytes long
             let written = vlan.deparse(&mut buf).unwrap();
             assert_eq!(written, vlan.size());
-            let (parsed, consumed) = Vlan::parse(&buf[..written.get()]).unwrap();
+            let (parsed, consumed) =
+                Vlan::parse(&buf[..written.into_non_zero_usize().get()]).unwrap();
             assert_eq!(parsed, *vlan);
             assert_eq!(consumed, written);
             assert_eq!(consumed, Vlan::MIN_LENGTH);
@@ -498,7 +509,7 @@ mod test {
     #[test]
     #[cfg_attr(kani, kani::proof)]
     fn parse_noise() {
-        bolero::check!().with_type().for_each(|buf: &[u8; Vlan::MIN_LENGTH.get()]| {
+        bolero::check!().with_type().for_each(|buf: &[u8; MIN_LENGTH_USIZE]| {
             let (vlan, consumed) = match Vlan::parse(buf) {
                 Ok((vlan, consumed)) => (vlan, consumed),
                 Err(ParseError::Invalid(InvalidVid::Zero | InvalidVid::Reserved)) => { return; }
@@ -507,10 +518,11 @@ mod test {
                 }
                 Err(ParseError::Length(e)) => {
                     unreachable!("parser error: we should never get a length error from a sequence of four bytes: {e:?}")
-                }
+                },
+                Err(ParseError::BufferTooLong(_)) => unreachable!(),
             };
             assert_eq!(consumed, Vlan::MIN_LENGTH);
-            let mut buf2 = [0u8; Vlan::MIN_LENGTH.get()];
+            let mut buf2 = [0u8; MIN_LENGTH_USIZE];
             let written = vlan.deparse(&mut buf2).unwrap_or_else(|_| unreachable!());
             assert_eq!(written, consumed);
             assert_eq!(buf, &buf2);
@@ -520,17 +532,15 @@ mod test {
     #[test]
     #[cfg_attr(kani, kani::proof)]
     fn parse_noise_too_short() {
-        bolero::check!()
-            .with_type()
-            .for_each(
-                |buf: &[u8; Vlan::MIN_LENGTH.get() - 1]| match Vlan::parse(buf) {
-                    Err(ParseError::Length(e)) => {
-                        assert_eq!(e.actual, buf.len());
-                        assert_eq!(e.expected, Vlan::MIN_LENGTH);
-                    }
-                    _ => unreachable!(),
-                },
-            );
+        bolero::check!().with_type().for_each(
+            |buf: &[u8; MIN_LENGTH_USIZE - 1]| match Vlan::parse(buf) {
+                Err(ParseError::Length(e)) => {
+                    assert_eq!(e.actual, buf.len());
+                    assert_eq!(e.expected, Vlan::MIN_LENGTH.into_non_zero_usize());
+                }
+                _ => unreachable!(),
+            },
+        );
     }
 
     #[test]
@@ -545,8 +555,8 @@ mod test {
                 from.set_dei(into.dei());
                 from.set_inner_ethtype(into.inner_ethtype());
                 assert_eq!(&from, into);
-                let mut from_buffer = [0u8; Vlan::MIN_LENGTH.get()];
-                let mut into_buffer = [0u8; Vlan::MIN_LENGTH.get()];
+                let mut from_buffer = [0u8; MIN_LENGTH_USIZE];
+                let mut into_buffer = [0u8; MIN_LENGTH_USIZE];
                 from.deparse(from_buffer.as_mut()).unwrap();
                 into.deparse(into_buffer.as_mut()).unwrap();
                 assert_eq!(from_buffer, into_buffer);
@@ -557,11 +567,11 @@ mod test {
     #[cfg_attr(kani, kani::proof)]
     fn deparse_to_insufficient_buffer_is_graceful() {
         bolero::check!().with_type().for_each(|vlan: &Vlan| {
-            let mut buf = [0u8; Vlan::MIN_LENGTH.get() - 1];
+            let mut buf = [0u8; MIN_LENGTH_USIZE - 1];
             match vlan.deparse(&mut buf) {
                 Err(DeParseError::Length(e)) => {
                     assert_eq!(e.actual, buf.len());
-                    assert_eq!(e.expected, Vlan::MIN_LENGTH);
+                    assert_eq!(e.expected, Vlan::MIN_LENGTH.into_non_zero_usize());
                 }
                 _ => unreachable!(),
             }

@@ -6,7 +6,9 @@
 mod checksum;
 mod port;
 
-use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, Reader};
+use crate::parse::{
+    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
+};
 use crate::tcp::port::TcpPort;
 use etherparse::err::tcp::{HeaderError, HeaderSliceError};
 use etherparse::TcpHeader;
@@ -23,7 +25,8 @@ pub struct Tcp(TcpHeader);
 
 impl Tcp {
     /// The minimum length of a [`Tcp`]
-    pub const MIN_LENGTH: usize = 20;
+    #[allow(clippy::unwrap_used)] // trivially sound const eval
+    pub const MIN_LENGTH: NonZero<u16> = NonZero::new(20).unwrap();
     /// The maximum length of a [`Tcp`]
     pub const MAX_LENGTH: usize = 60;
 
@@ -297,7 +300,10 @@ pub enum TcpError {
 impl Parse for Tcp {
     type Error = TcpError;
 
-    fn parse(buf: &[u8]) -> Result<(Self, NonZero<usize>), ParseError<Self::Error>> {
+    fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
+        if buf.len() > u16::MAX as usize {
+            return Err(ParseError::BufferTooLong(buf.len()));
+        }
         let (inner, rest) = TcpHeader::from_slice(buf).map_err(|e| match e {
             HeaderSliceError::Len(len) => ParseError::Length(LengthError {
                 expected: NonZero::new(len.required_len).unwrap_or_else(|| unreachable!()),
@@ -315,7 +321,9 @@ impl Parse for Tcp {
             rest = rest.len(),
             buf = buf.len()
         );
-        let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
+        #[allow(clippy::cast_possible_truncation)] // buffer length bounded above
+        let consumed =
+            NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
         if inner.source_port == 0 {
             return Err(ParseError::Invalid(TcpError::ZeroSourcePort));
         }
@@ -330,19 +338,20 @@ impl Parse for Tcp {
 impl DeParse for Tcp {
     type Error = ();
 
-    fn size(&self) -> NonZero<usize> {
-        NonZero::new(self.0.header_len()).unwrap_or_else(|| unreachable!())
+    fn size(&self) -> NonZero<u16> {
+        #[allow(clippy::cast_possible_truncation)] // bounded header length
+        NonZero::new(self.0.header_len() as u16).unwrap_or_else(|| unreachable!())
     }
 
-    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
+    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
         let len = buf.len();
-        if len < self.size().get() {
+        if len < self.size().into_non_zero_usize().get() {
             return Err(DeParseError::Length(LengthError {
-                expected: self.size(),
+                expected: self.size().into_non_zero_usize(),
                 actual: len,
             }));
         }
-        buf[..self.size().get()].copy_from_slice(&self.0.to_bytes());
+        buf[..self.size().into_non_zero_usize().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
     }
 }
@@ -389,8 +398,10 @@ mod contract {
 #[allow(clippy::unwrap_used, clippy::expect_used)] // valid in tests
 #[cfg(test)]
 mod test {
-    use crate::parse::{DeParse, Parse, ParseError};
+    use crate::parse::{DeParse, IntoNonZeroUSize, Parse, ParseError};
     use crate::tcp::Tcp;
+
+    const MIN_LEN: usize = Tcp::MIN_LENGTH.get() as usize;
 
     #[test]
     #[cfg_attr(kani, kani::proof)]
@@ -403,8 +414,9 @@ mod test {
                     unreachable!("failed to write tcp: {err:?}");
                 }
             };
-            assert!(consumed.get() <= buffer.len());
-            let (parsed, consumed2) = Tcp::parse(&buffer[..consumed.get()]).unwrap();
+            assert!(consumed.into_non_zero_usize().get() <= buffer.len());
+            let (parsed, consumed2) =
+                Tcp::parse(&buffer[..consumed.into_non_zero_usize().get()]).unwrap();
             assert_eq!(tcp.source(), parsed.source());
             assert_eq!(tcp.destination(), parsed.destination());
             assert_eq!(tcp.checksum(), parsed.checksum());
@@ -432,7 +444,7 @@ mod test {
     fn parse_noise() {
         bolero::check!()
             .with_type()
-            .for_each(|slice: &[u8; Tcp::MIN_LENGTH]| {
+            .for_each(|slice: &[u8; MIN_LEN]| {
                 let (parsed, consumed1) = match Tcp::parse(slice) {
                     Ok((parsed, consumed)) => (parsed, consumed),
                     Err(err) => match err {
@@ -445,6 +457,7 @@ mod test {
                             /* I'm not sure that I can assert much in this case */
                             return;
                         }
+                        ParseError::BufferTooLong(_) => unreachable!(),
                     },
                 };
                 let mut slice2 = [0u8; Tcp::MAX_LENGTH];
@@ -455,18 +468,19 @@ mod test {
                     }
                 };
                 assert_eq!(consumed2, consumed1);
-                let (parsed_back, consumed3) = Tcp::parse(&slice2[..consumed2.get()]).unwrap();
+                let (parsed_back, consumed3) =
+                    Tcp::parse(&slice2[..consumed2.into_non_zero_usize().get()]).unwrap();
                 assert_eq!(consumed2, consumed3);
                 #[cfg(not(kani))] // remove after fixing options
                 assert_eq!(parsed, parsed_back);
                 assert_eq!(&slice[..12], &slice2[..12]);
                 // check for reserved bits getting zeroed by `write` (regardless of inputs)
                 assert_eq!(slice[12] & 0b1111_0001, slice2[12]);
-                assert_eq!(&slice[13..Tcp::MIN_LENGTH], &slice2[13..Tcp::MIN_LENGTH]);
+                assert_eq!(&slice[13..MIN_LEN], &slice2[13..MIN_LEN]);
                 #[cfg(not(kani))] // remove after fixing options
                 assert_eq!(
-                    &slice[Tcp::MIN_LENGTH..consumed1.get()],
-                    &slice2[Tcp::MIN_LENGTH..consumed1.get()]
+                    &slice[MIN_LEN..consumed1.into_non_zero_usize().get()],
+                    &slice2[MIN_LEN..consumed1.into_non_zero_usize().get()]
                 );
             });
     }

@@ -7,7 +7,9 @@
 
 mod vni;
 
-use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, Reader};
+use crate::parse::{
+    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
+};
 use crate::udp::port::UdpPort;
 use core::num::NonZero;
 use tracing::trace;
@@ -35,7 +37,7 @@ impl Vxlan {
     ///
     /// Naming for consistency with other headers.
     #[allow(clippy::unwrap_used)] // trivially safe const expression
-    pub const MIN_LENGTH: NonZero<usize> = NonZero::new(8).unwrap();
+    pub const MIN_LENGTH: NonZero<u16> = NonZero::new(8).unwrap();
 
     /// The only legal set of flags for a VXLAN header.
     ///
@@ -89,14 +91,14 @@ pub enum VxlanError {
 impl Parse for Vxlan {
     type Error = VxlanError;
 
-    fn parse(buf: &[u8]) -> Result<(Self, NonZero<usize>), ParseError<Self::Error>> {
-        if buf.len() < Vxlan::MIN_LENGTH.get() {
+    fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
+        if buf.len() < Vxlan::MIN_LENGTH.into_non_zero_usize().get() {
             return Err(ParseError::Length(LengthError {
-                expected: Vxlan::MIN_LENGTH,
+                expected: Vxlan::MIN_LENGTH.into_non_zero_usize(),
                 actual: buf.len(),
             }));
         }
-        let slice = &buf[..Vxlan::MIN_LENGTH.get()];
+        let slice = &buf[..Vxlan::MIN_LENGTH.into_non_zero_usize().get()];
         if slice[0] & Vxlan::LEGAL_FLAGS != Vxlan::LEGAL_FLAGS {
             return Err(ParseError::Invalid(VxlanError::RequiredBitUnset));
         }
@@ -128,14 +130,14 @@ impl Parse for Vxlan {
 impl DeParse for Vxlan {
     type Error = ();
 
-    fn size(&self) -> NonZero<usize> {
+    fn size(&self) -> NonZero<u16> {
         Vxlan::MIN_LENGTH
     }
 
-    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
-        if buf.len() < Vxlan::MIN_LENGTH.get() {
+    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
+        if buf.len() < Vxlan::MIN_LENGTH.into_non_zero_usize().get() {
             return Err(DeParseError::Length(LengthError {
-                expected: Vxlan::MIN_LENGTH,
+                expected: Vxlan::MIN_LENGTH.into_non_zero_usize(),
                 actual: buf.len(),
             }));
         }
@@ -161,15 +163,16 @@ impl ParsePayload for Vxlan {
 #[allow(clippy::unwrap_used, clippy::expect_used)] // valid in test code
 #[cfg(test)]
 mod test {
-    use crate::parse::{DeParse, DeParseError, Parse, ParseError};
+    use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, Parse, ParseError};
     use crate::vxlan::{InvalidVni, Vni, Vxlan, VxlanError};
+    const MIN_LENGTH_USIZE: usize = 8;
 
     #[test]
     #[cfg_attr(kani, kani::proof)]
     fn parse_back() {
         bolero::check!().with_type().for_each(|vxlan: &Vxlan| {
             assert_eq!(vxlan.size(), Vxlan::MIN_LENGTH);
-            let mut buf = [0u8; Vxlan::MIN_LENGTH.get()];
+            let mut buf = [0u8; MIN_LENGTH_USIZE];
             let bytes_written = vxlan.deparse(&mut buf).unwrap_or_else(|_| unreachable!());
             assert_eq!(bytes_written, Vxlan::MIN_LENGTH);
             let (parsed, bytes_parsed) = Vxlan::parse(&buf).unwrap();
@@ -193,7 +196,7 @@ mod test {
     fn parse_noise() {
         bolero::check!()
             .with_type()
-            .for_each(|slice: &[u8; Vxlan::MIN_LENGTH.get()]| {
+            .for_each(|slice: &[u8; MIN_LENGTH_USIZE]| {
                 let (parsed, bytes_parsed) = match Vxlan::parse(slice) {
                     Ok((parsed, bytes_parsed)) => (parsed, bytes_parsed),
                     Err(ParseError::Length(_)) => {
@@ -217,9 +220,10 @@ mod test {
                             "parser logic error: too large vni should be impossible: found {val}"
                         );
                     }
+                    Err(ParseError::BufferTooLong(_)) => unreachable!(),
                 };
                 assert_eq!(bytes_parsed, Vxlan::MIN_LENGTH);
-                let mut write_back_buffer = [0u8; Vxlan::MIN_LENGTH.get()];
+                let mut write_back_buffer = [0u8; MIN_LENGTH_USIZE];
                 let bytes_written = parsed
                     .deparse(&mut write_back_buffer)
                     .unwrap_or_else(|_| unreachable!());
@@ -228,8 +232,8 @@ mod test {
                 assert_eq!(slice[0] & Vxlan::LEGAL_FLAGS, Vxlan::LEGAL_FLAGS);
                 assert_eq!(&write_back_buffer[1..=3], &[0, 0, 0]); // reserved should always be zero
                 assert_eq!(
-                    &write_back_buffer[4..bytes_written.get()],
-                    &slice[4..bytes_written.get()]
+                    &write_back_buffer[4..bytes_written.into_non_zero_usize().get()],
+                    &slice[4..bytes_written.into_non_zero_usize().get()]
                 );
             });
     }
@@ -238,10 +242,10 @@ mod test {
     #[cfg_attr(kani, kani::proof)]
     fn write_to_insufficient_buffer_fails_gracefully() {
         bolero::check!().with_type().for_each(|vni: &Vxlan| {
-            let mut too_small_buffer = [0u8; Vxlan::MIN_LENGTH.get() - 1];
+            let mut too_small_buffer = [0u8; MIN_LENGTH_USIZE - 1];
             match vni.deparse(&mut too_small_buffer) {
                 Err(DeParseError::Length(e)) => {
-                    assert_eq!(e.expected, Vxlan::MIN_LENGTH);
+                    assert_eq!(e.expected, Vxlan::MIN_LENGTH.into_non_zero_usize());
                     assert_eq!(e.actual, too_small_buffer.len());
                 }
                 _ => unreachable!(),
@@ -255,9 +259,9 @@ mod test {
         bolero::check!()
             .with_type()
             .for_each(
-                |slice: &[u8; Vxlan::MIN_LENGTH.get() - 1]| match Vxlan::parse(slice) {
+                |slice: &[u8; MIN_LENGTH_USIZE - 1]| match Vxlan::parse(slice) {
                     Err(ParseError::Length(e)) => {
-                        assert_eq!(e.expected, Vxlan::MIN_LENGTH);
+                        assert_eq!(e.expected, Vxlan::MIN_LENGTH.into_non_zero_usize());
                         assert_eq!(e.actual, slice.len());
                     }
                     _ => unreachable!(),

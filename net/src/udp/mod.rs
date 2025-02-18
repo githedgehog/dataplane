@@ -7,7 +7,9 @@ pub mod checksum;
 pub mod port;
 
 use crate::packet::Header;
-use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, Reader};
+use crate::parse::{
+    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
+};
 use crate::udp::port::UdpPort;
 use crate::vxlan::Vxlan;
 use etherparse::UdpHeader;
@@ -31,7 +33,7 @@ impl Udp {
     /// The minimum length of a valid UDP header (technically also the maximum length).
     /// The name choice here is for consistency with other header types.
     #[allow(clippy::unwrap_used)] // safe due to const-eval
-    pub const MIN_LENGTH: NonZero<usize> = NonZero::new(8).unwrap();
+    pub const MIN_LENGTH: NonZero<u16> = NonZero::new(8).unwrap();
 
     /// Get the header's source port
     #[must_use]
@@ -93,12 +95,12 @@ impl Udp {
     ///
     /// # Safety
     ///
-    /// If you set the length to zero (or anything less than 8) then this is sure to be unsound.
+    /// If you set the length to zero (or anything less than [`Udp::MIN_LENGTH`]) then this is sure
+    /// to be unsound.
     #[allow(unsafe_code)]
-    #[allow(clippy::cast_possible_truncation)] // trivially valid since MIN_LENGTH is small
     pub unsafe fn set_length(&mut self, length: NonZero<u16>) -> &mut Self {
         debug_assert!(
-            length.get() >= Udp::MIN_LENGTH.get() as u16,
+            length >= Udp::MIN_LENGTH,
             "udp length must be at least 8 bytes, got: {length:#x}",
         );
         self.0.length = length.get();
@@ -120,7 +122,10 @@ pub enum UdpParseError {
 impl Parse for Udp {
     type Error = UdpParseError;
 
-    fn parse(buf: &[u8]) -> Result<(Self, NonZero<usize>), ParseError<Self::Error>> {
+    fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
+        if buf.len() > u16::MAX as usize {
+            return Err(ParseError::BufferTooLong(buf.len()));
+        }
         let (inner, rest) = UdpHeader::from_slice(buf).map_err(|e| {
             let expected = NonZero::new(e.required_len).unwrap_or_else(|| unreachable!());
             ParseError::Length(LengthError {
@@ -134,7 +139,9 @@ impl Parse for Udp {
             rest = rest.len(),
             buf = buf.len()
         );
-        let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
+        #[allow(clippy::cast_possible_truncation)] // size of buffer bounded above
+        let consumed =
+            NonZero::new((buf.len() - rest.len()) as u16).unwrap_or_else(|| unreachable!());
         if inner.source_port == 0 {
             return Err(ParseError::Invalid(UdpParseError::ZeroSourcePort));
         }
@@ -148,19 +155,20 @@ impl Parse for Udp {
 impl DeParse for Udp {
     type Error = ();
 
-    fn size(&self) -> NonZero<usize> {
-        NonZero::new(self.0.header_len()).unwrap_or_else(|| unreachable!())
+    fn size(&self) -> NonZero<u16> {
+        #[allow(clippy::cast_possible_truncation)] // bounded size for header
+        NonZero::new(self.0.header_len() as u16).unwrap_or_else(|| unreachable!())
     }
 
-    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
+    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
         let len = buf.len();
-        if len < self.size().get() {
+        if len < self.size().into_non_zero_usize().get() {
             return Err(DeParseError::Length(LengthError {
-                expected: self.size(),
+                expected: self.size().into_non_zero_usize(),
                 actual: len,
             }));
         }
-        buf[..self.size().get()].copy_from_slice(&self.0.to_bytes());
+        buf[..self.size().into_non_zero_usize().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
     }
 }
@@ -200,27 +208,18 @@ mod contract {
 
     impl TypeGenerator for Udp {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
-            #[allow(clippy::cast_possible_truncation)] // trivially safe
-            const MIN_LENGTH: u16 = Udp::MIN_LENGTH.get() as u16;
+            const MIN_LENGTH: u16 = Udp::MIN_LENGTH.get();
             let mut header = Udp(UdpHeader::default());
             header.set_source(u.gen()?);
             header.set_destination(u.gen()?);
             header.set_checksum(u.gen()?);
-            // Safety:
-            // This is sound in-so-far as the whole point of this method is to generate potentially
-            // hostile values which are used to test the soundness of the code.
-            // Strict soundness here would itself be unsound :)
-            #[allow(unsafe_code)]
-            #[allow(clippy::cast_possible_truncation)]
-            // trivially sound since MIN_LENGTH is small
             let length = u.gen::<u16>()?;
             match length {
                 #[allow(unsafe_code)] // trivially safe const-eval
                 0..MIN_LENGTH => unsafe {
-                    #[allow(clippy::unwrap_used)] // trivially safe const eval
-                    header.set_length(const { NonZero::new(MIN_LENGTH).unwrap() });
+                    header.set_length(Udp::MIN_LENGTH);
                 },
-                MIN_LENGTH..=u16::MAX => {
+                MIN_LENGTH.. => {
                     #[allow(unsafe_code)] // trivially safe based on current branch condition
                     unsafe {
                         header.set_length(NonZero::new(length).unwrap_or_else(|| unreachable!()));
@@ -235,22 +234,27 @@ mod contract {
 #[allow(clippy::unwrap_used, clippy::expect_used)] // valid in test code
 #[cfg(test)]
 mod test {
-    use crate::parse::{DeParse, Parse, ParseError};
+    use crate::parse::IntoNonZeroUSize;
+    use crate::parse::Parse;
+    use crate::parse::{DeParse, ParseError};
     use crate::udp::{Udp, UdpParseError};
+
+    const MIN_LENGTH_USIZE: usize = 8;
 
     #[test]
     #[cfg_attr(kani, kani::proof)]
     fn parse_back() {
         bolero::check!().with_type().for_each(|input: &Udp| {
-            let mut buffer = [0u8; 8];
+            let mut buffer = [0u8; MIN_LENGTH_USIZE];
             let consumed = match input.deparse(&mut buffer) {
                 Ok(consumed) => consumed,
                 Err(err) => {
                     unreachable!("failed to write udp: {err:?}");
                 }
             };
-            assert_eq!(consumed.get(), buffer.len());
-            let (parse_back, consumed2) = Udp::parse(&buffer[..consumed.get()]).unwrap();
+            assert_eq!(consumed.into_non_zero_usize().get(), buffer.len());
+            let (parse_back, consumed2) =
+                Udp::parse(&buffer[..consumed.into_non_zero_usize().get()]).unwrap();
             assert_eq!(input, &parse_back);
             assert_eq!(input.source(), parse_back.source());
             assert_eq!(input.destination(), parse_back.destination());
@@ -265,7 +269,7 @@ mod test {
     fn parse_arbitrary_bytes() {
         bolero::check!()
             .with_type()
-            .for_each(|slice: &[u8; Udp::MIN_LENGTH.get()]| {
+            .for_each(|slice: &[u8; MIN_LENGTH_USIZE]| {
                 let (parsed, bytes_read) = match Udp::parse(slice) {
                     Ok(x) => x,
                     Err(ParseError::Length(e)) => unreachable!("{e:?}", e = e),
@@ -277,13 +281,14 @@ mod test {
                         assert_eq!(slice[2..=3], [0, 0]);
                         return;
                     }
+                    Err(ParseError::BufferTooLong(_)) => unreachable!(),
                 };
                 let mut slice2 = [0u8; 8];
                 let bytes_written = parsed.deparse(&mut slice2).unwrap_or_else(|e| {
                     unreachable!("{e:?}");
                 });
-                assert_eq!(bytes_read.get(), slice.len());
-                assert_eq!(bytes_written.get(), slice.len());
+                assert_eq!(bytes_read.into_non_zero_usize().get(), slice.len());
+                assert_eq!(bytes_written.into_non_zero_usize().get(), slice.len());
                 assert_eq!(slice, &slice2);
             });
     }
@@ -293,11 +298,11 @@ mod test {
     fn too_short_buffer_parse_fails_gracefully() {
         bolero::check!()
             .with_type()
-            .for_each(|slice: &[u8; Udp::MIN_LENGTH.get() - 1]| {
+            .for_each(|slice: &[u8; MIN_LENGTH_USIZE - 1]| {
                 for i in 0..slice.len() {
                     match Udp::parse(&slice[..i]) {
                         Err(ParseError::Length(e)) => {
-                            assert_eq!(e.expected, Udp::MIN_LENGTH);
+                            assert_eq!(e.expected, Udp::MIN_LENGTH.into_non_zero_usize());
                             assert_eq!(e.actual, i);
                         }
                         _ => unreachable!(),
@@ -311,8 +316,8 @@ mod test {
     fn longer_buffer_parses_ok() {
         bolero::check!()
             .with_type()
-            .for_each(|slice: &[u8; 2 * Udp::MIN_LENGTH.get()]| {
-                for _ in Udp::MIN_LENGTH.get()..slice.len() {
+            .for_each(|slice: &[u8; 2 * MIN_LENGTH_USIZE]| {
+                for _ in MIN_LENGTH_USIZE..slice.len() {
                     let (parsed, bytes_read) = match Udp::parse(slice) {
                         Ok(x) => x,
                         Err(ParseError::Length(e)) => unreachable!("{e:?}", e = e),
@@ -324,14 +329,15 @@ mod test {
                             assert_eq!(slice[2..=3], [0, 0]);
                             return;
                         }
+                        Err(ParseError::BufferTooLong(_)) => unreachable!(),
                     };
-                    let mut slice2 = [0u8; Udp::MIN_LENGTH.get()];
+                    let mut slice2 = [0u8; MIN_LENGTH_USIZE];
                     let bytes_written = parsed.deparse(&mut slice2).unwrap_or_else(|e| {
                         unreachable!("{e:?}");
                     });
                     assert_eq!(bytes_read, Udp::MIN_LENGTH);
                     assert_eq!(bytes_written, Udp::MIN_LENGTH);
-                    assert_eq!(&slice[..Udp::MIN_LENGTH.get()], &slice2);
+                    assert_eq!(&slice[..MIN_LENGTH_USIZE], &slice2);
                 }
             });
     }
@@ -347,7 +353,7 @@ mod test {
                 if source == target {
                     return;
                 }
-                let mut target_bytes = [0u8; Udp::MIN_LENGTH.get()];
+                let mut target_bytes = [0u8; MIN_LENGTH_USIZE];
                 target
                     .deparse(&mut target_bytes)
                     .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
@@ -363,7 +369,7 @@ mod test {
                 source.set_checksum(target.checksum());
                 assert_eq!(source.checksum(), target.checksum());
                 assert_eq!(source, target);
-                let mut source_bytes = [0u8; Udp::MIN_LENGTH.get()];
+                let mut source_bytes = [0u8; MIN_LENGTH_USIZE];
                 source
                     .deparse(&mut source_bytes)
                     .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
