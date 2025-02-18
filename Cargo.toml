@@ -22,7 +22,6 @@ resolver = "3"
 [workspace.dependencies]
 
 # Internal
-
 dpdk = { path = "./dpdk" }
 dpdk-sys = { path = "./dpdk-sys" }
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper" }
@@ -35,20 +34,19 @@ arbitrary = { version = "1.4.1", default-features = false, features = [] }
 arrayvec = { version = "0.7.6", default-features = false, features = [] }
 bindgen = { version = "0.71.1", default-features = false, features = [] }
 bolero = { version = "0.12.0", default-features = false, features = [] }
+# std feature currently globally required for clap
 clap = { version = "4.5.27", default-features = false, features = ["std"] }
 ctrlc = { version = "3.4.5", default-features = false, features = [] }
 doxygen-rs = { version = "0.4.0", default-features = false, features = [] }
 etherparse = { version = "0.17.0", default-features = false, features = [] }
-ipnet = { version = "2.11.0" }
-mio = { version = "1.0.3" }
-serde = { version = "1.0.213", default-features = false }
+ipnet = { version = "2.11.0", default-features = false, features = [] }
+mio = { version = "1.0.3", default-features = false, features = [] }
+serde = { version = "1.0.213", default-features = false, features = [] }
 serde_yml = { version = "0.0.12", default-features = false, features = [] }
 thiserror = { version = "2.0.11", default-features = false, features = [] }
 # attribute feature is so commonly used that we should just leave it on globally
 tracing = { version = "0.1.40", default-features = false, features = ["attributes"] }
 tracing-subscriber = { version = "0.3.19", default-features = false, features = []}
-
-# dev-dependencies
 tracing-test = { version = "0.2.5", default-features = false, features = [] }
 
 [profile.dev]
