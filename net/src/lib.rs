@@ -19,6 +19,7 @@ extern crate core;
 
 use core::fmt::Debug;
 
+pub mod buffer;
 pub mod eth;
 pub mod headers;
 pub mod icmp4;
