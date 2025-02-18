@@ -223,7 +223,8 @@ mod test {
                     Err(ParseError::Invalid(VxlanError::InvalidVni(InvalidVni::TooLarge(val)))) => {
                         // The parser should never interpret more than 24-bits here.
                         unreachable!(
-                            "parser logic error: too large vni should be impossible: found {val}"
+                            "parser logic error: too large vni should be impossible: found {val}",
+                            val = val
                         );
                     }
                     Err(ParseError::BufferTooLong(_)) => unreachable!(),

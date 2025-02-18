@@ -117,9 +117,9 @@ mod contract {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
             let raw: u32 = u.gen::<u32>()? & Vni::MAX;
             if raw == 0 {
-                Some(Vni::new_checked(1).unwrap_or_else(|e| unreachable!("{e:?}")))
+                Some(Vni::new_checked(1).unwrap_or_else(|e| unreachable!("{e:?}", e = e)))
             } else {
-                Some(Vni::new_checked(raw).unwrap_or_else(|e| unreachable!("{e:?}")))
+                Some(Vni::new_checked(raw).unwrap_or_else(|e| unreachable!("{e:?}", e = e)))
             }
         }
     }
