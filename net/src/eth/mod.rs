@@ -228,18 +228,45 @@ impl From<EthNext> for Header {
 
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
-    use crate::eth::ethtype::EthType;
+    use crate::eth::ethtype::{CommonEthType, EthType};
     use crate::eth::mac::{DestinationMac, SourceMac};
     use crate::eth::Eth;
-    use bolero::{Driver, TypeGenerator};
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
 
-    impl TypeGenerator for Eth {
-        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+    /// Generate an [`Eth`] with a specific [`EthType`]
+    #[repr(transparent)]
+    pub struct GenWithEthType(pub EthType);
+
+    impl ValueGenerator for GenWithEthType {
+        type Output = Eth;
+
+        /// Generate an [`Eth`] with the [`EthType`] specified in `Self`
+        fn generate<D: Driver>(&self, u: &mut D) -> Option<Self::Output> {
             let source_mac: SourceMac = u.gen()?;
             let destination_mac: DestinationMac = u.gen()?;
-            let ether_type: EthType = u.gen()?;
-            let eth = Eth::new(source_mac, destination_mac, ether_type);
+            let eth = Eth::new(source_mac, destination_mac, self.0);
             Some(eth)
+        }
+    }
+
+    impl TypeGenerator for Eth {
+        /// Generate an arbitrary [`Eth`] header
+        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+            GenWithEthType(u.gen()?).generate(u)
+        }
+    }
+
+    /// Generate an [`Eth`] with a [`CommonEthType`]
+    #[non_exhaustive]
+    #[repr(transparent)]
+    pub struct GenWithCommonEthType;
+
+    impl ValueGenerator for GenWithCommonEthType {
+        type Output = Eth;
+
+        /// Generate an [`Eth`] with a [`CommonEthType`]
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            GenWithEthType(driver.gen::<CommonEthType>()?.into()).generate(driver)
         }
     }
 }
