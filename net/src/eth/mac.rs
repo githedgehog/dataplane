@@ -243,7 +243,7 @@ mod contract {
             if mac.is_zero() {
                 mac.0[5] = 1;
             }
-            Some(SourceMac(mac))
+            Some(SourceMac::new(mac).unwrap_or_else(|e| unreachable!("{e:?}", e = e)))
         }
     }
 
@@ -253,7 +253,7 @@ mod contract {
             if mac.is_zero() {
                 mac.0[5] = 1;
             }
-            Some(DestinationMac(mac))
+            Some(DestinationMac::new(mac).unwrap_or_else(|e| unreachable!("{e:?}", e = e)))
         }
     }
 }
