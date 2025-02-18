@@ -14,7 +14,7 @@
 use std::error::Error;
 
 use dpdk::mem::Mbuf;
-use net::packet::Packet;
+use net::headers::Headers;
 use net::vxlan::Vni;
 
 use crate::config::Config;
@@ -26,11 +26,11 @@ pub struct Metadata {
 }
 
 pub struct MetaPacket {
-    pub packet: Packet,
+    pub packet: Headers,
     #[allow(dead_code)]
     pub metadata: Metadata,
     #[allow(dead_code)]
-    pub outer_packet: Option<Box<Packet>>,
+    pub outer_packet: Option<Box<Headers>>,
     pub mbuf: Mbuf,
 }
 

@@ -3,15 +3,15 @@
 
 //! Ipv6 Address type and manipulation
 
+use crate::headers::Header;
 use crate::icmp6::Icmp6;
 use crate::ip::NextHeader;
 use crate::ip_auth::IpAuth;
 use crate::ipv6::addr::UnicastIpv6Addr;
 use crate::ipv6::flow_label::FlowLabel;
-use crate::packet::Header;
 use crate::parse::{
-    DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, ParsePayloadWith,
-    ParseWith, Reader,
+    DeParse, DeParseError, LengthError, NonZeroUnSizedNumericUpcast, Parse, ParseError,
+    ParsePayload, ParsePayloadWith, ParseWith, Reader,
 };
 use crate::tcp::Tcp;
 use crate::udp::Udp;
@@ -23,13 +23,19 @@ use tracing::{debug, trace};
 pub mod addr;
 pub mod flow_label;
 
+#[allow(unused_imports)] // re-export
+#[cfg(any(test, feature = "arbitrary"))]
+pub use contract::*;
+
 /// An IPv6 header
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ipv6(Ipv6Header);
 impl Ipv6 {
     /// The minimum length (in bytes) of an [`Ipv6`] header.
     #[allow(clippy::unwrap_used)] // safe due to const eval
-    pub const MIN_LEN: NonZero<usize> = NonZero::new(40).unwrap();
+    pub const MIN_LEN: NonZero<u16> = NonZero::new(40).unwrap();
+
+    const MIN_LEN_USIZE: usize = 40;
 
     /// Create a new [`Ipv6`] header
     ///
@@ -163,7 +169,8 @@ impl Ipv6 {
     /// the packet to which this header belongs (if any).
     ///
     /// [`next_header`]: NextHeader
-    pub fn set_next_header(&mut self, next_header: NextHeader) -> &mut Self {
+    #[allow(unsafe_code)] // safety requirements documented
+    pub unsafe fn set_next_header(&mut self, next_header: NextHeader) -> &mut Self {
         self.0.next_header = next_header.0;
         self
     }
@@ -191,10 +198,14 @@ pub enum Ipv6Error {
 impl Parse for Ipv6 {
     type Error = Ipv6Error;
 
-    fn parse(buf: &[u8]) -> Result<(Self, NonZero<usize>), ParseError<Self::Error>> {
-        if buf.len() < Ipv6::MIN_LEN.get() {
+    fn parse<T: AsRef<[u8]>>(buf: T) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
+        let buf = buf.as_ref();
+        if buf.len() > u16::MAX as usize {
+            return Err(ParseError::BufferTooLong(buf.len()));
+        }
+        if buf.len() < Ipv6::MIN_LEN_USIZE {
             return Err(ParseError::Length(LengthError {
-                expected: Ipv6::MIN_LEN,
+                expected: Ipv6::MIN_LEN.cast(),
                 actual: buf.len(),
             }));
         }
@@ -206,7 +217,9 @@ impl Parse for Ipv6 {
             rest = rest.len(),
             buf = buf.len()
         );
-        let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
+        #[allow(clippy::cast_possible_truncation)]
+        let consumed =
+            NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
         Ok((Self::new(header).map_err(ParseError::Invalid)?, consumed))
     }
 }
@@ -214,19 +227,24 @@ impl Parse for Ipv6 {
 impl DeParse for Ipv6 {
     type Error = ();
 
-    fn size(&self) -> NonZero<usize> {
-        NonZero::new(self.0.header_len()).unwrap_or_else(|| unreachable!())
+    fn size(&self) -> NonZero<u16> {
+        #[allow(clippy::cast_possible_truncation)] // header has bounded size
+        NonZero::new(self.0.header_len() as u16).unwrap_or_else(|| unreachable!())
     }
 
-    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<usize>, DeParseError<Self::Error>> {
+    fn deparse<T: AsMut<[u8]>>(
+        &self,
+        mut buf: T,
+    ) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
+        let buf = buf.as_mut();
         let len = buf.len();
-        if len < self.size().get() {
+        if len < self.size().get() as usize {
             return Err(DeParseError::Length(LengthError {
-                expected: self.size(),
+                expected: self.size().cast(),
                 actual: len,
             }));
         }
-        buf[..self.size().get()].copy_from_slice(&self.0.to_bytes());
+        buf[..self.size().cast().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
     }
 }
@@ -305,7 +323,10 @@ impl ParseWith for Ipv6Ext {
     fn parse_with(
         ip_number: IpNumber,
         buf: &[u8],
-    ) -> Result<(Self, NonZero<usize>), ParseError<Self::Error>> {
+    ) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
+        if buf.len() > u16::MAX as usize {
+            return Err(ParseError::BufferTooLong(buf.len()));
+        }
         let (inner, rest) = Ipv6Extensions::from_slice(ip_number, buf)
             .map(|(h, _, rest)| (Box::new(h), rest))
             .map_err(ParseError::Invalid)?;
@@ -315,7 +336,9 @@ impl ParseWith for Ipv6Ext {
             rest = rest.len(),
             buf = buf.len()
         );
-        let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
+        #[allow(clippy::cast_possible_truncation)] // buffer length bounded above
+        let consumed =
+            NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
         Ok((Self { inner }, consumed))
     }
 }
@@ -430,10 +453,13 @@ mod contract {
     impl TypeGenerator for Ipv6 {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
             let mut header = Ipv6(Ipv6Header::default());
+            #[allow(unsafe_code)] // safe in test context
+            unsafe {
+                header.set_next_header(u.gen()?);
+            }
             header
                 .set_source(u.gen()?)
                 .set_destination(Ipv6Addr::from(u.gen::<u128>()?))
-                .set_next_header(u.gen()?)
                 .set_flow_label(u.gen()?)
                 .set_traffic_class(u.gen()?)
                 .set_hop_limit(u.gen()?);
@@ -446,17 +472,17 @@ mod contract {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod test {
     use crate::ipv6::{Ipv6, Ipv6Error};
-    use crate::parse::{DeParse, Parse, ParseError};
+    use crate::parse::{DeParse, NonZeroUnSizedNumericUpcast, Parse, ParseError};
     use etherparse::err::ipv6::{HeaderError, HeaderSliceError};
 
     #[test]
     #[cfg_attr(kani, kani::proof)]
     fn parse_back() {
         bolero::check!().with_type().for_each(|header: &Ipv6| {
-            let mut buf = [0u8; Ipv6::MIN_LEN.get()];
-            let len = header.deparse(&mut buf).unwrap().get();
-            let (header2, consumed) = crate::ipv6::Ipv6::parse(&buf[..len]).unwrap();
-            assert_eq!(consumed.get(), len);
+            let mut buf = [0u8; Ipv6::MIN_LEN_USIZE];
+            let len = header.deparse(&mut buf).unwrap();
+            let (header2, consumed) = crate::ipv6::Ipv6::parse(&buf[..len.cast().get()]).unwrap();
+            assert_eq!(consumed, len);
             assert_eq!(header, &header2);
         });
     }
@@ -466,7 +492,7 @@ mod test {
     fn parse_arbitrary_bytes() {
         bolero::check!()
             .with_type()
-            .for_each(|slice: &[u8; Ipv6::MIN_LEN.get()]| {
+            .for_each(|slice: &[u8; Ipv6::MIN_LEN_USIZE]| {
                 let (header, bytes_read) = match Ipv6::parse(slice) {
                     Ok((header, bytes_read)) => (header, bytes_read),
                     Err(ParseError::Invalid(Ipv6Error::InvalidSourceAddr(source))) => {
@@ -481,14 +507,14 @@ mod test {
                     }
                     _ => unreachable!(),
                 };
-                assert_eq!(bytes_read.get(), slice.len());
-                let mut slice2 = [0u8; Ipv6::MIN_LEN.get()];
+                assert_eq!(bytes_read.cast().get(), slice.len());
+                let mut slice2 = [0u8; Ipv6::MIN_LEN_USIZE];
                 header
                     .deparse(&mut slice2)
                     .unwrap_or_else(|e| unreachable!("{e:?}"));
                 let (parse_back, bytes_read2) =
-                    Ipv6::parse(&slice2).unwrap_or_else(|e| unreachable!("{e:?}"));
-                assert_eq!(bytes_read2.get(), slice2.len());
+                    Ipv6::parse(slice2).unwrap_or_else(|e| unreachable!("{e:?}"));
+                assert_eq!(bytes_read2.cast().get(), slice2.len());
                 assert_eq!(header, parse_back);
                 assert_eq!(slice, &slice2);
             });
@@ -500,10 +526,10 @@ mod test {
         bolero::check!()
             .with_type()
             .for_each(
-                |slice: &[u8; Ipv6::MIN_LEN.get() - 1]| match Ipv6::parse(slice) {
+                |slice: &[u8; Ipv6::MIN_LEN_USIZE - 1]| match Ipv6::parse(slice) {
                     Err(ParseError::Length(e)) => {
-                        assert_eq!(e.expected, Ipv6::MIN_LEN);
-                        assert_eq!(e.actual, Ipv6::MIN_LEN.get() - 1);
+                        assert_eq!(e.expected, Ipv6::MIN_LEN.cast());
+                        assert_eq!(e.actual, Ipv6::MIN_LEN.cast().get() - 1);
                     }
                     _ => unreachable!(),
                 },
@@ -515,7 +541,7 @@ mod test {
     fn parse_arbitrary_bytes_above_minimum() {
         bolero::check!()
             .with_type()
-            .for_each(|slice: &[u8; 4 * Ipv6::MIN_LEN.get()]| {
+            .for_each(|slice: &[u8; 4 * Ipv6::MIN_LEN_USIZE]| {
                 let (header, bytes_read) = match Ipv6::parse(slice) {
                     Ok((header, bytes_read)) => (header, bytes_read),
                     Err(ParseError::Invalid(Ipv6Error::InvalidSourceAddr(source))) => {
@@ -531,15 +557,15 @@ mod test {
                     _ => unreachable!(),
                 };
                 assert!(bytes_read >= Ipv6::MIN_LEN);
-                let mut slice2 = [0u8; Ipv6::MIN_LEN.get()];
+                let mut slice2 = [0u8; Ipv6::MIN_LEN_USIZE];
                 header
                     .deparse(&mut slice2)
                     .unwrap_or_else(|e| unreachable!("{e:?}"));
                 let (parse_back, bytes_read2) =
-                    Ipv6::parse(&slice2).unwrap_or_else(|e| unreachable!("{e:?}"));
-                assert_eq!(bytes_read2.get(), slice2.len());
+                    Ipv6::parse(slice2).unwrap_or_else(|e| unreachable!("{e:?}"));
+                assert_eq!(bytes_read2.cast().get(), slice2.len());
                 assert_eq!(header, parse_back);
-                assert_eq!(&slice[..Ipv6::MIN_LEN.get()], &slice2);
+                assert_eq!(&slice[..Ipv6::MIN_LEN_USIZE], &slice2);
             });
     }
 }

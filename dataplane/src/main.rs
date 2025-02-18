@@ -6,6 +6,9 @@ mod config;
 mod nat;
 mod pipeline;
 
+use crate::args::{CmdArgs, Parser};
+use crate::config::Config;
+use crate::pipeline::{MetaPacket, Metadata, Passthrough, Pipeline};
 use dpdk::dev::{Dev, TxOffloadConfig};
 use dpdk::eal::Eal;
 use dpdk::lcore::{LCoreId, WorkerThread};
@@ -13,13 +16,9 @@ use dpdk::mem::{Pool, PoolConfig, PoolParams, RteAllocator};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, eal, socket};
-use net::packet::Packet;
+use net::headers::Headers;
 use net::parse::{DeParse, Parse};
 use tracing::{info, trace, warn};
-
-use crate::args::{CmdArgs, Parser};
-use crate::config::Config;
-use crate::pipeline::{MetaPacket, Metadata, Passthrough, Pipeline};
 
 #[global_allocator]
 static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();
@@ -114,7 +113,7 @@ fn start_rte_workers(devices: &Vec<Dev>) {
             loop {
                 let mbufs = rx_queue.receive();
                 let pkts = mbufs.filter_map(|mut mbuf| {
-                    let packet_result = Packet::parse(mbuf.raw_data_mut());
+                    let packet_result = Headers::parse(mbuf.raw_data_mut());
                     let packet = match packet_result {
                         Ok(packet) => packet.0,
                         Err(e) => {

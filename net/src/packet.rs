@@ -126,7 +126,7 @@ impl ParsePayload for Header {
             IpV6Ext(ext) => {
                 if let Ipv6(ipv6) = self {
                     ext.parse_payload_with(&ipv6.next_header(), cursor)
-                        .map(Header::from)
+                       .map(Header::from)
                 } else {
                     debug!("ipv6 extension header outside ipv6 packet");
                     None

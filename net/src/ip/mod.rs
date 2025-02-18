@@ -19,6 +19,18 @@ impl From<NextHeader> for IpNumber {
 }
 
 impl NextHeader {
+    /// Transmission Control [RFC793](https://datatracker.ietf.org/doc/html/rfc793)
+    pub const TCP: NextHeader = NextHeader(IpNumber::TCP);
+
+    /// User Datagram [RFC768](https://datatracker.ietf.org/doc/html/rfc768)
+    pub const UDP: NextHeader = NextHeader(IpNumber::UDP);
+
+    /// Internet Control Message [RFC792](https://datatracker.ietf.org/doc/html/rfc792)
+    pub const ICMP: NextHeader = NextHeader(IpNumber::ICMP);
+
+    /// ICMP for IPv6 [RFC8200](https://datatracker.ietf.org/doc/html/rfc8200)
+    pub const ICMP6: NextHeader = NextHeader(IpNumber::IPV6_ICMP);
+
     /// Get the inner (wrapped) `etherparse` [`IpNumber`] type
     pub(crate) fn inner(self) -> IpNumber {
         self.0

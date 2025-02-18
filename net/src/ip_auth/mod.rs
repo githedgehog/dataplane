@@ -3,9 +3,9 @@
 
 //! IP authentication header type and logic.
 
+use crate::headers::Header;
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
-use crate::packet::Header;
 use crate::parse::{Parse, ParseError, ParsePayload, Reader};
 use crate::tcp::Tcp;
 use crate::udp::Udp;
@@ -22,7 +22,11 @@ pub struct IpAuth(Box<IpAuthHeader>);
 impl Parse for IpAuth {
     type Error = etherparse::err::ip_auth::HeaderSliceError;
 
-    fn parse(buf: &[u8]) -> Result<(Self, NonZero<usize>), ParseError<Self::Error>> {
+    fn parse<T: AsRef<[u8]>>(buf: T) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
+        let buf = buf.as_ref();
+        if buf.len() > u16::MAX as usize {
+            return Err(ParseError::BufferTooLong(buf.len()));
+        }
         let (inner, rest) = IpAuthHeader::from_slice(buf)
             .map(|(h, rest)| (Box::new(h), rest))
             .map_err(ParseError::Invalid)?;
@@ -32,7 +36,9 @@ impl Parse for IpAuth {
             rest = rest.len(),
             buf = buf.len()
         );
-        let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
+        #[allow(clippy::cast_possible_truncation)] // buffer length bounded above
+        let consumed =
+            NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
         Ok((Self(inner), consumed))
     }
 }
