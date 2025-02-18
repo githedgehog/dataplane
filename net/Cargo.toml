@@ -5,9 +5,10 @@ edition = "2021"
 publish = false
 
 [features]
-default = []
+default = ["arbitrary"]
 serde = ["dep:serde"]
 arbitrary = ["dep:arbitrary", "dep:bolero"]
+test_helper = []
 
 [dependencies]
 arbitrary = { workspace = true, features = ["derive"], optional = true }
