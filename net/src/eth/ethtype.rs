@@ -64,4 +64,25 @@ mod contract {
             Some(EthType::new(u.gen()?))
         }
     }
+
+    /// The set of commonly used (supported) and easily generated [`EthType`]s
+    ///
+    /// This type is useful in guiding the fuzzer toward more plausible packets to better exercise
+    /// our test infrastructure.
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Hash, bolero::TypeGenerator)]
+    pub enum CommonEthType {
+        /// The IPV4 [`EthType`] (see [`EthType::IPV4`])
+        Ipv4,
+        /// The IPV6 [`EthType`] (see [`EthType::IPV6`])
+        Ipv6,
+    }
+
+    impl From<CommonEthType> for EthType {
+        fn from(value: CommonEthType) -> Self {
+            match value {
+                CommonEthType::Ipv4 => EthType::IPV4,
+                CommonEthType::Ipv6 => EthType::IPV6,
+            }
+        }
+    }
 }
