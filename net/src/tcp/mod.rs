@@ -446,7 +446,7 @@ mod test {
 
     #[test]
     #[cfg_attr(kani, kani::proof)]
-    fn parse_noise() {
+    fn parse_arbitrary_bytes() {
         bolero::check!()
             .with_type()
             .for_each(|slice: &[u8; Tcp::MIN_LENGTH_USIZE]| {
