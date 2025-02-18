@@ -8,6 +8,7 @@ use core::fmt::{Display, Formatter};
 /// A [`Udp`] [checksum]
 ///
 /// [checksum]: https://en.wikipedia.org/wiki/Transmission_Control_Protocol#Checksum_computation
+/// [`Udp`]: crate::udp::Udp
 #[repr(transparent)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(bolero::TypeGenerator))]
