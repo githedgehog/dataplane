@@ -10,4 +10,12 @@ colored = "3.0.0"
 bincode2 = "2.0.1"
 enum_primitive = "0.1.1"
 log = { version = "^0.4.25", features = ["serde"]}
-serde = {version = "1.0.217", features = ["derive", "serde_derive"]}
+rustyline = { version = "8.0.0", features = ["with-fuzzy"] }
+serde = {workspace = true, features = ["derive", "serde_derive"]}
+smallvec = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+cli = []
+
