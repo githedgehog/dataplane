@@ -79,6 +79,8 @@ ordermap = { version = "0.5.7", default-features = false, features = [] }
 rtnetlink = { version = "0.16.0", default-features = false, features = [] }
 serde = { version = "1.0.219", default-features = false, features = [] }
 serde_yml = { version = "0.0.12", default-features = false, features = [] }
+smallvec = { version = "1.14.0" }
+strum = { version = "0.27", features = ["derive"] }
 thiserror = { version = "2.0.12", default-features = false, features = [] }
 tokio = { version = "1.45.0", default-features = false, features = [] }
 tonic = { version = "0.13", default-features = false, features = ["transport", "codegen"] }
