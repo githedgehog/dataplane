@@ -21,11 +21,14 @@ use core::slice::from_raw_parts_mut;
 use errno::Errno;
 use tracing::{error, info, warn};
 
-use dpdk_sys::{rte_pktmbuf_adj, rte_pktmbuf_prepend};
+use dpdk_sys::{
+    rte_pktmbuf_adj, rte_pktmbuf_append, rte_pktmbuf_headroom, rte_pktmbuf_prepend,
+    rte_pktmbuf_tailroom, rte_pktmbuf_trim,
+};
 // unfortunately, we need the standard library to swap allocators
+use net::buffer::{Append, Headroom, Prepend, Tailroom, TrimFromEnd, TrimFromStart};
 use std::alloc::System;
 use std::ffi::CString;
-use std::num::NonZero;
 
 /// DPDK memory manager
 #[repr(transparent)]
@@ -399,7 +402,74 @@ pub struct Mbuf {
 impl Drop for Mbuf {
     fn drop(&mut self) {
         unsafe {
-            dpdk_sys::rte_pktmbuf_free_w(self.raw.as_ptr());
+            dpdk_sys::rte_pktmbuf_free(self.raw.as_ptr());
+        }
+    }
+}
+
+impl AsRef<[u8]> for Mbuf {
+    fn as_ref(&self) -> &[u8] {
+        self.raw_data()
+    }
+}
+
+impl AsMut<[u8]> for Mbuf {
+    fn as_mut(&mut self) -> &mut [u8] {
+        self.raw_data_mut()
+    }
+}
+
+impl Headroom for Mbuf {
+    fn headroom(&self) -> u16 {
+        unsafe { rte_pktmbuf_headroom(self.raw.as_ptr()) }
+    }
+}
+
+impl Tailroom for Mbuf {
+    fn tailroom(&self) -> u16 {
+        unsafe { rte_pktmbuf_tailroom(self.raw.as_ptr()) }
+    }
+}
+
+impl Prepend for Mbuf {
+    type Error = NotEnoughHeadRoom;
+
+    fn prepend(&mut self, len: u16) -> Result<&mut [u8], Self::Error> {
+        self.prepend_to_headroom(len)
+    }
+}
+
+impl Append for Mbuf {
+    type Error = NotEnoughTailRoom;
+
+    fn append(&mut self, len: u16) -> Result<&mut [u8], Self::Error> {
+        self.append_to_tailroom(len)
+    }
+}
+
+impl TrimFromStart for Mbuf {
+    type Error = MemoryBufferNotLongEnough;
+
+    fn trim_from_start(&mut self, len: u16) -> Result<&mut [u8], Self::Error> {
+        match NonNull::new(unsafe {
+            #[allow(clippy::cast_possible_truncation)] // checked above
+            rte_pktmbuf_adj(self.raw.as_ptr(), len as u16)
+        }) {
+            None => Err(MemoryBufferNotLongEnough),
+            Some(_) => Ok(self.raw_data_mut()),
+        }
+    }
+}
+
+impl TrimFromEnd for Mbuf {
+    type Error = MemoryBufferNotLongEnough;
+
+    fn trim_from_end(&mut self, len: u16) -> Result<&mut [u8], Self::Error> {
+        match unsafe { rte_pktmbuf_trim(self.raw.as_ptr(), len) } {
+            0 => Ok(self.raw_data_mut()),
+            -1 => Err(MemoryBufferNotLongEnough),
+            // TODO: this only happens when DPDK has a programmer error (deviation from docs)
+            ret => unreachable!("DPDK logic error: {ret}", ret = ret),
         }
     }
 }
@@ -498,43 +568,41 @@ impl Mbuf {
     }
 
     #[tracing::instrument(level = "trace")]
-    pub fn prepend(&mut self, len: NonZero<u16>) -> Result<&mut [u8], NotEnoughHeadRoom> {
-        let val = unsafe { rte_pktmbuf_prepend(self.raw.as_mut(), len.get()) };
-        NonNull::new(val)
-            .map(|ptr| unsafe {
-                from_raw_parts_mut(
-                    ptr.as_ptr().cast::<u8>(),
-                    self.raw.as_ref().annon2.annon1.data_len as usize,
-                )
-            })
-            .ok_or(NotEnoughHeadRoom)
+    fn prepend_to_headroom(&mut self, len: u16) -> Result<&mut [u8], NotEnoughHeadRoom> {
+        let val = unsafe { rte_pktmbuf_prepend(self.raw.as_mut(), len) };
+        match NonNull::new(val) {
+            None => Err(NotEnoughHeadRoom),
+            Some(_) => Ok(self.raw_data_mut()),
+        }
     }
 
     #[tracing::instrument(level = "trace")]
-    pub fn adjust(&mut self, len: NonZero<u16>) -> Result<&mut [u8], MbufNotLongEnough> {
-        let val = unsafe { rte_pktmbuf_adj(self.raw.as_mut(), len.get()) };
-        NonNull::new(val)
-            .map(|ptr| unsafe {
-                from_raw_parts_mut(
-                    ptr.as_ptr().cast::<u8>(),
-                    self.raw.as_ref().annon2.annon1.data_len as usize,
-                )
-            })
-            .ok_or(MbufNotLongEnough)
+    fn append_to_tailroom(&mut self, len: u16) -> Result<&mut [u8], NotEnoughTailRoom> {
+        let val = unsafe { rte_pktmbuf_append(self.raw.as_mut(), len) };
+        match NonNull::new(val) {
+            None => Err(NotEnoughTailRoom),
+            Some(_) => Ok(self.raw_data_mut()),
+        }
     }
 }
 
 #[non_exhaustive]
 #[repr(transparent)]
 #[derive(Debug, thiserror::Error)]
-#[error("Not enough head room in mbuf")]
+#[error("Not enough head room in memory buffer")]
 pub struct NotEnoughHeadRoom;
 
 #[non_exhaustive]
 #[repr(transparent)]
 #[derive(Debug, thiserror::Error)]
-#[error("Mbuf not long enough to remove required number of bytes from the start")]
-pub struct MbufNotLongEnough;
+#[error("Not enough tail room in memory buffer")]
+pub struct NotEnoughTailRoom;
+
+#[non_exhaustive]
+#[repr(transparent)]
+#[derive(Debug, thiserror::Error)]
+#[error("MemoryBuffer not long enough to remove required number of bytes")]
+pub struct MemoryBufferNotLongEnough;
 
 /// A global memory allocator for DPDK
 #[non_exhaustive]
