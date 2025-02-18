@@ -7,6 +7,7 @@ use enum_primitive::enum_from_primitive;
 use log::Level;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
+use thiserror::Error;
 
 /// Arguments to a cli request
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -21,17 +22,39 @@ pub struct RequestArgs {
 }
 
 /// A Cli request
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct CliRequest {
     pub action: CliAction,
     pub args: RequestArgs,
 }
 
+#[derive(Error, Debug)]
+pub enum CliSerdeError {
+    #[error("Serialization error")]
+    Serialize,
+    #[error("Deserialization error")]
+    Deserialize,
+}
+impl CliRequest {
+    pub fn serialize(&self) -> Result<Vec<u8>, CliSerdeError> {
+        bincode2::serialize(self).map_err(|_| CliSerdeError::Serialize)
+    }
+    pub fn deserialize(buf: &[u8]) -> Result<Self, CliSerdeError> {
+        bincode2::deserialize(buf).map_err(|_| CliSerdeError::Deserialize)
+    }
+}
+impl CliResponse {
+    pub fn serialize(&self) -> Result<Vec<u8>, CliSerdeError> {
+        bincode2::serialize(self).map_err(|_| CliSerdeError::Serialize)
+    }
+    pub fn deserialize(buf: &[u8]) -> Result<Self, CliSerdeError> {
+        bincode2::deserialize(buf).map_err(|_| CliSerdeError::Deserialize)
+    }
+}
 
 /// A Cli response
-#[derive(Serialize, Deserialize)]
-
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CliResponse {
     pub request: CliRequest,
     // here we would add a union for the distinct objects which
@@ -57,7 +80,7 @@ impl CliResponse {
 
 enum_from_primitive! {
 #[allow(unused)]
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 
 pub enum CliAction {
     Clear,
