@@ -486,5 +486,5 @@ build-sweep start="main":
     # Get all commits since {{start}}, in chronological order
     while read -r commit; do
       git checkout "${commit}" || exit 1
-      { just debug=true cargo +{{rust}} build --locked --profile=dev --target=x86_64-unknown-linux-gnu; } || exit 1
+      { just debug={{debug}} cargo +{{rust}} build --locked --profile=dev --target=x86_64-unknown-linux-gnu; } || exit 1
     done < <(git rev-list --reverse "{{start}}".."$(git rev-parse HEAD)")
