@@ -3,10 +3,10 @@
 
 //! Ethernet types
 
-pub mod ethertype;
+pub mod ethtype;
 pub mod mac;
 
-use crate::eth::ethertype::EthType;
+use crate::eth::ethtype::EthType;
 use crate::eth::mac::{
     DestinationMac, DestinationMacAddressError, Mac, SourceMac, SourceMacAddressError,
 };
@@ -212,7 +212,7 @@ impl From<EthNext> for Header {
 
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
-    use crate::eth::ethertype::EthType;
+    use crate::eth::ethtype::EthType;
     use crate::eth::mac::{DestinationMac, SourceMac};
     use crate::eth::Eth;
     use bolero::{Driver, TypeGenerator};

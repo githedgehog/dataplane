@@ -7,7 +7,7 @@
 #[cfg(any(test, feature = "arbitrary"))]
 pub use contract::*;
 
-use crate::eth::ethertype::EthType;
+use crate::eth::ethtype::EthType;
 use crate::eth::{parse_from_ethertype, EthNext};
 use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, Reader};
 use core::num::NonZero;
