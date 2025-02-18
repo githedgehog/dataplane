@@ -155,13 +155,7 @@ impl SourceMac {
     ///
     /// Will return a [`SourceMacAddressError`] if the supplied [`Mac`] is not a legal source [`Mac`].
     pub fn new(mac: Mac) -> Result<SourceMac, SourceMacAddressError> {
-        if mac.is_zero() {
-            Err(SourceMacAddressError::ZeroSource(mac))
-        } else if mac.is_multicast() {
-            Err(SourceMacAddressError::MulticastSource(mac))
-        } else {
-            Ok(SourceMac(mac))
-        }
+        mac.valid_src().map(|()| SourceMac(mac))
     }
 
     /// Map a [`Mac`] to a [`SourceMac`] without checking validity.
@@ -194,11 +188,7 @@ impl DestinationMac {
     /// Will return a [`DestinationMacAddressError`] if the supplied [`Mac`] is not legal as a
     /// destination.
     pub fn new(mac: Mac) -> Result<DestinationMac, DestinationMacAddressError> {
-        if mac.is_zero() {
-            Err(DestinationMacAddressError::ZeroDestination(mac))
-        } else {
-            Ok(DestinationMac(mac))
-        }
+        mac.valid_dst().map(|()| DestinationMac(mac))
     }
 
     /// Map a [`Mac`] to a [`DestinationMac`] without checking validity.
