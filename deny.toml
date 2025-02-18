@@ -185,10 +185,11 @@ deny = [
 # detection. Unlike skip, it also includes the entire tree of transitive
 # dependencies starting at the specified crate, up to a certain depth, which is
 # by default infinite.
-skip-tree = [
-    #"ansi_term@0.11.0", # will be skipped along with _all_ of its direct and transitive dependencies
-    #{ crate = "ansi_term@0.11.0", depth = 20 },
-]
+
+[[bans.skip-tree]]
+name = "cbindgen"
+version = "*"
+reason = "cbindgen is always a dev dependency for us and we don't care if it pulls in other versions of things"
 
 [[bans.skip]]
 name = "regex-automata"
