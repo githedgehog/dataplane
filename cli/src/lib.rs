@@ -6,3 +6,4 @@ mod cliproto;
 mod cmdtree;
 mod cmdtree_dp;
 mod completions;
+mod terminal;
