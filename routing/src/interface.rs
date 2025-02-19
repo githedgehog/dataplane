@@ -92,8 +92,8 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Set the description of an interface
     //////////////////////////////////////////////////////////////////
-    pub fn set_description(&mut self, description: &str) {
-        self.description = Some(description.to_owned());
+    pub fn set_description<T: AsRef<str>>(&mut self, description: T) {
+        self.description = Some(description.as_ref().to_string());
     }
 
     //////////////////////////////////////////////////////////////////
