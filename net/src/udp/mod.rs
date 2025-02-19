@@ -305,4 +305,34 @@ mod test {
                 }
             });
     }
+
+    #[test]
+    #[cfg_attr(kani, kani::proof)]
+    fn longer_buffer_parses_ok() {
+        bolero::check!()
+            .with_type()
+            .for_each(|slice: &[u8; 2 * Udp::MIN_LENGTH.get()]| {
+                for _ in Udp::MIN_LENGTH.get()..slice.len() {
+                    let (parsed, bytes_read) = match Udp::parse(slice) {
+                        Ok(x) => x,
+                        Err(ParseError::Length(e)) => unreachable!("{e:?}", e = e),
+                        Err(ParseError::Invalid(UdpParseError::ZeroSourcePort)) => {
+                            assert_eq!(slice[0..=1], [0, 0]);
+                            return;
+                        }
+                        Err(ParseError::Invalid(UdpParseError::ZeroDestinationPort)) => {
+                            assert_eq!(slice[2..=3], [0, 0]);
+                            return;
+                        }
+                    };
+                    let mut slice2 = [0u8; Udp::MIN_LENGTH.get()];
+                    let bytes_written = parsed.deparse(&mut slice2).unwrap_or_else(|e| {
+                        unreachable!("{e:?}");
+                    });
+                    assert_eq!(bytes_read, Udp::MIN_LENGTH);
+                    assert_eq!(bytes_written, Udp::MIN_LENGTH);
+                    assert_eq!(&slice[..Udp::MIN_LENGTH.get()], &slice2);
+                }
+            });
+    }
 }
