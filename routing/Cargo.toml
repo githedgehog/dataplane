@@ -8,7 +8,7 @@ publish = false
 auto-learn = []
 
 [dependencies]
-ipnet = "2.11.0"
+ipnet = { workspace = true }
 iptrie = "0.9.1"
 mio = { workspace = true, features = ["os-ext", "net"] }
 net = { workspace = true }
