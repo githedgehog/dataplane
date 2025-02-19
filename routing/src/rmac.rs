@@ -39,7 +39,7 @@ impl RmacStore {
         self.0.insert((address, vni), rmac)
     }
 
-    /// Identical to add_rmac, but getting the entry as param
+    /// Identical to [`add_rmac`], but getting the entry as param
     pub fn add_rmac_entry(&mut self, entry: RmacEntry) -> Option<RmacEntry> {
         self.0.insert((entry.address, entry.vni), entry)
     }
@@ -54,7 +54,7 @@ impl RmacStore {
         }
     }
 
-    /// Identical to add_rmac, but getting the entry as param
+    /// Identical to[`add_rmac`], but getting the entry as param
     pub fn del_rmac_entry(&mut self, entry: RmacEntry) {
         let key = (entry.address, entry.vni);
         if let Entry::Occupied(o) = self.0.entry(key) {
@@ -160,7 +160,5 @@ mod tests {
             r.unwrap().mac,
             Mac::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66])
         );
-
-        println!("{store:#?}")
     }
 }
