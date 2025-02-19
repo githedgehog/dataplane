@@ -424,7 +424,7 @@ impl From<Ipv6ExtNext> for Header {
 mod contract {
     use crate::ip::NextHeader;
     use crate::ipv6::Ipv6;
-    use bolero::{Driver, TypeGenerator};
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
     use etherparse::Ipv6Header;
     use std::net::Ipv6Addr;
 
@@ -449,17 +449,29 @@ mod contract {
         }
     }
 
-    impl TypeGenerator for Ipv6 {
-        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+    /// [`ValueGenerator`] for an (otherwise) arbitrary [`Ipv6`] with a specified [`NextHeader`].
+    pub struct GenWithNextHeader(pub NextHeader);
+
+    impl ValueGenerator for GenWithNextHeader {
+        type Output = Ipv6;
+
+        fn generate<D: Driver>(&self, u: &mut D) -> Option<Ipv6> {
             let mut header = Ipv6(Ipv6Header::default());
             header
                 .set_source(u.gen()?)
                 .set_destination(Ipv6Addr::from(u.gen::<u128>()?))
-                .set_next_header(u.gen()?)
+                .set_next_header(self.0)
                 .set_flow_label(u.gen()?)
                 .set_traffic_class(u.gen()?)
                 .set_hop_limit(u.gen()?);
             Some(header)
+        }
+    }
+
+    impl TypeGenerator for Ipv6 {
+        /// Generate a completely arbitrary [`Ipv6`] header.
+        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+            GenWithNextHeader(u.gen()?).generate(u)
         }
     }
 }
