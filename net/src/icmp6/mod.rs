@@ -7,6 +7,9 @@ use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, ParseP
 use etherparse::Icmpv6Header;
 use std::num::NonZero;
 
+#[cfg(any(test, feature = "arbitrary"))]
+pub use contract::*;
+
 /// An `ICMPv6` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Icmp6(Icmpv6Header);
@@ -59,5 +62,65 @@ impl DeParse for Icmp6 {
         }
         buf[..self.size().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
+    }
+}
+
+#[cfg(any(test, feature = "arbitrary"))]
+mod contract {
+    use crate::icmp6::Icmp6;
+    use crate::parse::Parse;
+    use bolero::{Driver, TypeGenerator};
+
+    /// The number of bytes to use in parsing arbitrary test values for [`Icmp6`]
+    pub const BYTE_SLICE_SIZE: usize = 128;
+
+    impl TypeGenerator for Icmp6 {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let buf: [u8; BYTE_SLICE_SIZE] = driver.gen()?;
+            let header = match Icmp6::parse(&buf) {
+                Ok((h, _)) => h,
+                Err(e) => unreachable!("{e:?}", e = e),
+            };
+            Some(header)
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::icmp6::Icmp6;
+    use crate::parse::{DeParse, Parse};
+
+    fn parse_back_test_helper(header: &Icmp6) {
+        let mut buf = [0; super::contract::BYTE_SLICE_SIZE];
+        let bytes_written = header
+            .deparse(&mut buf)
+            .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
+        let (parsed, bytes_read) =
+            Icmp6::parse(&buf).unwrap_or_else(|e| unreachable!("{e:?}", e = e));
+        assert_eq!(header, &parsed);
+        assert_eq!(bytes_written, bytes_read);
+        assert_eq!(header.size(), bytes_read);
+    }
+
+    #[test]
+    #[cfg_attr(kani, kani::proof)]
+    fn parse_back() {
+        bolero::check!()
+            .with_type()
+            .for_each(parse_back_test_helper);
+    }
+
+    #[test]
+    #[cfg_attr(kani, kani::proof)]
+    fn parse_arbitrary_bytes() {
+        bolero::check!()
+            .with_type()
+            .for_each(|buffer: &[u8; super::contract::BYTE_SLICE_SIZE]| {
+                let (parsed, bytes_read) =
+                    Icmp6::parse(buffer).unwrap_or_else(|e| unreachable!("{e:?}", e = e));
+                assert_eq!(parsed.size(), bytes_read);
+                parse_back_test_helper(&parsed);
+            });
     }
 }
