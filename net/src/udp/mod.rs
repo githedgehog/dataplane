@@ -106,8 +106,19 @@ impl Udp {
     }
 }
 
+/// Errors which may occur when parsing a UDP header
+#[derive(Debug, thiserror::Error)]
+pub enum UdpParseError {
+    /// Zero is not a legal udp port
+    #[error("zero source port")]
+    ZeroSourcePort,
+    /// Zero is not a legal udp port
+    #[error("zero destination port")]
+    ZeroDestinationPort,
+}
+
 impl Parse for Udp {
-    type Error = LengthError;
+    type Error = UdpParseError;
 
     fn parse(buf: &[u8]) -> Result<(Self, NonZero<usize>), ParseError<Self::Error>> {
         let (inner, rest) = UdpHeader::from_slice(buf).map_err(|e| {
@@ -124,6 +135,12 @@ impl Parse for Udp {
             buf = buf.len()
         );
         let consumed = NonZero::new(buf.len() - rest.len()).ok_or_else(|| unreachable!())?;
+        if inner.source_port == 0 {
+            return Err(ParseError::Invalid(UdpParseError::ZeroSourcePort));
+        }
+        if inner.destination_port == 0 {
+            return Err(ParseError::Invalid(UdpParseError::ZeroDestinationPort));
+        }
         Ok((Self(inner), consumed))
     }
 }
@@ -218,8 +235,8 @@ mod contract {
 #[allow(clippy::unwrap_used, clippy::expect_used)] // valid in test code
 #[cfg(test)]
 mod test {
-    use crate::parse::{DeParse, Parse};
-    use crate::udp::Udp;
+    use crate::parse::{DeParse, Parse, ParseError};
+    use crate::udp::{Udp, UdpParseError};
 
     #[test]
     #[cfg_attr(kani, kani::proof)]
@@ -245,8 +262,18 @@ mod test {
         bolero::check!()
             .with_type()
             .for_each(|slice: &[u8; Udp::MIN_LENGTH.get()]| {
-                let (parsed, bytes_read) =
-                    Udp::parse(slice).unwrap_or_else(|e| unreachable!("{e:?}"));
+                let (parsed, bytes_read) = match Udp::parse(slice) {
+                    Ok(x) => x,
+                    Err(ParseError::Length(e)) => unreachable!("{e:?}", e = e),
+                    Err(ParseError::Invalid(UdpParseError::ZeroSourcePort)) => {
+                        assert_eq!(slice[0..=1], [0, 0]);
+                        return;
+                    }
+                    Err(ParseError::Invalid(UdpParseError::ZeroDestinationPort)) => {
+                        assert_eq!(slice[2..=3], [0, 0]);
+                        return;
+                    }
+                };
                 let mut slice2 = [0u8; 8];
                 let bytes_written = parsed.deparse(&mut slice2).unwrap_or_else(|e| {
                     unreachable!("{e:?}");
