@@ -5,8 +5,6 @@
 
 use std::hash::Hash;
 use std::net::IpAddr;
-#[cfg(test)]
-use std::str::FromStr;
 
 use crate::nexthop::{Nhop, NhopKey, NhopStore};
 use crate::prefix::Prefix;
@@ -291,6 +289,7 @@ impl Vrf {
 #[rustfmt::skip]
 pub mod tests {
     use super::*;
+    use std::str::FromStr;
     use dplane_rpc::msg::RouteType;
     use crate::interface::IfIndex;
     use crate::vrf::VrfId;
