@@ -14,7 +14,7 @@ use std::num::NonZero;
 #[allow(clippy::unsafe_derive_deserialize)] // both try_from and into u16 are safe for this type
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "u16", into = "u16"))]
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct UdpPort(NonZero<u16>);
 
 /// Errors which may occur in the creation or parsing of a [`UdpPort`].
