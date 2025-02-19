@@ -22,7 +22,7 @@ pub struct RequestArgs {
 }
 
 /// A Cli request
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct CliRequest {
     pub action: CliAction,
@@ -61,15 +61,26 @@ pub trait CliSerialize {
 impl CliSerialize for CliRequest {}
 impl CliSerialize for CliResponse {}
 
+#[derive(Error, Debug, Serialize, Deserialize)]
+pub enum CliError {
+    #[error("Internal error")]
+    InternalError,
+    #[error("Could not find {0}")]
+    NotFound(String),
+    #[error("Not supported")]
+    NotSupported(String),
+}
+
 /// A Cli response
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CliResponse {
     pub request: CliRequest,
     // here we would add a union for the distinct objects which
-    // would need to implement Serialize & Deserialize
+    // would need to implement Serialize & Deserialize, or , maybe
+    // pass a trait object implementing some sort of Serde.
     // For the time being, we let the dataplane send a string, until
-    // all objects are defined and implement those traits
-    pub data: String,
+    // all objects are defined and implement those traits.
+    pub result: Result<String, CliError>,
 }
 
 #[allow(unused)]
@@ -81,8 +92,17 @@ impl CliRequest {
 
 #[allow(unused)]
 impl CliResponse {
-    pub fn from_request(request: CliRequest, data: String) -> Self {
-        Self { request, data }
+    pub fn from_request_ok(request: CliRequest, data: String) -> Self {
+        Self {
+            request,
+            result: Ok(data),
+        }
+    }
+    pub fn from_request_fail(request: CliRequest, error: CliError) -> Self {
+        Self {
+            request,
+            result: Err(error),
+        }
     }
 }
 
