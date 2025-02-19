@@ -26,20 +26,13 @@ impl AdjacencyTable {
 
 #[allow(dead_code)]
 impl AdjacencyTable {
-    pub(crate) fn add_adjacency(&mut self, address: IpAddr, mac: Mac, ifindex: IfIndex) {
-        self.0.insert(
-            address,
-            Adjacency {
-                address,
-                mac,
-                ifindex,
-            },
-        );
+    pub(crate) fn add_adjacency(&mut self, adjacency: Adjacency) {
+        self.0.insert(adjacency.address, adjacency);
     }
-    pub(crate) fn del_adjacency(&mut self, address: &IpAddr) {
+    pub fn del_adjacency(&mut self, address: &IpAddr) {
         self.0.remove(address);
     }
-    pub(crate) fn get_adjacency(&self, address: &IpAddr) -> Option<&Adjacency> {
+    pub fn get_adjacency(&self, address: &IpAddr) -> Option<&Adjacency> {
         self.0.get(address)
     }
 }
