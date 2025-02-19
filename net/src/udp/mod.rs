@@ -335,4 +335,39 @@ mod test {
                 }
             });
     }
+
+    // evolve an arbitrary source towards an arbitrary target to make sure mutation methods work
+    #[test]
+    #[cfg_attr(kani, kani::proof)]
+    fn arbitrary_mutation() {
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .for_each(|(mut source, target): (Udp, Udp)| {
+                if source == target {
+                    return;
+                }
+                let mut target_bytes = [0u8; Udp::MIN_LENGTH.get()];
+                target
+                    .deparse(&mut target_bytes)
+                    .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
+                source.set_source(target.source());
+                assert_eq!(source.source(), target.source());
+                source.set_destination(target.destination());
+                assert_eq!(source.destination(), target.destination());
+                #[allow(unsafe_code)] // valid in test context
+                unsafe {
+                    source.set_length(target.length());
+                }
+                assert_eq!(source.length(), target.length());
+                source.set_checksum(target.checksum());
+                assert_eq!(source.checksum(), target.checksum());
+                assert_eq!(source, target);
+                let mut source_bytes = [0u8; Udp::MIN_LENGTH.get()];
+                source
+                    .deparse(&mut source_bytes)
+                    .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
+                assert_eq!(source_bytes, target_bytes);
+            });
+    }
 }
