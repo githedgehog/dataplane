@@ -58,22 +58,22 @@ impl Prefix {
         }
     }
 }
-impl From<(&IpAddr, u8)> for Prefix {
-    fn from(tuple: (&IpAddr, u8)) -> Self {
-        match *tuple.0 {
+impl From<(IpAddr, u8)> for Prefix {
+    fn from(tuple: (IpAddr, u8)) -> Self {
+        match tuple.0 {
             IpAddr::V4(a) => Prefix::IPV4(Ipv4Prefix::new(a, tuple.1).unwrap()),
             IpAddr::V6(a) => Prefix::IPV6(Ipv6Prefix::new(a, tuple.1).unwrap()),
         }
     }
 }
-impl From<&Ipv4Net> for Prefix {
-    fn from(value: &Ipv4Net) -> Self {
-        Prefix::IPV4(Ipv4Prefix::from(*value))
+impl From<Ipv4Net> for Prefix {
+    fn from(value: Ipv4Net) -> Self {
+        Prefix::IPV4(Ipv4Prefix::from(value))
     }
 }
-impl From<&Ipv6Net> for Prefix {
-    fn from(value: &Ipv6Net) -> Self {
-        Prefix::IPV6(Ipv6Prefix::from(*value))
+impl From<Ipv6Net> for Prefix {
+    fn from(value: Ipv6Net) -> Self {
+        Prefix::IPV6(Ipv6Prefix::from(value))
     }
 }
 impl<'a> From<&'a Prefix> for &'a Ipv4Prefix {
@@ -92,14 +92,14 @@ impl<'a> From<&'a Prefix> for &'a Ipv6Prefix {
         }
     }
 }
-impl From<&Ipv4Prefix> for Prefix {
-    fn from(value: &Ipv4Prefix) -> Self {
-        Self::IPV4(*value)
+impl From<Ipv4Prefix> for Prefix {
+    fn from(value: Ipv4Prefix) -> Self {
+        Self::IPV4(value)
     }
 }
-impl From<&Ipv6Prefix> for Prefix {
-    fn from(value: &Ipv6Prefix) -> Self {
-        Self::IPV6(*value)
+impl From<Ipv6Prefix> for Prefix {
+    fn from(value: Ipv6Prefix) -> Self {
+        Self::IPV6(value)
     }
 }
 
@@ -108,7 +108,7 @@ impl From<&Ipv6Prefix> for Prefix {
 impl From<(&str, u8)> for Prefix {
     fn from(tuple: (&str, u8)) -> Self {
         let a = IpAddr::from_str(tuple.0).expect("Bad address");
-        Prefix::from((&a, tuple.1))
+        Prefix::from((a, tuple.1))
     }
 }
 
@@ -131,8 +131,8 @@ mod tests {
     fn test_prefix_v4() {
         let ipv4_addr: Ipv4Addr = "1.2.3.0".parse().expect("Bad address");
         let ipv4_pfx = Ipv4Prefix::new(ipv4_addr, 24).expect("Should succeed");
-        let _prefix: Prefix = (&ipv4_pfx).into();
-        let prefix = Prefix::from(&ipv4_pfx);
+        let _prefix: Prefix = ipv4_pfx.into();
+        let prefix = Prefix::from(ipv4_pfx);
         let ipv4_pfx_back: &Ipv4Prefix = (&prefix).into();
         assert_eq!(*ipv4_pfx_back, ipv4_pfx);
 
@@ -142,7 +142,7 @@ mod tests {
         // default - root
         let address: Ipv4Addr = "0.0.0.0".parse().unwrap();
         let iptrie_pfx = Ipv4Prefix::new(address, 0).unwrap();
-        let prefix = Prefix::from(&iptrie_pfx);
+        let prefix = Prefix::from(iptrie_pfx);
         assert_eq!(prefix, Prefix::root_v4());
     }
 
@@ -150,8 +150,8 @@ mod tests {
     fn test_prefix_v6() {
         let ipv6_addr: Ipv6Addr = "2001:a:b:c::".parse().expect("Bad address");
         let ipv6_pfx = Ipv6Prefix::new(ipv6_addr, 64).expect("Should succeed");
-        let _prefix: Prefix = (&ipv6_pfx).into();
-        let prefix = Prefix::from(&ipv6_pfx);
+        let _prefix: Prefix = ipv6_pfx.into();
+        let prefix = Prefix::from(ipv6_pfx);
         let ipv6_pfx_back: &Ipv6Prefix = (&prefix).into();
         assert_eq!(*ipv6_pfx_back, ipv6_pfx);
 
@@ -161,7 +161,7 @@ mod tests {
         // default - root
         let address: Ipv6Addr = "::".parse().unwrap();
         let iptrie_pfx = Ipv6Prefix::new(address, 0).unwrap();
-        let prefix = Prefix::from(&iptrie_pfx);
+        let prefix = Prefix::from(iptrie_pfx);
         assert_eq!(prefix, Prefix::root_v6());
     }
 }

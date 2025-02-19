@@ -86,13 +86,13 @@ impl From<&Rmac> for RmacEntry {
 #[allow(unused)]
 impl Vrf {
     pub fn add_route_rpc(&mut self, iproute: &IpRoute) {
-        let prefix = Prefix::from((&iproute.prefix, iproute.prefix_len));
+        let prefix = Prefix::from((iproute.prefix, iproute.prefix_len));
         let route = Route::from(iproute);
         let nhops: Vec<RouteNhop> = iproute.nhops.iter().map(RouteNhop::from).collect();
         self.add_route(&prefix, route, &nhops);
     }
     pub fn del_route_rpc(&mut self, route: &IpRoute) {
-        let prefix = Prefix::from((&route.prefix, route.prefix_len));
+        let prefix = Prefix::from((route.prefix, route.prefix_len));
         self.del_route(&prefix);
     }
 }
