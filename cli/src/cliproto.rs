@@ -36,22 +36,30 @@ pub enum CliSerdeError {
     #[error("Deserialization error")]
     Deserialize,
 }
-impl CliRequest {
-    pub fn serialize(&self) -> Result<Vec<u8>, CliSerdeError> {
+
+pub trait CliSerialize {
+    fn serialize(&self) -> Result<Vec<u8>, CliSerdeError>
+    where
+        Self: Serialize,
+    {
         bincode2::serialize(self).map_err(|_| CliSerdeError::Serialize)
     }
-    pub fn deserialize(buf: &[u8]) -> Result<Self, CliSerdeError> {
+    fn serialized_size(&self) -> Result<u64, CliSerdeError>
+    where
+        Self: Serialize,
+    {
+        bincode2::serialized_size(self).map_err(|_| CliSerdeError::Serialize)
+    }
+    fn deserialize<'a>(buf: &'a [u8]) -> Result<Self, CliSerdeError>
+    where
+        Self: Deserialize<'a>,
+    {
         bincode2::deserialize(buf).map_err(|_| CliSerdeError::Deserialize)
     }
 }
-impl CliResponse {
-    pub fn serialize(&self) -> Result<Vec<u8>, CliSerdeError> {
-        bincode2::serialize(self).map_err(|_| CliSerdeError::Serialize)
-    }
-    pub fn deserialize(buf: &[u8]) -> Result<Self, CliSerdeError> {
-        bincode2::deserialize(buf).map_err(|_| CliSerdeError::Deserialize)
-    }
-}
+
+impl CliSerialize for CliRequest {}
+impl CliSerialize for CliResponse {}
 
 /// A Cli response
 #[derive(Debug, Serialize, Deserialize)]
