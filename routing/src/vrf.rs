@@ -22,7 +22,7 @@ use dplane_rpc::msg::{RouteDistance, RouteMetric, RouteType};
 pub type VrfId = u32;
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
-#[doc = "A next-hop in the VRF"]
+/// A next-hop in the VRF
 pub struct RouteNhop {
     pub vrfid: VrfId,
     pub key: NhopKey,
@@ -275,11 +275,11 @@ impl Vrf {
     pub fn lpm(&self, target: &IpAddr) -> (Prefix, &Route) {
         match *target {
             IpAddr::V4(a) => {
-                let (p, r) = self.lpm_v4(&Ipv4Prefix::from(a));
+                let (p, r) = self.lpm_v4(&a.into());
                 (Prefix::IPV4(*p), r)
             }
             IpAddr::V6(a) => {
-                let (p, r) = self.lpm_v6(&Ipv6Prefix::from(a));
+                let (p, r) = self.lpm_v6(&a.into());
                 (Prefix::IPV6(*p), r)
             }
         }
