@@ -19,6 +19,15 @@ impl From<NextHeader> for IpNumber {
 }
 
 impl NextHeader {
+    /// TCP next header
+    pub const TCP: NextHeader = NextHeader(IpNumber::TCP);
+
+    /// UDP next header
+    pub const UDP: NextHeader = NextHeader(IpNumber::UDP);
+
+    /// ICMP next header
+    pub const ICMP: NextHeader = NextHeader(IpNumber::ICMP);
+
     /// Get the inner (wrapped) `etherparse` [`IpNumber`] type
     pub(crate) fn inner(self) -> IpNumber {
         self.0
