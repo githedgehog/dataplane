@@ -287,4 +287,22 @@ mod test {
                 assert_eq!(slice, &slice2);
             });
     }
+
+    #[test]
+    #[cfg_attr(kani, kani::proof)]
+    fn too_short_buffer_parse_fails_gracefully() {
+        bolero::check!()
+            .with_type()
+            .for_each(|slice: &[u8; Udp::MIN_LENGTH.get() - 1]| {
+                for i in 0..slice.len() {
+                    match Udp::parse(&slice[..i]) {
+                        Err(ParseError::Length(e)) => {
+                            assert_eq!(e.expected, Udp::MIN_LENGTH);
+                            assert_eq!(e.actual, i);
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            });
+    }
 }
