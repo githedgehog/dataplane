@@ -85,10 +85,12 @@ fn process_cli_response(sock: &UnixDatagram) {
         }
         match sock.recv(rx_buff.as_mut_slice()) {
             Ok(rx_len) => {
-                if let Ok(response) = CliResponse::deserialize(&rx_buff[0..rx_len]) {
-                    println!("{}", response.data);
-                } else {
-                    print_err!("Failed to deserialize response");
+                match CliResponse::deserialize(&rx_buff[0..rx_len]) {
+                    Ok(response) => match &response.result {
+                        Ok(data) => println!("{}", data),
+                        Err(e) => print_err!("Dataplane error: {}", e),
+                    },
+                    Err(_) => print_err!("Failed to deserialize response"),
                 }
                 return;
             }
