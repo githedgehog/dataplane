@@ -252,6 +252,10 @@ mod test {
             assert_eq!(consumed.get(), buffer.len());
             let (parse_back, consumed2) = Udp::parse(&buffer[..consumed.get()]).unwrap();
             assert_eq!(input, &parse_back);
+            assert_eq!(input.source(), parse_back.source());
+            assert_eq!(input.destination(), parse_back.destination());
+            assert_eq!(input.length(), parse_back.length());
+            assert_eq!(input.checksum(), parse_back.checksum());
             assert_eq!(consumed, consumed2);
         });
     }
