@@ -422,10 +422,32 @@ impl From<Ipv6ExtNext> for Header {
 
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
+    use crate::ip::NextHeader;
     use crate::ipv6::Ipv6;
     use bolero::{Driver, TypeGenerator};
     use etherparse::Ipv6Header;
     use std::net::Ipv6Addr;
+
+    /// A [`bolero::TypeGenerator`] for common (and supported) [`NextHeader`] values
+    #[derive(Copy, Clone, Debug, bolero::TypeGenerator)]
+    pub enum CommonNextHeader {
+        /// TCP next header (see [`NextHeader::TCP`]
+        Tcp,
+        /// UDP next header (see [`NextHeader::UDP`]
+        Udp,
+        /// ICMP v6 next header (see [`NextHeader::ICMP6`]
+        Icmp6,
+    }
+
+    impl From<CommonNextHeader> for NextHeader {
+        fn from(value: CommonNextHeader) -> Self {
+            match value {
+                CommonNextHeader::Tcp => NextHeader::TCP,
+                CommonNextHeader::Udp => NextHeader::UDP,
+                CommonNextHeader::Icmp6 => NextHeader::ICMP6,
+            }
+        }
+    }
 
     impl TypeGenerator for Ipv6 {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
