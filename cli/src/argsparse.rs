@@ -66,6 +66,12 @@ impl RequestArgs {
             }
             args.connpath = Some(path.clone());
         }
+        if let Some(path) = args_map.remove("bind-address") {
+            if path.is_empty() {
+                return Err(ArgsError::MissingValue("bind-address"));
+            }
+            args.bind_address = Some(path.clone());
+        }
         if let Some(vrf) = args_map.remove("vrf") {
             if vrf.is_empty() {
                 return Err(ArgsError::MissingValue("vrf"));
