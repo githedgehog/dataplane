@@ -178,7 +178,8 @@ fn cmd_local() -> Node {
     root += Node::new("connect")
         .desc("Connect to dataplane")
         .action(CliAction::Connect as u16)
-        .arg("path");
+        .arg("path")
+        .arg("bind-address");
     root += Node::new("disconnect")
         .desc("Disconnect from dataplane")
         .action(CliAction::Disconnect as u16);
