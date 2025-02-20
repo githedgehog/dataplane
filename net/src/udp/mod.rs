@@ -6,7 +6,7 @@
 pub mod checksum;
 pub mod port;
 
-use crate::packet::Header;
+use crate::headers::Header;
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
 };

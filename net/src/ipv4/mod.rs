@@ -3,6 +3,7 @@
 
 //! Ipv4 Address type and manipulation
 
+use crate::headers::Header;
 use crate::icmp4::Icmp4;
 use crate::ip::NextHeader;
 use crate::ip_auth::IpAuth;
@@ -10,7 +11,6 @@ use crate::ipv4::addr::UnicastIpv4Addr;
 use crate::ipv4::dscp::Dscp;
 use crate::ipv4::ecn::Ecn;
 use crate::ipv4::frag_offset::FragOffset;
-use crate::packet::Header;
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
 };

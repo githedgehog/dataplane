@@ -210,7 +210,7 @@ impl DestinationMac {
 
 /// Errors which can occur while setting the source [`Mac`] of a [`Packet`]
 ///
-/// [`Packet`]: crate::packet::Packet
+/// [`Packet`]: crate::headers::Packet
 #[derive(Debug, thiserror::Error)]
 pub enum SourceMacAddressError {
     /// Multicast [`Mac`]s are not legal as a source [`Mac`]
@@ -223,7 +223,7 @@ pub enum SourceMacAddressError {
 
 /// Errors which can occur while setting the destination [`Mac`] of a [`Packet`]
 ///
-/// [`Packet`]: crate::packet::Packet
+/// [`Packet`]: crate::headers::Packet
 #[derive(Debug, thiserror::Error)]
 pub enum DestinationMacAddressError {
     /// Zero is not a legal source

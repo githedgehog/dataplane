@@ -13,7 +13,7 @@ use dpdk::mem::{Pool, PoolConfig, PoolParams, RteAllocator};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, eal, socket};
-use net::packet::Packet;
+use net::headers::Packet;
 use net::parse::{DeParse, Parse};
 use tracing::{info, trace, warn};
 

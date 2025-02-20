@@ -10,9 +10,9 @@ use crate::eth::ethtype::EthType;
 use crate::eth::mac::{
     DestinationMac, DestinationMacAddressError, Mac, SourceMac, SourceMacAddressError,
 };
+use crate::headers::Header;
 use crate::ipv4::Ipv4;
 use crate::ipv6::Ipv6;
-use crate::packet::Header;
 use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, Reader};
 use crate::vlan::Vlan;
 use etherparse::{EtherType, Ethernet2Header};

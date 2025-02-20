@@ -3,9 +3,9 @@
 
 //! IP authentication header type and logic.
 
+use crate::headers::Header;
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
-use crate::packet::Header;
 use crate::parse::{Parse, ParseError, ParsePayload, Reader};
 use crate::tcp::Tcp;
 use crate::udp::Udp;

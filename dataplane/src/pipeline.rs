@@ -14,7 +14,7 @@
 use std::error::Error;
 
 use dpdk::mem::Mbuf;
-use net::packet::Packet;
+use net::headers::Packet;
 use net::vxlan::Vni;
 
 use crate::config::Config;
@@ -140,7 +140,7 @@ mod test {
     use net::eth::ethertype::EthType;
     use net::eth::mac::{DestinationMac, Mac, SourceMac};
     use net::eth::Eth;
-    use net::packet::Packet;
+    use net::headers::Packet;
 
     #[test]
     fn test_passthrough_process() {
