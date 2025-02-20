@@ -3,8 +3,8 @@
 
 //! Adds main parser for command arguments
 
-use cli::argsparse::ArgsError;
-use cli::cliproto::{CliAction, CliRequest, CliResponse, CliSerialize, RequestArgs};
+use cli::argsparse::{ArgsError, CliArgs};
+use cli::cliproto::{CliAction, CliRequest, CliResponse, CliSerialize};
 use cli::cmdtree_dp::gw_cmd_tree;
 use cli::terminal::Terminal;
 use colored::Colorize;
@@ -99,7 +99,7 @@ fn process_cli_response(sock: &UnixDatagram) {
 
 fn execute_remote_action(
     action: CliAction,       /* action to perform */
-    args: &RequestArgs,      /* action arguments */
+    args: &CliArgs,          /* action arguments */
     terminal: &mut Terminal, /* this terminal */
 ) {
     /* don't issue request if we're not connected to dataplane */
@@ -116,7 +116,7 @@ fn execute_remote_action(
     }
 
     /* serialize request and send it */
-    if let Ok(request) = CliRequest::new(action, args.clone()).serialize() {
+    if let Ok(request) = CliRequest::new(action, args.remote.clone()).serialize() {
         match terminal.sock.send(&request) {
             Ok(_) => process_cli_response(&terminal.sock),
             Err(e) => {
@@ -134,7 +134,7 @@ fn execute_remote_action(
 
 fn execute_action(
     action: u16,             /* action to perform */
-    args: &RequestArgs,      /* action arguments */
+    args: &CliArgs,          /* action arguments */
     terminal: &mut Terminal, /* this terminal */
 ) {
     let cli_action = CliAction::from_u16(action).expect("Valid cli action code");
@@ -184,9 +184,9 @@ fn show_bad_arg(input_line: &str, argname: &str) {
 }
 
 /// Build arguments from map of arguments
-fn process_args(input_line: &str) -> Result<RequestArgs, ()> {
+fn process_args(input_line: &str) -> Result<CliArgs, ()> {
     let args_map = get_args(input_line);
-    let args = RequestArgs::from_args_map(args_map);
+    let args = CliArgs::from_args_map(args_map);
     match args {
         Err(ArgsError::UnrecognizedArgs(args_map)) => {
             print_err!(" Unrecognized arguments");
