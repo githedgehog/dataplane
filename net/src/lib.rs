@@ -17,6 +17,7 @@
 extern crate alloc;
 extern crate core;
 
+pub mod buffer;
 pub mod eth;
 pub mod icmp4;
 pub mod icmp6;
