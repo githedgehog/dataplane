@@ -401,7 +401,7 @@ pub struct Mbuf {
 impl Drop for Mbuf {
     fn drop(&mut self) {
         unsafe {
-            dpdk_sys::rte_pktmbuf_free_w(self.raw.as_ptr());
+            dpdk_sys::rte_pktmbuf_free(self.raw.as_ptr());
         }
     }
 }
