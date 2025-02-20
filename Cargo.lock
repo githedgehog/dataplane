@@ -386,6 +386,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "dpdk",
+ "dyn-iter",
  "iptrie",
  "net",
  "routing",
@@ -464,6 +465,12 @@ dependencies = [
  "tracing-subscriber",
  "tracing-test",
 ]
+
+[[package]]
+name = "dyn-iter"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e49983f6f9b2e40db2416bacd643ec482f29e5438bcd1bf587ff142558322b81"
 
 [[package]]
 name = "either"
