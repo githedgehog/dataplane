@@ -15,7 +15,7 @@ use thiserror::Error;
 pub struct RequestArgs {
     pub address: Option<IpAddr>,      /* an IP address */
     pub prefix: Option<(IpAddr, u8)>, /* an IP prefix */
-    pub vrf: Option<String>,          /* name of a VRF */
+    pub vrfid: Option<u32>,           /* Id of a VRF */
     pub ifname: Option<String>,       /* name of interface */
     pub loglevel: Option<Level>,      /* loglevel, from crate log */
 }

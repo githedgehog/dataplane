@@ -48,7 +48,7 @@ fn cmd_show_ip() -> Node {
         .desc("Display IPv4 routes")
         .action(CliAction::ShowRouterIpv4Routes as u16)
         .arg("prefix")
-        .arg("vrf");
+        .arg("vrfid");
 
     root += Node::new("address")
         .desc("Display IPv4 addresses")
@@ -63,7 +63,7 @@ fn cmd_show_ipv6() -> Node {
         .desc("Display IPv6 routes")
         .action(CliAction::ShowRouterIpv6Routes as u16)
         .arg("prefix")
-        .arg("vrf");
+        .arg("vrfid");
 
     root += Node::new("address")
         .desc("Display IPv6 addresses")
