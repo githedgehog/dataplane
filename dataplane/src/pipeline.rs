@@ -14,7 +14,7 @@
 use std::error::Error;
 
 use dpdk::mem::Mbuf;
-use net::headers::Packet;
+use net::headers::Headers;
 use net::vxlan::Vni;
 
 use crate::config::Config;
@@ -26,11 +26,11 @@ pub struct Metadata {
 }
 
 pub struct MetaPacket {
-    pub packet: Packet,
+    pub packet: Headers,
     #[allow(dead_code)]
     pub metadata: Metadata,
     #[allow(dead_code)]
-    pub outer_packet: Option<Box<Packet>>,
+    pub outer_packet: Option<Box<Headers>>,
     pub mbuf: Mbuf,
 }
 
@@ -140,7 +140,7 @@ mod test {
     use net::eth::ethertype::EthType;
     use net::eth::mac::{DestinationMac, Mac, SourceMac};
     use net::eth::Eth;
-    use net::headers::Packet;
+    use net::headers::Headers;
 
     #[test]
     fn test_passthrough_process() {
@@ -151,7 +151,7 @@ mod test {
         let src_mac = SourceMac::new(Mac::from([0x00, 0x00, 0x00, 0x00, 0x00, 0x01])).unwrap();
         let dst_mac = DestinationMac::new(Mac::from([0x00, 0x00, 0x00, 0x00, 0x00, 0x02])).unwrap();
         let test_packet = MetaPacket {
-            packet: Packet::new(Eth::new(src_mac, dst_mac, EthType::IPV4)),
+            packet: Headers::new(Eth::new(src_mac, dst_mac, EthType::IPV4)),
             metadata: Metadata { vni: None },
             outer_packet: None,
             // Temporary mbuf fake, need to have a proper mockable interface

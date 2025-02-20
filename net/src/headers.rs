@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Packet definition
+//! Definition of [`Headers`] and related methods and types.
 #![allow(missing_docs, clippy::pedantic)] // temporary
 
 use crate::eth::ethtype::EthType;
@@ -28,7 +28,7 @@ const MAX_NET_EXTENSIONS: usize = 2;
 
 // TODO: remove `pub` from all fields
 #[derive(Debug)]
-pub struct Packet {
+pub struct Headers {
     pub eth: Eth,
     pub vlan: ArrayVec<Vlan, MAX_VLANS>,
     pub net: Option<Net>,
@@ -128,7 +128,7 @@ impl ParsePayload for Header {
                     ext.parse_payload_with(&ipv6.next_header(), cursor)
                         .map(Header::from)
                 } else {
-                    debug!("ipv6 extension header outside ipv6 packet");
+                    debug!("ipv6 extension header outside ipv6 header");
                     None
                 }
             }
@@ -138,14 +138,14 @@ impl ParsePayload for Header {
     }
 }
 
-impl Parse for Packet {
+impl Parse for Headers {
     type Error = EthError;
 
     fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
         let mut cursor =
             Reader::new(buf).map_err(|IllegalBufferLength(len)| ParseError::BufferTooLong(len))?;
         let (eth, _) = cursor.parse::<Eth>()?;
-        let mut this = Packet {
+        let mut this = Headers {
             eth: eth.clone(),
             net: None,
             transport: None,
@@ -204,7 +204,7 @@ impl Parse for Packet {
     }
 }
 
-impl DeParse for Packet {
+impl DeParse for Headers {
     type Error = ();
 
     fn size(&self) -> NonZero<u16> {
@@ -292,13 +292,13 @@ impl DeParse for Packet {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("Packet already has as many VLAN headers as parser can support (max is {MAX_VLANS})")]
+#[error("Header already has as many VLAN headers as parser can support (max is {MAX_VLANS})")]
 pub struct TooManyVlans;
 
-impl Packet {
-    /// Create a new packet with the supplied `Eth` header.
-    pub fn new(eth: Eth) -> Packet {
-        Packet {
+impl Headers {
+    /// Create a new [`Headers`] with the supplied `Eth` header.
+    pub fn new(eth: Eth) -> Headers {
+        Headers {
             eth,
             vlan: ArrayVec::default(),
             net: None,
@@ -318,12 +318,12 @@ impl Packet {
     ///
     /// # Safety:
     ///
-    /// This method will create an invalid packet if the header you push has an _inner_ ethtype
+    /// This method will create an invalid [`Headers`] if the header you push has an _inner_ ethtype
     /// which does not align with the next header below it.
     ///
-    /// This method will create an invalid packet if the _outer_ ethtype (i.e., the ethtype of the
-    /// `Eth` header or prior [`Vlan`] in the stack) is not some flavor of `Vlan` ethtype (e.g.
-    /// [`EthType::VLAN`] or [`EthType::VLAN_QINQ`])
+    /// This method will create an invalid [`Headers`] if the _outer_ ethtype (i.e., the ethtype of
+    /// the [`Eth`] header or prior [`Vlan`] in the stack) is not some flavor of `Vlan` ethtype
+    /// (e.g. [`EthType::VLAN`] or [`EthType::VLAN_QINQ`])
     #[allow(unsafe_code)]
     #[allow(dead_code)]
     unsafe fn push_vlan_header_unchecked(&mut self, vlan: Vlan) -> Result<(), TooManyVlans> {
@@ -335,7 +335,7 @@ impl Packet {
         }
     }
 
-    /// Push a vlan header onto the VLAN stack of this packet.
+    /// Push a vlan header onto the VLAN stack of this [`Headers`].
     ///
     /// This method will ensure that the `eth` field has its [`EthType`] adjusted to
     /// [`EthType::VLAN`] if there are no [`Vlan`]s on the stack at the time this method was called.
@@ -355,9 +355,9 @@ impl Packet {
     /// Returns [`None`] if no [`Vlan`]s are on the stack.
     ///
     /// If `Some` is returned, the popped [`Vlan`]s ethtype is assigned to the `eth` header to
-    /// preserve packet structure.
+    /// preserve structure.
     ///
-    /// If `None` is returned, the `Packet` is not modified.
+    /// If `None` is returned, the [`Headers`] is not modified.
     pub fn pop_vlan(&mut self) -> Option<Vlan> {
         match self.vlan.pop() {
             None => None,

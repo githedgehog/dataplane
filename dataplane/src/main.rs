@@ -13,7 +13,7 @@ use dpdk::mem::{Pool, PoolConfig, PoolParams, RteAllocator};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, eal, socket};
-use net::headers::Packet;
+use net::headers::Headers;
 use net::parse::{DeParse, Parse};
 use tracing::{info, trace, warn};
 
@@ -114,7 +114,7 @@ fn start_rte_workers(devices: &Vec<Dev>) {
             loop {
                 let mbufs = rx_queue.receive();
                 let pkts = mbufs.filter_map(|mut mbuf| {
-                    let packet_result = Packet::parse(mbuf.raw_data_mut());
+                    let packet_result = Headers::parse(mbuf.raw_data_mut());
                     let packet = match packet_result {
                         Ok(packet) => packet.0,
                         Err(e) => {
