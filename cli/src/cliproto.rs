@@ -131,11 +131,10 @@ pub enum CliAction {
 
     // router
     ShowRouterInterfaces,
+    ShowRouterInterfaceAddresses,
     ShowRouterVrfs,
     ShowRouterIpv4Routes,
     ShowRouterIpv6Routes,
-    ShowRouterIpv4Addresses,
-    ShowRouterIpv6Addresses,
     ShowRouterEvpnVrfs,
     ShowRouterEvpnRmacStore,
 
