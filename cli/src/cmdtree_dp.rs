@@ -49,6 +49,12 @@ fn cmd_show_ip() -> Node {
         .action(CliAction::ShowRouterIpv4Routes as u16)
         .arg("prefix")
         .arg("vrfid");
+
+    root += Node::new("next-hop")
+        .desc("Display IPv4 next-hops")
+        .action(CliAction::ShowRouterIpv4NextHops as u16)
+        .arg("address");
+
     root
 }
 fn cmd_show_ipv6() -> Node {
@@ -59,6 +65,11 @@ fn cmd_show_ipv6() -> Node {
         .action(CliAction::ShowRouterIpv6Routes as u16)
         .arg("prefix")
         .arg("vrfid");
+
+    root += Node::new("next-hop")
+        .desc("Display IPv6 next-hops")
+        .action(CliAction::ShowRouterIpv6NextHops as u16)
+        .arg("address");
 
     root
 }
