@@ -135,6 +135,8 @@ pub enum CliAction {
     ShowRouterVrfs,
     ShowRouterIpv4Routes,
     ShowRouterIpv6Routes,
+    ShowRouterIpv4NextHops,
+    ShowRouterIpv6NextHops,
     ShowRouterEvpnVrfs,
     ShowRouterEvpnRmacStore,
 
