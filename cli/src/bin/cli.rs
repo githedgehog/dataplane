@@ -3,21 +3,16 @@
 
 //! Adds main parser for command arguments
 
-use clap::Parser;
+use cli::argsparse::ArgsError;
 use cli::cliproto::{CliAction, CliRequest, CliResponse, CliSerialize, RequestArgs};
+use cli::cmdtree_dp::gw_cmd_tree;
+use cli::terminal::Terminal;
 use colored::Colorize;
 use enum_primitive::FromPrimitive;
 use std::collections::HashMap;
-use std::fs;
 use std::io::stdin;
-use std::net::Shutdown;
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
 use std::rc::Rc;
-
-use cli::argsparse::ArgsError;
-use cli::cmdtree_dp::gw_cmd_tree;
-use cli::terminal::Terminal;
 
 const DEFAULT_CLI_BIND: &str = "/tmp/cli.sock";
 const DEFAULT_DATAPLANE_PATH: &str = "/tmp/dataplane_ctl.sock";
@@ -106,7 +101,6 @@ fn execute_remote_action(
     action: CliAction,       /* action to perform */
     args: &RequestArgs,      /* action arguments */
     terminal: &mut Terminal, /* this terminal */
-    sock: &UnixDatagram,     /* socket to talk to dataplane */
 ) {
     /* don't issue request if we're not connected to dataplane */
     if !terminal.is_connected() {
@@ -123,8 +117,8 @@ fn execute_remote_action(
 
     /* serialize request and send it */
     if let Ok(request) = CliRequest::new(action, args.clone()).serialize() {
-        match sock.send(&request) {
-            Ok(_) => process_cli_response(sock),
+        match terminal.sock.send(&request) {
+            Ok(_) => process_cli_response(&terminal.sock),
             Err(e) => {
                 print_err!(
                     "Error sending request: {e}, request length: {}",
@@ -142,31 +136,27 @@ fn execute_action(
     action: u16,             /* action to perform */
     args: &RequestArgs,      /* action arguments */
     terminal: &mut Terminal, /* this terminal */
-    sock: &UnixDatagram,     /* socket to talk to dataplane */
 ) {
     let cli_action = CliAction::from_u16(action).expect("Valid cli action code");
     match cli_action {
         CliAction::Clear => terminal.clear(),
         CliAction::Quit => terminal.stop(),
         CliAction::Help => terminal.get_cmd_tree().dump(),
-        CliAction::Disconnect => {
-            if let Ok(()) = sock.shutdown(Shutdown::Both) {
-                terminal.connected(false);
-            }
-        }
+        CliAction::Disconnect => terminal.disconnect(),
         CliAction::Connect => {
             let path = args
                 .connpath
                 .clone()
                 .unwrap_or_else(|| DEFAULT_DATAPLANE_PATH.to_owned());
-            if let Err(error) = sock.connect(&path) {
-                print_err!("Failed to connect to '{}': {}", path, error);
-            } else {
-                terminal.connected(true);
-            }
+
+            let bind_addr = args
+                .bind_address
+                .clone()
+                .unwrap_or_else(|| DEFAULT_CLI_BIND.to_owned());
+            terminal.connect(&bind_addr, &path);
         }
         /* all others are remote */
-        _ => execute_remote_action(cli_action, args, terminal, sock),
+        _ => execute_remote_action(cli_action, args, terminal),
     }
 }
 
@@ -213,36 +203,7 @@ fn process_args(input_line: &str) -> Result<RequestArgs, ()> {
     }
 }
 
-fn open_unix_sock(path: &String) -> Result<UnixDatagram, ()> {
-    let _ = std::fs::remove_file(path);
-    let sock = UnixDatagram::bind(path).expect("Failure binding socket");
-    let mut perms = fs::metadata(path)
-        .expect("Failed getting metadata")
-        .permissions();
-    perms.set_mode(0o777);
-    fs::set_permissions(path, perms).expect("Failure setting permissions");
-    Ok(sock)
-}
-
-#[derive(Parser)]
-#[command(name = "Gateway dataplane CLI")]
-#[command(about = "CLI for gateway dataplane", long_about = None)]
-struct CliCmdArgs {
-    #[arg(long, value_name = "path to bind cli to")]
-    cli_sock: Option<String>,
-}
-
 fn main() {
-    let args = CliCmdArgs::parse();
-    let sock = open_unix_sock(
-        &args
-            .cli_sock
-            .unwrap_or_else(|| DEFAULT_CLI_BIND.to_string()),
-    )
-    .expect("Error opening unix socket");
-
-    let _ = sock.set_nonblocking(false);
-
     /* build command tree */
     let cmds = Rc::new(gw_cmd_tree());
     let mut terminal = Terminal::new("dataplane", cmds.clone());
@@ -258,7 +219,7 @@ fn main() {
             terminal.add_history_entry(input.get_line().to_owned());
             if let Some(action) = &node.action {
                 if let Ok(args) = process_args(input.get_line()) {
-                    execute_action(*action, &args, &mut terminal, &sock);
+                    execute_action(*action, &args, &mut terminal);
                 }
             } else if node.depth > 0 {
                 print_err!("No action associated to command");
