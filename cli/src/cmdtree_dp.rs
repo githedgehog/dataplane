@@ -102,7 +102,7 @@ fn cmd_show_interface() -> Node {
     root.arg_add(arg)
 }
 fn cmd_show_routing() -> Node {
-    let mut root = Node::new("routing");
+    let mut root = Node::new("");
     root += Node::new("cpi").desc("show the status of the routing interface");
     root += cmd_show_interface();
     root += cmd_show_evpn();
