@@ -13,8 +13,6 @@ use thiserror::Error;
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct RequestArgs {
-    pub connpath: Option<String>,     /* connection path; this is local */
-    pub bind_address: Option<String>, /* address to bind unix sock to */
     pub address: Option<IpAddr>,      /* an IP address */
     pub prefix: Option<(IpAddr, u8)>, /* an IP prefix */
     pub vrf: Option<String>,          /* name of a VRF */
