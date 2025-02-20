@@ -27,6 +27,8 @@ pub enum ArgsError {
     MissingValue(&'static str),
     #[error("Unknown loglevel {0}")]
     UnknownLogLevel(String),
+    #[error("Bad value {0}")]
+    BadValue(String),
 }
 
 #[derive(Default)]
@@ -79,11 +81,15 @@ impl CliArgs {
             }
             args.bind_address = Some(path.clone());
         }
-        if let Some(vrf) = args_map.remove("vrf") {
-            if vrf.is_empty() {
-                return Err(ArgsError::MissingValue("vrf"));
+        if let Some(vrfid) = args_map.remove("vrfid") {
+            if vrfid.is_empty() {
+                return Err(ArgsError::MissingValue("vrfid"));
             }
-            args.remote.vrf = Some(vrf).clone();
+            args.remote.vrfid = Some(
+                vrfid
+                    .parse::<u32>()
+                    .map_err(|_| ArgsError::BadValue(vrfid))?,
+            );
         }
         if let Some(ifname) = args_map.remove("ifname") {
             if ifname.is_empty() {
