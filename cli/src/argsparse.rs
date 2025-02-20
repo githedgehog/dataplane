@@ -29,17 +29,24 @@ pub enum ArgsError {
     UnknownLogLevel(String),
 }
 
+#[derive(Default)]
+pub struct CliArgs {
+    pub connpath: Option<String>,     /* connection path; this is local */
+    pub bind_address: Option<String>, /* address to bind unix sock to */
+    pub remote: RequestArgs,          /* args to send to remote */
+}
+
 #[allow(unused)]
-impl RequestArgs {
+impl CliArgs {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn from_args_map(mut args_map: HashMap<String, String>) -> Result<RequestArgs, ArgsError> {
-        let mut args = RequestArgs::new();
+    pub fn from_args_map(mut args_map: HashMap<String, String>) -> Result<CliArgs, ArgsError> {
+        let mut args = CliArgs::new();
         if let Some(addr) = &args_map.remove("address") {
             let address =
                 IpAddr::from_str(addr).map_err(|_| ArgsError::BadPrefix(addr.to_owned()))?;
-            args.address = Some(address);
+            args.remote.address = Some(address);
         }
         if let Some(prefix) = args_map.remove("prefix") {
             if let Some((addr, len)) = prefix.split_once('/') {
@@ -55,7 +62,7 @@ impl RequestArgs {
                 if pxf_len > max_len {
                     return Err(ArgsError::BadPrefixLength(pxf_len));
                 }
-                args.prefix = Some((pfx, pxf_len));
+                args.remote.prefix = Some((pfx, pxf_len));
             } else {
                 return Err(ArgsError::BadPrefixFormat(prefix.to_owned()));
             }
@@ -76,20 +83,20 @@ impl RequestArgs {
             if vrf.is_empty() {
                 return Err(ArgsError::MissingValue("vrf"));
             }
-            args.vrf = Some(vrf).clone();
+            args.remote.vrf = Some(vrf).clone();
         }
         if let Some(ifname) = args_map.remove("ifname") {
             if ifname.is_empty() {
                 return Err(ArgsError::MissingValue("ifname"));
             }
-            args.ifname = Some(ifname).clone();
+            args.remote.ifname = Some(ifname).clone();
         }
         if let Some(level) = args_map.remove("level") {
             if level.is_empty() {
                 return Err(ArgsError::MissingValue("level"));
             } else {
                 let level = level.to_uppercase();
-                args.loglevel = Some(
+                args.remote.loglevel = Some(
                     Level::from_str(level.as_str())
                         .map_err(|_| ArgsError::UnknownLogLevel(level))?,
                 );
