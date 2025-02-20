@@ -8,6 +8,11 @@ use rustyline::config::{ColorMode, CompletionType, Config};
 use rustyline::{Cmd, Event, KeyCode, KeyEvent, Modifiers};
 use smallvec::SmallVec;
 use std::collections::VecDeque;
+use std::fs;
+use std::net::Shutdown;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixDatagram;
+use std::path::Path;
 use std::rc::Rc;
 
 // our completer
@@ -30,6 +35,7 @@ pub struct Terminal {
     editor: rustyline::Editor<CmdCompleter>,
     run: bool,
     connected: bool,
+    pub sock: UnixDatagram,
 }
 
 #[derive(Debug)]
@@ -57,6 +63,7 @@ impl Terminal {
             editor: rustyline::Editor::<CmdCompleter>::with_config(rustyline_editor_config()),
             run: true,
             connected: false,
+            sock: UnixDatagram::unbound().expect("Failed to create unix socket"),
         }
         .set_helper(CmdCompleter::new(cmdtree.clone()));
         term.set_prompt();
@@ -135,5 +142,42 @@ impl Terminal {
     }
     pub fn is_connected(&self) -> bool {
         self.connected
+    }
+
+    fn open_unix_sock<P: AsRef<Path>>(bind_addr: &P) -> Result<UnixDatagram, &'static str> {
+        let _ = std::fs::remove_file(bind_addr);
+        let sock = UnixDatagram::bind(bind_addr).map_err(|_| "Failed to bind socket")?;
+        let mut perms = fs::metadata(bind_addr)
+            .map_err(|_| "Failed to retrieve path metadata")?
+            .permissions();
+        perms.set_mode(0o777);
+        fs::set_permissions(bind_addr, perms).map_err(|_| "Failure setting permissions")?;
+        sock.set_nonblocking(false)
+            .map_err(|_| "Failed to set non-blocking")?;
+        Ok(sock)
+    }
+
+    pub fn disconnect(&mut self) {
+        if let Ok(()) = self.sock.shutdown(Shutdown::Both) {
+            self.connected(false);
+        }
+    }
+
+    pub fn connect<P: AsRef<Path>>(&mut self, local_addr: &P, remote_addr: &P) {
+        if self.is_connected() {
+            self.disconnect();
+        }
+        if let Ok(new_sock) = Self::open_unix_sock(local_addr) {
+            self.sock = new_sock;
+        }
+        if let Err(error) = self.sock.connect(remote_addr) {
+            println!(
+                "Failed to connect to '{:?}': {}",
+                remote_addr.as_ref(),
+                error
+            );
+        } else {
+            self.connected(true);
+        }
     }
 }
