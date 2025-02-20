@@ -7,7 +7,7 @@
 /design-docs/src/mdbook/book/**
 /design-docs/src/mdbook/src/mdbook-plantuml-img/**
 /dev-env-template/**
-/dpdk-sys/dpdk_wrapper-precompile.h.*
+/dpdk-sys/dpdk_wrapper-precompile.h*
 /dpdk-sys/.macro_eval.c
 **/__fuzz__/**
 **.profraw
