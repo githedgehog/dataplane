@@ -49,11 +49,6 @@ fn cmd_show_ip() -> Node {
         .action(CliAction::ShowRouterIpv4Routes as u16)
         .arg("prefix")
         .arg("vrfid");
-
-    root += Node::new("address")
-        .desc("Display IPv4 addresses")
-        .action(CliAction::ShowRouterIpv4Addresses as u16)
-        .arg("address");
     root
 }
 fn cmd_show_ipv6() -> Node {
@@ -65,10 +60,6 @@ fn cmd_show_ipv6() -> Node {
         .arg("prefix")
         .arg("vrfid");
 
-    root += Node::new("address")
-        .desc("Display IPv6 addresses")
-        .action(CliAction::ShowRouterIpv6Addresses as u16)
-        .arg("address");
     root
 }
 fn cmd_show_vrf() -> Node {
@@ -90,7 +81,7 @@ fn cmd_show_evpn() -> Node {
     root
 }
 fn cmd_show_interface() -> Node {
-    let root = Node::new("interface")
+    let mut root = Node::new("interface")
         .desc("show network interfaces")
         .action(CliAction::ShowRouterInterfaces as u16)
         .arg("ifname");
@@ -99,7 +90,14 @@ fn cmd_show_interface() -> Node {
         .choice("ethernet")
         .choice("vlan")
         .choice("vxlan");
-    root.arg_add(arg)
+    root = root.arg_add(arg);
+
+    root += Node::new("address")
+        .desc("Display interface IP addresses")
+        .action(CliAction::ShowRouterInterfaceAddresses as u16)
+        .arg("address");
+
+    root
 }
 fn cmd_show_routing() -> Node {
     let mut root = Node::new("");
