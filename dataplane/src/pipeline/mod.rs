@@ -12,3 +12,12 @@
     clippy::expect_used,
     clippy::panic
 )]
+
+pub mod sample_nfs;
+mod static_nf;
+
+#[cfg(test)]
+pub(crate) mod test_utils;
+
+#[allow(unused)]
+pub use static_nf::{NetworkFunction, StaticChain};
