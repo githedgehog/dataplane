@@ -102,7 +102,7 @@ fn init_devices(eal: &Eal) -> Vec<Dev> {
         .collect()
 }
 
-fn start_rte_workers(devices: &Vec<Dev>) {
+fn start_rte_workers(devices: &[Dev]) {
     LCoreId::iter().enumerate().for_each(|(i, lcore_id)| {
         info!("Starting RTE Worker on {lcore_id:?}");
         WorkerThread::launch(lcore_id, move || {
