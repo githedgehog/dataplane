@@ -68,31 +68,26 @@ fn process_cli_response(sock: &UnixDatagram) {
     let mut rx_buff = vec![0u8; 1024];
     let mut msg_size_wire = [0u8; 8];
     let msg_size: u64;
-    loop {
-        if let Err(e) = sock.recv(msg_size_wire.as_mut()) {
-            print_err!("Error receiving msg size: {e}");
-            return;
-        } else {
-            msg_size = u64::from_ne_bytes(msg_size_wire);
-            if msg_size as usize > rx_buff.capacity() {
-                rx_buff.resize(msg_size as usize, 0);
-            }
+
+    if let Err(e) = sock.recv(msg_size_wire.as_mut()) {
+        print_err!("Error receiving msg size: {e}");
+        return;
+    } else {
+        msg_size = u64::from_ne_bytes(msg_size_wire);
+        if msg_size as usize > rx_buff.capacity() {
+            rx_buff.resize(msg_size as usize, 0);
         }
-        match sock.recv(rx_buff.as_mut_slice()) {
-            Ok(rx_len) => {
-                match CliResponse::deserialize(&rx_buff[0..rx_len]) {
-                    Ok(response) => match &response.result {
-                        Ok(data) => println!("{}", data),
-                        Err(e) => print_err!("Dataplane error: {}", e),
-                    },
-                    Err(_) => print_err!("Failed to deserialize response"),
-                }
-                return;
-            }
-            Err(e) => {
-                print_err!("Failed to recv from dataplane: {e}");
-                return;
-            }
+    }
+    match sock.recv(rx_buff.as_mut_slice()) {
+        Ok(rx_len) => match CliResponse::deserialize(&rx_buff[0..rx_len]) {
+            Ok(response) => match &response.result {
+                Ok(data) => println!("{}", data),
+                Err(e) => print_err!("Dataplane error: {}", e),
+            },
+            Err(_) => print_err!("Failed to deserialize response"),
+        },
+        Err(e) => {
+            print_err!("Failed to recv from dataplane: {e}");
         }
     }
 }
@@ -108,11 +103,9 @@ fn execute_remote_action(
         return;
     }
 
-    /* warn if want to restart dataplane */
-    if matches!(action, CliAction::Restart) {
-        if !ask_user("Are you sure [yes|no]?") {
-            return;
-        }
+    /* warn if want to restart dataplane (adding this as an example of asking user) */
+    if matches!(action, CliAction::Restart) && !ask_user("Are you sure [yes|no]?") {
+        return;
     }
 
     /* serialize request and send it */
