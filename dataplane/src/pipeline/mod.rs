@@ -1,7 +1,89 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Pipeline Building Blocks
+//! # Pipeline Building Blocks
+//!
+//! This module provides the building blocks for constructing pipelines of network functions.
+//! There are two main methods provided for linking network functions together in sequence:
+//!
+//! - `StaticChain`: A trait for statically chaining network functions together.
+//! - `DynPipeline`: A pipeline that can be dynamically constructed at runtime.
+//!
+//! ## Network Functions
+//!
+//! A network function is anything that implements the [`NetworkFunction`] trait.
+//! You can look at the [`sample_nfs`] module for some examples of simple network functions.
+//!
+//! ## Static Chaining
+//!
+//! You can statically chain together a series of network functions using the [`StaticChain::chain`]
+//! method. [`StaticChain`] is implemented for all types that implement [`NetworkFunction`].
+//!
+//! ```rust
+//! use crate::dataplane::pipeline::{NetworkFunction, StaticChain};
+//! use crate::dataplane::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
+//!
+//! /// This creates a chain of functions that first does a `debug!` on the packet contents then
+//! /// sets the destination mac to the broadcast mac address then decrements the TTL value of the
+//! /// IP packet.
+//! let mut pipeline = InspectHeaders.chain(BroadcastMacs).chain(DecrementTtl);
+//! ```
+//! Note that `pipeline` implements the [`NetworkFunction`] trait and can be used anywhere a
+//! network function is expected.
+//!
+//! > [!WARNING]
+//! >
+//! > Keep statically linked chains short, ideally less than 8 stages.
+//! >
+//! > The [`StaticChain::chain`] triggers compiler/linker limitations, long chains cause long
+//! > compile times and eventually cause the linker to run out of memory.
+//!
+//! ## Dynamic Pipeline
+//!
+//! You can also use [`DynPipeline`] to construct a pipeline at runtime or to dynamically chain
+//! together a series of network functions.
+//!
+//! ```rust
+//! use crate::dataplane::pipeline::DynPipeline;
+//! use crate::dataplane::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
+//!
+//! let mut pipeline = DynPipeline::new();
+//! pipeline = pipeline.add_stage(InspectHeaders);
+//! pipeline = pipeline.add_stage(BroadcastMacs);
+//! pipeline = pipeline.add_stage(DecrementTtl);
+//! ```
+//! Here the pipeline has exactly the same functionality as the statically chained pipeline in the
+//! previous example, but using [`dyn_iter::DynIter`] and [`DynNetworkFunction`] to allow for
+//! dynamic chaining, including at runtime.
+//!
+//! Note again that `pipeline` is of type [`NetworkFunction`] and can be used anywhere a network
+//! function is expected.
+//!
+//! ## Dynamic Pipeline with Static Chaining
+//!
+//! You can also combine dynamic chaining with static chaining.
+//!
+//! ```rust
+//! use crate::dataplane::pipeline::{DynPipeline, NetworkFunction, StaticChain};
+//! use crate::dataplane::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
+//!
+//! let mut pipeline = DynPipeline::new();
+//! // Add a dynamic stage that is the static chain of `InspectHeaders` and `BroadcastMacs`
+//! pipeline = pipeline.add_stage(InspectHeaders.chain(BroadcastMacs));
+//! pipeline = pipeline.add_stage(DecrementTtl);
+//! ```
+//! Here the first stage is a static chain of [`sample_nfs::InspectHeaders`] and
+//! [`sample_nfs::BroadcastMacs`] and the second stage is just [`sample_nfs::DecrementTtl`].
+//! The overall functionality is the same as the previous examples.
+//!
+//! ## Performance Considerations
+//!
+//! Static chaining results in longer compile times (due mainly to linker memory usage) but faster
+//! runtime since the compiler (as of this writing) seems to inline and co-optimize statically
+//! chained functions. If combining a few small network functions, static chaining is more efficient.
+//! It is always possible to then dynamically chain the statically chained stages as shown in the
+//! example.
+//!
 
 #![deny(
     unsafe_code,
