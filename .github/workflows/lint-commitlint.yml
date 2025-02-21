@@ -1,0 +1,25 @@
+# Make sure commi subject and description follow the Conventional Commits spec.
+# See https://www.conventionalcommits.org/
+
+name: "lint-commitlint.yml"
+
+on:
+  pull_request: {}
+
+concurrency:
+  group: "${{ github.workflow }}:${{ github.event.pull_request.number }}"
+  cancel-in-progress: true
+
+jobs:
+  commitlint:
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: "Checkout"
+        uses: "actions/checkout@v4"
+        with:
+          fetch-depth: 0
+          persist-credentials: "false"
+      - name: "Run commitlint on Pull Request's commits"
+        uses: "opensource-nepal/commitlint@v1"
+        with:
+          verbose: true
