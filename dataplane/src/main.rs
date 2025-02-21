@@ -2,7 +2,6 @@
 // Copyright Open Network Fabric Authors
 
 mod args;
-mod config;
 mod nat;
 mod packet;
 mod pipeline;
