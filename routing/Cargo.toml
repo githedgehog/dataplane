@@ -20,6 +20,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dplane-rpc = { workspace = true }
 bytes = { workspace = true, features = ["serde"] }
+cli = { workspace = true }
 
 [dev-dependencies]
 serde_yml = { workspace = true }
+
+
