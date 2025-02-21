@@ -1711,6 +1711,7 @@ name = "routing"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "cli",
  "dplane-rpc",
  "ipnet",
  "iptrie",
