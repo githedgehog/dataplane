@@ -5,6 +5,7 @@ mod args;
 mod config;
 mod nat;
 mod packet;
+mod pipeline;
 mod pipeline_old;
 
 use dpdk::dev::{Dev, TxOffloadConfig};
