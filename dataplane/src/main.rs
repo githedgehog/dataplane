@@ -6,7 +6,6 @@ mod config;
 mod nat;
 mod packet;
 mod pipeline;
-mod pipeline_old;
 
 use dpdk::dev::{Dev, TxOffloadConfig};
 use dpdk::eal::Eal;
@@ -18,9 +17,9 @@ use dpdk::{dev, eal, socket};
 use tracing::{info, trace, warn};
 
 use crate::args::{CmdArgs, Parser};
-use crate::config::Config;
 use crate::packet::Packet;
-use crate::pipeline_old::{Passthrough, Pipeline};
+use crate::pipeline::sample_nfs::Passthrough;
+use crate::pipeline::{DynPipeline, NetworkFunction};
 
 #[global_allocator]
 static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();
@@ -38,15 +37,10 @@ fn init_eal(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
 }
 
 // FIXME(mvachhar) construct pipline elsewhere, ideally from config file
-fn setup_pipeline() -> Pipeline<Mbuf> {
-    let mut pipeline = Pipeline::new();
-    let config = Config::new();
+fn setup_pipeline() -> DynPipeline<Mbuf> {
+    let pipeline = DynPipeline::new();
 
-    let passthrough = Passthrough::new();
-    pipeline.add_stage(Box::new(passthrough)).unwrap();
-    pipeline.update_config(&config).unwrap();
-
-    pipeline
+    pipeline.add_stage(Passthrough)
 }
 
 fn init_devices(eal: &Eal) -> Vec<Dev> {
@@ -108,7 +102,6 @@ fn start_rte_workers(devices: &[Dev]) {
         info!("Starting RTE Worker on {lcore_id:?}");
         WorkerThread::launch(lcore_id, move || {
             let mut pipeline = setup_pipeline();
-            pipeline.start().unwrap();
             let rx_queue = devices[0].rx_queue(RxQueueIndex(i as u16)).unwrap();
             let tx_queue = devices[0].tx_queue(TxQueueIndex(i as u16)).unwrap();
             loop {
@@ -121,10 +114,7 @@ fn start_rte_workers(devices: &[Dev]) {
                     }
                 });
 
-                // restore when new pipeline interface lands.  This one is unsound in 2024 edition
-                #[cfg(none)]
-                let pkts_out = pipeline.process_packets(Box::new(pkts));
-                let pkts_out = pkts;
+                let pkts_out = pipeline.process(pkts);
                 tx_queue.transmit(pkts_out.map(|pkt| pkt.reserialize()));
             }
         });
