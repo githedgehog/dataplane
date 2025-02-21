@@ -36,13 +36,14 @@ impl Default for RouteNhop {
 #[allow(unused)]
 #[derive(Debug, Default, Clone, PartialEq)]
 pub enum RouteOrigin {
-    Connected = 1,
-    Static = 2,
-    Ospf = 3,
-    Isis = 4,
-    Bgp = 5,
+    Local,
+    Connected,
+    Static,
+    Ospf,
+    Isis,
+    Bgp,
     #[default]
-    Other = 6,
+    Other,
 }
 
 #[derive(Debug, Clone, PartialEq)]
