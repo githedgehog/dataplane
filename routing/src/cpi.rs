@@ -4,8 +4,12 @@
 //! Control-plane interface (CPI)
 
 const DEFAULT_DP_UX_PATH: &str = "/var/run/frr/hh_dataplane.sock";
+const DEFAULT_DP_UX_PATH_CLI: &str = "/tmp/dataplane_ctl.sock";
 
+use crate::cli::handle_cli_request;
 use crate::routingdb::RoutingDb;
+use cli::cliproto::CliRequest;
+use cli::cliproto::CliSerialize;
 use dplane_rpc::log::Level;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -53,6 +57,7 @@ impl CpiHandle {
 pub struct CpiConf {
     pub rpc_loglevel: Option<String>,
     pub cpi_sock_path: Option<String>,
+    pub cli_sock_path: Option<String>,
 }
 
 fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
@@ -82,30 +87,53 @@ pub fn start_cpi(conf: &CpiConf, db: Arc<RoutingDb>) -> Result<CpiHandle, Router
 
     info!("Launching CPI, loglevel is {:?}....", loglevel);
 
-    /* path to bind to */
+    /* path to bind to for routing function */
     let cp_sock_path = conf
         .cpi_sock_path
         .as_ref()
         .map_or_else(|| DEFAULT_DP_UX_PATH.to_owned(), |path| path.to_owned());
 
-    /* create unix sock and bind it */
+    /* path to bind to for cli */
+    let cli_sock_path = conf
+        .cli_sock_path
+        .as_ref()
+        .map_or_else(|| DEFAULT_DP_UX_PATH_CLI.to_owned(), |path| path.to_owned());
+
+    /* create unix sock for routing function and bind it */
     let cpsock = open_unix_sock(&cp_sock_path)?;
+    cpsock.set_nonblocking(true);
+
+    /* create unix sock for cli and bind it */
+    let clisock = open_unix_sock(&cli_sock_path)?;
+    clisock.set_nonblocking(true);
 
     /* internal ctl channel */
     let (tx, mut rx) = channel::<CpiCtlMsg>();
 
-    /* create poller and register cp_sock */
+    /* Routing socket */
     const CPSOCK: Token = Token(0);
     let cpsock_fd = cpsock.as_raw_fd();
     let mut ev_cpsock = SourceFd(&cpsock_fd);
+
+    /* cli socket */
+    const CLISOCK: Token = Token(1);
+    let clisock_fd = clisock.as_raw_fd();
+    let mut ev_clisock = SourceFd(&clisock_fd);
+
+    /* create poller and register cp_sock and cli_sock */
     let mut poller = Poll::new().expect("Failed to create poller");
     poller
         .registry()
         .register(&mut ev_cpsock, CPSOCK, Interest::READABLE)
         .expect("Failed to register CPI sock");
+    poller
+        .registry()
+        .register(&mut ev_clisock, CLISOCK, Interest::READABLE)
+        .expect("Failed to register CLI sock");
 
     let cpi_loop = move || {
-        info!("Listening at {}.", cp_sock_path);
+        info!("CPI Listening at {}.", cp_sock_path);
+        info!("CLI Listening at {}.", cli_sock_path);
         info!("Entering main IO loop....");
         let mut events = Events::with_capacity(64);
         let mut buf = vec![0; 1024];
@@ -116,6 +144,7 @@ pub fn start_cpi(conf: &CpiConf, db: Arc<RoutingDb>) -> Result<CpiHandle, Router
                 .poll(&mut events, Some(Duration::from_secs(1)))
                 .expect("Poll error");
 
+            /* control channel */
             match rx.try_recv() {
                 Ok(CpiCtlMsg::Finish) => {
                     info!("Got request to shutdown. Au revoir ...");
@@ -126,6 +155,8 @@ pub fn start_cpi(conf: &CpiConf, db: Arc<RoutingDb>) -> Result<CpiHandle, Router
                     error!("Error receiving from ctl channel {e:?}")
                 }
             }
+
+            /* events on unix sockets */
             for event in &events {
                 #[allow(clippy::single_match)]
                 match event.token() {
@@ -133,6 +164,19 @@ pub fn start_cpi(conf: &CpiConf, db: Arc<RoutingDb>) -> Result<CpiHandle, Router
                         while event.is_readable() {
                             if let Ok((len, peer)) = cpsock.recv_from(buf.as_mut_slice()) {
                                 process_rx_data(&cpsock, &peer, &buf[..len], &db);
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    CLISOCK => {
+                        while event.is_readable() {
+                            if let Ok((len, peer)) = clisock.recv_from(buf.as_mut_slice()) {
+                                if let Ok(request) = CliRequest::deserialize(&buf[0..len]) {
+                                    handle_cli_request(&clisock, &peer, request, &db);
+                                }
+                            } else {
+                                break;
                             }
                         }
                     }
@@ -168,6 +212,7 @@ mod tests {
         let conf = CpiConf {
             rpc_loglevel: Some("debug".to_string()),
             cpi_sock_path: Some("/tmp/hh_dataplane.sock".to_string()),
+            cli_sock_path: None,
         };
 
         /* create routing database */
@@ -193,6 +238,7 @@ mod tests {
         let conf = CpiConf {
             rpc_loglevel: Some("debug".to_string()),
             cpi_sock_path: Some("/nonexistent/hh_dataplane.sock".to_string()),
+            cli_sock_path: None,
         };
 
         /* create routing database */
