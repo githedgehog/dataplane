@@ -28,7 +28,7 @@ const MAX_VLANS: usize = 4;
 const MAX_NET_EXTENSIONS: usize = 2;
 
 // TODO: remove `pub` from all fields
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Headers {
     pub eth: Eth,
     pub vlan: ArrayVec<Vlan, MAX_VLANS>,
@@ -931,5 +931,206 @@ where
 {
     fn try_vxlan_mut(&mut self) -> Option<&mut Vxlan> {
         self.headers_mut().try_vxlan_mut()
+    }
+}
+
+#[cfg(any(test, feature = "arbitrary"))]
+mod contract {
+    use crate::eth::ethtype::CommonEthType;
+    use crate::eth::{Eth, GenWithEthType};
+    use crate::headers::{Headers, Net, Transport};
+    use crate::icmp4::Icmp4;
+    use crate::icmp6::Icmp6;
+    use crate::ipv4;
+    use crate::ipv6;
+    use crate::parse::{DeParse, Parse};
+    use crate::tcp::Tcp;
+    use crate::udp::Udp;
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
+
+    impl TypeGenerator for Headers {
+        /// Generate a completely arbitrary value of [`Headers`].
+        ///
+        /// <div class="warning">
+        ///
+        /// # Note:
+        ///
+        /// You are likely looking for [`CommonHeaders`] rather than this method!
+        ///
+        /// This is _not_ an efficient method of testing "sunny-day" logic of general network
+        /// processing code (e.g., routing or NAT).
+        /// This method simply generates an arbitrary (fuzzer provided) byte sequence and then
+        /// parses it into a [`Headers`] value.
+        /// The fuzzer may make good guesses.
+        /// However, the space of all values for [`Headers`] is so ponderously large that it may
+        /// take the fuzzer a very large number of guesses before it returns valid or interesting
+        /// packets for most workloads.
+        ///
+        /// On the other hand, this method is well suited to testing and hardening the parser
+        /// itself since (in theory) every possible value of [`Headers`] can be generated this way.
+        /// That is, this `TypeGenerator` should have a full cover property (as all implementations
+        /// of `TypeGenerator` should).
+        /// It's just that full coverage is likely not what you are looking for.
+        /// </div>
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            // In theory, `size_of::<Headers>()` is strictly larger than the serialized
+            // representation, so this should always be correct (if not perfectly efficient).
+            // The exception is IPv4/6 extension headers (because those values are large and boxed).
+            // As a result, we will need to generate more bytes once we want to start testing more
+            // exotic packets.  For now, I will double to be safe.
+            let mut arbitrary_bytes: [u8; 2 * size_of::<Headers>()] = driver.r#gen()?;
+            let arbitrary_eth: Eth = driver.r#gen()?;
+            // ensure that the start of the arbitrary bytes for some valid ethernet header.
+            arbitrary_eth
+                .deparse(&mut arbitrary_bytes)
+                .unwrap_or_else(|_| unreachable!());
+            Some(
+                Headers::parse(&arbitrary_bytes)
+                    .unwrap_or_else(|_| unreachable!())
+                    .0,
+            )
+        }
+    }
+
+    #[repr(transparent)]
+    pub struct CommonHeaders;
+
+    impl ValueGenerator for CommonHeaders {
+        type Output = Headers;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let common_eth_type: CommonEthType = driver.r#gen()?;
+            let eth = GenWithEthType(common_eth_type.into()).generate(driver)?;
+            match common_eth_type {
+                CommonEthType::Ipv4 => {
+                    let common_next_header: ipv4::CommonNextHeader = driver.r#gen()?;
+                    let ipv4 =
+                        ipv4::GenWithNextHeader(common_next_header.into()).generate(driver)?;
+                    match common_next_header {
+                        ipv4::CommonNextHeader::Tcp => {
+                            let tcp: Tcp = driver.r#gen()?;
+                            let headers = Headers {
+                                eth,
+                                vlan: Default::default(),
+                                net: Some(Net::Ipv4(ipv4)),
+                                net_ext: Default::default(),
+                                transport: Some(Transport::Tcp(tcp)),
+                                udp_encap: None,
+                            };
+                            Some(headers)
+                        }
+                        ipv4::CommonNextHeader::Udp => {
+                            let udp: Udp = driver.r#gen()?;
+                            let headers = Headers {
+                                eth,
+                                vlan: Default::default(),
+                                net: Some(Net::Ipv4(ipv4)),
+                                net_ext: Default::default(),
+                                transport: Some(Transport::Udp(udp)),
+                                udp_encap: None,
+                            };
+                            Some(headers)
+                        }
+                        ipv4::CommonNextHeader::Icmp4 => {
+                            let icmp: Icmp4 = driver.r#gen()?;
+                            let headers = Headers {
+                                eth,
+                                vlan: Default::default(),
+                                net: Some(Net::Ipv4(ipv4)),
+                                net_ext: Default::default(),
+                                transport: Some(Transport::Icmp4(icmp)),
+                                udp_encap: None,
+                            };
+                            Some(headers)
+                        }
+                    }
+                }
+                CommonEthType::Ipv6 => {
+                    let common_next_header: ipv6::CommonNextHeader = driver.r#gen()?;
+                    let ipv6 =
+                        ipv6::GenWithNextHeader(common_next_header.into()).generate(driver)?;
+                    match common_next_header {
+                        ipv6::CommonNextHeader::Tcp => {
+                            let tcp: Tcp = driver.r#gen()?;
+                            let headers = Headers {
+                                eth,
+                                vlan: Default::default(),
+                                net: Some(Net::Ipv6(ipv6)),
+                                net_ext: Default::default(),
+                                transport: Some(Transport::Tcp(tcp)),
+                                udp_encap: None,
+                            };
+                            Some(headers)
+                        }
+                        ipv6::CommonNextHeader::Udp => {
+                            let udp: Udp = driver.r#gen()?;
+                            let headers = Headers {
+                                eth,
+                                vlan: Default::default(),
+                                net: Some(Net::Ipv6(ipv6)),
+                                net_ext: Default::default(),
+                                transport: Some(Transport::Udp(udp)),
+                                udp_encap: None,
+                            };
+                            Some(headers)
+                        }
+                        ipv6::CommonNextHeader::Icmp6 => {
+                            let icmp6: Icmp6 = driver.r#gen()?;
+                            let headers = Headers {
+                                eth,
+                                vlan: Default::default(),
+                                net: Some(Net::Ipv6(ipv6)),
+                                net_ext: Default::default(),
+                                transport: Some(Transport::Icmp6(icmp6)),
+                                udp_encap: None,
+                            };
+                            Some(headers)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(any(test, kani))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod test {
+    use crate::headers::Headers;
+    use crate::headers::contract::CommonHeaders;
+    use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, Parse, ParseError};
+
+    fn parse_back_test(headers: &Headers) {
+        let mut buffer = [0_u8; 1024];
+        let bytes_written =
+            match headers.deparse(&mut buffer[..headers.size().into_non_zero_usize().get()]) {
+                Ok(written) => written,
+                Err(DeParseError::Length(e)) => unreachable!("{e:?}", e = e),
+                Err(DeParseError::Invalid(e)) => unreachable!("{e:?}", e = e),
+                Err(DeParseError::BufferTooLong(_)) => unreachable!(),
+            };
+        let (parsed, bytes_parsed) =
+            match Headers::parse(&buffer[..bytes_written.into_non_zero_usize().get()]) {
+                Ok(k) => k,
+                Err(ParseError::Length(e)) => unreachable!("{e:?}", e = e),
+                Err(ParseError::Invalid(e)) => unreachable!("{e:?}", e = e),
+                Err(ParseError::BufferTooLong(_)) => unreachable!(),
+            };
+        assert_eq!(headers, &parsed);
+        assert_eq!(bytes_parsed, headers.size());
+    }
+
+    #[test]
+    #[cfg_attr(kani, kani::proof)]
+    fn parse_back() {
+        bolero::check!().with_type().for_each(parse_back_test)
+    }
+
+    #[test]
+    #[cfg_attr(kani, kani::proof)]
+    fn parse_back_common() {
+        bolero::check!()
+            .with_generator(CommonHeaders)
+            .for_each(parse_back_test)
     }
 }
