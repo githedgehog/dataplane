@@ -11,30 +11,13 @@
     clippy::panic
 )]
 
+use net::buffer::PacketBufferMut;
 use std::error::Error;
 
-use dpdk::mem::Mbuf;
-use net::headers::Headers;
-use net::vxlan::Vni;
-
 use crate::config::Config;
+use crate::packet::Packet;
 
-// FIXME(mvachhar) add actual data here
-pub struct Metadata {
-    #[allow(dead_code)]
-    pub vni: Option<Vni>,
-}
-
-pub struct MetaPacket {
-    pub packet: Headers,
-    #[allow(dead_code)]
-    pub metadata: Metadata,
-    #[allow(dead_code)]
-    pub outer_packet: Option<Box<Headers>>,
-    pub mbuf: Mbuf,
-}
-
-pub trait PipelineStage {
+pub trait PipelineStage<Buf: PacketBufferMut> {
     fn start(&mut self) -> Result<(), Box<dyn Error>>;
 
     // FIXME(mvachhar) This interface is likely to change once we figure out
@@ -45,12 +28,12 @@ pub trait PipelineStage {
     #[allow(unused)] // used when new pipeline lands
     fn process(
         &mut self,
-        packets: Box<dyn Iterator<Item = MetaPacket>>,
-    ) -> Box<dyn Iterator<Item = MetaPacket>>;
+        packets: Box<dyn Iterator<Item = Packet<Buf>>>,
+    ) -> Box<dyn Iterator<Item = Packet<Buf>>>;
 }
 
-pub struct Pipeline {
-    stages: Vec<Box<dyn PipelineStage>>,
+pub struct Pipeline<Buf: PacketBufferMut> {
+    stages: Vec<Box<dyn PipelineStage<Buf>>>,
     started: bool,
 }
 
@@ -60,7 +43,7 @@ pub enum PipelineError {
     AlreadyStarted,
 }
 
-impl Pipeline {
+impl<Buf: PacketBufferMut> Pipeline<Buf> {
     pub fn new() -> Self {
         Self {
             stages: vec![],
@@ -68,7 +51,7 @@ impl Pipeline {
         }
     }
 
-    pub fn add_stage(&mut self, stage: Box<dyn PipelineStage>) -> Result<(), PipelineError> {
+    pub fn add_stage(&mut self, stage: Box<dyn PipelineStage<Buf>>) -> Result<(), PipelineError> {
         if self.started {
             return Err(PipelineError::AlreadyStarted);
         }
@@ -97,8 +80,8 @@ impl Pipeline {
     #[allow(unused)] // used when new pipeline lands
     pub fn process_packets(
         &mut self,
-        packets: Box<dyn Iterator<Item = MetaPacket>>,
-    ) -> Box<dyn Iterator<Item = MetaPacket>> {
+        packets: Box<dyn Iterator<Item = Packet<Buf>>>,
+    ) -> Box<dyn Iterator<Item = Packet<Buf>>> {
         self.stages
             .iter_mut()
             .fold(packets, |packets, stage| stage.process(packets))
@@ -114,7 +97,7 @@ impl Passthrough {
     }
 }
 
-impl PipelineStage for Passthrough {
+impl<Buf: PacketBufferMut> PipelineStage<Buf> for Passthrough {
     fn start(&mut self) -> Result<(), Box<dyn Error>> {
         // nothing to do
         Ok(())
@@ -126,8 +109,8 @@ impl PipelineStage for Passthrough {
 
     fn process(
         &mut self,
-        packets: Box<dyn Iterator<Item = MetaPacket>>,
-    ) -> Box<dyn Iterator<Item = MetaPacket>> {
+        packets: Box<dyn Iterator<Item = Packet<Buf>>>,
+    ) -> Box<dyn Iterator<Item = Packet<Buf>>> {
         packets
     }
 }

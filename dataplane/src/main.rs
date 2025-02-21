@@ -4,22 +4,22 @@
 mod args;
 mod config;
 mod nat;
+mod packet;
 mod pipeline;
 
 use dpdk::dev::{Dev, TxOffloadConfig};
 use dpdk::eal::Eal;
 use dpdk::lcore::{LCoreId, WorkerThread};
-use dpdk::mem::{Pool, PoolConfig, PoolParams, RteAllocator};
+use dpdk::mem::{Mbuf, Pool, PoolConfig, PoolParams, RteAllocator};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, eal, socket};
-use net::headers::Headers;
-use net::parse::{DeParse, Parse};
 use tracing::{info, trace, warn};
 
 use crate::args::{CmdArgs, Parser};
 use crate::config::Config;
-use crate::pipeline::{MetaPacket, Metadata, Passthrough, Pipeline};
+use crate::packet::Packet;
+use crate::pipeline::{Passthrough, Pipeline};
 
 #[global_allocator]
 static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();
@@ -37,7 +37,7 @@ fn init_eal(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
 }
 
 // FIXME(mvachhar) construct pipline elsewhere, ideally from config file
-fn setup_pipeline() -> Pipeline {
+fn setup_pipeline() -> Pipeline<Mbuf> {
     let mut pipeline = Pipeline::new();
     let config = Config::new();
 
@@ -112,32 +112,19 @@ fn start_rte_workers(devices: &Vec<Dev>) {
             let tx_queue = devices[0].tx_queue(TxQueueIndex(i as u16)).unwrap();
             loop {
                 let mbufs = rx_queue.receive();
-                let pkts = mbufs.filter_map(|mut mbuf| {
-                    let packet_result = Headers::parse(mbuf.raw_data_mut());
-                    let packet = match packet_result {
-                        Ok(packet) => packet.0,
-                        Err(e) => {
-                            trace!("Failed to parse packet {e:?}");
-                            return None;
-                        }
-                    };
-                    Some(MetaPacket {
-                        packet,
-                        metadata: Metadata { vni: None },
-                        outer_packet: None,
-                        mbuf,
-                    })
+                let pkts = mbufs.filter_map(|mbuf| match Packet::new(mbuf) {
+                    Ok(pkt) => Some(pkt),
+                    Err(e) => {
+                        trace!("Failed to parse packet: {e:?}");
+                        None
+                    }
                 });
 
                 // restore when new pipeline interface lands.  This one is unsound in 2024 edition
                 #[cfg(none)]
                 let pkts_out = pipeline.process_packets(Box::new(pkts));
                 let pkts_out = pkts;
-                tx_queue.transmit(pkts_out.map(|pkt| {
-                    let mut mbuf = pkt.mbuf;
-                    pkt.packet.deparse(mbuf.raw_data_mut()).unwrap();
-                    mbuf
-                }));
+                tx_queue.transmit(pkts_out.map(|pkt| pkt.reserialize()));
             }
         });
     });
