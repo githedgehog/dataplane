@@ -226,15 +226,27 @@ mod contract {
     use crate::eth::Eth;
     use crate::eth::ethtype::EthType;
     use crate::eth::mac::{DestinationMac, SourceMac};
-    use bolero::{Driver, TypeGenerator};
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
 
-    impl TypeGenerator for Eth {
-        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+    /// Generate an [`Eth`] with a specific [`EthType`]
+    #[repr(transparent)]
+    pub struct GenWithEthType(pub EthType);
+
+    impl ValueGenerator for GenWithEthType {
+        type Output = Eth;
+        /// Generate an [`Eth`] with the [`EthType`] specified in `Self`
+        fn generate<D: Driver>(&self, u: &mut D) -> Option<Self::Output> {
             let source_mac: SourceMac = u.r#gen()?;
             let destination_mac: DestinationMac = u.r#gen()?;
-            let ether_type: EthType = u.r#gen()?;
-            let eth = Eth::new(source_mac, destination_mac, ether_type);
+            let eth = Eth::new(source_mac, destination_mac, self.0);
             Some(eth)
+        }
+    }
+
+    impl TypeGenerator for Eth {
+        /// Generate an arbitrary [`Eth`] header
+        fn generate<D: Driver>(u: &mut D) -> Option<Self> {
+            GenWithEthType(u.r#gen()?).generate(u)
         }
     }
 }
