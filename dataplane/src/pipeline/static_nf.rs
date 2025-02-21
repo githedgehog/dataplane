@@ -14,6 +14,11 @@ pub trait NetworkFunction<Buf: PacketBufferMut> {
     ///
     /// Note that a concrete iterator type is required to call this function and
     /// a concrete iterator type must be returned from this function (i.e., `impl Iterator`).
+    /// If you don't have a concrete iterator type, use the [`DynNetworkFunction`] trait instead.
+    ///
+    /// # See Also
+    ///
+    /// [`DynNetworkFunction`]
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,
