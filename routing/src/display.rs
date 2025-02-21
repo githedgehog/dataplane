@@ -6,7 +6,7 @@
 use crate::encapsulation::Encapsulation;
 use crate::interface::{IfDataDot1q, IfDataEthernet, IfState, IfTable, IfType, Interface};
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
-use crate::pretty_utils::{line, Heading};
+use crate::pretty_utils::{Heading, line};
 use crate::rmac::{RmacEntry, RmacStore};
 use crate::routingdb::VrfTable;
 use crate::vrf::{Route, ShimNhop, Vrf};

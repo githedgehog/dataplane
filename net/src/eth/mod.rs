@@ -223,16 +223,16 @@ impl From<EthNext> for Header {
 
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
+    use crate::eth::Eth;
     use crate::eth::ethtype::EthType;
     use crate::eth::mac::{DestinationMac, SourceMac};
-    use crate::eth::Eth;
     use bolero::{Driver, TypeGenerator};
 
     impl TypeGenerator for Eth {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
-            let source_mac: SourceMac = u.gen()?;
-            let destination_mac: DestinationMac = u.gen()?;
-            let ether_type: EthType = u.gen()?;
+            let source_mac: SourceMac = u.r#gen()?;
+            let destination_mac: DestinationMac = u.r#gen()?;
+            let ether_type: EthType = u.r#gen()?;
             let eth = Eth::new(source_mac, destination_mac, ether_type);
             Some(eth)
         }

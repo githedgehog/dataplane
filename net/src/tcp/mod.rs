@@ -10,8 +10,8 @@ use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
 };
 use crate::tcp::port::TcpPort;
-use etherparse::err::tcp::{HeaderError, HeaderSliceError};
 use etherparse::TcpHeader;
+use etherparse::err::tcp::{HeaderError, HeaderSliceError};
 use std::num::NonZero;
 
 use crate::tcp::checksum::TcpChecksum;
@@ -375,21 +375,21 @@ mod contract {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
             let mut header = Tcp(TcpHeader::default());
             header
-                .set_source(u.gen()?)
-                .set_destination(u.gen()?)
-                .set_checksum(u.gen()?)
-                .set_sequence_number(u.gen()?)
-                .set_ack(u.gen()?)
-                .set_ack_number(u.gen()?)
-                .set_cwr(u.gen()?)
-                .set_ece(u.gen()?)
-                .set_fin(u.gen()?)
-                .set_psh(u.gen()?)
-                .set_rst(u.gen()?)
-                .set_syn(u.gen()?)
-                .set_urg(u.gen()?)
-                .set_window_size(u.gen()?)
-                .set_urgent_pointer(u.gen()?);
+                .set_source(u.r#gen()?)
+                .set_destination(u.r#gen()?)
+                .set_checksum(u.r#gen()?)
+                .set_sequence_number(u.r#gen()?)
+                .set_ack(u.r#gen()?)
+                .set_ack_number(u.r#gen()?)
+                .set_cwr(u.r#gen()?)
+                .set_ece(u.r#gen()?)
+                .set_fin(u.r#gen()?)
+                .set_psh(u.r#gen()?)
+                .set_rst(u.r#gen()?)
+                .set_syn(u.r#gen()?)
+                .set_urg(u.r#gen()?)
+                .set_window_size(u.r#gen()?)
+                .set_urgent_pointer(u.r#gen()?);
             Some(header)
         }
     }

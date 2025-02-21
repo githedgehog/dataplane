@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use iptrie::{map::RTrieMap, Ipv4Prefix, Ipv6Prefix};
+use iptrie::{Ipv4Prefix, Ipv6Prefix, map::RTrieMap};
 use net::vxlan::Vni;
 use routing::prefix::Prefix;
 use serde::{Deserialize, Serialize};

@@ -105,12 +105,11 @@ fn init_devices(eal: &Eal) -> Vec<Dev> {
 fn start_rte_workers(devices: &Vec<Dev>) {
     LCoreId::iter().enumerate().for_each(|(i, lcore_id)| {
         info!("Starting RTE Worker on {lcore_id:?}");
-        let rx_queue = devices[0].rx_queue(RxQueueIndex(i as u16)).unwrap();
-        let tx_queue = devices[0].tx_queue(TxQueueIndex(i as u16)).unwrap();
         WorkerThread::launch(lcore_id, move || {
             let mut pipeline = setup_pipeline();
             pipeline.start().unwrap();
-
+            let rx_queue = devices[0].rx_queue(RxQueueIndex(i as u16)).unwrap();
+            let tx_queue = devices[0].tx_queue(TxQueueIndex(i as u16)).unwrap();
             loop {
                 let mbufs = rx_queue.receive();
                 let pkts = mbufs.filter_map(|mut mbuf| {
@@ -130,7 +129,10 @@ fn start_rte_workers(devices: &Vec<Dev>) {
                     })
                 });
 
+                // restore when new pipeline interface lands.  This one is unsound in 2024 edition
+                #[cfg(none)]
                 let pkts_out = pipeline.process_packets(Box::new(pkts));
+                let pkts_out = pkts;
                 tx_queue.transmit(pkts_out.map(|pkt| {
                     let mut mbuf = pkt.mbuf;
                     pkt.packet.deparse(mbuf.raw_data_mut()).unwrap();

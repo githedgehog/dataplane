@@ -84,7 +84,7 @@ mod contract {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
             // TODO: 20 bytes is far too small to properly test the space of `Icmp4`
             // We will need better error handling if we want to bump it up tho.
-            let buffer: [u8; 20] = driver.gen()?;
+            let buffer: [u8; 20] = driver.r#gen()?;
             let icmp4 = match Icmp4::parse(&buffer) {
                 Ok((icmp4, _)) => icmp4,
                 Err(ParseError::Length(l)) => unreachable!("{:?}", l),

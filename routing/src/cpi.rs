@@ -19,9 +19,9 @@ use crate::errors::RouterError;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixDatagram;
 use std::str::FromStr;
-use std::sync::mpsc::channel;
 use std::sync::mpsc::Sender;
 use std::sync::mpsc::TryRecvError;
+use std::sync::mpsc::channel;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tracing::{debug, error, info};
@@ -152,7 +152,7 @@ pub fn start_cpi(conf: &CpiConf, db: Arc<RoutingDb>) -> Result<CpiHandle, Router
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
-    use crate::cpi::{start_cpi, CpiConf};
+    use crate::cpi::{CpiConf, start_cpi};
     use crate::errors::RouterError;
     use crate::interface::{IfTable, Interface};
     use crate::rmac::RmacStore;

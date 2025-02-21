@@ -38,7 +38,7 @@ mod contract {
 
     impl TypeGenerator for Ecn {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            Some(Ecn::new(driver.gen::<u8>()? & 0b0000_0011).unwrap_or_else(|_| unreachable!()))
+            Some(Ecn::new(driver.r#gen::<u8>()? & 0b0000_0011).unwrap_or_else(|_| unreachable!()))
         }
     }
 }

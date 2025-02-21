@@ -6,7 +6,7 @@
 use net::eth::mac::Mac;
 use net::vxlan::Vni;
 use std::collections::hash_map;
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::{HashMap, hash_map::Entry};
 use std::net::IpAddr;
 
 #[derive(Debug, Eq, Hash, PartialEq)]

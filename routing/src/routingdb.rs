@@ -8,8 +8,8 @@ use crate::interface::IfTable;
 use crate::rmac::RmacStore;
 use crate::vrf::{Vrf, VrfId};
 use net::vxlan::Vni;
-use std::collections::hash_map;
 use std::collections::HashMap;
+use std::collections::hash_map;
 use std::sync::Arc;
 use std::sync::RwLock;
 
@@ -212,9 +212,11 @@ mod tests {
 
         /* remove VRFs 0 - interfaces should be automatically detached */
         let _ = vrftable.remove_vrf(0, &mut iftable);
-        assert!(vrftable
-            .get_vrf(0)
-            .is_err_and(|e| e == RouterError::NoSuchVrf));
+        assert!(
+            vrftable
+                .get_vrf(0)
+                .is_err_and(|e| e == RouterError::NoSuchVrf)
+        );
         let eth0 = iftable.get_interface(2).expect("Should be there");
         assert!(eth0.vrf.is_none(), "Eth0 should be detached");
         let eth1 = iftable.get_interface(3).expect("Should be there");
@@ -222,17 +224,21 @@ mod tests {
 
         /* remove VRFs 1 - interfaces should be automatically detached */
         let _ = vrftable.remove_vrf(1, &mut iftable);
-        assert!(vrftable
-            .get_vrf(1)
-            .is_err_and(|e| e == RouterError::NoSuchVrf));
+        assert!(
+            vrftable
+                .get_vrf(1)
+                .is_err_and(|e| e == RouterError::NoSuchVrf)
+        );
         let vlan100 = iftable.get_interface(4).expect("Should be there");
         assert!(vlan100.vrf.is_none(), "vlan100 should be detached");
         let vlan200 = iftable.get_interface(5).expect("Should be there");
         assert!(vlan200.vrf.is_none(), "vlan200 should be detached");
 
         /* Should be gone from by_vni map */
-        assert!(vrftable
-            .get_vrf_by_vni(3000)
-            .is_err_and(|e| e == RouterError::NoSuchVrf),);
+        assert!(
+            vrftable
+                .get_vrf_by_vni(3000)
+                .is_err_and(|e| e == RouterError::NoSuchVrf),
+        );
     }
 }

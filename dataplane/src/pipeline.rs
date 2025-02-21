@@ -42,6 +42,7 @@ pub trait PipelineStage {
     // we figure out the best way to do this.
     fn update_config(&mut self, config: &Config) -> Result<(), Box<dyn Error>>;
 
+    #[allow(unused)] // used when new pipeline lands
     fn process(
         &mut self,
         packets: Box<dyn Iterator<Item = MetaPacket>>,
@@ -93,6 +94,7 @@ impl Pipeline {
         result.map(|_| ())
     }
 
+    #[allow(unused)] // used when new pipeline lands
     pub fn process_packets(
         &mut self,
         packets: Box<dyn Iterator<Item = MetaPacket>>,
@@ -137,9 +139,10 @@ impl PipelineStage for Passthrough {
 mod test {
     use super::{MetaPacket, Metadata, Passthrough, Pipeline};
     use dpdk::mem::Mbuf;
+    use net::eth::Eth;
+    use net::eth::Eth;
     use net::eth::ethertype::EthType;
     use net::eth::mac::{DestinationMac, Mac, SourceMac};
-    use net::eth::Eth;
     use net::headers::Headers;
 
     #[test]

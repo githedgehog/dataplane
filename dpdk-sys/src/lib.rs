@@ -8,9 +8,13 @@
     clippy::all,
     clippy::pedantic,
     deprecated,
-    non_snake_case,
     non_camel_case_types,
+    non_snake_case,
     non_upper_case_globals
 )]
+// Bindgen code currently isn't complying with 2024 edition style but not much we can do a about it
+// on our side.
+// Silence the warning messages for now.
+#![allow(unsafe_op_in_unsafe_fn)]
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));

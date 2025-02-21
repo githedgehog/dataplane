@@ -84,7 +84,7 @@ mod contract {
 
     impl TypeGenerator for Icmp6 {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            let buf: [u8; BYTE_SLICE_SIZE] = driver.gen()?;
+            let buf: [u8; BYTE_SLICE_SIZE] = driver.r#gen()?;
             let header = match Icmp6::parse(&buf) {
                 Ok((h, _)) => h,
                 Err(e) => unreachable!("{e:?}", e = e),

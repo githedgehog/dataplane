@@ -10,13 +10,13 @@ use alloc::string::String;
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::Cell;
 use core::ffi::c_uint;
-use core::ffi::{c_int, CStr};
+use core::ffi::{CStr, c_int};
 use core::fmt::{Debug, Display};
 use core::marker::PhantomData;
 use core::mem::transmute;
+use core::ptr::NonNull;
 use core::ptr::null;
 use core::ptr::null_mut;
-use core::ptr::NonNull;
 use core::slice::from_raw_parts_mut;
 use errno::Errno;
 use tracing::{error, info, warn};
@@ -179,7 +179,7 @@ impl PoolInner {
     ///
     /// </div>
     pub(crate) unsafe fn as_ref(&self) -> &dpdk_sys::rte_mempool {
-        self.pool.as_ref()
+        unsafe { self.pool.as_ref() }
     }
 
     /// Get a mutable pointer to the raw DPDK [`rte_mempool`].
@@ -291,19 +291,18 @@ impl PoolConfig {
         }
 
         if name.len() > PoolConfig::MAX_NAME_LEN {
-            return Err(InvalidMemPoolName::TooLong(
-                format!(
-                    "Memory pool name must be at most {max} characters of valid ASCII: {name} is too long ({len} > {max}).",
-                    max = PoolConfig::MAX_NAME_LEN,
-                    len = name.len()
-                )
-            ));
+            return Err(InvalidMemPoolName::TooLong(format!(
+                "Memory pool name must be at most {max} characters of valid ASCII: {name} is too long ({len} > {max}).",
+                max = PoolConfig::MAX_NAME_LEN,
+                len = name.len()
+            )));
         }
 
         if name.is_empty() {
-            return Err(InvalidMemPoolName::Empty(
-                format!("Memory pool name must be at least 1 character of valid ASCII: {name} is too short ({len} == 0).", len = name.len()))
-            );
+            return Err(InvalidMemPoolName::Empty(format!(
+                "Memory pool name must be at least 1 character of valid ASCII: {name} is too short ({len} == 0).",
+                len = name.len()
+            )));
         }
 
         const ASCII_LETTERS: [char; 26 * 2] = [
@@ -661,51 +660,61 @@ unsafe impl GlobalAlloc for RteAllocator {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if SWITCHED.get() {
-            dpdk_sys::rte_malloc_socket(
-                null(),
-                layout.size(),
-                layout.align() as _,
-                RTE_SOCKET.get().0 as _,
-            ) as _
+            unsafe {
+                dpdk_sys::rte_malloc_socket(
+                    null(),
+                    layout.size(),
+                    layout.align() as _,
+                    RTE_SOCKET.get().0 as _,
+                ) as _
+            }
         } else {
-            System.alloc(layout)
+            unsafe { System.alloc(layout) }
         }
     }
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if SWITCHED.get() {
-            dpdk_sys::rte_free(ptr as _);
+            unsafe {
+                dpdk_sys::rte_free(ptr as _);
+            }
         } else {
-            System.dealloc(ptr, layout);
+            unsafe {
+                System.dealloc(ptr, layout);
+            }
         }
     }
 
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         if SWITCHED.get() {
-            dpdk_sys::rte_zmalloc_socket(
-                null(),
-                layout.size(),
-                layout.align() as _,
-                RTE_SOCKET.get().0 as _,
-            ) as _
+            unsafe {
+                dpdk_sys::rte_zmalloc_socket(
+                    null(),
+                    layout.size(),
+                    layout.align() as _,
+                    RTE_SOCKET.get().0 as _,
+                ) as _
+            }
         } else {
-            System.alloc_zeroed(layout)
+            unsafe { System.alloc_zeroed(layout) }
         }
     }
 
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if SWITCHED.get() {
-            dpdk_sys::rte_realloc_socket(
-                ptr as _,
-                new_size,
-                layout.align() as _,
-                RTE_SOCKET.get().0 as _,
-            ) as _
+            unsafe {
+                dpdk_sys::rte_realloc_socket(
+                    ptr as _,
+                    new_size,
+                    layout.align() as _,
+                    RTE_SOCKET.get().0 as _,
+                ) as _
+            }
         } else {
-            System.realloc(ptr, layout, new_size)
+            unsafe { System.realloc(ptr, layout, new_size) }
         }
     }
 }

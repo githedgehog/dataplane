@@ -103,7 +103,10 @@ impl Parse for Vxlan {
             return Err(ParseError::Invalid(VxlanError::RequiredBitUnset));
         }
         if slice[0] != Vxlan::LEGAL_FLAGS {
-            trace!("Received VXLAN header with illegal flags: {flags:#8b}.  Flags will be ignored per the spec, however this is likely an error on the source side.", flags = slice[0]);
+            trace!(
+                "Received VXLAN header with illegal flags: {flags:#8b}.  Flags will be ignored per the spec, however this is likely an error on the source side.",
+                flags = slice[0]
+            );
         }
         if slice[1..=3] != [0, 0, 0] {
             trace!("Received VXLAN header with reserved bits set.");

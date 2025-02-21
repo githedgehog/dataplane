@@ -906,7 +906,9 @@ pub enum StandardErrno {
     CaseClash = ECASECLASH,
     /// While decoding a multibyte character the function came along an invalid or an incomplete
     /// sequence of bytes or the given wide character is invalid.
-    #[error("While decoding a multibyte character the function came along an invalid or an incomplete sequence of bytes or the given wide character is invalid.")]
+    #[error(
+        "While decoding a multibyte character the function came along an invalid or an incomplete sequence of bytes or the given wide character is invalid."
+    )]
     IllegalSequence = EILSEQ,
     /// Value too large for defined data type
     #[error("Value too large for defined data type")]
@@ -1249,9 +1251,7 @@ pub enum StandardErrno {
     #[error("(negative) Too many references: cannot splice")]
     TooManyReferencesNeg = -ETOOMANYREFS,
     /// (negative) The per-user limit on the new process would be exceeded by an attempted fork.
-    #[error(
-        "(negative) The per-user limit on new process would be exceeded by an attempted fork."
-    )]
+    #[error("(negative) The per-user limit on new process would be exceeded by an attempted fork.")]
     ProcessLimitExceededNeg = -EPROCLIM,
     /// (negative) The file quota system is confused because there are too many users.
     #[error("(negative) The file quota system is confused because there are too many users.")]
@@ -1277,7 +1277,9 @@ pub enum StandardErrno {
     /// (negative)
     /// While decoding a multibyte character the function came along an invalid or an incomplete
     /// sequence of bytes or the given wide character is invalid.
-    #[error("(negative) While decoding a multibyte character the function came along an invalid or an incomplete sequence of bytes or the given wide character is invalid.")]
+    #[error(
+        "(negative) While decoding a multibyte character the function came along an invalid or an incomplete sequence of bytes or the given wide character is invalid."
+    )]
     IllegalSequenceNeg = -EILSEQ,
     /// (negative) Value too large for defined data type
     #[error("(negative) Value too large for defined data type")]

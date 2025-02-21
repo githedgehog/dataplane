@@ -6,8 +6,8 @@
 
 use crate::encapsulation::Encapsulation;
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
-use std::collections::btree_set;
 pub use std::collections::BTreeSet;
+use std::collections::btree_set;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::net::IpAddr;

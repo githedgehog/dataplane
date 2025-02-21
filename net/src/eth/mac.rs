@@ -238,7 +238,7 @@ mod contract {
 
     impl TypeGenerator for SourceMac {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
-            let mut mac: Mac = u.gen()?;
+            let mut mac: Mac = u.r#gen()?;
             mac.0[0] &= 0b1111_1110;
             if mac.is_zero() {
                 mac.0[5] = 1;
@@ -249,7 +249,7 @@ mod contract {
 
     impl TypeGenerator for DestinationMac {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
-            let mut mac: Mac = u.gen()?;
+            let mut mac: Mac = u.r#gen()?;
             if mac.is_zero() {
                 mac.0[5] = 1;
             }

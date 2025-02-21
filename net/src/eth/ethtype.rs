@@ -50,7 +50,7 @@ impl EthType {
     /// get the raw `u16` value (native-endian)
     #[must_use]
     pub const fn raw(self) -> u16 {
-        self.0 .0
+        self.0.0
     }
 }
 
@@ -61,7 +61,7 @@ mod contract {
 
     impl TypeGenerator for EthType {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
-            Some(EthType::new(u.gen()?))
+            Some(EthType::new(u.r#gen()?))
         }
     }
 

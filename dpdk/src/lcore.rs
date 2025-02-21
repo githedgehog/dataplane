@@ -145,9 +145,11 @@ impl WorkerThread {
         #[inline]
         unsafe extern "C" fn _launch<Task: Send + FnOnce()>(arg: *mut c_void) -> c_int {
             RteAllocator::assert_initialized();
-            let task = Box::from_raw(
-                arg.as_mut().expect("null argument in worker setup") as *mut _ as *mut Task,
-            );
+            let task = unsafe {
+                Box::from_raw(
+                    arg.as_mut().expect("null argument in worker setup") as *mut _ as *mut Task,
+                )
+            };
             task();
             0
         }

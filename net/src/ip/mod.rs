@@ -45,7 +45,7 @@ impl NextHeader {
     /// Return the [`NextHeader`] represented as a `u8`
     #[must_use]
     pub fn as_u8(&self) -> u8 {
-        self.0 .0
+        self.0.0
     }
 
     /// Set the value of this [`NextHeader`] to an arbitrary `u8`
@@ -61,7 +61,7 @@ mod contract {
 
     impl TypeGenerator for NextHeader {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            Some(NextHeader::new(driver.gen()?))
+            Some(NextHeader::new(driver.r#gen()?))
         }
     }
 }

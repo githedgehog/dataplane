@@ -44,7 +44,7 @@ mod contract {
 
     impl TypeGenerator for UnicastIpv6Addr {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            let ip = Ipv6Addr::from(driver.gen::<u128>()?);
+            let ip = Ipv6Addr::from(driver.r#gen::<u128>()?);
             // multicast ipv6 addresses begin with 0xFF
             // map back to unicast space if we hit a multicast address
             if ip.is_multicast() {

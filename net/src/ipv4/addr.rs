@@ -44,7 +44,7 @@ mod contract {
 
     impl TypeGenerator for UnicastIpv4Addr {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
-            let raw = u.gen::<[u8; 4]>()?;
+            let raw = u.r#gen::<[u8; 4]>()?;
             let ip = Ipv4Addr::from(raw);
             if ip.is_multicast() {
                 // multicast addresses start with 0b1110
