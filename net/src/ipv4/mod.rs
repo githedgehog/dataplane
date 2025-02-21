@@ -33,7 +33,7 @@ pub use contract::*;
 
 /// An IPv4 header
 #[repr(transparent)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Ipv4(Ipv4Header);
 
 impl Ipv4 {
