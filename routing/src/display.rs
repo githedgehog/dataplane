@@ -79,7 +79,7 @@ impl Display for Encapsulation {
 }
 impl Display for Route {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{:?} [{}/{}]", self.rtype, self.distance, self.metric)?;
+        writeln!(f, "{:?} [{}/{}]", self.origin, self.distance, self.metric)?;
         for slim in &self.s_nhops {
             writeln!(f, "       {slim}")?;
         }
