@@ -13,12 +13,25 @@ use crate::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::nexthop::{FwAction, NhopKey};
 use crate::prefix::Prefix;
 use crate::rmac::RmacEntry;
-use crate::vrf::{Route, RouteNhop, Vrf};
-use dplane_rpc::msg::{ForwardAction, IpRoute, NextHop, NextHopEncap, Rmac, VxlanEncap};
+use crate::vrf::{Route, RouteNhop, RouteOrigin, Vrf};
+use dplane_rpc::msg::{ForwardAction, IpRoute, NextHop, NextHopEncap, Rmac, RouteType, VxlanEncap};
 use net::eth::mac::Mac;
 use net::vxlan::Vni;
 use std::net::{IpAddr, Ipv4Addr};
 
+impl From<RouteType> for RouteOrigin {
+    fn from(value: RouteType) -> Self {
+        match value {
+            RouteType::Connected => RouteOrigin::Connected,
+            RouteType::Static => RouteOrigin::Static,
+            RouteType::Ospf => RouteOrigin::Ospf,
+            RouteType::Isis => RouteOrigin::Isis,
+            RouteType::Bgp => RouteOrigin::Bgp,
+            RouteType::Other => RouteOrigin::Other,
+            RouteType::Local => todo!()
+        }
+    }
+}
 impl From<&VxlanEncap> for VxlanEncapsulation {
     fn from(vxlan: &VxlanEncap) -> Self {
         VxlanEncapsulation {
@@ -65,7 +78,7 @@ impl From<&NextHop> for RouteNhop {
 impl From<&IpRoute> for Route {
     fn from(r: &IpRoute) -> Self {
         Route {
-            rtype: r.rtype,
+            origin: RouteOrigin::from(r.rtype),
             distance: r.distance,
             metric: r.metric,
             s_nhops: Vec::with_capacity(1),

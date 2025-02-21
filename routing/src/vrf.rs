@@ -14,9 +14,6 @@ use iptrie::{Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
 use std::sync::Arc;
 
-/// We'll use the RPC definitions for these
-use dplane_rpc::msg::{RouteDistance, RouteMetric, RouteType};
-
 /// Every VRF is univocally identified with a numerical VRF id
 pub type VrfId = u32;
 
@@ -35,17 +32,29 @@ impl Default for RouteNhop {
     }
 }
 
+#[allow(unused)]
+#[derive(Debug, Default, Clone, PartialEq)]
+pub enum RouteOrigin {
+    Connected = 1,
+    Static = 2,
+    Ospf = 3,
+    Isis = 4,
+    Bgp = 5,
+    #[default]
+    Other = 6,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Route {
-    pub rtype: RouteType,
-    pub distance: RouteDistance,
-    pub metric: RouteMetric,
+    pub origin: RouteOrigin,
+    pub distance: u8,
+    pub metric: u32,
     pub s_nhops: Vec<ShimNhop>,
 }
 impl Default for Route {
     fn default() -> Self {
         Self {
-            rtype: RouteType::Other,
+            origin: RouteOrigin::default(),
             distance: 0,
             metric: 0,
             s_nhops: Vec::with_capacity(1),
@@ -291,7 +300,6 @@ impl Vrf {
 pub mod tests {
     use super::*;
     use std::str::FromStr;
-    use dplane_rpc::msg::RouteType;
     use crate::interface::IfIndex;
     use crate::vrf::VrfId;
     use crate::nexthop::{FwAction, NhopKey};
@@ -370,9 +378,9 @@ pub mod tests {
             key,
         }
     }
-    pub fn build_test_route(rtype: RouteType, distance: RouteDistance, metric: RouteMetric) -> Route {
+    pub fn build_test_route(origin: RouteOrigin, distance: u8, metric: u32) -> Route {
         Route {
-            rtype,
+            origin,
             distance,
             metric,
             s_nhops: vec![],
@@ -386,7 +394,7 @@ pub mod tests {
 
         /* Add static default via 10.0.0.1 */
         let prefix: Prefix = Prefix::root_v4();
-        let route = build_test_route(RouteType::Static, 1, 0);
+        let route = build_test_route(RouteOrigin::Static, 1, 0);
         let nhop = build_test_nhop(Some("10.0.0.1"), None, 0, None);
         vrf.add_route(&prefix, route, &[nhop]);
 
@@ -407,7 +415,7 @@ pub mod tests {
 
         /* Add static default via 2001::1 */
         let prefix: Prefix = Prefix::root_v4();
-        let route = build_test_route(RouteType::Static, 1, 0);
+        let route = build_test_route(RouteOrigin::Static, 1, 0);
         let nhop = build_test_nhop(Some("2001::1"), None, 0, None);
         vrf.add_route(&prefix, route, &[nhop]);
 
@@ -431,7 +439,7 @@ pub mod tests {
             /* add a v4 route */
             let nh1 = build_test_nhop(Some("10.0.0.1"), Some(1), 0, None);
             let nh2 = build_test_nhop(Some("10.0.0.2"), Some(2), 0, None);
-            let route = build_test_route(RouteType::Ospf, 110, 20);
+            let route = build_test_route(RouteOrigin::Ospf, 110, 20);
             let prefix = Prefix::expect_from((format!("7.0.0.{i}").as_str(), 32));
             vrf.add_route(&prefix, route.clone() /* only test */, &[nh1, nh2]);
 
@@ -441,7 +449,7 @@ pub mod tests {
             assert_eq!(longest, prefix);
             assert_eq!(best.distance, route.distance);
             assert_eq!(best.metric, route.metric);
-            assert_eq!(best.rtype, route.rtype);
+            assert_eq!(best.origin, route.origin);
             assert_eq!(best.s_nhops.len(), 2);
             assert!(best.s_nhops.iter().any(|s| s.rc.key.address == Some(build_address("10.0.0.1")) && s.rc.key.ifindex == Some(1)));
             assert!(best.s_nhops.iter().any(|s| s.rc.key.address == Some(build_address("10.0.0.2")) && s.rc.key.ifindex == Some(2)));
