@@ -7,17 +7,30 @@ use enum_primitive::enum_from_primitive;
 use log::Level;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
+use strum::{AsRefStr, EnumIter, EnumString};
 use thiserror::Error;
+
+#[derive(AsRefStr, EnumString, Debug, Clone, Serialize, Deserialize, EnumIter)]
+#[strum(ascii_case_insensitive)]
+pub enum RouteProtocol {
+    Local,
+    Connected,
+    Static,
+    Ospf,
+    Isis,
+    Bgp,
+}
 
 /// Arguments to a cli request
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct RequestArgs {
-    pub address: Option<IpAddr>,      /* an IP address */
-    pub prefix: Option<(IpAddr, u8)>, /* an IP prefix */
-    pub vrfid: Option<u32>,           /* Id of a VRF */
-    pub ifname: Option<String>,       /* name of interface */
-    pub loglevel: Option<Level>,      /* loglevel, from crate log */
+    pub address: Option<IpAddr>,         /* an IP address */
+    pub prefix: Option<(IpAddr, u8)>,    /* an IP prefix */
+    pub vrfid: Option<u32>,              /* Id of a VRF */
+    pub ifname: Option<String>,          /* name of interface */
+    pub loglevel: Option<Level>,         /* loglevel, from crate log */
+    pub protocol: Option<RouteProtocol>, /* a type of route or routing protocol */
 }
 
 /// A Cli request
