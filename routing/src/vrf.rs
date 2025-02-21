@@ -4,6 +4,7 @@
 //! VRF module to store Ipv4 and Ipv6 routing tables
 
 use std::hash::Hash;
+use std::iter::Filter;
 use std::net::IpAddr;
 
 use crate::nexthop::{Nhop, NhopKey, NhopStore};
@@ -78,6 +79,12 @@ pub struct Vrf {
     pub(crate) nhstore: NhopStore,
     pub(crate) vni: Option<Vni>,
 }
+
+// pub type RouteV4FilterTuple<'a> = (&'a Ipv4Prefix, &'a Route);
+// pub type RouteV6FilterTuple<'a> = (&'a Ipv6Prefix, &'a Route);
+
+pub type RouteV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &Route)) -> bool>;
+pub type RouteV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &Route)) -> bool>;
 
 #[allow(dead_code)]
 impl Vrf {
@@ -268,6 +275,34 @@ impl Vrf {
         }
     }
 
+    // ///////////////////////////////////////////////////////////////////////
+    // iterators, filters and counts
+    // ///////////////////////////////////////////////////////////////////////
+
+    pub fn iter_v4(&self) -> impl Iterator<Item = (&Ipv4Prefix, &Route)> {
+        self.routesv4.iter()
+    }
+    pub fn iter_v6(&self) -> impl Iterator<Item = (&Ipv6Prefix, &Route)> {
+        self.routesv6.iter()
+    }
+    pub fn filter_v4<'a>(
+        &'a self,
+        filter: &'a RouteV4Filter,
+    ) -> Filter<impl Iterator<Item = (&'a Ipv4Prefix, &'a Route)>, &'a RouteV4Filter> {
+        self.iter_v4().filter(filter)
+    }
+    pub fn filter_v6<'a>(
+        &'a self,
+        filter: &'a RouteV6Filter,
+    ) -> Filter<impl Iterator<Item = (&'a Ipv6Prefix, &'a Route)>, &'a RouteV6Filter> {
+        self.iter_v6().filter(filter)
+    }
+    pub fn len_v4(&self) -> usize {
+        self.routesv4.len().get()
+    }
+    pub fn len_v6(&self) -> usize {
+        self.routesv6.len().get()
+    }
     /////////////////////////////////////////////////////////////////////////
     // LPM, single call
     /////////////////////////////////////////////////////////////////////////
@@ -308,8 +343,8 @@ pub mod tests {
     #[test]
     fn test_vrf_build() {
         let vrf = Vrf::new("Default", 0);
-        assert_eq!(vrf.routesv4.len().get(), 1, "An Ipv4 default route must exist.");
-        assert_eq!(vrf.routesv6.len().get(), 1, "An Ipv6 default route must exist.");
+        assert_eq!(vrf.len_v4(), 1, "An Ipv4 default route must exist.");
+        assert_eq!(vrf.len_v6(), 1, "An Ipv6 default route must exist.");
         assert_eq!(vrf.nhstore.len(), 1, "A single 'drop' nexthop must be there.");
         vrf.dump(Some("Brand new VRF"));
     }
@@ -327,8 +362,8 @@ pub mod tests {
         assert_eq!(recovered.s_nhops[0].rc.key.fwaction, FwAction::Drop);
     }
     fn check_vrf_is_empty(vrf: &Vrf) {
-        assert_eq!(vrf.routesv4.len().get(), 1,"Only default(root) route for Ipv4");
-        assert_eq!(vrf.routesv6.len().get(), 1,"Only default(root) route for Ipv6");
+        assert_eq!(vrf.len_v4(), 1,"Only default(root) route for Ipv4");
+        assert_eq!(vrf.len_v6(), 1,"Only default(root) route for Ipv6");
         assert_eq!(vrf.nhstore.len(), 1, "Only next-hop for default route w/ Fwaction::Drop");
         check_default_drop_v4(vrf);
         check_default_drop_v6(vrf);
@@ -398,7 +433,7 @@ pub mod tests {
         let nhop = build_test_nhop(Some("10.0.0.1"), None, 0, None);
         vrf.add_route(&prefix, route, &[nhop]);
 
-        assert_eq!(vrf.routesv4.len().get(), 1, "Should have replaced the default");
+        assert_eq!(vrf.len_v4(), 1, "Should have replaced the default");
         vrf.dump(Some("With static IPv4 default non-drop route"));
 
         /* delete the static default. This should put back again a default route with action DROP */
@@ -419,7 +454,7 @@ pub mod tests {
         let nhop = build_test_nhop(Some("2001::1"), None, 0, None);
         vrf.add_route(&prefix, route, &[nhop]);
 
-        assert_eq!(vrf.routesv6.len().get(), 1, "Should have replaced the default");
+        assert_eq!(vrf.len_v6(), 1, "Should have replaced the default");
         vrf.dump(Some("With static IPv6 default non-drop route"));
 
         /* delete the static default. This should put back again a default route with action DROP */
@@ -454,7 +489,7 @@ pub mod tests {
             assert!(best.s_nhops.iter().any(|s| s.rc.key.address == Some(build_address("10.0.0.1")) && s.rc.key.ifindex == Some(1)));
             assert!(best.s_nhops.iter().any(|s| s.rc.key.address == Some(build_address("10.0.0.2")) && s.rc.key.ifindex == Some(2)));
         }
-        assert_eq!(vrf.routesv4.len().get(),  (1 + num_routes) as usize, "There must be default + the ones added");
+        assert_eq!(vrf.len_v4(),  (1 + num_routes) as usize, "There must be default + the ones added");
         assert_eq!(vrf.nhstore.len(), 3usize,"There is drop + 2 nexthops shared by all routes");
 
         for i in 1..=num_routes {
@@ -481,6 +516,44 @@ pub mod tests {
         let prefix1 = Ipv4Prefix::from_str("10.0.0.1/32").unwrap();
         trie.insert(prefix1, ());
         trie.remove(&prefix1);
+    }
+
+    #[test]
+    fn test_route_filtering() {
+        let mut vrf = Vrf::new("Default", 0);
+
+        /* connected */
+        let nh = build_test_nhop(None, Some(1), 0, None);
+        let connected = build_test_route(RouteOrigin::Connected, 0, 1);
+        let prefix = Prefix::from(("10.0.0.1", 24));
+        vrf.add_route(&prefix, connected.clone() /* only test */, &[nh]);
+
+        /* ospf */
+        let nh1 = build_test_nhop(Some("10.0.0.1"), Some(1), 0, None);
+        let nh2 = build_test_nhop(Some("10.0.0.2"), Some(2), 0, None);
+        let ospf = build_test_route(RouteOrigin::Ospf, 110, 20);
+        let prefix = Prefix::from(("7.0.0.1", 32));
+        vrf.add_route(&prefix, ospf.clone() /* only test */, &[nh1, nh2]);
+
+        /* bgp */
+        let nh = build_test_nhop(Some("7.0.0.1"), None, 0, None);
+        let bgp = build_test_route(RouteOrigin::Bgp, 20, 100);
+        let prefix = Prefix::from(("192.168.1.0", 24));
+        vrf.add_route(&prefix, bgp.clone() /* only test */, &[nh]);
+
+        assert_eq!(vrf.len_v4(), 4, "There are 3 routes + drop");
+
+        let only_connected: RouteV4Filter= Box::new(|(_, route): &(&Ipv4Prefix, &Route)| {route.origin == RouteOrigin::Connected});
+        let filtered  = vrf.filter_v4(&only_connected);
+        assert_eq!(filtered.count(), 1);
+
+        let only_ospf: RouteV4Filter= Box::new(|(_, route): &(&Ipv4Prefix, &Route)| {route.origin == RouteOrigin::Ospf});
+        let filtered  = vrf.filter_v4(&only_ospf);
+        assert_eq!(filtered.count(), 1);
+
+        let only_bgp: RouteV4Filter= Box::new(|(_, route): &(&Ipv4Prefix, &Route)| {route.origin == RouteOrigin::Bgp});
+        let filtered  = vrf.filter_v4(&only_bgp);
+        assert_eq!(filtered.count(), 1);
     }
 
 }
