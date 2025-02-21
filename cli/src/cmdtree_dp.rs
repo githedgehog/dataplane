@@ -3,9 +3,11 @@
 
 //! Builds our command tree for dataplane
 
-use crate::cliproto::CliAction;
+use crate::cliproto::{CliAction, RouteProtocol};
 use crate::cmdtree::{Node, NodeArg};
 use log::Level;
+use std::convert::AsRef;
+use strum::IntoEnumIterator;
 
 fn cmd_show_pipelines() -> Node {
     let mut root = Node::new("pipeline")
@@ -43,12 +45,16 @@ fn cmd_show_vpc() -> Node {
 }
 fn cmd_show_ip() -> Node {
     let mut root = Node::new("ip");
-
-    root += Node::new("route")
+    let mut routes = Node::new("route")
         .desc("Display IPv4 routes")
         .action(CliAction::ShowRouterIpv4Routes as u16)
         .arg("prefix")
         .arg("vrfid");
+
+    let mut arg = NodeArg::new("protocol");
+    RouteProtocol::iter().for_each(|proto| arg.add_choice(proto.as_ref()));
+    routes = routes.arg_add(arg);
+    root += routes;
 
     root += Node::new("next-hop")
         .desc("Display IPv4 next-hops")
@@ -59,12 +65,16 @@ fn cmd_show_ip() -> Node {
 }
 fn cmd_show_ipv6() -> Node {
     let mut root = Node::new("ipv6");
-
-    root += Node::new("route")
+    let mut routes = Node::new("route")
         .desc("Display IPv6 routes")
         .action(CliAction::ShowRouterIpv6Routes as u16)
         .arg("prefix")
         .arg("vrfid");
+
+    let mut arg = NodeArg::new("protocol");
+    RouteProtocol::iter().for_each(|proto| arg.add_choice(proto.as_ref()));
+    routes = routes.arg_add(arg);
+    root += routes;
 
     root += Node::new("next-hop")
         .desc("Display IPv6 next-hops")
