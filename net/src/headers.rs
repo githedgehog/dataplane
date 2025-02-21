@@ -20,6 +20,7 @@ use crate::udp::{Udp, UdpEncap};
 use crate::vlan::{Pcp, Vid, Vlan};
 use crate::vxlan::Vxlan;
 use arrayvec::ArrayVec;
+use core::fmt::Debug;
 use std::num::NonZero;
 use tracing::debug;
 
@@ -367,110 +368,568 @@ impl Headers {
             }
         }
     }
+}
 
-    pub fn eth(&self) -> &Eth {
+// Eth traits
+
+pub trait WithEth {
+    fn eth(&self) -> &Eth;
+}
+
+pub trait WithEthMut {
+    fn eth_mut(&mut self) -> &mut Eth;
+}
+
+pub trait TryEth {
+    fn try_eth(&self) -> Option<&Eth>;
+}
+
+pub trait TryEthMut {
+    fn try_eth_mut(&mut self) -> Option<&mut Eth>;
+}
+
+impl WithEth for Headers {
+    fn eth(&self) -> &Eth {
         &self.eth
     }
+}
 
-    pub fn eth_mut(&mut self) -> &mut Eth {
+impl WithEthMut for Headers {
+    fn eth_mut(&mut self) -> &mut Eth {
         &mut self.eth
     }
+}
 
-    pub fn ipv4(&self) -> Option<&Ipv4> {
+impl TryEth for Headers {
+    fn try_eth(&self) -> Option<&Eth> {
+        Some(self.eth())
+    }
+}
+
+impl TryEthMut for Headers {
+    fn try_eth_mut(&mut self) -> Option<&mut Eth> {
+        Some(self.eth_mut())
+    }
+}
+
+// Ipv4 traits
+
+pub trait WithIpv4 {
+    fn ipv4(&self) -> &Ipv4;
+}
+
+pub trait WithIpv4Mut {
+    fn ipv4_mut(&mut self) -> &mut Ipv4;
+}
+
+pub trait TryIpv4 {
+    fn try_ipv4(&self) -> Option<&Ipv4>;
+}
+
+pub trait TryIpv4Mut {
+    fn try_ipv4_mut(&mut self) -> Option<&mut Ipv4>;
+}
+
+impl TryIpv4 for Headers {
+    fn try_ipv4(&self) -> Option<&Ipv4> {
         match &self.net {
             Some(Net::Ipv4(header)) => Some(header),
             _ => None,
         }
     }
+}
 
-    pub fn ipv4_mut(&mut self) -> Option<&mut Ipv4> {
+impl TryIpv4Mut for Headers {
+    fn try_ipv4_mut(&mut self) -> Option<&mut Ipv4> {
         match &mut self.net {
             Some(Net::Ipv4(header)) => Some(header),
             _ => None,
         }
     }
+}
 
-    pub fn ipv6(&self) -> Option<&Ipv6> {
+// Ipv6 traits
+
+pub trait WithIpv6 {
+    fn ipv6(&self) -> &Ipv6;
+}
+
+pub trait WithIpv6Mut {
+    fn ipv6_mut(&mut self) -> &mut Ipv6;
+}
+
+pub trait TryIpv6 {
+    fn try_ipv6(&self) -> Option<&Ipv6>;
+}
+
+pub trait TryIpv6Mut {
+    fn try_ipv6_mut(&mut self) -> Option<&mut Ipv6>;
+}
+
+impl TryIpv6 for Headers {
+    fn try_ipv6(&self) -> Option<&Ipv6> {
         match &self.net {
             Some(Net::Ipv6(header)) => Some(header),
             _ => None,
         }
     }
+}
 
-    pub fn ipv6_mut(&mut self) -> Option<&mut Ipv6> {
+impl TryIpv6Mut for Headers {
+    fn try_ipv6_mut(&mut self) -> Option<&mut Ipv6> {
         match &mut self.net {
             Some(Net::Ipv6(header)) => Some(header),
             _ => None,
         }
     }
+}
 
-    pub fn tcp(&self) -> Option<&Tcp> {
+// Tcp traits
+
+pub trait WithTcp {
+    fn tcp(&self) -> &Tcp;
+}
+
+pub trait WithTcpMut {
+    fn tcp_mut(&mut self) -> &mut Tcp;
+}
+
+pub trait TryTcp {
+    fn try_tcp(&self) -> Option<&Tcp>;
+}
+
+pub trait TryTcpMut {
+    fn try_tcp_mut(&mut self) -> Option<&mut Tcp>;
+}
+
+impl TryTcp for Headers {
+    fn try_tcp(&self) -> Option<&Tcp> {
         match &self.transport {
             Some(Transport::Tcp(header)) => Some(header),
             _ => None,
         }
     }
+}
 
-    pub fn tcp_mut(&mut self) -> Option<&mut Tcp> {
+impl TryTcpMut for Headers {
+    fn try_tcp_mut(&mut self) -> Option<&mut Tcp> {
         match &mut self.transport {
             Some(Transport::Tcp(header)) => Some(header),
             _ => None,
         }
     }
+}
 
-    pub fn udp(&self) -> Option<&Udp> {
+// UDP traits
+
+pub trait WithUdp {
+    fn udp(&self) -> &Udp;
+}
+
+pub trait WithUdpMut {
+    fn udp_mut(&mut self) -> &mut Udp;
+}
+
+pub trait TryUdp {
+    fn try_udp(&self) -> Option<&Udp>;
+}
+
+pub trait TryUdpMut {
+    fn try_udp_mut(&mut self) -> Option<&mut Udp>;
+}
+
+impl TryUdp for Headers {
+    fn try_udp(&self) -> Option<&Udp> {
         match &self.transport {
             Some(Transport::Udp(header)) => Some(header),
             _ => None,
         }
     }
+}
 
-    pub fn udp_mut(&mut self) -> Option<&mut Udp> {
+impl TryUdpMut for Headers {
+    fn try_udp_mut(&mut self) -> Option<&mut Udp> {
         match &mut self.transport {
             Some(Transport::Udp(header)) => Some(header),
             _ => None,
         }
     }
+}
 
-    pub fn icmp(&self) -> Option<&Icmp4> {
+// Icmp traits
+
+pub trait WithIcmp {
+    fn icmp(&self) -> &Icmp4;
+}
+
+pub trait WithIcmpMut {
+    fn icmp_mut(&mut self) -> &mut Icmp4;
+}
+
+pub trait TryIcmp {
+    fn try_icmp(&self) -> Option<&Icmp4>;
+}
+
+pub trait TryIcmpMut {
+    fn try_icmp_mut(&mut self) -> Option<&mut Icmp4>;
+}
+
+impl TryIcmp for Headers {
+    fn try_icmp(&self) -> Option<&Icmp4> {
         match &self.transport {
             Some(Transport::Icmp4(header)) => Some(header),
             _ => None,
         }
     }
+}
 
-    pub fn icmp_mut(&mut self) -> Option<&mut Icmp4> {
+impl TryIcmpMut for Headers {
+    fn try_icmp_mut(&mut self) -> Option<&mut Icmp4> {
         match &mut self.transport {
             Some(Transport::Icmp4(header)) => Some(header),
             _ => None,
         }
     }
+}
 
-    pub fn icmp6(&self) -> Option<&Icmp6> {
+// ICMP6 traits
+
+pub trait WithIcmp6 {
+    fn icmp6(&self) -> &Icmp6;
+}
+
+pub trait WithIcmp6Mut {
+    fn icmp6_mut(&mut self) -> &mut Icmp6;
+}
+
+pub trait TryIcmp6 {
+    fn try_icmp6(&self) -> Option<&Icmp6>;
+}
+
+pub trait TryIcmp6Mut {
+    fn try_icmp6_mut(&mut self) -> Option<&mut Icmp6>;
+}
+
+impl TryIcmp6 for Headers {
+    fn try_icmp6(&self) -> Option<&Icmp6> {
         match &self.transport {
             Some(Transport::Icmp6(header)) => Some(header),
             _ => None,
         }
     }
+}
 
-    pub fn icmp6_mut(&mut self) -> Option<&mut Icmp6> {
+impl TryIcmp6Mut for Headers {
+    fn try_icmp6_mut(&mut self) -> Option<&mut Icmp6> {
         match &mut self.transport {
             Some(Transport::Icmp6(header)) => Some(header),
             _ => None,
         }
     }
+}
 
-    pub fn vxlan(&self) -> Option<&Vxlan> {
+// Vxlan traits
+
+pub trait WithVxlan {
+    fn vxlan(&self) -> &Vxlan;
+}
+
+pub trait WithVxlanMut {
+    fn vxlan_mut(&mut self) -> &mut Vxlan;
+}
+
+pub trait TryVxlan {
+    fn try_vxlan(&self) -> Option<&Vxlan>;
+}
+
+pub trait TryVxlanMut {
+    fn try_vxlan_mut(&mut self) -> Option<&mut Vxlan>;
+}
+
+impl TryVxlan for Headers {
+    fn try_vxlan(&self) -> Option<&Vxlan> {
         match &self.udp_encap {
             Some(UdpEncap::Vxlan(vxlan)) => Some(vxlan),
             _ => None,
         }
     }
+}
 
-    pub fn vxlan_mut(&mut self) -> Option<&mut Vxlan> {
+impl TryVxlanMut for Headers {
+    fn try_vxlan_mut(&mut self) -> Option<&mut Vxlan> {
         match &mut self.udp_encap {
             Some(UdpEncap::Vxlan(vxlan)) => Some(vxlan),
             _ => None,
         }
+    }
+}
+
+impl From<Eth> for Header {
+    fn from(value: Eth) -> Self {
+        Header::Eth(value)
+    }
+}
+
+impl From<Vlan> for Header {
+    fn from(value: Vlan) -> Self {
+        Header::Vlan(value)
+    }
+}
+
+impl From<Ipv4> for Header {
+    fn from(value: Ipv4) -> Self {
+        Header::Ipv4(value)
+    }
+}
+
+impl From<Ipv6> for Header {
+    fn from(value: Ipv6) -> Self {
+        Header::Ipv6(value)
+    }
+}
+
+impl From<Net> for Header {
+    fn from(value: Net) -> Self {
+        match value {
+            Net::Ipv4(ip) => Header::from(ip),
+            Net::Ipv6(ip) => Header::from(ip),
+        }
+    }
+}
+
+impl From<IpAuth> for Header {
+    fn from(value: IpAuth) -> Self {
+        Header::IpAuth(value)
+    }
+}
+
+impl From<Ipv6Ext> for Header {
+    fn from(value: Ipv6Ext) -> Self {
+        Header::IpV6Ext(value)
+    }
+}
+
+impl From<Udp> for Header {
+    fn from(value: Udp) -> Self {
+        Header::Udp(value)
+    }
+}
+
+impl From<Tcp> for Header {
+    fn from(value: Tcp) -> Self {
+        Header::Tcp(value)
+    }
+}
+
+impl From<Icmp4> for Header {
+    fn from(value: Icmp4) -> Self {
+        Header::Icmp4(value)
+    }
+}
+
+impl From<Icmp6> for Header {
+    fn from(value: Icmp6) -> Self {
+        Header::Icmp6(value)
+    }
+}
+
+impl From<Transport> for Header {
+    fn from(value: Transport) -> Self {
+        match value {
+            Transport::Tcp(x) => Header::from(x),
+            Transport::Udp(x) => Header::from(x),
+            Transport::Icmp4(x) => Header::from(x),
+            Transport::Icmp6(x) => Header::from(x),
+        }
+    }
+}
+
+impl From<Vxlan> for Header {
+    fn from(value: Vxlan) -> Self {
+        Header::Encap(UdpEncap::Vxlan(value))
+    }
+}
+
+impl From<UdpEncap> for Header {
+    fn from(value: UdpEncap) -> Self {
+        Header::Encap(value)
+    }
+}
+
+pub trait AbstractHeaders:
+    Debug + TryEth + TryIpv4 + TryIpv6 + TryTcp + TryUdp + TryIcmp + TryIcmp6 + TryVxlan
+{
+}
+
+impl<T> AbstractHeaders for T where
+    T: Debug + TryEth + TryIpv4 + TryIpv6 + TryTcp + TryUdp + TryIcmp + TryIcmp6 + TryVxlan
+{
+}
+
+pub trait AbstractHeadersMut:
+    TryEthMut + TryIpv4Mut + TryIpv6Mut + TryTcpMut + TryUdpMut + TryIcmpMut + TryIcmp6Mut + TryVxlanMut
+{
+}
+impl<T> AbstractHeadersMut for T where
+    T: TryEthMut
+        + TryIpv4Mut
+        + TryIpv6Mut
+        + TryTcpMut
+        + TryUdpMut
+        + TryIcmpMut
+        + TryIcmp6Mut
+        + TryVxlanMut
+{
+}
+
+pub trait TryHeaders {
+    fn headers(&self) -> &impl AbstractHeaders;
+}
+
+pub trait TryHeadersMut {
+    fn headers_mut(&mut self) -> &mut impl AbstractHeadersMut;
+}
+
+impl<T> TryEth for T
+where
+    T: TryHeaders,
+{
+    fn try_eth(&self) -> Option<&Eth> {
+        self.headers().try_eth()
+    }
+}
+
+impl<T> TryIpv4 for T
+where
+    T: TryHeaders,
+{
+    fn try_ipv4(&self) -> Option<&Ipv4> {
+        self.headers().try_ipv4()
+    }
+}
+
+impl<T> TryIpv6 for T
+where
+    T: TryHeaders,
+{
+    fn try_ipv6(&self) -> Option<&Ipv6> {
+        self.headers().try_ipv6()
+    }
+}
+
+impl<T> TryTcp for T
+where
+    T: TryHeaders,
+{
+    fn try_tcp(&self) -> Option<&Tcp> {
+        self.headers().try_tcp()
+    }
+}
+
+impl<T> TryUdp for T
+where
+    T: TryHeaders,
+{
+    fn try_udp(&self) -> Option<&Udp> {
+        self.headers().try_udp()
+    }
+}
+
+impl<T> TryIcmp for T
+where
+    T: TryHeaders,
+{
+    fn try_icmp(&self) -> Option<&Icmp4> {
+        self.headers().try_icmp()
+    }
+}
+
+impl<T> TryIcmp6 for T
+where
+    T: TryHeaders,
+{
+    fn try_icmp6(&self) -> Option<&Icmp6> {
+        self.headers().try_icmp6()
+    }
+}
+
+impl<T> TryVxlan for T
+where
+    T: TryHeaders,
+{
+    fn try_vxlan(&self) -> Option<&Vxlan> {
+        self.headers().try_vxlan()
+    }
+}
+
+impl<T> TryEthMut for T
+where
+    T: TryHeadersMut,
+{
+    fn try_eth_mut(&mut self) -> Option<&mut Eth> {
+        self.headers_mut().try_eth_mut()
+    }
+}
+
+impl<T> TryIpv4Mut for T
+where
+    T: TryHeadersMut,
+{
+    fn try_ipv4_mut(&mut self) -> Option<&mut Ipv4> {
+        self.headers_mut().try_ipv4_mut()
+    }
+}
+
+impl<T> TryIpv6Mut for T
+where
+    T: TryHeadersMut,
+{
+    fn try_ipv6_mut(&mut self) -> Option<&mut Ipv6> {
+        self.headers_mut().try_ipv6_mut()
+    }
+}
+
+impl<T> TryTcpMut for T
+where
+    T: TryHeadersMut,
+{
+    fn try_tcp_mut(&mut self) -> Option<&mut Tcp> {
+        self.headers_mut().try_tcp_mut()
+    }
+}
+
+impl<T> TryUdpMut for T
+where
+    T: TryHeadersMut,
+{
+    fn try_udp_mut(&mut self) -> Option<&mut Udp> {
+        self.headers_mut().try_udp_mut()
+    }
+}
+
+impl<T> TryIcmpMut for T
+where
+    T: TryHeadersMut,
+{
+    fn try_icmp_mut(&mut self) -> Option<&mut Icmp4> {
+        self.headers_mut().try_icmp_mut()
+    }
+}
+
+impl<T> TryIcmp6Mut for T
+where
+    T: TryHeadersMut,
+{
+    fn try_icmp6_mut(&mut self) -> Option<&mut Icmp6> {
+        self.headers_mut().try_icmp6_mut()
+    }
+}
+
+impl<T> TryVxlanMut for T
+where
+    T: TryHeadersMut,
+{
+    fn try_vxlan_mut(&mut self) -> Option<&mut Vxlan> {
+        self.headers_mut().try_vxlan_mut()
     }
 }

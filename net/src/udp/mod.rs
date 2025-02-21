@@ -6,7 +6,6 @@
 pub mod checksum;
 pub mod port;
 
-use crate::headers::Header;
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
 };
@@ -190,12 +189,6 @@ impl ParsePayload for Udp {
             }
             _ => None,
         }
-    }
-}
-
-impl From<UdpEncap> for Header {
-    fn from(value: UdpEncap) -> Self {
-        Header::Encap(value)
     }
 }
 
