@@ -875,6 +875,7 @@ name = "dataplane-routing"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "dataplane-cli",
  "dataplane-net",
  "dplane-rpc",
  "ipnet",
