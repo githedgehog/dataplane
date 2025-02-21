@@ -7,7 +7,7 @@ use colored::Colorize;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct NodeArg {
     pub name: String,
     pub choices: Vec<String>,
@@ -23,6 +23,9 @@ impl NodeArg {
     pub fn choice(mut self, choice: &str) -> Self {
         self.choices.push(choice.to_owned());
         self
+    }
+    pub fn add_choice(&mut self, choice: &str) {
+        self.choices.push(choice.to_owned());
     }
 }
 

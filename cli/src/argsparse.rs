@@ -3,7 +3,7 @@
 
 //! Adds main parser for command arguments
 
-use crate::cliproto::RequestArgs;
+use crate::cliproto::{RequestArgs, RouteProtocol};
 use log::Level;
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -29,6 +29,8 @@ pub enum ArgsError {
     UnknownLogLevel(String),
     #[error("Bad value {0}")]
     BadValue(String),
+    #[error("Unknown protocol '{0}'")]
+    UnknownProtocol(String),
 }
 
 #[derive(Default)]
@@ -107,6 +109,15 @@ impl CliArgs {
                         .map_err(|_| ArgsError::UnknownLogLevel(level))?,
                 );
             }
+        }
+        if let Some(protocol) = args_map.remove("protocol") {
+            if protocol.is_empty() {
+                return Err(ArgsError::MissingValue("protocol"));
+            }
+            args.remote.protocol = Some(
+                RouteProtocol::from_str(&protocol)
+                    .map_err(|_| ArgsError::UnknownProtocol(protocol))?,
+            );
         }
         if !args_map.is_empty() {
             Err(ArgsError::UnrecognizedArgs(args_map))
