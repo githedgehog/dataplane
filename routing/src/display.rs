@@ -11,6 +11,7 @@ use crate::rmac::{RmacEntry, RmacStore};
 use crate::routingdb::VrfTable;
 use crate::vrf::{Route, ShimNhop, Vrf};
 use iptrie::map::RTrieMap;
+use iptrie::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
 use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -87,10 +88,11 @@ impl Display for Route {
     }
 }
 
-fn fmt_vrf_trie<P: iptrie::IpPrefix>(
+fn fmt_vrf_trie<P: IpPrefix, F: Fn(&(&P, &Route)) -> bool>(
     f: &mut std::fmt::Formatter<'_>,
     show_string: &str,
     trie: &RTrieMap<P, Route>,
+    _route_filter: F,
 ) -> std::fmt::Result {
     Heading(format!("{show_string} routes ({})", trie.len())).fmt(f)?;
     for (prefix, route) in trie.iter() {
@@ -102,10 +104,124 @@ fn fmt_vrf_trie<P: iptrie::IpPrefix>(
 impl Display for Vrf {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, " Vrf: '{}' (id: {})", self.name, self.vrfid)?;
-        fmt_vrf_trie(f, "Ipv4", &self.routesv4)?;
-        fmt_vrf_trie(f, "Ipv6", &self.routesv6)?;
-        self.nhstore.fmt(f)?;
+        fmt_vrf_trie(f, "Ipv4", &self.routesv4, |_| true)?;
+        fmt_vrf_trie(f, "Ipv6", &self.routesv6, |_| true)?;
+        self.nhstore.fmt(f)
+    }
+}
+
+pub struct VrfViewV4<'a, F>
+where
+    F: Fn(&(&Ipv4Prefix, &Route)) -> bool,
+{
+    pub vrf: &'a Vrf,
+    pub filter: &'a F,
+}
+impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Route)) -> bool> Display for VrfViewV4<'_, F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // apply the filter
+        let rt_iter = self.vrf.iter_v4().filter(&self.filter);
+
+        // total number of routes
+        let total_routes = self.vrf.len_v4();
+
+        // displayed routes
+        let mut displayed = 0;
+
+        // display !
+        writeln!(
+            f,
+            "\n ━━━━━━━━━\n Vrf: '{}' (id: {})",
+            self.vrf.name, self.vrf.vrfid
+        )?;
+        Heading(format!("Ipv4 routes ({})", total_routes)).fmt(f)?;
+        for (prefix, route) in rt_iter {
+            write!(f, "  {:?} {}", prefix, route)?;
+            displayed += 1;
+        }
+        if displayed != total_routes {
+            writeln!(
+                f,
+                "\n  (Displayed {} routes out of {})",
+                displayed, total_routes
+            )?;
+        }
         Ok(())
+    }
+}
+
+pub struct VrfViewV6<'a, F>
+where
+    F: Fn(&(&Ipv6Prefix, &Route)) -> bool,
+{
+    pub vrf: &'a Vrf,
+    pub filter: &'a F,
+}
+impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Route)) -> bool> Display for VrfViewV6<'_, F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // apply the filter
+        let rt_iter = self.vrf.iter_v6().filter(&self.filter);
+
+        // total number of routes
+        let total_routes = self.vrf.len_v6();
+
+        // displayed routes
+        let mut displayed = 0;
+
+        // display !
+        writeln!(
+            f,
+            "\n ━━━━━━━━━\n Vrf: '{}' (id: {})",
+            self.vrf.name, self.vrf.vrfid
+        )?;
+        Heading(format!("Ipv6 routes ({})", total_routes)).fmt(f)?;
+        for (prefix, route) in rt_iter {
+            write!(f, "  {:?} {}", prefix, route)?;
+            displayed += 1;
+        }
+        if displayed != total_routes {
+            writeln!(
+                f,
+                "\n  (Displayed {} routes out of {})",
+                displayed, total_routes
+            )?;
+        }
+        Ok(())
+    }
+}
+
+// ================================================= //
+
+pub struct VrfV4Nexthops<'a>(pub &'a Vrf);
+impl Display for VrfV4Nexthops<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, " Vrf: '{}' (id: {})", self.0.name, self.0.vrfid)?;
+        Heading("Ipv4 Next-hops".to_string()).fmt(f)?;
+        let iter =
+            self.0.nhstore.iter().filter(|nh| {
+                nh.key.address.is_some_and(|a| a.is_ipv4()) || nh.key.address.is_none()
+            });
+
+        for nhop in iter {
+            fmt_nhop_rec(f, nhop, 0)?;
+        }
+        line(f)
+    }
+}
+pub struct VrfV6Nexthops<'a>(pub &'a Vrf);
+impl Display for VrfV6Nexthops<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, " Vrf: '{}' (id: {})", self.0.name, self.0.vrfid)?;
+        Heading("Ipv6 Next-hops".to_string()).fmt(f)?;
+        let iter =
+            self.0.nhstore.iter().filter(|nh| {
+                nh.key.address.is_some_and(|a| a.is_ipv6()) || nh.key.address.is_none()
+            });
+
+        for nhop in iter {
+            fmt_nhop_rec(f, nhop, 0)?;
+        }
+        line(f)
     }
 }
 
@@ -118,7 +234,10 @@ fn fmt_vrf_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result 
     writeln!(
         f,
         "{}",
-        format_args!(VRF_TBL_FMT!(), "name", "id", "vni", "Ipv4", "Ipv6")
+        format_args!(
+            VRF_TBL_FMT!(),
+            "name", "id", "vni", "Ipv4-routes", "Ipv6-routes"
+        )
     )
 }
 fn fmt_vrf_summary(f: &mut std::fmt::Formatter<'_>, vrf: &Arc<RwLock<Vrf>>) -> std::fmt::Result {
@@ -151,6 +270,22 @@ impl Display for VrfTable {
 }
 
 //========================= Interfaces ================================//
+
+macro_rules! INTERFACE_TBL_FMT {
+    () => {
+        " {:<16} {:>4} {:>10} {:<10} {:20} {:>12} {}"
+    };
+}
+fn fmt_interface_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    writeln!(
+        f,
+        "{}",
+        format_args!(
+            INTERFACE_TBL_FMT!(),
+            "name", "id", "opState", "AdmState", "VRF", "addresses", "type"
+        )
+    )
+}
 
 impl Display for IfState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -197,40 +332,99 @@ impl Display for Interface {
         let vrf_name = self
             .get_vrf_name()
             .map_or_else(|| "-detached-".to_owned(), |name| name);
-        f.pad(&format!(
-            "  {:>12} ({}) {}|{} {:<16} ",
-            self.name, self.ifindex, self.admin_state, self.oper_state, vrf_name,
-        ))?;
-        self.iftype.fmt(f)?;
-        if !self.addresses.is_empty() {
-            write!(f, "      addresses:")?;
-            for (addr, mask_len) in self.addresses.iter() {
-                write!(f, " {addr}/{mask_len}")?;
-            }
-        }
+        write!(
+            f,
+            "{}",
+            format_args!(
+                INTERFACE_TBL_FMT!(),
+                self.name,
+                self.ifindex.to_string(),
+                self.admin_state,
+                self.oper_state,
+                vrf_name,
+                self.addresses.len(),
+                self.iftype,
+            )
+        )?;
+
         Ok(())
     }
 }
 impl Display for IfTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading(format!("interfaces ({})", self.0.len())).fmt(f)?;
+        fmt_interface_heading(f)?;
         for iface in self.0.values() {
             writeln!(f, " {iface}")?;
         }
         Ok(())
     }
 }
+//========================= Interface addresses ================================//
+#[repr(transparent)]
+pub struct IfTableAddress<'a>(pub &'a IfTable);
+
+macro_rules! INTERFACE_ADDR_FMT {
+    () => {
+        " {:<16} {:10} {:<}"
+    };
+}
+fn fmt_interface_addr_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    writeln!(
+        f,
+        "{}",
+        format_args!(INTERFACE_ADDR_FMT!(), "name", "opState", "addresses")
+    )
+}
+fn fmt_interface_addresses(f: &mut std::fmt::Formatter<'_>, iface: &Interface) -> std::fmt::Result {
+    write!(
+        f,
+        "{}",
+        format_args!(INTERFACE_ADDR_FMT!(), iface.name, iface.oper_state, "")
+    )?;
+    for (addr, mask_len) in iface.addresses.iter() {
+        write!(f, " {}/{}", addr, mask_len)?;
+    }
+    writeln!(f)
+}
+impl Display for IfTableAddress<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Heading("interface addresses".to_string()).fmt(f)?;
+        fmt_interface_addr_heading(f)?;
+        for iface in self.0.0.values() {
+            fmt_interface_addresses(f, iface)?;
+        }
+        Ok(())
+    }
+}
 
 //========================= Rmac Store ================================//
+macro_rules! RMAC_TBL_FMT {
+    () => {
+        " {:<5} {:<20} {:<18}"
+    };
+}
+fn fmt_rmac_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    writeln!(
+        f,
+        "{}",
+        format_args!(RMAC_TBL_FMT!(), "vni", "address", "mac")
+    )
+}
 
 impl Display for RmacEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, " {} {} ── {}", self.vni.as_u32(), self.address, self.mac)
+        write!(
+            f,
+            "{}",
+            format_args!(RMAC_TBL_FMT!(), self.vni.as_u32(), self.address, self.mac)
+        )
     }
 }
 impl Display for RmacStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading(format!("Rmac store ({})", self.len())).fmt(f)?;
+        fmt_rmac_heading(f)?;
         for rmac in self.values() {
             writeln!(f, " {rmac}")?;
         }
