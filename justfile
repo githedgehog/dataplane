@@ -4,24 +4,6 @@
 set unstable := true
 
 run_id := uuid()
-SHELL := shell("""
-  if ! set -e; then
-    >&2 echo "ERROR: failed to configure shell (set -e not supported by shell $SHELL)"
-    exit 1
-  fi
-  if ! set -u; then
-    >&2 echo "ERROR: failed to configure shell (set -u not supported by shell $SHELL)"
-    exit 1
-  fi
-  if ! set -o pipefail; then
-    >&2 echo "ERROR: failed to configure shell (set -o pipefail not supported by shell $SHELL)"
-    exit 1
-  fi
-  if ! (set -x); then
-    >&2 echo "WARNING: shell does not support set -x: debug mode unavailable (shell $SHELL)"
-  fi
-  echo ${SHELL:-sh}
-""")
 
 set shell := [x"${SHELL:-bash}", "-euo", "pipefail", "-c"]
 set script-interpreter := [x"${SHELL:-bash}", "-euo", "pipefail"]
