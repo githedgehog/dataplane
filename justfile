@@ -315,17 +315,13 @@ fake-nix refake="":
 [group('env')]
 sterile *args: (compile-env "just" ("debug=" + debug) ("rust=" + rust) ("target=" + target) ("profile=" + profile) args)
 
-# Run a "sterile" build
-[private]
-sterile-build: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target) "--package=dataplane")
-    mkdir -p "artifact/{{ target }}/{{ profile }}"
-    cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/dataplane" "artifact/{{ target }}/{{ profile }}/dataplane"
-
 # Build containers in a sterile environment
 [script]
-build-container: sterile-build
+build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target) "--package=dataplane")
     {{ _just_debuggable_ }}
     {{ _define_truncate128 }}
+    mkdir -p "artifact/{{ target }}/{{ profile }}"
+    cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/dataplane" "artifact/{{ target }}/{{ profile }}/dataplane"
     declare build_date
     build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
     declare -r build_date
