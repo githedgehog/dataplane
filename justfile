@@ -381,35 +381,6 @@ push-container: build-container
       sudo -E docker push "{{ _container_repo }}:$(truncate128 "{{ _slug }}")"
     fi
 
-# Run the tests (with nextest)
-[group("ci")]
-[script]
-test:
-    declare -r  report_dir="${CARGO_TARGET_DIR:-target}/nextest/{{ profile }}"
-    mkdir -p "${report_dir}"
-    {{ _just_debuggable_ }}
-    PROFILE="{{ profile }}"
-    case "{{ profile }}" in
-      dev|test)
-        [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
-        ;;
-      bench|release)
-        [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_RELEASE}"
-        ;;
-      fuzz)
-        [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_FUZZ}"
-        ;;
-    esac
-    [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
-    # >&2 echo "With RUSTFLAGS=\"${RUSTFLAGS:-}\""
-    cargo $(if rustup -V &>/dev/null; then echo +{{ rust }}; fi) nextest --profile={{ profile }} run \
-          --message-format libtest-json-plus \
-          --locked \
-          --cargo-profile={{ profile }} \
-          --target={{ target }} \
-        > >(tee "$report_dir/report.json") \
-        2> >(tee "$report_dir/report.log")
-
 # Generate a test report (does not run the tests first)
 [group("ci")]
 [script]
