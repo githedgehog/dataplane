@@ -388,8 +388,7 @@ mdbook *args="build":
       {{ _doc_env_container }} \
       {{ args }}
 
-# Run a simple build for each separate commit (for "pull_request")
-# or for the HEAD of the branch (other events).
+# Build for each separate commit (for "pull_request") or for the HEAD of the branch (other events).
 [script]
 build-sweep start="main":
     {{ _just_debuggable_ }}
