@@ -129,8 +129,18 @@ cargo *args:
 
 # Run the (very minimal) compile environment
 [script]
-compile-env *args: fill-out-dev-env-template
+compile-env *args:
     {{ _just_debuggable_ }}
+    mkdir -p dev-env-template/etc
+    if [ -z "${UID:-}" ]; then
+      >&2 echo "ERROR: environment variable UID not set"
+    fi
+    declare -rxi UID
+    GID="$(id -g)"
+    declare -rxi GID
+    declare -rx USER="${USER:-runner}"
+    envsubst < dev-env-template/etc.template/group.template > dev-env-template/etc/group
+    envsubst < dev-env-template/etc.template/passwd.template > dev-env-template/etc/passwd
     mkdir -p "$(pwd)/sterile"
     declare tmp_link
     tmp_link="$(mktemp -p "$(pwd)/sterile" -d --suffix=.compile-env.link)"
@@ -304,23 +314,6 @@ fake-nix refake="":
       exit 1
     fi
     sudo ln -rs ./compile-env/nix /nix
-
-# Fill out template file for the dev-env (needed to preserve user in dev-env container)
-[group('env')]
-[private]
-[script]
-fill-out-dev-env-template:
-    {{ _just_debuggable_ }}
-    mkdir -p dev-env-template/etc
-    if [ -z "${UID:-}" ]; then
-      >&2 echo "ERROR: environment variable UID not set"
-    fi
-    declare -rxi UID
-    GID="$(id -g)"
-    declare -rxi GID
-    declare -rx USER="${USER:-runner}"
-    envsubst < dev-env-template/etc.template/group.template > dev-env-template/etc/group
-    envsubst < dev-env-template/etc.template/passwd.template > dev-env-template/etc/passwd
 
 # Run a "sterile" command
 [group('env')]
