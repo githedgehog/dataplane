@@ -177,15 +177,11 @@ compile-env *args:
       "{{ _compile_env_container }}" \
       {{ args }}
 
-# Pull the latest versions of the compile-env container
-[script]
-pull-compile-env:
-    {{ _just_debuggable_ }}
-    sudo -E docker pull "{{ _compile_env_container }}" || true
-
 # Pull the latest versions of the containers
 [script]
-pull: pull-compile-env
+pull:
+    {{ _just_debuggable_ }}
+    sudo -E docker pull "{{ _compile_env_container }}" || true
 
 # Allocate 2M hugepages (if needed)
 [private]
@@ -281,7 +277,7 @@ remove-compile-env:
 # refresh the compile-env (clear and restore)
 [group('env')]
 [script]
-refresh-compile-env: remove-compile-env pull-compile-env create-compile-env
+refresh-compile-env: remove-compile-env pull create-compile-env
 
 # Install "fake-nix" (required for local builds to function)
 [confirm("Fake a nix install (yes/no)")]
