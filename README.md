@@ -23,11 +23,10 @@ managed by the Fabric, or to communicate with endpoints outside of the Fabric.
     ```bash
     rustup update
     ```
-  * :warning: You need to install both the glibc and musl targets to use the default builds.
+  * :warning: You need to install (at least) the glibc target to use the default builds.
 
     ```bash
     rustup target add x86_64-unknown-linux-gnu
-    rustup target add x86_64-unknown-linux-musl
     ```
 
 - [just][just] (install through your package manager or cargo)
@@ -53,7 +52,7 @@ just refresh-compile-env
 
 You should now have a directory called `compile-env` which contains the tools needed to build `dpdk-sys` such as `clang` and `lld`.
 You should also have `./compile-env/sysroot` which contains the libraries that `dpdk-sys` needs to link against.
-Both `x86_64-unknown-linux-gnu` and `x86_64-unknown-linux-musl` targets are currently supported.
+Only the `x86_64-unknown-linux-gnu` target is currently supported.
 
 ### Step 2. Fake nix
 
@@ -99,7 +98,7 @@ After running
 just cargo build --package=dataplane
 ```
 
-You should now have ELF executables in `target/x86_64-unknown-linux-gnu/debug/dataplane` and `target/x86_64-unknown-linux-musl/debug/dataplane`.
+You should now have an ELF executable in `target/x86_64-unknown-linux-gnu/debug/dataplane`.
 
 You can build in release mode with
 
@@ -107,7 +106,7 @@ You can build in release mode with
 just cargo build --package=dataplane --profile=release
 ```
 
-at which point the executables will be in `target/x86_64-unknown-linux-gnu/release/dataplane` and `target/x86_64-unknown-linux-musl/release/dataplane`.
+at which point you should have an executable in `target/x86_64-unknown-linux-gnu/release/dataplane`.
 
 ### Step 4. Run the tests (debug mode)
 
@@ -115,13 +114,6 @@ To run the test suite, you can run
 
 ```bash
 just cargo test
-```
-
-By default, this will run just the glibc tests.
-To run the test suite under musl, try
-
-```bash
-just cargo test --target x86_64-unknown-linux-musl
 ```
 
 To run the test suite under release mode

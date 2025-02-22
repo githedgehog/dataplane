@@ -180,5 +180,5 @@ Control plane components
 
 [`dpdk-sys`]: <https://github.com/githedgehog/dpdk-sys>
 [`dataplane`]: <https://github.com/githedgehog/dataplane>
-[^um-actually]: In fact, `dpdk-sys` produces four sysroots.  One for each combination of dev/release builds and gnu64 and musl64 builds.
+[^um-actually]: In fact, `dpdk-sys` produces two sysroots.  One for debug and one for release builds.
 

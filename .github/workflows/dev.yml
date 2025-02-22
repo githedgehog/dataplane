@@ -87,7 +87,7 @@ jobs:
         debug_justfile:
           - "${{inputs.debug_justfile || false}}"
     outputs:
-      result: "${{ matrix.rust.optional || steps.gnu_dev_test.conclusion == 'success' && steps.musl_dev_test.conclusion == 'success' && steps.gnu_release_test.conclusion == 'success' && steps.musl_release_test.conclusion == 'success' }}"
+      result: "${{ matrix.rust.optional || steps.gnu_dev_test.conclusion == 'success' && steps.gnu_release_test.conclusion == 'success' }}"
     name: "Developer build"
     runs-on: "lab"
     timeout-minutes: 45
@@ -102,7 +102,7 @@ jobs:
         uses: "dtolnay/rust-toolchain@master"
         with:
           toolchain: "${{ matrix.rust.version }}"
-          targets: "x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl"
+          targets: "x86_64-unknown-linux-gnu"
           components: "rustfmt,clippy"
       - name: "Checkout"
         uses: "actions/checkout@v4"
@@ -132,30 +132,12 @@ jobs:
             cargo doc
         continue-on-error: ${{ matrix.rust.optional }}
 
-      - id: "musl_dev_test"
-        name: "test musl dev"
-        run: |
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-musl \
-            cargo test
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-musl \
-            cargo doc
-        continue-on-error: ${{ matrix.rust.optional }}
-
       - id: "gnu_release_test"
         name: "test gnu release"
         run: |
           just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-gnu \
             cargo test
           just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-gnu \
-            cargo doc
-        continue-on-error: ${{ matrix.rust.optional }}
-
-      - id: "musl_release_test"
-        name: "test musl release"
-        run: |
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-musl \
-            cargo test
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-musl \
             cargo doc
         continue-on-error: ${{ matrix.rust.optional }}
 
@@ -173,7 +155,7 @@ jobs:
 
       - name: "Note failure of optional steps"
         uses: "actions/github-script@v7"
-        if: ${{ matrix.rust.optional && (steps.gnu_dev_test.outcome != 'success' || steps.musl_dev_test.outcome != 'success' || steps.gnu_release_test.outcome != 'success' || steps.musl_release_test.outcome != 'success' || steps.clippy.outcome != 'success') }}
+        if: ${{ matrix.rust.optional && (steps.gnu_dev_test.outcome != 'success' || steps.gnu_release_test.outcome != 'success' || steps.clippy.outcome != 'success') }}
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
           script: |
@@ -185,7 +167,6 @@ jobs:
               repo: context.repo.repo,
               body: body
             });
-
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}

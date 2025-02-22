@@ -54,17 +54,6 @@ The `compile-env` directory basically looks like this:
 ******_ dpdk-libs
 ******_ rdma-libs
 ******_ deps
-*** x86_64-unknown-linux-musl
-**** debug
-***** lib
-******_ dpdk-libs
-******_ rdma-libs
-******_ deps
-**** release
-***** lib
-******_ dpdk-libs
-******_ rdma-libs
-******_ deps
 @endwbs
 ```
 > High-level anatomy of the `compile-env`.
