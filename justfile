@@ -2,9 +2,6 @@
 # Copyright Open Network Fabric Authors
 
 set unstable := true
-
-run_id := uuid()
-
 set shell := [x"${SHELL:-bash}", "-euo", "pipefail", "-c"]
 set script-interpreter := [x"${SHELL:-bash}", "-euo", "pipefail"]
 set dotenv-load := true
@@ -258,10 +255,10 @@ teardown-test-env: umount-hugepages
 create-compile-env:
     {{ _just_debuggable_ }}
     mkdir compile-env
-    sudo -E docker create --name dpdk-sys-compile-env-{{ run_id }} "{{ _compile_env_container }}" - fake
-    sudo -E docker export dpdk-sys-compile-env-{{ run_id }} \
+    sudo -E docker create --name dpdk-sys-compile-env-{{ _slug }} "{{ _compile_env_container }}" - fake
+    sudo -E docker export dpdk-sys-compile-env-{{ _slug }} \
       | tar --no-same-owner --no-same-permissions -xf - -C compile-env
-    sudo -E docker rm dpdk-sys-compile-env-{{ run_id }}
+    sudo -E docker rm dpdk-sys-compile-env-{{ _slug }}
 
 # remove the compile-env directory
 [confirm("Remove old compile environment? (yes/no)\n(you can recreate it with `just create-compile-env`)")]
