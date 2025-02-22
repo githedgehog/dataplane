@@ -57,12 +57,12 @@ jobs:
         uses: "peter-evans/create-pull-request@v7"
         with:
           branch: "bump/dpdk-sys"
-          title: "bump/dpdk-sys"
+          title: "build(dpdk-sys): bump"
           labels: |
             automated
             dependencies
           signoff: "true"
-          commit-message: "bump/dpdk-sys"
+          commit-message: "automated bump of dpdk-sys"
           sign-commits: "true"
           body: "bump dpdk-sys"
 
