@@ -17,16 +17,24 @@ debug := "false"
 dpdk_sys_commit := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT")
 hugepages_1g := "8"
 hugepages_2m := "1024"
+[private]
 _just_debuggable_ := if debug == "true" { "set -x" } else { "" }
 target := "x86_64-unknown-linux-gnu"
 profile := "debug"
+[private]
 _container_repo := "ghcr.io/githedgehog/dataplane"
 rust := "stable"
+[private]
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
+[private]
 _dpdk_sys_container_tag := dpdk_sys_commit + ".rust-" + rust
+[private]
 _doc_env_container := _dpdk_sys_container_repo + "/doc-env:" + _dpdk_sys_container_tag
+[private]
 _compile_env_container := _dpdk_sys_container_repo + "/compile-env:" + _dpdk_sys_container_tag
+[private]
 _network := "host"
+[private]
 _docker_sock_cmd := replace_regex(_just_debuggable_, ".+", "$0;") + '''
   declare -r DOCKER_HOST="${DOCKER_HOST:-unix:///var/run/docker.sock}"
   declare -r without_unix="${DOCKER_HOST##unix://}"
@@ -42,16 +50,19 @@ export DOCKER_SOCK := shell(_docker_sock_cmd)
 # The git commit hash of the last commit to HEAD
 # We allow this command to fail in the sterile environment because git is not available there
 
+[private]
 _commit := `git rev-parse HEAD 2>/dev/null || echo "sterile"`
 
 # The git branch we are currnetly on
 # We allow this command to fail in the sterile environment because git is not available there
 
+[private]
 _branch := `(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "sterile") | tr -c '[:alnum:]\n' '-'`
 
 # The git tree state (clean or dirty)
 # We allow this command to fail in the sterile environment because git is not available there
 
+[private]
 _clean := ```
   set -euo pipefail
   (
@@ -63,13 +74,17 @@ _clean := ```
 
 # The slug is the branch name (sanitized) with a marker if the tree is dirty
 
+[private]
 _slug := (if _clean == "clean" { "" } else { "dirty-_-" }) + _branch
 
 # Define a function to truncate long lines to the limit for containers tags
+
+[private]
 _define_truncate128 := 'truncate128() { printf -- "%s" "${1::128}" ; }'
 
 # The time of the build (in iso8601 utc)
 
+[private]
 _build_time := datetime_utc("%+")
 
 # List out the available commands
