@@ -5,6 +5,10 @@ edition = "2024"
 description = "Low-level bindings to the Data Plane Development Kit (DPDK)"
 publish = false
 
+[lib]
+doctest = false
+doc = false
+
 [build-dependencies]
 bindgen = { workspace = true, features = ["runtime", "experimental"]}
 doxygen-rs = { workspace = true }
