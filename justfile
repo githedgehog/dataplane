@@ -381,42 +381,6 @@ push-container: build-container
       sudo -E docker push "{{ _container_repo }}:$(truncate128 "{{ _slug }}")"
     fi
 
-# Generate a test report (does not run the tests first)
-[group("ci")]
-[script]
-report:
-    {{ _just_debuggable_ }}
-    declare -r report_dir="${CARGO_TARGET_DIR:-target}/nextest/{{ profile }}"
-    markdown-test-report "$report_dir/report.json" -o "$report_dir/report.md"
-    cat <<'EOF' >> "${report_dir}/report.md"
-    ## Test Report
-
-    > [!NOTE]
-    > Rust: {{ rust }}
-    > Profile: {{ profile }}
-    > Target: {{ target }}
-
-    EOF
-    declare -rx log="$(ansi2txt < $report_dir/report.log)"
-    cat >> "${report_dir}/report.md" <<EOF
-    <details>
-    <summary>
-
-    ## Test log
-
-    </summary>
-
-    \`\`\`log
-    $log
-    \`\`\`
-    </details>
-
-    EOF
-
-    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-      cat $report_dir/report.md >> $GITHUB_STEP_SUMMARY
-    fi
-
 # run commands in a minimal mdbook container
 [script]
 mdbook *args="build":
