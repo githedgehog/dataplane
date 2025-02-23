@@ -92,7 +92,6 @@ _build_time := datetime_utc("%+")
     just --list --justfile {{ justfile() }}
 
 # Run cargo with RUSTFLAGS computed based on profile.
-[group('rust')]
 [script]
 cargo *args:
     # Ideally this would be done via Cargo.toml and .cargo/config.toml,
@@ -244,15 +243,12 @@ mount-hugepages:
     sync
 
 # Set up the environment for testing locally
-[group('env')]
 setup-test-env: allocate-2M-hugepages allocate-1G-hugepages mount-hugepages
 
 # Tear down environment for testing locally
-[group('env')]
 teardown-test-env: umount-hugepages
 
 # Dump the compile-env container into a sysroot for use by the build.
-[group('env')]
 [script]
 create-compile-env:
     {{ _just_debuggable_ }}
@@ -264,20 +260,17 @@ create-compile-env:
 
 # remove the compile-env directory
 [confirm("Remove old compile environment? (yes/no)\n(you can recreate it with `just create-compile-env`)")]
-[group('env')]
 [script]
 remove-compile-env:
     {{ _just_debuggable_ }}
     if [ -d compile-env ]; then sudo rm -rf compile-env; fi
 
 # refresh the compile-env (clear and restore)
-[group('env')]
 [script]
 refresh-compile-env: pull remove-compile-env create-compile-env
 
 # Install "fake-nix" (required for local builds to function)
 [confirm("Fake a nix install (yes/no)")]
-[group('env')]
 [script]
 fake-nix refake="":
     {{ _just_debuggable_ }}
