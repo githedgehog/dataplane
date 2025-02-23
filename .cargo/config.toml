@@ -5,7 +5,3 @@ LIBCLANG_PATH = { value = "compile-env/lib", relative = true, force = true }
 
 [build]
 target = "x86_64-unknown-linux-gnu"
-
-[alias]
-just = ["just", "cargo"]
-sterile = ["just", "sterile", "cargo"]
