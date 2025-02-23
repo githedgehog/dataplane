@@ -392,12 +392,12 @@ mdbook *args="build":
 [script]
 build-sweep start="main":
     {{ _just_debuggable_ }}
-    if [ {{_clean}} != "clean" ]; then
+    if [ {{ _clean }} != "clean" ]; then
       >&2 echo "can not build-sweep with dirty branch (would risk data loss)"
       exit 1
     fi
-    # Get all commits since {{start}}, in chronological order
+    # Get all commits since {{ start }}, in chronological order
     while read -r commit; do
       git checkout "${commit}" || exit 1
-      { just debug={{debug}} cargo +{{rust}} build --locked --profile=dev --target=x86_64-unknown-linux-gnu; } || exit 1
-    done < <(git rev-list --reverse "{{start}}".."$(git rev-parse HEAD)")
+      { just debug={{ debug }} cargo +{{ rust }} build --locked --profile=dev --target=x86_64-unknown-linux-gnu; } || exit 1
+    done < <(git rev-list --reverse "{{ start }}".."$(git rev-parse HEAD)")
