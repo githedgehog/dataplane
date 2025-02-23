@@ -10,6 +10,7 @@ set dotenv-path := "."
 set dotenv-filename := "./scripts/rust.env"
 
 debug_justfile := "false"
+[private]
 dpdk_sys_commit := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT")
 hugepages_1g := "8"
 hugepages_2m := "1024"
