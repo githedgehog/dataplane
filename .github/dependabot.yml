@@ -11,7 +11,7 @@ updates:
   - package-ecosystem: "cargo"
     target-branch: "main"
     directories:
-      - /
+      - "/"
     schedule:
       interval: "weekly"
     versioning-strategy: "lockfile-only"
