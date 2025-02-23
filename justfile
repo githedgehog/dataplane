@@ -9,15 +9,19 @@ set dotenv-required := true
 set dotenv-path := "."
 set dotenv-filename := "./scripts/rust.env"
 
+# enable to debug just recipes
 debug_justfile := "false"
 [private]
 dpdk_sys_commit := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT")
 [private]
 _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
+# the tripple to compile for
 target := "x86_64-unknown-linux-gnu"
+# cargo build profile to use
 profile := "debug"
 [private]
 _container_repo := "ghcr.io/githedgehog/dataplane"
+# the rust channel to use (choose stable, beta, or nightly)
 rust := "stable"
 [private]
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
