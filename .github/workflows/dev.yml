@@ -168,21 +168,7 @@ jobs:
       - id: "build_each_commit"
         name: "build each commit"
         run: |
-          # Run a simple build for each separate commit (for "pull_request")
-          # or for the HEAD of the branch (other events).
-          set -eu -o pipefail
-          COMMITS=${{ github.sha }}
-          if [[ "${{ github.event_name == 'pull_request' }}" == "true" ]]; then
-            # Get all commits from Pull Request, in chronological order
-            COMMITS=$(git rev-list --reverse ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
-          fi
-          for commit in $COMMITS ; do
-            git checkout $commit || exit 1
-            printf "::group::Build commit %s\n" "$(git log --oneline --no-decorate -n 1)"
-            (just debug_justfile="${{matrix.debug_justfile}}" cargo +${{matrix.rust.version}} build --locked --profile=dev --target=x86_64-unknown-linux-gnu) || exit 1
-            printf "::endgroup::\n"
-          done
-          printf "::notice::HEAD remains at %s\n" "$(git log --oneline --no-decorate -n 1)"
+          just debug_justfile="${{matrix.debug_justfile}}" rust="${{matrix.rust.version}}" build-sweep
         continue-on-error: ${{ matrix.rust.optional }}
 
       - name: "Note failure of optional steps"
