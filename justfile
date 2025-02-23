@@ -9,7 +9,6 @@ set dotenv-required := true
 set dotenv-path := "."
 set dotenv-filename := "./scripts/rust.env"
 
-export NEXTEST_EXPERIMENTAL_LIBTEST_JSON := "1"
 debug := "false"
 dpdk_sys_commit := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT")
 hugepages_1g := "8"
