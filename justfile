@@ -9,12 +9,12 @@ set dotenv-required := true
 set dotenv-path := "."
 set dotenv-filename := "./scripts/rust.env"
 
-debug := "false"
+debug_justfile := "false"
 dpdk_sys_commit := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT")
 hugepages_1g := "8"
 hugepages_2m := "1024"
 [private]
-_just_debuggable_ := if debug == "true" { "set -x" } else { "" }
+_just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 target := "x86_64-unknown-linux-gnu"
 profile := "debug"
 [private]
@@ -305,8 +305,7 @@ fake-nix refake="":
     sudo ln -rs ./compile-env/nix /nix
 
 # Run a "sterile" command
-[group('env')]
-sterile *args: (compile-env "just" ("debug=" + debug) ("rust=" + rust) ("target=" + target) ("profile=" + profile) args)
+sterile *args: (compile-env "just" ("debug_justfile=" + debug_justfile) ("rust=" + rust) ("target=" + target) ("profile=" + profile) args)
 
 # Build containers in a sterile environment
 [script]
@@ -398,5 +397,5 @@ build-sweep start="main":
     # Get all commits since {{ start }}, in chronological order
     while read -r commit; do
       git checkout "${commit}" || exit 1
-      { just debug={{ debug }} cargo +{{ rust }} build --locked --profile=dev --target=x86_64-unknown-linux-gnu; } || exit 1
+      { just debug_justfile={{ debug_justfile }} cargo +{{ rust }} build --locked --profile=dev --target=x86_64-unknown-linux-gnu; } || exit 1
     done < <(git rev-list --reverse "{{ start }}".."$(git rev-parse HEAD)")

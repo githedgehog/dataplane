@@ -18,7 +18,7 @@ on:
         description: "Run with tmate enabled"
         required: false
         default: false
-      debug_just:
+      debug_justfile:
         type: "boolean"
         description: "enable to see debug statements from just recipes"
         required: false
@@ -88,39 +88,39 @@ jobs:
       - name: "dev/gnu sterile test"
         if: ${{ always() }}
         run: |
-          just debug="${{inputs.debug_just}}" rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu \
+          just debug_justfile="${{inputs.debug_justfile}}" rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu \
             sterile cargo test
-          just debug="${{inputs.debug_just}}" rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu \
+          just debug_justfile="${{inputs.debug_justfile}}" rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu \
             sterile cargo doc
 
       - name: "release/gnu sterile test"
         if: ${{ always() }}
         run: |
-          just debug="${{inputs.debug_just}}" rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu \
+          just debug_justfile="${{inputs.debug_justfile}}" rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu \
             sterile cargo test
-          just debug="${{inputs.debug_just}}" rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu \
+          just debug_justfile="${{inputs.debug_justfile}}" rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu \
             sterile cargo doc
 
       - name: "dev/musl sterile test"
         if: ${{ always() }}
         run: |
-          just debug="${{inputs.debug_just}}" rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl \
+          just debug_justfile="${{inputs.debug_justfile}}" rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl \
             sterile cargo test
-          just debug="${{inputs.debug_just}}" rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl \
+          just debug_justfile="${{inputs.debug_justfile}}" rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-musl \
             sterile cargo doc
 
       - name: "release/musl sterile test"
         if: ${{ always() }}
         run: |
-          just debug="${{inputs.debug_just}}" rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl \
+          just debug_justfile="${{inputs.debug_justfile}}" rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl \
             sterile cargo test
-          just debug="${{inputs.debug_just}}" rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl \
+          just debug_justfile="${{inputs.debug_justfile}}" rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl \
             sterile cargo doc
 
       - name: "run clippy"
         if: ${{ always() }}
         run: |
-          just debug="${{inputs.debug_just}}" rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu \
+          just debug_justfile="${{inputs.debug_justfile}}" rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu \
             sterile cargo clippy
 
 
@@ -144,8 +144,8 @@ jobs:
       matrix:
         rust:
           - "stable"
-        debug_just:
-          - "${{inputs.debug_just || false}}"
+        debug_justfile:
+          - "${{inputs.debug_justfile || false}}"
     name: "Push containers"
     steps:
       - name: "login to ghcr.io"
@@ -177,18 +177,18 @@ jobs:
       - run: |
           cargo install cargo-deny
       - run: |
-          just debug="${{matrix.debug_just}}" cargo deny check
+          just debug_justfile="${{matrix.debug_just}}" cargo deny check
       - run: |
-          just debug="${{matrix.debug_just}}" rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-gnu \
+          just debug_justfile="${{matrix.debug_just}}" rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-gnu \
             push-container
       - run: |
-          just debug="${{matrix.debug_just}}" rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu \
+          just debug_justfile="${{matrix.debug_just}}" rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-gnu \
             push-container
       - run: |
-          just debug="${{matrix.debug_just}}" rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-musl \
+          just debug_justfile="${{matrix.debug_just}}" rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-musl \
             push-container
       - run: |
-          just debug="${{matrix.debug_just}}" rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl \
+          just debug_justfile="${{matrix.debug_just}}" rust="${{matrix.rust}}" profile=release target=x86_64-unknown-linux-musl \
             push-container
 
       - name: "Setup tmate session for debug"

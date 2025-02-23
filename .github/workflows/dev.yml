@@ -23,7 +23,7 @@ on:
         description: "Run with tmate enabled"
         required: false
         default: false
-      debug_just:
+      debug_justfile:
         type: "boolean"
         description: "enable to see debug statements from just recipes"
         required: false
@@ -84,8 +84,8 @@ jobs:
           - # failures on the nightly channel are a clear "yellow" flag
             version: "nightly"
             optional: true
-        debug_just:
-          - "${{inputs.debug_just || false}}"
+        debug_justfile:
+          - "${{inputs.debug_justfile || false}}"
     outputs:
       result: "${{ matrix.rust.optional || steps.gnu_dev_test.conclusion == 'success' && steps.musl_dev_test.conclusion == 'success' && steps.gnu_release_test.conclusion == 'success' && steps.musl_release_test.conclusion == 'success' }}"
     name: "Developer build"
@@ -116,53 +116,53 @@ jobs:
         run: |
           cargo install cargo-deny
       - run: |
-          just debug="${{matrix.debug_just}}" cargo deny check
+          just debug_justfile="${{matrix.debug_justfile}}" cargo deny check
       - name: refresh-compile-env
         run: |
-          just --yes debug="${{matrix.debug_just}}" refresh-compile-env
+          just --yes debug_justfile="${{matrix.debug_justfile}}" refresh-compile-env
       - run: |
-          just --yes debug="${{matrix.debug_just}}" fake-nix
+          just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
 
       - id: "gnu_dev_test"
         name: "test gnu dev"
         run: |
-          just debug="${{matrix.debug_just}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-gnu \
+          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-gnu \
             cargo test
-          just debug="${{matrix.debug_just}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-gnu \
+          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-gnu \
             cargo doc
         continue-on-error: ${{ matrix.rust.optional }}
 
       - id: "musl_dev_test"
         name: "test musl dev"
         run: |
-          just debug="${{matrix.debug_just}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-musl \
+          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-musl \
             cargo test
-          just debug="${{matrix.debug_just}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-musl \
+          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-musl \
             cargo doc
         continue-on-error: ${{ matrix.rust.optional }}
 
       - id: "gnu_release_test"
         name: "test gnu release"
         run: |
-          just debug="${{matrix.debug_just}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-gnu \
+          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-gnu \
             cargo test
-          just debug="${{matrix.debug_just}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-gnu \
+          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-gnu \
             cargo doc
         continue-on-error: ${{ matrix.rust.optional }}
 
       - id: "musl_release_test"
         name: "test musl release"
         run: |
-          just debug="${{matrix.debug_just}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-musl \
+          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-musl \
             cargo test
-          just debug="${{matrix.debug_just}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-musl \
+          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-musl \
             cargo doc
         continue-on-error: ${{ matrix.rust.optional }}
 
       - id: "clippy"
         name: "run clippy"
         run: |
-          just debug="${{matrix.debug_just}}" rust=${{matrix.rust.version}} cargo clippy
+          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} cargo clippy
         continue-on-error: ${{ matrix.rust.optional }}
 
       - id: "build_each_commit"
@@ -179,7 +179,7 @@ jobs:
           for commit in $COMMITS ; do
             git checkout $commit || exit 1
             printf "::group::Build commit %s\n" "$(git log --oneline --no-decorate -n 1)"
-            (just debug="${{matrix.debug_just}}" cargo +${{matrix.rust.version}} build --locked --profile=dev --target=x86_64-unknown-linux-gnu) || exit 1
+            (just debug_justfile="${{matrix.debug_justfile}}" cargo +${{matrix.rust.version}} build --locked --profile=dev --target=x86_64-unknown-linux-gnu) || exit 1
             printf "::endgroup::\n"
           done
           printf "::notice::HEAD remains at %s\n" "$(git log --oneline --no-decorate -n 1)"
