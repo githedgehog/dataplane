@@ -10,6 +10,7 @@ updates:
       interval: "weekly"
   - package-ecosystem: "cargo"
     target-branch: "main"
+    commit-message: "dep(cargo): bump cargo dependencies"
     directories:
       - "/"
     schedule:
