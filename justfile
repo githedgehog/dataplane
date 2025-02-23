@@ -12,8 +12,6 @@ set dotenv-filename := "./scripts/rust.env"
 debug_justfile := "false"
 [private]
 dpdk_sys_commit := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT")
-hugepages_1g := "8"
-hugepages_2m := "1024"
 [private]
 _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 target := "x86_64-unknown-linux-gnu"
@@ -180,7 +178,7 @@ pull:
 # Allocate 2M hugepages (if needed)
 [private]
 [script]
-allocate-2M-hugepages:
+allocate-2M-hugepages hugepages_2m="1024":
     {{ _just_debuggable_ }}
     pages=$(< /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages)
     if [ "$pages" -gt {{ hugepages_2m }} ]; then
@@ -192,7 +190,7 @@ allocate-2M-hugepages:
 # Allocate 1G hugepages (if needed)
 [private]
 [script]
-allocate-1G-hugepages:
+allocate-1G-hugepages hugepages_1g="8":
     {{ _just_debuggable_ }}
     pages=$(< /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages)
     if [ "$pages" -gt {{ hugepages_1g }} ]; then
