@@ -111,7 +111,7 @@ jobs:
 
       - name: "(PR) Deploy documentation preview"
         if: "${{ github.event.pull_request }}"
-        uses: "nwtgck/actions-netlify@v2"
+        uses: "nwtgck/actions-netlify@v3"
         with:
           publish-dir: "${{ github.workspace }}/publish/design-docs"
           alias: "preview-${{ github.event.number }}"
