@@ -25,7 +25,7 @@ updates:
       - "dependencies"
     versioning-strategy: "lockfile-only"
     groups:
-      dev-dependencies:
+      dependencies:
         applies-to: "version-updates"
         patterns:
           - "*"
