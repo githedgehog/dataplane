@@ -3,7 +3,8 @@ version: 2
 updates:
   - package-ecosystem: "github-actions"
     target-branch: "main"
-    commit-message: "dep(github-actions): bump github actions dependencies"
+    commit-message:
+      prefix: "dep(github-actions):"
     directories:
       - "/"
     schedule:
@@ -13,7 +14,8 @@ updates:
       - dependencies
   - package-ecosystem: "cargo"
     target-branch: "main"
-    commit-message: "dep(cargo): bump cargo dependencies"
+    commit-message:
+      prefix: "dep(cargo):"
     directories:
       - "/"
     schedule:
