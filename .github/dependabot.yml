@@ -10,8 +10,8 @@ updates:
     schedule:
       interval: "weekly"
     labels:
-      - automated
-      - dependencies
+      - "automated"
+      - "dependencies"
   - package-ecosystem: "cargo"
     target-branch: "main"
     commit-message:
@@ -21,8 +21,8 @@ updates:
     schedule:
       interval: "weekly"
     labels:
-      - automated
-      - dependencies
+      - "automated"
+      - "dependencies"
     versioning-strategy: "lockfile-only"
     groups:
       dev-dependencies:
