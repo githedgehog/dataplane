@@ -3,7 +3,10 @@
 name: "lint-just-fmt.yml"
 
 on:
-  pull_request: {}
+  pull_request:
+    paths:
+      - "justfile"
+      - ".github/workflows/lint-just-fmt.yml"
   merge_group:
     types: ["checks_requested"]
 
