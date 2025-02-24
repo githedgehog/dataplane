@@ -308,13 +308,13 @@ pub mod tests {
 
     fn check_default_drop_v4(vrf: &Vrf) {
         let prefix: Prefix = Prefix::root_v4();
-        let recovered = vrf.get_route_v4(&prefix.get_v4()).expect("There must be a default route");
+        let recovered = vrf.get_route_v4(prefix.get_v4()).expect("There must be a default route");
         assert_eq!(recovered.s_nhops.len(), 1);
         assert_eq!(recovered.s_nhops[0].rc.key.fwaction, FwAction::Drop);
     }
     fn check_default_drop_v6(vrf: &Vrf) {
         let prefix: Prefix = Prefix::root_v6();
-        let recovered = vrf.get_route_v6(&prefix.get_v6()).expect("There must be a default route");
+        let recovered = vrf.get_route_v6(prefix.get_v6()).expect("There must be a default route");
         assert_eq!(recovered.s_nhops.len(), 1);
         assert_eq!(recovered.s_nhops[0].rc.key.fwaction, FwAction::Drop);
     }
