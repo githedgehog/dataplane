@@ -61,7 +61,7 @@ impl Ipv4 {
     /// Get the destination ip address of the header
     #[must_use]
     pub fn destination(&self) -> Ipv4Addr {
-        Ipv4Addr::from(self.0.source)
+        Ipv4Addr::from(self.0.destination)
     }
 
     // TODO: proper wrapper type
