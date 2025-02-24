@@ -362,7 +362,7 @@ pub mod tests {
         encap: Option<Encapsulation>,
     ) -> RouteNhop {
         let key = NhopKey::new(
-            address.map(|a| build_address(a)),
+            address.map(build_address),
             ifindex, encap,FwAction::Forward);
 
         RouteNhop {
