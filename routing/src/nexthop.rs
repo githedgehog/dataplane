@@ -350,7 +350,7 @@ mod tests {
         let _ = store.add_nhop(&nh_key);
 
         /* check it's there */
-        assert_eq!(store.contains(&nh_key), true);
+        assert!(store.contains(&nh_key));
 
         /* get it */
         let nh = store.get_nhop(&nh_key).unwrap();
@@ -394,12 +394,12 @@ mod tests {
 
         /* check that were added */
         assert_eq!(store.len(), 6);
-        assert_eq!(store.contains(&n1_k), true);
-        assert_eq!(store.contains(&n2_k), true);
-        assert_eq!(store.contains(&n3_k), true);
-        assert_eq!(store.contains(&i1_k), true);
-        assert_eq!(store.contains(&i2_k), true);
-        assert_eq!(store.contains(&i3_k), true);
+        assert!(store.contains(&n1_k));
+        assert!(store.contains(&n2_k));
+        assert!(store.contains(&n3_k));
+        assert!(store.contains(&i1_k));
+        assert!(store.contains(&i2_k));
+        assert!(store.contains(&i3_k));
 
         /* check rc counts */
         assert_eq!(store.get_nhop_rc_count(&n1_k), 1);
@@ -552,7 +552,7 @@ mod tests {
 
         /* Delete nexthop. Since it has no extra reference it should be gone */
         store.del_nhop(&key);
-        assert_eq!(store.contains(&key), false);
+        assert!(!store.contains(&key));
 
         /* ... and since it refers to all other next-hops (indirectly) and no
         other next-hop does, all should be gone too */
