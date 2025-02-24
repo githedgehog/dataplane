@@ -50,12 +50,6 @@ pub fn get_sysroot() -> String {
     if expected_sysroot_path.exists() {
         expected_sysroot
     } else {
-        let fallback_sysroot = format!("/sysroot/{target}/{profile}");
-        let fallback_sysroot_path = Path::new(&fallback_sysroot);
-        if fallback_sysroot_path.exists() {
-            fallback_sysroot
-        } else {
-            panic!("sysroot not found at {expected_sysroot} or {fallback_sysroot}")
-        }
+        panic!("sysroot not found at {expected_sysroot}")
     }
 }
