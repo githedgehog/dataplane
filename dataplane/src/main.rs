@@ -5,8 +5,8 @@
 
 mod args;
 mod nat;
-mod packet;
 mod pipeline;
+mod vxlan;
 
 use dpdk::dev::{Dev, TxOffloadConfig};
 use dpdk::eal::Eal;

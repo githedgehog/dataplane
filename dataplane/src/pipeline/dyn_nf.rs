@@ -6,8 +6,8 @@ use net::buffer::PacketBufferMut;
 use std::any::Any;
 use std::marker::PhantomData;
 
-use crate::packet::Packet;
 use crate::pipeline::NetworkFunction;
+use net::packet::Packet;
 
 /// Trait for an object that processes a stream of packets.
 ///
