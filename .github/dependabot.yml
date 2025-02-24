@@ -8,9 +8,9 @@ updates:
       - "/"
     schedule:
       interval: "weekly"
-      labels:
-        - automated
-        - dependencies
+    labels:
+      - automated
+      - dependencies
   - package-ecosystem: "cargo"
     target-branch: "main"
     commit-message: "dep(cargo): bump cargo dependencies"
@@ -18,9 +18,9 @@ updates:
       - "/"
     schedule:
       interval: "weekly"
-      labels:
-        - automated
-        - dependencies
+    labels:
+      - automated
+      - dependencies
     versioning-strategy: "lockfile-only"
     groups:
       dev-dependencies:
