@@ -658,6 +658,36 @@ impl TryIcmp6Mut for Headers {
     }
 }
 
+// Generic Transport traits
+
+pub trait WithTransport {
+    fn transport(&self) -> &Transport;
+}
+
+pub trait WithTransportMut {
+    fn transport_mut(&mut self) -> &mut Transport;
+}
+
+pub trait TryTransport {
+    fn try_transport(&self) -> Option<&Transport>;
+}
+
+pub trait TryTransportMut {
+    fn try_transport_mut(&mut self) -> Option<&mut Transport>;
+}
+
+impl TryTransport for Headers {
+    fn try_transport(&self) -> Option<&Transport> {
+        self.transport.as_ref()
+    }
+}
+
+impl TryTransportMut for Headers {
+    fn try_transport_mut(&mut self) -> Option<&mut Transport> {
+        self.transport.as_mut()
+    }
+}
+
 // Vxlan traits
 
 pub trait WithVxlan {
@@ -787,17 +817,46 @@ impl From<UdpEncap> for Header {
 }
 
 pub trait AbstractHeaders:
-    Debug + TryEth + TryIpv4 + TryIpv6 + TryIp + TryTcp + TryUdp + TryIcmp + TryIcmp6 + TryVxlan
+    Debug
+    + TryEth
+    + TryIpv4
+    + TryIpv6
+    + TryIp
+    + TryTcp
+    + TryUdp
+    + TryIcmp
+    + TryIcmp6
+    + TryTransport
+    + TryVxlan
 {
 }
 
 impl<T> AbstractHeaders for T where
-    T: Debug + TryEth + TryIpv4 + TryIpv6 + TryIp + TryTcp + TryUdp + TryIcmp + TryIcmp6 + TryVxlan
+    T: Debug
+        + TryEth
+        + TryIpv4
+        + TryIpv6
+        + TryIp
+        + TryTcp
+        + TryUdp
+        + TryIcmp
+        + TryIcmp6
+        + TryTransport
+        + TryVxlan
 {
 }
 
 pub trait AbstractHeadersMut:
-    TryEthMut + TryIpv4Mut + TryIpv6Mut + TryIpMut + TryTcpMut + TryUdpMut + TryIcmpMut + TryIcmp6Mut + TryVxlanMut
+    TryEthMut
+    + TryIpv4Mut
+    + TryIpv6Mut
+    + TryIpMut
+    + TryTcpMut
+    + TryUdpMut
+    + TryIcmpMut
+    + TryIcmp6Mut
+    + TryTransportMut
+    + TryVxlanMut
 {
 }
 impl<T> AbstractHeadersMut for T where
@@ -809,6 +868,7 @@ impl<T> AbstractHeadersMut for T where
         + TryUdpMut
         + TryIcmpMut
         + TryIcmp6Mut
+        + TryTransportMut
         + TryVxlanMut
 {
 }
@@ -893,6 +953,15 @@ where
     }
 }
 
+impl<T> TryTransport for T
+where
+    T: TryHeaders,
+{
+    fn try_transport(&self) -> Option<&Transport> {
+        self.headers().try_transport()
+    }
+}
+
 impl<T> TryVxlan for T
 where
     T: TryHeaders,
@@ -971,6 +1040,15 @@ where
 {
     fn try_icmp6_mut(&mut self) -> Option<&mut Icmp6> {
         self.headers_mut().try_icmp6_mut()
+    }
+}
+
+impl<T> TryTransportMut for T
+where
+    T: TryHeadersMut,
+{
+    fn try_transport_mut(&mut self) -> Option<&mut Transport> {
+        self.headers_mut().try_transport_mut()
     }
 }
 
