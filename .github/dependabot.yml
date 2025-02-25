@@ -23,7 +23,7 @@ updates:
     labels:
       - "automated"
       - "dependencies"
-    versioning-strategy: "lockfile-only"
+    versioning-strategy: "increase-if-necessary"
     groups:
       dependencies:
         applies-to: "version-updates"
