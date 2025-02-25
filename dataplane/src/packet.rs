@@ -66,9 +66,15 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         // The `unreachable` statements in the first block should be easily optimized out, but best
         // to confirm.
 
-        if self.dropped() {
-            warn!("Serializing a packet that should be dropped");
-        }
+        // warn if packet has a drop reason != Delivered
+        self.get_drop().inspect(|reason| {
+            if *reason != DropReason::Delivered {
+                warn!("Serializing a packet that should be dropped");
+            }
+        });
+
+        // set the drop action to delivered, since this is terminal.
+        self.pkt_drop(DropReason::Delivered);
 
         let needed = self.headers.size();
         let mut mbuf = self.take_buf().expect("Packet without buffer");
@@ -108,15 +114,22 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     }
 
     #[allow(dead_code)]
-    /// Explicitly mark a packet as to be dropped, indicating the reason.
+    /// Explicitly mark a packet as done, indicating the reason.
     pub fn pkt_drop(&mut self, reason: DropReason) {
-        self.meta.drop = Some(reason);
+        if self.meta.drop.is_none() {
+            self.meta.drop = Some(reason);
+        }
     }
 
     #[allow(dead_code)]
     /// Tell if a packet has been marked as 'to drop'.
     pub fn dropped(&self) -> bool {
         self.meta.drop.is_some()
+    }
+
+    #[allow(dead_code)]
+    pub fn get_drop(&self) -> &Option<DropReason> {
+        &self.meta.drop
     }
 
     #[allow(dead_code)]
@@ -149,7 +162,16 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// ```
     /// .. or a variation to collect statistics.
     pub fn fate(self) -> Option<Self> {
-        if self.dropped() { Some(self) } else { None }
+        if !self.dropped() {
+            Some(self)
+        } else {
+            #[cfg(test)]
+            if self.meta.keep {
+                // ignore the request to drop and keep the packet instead.
+                return Some(self);
+            }
+            None
+        }
     }
 }
 
@@ -168,7 +190,7 @@ impl<Buf: PacketBufferMut> TryHeadersMut for Packet<Buf> {
 impl<Buf: PacketBufferMut> Drop for Packet<Buf> {
     fn drop(&mut self) {
         if self.meta.drop.is_none() {
-            error!("Dropped packet without specifying reason")
+            error!("Dropped packet without specifying reason");
             // This should be a panic!(). Leaving it as just a log
             // until related features adopt this, if adopted.
         }
