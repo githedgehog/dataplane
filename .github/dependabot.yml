@@ -23,7 +23,7 @@ updates:
     labels:
       - "automated"
       - "dependencies"
-    versioning-strategy: "increase-if-necessary"
+    versioning-strategy: "lockfile-only"
     groups:
       dependencies:
         applies-to: "version-updates"
@@ -32,9 +32,3 @@ updates:
         update-types:
           - "minor"
           - "patch"
-      major:
-        applies-to: "version-updates"
-        patterns:
-          - "*"
-        update-types:
-          - "major"
