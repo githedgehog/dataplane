@@ -8,6 +8,7 @@
 mod args;
 mod nat;
 mod packet;
+mod packet_meta;
 mod pipeline;
 
 use dpdk::dev::{Dev, TxOffloadConfig};
