@@ -251,6 +251,13 @@ impl Ipv4 {
         self.0.protocol = next_header.0;
         self
     }
+
+    /// Set the next layer protocol without unsafe.
+    /// This method could be defined to accept [`IpNumber`].
+    pub fn set_next_header_unchecked(&mut self, next_header: NextHeader) -> &mut Self {
+        self.0.protocol = next_header.0;
+        self
+    }
 }
 
 /// Error which is triggered when decrementing the TTL which is already zero.
