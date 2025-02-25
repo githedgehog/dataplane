@@ -8,6 +8,7 @@ use net::headers::{AbstractHeaders, AbstractHeadersMut, Headers, TryHeaders, Try
 use net::parse::{DeParse, DeParseError, Parse, ParseError};
 use std::cmp::Ordering;
 use std::num::NonZero;
+use tracing::error;
 
 #[derive(Debug)]
 pub struct Packet<Buf: PacketBufferMut> {
@@ -145,5 +146,15 @@ impl<Buf: PacketBufferMut> TryHeaders for Packet<Buf> {
 impl<Buf: PacketBufferMut> TryHeadersMut for Packet<Buf> {
     fn headers_mut(&mut self) -> &mut impl AbstractHeadersMut {
         &mut self.headers
+    }
+}
+
+impl<Buf: PacketBufferMut> Drop for Packet<Buf> {
+    fn drop(&mut self) {
+        if self.meta.drop.is_none() {
+            error!("Dropped packet without specifying reason")
+            // This should be a panic!(). Leaving it as just a log
+            // until related features adopt this, if adopted.
+        }
     }
 }
