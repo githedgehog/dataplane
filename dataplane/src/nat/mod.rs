@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use iptrie::{Ipv4Prefix, Ipv6Prefix, map::RTrieMap};
+mod prefixtrie;
+
+use crate::nat::prefixtrie::{PrefixTrie, TrieError};
+
 use net::vxlan::Vni;
 use routing::prefix::Prefix;
 use serde::{Deserialize, Serialize};
@@ -10,13 +13,7 @@ use std::fmt::Debug;
 use std::fs;
 use std::net::IpAddr;
 use std::path::Path;
-use tracing::{error, warn};
-
-#[derive(thiserror::Error, Debug)]
-pub enum NatError {
-    #[error("PIF already exists")]
-    PifExists,
-}
+use tracing::error;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 struct Pif {
@@ -24,94 +21,6 @@ struct Pif {
     endpoints: Vec<Prefix>,
     ips: Vec<Prefix>,
     vpc: String,
-}
-
-#[derive(Default, Clone)]
-struct PrefixTrie {
-    trie_ipv4: RTrieMap<Ipv4Prefix, String>,
-    trie_ipv6: RTrieMap<Ipv6Prefix, String>,
-}
-
-impl PrefixTrie {
-    #[tracing::instrument(level = "trace")]
-    fn new() -> Self {
-        Self {
-            trie_ipv4: RTrieMap::new(),
-            trie_ipv6: RTrieMap::new(),
-        }
-    }
-
-    fn insert_ipv4(&mut self, prefix: Ipv4Prefix, value: String) -> Result<(), NatError> {
-        // Insertion always succeeds even if the key already in the map.
-        // So we first need to ensure the key is not already in use.
-        //
-        // TODO: This is not thread-safe.
-        if self.trie_ipv4.get(&prefix).is_some() {
-            return Err(NatError::PifExists);
-        }
-        self.trie_ipv4.insert(prefix, value);
-        Ok(())
-    }
-
-    fn insert_ipv6(&mut self, prefix: Ipv6Prefix, value: String) -> Result<(), NatError> {
-        // See comment for IPv4
-        if self.trie_ipv6.get(&prefix).is_some() {
-            return Err(NatError::PifExists);
-        }
-        self.trie_ipv6.insert(prefix, value);
-        Ok(())
-    }
-
-    #[tracing::instrument(level = "trace")]
-    fn insert(&mut self, prefix: &Prefix, value: String) -> Result<(), NatError> {
-        match prefix {
-            Prefix::IPV4(p) => self.insert_ipv4(*p, value),
-            Prefix::IPV6(p) => self.insert_ipv6(*p, value),
-        }
-    }
-
-    #[tracing::instrument(level = "trace")]
-    fn find(&self, prefix: &Prefix) -> Option<String> {
-        match prefix {
-            Prefix::IPV4(p) => {
-                let (k, v) = self.trie_ipv4.lookup(p);
-                // The RTrieMap lookup always return an entry; if no better
-                // match, it returns the root of the map, which always exists.
-                // This means that to check if the result is "empty", we need to
-                // check whether the returned entry is the root for the map.
-                if Prefix::IPV4(*k).is_root() {
-                    None
-                } else {
-                    Some(v.to_string())
-                }
-            }
-            Prefix::IPV6(p) => {
-                let (k, v) = self.trie_ipv6.lookup(p);
-                if Prefix::IPV6(*k).is_root() {
-                    None
-                } else {
-                    Some(v.to_string())
-                }
-            }
-        }
-    }
-
-    #[tracing::instrument(level = "trace")]
-    fn find_ip(&self, ip: &IpAddr) -> Option<String> {
-        match ip {
-            IpAddr::V4(_) => self.find(&Prefix::from((*ip, 32))),
-            IpAddr::V6(_) => self.find(&Prefix::from((*ip, 128))),
-        }
-    }
-}
-
-impl Debug for PrefixTrie {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_map()
-            .entries(self.trie_ipv4.iter())
-            .entries(self.trie_ipv6.iter())
-            .finish()
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -151,9 +60,9 @@ impl PifTable {
     }
 
     #[tracing::instrument(level = "info")]
-    fn add_pif(&mut self, pif: Pif) -> Result<(), NatError> {
+    fn add_pif(&mut self, pif: Pif) -> Result<(), TrieError> {
         if self.pifs.contains_key(&pif.name) {
-            return Err(NatError::PifExists);
+            return Err(TrieError::EntryExists);
         }
 
         for prefix in &pif.endpoints {
