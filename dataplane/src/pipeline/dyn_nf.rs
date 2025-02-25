@@ -29,6 +29,13 @@ pub trait DynNetworkFunction<Buf: PacketBufferMut>: Any {
     /// [`DynPipeline::process`] with a concrete iterator type.  However, if you only
     /// have a dynamic iterator, you can use this method to process the packets.
     fn process_dyn<'a>(&'a mut self, input: DynIter<'a, Packet<Buf>>) -> DynIter<'a, Packet<Buf>>;
+
+    /// Allow objects implementing [`DynNetworkFunction`] to identify themselves by overriding this.
+    #[allow(dead_code)]
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn nf_name(&self) -> &str {
+        "anonymous-dynNF"
+    }
 }
 
 struct DynNetworkFunctionImpl<Buf: PacketBufferMut, NF: NetworkFunction<Buf> + 'static> {

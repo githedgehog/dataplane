@@ -23,6 +23,13 @@ pub trait NetworkFunction<Buf: PacketBufferMut> {
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a;
+
+    /// Allow objects implementing [`NetworkFunction`] to identify themselves by overriding this.
+    #[allow(dead_code)]
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn nf_name(&self) -> &str {
+        "anonymous-NF"
+    }
 }
 
 struct StaticChainImpl<Buf: PacketBufferMut, NF1: NetworkFunction<Buf>, NF2: NetworkFunction<Buf>> {
