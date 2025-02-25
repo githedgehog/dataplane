@@ -133,7 +133,16 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// ```
     /// .. or a variation to collect statistics.
     pub fn fate(self) -> Option<Self> {
-        if self.dropped() { Some(self) } else { None }
+        if self.dropped() {
+            #[cfg(test)]
+            if self.meta.keep {
+                // ignore the request to drop and keep the packet instead.
+                return Some(self);
+            }
+            None
+        } else {
+            Some(self)
+        }
     }
 }
 
@@ -152,7 +161,7 @@ impl<Buf: PacketBufferMut> TryHeadersMut for Packet<Buf> {
 impl<Buf: PacketBufferMut> Drop for Packet<Buf> {
     fn drop(&mut self) {
         if self.meta.drop.is_none() {
-            error!("Dropped packet without specifying reason")
+            error!("Dropped packet without specifying reason");
             // This should be a panic!(). Leaving it as just a log
             // until related features adopt this, if adopted.
         }
