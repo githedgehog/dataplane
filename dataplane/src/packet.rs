@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use crate::packet_meta::{DropReason, PacketMeta};
 use net::buffer::PacketBufferMut;
 use net::eth::EthError;
 use net::headers::{AbstractHeaders, AbstractHeadersMut, Headers, TryHeaders, TryHeadersMut};
@@ -15,6 +16,8 @@ pub struct Packet<Buf: PacketBufferMut> {
     /// Mutations to `packet` can cause the re-serialized size of the packet to grow or shrink.
     consumed: NonZero<u16>,
     pub mbuf: Buf, // TODO: find a way to make this private
+    // packet metadata added by stages to drive other stages down the pipeline
+    pub meta: PacketMeta,
 }
 #[derive(Debug, thiserror::Error)]
 pub struct InvalidPacket<Buf: PacketBufferMut> {
@@ -35,6 +38,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         Ok(Packet {
             headers,
             consumed,
+            meta: PacketMeta::default(),
             mbuf,
         })
     }
@@ -79,6 +83,51 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 unreachable!("buffer too long: {len}", len = len)
             }
         }
+    }
+
+    #[allow(dead_code)]
+    /// Explicitly mark a packet as to be dropped, indicating the reason.
+    pub fn pkt_drop(&mut self, reason: DropReason) {
+        self.meta.drop = Some(reason);
+    }
+
+    #[allow(dead_code)]
+    /// Tell if a packet has been marked as 'to drop'.
+    pub fn dropped(&self) -> bool {
+        self.meta.drop.is_some()
+    }
+
+    #[allow(dead_code)]
+    /// Wraps a packet in an Option<Packet> depending on the metadata:
+    /// If the [`Packet`] is to be dropped, returns `None`.
+    /// Else, `Some(packet)`.
+    ///
+    /// This method consumes Self. If the packet was marked as
+    /// dropped, this will actually drop it.
+    /// The method is intended to use in NFs within closures of `filter_map()`
+    /// where internal processing functions need not return anything but signal
+    /// the desire to drop a packet by calling method[`pkt_drop()`].
+    /// ```
+    ///     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
+    ///        &'a mut self,
+    ///        input: Input,
+    ///     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
+    ///        input.filter_map(|mut packet| {
+    ///        some_function_that_may_drop_pkt(&mut packet);
+    ///        packet.fate()
+    ///    })
+    ///   }
+    /// ```
+    /// If a stage would opt not to drop a packet but defer this action, it should
+    /// simply replace `packet.fate()` by Some(packet). The packet annotation would
+    /// allow  dropping it later on. E.g. a pipeline could have a last stage that
+    /// could execute something like:
+    /// ```
+    ///        input.filter_map(|mut packet| packet.fate() )
+    /// ```
+    /// .. or a variation to collect statistics.
+    pub fn fate(self) -> Option<Self> {
+        if self.dropped() { Some(self) } else { None }
     }
 }
 
