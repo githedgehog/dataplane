@@ -8,6 +8,7 @@ use net::eth::Eth;
 use net::eth::ethtype::EthType;
 use net::eth::mac::{DestinationMac, Mac, SourceMac};
 use net::headers::{Headers, Net};
+use net::ip::NextHeader;
 use net::ipv4::Ipv4;
 use net::ipv4::addr::UnicastIpv4Addr;
 use net::parse::DeParse;
@@ -86,6 +87,7 @@ pub fn build_test_ipv4_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPack
     ipv4.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(1, 2, 3, 4)).unwrap());
     ipv4.set_destination(Ipv4Addr::new(1, 2, 3, 4));
     ipv4.set_ttl(ttl);
+    ipv4.set_next_header_unchecked(NextHeader::UDP);
 
     let mut headers = Headers::new(Eth::new(
         SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
