@@ -72,3 +72,87 @@ jobs:
         timeout-minutes: 60
         with:
           limit-access-to-actor: true
+
+  cargo-upgrades:
+    runs-on: "lab"
+    steps:
+      - name: "install rust"
+        uses: "dtolnay/rust-toolchain@stable"
+      - name: "install ansi2txt"
+        run: |
+          # this keeps our GH actions logs from getting messed up with color codes
+          echo 'deb [trusted=yes] https://apt.gabe565.com /' | sudo tee /etc/apt/sources.list.d/gabe565.list
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ansi2txt
+      - name: "install binstall"
+        run: |
+          cargo install cargo-binstall
+      - name: "install upgrade tools"
+        run: |
+          cargo binstall -y cargo-edit # required to make `cargo upgrade` edit the Cargo.toml file
+          cargo binstall -y cargo-deny
+          cargo binstall -y cargo-upgrades
+      - name: "Checkout"
+        uses: "actions/checkout@v4"
+      - name: "deny check (pre)"
+        # Confirm that upstream licenses have not changed in some way that prevents us from using them.
+        # We want to do this both before and after we run cargo upgrade to make it easier to decide if
+        # the problem existed before the upgrade ran, or if the license issue was introduced by the
+        # upgrade itself.
+        # Similar logic applies to security vulnerabilities but even more so since those, almost by definition, were
+        # not detected at release time by the upstream project.
+        # We run our "pre" check with `continue-on-error` set to true because it is equally possible that the upgrade
+        # _resolves_ the license / security issue we have had / would have had without the upgrade.
+        run: |
+          cargo deny check
+        continue-on-error: true
+      - name: "cargo upgrade"
+        id: upgrade
+        run: |
+          cargo update
+          echo "### :rocket: Upgrades available" > upgrade.log
+          echo "" >> upgrade.log
+          echo '```' >> upgrade.log
+          cargo upgrade --incompatible=allow  >> upgrade.log
+          echo '```' >> upgrade.log
+          echo "" >> upgrade.log
+          cat upgrade.log > "${GITHUB_STEP_SUMMARY}"
+          {
+            echo 'upgrade<<EOF';
+            cat upgrade.log;
+            echo 'EOF';
+          } >> "${GITHUB_OUTPUT}"
+          rm upgrade.log
+      - name: "deny check (post)"
+        run: |
+          cargo deny check
+      - name: "Create Pull Request"
+        uses: "peter-evans/create-pull-request@v7"
+        with:
+          branch: "bump/cargo-upgrades"
+          title: "bump(cargo)!: :rocket: upgrades available"
+          labels: |
+            automated
+            dependencies
+          signoff: "true"
+          commit-message: |
+            bump(cargo)!: bump
+            
+            ${{ steps.upgrade.outputs.upgrade }}
+            
+            BREAKING CHANGE: This commit _may_ introduce breaking changes.
+
+          sign-commits: "true"
+          body: |
+            ${{ steps.upgrade.outputs.upgrade }}
+            
+            :warning: This commit was automatically generated and should be carefully reviewed before acceptance.
+            If this commit includes multiple simultaneous upgrades, it is likely that this commit should be rejected.
+            The affected versions should then be bumped in individual commits to aide bisection and ease revert.
+
+      - name: "Setup tmate session for debug"
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: "mxschmitt/action-tmate@v3"
+        timeout-minutes: 60
+        with:
+          limit-access-to-actor: true
