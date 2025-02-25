@@ -29,7 +29,7 @@ impl BridgeDomain {
 }
 
 #[allow(unused)]
-#[derive(Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub enum DropReason {
     InternalFailure,      /* catch-all for internal issues */
     NotEthernet,          /* could not get eth header */
@@ -45,6 +45,8 @@ pub enum DropReason {
     RouteFailure,         /* missing routing information */
     HopLimitExceeded,     /* TTL / Hop count was exceeded */
     Filtered,             /* The packet was administratively filtered */
+    Unhandled,            /* there exists no support to handle this type of packet */
+    Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
 }
 
 #[allow(unused)]
@@ -56,10 +58,14 @@ pub struct PacketMeta {
     pub is_iplocal: bool,             /* frame contains an ip packet for local delivery */
     pub route: Option<VrfId>,         /* frame is IP packet to be routed */
     pub bridge: Option<BridgeDomain>, /* frame is to be bridged over a bridge domain */
-    pub drop: Option<DropReason>,     /* if Some, the reason why a packet was purposedly dropped */
+    pub drop: Option<DropReason>,     /* if Some, the reason why a packet was purposedly dropped.
+                                      This includes the delivery of the packet by the NF */
 
-    //#[cfg(test)]
+    #[cfg(test)]
     pub descr: &'static str, /* packet annotation (we may enable for testing only) */
+    #[cfg(test)]
+    /* Keep the Packet in spite of calling packet.fate(). This is for testing */
+    pub keep: bool,
 }
 
 #[derive(Default, Debug)]
