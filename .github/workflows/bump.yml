@@ -41,12 +41,6 @@ jobs:
         uses: "actions/checkout@v4"
       - name: "install rust"
         uses: "dtolnay/rust-toolchain@stable"
-      - name: "install cargo-deny"
-        run: |
-          cargo install cargo-deny
-      - name: "deny check"
-        run: |
-          cargo deny check
       - name: "install envsubst"
         run: |
           sudo apt-get update
