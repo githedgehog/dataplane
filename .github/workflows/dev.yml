@@ -149,8 +149,12 @@ jobs:
 
       - id: "build_each_commit"
         name: "build each commit"
+        if: "${{ github.event.pull_request || github.event.merge_group }}"
         run: |
-          just debug_justfile="${{matrix.debug_justfile}}" rust="${{matrix.rust.version}}" build-sweep
+          BASE="${{ github.event.pull_request.base.sha || github.event.merge_group.base.sha }}"
+          just debug_justfile="${{matrix.debug_justfile}}" rust="${{matrix.rust.version}}" \
+            build-sweep ${BASE}
+          printf "::notice::HEAD back to %s\n" "$(git log --oneline --no-decorate -n 1)"
         continue-on-error: ${{ matrix.rust.optional }}
 
       - name: "Note failure of optional steps"
