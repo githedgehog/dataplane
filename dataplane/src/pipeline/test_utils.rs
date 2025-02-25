@@ -8,6 +8,7 @@ use net::eth::Eth;
 use net::eth::ethtype::EthType;
 use net::eth::mac::{DestinationMac, Mac, SourceMac};
 use net::headers::{Headers, Net};
+use net::ip::NextHeader;
 use net::ipv4::Ipv4;
 use net::ipv4::addr::UnicastIpv4Addr;
 use net::parse::DeParse;
@@ -81,12 +82,15 @@ impl Iterator for DynStageGenerator {
 /// The Ethernet source and destination MAC addresses are 0x02:00:00:00:00:01 and 0x02:00:00:00:00:02
 /// respectively.
 ///
+#[allow(unsafe_code)]
 pub fn build_test_ipv4_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
     let mut ipv4 = Ipv4::default();
     ipv4.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(1, 2, 3, 4)).unwrap());
     ipv4.set_destination(Ipv4Addr::new(1, 2, 3, 4));
     ipv4.set_ttl(ttl);
-
+    unsafe {
+        ipv4.set_next_header(NextHeader::UDP);
+    }
     let mut headers = Headers::new(Eth::new(
         SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
         DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
