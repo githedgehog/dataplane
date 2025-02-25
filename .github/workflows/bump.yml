@@ -39,8 +39,6 @@ jobs:
           password: "${{ secrets.GITHUB_TOKEN }}"
       - name: "Checkout"
         uses: "actions/checkout@v4"
-      - name: "install rust"
-        uses: "dtolnay/rust-toolchain@stable"
       - name: "install envsubst"
         run: |
           sudo apt-get update
