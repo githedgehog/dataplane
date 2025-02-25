@@ -88,6 +88,7 @@ mod test {
     use net::eth::mac::{DestinationMac, Mac};
     use net::headers::{Net, TryEth, TryIp, TryIpv4};
 
+    use crate::pipeline::test_utils::init_test_tracing;
     use crate::pipeline::test_utils::{DynStageGenerator, build_test_ipv4_packet};
     use crate::pipeline::{DynNetworkFunction, DynPipeline, NetworkFunction};
 
@@ -124,6 +125,7 @@ mod test {
     #[allow(clippy::similar_names)]
     #[test]
     fn process_dyn() {
+        init_test_tracing();
         let mut pipeline = DynPipeline::new();
         let mut stages = DynStageGenerator::new();
         let num_stages = 10;
