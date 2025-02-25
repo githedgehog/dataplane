@@ -72,7 +72,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DynPipeline<Buf> {
 mod test {
     use dyn_iter::IntoDynIterator;
     use net::eth::mac::{DestinationMac, Mac};
-    use net::headers::{TryEth, TryIpv4};
+    use net::headers::{Net, TryEth, TryIp, TryIpv4};
 
     use crate::pipeline::test_utils::{DynStageGenerator, build_test_ipv4_packet};
     use crate::pipeline::{DynNetworkFunction, DynPipeline, NetworkFunction};
@@ -148,5 +148,14 @@ mod test {
             (p2_ttl as usize) - DynStageGenerator::num_ttl_decs(num_stages),
             p2_out.try_ipv4().unwrap().ttl() as usize
         );
+
+        // Check try_ip() and try_ipv4() are consistent
+        let p1_ipv4 = p1_out.try_ipv4().expect("Expected IPv4 packet");
+        let p1_net = p1_out.try_ip();
+        if let Some(Net::Ipv4(p1_net_ipv4)) = p1_net {
+            assert_eq!(p1_ipv4.ttl(), p1_net_ipv4.ttl());
+        } else {
+            panic!("Expected IPv4 packet");
+        }
     }
 }

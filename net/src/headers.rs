@@ -484,6 +484,36 @@ impl TryIpv6Mut for Headers {
     }
 }
 
+// IP version-agnostic traits
+
+pub trait WithIp {
+    fn ip(&self) -> &Net;
+}
+
+pub trait WithIpMut {
+    fn ip_mut(&mut self) -> &mut Net;
+}
+
+pub trait TryIp {
+    fn try_ip(&self) -> Option<&Net>;
+}
+
+pub trait TryIpMut {
+    fn try_ip_mut(&mut self) -> Option<&mut Net>;
+}
+
+impl TryIp for Headers {
+    fn try_ip(&self) -> Option<&Net> {
+        self.net.as_ref()
+    }
+}
+
+impl TryIpMut for Headers {
+    fn try_ip_mut(&mut self) -> Option<&mut Net> {
+        self.net.as_mut()
+    }
+}
+
 // Tcp traits
 
 pub trait WithTcp {
@@ -757,23 +787,24 @@ impl From<UdpEncap> for Header {
 }
 
 pub trait AbstractHeaders:
-    Debug + TryEth + TryIpv4 + TryIpv6 + TryTcp + TryUdp + TryIcmp + TryIcmp6 + TryVxlan
+    Debug + TryEth + TryIpv4 + TryIpv6 + TryIp + TryTcp + TryUdp + TryIcmp + TryIcmp6 + TryVxlan
 {
 }
 
 impl<T> AbstractHeaders for T where
-    T: Debug + TryEth + TryIpv4 + TryIpv6 + TryTcp + TryUdp + TryIcmp + TryIcmp6 + TryVxlan
+    T: Debug + TryEth + TryIpv4 + TryIpv6 + TryIp + TryTcp + TryUdp + TryIcmp + TryIcmp6 + TryVxlan
 {
 }
 
 pub trait AbstractHeadersMut:
-    TryEthMut + TryIpv4Mut + TryIpv6Mut + TryTcpMut + TryUdpMut + TryIcmpMut + TryIcmp6Mut + TryVxlanMut
+    TryEthMut + TryIpv4Mut + TryIpv6Mut + TryIpMut + TryTcpMut + TryUdpMut + TryIcmpMut + TryIcmp6Mut + TryVxlanMut
 {
 }
 impl<T> AbstractHeadersMut for T where
     T: TryEthMut
         + TryIpv4Mut
         + TryIpv6Mut
+        + TryIpMut
         + TryTcpMut
         + TryUdpMut
         + TryIcmpMut
@@ -814,6 +845,15 @@ where
 {
     fn try_ipv6(&self) -> Option<&Ipv6> {
         self.headers().try_ipv6()
+    }
+}
+
+impl<T> TryIp for T
+where
+    T: TryHeaders,
+{
+    fn try_ip(&self) -> Option<&Net> {
+        self.headers().try_ip()
     }
 }
 
@@ -886,6 +926,15 @@ where
 {
     fn try_ipv6_mut(&mut self) -> Option<&mut Ipv6> {
         self.headers_mut().try_ipv6_mut()
+    }
+}
+
+impl<T> TryIpMut for T
+where
+    T: TryHeadersMut,
+{
+    fn try_ip_mut(&mut self) -> Option<&mut Net> {
+        self.headers_mut().try_ip_mut()
     }
 }
 
