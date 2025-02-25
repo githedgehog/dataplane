@@ -9,7 +9,7 @@ mod cpi_process;
 mod display;
 mod encapsulation;
 mod errors;
-mod interface;
+pub mod interface;
 mod nexthop;
 pub mod prefix;
 mod pretty_utils;
