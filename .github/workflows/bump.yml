@@ -28,7 +28,7 @@ permissions:
   pull-requests: "write"
 
 jobs:
-  update:
+  dpdk-sys:
     runs-on: "ubuntu-latest"
     steps:
       - name: "login to ghcr.io"
