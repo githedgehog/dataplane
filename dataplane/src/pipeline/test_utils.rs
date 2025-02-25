@@ -99,3 +99,13 @@ pub fn build_test_ipv4_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPack
 
     Packet::new(buffer)
 }
+
+/// Initializes tracing for tests that emit logs
+pub fn init_test_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_target(true)
+        .with_line_number(true)
+        .with_thread_names(false)
+        .try_init();
+}
