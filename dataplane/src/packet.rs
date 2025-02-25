@@ -15,7 +15,7 @@ pub struct Packet<Buf: PacketBufferMut> {
     /// The total number of bytes _originally_ consumed when parsing this packet
     /// Mutations to `packet` can cause the re-serialized size of the packet to grow or shrink.
     consumed: NonZero<u16>,
-    pub mbuf: Buf, // TODO: find a way to make this private
+    mbuf: Option<Buf>,
     // packet metadata added by stages to drive other stages down the pipeline
     pub meta: PacketMeta,
 }
@@ -39,16 +39,21 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             headers,
             consumed,
             meta: PacketMeta::default(),
-            mbuf,
+            mbuf: Some(mbuf),
         })
     }
 
-    pub(crate) fn reserialize(self) -> Buf {
+    /// Take ownership of the memory buffer of a Packet
+    pub fn take_buf(&mut self) -> Option<Buf> {
+        self.mbuf.take()
+    }
+
+    pub(crate) fn reserialize(mut self) -> Buf {
         // TODO: prove that these unreachable statements are optimized out
         // The `unreachable` statements in the first block should be easily optimized out, but best
         // to confirm.
         let needed = self.headers.size();
-        let mut mbuf = self.mbuf;
+        let mut mbuf = self.take_buf().expect("Packet without buffer");
         let mut mbuf = match needed.cmp(&self.consumed) {
             Ordering::Equal => mbuf,
             Ordering::Less => {
