@@ -32,3 +32,9 @@ updates:
         update-types:
           - "minor"
           - "patch"
+      major:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "major"
