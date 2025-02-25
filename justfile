@@ -399,6 +399,6 @@ build-sweep start="main":
     fi
     # Get all commits since {{ start }}, in chronological order
     while read -r commit; do
-      git checkout "${commit}" || exit 1
+      git -c advice.detachedHead=false checkout "${commit}" || exit 1
       { just debug_justfile={{ debug_justfile }} cargo +{{ rust }} build --locked --profile=dev --target=x86_64-unknown-linux-gnu; } || exit 1
     done < <(git rev-list --reverse "{{ start }}".."$(git rev-parse HEAD)")
