@@ -23,6 +23,30 @@ struct Pif {
     vpc: String,
 }
 
+impl Pif {
+    #[tracing::instrument(level = "trace")]
+    pub fn new(name: String, vpc: String) -> Self {
+        Self {
+            name,
+            endpoints: Vec::new(),
+            ips: Vec::new(),
+            vpc,
+        }
+    }
+
+    fn name(&self) -> &String {
+        &self.name
+    }
+
+    fn vpc(&self) -> &String {
+        &self.vpc
+    }
+
+    fn iter_ips(&self) -> impl Iterator<Item = &Prefix> {
+        self.ips.iter()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct Vpc {
     name: String,
@@ -41,6 +65,18 @@ impl Vpc {
             vni,
             pif_table: PifTable::new(),
         }
+    }
+
+    fn name(&self) -> &String {
+        &self.name
+    }
+
+    fn add_pif(&mut self, pif: Pif) -> Result<(), TrieError> {
+        self.pif_table.add_pif(pif)
+    }
+
+    fn find_pif_by_endpoint(&self, ip: &IpAddr) -> Option<String> {
+        self.pif_table.find_pif_by_endpoint(ip)
     }
 }
 
@@ -61,16 +97,16 @@ impl PifTable {
 
     #[tracing::instrument(level = "info")]
     fn add_pif(&mut self, pif: Pif) -> Result<(), TrieError> {
-        if self.pifs.contains_key(&pif.name) {
+        if self.pifs.contains_key(pif.name()) {
             return Err(TrieError::EntryExists);
         }
 
         for prefix in &pif.endpoints {
-            self.endpoint_trie.insert(prefix, pif.name.clone())?;
+            self.endpoint_trie.insert(prefix, pif.name().clone())?;
             // TODO: Rollback on error?
         }
 
-        self.pifs.insert(pif.name.clone(), pif);
+        self.pifs.insert(pif.name().clone(), pif);
         Ok(())
     }
 
@@ -108,7 +144,7 @@ impl<'de> Deserialize<'de> for PifTable {
             for prefix in &pif.endpoints {
                 pif_table
                     .endpoint_trie
-                    .insert(prefix, pif.name.clone())
+                    .insert(prefix, pif.name().clone())
                     .or(Err(serde::de::Error::custom(
                         "Failed to insert endpoint into trie",
                     )))?;
@@ -148,7 +184,7 @@ impl GlobalContext {
             {
                 let file_content = fs::read_to_string(&file_path).expect("Failed to read file");
                 let vpc: Vpc = serde_yml::from_str(&file_content).expect("Failed to parse YAML");
-                self.vpcs.insert(vpc.name.clone(), vpc);
+                self.vpcs.insert(vpc.name().clone(), vpc);
             }
         }
     }
@@ -166,23 +202,24 @@ impl GlobalContext {
                 let file_content = fs::read_to_string(&file_path).expect("Failed to read file");
                 let pif: Pif = serde_yml::from_str(&file_content).expect("Failed to parse YAML");
 
-                if let Some(vpc) = self.vpcs.get_mut(&pif.vpc) {
-                    if vpc.pif_table.add_pif(pif.clone()).is_err() {
-                        error!("Failed to add PIF {} to table", pif.name);
+                if let Some(vpc) = self.vpcs.get_mut(pif.vpc()) {
+                    if vpc.add_pif(pif.clone()).is_err() {
+                        error!("Failed to add PIF {} to table", pif.name());
                     }
                 } else {
-                    error!("VPC {} not found for PIF {}", pif.vpc, pif.name);
+                    error!("VPC {} not found for PIF {}", pif.vpc(), pif.name());
                 }
 
-                for prefix in &pif.ips {
+                for prefix in pif.iter_ips() {
                     if self
                         .global_pif_trie
-                        .insert(prefix, pif.name.clone())
+                        .insert(prefix, pif.name().clone())
                         .is_err()
                     {
                         error!(
                             "Failed to insert endpoint {} for PIF {} into global trie",
-                            prefix, pif.name
+                            prefix,
+                            pif.name()
                         );
                     }
                 }
@@ -198,7 +235,7 @@ impl GlobalContext {
     #[tracing::instrument(level = "trace")]
     fn find_pif_in_vpc(&self, vpc_name: &str, ip: &IpAddr) -> Option<String> {
         let vpc = self.vpcs.get(vpc_name)?;
-        vpc.pif_table.find_pif_by_endpoint(ip)
+        vpc.find_pif_by_endpoint(ip)
     }
 }
 
