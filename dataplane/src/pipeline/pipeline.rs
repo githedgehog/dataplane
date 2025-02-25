@@ -17,12 +17,27 @@ use crate::pipeline::{DynNetworkFunction, NetworkFunction, nf_dyn};
 #[derive(Default)]
 pub struct DynPipeline<Buf: PacketBufferMut> {
     nfs: Vec<Box<dyn DynNetworkFunction<Buf>>>,
+
+    #[allow(unused)]
+    name: String,
 }
 
+#[allow(unused)]
 impl<Buf: PacketBufferMut + 'static> DynPipeline<Buf> {
-    #[allow(unused)]
     pub fn new() -> Self {
-        Self { nfs: vec![] }
+        Self {
+            nfs: vec![],
+            name: "anonymous-pipeline".to_owned(),
+        }
+    }
+    pub fn with_name(name: &str) -> Self {
+        Self {
+            nfs: vec![],
+            name: name.to_owned(),
+        }
+    }
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Add a static network function to the pipeline.
@@ -42,7 +57,6 @@ impl<Buf: PacketBufferMut + 'static> DynPipeline<Buf> {
     ///
     /// [`DynNetworkFunction`]
     /// [`nf_dyn`]
-    #[allow(unused)]
     pub fn add_stage_dyn(mut self, nf: Box<dyn DynNetworkFunction<Buf>>) -> Self {
         self.nfs.push(nf);
         self
