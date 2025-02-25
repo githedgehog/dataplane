@@ -8,7 +8,7 @@ use net::headers::{AbstractHeaders, AbstractHeadersMut, Headers, TryHeaders, Try
 use net::parse::{DeParse, DeParseError, Parse, ParseError};
 use std::cmp::Ordering;
 use std::num::NonZero;
-use tracing::error;
+use tracing::{error, warn};
 
 #[derive(Debug)]
 pub struct Packet<Buf: PacketBufferMut> {
@@ -65,6 +65,11 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         // TODO: prove that these unreachable statements are optimized out
         // The `unreachable` statements in the first block should be easily optimized out, but best
         // to confirm.
+
+        if self.dropped() {
+            warn!("Serializing a packet that should be dropped");
+        }
+
         let needed = self.headers.size();
         let mut mbuf = self.take_buf().expect("Packet without buffer");
         let mut mbuf = match needed.cmp(&self.consumed) {
