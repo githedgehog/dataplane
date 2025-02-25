@@ -43,6 +43,8 @@ pub enum DropReason {
     VrfUnknown,           /* the vrf does not exist */
     NatOutOfResources,    /* can't do NAT due to lack of resources */
     RouteFailure,         /* missing routing information */
+    HopLimitExceeded,     /* TTL / Hop count was exceeded */
+    Filtered,             /* The packet was administratively filtered */
 }
 
 #[allow(unused)]
