@@ -8,7 +8,7 @@ use net::headers::{AbstractHeaders, AbstractHeadersMut, Headers, TryHeaders, Try
 use net::parse::{DeParse, DeParseError, Parse, ParseError};
 use std::cmp::Ordering;
 use std::num::NonZero;
-use tracing::error;
+use tracing::{error, warn};
 
 #[derive(Debug)]
 pub struct Packet<Buf: PacketBufferMut> {
@@ -53,6 +53,17 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         // TODO: prove that these unreachable statements are optimized out
         // The `unreachable` statements in the first block should be easily optimized out, but best
         // to confirm.
+
+        // warn if packet has a drop reason != Delivered
+        self.get_drop().inspect(|reason| {
+            if *reason != DropReason::Delivered {
+                warn!("Serializing a packet that should be dropped");
+            }
+        });
+
+        // set the drop action to delivered, since this is terminal.
+        self.pkt_drop(DropReason::Delivered);
+
         let needed = self.headers.size();
         let mut mbuf = self.take_buf().expect("Packet without buffer");
         let mut mbuf = match needed.cmp(&self.consumed) {
@@ -92,15 +103,25 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     }
 
     #[allow(dead_code)]
-    /// Explicitly mark a packet as to be dropped, indicating the reason.
+    /// Explicitly mark a packet as done, indicating the reason.
     pub fn pkt_drop(&mut self, reason: DropReason) {
-        self.meta.drop = Some(reason);
+        if self.meta.drop.is_none() {
+            self.meta.drop = Some(reason);
+        }
     }
 
     #[allow(dead_code)]
-    /// Tell if a packet has been marked as 'to drop'.
+    /// Tell if a packet has been marked as to be dropped.
     pub fn dropped(&self) -> bool {
         self.meta.drop.is_some()
+    }
+
+    #[allow(dead_code)]
+    /// Get the reason why a packet has been dropped. One reason is Delivered,
+    /// so this should be read as the reason why a packet is no longer to be
+    /// processed.
+    pub fn get_drop(&self) -> Option<DropReason> {
+        self.meta.drop
     }
 
     #[allow(dead_code)]
