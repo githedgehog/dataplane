@@ -3,6 +3,7 @@
 
 use dyn_iter::{DynIter, IntoDynIterator};
 use net::buffer::PacketBufferMut;
+use std::any::Any;
 use std::marker::PhantomData;
 
 use crate::packet::Packet;
@@ -17,7 +18,7 @@ use crate::pipeline::NetworkFunction;
 ///
 /// [`nf_dyn`]
 /// [`crate::pipeline::DynPipeline`]
-pub trait DynNetworkFunction<Buf: PacketBufferMut> {
+pub trait DynNetworkFunction<Buf: PacketBufferMut>: Any {
     /// The `process_dyn` method takes an iterator of [`crate::packet::Packet`] objects,
     /// However, unlike [`NetworkFunction::process`], this method does not require concrete
     /// iterator types.
@@ -30,7 +31,7 @@ pub trait DynNetworkFunction<Buf: PacketBufferMut> {
     fn process_dyn<'a>(&'a mut self, input: DynIter<'a, Packet<Buf>>) -> DynIter<'a, Packet<Buf>>;
 }
 
-struct DynNetworkFunctionImpl<Buf: PacketBufferMut, NF: NetworkFunction<Buf>> {
+struct DynNetworkFunctionImpl<Buf: PacketBufferMut, NF: NetworkFunction<Buf> + 'static> {
     nf: NF,
     _marker: PhantomData<Buf>,
 }
