@@ -2,22 +2,29 @@
 // Copyright Open Network Fabric Authors
 
 mod fabric;
+mod iplist;
 mod prefixtrie;
 
 use crate::nat::fabric::{Pif, Vpc};
+use crate::nat::iplist::{IpList, IpListType};
 use crate::nat::prefixtrie::PrefixTrie;
+use crate::packet::Packet;
+use crate::pipeline::NetworkFunction;
 
+use net::buffer::PacketBufferMut;
+use net::headers::Net;
+use net::headers::{TryHeadersMut, TryIpMut};
+use net::ipv4::UnicastIpv4Addr;
+use net::ipv6::UnicastIpv6Addr;
+use net::vxlan::Vni;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::fs;
 use std::net::IpAddr;
-use std::path::Path;
-use tracing::error;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 struct GlobalContext {
-    vpcs: HashMap<String, Vpc>,
+    vpcs: HashMap<u32, Vpc>,
     global_pif_trie: PrefixTrie,
 }
 
@@ -30,59 +37,14 @@ impl GlobalContext {
         }
     }
 
-    #[tracing::instrument(level = "info")]
-    fn load_vpcs(&mut self, directory: &Path) {
-        let paths = fs::read_dir(directory).expect("Failed to read VPCs directory");
-
-        for entry in paths.flatten() {
-            let file_path = entry.path();
-            if file_path
-                .extension()
-                .is_some_and(|ext| ext == "yaml" || ext == "yml")
-            {
-                let file_content = fs::read_to_string(&file_path).expect("Failed to read file");
-                let vpc: Vpc = serde_yml::from_str(&file_content).expect("Failed to parse YAML");
-                self.vpcs.insert(vpc.name().clone(), vpc);
-            }
-        }
-    }
-
-    #[tracing::instrument(level = "info")]
-    fn load_pifs(&mut self, directory: &Path) {
-        let paths = fs::read_dir(directory).expect("Failed to read PIFs directory");
-
-        for entry in paths.flatten() {
-            let file_path = entry.path();
-            if file_path
-                .extension()
-                .is_some_and(|ext| ext == "yaml" || ext == "yml")
-            {
-                let file_content = fs::read_to_string(&file_path).expect("Failed to read file");
-                let pif: Pif = serde_yml::from_str(&file_content).expect("Failed to parse YAML");
-
-                if let Some(vpc) = self.vpcs.get_mut(pif.vpc()) {
-                    if vpc.add_pif(pif.clone()).is_err() {
-                        error!("Failed to add PIF {} to table", pif.name());
-                    }
-                } else {
-                    error!("VPC {} not found for PIF {}", pif.vpc(), pif.name());
-                }
-
-                for prefix in pif.iter_ips() {
-                    if self
-                        .global_pif_trie
-                        .insert(prefix, pif.name().clone())
-                        .is_err()
-                    {
-                        error!(
-                            "Failed to insert endpoint {} for PIF {} into global trie",
-                            prefix,
-                            pif.name()
-                        );
-                    }
-                }
-            }
-        }
+    #[tracing::instrument(level = "trace")]
+    fn insert_vpc(&mut self, vni: Vni, vpc: Vpc) {
+        vpc.iter_pifs().for_each(|pif| {
+            pif.iter_ips().for_each(|prefix| {
+                let _ = self.global_pif_trie.insert(prefix, pif.name().clone());
+            });
+        });
+        let _ = self.vpcs.insert(vni.as_u32(), vpc);
     }
 
     #[tracing::instrument(level = "trace")]
@@ -91,43 +53,221 @@ impl GlobalContext {
     }
 
     #[tracing::instrument(level = "trace")]
-    fn find_pif_in_vpc(&self, vpc_name: &str, ip: &IpAddr) -> Option<String> {
-        let vpc = self.vpcs.get(vpc_name)?;
+    fn find_pif_in_vpc(&self, vni: Vni, ip: &IpAddr) -> Option<String> {
+        let vpc = self.vpcs.get(&vni.as_u32())?;
         vpc.find_pif_by_endpoint(ip)
+    }
+
+    #[tracing::instrument(level = "trace")]
+    fn get_vpc(&self, vni: Vni) -> Option<&Vpc> {
+        self.vpcs.get(&vni.as_u32())
+    }
+
+    #[tracing::instrument(level = "trace")]
+    fn find_pif_by_name(&self, name: &String) -> Option<&Pif> {
+        self.vpcs.values().find_map(|vpc| vpc.get_pif(name))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NatDirection {
+    #[allow(dead_code)]
+    SrcNat,
+    #[allow(dead_code)]
+    DstNat,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NatMode {
+    Stateless,
+    #[allow(dead_code)]
+    Stateful,
+}
+
+#[derive(Debug, Clone)]
+pub struct Nat {
+    context: GlobalContext,
+    mode: NatMode,
+    direction: NatDirection,
+}
+
+impl Nat {
+    #[tracing::instrument(level = "trace")]
+    pub fn new<Buf: PacketBufferMut>(direction: NatDirection, mode: NatMode) -> Self {
+        let context = GlobalContext::new();
+        Self {
+            context,
+            mode,
+            direction,
+        }
+    }
+
+    #[tracing::instrument(level = "trace")]
+    pub fn add_vpc(&mut self, vni: Vni, vpc: Vpc) {
+        self.context.insert_vpc(vni, vpc);
+    }
+
+    #[tracing::instrument(level = "trace")]
+    fn nat_supported(&self) -> bool {
+        // We only support stateless NAT for now
+        match self.mode {
+            NatMode::Stateless => (),
+            NatMode::Stateful => return false,
+        }
+
+        true
+    }
+
+    #[tracing::instrument(level = "trace")]
+    fn nat_ranges_supported(&self, current_range: &IpList, target_range: &IpList) -> bool {
+        // We only support NAT44 for now
+        match (current_range.list_type(), target_range.list_type()) {
+            (IpListType::Ipv4, IpListType::Ipv4) => (),
+            _ => return false,
+        }
+
+        // Stateless NAT requires a 1:1 mapping, which means that both ranges
+        // must include the same number of addresses.
+        //
+        // TODO: Move this check to configuration step.
+        if self.mode == NatMode::Stateless && current_range.length() != target_range.length() {
+            return false;
+        }
+
+        true
+    }
+
+    #[tracing::instrument(level = "trace")]
+    fn find_src_nat_ranges(&self, net: &Net, vni_opt: Option<Vni>) -> Option<(IpList, IpList)> {
+        // For now we don't support NAT if we don't have a VNI
+        let vni = vni_opt?;
+
+        let src_vpc = self.context.get_vpc(vni)?;
+        let src_pif = self
+            .context
+            .find_pif_in_vpc(vni, &get_src_addr(net))
+            .and_then(|name| src_vpc.get_pif(&name))?;
+
+        let current_range = IpList::from_prefixes(src_pif.iter_endpoints());
+        let target_range = IpList::from_prefixes(src_pif.iter_ips());
+        Some((current_range, target_range))
+    }
+
+    #[tracing::instrument(level = "trace")]
+    fn find_dst_nat_ranges(&self, net: &Net) -> Option<(IpList, IpList)> {
+        let dst_pif = self
+            .context
+            .find_pif_by_ip(&get_dst_addr(net))
+            .and_then(|name| self.context.find_pif_by_name(&name))?;
+
+        let current_range = IpList::from_prefixes(dst_pif.iter_ips());
+        let target_range = IpList::from_prefixes(dst_pif.iter_endpoints());
+        Some((current_range, target_range))
+    }
+
+    #[tracing::instrument(level = "trace")]
+    fn find_nat_ranges(&self, net: &mut Net, vni: Option<Vni>) -> Option<(IpList, IpList)> {
+        match self.direction {
+            NatDirection::SrcNat => self.find_src_nat_ranges(net, vni),
+            NatDirection::DstNat => self.find_dst_nat_ranges(net),
+        }
+    }
+
+    #[tracing::instrument(level = "trace")]
+    fn translate(
+        &self,
+        net: &mut Net,
+        current_range: &IpList,
+        target_range: &IpList,
+    ) -> Option<()> {
+        let current_ip = match self.direction {
+            NatDirection::SrcNat => get_src_addr(net),
+            NatDirection::DstNat => get_dst_addr(net),
+        };
+        let offset = current_range.get_offset(&current_ip)?;
+        let target_ip = target_range.get_addr(offset)?;
+
+        match self.direction {
+            NatDirection::SrcNat => match (net, target_ip) {
+                (Net::Ipv4(hdr), IpAddr::V4(ip)) => {
+                    hdr.set_source(UnicastIpv4Addr::new(ip).ok()?);
+                }
+                (Net::Ipv6(hdr), IpAddr::V6(ip)) => {
+                    hdr.set_source(UnicastIpv6Addr::new(ip).ok()?);
+                }
+                (_, _) => return None,
+            },
+            NatDirection::DstNat => match (net, target_ip) {
+                (Net::Ipv4(hdr), IpAddr::V4(ip)) => {
+                    hdr.set_destination(ip);
+                }
+                (Net::Ipv6(hdr), IpAddr::V6(ip)) => {
+                    hdr.set_destination(ip);
+                }
+                (_, _) => return None,
+            },
+        }
+        Some(())
+    }
+
+    fn process_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
+        if !self.nat_supported() {
+            return;
+        }
+
+        // ----------------------------------------------------
+        // TODO: Get VNI
+        let vni = Vni::new_checked(100).ok();
+        // ----------------------------------------------------
+        let Some(net) = packet.headers_mut().try_ip_mut() else {
+            return;
+        };
+
+        let ranges = self.find_nat_ranges(net, vni);
+        let Some((current_range, target_range)) = ranges else {
+            return;
+        };
+
+        if !self.nat_ranges_supported(&current_range, &target_range) {
+            return;
+        }
+
+        self.translate(net, &current_range, &target_range);
+    }
+}
+
+#[tracing::instrument(level = "trace")]
+fn get_src_addr(net: &Net) -> IpAddr {
+    match net {
+        Net::Ipv4(hdr) => IpAddr::V4(hdr.source().inner()),
+        Net::Ipv6(hdr) => IpAddr::V6(hdr.source().inner()),
+    }
+}
+
+#[tracing::instrument(level = "trace")]
+fn get_dst_addr(net: &Net) -> IpAddr {
+    match net {
+        Net::Ipv4(hdr) => IpAddr::V4(hdr.destination()),
+        Net::Ipv6(hdr) => IpAddr::V6(hdr.destination()),
+    }
+}
+
+impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Nat {
+    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
+        &'a mut self,
+        input: Input,
+    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
+        input.map(|mut packet| {
+            self.process_packet(&mut packet);
+            packet
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tracing::{info, warn};
 
     #[test]
-    fn basic_test() {
-        let mut context = GlobalContext::new();
-
-        warn!(
-            "pwd: {pwd}",
-            pwd = std::env::current_dir().unwrap().display()
-        );
-        // Load VPCs and PIFs
-        context.load_vpcs(Path::new("src").join("nat").join("vpcs").as_path());
-        context.load_pifs(Path::new("src").join("nat").join("pifs").as_path());
-
-        // Example global lookup
-        let ip: IpAddr = "11.11.0.5".parse().unwrap();
-        if let Some(pif_name) = context.find_pif_by_ip(&ip) {
-            info!("Found PIF for IP {ip}: {pif_name}");
-        } else {
-            panic!("No PIF found for IP {ip}");
-        }
-
-        // Example VPC lookup
-        let ip: IpAddr = "192.168.1.1".parse().unwrap();
-        if let Some(pif_name) = context.find_pif_in_vpc("VPC1", &ip) {
-            info!("Found PIF in VPC1 for IP {ip}: {pif_name}");
-        } else {
-            panic!("No PIF found in VPC1 for IP {ip}");
-        }
-    }
+    fn basic_test() {}
 }

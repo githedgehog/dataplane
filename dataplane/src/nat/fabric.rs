@@ -29,16 +29,39 @@ impl Pif {
         }
     }
 
+    #[tracing::instrument(level = "trace")]
     pub fn name(&self) -> &String {
         &self.name
     }
 
+    #[tracing::instrument(level = "trace")]
     pub fn vpc(&self) -> &String {
         &self.vpc
     }
 
+    #[tracing::instrument(level = "trace")]
+    pub fn iter_endpoints(&self) -> impl Iterator<Item = &Prefix> {
+        self.endpoints.iter()
+    }
+
+    #[tracing::instrument(level = "trace")]
     pub fn iter_ips(&self) -> impl Iterator<Item = &Prefix> {
         self.ips.iter()
+    }
+
+    #[tracing::instrument(level = "trace")]
+    pub fn add_endpoint(&mut self, endpoint: Prefix) {
+        self.endpoints.push(endpoint);
+    }
+
+    #[tracing::instrument(level = "trace")]
+    pub fn add_ip(&mut self, ip: Prefix) {
+        self.ips.push(ip);
+    }
+
+    #[tracing::instrument(level = "trace")]
+    pub fn find_prefix(&self, ip: &IpAddr) -> Option<&Prefix> {
+        self.iter_endpoints().find(|&prefix| prefix.covers_addr(ip))
     }
 }
 
@@ -46,9 +69,6 @@ impl Pif {
 pub struct Vpc {
     name: String,
     vni: Vni,
-    #[serde(skip)]
-    // SMATOV: TMP: Skip serialization of PIF table cause its not present in the YAML
-    #[allow(dead_code)]
     pif_table: PifTable,
 }
 
@@ -62,16 +82,24 @@ impl Vpc {
         }
     }
 
-    pub fn name(&self) -> &String {
-        &self.name
-    }
-
+    #[tracing::instrument(level = "trace")]
     pub fn add_pif(&mut self, pif: Pif) -> Result<(), TrieError> {
         self.pif_table.add_pif(pif)
     }
 
+    #[tracing::instrument(level = "trace")]
     pub fn find_pif_by_endpoint(&self, ip: &IpAddr) -> Option<String> {
         self.pif_table.find_pif_by_endpoint(ip)
+    }
+
+    #[tracing::instrument(level = "trace")]
+    pub fn get_pif(&self, name: &String) -> Option<&Pif> {
+        self.pif_table.pifs.get(name)
+    }
+
+    #[tracing::instrument(level = "trace")]
+    pub fn iter_pifs(&self) -> impl Iterator<Item = &Pif> {
+        self.pif_table.pifs.values()
     }
 }
 
