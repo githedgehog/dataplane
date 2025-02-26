@@ -64,6 +64,9 @@ impl<Buf: PacketBufferMut + 'static> DynPipeline<Buf> {
 }
 
 impl<Buf: PacketBufferMut> DynNetworkFunction<Buf> for DynPipeline<Buf> {
+    fn nf_name(&self) -> &str {
+        self.name.as_str()
+    }
     fn process_dyn<'a>(&'a mut self, input: DynIter<'a, Packet<Buf>>) -> DynIter<'a, Packet<Buf>> {
         self.nfs
             .iter_mut()
