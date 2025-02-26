@@ -61,6 +61,14 @@ impl<Buf: PacketBufferMut + 'static> DynPipeline<Buf> {
         self.nfs.push(nf);
         self
     }
+
+    /// Get a reference to a stage of the pipeline by name
+    pub fn get_stage(&self, name: &str) -> Option<&dyn DynNetworkFunction<Buf>> {
+        self.nfs
+            .iter()
+            .find(|&nf| name == nf.nf_name())
+            .map(|v| &**v)
+    }
 }
 
 impl<Buf: PacketBufferMut> DynNetworkFunction<Buf> for DynPipeline<Buf> {
