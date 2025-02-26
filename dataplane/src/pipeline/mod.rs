@@ -118,12 +118,13 @@ mod test {
     use net::headers::{TryEth, TryIpv4};
 
     use crate::pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, Passthrough};
-    use crate::pipeline::test_utils::build_test_ipv4_packet;
+    use crate::pipeline::test_utils::{build_test_ipv4_packet, init_test_tracing};
     use crate::pipeline::{DynPipeline, NetworkFunction, StaticChain};
 
     #[test]
     fn mixed_dyn_static_pipeline() {
         const MAX_TTL: u8 = u8::MAX;
+        init_test_tracing();
 
         let mut pipeline = DynPipeline::new();
         let num_stages = 50;

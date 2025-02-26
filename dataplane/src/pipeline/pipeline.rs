@@ -3,6 +3,7 @@
 
 use dyn_iter::{DynIter, IntoDynIterator};
 use net::buffer::PacketBufferMut;
+use std::any::Any;
 
 use crate::packet::Packet;
 use crate::pipeline::{DynNetworkFunction, NetworkFunction, nf_dyn};
@@ -17,12 +18,27 @@ use crate::pipeline::{DynNetworkFunction, NetworkFunction, nf_dyn};
 #[derive(Default)]
 pub struct DynPipeline<Buf: PacketBufferMut> {
     nfs: Vec<Box<dyn DynNetworkFunction<Buf>>>,
+
+    #[allow(unused)]
+    name: String,
 }
 
+#[allow(unused)]
 impl<Buf: PacketBufferMut + 'static> DynPipeline<Buf> {
-    #[allow(unused)]
     pub fn new() -> Self {
-        Self { nfs: vec![] }
+        Self {
+            nfs: vec![],
+            name: "anonymous-pipeline".to_owned(),
+        }
+    }
+    pub fn with_name(name: &str) -> Self {
+        Self {
+            nfs: vec![],
+            name: name.to_owned(),
+        }
+    }
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Add a static network function to the pipeline.
@@ -42,14 +58,38 @@ impl<Buf: PacketBufferMut + 'static> DynPipeline<Buf> {
     ///
     /// [`DynNetworkFunction`]
     /// [`nf_dyn`]
-    #[allow(unused)]
     pub fn add_stage_dyn(mut self, nf: Box<dyn DynNetworkFunction<Buf>>) -> Self {
         self.nfs.push(nf);
         self
     }
+
+    /// Get a reference to a stage of the pipeline by name
+    pub fn get_stage(&self, name: &str) -> Option<&dyn DynNetworkFunction<Buf>> {
+        self.nfs
+            .iter()
+            .find(|&nf| name == nf.nf_name())
+            .map(|v| &**v)
+    }
+
+    /// Get a reference to a stage of the pipeline by name, type to the original
+    /// object type instead of the trait.
+    ///
+    /// Sample usage:
+    /// Suppose that there exists a stage called "Foo-1" of type TypeFoo.
+    /// A reference to the object implementing the stage/NF can be obtained back as
+    ///   `pipeline.get_stage_typed::<TypeFoo>("Foo");`
+    pub fn get_stage_typed<T: Any>(&self, name: &str) -> Option<&T> {
+        self.nfs
+            .iter()
+            .find(|&nf| name == nf.nf_name())
+            .map(|stage| (stage as &dyn Any).downcast_ref())?
+    }
 }
 
 impl<Buf: PacketBufferMut> DynNetworkFunction<Buf> for DynPipeline<Buf> {
+    fn nf_name(&self) -> &str {
+        self.name.as_str()
+    }
     fn process_dyn<'a>(&'a mut self, input: DynIter<'a, Packet<Buf>>) -> DynIter<'a, Packet<Buf>> {
         self.nfs
             .iter_mut()
@@ -74,6 +114,7 @@ mod test {
     use net::eth::mac::{DestinationMac, Mac};
     use net::headers::{Net, TryEth, TryIp, TryIpv4};
 
+    use crate::pipeline::test_utils::init_test_tracing;
     use crate::pipeline::test_utils::{DynStageGenerator, build_test_ipv4_packet};
     use crate::pipeline::{DynNetworkFunction, DynPipeline, NetworkFunction};
 
@@ -110,6 +151,7 @@ mod test {
     #[allow(clippy::similar_names)]
     #[test]
     fn process_dyn() {
+        init_test_tracing();
         let mut pipeline = DynPipeline::new();
         let mut stages = DynStageGenerator::new();
         let num_stages = 10;
