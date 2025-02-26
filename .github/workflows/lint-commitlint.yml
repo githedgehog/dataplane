@@ -14,10 +14,28 @@ jobs:
   commitlint:
     runs-on: "ubuntu-latest"
     steps:
+
       - name: "Checkout"
         uses: "actions/checkout@v4"
         with:
           fetch-depth: 0
           persist-credentials: "false"
+
+      # Acceptable commit subject types are:
+      #
+      # - build
+      # - bump
+      # - chore
+      # - ci
+      # - docs
+      # - feat
+      # - fix
+      # - perf
+      # - refactor
+      # - revert
+      # - style
+      # - test
+      #
+      # See https://github.com/opensource-nepal/commitlint/blob/main/src/commitlint/constants.py
       - name: "Run commitlint on Pull Request's commits"
         uses: "opensource-nepal/commitlint@v1"
