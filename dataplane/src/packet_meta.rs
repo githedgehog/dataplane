@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use routing::vrf::VrfId;
-use std::collections::HashMap;
+use std::{any::{Any, TypeId}, collections::HashMap};
 
 #[derive(Debug, Default)]
 pub struct InterfaceId(u32);

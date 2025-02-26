@@ -35,7 +35,7 @@ pub trait DynNetworkFunction<Buf: PacketBufferMut> {
     fn nf_name(&self) -> &str;
 }
 
-struct DynNetworkFunctionImpl<Buf: PacketBufferMut, NF: NetworkFunction<Buf>> {
+pub struct DynNetworkFunctionImpl<Buf: PacketBufferMut, NF: NetworkFunction<Buf>> {
     nf: NF,
     name: String,
     _marker: PhantomData<Buf>,

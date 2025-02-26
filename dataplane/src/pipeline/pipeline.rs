@@ -4,10 +4,12 @@
 use dyn_iter::{DynIter, IntoDynIterator};
 use net::buffer::PacketBufferMut;
 use std::any::Any;
-use std::any::TypeId;
+//use std::any::TypeId;
 
+use crate::pipeline::static_nf;
 use crate::packet::Packet;
 use crate::pipeline::{DynNetworkFunction, NetworkFunction, nf_dyn};
+use crate::pipeline::dyn_nf::DynNetworkFunctionImpl;
 
 /// A dynamic pipeline that can be updated at runtime.
 ///
@@ -92,24 +94,27 @@ impl<Buf: PacketBufferMut + 'static> DynPipeline<Buf> {
                 x
             })?
     }
+
     #[allow(unsafe_code)]
-    pub fn get_stage_typed<T: Any + std::fmt::Debug>(&self, name: &str) -> Option<&T> {
+    pub fn get_stage_typed<T: Any + std::fmt::Debug + static_nf::NetworkFunction<Buf>>(&self, name: &str) -> Option<&T> {
         self.nfs
             .iter()
             .find(|&nf| {
-                println!("nf: {} type = {:#?}", nf.nf_name(), TypeId::of::<T>());
+                println!("nf: {} type: {:#?}", nf.nf_name(), (**nf).type_id());
                 name == nf.nf_name()
             })
             .map(|nf| {
-                println!("type = {:#?}", TypeId::of::<T>()); //<-- This works fine to get the type wo/ needing extra trait method
-                let x = (nf as &dyn Any).downcast_ref::<T>(); // does not work -> Always None
-                x
+                println!("FOUND = {:#?}", (**nf).type_id()); //<-- This works fine to get the type wo/ needing extra trait method
+                let first = ((nf as &dyn Any)).downcast_ref::<DynNetworkFunctionImpl<Buf, T>>().unwrap(); // does not work -> Always None
+                let second = (first as &dyn Any).downcast_ref::<T>();
+
                 // all of this unsafe options lead to mem corruption
                 //              unsafe {
                 //                    Some(&*(nf as *const dyn Any as *const T))
                 //                    //Some(&*std::ptr::from_ref::<dyn Any>(nf).cast::<T>())
                 //                    //Some(&*std::ptr::from_ref::<Box<dyn DynNetworkFunction<Buf>>>(&*nf).cast::<T>())
                 //                }
+                second
             })? // or flatten()
     }
     fn stage_get<T: Any>(stage: &dyn Any) -> Option<&T> {
