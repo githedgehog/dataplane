@@ -71,32 +71,32 @@ pub struct PacketMeta {
 #[derive(Default, Debug)]
 #[allow(unused)]
 pub struct PacketDropStats {
-    name: String,
+    pub name: String,
     reasons: HashMap<DropReason, u64>,
     //Fredi: Todo: replace by ahash or use a small vec indexed by the DropReason value
 }
 
 impl PacketDropStats {
     #[allow(dead_code)]
-    fn new(name: &str) -> Self {
+    pub fn new(name: &str) -> Self {
         Self {
             name: name.to_owned(),
             reasons: HashMap::default(),
         }
     }
     #[allow(dead_code)]
-    fn incr(&mut self, reason: DropReason, value: u64) {
+    pub fn incr(&mut self, reason: DropReason, value: u64) {
         self.reasons
             .entry(reason)
             .and_modify(|counter| *counter += value)
             .or_insert(value);
     }
     #[allow(dead_code)]
-    fn get_stat(&self, reason: DropReason) -> Option<u64> {
+    pub fn get_stat(&self, reason: DropReason) -> Option<u64> {
         self.reasons.get(&reason).cloned()
     }
     #[allow(dead_code)]
-    fn get_stats(&self) -> &HashMap<DropReason, u64> {
+    pub fn get_stats(&self) -> &HashMap<DropReason, u64> {
         &self.reasons
     }
 }
