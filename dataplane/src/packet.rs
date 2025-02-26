@@ -52,18 +52,19 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 match mbuf.prepend(prepend) {
                     Ok(_) => {}
                     Err(e) => unreachable!("configuration error: {:?}", e),
-                };
+                }
                 mbuf
             }
             Ordering::Greater => {
                 let trim = self.consumed.get() - needed.get();
-                if trim > self.headers.size().get() {
-                    panic!("attempting to trim a nonsensical amount of data: {trim}");
-                }
+                assert!(
+                    !trim > self.headers.size().get(),
+                    "attempting to trim a nonsensical amount of data: {trim}"
+                );
                 match mbuf.trim_from_start(trim) {
                     Ok(_) => {}
                     Err(e) => unreachable!("configuration error: {:?}", e),
-                };
+                }
                 mbuf
             }
         };

@@ -65,7 +65,7 @@ fn init_devices(eal: &Eal) -> Vec<Dev> {
             LCoreId::iter().enumerate().for_each(|(i, lcore_id)| {
                 let rx_queue_config = RxQueueConfig {
                     dev: dev.info.index(),
-                    queue_index: RxQueueIndex(i as u16),
+                    queue_index: RxQueueIndex(u16::try_from(i).unwrap()),
                     num_descriptors: 2048,
                     socket_preference: socket::Preference::LCore(lcore_id),
                     offloads: dev.info.rx_offload_caps(),
@@ -83,7 +83,7 @@ fn init_devices(eal: &Eal) -> Vec<Dev> {
                 };
                 dev.new_rx_queue(rx_queue_config).unwrap();
                 let tx_queue_config = TxQueueConfig {
-                    queue_index: TxQueueIndex(i as u16),
+                    queue_index: TxQueueIndex(u16::try_from(i).unwrap()),
                     num_descriptors: 2048,
                     socket_preference: socket::Preference::LCore(lcore_id),
                     config: (),
@@ -101,8 +101,12 @@ fn start_rte_workers(devices: &[Dev]) {
         info!("Starting RTE Worker on {lcore_id:?}");
         WorkerThread::launch(lcore_id, move || {
             let mut pipeline = setup_pipeline();
-            let rx_queue = devices[0].rx_queue(RxQueueIndex(i as u16)).unwrap();
-            let tx_queue = devices[0].tx_queue(TxQueueIndex(i as u16)).unwrap();
+            let rx_queue = devices[0]
+                .rx_queue(RxQueueIndex(u16::try_from(i).unwrap()))
+                .unwrap();
+            let tx_queue = devices[0]
+                .tx_queue(TxQueueIndex(u16::try_from(i).unwrap()))
+                .unwrap();
             loop {
                 let mbufs = rx_queue.receive();
                 let pkts = mbufs.filter_map(|mbuf| match Packet::new(mbuf) {
@@ -114,7 +118,7 @@ fn start_rte_workers(devices: &[Dev]) {
                 });
 
                 let pkts_out = pipeline.process(pkts);
-                tx_queue.transmit(pkts_out.map(|pkt| pkt.reserialize()));
+                tx_queue.transmit(pkts_out.map(Packet::reserialize));
             }
         });
     });

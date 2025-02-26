@@ -41,34 +41,32 @@ impl PrefixTrie {
         }
     }
 
-    #[inline(always)]
-    fn insert_ipv4(&mut self, prefix: &Ipv4Prefix, value: String) -> Result<(), NatError> {
+    fn insert_ipv4(&mut self, prefix: Ipv4Prefix, value: String) -> Result<(), NatError> {
         // Insertion always succeeds even if the key already in the map.
         // So we first need to ensure the key is not already in use.
         //
         // TODO: This is not thread-safe.
-        if self.trie_ipv4.get(prefix).is_some() {
+        if self.trie_ipv4.get(&prefix).is_some() {
             return Err(NatError::PifExists);
         }
-        self.trie_ipv4.insert(*prefix, value);
+        self.trie_ipv4.insert(prefix, value);
         Ok(())
     }
 
-    #[inline(always)]
-    fn insert_ipv6(&mut self, prefix: &Ipv6Prefix, value: String) -> Result<(), NatError> {
+    fn insert_ipv6(&mut self, prefix: Ipv6Prefix, value: String) -> Result<(), NatError> {
         // See comment for IPv4
-        if self.trie_ipv6.get(prefix).is_some() {
+        if self.trie_ipv6.get(&prefix).is_some() {
             return Err(NatError::PifExists);
         }
-        self.trie_ipv6.insert(*prefix, value);
+        self.trie_ipv6.insert(prefix, value);
         Ok(())
     }
 
     #[tracing::instrument(level = "trace")]
     fn insert(&mut self, prefix: &Prefix, value: String) -> Result<(), NatError> {
         match prefix {
-            Prefix::IPV4(p) => self.insert_ipv4(p, value),
-            Prefix::IPV6(p) => self.insert_ipv6(p, value),
+            Prefix::IPV4(p) => self.insert_ipv4(*p, value),
+            Prefix::IPV6(p) => self.insert_ipv6(*p, value),
         }
     }
 

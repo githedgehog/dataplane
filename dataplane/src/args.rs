@@ -36,7 +36,7 @@ impl CmdArgs {
         out.push(
             self.lcores
                 .clone()
-                .map_or_else(|| "2-4".to_owned(), |lcores| lcores.to_owned()),
+                .map_or_else(|| "2-4".to_owned(), |lcores| lcores.clone()),
         );
 
         /* IOVA mode */
@@ -45,14 +45,14 @@ impl CmdArgs {
             &self
                 .iova_mode
                 .clone()
-                .map_or_else(|| { "va".to_owned() }, |mode| mode.to_owned())
+                .map_or_else(|| { "va".to_owned() }, |mode| mode.clone())
         ));
 
         /* worker huge page stack size */
         out.push(format!("--huge-worker-stack={}", self.huge_worker_stack));
 
         /* --allow */
-        for a in self.allow.iter() {
+        for a in &self.allow {
             out.push("--allow".to_string());
             out.push(a.to_owned());
         }
@@ -64,13 +64,13 @@ impl CmdArgs {
         }
 
         /* --log-level */
-        for level in self.log_level.iter() {
+        for level in &self.log_level {
             out.push("--log-level".to_string());
             out.push(level.to_owned());
         }
 
         // To replace by log
-        println!("DPDK EAL init params: {:#?}", out);
+        println!("DPDK EAL init params: {out:#?}");
 
         out
     }
