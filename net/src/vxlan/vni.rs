@@ -74,7 +74,6 @@ impl Vni {
 }
 
 impl AsRef<NonZero<u32>> for Vni {
-    #[must_use]
     fn as_ref(&self) -> &NonZero<u32> {
         &self.0
     }

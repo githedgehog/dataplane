@@ -30,7 +30,6 @@ impl RxQueueIndex {
 }
 
 impl From<RxQueueIndex> for u16 {
-    #[must_use]
     fn from(value: RxQueueIndex) -> u16 {
         value.as_u16()
     }

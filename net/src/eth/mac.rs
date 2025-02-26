@@ -30,14 +30,12 @@ impl From<Mac> for [u8; 6] {
 }
 
 impl AsRef<[u8; 6]> for Mac {
-    #[must_use]
     fn as_ref(&self) -> &[u8; 6] {
         &self.0
     }
 }
 
 impl AsMut<[u8; 6]> for Mac {
-    #[must_use]
     fn as_mut(&mut self) -> &mut [u8; 6] {
         &mut self.0
     }
