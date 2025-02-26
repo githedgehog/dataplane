@@ -43,6 +43,7 @@ pub enum DropReason {
     VrfUnknown,           /* the vrf does not exist */
     NatOutOfResources,    /* can't do NAT due to lack of resources */
     RouteFailure,         /* missing routing information */
+    RouteDrop,            /* routing explicitly requests pkts to be dropped */
     HopLimitExceeded,     /* TTL / Hop count was exceeded */
     Filtered,             /* The packet was administratively filtered */
     Unhandled,            /* there exists no support to handle this type of packet */
