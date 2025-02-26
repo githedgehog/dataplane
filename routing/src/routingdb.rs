@@ -19,6 +19,8 @@ pub struct VrfTable {
 }
 
 #[allow(dead_code)]
+#[allow(clippy::new_without_default)]
+#[allow(clippy::len_without_is_empty)]
 /// Table of VRFs. All VRFs in the system are represented here.
 /// Every VRF is uniquely identified by a vrfId, which acts as the master key.
 /// Vrfs that have a VNI associated can also be looked up by VNI.
@@ -140,13 +142,14 @@ impl VrfTable {
     }
 }
 
-#[allow(unused)]
 /// Routing database
 pub struct RoutingDb {
     pub vrftable: RwLock<VrfTable>,
     pub iftable: RwLock<IfTable>,
     pub rmac_store: RwLock<RmacStore>,
 }
+#[allow(unused)]
+#[allow(clippy::new_without_default)]
 impl RoutingDb {
     #[allow(dead_code)]
     pub fn new() -> Self {
