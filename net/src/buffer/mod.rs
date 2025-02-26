@@ -12,8 +12,8 @@ use core::fmt::Debug;
 pub use test_buffer::*;
 
 /// Super trait representing the abstract operations which may be performed on a packet buffer.
-pub trait PacketBuffer: AsRef<[u8]> + Headroom {}
-impl<T> PacketBuffer for T where T: AsRef<[u8]> + Headroom {}
+pub trait PacketBuffer: AsRef<[u8]> + Headroom + 'static {}
+impl<T> PacketBuffer for T where T: AsRef<[u8]> + Headroom + 'static {}
 
 /// Super trait representing the abstract operations which may be performed on mutable a packet buffer.
 pub trait PacketBufferMut: PacketBuffer + AsMut<[u8]> + Prepend + TrimFromStart {}
