@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use crate::packet_meta::{DropReason, PacketMeta};
 use net::buffer::PacketBufferMut;
 use net::eth::EthError;
 use net::headers::{AbstractHeaders, AbstractHeadersMut, Headers, TryHeaders, TryHeadersMut};
 use net::parse::{DeParse, DeParseError, Parse, ParseError};
 use std::cmp::Ordering;
 use std::num::NonZero;
+use tracing::{error, warn};
 
 #[derive(Debug)]
 pub struct Packet<Buf: PacketBufferMut> {
@@ -14,7 +16,9 @@ pub struct Packet<Buf: PacketBufferMut> {
     /// The total number of bytes _originally_ consumed when parsing this packet
     /// Mutations to `packet` can cause the re-serialized size of the packet to grow or shrink.
     consumed: NonZero<u16>,
-    pub mbuf: Buf, // TODO: find a way to make this private
+    mbuf: Option<Buf>,
+    // packet metadata added by stages to drive other stages down the pipeline
+    pub meta: PacketMeta,
 }
 #[derive(Debug, thiserror::Error)]
 pub struct InvalidPacket<Buf: PacketBufferMut> {
@@ -35,16 +39,45 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         Ok(Packet {
             headers,
             consumed,
-            mbuf,
+            meta: PacketMeta::default(),
+            mbuf: Some(mbuf),
         })
     }
 
-    pub(crate) fn reserialize(self) -> Buf {
+    /// Get a reference to the underlying buffer of a packet
+    #[allow(dead_code)]
+    pub fn get_buf(&self) -> &Option<Buf> {
+        &self.mbuf
+    }
+
+    /// Get a mutable reference to the underlying buffer of a packet
+    #[allow(dead_code)]
+    pub fn get_buf_mut(&mut self) -> &mut Option<Buf> {
+        &mut self.mbuf
+    }
+
+    /// Take ownership of the memory buffer of a Packet
+    pub fn take_buf(&mut self) -> Option<Buf> {
+        self.mbuf.take()
+    }
+
+    pub(crate) fn reserialize(mut self) -> Buf {
         // TODO: prove that these unreachable statements are optimized out
         // The `unreachable` statements in the first block should be easily optimized out, but best
         // to confirm.
+
+        // warn if packet has a drop reason != Delivered
+        self.get_drop().inspect(|reason| {
+            if *reason != DropReason::Delivered {
+                warn!("Serializing a packet that should be dropped");
+            }
+        });
+
+        // set the drop action to delivered, since this is terminal.
+        self.pkt_drop(DropReason::Delivered);
+
         let needed = self.headers.size();
-        let mut mbuf = self.mbuf;
+        let mut mbuf = self.take_buf().expect("Packet without buffer");
         let mut mbuf = match needed.cmp(&self.consumed) {
             Ordering::Equal => mbuf,
             Ordering::Less => {
@@ -79,6 +112,67 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             }
         }
     }
+
+    #[allow(dead_code)]
+    /// Explicitly mark a packet as done, indicating the reason.
+    pub fn pkt_drop(&mut self, reason: DropReason) {
+        if self.meta.drop.is_none() {
+            self.meta.drop = Some(reason);
+        }
+    }
+
+    #[allow(dead_code)]
+    /// Tell if a packet has been marked as 'to drop'.
+    pub fn dropped(&self) -> bool {
+        self.meta.drop.is_some()
+    }
+
+    #[allow(dead_code)]
+    pub fn get_drop(&self) -> &Option<DropReason> {
+        &self.meta.drop
+    }
+
+    #[allow(dead_code)]
+    /// Wraps a packet in an Option<Packet> depending on the metadata:
+    /// If the [`Packet`] is to be dropped, returns `None`.
+    /// Else, `Some(packet)`.
+    ///
+    /// This method consumes Self. If the packet was marked as
+    /// dropped, this will actually drop it.
+    /// The method is intended to use in NFs within closures of filter_map()
+    /// where internal processing functions need not return anything but signal
+    /// the desire to drop a packet by calling method[`pkt_drop()`].
+    /// ```
+    ///     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
+    ///        &'a mut self,
+    ///        input: Input,
+    ///     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
+    ///        input.filter_map(|mut packet| {
+    ///        some_function_that_may_drop_pkt(&mut packet);
+    ///        packet.fate()
+    ///    })
+    ///   }
+    /// ```
+    /// If a stage would opt not to drop a packet but defer this action, it should
+    /// simply replace packet.fate() by Some(packet). The packet annotation would
+    /// allow  dropping it later on. E.g. a pipeline could have a last stage that
+    /// could execute something like:
+    /// ```
+    ///        input.filter_map(|mut packet| packet.fate() )
+    /// ```
+    /// .. or a variation to collect statistics.
+    pub fn fate(self) -> Option<Self> {
+        if !self.dropped() {
+            Some(self)
+        } else {
+            #[cfg(test)]
+            if self.meta.keep {
+                // ignore the request to drop and keep the packet instead.
+                return Some(self);
+            }
+            None
+        }
+    }
 }
 
 impl<Buf: PacketBufferMut> TryHeaders for Packet<Buf> {
@@ -90,5 +184,15 @@ impl<Buf: PacketBufferMut> TryHeaders for Packet<Buf> {
 impl<Buf: PacketBufferMut> TryHeadersMut for Packet<Buf> {
     fn headers_mut(&mut self) -> &mut impl AbstractHeadersMut {
         &mut self.headers
+    }
+}
+
+impl<Buf: PacketBufferMut> Drop for Packet<Buf> {
+    fn drop(&mut self) {
+        if self.meta.drop.is_none() {
+            error!("Dropped packet without specifying reason");
+            // This should be a panic!(). Leaving it as just a log
+            // until related features adopt this, if adopted.
+        }
     }
 }
