@@ -3,6 +3,7 @@
 
 use dyn_iter::{DynIter, IntoDynIterator};
 use net::buffer::PacketBufferMut;
+use std::any::Any;
 
 use crate::packet::Packet;
 use crate::pipeline::{DynNetworkFunction, NetworkFunction, nf_dyn};
@@ -68,6 +69,20 @@ impl<Buf: PacketBufferMut + 'static> DynPipeline<Buf> {
             .iter()
             .find(|&nf| name == nf.nf_name())
             .map(|v| &**v)
+    }
+
+    /// Get a reference to a stage of the pipeline by name, type to the original
+    /// object type instead of the trait.
+    ///
+    /// Sample usage:
+    /// Suppose that there exists a stage called "Foo-1" of type `TypeFoo`.
+    /// A reference to the object implementing the stage/NF can be obtained back as
+    ///   `pipeline.get_stage_typed::<TypeFoo>("Foo-1");`
+    pub fn get_stage_typed<T: Any>(&self, name: &str) -> Option<&T> {
+        self.nfs
+            .iter()
+            .find(|&nf| name == nf.nf_name())
+            .map(|stage| (stage as &dyn Any).downcast_ref())?
     }
 }
 
