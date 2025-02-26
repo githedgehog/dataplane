@@ -33,20 +33,21 @@ pub trait DynNetworkFunction<Buf: PacketBufferMut>: Any {
     /// Allow objects implementing [`DynNetworkFunction`] to identify themselves by overriding this.
     #[allow(dead_code)]
     #[allow(clippy::unnecessary_literal_bound)]
-    fn nf_name(&self) -> &str {
-        "anonymous-dynNF"
-    }
+    fn nf_name(&self) -> &str;
 }
 
 struct DynNetworkFunctionImpl<Buf: PacketBufferMut, NF: NetworkFunction<Buf> + 'static> {
     nf: NF,
+    name: String,
     _marker: PhantomData<Buf>,
 }
 
 impl<Buf: PacketBufferMut, NF: NetworkFunction<Buf>> DynNetworkFunctionImpl<Buf, NF> {
     pub fn new(nf: NF) -> Self {
+        let name = nf.nf_name().to_owned();
         Self {
             nf,
+            name,
             _marker: PhantomData,
         }
     }
@@ -69,6 +70,9 @@ pub fn nf_dyn<Buf: PacketBufferMut + 'static, NF: NetworkFunction<Buf> + 'static
 impl<Buf: PacketBufferMut, NF: NetworkFunction<Buf>> DynNetworkFunction<Buf>
     for DynNetworkFunctionImpl<Buf, NF>
 {
+    fn nf_name(&self) -> &str {
+        self.name.as_str()
+    }
     fn process_dyn<'a>(&'a mut self, input: DynIter<'a, Packet<Buf>>) -> DynIter<'a, Packet<Buf>> {
         self.nf.process(input).into_dyn_iter()
     }
