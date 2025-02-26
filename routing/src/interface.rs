@@ -203,6 +203,7 @@ impl Interface {
 pub struct IfTable(pub(crate) HashMap<u32, Interface>);
 
 #[allow(dead_code)]
+#[allow(clippy::new_without_default)]
 impl IfTable {
     //////////////////////////////////////////////////////////////////
     /// Create an interface table. All interfaces should live here.

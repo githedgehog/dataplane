@@ -26,6 +26,7 @@ impl RmacEntry {
 pub struct RmacStore(HashMap<(IpAddr, Vni), RmacEntry>);
 
 #[allow(dead_code)]
+#[allow(clippy::new_without_default)]
 impl RmacStore {
     pub fn new() -> Self {
         Self(HashMap::new())
