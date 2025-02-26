@@ -97,6 +97,7 @@ impl<Buf: PacketBufferMut + 'static> DynPipeline<Buf> {
         self.nfs
             .iter()
             .find(|&nf| {
+                println!("nf: {} type = {:#?}", nf.nf_name(), TypeId::of::<T>());
                 name == nf.nf_name()
             })
             .map(|nf| {

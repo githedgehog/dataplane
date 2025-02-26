@@ -242,7 +242,13 @@ mod test {
                 }
             }
         }
-        //println!("{}", pipeline.nfs.len());
-        //let stats = pipeline.get_stage("Pipeline-stats").unwrap();
+
+        use std::any::TypeId;
+        let typeid = TypeId::of::<PacketDropStats>();
+        println!("{typeid:#?}");
+        let stats = pipeline.get_stage_typed::<PacketDropStats>("Pipeline-stats");
+        println!("stats = {stats:#?}");
+
+
     }
 }
