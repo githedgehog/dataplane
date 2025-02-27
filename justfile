@@ -29,7 +29,7 @@ _container_repo := "ghcr.io/githedgehog/dataplane"
 
 # the rust channel to use (choose stable, beta, or nightly)
 
-rust := "stable"
+rust := "beta"
 [private]
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
 [private]

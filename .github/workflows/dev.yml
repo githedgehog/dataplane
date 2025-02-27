@@ -77,7 +77,7 @@ jobs:
         rust:
           - # failures on stable block release
             version: "stable"
-            optional: false
+            optional: true
           - # failures on beta block release
             version: "beta"
             optional: false
