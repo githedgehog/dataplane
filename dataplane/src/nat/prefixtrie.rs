@@ -100,3 +100,119 @@ impl Debug for PrefixTrie {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::str::FromStr;
+
+    fn prefix_v4(s: &str) -> Ipv4Prefix {
+        Ipv4Prefix::from_str(s).expect("Invalid IPv4 prefix")
+    }
+
+    fn prefix_v6(s: &str) -> Ipv6Prefix {
+        Ipv6Prefix::from_str(s).expect("Invalid IPv6 prefix")
+    }
+
+    fn addr_v4(s: &str) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::from_str(s).expect("Invalid IPv4 address"))
+    }
+
+    fn addr_v6(s: &str) -> IpAddr {
+        IpAddr::V6(Ipv6Addr::from_str(s).expect("Invalid IPv6 address"))
+    }
+
+    fn build_prefixtrie() -> PrefixTrie {
+        let mut pt = PrefixTrie::new();
+
+        pt.insert_ipv4(prefix_v4("10.0.1.0/24"), "prefix_10.0.1.0/24".to_string())
+            .expect("Failed to insert prefix");
+
+        pt.insert_ipv4(prefix_v4("10.0.2.0/24"), "prefix_10.0.2.0/24".to_string())
+            .expect("Failed to insert prefix");
+
+        pt.insert_ipv6(
+            prefix_v6("aa:bb:cc:dd::/32"),
+            "prefix_aa:bb:cc:dd::/32".to_string(),
+        )
+        .expect("Failed to insert prefix");
+
+        pt.insert_ipv4(prefix_v4("10.1.0.0/16"), "prefix_10.1.0.0/16".to_string())
+            .expect("Failed to insert prefix");
+
+        pt
+    }
+
+    #[test]
+    fn test_prefixtrie() {
+        let pt = build_prefixtrie();
+
+        // Look for first prefix, as is
+        assert_eq!(
+            pt.find(&prefix_v4("10.0.1.0/24").into()),
+            Some("prefix_10.0.1.0/24".to_string())
+        );
+
+        // Look for second prefix, as is
+        assert_eq!(
+            pt.find(&prefix_v4("10.0.2.0/24").into()),
+            Some("prefix_10.0.2.0/24".to_string())
+        );
+
+        // Look for /16 prefix, as is
+        assert_eq!(
+            pt.find(&prefix_v4("10.1.0.0/16").into()),
+            Some("prefix_10.1.0.0/16".to_string())
+        );
+
+        // Look for a sub-prefix from the /16 prefix
+        assert_eq!(
+            pt.find(&prefix_v4("10.1.1.0/24").into()),
+            Some("prefix_10.1.0.0/16".to_string())
+        );
+
+        // Look for IPv6 prefix, as is
+        assert_eq!(
+            pt.find(&prefix_v6("aa:bb:cc:dd::/32").into()),
+            Some("prefix_aa:bb:cc:dd::/32".to_string())
+        );
+
+        // Look for IPv6 sub-prefix from the /32 prefix
+        assert_eq!(
+            pt.find(&prefix_v6("aa:bb:cc:dd::/64").into()),
+            Some("prefix_aa:bb:cc:dd::/32".to_string())
+        );
+
+        // Look for a missing IPv4 prefix
+        assert_eq!(pt.find(&prefix_v4("10.2.0.0/16").into()), None);
+
+        // Look for a missing IPv6 prefix
+        assert_eq!(pt.find(&prefix_v6("aa::/32").into()), None);
+
+        // Look for a single IPv4 address
+        assert_eq!(
+            pt.find_ip(&addr_v4("10.1.1.1")),
+            Some("prefix_10.1.0.0/16".to_string())
+        );
+
+        // Look for a single IPv6 address
+        assert_eq!(
+            pt.find_ip(&addr_v6("aa:bb:cc:dd::1")),
+            Some("prefix_aa:bb:cc:dd::/32".to_string())
+        );
+
+        // Look for a single IPv4 address that is not in the trie
+        assert_eq!(pt.find_ip(&addr_v4("10.2.1.1")), None);
+
+        // Look for a single IPv6 address that is not in the trie
+        assert_eq!(pt.find_ip(&addr_v6("aa::1")), None);
+
+        // Clone the prefix trie
+        let cloned_pt = pt.clone();
+        assert_eq!(
+            cloned_pt.find(&prefix_v4("10.0.1.0/24").into()),
+            Some("prefix_10.0.1.0/24".to_string())
+        );
+    }
+}
