@@ -3,13 +3,15 @@
 
 //! Packet struct and methods
 
-use crate::buffer::{Headroom, PacketBufferMut, TrimFromStart};
+use crate::buffer::{Headroom, PacketBufferMut, Prepend, TrimFromStart};
 use crate::eth::EthError;
 use crate::headers::{
-    AbstractHeaders, AbstractHeadersMut, Headers, TryHeaders, TryHeadersMut, TryVxlan,
+    AbstractHeaders, AbstractHeadersMut, Headers, TryHeaders, TryHeadersMut, TryIp, TryUdp,
+    TryVxlan,
 };
 use crate::parse::{DeParse, DeParseError, Parse, ParseError};
 use crate::vxlan::Vxlan;
+use core::fmt::Debug;
 use std::cmp::Ordering;
 use std::num::NonZero;
 
@@ -34,6 +36,10 @@ pub struct InvalidPacket<Buf: PacketBufferMut> {
 
 impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Map a `PacketBufferMut` to a `Packet` if the buffer contains a valid ethernet packet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`InvalidPacket`] error the buffer does not parse as an ethernet frame.
     pub fn new(mbuf: Buf) -> Result<Packet<Buf>, InvalidPacket<Buf>> {
         let (headers, consumed) = match Headers::parse(mbuf.as_ref()) {
             Ok((headers, consumed)) => (headers, consumed),
@@ -48,7 +54,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         })
     }
 
-    /// If the [`Packet`] is [`Vxlan`] then this method
+    /// If the [`Packet`] is [`Vxlan`], then this method
     ///
     /// 1. strips the outer headers
     /// 2. parses the inner headers
@@ -105,6 +111,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                         // packet is invalid.
                         // Advancing the start location violates that goal, so we can't get away
                         // with it.
+                        #[allow(clippy::cast_possible_truncation)] // u16 to start with
                         match self.mbuf.trim_from_start(header_size as u16) {
                             Ok(_) => {
                                 let vxlan = *vxlan;
@@ -125,7 +132,67 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         }
     }
 
-    pub(crate) fn reserialize(self) -> Buf {
+    /// Encapsulate the packet in the supplied [`Headers`].
+    ///
+    /// If successful, this method will replace the current [`Packet`]'s [`Headers`] with the
+    /// supplied headers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Err`] variant if the buffer is unable to [`prepend`] the supplied [`Headers`].
+    ///
+    /// # Safety
+    ///
+    /// This method does not confirm that the supplied [`Headers`] are a logical form of
+    /// encapsulation.
+    /// It is the caller's responsibility to ensure they are constructing the desired [`Packet`].
+    ///
+    /// This method is principally intended as a building block for other types of (checked)
+    /// encapsulation logic.
+    /// It is made public to allow other crates to "bring their own encap / decap"
+    ///
+    /// [`prepend`]: Prepend::prepend
+    #[allow(unsafe_code)] // safety requirements documented
+    pub unsafe fn encap(&mut self, headers: Headers) -> Result<(), <Buf as Prepend>::Error> {
+        self.mbuf.prepend(headers.size().get())?;
+        self.consumed = headers.size();
+        self.headers = headers;
+        Ok(())
+    }
+
+    /// Encapsulate the packet in the supplied [`Vxlan`] [`Headers`]
+    ///
+    /// The supplied [`Headers`] will be validated to ensure they form a VXLAN header.
+    ///
+    /// # Errors
+    ///
+    /// If the supplied [`Headers`] have no
+    ///
+    /// * IP layer, then this method will return an [`VxlanEncapError::NoIp`] `Err`
+    /// * UDP layer, then this method will return an [`VxlanEncapError::NoUdp`] `Err`
+    /// * Vxlan layer, then this method will return an [`VxlanEncapError::NoVxlan`] `Err`
+    ///
+    /// If the buffer is unable to prepend the supplied [`Headers`], this method will return a
+    /// [`VxlanEncapError::PrependFailed`] `Err`.
+    #[allow(clippy::result_large_err)] // no reason to eat the headers
+    pub fn encap_vxlan(&mut self, headers: Headers) -> Result<(), VxlanEncapError<Buf>> {
+        match (headers.try_ip(), headers.try_udp(), headers.try_vxlan()) {
+            (None, _, _) => Err(VxlanEncapError::<Buf>::NoIp(headers)),
+            (_, None, _) => Err(VxlanEncapError::<Buf>::NoUdp(headers)),
+            (_, _, None) => Err(VxlanEncapError::<Buf>::NoVxlan(headers)),
+            (Some(_), Some(_), Some(_)) => {
+                #[allow(unsafe_code)] // sound by exhaustion
+                unsafe { self.encap(headers) }.map_err(VxlanEncapError::PrependFailed)
+            }
+        }
+    }
+
+    /// Consume the packet and return it as a `Buf`
+    ///
+    /// # Panics
+    ///
+    /// Panics if `Buf` does not have enough headroom to serialize the packet.
+    pub fn reserialize(self) -> Buf {
         // TODO: prove that these unreachable statements are optimized out
         // The `unreachable` statements in the first block should be easily optimized out, but best
         // to confirm.
@@ -193,3 +260,37 @@ impl<Buf: PacketBufferMut> Headroom for Packet<Buf> {
         self.mbuf.headroom()
     }
 }
+
+/// Errors which may occur when encapsulating a packet with VXLAN headers.
+#[derive(Debug, thiserror::Error)]
+pub enum VxlanEncapError<Buf: PacketBufferMut> {
+    /// supplied headers have no IP layer
+    #[error("supplied headers have not IP layer")]
+    NoIp(Headers),
+    /// supplied headers have no UDP layer
+    #[error("supplied headers have no UDP layer")]
+    NoUdp(Headers),
+    /// supplied headers have no VXLAN layer
+    #[error("supplied headers have no VXLAN layer")]
+    NoVxlan(Headers),
+    /// Unable to prepend the supplied headers to the buffer.
+    #[error(transparent)]
+    PrependFailed(<Buf as Prepend>::Error),
+}
+
+//
+// #[cfg(all(any(test, feature = "arbitrary"), feature = "test_buffer"))]
+// mod contract {
+//     use crate::packet::Packet;
+//     use bolero::{Driver, ValueGenerator};
+//
+//     pub struct VxlanPacketGenerator;
+//
+//     impl ValueGenerator for VxlanPacketGenerator {
+//         type Output = Packet;
+//
+//         fn generate<D: Driver>(&self, _driver: &mut D) -> Option<Self::Output> {
+//             todo!()
+//         }
+//     }
+// }

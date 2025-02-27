@@ -8,6 +8,9 @@ mod nat;
 mod pipeline;
 mod vxlan;
 
+use crate::args::{CmdArgs, Parser};
+use crate::pipeline::sample_nfs::Passthrough;
+use crate::pipeline::{DynPipeline, NetworkFunction};
 use dpdk::dev::{Dev, TxOffloadConfig};
 use dpdk::eal::Eal;
 use dpdk::lcore::{LCoreId, WorkerThread};
@@ -15,12 +18,8 @@ use dpdk::mem::{Mbuf, Pool, PoolConfig, PoolParams, RteAllocator};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, eal, socket};
+use net::packet::Packet;
 use tracing::{info, trace, warn};
-
-use crate::args::{CmdArgs, Parser};
-use crate::packet::Packet;
-use crate::pipeline::sample_nfs::Passthrough;
-use crate::pipeline::{DynPipeline, NetworkFunction};
 
 #[global_allocator]
 static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();

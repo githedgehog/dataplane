@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use crate::pipeline::{DynNetworkFunction, NetworkFunction, nf_dyn};
 use dyn_iter::{DynIter, IntoDynIterator};
 use net::buffer::PacketBufferMut;
-
-use crate::packet::Packet;
-use crate::pipeline::{DynNetworkFunction, NetworkFunction, nf_dyn};
+use net::packet::Packet;
 
 /// A dynamic pipeline that can be updated at runtime.
 ///
