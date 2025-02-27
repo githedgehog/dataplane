@@ -50,7 +50,7 @@ mod contract {
 
     impl TypeGenerator for Dscp {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            let raw = driver.r#gen::<u8>()? & Dscp::MAX.0.value();
+            let raw = driver.produce::<u8>()? & Dscp::MAX.0.value();
             Some(Dscp(
                 Ipv4Dscp::try_new(raw).unwrap_or_else(|_| unreachable!()),
             ))

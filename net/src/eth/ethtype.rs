@@ -61,7 +61,7 @@ mod contract {
 
     impl TypeGenerator for EthType {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
-            Some(EthType::new(u.r#gen()?))
+            Some(EthType::new(u.produce()?))
         }
     }
 

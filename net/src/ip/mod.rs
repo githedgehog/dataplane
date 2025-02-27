@@ -61,7 +61,7 @@ mod contract {
 
     impl TypeGenerator for NextHeader {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            Some(NextHeader::new(driver.r#gen()?))
+            Some(NextHeader::new(driver.produce()?))
         }
     }
 }

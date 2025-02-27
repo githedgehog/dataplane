@@ -114,7 +114,7 @@ mod contract {
 
     impl TypeGenerator for Vni {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
-            let raw: u32 = u.r#gen::<u32>()? & Vni::MAX;
+            let raw: u32 = u.produce::<u32>()? & Vni::MAX;
             if raw == 0 {
                 Some(Vni::new_checked(1).unwrap_or_else(|e| unreachable!("{e:?}")))
             } else {

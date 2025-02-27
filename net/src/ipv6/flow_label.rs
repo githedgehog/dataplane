@@ -76,7 +76,7 @@ mod contract {
     impl TypeGenerator for FlowLabel {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
             Some(
-                FlowLabel::new(driver.r#gen::<u32>()? & FlowLabel::MAX.0.value())
+                FlowLabel::new(driver.produce::<u32>()? & FlowLabel::MAX.0.value())
                     .unwrap_or_else(|_| unreachable!()),
             )
         }

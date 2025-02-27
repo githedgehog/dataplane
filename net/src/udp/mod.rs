@@ -203,10 +203,10 @@ mod contract {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
             const MIN_LENGTH: u16 = Udp::MIN_LENGTH.get();
             let mut header = Udp(UdpHeader::default());
-            header.set_source(u.r#gen()?);
-            header.set_destination(u.r#gen()?);
-            header.set_checksum(u.r#gen()?);
-            let length = u.r#gen::<u16>()?;
+            header.set_source(u.produce()?);
+            header.set_destination(u.produce()?);
+            header.set_checksum(u.produce()?);
+            let length = u.produce::<u16>()?;
             match length {
                 #[allow(unsafe_code)] // trivially safe const-eval
                 0..MIN_LENGTH => unsafe {

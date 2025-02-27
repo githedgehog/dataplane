@@ -1105,8 +1105,8 @@ mod contract {
             // The exception is IPv4/6 extension headers (because those values are large and boxed).
             // As a result, we will need to generate more bytes once we want to start testing more
             // exotic packets.  For now, I will double to be safe.
-            let mut arbitrary_bytes: [u8; 2 * size_of::<Headers>()] = driver.r#gen()?;
-            let arbitrary_eth: Eth = driver.r#gen()?;
+            let mut arbitrary_bytes: [u8; 2 * size_of::<Headers>()] = driver.produce()?;
+            let arbitrary_eth: Eth = driver.produce()?;
             // ensure that the start of the arbitrary bytes for some valid ethernet header.
             arbitrary_eth
                 .deparse(&mut arbitrary_bytes)
@@ -1126,16 +1126,16 @@ mod contract {
         type Output = Headers;
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
-            let common_eth_type: CommonEthType = driver.r#gen()?;
+            let common_eth_type: CommonEthType = driver.produce()?;
             let eth = GenWithEthType(common_eth_type.into()).generate(driver)?;
             match common_eth_type {
                 CommonEthType::Ipv4 => {
-                    let common_next_header: ipv4::CommonNextHeader = driver.r#gen()?;
+                    let common_next_header: ipv4::CommonNextHeader = driver.produce()?;
                     let ipv4 =
                         ipv4::GenWithNextHeader(common_next_header.into()).generate(driver)?;
                     match common_next_header {
                         ipv4::CommonNextHeader::Tcp => {
-                            let tcp: Tcp = driver.r#gen()?;
+                            let tcp: Tcp = driver.produce()?;
                             let headers = Headers {
                                 eth,
                                 vlan: Default::default(),
@@ -1147,7 +1147,7 @@ mod contract {
                             Some(headers)
                         }
                         ipv4::CommonNextHeader::Udp => {
-                            let udp: Udp = driver.r#gen()?;
+                            let udp: Udp = driver.produce()?;
                             let headers = Headers {
                                 eth,
                                 vlan: Default::default(),
@@ -1159,7 +1159,7 @@ mod contract {
                             Some(headers)
                         }
                         ipv4::CommonNextHeader::Icmp4 => {
-                            let icmp: Icmp4 = driver.r#gen()?;
+                            let icmp: Icmp4 = driver.produce()?;
                             let headers = Headers {
                                 eth,
                                 vlan: Default::default(),
@@ -1173,12 +1173,12 @@ mod contract {
                     }
                 }
                 CommonEthType::Ipv6 => {
-                    let common_next_header: ipv6::CommonNextHeader = driver.r#gen()?;
+                    let common_next_header: ipv6::CommonNextHeader = driver.produce()?;
                     let ipv6 =
                         ipv6::GenWithNextHeader(common_next_header.into()).generate(driver)?;
                     match common_next_header {
                         ipv6::CommonNextHeader::Tcp => {
-                            let tcp: Tcp = driver.r#gen()?;
+                            let tcp: Tcp = driver.produce()?;
                             let headers = Headers {
                                 eth,
                                 vlan: Default::default(),
@@ -1190,7 +1190,7 @@ mod contract {
                             Some(headers)
                         }
                         ipv6::CommonNextHeader::Udp => {
-                            let udp: Udp = driver.r#gen()?;
+                            let udp: Udp = driver.produce()?;
                             let headers = Headers {
                                 eth,
                                 vlan: Default::default(),
@@ -1202,7 +1202,7 @@ mod contract {
                             Some(headers)
                         }
                         ipv6::CommonNextHeader::Icmp6 => {
-                            let icmp6: Icmp6 = driver.r#gen()?;
+                            let icmp6: Icmp6 = driver.produce()?;
                             let headers = Headers {
                                 eth,
                                 vlan: Default::default(),

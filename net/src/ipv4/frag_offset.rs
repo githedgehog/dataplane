@@ -50,7 +50,7 @@ mod contract {
     impl TypeGenerator for FragOffset {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
             Some(
-                FragOffset::new(driver.r#gen::<u16>()? & FragOffset::MAX.0.value())
+                FragOffset::new(driver.produce::<u16>()? & FragOffset::MAX.0.value())
                     .unwrap_or_else(|e| unreachable!("{e:?}")),
             )
         }

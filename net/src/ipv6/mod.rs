@@ -472,12 +472,12 @@ mod contract {
         fn generate<D: Driver>(&self, u: &mut D) -> Option<Ipv6> {
             let mut header = Ipv6(Ipv6Header::default());
             header
-                .set_source(u.r#gen()?)
-                .set_destination(Ipv6Addr::from(u.r#gen::<u128>()?))
+                .set_source(u.produce()?)
+                .set_destination(Ipv6Addr::from(u.produce::<u128>()?))
                 .set_next_header(self.0)
-                .set_flow_label(u.r#gen()?)
-                .set_traffic_class(u.r#gen()?)
-                .set_hop_limit(u.r#gen()?);
+                .set_flow_label(u.produce()?)
+                .set_traffic_class(u.produce()?)
+                .set_hop_limit(u.produce()?);
             Some(header)
         }
     }
@@ -485,7 +485,7 @@ mod contract {
     impl TypeGenerator for Ipv6 {
         /// Generate a completely arbitrary [`Ipv6`] header.
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
-            GenWithNextHeader(u.r#gen()?).generate(u)
+            GenWithNextHeader(u.produce()?).generate(u)
         }
     }
 }

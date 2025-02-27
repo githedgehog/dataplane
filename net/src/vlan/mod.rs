@@ -351,7 +351,7 @@ mod contract {
 
     impl TypeGenerator for Vid {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
-            let raw = u.r#gen::<u16>()? & Vid::MAX.0.get();
+            let raw = u.produce::<u16>()? & Vid::MAX.0.get();
             match Vid::new(raw) {
                 Ok(vid) => Some(vid),
                 Err(InvalidVid::Zero) => Some(Vid::MIN),
@@ -363,7 +363,7 @@ mod contract {
 
     impl TypeGenerator for Pcp {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            match Pcp::new(driver.r#gen::<u8>()? & Pcp::MAX.0) {
+            match Pcp::new(driver.produce::<u8>()? & Pcp::MAX.0) {
                 Ok(pcp) => Some(pcp),
                 Err(InvalidPcp(_)) => unreachable!(),
             }
@@ -378,9 +378,9 @@ mod contract {
 
         fn generate<D: Driver>(&self, u: &mut D) -> Option<Self::Output> {
             let ethertype = self.0;
-            let vid = u.r#gen()?;
-            let pcp = u.r#gen()?;
-            let dei = u.r#gen()?;
+            let vid = u.produce()?;
+            let pcp = u.produce()?;
+            let dei = u.produce()?;
             Some(Vlan::new(vid, ethertype, pcp, dei))
         }
     }
@@ -401,7 +401,7 @@ mod contract {
         type Output = Vlan;
         /// Generate a [`Vlan`] header with a [`CommonEthType`]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vlan> {
-            GenWithEthType(driver.r#gen::<CommonEthType>()?.into()).generate(driver)
+            GenWithEthType(driver.produce::<CommonEthType>()?.into()).generate(driver)
         }
     }
 }

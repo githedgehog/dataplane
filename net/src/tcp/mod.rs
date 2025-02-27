@@ -375,21 +375,21 @@ mod contract {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
             let mut header = Tcp(TcpHeader::default());
             header
-                .set_source(u.r#gen()?)
-                .set_destination(u.r#gen()?)
-                .set_checksum(u.r#gen()?)
-                .set_sequence_number(u.r#gen()?)
-                .set_ack(u.r#gen()?)
-                .set_ack_number(u.r#gen()?)
-                .set_cwr(u.r#gen()?)
-                .set_ece(u.r#gen()?)
-                .set_fin(u.r#gen()?)
-                .set_psh(u.r#gen()?)
-                .set_rst(u.r#gen()?)
-                .set_syn(u.r#gen()?)
-                .set_urg(u.r#gen()?)
-                .set_window_size(u.r#gen()?)
-                .set_urgent_pointer(u.r#gen()?);
+                .set_source(u.produce()?)
+                .set_destination(u.produce()?)
+                .set_checksum(u.produce()?)
+                .set_sequence_number(u.produce()?)
+                .set_ack(u.produce()?)
+                .set_ack_number(u.produce()?)
+                .set_cwr(u.produce()?)
+                .set_ece(u.produce()?)
+                .set_fin(u.produce()?)
+                .set_psh(u.produce()?)
+                .set_rst(u.produce()?)
+                .set_syn(u.produce()?)
+                .set_urg(u.produce()?)
+                .set_window_size(u.produce()?)
+                .set_urgent_pointer(u.produce()?);
             Some(header)
         }
     }

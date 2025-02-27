@@ -415,8 +415,8 @@ mod contract {
         /// Generates an arbitrary [`Ipv4`] header with the [`NextHeader`] specified in `self`.
         fn generate<D: Driver>(&self, u: &mut D) -> Option<Self::Output> {
             let mut header = Ipv4(Ipv4Header::default());
-            header.set_source(u.r#gen()?);
-            header.set_destination(Ipv4Addr::from(u.r#gen::<u32>()?));
+            header.set_source(u.produce()?);
+            header.set_destination(Ipv4Addr::from(u.produce::<u32>()?));
 
             // safe in so far as the whole point of this method is to generate a header with
             // the specified `NextHeader`.
@@ -425,13 +425,13 @@ mod contract {
                 header.set_next_header(self.0);
             }
             header
-                .set_ttl(u.r#gen()?)
-                .set_dscp(u.r#gen()?)
-                .set_ecn(u.r#gen()?)
-                .set_dont_fragment(u.r#gen()?)
-                .set_more_fragments(u.r#gen()?)
-                .set_identification(u.r#gen()?)
-                .set_fragment_offset(u.r#gen()?);
+                .set_ttl(u.produce()?)
+                .set_dscp(u.produce()?)
+                .set_ecn(u.produce()?)
+                .set_dont_fragment(u.produce()?)
+                .set_more_fragments(u.produce()?)
+                .set_identification(u.produce()?)
+                .set_fragment_offset(u.produce()?);
             Some(header)
         }
     }
@@ -448,7 +448,7 @@ mod contract {
         ///
         /// Unfortunately, the current implementation does not cover [`Ipv4::options`].
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
-            GenWithNextHeader(u.r#gen()?).generate(u)
+            GenWithNextHeader(u.produce()?).generate(u)
         }
     }
 }

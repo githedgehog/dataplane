@@ -236,8 +236,8 @@ mod contract {
         type Output = Eth;
         /// Generate an [`Eth`] with the [`EthType`] specified in `Self`
         fn generate<D: Driver>(&self, u: &mut D) -> Option<Self::Output> {
-            let source_mac: SourceMac = u.r#gen()?;
-            let destination_mac: DestinationMac = u.r#gen()?;
+            let source_mac: SourceMac = u.produce()?;
+            let destination_mac: DestinationMac = u.produce()?;
             let eth = Eth::new(source_mac, destination_mac, self.0);
             Some(eth)
         }
@@ -246,7 +246,7 @@ mod contract {
     impl TypeGenerator for Eth {
         /// Generate an arbitrary [`Eth`] header
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
-            GenWithEthType(u.r#gen()?).generate(u)
+            GenWithEthType(u.produce()?).generate(u)
         }
     }
 }
