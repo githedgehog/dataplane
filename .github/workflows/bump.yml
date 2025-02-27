@@ -57,7 +57,7 @@ jobs:
             automated
             dependencies
           signoff: "true"
-          commit-message: "automated bump of dpdk-sys"
+          commit-message: "bump(dpdk-sys): automated bump of dpdk-sys"
           sign-commits: "true"
           body: "bump dpdk-sys"
 
