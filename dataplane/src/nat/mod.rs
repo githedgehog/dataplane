@@ -267,7 +267,78 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Nat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline::test_utils::build_test_ipv4_packet;
+    use iptrie::Ipv4Prefix;
+    use net::buffer::TestBuffer;
+    use net::headers::TryIpv4;
+    use routing::prefix::Prefix;
+    use std::net::Ipv4Addr;
+    use std::str::FromStr;
+
+    fn prefix_v4(s: &str) -> Prefix {
+        Ipv4Prefix::from_str(s).expect("Invalid IPv4 prefix").into()
+    }
+
+    fn addr_v4(s: &str) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::from_str(s).expect("Invalid IPv4 address"))
+    }
+
+    fn build_vpc() -> Vpc {
+        let mut vpc = Vpc::new(
+            "test_vpc".into(),
+            Vni::new_checked(100).expect("Failed to create VNI"),
+        );
+        let mut pif1 = Pif::new("pif1".into(), "test_vpc".into());
+        pif1.add_endpoint(prefix_v4("10.0.0.0/24"));
+        pif1.add_endpoint(prefix_v4("8.8.8.0/24"));
+        pif1.add_ip(prefix_v4("192.168.0.0/24"));
+        pif1.add_ip(prefix_v4("1.2.3.0/24"));
+
+        let mut pif2 = Pif::new("pif2".into(), "test_vpc".into());
+        pif2.add_endpoint(prefix_v4("10.0.2.0/24"));
+        pif2.add_endpoint(prefix_v4("1.2.3.0/24"));
+        pif2.add_ip(prefix_v4("192.168.2.0/24"));
+        pif2.add_ip(prefix_v4("4.4.4.0/24"));
+
+        vpc.add_pif(pif1.clone()).expect("Failed to add PIF");
+        vpc.add_pif(pif2.clone()).expect("Failed to add PIF");
+
+        vpc
+    }
 
     #[test]
-    fn basic_test() {}
+    fn test_src_nat_stateless_44() {
+        let mut nat = Nat::new::<TestBuffer>(NatDirection::SrcNat, NatMode::Stateless);
+        let vpc = build_vpc();
+        nat.add_vpc(Vni::new_checked(100).expect("Failed to create VNI"), vpc);
+
+        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
+        let packets_out: Vec<_> = nat.process(packets).collect();
+
+        assert_eq!(packets_out.len(), 1);
+
+        let hdr0_out = &packets_out[0]
+            .try_ipv4()
+            .expect("Failed to get IPv4 header");
+        println!("L3 header: {:?}", hdr0_out);
+        assert_eq!(hdr0_out.source().inner(), addr_v4("4.4.4.4"));
+    }
+
+    #[test]
+    fn test_dst_nat_stateless_44() {
+        let mut nat = Nat::new::<TestBuffer>(NatDirection::DstNat, NatMode::Stateless);
+        let vpc = build_vpc();
+        nat.add_vpc(Vni::new_checked(100).expect("Failed to create VNI"), vpc);
+
+        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
+        let packets_out: Vec<_> = nat.process(packets).collect();
+
+        assert_eq!(packets_out.len(), 1);
+
+        let hdr0_out = &packets_out[0]
+            .try_ipv4()
+            .expect("Failed to get IPv4 header");
+        println!("L3 header: {:?}", hdr0_out);
+        assert_eq!(hdr0_out.destination(), addr_v4("8.8.8.4"));
+    }
 }

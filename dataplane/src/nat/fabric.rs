@@ -178,3 +178,137 @@ impl<'de> Deserialize<'de> for PifTable {
         Ok(pif_table)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iptrie::{Ipv4Prefix, Ipv6Prefix};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::str::FromStr;
+
+    fn prefix_v4(s: &str) -> Prefix {
+        Ipv4Prefix::from_str(s).expect("Invalid IPv4 prefix").into()
+    }
+
+    fn prefix_v6(s: &str) -> Prefix {
+        Ipv6Prefix::from_str(s).expect("Invalid IPv6 prefix").into()
+    }
+
+    fn addr_v4(s: &str) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::from_str(s).expect("Invalid IPv4 address"))
+    }
+
+    fn addr_v6(s: &str) -> IpAddr {
+        IpAddr::V6(Ipv6Addr::from_str(s).expect("Invalid IPv6 address"))
+    }
+
+    #[test]
+    fn test_fabric() {
+        // Create a VPC
+
+        let mut vpc = Vpc::new(
+            "test_vpc".into(),
+            Vni::new_checked(100).expect("Failed to create VNI"),
+        );
+
+        assert_eq!(vpc.name, "test_vpc");
+
+        // Create a PIF
+
+        let mut pif1 = Pif::new("pif1".into(), "test_vpc".into());
+
+        assert_eq!(pif1.name, "pif1");
+        assert_eq!(pif1.vpc, "test_vpc");
+
+        pif1.add_endpoint(prefix_v4("10.0.0.0/24"));
+        pif1.add_endpoint(prefix_v6("1111::/32"));
+
+        pif1.add_ip(prefix_v4("192.168.0.0/24"));
+        pif1.add_ip(prefix_v6("aaaa::/32"));
+
+        assert_eq!(pif1.endpoints.len(), 2);
+        assert_eq!(pif1.ips.len(), 2);
+
+        assert_eq!(
+            pif1.find_prefix(&addr_v4("10.0.0.1")),
+            Some(&prefix_v4("10.0.0.0/24"))
+        );
+        assert_eq!(
+            pif1.find_prefix(&addr_v6("1111::3")),
+            Some(&prefix_v6("1111::/32"))
+        );
+        assert_eq!(pif1.find_prefix(&addr_v4("22.22.22.22")), None);
+        assert_eq!(pif1.find_prefix(&addr_v6("2222::2222")), None);
+
+        // Create another PIF
+
+        let mut pif2 = Pif::new("pif2".into(), "test_vpc".into());
+        pif2.add_endpoint(prefix_v4("10.0.2.0/24"));
+        pif2.add_endpoint(prefix_v4("10.0.3.0/24"));
+        pif2.add_ip(prefix_v4("192.168.2.0/24"));
+        pif2.add_ip(prefix_v4("192.168.3.0/24"));
+
+        // Insert the PIFs into the VPC
+
+        vpc.add_pif(pif1.clone()).expect("Failed to add PIF");
+        assert_eq!(vpc.pif_table.pifs.len(), 1);
+        vpc.add_pif(pif2.clone()).expect("Failed to add PIF");
+        assert_eq!(vpc.pif_table.pifs.len(), 2);
+
+        assert_eq!(vpc.get_pif(&"pif1".into()), Some(&pif1));
+        assert_eq!(vpc.get_pif(&"pif2".into()), Some(&pif2));
+
+        // Look up for IPs in the VPC
+
+        assert_eq!(
+            vpc.find_pif_by_endpoint(&addr_v4("10.0.0.1")),
+            Some(pif1.name.clone())
+        );
+        assert_eq!(
+            vpc.find_pif_by_endpoint(&addr_v4("10.0.0.27")),
+            Some(pif1.name.clone())
+        );
+        assert_eq!(
+            vpc.find_pif_by_endpoint(&addr_v6("1111::27")),
+            Some(pif1.name.clone())
+        );
+
+        assert_eq!(
+            vpc.find_pif_by_endpoint(&addr_v4("10.0.2.2")),
+            Some(pif2.name.clone())
+        );
+        assert_eq!(
+            vpc.find_pif_by_endpoint(&addr_v4("10.0.3.255")),
+            Some(pif2.name.clone())
+        );
+
+        assert_eq!(vpc.find_pif_by_endpoint(&addr_v4("22.22.22.22")), None);
+        assert_eq!(vpc.find_pif_by_endpoint(&addr_v6("2222::2222")), None);
+
+        // Serialize, deserialize
+
+        let serialized = serde_yml::to_string(&vpc).expect("Failed to serialize");
+        println!("{}", serialized);
+
+        let deserialized: Vpc = serde_yml::from_str(&serialized).expect("Failed to deserialize");
+        println!("{:?}", deserialized);
+
+        assert_eq!(deserialized.pif_table.pifs.len(), 2);
+        assert_eq!(deserialized.get_pif(&"pif1".into()), Some(&pif1));
+        assert_eq!(deserialized.get_pif(&"pif2".into()), Some(&pif2));
+    }
+
+    #[test]
+    fn test_bad_pif() {
+        let mut vpc = Vpc::new(
+            "test_vpc".into(),
+            Vni::new_checked(100).expect("Failed to create VNI"),
+        );
+        let pif1 = Pif::new("test_pif".into(), "test_vpc".into());
+        let pif2 = Pif::new("test_pif".into(), "test_vpc".into());
+
+        vpc.add_pif(pif1).expect("Failed to add PIF");
+        vpc.add_pif(pif2)
+            .expect_err("Should fail to add PIF with duplicate name");
+    }
+}
