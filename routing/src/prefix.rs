@@ -241,7 +241,7 @@ mod tests {
         assert!(prefix.covers_addr(&"1.2.3.10".parse::<IpAddr>().expect("Bad address")));
         assert!(!prefix.covers_addr(&"1.2.9.10".parse::<IpAddr>().expect("Bad address")));
 
-        assert_eq!(prefix.size(), 2usize.pow(32 - 24));
+        assert_eq!(prefix.size(), 2u128.pow(32 - 24));
 
         // default - root
         let address: Ipv4Addr = "0.0.0.0".parse().unwrap();
@@ -265,7 +265,7 @@ mod tests {
         assert!(prefix.covers_addr(&"2001:a:b:c::10".parse::<IpAddr>().expect("Bad address")));
         assert!(!prefix.covers_addr(&"2001:a:b:9::10".parse::<IpAddr>().expect("Bad address")));
 
-        assert_eq!(prefix.size(), 2usize.pow(128 - 64));
+        assert_eq!(prefix.size(), 2u128.pow(128 - 64));
 
         // default - root
         let address: Ipv6Addr = "::".parse().unwrap();
