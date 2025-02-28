@@ -3,6 +3,8 @@
 
 //! A library to implement routing functions.
 
+#![deny(clippy::all)]
+
 mod adjacency;
 mod cpi;
 mod cpi_process;
