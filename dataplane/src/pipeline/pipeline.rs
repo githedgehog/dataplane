@@ -2,10 +2,16 @@
 // Copyright Open Network Fabric Authors
 
 use dyn_iter::{DynIter, IntoDynIterator};
+use id::Id;
 use net::buffer::PacketBufferMut;
+use ordermap::OrderMap;
+use std::any::Any;
 
 use crate::packet::Packet;
+use crate::pipeline::dyn_nf::DynNetworkFunctionImpl;
 use crate::pipeline::{DynNetworkFunction, NetworkFunction, nf_dyn};
+
+pub type StageId<Buf> = Id<Box<dyn DynNetworkFunction<Buf>>>;
 
 /// A dynamic pipeline that can be updated at runtime.
 ///
@@ -16,13 +22,21 @@ use crate::pipeline::{DynNetworkFunction, NetworkFunction, nf_dyn};
 /// [`DynNetworkFunction`]
 #[derive(Default)]
 pub struct DynPipeline<Buf: PacketBufferMut> {
-    nfs: Vec<Box<dyn DynNetworkFunction<Buf>>>,
+    nfs: OrderMap<StageId<Buf>, Box<dyn DynNetworkFunction<Buf>>>,
 }
 
-impl<Buf: PacketBufferMut + 'static> DynPipeline<Buf> {
+#[derive(Debug, thiserror::Error)]
+pub enum PipelineError {
+    #[error("Duplicate stage id: {0}")]
+    DuplicateStageId(String),
+}
+
+impl<Buf: PacketBufferMut> DynPipeline<Buf> {
     #[allow(unused)]
     pub fn new() -> Self {
-        Self { nfs: vec![] }
+        Self {
+            nfs: OrderMap::new(),
+        }
     }
 
     /// Add a static network function to the pipeline.
@@ -32,6 +46,19 @@ impl<Buf: PacketBufferMut + 'static> DynPipeline<Buf> {
     #[allow(unused)]
     pub fn add_stage<NF: NetworkFunction<Buf> + 'static>(self, nf: NF) -> Self {
         self.add_stage_dyn(nf_dyn(nf))
+    }
+
+    /// Add a static network function to the pipeline using a specific stage id.
+    ///
+    /// This method takes a [`NetworkFunction`] and adds it to the pipeline.
+    ///
+    #[allow(unused)]
+    pub fn add_stage_with_id<NF: NetworkFunction<Buf> + 'static>(
+        &mut self,
+        id: StageId<Buf>,
+        nf: NF,
+    ) -> Result<&mut Self, PipelineError> {
+        self.add_stage_dyn_with_id(id, nf_dyn(nf))
     }
 
     /// Add a dynamic network function to the pipeline.
@@ -44,15 +71,100 @@ impl<Buf: PacketBufferMut + 'static> DynPipeline<Buf> {
     /// [`nf_dyn`]
     #[allow(unused)]
     pub fn add_stage_dyn(mut self, nf: Box<dyn DynNetworkFunction<Buf>>) -> Self {
-        self.nfs.push(nf);
+        self.internal_add_stage_dyn_with_id(StageId::<Buf>::new(), nf);
         self
+    }
+
+    /// Add a dynamic network function to the pipeline using a specific stage id.
+    ///
+    /// This method takes a [`DynNetworkFunction`] and adds it to the pipeline.
+    ///
+    /// # See Also
+    ///
+    /// [`DynNetworkFunction`]
+    /// [`nf_dyn`]
+    /// Add a dynamic network function to the pipeline using a specific stage id.
+    ///
+    /// This method takes a [`DynNetworkFunction`] and adds it to the pipeline.
+    ///
+    /// # See Also
+    ///
+    /// [`DynNetworkFunction`]
+    /// [`nf_dyn`]
+    /// Add a dynamic network function to the pipeline using a specific stage id.
+    ///
+    /// This method takes a [`DynNetworkFunction`] and adds it to the pipeline.
+    ///
+    /// # See Also
+    ///
+    /// [`DynNetworkFunction`]
+    /// [`nf_dyn`]
+    pub fn add_stage_dyn_with_id(
+        &mut self,
+        id: StageId<Buf>,
+        nf: Box<dyn DynNetworkFunction<Buf>>,
+    ) -> Result<&mut Self, PipelineError> {
+        self.internal_add_stage_dyn_with_id(id, nf)
+    }
+
+    fn internal_add_stage_dyn_with_id(
+        &mut self,
+        id: StageId<Buf>,
+        nf: Box<dyn DynNetworkFunction<Buf>>,
+    ) -> Result<&mut Self, PipelineError> {
+        // FIXME(mvachhar): There seems to be no method to insert and error if the key already exists.
+        // As a result, this does a double hash and lookup.  Probably fine here, but may need to submit
+        // a patch to ordermap to add this functionality in other places.
+        //
+        // When [this](https://github.com/rust-lang/rust/issues/82766) becomes stable, we should move
+        // to using `try_insert` instead of `get` then `insert`.
+        if self.nfs.get(&id).is_some() {
+            Err(PipelineError::DuplicateStageId(id.to_string()))
+        } else {
+            self.nfs.insert(id, nf);
+            Ok(self)
+        }
+    }
+
+    /// Get a static network function from the pipeline by stage id.
+    /// Get a dynamic network function from the pipeline by stage id.
+    ///
+    /// This method takes a stage id and returns the [`DynNetworkFunction`] associated with that stage.
+    ///
+    /// # See Also
+    ///
+    ///
+    /// This method takes a stage id and returns the [`NetworkFunction`] associated with that stage.
+    ///
+    /// # See Also
+    ///
+    #[allow(unused)]
+    pub fn get_stage_by_id<T: NetworkFunction<Buf> + 'static>(
+        &self,
+        id: &StageId<Buf>,
+    ) -> Option<&T> {
+        self.get_stage_dyn_by_id::<DynNetworkFunctionImpl<Buf, T>>(id)
+            .map(DynNetworkFunctionImpl::get_nf)
+    }
+
+    /// Get a dynamic network function from the pipeline by stage id.
+    ///
+    /// This method takes a stage id and returns the [`DynNetworkFunction`] associated with that stage.
+    ///
+    /// # See Also
+    ///
+    #[allow(unused)]
+    pub fn get_stage_dyn_by_id<T: DynNetworkFunction<Buf>>(&self, id: &StageId<Buf>) -> Option<&T> {
+        self.nfs
+            .get(id)
+            .and_then(|nf| (&**nf as &dyn Any).downcast_ref::<T>())
     }
 }
 
 impl<Buf: PacketBufferMut> DynNetworkFunction<Buf> for DynPipeline<Buf> {
     fn process_dyn<'a>(&'a mut self, input: DynIter<'a, Packet<Buf>>) -> DynIter<'a, Packet<Buf>> {
         self.nfs
-            .iter_mut()
+            .values_mut()
             .fold(input, move |input, nf| nf.process_dyn(input))
             .into_dyn_iter()
     }
@@ -71,11 +183,16 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DynPipeline<Buf> {
 #[cfg(test)]
 mod test {
     use dyn_iter::IntoDynIterator;
+    use net::buffer::TestBuffer;
     use net::eth::mac::{DestinationMac, Mac};
     use net::headers::{Net, TryEth, TryIp, TryIpv4};
 
+    use crate::pipeline::dyn_nf::DynNetworkFunctionImpl;
+    use crate::pipeline::sample_nfs::DecrementTtl;
     use crate::pipeline::test_utils::{DynStageGenerator, build_test_ipv4_packet};
-    use crate::pipeline::{DynNetworkFunction, DynPipeline, NetworkFunction};
+    use crate::pipeline::{DynNetworkFunction, DynPipeline, NetworkFunction, StageId};
+
+    type TestStageId = StageId<TestBuffer>;
 
     #[test]
     fn long_dyn_pipeline() {
@@ -157,5 +274,50 @@ mod test {
         } else {
             panic!("Expected IPv4 packet");
         }
+    }
+
+    #[test]
+    fn get_stage_by_id() {
+        let mut pipeline = DynPipeline::new();
+        let mut stages = DynStageGenerator::new();
+        let num_stages = 10u16;
+        let test_stage_id = TestStageId::new();
+
+        for i in 0..num_stages {
+            if i == 5 {
+                pipeline
+                    .add_stage_with_id(test_stage_id, DecrementTtl)
+                    .unwrap();
+            } else {
+                pipeline = pipeline.add_stage_dyn(stages.next().unwrap());
+            }
+        }
+
+        let stage = pipeline.get_stage_by_id::<DecrementTtl>(&test_stage_id);
+        assert!(stage.is_some());
+    }
+
+    #[test]
+    fn get_stage_dyn_by_id() {
+        let mut pipeline = DynPipeline::new();
+        let mut stages = DynStageGenerator::new();
+        let num_stages = 10u16;
+        let test_stage_id = TestStageId::new();
+
+        for i in 0..num_stages {
+            if i == 5 {
+                pipeline
+                    .add_stage_with_id(test_stage_id, DecrementTtl)
+                    .unwrap();
+            } else {
+                pipeline = pipeline.add_stage_dyn(stages.next().unwrap());
+            }
+        }
+
+        let stage = pipeline
+            .get_stage_dyn_by_id::<DynNetworkFunctionImpl<TestBuffer, DecrementTtl>>(
+                &test_stage_id,
+            );
+        assert!(stage.is_some());
     }
 }
