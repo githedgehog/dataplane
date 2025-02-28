@@ -31,7 +31,7 @@ pub trait DynNetworkFunction<Buf: PacketBufferMut>: Any {
     fn process_dyn<'a>(&'a mut self, input: DynIter<'a, Packet<Buf>>) -> DynIter<'a, Packet<Buf>>;
 }
 
-struct DynNetworkFunctionImpl<Buf: PacketBufferMut, NF: NetworkFunction<Buf> + 'static> {
+pub(crate) struct DynNetworkFunctionImpl<Buf: PacketBufferMut, NF: NetworkFunction<Buf> + 'static> {
     nf: NF,
     _marker: PhantomData<Buf>,
 }
@@ -42,6 +42,10 @@ impl<Buf: PacketBufferMut, NF: NetworkFunction<Buf>> DynNetworkFunctionImpl<Buf,
             nf,
             _marker: PhantomData,
         }
+    }
+
+    pub fn get_nf(&self) -> &NF {
+        &self.nf
     }
 }
 
