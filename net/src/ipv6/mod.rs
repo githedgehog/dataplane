@@ -7,7 +7,7 @@ use crate::headers::Header;
 use crate::icmp6::Icmp6;
 use crate::ip::NextHeader;
 use crate::ip_auth::IpAuth;
-use crate::ipv6::addr::UnicastIpv6Addr;
+pub use crate::ipv6::addr::UnicastIpv6Addr;
 use crate::ipv6::flow_label::FlowLabel;
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload,
