@@ -2,6 +2,8 @@
 // Copyright Open Network Fabric Authors
 
 mod fabric;
+#[allow(dead_code)]
+mod iplist;
 mod prefixtrie;
 
 use crate::nat::fabric::{Pif, Vpc};
