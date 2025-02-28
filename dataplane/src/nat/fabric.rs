@@ -78,7 +78,6 @@ impl Pif {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct PeeringPolicy {
     name: String,
     vnis: [Vni; 2],
