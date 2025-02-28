@@ -46,9 +46,6 @@ impl Pif {
 pub struct Vpc {
     name: String,
     vni: Vni,
-    #[serde(skip)]
-    // SMATOV: TMP: Skip serialization of PIF table cause its not present in the YAML
-    #[allow(dead_code)]
     pif_table: PifTable,
 }
 
