@@ -186,12 +186,24 @@ impl Interface {
         }
         false
     }
+
+    //////////////////////////////////////////////////////////////////
+    /// Get mac address of interface, if any
+    //////////////////////////////////////////////////////////////////
+    pub fn get_mac(&self) -> Option<&Mac> {
+        match &self.iftype {
+            IfType::Ethernet(inner) => Some(&inner.mac),
+            IfType::Dot1q(inner) => Some(&inner.mac),
+            _ => None,
+        }
+    }
 }
 
 /// A table of network interface objects, keyed by some ifindex (u32)
 pub struct IfTable(pub(crate) HashMap<u32, Interface>);
 
 #[allow(dead_code)]
+#[allow(clippy::new_without_default)]
 impl IfTable {
     //////////////////////////////////////////////////////////////////
     /// Create an interface table. All interfaces should live here.
