@@ -14,7 +14,7 @@ use std::net::IpAddr;
 #[derive(Debug)]
 #[allow(dead_code)]
 struct GlobalContext {
-    vpcs: HashMap<String, Vpc>,
+    vpcs: HashMap<u32, Vpc>,
     global_pif_trie: PrefixTrie,
 }
 
