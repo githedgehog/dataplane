@@ -8,11 +8,11 @@ use std::collections::HashMap;
 pub struct InterfaceId(u32);
 #[allow(unused)]
 impl InterfaceId {
+    pub fn new(val: u32) -> Self {
+        Self(val)
+    }
     pub fn get_id(&self) -> u32 {
         self.0
-    }
-    pub fn set_id(&mut self, id: u32) {
-        self.0 = id;
     }
 }
 
@@ -54,7 +54,7 @@ pub enum DropReason {
 #[derive(Debug, Default)]
 pub struct PacketMeta {
     pub iif: InterfaceId,             /* incoming interface - set early */
-    pub oif: InterfaceId,             /* outgoing interface - set late */
+    pub oif: Option<InterfaceId>,     /* outgoing interface - set late */
     pub is_l2bcast: bool,             /* frame is broadcast */
     pub is_iplocal: bool,             /* frame contains an ip packet for local delivery */
     pub vrf: Option<VrfId>,           /* for IP packet, the VRF to use to route it */
