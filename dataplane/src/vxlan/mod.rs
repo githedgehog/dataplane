@@ -26,7 +26,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for VxlanDecap {
                 Some(Ok(vxlan)) => {
                     trace!("decapsulated vxlan packet: {vxlan:?} inner packet: {packet:?}");
                 }
-            };
+            }
             packet
         })
     }

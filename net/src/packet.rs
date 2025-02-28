@@ -79,7 +79,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// #   let mut packet = Packet::new(buf).unwrap();
     /// match packet.vxlan_decap() {
     ///     Some(Ok(vxlan)) => {
-    ///         println!("We got a vni with value {vni}", vni = vxlan.vni());
+    ///         println!("We got a vni with value {vni}", vni = vxlan.vni().as_u32());
     ///         println!("the inner packet headers are {headers:?}", headers = packet.headers());
     ///     }
     ///     Some(Err(bad)) => {
@@ -177,9 +177,9 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     #[allow(clippy::result_large_err)] // no reason to eat the headers
     pub fn encap_vxlan(&mut self, headers: Headers) -> Result<(), VxlanEncapError<Buf>> {
         match (headers.try_ip(), headers.try_udp(), headers.try_vxlan()) {
-            (None, _, _) => Err(VxlanEncapError::<Buf>::NoIp(headers)),
-            (_, None, _) => Err(VxlanEncapError::<Buf>::NoUdp(headers)),
-            (_, _, None) => Err(VxlanEncapError::<Buf>::NoVxlan(headers)),
+            (None, _, _) => Err(VxlanEncapError::NoIp(headers)),
+            (_, None, _) => Err(VxlanEncapError::NoUdp(headers)),
+            (_, _, None) => Err(VxlanEncapError::NoVxlan(headers)),
             (Some(_), Some(_), Some(_)) => {
                 #[allow(unsafe_code)] // sound by exhaustion
                 unsafe { self.encap(headers) }.map_err(VxlanEncapError::PrependFailed)

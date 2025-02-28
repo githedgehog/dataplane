@@ -46,7 +46,7 @@ impl Vxlan {
     /// > Flags (8-bits): where the I flag MUST be set to 1 for a valid VXLAN Network ID (VNI).
     /// > The other 7-bits (designated "R") are reserved fields and MUST be set to zero on
     /// > transmission and ignored on receipt.
-    pub const LEGAL_FLAGS: u8 = 0b0000_1000;
+    const LEGAL_FLAGS: u8 = 0b0000_1000;
 
     /// Create a new VXLAN header.
     #[must_use]
@@ -108,24 +108,16 @@ impl Parse for Vxlan {
                 flags = slice[0]
             );
         }
-        if slice[1..=3] != [0, 0, 0] {
+        if slice[1..=3] != [0, 0, 0] || slice[7] != 0 {
             trace!("Received VXLAN header with reserved bits set.");
             return Err(ParseError::Invalid(VxlanError::ReservedBitsSet));
         }
         // length checked in conversion to `VxlanHeaderSlice`
         // check should be optimized out
         let bytes: [u8; 4] = slice[3..=6].try_into().unwrap_or_else(|_| unreachable!());
-        if bytes == [0, 0, 0, 0] {
-            return Err(ParseError::Invalid(VxlanError::InvalidVni(
-                InvalidVni::ReservedZero,
-            )));
-        }
         let raw_vni = u32::from_be_bytes(bytes);
         let vni = Vni::new_checked(raw_vni)
             .map_err(|e| ParseError::Invalid(VxlanError::InvalidVni(e)))?;
-        if slice[7] != 0 {
-            return Err(ParseError::Invalid(VxlanError::ReservedBitsSet));
-        }
         Ok((Vxlan { vni }, Vxlan::MIN_LENGTH))
     }
 }
@@ -168,6 +160,7 @@ impl ParsePayload for Vxlan {
 mod test {
     use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, Parse, ParseError};
     use crate::vxlan::{InvalidVni, Vni, Vxlan, VxlanError};
+    use std::time::Duration;
     const MIN_LENGTH_USIZE: usize = 8;
 
     #[test]
@@ -276,6 +269,7 @@ mod test {
     #[cfg_attr(kani, kani::proof)]
     fn mutation_of_header_preserves_contract() {
         bolero::check!()
+            .with_test_time(Duration::from_secs(60))
             .with_type()
             .for_each(|(vxlan, new_vni): &(Vxlan, Vni)| {
                 if vxlan.vni() == *new_vni {
