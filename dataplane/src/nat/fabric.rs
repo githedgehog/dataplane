@@ -37,8 +37,24 @@ impl Pif {
         &self.vpc
     }
 
+    pub fn iter_endpoints(&self) -> impl Iterator<Item = &Prefix> {
+        self.endpoints.iter()
+    }
+
     pub fn iter_ips(&self) -> impl Iterator<Item = &Prefix> {
         self.ips.iter()
+    }
+
+    pub fn add_endpoint(&mut self, endpoint: Prefix) {
+        self.endpoints.push(endpoint);
+    }
+
+    pub fn add_ip(&mut self, ip: Prefix) {
+        self.ips.push(ip);
+    }
+
+    pub fn find_prefix(&self, ip: &IpAddr) -> Option<&Prefix> {
+        self.iter_endpoints().find(|&prefix| prefix.covers_addr(ip))
     }
 }
 
@@ -63,12 +79,24 @@ impl Vpc {
         &self.name
     }
 
+    pub fn vni(&self) -> Vni {
+        self.vni
+    }
+
     pub fn add_pif(&mut self, pif: Pif) -> Result<(), TrieError> {
         self.pif_table.add_pif(pif)
     }
 
     pub fn find_pif_by_endpoint(&self, ip: &IpAddr) -> Option<String> {
         self.pif_table.find_pif_by_endpoint(ip)
+    }
+
+    pub fn get_pif(&self, name: &String) -> Option<&Pif> {
+        self.pif_table.pifs.get(name)
+    }
+
+    pub fn iter_pifs(&self) -> impl Iterator<Item = &Pif> {
+        self.pif_table.pifs.values()
     }
 }
 
