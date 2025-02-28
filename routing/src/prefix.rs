@@ -75,6 +75,13 @@ impl Prefix {
             Prefix::IPV6(p) => p.len(),
         }
     }
+    /// Get number of covered IP addresses
+    pub fn size(&self) -> u128 {
+        match *self {
+            Prefix::IPV4(p) => 2u128.pow(32 - p.len() as u32),
+            Prefix::IPV6(p) => 2u128.pow(128 - p.len() as u32),
+        }
+    }
 }
 impl From<(IpAddr, u8)> for Prefix {
     fn from(tuple: (IpAddr, u8)) -> Self {
@@ -215,6 +222,8 @@ mod tests {
         let prefv4 = prefix.get_v4();
         assert_eq!(*prefv4, ipv4_pfx, "Conversion mismatch");
 
+        assert_eq!(prefix.size(), 2u128.pow(32 - 24));
+
         // default - root
         let address: Ipv4Addr = "0.0.0.0".parse().unwrap();
         let iptrie_pfx = Ipv4Prefix::new(address, 0).unwrap();
@@ -233,6 +242,8 @@ mod tests {
 
         let prefv6 = prefix.get_v6();
         assert_eq!(*prefv6, ipv6_pfx, "Conversion mismatch");
+
+        assert_eq!(prefix.size(), 2u128.pow(128 - 64));
 
         // default - root
         let address: Ipv6Addr = "::".parse().unwrap();
