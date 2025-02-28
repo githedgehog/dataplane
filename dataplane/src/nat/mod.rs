@@ -6,7 +6,7 @@ mod fabric;
 mod iplist;
 mod prefixtrie;
 
-use crate::nat::fabric::{Pif, Vpc};
+use crate::nat::fabric::{PeeringPolicy, Pif, Vpc};
 use crate::nat::prefixtrie::PrefixTrie;
 
 use net::vxlan::Vni;
@@ -19,6 +19,7 @@ use std::net::IpAddr;
 struct GlobalContext {
     vpcs: HashMap<u32, Vpc>,
     global_pif_trie: PrefixTrie,
+    peerings: HashMap<String, PeeringPolicy>,
 }
 
 impl GlobalContext {
@@ -27,6 +28,7 @@ impl GlobalContext {
         Self {
             vpcs: HashMap::new(),
             global_pif_trie: PrefixTrie::new(),
+            peerings: HashMap::new(),
         }
     }
 
