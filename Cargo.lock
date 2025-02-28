@@ -383,6 +383,7 @@ dependencies = [
  "dyn-iter",
  "iptrie",
  "net",
+ "ordermap",
  "routing",
  "serde",
  "serde_yml",
@@ -786,6 +787,15 @@ name = "once_cell"
 version = "1.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "945462a4b81e43c4e3ba96bd7b49d834c6f61198356aa858733bc4acf3cbe62e"
+
+[[package]]
+name = "ordermap"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c55fdf45a2b1e929e3656d404395767e05c98b6ebd8157eb31e370077d545160"
+dependencies = [
+ "indexmap",
+]
 
 [[package]]
 name = "overload"
