@@ -162,7 +162,7 @@ impl Nhop {
     /// Auxiliary recursive method used by Nhop::quick_resolve().
     fn quick_resolve_rec(&self, result: &mut BTreeSet<NhopKey>) {
         if let Ok(resolvers_of_this) = self.resolvers.write() {
-            if resolvers_of_this.len() == 0 {
+            if resolvers_of_this.is_empty() {
                 /* next-hop has no resolvers */
                 if self.key.ifindex.is_some() || self.key.fwaction == FwAction::Drop {
                     result.insert(self.key);
