@@ -53,14 +53,14 @@ pub enum DropReason {
 #[allow(unused)]
 #[derive(Debug, Default)]
 pub struct PacketMeta {
-    pub iif: InterfaceId,             /* incoming interface - set early */
-    pub oif: Option<InterfaceId>,     /* outgoing interface - set late */
-    pub is_l2bcast: bool,             /* frame is broadcast */
-    pub is_iplocal: bool,             /* frame contains an ip packet for local delivery */
-    pub vrf: Option<VrfId>,           /* for IP packet, the VRF to use to route it */
-    pub bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
-    pub drop: Option<DropReason>,     /* if Some, the reason why a packet was purposedly dropped.
-                                      This includes the delivery of the packet by the NF */
+    pub(crate) iif: InterfaceId,         /* incoming interface - set early */
+    pub(crate) oif: Option<InterfaceId>, /* outgoing interface - set late */
+    pub(crate) is_l2bcast: bool,         /* frame is broadcast */
+    pub(crate) is_iplocal: bool,         /* frame contains an ip packet for local delivery */
+    pub(crate) vrf: Option<VrfId>,       /* for IP packet, the VRF to use to route it */
+    pub(crate) bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
+    pub(crate) drop: Option<DropReason>, /* if Some, the reason why a packet was purposedly dropped.
+                                         This includes the delivery of the packet by the NF */
 
     #[cfg(test)]
     pub descr: &'static str, /* packet annotation (we may enable for testing only) */
