@@ -59,10 +59,6 @@ impl Vpc {
         }
     }
 
-    pub fn name(&self) -> &String {
-        &self.name
-    }
-
     pub fn add_pif(&mut self, pif: Pif) -> Result<(), TrieError> {
         self.pif_table.add_pif(pif)
     }
