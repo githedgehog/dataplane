@@ -4,7 +4,7 @@
 //! Type to represent IP-version neutral network prefixes.
 
 use ipnet::{Ipv4Net, Ipv6Net};
-use iptrie::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
+use iptrie::{IpPrefix, IpPrefixCovering, Ipv4Prefix, Ipv6Prefix};
 use serde::ser::SerializeStructVariant;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
@@ -80,6 +80,22 @@ impl Prefix {
         match *self {
             Prefix::IPV4(p) => 2u128.pow(32 - p.len() as u32),
             Prefix::IPV6(p) => 2u128.pow(128 - p.len() as u32),
+        }
+    }
+    /// Check whether prefix covers a given address
+    pub fn covers_addr(&self, addr: &IpAddr) -> bool {
+        match (self, addr) {
+            (Prefix::IPV4(p), IpAddr::V4(a)) => p.covers(a),
+            (Prefix::IPV6(p), IpAddr::V6(a)) => p.covers(a),
+            _ => false,
+        }
+    }
+    /// Check whether prefix covers another prefix
+    pub fn covers(&self, other: &Prefix) -> bool {
+        match (self, other) {
+            (Prefix::IPV4(p1), Prefix::IPV4(p2)) => p1.covers(p2),
+            (Prefix::IPV6(p1), Prefix::IPV6(p2)) => p1.covers(p2),
+            _ => false,
         }
     }
 }
@@ -222,6 +238,9 @@ mod tests {
         let prefv4 = prefix.get_v4();
         assert_eq!(*prefv4, ipv4_pfx, "Conversion mismatch");
 
+        assert!(prefix.covers_addr(&"1.2.3.10".parse::<IpAddr>().expect("Bad address")));
+        assert!(!prefix.covers_addr(&"1.2.9.10".parse::<IpAddr>().expect("Bad address")));
+
         assert_eq!(prefix.size(), 2u128.pow(32 - 24));
 
         // default - root
@@ -242,6 +261,9 @@ mod tests {
 
         let prefv6 = prefix.get_v6();
         assert_eq!(*prefv6, ipv6_pfx, "Conversion mismatch");
+
+        assert!(prefix.covers_addr(&"2001:a:b:c::10".parse::<IpAddr>().expect("Bad address")));
+        assert!(!prefix.covers_addr(&"2001:a:b:9::10".parse::<IpAddr>().expect("Bad address")));
 
         assert_eq!(prefix.size(), 2u128.pow(128 - 64));
 
