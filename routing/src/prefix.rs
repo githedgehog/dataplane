@@ -53,6 +53,14 @@ impl Prefix {
             Prefix::IPV6(p) => p,
         }
     }
+    /// Check whether the prefix is IPv4
+    pub fn is_ipv4(&self) -> bool {
+        matches!(self, Prefix::IPV4(_))
+    }
+    /// Check whether the prefix is IPv6
+    pub fn is_ipv6(&self) -> bool {
+        matches!(self, Prefix::IPV6(_))
+    }
     /// Build an IpAddr from a prefix
     pub fn as_address(&self) -> IpAddr {
         match *self {
