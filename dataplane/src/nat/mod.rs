@@ -7,6 +7,7 @@ mod prefixtrie;
 use crate::nat::fabric::Vpc;
 use crate::nat::prefixtrie::PrefixTrie;
 
+use net::vxlan::Vni;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::net::IpAddr;
@@ -14,7 +15,7 @@ use std::net::IpAddr;
 #[derive(Debug)]
 #[allow(dead_code)]
 struct GlobalContext {
-    vpcs: HashMap<String, Vpc>,
+    vpcs: HashMap<u32, Vpc>,
     global_pif_trie: PrefixTrie,
 }
 
@@ -33,8 +34,8 @@ impl GlobalContext {
     }
 
     #[tracing::instrument(level = "trace")]
-    fn find_pif_in_vpc(&self, vpc_name: &str, ip: &IpAddr) -> Option<String> {
-        let vpc = self.vpcs.get(vpc_name)?;
+    fn find_pif_in_vpc(&self, vni: Vni, ip: &IpAddr) -> Option<String> {
+        let vpc = self.vpcs.get(&vni.as_u32())?;
         vpc.find_pif_by_endpoint(ip)
     }
 }
