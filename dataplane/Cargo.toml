@@ -12,6 +12,7 @@ dpdk = { workspace = true }
 iptrie = { workspace = true }
 dyn-iter = { workspace = true }
 net = { workspace = true, features = ["serde"] }
+ordermap = { workspace = true, features = ["std"] }
 routing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_yml = { workspace = true }
