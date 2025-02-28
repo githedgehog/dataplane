@@ -16,6 +16,7 @@ pub struct Pif {
     endpoints: Vec<Prefix>,
     ips: Vec<Prefix>,
     vpc: String,
+    peerings: Vec<String>,
 }
 
 impl Pif {
@@ -26,6 +27,7 @@ impl Pif {
             endpoints: Vec::new(),
             ips: Vec::new(),
             vpc,
+            peerings: Vec::new(),
         }
     }
 
@@ -50,6 +52,11 @@ impl Pif {
     }
 
     #[tracing::instrument(level = "trace")]
+    pub fn iter_peerings(&self) -> impl Iterator<Item = &String> {
+        self.peerings.iter()
+    }
+
+    #[tracing::instrument(level = "trace")]
     pub fn add_endpoint(&mut self, endpoint: Prefix) {
         self.endpoints.push(endpoint);
     }
@@ -60,8 +67,58 @@ impl Pif {
     }
 
     #[tracing::instrument(level = "trace")]
+    pub fn add_peering(&mut self, peering: String) {
+        self.peerings.push(peering);
+    }
+
+    #[tracing::instrument(level = "trace")]
     pub fn find_prefix(&self, ip: &IpAddr) -> Option<&Prefix> {
         self.iter_endpoints().find(|&prefix| prefix.covers_addr(ip))
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct PeeringPolicy {
+    name: String,
+    vnis: [Vni; 2],
+    pifs: [String; 2],
+}
+
+impl PeeringPolicy {
+    #[tracing::instrument(level = "trace")]
+    pub fn new(name: String, vnis: [Vni; 2], pifs: [String; 2]) -> Self {
+        Self { name, vnis, pifs }
+    }
+
+    #[tracing::instrument(level = "trace")]
+    pub fn name(&self) -> &String {
+        &self.name
+    }
+
+    #[tracing::instrument(level = "trace")]
+    pub fn vnis(&self) -> &[Vni; 2] {
+        &self.vnis
+    }
+
+    #[tracing::instrument(level = "trace")]
+    pub fn pifs(&self) -> &[String; 2] {
+        &self.pifs
+    }
+
+    #[tracing::instrument(level = "trace")]
+    pub fn get_index(&self, pif: &Pif) -> usize {
+        usize::from(self.pifs[0] != pif.name)
+    }
+
+    #[tracing::instrument(level = "trace")]
+    pub fn get_peer_index(&self, pif: &Pif) -> usize {
+        return self.get_index(pif) ^ 1;
+    }
+
+    #[tracing::instrument(level = "trace")]
+    pub fn get_peer(&self, pif: &Pif) -> &String {
+        &self.pifs[self.get_peer_index(pif)]
     }
 }
 
