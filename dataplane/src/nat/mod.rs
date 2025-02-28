@@ -11,6 +11,7 @@ use crate::nat::fabric::{PeeringPolicy, Pif, Vpc};
 use crate::nat::iplist::{IpList, IpListType};
 use crate::nat::prefixtrie::PrefixTrie;
 use crate::packet::Packet;
+use crate::pipeline::NetworkFunction;
 
 use net::buffer::PacketBufferMut;
 use net::headers::Net;
@@ -281,5 +282,17 @@ impl Nat {
         }
 
         self.translate(net, &current_range, &target_range);
+    }
+}
+
+impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Nat {
+    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
+        &'a mut self,
+        input: Input,
+    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
+        input.map(|mut packet| {
+            self.process_packet(&mut packet);
+            packet
+        })
     }
 }
