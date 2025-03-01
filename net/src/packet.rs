@@ -189,10 +189,16 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
 
     /// Consume the packet and return it as a `Buf`
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `Buf` does not have enough headroom to serialize the packet.
-    pub fn reserialize(self) -> Buf {
+    /// Returns [`ReserializeError::PrependError`] if the packet does not have enough remaining
+    /// headroom to prepend any necessary headers.
+    ///
+    /// Returns [`ReserializeError::TooShort`] if the packet is not long enough to remove any
+    /// requested headers.
+    ///
+    /// Both of these errors represent serious configuration or logic bugs.
+    pub fn reserialize(self) -> Result<Buf, (Buf, ReserializeError<Buf>)> {
         // TODO: prove that these unreachable statements are optimized out
         // The `unreachable` statements in the first block should be easily optimized out, but best
         // to confirm.
@@ -204,19 +210,15 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 let prepend = needed.get() - self.consumed.get();
                 match mbuf.prepend(prepend) {
                     Ok(_) => {}
-                    Err(e) => unreachable!("configuration error: {:?}", e),
+                    Err(e) => return Err((mbuf, ReserializeError::PrependError(e))),
                 }
                 mbuf
             }
             Ordering::Greater => {
                 let trim = self.consumed.get() - needed.get();
-                assert!(
-                    !trim > self.headers.size().get(),
-                    "attempting to trim a nonsensical amount of data: {trim}"
-                );
                 match mbuf.trim_from_start(trim) {
                     Ok(_) => {}
-                    Err(e) => unreachable!("configuration error: {:?}", e),
+                    Err(e) => return Err((mbuf, ReserializeError::TooShort(e))),
                 }
                 mbuf
             }
@@ -225,7 +227,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         // This may be _very_ hard to do since the compiler may not have perfect
         // visibility here.
         match self.headers.deparse(mbuf.as_mut()) {
-            Ok(_) => mbuf,
+            Ok(_) => Ok(mbuf),
             Err(DeParseError::Length(fatal)) => unreachable!("{fatal:?}", fatal = fatal),
             Err(DeParseError::Invalid(())) => unreachable!("invalid write operation"),
             Err(DeParseError::BufferTooLong(len)) => {
@@ -233,6 +235,17 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             }
         }
     }
+}
+
+/// Errors which may occur when re-serializing a packet
+#[derive(Debug, thiserror::Error)]
+pub enum ReserializeError<Buf: PacketBufferMut> {
+    /// The packet was too short to remove the requested amount of data
+    #[error(transparent)]
+    TooShort(<Buf as TrimFromStart>::Error),
+    /// The packet does not have enough headroom to append the requested amount of data.
+    #[error(transparent)]
+    PrependError(<Buf as Prepend>::Error),
 }
 
 impl<Buf: PacketBufferMut> TryHeaders for Packet<Buf> {

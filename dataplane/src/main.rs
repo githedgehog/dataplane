@@ -18,8 +18,8 @@ use dpdk::mem::{Mbuf, Pool, PoolConfig, PoolParams, RteAllocator};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, eal, socket};
-use net::packet::Packet;
-use tracing::{info, trace, warn};
+use net::packet::{Packet, ReserializeError};
+use tracing::{error, info, trace, warn};
 
 #[global_allocator]
 static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();
@@ -119,7 +119,18 @@ fn start_rte_workers(devices: &[Dev]) {
                 });
 
                 let pkts_out = pipeline.process(pkts);
-                tx_queue.transmit(pkts_out.map(Packet::reserialize));
+                let buffers = pkts_out.filter_map(|pkt| match pkt.reserialize() {
+                    Ok(mbuf) => Some(mbuf),
+                    Err((_, ReserializeError::PrependError(e))) => {
+                        error!("not enough headroom in packet: {e:?}");
+                        None
+                    }
+                    Err((_, ReserializeError::TooShort(e))) => {
+                        error!("packet too short: {e:?}");
+                        None
+                    }
+                });
+                tx_queue.transmit(buffers);
             }
         });
     });
