@@ -52,15 +52,24 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         })
     }
 
-    /// Get the length of the packet's memory buffer.
+    /// Get the length of the packet's payload
     ///
     /// # Note
     ///
     /// Manipulating the parsed headers _does not_ change the length returned by this method.
     #[allow(clippy::cast_possible_truncation)] // checked in ctor
     #[must_use]
-    pub fn mbuf_len(&self) -> u16 {
+    pub fn payload_len(&self) -> u16 {
         self.payload.as_ref().len() as u16
+    }
+
+    /// Get the length of the packet's current headers.
+    ///
+    /// # Note
+    ///
+    /// Manipulating the parsed headers _does_ change the length returned by this method.
+    pub fn header_len(&self) -> NonZero<u16> {
+        self.headers.size()
     }
 
     /// If the [`Packet`] is [`Vxlan`], then this method
