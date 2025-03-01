@@ -9,8 +9,8 @@ mod pipeline;
 mod vxlan;
 
 use crate::args::{CmdArgs, Parser};
-use crate::pipeline::{DynPipeline, NetworkFunction};
-use crate::vxlan::{VxlanDecap, VxlanEncap};
+use crate::pipeline::NetworkFunction;
+use crate::pipeline::StaticChain;
 use dpdk::dev::{Dev, TxOffloadConfig};
 use dpdk::eal::Eal;
 use dpdk::lcore::{LCoreId, WorkerThread};
@@ -29,6 +29,7 @@ use net::packet::Packet;
 use net::udp::port::UdpPort;
 use net::udp::{Udp, UdpEncap};
 use net::vxlan::{Vni, Vxlan};
+use net::vxlan::{VxlanDecap, VxlanEncap};
 use std::net::Ipv4Addr;
 use tracing::{debug, error, info, trace, warn};
 // #[global_allocator]
@@ -47,8 +48,7 @@ fn init_eal(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
 }
 
 // FIXME(mvachhar) construct pipline elsewhere, ideally from config file
-fn setup_pipeline() -> DynPipeline<Mbuf> {
-    let pipeline = DynPipeline::new();
+fn setup_pipeline() -> impl NetworkFunction<Mbuf> {
     let vxlan_decap = VxlanDecap;
     let mut encap = Headers::new(Eth::new(
         SourceMac::new(Mac([0b10, 0, 0, 0, 0, 1])).unwrap(),
@@ -84,10 +84,7 @@ fn setup_pipeline() -> DynPipeline<Mbuf> {
     encap2.transport = Some(Transport::Udp(udp));
     encap2.udp_encap = Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(5432).unwrap())));
     let vxlan_encap2 = VxlanEncap::new(encap2).unwrap();
-    pipeline
-        .add_stage(vxlan_decap)
-        .add_stage(vxlan_encap)
-        .add_stage(vxlan_encap2)
+    vxlan_decap.chain(vxlan_encap).chain(vxlan_encap2)
 }
 
 fn init_devices(eal: &Eal) -> Vec<Dev> {

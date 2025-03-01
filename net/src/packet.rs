@@ -10,7 +10,7 @@ use crate::headers::{
 };
 use crate::parse::{DeParse, Parse, ParseError};
 use crate::udp::Udp;
-use crate::vxlan::Vxlan;
+use crate::vxlan::{Vxlan, VxlanEncap};
 use core::fmt::Debug;
 use std::num::NonZero;
 use tracing::{debug, error};
@@ -156,7 +156,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     ///
     /// This method will panic if the resulting mbuf has a UDP length field longer than 2^16
     /// bytes.
-    pub fn vxlan_encap(self, mut headers: Headers) -> Result<Self, <Buf as Prepend>::Error> {
+    pub fn vxlan_encap(self, params: &VxlanEncap) -> Result<Self, <Buf as Prepend>::Error> {
         let mbuf = self.serialize()?;
         let len = mbuf.as_ref().len() + (Udp::MIN_LENGTH.get() + Vxlan::MIN_LENGTH.get()) as usize;
         assert!(
@@ -165,6 +165,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         );
         #[allow(clippy::cast_possible_truncation)] // checked
         let len = NonZero::new(len as u16).unwrap_or_else(|| unreachable!());
+        let mut headers = params.headers().clone();
         match headers.try_udp_mut() {
             None => {
                 todo!()
