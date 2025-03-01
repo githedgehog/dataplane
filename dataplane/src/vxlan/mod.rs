@@ -71,6 +71,6 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for VxlanEncap {
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.filter_map(|packet| packet.encap_vxlan(self.headers.clone()).ok())
+        input.filter_map(|packet| packet.vxlan_encap(self.headers.clone()).ok())
     }
 }

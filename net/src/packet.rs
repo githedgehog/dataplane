@@ -146,7 +146,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     ///
     /// This method will panic if the resulting mbuf has a UDP length field longer than 2^16
     /// bytes.
-    pub fn encap_vxlan(self, mut headers: Headers) -> Result<Self, <Buf as Prepend>::Error> {
+    pub fn vxlan_encap(self, mut headers: Headers) -> Result<Self, <Buf as Prepend>::Error> {
         let mbuf = self.serialize()?;
         let len = mbuf.as_ref().len() + (Udp::MIN_LENGTH.get() + Vxlan::MIN_LENGTH.get()) as usize;
         assert!(
