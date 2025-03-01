@@ -34,6 +34,17 @@ impl Udp {
     #[allow(clippy::unwrap_used)] // safe due to const-eval
     pub const MIN_LENGTH: NonZero<u16> = NonZero::new(8).unwrap();
 
+    #[allow(missing_docs)] // TODO
+    #[must_use]
+    pub fn new(source: UdpPort, destination: UdpPort) -> Udp {
+        let header = UdpHeader {
+            source_port: source.into(),
+            destination_port: destination.into(),
+            ..Default::default()
+        };
+        Udp(header)
+    }
+
     /// Get the header's source port
     #[must_use]
     pub const fn source(&self) -> UdpPort {

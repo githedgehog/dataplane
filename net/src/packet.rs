@@ -6,8 +6,7 @@
 use crate::buffer::{Headroom, PacketBufferMut, Prepend, TrimFromStart};
 use crate::eth::EthError;
 use crate::headers::{
-    AbstractHeaders, AbstractHeadersMut, Headers, TryHeaders, TryHeadersMut, TryIp, TryUdp,
-    TryVxlan,
+    AbstractHeaders, AbstractHeadersMut, Headers, TryHeaders, TryHeadersMut, TryVxlan,
 };
 use crate::parse::{DeParse, DeParseError, Parse, ParseError};
 use crate::vxlan::Vxlan;
@@ -52,6 +51,17 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             consumed,
             mbuf,
         })
+    }
+
+    /// Get the length of the packet's memory buffer.
+    ///
+    /// # Note
+    ///
+    /// Manipulating the parsed headers _does not_ change the length returned by this method.
+    #[allow(clippy::cast_possible_truncation)] // checked in ctor
+    #[must_use]
+    pub fn mbuf_len(&self) -> u16 {
+        self.mbuf.as_ref().len() as u16
     }
 
     /// If the [`Packet`] is [`Vxlan`], then this method
@@ -175,15 +185,10 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// If the buffer is unable to prepend the supplied [`Headers`], this method will return a
     /// [`VxlanEncapError::PrependFailed`] `Err`.
     #[allow(clippy::result_large_err)] // no reason to eat the headers
-    pub fn encap_vxlan(&mut self, headers: Headers) -> Result<(), VxlanEncapError<Buf>> {
-        match (headers.try_ip(), headers.try_udp(), headers.try_vxlan()) {
-            (None, _, _) => Err(VxlanEncapError::NoIp(headers)),
-            (_, None, _) => Err(VxlanEncapError::NoUdp(headers)),
-            (_, _, None) => Err(VxlanEncapError::NoVxlan(headers)),
-            (Some(_), Some(_), Some(_)) => {
-                #[allow(unsafe_code)] // sound by exhaustion
-                unsafe { self.encap(headers) }.map_err(VxlanEncapError::PrependFailed)
-            }
+    pub fn encap_vxlan(&mut self, headers: Headers) -> Result<(), <Buf as Prepend>::Error> {
+        #[allow(unsafe_code)] // sound by exhaustion
+        unsafe {
+            self.encap(headers)
         }
     }
 
@@ -272,23 +277,6 @@ impl<Buf: PacketBufferMut> Headroom for Packet<Buf> {
     fn headroom(&self) -> u16 {
         self.mbuf.headroom()
     }
-}
-
-/// Errors which may occur when encapsulating a packet with VXLAN headers.
-#[derive(Debug, thiserror::Error)]
-pub enum VxlanEncapError<Buf: PacketBufferMut> {
-    /// supplied headers have no IP layer
-    #[error("supplied headers have not IP layer")]
-    NoIp(Headers),
-    /// supplied headers have no UDP layer
-    #[error("supplied headers have no UDP layer")]
-    NoUdp(Headers),
-    /// supplied headers have no VXLAN layer
-    #[error("supplied headers have no VXLAN layer")]
-    NoVxlan(Headers),
-    /// Unable to prepend the supplied headers to the buffer.
-    #[error(transparent)]
-    PrependFailed(<Buf as Prepend>::Error),
 }
 
 //
