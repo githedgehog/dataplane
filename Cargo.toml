@@ -26,7 +26,7 @@ resolver = "3"
 dpdk = { path = "./dpdk" }
 dpdk-sys = { path = "./dpdk-sys" }
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper" }
-dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", branch = "master" }
+dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", version = "1.0.0" }
 errno = { path = "./errno", package = "dataplane-errno" }
 net = { path = "./net" }
 routing = { path = "./routing" }
