@@ -18,10 +18,8 @@ use tracing::{debug, error};
 /// A parsed (see [`Parse`]) ethernet packet.
 #[derive(Debug)]
 pub struct Packet<Buf: PacketBufferMut> {
-    /// make private again
-    pub headers: Headers,
-    /// make private again
-    pub mbuf: Buf, // TODO: find a way to make this private
+    headers: Headers,
+    payload: Buf,
 }
 
 /// Errors which may occur when failing to produce a [`Packet`]
@@ -48,7 +46,10 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         };
         mbuf.trim_from_start(consumed.get())
             .unwrap_or_else(|_| unreachable!());
-        Ok(Packet { headers, mbuf })
+        Ok(Packet {
+            headers,
+            payload: mbuf,
+        })
     }
 
     /// Get the length of the packet's memory buffer.
@@ -59,7 +60,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     #[allow(clippy::cast_possible_truncation)] // checked in ctor
     #[must_use]
     pub fn mbuf_len(&self) -> u16 {
-        self.mbuf.as_ref().len() as u16
+        self.payload.as_ref().len() as u16
     }
 
     /// If the [`Packet`] is [`Vxlan`], then this method
@@ -106,9 +107,9 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 None
             }
             Some(vxlan) => {
-                match Headers::parse(self.mbuf.as_ref()) {
+                match Headers::parse(self.payload.as_ref()) {
                     Ok((headers, consumed)) => {
-                        match self.mbuf.trim_from_start(consumed.get()) {
+                        match self.payload.trim_from_start(consumed.get()) {
                             Ok(_) => {
                                 let vxlan = *vxlan;
                                 self.headers = headers;
@@ -164,7 +165,10 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 udp.set_length(len);
             },
         }
-        let this = Self { headers, mbuf };
+        let this = Self {
+            headers,
+            payload: mbuf,
+        };
         Ok(this)
     }
 
@@ -179,14 +183,14 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         // The `unreachable` statements in the first block should be easily optimized out, but best
         // to confirm.
         let needed = self.headers.size();
-        let buf = self.mbuf.prepend(needed.get())?;
+        let buf = self.payload.prepend(needed.get())?;
         // TODO: prove that these unreachable statements are optimized out
         // This may be _very_ hard to do since the compiler may not have perfect
         // visibility here.
         self.headers
             .deparse(buf)
             .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
-        Ok(self.mbuf)
+        Ok(self.payload)
     }
 }
 
@@ -214,13 +218,13 @@ impl<Buf: PacketBufferMut> TrimFromStart for Packet<Buf> {
     type Error = <Buf as TrimFromStart>::Error;
 
     fn trim_from_start(&mut self, len: u16) -> Result<&mut [u8], Self::Error> {
-        self.mbuf.trim_from_start(len)
+        self.payload.trim_from_start(len)
     }
 }
 
 impl<Buf: PacketBufferMut> Headroom for Packet<Buf> {
     fn headroom(&self) -> u16 {
-        self.mbuf.headroom()
+        self.payload.headroom()
     }
 }
 
