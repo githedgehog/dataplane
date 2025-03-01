@@ -3,12 +3,11 @@
 
 use crate::pipeline::NetworkFunction;
 use net::buffer::PacketBufferMut;
-use net::headers::{Headers, TryHeaders, TryIp, TryUdp, TryUdpMut, TryVxlan};
+use net::headers::Headers;
+use net::headers::TryIp;
+use net::headers::TryUdp;
+use net::headers::TryVxlan;
 use net::packet::Packet;
-use net::parse::DeParse;
-use net::udp::Udp;
-use net::vxlan::Vxlan;
-use std::num::NonZero;
 use tracing::{debug, error, trace};
 
 pub struct VxlanDecap;
@@ -72,23 +71,6 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for VxlanEncap {
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.filter_map(|mut packet| {
-            let mbuf_len =
-                NonZero::new(packet.mbuf_len() + Udp::MIN_LENGTH.get() + Vxlan::MIN_LENGTH.get())
-                    .unwrap();
-            match packet.encap_vxlan(self.headers.clone()) {
-                Ok(()) => {
-                    #[allow(unsafe_code)] // TODO
-                    unsafe {
-                        packet.try_udp_mut().unwrap().set_length(mbuf_len);
-                    }
-                    Some(packet)
-                }
-                Err(e) => {
-                    error!("{e:?}");
-                    None
-                }
-            }
-        })
+        input.filter_map(|packet| packet.encap_vxlan(self.headers.clone()).ok())
     }
 }

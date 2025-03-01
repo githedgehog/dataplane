@@ -6,22 +6,22 @@
 use crate::buffer::{Headroom, PacketBufferMut, Prepend, TrimFromStart};
 use crate::eth::EthError;
 use crate::headers::{
-    AbstractHeaders, AbstractHeadersMut, Headers, TryHeaders, TryHeadersMut, TryVxlan,
+    AbstractHeaders, AbstractHeadersMut, Headers, TryHeaders, TryHeadersMut, TryUdpMut, TryVxlan,
 };
-use crate::parse::{DeParse, DeParseError, Parse, ParseError};
+use crate::parse::{DeParse, Parse, ParseError};
+use crate::udp::Udp;
 use crate::vxlan::Vxlan;
 use core::fmt::Debug;
-use std::cmp::Ordering;
 use std::num::NonZero;
+use tracing::{debug, error};
 
 /// A parsed (see [`Parse`]) ethernet packet.
 #[derive(Debug)]
 pub struct Packet<Buf: PacketBufferMut> {
-    headers: Headers,
-    /// The total number of bytes _originally_ consumed when parsing this packet
-    /// Mutations to `packet` can cause the re-serialized size of the packet to grow or shrink.
-    consumed: NonZero<u16>,
-    mbuf: Buf, // TODO: find a way to make this private
+    /// make private again
+    pub headers: Headers,
+    /// make private again
+    pub mbuf: Buf, // TODO: find a way to make this private
 }
 
 /// Errors which may occur when failing to produce a [`Packet`]
@@ -39,18 +39,16 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// # Errors
     ///
     /// Returns an [`InvalidPacket`] error the buffer does not parse as an ethernet frame.
-    pub fn new(mbuf: Buf) -> Result<Packet<Buf>, InvalidPacket<Buf>> {
+    pub fn new(mut mbuf: Buf) -> Result<Packet<Buf>, InvalidPacket<Buf>> {
         let (headers, consumed) = match Headers::parse(mbuf.as_ref()) {
             Ok((headers, consumed)) => (headers, consumed),
             Err(error) => {
                 return Err(InvalidPacket { mbuf, error });
             }
         };
-        Ok(Packet {
-            headers,
-            consumed,
-            mbuf,
-        })
+        mbuf.trim_from_start(consumed.get())
+            .unwrap_or_else(|_| unreachable!());
+        Ok(Packet { headers, mbuf })
     }
 
     /// Get the length of the packet's memory buffer.
@@ -103,29 +101,16 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// ```
     pub fn vxlan_decap(&mut self) -> Option<Result<Vxlan, ParseError<EthError>>> {
         match self.headers.try_vxlan() {
-            None => None,
+            None => {
+                debug!("attempted to remove VXLAN header from non-vxlan packet");
+                None
+            }
             Some(vxlan) => {
-                let header_size = self.headers.size().get() as usize;
-                if self.mbuf.as_ref().len() < header_size {
-                    // This can only happen if the parser or `Buf` is broken.
-                    // This outcome indicates that we parsed the headers but that the packet is
-                    // smaller than this size of the headers we parsed (which is programmer
-                    // error and not recoverable).
-                    unreachable!("logic error: packet smaller than parsed headers");
-                }
-                match Headers::parse(&self.mbuf.as_ref()[header_size..]) {
+                match Headers::parse(self.mbuf.as_ref()) {
                     Ok((headers, consumed)) => {
-                        // Note: we could call `trim_from_start` earlier in this method since that
-                        // method returns the slice we need.  This approach results in less complex
-                        // looking code, but we need to preserve the outer packet even if the inner
-                        // packet is invalid.
-                        // Advancing the start location violates that goal, so we can't get away
-                        // with it.
-                        #[allow(clippy::cast_possible_truncation)] // u16 to start with
-                        match self.mbuf.trim_from_start(header_size as u16) {
+                        match self.mbuf.trim_from_start(consumed.get()) {
                             Ok(_) => {
                                 let vxlan = *vxlan;
-                                self.consumed = consumed;
                                 self.headers = headers;
                                 Some(Ok(vxlan))
                             }
@@ -142,34 +127,6 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         }
     }
 
-    /// Encapsulate the packet in the supplied [`Headers`].
-    ///
-    /// If successful, this method will replace the current [`Packet`]'s [`Headers`] with the
-    /// supplied headers.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Err`] variant if the buffer is unable to [`prepend`] the supplied [`Headers`].
-    ///
-    /// # Safety
-    ///
-    /// This method does not confirm that the supplied [`Headers`] are a logical form of
-    /// encapsulation.
-    /// It is the caller's responsibility to ensure they are constructing the desired [`Packet`].
-    ///
-    /// This method is principally intended as a building block for other types of (checked)
-    /// encapsulation logic.
-    /// It is made public to allow other crates to "bring their own encap / decap"
-    ///
-    /// [`prepend`]: Prepend::prepend
-    #[allow(unsafe_code)] // safety requirements documented
-    pub unsafe fn encap(&mut self, headers: Headers) -> Result<(), <Buf as Prepend>::Error> {
-        self.mbuf.prepend(headers.size().get())?;
-        self.consumed = headers.size();
-        self.headers = headers;
-        Ok(())
-    }
-
     /// Encapsulate the packet in the supplied [`Vxlan`] [`Headers`]
     ///
     /// The supplied [`Headers`] will be validated to ensure they form a VXLAN header.
@@ -184,70 +141,58 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     ///
     /// If the buffer is unable to prepend the supplied [`Headers`], this method will return a
     /// [`VxlanEncapError::PrependFailed`] `Err`.
-    #[allow(clippy::result_large_err)] // no reason to eat the headers
-    pub fn encap_vxlan(&mut self, headers: Headers) -> Result<(), <Buf as Prepend>::Error> {
-        #[allow(unsafe_code)] // sound by exhaustion
-        unsafe {
-            self.encap(headers)
+    ///
+    /// # Panics
+    ///
+    /// This method will panic if the resulting mbuf has a UDP length field longer than 2^16
+    /// bytes.
+    pub fn encap_vxlan(self, mut headers: Headers) -> Result<Self, <Buf as Prepend>::Error> {
+        let mbuf = self.serialize()?;
+        let len = mbuf.as_ref().len() + (Udp::MIN_LENGTH.get() + Vxlan::MIN_LENGTH.get()) as usize;
+        assert!(
+            u16::try_from(len).is_ok(),
+            "encap would result in frame larger than 2^16 bytes"
+        );
+        #[allow(clippy::cast_possible_truncation)] // checked
+        let len = NonZero::new(len as u16).unwrap_or_else(|| unreachable!());
+        match headers.try_udp_mut() {
+            None => {
+                todo!()
+            }
+            #[allow(unsafe_code)] // sound usage due to length check
+            Some(udp) => unsafe {
+                udp.set_length(len);
+            },
         }
+        let this = Self { headers, mbuf };
+        Ok(this)
     }
 
-    /// Consume the packet and return it as a `Buf`
+    /// Update the packet's buffer based on any changes to the packets [`Headers`].
     ///
     /// # Errors
     ///
-    /// Returns [`ReserializeError::PrependError`] if the packet does not have enough remaining
-    /// headroom to prepend any necessary headers.
-    ///
-    /// Returns [`ReserializeError::TooShort`] if the packet is not long enough to remove any
-    /// requested headers.
-    ///
-    /// Both of these errors represent serious configuration or logic bugs.
-    pub fn reserialize(self) -> Result<Buf, (Buf, ReserializeError<Buf>)> {
+    /// Returns a [`Prepend::Error`] error if the packet does not have enough headroom to
+    /// serialize.
+    pub fn serialize(mut self) -> Result<Buf, <Buf as Prepend>::Error> {
         // TODO: prove that these unreachable statements are optimized out
         // The `unreachable` statements in the first block should be easily optimized out, but best
         // to confirm.
         let needed = self.headers.size();
-        let mut mbuf = self.mbuf;
-        let mut mbuf = match needed.cmp(&self.consumed) {
-            Ordering::Equal => mbuf,
-            Ordering::Less => {
-                let prepend = needed.get() - self.consumed.get();
-                match mbuf.prepend(prepend) {
-                    Ok(_) => {}
-                    Err(e) => return Err((mbuf, ReserializeError::PrependError(e))),
-                }
-                mbuf
-            }
-            Ordering::Greater => {
-                let trim = self.consumed.get() - needed.get();
-                match mbuf.trim_from_start(trim) {
-                    Ok(_) => {}
-                    Err(e) => return Err((mbuf, ReserializeError::TooShort(e))),
-                }
-                mbuf
-            }
-        };
+        let buf = self.mbuf.prepend(needed.get())?;
         // TODO: prove that these unreachable statements are optimized out
         // This may be _very_ hard to do since the compiler may not have perfect
         // visibility here.
-        match self.headers.deparse(mbuf.as_mut()) {
-            Ok(_) => Ok(mbuf),
-            Err(DeParseError::Length(fatal)) => unreachable!("{fatal:?}", fatal = fatal),
-            Err(DeParseError::Invalid(())) => unreachable!("invalid write operation"),
-            Err(DeParseError::BufferTooLong(len)) => {
-                unreachable!("buffer too long: {len}", len = len)
-            }
-        }
+        self.headers
+            .deparse(buf)
+            .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
+        Ok(self.mbuf)
     }
 }
 
 /// Errors which may occur when re-serializing a packet
 #[derive(Debug, thiserror::Error)]
 pub enum ReserializeError<Buf: PacketBufferMut> {
-    /// The packet was too short to remove the requested amount of data
-    #[error(transparent)]
-    TooShort(<Buf as TrimFromStart>::Error),
     /// The packet does not have enough headroom to append the requested amount of data.
     #[error(transparent)]
     PrependError(<Buf as Prepend>::Error),

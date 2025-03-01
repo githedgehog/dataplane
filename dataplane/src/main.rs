@@ -9,7 +9,6 @@ mod pipeline;
 mod vxlan;
 
 use crate::args::{CmdArgs, Parser};
-use crate::pipeline::sample_nfs::InspectHeaders;
 use crate::pipeline::{DynPipeline, NetworkFunction};
 use crate::vxlan::{VxlanDecap, VxlanEncap};
 use dpdk::dev::{Dev, TxOffloadConfig};
@@ -26,12 +25,11 @@ use net::headers::{Headers, Net, Transport};
 use net::ip::NextHeader;
 use net::ipv4::Ipv4;
 use net::ipv4::addr::UnicastIpv4Addr;
-use net::packet::{Packet, ReserializeError};
+use net::packet::Packet;
 use net::udp::port::UdpPort;
 use net::udp::{Udp, UdpEncap};
 use net::vxlan::{Vni, Vxlan};
 use std::net::Ipv4Addr;
-use std::num::NonZero;
 use tracing::{debug, error, info, trace, warn};
 // #[global_allocator]
 // static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();
@@ -65,15 +63,31 @@ fn setup_pipeline() -> DynPipeline<Mbuf> {
         ipv4.set_next_header(NextHeader::UDP);
     }
     encap.net = Some(Net::Ipv4(ipv4));
-    let mut udp = Udp::new(UdpPort::new_checked(10000).unwrap(), Vxlan::PORT);
+    let udp = Udp::new(UdpPort::new_checked(10000).unwrap(), Vxlan::PORT);
     encap.transport = Some(Transport::Udp(udp));
     encap.udp_encap = Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(1234).unwrap())));
     let vxlan_encap = VxlanEncap::new(encap).unwrap();
+    let mut encap2 = Headers::new(Eth::new(
+        SourceMac::new(Mac([0b10, 0, 0, 0, 0, 1])).unwrap(),
+        DestinationMac::new(Mac([0xa0, 0x88, 0xc2, 0x46, 0xa8, 0xdd])).unwrap(),
+        EthType::IPV4,
+    ));
+    let mut ipv4 = Ipv4::default();
+    ipv4.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(192, 168, 55, 55)).unwrap());
+    ipv4.set_destination(Ipv4Addr::new(192, 168, 32, 111));
+    ipv4.set_ttl(18);
+    unsafe {
+        ipv4.set_next_header(NextHeader::UDP);
+    }
+    encap2.net = Some(Net::Ipv4(ipv4));
+    let udp = Udp::new(UdpPort::new_checked(12222).unwrap(), Vxlan::PORT);
+    encap2.transport = Some(Transport::Udp(udp));
+    encap2.udp_encap = Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(5432).unwrap())));
+    let vxlan_encap2 = VxlanEncap::new(encap2).unwrap();
     pipeline
         .add_stage(vxlan_decap)
-        .add_stage(InspectHeaders)
         .add_stage(vxlan_encap)
-        .add_stage(InspectHeaders)
+        .add_stage(vxlan_encap2)
 }
 
 fn init_devices(eal: &Eal) -> Vec<Dev> {
@@ -156,14 +170,10 @@ fn start_rte_workers(devices: &[Dev]) {
 
                 let pkts_out = pipeline.process(pkts);
 
-                let buffers = pkts_out.filter_map(|pkt| match pkt.reserialize() {
-                    Ok(mbuf) => Some(mbuf),
-                    Err((_, ReserializeError::PrependError(e))) => {
-                        error!("not enough headroom in packet: {e:?}");
-                        None
-                    }
-                    Err((_, ReserializeError::TooShort(e))) => {
-                        error!("packet too short: {e:?}");
+                let buffers = pkts_out.filter_map(|pkt| match pkt.serialize() {
+                    Ok(buf) => Some(buf),
+                    Err(e) => {
+                        error!("{e:?}");
                         None
                     }
                 });
