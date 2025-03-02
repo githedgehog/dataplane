@@ -69,6 +69,8 @@ fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
         .permissions();
     perms.set_mode(0o777);
     fs::set_permissions(path, perms).map_err(|_| RouterError::PermError)?;
+    sock.set_nonblocking(true)
+        .map_err(|_| RouterError::Internal)?;
     Ok(sock)
 }
 
@@ -102,11 +104,9 @@ pub fn start_cpi(conf: &CpiConf, db: Arc<RoutingDb>) -> Result<CpiHandle, Router
 
     /* create unix sock for routing function and bind it */
     let cpsock = open_unix_sock(&cp_sock_path)?;
-    cpsock.set_nonblocking(true);
 
     /* create unix sock for cli and bind it */
     let clisock = open_unix_sock(&cli_sock_path)?;
-    clisock.set_nonblocking(true);
 
     /* internal ctl channel */
     let (tx, mut rx) = channel::<CpiCtlMsg>();
