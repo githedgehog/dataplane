@@ -22,6 +22,7 @@ use std::net::{IpAddr, Ipv4Addr};
 impl From<RouteType> for RouteOrigin {
     fn from(value: RouteType) -> Self {
         match value {
+            RouteType::Local => RouteOrigin::Local,
             RouteType::Connected => RouteOrigin::Connected,
             RouteType::Static => RouteOrigin::Static,
             RouteType::Ospf => RouteOrigin::Ospf,
