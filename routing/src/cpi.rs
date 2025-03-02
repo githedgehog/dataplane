@@ -11,6 +11,7 @@ use crate::routingdb::RoutingDb;
 use cli::cliproto::CliRequest;
 use cli::cliproto::CliSerialize;
 use dplane_rpc::log::Level;
+use dplane_rpc::socks::RpcCachedSock;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
@@ -115,6 +116,9 @@ pub fn start_cpi(conf: &CpiConf, db: Arc<RoutingDb>) -> Result<CpiHandle, Router
     let cpsock_fd = cpsock.as_raw_fd();
     let mut ev_cpsock = SourceFd(&cpsock_fd);
 
+    /* Build a cached socket */
+    let mut cached_sock = RpcCachedSock::from_sock(cpsock);
+
     /* cli socket */
     const CLISOCK: Token = Token(1);
     let clisock_fd = clisock.as_raw_fd();
@@ -158,14 +162,23 @@ pub fn start_cpi(conf: &CpiConf, db: Arc<RoutingDb>) -> Result<CpiHandle, Router
 
             /* events on unix sockets */
             for event in &events {
-                #[allow(clippy::single_match)]
                 match event.token() {
                     CPSOCK => {
                         while event.is_readable() {
-                            if let Ok((len, peer)) = cpsock.recv_from(buf.as_mut_slice()) {
-                                process_rx_data(&cpsock, &peer, &buf[..len], &db);
+                            if let Ok((len, peer)) = cached_sock.recv_from(buf.as_mut_slice()) {
+                                process_rx_data(&mut cached_sock, &peer, &buf[..len], &db);
                             } else {
                                 break;
+                            }
+                        }
+                        if event.is_writable() {
+                            cached_sock.flush_out_fast();
+                            if !cached_sock.interests().is_writable() {
+                                poller.registry().reregister(
+                                    &mut SourceFd(&cached_sock.get_raw_fd()),
+                                    CPSOCK,
+                                    cached_sock.interests(),
+                                );
                             }
                         }
                     }
