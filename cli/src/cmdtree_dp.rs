@@ -87,6 +87,7 @@ fn cmd_show_vrf() -> Node {
     Node::new("vrf")
         .desc("Show a summary of the VRFs")
         .action(CliAction::ShowRouterVrfs as u16)
+        .arg("vni")
 }
 fn cmd_show_evpn() -> Node {
     let mut root = Node::new("evpn");

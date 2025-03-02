@@ -28,6 +28,7 @@ pub struct RequestArgs {
     pub address: Option<IpAddr>,         /* an IP address */
     pub prefix: Option<(IpAddr, u8)>,    /* an IP prefix */
     pub vrfid: Option<u32>,              /* Id of a VRF */
+    pub vni: Option<u32>,                /* Vxlan vni */
     pub ifname: Option<String>,          /* name of interface */
     pub loglevel: Option<Level>,         /* loglevel, from crate log */
     pub protocol: Option<RouteProtocol>, /* a type of route or routing protocol */
