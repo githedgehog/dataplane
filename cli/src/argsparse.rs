@@ -93,6 +93,12 @@ impl CliArgs {
                     .map_err(|_| ArgsError::BadValue(vrfid))?,
             );
         }
+        if let Some(vni) = args_map.remove("vni") {
+            if vni.is_empty() {
+                return Err(ArgsError::MissingValue("vni"));
+            }
+            args.remote.vni = Some(vni.parse::<u32>().map_err(|_| ArgsError::BadValue(vni))?);
+        }
         if let Some(ifname) = args_map.remove("ifname") {
             if ifname.is_empty() {
                 return Err(ArgsError::MissingValue("ifname"));
