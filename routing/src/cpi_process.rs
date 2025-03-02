@@ -6,14 +6,18 @@
 use crate::interface::IfTable;
 #[cfg(feature = "auto-learn")]
 use crate::interface::Interface;
+
+#[cfg(feature = "auto-learn")]
+use net::vxlan::Vni;
+
 use crate::rmac::{RmacEntry, RmacStore};
 use crate::routingdb::{RoutingDb, VrfTable};
 use bytes::Bytes;
 use dplane_rpc::msg::*;
-use dplane_rpc::socks::send_msg;
+use dplane_rpc::socks::RpcCachedSock;
 use dplane_rpc::wire::*;
+use std::os::unix::net::SocketAddr;
 
-use std::os::unix::net::{SocketAddr, UnixDatagram};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -59,13 +63,39 @@ impl RpcOperation for IpRoute {
     type ObjectStore = VrfTable;
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         #[cfg(feature = "auto-learn")]
-        if db.get_vrf(self.vrfid).is_err() {
-            let vni = &self.nhops[0].encap.as_ref().and_then(|e| match e {
-                NextHopEncap::VXLAN(vxlan) => Some(vxlan.vni),
-                #[allow(unreachable_patterns)]
-                _ => None,
-            });
-            let _ = db.add_vrf("unnamed-vrf", self.vrfid, *vni);
+        match db.get_vrf(self.vrfid) {
+            Ok(vrf) => {
+                if let Ok(mut vrf) = vrf.write() {
+                    if vrf.vni.is_none() {
+                        for nh in self.nhops.iter() {
+                            if let Some(NextHopEncap::VXLAN(vxlan)) = &nh.encap {
+                                if nh.vrfid == self.vrfid {
+                                    vrf.set_vni(Vni::new_checked(vxlan.vni).unwrap());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                // vrf does not exist
+                let mut vni = None;
+                for nh in self.nhops.iter() {
+                    if let Some(NextHopEncap::VXLAN(vxlan)) = &nh.encap {
+                        if nh.vrfid == self.vrfid {
+                            vni = Some(vxlan.vni);
+                            break;
+                        }
+                    }
+                }
+                let name = if self.vrfid == 0 {
+                    "default"
+                } else {
+                    "unknown"
+                };
+                let _ = db.add_vrf(name, self.vrfid, vni);
+            }
         }
 
         if let Ok(vrf) = db.get_vrf(self.vrfid) {
@@ -159,7 +189,7 @@ fn collect_objects(_ovec: &mut [&RpcObject], filter: Option<&GetFilter>) -> RpcR
     }
     RpcResultCode::Ok
 }
-fn handle_get_request(sock: &UnixDatagram, peer: &SocketAddr, req: &RpcRequest) {
+fn handle_get_request(csock: &mut RpcCachedSock, peer: &SocketAddr, req: &RpcRequest) {
     let mut objects: Vec<&RpcObject> = vec![];
     let x = req.get_object();
     let res_code = match x {
@@ -172,15 +202,20 @@ fn handle_get_request(sock: &UnixDatagram, peer: &SocketAddr, req: &RpcRequest) 
     };
 
     let resp_msg = build_response_msg(req, res_code, Some(objects));
-    let _ = send_msg(sock, &resp_msg, peer);
+    csock.send_msg(resp_msg, peer);
 }
-fn handle_request(sock: &UnixDatagram, peer: &SocketAddr, req: &RpcRequest, db: &Arc<RoutingDb>) {
+fn handle_request(
+    csock: &mut RpcCachedSock,
+    peer: &SocketAddr,
+    req: &RpcRequest,
+    db: &Arc<RoutingDb>,
+) {
     let op = req.get_op();
     let object = req.get_object();
     debug!("Handling {}", req);
 
     if op == RpcOp::Get {
-        return handle_get_request(sock, peer, req);
+        return handle_get_request(csock, peer, req);
     }
 
     let res_code = match object {
@@ -228,34 +263,39 @@ fn handle_request(sock: &UnixDatagram, peer: &SocketAddr, req: &RpcRequest, db: 
         _ => RpcResultCode::InvalidRequest,
     };
     let resp_msg = build_response_msg(req, res_code, None);
-    let _ = send_msg(sock, &resp_msg, peer);
+    csock.send_msg(resp_msg, peer);
 }
-fn handle_response(_sock: &UnixDatagram, _peer: &SocketAddr, _res: &RpcResponse) {}
-fn handle_notification(_sock: &UnixDatagram, peer: &SocketAddr, _notif: &RpcNotification) {
+fn handle_response(_csock: &RpcCachedSock, _peer: &SocketAddr, _res: &RpcResponse) {}
+fn handle_notification(_csock: &RpcCachedSock, peer: &SocketAddr, _notif: &RpcNotification) {
     warn!("Received a notification message from {:?}", peer);
 }
-fn handle_control(_sock: &UnixDatagram, _peer: &SocketAddr, _ctl: &RpcControl) {}
-fn handle_rpc_msg(sock: &UnixDatagram, peer: &SocketAddr, msg: &RpcMsg, db: &Arc<RoutingDb>) {
+fn handle_control(_csock: &RpcCachedSock, _peer: &SocketAddr, _ctl: &RpcControl) {}
+fn handle_rpc_msg(csock: &mut RpcCachedSock, peer: &SocketAddr, msg: &RpcMsg, db: &Arc<RoutingDb>) {
     match msg {
-        RpcMsg::Control(ctl) => handle_control(sock, peer, ctl),
-        RpcMsg::Request(req) => handle_request(sock, peer, req, db),
-        RpcMsg::Response(resp) => handle_response(sock, peer, resp),
-        RpcMsg::Notification(notif) => handle_notification(sock, peer, notif),
+        RpcMsg::Control(ctl) => handle_control(csock, peer, ctl),
+        RpcMsg::Request(req) => handle_request(csock, peer, req, db),
+        RpcMsg::Response(resp) => handle_response(csock, peer, resp),
+        RpcMsg::Notification(notif) => handle_notification(csock, peer, notif),
     }
 }
 
 /* process rx data from UX sock */
 #[allow(unused)]
-pub fn process_rx_data(sock: &UnixDatagram, peer: &SocketAddr, data: &[u8], db: &Arc<RoutingDb>) {
+pub fn process_rx_data(
+    csock: &mut RpcCachedSock,
+    peer: &SocketAddr,
+    data: &[u8],
+    db: &Arc<RoutingDb>,
+) {
     let peer_addr = peer.as_pathname().unwrap_or_else(|| Path::new("unnamed"));
     trace!("CPI: recvd {} bytes from {:?}...", data.len(), peer_addr);
     let mut buf_rx = Bytes::copy_from_slice(data); // TODO: avoid this copy
     match RpcMsg::decode(&mut buf_rx) {
-        Ok(msg) => handle_rpc_msg(sock, peer, &msg, db),
+        Ok(msg) => handle_rpc_msg(csock, peer, &msg, db),
         Err(e) => {
             error!("Failure decoding msg rx from {:?}: {:?}", peer, e);
             let notif = build_notification_msg();
-            send_msg(sock, &notif, peer);
+            csock.send_msg(notif, peer);
         }
     }
 }
