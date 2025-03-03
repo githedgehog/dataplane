@@ -26,8 +26,9 @@ pub trait DynNetworkFunction<Buf: PacketBufferMut>: Any {
     /// To call this method, import the [`dyn_iter::IntoDynIterator`] trait and use the
     /// `into_dyn_iter` method to get a [`dyn_iter::DynIter`] to use with this method.
     /// Generally you should not need to call this method directly, instead just call
-    /// [`DynPipeline::process`] with a concrete iterator type.  However, if you only
-    /// have a dynamic iterator, you can use this method to process the packets.
+    /// [`DynPipeline::process`][crate::pipeline::DynPipeline::process] with a concrete iterator
+    /// type.  However, if you only have a dynamic iterator, you can use this method to process the
+    /// packets.
     fn process_dyn<'a>(&'a mut self, input: DynIter<'a, Packet<Buf>>) -> DynIter<'a, Packet<Buf>>;
 }
 

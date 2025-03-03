@@ -31,12 +31,14 @@
 //! Note that `pipeline` implements the [`NetworkFunction`] trait and can be used anywhere a
 //! network function is expected.
 //!
-//! > [!WARNING]
-//! >
-//! > Keep statically linked chains short, ideally less than 8 stages.
-//! >
-//! > The [`StaticChain::chain`] triggers compiler/linker limitations, long chains cause long
-//! > compile times and eventually cause the linker to run out of memory.
+//! <div class="warning">
+//!
+//! Keep statically linked chains short, ideally less than 8 stages.
+//!
+//! The [`StaticChain::chain`] triggers compiler/linker limitations, long chains cause long
+//! compile times and eventually cause the linker to run out of memory.
+//!
+//! </div>
 //!
 //! ## Dynamic Pipeline
 //!
