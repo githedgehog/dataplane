@@ -58,8 +58,8 @@ pub enum MatchType {
     ///
     /// See struct `rte_flow_item_any`.
     Any = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_ANY,
-    /// > **Deprecated** [`RTE_FLOW_ITEM_TYPE_PORT_REPRESENTOR`]
-    /// [`RTE_FLOW_ITEM_TYPE_REPRESENTED_PORT`]
+    /// > **Deprecated** [`dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_PORT_REPRESENTOR`]
+    /// [`dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_REPRESENTED_PORT`]
     ///
     /// \[META\]
     ///
@@ -159,7 +159,7 @@ pub enum MatchType {
     ///
     /// See struct `rte_flow_item_geneve`.
     Geneve = 24,
-    /// > **Deprecated** [`RTE_FLOW_ITEM_TYPE_VXLAN`]
+    /// > **Deprecated** [`dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_VXLAN`]
     ///
     /// Matches a VXLAN-GPE header.
     ///
