@@ -2,6 +2,8 @@
 // Copyright Open Network Fabric Authors
 
 #![deny(clippy::all, clippy::pedantic)]
+#![deny(rustdoc::all)]
+#![allow(rustdoc::missing_crate_level_docs)]
 
 mod args;
 mod nat;

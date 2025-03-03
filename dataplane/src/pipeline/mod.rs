@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![allow(rustdoc::private_doc_tests)]
+
 //! # Pipeline Building Blocks
 //!
 //! This module provides the building blocks for constructing pipelines of network functions.
