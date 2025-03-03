@@ -32,6 +32,9 @@ pub enum RouterError {
     #[error("Invalid socket path")]
     InvalidSockPath,
 
+    #[error("Internal error")]
+    Internal,
+
     #[error("Permission errors")]
     PermError,
 }
