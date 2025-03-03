@@ -58,139 +58,338 @@ pub enum MatchType {
     ///
     /// See struct `rte_flow_item_any`.
     Any = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_ANY,
-    /// > **Deprecated** [`RTE_FLOW_ITEM_TYPE_PORT_REPRESENTOR`]\n [`RTE_FLOW_ITEM_TYPE_REPRESENTED_PORT`]\n\n [META]\n\n Matches traffic originating from (ingress) or going to (egress) a\n given DPDK port ID.\n\n See struct rte_flow_item_port_id.
+    /// > **Deprecated** [`RTE_FLOW_ITEM_TYPE_PORT_REPRESENTOR`]
+    /// [`RTE_FLOW_ITEM_TYPE_REPRESENTED_PORT`]
+    ///
+    /// [META]
+    ///
+    /// Matches traffic originating from (ingress) or going to (egress) a
+    /// given DPDK port ID.
+    ///
+    /// See struct rte_flow_item_port_id.
     PortId = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_PORT_ID,
-    /// Matches a byte string of a given length at a given offset.\n\n See struct `rte_flow_item_raw`
+    /// Matches a byte string of a given length at a given offset.
+    ///
+    /// See struct `rte_flow_item_raw`
     Raw = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_RAW,
-    /// Matches an Ethernet header.\n\n See struct `rte_flow_item_eth`.
+    /// Matches an Ethernet header.
+    ///
+    /// See struct `rte_flow_item_eth`.
     Eth = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_ETH,
-    /// Matches an 802.1Q/ad VLAN tag.\n\n See struct `rte_flow_item_vlan`.
+    /// Matches an 802.1Q/ad VLAN tag.
+    ///
+    /// See struct `rte_flow_item_vlan`.
     Vlan = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_VLAN,
-    /// Matches an IPv4 header.\n\n See struct `rte_flow_item_ipv4`.
+    /// Matches an IPv4 header.
+    ///
+    /// See struct `rte_flow_item_ipv4`.
     Ipv4 = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_IPV4,
-    /// Matches an IPv6 header.\n\n See struct `rte_flow_item_ipv6`.
+    /// Matches an IPv6 header.
+    ///
+    /// See struct `rte_flow_item_ipv6`.
     Ipv6 = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_IPV6,
-    /// Matches an ICMP header.\n\n See struct `rte_flow_item_icmp`.
+    /// Matches an ICMP header.
+    ///
+    /// See struct `rte_flow_item_icmp`.
     Icmp = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_ICMP,
-    /// Matches a UDP header.\n\n See struct `rte_flow_item_udp`.
+    /// Matches a UDP header.
+    ///
+    /// See struct `rte_flow_item_udp`.
     Udp = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_UDP,
-    /// Matches a TCP header.\n\n See struct `rte_flow_item_tcp`.
+    /// Matches a TCP header.
+    ///
+    /// See struct `rte_flow_item_tcp`.
     Tcp = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_TCP,
-    /// Matches a SCTP header.\n\n See struct `rte_flow_item_sctp`.
+    /// Matches a SCTP header.
+    ///
+    /// See struct `rte_flow_item_sctp`.
     Sctp = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_SCTP,
-    /// Matches a VXLAN header.\n\n See struct `rte_flow_item_vxlan`.
+    /// Matches a VXLAN header.
+    ///
+    /// See struct `rte_flow_item_vxlan`.
     Vxlan = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_VXLAN,
-    /// Matches a `E_TAG` header.\n\n See struct `rte_flow_item_e_tag`.
+    /// Matches a `E_TAG` header.
+    ///
+    /// See struct `rte_flow_item_e_tag`.
     Etag = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_E_TAG,
-    /// Matches a NVGRE header.\n\n See struct `rte_flow_item_nvgre`.
+    /// Matches a NVGRE header.
+    ///
+    /// See struct `rte_flow_item_nvgre`.
     Nvgre = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_NVGRE,
-    /// Matches a MPLS header.\n\n See struct `rte_flow_item_mpls`.
+    /// Matches a MPLS header.
+    ///
+    /// See struct `rte_flow_item_mpls`.
     Mpls = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_MPLS,
-    /// Matches a GRE header.\n\n See struct `rte_flow_item_gre`.
+    /// Matches a GRE header.
+    ///
+    /// See struct `rte_flow_item_gre`.
     Gre = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_GRE,
-    /// [META]\n\n Fuzzy pattern match, expect faster than default.\n\n This is for device that support fuzzy matching option.\n Usually a fuzzy matching is fast, but the cost is accuracy.\n\n See struct `rte_flow_item_fuzzy`.
+    /// [META]
+    ///
+    /// Fuzzy pattern match, expect faster than default.
+    ///
+    /// This is for device that support fuzzy matching option.
+    /// Usually a fuzzy matching is fast, but the cost is accuracy.
+    ///
+    /// See struct `rte_flow_item_fuzzy`.
     Fuzzy = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_FUZZY,
-    /// Matches a GTP header.\n\n Configure flow for GTP packets.\n\n See struct `rte_flow_item_gtp`.
+    /// Matches a GTP header.
+    ///
+    /// Configure flow for GTP packets.
+    ///
+    /// See struct `rte_flow_item_gtp`.
     Gtp = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_GTP,
-    /// Matches a GTP header.\n\n Configure flow for GTP-C packets.\n\n See struct `rte_flow_item_gtp`.
+    /// Matches a GTP header.
+    ///
+    /// Configure flow for GTP-C packets.
+    ///
+    /// See struct `rte_flow_item_gtp`.
     Gtpc = 21,
-    /// Matches a GTP header.\n\n Configure flow for GTP-U packets.\n\n See struct `rte_flow_item_gtp`.
+    /// Matches a GTP header.
+    ///
+    /// Configure flow for GTP-U packets.
+    ///
+    /// See struct `rte_flow_item_gtp`.
     Gtpu = 22,
-    /// Matches a ESP header.\n\n See struct `rte_flow_item_esp`.
+    /// Matches a ESP header.
+    ///
+    /// See struct `rte_flow_item_esp`.
     Esp = 23,
-    /// Matches a GENEVE header.\n\n See struct `rte_flow_item_geneve`.
+    /// Matches a GENEVE header.
+    ///
+    /// See struct `rte_flow_item_geneve`.
     Geneve = 24,
-    /// > **Deprecated** [`RTE_FLOW_ITEM_TYPE_VXLAN`]\n\n Matches a VXLAN-GPE header.\n\n See struct rte_flow_item_vxlan_gpe.
+    /// > **Deprecated** [`RTE_FLOW_ITEM_TYPE_VXLAN`]
+    ///
+    /// Matches a VXLAN-GPE header.
+    ///
+    /// See struct rte_flow_item_vxlan_gpe.
     VxlanGpe = 25,
-    /// Matches an ARP header for Ethernet/IPv4.\n\n See struct `rte_flow_item_arp_eth_ipv4`.
+    /// Matches an ARP header for Ethernet/IPv4.
+    ///
+    /// See struct `rte_flow_item_arp_eth_ipv4`.
     ArpEthIpv4 = 26,
-    /// Matches the presence of any IPv6 extension header.\n\n See struct `rte_flow_item_ipv6_ext`.
+    /// Matches the presence of any IPv6 extension header.
+    ///
+    /// See struct `rte_flow_item_ipv6_ext`.
     Ipv6Ext = 27,
-    /// Matches any `ICMPv6` header.\n\n See struct `rte_flow_item_icmp6`.
+    /// Matches any `ICMPv6` header.
+    ///
+    /// See struct `rte_flow_item_icmp6`.
     Icmp6 = 28,
-    /// Matches an `ICMPv6` neighbor discovery solicitation.\n\n See struct `rte_flow_item_icmp6_nd_ns`.
+    /// Matches an `ICMPv6` neighbor discovery solicitation.
+    ///
+    /// See struct `rte_flow_item_icmp6_nd_ns`.
     Icmp6NdNs = 29,
-    /// Matches an `ICMPv6` neighbor discovery advertisement.\n\n See struct `rte_flow_item_icmp6_nd_na`.
+    /// Matches an `ICMPv6` neighbor discovery advertisement.
+    ///
+    /// See struct `rte_flow_item_icmp6_nd_na`.
     Icmp6NdNa = 30,
-    /// Matches the presence of any `ICMPv6` neighbor discovery option.\n\n See struct `rte_flow_item_icmp6_nd_opt`.
+    /// Matches the presence of any `ICMPv6` neighbor discovery option.
+    ///
+    /// See struct `rte_flow_item_icmp6_nd_opt`.
     Icmp6NdOpt = 31,
-    /// Matches an `ICMPv6` neighbor discovery source Ethernet link-layer\n address option.\n\n See struct `rte_flow_item_icmp6_nd_opt_sla_eth`.
+    /// Matches an `ICMPv6` neighbor discovery source Ethernet link-layer
+    /// address option.
+    ///
+    /// See struct `rte_flow_item_icmp6_nd_opt_sla_eth`.
     Icmp6NdOptSlaEth = 32,
-    /// Matches an `ICMPv6` neighbor discovery target Ethernet link-layer\n address option.\n\n See struct `rte_flow_item_icmp6_nd_opt_tla_eth`.
+    /// Matches an `ICMPv6` neighbor discovery target Ethernet link-layer
+    /// address option.
+    ///
+    /// See struct `rte_flow_item_icmp6_nd_opt_tla_eth`.
     Icmp6NdOptTlaEth = 33,
-    /// Matches specified mark field.\n\n See struct `rte_flow_item_mark`.
+    /// Matches specified mark field.
+    ///
+    /// See struct `rte_flow_item_mark`.
     Mark = 34,
-    /// [META]\n\n Matches a metadata value.\n\n See struct `rte_flow_item_meta`.
+    /// [META]
+    ///
+    /// Matches a metadata value.
+    ///
+    /// See struct `rte_flow_item_meta`.
     Meta = 35,
-    /// Matches a GRE optional key field.\n\n The value should a big-endian 32bit integer.\n\n When this item present the K bit is implicitly matched as \"1\"\n in the default mask.\n\n `spec/mask` type:\n `rte_be32_t` *
+    /// Matches a GRE optional key field.
+    ///
+    /// The value should a big-endian 32bit integer.
+    ///
+    /// When this item present the K bit is implicitly matched as \"1\"
+    /// in the default mask.
+    ///
+    /// `spec/mask` type:
+    /// `rte_be32_t` *
     GreKey = 36,
-    /// Matches a GTP extension header: PDU session container.\n\n Configure flow for GTP packets with extension header type 0x85.\n\n See struct `rte_flow_item_gtp_psc`.
+    /// Matches a GTP extension header: PDU session container.
+    ///
+    /// Configure flow for GTP packets with extension header type 0x85.
+    ///
+    /// See struct `rte_flow_item_gtp_psc`.
     GtpPsc = 37,
-    /// Matches a `PPPoE` header.\n\n Configure flow for `PPPoE` session packets.\n\n See struct `rte_flow_item_pppoe`.
+    /// Matches a `PPPoE` header.
+    ///
+    /// Configure flow for `PPPoE` session packets.
+    ///
+    /// See struct `rte_flow_item_pppoe`.
     PppoeS = 38,
-    /// Matches a `PPPoE` header.\n\n Configure flow for `PPPoE` discovery packets.\n\n See struct `rte_flow_item_pppoe`.
+    /// Matches a `PPPoE` header.
+    ///
+    /// Configure flow for `PPPoE` discovery packets.
+    ///
+    /// See struct `rte_flow_item_pppoe`.
     PppoeD = 39,
-    /// Matches a `PPPoE` optional `proto_id` field.\n\n It only applies to `PPPoE` session packets.\n\n See struct `rte_flow_item_pppoe_proto_id`.
+    /// Matches a `PPPoE` optional `proto_id` field.
+    ///
+    /// It only applies to `PPPoE` session packets.
+    ///
+    /// See struct `rte_flow_item_pppoe_proto_id`.
     PppoeProtoId = 40,
-    /// Matches Network service header (NSH).\n See struct `rte_flow_item_nsh.\n`
+    /// Matches Network service header (NSH).
+    /// See struct `rte_flow_item_nsh.
+    ///`
     Nsh = 41,
-    /// Matches Internet Group Management Protocol (IGMP).\n See struct `rte_flow_item_igmp.\n`
+    /// Matches Internet Group Management Protocol (IGMP).
+    /// See struct `rte_flow_item_igmp.
+    ///`
     Igmp = 42,
-    /// Matches IP Authentication Header (AH).\n See struct `rte_flow_item_ah.\n`
+    /// Matches IP Authentication Header (AH).
+    /// See struct `rte_flow_item_ah.
+    ///`
     Ah = 43,
-    /// Matches a HIGIG header.\n see struct `rte_flow_item_higig2_hdr`.
+    /// Matches a HIGIG header.
+    /// see struct `rte_flow_item_higig2_hdr`.
     Higig2 = 44,
-    /// [META]\n\n Matches a tag value.\n\n See struct `rte_flow_item_tag`.
+    /// [META]
+    ///
+    /// Matches a tag value.
+    ///
+    /// See struct `rte_flow_item_tag`.
     Tag = 45,
-    /// Matches an ` L2TPv3 ` over IP header.\n\n Configure flow for `L2TPv3` over IP packets.\n\n See struct `rte_flow_item_l2tpv3oip`.
+    /// Matches an ` L2TPv3 ` over IP header.
+    ///
+    /// Configure flow for `L2TPv3` over IP packets.
+    ///
+    /// See struct `rte_flow_item_l2tpv3oip`.
     L2tpv3oIp = 46,
-    /// Matches PFCP Header.\n See struct `rte_flow_item_pfcp.\n`
+    /// Matches PFCP Header.
+    /// See struct `rte_flow_item_pfcp.
+    ///`
     Pfcp = 47,
-    /// Matches eCPRI Header.\n\n Configure flow for eCPRI over ETH or UDP packets.\n\n See struct `rte_flow_item_ecpri`.
+    /// Matches eCPRI Header.
+    ///
+    /// Configure flow for eCPRI over ETH or UDP packets.
+    ///
+    /// See struct `rte_flow_item_ecpri`.
     Ecpri = 48,
-    /// Matches the presence of IPv6 fragment extension header.\n\n See struct `rte_flow_item_ipv6_frag_ext`.
+    /// Matches the presence of IPv6 fragment extension header.
+    ///
+    /// See struct `rte_flow_item_ipv6_frag_ext`.
     Ipv6FragExt = 49,
-    /// Matches Geneve Variable Length Option\n\n See struct `rte_flow_item_geneve_opt`
+    /// Matches Geneve Variable Length Option
+    ///
+    /// See struct `rte_flow_item_geneve_opt`
     GeneveOpt = 50,
-    /// [META]\n\n Matches on packet integrity.\n For some devices the application needs to enable integration checks in HW\n before using this item.\n\n [`struct`] `rte_flow_item_integrity`.
+    /// [META]
+    ///
+    /// Matches on packet integrity.
+    /// For some devices the application needs to enable integration checks in HW
+    /// before using this item.
+    ///
+    /// [`struct`] `rte_flow_item_integrity`.
     Integrity = 51,
-    /// [META]\n\n Matches conntrack state.\n\n [`struct`] `rte_flow_item_conntrack`.
+    /// [META]
+    ///
+    /// Matches conntrack state.
+    ///
+    /// [`struct`] `rte_flow_item_conntrack`.
     Conntrack = 52,
-    /// [META]\n\n Matches traffic entering the embedded switch from the given ethdev.\n\n [`struct`] `rte_flow_item_ethdev`
+    /// [META]
+    ///
+    /// Matches traffic entering the embedded switch from the given ethdev.
+    ///
+    /// [`struct`] `rte_flow_item_ethdev`
     PortRepresentor = 53,
-    /// [META]\n\n Matches traffic entering the embedded switch from\n the entity represented by the given ethdev.\n\n [`struct`] `rte_flow_item_ethdev`
+    /// [META]
+    ///
+    /// Matches traffic entering the embedded switch from
+    /// the entity represented by the given ethdev.
+    ///
+    /// [`struct`] `rte_flow_item_ethdev`
     RepresentedPort = 54,
-    /// Matches a configured set of fields at runtime calculated offsets\n over the generic network header with variable length and\n flexible pattern\n\n [`struct`] `rte_flow_item_flex`.
+    /// Matches a configured set of fields at runtime calculated offsets
+    /// over the generic network header with variable length and
+    /// flexible pattern
+    ///
+    /// [`struct`] `rte_flow_item_flex`.
     Flex = 55,
-    /// Matches `L2TPv2` Header.\n\n See struct `rte_flow_item_l2tpv2`.
+    /// Matches `L2TPv2` Header.
+    ///
+    /// See struct `rte_flow_item_l2tpv2`.
     L2tpv2 = 56,
-    /// Matches PPP Header.\n\n See struct `rte_flow_item_ppp`.
+    /// Matches PPP Header.
+    ///
+    /// See struct `rte_flow_item_ppp`.
     Ppp = 57,
-    /// Matches GRE optional fields.\n\n See struct `rte_flow_item_gre_opt`.
+    /// Matches GRE optional fields.
+    ///
+    /// See struct `rte_flow_item_gre_opt`.
     GreOption = 58,
-    /// Matches `MACsec` Ethernet Header.\n\n See struct `rte_flow_item_macsec`.
+    /// Matches `MACsec` Ethernet Header.
+    ///
+    /// See struct `rte_flow_item_macsec`.
     MacSec = 59,
-    /// Matches Meter Color Marker.\n\n See struct `rte_flow_item_meter_color`.
+    /// Matches Meter Color Marker.
+    ///
+    /// See struct `rte_flow_item_meter_color`.
     MeterColor = 60,
-    /// Matches the presence of IPv6 routing extension header.\n\n [`struct`] `rte_flow_item_ipv6_routing_ext`.
+    /// Matches the presence of IPv6 routing extension header.
+    ///
+    /// [`struct`] `rte_flow_item_ipv6_routing_ext`.
     Ipv6RoutingExt = 61,
-    /// Matches an `ICMPv6` echo request.\n\n [`struct`] `rte_flow_item_icmp6_echo`.
+    /// Matches an `ICMPv6` echo request.
+    ///
+    /// [`struct`] `rte_flow_item_icmp6_echo`.
     Icmp6EchoRequest = 62,
-    /// Matches an `ICMPv6` echo reply.\n\n [`struct`] `rte_flow_item_icmp6_echo`.
+    /// Matches an `ICMPv6` echo reply.
+    ///
+    /// [`struct`] `rte_flow_item_icmp6_echo`.
     Icmp6EchoReply = 63,
-    /// Match Quota state\n\n [`struct`] `rte_flow_item_quota`
+    /// Match Quota state
+    ///
+    /// [`struct`] `rte_flow_item_quota`
     Quota = 64,
-    /// Matches on the aggregated port of the received packet.\n Used in case multiple ports are aggregated to a DPDK port.\n First port is number 1.\n\n [`struct`] `rte_flow_item_aggr_affinity`.
+    /// Matches on the aggregated port of the received packet.
+    /// Used in case multiple ports are aggregated to a DPDK port.
+    /// First port is number 1.
+    ///
+    /// [`struct`] `rte_flow_item_aggr_affinity`.
     AggrAffinity = 65,
-    /// Match Tx queue number.\n This is valid only for egress rules.\n\n [`struct`] `rte_flow_item_tx_queue`
+    /// Match Tx queue number.
+    /// This is valid only for egress rules.
+    ///
+    /// [`struct`] `rte_flow_item_tx_queue`
     TxQueue = 66,
-    /// Matches an `InfiniBand` base transport header in `RoCE` packet.\n\n [`struct`] `rte_flow_item_ib_bth`.
+    /// Matches an `InfiniBand` base transport header in `RoCE` packet.
+    ///
+    /// [`struct`] `rte_flow_item_ib_bth`.
     IbBth = 67,
-    /// Matches the packet type as defined in `rte_mbuf_ptype.\n\n` See struct `rte_flow_item_ptype.\n`
+    /// Matches the packet type as defined in `rte_mbuf_ptype.
+    ///
+    ///` See struct `rte_flow_item_ptype.
+    ///`
     Ptype = 68,
-    /// [META]\n\n Matches a random value.\n\n This value is not based on the packet data/headers.\n The application shouldn't assume that this value is kept\n during the lifetime of the packet.\n\n [`struct`] `rte_flow_item_random`.
+    /// [META]
+    ///
+    /// Matches a random value.
+    ///
+    /// This value is not based on the packet data/headers.
+    /// The application shouldn't assume that this value is kept
+    /// during the lifetime of the packet.
+    ///
+    /// [`struct`] `rte_flow_item_random`.
     Random = 69,
-    /// Match packet with various comparison types.\n\n See struct `rte_flow_item_compare`.
+    /// Match packet with various comparison types.
+    ///
+    /// See struct `rte_flow_item_compare`.
     Compare = 70,
 }
 
