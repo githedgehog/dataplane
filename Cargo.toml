@@ -48,7 +48,7 @@ iptrie = { version = "0.10.2", default-features = false, features = [] }
 mio = { version = "1.0.3", default-features = false, features = [] }
 serde = { version = "1.0.218", default-features = false, features = [] }
 serde_yml = { version = "0.0.12", default-features = false, features = [] }
-thiserror = { version = "2.0.11", default-features = false, features = [] }
+thiserror = { version = "2.0.12", default-features = false, features = [] }
 # attribute feature is so commonly used that we should just leave it on globally
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
 tracing-subscriber = { version = "0.3.19", default-features = false, features = [] }
