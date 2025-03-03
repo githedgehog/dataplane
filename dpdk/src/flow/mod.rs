@@ -36,19 +36,19 @@ pub const MAX_ACTION_NUM: usize = 16;
 #[derive(Debug)]
 #[repr(u32)]
 pub enum MatchType {
-    /// [META]
+    /// \[META\]
     ///
     /// End marker for item lists.
     /// Prevents further processing of items, thereby ending the pattern.
     /// No associated specification structure.
     End = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_END,
-    /// [META]
+    /// \[META\]
     ///
     /// Used as a placeholder for convenience.
     /// It is ignored and simply discarded by PMDs.
     /// No associated specification structure.
     Void = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_VOID,
-    /// [META]
+    /// \[META\]
     ///
     /// Inverted matching, i.e., process packets that do not match the pattern.
     /// No associated specification structure.
@@ -61,7 +61,7 @@ pub enum MatchType {
     /// > **Deprecated** [`RTE_FLOW_ITEM_TYPE_PORT_REPRESENTOR`]
     /// [`RTE_FLOW_ITEM_TYPE_REPRESENTED_PORT`]
     ///
-    /// [META]
+    /// \[META\]
     ///
     /// Matches traffic originating from (ingress) or going to (egress) a
     /// given DPDK port ID.
@@ -124,7 +124,7 @@ pub enum MatchType {
     ///
     /// See struct `rte_flow_item_gre`.
     Gre = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_GRE,
-    /// [META]
+    /// \[META\]
     ///
     /// Fuzzy pattern match, expect faster than default.
     ///
@@ -203,7 +203,7 @@ pub enum MatchType {
     ///
     /// See struct `rte_flow_item_mark`.
     Mark = 34,
-    /// [META]
+    /// \[META\]
     ///
     /// Matches a metadata value.
     ///
@@ -258,7 +258,7 @@ pub enum MatchType {
     /// Matches a HIGIG header.
     /// see struct `rte_flow_item_higig2_hdr`.
     Higig2 = 44,
-    /// [META]
+    /// \[META\]
     ///
     /// Matches a tag value.
     ///
@@ -288,7 +288,7 @@ pub enum MatchType {
     ///
     /// See struct `rte_flow_item_geneve_opt`
     GeneveOpt = 50,
-    /// [META]
+    /// \[META\]
     ///
     /// Matches on packet integrity.
     /// For some devices the application needs to enable integration checks in HW
@@ -296,19 +296,19 @@ pub enum MatchType {
     ///
     /// [`struct`] `rte_flow_item_integrity`.
     Integrity = 51,
-    /// [META]
+    /// \[META\]
     ///
     /// Matches conntrack state.
     ///
     /// [`struct`] `rte_flow_item_conntrack`.
     Conntrack = 52,
-    /// [META]
+    /// \[META\]
     ///
     /// Matches traffic entering the embedded switch from the given ethdev.
     ///
     /// [`struct`] `rte_flow_item_ethdev`
     PortRepresentor = 53,
-    /// [META]
+    /// \[META\]
     ///
     /// Matches traffic entering the embedded switch from
     /// the entity represented by the given ethdev.
@@ -377,7 +377,7 @@ pub enum MatchType {
     ///` See struct `rte_flow_item_ptype.
     ///`
     Ptype = 68,
-    /// [META]
+    /// \[META\]
     ///
     /// Matches a random value.
     ///
