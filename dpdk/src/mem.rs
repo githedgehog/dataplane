@@ -217,7 +217,7 @@ unsafe impl Sync for PoolInner {}
 pub struct PoolParams {
     /// The number of elements in the mbuf pool.
     /// The optimum size (in terms of memory usage) for a mempool is when n is a power of two minus
-    /// one: <var>n = 2<sup>q</sup> - 1
+    /// one: <var>n</var> = 2<sup>q</sup> - 1
     pub size: u32,
     /// Size of the per-core object cache.
     pub cache_size: u32,
@@ -385,7 +385,7 @@ impl Drop for PoolInner {
 ///
 /// # Note
 ///
-/// This is a 0-cost transparent wrapper around an [`rte_mbuf`] pointer.
+/// This is a 0-cost transparent wrapper around an [`dpdk_sys::rte_mbuf`] pointer.
 /// It can be "safely" transmuted _to_ an `*mut rte_mbuf` under the assumption that
 /// standard borrowing rules are observed.
 #[repr(transparent)]

@@ -54,7 +54,8 @@ pub enum InitError {
     AlreadyInitialized,
     #[error("The EAL initialization failed")]
     InitializationFailed(errno::Errno),
-    /// [`rte_eal_init`] returned an error code other than `0` (success) or `-1` (failure).
+    /// [`dpdk_sys::rte_eal_init`] returned an error code other than `0` (success) or `-1`
+    /// (failure).
     /// This likely represents a bug in the DPDK library.
     #[error("Unknown error {0} when initializing the EAL")]
     UnknownError(i32),
@@ -146,7 +147,7 @@ pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
 impl Eal {
     /// Returns `true` if the [`Eal`] is using the PCI bus.
     ///
-    /// This is mostly a safe wrapper around [`rte_eal_has_pci`]
+    /// This is mostly a safe wrapper around [`dpdk_sys::rte_eal_has_pci`]
     /// which simply converts the return value to a [`bool`] instead of a [`c_int`].
     #[cold]
     #[tracing::instrument(level = "trace", skip(self), ret)]
@@ -155,7 +156,7 @@ impl Eal {
     }
 
     /// Exits the DPDK application with an error message, cleaning up the [`Eal`] as gracefully as
-    /// possible (by way of [`rte_exit`]).
+    /// possible (by way of [`dpdk_sys::rte_exit`]).
     ///
     /// This function never returns as it exits the application.
     ///

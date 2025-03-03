@@ -14,11 +14,12 @@ pub trait NetworkFunction<Buf: PacketBufferMut> {
     ///
     /// Note that a concrete iterator type is required to call this function and
     /// a concrete iterator type must be returned from this function (i.e., `impl Iterator`).
-    /// If you don't have a concrete iterator type, use the [`DynNetworkFunction`] trait instead.
+    /// If you don't have a concrete iterator type, use the
+    /// [`DynNetworkFunction`][crate::pipeline::DynPipeline] trait instead.
     ///
     /// # See Also
     ///
-    /// [`DynNetworkFunction`]
+    /// [`DynNetworkFunction`][crate::pipeline::DynPipeline]
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,
@@ -49,10 +50,13 @@ impl<Buf: PacketBufferMut, NF1: NetworkFunction<Buf>, NF2: NetworkFunction<Buf>>
 ///
 /// This trait is automatically implemented for all objects that implement [`NetworkFunction`].
 ///
-/// > [!WARNING]
-/// > Do not use long chains of statically chained network functions.
-/// > This will cause the compiler to generate a large chain of functions that
-/// > causes the linker to run out of memory and crash.
+/// <div class="warning">
+///
+/// Do not use long chains of statically chained network functions.
+/// This will cause the compiler to generate a large chain of functions that
+/// causes the linker to run out of memory and crash.
+///
+/// </div>
 pub trait StaticChain<Buf: PacketBufferMut>: NetworkFunction<Buf> {
     #[allow(unused)]
     fn chain<NF: NetworkFunction<Buf>>(self, nf: NF) -> impl NetworkFunction<Buf>;

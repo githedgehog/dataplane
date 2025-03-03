@@ -854,11 +854,11 @@ impl Dev {
 /// The state of a [`Dev`]
 #[derive(Debug, PartialEq)]
 pub enum State {
-    /// A device in the [`Stopped`] state is not usable for packet processing but can be
-    /// re-configured in ways that a [`Started`] device generally cannot.
+    /// A device in the [`Stopped`][State::Stopped] state is not usable for packet processing but
+    /// can be re-configured in ways that a [`Started`][State::Started] device generally cannot.
     Stopped,
-    /// A device in the [`Started`] state is usable for packet processing but can generally not be
-    /// re-configured while [`Started`].
+    /// A device in the [`Started`][State::Started] state is usable for packet processing but can
+    /// generally not be re-configured while [`Started`][State::Started].
     Started,
 }
 
