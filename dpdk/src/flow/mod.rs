@@ -294,32 +294,32 @@ pub enum MatchType {
     /// For some devices the application needs to enable integration checks in HW
     /// before using this item.
     ///
-    /// [`struct`] `rte_flow_item_integrity`.
+    /// `struct rte_flow_item_integrity`.
     Integrity = 51,
     /// \[META\]
     ///
     /// Matches conntrack state.
     ///
-    /// [`struct`] `rte_flow_item_conntrack`.
+    /// `struct rte_flow_item_conntrack`.
     Conntrack = 52,
     /// \[META\]
     ///
     /// Matches traffic entering the embedded switch from the given ethdev.
     ///
-    /// [`struct`] `rte_flow_item_ethdev`
+    /// `struct rte_flow_item_ethdev`
     PortRepresentor = 53,
     /// \[META\]
     ///
     /// Matches traffic entering the embedded switch from
     /// the entity represented by the given ethdev.
     ///
-    /// [`struct`] `rte_flow_item_ethdev`
+    /// `struct rte_flow_item_ethdev`
     RepresentedPort = 54,
     /// Matches a configured set of fields at runtime calculated offsets
     /// over the generic network header with variable length and
     /// flexible pattern
     ///
-    /// [`struct`] `rte_flow_item_flex`.
+    /// `struct rte_flow_item_flex`.
     Flex = 55,
     /// Matches `L2TPv2` Header.
     ///
@@ -343,34 +343,34 @@ pub enum MatchType {
     MeterColor = 60,
     /// Matches the presence of IPv6 routing extension header.
     ///
-    /// [`struct`] `rte_flow_item_ipv6_routing_ext`.
+    /// `struct rte_flow_item_ipv6_routing_ext`.
     Ipv6RoutingExt = 61,
     /// Matches an `ICMPv6` echo request.
     ///
-    /// [`struct`] `rte_flow_item_icmp6_echo`.
+    /// `struct rte_flow_item_icmp6_echo`.
     Icmp6EchoRequest = 62,
     /// Matches an `ICMPv6` echo reply.
     ///
-    /// [`struct`] `rte_flow_item_icmp6_echo`.
+    /// `struct rte_flow_item_icmp6_echo`.
     Icmp6EchoReply = 63,
     /// Match Quota state
     ///
-    /// [`struct`] `rte_flow_item_quota`
+    /// `struct rte_flow_item_quota`
     Quota = 64,
     /// Matches on the aggregated port of the received packet.
     /// Used in case multiple ports are aggregated to a DPDK port.
     /// First port is number 1.
     ///
-    /// [`struct`] `rte_flow_item_aggr_affinity`.
+    /// `struct rte_flow_item_aggr_affinity`.
     AggrAffinity = 65,
     /// Match Tx queue number.
     /// This is valid only for egress rules.
     ///
-    /// [`struct`] `rte_flow_item_tx_queue`
+    /// `struct rte_flow_item_tx_queue`
     TxQueue = 66,
     /// Matches an `InfiniBand` base transport header in `RoCE` packet.
     ///
-    /// [`struct`] `rte_flow_item_ib_bth`.
+    /// `struct rte_flow_item_ib_bth`.
     IbBth = 67,
     /// Matches the packet type as defined in `rte_mbuf_ptype.
     ///
@@ -385,7 +385,7 @@ pub enum MatchType {
     /// The application shouldn't assume that this value is kept
     /// during the lifetime of the packet.
     ///
-    /// [`struct`] `rte_flow_item_random`.
+    /// `struct rte_flow_item_random`.
     Random = 69,
     /// Match packet with various comparison types.
     ///
@@ -654,19 +654,35 @@ pub enum FlowActionType {
     Indirect = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_INDIRECT,
     /// Color the packet to reflect the meter color result. Set the meter color in the mbuf to the selected color. See struct `rte_flow_action_meter_color`.
     MeterColor = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_METER_COLOR,
-    /// At embedded switch level, sends matching traffic to the given ethdev. [`struct`] `rte_flow_action_ethdev`
+    /// At embedded switch level, sends matching traffic to the given ethdev.
+    ///
+    /// `struct rte_flow_action_ethdev`
     PortRepresentor = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_PORT_REPRESENTOR,
-    /// At embedded switch level, send matching traffic to the entity represented by the given ethdev. [`struct`] `rte_flow_action_ethdev`
+    /// At embedded switch level, send matching traffic to the entity represented by the given ethdev.
+    ///
+    /// `struct rte_flow_action_ethdev`
     RepresentedPort = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_REPRESENTED_PORT,
-    /// Traffic metering and marking (MTR). [`struct`] `rte_flow_action_meter_mark` See file `rte_mtr.h` for MTR profile object configuration.
+    /// Traffic metering and marking (MTR).
+    ///
+    /// `struct rte_flow_action_meter_mark`
+    ///
+    /// See file `rte_mtr.h` for MTR profile object configuration.
     MeterMark = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_METER_MARK,
     /// Send packets to the kernel, without going to userspace at all. The packets will be received by the kernel driver sharing the same device as the DPDK port on which this action is configured. This action mostly suits bifurcated driver model. No associated configuration structure.
     SendToKernel = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_SEND_TO_KERNEL,
-    /// Apply the quota verdict (PASS or BLOCK) to a flow. [`struct`] `rte_flow_action_quota` [`struct`] `rte_flow_query_quota` [`struct`] `rte_flow_update_quota`
+    /// Apply the quota verdict (PASS or BLOCK) to a flow.
+    ///
+    /// `struct rte_flow_action_quota`
+    /// `struct rte_flow_query_quota`
+    /// `struct rte_flow_update_quota`
     Quota = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_QUOTA,
-    /// Action handle to reference flow actions list. [`struct`] `rte_flow_action_indirect_list`
+    /// Action handle to reference flow actions list.
+    ///
+    /// `struct rte_flow_action_indirect_list`
     IndirectList = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_INDIRECT_LIST,
-    /// NAT64 translation of IPv4/IPv6 headers. [`struct`] `rte_flow_action_nat64`
+    /// NAT64 translation of IPv4/IPv6 headers.
+    ///
+    /// `struct rte_flow_action_nat64`
     Nat64 = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_NAT64,
     // /// > **Deprecated** [`RTE_FLOW_ACTION_TYPE_PORT_REPRESENTOR`] [`RTE_FLOW_ACTION_TYPE_REPRESENTED_PORT`] Directs matching traffic to the physical function (PF) of the current device. No associated configuration structure.
     // RTE_FLOW_ACTION_TYPE_PF,
