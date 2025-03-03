@@ -59,44 +59,50 @@ impl RpcOperation for ConnectInfo {
         }
     }
 }
-impl RpcOperation for IpRoute {
-    type ObjectStore = VrfTable;
-    fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
-        #[cfg(feature = "auto-learn")]
-        match db.get_vrf(self.vrfid) {
-            Ok(vrf) => {
-                if let Ok(mut vrf) = vrf.write() {
-                    if vrf.vni.is_none() {
-                        for nh in self.nhops.iter() {
-                            if let Some(NextHopEncap::VXLAN(vxlan)) = &nh.encap {
-                                if nh.vrfid == self.vrfid {
-                                    vrf.set_vni(Vni::new_checked(vxlan.vni).unwrap());
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Err(_) => {
-                // vrf does not exist
-                let mut vni = None;
-                for nh in self.nhops.iter() {
+
+#[cfg(feature = "auto-learn")]
+fn auto_learn_vrf(route: &IpRoute, db: &mut VrfTable) {
+    if let Ok(vrf) = db.get_vrf(route.vrfid) {
+        let mut vni = None;
+        if let Ok(vrf) = vrf.read() {
+            if vrf.vni.is_none() {
+                for nh in route.nhops.iter() {
                     if let Some(NextHopEncap::VXLAN(vxlan)) = &nh.encap {
-                        if nh.vrfid == self.vrfid {
+                        if nh.vrfid == route.vrfid {
                             vni = Some(vxlan.vni);
                             break;
                         }
                     }
                 }
-                let name = if self.vrfid == 0 {
-                    "default"
-                } else {
-                    "unknown"
-                };
-                let _ = db.add_vrf(name, self.vrfid, vni);
             }
         }
+        if let Some(vni) = vni {
+            let _ = db.set_vni(route.vrfid, Vni::new_checked(vni).unwrap());
+        }
+    } else {
+        let mut vni = None;
+        for nh in route.nhops.iter() {
+            if let Some(NextHopEncap::VXLAN(vxlan)) = &nh.encap {
+                if nh.vrfid == route.vrfid {
+                    vni = Some(vxlan.vni);
+                    break;
+                }
+            }
+        }
+        let name = if route.vrfid == 0 {
+            "default"
+        } else {
+            "unknown"
+        };
+        let _ = db.add_vrf(name, route.vrfid, vni);
+    }
+}
+
+impl RpcOperation for IpRoute {
+    type ObjectStore = VrfTable;
+    fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
+        #[cfg(feature = "auto-learn")]
+        auto_learn_vrf(&self, db);
 
         if let Ok(vrf) = db.get_vrf(self.vrfid) {
             if let Ok(mut vrf) = vrf.write() {
