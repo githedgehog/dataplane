@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::collections::hash_map;
 use std::sync::Arc;
 use std::sync::RwLock;
+use tracing::{debug, error};
 
 pub struct VrfTable {
     by_id: HashMap<VrfId, Arc<RwLock<Vrf>>>,
@@ -75,6 +76,65 @@ impl VrfTable {
         Ok(vrf)
     }
 
+    ///////////////////////////////////////////////////////////////////////////////////
+    /// Remove the vni from a VRF. This clears the vni field in a VRF if found and
+    /// removes it from the by_vni map.
+    ///////////////////////////////////////////////////////////////////////////////////
+    pub fn vrf_remove_vni(&mut self, vrfid: VrfId) -> Result<(), RouterError> {
+        let mut old_vni: Option<Vni> = None;
+        if let Ok(arc_vrf) = self.get_vrf(vrfid) {
+            if let Ok(ref mut vrf) = arc_vrf.write() {
+                if vrf.vni.is_some() {
+                    old_vni = vrf.vni.take();
+                }
+            } else {
+                error!("Hit poisoned RWlock!");
+                arc_vrf.clear_poison();
+                return Err(RouterError::Internal);
+            }
+        } else {
+            return Err(RouterError::NoSuchVrf);
+        }
+        if let Some(old_vni) = old_vni {
+            self.by_vni.remove(&old_vni);
+        }
+        debug!("Vrf with Id {vrfid} no longer has a VNI associated");
+        Ok(())
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// set the vni for a certain VRF that is already in the vrf table
+    //////////////////////////////////////////////////////////////////
+    pub fn set_vni(&mut self, vrfid: VrfId, vni: Vni) -> Result<(), RouterError> {
+        if let Ok(arc_vrf) = self.get_vrf_by_vni(vni.as_u32()) {
+            if let Ok(vrf) = arc_vrf.read() {
+                if vrf.vrfid != vrfid {
+                    // another vrf has that vni
+                    return Err(RouterError::VniInUse(vni.as_u32()));
+                }
+                // we're done, vrf has the vni requested already
+                return Ok(());
+            }
+        }
+        /* No vrf has the requested vni, including the vrf with id vrfId.
+           However the vrf w/ id VrfId may have another vni associated.
+        */
+        self.vrf_remove_vni(vrfid)?;
+
+        /* set the vni to the VRF */
+        if let Ok(ref mut arc_vrf) = self.get_vrf(vrfid) {
+            if let Ok(mut vrf) = arc_vrf.write() {
+                assert!(vrf.vni.is_none());
+                vrf.set_vni(vni);
+            } else {
+                error!("Hit poisoned RWlock!");
+                arc_vrf.clear_poison();
+            }
+            self.by_vni.insert(vni, arc_vrf.clone());
+        }
+        Ok(())
+    }
+
     //////////////////////////////////////////////////////////////////
     /// Remove the vrf with the given id
     //////////////////////////////////////////////////////////////////
@@ -95,7 +155,7 @@ impl VrfTable {
 
     //////////////////////////////////////////////////////////////////
     /// Access a VRF, for read or write, from its id.
-    /// Calling read() or write() on the resulting Ok value acquire a
+    /// Calling `read()` or `write()` on the resulting Ok value acquires a
     /// read / write lock respectively
     //////////////////////////////////////////////////////////////////
     pub fn get_vrf(&self, vrfid: VrfId) -> Result<&Arc<RwLock<Vrf>>, RouterError> {
