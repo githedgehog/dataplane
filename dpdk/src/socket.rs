@@ -30,18 +30,19 @@ impl Drop for Manager {
 impl Manager {
     /// Initialize the DPDK socket manager.
     ///
-    /// Only [`Eal`] should only call this function, and only during initialization.
+    /// Only [`Eal`][crate::eal::Eal] should only call this function, and only during
+    /// initialization.
     pub(crate) fn init() -> Manager {
         debug!("Initializing DPDK socket manager");
         Manager
     }
 
-    /// [`Iterator`] over all the [`SocketId`]s available to the [`Eal`].
+    /// [`Iterator`] over all the [`SocketId`]s available to the [`Eal`][crate::eal::Eal].
     pub fn iter(&self) -> impl Iterator<Item = SocketId> {
         SocketId::iter()
     }
 
-    /// The number of sockets (aka NUMA nodes) on the [`Eal`].
+    /// The number of sockets (aka NUMA nodes) on the [`Eal`][crate::eal::Eal].
     #[must_use]
     pub fn count(&self) -> u32 {
         SocketId::count()
@@ -106,7 +107,7 @@ impl From<c_uint> for Index {
     }
 }
 
-/// Iterator over all the [`SocketId`]s available to the [`Eal`].
+/// Iterator over all the [`SocketId`]s available to the [`Eal`][crate::eal::Eal].
 struct SocketIdIterator {
     index: Index,
     count: c_uint,
@@ -143,11 +144,11 @@ impl Iterator for SocketIdIterator {
 ///
 /// A [`SocketId`] is not at all the same thing as a socket index!
 ///
-/// A socket index is a zero-based index into the list of sockets on the [`Eal`].
-/// For example, if the [`SocketId`]s on the [`Eal`] are `[2, 3, 5]`, then index `1` would refer
-/// to [`SocketId(3)`].
+/// A socket index is a zero-based index into the list of sockets on the [`Eal`][crate::eal::Eal].
+/// For example, if the [`SocketId`]s on the [`Eal`][crate::eal::Eal] are `[2, 3, 5]`, then index
+/// `1` would refer to [`SocketId(3)`].
 /// It needs to work this way because there is no rule stating that we have a contiguous,
-/// zero-indexed list of sockets in the [`Eal`].
+/// zero-indexed list of sockets in the [`Eal`][crate::eal::Eal].
 ///
 /// </div>
 ///
@@ -194,12 +195,12 @@ impl SocketId {
         }
     }
 
-    /// [`Iterator`] over all the [`SocketId`]s available to the [`Eal`].
+    /// [`Iterator`] over all the [`SocketId`]s available to the [`Eal`][crate::eal::Eal].
     pub(crate) fn iter() -> impl Iterator<Item = SocketId> {
         SocketIdIterator::new()
     }
 
-    /// The number of sockets (aka NUMA nodes) on the [`Eal`].
+    /// The number of sockets (aka NUMA nodes) on the [`Eal`][crate::eal::Eal].
     ///
     /// This is a wrapper around [`rte_socket_count`].
     ///
