@@ -372,10 +372,9 @@ pub enum MatchType {
     ///
     /// `struct rte_flow_item_ib_bth`.
     IbBth = 67,
-    /// Matches the packet type as defined in `rte_mbuf_ptype.
+    /// Matches the packet type as defined in `rte_mbuf_ptype`.
     ///
-    ///` See struct `rte_flow_item_ptype.
-    ///`
+    /// See struct `rte_flow_item_ptype`.
     Ptype = 68,
     /// \[META\]
     ///
@@ -393,7 +392,7 @@ pub enum MatchType {
     Compare = 70,
 }
 
-/// This is a wrapper around [`rte_flow_item`].
+/// This is a wrapper around `struct rte_flow_item`.
 pub enum FlowMatch {
     /// The end of a match
     End,
@@ -453,7 +452,7 @@ pub struct MatchTag {
 
 /// A metadata value to match on.
 ///
-/// see [`rte_flow_item_meta`]
+/// see `struct rte_flow_item_meta`
 #[derive(Debug, Clone, Copy)]
 pub struct MatchMeta {
     /// The meta-data to match on
@@ -597,11 +596,24 @@ pub enum FlowActionType {
     PassThrough = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_PASSTHRU,
     /// Redirects packets to a group on the current device.
     ///
-    /// See struct [`rte_flow_action_jump`]
+    /// See struct `struct rte_flow_action_jump`
     Jump = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_JUMP,
-    /// Attaches an integer value to packets and sets `RTE_MBUF_F_RX_FDIR` and `RTE_MBUF_F_RX_FDIR_ID` mbuf flags. See struct `rte_flow_action_mark`. One should negotiate mark delivery from the NIC to the PMD. [`rte_eth_rx_metadata_negotiate()`] [`RTE_ETH_RX_METADATA_USER_MARK`]
+    /// Attaches an integer value to packets and sets `RTE_MBUF_F_RX_FDIR` and
+    /// `RTE_MBUF_F_RX_FDIR_ID` mbuf flags.
+    ///
+    /// See struct `rte_flow_action_mark`.
+    ///
+    /// One should negotiate mark delivery from the NIC to the PMD.
+    ///
+    /// `rte_eth_rx_metadata_negotiate()`
+    /// `RTE_ETH_RX_METADATA_USER_MARK`
     Mark = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_MARK,
-    /// Flags packets. Similar to MARK without a specific value; only sets the `RTE_MBUF_F_RX_FDIR` mbuf flag. No associated configuration structure. One should negotiate flag delivery from the NIC to the PMD. [`rte_eth_rx_metadata_negotiate()`] [`RTE_ETH_RX_METADATA_USER_FLAG`]
+    /// Flags packets. Similar to MARK without a specific value; only sets the `RTE_MBUF_F_RX_FDIR`
+    /// mbuf flag. No associated configuration structure. One should negotiate flag delivery from
+    /// the NIC to the PMD.
+    ///
+    /// `rte_eth_rx_metadata_negotiate()`
+    /// `RTE_ETH_RX_METADATA_USER_FLAG`
     Flag = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_FLAG,
     /// Assigns packets to a given queue index. See struct `rte_flow_action_queue`.
     Queue = dpdk_sys::rte_flow_action_type::RTE_FLOW_ACTION_TYPE_QUEUE,
