@@ -352,9 +352,9 @@ impl Display for Interface {
 }
 impl Display for IfTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Heading(format!("interfaces ({})", self.0.len())).fmt(f)?;
+        Heading(format!("interfaces ({})", self.len())).fmt(f)?;
         fmt_interface_heading(f)?;
-        for iface in self.0.values() {
+        for iface in self.values() {
             writeln!(f, " {iface}")?;
         }
         Ok(())
@@ -391,7 +391,7 @@ impl Display for IfTableAddress<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading("interface addresses".to_string()).fmt(f)?;
         fmt_interface_addr_heading(f)?;
-        for iface in self.0.0.values() {
+        for iface in self.0.values() {
             fmt_interface_addresses(f, iface)?;
         }
         Ok(())
