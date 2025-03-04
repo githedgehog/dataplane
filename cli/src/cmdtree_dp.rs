@@ -106,6 +106,11 @@ fn cmd_show_evpn() -> Node {
 
     root
 }
+fn cmd_show_adjacency_table() -> Node {
+    Node::new("adjacency-table")
+        .desc("Show neighboring information")
+        .action(CliAction::ShowAdjacencies as u16)
+}
 fn cmd_show_interface() -> Node {
     let mut root = Node::new("interface")
         .desc("show network interfaces")
@@ -128,6 +133,7 @@ fn cmd_show_interface() -> Node {
 fn cmd_show_routing() -> Node {
     let mut root = Node::new("");
     root += Node::new("cpi").desc("show the status of the routing interface");
+    root += cmd_show_adjacency_table();
     root += cmd_show_interface();
     root += cmd_show_evpn();
     root += cmd_show_vrf();
