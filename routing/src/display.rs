@@ -7,7 +7,7 @@ use crate::encapsulation::Encapsulation;
 use crate::interface::{IfDataDot1q, IfDataEthernet, IfState, IfTable, IfType, Interface};
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::pretty_utils::{Heading, line};
-use crate::rmac::{RmacEntry, RmacStore};
+use crate::rmac::{RmacEntry, RmacStore, Vtep};
 use crate::routingdb::VrfTable;
 use crate::vrf::{Route, ShimNhop, Vrf};
 use iptrie::map::RTrieMap;
@@ -429,5 +429,22 @@ impl Display for RmacStore {
             writeln!(f, " {rmac}")?;
         }
         Ok(())
+    }
+}
+
+//========================= Rmac Store ================================//
+impl Display for Vtep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "\n ───────── Local VTEP ─────────")?;
+        if let Some(ip) = self.get_ip() {
+            writeln!(f, " ip address: {}", ip)?;
+        } else {
+            writeln!(f, " ip address: unset")?;
+        }
+        if let Some(mac) = self.get_mac() {
+            writeln!(f, " Mac address: {}", mac)
+        } else {
+            writeln!(f, " Mac address: unset")
+        }
     }
 }
