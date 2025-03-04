@@ -4,6 +4,7 @@
 //! State objects to keep adjacency information
 
 use crate::interface::IfIndex;
+use dplane_rpc::msg::Ifindex;
 use net::eth::mac::Mac;
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -17,28 +18,46 @@ pub struct Adjacency {
 
 #[allow(dead_code)]
 impl Adjacency {
-    fn new(address: IpAddr, ifindex: IfIndex, mac: Mac) -> Self {
+    pub fn new(address: IpAddr, ifindex: IfIndex, mac: Mac) -> Self {
         Self {
             address,
             ifindex,
             mac,
         }
     }
+    pub fn get_ifindex(&self) -> Ifindex {
+        self.ifindex
+    }
+    pub fn get_mac(&self) -> Mac {
+        self.mac
+    }
+    pub fn get_ip(&self) -> IpAddr {
+        self.address
+    }
 }
 
+#[derive(Default)]
 pub struct AdjacencyTable(HashMap<(IfIndex, IpAddr), Adjacency>);
 
 #[allow(dead_code)]
 impl AdjacencyTable {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self(HashMap::new())
         // Todo: use a fast hasher
     }
-}
-
-#[allow(dead_code)]
-impl AdjacencyTable {
-    pub(crate) fn add_adjacency(&mut self, adjacency: Adjacency) {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn iter(&self) -> impl Iterator<Item = (&(IfIndex, IpAddr), &Adjacency)> {
+        self.0.iter()
+    }
+    pub fn values(&self) -> impl Iterator<Item = &Adjacency> {
+        self.0.values()
+    }
+    pub fn add_adjacency(&mut self, adjacency: Adjacency) {
         self.0
             .insert((adjacency.ifindex, adjacency.address), adjacency);
     }
