@@ -100,6 +100,10 @@ fn cmd_show_evpn() -> Node {
         .desc("Show the contents of the router mac store")
         .action(CliAction::ShowRouterEvpnRmacStore as u16);
 
+    root += Node::new("vtep")
+        .desc("Show EVPN VTEP configuration")
+        .action(CliAction::ShowRouterEvpnVtep as u16);
+
     root
 }
 fn cmd_show_interface() -> Node {
