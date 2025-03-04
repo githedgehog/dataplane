@@ -200,7 +200,7 @@ impl Interface {
 }
 
 /// A table of network interface objects, keyed by some ifindex (u32)
-pub struct IfTable(pub(crate) HashMap<u32, Interface>);
+pub struct IfTable(HashMap<u32, Interface>);
 
 #[allow(dead_code)]
 #[allow(clippy::new_without_default)]
@@ -212,6 +212,19 @@ impl IfTable {
     pub fn new() -> Self {
         Self(HashMap::new())
         // TODO: set a fast hasher
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn iter(&self) -> impl Iterator<Item = (&u32, &Interface)> {
+        self.0.iter()
+    }
+    pub fn values(&self) -> impl Iterator<Item = &Interface> {
+        self.0.values()
     }
 
     //////////////////////////////////////////////////////////////////
