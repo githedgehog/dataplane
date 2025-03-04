@@ -83,10 +83,63 @@ impl RmacStore {
     }
 }
 
+/// Type that represents a VTEP
+#[derive(Default)]
+pub struct Vtep {
+    ip: Option<IpAddr>,
+    mac: Option<Mac>,
+}
+
+#[allow(dead_code)]
+impl Vtep {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_ip(ip: IpAddr) -> Self {
+        Self {
+            ip: Some(ip),
+            mac: None,
+        }
+    }
+    pub fn with_mac(mac: Mac) -> Self {
+        Self {
+            ip: None,
+            mac: Some(mac),
+        }
+    }
+    pub fn with_ip_and_mac(ip: IpAddr, mac: Mac) -> Self {
+        Self {
+            ip: Some(ip),
+            mac: Some(mac),
+        }
+    }
+    pub fn get_ip(&self) -> Option<IpAddr> {
+        self.ip
+    }
+    pub fn get_mac(&self) -> Option<Mac> {
+        self.mac
+    }
+    pub fn set_ip(&mut self, ip: IpAddr) {
+        self.ip = Some(ip);
+    }
+    pub fn set_mac(&mut self, mac: Mac) {
+        self.mac = Some(mac);
+    }
+    pub fn is_set_up(&self) -> bool {
+        self.ip.is_some() && self.mac.is_some()
+    }
+    pub fn unset_ip(&mut self) {
+        self.ip.take();
+    }
+    pub fn unset_mac(&mut self) {
+        self.mac.take();
+    }
+}
+
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
-    use super::RmacStore;
+    use super::{RmacStore, Vtep};
     use net::eth::mac::Mac;
     use net::vxlan::Vni;
     use std::{net::IpAddr, str::FromStr};
@@ -163,5 +216,20 @@ mod tests {
             r.unwrap().mac,
             Mac::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66])
         );
+    }
+
+    #[test]
+    fn vtep_basic() {
+        let mut vtep = Vtep::new();
+        assert_eq!(vtep.get_ip(), None);
+        assert_eq!(vtep.get_mac(), None);
+        vtep.set_ip(IpAddr::from_str("172.16.128.1").expect("Bad address"));
+        assert!(vtep.get_ip().is_some());
+        vtep.set_mac(Mac::from([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]));
+        assert!(vtep.get_mac().is_some());
+        vtep.unset_ip();
+        vtep.unset_mac();
+        assert_eq!(vtep.get_ip(), None);
+        assert_eq!(vtep.get_mac(), None);
     }
 }
