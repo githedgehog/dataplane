@@ -6,6 +6,7 @@ members = [
 	"dpdk-sys",
 	"dpdk-sysroot-helper",
 	"errno",
+	"id",
 	"net",
 	"routing",
 ]
@@ -14,6 +15,7 @@ default-members = [
 	"dataplane",
 	"dpdk-sysroot-helper",
 	"errno",
+	"id",
 	"net",
 	"routing",
 ]
@@ -28,6 +30,7 @@ dpdk-sys = { path = "./dpdk-sys" }
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper" }
 dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", branch = "master" }
 errno = { path = "./errno", package = "dataplane-errno" }
+id = { path = "./id", package = "dataplane-id" }
 net = { path = "./net" }
 routing = { path = "./routing" }
 
