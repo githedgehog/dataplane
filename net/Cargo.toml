@@ -7,21 +7,22 @@ license = "Apache-2.0"
 
 [features]
 default = []
-serde = ["dep:serde"]
-arbitrary = ["dep:arbitrary", "dep:bolero"]
+serde = ["dep:serde", "uuid/serde"]
+arbitrary = ["dep:arbitrary", "dep:bolero", "uuid/arbitrary"]
 test_buffer = []
 
 [dependencies]
 ahash = { workspace = true }
 arbitrary = { workspace = true, features = ["derive"], optional = true }
-bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional = true }
 arrayvec = { workspace = true }
-# ideally, we would do without "std" for etherparse, but we need it for error types.
+bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional = true }
+diff-struct = { workspace = true }
 etherparse = { workspace = true, features = ["std"] }
 nom = { workspace = true, features = ["std"]  }
 serde = { workspace = true, optional = true, features = ["derive"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 arbitrary = { workspace = true, features = ["derive"] }

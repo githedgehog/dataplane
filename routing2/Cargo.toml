@@ -1,0 +1,31 @@
+[package]
+name = "routing2"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+default = ["serde"]
+ecmp = ["dep:arrayvec"]
+serde = ["dep:serde"]
+
+[dependencies]
+
+# workspace
+id = { workspace = true }
+net = { workspace = true }
+interface-manager = { workspace = true }
+
+
+# external
+arrayvec = { workspace = true, optional = true }
+bytes = { workspace = true, features = ["serde"] }
+ipnet = { workspace = true }
+iptrie = { workspace = true }
+multi_index_map = { workspace = true, features = ["serde"] }
+serde = { workspace = true, optional = true, features = ["derive"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tracing-test = { workspace = true }
