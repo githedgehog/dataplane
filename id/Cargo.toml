@@ -1,0 +1,21 @@
+[package]
+name = "dataplane-id"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[features]
+default = ["serde"]
+bolero = ["dep:bolero"]
+serde = ["dep:serde", "uuid/serde"]
+
+[dependencies]
+bolero = { workspace = true, optional = true }
+serde = { workspace = true, optional = true, features = ["derive"] }
+uuid = { workspace = true, features = ["v4", "v5"] }
+
+[dev-dependencies]
+bolero = { workspace = true, features = ["std"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
