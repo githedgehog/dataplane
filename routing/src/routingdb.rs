@@ -5,7 +5,7 @@
 
 use crate::errors::RouterError;
 use crate::interface::IfTable;
-use crate::rmac::RmacStore;
+use crate::rmac::{RmacStore, Vtep};
 use crate::vrf::{Vrf, VrfId};
 use net::vxlan::Vni;
 use std::collections::HashMap;
@@ -206,6 +206,7 @@ pub struct RoutingDb {
     pub vrftable: RwLock<VrfTable>,
     pub iftable: RwLock<IfTable>,
     pub rmac_store: RwLock<RmacStore>,
+    pub vtep: RwLock<Vtep>,
 }
 #[allow(unused)]
 #[allow(clippy::new_without_default)]
@@ -216,6 +217,7 @@ impl RoutingDb {
             vrftable: RwLock::new(VrfTable::new()),
             iftable: RwLock::new(IfTable::new()),
             rmac_store: RwLock::new(RmacStore::new()),
+            vtep: RwLock::new(Vtep::new()),
         }
     }
 }
