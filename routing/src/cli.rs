@@ -278,7 +278,11 @@ fn _handle_cli_request(request: CliRequest, db: &Arc<RoutingDb>) -> Result<CliRe
         }
         CliAction::ShowRouterEvpnVtep => {
             let vtep = db.vtep.read().map_err(|_| CliError::InternalError)?;
-            CliResponse::from_request_ok(request, format!("\n{}", vtep))
+            CliResponse::from_request_ok(request, format!("{}", vtep))
+        }
+        CliAction::ShowAdjacencies => {
+            let adjtable = db.atable.read().map_err(|_| CliError::InternalError)?;
+            CliResponse::from_request_ok(request, format!("\n{}", adjtable))
         }
         CliAction::ShowRouterIpv4Routes => {
             return show_vrf_routes(request, db, true);
