@@ -3,6 +3,7 @@
 
 //! Routing database keeps most of the routing information in memory
 
+use crate::adjacency::AdjacencyTable;
 use crate::errors::RouterError;
 use crate::interface::IfTable;
 use crate::rmac::{RmacStore, Vtep};
@@ -208,6 +209,7 @@ pub struct RoutingDb {
     pub iftable: RwLock<IfTable>,
     pub rmac_store: RwLock<RmacStore>,
     pub vtep: RwLock<Vtep>,
+    pub atable: RwLock<AdjacencyTable>,
 }
 #[allow(unused)]
 #[allow(clippy::new_without_default)]
@@ -219,6 +221,7 @@ impl RoutingDb {
             iftable: RwLock::new(IfTable::new()),
             rmac_store: RwLock::new(RmacStore::new()),
             vtep: RwLock::new(Vtep::new()),
+            atable: RwLock::new(AdjacencyTable::new()),
         }
     }
 }
