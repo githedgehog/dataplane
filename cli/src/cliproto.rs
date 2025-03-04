@@ -153,6 +153,7 @@ pub enum CliAction {
     ShowRouterIpv6NextHops,
     ShowRouterEvpnVrfs,
     ShowRouterEvpnRmacStore,
+    ShowRouterEvpnVtep,
 
     // DPDK
     ShowDpdkPort,
