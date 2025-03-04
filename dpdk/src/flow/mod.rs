@@ -59,6 +59,7 @@ pub enum MatchType {
     /// See struct `rte_flow_item_any`.
     Any = dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_ANY,
     /// > **Deprecated** [`dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_PORT_REPRESENTOR`]
+    ///
     /// [`dpdk_sys::rte_flow_item_type::RTE_FLOW_ITEM_TYPE_REPRESENTED_PORT`]
     ///
     /// \[META\]
