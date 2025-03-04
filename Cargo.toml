@@ -6,6 +6,7 @@ members = [
 	"dpdk-sys",
 	"dpdk-sysroot-helper",
 	"errno",
+	"id",
 	"net",
 	"routing",
 ]
@@ -14,6 +15,7 @@ default-members = [
 	"dataplane",
 	"dpdk-sysroot-helper",
 	"errno",
+	"id",
 	"net",
 	"routing",
 ]
@@ -28,6 +30,7 @@ dpdk-sys = { path = "./dpdk-sys" }
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper" }
 dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", version = "1.0.0" }
 errno = { path = "./errno", package = "dataplane-errno" }
+id = { path = "./id", package = "dataplane-id" }
 net = { path = "./net" }
 routing = { path = "./routing" }
 
@@ -53,6 +56,7 @@ thiserror = { version = "2.0.12", default-features = false, features = [] }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
 tracing-subscriber = { version = "0.3.19", default-features = false, features = [] }
 tracing-test = { version = "0.2.5", default-features = false, features = [] }
+uuid = { version = "1.15.1", default-features = false, features = [] }
 
 [profile.dev]
 panic = "unwind"
