@@ -3,6 +3,7 @@
 
 //! Module that implements Display for routing objects
 
+use crate::adjacency::{Adjacency, AdjacencyTable};
 use crate::encapsulation::Encapsulation;
 use crate::interface::{IfDataDot1q, IfDataEthernet, IfState, IfTable, IfType, Interface};
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
@@ -446,5 +447,44 @@ impl Display for Vtep {
         } else {
             writeln!(f, " Mac address: unset")
         }
+    }
+}
+
+//========================= Adjacencies ================================//
+macro_rules! ADJ_TBL_FMT {
+    () => {
+        " {:<10} {:<20} {:<18}"
+    };
+}
+fn fmt_adjacency_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    writeln!(
+        f,
+        "{}",
+        format_args!(ADJ_TBL_FMT!(), "ifindex", "address", "mac")
+    )
+}
+
+impl Display for Adjacency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            format_args!(
+                ADJ_TBL_FMT!(),
+                self.get_ifindex(),
+                self.get_ip(),
+                self.get_mac()
+            )
+        )
+    }
+}
+impl Display for AdjacencyTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Heading(format!("Adjacency table ({})", self.len())).fmt(f)?;
+        fmt_adjacency_heading(f)?;
+        for a in self.values() {
+            writeln!(f, "{}", a)?
+        }
+        Ok(())
     }
 }
