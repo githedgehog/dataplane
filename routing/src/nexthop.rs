@@ -5,9 +5,10 @@
 //! refer to other objects like Encapsulation.
 
 use crate::encapsulation::Encapsulation;
+use crate::vrf::Vrf;
+
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
-pub use std::collections::BTreeSet;
-use std::collections::btree_set;
+use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::net::IpAddr;
@@ -15,6 +16,7 @@ use std::option::Option;
 #[cfg(test)]
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
+use tracing::{error, trace};
 
 #[derive(Debug)]
 /// A collection of unique next-hops. Next-hops are identified by a next-hop key
@@ -153,10 +155,44 @@ impl Nhop {
     ///     the 'routing resolution' semantic is implicitly assumed in the functions that allow resolving
     ///     nexthops from such references. In other words, the "resolution" in this module will be as (in)
     ///     correct as those with explicit recursion, as long as the references are kept up to date.
+    ///   * **WARNING**: This method takes a lock for writing on the resolvers
     //////////////////////////////////////////////////////////////////////////////////////////////////////
     pub fn add_resolver(&self, resolver: Arc<Nhop>) -> &Self {
         self.resolvers.write().expect("poisoned").push(resolver);
         self
+    }
+
+    /// Resolve a next-hop with a VRF, non-recursively, assuming that its resolvers are resolved already
+    /// **WARNING**: This method takes a lock for writing on the resolvers
+    pub fn lazy_resolve(&self, vrf: &Vrf) {
+        if self.key.ifindex.is_some() || self.key.fwaction == FwAction::Drop {
+            return;
+        }
+        if let Some(a) = self.key.address {
+            trace!("Resolving {} with vrf '{}' (Id {})", a, vrf.name, vrf.vrfid);
+            if let Ok(mut resolvers) = self.resolvers.write() {
+                resolvers.clear();
+                let (prefix, route) = vrf.lpm(&a);
+                trace!("matched route is for {}", prefix);
+                for nh in route.s_nhops.iter() {
+                    if *nh.rc == *self {
+                        error!(
+                            "Warning next-hop resolution loop!: {} resolves with route to {} via {}",
+                            a, prefix, nh.rc
+                        );
+                        continue;
+                    }
+                    trace!("Adding resolver {nh}");
+                    // N.B. here we don't call self.add_resolver() since that takes a write lock
+                    // and we have already taken it here. Better to take it here and not per resolver.
+                    resolvers.push(nh.rc.clone());
+                }
+            } else {
+                panic!("Poisoned");
+            }
+        } else {
+            // nothing to do
+        }
     }
 
     /// Auxiliary recursive method used by Nhop::quick_resolve().
@@ -325,7 +361,7 @@ impl NhopStore {
     //////////////////////////////////////////////////////////////////
     /// Iterate over all next-hops in the next-hop store
     //////////////////////////////////////////////////////////////////
-    pub(crate) fn iter(&self) -> btree_set::Iter<'_, Arc<Nhop>> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Arc<Nhop>> {
         self.0.iter()
     }
 
