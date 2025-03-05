@@ -25,29 +25,52 @@ impl Display for NhopKey {
             write!(f, " via {address}")?;
         }
         if let Some(ifindex) = self.ifindex {
-            write!(f, " interface:{ifindex}")?;
+            write!(f, " interface {ifindex}")?;
         }
         if let Some(encap) = self.encap {
-            write!(f, " encap:{encap}")?;
+            write!(f, " encap {encap}")?;
         }
         if self.fwaction != FwAction::Forward {
-            write!(f, " action:{:?}", self.fwaction)?;
+            write!(f, " action {:?}", self.fwaction)?;
         }
         Ok(())
     }
 }
 impl Display for Nhop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.key, f)
+        writeln!(f, "{}", self.key)?;
+        fmt_nhop_resolvers(f, self, 1)
     }
 }
 
+fn fmt_nhop_resolvers(f: &mut std::fmt::Formatter<'_>, rc: &Nhop, depth: u8) -> std::fmt::Result {
+    let resolvers = rc.resolvers.read().expect("poisoned");
+    let tab = 6 * depth as usize;
+    let indent = String::from_utf8(vec![b' '; tab]).unwrap();
+    if !resolvers.is_empty() {
+        for r in resolvers.iter() {
+            writeln!(f, "{} {}", indent, r.key)?;
+            fmt_nhop_resolvers(f, r, depth + 1)?;
+        }
+    }
+    Ok(())
+}
+
+// formats nhop using the display of the key, recoursing over resolvers
+// Does not use Nhop::fmt().
 fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Arc<Nhop>, depth: u8) -> std::fmt::Result {
     let tab = 8 * depth as usize;
     let indent = String::from_utf8(vec![b' '; tab]).unwrap();
 
     let sym = if depth == 0 { "NH" } else { "ref" };
-    writeln!(f, "{} ({}) {} = {}", indent, Arc::strong_count(rc), sym, rc)?;
+    writeln!(
+        f,
+        "{} ({}) {} = {}",
+        indent,
+        Arc::strong_count(rc),
+        sym,
+        rc.key
+    )?;
 
     for r in rc.resolvers.read().expect("poisoned").iter() {
         fmt_nhop_rec(f, r, depth + 1)?;
@@ -66,7 +89,7 @@ impl Display for NhopStore {
 
 impl Display for ShimNhop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.rc.fmt(f) // Nhop, which displays NhopKey
+        self.rc.fmt(f) // Nhop, which displays NhopKey only
     }
 }
 impl Display for Encapsulation {
