@@ -66,7 +66,7 @@ impl Default for Route {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShimNhop {
-    pub shim: VrfId,
+    pub ext_vrf: Option<VrfId>,
     pub rc: Arc<Nhop>,
 }
 
@@ -155,10 +155,16 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     fn register_shared_nhops(&mut self, route: &mut Route, nhops: &[RouteNhop]) {
         for nhop in nhops {
-            // shim next-hop created here
             let shared = self.register_shared_nhop(nhop);
+            let ext_vrf = if nhop.vrfid != self.vrfid {
+                Some(nhop.vrfid)
+            } else {
+                None
+            };
+
+            // shim next-hop created here
             let shim = ShimNhop {
-                shim: nhop.vrfid,
+                ext_vrf,
                 rc: shared,
             };
             route.s_nhops.push(shim);
