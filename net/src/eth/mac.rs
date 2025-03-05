@@ -141,6 +141,17 @@ impl Display for Mac {
         )
     }
 }
+impl Display for SourceMac {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.inner().fmt(f)
+    }
+}
+impl Display for DestinationMac {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.inner().fmt(f)
+    }
+}
+
 /// A [`Mac`] which is legal as a source in an ethernet header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
