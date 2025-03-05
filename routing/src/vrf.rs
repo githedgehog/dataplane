@@ -342,7 +342,7 @@ pub mod tests {
     use crate::interface::IfIndex;
     use crate::vrf::VrfId;
     use crate::nexthop::{FwAction, NhopKey};
-    use crate::encapsulation::Encapsulation;
+    use crate::encapsulation::{Encapsulation, VxlanEncapsulation};
 
     #[test]
     fn test_vrf_build() {
@@ -558,6 +558,98 @@ pub mod tests {
         let only_bgp: RouteV4Filter= Box::new(|(_, route): &(&Ipv4Prefix, &Route)| {route.origin == RouteOrigin::Bgp});
         let filtered  = vrf.filter_v4(&only_bgp);
         assert_eq!(filtered.count(), 1);
+    }
+
+    fn add_vxlan_route(vrf: &mut Vrf, dst: (&str, u8), vni: u32) {
+        let route: Route = build_test_route(RouteOrigin::Bgp, 0, 1);
+        let nhop = build_test_nhop(
+            Some("7.0.0.1"),
+            None,
+            0,
+            Some(Encapsulation::Vxlan(VxlanEncapsulation::new(
+                Vni::new_checked(vni).expect("Should be ok"),
+                IpAddr::from_str("7.0.0.1").unwrap(),
+            ))),
+        );
+        let prefix = Prefix::from(dst);
+        vrf.add_route(&prefix, route, &[nhop]);
+    }
+    fn add_vxlan_routes(vrf: &mut Vrf, num_routes: u32) {
+        for n in 0..num_routes {
+            add_vxlan_route(vrf, (format!("192.168.{n}.0").as_str(), 24), 3000+n);
+        }
+    }
+
+    #[test]
+    fn test_vrf_lazy_nhop_resolution() {
+        // WIP
+        let mut vrf = Vrf::new("Default", 0);
+
+        {
+            let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
+            let nhop = build_test_nhop(None, Some(1), 0, None);
+            let prefix = Prefix::from(("10.0.0.0", 30));
+            vrf.add_route(&prefix, route, &[nhop]);
+        }
+
+        {
+            let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
+            let nhop = build_test_nhop(None, Some(2), 0, None);
+            let prefix = Prefix::from(("10.0.0.4", 30));
+            vrf.add_route(&prefix, route, &[nhop]);
+        }
+
+        {
+            let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
+            let nhop = build_test_nhop(None, Some(3), 0, None);
+            let prefix = Prefix::from(("10.0.0.8", 30));
+            vrf.add_route(&prefix, route, &[nhop]);
+        }
+
+        {
+            let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
+            let n1 = build_test_nhop(Some("10.0.0.1"), None, 0, Some(Encapsulation::Mpls(8001)));
+            let n2 = build_test_nhop(Some("10.0.0.5"), None, 0, Some(Encapsulation::Mpls(8005)));
+            let prefix = Prefix::from(("8.0.0.1", 32));
+            vrf.add_route(&prefix, route, &[n1, n2]);
+        }
+
+        {
+            let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
+            let n2 = build_test_nhop(Some("10.0.0.5"), None, 0, Some(Encapsulation::Mpls(8005)));
+            let n3 = build_test_nhop(Some("10.0.0.9"), None, 0, Some(Encapsulation::Mpls(8009)));
+            let prefix = Prefix::from(("8.0.0.2", 32));
+            vrf.add_route(&prefix, route, &[n2, n3]);
+        }
+
+        {
+            let route: Route = build_test_route(RouteOrigin::Bgp, 0, 1);
+            let n1 = build_test_nhop(Some("8.0.0.1"), None, 0, Some(Encapsulation::Mpls(7000)));
+            let n2 = build_test_nhop(Some("8.0.0.2"), None, 0, Some(Encapsulation::Mpls(7000)));
+            let prefix = Prefix::from(("7.0.0.1", 32));
+            vrf.add_route(&prefix, route, &[n1, n2]);
+        }
+
+        add_vxlan_routes(&mut vrf, 1);
+
+        vrf.dump(Some("With next-hops lazily resolved on addition"));
+
+        let encap = Some(Encapsulation::Vxlan(VxlanEncapsulation::new(
+            Vni::new_checked(3000).expect("Should be ok"),
+            IpAddr::from_str("7.0.0.1").unwrap(),
+        )));
+
+        let nhkey = NhopKey {
+            address: Some(build_address("7.0.0.1")),
+            ifindex: None,
+            encap,
+            fwaction: FwAction::default(),
+        };
+
+        let _nhop = vrf.nhstore.get_nhop(&nhkey).expect("Should be there");
+        /* Todo: finish test */
+
+
     }
 
 }
