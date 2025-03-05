@@ -144,7 +144,10 @@ impl Vrf {
     #[inline(always)]
     #[must_use]
     fn register_shared_nhop(&mut self, nhop: &RouteNhop) -> Arc<Nhop> {
-        self.nhstore.add_nhop(&nhop.key)
+        let arc_nh = self.nhstore.add_nhop(&nhop.key);
+        // resolve the next-hop lazily
+        arc_nh.lazy_resolve(self);
+        arc_nh
     }
 
     /////////////////////////////////////////////////////////////////////////
