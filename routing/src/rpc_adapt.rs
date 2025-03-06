@@ -37,6 +37,15 @@ impl From<&VxlanEncap> for VxlanEncapsulation {
         VxlanEncapsulation {
             vni: Vni::new_checked(vxlan.vni).expect("Invalid Vni"),
             remote: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            // Note: local, smac and dmac are never set in nhops, because they may not
+            // be known when the next-hop is added (local may) and the encapsulation
+            // is part of the next-hop key which should be immutable for keying purposes.
+            // We ALWAYS set them to None when learning about next-hops via the CPI.
+            // This happens because we want to reuse the VxlanEncapsulation type for other
+            // purposes outside the Nhops. An alternative is to define yet another type.
+            local: None,
+            smac: None,
+            dmac: None,
         }
     }
 }
