@@ -2,6 +2,40 @@
 // Copyright Open Network Fabric Authors
 
 #![allow(dead_code)]
+#![allow(rustdoc::private_doc_tests)]
+
+//! Network Address Translation (NAT) for the dataplane
+//!
+//! This module implements a [`NetworkFunction`] that provides Network Address
+//! Translation (NAT) functionality, either source or destination.
+//!
+//! # Example
+//!
+//! ```
+//! let mut nat = Nat::new::<TestBuffer>(NatDirection::SrcNat, NatMode::Stateless);
+//! let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
+//! let packets_out: Vec<_> = nat.process(packets).collect();
+//!
+//! let hdr0_out = &packets_out[0]
+//!     .try_ipv4()
+//!     .expect("Failed to get IPv4 header");
+//! ```
+//!
+//! # Limitations
+//!
+//! The module is subject to the following limitations:
+//!
+//! - Only stateless NAT is supported (no stateful NAT)
+//! - Only NAT44 is supported (no NAT46, NAT64, or NAT66)
+//! - Either source or destination NAT is supported, only one at a time, by a
+//!   given [`Nat`] object. To perform NAT for different address fields, instantiate
+//!   multiple [`Nat`] objects.
+//! - PIFs mixing IPv4 and IPv6 endpoints or list of exposed IPs are not
+//!   supported
+//! - For a given PIF used for NAT, the number of IP addresses covered by the
+//!   full set of (VPC-internal) endpoint prefixes must be equal to the number of
+//!   IP addresses covered by the full set of externally-exposed IP prefixes; this
+//!   is in order to make the 1:1 address mapping work.
 
 mod fabric;
 mod iplist;
@@ -31,6 +65,13 @@ struct GlobalContext {
     peerings: HashMap<String, PeeringPolicy>,
 }
 
+/// An object containing the [`Nat`] object state, not in terms of stateful NAT
+/// processing, but instead holding references to the different fabric objects
+/// that the [`Nat`] component uses, namely VPCs and their PIFs, and peering
+/// interfaces.
+///
+/// This context will likely change and be shared with other components in the
+/// future.
 impl GlobalContext {
     #[tracing::instrument(level = "trace")]
     fn new() -> Self {
@@ -96,6 +137,8 @@ impl GlobalContext {
     }
 }
 
+/// A helper to retrieve the source IP address from a [`Net`] object,
+/// independently of the IP version.
 #[tracing::instrument(level = "trace")]
 fn get_src_addr(net: &Net) -> IpAddr {
     match net {
@@ -104,6 +147,8 @@ fn get_src_addr(net: &Net) -> IpAddr {
     }
 }
 
+/// A helper to retrieve the destination IP address from a [`Net`] object,
+/// independently of the IP version.
 #[tracing::instrument(level = "trace")]
 fn get_dst_addr(net: &Net) -> IpAddr {
     match net {
@@ -112,21 +157,29 @@ fn get_dst_addr(net: &Net) -> IpAddr {
     }
 }
 
+/// Indicates whether a [`Nat`] processor should perform source NAT or destination
+/// NAT.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum NatDirection {
+pub enum NatDirection {
     #[allow(dead_code)]
+    /// Source NAT
     SrcNat,
     #[allow(dead_code)]
+    /// Destination NAT
     DstNat,
 }
 
+/// Indicates whether a [`Nat`] processor should perform stateless or stateful NAT.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum NatMode {
+pub enum NatMode {
     Stateless,
     #[allow(dead_code)]
     Stateful,
 }
 
+/// A NAT processor, implementing the [`NetworkFunction`] trait. [`Nat`] processes
+/// packets to run source or destination Network Address Translation (NAT) on
+/// their IP addresses.
 #[derive(Debug)]
 pub struct Nat {
     context: GlobalContext,
@@ -135,6 +188,9 @@ pub struct Nat {
 }
 
 impl Nat {
+    /// Creates a new [`Nat`] processor. The `direction` indicates whether this
+    /// processor should perform source or destination NAT. The `mode` indicates
+    /// whether this processor should perform stateless or stateful NAT.
     #[tracing::instrument(level = "trace")]
     pub fn new<Buf: PacketBufferMut>(direction: NatDirection, mode: NatMode) -> Self {
         let context = GlobalContext::new();
@@ -145,11 +201,13 @@ impl Nat {
         }
     }
 
+    /// Temporary, expect this to be removed in the future.
     #[tracing::instrument(level = "trace")]
     pub fn add_vpc(&mut self, vni: Vni, vpc: Vpc) {
         self.context.insert_vpc(vni, vpc);
     }
 
+    /// Temporary, expect this to be removed in the future.
     #[tracing::instrument(level = "trace")]
     pub fn add_peering_policy(&mut self, pp: PeeringPolicy) {
         self.context.peerings.insert(pp.name().clone(), pp);
@@ -185,6 +243,8 @@ impl Nat {
         true
     }
 
+    /// From the destination IP address contained in `net`, finds the
+    /// destination PIF for the packet.
     #[tracing::instrument(level = "trace")]
     fn find_dst_pif(&self, net: &Net) -> Option<&Pif> {
         self.context
@@ -192,6 +252,21 @@ impl Nat {
             .and_then(|name| self.context.find_pif_by_name(&name))
     }
 
+    /// Finds the two [`IpList`] objects necessary to perform _source_ NAT on the
+    /// packet represented by the network header `net`. These objects represent
+    /// two lists of IP addresses, such that the NAT operation translates one IP
+    /// from the first list to one in the second list.
+    ///
+    /// To find these ranges:
+    ///
+    /// - First we lookup for the destination PIF, based on the destination IP
+    ///   address.
+    /// - Then we derive the source PIF from the destination PIF and source IP
+    ///   address (see [`GlobalContext::find_src_pif()`]).
+    /// - At last, we get the relevant NAT ranges from the source PIF:
+    ///     - For the initial range, the list of endpoints from the source PIF.
+    ///     - For the target range, the list of publicly-exposed IP addresses from
+    ///       the source PIF.
     #[tracing::instrument(level = "trace")]
     fn find_src_nat_ranges(&self, net: &Net, vni_opt: Option<Vni>) -> Option<(IpList, IpList)> {
         // For now we don't support NAT if we don't have a VNI
@@ -206,6 +281,16 @@ impl Nat {
         Some((current_range, target_range))
     }
 
+    /// Finds the two [`IpList`] objects necessary to perform _destination NAT_ on
+    /// the packet represented by the network header `net`. These objects
+    /// represent two lists of IP addresses, such that the NAT operation
+    /// translates one IP from the first list to one in the second list.
+    ///
+    /// These ranges are:
+    ///
+    /// - For the initial range, the list of publicly-exposed IP addresses from
+    ///   the destination PIF.
+    /// - For the target range, the list of endpoints from the destination PIF.
     #[tracing::instrument(level = "trace")]
     fn find_dst_nat_ranges(&self, net: &Net) -> Option<(IpList, IpList)> {
         let dst_pif = self.find_dst_pif(net)?;
@@ -222,6 +307,8 @@ impl Nat {
         }
     }
 
+    /// Applies network address translation to a packet, knowing the current and
+    /// target ranges.
     #[tracing::instrument(level = "trace")]
     fn translate(
         &self,
@@ -259,6 +346,9 @@ impl Nat {
         Some(())
     }
 
+    /// Processes one packet. This is the main entry point for processing a
+    /// packet. This is also the function that we pass to [`Nat::process`] to
+    /// iterate over packets.
     fn process_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
         if !self.nat_supported() {
             return;

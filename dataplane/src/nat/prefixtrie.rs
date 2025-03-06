@@ -1,18 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+//! This submodule provides an IP version-independent trie data structure, to
+//! associate values to IP prefixes.
+
 use iptrie::map::RTrieMap;
 use iptrie::{Ipv4Prefix, Ipv6Prefix};
 use routing::prefix::Prefix;
 use std::fmt::Debug;
 use std::net::IpAddr;
 
+/// Error type for [`PrefixTrie`] operations.
 #[derive(thiserror::Error, Debug)]
 pub enum TrieError {
     #[error("entry already exists")]
     EntryExists,
 }
 
+/// A [`PrefixTrie`] is a data structure that stores a set of IP prefixes and
+/// their associated [`String`] values, independent of the IP address family.
+///
+/// It is used to efficiently look up the value associated with a given IP
+/// address.
+///
+/// Internally, it relies on two different tries, one for IPv4 and one for IPv6.
 #[derive(Default, Clone)]
 pub struct PrefixTrie {
     trie_ipv4: RTrieMap<Ipv4Prefix, String>,
@@ -20,6 +31,7 @@ pub struct PrefixTrie {
 }
 
 impl PrefixTrie {
+    /// Creates a new [`PrefixTrie`].
     #[tracing::instrument(level = "trace")]
     pub fn new() -> Self {
         Self {
@@ -28,6 +40,9 @@ impl PrefixTrie {
         }
     }
 
+    /// Inserts a new IPv4 prefix and its associated value into the trie.
+    ///
+    /// Note: This method is not thread-safe.
     pub fn insert_ipv4(&mut self, prefix: Ipv4Prefix, value: String) -> Result<(), TrieError> {
         // Insertion always succeeds even if the key already in the map.
         // So we first need to ensure the key is not already in use.
@@ -40,6 +55,9 @@ impl PrefixTrie {
         Ok(())
     }
 
+    /// Inserts a new IPv6 prefix and its associated value into the trie.
+    ///
+    /// Note: This method is not thread-safe.
     pub fn insert_ipv6(&mut self, prefix: Ipv6Prefix, value: String) -> Result<(), TrieError> {
         // See comment for IPv4
         if self.trie_ipv6.get(&prefix).is_some() {
@@ -49,6 +67,9 @@ impl PrefixTrie {
         Ok(())
     }
 
+    /// Inserts a new prefix and its associated value into the trie.
+    ///
+    /// Note: This method is not thread-safe.
     #[tracing::instrument(level = "trace")]
     pub fn insert(&mut self, prefix: &Prefix, value: String) -> Result<(), TrieError> {
         match prefix {
@@ -57,6 +78,7 @@ impl PrefixTrie {
         }
     }
 
+    /// Looks up for the value associated with the given prefix.
     #[tracing::instrument(level = "trace")]
     pub fn find(&self, prefix: &Prefix) -> Option<String> {
         match prefix {
@@ -83,6 +105,7 @@ impl PrefixTrie {
         }
     }
 
+    /// Looks up for the value associated with the given IP address.
     #[tracing::instrument(level = "trace")]
     pub fn find_ip(&self, ip: &IpAddr) -> Option<String> {
         match ip {

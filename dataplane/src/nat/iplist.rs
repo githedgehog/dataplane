@@ -1,26 +1,91 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+//! A data structure interface presenting a list of IP prefixes as a flat list
+//! of IP addresses.
+
 use iptrie::IpPrefix;
 use routing::prefix::Prefix;
 use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+/// Type for an [`IpList`] object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpListType {
+    /// IPv4
     Ipv4,
+    /// IPv6
     Ipv6,
+    /// Type yet to be determined
     Unknown,
 }
 
-// This struct represents a list of IP addresses. Internally, it is a collection
-// of IP prefixes (CIDRs). But the representation here is that of a flat list of
-// addresses. Addresses have an index in that list, although they may not be
-// ordered by numerical value.
-//
-// The idea if to provide a way to do a 1:1 mapping between two lists of the
-// same size, by finding the offset of an IP in one list, and retrieving the IP
-// at the same offset in the second list.
+/// This struct represents a list of IP addresses. Internally, it is a
+/// collection of IP prefixes (CIDRs). But the representation here is that of a
+/// flat list of addresses. Addresses have an index in that list, although they
+/// may not be ordered by numerical value.
+///
+/// The idea if to provide a way to establish a 1:1 mapping between two lists of
+/// the same size, by finding the offset of an IP in one list, and retrieving
+/// the IP at the same offset in the second list.
+///
+/// One typical use case is to provide a way to perform a 1:1 mapping between
+/// two IP lists of the same size, such as for stateless NAT.
+///
+/// Consider for example the following two lists of IP prefixes:
+///
+/// ```text
+/// Initial set                               Target set
+/// +--------------------+                    +--------------------+
+/// |                    |                    |                    |
+/// | +----------------+ |                    | +----------------+ |
+/// | |    10.1.0.0/16 | |                    | | 192.168.1.0/24 | |
+/// | +----------------+ |                    | +----------------+ |
+/// |                    |  NAT must provide  |                    |
+/// | +----------------+ |   a mapping here   | +----------------+ |
+/// | |    10.0.5.0/24 | | -----------------> | |   10.10.0.0/16 | |
+/// | +----------------+ |                    | +----------------+ |
+/// |                    |                    |                    |
+/// | +----------------+ |                    | +----------------+ |
+/// | |    10.2.0.0/30 | |                    | |    10.8.0.0/31 | |
+/// | +----------------+ |                    | +----------------+ |
+/// |                    |                    |                    |
+/// |                    |                    | +----------------+ |
+/// |                    |                    | |    10.8.1.0/31 | |
+/// |                    |                    | +----------------+ |
+/// |                    |                    |                    |
+/// +--------------------+                    +--------------------+
+/// ```
+///
+/// Mapping an IP from the initial set to one from the target set is
+/// non-trivial, because we don't necessarily have a correspondence between the
+/// sizes of the prefixes in the two sets. To ease the mapping process, we
+/// introduce the [`IpList`] abstraction: it flattens the sets of endpoints into
+/// lists of IP addresses. The example above becomes:
+///
+/// ```text
+/// Initial set                                    Target set
+/// +---------------+                              +---------------+
+/// |               |                              |               |
+/// |      10.1.0.0 | 10.1.0.1 maps to 192.168.1.1 |   192.168.1.0 |
+/// |      10.1.0.1 | ---------------------------> |   192.168.1.1 |
+/// |         ...   |                              |         ...   |
+/// |  10.1.255.255 |                              | 192.168.1.255 |
+/// |      10.0.5.0 |                              |     10.10.0.0 |
+/// |         ...   |                              |         ...   |
+/// |    10.0.5.255 |                              | 10.10.255.255 |
+/// |      10.2.0.0 |                              |      10.8.0.0 |
+/// |      10.2.0.1 |  10.2.0.1 maps to 10.8.1.0   |      10.8.0.1 |
+/// |      10.2.0.2 | ---------------------------> |      10.8.1.0 |
+/// |      10.2.0.3 |                              |      10.8.1.1 |
+/// |               |                              |               |
+/// +---------------+                              +---------------+
+/// ```
+///
+/// Note that the lists are ordered, but not sorted by equivalent numerical
+/// value. Internally the order corresponds to the order the prefixes were added
+/// to the sets, but the user of the interface should not assume any particular
+/// order.
 #[derive(Debug, Clone)]
 pub struct IpList {
     list_type: IpListType,
@@ -36,6 +101,7 @@ impl IpList {
         }
     }
 
+    /// Creates an [`IpList`] from an iterator of [`Prefix`] objects.
     pub fn from_prefixes<'a, I>(prefixes: I) -> Self
     where
         I: Iterator<Item = &'a Prefix>,
@@ -45,16 +111,25 @@ impl IpList {
         iplist
     }
 
+    /// Returns the number of IP addresses (including network and broadcast
+    /// addresses) contained in the [`IpList`].
     #[tracing::instrument(level = "trace")]
     pub fn length(&self) -> u128 {
         self.prefixes.iter().map(Prefix::size).sum()
     }
 
+    /// Returns the type of IP addresses contained in the [`IpList`].
     #[tracing::instrument(level = "trace")]
     pub fn list_type(&self) -> IpListType {
         self.list_type
     }
 
+    /// Adds a [`Prefix`] to the [`IpList`].
+    ///
+    /// # Panic
+    ///
+    /// Panics if the [`Prefix`] is not of the same IP version as the type of the
+    /// [`IpList`].
     #[tracing::instrument(level = "trace")]
     pub fn add_prefix(&mut self, prefix: Prefix) {
         match (self.list_type, &prefix) {
@@ -77,6 +152,12 @@ impl IpList {
         self.prefixes.push(prefix);
     }
 
+    /// Returns the offset of the given [`IpAddr`] in the [`IpList`].
+    ///
+    /// # Panic
+    ///
+    /// Panics if the [`IpAddr`] is not of the same IP version as the type of the
+    /// [`IpList`].
     #[tracing::instrument(level = "trace")]
     pub fn get_offset(&self, ip: &IpAddr) -> Option<u128> {
         fn offset_from_prefix(ip: &IpAddr, prefix: &Prefix) -> u128 {
@@ -100,6 +181,7 @@ impl IpList {
         None
     }
 
+    /// Returns the IP address at the given offset within the [`IpList`].
     #[tracing::instrument(level = "trace")]
     pub fn get_addr(&self, offset: u128) -> Option<IpAddr> {
         let mut n: u128 = 0;
