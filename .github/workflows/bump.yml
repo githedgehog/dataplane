@@ -104,19 +104,35 @@ jobs:
         id: upgrade
         run: |
           cargo update
+          cargo upgrade --incompatible=allow >> upgrade_output.tmp
+          nb_upgrades=$(cat upgrade_output.tmp | sed '0,/^====/d' | wc -l)
+
           echo "### :rocket: Upgrades available" > upgrade.log
-          echo "" >> upgrade.log
-          echo '```' >> upgrade.log
-          cargo upgrade --incompatible=allow  >> upgrade.log
-          echo '```' >> upgrade.log
-          echo "" >> upgrade.log
+
+          if [[ $nb_upgrades -gt 0 ]]; then
+              echo '' >> upgrade.log
+              echo '```' >> upgrade.log
+              cat upgrade_output.tmp >> upgrade.log
+              echo '```' >> upgrade.log
+          fi
+
+          echo '' >> upgrade.log
+          echo 'BREAKING CHANGE: This commit _may_ introduce breaking changes.' >> upgrade.log
+          echo '' >> upgrade.log
+          echo ':warning: This commit was automatically generated and should be carefully reviewed before acceptance.' >> upgrade.log
+
+          if [[ $nb_upgrades -gt 1 ]]; then
+              echo 'This commit includes multiple simultaneous upgrades, YOU SHOULD LIKELY REJECT IT.' >> upgrade.log
+              echo 'The affected versions should then be bumped in individual commits to aide bisection and ease revert.' >> upgrade.log
+          fi
+
           cat upgrade.log > "${GITHUB_STEP_SUMMARY}"
           {
             echo 'upgrade<<EOF';
             cat upgrade.log;
             echo 'EOF';
           } >> "${GITHUB_OUTPUT}"
-          rm upgrade.log
+          rm upgrade.log upgrade_output.tmp
       - name: "deny check (post)"
         run: |
           cargo deny check
@@ -130,19 +146,13 @@ jobs:
             dependencies
           signoff: "true"
           commit-message: |
-            bump(cargo)!: bump
-            
+            bump(cargo)!: bump dependencies
+
             ${{ steps.upgrade.outputs.upgrade }}
-            
-            BREAKING CHANGE: This commit _may_ introduce breaking changes.
 
           sign-commits: "true"
           body: |
             ${{ steps.upgrade.outputs.upgrade }}
-            
-            :warning: This commit was automatically generated and should be carefully reviewed before acceptance.
-            If this commit includes multiple simultaneous upgrades, it is likely that this commit should be rejected.
-            The affected versions should then be bumped in individual commits to aide bisection and ease revert.
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
