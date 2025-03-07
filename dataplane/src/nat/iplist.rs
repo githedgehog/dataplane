@@ -256,33 +256,35 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "Mixed IPv4 and IPv6 prefixes not supported")]
     fn test_incompatible_list_types_v4() {
         // Try adding a prefix of a different IP version
         build_v4_iplist().add_prefix(prefix_v6("aa::0/32"));
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "Prefix overlap not supported")]
     fn test_unsupported_overlap_v4() {
         // Try adding a prefix of a different IP version
         build_v4_iplist().add_prefix(prefix_v4("10.0.1.0/24"));
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "Prefix overlap not supported")]
     fn test_unsupported_overlap_v6() {
         // Try adding an overlapping prefix
         build_v6_iplist().add_prefix(prefix_v6("aa:11::/64"));
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "Mixed IPv4 and IPv6 prefixes not supported")]
     fn test_incompatible_list_types_v6() {
         // Try adding an overlapping prefix
         build_v6_iplist().add_prefix(prefix_v4("10.0.0.0/24"));
     }
 
+    // Hey Clippy, it's OK to have "+ 0" in sums to better understand how we compute the offsets
+    #[allow(clippy::identity_op)]
     #[test]
     fn test_iplist_v4() {
         let list = build_v4_iplist();
@@ -315,6 +317,8 @@ mod tests {
         assert_eq!(list.get_addr(3 * 4 + 256 + 1), None);
     }
 
+    // Hey Clippy, it's OK to have "+ 0" in sums to better understand how we compute the offsets
+    #[allow(clippy::identity_op)]
     #[test]
     fn test_iplist_v6() {
         let list = build_v6_iplist();

@@ -473,7 +473,7 @@ mod tests {
         let hdr0_out = &packets_out[0]
             .try_ipv4()
             .expect("Failed to get IPv4 header");
-        println!("L3 header: {:?}", hdr0_out);
+        println!("L3 header: {hdr0_out:?}");
         assert_eq!(hdr0_out.source().inner(), addr_v4("4.4.4.4"));
     }
 
@@ -496,7 +496,7 @@ mod tests {
         let hdr0_out = &packets_out[0]
             .try_ipv4()
             .expect("Failed to get IPv4 header");
-        println!("L3 header: {:?}", hdr0_out);
+        println!("L3 header: {hdr0_out:?}");
         assert_eq!(hdr0_out.destination(), addr_v4("8.8.8.4"));
     }
 }

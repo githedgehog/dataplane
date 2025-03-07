@@ -394,10 +394,10 @@ mod tests {
         // Serialize, deserialize
 
         let serialized = serde_yml::to_string(&vpc1).expect("Failed to serialize");
-        println!("{}", serialized);
+        println!("{serialized}");
 
         let deserialized: Vpc = serde_yml::from_str(&serialized).expect("Failed to deserialize");
-        println!("{:?}", deserialized);
+        println!("{serialized:?}");
 
         assert_eq!(deserialized.pif_table.pifs.len(), 1);
         assert_eq!(deserialized.get_pif(&"pif1".into()), Some(&pif1));
