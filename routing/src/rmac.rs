@@ -5,7 +5,6 @@
 
 use net::eth::mac::Mac;
 use net::vxlan::Vni;
-use std::collections::hash_map;
 use std::collections::{HashMap, hash_map::Entry};
 use std::net::IpAddr;
 
@@ -73,7 +72,7 @@ impl RmacStore {
     }
 
     /// iterator
-    pub fn values(&self) -> hash_map::Values<'_, (IpAddr, Vni), RmacEntry> {
+    pub fn values(&self) -> impl Iterator<Item = &RmacEntry> {
         self.0.values()
     }
 
@@ -138,21 +137,47 @@ impl Vtep {
 
 #[cfg(test)]
 #[allow(dead_code)]
-mod tests {
+pub(crate) mod tests {
     use super::{RmacStore, Vtep};
+    use crate::vrf::tests::mk_addr;
     use net::eth::mac::Mac;
     use net::vxlan::Vni;
-    use std::{net::IpAddr, str::FromStr};
 
     fn new_vni(value: u32) -> Vni {
         Vni::new_checked(value).unwrap()
+    }
+
+    pub fn build_sample_rmac_store() -> RmacStore {
+        let mut store = RmacStore::new();
+        let remote = mk_addr("7.0.0.1");
+        store.add_rmac(
+            new_vni(3000),
+            remote,
+            Mac::from([0x02, 0x0, 0x0, 0x0, 0x0, 0xaa]),
+        );
+        store.add_rmac(
+            new_vni(3001),
+            remote,
+            Mac::from([0x02, 0x0, 0x0, 0x0, 0x0, 0xbb]),
+        );
+        store.add_rmac(
+            new_vni(3002),
+            remote,
+            Mac::from([0x02, 0x0, 0x0, 0x0, 0x0, 0xcc]),
+        );
+        store
+    }
+    pub fn build_sample_vtep() -> Vtep {
+        let address = mk_addr("7.0.0.100");
+        let mac = Mac::from([0x02, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
+        Vtep::with_ip_and_mac(address, mac)
     }
 
     #[test]
     fn rmac_store_basic() {
         let mut store = RmacStore::new();
 
-        let remote = IpAddr::from_str("7.0.0.1").expect("Bad address");
+        let remote = mk_addr("7.0.0.1");
 
         store.add_rmac(
             new_vni(3001),
@@ -223,7 +248,7 @@ mod tests {
         let mut vtep = Vtep::new();
         assert_eq!(vtep.get_ip(), None);
         assert_eq!(vtep.get_mac(), None);
-        vtep.set_ip(IpAddr::from_str("172.16.128.1").expect("Bad address"));
+        vtep.set_ip(mk_addr("172.16.128.1"));
         assert!(vtep.get_ip().is_some());
         vtep.set_mac(Mac::from([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]));
         assert!(vtep.get_mac().is_some());

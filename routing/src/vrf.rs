@@ -6,6 +6,8 @@
 use std::hash::Hash;
 use std::iter::Filter;
 use std::net::IpAddr;
+use std::sync::Arc;
+use tracing::debug;
 
 use crate::nexthop::{Nhop, NhopKey, NhopStore};
 use crate::prefix::Prefix;
@@ -13,7 +15,6 @@ use crate::pretty_utils::Frame;
 use iptrie::map::RTrieMap;
 use iptrie::{Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
-use std::sync::Arc;
 
 /// Every VRF is univocally identified with a numerical VRF id
 pub type VrfId = u32;
@@ -139,6 +140,12 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     pub fn set_vni(&mut self, vni: Vni) {
         self.vni = Some(vni);
+        debug!(
+            "Vrf '{}'(Id {}) is now associated to vni {}",
+            self.name,
+            self.vrfid,
+            vni.as_u32()
+        );
     }
 
     #[inline(always)]
@@ -404,7 +411,7 @@ pub mod tests {
         vrf.dump(None);
     }
 
-    pub fn build_address(a: &str) -> IpAddr {
+    pub fn mk_addr(a: &str) -> IpAddr {
         IpAddr::from_str(a).expect("Bad address")
     }
 
@@ -415,7 +422,7 @@ pub mod tests {
         encap: Option<Encapsulation>,
     ) -> RouteNhop {
         let key = NhopKey::new(
-            address.map(build_address),
+            address.map(mk_addr),
             ifindex, encap,FwAction::Forward);
 
         RouteNhop {
@@ -496,8 +503,8 @@ pub mod tests {
             assert_eq!(best.metric, route.metric);
             assert_eq!(best.origin, route.origin);
             assert_eq!(best.s_nhops.len(), 2);
-            assert!(best.s_nhops.iter().any(|s| s.rc.key.address == Some(build_address("10.0.0.1")) && s.rc.key.ifindex == Some(1)));
-            assert!(best.s_nhops.iter().any(|s| s.rc.key.address == Some(build_address("10.0.0.2")) && s.rc.key.ifindex == Some(2)));
+            assert!(best.s_nhops.iter().any(|s| s.rc.key.address == Some(mk_addr("10.0.0.1")) && s.rc.key.ifindex == Some(1)));
+            assert!(best.s_nhops.iter().any(|s| s.rc.key.address == Some(mk_addr("10.0.0.2")) && s.rc.key.ifindex == Some(2)));
         }
         assert_eq!(vrf.len_v4(),  (1 + num_routes) as usize, "There must be default + the ones added");
         assert_eq!(vrf.nhstore.len(), 3usize,"There is drop + 2 nexthops shared by all routes");
@@ -586,9 +593,8 @@ pub mod tests {
         }
     }
 
-    #[test]
-    fn test_vrf_lazy_nhop_resolution() {
-        // WIP
+    // build a sample VRF used for testing
+    pub fn build_test_vrf() -> Vrf {
         let mut vrf = Vrf::new("Default", 0);
 
         {
@@ -638,24 +644,26 @@ pub mod tests {
 
         add_vxlan_routes(&mut vrf, 1);
 
-        vrf.dump(Some("With next-hops lazily resolved on addition"));
+        vrf.dump(Some("VRF With next-hops lazily resolved on addition"));
+        vrf
+    }
 
-        let encap = Some(Encapsulation::Vxlan(VxlanEncapsulation::new(
-            Vni::new_checked(3000).expect("Should be ok"),
-            IpAddr::from_str("7.0.0.1").unwrap(),
-        )));
+    #[test]
+    fn test_vrf_lazy_nhop_resolution() {
+        let vrf = build_test_vrf();
 
         let nhkey = NhopKey {
-            address: Some(build_address("7.0.0.1")),
+            address: Some(mk_addr("7.0.0.1")),
             ifindex: None,
-            encap,
+            encap: Some(Encapsulation::Vxlan(VxlanEncapsulation::new(
+                Vni::new_checked(3000).expect("Should be ok"),
+                IpAddr::from_str("7.0.0.1").unwrap(),
+            ))),
             fwaction: FwAction::default(),
         };
 
+        /* check how the next-hop has been resolved */
         let _nhop = vrf.nhstore.get_nhop(&nhkey).expect("Should be there");
         /* Todo: finish test */
-
-
     }
-
 }

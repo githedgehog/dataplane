@@ -230,7 +230,11 @@ impl RoutingDb {
 #[allow(dead_code)]
 mod tests {
     use super::*;
+    use crate::adjacency::tests::build_test_atable;
     use crate::interface::tests::build_test_iftable;
+    use crate::rmac::tests::{build_sample_rmac_store, build_sample_vtep};
+    use crate::route_processor::FibEntryGroup;
+    use crate::vrf::tests::{build_test_vrf, mk_addr};
 
     #[test]
     fn vrf_table() {
@@ -310,5 +314,56 @@ mod tests {
                 .get_vrf_by_vni(3000)
                 .is_err_and(|e| e == RouterError::NoSuchVrf),
         );
+    }
+
+    #[test]
+    fn test_vrf_fibgroup() {
+        let vrf = build_test_vrf();
+        let rmac_store = build_sample_rmac_store();
+        let iftable = build_test_iftable();
+        let vtep = build_sample_vtep();
+        let atable = build_test_atable();
+
+        {
+            // do lpm just to get access to a next-hop object
+            let (_prefix, route) = vrf.lpm(&mk_addr("192.168.0.1"));
+            let nhop = &route.s_nhops[0].rc;
+            println!("{}", nhop);
+
+            // build fib entry for next-hop
+            let mut fibgroup = nhop.as_fib_entry_group();
+            println!("{}", fibgroup);
+
+            fibgroup.resolve(&rmac_store, &vtep, &iftable, &atable);
+            println!("{}", fibgroup);
+        }
+
+        {
+            // do lpm just to get access several next-hop objects
+            let (_prefix, route) = vrf.lpm(&mk_addr("8.0.0.1"));
+
+            // we have to collect all fib entries
+            let mut fibgroup = FibEntryGroup::new();
+            for nhop in route.s_nhops.iter() {
+                fibgroup.append(&mut nhop.rc.as_fib_entry_group());
+            }
+
+            fibgroup.resolve(&rmac_store, &vtep, &iftable, &atable);
+            println!("{}", fibgroup);
+        }
+
+        {
+            // do lpm just to get access several next-hop objects
+            let (_prefix, route) = vrf.lpm(&mk_addr("7.0.0.1"));
+
+            // we have to collect all fib entries
+            let mut fibgroup = FibEntryGroup::new();
+            for nhop in route.s_nhops.iter() {
+                fibgroup.append(&mut nhop.rc.as_fib_entry_group());
+            }
+
+            fibgroup.resolve(&rmac_store, &vtep, &iftable, &atable);
+            println!("{}", fibgroup);
+        }
     }
 }
