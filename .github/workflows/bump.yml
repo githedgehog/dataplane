@@ -86,7 +86,6 @@ jobs:
         run: |
           cargo binstall -y cargo-edit # required to make `cargo upgrade` edit the Cargo.toml file
           cargo binstall -y cargo-deny
-          cargo binstall -y cargo-upgrades
       - name: "Checkout"
         uses: "actions/checkout@v4"
       - name: "deny check (pre)"
