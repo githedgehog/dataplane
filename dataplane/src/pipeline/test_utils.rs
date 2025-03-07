@@ -3,6 +3,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use crate::pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders, Passthrough};
+use crate::pipeline::{DynNetworkFunction, nf_dyn};
 use net::buffer::TestBuffer;
 use net::eth::Eth;
 use net::eth::ethtype::EthType;
@@ -10,13 +12,10 @@ use net::eth::mac::{DestinationMac, Mac, SourceMac};
 use net::headers::{Headers, Net};
 use net::ipv4::Ipv4;
 use net::ipv4::addr::UnicastIpv4Addr;
+use net::packet::{InvalidPacket, Packet};
 use net::parse::DeParse;
 use std::default::Default;
 use std::net::Ipv4Addr;
-
-use crate::packet::{InvalidPacket, Packet};
-use crate::pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders, Passthrough};
-use crate::pipeline::{DynNetworkFunction, nf_dyn};
 
 /// Generates an infinite sequence of network functions.
 ///
