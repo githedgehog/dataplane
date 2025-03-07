@@ -9,6 +9,7 @@ license = "Apache-2.0"
 clap = { workspace = true, features = ["derive"] }
 ctrlc = { workspace = true, features = ["termination"] }
 dpdk = { workspace = true }
+id = { workspace = true }
 iptrie = { workspace = true }
 dyn-iter = { workspace = true }
 net = { workspace = true, features = ["serde"] }
