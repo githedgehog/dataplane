@@ -12,6 +12,8 @@ use net::vxlan::Vni;
 
 use crate::rmac::{RmacEntry, RmacStore};
 use crate::routingdb::{RoutingDb, VrfTable};
+use crate::rpc_adapt::is_evpn_route;
+use crate::vrf::Vrf;
 use bytes::Bytes;
 use dplane_rpc::msg::*;
 use dplane_rpc::socks::RpcCachedSock;
@@ -19,8 +21,7 @@ use dplane_rpc::wire::*;
 use std::os::unix::net::SocketAddr;
 
 use std::path::Path;
-use std::sync::Arc;
-
+use std::sync::{Arc, RwLock};
 use tracing::{debug, error, trace, warn};
 
 /* convenience trait */
@@ -98,15 +99,35 @@ fn auto_learn_vrf(route: &IpRoute, db: &mut VrfTable) {
     }
 }
 
+fn get_vrf0<'a>(iproute: &IpRoute, vrftable: &'a VrfTable) -> Option<&'a Arc<RwLock<Vrf>>> {
+    if is_evpn_route(iproute) && iproute.vrfid != 0 {
+        match vrftable.get_vrf(0) {
+            Ok(vrfg) => Some(vrfg),
+            Err(e) => {
+                error!("Unable to access default vrf!: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    }
+}
+
 impl RpcOperation for IpRoute {
     type ObjectStore = VrfTable;
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         #[cfg(feature = "auto-learn")]
         auto_learn_vrf(&self, db);
 
+        let vrfg = get_vrf0(self, db);
+
         if let Ok(vrf) = db.get_vrf(self.vrfid) {
             if let Ok(mut vrf) = vrf.write() {
-                vrf.add_route_rpc(self);
+                if let Some(vrf0) = vrfg {
+                    vrf.add_route_rpc(self, vrf0.read().ok().as_deref());
+                } else {
+                    vrf.add_route_rpc(self, None);
+                }
                 RpcResultCode::Ok
             } else {
                 vrf.clear_poison();

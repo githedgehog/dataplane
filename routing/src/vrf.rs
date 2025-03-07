@@ -126,11 +126,13 @@ impl Vrf {
             &Prefix::root_v4(),
             Route::default(),
             &[RouteNhop::default()],
+            None,
         );
         vrf.add_route(
             &Prefix::root_v6(),
             Route::default(),
             &[RouteNhop::default()],
+            None,
         );
         vrf
     }
@@ -150,19 +152,28 @@ impl Vrf {
 
     #[inline(always)]
     #[must_use]
-    fn register_shared_nhop(&mut self, nhop: &RouteNhop) -> Arc<Nhop> {
+    fn register_shared_nhop(&mut self, nhop: &RouteNhop, vrf0: Option<&Vrf>) -> Arc<Nhop> {
         let arc_nh = self.nhstore.add_nhop(&nhop.key);
         // resolve the next-hop lazily
-        arc_nh.lazy_resolve(self);
+        if let Some(vrf0) = vrf0 {
+            arc_nh.lazy_resolve(vrf0);
+        } else {
+            arc_nh.lazy_resolve(self);
+        }
         arc_nh
     }
 
     /////////////////////////////////////////////////////////////////////////
     /// Register a shared next-hop for the route if not there
     /////////////////////////////////////////////////////////////////////////
-    fn register_shared_nhops(&mut self, route: &mut Route, nhops: &[RouteNhop]) {
+    fn register_shared_nhops(
+        &mut self,
+        route: &mut Route,
+        nhops: &[RouteNhop],
+        vrf0: Option<&Vrf>,
+    ) {
         for nhop in nhops {
-            let shared = self.register_shared_nhop(nhop);
+            let shared = self.register_shared_nhop(nhop, vrf0);
             let ext_vrf = if nhop.vrfid != self.vrfid {
                 Some(nhop.vrfid)
             } else {
@@ -197,20 +208,38 @@ impl Vrf {
     // Route Insertion
     /////////////////////////////////////////////////////////////////////////
     #[inline(always)]
-    fn add_route_v4(&mut self, prefix: &Ipv4Prefix, mut route: Route, nhops: &[RouteNhop]) {
-        self.register_shared_nhops(&mut route, nhops);
+    fn add_route_v4(
+        &mut self,
+        prefix: &Ipv4Prefix,
+        mut route: Route,
+        nhops: &[RouteNhop],
+        vrf0: Option<&Vrf>,
+    ) {
+        self.register_shared_nhops(&mut route, nhops, vrf0);
         self.routesv4.insert(*prefix, route);
     }
 
     #[inline(always)]
-    fn add_route_v6(&mut self, prefix: &Ipv6Prefix, mut route: Route, nhops: &[RouteNhop]) {
-        self.register_shared_nhops(&mut route, nhops);
+    fn add_route_v6(
+        &mut self,
+        prefix: &Ipv6Prefix,
+        mut route: Route,
+        nhops: &[RouteNhop],
+        vrf0: Option<&Vrf>,
+    ) {
+        self.register_shared_nhops(&mut route, nhops, vrf0);
         self.routesv6.insert(*prefix, route);
     }
-    pub fn add_route(&mut self, prefix: &Prefix, route: Route, nhops: &[RouteNhop]) {
+    pub fn add_route(
+        &mut self,
+        prefix: &Prefix,
+        route: Route,
+        nhops: &[RouteNhop],
+        vrf0: Option<&Vrf>,
+    ) {
         match prefix {
-            Prefix::IPV4(p) => self.add_route_v4(p, route, nhops),
-            Prefix::IPV6(p) => self.add_route_v6(p, route, nhops),
+            Prefix::IPV4(p) => self.add_route_v4(p, route, nhops, vrf0),
+            Prefix::IPV6(p) => self.add_route_v6(p, route, nhops, vrf0),
         }
     }
 
@@ -227,7 +256,7 @@ impl Vrf {
             if let Some(mut prior) = self.routesv4.insert(*prefix, Route::default()) {
                 self.deregister_shared_nexthops(&mut prior);
             }
-            self.add_route_v4(prefix, Route::default(), &[RouteNhop::default()]);
+            self.add_route_v4(prefix, Route::default(), &[RouteNhop::default()], None);
         } else if let Some(found) = &mut self.routesv4.remove(prefix) {
             self.deregister_shared_nexthops(found);
         }
@@ -241,7 +270,7 @@ impl Vrf {
             if let Some(mut prior) = self.routesv6.insert(*prefix, Route::default()) {
                 self.deregister_shared_nexthops(&mut prior);
             }
-            self.add_route_v6(prefix, Route::default(), &[RouteNhop::default()]);
+            self.add_route_v6(prefix, Route::default(), &[RouteNhop::default()], None);
         } else if let Some(found) = &mut self.routesv6.remove(prefix) {
             self.deregister_shared_nexthops(found);
         }
@@ -404,8 +433,8 @@ pub mod tests {
         check_default_drop_v6(&vrf);
 
         /* Overwrite is safe */
-        vrf.add_route(&pref_v4, Route::default(), &[RouteNhop::default()]);
-        vrf.add_route(&pref_v6, Route::default(), &[RouteNhop::default()]);
+        vrf.add_route(&pref_v4, Route::default(), &[RouteNhop::default()], None);
+        vrf.add_route(&pref_v6, Route::default(), &[RouteNhop::default()], None);
         check_default_drop_v4(&vrf);
         check_default_drop_v6(&vrf);
         vrf.dump(None);
@@ -448,7 +477,7 @@ pub mod tests {
         let prefix: Prefix = Prefix::root_v4();
         let route = build_test_route(RouteOrigin::Static, 1, 0);
         let nhop = build_test_nhop(Some("10.0.0.1"), None, 0, None);
-        vrf.add_route(&prefix, route, &[nhop]);
+        vrf.add_route(&prefix, route, &[nhop], None);
 
         assert_eq!(vrf.len_v4(), 1, "Should have replaced the default");
         vrf.dump(Some("With static IPv4 default non-drop route"));
@@ -469,7 +498,7 @@ pub mod tests {
         let prefix: Prefix = Prefix::root_v4();
         let route = build_test_route(RouteOrigin::Static, 1, 0);
         let nhop = build_test_nhop(Some("2001::1"), None, 0, None);
-        vrf.add_route(&prefix, route, &[nhop]);
+        vrf.add_route(&prefix, route, &[nhop], None);
 
         assert_eq!(vrf.len_v6(), 1, "Should have replaced the default");
         vrf.dump(Some("With static IPv6 default non-drop route"));
@@ -493,7 +522,7 @@ pub mod tests {
             let nh2 = build_test_nhop(Some("10.0.0.2"), Some(2), 0, None);
             let route = build_test_route(RouteOrigin::Ospf, 110, 20);
             let prefix = Prefix::expect_from((format!("7.0.0.{i}").as_str(), 32));
-            vrf.add_route(&prefix, route.clone() /* only test */, &[nh1, nh2]);
+            vrf.add_route(&prefix, route.clone() /* only test */, &[nh1, nh2], None);
 
             /* since route is /32, it should resolve to itself */
             let target = prefix.as_address();
@@ -542,21 +571,21 @@ pub mod tests {
         /* connected */
         let nh = build_test_nhop(None, Some(1), 0, None);
         let connected = build_test_route(RouteOrigin::Connected, 0, 1);
-        let prefix = Prefix::from(("10.0.0.1", 24));
-        vrf.add_route(&prefix, connected.clone() /* only test */, &[nh]);
+        let prefix = Prefix::expect_from(("10.0.0.1", 24));
+        vrf.add_route(&prefix, connected.clone() /* only test */, &[nh], None);
 
         /* ospf */
         let nh1 = build_test_nhop(Some("10.0.0.1"), Some(1), 0, None);
         let nh2 = build_test_nhop(Some("10.0.0.2"), Some(2), 0, None);
         let ospf = build_test_route(RouteOrigin::Ospf, 110, 20);
-        let prefix = Prefix::from(("7.0.0.1", 32));
-        vrf.add_route(&prefix, ospf.clone() /* only test */, &[nh1, nh2]);
+        let prefix = Prefix::expect_from(("7.0.0.1", 32));
+        vrf.add_route(&prefix, ospf.clone() /* only test */, &[nh1, nh2], None);
 
         /* bgp */
         let nh = build_test_nhop(Some("7.0.0.1"), None, 0, None);
         let bgp = build_test_route(RouteOrigin::Bgp, 20, 100);
-        let prefix = Prefix::from(("192.168.1.0", 24));
-        vrf.add_route(&prefix, bgp.clone() /* only test */, &[nh]);
+        let prefix = Prefix::expect_from(("192.168.1.0", 24));
+        vrf.add_route(&prefix, bgp.clone() /* only test */, &[nh], None);
 
         assert_eq!(vrf.len_v4(), 4, "There are 3 routes + drop");
 
@@ -584,8 +613,8 @@ pub mod tests {
                 IpAddr::from_str("7.0.0.1").unwrap(),
             ))),
         );
-        let prefix = Prefix::from(dst);
-        vrf.add_route(&prefix, route, &[nhop]);
+        let prefix = Prefix::expect_from(dst);
+        vrf.add_route(&prefix, route, &[nhop], None);
     }
     fn add_vxlan_routes(vrf: &mut Vrf, num_routes: u32) {
         for n in 0..num_routes {
@@ -600,46 +629,46 @@ pub mod tests {
         {
             let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
             let nhop = build_test_nhop(None, Some(1), 0, None);
-            let prefix = Prefix::from(("10.0.0.0", 30));
-            vrf.add_route(&prefix, route, &[nhop]);
+            let prefix = Prefix::expect_from(("10.0.0.0", 30));
+            vrf.add_route(&prefix, route, &[nhop], None);
         }
 
         {
             let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
             let nhop = build_test_nhop(None, Some(2), 0, None);
-            let prefix = Prefix::from(("10.0.0.4", 30));
-            vrf.add_route(&prefix, route, &[nhop]);
+            let prefix = Prefix::expect_from(("10.0.0.4", 30));
+            vrf.add_route(&prefix, route, &[nhop], None);
         }
 
         {
             let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
             let nhop = build_test_nhop(None, Some(3), 0, None);
-            let prefix = Prefix::from(("10.0.0.8", 30));
-            vrf.add_route(&prefix, route, &[nhop]);
+            let prefix = Prefix::expect_from(("10.0.0.8", 30));
+            vrf.add_route(&prefix, route, &[nhop], None);
         }
 
         {
             let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
             let n1 = build_test_nhop(Some("10.0.0.1"), None, 0, Some(Encapsulation::Mpls(8001)));
             let n2 = build_test_nhop(Some("10.0.0.5"), None, 0, Some(Encapsulation::Mpls(8005)));
-            let prefix = Prefix::from(("8.0.0.1", 32));
-            vrf.add_route(&prefix, route, &[n1, n2]);
+            let prefix = Prefix::expect_from(("8.0.0.1", 32));
+            vrf.add_route(&prefix, route, &[n1, n2], None);
         }
 
         {
             let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
             let n2 = build_test_nhop(Some("10.0.0.5"), None, 0, Some(Encapsulation::Mpls(8005)));
             let n3 = build_test_nhop(Some("10.0.0.9"), None, 0, Some(Encapsulation::Mpls(8009)));
-            let prefix = Prefix::from(("8.0.0.2", 32));
-            vrf.add_route(&prefix, route, &[n2, n3]);
+            let prefix = Prefix::expect_from(("8.0.0.2", 32));
+            vrf.add_route(&prefix, route, &[n2, n3], None);
         }
 
         {
             let route: Route = build_test_route(RouteOrigin::Bgp, 0, 1);
             let n1 = build_test_nhop(Some("8.0.0.1"), None, 0, Some(Encapsulation::Mpls(7000)));
             let n2 = build_test_nhop(Some("8.0.0.2"), None, 0, Some(Encapsulation::Mpls(7000)));
-            let prefix = Prefix::from(("7.0.0.1", 32));
-            vrf.add_route(&prefix, route, &[n1, n2]);
+            let prefix = Prefix::expect_from(("7.0.0.1", 32));
+            vrf.add_route(&prefix, route, &[n1, n2], None);
         }
 
         add_vxlan_routes(&mut vrf, 1);

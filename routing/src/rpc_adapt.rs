@@ -109,12 +109,22 @@ impl From<&Rmac> for RmacEntry {
 }
 
 #[allow(unused)]
+/// Util to tell if a route is EVPN - heuristic
+pub fn is_evpn_route(iproute: &IpRoute) -> bool {
+    if iproute.rtype != RouteType::Bgp || iproute.nhops.is_empty() {
+        false
+    } else {
+        matches!(iproute.nhops[0].encap, Some(NextHopEncap::VXLAN(_)))
+    }
+}
+
+#[allow(unused)]
 impl Vrf {
-    pub fn add_route_rpc(&mut self, iproute: &IpRoute) {
+    pub fn add_route_rpc(&mut self, iproute: &IpRoute, vrf0: Option<&Vrf>) {
         let prefix = Prefix::from((iproute.prefix, iproute.prefix_len));
         let route = Route::from(iproute);
         let nhops: Vec<RouteNhop> = iproute.nhops.iter().map(RouteNhop::from).collect();
-        self.add_route(&prefix, route, &nhops);
+        self.add_route(&prefix, route, &nhops, vrf0);
     }
     pub fn del_route_rpc(&mut self, route: &IpRoute) {
         let prefix = Prefix::from((route.prefix, route.prefix_len));
