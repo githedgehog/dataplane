@@ -147,7 +147,8 @@ jobs:
         if: "${{ matrix.rust.version != 'nightly' }}"
         name: "run clippy"
         run: |
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} cargo clippy
+          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} \
+            cargo clippy --all-targets --all-features -- -D warnings
         continue-on-error: ${{ matrix.rust.optional }}
 
       - id: "build_each_commit"
