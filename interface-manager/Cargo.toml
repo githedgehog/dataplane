@@ -11,7 +11,16 @@ serde = ["dep:serde"]
 [dependencies]
 id = { workspace = true }
 net = { workspace = true }
-thiserror = { workspace = true }
+
+futures = { workspace = true, features = ["default"] }
+macaddr = "1.0.1"
+netlink-packet-route = { workspace = true, features = ["rich_nlas"] }
+rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, optional = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
+netlink-sys = "*"
+nix = "*"
+
 
 arrayvec = { workspace = true }

@@ -7,6 +7,7 @@
 use arrayvec::ArrayVec;
 use interface_manager::IfIndex;
 use net::eth::mac::SourceMac;
+use net::vlan::Vid;
 use net::vxlan::Vni;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -19,27 +20,30 @@ pub struct EthernetNeighbor {
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
-pub enum EthernetNeighborState {
-    Failed,
-    Reachable,
-    Delay,
+pub struct VlanTunnel {
+    vid: Vid,
+    native: bool,
+    egress_untagged: bool,
 }
 
+pub enum VxlanNextHop {
+    Ip(IpAddr),
+    Group(L2NextHopGroup),
+}
+
+pub struct L2NextHopGroup {}
+
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
-pub struct VxlanNeighbor<Ip: IpLike = IpAddr> {
+pub struct VxlanNeighbor {
     eth: EthernetNeighbor,
+    vlan_tunnel: VlanTunnel,
     vni: Vni,
-    remote: Ip,
+    remote: IpAddr,
 }
 
 pub enum Neighbor {
     Eth(EthernetNeighbor),
     Vxlan(VxlanNeighbor),
-}
-
-pub struct Via {
-    address: Option<IpAddr>,
-    interface: Option<IfIndex>,
 }
 
 trait IpLike: Into<IpAddr> {}
@@ -48,11 +52,11 @@ impl IpLike for IpAddr {}
 impl IpLike for Ipv4Addr {}
 impl IpLike for Ipv6Addr {}
 
-impl<Ip: IpLike> AsRef<EthernetNeighbor> for VxlanNeighbor<Ip> {
-    fn as_ref(&self) -> &EthernetNeighbor {
-        &self.eth
-    }
-}
+// impl<Ip: IpLike> AsRef<EthernetNeighbor> for VxlanNeighbor<Ip> {
+//     fn as_ref(&self) -> &EthernetNeighbor {
+//         &self.eth
+//     }
+// }
 
 pub enum RouteStep {
     Via(IpAddr),
