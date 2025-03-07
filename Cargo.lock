@@ -379,6 +379,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "ctrlc",
+ "dataplane-id",
  "dpdk",
  "dyn-iter",
  "iptrie",
