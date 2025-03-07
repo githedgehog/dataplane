@@ -86,7 +86,6 @@ jobs:
         run: |
           cargo binstall -y cargo-edit # required to make `cargo upgrade` edit the Cargo.toml file
           cargo binstall -y cargo-deny
-          cargo binstall -y cargo-upgrades
       - name: "Checkout"
         uses: "actions/checkout@v4"
       - name: "deny check (pre)"
@@ -105,12 +104,12 @@ jobs:
         id: upgrade
         run: |
           cargo update
-          echo "### :rocket: Upgrades available" > upgrade.log
+          echo "### :rocket: Upgrades available" | tee -a upgrade.log
           echo "" >> upgrade.log
-          echo '```' >> upgrade.log
-          cargo upgrade --incompatible=allow  >> upgrade.log
-          echo '```' >> upgrade.log
-          echo "" >> upgrade.log
+          echo '```' | tee -a upgrade.log
+          cargo upgrade --incompatible=allow  | tee -a upgrade.log
+          echo '```' | tee -a upgrade.log
+          echo "" | tee -a upgrade.log
           cat upgrade.log > "${GITHUB_STEP_SUMMARY}"
           {
             echo 'upgrade<<EOF';
