@@ -1,4 +1,6 @@
 # Hedgehog Dataplane
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fgithedgehog%2Fdataplane.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fgithedgehog%2Fdataplane?ref=badge_shield)
+
 
 This repository contains the Dataplane for [Hedgehog's Open Network
 Fabric][fabric-docs]. This component acts as a gateway between different VPCs
@@ -172,3 +174,6 @@ To do this, add the following to your `.vscode/settings.json` file:
 
 The Dataplane of the Hedgehog Open Fabric Network is licensed under the
 [Apache License, Version 2.0](LICENSE).
+
+
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fgithedgehog%2Fdataplane.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fgithedgehog%2Fdataplane?ref=badge_large)
