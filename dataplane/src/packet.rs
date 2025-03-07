@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::packet_meta::{DropReason, PacketMeta};
+use crate::packet_meta::{DoneReason, PacketMeta};
 use net::buffer::PacketBufferMut;
 use net::eth::EthError;
 use net::headers::{AbstractHeaders, AbstractHeadersMut, Headers, TryHeaders, TryHeadersMut};
@@ -28,6 +28,7 @@ pub struct InvalidPacket<Buf: PacketBufferMut> {
     error: ParseError<EthError>,
 }
 
+#[allow(dead_code)]
 impl<Buf: PacketBufferMut> Packet<Buf> {
     pub fn new(mbuf: Buf) -> Result<Packet<Buf>, InvalidPacket<Buf>> {
         let (headers, consumed) = match Headers::parse(mbuf.as_ref()) {
@@ -55,14 +56,14 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         // to confirm.
 
         // warn if packet has a drop reason != Delivered
-        self.get_drop().inspect(|reason| {
-            if *reason != DropReason::Delivered {
+        self.get_done().inspect(|reason| {
+            if *reason != DoneReason::Delivered {
                 warn!("Serializing a packet that should be dropped");
             }
         });
 
         // set the drop action to delivered, since this is terminal.
-        self.pkt_drop(DropReason::Delivered);
+        self.done(DoneReason::Delivered);
 
         let needed = self.headers.size();
         let mut mbuf = self.take_buf().expect("Packet without buffer");
@@ -102,67 +103,51 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         }
     }
 
-    #[allow(dead_code)]
-    /// Explicitly mark a packet as done, indicating the reason.
-    pub fn pkt_drop(&mut self, reason: DropReason) {
-        if self.meta.drop.is_none() {
-            self.meta.drop = Some(reason);
+    /// Explicitly mark a packet as done, indicating the reason. Broadly, there are 2 types of reasons
+    ///  - The packet is to be dropped due to the indicated reason.
+    ///  - The packet has been processed and is marked as done to prevent later stages from processing it.
+    pub fn done(&mut self, reason: DoneReason) {
+        if self.meta.done.is_none() {
+            self.meta.done = Some(reason);
         }
     }
 
-    #[allow(dead_code)]
-    /// Tell if a packet has been marked as to be dropped.
-    pub fn dropped(&self) -> bool {
-        self.meta.drop.is_some()
+    /// This behaves like method `done()` but overwrites the reason or veredict. This is useful when a stage is
+    /// allowed, by design, to override the decisions taken by prior stages. For instance, a forwarding stage
+    /// may determine that the processing of a packet is completed and mark a packet as done in order to skip
+    /// other stages in the pipeline (like another forwarding stage). A subsequent firewalling stage should be
+    /// allowed to: 1) ignore the prior reason 2) override it (e.g. to drop the packet).
+    pub fn done_force(&mut self, reason: DoneReason) {
+        self.meta.done = Some(reason);
+    }
+
+    /// Remove the done marking for a packet
+    pub fn done_clear(&mut self) {
+        self.meta.done.take();
+    }
+
+    /// Tell if a packet has been marked as done.
+    pub fn is_done(&self) -> bool {
+        self.meta.done.is_some()
+    }
+
+    /// Get the reason why a packet has been marked as done.
+    pub fn get_done(&self) -> Option<DoneReason> {
+        self.meta.done
     }
 
     #[allow(dead_code)]
-    /// Get the reason why a packet has been dropped. One reason is Delivered,
-    /// so this should be read as the reason why a packet is no longer to be
-    /// processed.
-    pub fn get_drop(&self) -> Option<DropReason> {
-        self.meta.drop
-    }
-
-    #[allow(dead_code)]
-    /// Wraps a packet in an Option<Packet> depending on the metadata:
-    /// If the [`Packet`] is to be dropped, returns `None`.
-    /// Else, `Some(packet)`.
-    ///
-    /// This method consumes Self. If the packet was marked as
-    /// dropped, this will actually drop it.
-    /// The method is intended to use in NFs within closures of `filter_map()`
-    /// where internal processing functions need not return anything but signal
-    /// the desire to drop a packet by calling method[`pkt_drop()`].
-    /// ```
-    ///     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-    ///        &'a mut self,
-    ///        input: Input,
-    ///     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-    ///        input.filter_map(|mut packet| {
-    ///        some_function_that_may_drop_pkt(&mut packet);
-    ///        packet.fate()
-    ///    })
-    ///   }
-    /// ```
-    /// If a stage would opt not to drop a packet but defer this action, it should
-    /// simply replace `packet.fate()` by Some(packet). The packet annotation would
-    /// allow  dropping it later on. E.g. a pipeline could have a last stage that
-    /// could execute something like:
-    /// ```
-    ///        input.filter_map(|mut packet| packet.fate() )
-    /// ```
-    /// .. or a variation to collect statistics.
-    pub fn fate(self) -> Option<Self> {
-        if self.dropped() {
-            #[cfg(test)]
-            if self.meta.keep {
-                // ignore the request to drop and keep the packet instead.
-                return Some(self);
-            }
-            None
-        } else {
-            Some(self)
+    /// Wraps a packet in an `Option` depending on the metadata:
+    /// If [`Packet`] is to be dropped, returns `None`. Else, `Some`.
+    pub fn enforce(self) -> Option<Self> {
+        #[cfg(test)]
+        if self.meta.keep {
+            // ignore the request to drop and keep the packet instead.
+            return Some(self);
+        }
+        match self.get_done() {
+            Some(DoneReason::Delivered) | None => Some(self),
+            Some(_) => None,
         }
     }
 }
@@ -181,7 +166,7 @@ impl<Buf: PacketBufferMut> TryHeadersMut for Packet<Buf> {
 
 impl<Buf: PacketBufferMut> Drop for Packet<Buf> {
     fn drop(&mut self) {
-        if self.meta.drop.is_none() {
+        if self.meta.done.is_none() {
             error!("Dropped packet without specifying reason");
             // This should be a panic!(). Leaving it as just a log
             // until related features adopt this, if adopted.

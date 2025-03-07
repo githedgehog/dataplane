@@ -3,6 +3,7 @@
 
 use routing::vrf::VrfId;
 use std::collections::HashMap;
+use std::net::IpAddr;
 
 #[derive(Debug, Default)]
 pub struct InterfaceId(u32);
@@ -30,7 +31,7 @@ impl BridgeDomain {
 
 #[allow(unused)]
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
-pub enum DropReason {
+pub enum DoneReason {
     InternalFailure,      /* catch-all for internal issues */
     NotEthernet,          /* could not get eth header */
     NotIp,                /* could not get IP header - maybe it's not ip */
@@ -47,20 +48,22 @@ pub enum DropReason {
     HopLimitExceeded,     /* TTL / Hop count was exceeded */
     Filtered,             /* The packet was administratively filtered */
     Unhandled,            /* there exists no support to handle this type of packet */
+    MissL2resolution,     /* adjacency failure: we don't know mac of some ip next-hop */
     Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
 }
 
 #[allow(unused)]
 #[derive(Debug, Default)]
 pub struct PacketMeta {
-    pub iif: InterfaceId,             /* incoming interface - set early */
-    pub oif: Option<InterfaceId>,     /* outgoing interface - set late */
-    pub is_l2bcast: bool,             /* frame is broadcast */
-    pub is_iplocal: bool,             /* frame contains an ip packet for local delivery */
-    pub vrf: Option<VrfId>,           /* for IP packet, the VRF to use to route it */
-    pub bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
-    pub drop: Option<DropReason>,     /* if Some, the reason why a packet was purposedly dropped.
-                                      This includes the delivery of the packet by the NF */
+    pub(crate) iif: InterfaceId,         /* incoming interface - set early */
+    pub(crate) oif: Option<InterfaceId>, /* outgoing interface - set late */
+    pub(crate) nh_addr: Option<IpAddr>,  /* IP address of next-hop */
+    pub(crate) is_l2bcast: bool,         /* frame is broadcast */
+    pub(crate) is_iplocal: bool,         /* frame contains an ip packet for local delivery */
+    pub(crate) vrf: Option<VrfId>,       /* for IP packet, the VRF to use to route it */
+    pub(crate) bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
+    pub(crate) done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done.
+                                         This includes the delivery of the packet by the NF */
 
     #[cfg(test)]
     pub descr: &'static str, /* packet annotation (we may enable for testing only) */
@@ -73,7 +76,7 @@ pub struct PacketMeta {
 #[allow(unused)]
 pub struct PacketDropStats {
     pub name: String,
-    reasons: HashMap<DropReason, u64>,
+    reasons: HashMap<DoneReason, u64>,
     //Fredi: Todo: replace by ahash or use a small vec indexed by the DropReason value
 }
 
@@ -86,41 +89,41 @@ impl PacketDropStats {
         }
     }
     #[allow(dead_code)]
-    pub fn incr(&mut self, reason: DropReason, value: u64) {
+    pub fn incr(&mut self, reason: DoneReason, value: u64) {
         self.reasons
             .entry(reason)
             .and_modify(|counter| *counter += value)
             .or_insert(value);
     }
     #[allow(dead_code)]
-    pub fn get_stat(&self, reason: DropReason) -> Option<u64> {
+    pub fn get_stat(&self, reason: DoneReason) -> Option<u64> {
         self.reasons.get(&reason).copied()
     }
     #[allow(dead_code)]
-    pub fn get_stats(&self) -> &HashMap<DropReason, u64> {
+    pub fn get_stats(&self) -> &HashMap<DoneReason, u64> {
         &self.reasons
     }
 }
 
 #[cfg(test)]
 pub mod test {
-    use super::DropReason;
+    use super::DoneReason;
     use crate::packet_meta::PacketDropStats;
     #[test]
     fn test_packet_drop_stats() {
         let mut stats = PacketDropStats::new("Stats:pipeline-FOO-stage-BAR");
-        stats.incr(DropReason::InterfaceAdmDown, 10);
-        stats.incr(DropReason::InterfaceAdmDown, 1);
-        stats.incr(DropReason::RouteFailure, 9);
-        stats.incr(DropReason::VrfUnknown, 13);
+        stats.incr(DoneReason::InterfaceAdmDown, 10);
+        stats.incr(DoneReason::InterfaceAdmDown, 1);
+        stats.incr(DoneReason::RouteFailure, 9);
+        stats.incr(DoneReason::VrfUnknown, 13);
 
         // look up some particular stats
-        assert_eq!(stats.get_stat(DropReason::InterfaceAdmDown), Some(11));
-        assert_eq!(stats.get_stat(DropReason::VrfUnknown), Some(13));
-        assert_eq!(stats.get_stat(DropReason::InterfaceUnsupported), None);
+        assert_eq!(stats.get_stat(DoneReason::InterfaceAdmDown), Some(11));
+        assert_eq!(stats.get_stat(DoneReason::VrfUnknown), Some(13));
+        assert_eq!(stats.get_stat(DoneReason::InterfaceUnsupported), None);
 
         // access the whole stats map
         let read = stats.get_stats();
-        assert_eq!(read.get(&DropReason::InterfaceAdmDown), Some(11).as_ref());
+        assert_eq!(read.get(&DoneReason::InterfaceAdmDown), Some(11).as_ref());
     }
 }
