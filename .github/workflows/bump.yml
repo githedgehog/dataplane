@@ -103,20 +103,58 @@ jobs:
       - name: "cargo upgrade"
         id: upgrade
         run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '<41898282+github-actions[bot]@users.noreply.github.com>'
+          BASE="$(git rev-parse HEAD)"
+
+          # Check updates available with "cargo upgrade",
+          # then bump each package individually through separate commits
+          cargo upgrade --incompatible=allow --dry-run > upgrade_output.txt
+          sed '0,/^====/d; s/ .*//' upgrade_output.txt > list_packages.txt
+          nb_upgrades=$(wc -l < list_packages.txt)
+
+          while read -r package; do
+              echo "bump(cargo)!: bump $package (cargo upgrade)" | tee commit_msg.txt
+              echo '' | tee -a commit_msg.txt
+              cargo upgrade --incompatible=allow --package "$package" | tee -a commit_msg.txt
+              git add Cargo.toml Cargo.lock
+              git commit -sF commit_msg.txt
+          done < list_packages.txt
+
+          # Run "cargo update"
           cargo update
-          echo "### :rocket: Upgrades available" > upgrade.log
-          echo "" >> upgrade.log
-          echo '```' >> upgrade.log
-          cargo upgrade --incompatible=allow  >> upgrade.log
-          echo '```' >> upgrade.log
-          echo "" >> upgrade.log
+          if ! git diff --quiet; then
+              git add Cargo.lock
+              git commit -sm "bump(cargo)!: bump dependencies (cargo update)"
+          fi
+
+          # If we didn't create any commits, we don't need to create a PR message
+          if [[ "$(git rev-parse HEAD)" = "${BASE}" ]]; then
+              exit 0
+          fi
+          echo '::notice::We created the following commits:'
+          git log --reverse -p "${BASE}"..
+
+          # Create Pull Request description
+          echo '### :rocket: Upgrades available' | tee upgrade.log
+          if [[ "${nb_upgrades}" -ge 1 ]]; then
+              echo '' | tee -a upgrade.log
+              echo '```' | tee -a upgrade.log
+              tee -a upgrade.log < upgrade_output.txt
+              echo '```' | tee -a upgrade.log
+          fi
+
+          echo '' | tee -a upgrade.log
+          echo ':warning: This Pull Request was automatically generated and should be carefully reviewed before acceptance. It may introduce **breaking changes**.' | tee -a upgrade.log
+
           cat upgrade.log > "${GITHUB_STEP_SUMMARY}"
           {
             echo 'upgrade<<EOF';
             cat upgrade.log;
             echo 'EOF';
           } >> "${GITHUB_OUTPUT}"
-          rm upgrade.log
+
+          rm upgrade.log upgrade_output.txt list_packages.txt commit_msg.txt
       - name: "deny check (post)"
         run: |
           cargo deny check
@@ -129,20 +167,9 @@ jobs:
             automated
             dependencies
           signoff: "true"
-          commit-message: |
-            bump(cargo)!: bump
-            
-            ${{ steps.upgrade.outputs.upgrade }}
-            
-            BREAKING CHANGE: This commit _may_ introduce breaking changes.
-
           sign-commits: "true"
           body: |
             ${{ steps.upgrade.outputs.upgrade }}
-            
-            :warning: This commit was automatically generated and should be carefully reviewed before acceptance.
-            If this commit includes multiple simultaneous upgrades, it is likely that this commit should be rejected.
-            The affected versions should then be bumped in individual commits to aide bisection and ease revert.
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
