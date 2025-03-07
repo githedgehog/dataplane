@@ -72,14 +72,34 @@ impl AdjacencyTable {
 #[cfg(test)]
 #[allow(dead_code)]
 #[rustfmt::skip]
-pub mod test {
+pub mod tests {
     use super::*;
-    use std::{net::IpAddr, str::FromStr};
+    use crate::vrf::tests::mk_addr;
+
+    pub fn build_test_atable() -> AdjacencyTable {
+        let mut atable = AdjacencyTable::new();
+        {
+            let ip = mk_addr("10.0.0.1");
+            let mac = Mac::from([0x0, 0x0, 0x0, 0x0 ,0x0, 0x1]);
+            atable.add_adjacency(Adjacency::new(ip, 1, mac));
+        }
+        {
+            let ip = mk_addr("10.0.0.5");
+            let mac = Mac::from([0x0, 0x0, 0x0, 0x0 ,0x0, 0x5]);
+            atable.add_adjacency(Adjacency::new(ip, 2, mac));
+        }
+        {
+            let ip = mk_addr("10.0.0.9");
+            let mac = Mac::from([0x0, 0x0, 0x0, 0x0 ,0x0, 0x9]);
+            atable.add_adjacency(Adjacency::new(ip, 3, mac ));
+        }
+        atable
+    }
 
     #[test]
     fn test_adj_table_minimal() {
         let mut atable = AdjacencyTable::new();
-        let ip = IpAddr::from_str("10.0.0.1").unwrap();
+        let ip = mk_addr("10.0.0.1");
         let mac = Mac::from([0x0, 0x0, 0x0, 0x0 ,0x0, 0x1]);
 
         let a1 = Adjacency::new(ip, 10, mac);
