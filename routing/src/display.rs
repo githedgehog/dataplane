@@ -4,18 +4,60 @@
 //! Module that implements Display for routing objects
 
 use crate::adjacency::{Adjacency, AdjacencyTable};
-use crate::encapsulation::Encapsulation;
+use crate::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::interface::{IfDataDot1q, IfDataEthernet, IfState, IfTable, IfType, Interface};
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::pretty_utils::{Heading, line};
 use crate::rmac::{RmacEntry, RmacStore, Vtep};
+use crate::route_processor::{EgressObject, FibEntry, FibEntryGroup, PktInstruction};
 use crate::routingdb::VrfTable;
 use crate::vrf::{Route, ShimNhop, Vrf};
+
 use iptrie::map::RTrieMap;
 use iptrie::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
 use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::RwLock;
+
+//================================= Common ==========================//
+fn fmt_opt_value<T: Display>(
+    f: &mut std::fmt::Formatter<'_>,
+    name: &str,
+    value: Option<T>,
+    nl: bool,
+) -> Result<(), std::fmt::Error> {
+    match value {
+        Option::None => write!(f, "{}: --", name),
+        Some(value) => write!(f, "{}: {}", name, value),
+    }?;
+    if nl { writeln!(f) } else { Ok(()) }
+}
+
+//=================== VRFs, routes and next-hops ====================//
+impl Display for VxlanEncapsulation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Vxlan (vni {}), remote {}",
+            self.vni.as_u32(),
+            self.remote
+        )?;
+        fmt_opt_value(f, " local", self.local, false)?;
+        fmt_opt_value(f, " smac", self.smac, false)?;
+        fmt_opt_value(f, " dmac", self.dmac, false)
+    }
+}
+impl Display for Encapsulation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "")?;
+        match self {
+            Encapsulation::Vxlan(encap) => encap.fmt(f)?,
+            //write!(f, "Vxlan (vni:{})", e.vni.as_u32())?,
+            Encapsulation::Mpls(label) => write!(f, "MPLS (label:{})", label)?,
+        }
+        Ok(())
+    }
+}
 
 //=================== VRFs, routes and next-hops ====================//
 
@@ -89,17 +131,10 @@ impl Display for NhopStore {
 
 impl Display for ShimNhop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.rc.fmt(f) // Nhop, which displays NhopKey only
-    }
-}
-impl Display for Encapsulation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "")?;
-        match self {
-            Encapsulation::Vxlan(e) => write!(f, "Vxlan (vni:{})", e.vni.as_u32())?,
-            Encapsulation::Mpls(label) => write!(f, "MPLS (label:{label})")?,
+        if let Some(ext_vrf) = self.ext_vrf {
+            write!(f, "(from VRF {})", ext_vrf)?;
         }
-        Ok(())
+        self.rc.fmt(f) // Nhop
     }
 }
 impl Display for Route {
@@ -460,16 +495,8 @@ impl Display for RmacStore {
 impl Display for Vtep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "\n ───────── Local VTEP ─────────")?;
-        if let Some(ip) = self.get_ip() {
-            writeln!(f, " ip address: {}", ip)?;
-        } else {
-            writeln!(f, " ip address: unset")?;
-        }
-        if let Some(mac) = self.get_mac() {
-            writeln!(f, " Mac address: {}", mac)
-        } else {
-            writeln!(f, " Mac address: unset")
-        }
+        fmt_opt_value(f, "ip address", self.get_ip(), true)?;
+        fmt_opt_value(f, "Mac address", self.get_mac(), true)
     }
 }
 
@@ -507,6 +534,46 @@ impl Display for AdjacencyTable {
         fmt_adjacency_heading(f)?;
         for a in self.values() {
             writeln!(f, "{}", a)?
+        }
+        Ok(())
+    }
+}
+
+//========================= Fib ================================//
+
+impl Display for EgressObject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(f, "if: {}", self.ifindex)?;
+        fmt_opt_value(f, " addr", self.address, false)?;
+        fmt_opt_value(f, " smac", self.smac, false)?;
+        fmt_opt_value(f, " dmac", self.dmac, false)
+    }
+}
+
+impl Display for PktInstruction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match self {
+            PktInstruction::Drop => write!(f, "drop"),
+            PktInstruction::Xmit(egress) => write!(f, "xmit: {}", egress),
+            PktInstruction::Encap(encap) => write!(f, "encap: {}", encap),
+            PktInstruction::Nat => write!(f, "NAT"),
+        }
+    }
+}
+impl Display for FibEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        for (n, inst) in self.iter().enumerate() {
+            writeln!(f, "     {} {}", n, inst)?;
+        }
+        Ok(())
+    }
+}
+impl Display for FibEntryGroup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        writeln!(f, "FibGroup:")?;
+        for (n, entry) in self.iter().enumerate() {
+            writeln!(f, "  Fibentry {}:", n)?;
+            writeln!(f, "{}", entry)?;
         }
         Ok(())
     }
