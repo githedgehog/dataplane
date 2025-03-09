@@ -35,6 +35,7 @@ net = { path = "./net" }
 routing = { path = "./routing" }
 
 # External
+ahash = { version = "0.8.11", default-features = false, features = [] }
 arbitrary = { version = "1.4.1", default-features = false, features = [] }
 arrayvec = { version = "0.7.6", default-features = false, features = [] }
 bindgen = { version = "0.71.1", default-features = false, features = [] }
