@@ -8,6 +8,7 @@
 mod args;
 mod nat;
 mod packet;
+mod packet_hash;
 mod packet_meta;
 mod pipeline;
 
