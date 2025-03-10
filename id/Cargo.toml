@@ -12,6 +12,7 @@ serde = ["dep:serde", "uuid/serde"]
 uuid = { workspace = true, features = ["v4"] }
 serde = { workspace = true, optional = true, features = ["derive"] }
 bolero = { workspace = true, optional = true }
+diff-struct = { version = "0.5.3" }
 
 [dev-dependencies]
 bolero = { workspace = true, features = ["std"] }

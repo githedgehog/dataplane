@@ -5,22 +5,21 @@ edition = "2024"
 
 [features]
 default = ["serde"]
-serde = ["dep:serde"]
+serde = ["dep:serde", "multi_index_map/serde", "net/serde"]
 
 
 [dependencies]
 id = { workspace = true }
 net = { workspace = true }
 
+diff-struct = { version = "0.5.3", features = ["default"] }
 futures = { workspace = true, features = ["default"] }
-macaddr = "1.0.1"
-netlink-packet-route = { workspace = true, features = ["rich_nlas"] }
-rtnetlink = { workspace = true, features = ["default", "tokio"] }
-serde = { workspace = true, optional = true }
-thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
+multi_index_map = { version = "0.11.0" }
 netlink-sys = "*"
-nix = "*"
+nix = { version = "0.29.0", features = ["sched", "fs"] }
+rtnetlink = { workspace = true, features = ["default", "tokio"] }
+serde = { workspace = true, optional = true, features = ["rc"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "sync"] }
 
 
-arrayvec = { workspace = true }

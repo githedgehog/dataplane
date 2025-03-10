@@ -9,6 +9,8 @@
     clippy::expect_used,
     clippy::panic
 )]
+#![allow(unsafe_code)] // we panic in contract checks with simple unwrap()
+#![allow(missing_docs)] // we panic in contract checks with simple unwrap()
 #![allow(clippy::should_panic_without_expect)] // we panic in contract checks with simple unwrap()
 #![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used)] // TODO(blocking)
 
@@ -19,27 +21,25 @@ use std::path::Path;
 
 mod interface;
 mod name;
+mod schedule;
 
 pub use interface::*;
 pub use name::*;
 
 // SPDX-License-Identifier: MIT
 
-use std::str::FromStr;
-
 use futures::stream::TryStreamExt;
-use net::headers::TryVxlan;
-use netlink_packet_route::link::{InfoBridge, InfoData, LinkAttribute, LinkInfo};
 use nix::fcntl::OFlag;
 use nix::libc::exit;
 use nix::sched::CloneFlags;
 use nix::sys::stat::Mode;
 use nix::unistd::ForkResult;
-use rtnetlink::{Handle, new_connection};
+use rtnetlink::packet_route::link::{InfoBridge, InfoData, LinkAttribute, LinkInfo};
+use rtnetlink::{Handle, LinkBridge, LinkUnspec, LinkVrf, new_connection};
 
 #[tokio::test(flavor = "current_thread")]
 async fn biscuit() -> Result<(), String> {
-    let Ok((mut connection, handle, recv)) = new_connection() else {
+    let Ok((mut connection, handle, _recv)) = new_connection() else {
         panic!("failed to create connection");
     };
     connection
@@ -58,14 +58,10 @@ async fn biscuit() -> Result<(), String> {
     //     .map_err(|e| format!("{e}"))
 }
 
-async fn create_netns<T: AsRef<str>>(name: T) -> Result<(), rtnetlink::Error> {
-    let name = name.as_ref().to_string();
-    rtnetlink::NetworkNamespace::add(name).await
-}
-
+#[allow(clippy::too_many_lines)]
 async fn create_bridge(handle: Handle) -> Result<(), rtnetlink::Error> {
     let netns_path_name = OsString::from(rtnetlink::NETNS_PATH.to_string() + "/br_biscuit");
-    let netns_path = std::path::Path::new(&netns_path_name);
+    let netns_path = Path::new(&netns_path_name);
     match rtnetlink::NetworkNamespace::del("br_biscuit".to_string()).await {
         Ok(()) => { /* ok */ }
         Err(e) => {
@@ -81,98 +77,184 @@ async fn create_bridge(handle: Handle) -> Result<(), rtnetlink::Error> {
         }
     };
 
-    let mut req = handle.link().add().bridge("br_biscuit".to_string());
-    req.message_mut().attributes.iter_mut().for_each(|x| {
-        if let LinkAttribute::LinkInfo(link_info) = x {
-            link_info.push(LinkInfo::Data(InfoData::Bridge(vec![
-                InfoBridge::VlanProtocol(0x8100),
-                InfoBridge::VlanFiltering(1),
-                InfoBridge::VlanDefaultPvid(0),
-                InfoBridge::NfCallArpTables(0),
-                InfoBridge::NfCallIpTables(0),
-                InfoBridge::NfCallIp6Tables(0),
-            ])));
-        }
-    });
-    if req.message_mut().attributes.iter().any(|x| {
-        matches!(
-            *x,
-            LinkAttribute::NetNsFd(_) | LinkAttribute::NetnsId(_) | LinkAttribute::NetNsPid(_)
-        )
-    }) {
-        panic!("netns already set");
-    }
-    req.message_mut()
-        .attributes
-        .push(LinkAttribute::NetNsFd(netns_file.as_raw_fd()));
-
-    req.execute().await?;
-
-    in_netns(
-        netns_path.as_os_str().to_str().unwrap(),
-        |handle| async move {
-            let req = handle.link().get();
-
-            let mut req = req.execute();
-            while let Some(link) = req.try_next().await? {
-                if !link.attributes.iter().any(|x| match x {
-                    LinkAttribute::IfName(x) => {
-                        println!("{x:?} ?== br_biscuit");
-                        x == "br_biscuit"
-                    }
-                    _ => false,
-                }) {
-                    continue;
-                }
-                println!("science!");
-                // if let Some(other_link) = req.try_next().await? {
-                //     unreachable!(
-                //         "multiple links with same name: {other_link:?}",
-                //         other_link = other_link
-                //     );
-                // }
-                println!("{header:?}", header = link.header);
-                for attr in &link.attributes {
-                    println!("\t{attr:?}");
-                }
-                let mut req2 = handle.link().del(link.header.index);
-                return req2.execute().await;
-            }
-            panic!("biscuits")
-        },
-    )
-    .await
-}
-
-async fn create_vtep(handle: Handle) -> Result<(), rtnetlink::Error> {
     handle
         .link()
-        .add()
-        .vxlan("biscuit".to_string(), 0)
-        .local("192.168.99.3".parse().unwrap())
-        .udp_csum(false)
-        .learning(false)
-        .up()
-        .port(4789)
-        .ttl(64)
-        .collect_metadata(true)
+        .add(
+            LinkVrf::new("science", 119)
+                .setns_by_fd(netns_file.as_raw_fd())
+                .up()
+                .build(),
+        )
         .execute()
         .await?;
 
-    let mut ret = handle.link().get().execute();
+    let req = handle.link().add(
+        LinkBridge::new("br_biscuit")
+            .setns_by_fd(netns_file.as_raw_fd())
+            .append_extra_attribute(LinkAttribute::LinkInfo(vec![LinkInfo::Data(
+                InfoData::Bridge(vec![
+                    InfoBridge::VlanProtocol(0x8100),
+                    InfoBridge::VlanFiltering(true),
+                    InfoBridge::VlanDefaultPvid(0),
+                    InfoBridge::NfCallArpTables(0),
+                    InfoBridge::NfCallIpTables(0),
+                    InfoBridge::NfCallIp6Tables(0),
+                ]),
+            )]))
+            .build(),
+    );
 
-    if ret.try_next().await?.is_some() {
-        if let Some(other_link) = ret.try_next().await? {
-            unreachable!(
-                "multiple links with same name: {other_link:?}",
-                other_link = other_link
-            );
+    req.execute().await?;
+    in_netns2(netns_path, |handle| async move {
+        let mut bridge_query = handle
+            .link()
+            .get()
+            .match_name("br_biscuit".to_string())
+            .execute();
+
+        let Ok(Some(bridge)) = bridge_query.try_next().await else {
+            panic!("WRONG");
+        };
+
+        let Ok(None) = bridge_query.try_next().await else {
+            panic!("VERY WRONG");
+        };
+
+        let mut vrf_query = handle
+            .link()
+            .get()
+            .match_name("science".to_string())
+            .execute();
+
+        let Ok(Some(vrf)) = vrf_query.try_next().await else {
+            panic!("WRONG");
+        };
+
+        let Ok(None) = vrf_query.try_next().await else {
+            panic!("VERY WRONG");
+        };
+
+        let controller_request = handle.link().set(
+            LinkUnspec::new_with_index(bridge.header.index)
+                .controller(vrf.header.index)
+                .build(),
+        );
+
+        controller_request.execute().await
+
+        // while let Some(link) = bridge_query.try_next().await? {
+        //     if !link.attributes.iter().any(|x| match x {
+        //         LinkAttribute::IfName(x) => {
+        //             println!("{x:?} ?== br_biscuit");
+        //             x == "br_biscuit"
+        //         }
+        //         _ => false,
+        //     }) {
+        //         continue;
+        //     }
+        //     let mut req2 = handle.link().del(link.header.index);
+        //     return req2.execute().await;
+        // }
+        // panic!("biscuits")
+    })?;
+
+    let mut links = handle.link().get().execute();
+
+    while let Some(link) = links.try_next().await? {
+        println!("link: ");
+        for attr in &link.attributes {
+            println!("\t{attr:?}");
         }
-        Ok(())
-    } else {
-        Err(rtnetlink::Error::RequestFailed)
     }
+
+    Ok(())
+
+    // in_netns(
+    //     netns_path.as_os_str().to_str().unwrap(),
+    //     |handle| async move {
+    //         let mut bridge_query = handle
+    //             .link()
+    //             .get()
+    //             .match_name("br_biscuit".to_string())
+    //             .execute();
+    //
+    //         let Ok(Some(bridge)) = bridge_query.try_next().await else {
+    //             panic!("WRONG");
+    //         };
+    //
+    //         let Ok(None) = bridge_query.try_next().await else {
+    //             panic!("VERY WRONG");
+    //         };
+    //
+    //         let mut vrf_query = handle
+    //             .link()
+    //             .get()
+    //             .match_name("science".to_string())
+    //             .execute();
+    //
+    //         let Ok(Some(vrf)) = vrf_query.try_next().await else {
+    //             panic!("WRONG");
+    //         };
+    //
+    //         let Ok(None) = vrf_query.try_next().await else {
+    //             panic!("VERY WRONG");
+    //         };
+    //
+    //         let mut controller_request = handle.link().set(
+    //             LinkUnspec::new_with_index(bridge.header.index)
+    //                 .controller(vrf.header.index)
+    //                 .build(),
+    //         );
+    //
+    //         controller_request.execute().await
+    //
+    //         // while let Some(link) = bridge_query.try_next().await? {
+    //         //     if !link.attributes.iter().any(|x| match x {
+    //         //         LinkAttribute::IfName(x) => {
+    //         //             println!("{x:?} ?== br_biscuit");
+    //         //             x == "br_biscuit"
+    //         //         }
+    //         //         _ => false,
+    //         //     }) {
+    //         //         continue;
+    //         //     }
+    //         //     let mut req2 = handle.link().del(link.header.index);
+    //         //     return req2.execute().await;
+    //         // }
+    //         // panic!("biscuits")
+    //     },
+    // )
+    // .await
 }
+
+// async fn create_vtep(handle: Handle) -> Result<(), rtnetlink::Error> {
+//     handle
+//         .link()
+//         .add(LinkVxlan::new("biscuit", 0))
+//         .local("192.168.99.3".parse().unwrap())
+//         .udp_csum(false)
+//         .learning(false)
+//         .up()
+//         .port(4789)
+//         .ttl(64)
+//         .collect_metadata(true)
+//         .execute()
+//         .await?;
+//
+//     let mut ret = handle.link().get().execute();
+//
+//     if ret.try_next().await?.is_some() {
+//         if let Some(other_link) = ret.try_next().await? {
+//             unreachable!(
+//                 "multiple links with same name: {other_link:?}",
+//                 other_link = other_link
+//             );
+//         }
+//         Ok(())
+//     } else {
+//         Err(rtnetlink::Error::RequestFailed)
+//     }
+// }
 
 async fn in_netns<
     F: Future<Output = Result<(), rtnetlink::Error>> + Send,
@@ -189,7 +271,7 @@ async fn in_netns<
         }
         Ok(ForkResult::Child) => {
             swap_to_netns(&netns.to_string())?;
-            let Ok((mut connection, handle, recv)) = new_connection() else {
+            let Ok((mut connection, handle, _recv)) = new_connection() else {
                 panic!("failed to create connection");
             };
             connection
@@ -222,6 +304,102 @@ async fn in_netns<
     Ok(())
 }
 
+fn in_netns2<
+    T: Send + 'static,
+    F: Future<Output = Result<T, rtnetlink::Error>> + Send,
+    Exec: 'static + Send + FnOnce(Handle) -> F,
+>(
+    netns: &Path,
+    exec: Exec,
+) -> Result<T, rtnetlink::Error> {
+    let netns_str = netns
+        .to_str()
+        .expect("netns path not legal unicode")
+        .to_string()
+        .clone();
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name(netns_str.clone())
+            .spawn_scoped(scope, || {
+                swap_to_netns(&netns_str)?;
+                let tokio_runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_io()
+                    .enable_time()
+                    .thread_name(netns_str)
+                    .build()
+                    .unwrap();
+                tokio_runtime.block_on(async move {
+                    let Ok((mut connection, handle, _recv)) = new_connection() else {
+                        panic!("failed to create connection");
+                    };
+                    connection
+                        .socket_mut()
+                        .socket_mut()
+                        .set_rx_buf_sz(212_992)
+                        .unwrap();
+                    tokio::spawn(connection);
+                    exec(handle).await
+                })
+            })
+            .expect("unable to spawn thread")
+            .join()
+            .unwrap()
+    })
+}
+
+fn in_netns3<
+    'scope,
+    'env: 'scope,
+    Req: Send + 'scope,
+    Resp: Send + 'scope,
+    Fut: Future<Output = Resp> + Send + 'scope,
+    Exec: (FnMut(&Handle, Req) -> Fut) + Send + 'scope,
+>(
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    netns: &Path,
+    mut exec: Exec,
+) -> (
+    std::thread::ScopedJoinHandle<'scope, ()>,
+    tokio::sync::mpsc::Sender<Req>,
+    tokio::sync::mpsc::Receiver<Resp>,
+) {
+    const BUFFER: usize = 16_384; // TODO: adjust to something reasonable
+    let netns_str = netns
+        .to_str()
+        .expect("netns path not legal unicode")
+        .to_string()
+        .clone();
+    let (tx_request, mut rx_request) = tokio::sync::mpsc::channel(BUFFER);
+    let (tx_response, rx_response) = tokio::sync::mpsc::channel(BUFFER);
+    let thread_name = format!("netns-{netns_str}");
+    let handle = std::thread::Builder::new()
+        .name(thread_name)
+        .spawn_scoped(scope, move || {
+            swap_to_netns(&netns_str).expect("failed to swap to netns");
+            let tokio_runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .build()
+                .unwrap();
+            tokio_runtime.block_on(async move {
+                let Ok((mut connection, handle, _recv)) = new_connection() else {
+                    panic!("failed to create connection");
+                };
+                connection
+                    .socket_mut()
+                    .socket_mut()
+                    .set_rx_buf_sz(212_992)
+                    .unwrap();
+                tokio::spawn(connection);
+                while let Some(request) = rx_request.recv().await {
+                    let resp = exec(&handle, request).await;
+                    tx_response.send(resp).await.unwrap();
+                }
+            });
+        })
+        .unwrap();
+    (handle, tx_request, rx_response)
+}
+
 // async fn create_macvlan(
 //     handle: Handle,
 //     link_name: String,
@@ -249,13 +427,12 @@ fn swap_to_netns(netns_path: &String) -> Result<(), rtnetlink::Error> {
 
     // unshare to the new network namespace
     if let Err(e) = nix::sched::unshare(CloneFlags::CLONE_NEWNET) {
-        eprintln!("unshare error: {}", e);
+        eprintln!("unshare error: {e}");
         let err_msg = format!("unshare error: {e}");
         let _ = nix::unistd::unlink(ns_path);
         return Err(rtnetlink::Error::NamespaceError(err_msg));
     }
 
-    open_flags = OFlag::empty();
     open_flags.insert(OFlag::O_RDONLY);
     open_flags.insert(OFlag::O_CLOEXEC);
 

@@ -6,6 +6,7 @@
 //! [UUID]: https://en.wikipedia.org/wiki/Universally_unique_identifier
 
 use core::fmt::{Debug, Formatter};
+use diff::Diff;
 use std::fmt::Display;
 use std::marker::PhantomData;
 use uuid::Uuid;
@@ -27,7 +28,8 @@ pub use contract::*;
 /// I recommend making a `type` alias such as
 ///
 /// ```
-/// # type MySpecialType = () // stub for example
+/// # use dataplane_id::AbstractIdType;
+/// # type MySpecialType = (); // stub for example
 /// type MySpecialId<T> = AbstractIdType<*const T, MySpecialType>;
 /// ```
 ///
@@ -35,11 +37,75 @@ pub use contract::*;
 /// </div>
 ///
 /// [UUID]: https://en.wikipedia.org/wiki/Universally_unique_identifier
-#[cfg_attr(feature = "serde", allow(clippy::unsafe_derive_deserialize))] // not used in deserialize method
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(transparent)]
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct AbstractIdType<T, U = Uuid>(U, PhantomData<T>);
+
+impl<T, U: Debug> Debug for AbstractIdType<T, U> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.0)
+    }
+}
+
+pub enum Mutation<T: PartialEq> {
+    None,
+    Change { old: T, new: T },
+}
+
+impl<T> Diff for Id<T> {
+    type Repr = Mutation<Self>;
+
+    fn diff(&self, other: &Self) -> Self::Repr {
+        if self.0 == other.0 {
+            Mutation::None
+        } else {
+            Mutation::Change {
+                old: *self,
+                new: *other,
+            }
+        }
+    }
+
+    fn apply(&mut self, diff: &Self::Repr) {
+        match diff {
+            Mutation::None => { /* ok */ }
+            Mutation::Change { new, .. } => self.0 = new.0,
+        }
+    }
+
+    fn identity() -> Self {
+        Id::from_raw(Uuid::nil())
+    }
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[repr(transparent)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
+struct Wrapper<T>(T);
+
+impl Diff for Wrapper<Uuid> {
+    type Repr = Uuid;
+
+    fn diff(&self, other: &Self) -> Self::Repr {
+        other.0
+    }
+
+    fn apply(&mut self, diff: &Self::Repr) {
+        self.0 = *diff
+    }
+
+    fn identity() -> Self {
+        Wrapper(Uuid::nil())
+    }
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
+pub struct AbstractIdTypeDiff<T, U = Uuid> {
+    old: AbstractIdType<T, U>,
+    new: AbstractIdType<T, U>,
+}
 
 /// A typed [UUID].
 ///
@@ -128,12 +194,6 @@ impl<T> Display for Id<T> {
     }
 }
 
-impl<T> Debug for Id<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        <_ as Debug>::fmt(self.0.as_hyphenated(), f)
-    }
-}
-
 impl<T> Default for Id<T> {
     fn default() -> Self {
         Self::new()
@@ -141,13 +201,14 @@ impl<T> Default for Id<T> {
 }
 
 impl<T> Id<T> {
-    /// Generate a new `Id<U>`.
+    /// Generate a new `Id<T>`.
     /// This method returns a transparently wrapped [Uuid] which is compile-time tagged with the
-    /// type parameter `U`.
+    /// type parameter `T`.
     /// The annotation consumes no space and has no runtime overhead whatsoever.
-    /// The only function of `U` is to distinguish this type from other [Id] types.
+    /// The only function of `T` is to distinguish this type from other [Id] types.
+    #[inline(always)]
     #[must_use]
-    pub fn new<U>() -> Id<U> {
+    pub fn new() -> Id<T> {
         AbstractIdType(Uuid::new_v4(), PhantomData)
     }
 
@@ -177,7 +238,7 @@ impl<T> Id<T> {
     ///
     /// You _should not_ use this method in situations where you are generating a [Uuid] and wish
     /// to associate it with a type.
-    /// In such cases use [Id::new::<U>] instead.
+    /// In such cases use [Id::new] instead.
     #[must_use]
     pub fn from_raw(uuid: Uuid) -> Self {
         Self(uuid, PhantomData)
