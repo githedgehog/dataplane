@@ -107,6 +107,14 @@ jobs:
           just debug_justfile="${{inputs.debug_justfile}}" rust="${{matrix.rust}}" profile=dev target=x86_64-unknown-linux-gnu \
             sterile cargo clippy --all-targets --all-features -- -D warnings
 
+      - name: "check Git status"
+        run: |
+          if ! git diff --quiet; then
+              printf '::error::Git working directory is dirty, missing Cargo.lock update?\n\n'
+              git --no-pager diff
+              printf '\nPlease commit the changes and update your Pull Request\n'
+              exit 1
+          fi
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
