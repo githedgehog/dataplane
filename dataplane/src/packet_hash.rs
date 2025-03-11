@@ -55,5 +55,72 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
 
 #[cfg(test)]
 mod tests {
-    
+    use crate::Packet;
+    use crate::packet_test_utils::packet_utils::build_test_udp_ipv4_packet;
+    use ahash::AHasher;
+    use net::buffer::{PacketBufferMut, TestBuffer};
+    use ordermap::OrderMap;
+    use std::fs;
+    use std::fs::File;
+    use std::hash::Hasher;
+    use std::io::Write;
+
+    // compute ip hash using ahash hasher
+    fn hash_ip_packet<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> u64 {
+        let mut hasher = AHasher::default();
+        packet.hash_ip(&mut hasher);
+        hasher.finish()
+    }
+    // Builds a vector of packets.
+    // Note: If this function is changed, the fingerprint file may
+    // need to be updated.
+    fn build_test_packets(number: u16) -> Vec<Packet<TestBuffer>> {
+        let mut packets = Vec::new();
+        for n in 1..=number {
+            packets.push(build_test_udp_ipv4_packet(
+                format!("10.0.0.{}", n % 255).as_str(),
+                format!("10.0.0.{}", 255 - n % 255).as_str(),
+                (1 + n) % u16::MAX,
+                u16::MAX - (n % u16::MAX),
+            ));
+        }
+        packets
+    }
+    // create fingerprint file
+    fn create_ahash_fingerprint() {
+        let packets = build_test_packets(500);
+        let mut vals: OrderMap<u16, u64> = OrderMap::new();
+        for (n, packet) in packets.iter().enumerate() {
+            let hash_value = hash_ip_packet(&packet);
+            vals.insert(n as u16, hash_value);
+        }
+        let mut file = File::create("artifacts/ahash_fingerprint.txt")
+            .expect("Failed to open ahash fingerprint file");
+        let _ = file
+            .write_all(format!("{:#?}", vals).as_bytes())
+            .expect("Failed to write fingerprint");
+    }
+
+    // hashes the test packets storing the results in an ordermap and then compares
+    // the whole ordermap with a reference stored in artifacts/ahash_fingerprint.
+    // This test should fail if ahash changes to produce distinct output.
+    // If that happens, set update_fingerprint to true and commit the fingerprint
+    // file.
+    #[test]
+    fn test_ahash_detect_change() {
+        let update_fingerprint = false;
+        if update_fingerprint {
+            create_ahash_fingerprint();
+        }
+        let packets = build_test_packets(500);
+        let mut vals: OrderMap<u16, u64> = OrderMap::new();
+        for (n, packet) in packets.iter().enumerate() {
+            let hash_value = hash_ip_packet(&packet);
+            vals.insert(n as u16, hash_value);
+        }
+        let fingerprint = format!("{:#?}", vals);
+        let reference = fs::read_to_string("artifacts/ahash_fingerprint.txt")
+            .expect("Missing fingerprint file");
+        assert_eq!(fingerprint, reference);
+    }
 }
