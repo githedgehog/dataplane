@@ -187,9 +187,10 @@ mod test {
     use net::eth::mac::{DestinationMac, Mac};
     use net::headers::{Net, TryEth, TryIp, TryIpv4};
 
+    use crate::packet_test_utils::packet_utils::build_test_ipv4_packet;
     use crate::pipeline::dyn_nf::DynNetworkFunctionImpl;
     use crate::pipeline::sample_nfs::DecrementTtl;
-    use crate::pipeline::test_utils::{DynStageGenerator, build_test_ipv4_packet};
+    use crate::pipeline::test_utils::DynStageGenerator;
     use crate::pipeline::{DynNetworkFunction, DynPipeline, NetworkFunction, StageId};
 
     type TestStageId = StageId<TestBuffer>;

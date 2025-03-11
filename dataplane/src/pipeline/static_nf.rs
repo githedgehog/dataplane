@@ -81,8 +81,8 @@ mod test {
     use net::eth::mac::{DestinationMac, Mac};
     use net::headers::{TryEth, TryIpv4};
 
+    use crate::packet_test_utils::packet_utils::build_test_ipv4_packet;
     use crate::pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders, Passthrough};
-    use crate::pipeline::test_utils::build_test_ipv4_packet;
     use crate::pipeline::{NetworkFunction, StaticChain};
 
     #[test]

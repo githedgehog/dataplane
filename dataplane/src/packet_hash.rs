@@ -52,3 +52,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         hasher.finish() % u64::from(last - first + 1) + u64::from(first)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    
+}

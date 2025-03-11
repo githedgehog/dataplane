@@ -8,8 +8,9 @@
 mod args;
 mod nat;
 mod packet;
-mod packet_hash;
-mod packet_meta;
+mod packet_hash; /* todo: move to crate */
+mod packet_meta; /* todo: move to crate */
+mod packet_test_utils; /* todo: move to crate */
 mod pipeline;
 
 use dpdk::dev::{Dev, TxOffloadConfig};
