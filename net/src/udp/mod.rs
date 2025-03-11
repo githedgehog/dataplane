@@ -34,6 +34,18 @@ impl Udp {
     #[allow(clippy::unwrap_used)] // safe due to const-eval
     pub const MIN_LENGTH: NonZero<u16> = NonZero::new(8).unwrap();
 
+    /// Build an empty UDP header, without checksum and with the length equal to the header only length
+    #[allow(clippy::cast_possible_truncation)]
+    #[must_use]
+    pub fn empty() -> Self {
+        Udp(UdpHeader {
+            source_port: 0,
+            destination_port: 0,
+            length: (UdpHeader::LEN as u16),
+            checksum: 0,
+        })
+    }
+
     /// Get the header's source port
     #[must_use]
     pub const fn source(&self) -> UdpPort {
