@@ -60,6 +60,7 @@ mod tests {
     use ahash::AHasher;
     use net::buffer::{PacketBufferMut, TestBuffer};
     use ordermap::OrderMap;
+    use std::collections::BTreeMap;
     use std::fs;
     use std::fs::File;
     use std::hash::Hasher;
@@ -122,5 +123,46 @@ mod tests {
         let reference = fs::read_to_string("artifacts/ahash_fingerprint.txt")
             .expect("Missing fingerprint file");
         assert_eq!(fingerprint, reference);
+    }
+
+    #[test]
+    fn test_hash_bounds() {
+        let start: u64 = 4;
+        let end: u64 = 10;
+        let num_packets: u64 = 2000;
+        let packets = build_test_packets(num_packets.try_into().unwrap());
+        let mut values: BTreeMap<u64, u64> = BTreeMap::new();
+        for packet in packets.iter() {
+            let hash = packet.packet_hash_ecmp(start as u8, end as u8);
+            values
+                .entry(hash)
+                .and_modify(|counter| *counter += 1)
+                .or_insert(1);
+        }
+        /* test bounds */
+        assert_eq!(values.get(&(start - 1)), None);
+        assert_eq!(values.get(&(end + 1)), None);
+
+        /* distribution */
+        let normalized: Vec<f64> = values
+            .values()
+            .map(|value| (value * 100 / (num_packets as u64)) as f64)
+            .collect();
+
+        /* ideal frequency (in %): uniform */
+        let ifreq = 100 as f64 / (end - start + 1) as f64;
+
+        /* This is not yet a test but we could require it to be
+        Run with --nocapture to see the spread */
+        for value in normalized.iter() {
+            print!("  {value} %");
+            if *value < ifreq * 0.85 {
+                println!(" : too low (15% below ideal)");
+            } else if *value > ifreq * 1.15 {
+                println!(" : too high (15% above ideal)");
+            } else {
+                println!(" : fair");
+            }
+        }
     }
 }
