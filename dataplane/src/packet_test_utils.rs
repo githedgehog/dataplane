@@ -2,8 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 #[cfg(test)]
-#[allow(dead_code, unused_imports)]
-#[allow(dead_code, unused_import_braces, clippy::unused_imports)]
+#[allow(dead_code, unused_import_braces, unused_imports)]
 pub mod packet_utils {
     use crate::packet::{InvalidPacket, Packet};
     use net::buffer::TestBuffer;

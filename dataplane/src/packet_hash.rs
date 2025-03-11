@@ -92,13 +92,12 @@ mod tests {
         let packets = build_test_packets(500);
         let mut vals: OrderMap<u16, u64> = OrderMap::new();
         for (n, packet) in packets.iter().enumerate() {
-            let hash_value = hash_ip_packet(&packet);
-            vals.insert(n as u16, hash_value);
+            let hash_value = hash_ip_packet(packet);
+            vals.insert(u16::try_from(n).expect("Conversion failed"), hash_value);
         }
         let mut file = File::create("artifacts/ahash_fingerprint.txt")
             .expect("Failed to open ahash fingerprint file");
-        let _ = file
-            .write_all(format!("{:#?}", vals).as_bytes())
+        file.write_all(format!("{vals:#?}").as_bytes())
             .expect("Failed to write fingerprint");
     }
 
@@ -116,24 +115,28 @@ mod tests {
         let packets = build_test_packets(500);
         let mut vals: OrderMap<u16, u64> = OrderMap::new();
         for (n, packet) in packets.iter().enumerate() {
-            let hash_value = hash_ip_packet(&packet);
-            vals.insert(n as u16, hash_value);
+            let hash_value = hash_ip_packet(packet);
+            vals.insert(u16::try_from(n).expect("Conversion failed"), hash_value);
         }
-        let fingerprint = format!("{:#?}", vals);
+        let fingerprint = format!("{vals:#?}");
         let reference = fs::read_to_string("artifacts/ahash_fingerprint.txt")
             .expect("Missing fingerprint file");
         assert_eq!(fingerprint, reference);
     }
 
     #[test]
+    #[allow(clippy::cast_precision_loss)]
     fn test_hash_bounds() {
         let start: u64 = 4;
         let end: u64 = 10;
         let num_packets: u64 = 2000;
         let packets = build_test_packets(num_packets.try_into().unwrap());
         let mut values: BTreeMap<u64, u64> = BTreeMap::new();
-        for packet in packets.iter() {
-            let hash = packet.packet_hash_ecmp(start as u8, end as u8);
+        for packet in &packets {
+            let hash = packet.packet_hash_ecmp(
+                u8::try_from(start).expect("Bad start"),
+                u8::try_from(end).expect("Bad start"),
+            );
             values
                 .entry(hash)
                 .and_modify(|counter| *counter += 1)
@@ -146,15 +149,15 @@ mod tests {
         /* distribution */
         let normalized: Vec<f64> = values
             .values()
-            .map(|value| (value * 100 / (num_packets as u64)) as f64)
+            .map(|value| (value * 100 / num_packets) as f64)
             .collect();
 
         /* ideal frequency (in %): uniform */
-        let ifreq = 100 as f64 / (end - start + 1) as f64;
+        let ifreq = 100_f64 / (end - start + 1) as f64;
 
         /* This is not yet a test but we could require it to be
         Run with --nocapture to see the spread */
-        for value in normalized.iter() {
+        for value in &normalized {
             print!("  {value} %");
             if *value < ifreq * 0.85 {
                 println!(" : too low (15% below ideal)");
