@@ -41,7 +41,7 @@ mod iplist;
 mod prefixtrie;
 
 use crate::nat::fabric::{PeeringPolicy, Pif, Vpc};
-use crate::nat::iplist::{IpList, IpListType};
+use crate::nat::iplist::IpList;
 use crate::nat::prefixtrie::PrefixTrie;
 use crate::pipeline::NetworkFunction;
 
@@ -223,25 +223,6 @@ impl Nat {
         true
     }
 
-    #[tracing::instrument(level = "trace")]
-    fn nat_ranges_supported(&self, current_range: &IpList, target_range: &IpList) -> bool {
-        // We only support NAT44 for now
-        match (current_range.list_type(), target_range.list_type()) {
-            (IpListType::Ipv4, IpListType::Ipv4) => (),
-            _ => return false,
-        }
-
-        // Stateless NAT requires a 1:1 mapping, which means that both ranges
-        // must include the same number of addresses.
-        //
-        // TODO: Move this check to configuration step.
-        if self.mode == NatMode::Stateless && current_range.length() != target_range.length() {
-            return false;
-        }
-
-        true
-    }
-
     /// From the destination IP address contained in `net`, finds the
     /// destination PIF for the packet.
     #[tracing::instrument(level = "trace")]
@@ -270,6 +251,7 @@ impl Nat {
     fn find_src_nat_ranges(
         &self,
         dst_ip: &IpAddr,
+        src_ip: &IpAddr,
         vni_opt: Option<Vni>,
     ) -> Option<(IpList, IpList)> {
         // For now we don't support NAT if we don't have a VNI
@@ -277,9 +259,7 @@ impl Nat {
         let dst_pif = self.find_dst_pif(dst_ip)?;
         let src_pif = self.context.find_src_pif(vni, dst_pif, dst_ip)?;
 
-        let current_range = IpList::from_prefixes(src_pif.iter_endpoints());
-        let target_range = IpList::from_prefixes(src_pif.iter_ips());
-        Some((current_range, target_range))
+        IpList::generate_ranges(src_pif.iter_endpoints(), src_pif.iter_ips(), dst_ip)
     }
 
     /// Finds the two [`IpList`] objects necessary to perform _destination NAT_ on
@@ -295,16 +275,14 @@ impl Nat {
     #[tracing::instrument(level = "trace")]
     fn find_dst_nat_ranges(&self, dst_ip: &IpAddr) -> Option<(IpList, IpList)> {
         let dst_pif = self.find_dst_pif(dst_ip)?;
-        let current_range = IpList::from_prefixes(dst_pif.iter_ips());
-        let target_range = IpList::from_prefixes(dst_pif.iter_endpoints());
-        Some((current_range, target_range))
+        IpList::generate_ranges(dst_pif.iter_ips(), dst_pif.iter_endpoints(), dst_ip)
     }
 
     #[tracing::instrument(level = "trace")]
     fn find_nat_ranges(&self, net: &mut Net, vni: Option<Vni>) -> Option<(IpList, IpList)> {
         let dst_ip = &get_dst_addr(net);
         match self.direction {
-            NatDirection::SrcNat => self.find_src_nat_ranges(dst_ip, vni),
+            NatDirection::SrcNat => self.find_src_nat_ranges(dst_ip, &get_src_addr(net), vni),
             NatDirection::DstNat => self.find_dst_nat_ranges(dst_ip),
         }
     }
@@ -382,11 +360,6 @@ impl Nat {
         let Some((current_range, target_range)) = ranges else {
             return;
         };
-
-        if !self.nat_ranges_supported(&current_range, &target_range) {
-            return;
-        }
-
         self.translate(net, &current_range, &target_range);
     }
 }
