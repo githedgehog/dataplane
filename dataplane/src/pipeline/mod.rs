@@ -122,8 +122,8 @@ mod test {
     use net::headers::{TryEth, TryIpv4};
 
     use crate::pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, Passthrough};
-    use crate::pipeline::test_utils::build_test_ipv4_packet;
     use crate::pipeline::{DynPipeline, NetworkFunction, StaticChain};
+    use net::packet::test_utils::build_test_ipv4_packet;
 
     #[test]
     fn mixed_dyn_static_pipeline() {

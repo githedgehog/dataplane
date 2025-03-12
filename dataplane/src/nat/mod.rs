@@ -393,10 +393,10 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Nat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::test_utils::build_test_ipv4_packet;
     use iptrie::Ipv4Prefix;
     use net::buffer::TestBuffer;
     use net::headers::TryIpv4;
+    use net::packet::test_utils::build_test_ipv4_packet;
     use routing::prefix::Prefix;
     use std::net::Ipv4Addr;
     use std::str::FromStr;

@@ -11,7 +11,7 @@ use std::marker::PhantomData;
 /// Trait for an object that processes a stream of packets.
 ///
 /// Generally, you should not need to implement this trait directly. Instead, use the [`nf_dyn`]
-/// function to create a boxed, dynamic network function.  
+/// function to create a boxed, dynamic network function.
 ///
 /// # See Also
 ///

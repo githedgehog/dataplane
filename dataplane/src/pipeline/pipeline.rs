@@ -188,8 +188,9 @@ mod test {
 
     use crate::pipeline::dyn_nf::DynNetworkFunctionImpl;
     use crate::pipeline::sample_nfs::DecrementTtl;
-    use crate::pipeline::test_utils::{DynStageGenerator, build_test_ipv4_packet};
+    use crate::pipeline::test_utils::DynStageGenerator;
     use crate::pipeline::{DynNetworkFunction, DynPipeline, NetworkFunction, StageId};
+    use net::packet::test_utils::build_test_ipv4_packet;
 
     type TestStageId = StageId<TestBuffer>;
 

@@ -7,6 +7,8 @@
 
 mod hash;
 mod meta;
+#[cfg(any(test, feature = "test_buffer"))]
+pub mod test_utils;
 
 use crate::buffer::PacketBufferMut;
 use crate::eth::EthError;
