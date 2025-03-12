@@ -25,6 +25,7 @@ tracing = { workspace = true }
 arbitrary = { workspace = true, features = ["derive"] }
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"] }
 etherparse = { workspace = true, default-features = false, features = ["std"] }
+ordermap = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

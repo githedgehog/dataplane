@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 pub use crate::buffer::TestBuffer;
 use crate::eth::Eth;
 use crate::eth::ethtype::EthType;
@@ -22,7 +24,6 @@ use std::str::FromStr;
 /// The packet is an IPv4 packet with a source and destination IP address of 1.2.3.4.
 /// The Ethernet source and destination MAC addresses are 0x02:00:00:00:00:01 and 0x02:00:00:00:00:02
 /// respectively.
-///
 pub fn build_test_ipv4_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
     let mut ipv4 = Ipv4::default();
     ipv4.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(1, 2, 3, 4)).unwrap());
