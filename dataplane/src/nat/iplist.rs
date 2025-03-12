@@ -240,3 +240,447 @@ impl IpList {
         Some(addr)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iptrie::{Ipv4Prefix, Ipv6Prefix};
+    use std::str::FromStr;
+
+    fn prefix_v4(s: &str) -> Prefix {
+        Ipv4Prefix::from_str(s).expect("Invalid IPv4 prefix").into()
+    }
+
+    fn prefix_v6(s: &str) -> Prefix {
+        Ipv6Prefix::from_str(s).expect("Invalid IPv6 prefix").into()
+    }
+
+    fn addr_v4(s: &str) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::from_str(s).expect("Invalid IPv4 address"))
+    }
+
+    fn addr_v6(s: &str) -> IpAddr {
+        IpAddr::V6(Ipv6Addr::from_str(s).expect("Invalid IPv6 address"))
+    }
+
+    #[test]
+    fn test_addr_higher_than_prefix_start_v4() {
+        let prefix = prefix_v4("10.1.0.0/16");
+
+        // Lower than start address
+        assert!(!addr_higher_than_prefix_start(
+            &addr_v4("9.255.255.255"),
+            &prefix
+        ));
+        assert!(!addr_higher_than_prefix_start(
+            &addr_v4("10.0.255.255"),
+            &prefix
+        ));
+
+        // Higher than start address
+        assert!(addr_higher_than_prefix_start(&addr_v4("10.1.0.0"), &prefix));
+        assert!(addr_higher_than_prefix_start(&addr_v4("10.1.2.3"), &prefix));
+        assert!(addr_higher_than_prefix_start(&addr_v4("10.2.0.0"), &prefix));
+        assert!(addr_higher_than_prefix_start(
+            &addr_v4("192.168.0.1"),
+            &prefix
+        ));
+    }
+
+    #[test]
+    fn test_addr_higher_than_prefix_start_v6() {
+        let prefix = prefix_v6("abba::1001:0/112");
+
+        // Lower than start address
+        assert!(!addr_higher_than_prefix_start(
+            &addr_v6("abba::9ff:ffff"),
+            &prefix
+        ));
+        assert!(!addr_higher_than_prefix_start(
+            &addr_v6("abba::1000:ffff"),
+            &prefix
+        ));
+
+        // Higher than start address
+        assert!(addr_higher_than_prefix_start(
+            &addr_v6("abba::1001:0"),
+            &prefix
+        ));
+        assert!(addr_higher_than_prefix_start(
+            &addr_v6("abba::1001:203"),
+            &prefix
+        ));
+        assert!(addr_higher_than_prefix_start(
+            &addr_v6("abba::1002:0"),
+            &prefix
+        ));
+        assert!(addr_higher_than_prefix_start(&addr_v6("cdef::1"), &prefix));
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot compare address and prefix of different IP versions")]
+    fn test_addr_higher_than_prefix_start_ip_mismatch_v64() {
+        assert!(addr_higher_than_prefix_start(
+            &addr_v6("::1"),
+            &prefix_v4("10.1.0.0/16")
+        ));
+    }
+    #[test]
+    #[should_panic(expected = "Cannot compare address and prefix of different IP versions")]
+    fn test_addr_higher_than_prefix_start_ip_mismatch_v46() {
+        assert!(addr_higher_than_prefix_start(
+            &addr_v4("10.1.0.1"),
+            &prefix_v6("::100:0/112")
+        ));
+    }
+
+    #[test]
+    fn test_addr_offset_in_prefix_v4() {
+        let prefix = prefix_v4("10.1.0.0/16");
+
+        assert_eq!(addr_offset_in_prefix(&addr_v4("10.0.0.0"), &prefix), None);
+        assert_eq!(
+            addr_offset_in_prefix(&addr_v4("10.0.255.255"), &prefix),
+            None,
+        );
+
+        assert_eq!(
+            addr_offset_in_prefix(&addr_v4("10.1.0.0"), &prefix),
+            Some(0),
+        );
+        assert_eq!(
+            addr_offset_in_prefix(&addr_v4("10.1.0.1"), &prefix),
+            Some(1),
+        );
+        assert_eq!(
+            addr_offset_in_prefix(&addr_v4("10.1.0.27"), &prefix),
+            Some(27),
+        );
+        assert_eq!(
+            addr_offset_in_prefix(&addr_v4("10.1.1.0"), &prefix),
+            Some(256),
+        );
+        assert_eq!(
+            addr_offset_in_prefix(&addr_v4("10.1.255.255"), &prefix),
+            Some(65535),
+        );
+
+        assert_eq!(addr_offset_in_prefix(&addr_v4("10.2.0.0"), &prefix), None);
+        assert_eq!(
+            addr_offset_in_prefix(&addr_v4("192.168.0.1"), &prefix),
+            None,
+        );
+
+        assert_eq!(addr_offset_in_prefix(&addr_v6("::10:1:0:1"), &prefix), None);
+    }
+
+    #[test]
+    fn test_addr_offset_in_prefix_v6() {
+        let prefix = prefix_v6("abba::1001:0/112");
+
+        assert_eq!(
+            addr_offset_in_prefix(&addr_v6("abba::1000:0"), &prefix),
+            None
+        );
+        assert_eq!(
+            addr_offset_in_prefix(&addr_v6("abba::1000:ffff"), &prefix),
+            None,
+        );
+
+        assert_eq!(
+            addr_offset_in_prefix(&addr_v6("abba::1001:0"), &prefix),
+            Some(0),
+        );
+        assert_eq!(
+            addr_offset_in_prefix(&addr_v6("abba::1001:1"), &prefix),
+            Some(1),
+        );
+        assert_eq!(
+            addr_offset_in_prefix(&addr_v6("abba::1001:27"), &prefix),
+            Some(0x27),
+        );
+        assert_eq!(
+            addr_offset_in_prefix(&addr_v6("abba::1001:100"), &prefix),
+            Some(0x100),
+        );
+        assert_eq!(
+            addr_offset_in_prefix(&addr_v6("abba::1001:ffff"), &prefix),
+            Some(0xffff),
+        );
+
+        assert_eq!(
+            addr_offset_in_prefix(&addr_v6("abba::1002:0"), &prefix),
+            None
+        );
+        assert_eq!(addr_offset_in_prefix(&addr_v6("cdef::1"), &prefix), None,);
+
+        assert_eq!(addr_offset_in_prefix(&addr_v4("10.1.0.1"), &prefix), None);
+    }
+
+    #[test]
+    fn test_addr_from_prefix_offset_v4() {
+        let prefix = prefix_v4("10.1.0.0/16");
+        assert_eq!(
+            addr_from_prefix_offset(&prefix, 0),
+            Some(addr_v4("10.1.0.0"))
+        );
+        assert_eq!(
+            addr_from_prefix_offset(&prefix, 1),
+            Some(addr_v4("10.1.0.1"))
+        );
+        assert_eq!(
+            addr_from_prefix_offset(&prefix, 100),
+            Some(addr_v4("10.1.0.100"))
+        );
+        assert_eq!(
+            addr_from_prefix_offset(&prefix, 256),
+            Some(addr_v4("10.1.1.0"))
+        );
+        assert_eq!(
+            addr_from_prefix_offset(&prefix, 65535),
+            Some(addr_v4("10.1.255.255"))
+        );
+
+        assert_eq!(addr_from_prefix_offset(&prefix, 65536), None);
+        assert_eq!(addr_from_prefix_offset(&prefix, 100_000), None);
+    }
+
+    #[test]
+    fn test_addr_from_prefix_offset_v6() {
+        let prefix = prefix_v6("abba::1001:0/112");
+        assert_eq!(
+            addr_from_prefix_offset(&prefix, 0),
+            Some(addr_v6("abba::1001:0"))
+        );
+        assert_eq!(
+            addr_from_prefix_offset(&prefix, 1),
+            Some(addr_v6("abba::1001:1"))
+        );
+        assert_eq!(
+            addr_from_prefix_offset(&prefix, 0x64),
+            Some(addr_v6("abba::1001:64"))
+        );
+        assert_eq!(
+            addr_from_prefix_offset(&prefix, 0x100),
+            Some(addr_v6("abba::1001:100"))
+        );
+        assert_eq!(
+            addr_from_prefix_offset(&prefix, 0xffff),
+            Some(addr_v6("abba::1001:ffff"))
+        );
+
+        assert_eq!(addr_from_prefix_offset(&prefix, 0x10_000), None);
+        assert_eq!(addr_from_prefix_offset(&prefix, 0x100_000), None);
+    }
+
+    #[test]
+    fn test_iplist_v4() {
+        let mut list = IpList::new(prefix_v4("10.1.0.0/16"), None);
+        assert_eq!(list.size(), 65536);
+
+        assert!(!list.covers_addr(&addr_v4("9.0.0.1")));
+        assert!(list.covers_addr(&addr_v4("10.1.0.0")));
+        assert!(list.covers_addr(&addr_v4("10.1.2.1")));
+        assert!(list.covers_addr(&addr_v4("10.1.255.255")));
+        assert!(!list.covers_addr(&addr_v4("10.2.0.0")));
+
+        // Try to add junk exclusion prefixes
+        assert_eq!(
+            list.add_exclude(prefix_v4("10.0.2.0/24")),
+            Err(IpListError::ExcludePrefixOutOfRange)
+        );
+        assert_eq!(
+            list.add_exclude(prefix_v4("10.1.0.0/16")),
+            Err(IpListError::NoAddressesLeft)
+        );
+        assert_eq!(
+            list.add_exclude(prefix_v4("10.0.0.0/8")),
+            Err(IpListError::ExcludePrefixOutOfRange)
+        );
+        assert_eq!(
+            list.add_exclude(prefix_v6("::1:0/24")),
+            Err(IpListError::IpVersionMismatch)
+        );
+
+        assert_eq!(list.size(), 65536);
+
+        // Add exclusion prefixes for real
+        list.add_exclude(prefix_v4("10.1.2.0/24"))
+            .expect("Failed to add exclusion prefix");
+        assert_eq!(list.size(), 65536 - 256);
+        assert!(!list.covers_addr(&addr_v4("10.1.2.1")));
+
+        // Add exclusion prefixes for real
+        list.add_exclude(prefix_v4("10.1.6.0/24"))
+            .expect("Failed to add exclusion prefix");
+        assert_eq!(list.size(), 65536 - 2 * 256);
+        assert!(!list.covers_addr(&addr_v4("10.1.6.1")));
+
+        list.add_exclude(prefix_v4("10.1.240.0/20"))
+            .expect("Failed to add exclusion prefix");
+        assert_eq!(list.size(), 65536 - 2 * 256 - 4096);
+        assert!(list.covers_addr(&addr_v4("10.1.239.255")));
+        assert!(!list.covers_addr(&addr_v4("10.1.240.1")));
+        assert!(!list.covers_addr(&addr_v4("10.1.250.1")));
+        assert!(!list.covers_addr(&addr_v4("10.1.255.255")));
+
+        // Get some address offsets
+        assert_eq!(list.get_offset(&addr_v4("10.1.0.0")), Some(0));
+        assert_eq!(list.get_offset(&addr_v4("10.1.0.1")), Some(1));
+        assert_eq!(list.get_offset(&addr_v4("10.1.1.255")), Some(256 + 255));
+        assert_eq!(list.get_offset(&addr_v4("10.1.2.0")), None);
+        assert_eq!(list.get_offset(&addr_v4("10.1.2.255")), None);
+        assert_eq!(list.get_offset(&addr_v4("10.1.3.0")), Some(256 * 3 - 256));
+        assert_eq!(list.get_offset(&addr_v4("10.1.5.0")), Some(256 * 5 - 256));
+        assert_eq!(list.get_offset(&addr_v4("10.1.6.6")), None);
+        assert_eq!(
+            list.get_offset(&addr_v4("10.1.7.1")),
+            Some(256 * 7 - 256 * 2 + 1)
+        );
+        assert_eq!(
+            list.get_offset(&addr_v4("10.1.239.255")),
+            Some(256 * 239 - 256 * 2 + 255)
+        );
+        assert_eq!(list.get_offset(&addr_v4("10.1.240.0")), None);
+        assert_eq!(list.get_offset(&addr_v4("10.1.255.255")), None);
+        assert_eq!(list.get_offset(&addr_v4("10.2.0.0")), None);
+        assert_eq!(list.get_offset(&addr_v4("192.168.0.1")), None);
+
+        // Get some addresses from given offsets
+        assert_eq!(list.get_addr(0), Some(addr_v4("10.1.0.0")));
+        assert_eq!(list.get_addr(1), Some(addr_v4("10.1.0.1")));
+        assert_eq!(list.get_addr(5), Some(addr_v4("10.1.0.5")));
+        assert_eq!(list.get_addr(255), Some(addr_v4("10.1.0.255")));
+        assert_eq!(list.get_addr(256), Some(addr_v4("10.1.1.0")));
+        assert_eq!(list.get_addr(256 * 3 - 256 + 5), Some(addr_v4("10.1.3.5")));
+        assert_eq!(
+            list.get_addr(256 * 7 - 256 * 2 + 5),
+            Some(addr_v4("10.1.7.5"))
+        );
+        assert_eq!(
+            list.get_addr(256 * 239 - 256 * 2 + 255),
+            Some(addr_v4("10.1.239.255"))
+        );
+        assert_eq!(list.get_addr(256 * 239 - 256 * 2 + 256), None);
+
+        // Attempt to exclude all addresses
+        let mut list = IpList::new(prefix_v4("10.1.0.0/16"), None);
+        list.add_exclude(prefix_v4("10.1.0.0/17"))
+            .expect("Failed to add exclusion prefix");
+        assert_eq!(
+            list.add_exclude(prefix_v4("10.1.128.0/17")),
+            Err(IpListError::NoAddressesLeft)
+        );
+        assert_eq!(list.size(), 65536 / 2);
+    }
+
+    #[test]
+    fn test_iplist_v6() {
+        let mut list = IpList::new(prefix_v6("abba::1001:0/112"), None);
+        assert_eq!(list.size(), 65536);
+
+        assert!(!list.covers_addr(&addr_v6("abba::900:1")));
+        assert!(list.covers_addr(&addr_v6("abba::1001:0")));
+        assert!(list.covers_addr(&addr_v6("abba::1001:201")));
+        assert!(list.covers_addr(&addr_v6("abba::1001:ffff")));
+        assert!(!list.covers_addr(&addr_v6("abba::1002:0")));
+
+        // Try to add junk exclusion prefixes
+        assert_eq!(
+            list.add_exclude(prefix_v6("abba::1000:200/120")),
+            Err(IpListError::ExcludePrefixOutOfRange)
+        );
+        assert_eq!(
+            list.add_exclude(prefix_v6("abba::1001:0/112")),
+            Err(IpListError::NoAddressesLeft)
+        );
+        assert_eq!(
+            list.add_exclude(prefix_v6("abba::1000:0/104")),
+            Err(IpListError::ExcludePrefixOutOfRange)
+        );
+        assert_eq!(
+            list.add_exclude(prefix_v4("10.3.0.0/24")),
+            Err(IpListError::IpVersionMismatch)
+        );
+
+        assert_eq!(list.size(), 0x10_000);
+
+        // Add exclusion prefixes for real
+        list.add_exclude(prefix_v6("abba::1001:200/120"))
+            .expect("Failed to add exclusion prefix");
+        assert_eq!(list.size(), 0x10_000 - 0x100);
+        assert!(!list.covers_addr(&addr_v6("abba::1001:201")));
+
+        // Add exclusion prefixes for real
+        list.add_exclude(prefix_v6("abba::1001:600/120"))
+            .expect("Failed to add exclusion prefix");
+        assert_eq!(list.size(), 0x10_000 - 2 * 0x100);
+        assert!(!list.covers_addr(&addr_v6("abba::1001:601")));
+
+        list.add_exclude(prefix_v6("abba::1001:f000/116"))
+            .expect("Failed to add exclusion prefix");
+        assert_eq!(list.size(), 0x10_000 - 2 * 0x100 - 0x1_000);
+        assert!(list.covers_addr(&addr_v6("abba::1001:efff")));
+        assert!(!list.covers_addr(&addr_v6("abba::1001:f001")));
+        assert!(!list.covers_addr(&addr_v6("abba::1001:fa01")));
+        assert!(!list.covers_addr(&addr_v6("abba::1001:ffff")));
+
+        // Get some address offsets
+        assert_eq!(list.get_offset(&addr_v6("abba::1001:0")), Some(0));
+        assert_eq!(list.get_offset(&addr_v6("abba::1001:1")), Some(1));
+        assert_eq!(list.get_offset(&addr_v6("abba::1001:1ff")), Some(0x1ff));
+        assert_eq!(list.get_offset(&addr_v6("abba::1001:200")), None);
+        assert_eq!(list.get_offset(&addr_v6("abba::1001:2ff")), None);
+        assert_eq!(
+            list.get_offset(&addr_v6("abba::1001:300")),
+            Some(0x300 - 0x100)
+        );
+        assert_eq!(
+            list.get_offset(&addr_v6("abba::1001:500")),
+            Some(0x500 - 0x100)
+        );
+        assert_eq!(list.get_offset(&addr_v6("abba::1001:606")), None);
+        assert_eq!(
+            list.get_offset(&addr_v6("abba::1001:701")),
+            Some(0x701 - 0x100 * 2)
+        );
+        assert_eq!(
+            list.get_offset(&addr_v6("abba::1001:efff")),
+            Some(0xefff - 0x100 * 2)
+        );
+        assert_eq!(list.get_offset(&addr_v6("abba::1001:f000")), None);
+        assert_eq!(list.get_offset(&addr_v6("abba::1001:ffff")), None);
+        assert_eq!(list.get_offset(&addr_v6("abba::1002:0")), None);
+        assert_eq!(list.get_offset(&addr_v6("abba::cdef:1")), None);
+
+        // Get some addresses from given offsets
+        assert_eq!(list.get_addr(0), Some(addr_v6("abba::1001:0")));
+        assert_eq!(list.get_addr(1), Some(addr_v6("abba::1001:1")));
+        assert_eq!(list.get_addr(5), Some(addr_v6("abba::1001:5")));
+        assert_eq!(list.get_addr(0xff), Some(addr_v6("abba::1001:ff")));
+        assert_eq!(list.get_addr(0x100), Some(addr_v6("abba::1001:100")));
+        assert_eq!(
+            list.get_addr(0x305 - 0x100),
+            Some(addr_v6("abba::1001:305"))
+        );
+        assert_eq!(
+            list.get_addr(0x705 - 0x100 * 2),
+            Some(addr_v6("abba::1001:705"))
+        );
+        assert_eq!(
+            list.get_addr(0xefff - 0x100 * 2),
+            Some(addr_v6("abba::1001:efff"))
+        );
+        assert_eq!(list.get_addr(0xf000 - 0x100 * 2), None);
+
+        // Attempt to exclude all addresses
+        let mut list = IpList::new(prefix_v6("abba::1001:0/112"), None);
+        list.add_exclude(prefix_v6("abba::1001:0/113"))
+            .expect("Failed to add exclusion prefix");
+        assert_eq!(
+            list.add_exclude(prefix_v6("abba::1001:8000/113")),
+            Err(IpListError::NoAddressesLeft)
+        );
+        assert_eq!(list.size(), 0x10_000 / 2);
+    }
+}
