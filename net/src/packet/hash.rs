@@ -75,6 +75,8 @@ mod tests {
     // Builds a vector of packets.
     // Note: If this function is changed, the fingerprint file may
     // need to be updated.
+    //
+    // See instructions in the comment for test_ahash_detect_changes().
     fn build_test_packets(number: u16) -> Vec<Packet<TestBuffer>> {
         let mut packets = Vec::new();
         for n in 1..=number {
