@@ -52,6 +52,11 @@ impl FibGroup {
             entries: Vec::new(),
         }
     }
+    pub fn with_entry(entry: FibEntry) -> Self {
+        Self {
+            entries: vec![entry],
+        }
+    }
     pub fn add(&mut self, entry: FibEntry) {
         self.entries.push(entry);
     }
@@ -81,6 +86,11 @@ impl FibEntry {
     pub fn new() -> Self {
         Self {
             instructions: Vec::new(),
+        }
+    }
+    pub fn with_inst(instruction: PktInstruction) -> Self {
+        Self {
+            instructions: vec![instruction],
         }
     }
     pub fn add(&mut self, instruction: PktInstruction) {
