@@ -15,8 +15,8 @@ use std::marker::PhantomData;
 ///
 /// # See Also
 ///
-/// [`nf_dyn`]
-/// [`crate::pipeline::DynPipeline`]
+/// * [`nf_dyn`]
+/// * [`crate::pipeline::DynPipeline`]
 pub trait DynNetworkFunction<Buf: PacketBufferMut>: Any {
     /// The `process_dyn` method takes an iterator of [`Packet`] objects,
     /// However, unlike [`NetworkFunction::process`], this method does not require concrete
@@ -55,8 +55,8 @@ impl<Buf: PacketBufferMut, NF: NetworkFunction<Buf>> DynNetworkFunctionImpl<Buf,
 ///
 /// # See Also
 ///
-/// [`DynNetworkFunction`]
-/// [`crate::pipeline::DynPipeline`]
+/// * [`DynNetworkFunction`]
+/// * [`crate::pipeline::DynPipeline`]
 pub fn nf_dyn<Buf: PacketBufferMut + 'static, NF: NetworkFunction<Buf> + 'static>(
     nf: NF,
 ) -> Box<dyn DynNetworkFunction<Buf>> {
