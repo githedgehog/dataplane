@@ -1,14 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::packet_meta::{DoneReason, PacketMeta};
-use net::buffer::PacketBufferMut;
-use net::eth::EthError;
-use net::headers::{AbstractHeaders, AbstractHeadersMut, Headers, TryHeaders, TryHeadersMut};
-use net::parse::{DeParse, DeParseError, Parse, ParseError};
+#![allow(missing_docs)] // temporary allowance
+
+//! High-level packet structure
+
+mod hash;
+mod meta;
+
+use crate::buffer::PacketBufferMut;
+use crate::eth::EthError;
+use crate::headers::{AbstractHeaders, AbstractHeadersMut, Headers, TryHeaders, TryHeadersMut};
+use crate::parse::{DeParse, DeParseError, Parse, ParseError};
 use std::cmp::Ordering;
 use std::num::NonZero;
 use tracing::{error, warn};
+
+#[allow(unused_imports)] // re-export
+pub use hash::*;
+#[allow(unused_imports)] // re-export
+pub use meta::*;
 
 #[derive(Debug)]
 pub struct Packet<Buf: PacketBufferMut> {
@@ -30,6 +41,11 @@ pub struct InvalidPacket<Buf: PacketBufferMut> {
 
 #[allow(dead_code)]
 impl<Buf: PacketBufferMut> Packet<Buf> {
+    /// Create a new packet from a buffer
+    ///
+    /// # Errors
+    ///
+    /// If the supplied buffer fails to parse, this method will return an [`InvalidPacket`] error.
     pub fn new(mbuf: Buf) -> Result<Packet<Buf>, InvalidPacket<Buf>> {
         let (headers, consumed) = match Headers::parse(mbuf.as_ref()) {
             Ok((packet, consumed)) => (packet, consumed),
@@ -50,7 +66,12 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         self.mbuf.take()
     }
 
-    pub(crate) fn reserialize(mut self) -> Buf {
+    /// Reserialize the packet into a buffer (consuming self).
+    ///
+    /// # Panics
+    ///
+    /// This method should never panic baring programmer error.
+    pub fn reserialize(mut self) -> Buf {
         // TODO: prove that these unreachable statements are optimized out
         // The `unreachable` statements in the first block should be easily optimized out, but best
         // to confirm.
@@ -66,6 +87,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         self.done(DoneReason::Delivered);
 
         let needed = self.headers.size();
+        #[allow(clippy::expect_used)] // TODO: this should not be necessary
         let mut mbuf = self.take_buf().expect("Packet without buffer");
         let mut mbuf = match needed.cmp(&self.consumed) {
             Ordering::Equal => mbuf,

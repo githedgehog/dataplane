@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use crate::pipeline::NetworkFunction;
 use dyn_iter::{DynIter, IntoDynIterator};
 use net::buffer::PacketBufferMut;
+use net::packet::Packet;
 use std::any::Any;
 use std::marker::PhantomData;
-
-use crate::packet::Packet;
-use crate::pipeline::NetworkFunction;
 
 /// Trait for an object that processes a stream of packets.
 ///
@@ -19,13 +18,13 @@ use crate::pipeline::NetworkFunction;
 /// [`nf_dyn`]
 /// [`crate::pipeline::DynPipeline`]
 pub trait DynNetworkFunction<Buf: PacketBufferMut>: Any {
-    /// The `process_dyn` method takes an iterator of [`crate::packet::Packet`] objects,
+    /// The `process_dyn` method takes an iterator of [`Packet`] objects,
     /// However, unlike [`NetworkFunction::process`], this method does not require concrete
     /// iterator types.
     ///
-    /// To call this method, import the [`dyn_iter::IntoDynIterator`] trait and use the
-    /// `into_dyn_iter` method to get a [`dyn_iter::DynIter`] to use with this method.
-    /// Generally you should not need to call this method directly, instead just call
+    /// To call this method, import the [`IntoDynIterator`] trait and use the
+    /// `into_dyn_iter` method to get a [`DynIter`] to use with this method.
+    /// Generally, you should not need to call this method directly, instead call
     /// [`DynPipeline::process`][crate::pipeline::DynPipeline::process] with a concrete iterator
     /// type.  However, if you only have a dynamic iterator, you can use this method to process the
     /// packets.

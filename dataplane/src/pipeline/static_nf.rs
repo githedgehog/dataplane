@@ -2,13 +2,12 @@
 // Copyright Open Network Fabric Authors
 
 use net::buffer::PacketBufferMut;
+use net::packet::Packet;
 use std::marker::PhantomData;
-
-use crate::packet::Packet;
 
 /// Trait for an object that processes a stream of packets.
 pub trait NetworkFunction<Buf: PacketBufferMut> {
-    /// The `process` method takes an iterator of [`crate::packet::Packet`] objects,
+    /// The `process` method takes an iterator of [`Packet`] objects,
     /// applies the appropriate transformations (or drops) and returns an iterator of
     /// modified packets.
     ///

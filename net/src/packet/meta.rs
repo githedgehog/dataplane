@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use routing::vrf::VrfId;
 use std::collections::HashMap;
 use std::net::IpAddr;
+
+/// Every VRF is univocally identified with a numerical VRF id
+pub type VrfId = u32;
 
 #[derive(Debug, Default)]
 pub struct InterfaceId(u32);
 #[allow(unused)]
 impl InterfaceId {
+    #[must_use]
     pub fn new(val: u32) -> Self {
         Self(val)
     }
+    #[must_use]
     pub fn get_id(&self) -> u32 {
         self.0
     }
@@ -21,9 +25,11 @@ impl InterfaceId {
 pub struct BridgeDomain(u32);
 #[allow(unused)]
 impl BridgeDomain {
+    #[must_use]
     pub fn get_id(&self) -> u32 {
         self.0
     }
+    #[must_use]
     pub fn with_id(id: u32) -> Self {
         Self(id)
     }
@@ -82,6 +88,7 @@ pub struct PacketDropStats {
 
 impl PacketDropStats {
     #[allow(dead_code)]
+    #[must_use]
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_owned(),
@@ -96,10 +103,12 @@ impl PacketDropStats {
             .or_insert(value);
     }
     #[allow(dead_code)]
+    #[must_use]
     pub fn get_stat(&self, reason: DoneReason) -> Option<u64> {
         self.reasons.get(&reason).copied()
     }
     #[allow(dead_code)]
+    #[must_use]
     pub fn get_stats(&self) -> &HashMap<DoneReason, u64> {
         &self.reasons
     }
@@ -108,7 +117,8 @@ impl PacketDropStats {
 #[cfg(test)]
 pub mod test {
     use super::DoneReason;
-    use crate::packet_meta::PacketDropStats;
+    use super::PacketDropStats;
+
     #[test]
     fn test_packet_drop_stats() {
         let mut stats = PacketDropStats::new("Stats:pipeline-FOO-stage-BAR");

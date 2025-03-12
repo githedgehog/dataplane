@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use crate::pipeline::dyn_nf::DynNetworkFunctionImpl;
+use crate::pipeline::{DynNetworkFunction, NetworkFunction, nf_dyn};
 use dyn_iter::{DynIter, IntoDynIterator};
 use id::Id;
 use net::buffer::PacketBufferMut;
+use net::packet::Packet;
 use ordermap::OrderMap;
 use std::any::Any;
-
-use crate::packet::Packet;
-use crate::pipeline::dyn_nf::DynNetworkFunctionImpl;
-use crate::pipeline::{DynNetworkFunction, NetworkFunction, nf_dyn};
 
 pub type StageId<Buf> = Id<Box<dyn DynNetworkFunction<Buf>>>;
 

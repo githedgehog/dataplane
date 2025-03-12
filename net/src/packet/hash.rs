@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
-//
+
 //! Module to compute packet hashes
 
 use super::Packet;
+use crate::buffer::PacketBufferMut;
+use crate::headers::{Net, Transport, TryHeaders, TryIp, TryTransport};
 use ahash::AHasher;
-use net::buffer::PacketBufferMut;
-use net::headers::{Net, Transport, TryHeaders, TryIp, TryTransport};
 use std::hash::{Hash, Hasher};
 
 impl<Buf: PacketBufferMut> Packet<Buf> {
