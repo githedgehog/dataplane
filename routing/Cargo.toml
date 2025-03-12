@@ -12,6 +12,7 @@ testing = []
 [dependencies]
 ipnet = { workspace = true }
 iptrie = { workspace = true }
+left-right = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
 net = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
