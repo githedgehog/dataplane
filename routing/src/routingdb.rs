@@ -67,16 +67,20 @@ impl VrfTable {
             return Err(RouterError::VrfExists(vrfid));
         }
 
-        /* create fib if we have a fibtablewriter */
-        let fibw = self.fibtable.as_mut().map(|fibtwriter| {
-            let (fibw, _) = fibtwriter.add_fib(vrfid);
-            fibw
-        });
-
-        /* Build new VRF, with the corresponding fib writer */
-        let mut vrf = Vrf::new(name, vrfid, fibw);
+        /* Build new VRF (no writer is passed yet since we don't create it until checking
+        the vni) */
+        let mut vrf = Vrf::new(name, vrfid, None);
         if let Some(vni) = vni_checked {
             vrf.set_vni(vni);
+        }
+
+        /* create fib if we have a fibtablewriter */
+        if let Some(fibwriter) = self.fibtable.as_mut() {
+            vrf.set_fib_id(); /* only set if we're going to have a fib */
+
+            /* fixme: add_fib() */
+            let (fibw, _) = fibwriter.add_fib(vrf.fib_id());
+            vrf.set_fibw(fibw);
         }
 
         // FIXME: replace ARC by RC
@@ -155,7 +159,11 @@ impl VrfTable {
         if let Some(vrf) = self.by_id.remove(&vrfid) {
             if let Some(fibtablew) = &mut self.fibtable {
                 if let Ok(vrf) = vrf.read() {
-                    fibtablew.del_fib(vrf.fib_id());
+                    if vrf.fibw.is_some() {
+                        if let Some(id) = vrf.get_fib_id() {
+                            fibtablew.del_fib(id);
+                        }
+                    }
                 }
             }
             iftable.detach_vrf_interfaces(&vrf);
