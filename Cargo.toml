@@ -42,7 +42,7 @@ bindgen = { version = "0.71.1", default-features = false, features = [] }
 bolero = { version = "0.13.0", default-features = false, features = [] }
 bytes = { version = "1.10.1", default-features = false, features = [] }
 # std feature currently globally required for clap
-clap = { version = "4.5.31", default-features = false, features = ["std"] }
+clap = { version = "4.5.32", default-features = false, features = ["std"] }
 ctrlc = { version = "3.4.5", default-features = false, features = [] }
 doxygen-rs = { version = "0.4.2", default-features = false, features = [] }
 dyn-iter = { version = "1.0.1", default-features = false, features = [] }
