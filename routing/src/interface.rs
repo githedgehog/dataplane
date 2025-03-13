@@ -398,7 +398,7 @@ pub mod tests {
         assert!(eth0.has_address(&address));
 
         /* Suppose a VRF exists already, somewhere... */
-        let vrf = Arc::new(RwLock::new(Vrf::new("default-vrf", 0)));
+        let vrf = Arc::new(RwLock::new(Vrf::new("default-vrf", 0, None)));
 
         /* Attach to VRF */
         let e = eth0.attach(&vrf);
