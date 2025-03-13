@@ -157,8 +157,7 @@ pub fn start_cpi(conf: &CpiConf) -> Result<CpiHandle, RouterError> {
         /* create FIB table and writer and reader */
         let (mut fibt_w, fibt_r) = create_fibtable();
 
-        /* create the FIB for the default VRF */
-        let (a, b) = fibt_w.add_fib(0);
+        /* TODO: create default VRF upfront ? */
 
         /* pass factory of fibtable read handles back */
         if let Ok(mut x) = fibt_r_fact_clone.write() {
