@@ -17,8 +17,8 @@ use std::sync::RwLock;
 use tracing::{debug, error};
 
 pub struct VrfTable {
-    by_id: HashMap<VrfId, Arc<RwLock<Vrf>>>,
-    by_vni: HashMap<Vni, Arc<RwLock<Vrf>>>,
+    by_id: HashMap<VrfId, Arc<RwLock<Vrf>>>, /* Fixme: replace by RC */
+    by_vni: HashMap<Vni, Arc<RwLock<Vrf>>>,  /* Fixme: replace by RC */
     fibtable: Option<FibTableWriter>,
 }
 
@@ -29,17 +29,18 @@ pub struct VrfTable {
 /// Every VRF is uniquely identified by a vrfId, which acts as the master key.
 /// Vrfs that have a VNI associated can also be looked up by VNI.
 impl VrfTable {
-    pub fn new() -> Self {
+    pub fn new(fibtable: Option<FibTableWriter>) -> Self {
         Self {
             by_id: HashMap::new(),
             by_vni: HashMap::new(),
-            fibtable: None,
+            fibtable,
         }
     }
 
     //////////////////////////////////////////////////////////////////
     /// Create a new VRF with some name and Id, and optional Vni.
     //////////////////////////////////////////////////////////////////
+    #[allow(clippy::arc_with_non_send_sync)]
     pub fn add_vrf(
         &mut self,
         name: &str,
@@ -66,17 +67,25 @@ impl VrfTable {
             return Err(RouterError::VrfExists(vrfid));
         }
 
-        /* Build new VRF */
-        let mut vrf = Vrf::new(name, vrfid);
+        /* create fib if we have a fibtablewriter */
+        let fibw = self.fibtable.as_mut().map(|fibtwriter| {
+            let (fibw, _) = fibtwriter.add_fib(vrfid);
+            fibw
+        });
+
+        /* Build new VRF, with the corresponding fib writer */
+        let mut vrf = Vrf::new(name, vrfid, fibw);
         if let Some(vni) = vni_checked {
             vrf.set_vni(vni);
         }
 
+        // FIXME: replace ARC by RC
         let vrf = Arc::new(RwLock::new(vrf));
         self.by_id.entry(vrfid).or_insert(vrf.clone());
         if let Some(vni) = vni_checked {
             self.by_vni.entry(vni).insert_entry(vrf.clone());
         }
+
         Ok(vrf)
     }
 
@@ -144,6 +153,11 @@ impl VrfTable {
     //////////////////////////////////////////////////////////////////
     pub fn remove_vrf(&mut self, vrfid: VrfId, iftable: &mut IfTable) -> Result<(), RouterError> {
         if let Some(vrf) = self.by_id.remove(&vrfid) {
+            if let Some(fibtablew) = &mut self.fibtable {
+                if let Ok(vrf) = vrf.read() {
+                    fibtablew.del_fib(vrf.fib_id());
+                }
+            }
             iftable.detach_vrf_interfaces(&vrf);
             #[allow(clippy::collapsible_if)]
             if let Ok(vrf) = vrf.read() {
@@ -218,9 +232,9 @@ pub struct RoutingDb {
 #[allow(clippy::new_without_default)]
 impl RoutingDb {
     #[allow(dead_code)]
-    pub fn new() -> Self {
+    pub fn new(fibtable: Option<FibTableWriter>) -> Self {
         Self {
-            vrftable: RwLock::new(VrfTable::new()),
+            vrftable: RwLock::new(VrfTable::new(fibtable)),
             iftable: RwLock::new(IfTable::new()),
             rmac_store: RwLock::new(RmacStore::new()),
             vtep: RwLock::new(Vtep::new()),
@@ -243,7 +257,7 @@ mod tests {
 
     #[test]
     fn vrf_table() {
-        let mut vrftable = VrfTable::new();
+        let mut vrftable = VrfTable::new(None);
         let mut iftable = build_test_iftable();
 
         /* add VRFs */
