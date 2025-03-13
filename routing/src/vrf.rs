@@ -12,6 +12,8 @@ use tracing::debug;
 use crate::nexthop::{Nhop, NhopKey, NhopStore};
 use crate::prefix::Prefix;
 use crate::pretty_utils::Frame;
+use crate::softfib::fib::FibId;
+use crate::softfib::fib::FibWriter;
 use iptrie::map::RTrieMap;
 use iptrie::{Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
@@ -85,6 +87,7 @@ pub struct Vrf {
     pub(crate) routesv6: RTrieMap<Ipv6Prefix, Route>,
     pub(crate) nhstore: NhopStore,
     pub(crate) vni: Option<Vni>,
+    pub(crate) fibw: Option<FibWriter>,
 }
 
 // pub type RouteV4FilterTuple<'a> = (&'a Ipv4Prefix, &'a Route);
@@ -100,8 +103,19 @@ impl Vrf {
     /// Initial capacities are 0. We may want to have some default sizes.
     /// Else, we can always call Self::with_capacities().
     /////////////////////////////////////////////////////////////////////////
-    pub fn new(name: &str, vrfid: VrfId) -> Self {
-        Self::with_capacities(name, vrfid, 0, 0)
+    pub fn new(name: &str, vrfid: VrfId, fibw: Option<FibWriter>) -> Self {
+        Self::with_capacities(name, vrfid, 0, 0, fibw)
+    }
+
+    /// Get the FibId corresponding to a VRF. We need FibIds to identify the fib
+    /// object corresponding to a VRF, so that we can do certain lookups from the vni.
+    /// If a VRF does not have a vni, we don't need it to be in the fibtable.
+    pub fn fib_id(&self) -> FibId {
+        if let Some(vni) = self.vni {
+            vni.into()
+        } else {
+            self.vrfid
+        }
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -117,7 +131,13 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     /// Create VRF with some initial capacities
     /////////////////////////////////////////////////////////////////////////
-    pub fn with_capacities(name: &str, vrfid: VrfId, capa_v4: usize, capa_v6: usize) -> Self {
+    pub fn with_capacities(
+        name: &str,
+        vrfid: VrfId,
+        capa_v4: usize,
+        capa_v6: usize,
+        fibw: Option<FibWriter>,
+    ) -> Self {
         let mut vrf = Self {
             name: name.to_owned(),
             vrfid,
@@ -125,6 +145,7 @@ impl Vrf {
             routesv6: RTrieMap::with_capacity(capa_v6),
             nhstore: NhopStore::new(),
             vni: None,
+            fibw,
         };
         /* add default routes with default next-hop with action DROP */
         vrf.add_route(
@@ -391,7 +412,7 @@ pub mod tests {
 
     #[test]
     fn test_vrf_build() {
-        let vrf = Vrf::new("Default", 0);
+        let vrf = Vrf::new("Default", 0, None);
         assert_eq!(vrf.len_v4(), 1, "An Ipv4 default route must exist.");
         assert_eq!(vrf.len_v6(), 1, "An Ipv6 default route must exist.");
         assert_eq!(vrf.nhstore.len(), 1, "A single 'drop' nexthop must be there.");
@@ -420,7 +441,7 @@ pub mod tests {
 
     #[test]
     fn test_default_idempotence() {
-        let mut vrf = Vrf::new("Default", 0);
+        let mut vrf = Vrf::new("Default", 0, None);
 
         let pref_v4: Prefix = Prefix::root_v4();
         let pref_v6: Prefix = Prefix::root_v6();
@@ -473,7 +494,7 @@ pub mod tests {
 
     #[test]
     fn test_default_replace_v4() {
-        let mut vrf = Vrf::new("Default", 0);
+        let mut vrf = Vrf::new("Default", 0, None);
         vrf.dump(Some("Initial (clean)"));
 
         /* Add static default via 10.0.0.1 */
@@ -494,7 +515,7 @@ pub mod tests {
 
     #[test]
     fn test_default_replace_v6() {
-        let mut vrf = Vrf::new("Default", 0);
+        let mut vrf = Vrf::new("Default", 0, None);
         vrf.dump(Some("Initial (clean)"));
 
         /* Add static default via 2001::1 */
@@ -516,7 +537,7 @@ pub mod tests {
     #[test]
     fn test_vrf_basic() {
         let num_routes = 10;
-        let mut vrf = Vrf::new("Default", 0);
+        let mut vrf = Vrf::new("Default", 0, None);
 
         /* Add 'num_routes' routes */
         for i in 1..=num_routes {
@@ -569,7 +590,7 @@ pub mod tests {
 
     #[test]
     fn test_route_filtering() {
-        let mut vrf = Vrf::new("Default", 0);
+        let mut vrf = Vrf::new("Default", 0, None);
 
         /* connected */
         let nh = build_test_nhop(None, Some(1), 0, None);
@@ -627,7 +648,7 @@ pub mod tests {
 
     // build a sample VRF used for testing
     pub fn build_test_vrf() -> Vrf {
-        let mut vrf = Vrf::new("Default", 0);
+        let mut vrf = Vrf::new("Default", 0, None);
 
         {
             let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
@@ -682,7 +703,7 @@ pub mod tests {
 
     // build a sample VRF used for testing
     pub fn build_test_vrf_nhops_partially_resolved() -> Vrf {
-        let mut vrf = Vrf::new("Default", 0);
+        let mut vrf = Vrf::new("Default", 0, None);
 
         {
             let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
