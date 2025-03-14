@@ -80,18 +80,18 @@ pub mod tests {
         let mut atable = AdjacencyTable::new();
         {
             let ip = mk_addr("10.0.0.1");
-            let mac = Mac::from([0x0, 0x0, 0x0, 0x0 ,0x0, 0x1]);
-            atable.add_adjacency(Adjacency::new(ip, 1, mac));
-        }
-        {
-            let ip = mk_addr("10.0.0.5");
-            let mac = Mac::from([0x0, 0x0, 0x0, 0x0 ,0x0, 0x5]);
+            let mac = Mac::from([0x0, 0x0, 0x0, 0x0 ,0xaa, 0x1]);
             atable.add_adjacency(Adjacency::new(ip, 2, mac));
         }
         {
+            let ip = mk_addr("10.0.0.5");
+            let mac = Mac::from([0x0, 0x0, 0x0, 0x0 ,0xaa, 0x5]);
+            atable.add_adjacency(Adjacency::new(ip, 3, mac));
+        }
+        {
             let ip = mk_addr("10.0.0.9");
-            let mac = Mac::from([0x0, 0x0, 0x0, 0x0 ,0x0, 0x9]);
-            atable.add_adjacency(Adjacency::new(ip, 3, mac ));
+            let mac = Mac::from([0x0, 0x0, 0x0, 0x0 ,0xaa, 0x9]);
+            atable.add_adjacency(Adjacency::new(ip, 4, mac ));
         }
         atable
     }
