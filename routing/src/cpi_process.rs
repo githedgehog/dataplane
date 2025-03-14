@@ -306,12 +306,7 @@ fn handle_get_request(csock: &mut RpcCachedSock, peer: &SocketAddr, req: &RpcReq
     let resp_msg = build_response_msg(req, res_code, Some(objects));
     csock.send_msg(resp_msg, peer);
 }
-fn handle_request(
-    csock: &mut RpcCachedSock,
-    peer: &SocketAddr,
-    req: &RpcRequest,
-    db: &Arc<RoutingDb>,
-) {
+fn handle_request(csock: &mut RpcCachedSock, peer: &SocketAddr, req: &RpcRequest, db: &RoutingDb) {
     let op = req.get_op();
     let object = req.get_object();
     debug!("Handling {}", req);
@@ -354,7 +349,7 @@ fn handle_notification(_csock: &RpcCachedSock, peer: &SocketAddr, _notif: &RpcNo
     warn!("Received a notification message from {:?}", peer);
 }
 fn handle_control(_csock: &RpcCachedSock, _peer: &SocketAddr, _ctl: &RpcControl) {}
-fn handle_rpc_msg(csock: &mut RpcCachedSock, peer: &SocketAddr, msg: &RpcMsg, db: &Arc<RoutingDb>) {
+fn handle_rpc_msg(csock: &mut RpcCachedSock, peer: &SocketAddr, msg: &RpcMsg, db: &RoutingDb) {
     match msg {
         RpcMsg::Control(ctl) => handle_control(csock, peer, ctl),
         RpcMsg::Request(req) => handle_request(csock, peer, req, db),
@@ -365,12 +360,7 @@ fn handle_rpc_msg(csock: &mut RpcCachedSock, peer: &SocketAddr, msg: &RpcMsg, db
 
 /* process rx data from UX sock */
 #[allow(unused)]
-pub fn process_rx_data(
-    csock: &mut RpcCachedSock,
-    peer: &SocketAddr,
-    data: &[u8],
-    db: &Arc<RoutingDb>,
-) {
+pub fn process_rx_data(csock: &mut RpcCachedSock, peer: &SocketAddr, data: &[u8], db: &RoutingDb) {
     let peer_addr = peer.as_pathname().unwrap_or_else(|| Path::new("unnamed"));
     trace!("CPI: recvd {} bytes from {:?}...", data.len(), peer_addr);
     let mut buf_rx = Bytes::copy_from_slice(data); // TODO: avoid this copy
