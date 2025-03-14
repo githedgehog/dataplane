@@ -5,13 +5,13 @@
 
 use crate::adjacency::{Adjacency, AdjacencyTable};
 use crate::encapsulation::{Encapsulation, VxlanEncapsulation};
-use crate::fib::Fib;
 use crate::interface::{IfDataDot1q, IfDataEthernet, IfState, IfTable, IfType, Interface};
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::pretty_utils::{Heading, line};
 use crate::rmac::{RmacEntry, RmacStore, Vtep};
 use crate::route_processor::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::routingdb::VrfTable;
+use crate::testfib::TestFib;
 use crate::vrf::{Route, ShimNhop, Vrf};
 
 use iptrie::map::RTrieMap;
@@ -554,6 +554,17 @@ impl Display for AdjacencyTable {
     }
 }
 
+//========================= Test Fib ================================//
+impl Display for TestFib {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        Heading(format!("Fib ({} entries)", self.len())).fmt(f)?;
+        for entry in self.iter() {
+            write!(f, " {}", entry)?;
+        }
+        Ok(())
+    }
+}
+
 //========================= Fib ================================//
 
 impl Display for EgressObject {
@@ -564,7 +575,6 @@ impl Display for EgressObject {
         //        fmt_opt_value(f, " dmac", self.dmac, false)
     }
 }
-
 impl Display for PktInstruction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
@@ -589,15 +599,6 @@ impl Display for FibGroup {
         for (n, entry) in self.iter().enumerate() {
             writeln!(f, "    FibEntry {}:", n)?;
             writeln!(f, "{}", entry)?;
-        }
-        Ok(())
-    }
-}
-impl Display for Fib {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        Heading(format!("Fib ({} entries)", self.len())).fmt(f)?;
-        for entry in self.iter() {
-            write!(f, " {}", entry)?;
         }
         Ok(())
     }
