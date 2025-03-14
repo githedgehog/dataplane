@@ -333,6 +333,16 @@ pub mod tests {
             vlanid: Vid::new(100).unwrap(),
         }));
 
+        /* create Eth2 */
+        let mut eth2 = Interface::new("eth2", 4);
+        eth2.set_admin_state(IfState::Up);
+        eth2.set_oper_state(IfState::Up);
+        eth2.set_description("Downlink from Sun");
+        eth2.set_iftype(IfType::Dot1q(IfDataDot1q {
+            mac: Mac::from([0x0, 0xbb, 0x0, 0x0, 0x0, 0x3]),
+            vlanid: Vid::new(100).unwrap(),
+        }));
+
         /* create vlan.100 */
         let mut vlan100 = Interface::new("eth1.100", 4);
         vlan100.set_admin_state(IfState::Up);
@@ -357,6 +367,7 @@ pub mod tests {
         iftable.add_interface(lo);
         iftable.add_interface(eth0);
         iftable.add_interface(eth1);
+        iftable.add_interface(eth2);
         iftable.add_interface(vlan100);
         iftable.add_interface(vlan200);
 
