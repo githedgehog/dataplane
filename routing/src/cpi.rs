@@ -7,28 +7,32 @@ const DEFAULT_DP_UX_PATH: &str = "/var/run/frr/hh_dataplane.sock";
 const DEFAULT_DP_UX_PATH_CLI: &str = "/tmp/dataplane_ctl.sock";
 
 use crate::cli::handle_cli_request;
+use crate::cpi_process::process_rx_data;
+use crate::errors::RouterError;
 use crate::routingdb::RoutingDb;
+use crate::softfib::fibtable::{FibTable, create_fibtable};
+use left_right::ReadHandleFactory;
+use std::sync::RwLock;
+
 use cli::cliproto::CliRequest;
 use cli::cliproto::CliSerialize;
 use dplane_rpc::log::Level;
 use dplane_rpc::socks::RpcCachedSock;
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
+
+use net::eth::mac::Mac;
+use std::net::IpAddr;
 
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
-use std::sync::Arc;
-
-use crate::cpi_process::process_rx_data;
-use crate::errors::RouterError;
+use std::fs;
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
 use std::str::FromStr;
-use std::sync::mpsc::Sender;
-use std::sync::mpsc::TryRecvError;
-use std::sync::mpsc::channel;
+use std::sync::Arc;
+use std::sync::mpsc::{Sender, TryRecvError, channel};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info};
 
 #[allow(unused)]
@@ -39,6 +43,7 @@ pub enum CpiCtlMsg {
 pub struct CpiHandle {
     pub ctl: Sender<CpiCtlMsg>,
     pub handle: JoinHandle<()>,
+    pub fibr_fact: ReadHandleFactory<FibTable>,
 }
 #[allow(unused)]
 impl CpiHandle {
@@ -75,7 +80,7 @@ fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
 }
 
 #[allow(unused)]
-pub fn start_cpi(conf: &CpiConf, db: Arc<RoutingDb>) -> Result<CpiHandle, RouterError> {
+pub fn start_cpi(conf: &CpiConf) -> Result<CpiHandle, RouterError> {
     /* get desired loglevel and set it */
     let loglevel = conf
         .rpc_loglevel
@@ -135,6 +140,12 @@ pub fn start_cpi(conf: &CpiConf, db: Arc<RoutingDb>) -> Result<CpiHandle, Router
         .register(&mut ev_clisock, CLISOCK, Interest::READABLE)
         .expect("Failed to register CLI sock");
 
+    /* placeholder to get read handle factory from CPI */
+    let mut fibt_r_fact: Arc<RwLock<Option<ReadHandleFactory<FibTable>>>> =
+        Arc::new(RwLock::new(None));
+    let fibt_r_fact_clone = fibt_r_fact.clone();
+
+    /* CPI & CLI loop */
     let cpi_loop = move || {
         info!("CPI Listening at {}.", cp_sock_path);
         info!("CLI Listening at {}.", cli_sock_path);
@@ -142,6 +153,25 @@ pub fn start_cpi(conf: &CpiConf, db: Arc<RoutingDb>) -> Result<CpiHandle, Router
         let mut events = Events::with_capacity(64);
         let mut buf = vec![0; 1024];
         let mut run = true;
+
+        /* create FIB table and writer and reader */
+        let (mut fibt_w, fibt_r) = create_fibtable();
+
+        /* create the FIB for the default VRF */
+        let (a, b) = fibt_w.add_fib(0);
+
+        /* pass factory of fibtable read handles back */
+        if let Ok(mut x) = fibt_r_fact_clone.write() {
+            *x = Some(fibt_r.factory());
+        }
+
+        /* create routing database */
+        let mut db = RoutingDb::new(Some(fibt_w));
+
+        if let Ok(mut vtep) = db.vtep.write() {
+            vtep.set_ip(IpAddr::from_str("7.0.0.1").unwrap());
+            vtep.set_mac(Mac::from([0x02, 0, 0, 0, 0, 0xab]));
+        }
 
         while run {
             poller
@@ -202,7 +232,33 @@ pub fn start_cpi(conf: &CpiConf, db: Arc<RoutingDb>) -> Result<CpiHandle, Router
         .name("CPI".to_string())
         .spawn(cpi_loop)
         .map_err(|_| RouterError::CpiFailure)?;
-    Ok(CpiHandle { ctl: tx, handle })
+
+    /* wait for the CPI thread to provide the read handle factory for the fibtable */
+    let mut fibr_fact;
+    loop {
+        let now = Instant::now();
+        if let Ok(read_guard) = fibt_r_fact.read() {
+            if let Some(fact) = &*read_guard {
+                fibr_fact = fact.clone();
+                break;
+            }
+        } else {
+            panic!("Impossible to access Fibtable reader");
+        }
+        /* Sanity */
+        if now.elapsed().as_secs() > 5 {
+            error!("CPI failed to provide fibtable access in a reasonable time");
+            tx.send(CpiCtlMsg::Finish)
+                .map_err(|_| RouterError::CpiFailure)?;
+            return Err(RouterError::Internal);
+        }
+    }
+
+    Ok(CpiHandle {
+        ctl: tx,
+        handle,
+        fibr_fact,
+    })
 }
 
 #[allow(unused)]
@@ -228,20 +284,8 @@ mod tests {
             cli_sock_path: None,
         };
 
-        /* create routing database */
-        let db = Arc::new(RoutingDb::new());
-
         /* start CPI */
-        let cpi = start_cpi(&conf, db.clone());
-
-        if let Ok(mut iftable) = db.iftable.write() {
-            let eth0 = Interface::new("eth0", 100);
-            let eth1 = Interface::new("eth1", 200);
-            iftable.add_interface(eth0);
-            iftable.add_interface(eth1);
-        }
-
-        let cpi = cpi.expect("Should succeed");
+        let cpi = start_cpi(&conf).expect("Should succeed");
         thread::sleep(Duration::from_secs(3));
         assert_eq!(cpi.finish(), Ok(()));
     }
@@ -254,11 +298,8 @@ mod tests {
             cli_sock_path: None,
         };
 
-        /* create routing database */
-        let db = Arc::new(RoutingDb::new());
-
         /* start CPI */
-        let cpi = start_cpi(&conf, db.clone());
+        let cpi = start_cpi(&conf);
         assert!(cpi.is_err_and(|e| e == RouterError::InvalidSockPath));
     }
 }
