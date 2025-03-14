@@ -47,44 +47,56 @@ impl Completer for CmdCompleter {
         let mut candidates: Vec<String> =
             node.children.values().map(|cmd| cmd.name.clone()).collect();
 
-        // offer child nodes if there
-        if !node.children.is_empty() {
-            // check if leftover is prefix of any children node
-            if let Some(word) = left.front() {
-                candidates = candidates
-                    .iter()
-                    .filter(|child| child.to_lowercase().starts_with(word))
-                    .cloned()
-                    .collect();
-            };
-        } else {
-            // Otherwise, offer args if present and not already input
-            for arg in &node.args {
-                if !line.contains(&arg.name) {
-                    candidates.push(arg.name.to_owned() + "=");
-                }
-            }
+        // if line has args, don't offer child nodes: only expect args/choices
+        if line.contains("=") {
+            candidates.truncate(0);
+        }
 
-            // FIXME
-            if let Some(word) = left.front() {
-                if word.contains("=") {
-                    if let Some((arg_side, _value_side)) = word.split_once("=") {
-                        if let Some(arg) = node.find_arg(arg_side) {
-                            if !arg.choices.is_empty() {
-                                candidates.truncate(0);
-                                for choice in arg.choices.iter() {
-                                    candidates.push(choice.to_owned());
-                                }
-                            }
-                        }
-                    }
-                }
+        // remove completed arg pairs from leftovers
+        left = left
+            .iter()
+            .filter(|word| match word.split_once("=") {
+                Some((_arg, val)) => val.is_empty(),
+                None => true,
+            })
+            .cloned()
+            .collect();
+
+        // always offer args if there, except those already in the line
+        for arg in &node.args {
+            if !line.contains(&arg.name) {
+                candidates.push(arg.name.clone() + "=");
             }
         }
 
-        //        if let Some(longest) = longest_common_prefix(candidates.as_ref()) {
-        //            println!("\n{longest}");
-        //        }
+        // FIXME
+        if let Some(word) = left.front() {
+            if word.contains("=") {
+                if let Some((arg_side, value_side)) = word.split_once("=") {
+                    if let Some(arg) = node.find_arg(arg_side) {
+                        // if left side of = is arg and it has choices, offer them
+                        if !arg.choices.is_empty() {
+                            candidates.truncate(0); //  not needed. the next code truncates
+                            candidates = arg.choices.iter().filter(|_| true).cloned().collect();
+                        }
+                        if !value_side.is_empty() {
+                            candidates = candidates
+                                .iter()
+                                .filter(|choice| choice.starts_with(value_side))
+                                .cloned()
+                                .collect();
+                        }
+                    }
+                }
+            } else if !word.is_empty() {
+                candidates = candidates
+                    .iter()
+                    .filter(|cand| cand.to_lowercase().starts_with(word))
+                    .cloned()
+                    .collect();
+            }
+        }
+
         let mut newpos = 0;
         if !matched.is_empty() {
             let last = matched.pop_back().unwrap();
