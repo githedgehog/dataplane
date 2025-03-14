@@ -12,7 +12,7 @@
 use crate::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::nexthop::{FwAction, NhopKey};
 use crate::prefix::Prefix;
-use crate::rmac::RmacEntry;
+use crate::rmac::{RmacEntry, RmacStore, Vtep};
 use crate::vrf::{Route, RouteNhop, RouteOrigin, Vrf};
 use dplane_rpc::msg::{ForwardAction, IpRoute, NextHop, NextHopEncap, Rmac, RouteType, VxlanEncap};
 use net::eth::mac::Mac;
@@ -120,11 +120,17 @@ pub fn is_evpn_route(iproute: &IpRoute) -> bool {
 
 #[allow(unused)]
 impl Vrf {
-    pub fn add_route_rpc(&mut self, iproute: &IpRoute, vrf0: Option<&Vrf>) {
+    pub fn add_route_rpc(
+        &mut self,
+        iproute: &IpRoute,
+        vrf0: Option<&Vrf>,
+        rstore: &RmacStore,
+        vtep: &Vtep,
+    ) {
         let prefix = Prefix::from((iproute.prefix, iproute.prefix_len));
         let route = Route::from(iproute);
         let nhops: Vec<RouteNhop> = iproute.nhops.iter().map(RouteNhop::from).collect();
-        self.add_route(&prefix, route, &nhops, vrf0);
+        self.add_route_complete(&prefix, route, &nhops, vrf0, rstore, vtep);
     }
     pub fn del_route_rpc(&mut self, route: &IpRoute) {
         let prefix = Prefix::from((route.prefix, route.prefix_len));
