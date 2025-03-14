@@ -7,11 +7,12 @@ use colored::Colorize;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct NodeArg {
     pub name: String,
     pub choices: Vec<String>,
 }
+
 #[allow(unused)]
 impl NodeArg {
     pub fn new(name: &str) -> Self {

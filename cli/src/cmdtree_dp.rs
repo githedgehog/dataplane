@@ -54,12 +54,21 @@ fn cmd_show_ip() -> Node {
     let mut arg = NodeArg::new("protocol");
     RouteProtocol::iter().for_each(|proto| arg.add_choice(proto.as_ref()));
     routes = routes.arg_add(arg);
+
+    routes += Node::new("summary").action(CliAction::ShowRouterIpv4Routes as u16);
+
     root += routes;
 
     root += Node::new("next-hop")
         .desc("Display IPv4 next-hops")
         .action(CliAction::ShowRouterIpv4NextHops as u16)
         .arg("address");
+
+    root += Node::new("fib")
+        .desc("Display IPv4 forwarding entries")
+        .action(CliAction::ShowRouterIpv4FibEntries as u16)
+        .arg("prefix")
+        .arg("vrfid");
 
     root
 }
@@ -80,6 +89,12 @@ fn cmd_show_ipv6() -> Node {
         .desc("Display IPv6 next-hops")
         .action(CliAction::ShowRouterIpv6NextHops as u16)
         .arg("address");
+
+    root += Node::new("fib")
+        .desc("Display IPv6 forwarding entries")
+        .action(CliAction::ShowRouterIpv6FibEntries as u16)
+        .arg("prefix")
+        .arg("vrfid");
 
     root
 }
