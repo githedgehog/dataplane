@@ -5,7 +5,7 @@
 //! refer to other objects like Encapsulation.
 
 use crate::encapsulation::Encapsulation;
-use crate::route_processor::PktInstruction;
+use crate::route_processor::{FibGroup, PktInstruction};
 use crate::vrf::Vrf;
 
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
@@ -31,6 +31,7 @@ pub struct Nhop {
     pub(crate) key: NhopKey,
     pub(crate) resolvers: RwLock<Vec<Arc<Nhop>>>,
     pub(crate) instructions: RwLock<Vec<PktInstruction>>,
+    pub fibgroup: RwLock<FibGroup>, // Adding RWlock to allow int mut. Will replace by rc & Refcell
 }
 
 #[derive(Debug, Default, Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
@@ -146,6 +147,7 @@ impl Nhop {
             key: *key,
             resolvers: RwLock::new(Vec::new()),
             instructions: RwLock::new(Vec::with_capacity(2)),
+            fibgroup: RwLock::new(FibGroup::new()),
         }
     }
 
@@ -272,9 +274,8 @@ impl NhopStore {
         if let Some(e) = self.0.get(&nh) {
             Arc::clone(e)
         } else {
-            let out = Arc::clone(&nh);
-            self.0.insert(nh);
-            out
+            self.0.insert(nh.clone());
+            nh
         }
     }
 
