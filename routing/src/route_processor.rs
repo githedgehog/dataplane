@@ -66,6 +66,10 @@ impl FibGroup {
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut FibEntry> {
         self.entries.iter_mut()
     }
+    pub fn extend(&mut self, other: &Self) {
+        self.entries.extend_from_slice(&other.entries);
+    }
+
     /// merge multiple fib entry groups
     pub fn append(&mut self, other: &mut Self) {
         self.entries.append(&mut other.entries);
@@ -157,12 +161,14 @@ impl Nhop {
     /// Tell if a next-hop resolves directly to an interface (i.e. is adjacency).
     /// In most cases, this should not need to take the lock to read since the
     /// next-hop will have an ifindex.
+    #[inline]
     fn resolves_via_interface(&self) -> Option<(IpAddr, IfIndex)> {
         if let Some(address) = self.key.address {
             if let Some(ifindex) = self.key.ifindex {
                 return Some((address, ifindex)); /* happy path not needing resolvers (FRR) */
             } else if let Ok(resolvers) = self.resolvers.read() {
-                if resolvers.len() == 1 {
+                // This is a heuristic. Need to change MPLS encap object to do correctly
+                if resolvers.len() == 1 && resolvers[0].key.address.is_none() {
                     if let Some(ifindex) = resolvers[0].key.ifindex {
                         return Some((address, ifindex));
                     }
@@ -174,6 +180,7 @@ impl Nhop {
 
     /// Build the vector of packet instructions for a next-hop. This process does not
     /// depend on the routing table, with the exception of adjacent next-hops.
+    #[inline]
     fn build_pkt_instructions(&self) -> Vec<PktInstruction> {
         let mut instructions = Vec::with_capacity(2);
         if self.key.fwaction == FwAction::Drop {
@@ -209,8 +216,72 @@ impl Nhop {
             }
         }
     }
+
+    /// N.B. provides clone: TODO: remove this when RWlock is removed
+    fn get_packet_instructions(&self) -> Vec<PktInstruction> {
+        if let Ok(instructions) = self.instructions.read() {
+            instructions.clone()
+        } else {
+            panic!("poisoned") // changing this because we'll remove the locking
+        }
+    }
+
+    /// Recursive helper to build [`FibGroup`] for a next-hop
+    ///
+    fn __as_fib_entry_group_lazy(&self, fibgroup: &mut FibGroup, mut entry: FibEntry) {
+        // add the instructions for a next-hop (already completed) to the entry
+        let instructions = self.get_packet_instructions();
+        entry.extend_from_slice(&instructions);
+
+        // check the instructions of the resolving next-hops
+        if let Ok(resolvers) = self.resolvers.read() {
+            if resolvers.is_empty() {
+                // squash the entry before committing it to the group
+                entry.squash();
+                // create new fib entry
+                fibgroup.add(entry);
+            } else {
+                for resolver in resolvers.iter() {
+                    resolver.__as_fib_entry_group_lazy(fibgroup, entry.clone());
+                }
+            }
+        } else {
+            panic!("Poisoned");
+        }
+    }
+
+    #[allow(unused)]
+    pub(crate) fn as_fib_entry_group_lazy(&self) -> FibGroup {
+        let mut out = FibGroup::new();
+        self.__as_fib_entry_group_lazy(&mut out, FibEntry::new());
+        out
+    }
+
+    pub(crate) fn refresh_fibgroup(&self, rstore: &RmacStore, vtep: &Vtep) {
+        self.resolve_instructions(rstore, vtep);
+        if let Ok(mut fibgroup) = self.fibgroup.write() {
+            *fibgroup = self.as_fib_entry_group_lazy();
+        } else {
+            panic!("poisoned");
+        }
+    }
 }
 
+#[allow(dead_code)]
+impl NhopStore {
+    /// Derive next-hop instructions. Each next-hop may yield, non-recursively
+    /// one or more instructions. The instructions derived may need to be further
+    /// completed or resolved with missing pieces of information. This method just
+    /// iterates over all next-hops to "resolve" their instructions. Note: this does
+    /// the resolution of instructions without considering nhop resolvers.
+    pub fn resolve_nhop_instructions(&self, rstore: &RmacStore, vtep: &Vtep) {
+        for nhop in self.iter() {
+            nhop.resolve_instructions(rstore, vtep);
+        }
+    }
+}
+
+//#[cfg(any())]
 #[allow(dead_code)]
 impl Nhop {
     /// Internal: build a single [`PktInstruction`] for a given next-hop
@@ -268,127 +339,6 @@ impl Nhop {
         let mut out = FibGroup::new();
         self.__as_fib_entry_group(&mut out, FibEntry::new(), None);
         out
-    }
-
-    /* ======== */
-
-    // unused
-    //    fn set_packet_instruction_no_clone(&self, prev: Option<IpAddr>) {
-    //        if let Ok(mut instruction) = self.instruction.write() {
-    //            *instruction = self.as_pkt_instruction(prev);
-    //        }
-    //    }
-
-    /*
-       /// N.B. provides clone
-       fn set_packet_instruction(&self, prev: Option<IpAddr>) -> Option<PktInstruction> {
-           if let Ok(mut instruction) = self.instruction.write() {
-               *instruction = self.as_pkt_instruction(prev);
-               instruction.clone()
-           } else {
-               None
-           }
-       }
-
-       /// N.B. provides clone
-       fn check_set_instruction(&self, prev: Option<IpAddr>) -> Option<PktInstruction> {
-           let mut resolve: bool = false;
-           if let Ok(instruction) = self.instruction.read() {
-               if instruction.is_none() {
-                   resolve = true;
-               }
-           }
-           if resolve {
-               self.set_packet_instruction(prev)
-           } else {
-               self.get_packet_instruction()
-           }
-       }
-
-       fn __as_fib_entry_group_fast(
-           &self,
-           fibgroup: &mut FibEntryGroup,
-           mut entry: FibEntry,
-           prev: Option<IpAddr>,
-       ) {
-           if let Some(instruction) = self.check_set_instruction(prev) {
-               entry.add(instruction);
-           }
-
-           if let Ok(resolvers) = self.resolvers.write() {
-               if resolvers.is_empty() {
-                   fibgroup.add(entry);
-               } else {
-                   for resolver in resolvers.iter() {
-                       resolver.__as_fib_entry_group_fast(fibgroup, entry.clone(), self.key.address);
-                   }
-               }
-           } else {
-               panic!("Poisoned");
-           }
-       }
-
-       pub(crate) fn as_fib_entry_group_fast(&self) -> FibEntryGroup {
-           let mut out = FibEntryGroup::new();
-           self.__as_fib_entry_group_fast(&mut out, FibEntry::new(), None);
-           out
-       }
-    */
-}
-
-impl Nhop {
-    /// N.B. provides clone
-    fn get_packet_instructions(&self) -> Option<Vec<PktInstruction>> {
-        //self.instruction.read().map(|inst| inst.clone()).ok()
-        if let Ok(instructions) = self.instructions.read() {
-            Some(instructions.clone())
-        } else {
-            None
-        }
-    }
-
-    // RO: this is the latest and assumes that the instructions for a next-hop have
-    // already been "resolved".
-    fn __as_fib_entry_group_lazy(&self, fibgroup: &mut FibGroup, mut entry: FibEntry) {
-        // add the instructions for a next-hop (already completed) to the entry
-        if let Some(instructions) = self.get_packet_instructions() {
-            entry.extend_from_slice(&instructions);
-        }
-        // check the instructions of the resolving next-hops
-        if let Ok(resolvers) = self.resolvers.read() {
-            if resolvers.is_empty() {
-                // squash the entry before committing it to the group
-                entry.squash();
-                // create new fib entry
-                fibgroup.add(entry);
-            } else {
-                for resolver in resolvers.iter() {
-                    resolver.__as_fib_entry_group_lazy(fibgroup, entry.clone());
-                }
-            }
-        } else {
-            panic!("Poisoned");
-        }
-    }
-    #[allow(unused)]
-    pub(crate) fn as_fib_entry_group_lazy(&self) -> FibGroup {
-        let mut out = FibGroup::new();
-        self.__as_fib_entry_group_lazy(&mut out, FibEntry::new());
-        out
-    }
-}
-
-#[allow(dead_code)]
-impl NhopStore {
-    /// Derive next-hop instructions. Each next-hop may yield, non-recursively
-    /// one or more instructions. The instructions derived may need to be further
-    /// completed or resolved with missing pieces of information. This method just
-    /// iterates over all next-hops to "resolve" their instructions. Note: this does
-    /// the resolution of instructions without considering nhop resolvers.
-    pub fn resolve_nhop_instructions(&self, rstore: &RmacStore, vtep: &Vtep) {
-        for nhop in self.iter() {
-            nhop.resolve_instructions(rstore, vtep);
-        }
     }
 }
 
@@ -466,7 +416,7 @@ impl PktInstruction {
     }
 }
 
-//#[cfg(any())]
+#[cfg(test)]
 // No longer used. These are for the implementation that builds entries & groups
 // first and then resolves them.
 #[allow(dead_code)]
@@ -479,7 +429,7 @@ impl FibEntry {
     }
 }
 
-//#[cfg(any())]
+#[cfg(test)]
 #[allow(dead_code)]
 impl FibGroup {
     pub fn resolve(&mut self, rstore: &RmacStore, vtep: &Vtep) {
