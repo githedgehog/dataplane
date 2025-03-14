@@ -256,10 +256,10 @@ impl RoutingDb {
 mod tests {
     use super::*;
     use crate::adjacency::tests::build_test_atable;
-    use crate::fib::Fib;
     use crate::interface::tests::build_test_iftable;
     use crate::rmac::tests::{build_sample_rmac_store, build_sample_vtep};
     use crate::route_processor::FibGroup;
+    use crate::testfib::TestFib;
     use crate::vrf::tests::build_test_vrf_nhops_partially_resolved;
     use crate::vrf::tests::{build_test_vrf, mk_addr};
 
@@ -404,7 +404,7 @@ mod tests {
         vrf.nhstore.resolve_nhop_instructions(&rmac_store, &vtep);
 
         // create FIB
-        let mut fib = Fib::new();
+        let mut fib = TestFib::new();
 
         {
             let (_prefix, route) = vrf.lpm(&mk_addr("192.168.0.1"));

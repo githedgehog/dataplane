@@ -271,6 +271,8 @@ fn _handle_cli_request(request: CliRequest, db: &RoutingDb) -> Result<CliRespons
         CliAction::ShowRouterIpv6NextHops => {
             return show_vrf_nexthops(request, db, false);
         }
+        //CliAction::ShowRouterIpv4FibEntries => {}
+        //CliAction::ShowRouterIpv6FibEntries => {},
         _ => Err(CliError::NotSupported("Not implemented yet".to_owned()))?,
     };
     Ok(response)
