@@ -70,6 +70,11 @@ pub struct ShimNhop {
     pub ext_vrf: Option<VrfId>,
     pub rc: Arc<Nhop>,
 }
+impl ShimNhop {
+    fn new(ext_vrf: Option<VrfId>, rc: Arc<Nhop>) -> Self {
+        Self { ext_vrf, rc }
+    }
+}
 
 #[allow(unused)]
 pub struct Vrf {
@@ -179,12 +184,10 @@ impl Vrf {
             } else {
                 None
             };
+            /* create shim next-hop */
+            let shim = ShimNhop::new(ext_vrf, shared);
 
-            // shim next-hop created here
-            let shim = ShimNhop {
-                ext_vrf,
-                rc: shared,
-            };
+            /* add to route */
             route.s_nhops.push(shim);
         }
     }
@@ -671,11 +674,46 @@ pub mod tests {
             vrf.add_route(&prefix, route, &[n1, n2], None);
         }
 
-        add_vxlan_routes(&mut vrf, 1);
+        add_vxlan_routes(&mut vrf, 5);
 
         vrf.dump(Some("VRF With next-hops lazily resolved on addition"));
         vrf
     }
+
+    // build a sample VRF used for testing
+    pub fn build_test_vrf_nhops_partially_resolved() -> Vrf {
+        let mut vrf = Vrf::new("Default", 0);
+
+        {
+            let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
+            let n1 = build_test_nhop(Some("10.0.0.1"), Some(2), 0, Some(Encapsulation::Mpls(8001)));
+            let n2 = build_test_nhop(Some("10.0.0.5"), Some(3), 0, Some(Encapsulation::Mpls(8005)));
+            let prefix = Prefix::expect_from(("8.0.0.1", 32));
+            vrf.add_route(&prefix, route, &[n1, n2], None);
+        }
+
+        {
+            let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
+            let n2 = build_test_nhop(Some("10.0.0.5"), Some(3), 0, Some(Encapsulation::Mpls(8005)));
+            let n3 = build_test_nhop(Some("10.0.0.9"), Some(4), 0, Some(Encapsulation::Mpls(8009)));
+            let prefix = Prefix::expect_from(("8.0.0.2", 32));
+            vrf.add_route(&prefix, route, &[n2, n3], None);
+        }
+
+        {
+            let route: Route = build_test_route(RouteOrigin::Bgp, 0, 1);
+            let n1 = build_test_nhop(Some("8.0.0.1"), None, 0, Some(Encapsulation::Mpls(7000)));
+            let n2 = build_test_nhop(Some("8.0.0.2"), None, 0, Some(Encapsulation::Mpls(7000)));
+            let prefix = Prefix::expect_from(("7.0.0.1", 32));
+            vrf.add_route(&prefix, route, &[n1, n2], None);
+        }
+
+        add_vxlan_routes(&mut vrf, 5);
+
+        vrf.dump(Some("VRF With next-hops with partially resolved nexthops, lazily resolved on addition"));
+        vrf
+    }
+
 
     #[test]
     fn test_vrf_lazy_nhop_resolution() {
