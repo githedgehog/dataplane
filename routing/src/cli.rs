@@ -7,7 +7,6 @@ use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, CliSerialize, 
 use iptrie::{Ipv4Prefix, Ipv6Prefix};
 use std::os::unix::net::SocketAddr;
 use std::os::unix::net::UnixDatagram;
-use std::sync::Arc;
 use tracing::{error, trace};
 
 impl From<&RouteProtocol> for RouteOrigin {
@@ -133,14 +132,10 @@ fn route_filter_v6(request: &CliRequest) -> RouteV6Filter {
 }
 fn show_vrf_routes(
     request: CliRequest,
-    db: &Arc<RoutingDb>,
+    db: &RoutingDb,
     ipv4: bool,
 ) -> Result<CliResponse, CliError> {
-    let vrftable = db
-        .as_ref()
-        .vrftable
-        .read()
-        .map_err(|_| CliError::InternalError)?;
+    let vrftable = db.vrftable.read().map_err(|_| CliError::InternalError)?;
 
     if ipv4 {
         let filter = route_filter_v4(&request);
@@ -204,14 +199,10 @@ fn show_vrf_nexthops_multi(
 
 fn show_vrf_nexthops(
     request: CliRequest,
-    db: &Arc<RoutingDb>,
+    db: &RoutingDb,
     ipv4: bool,
 ) -> Result<CliResponse, CliError> {
-    let vrftable = db
-        .as_ref()
-        .vrftable
-        .read()
-        .map_err(|_| CliError::InternalError)?;
+    let vrftable = db.vrftable.read().map_err(|_| CliError::InternalError)?;
 
     if let Some(vrfid) = request.args.vrfid {
         show_vrf_nexthops_single(request, &vrftable, vrfid, ipv4)
@@ -220,7 +211,7 @@ fn show_vrf_nexthops(
     }
 }
 
-fn show_vrfs(request: CliRequest, db: &Arc<RoutingDb>) -> Result<CliResponse, CliError> {
+fn show_vrfs(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
     if let Some(vni) = request.args.vni {
         if let Ok(vrftable) = db.vrftable.read() {
             if let Ok(vrf) = vrftable.get_vrf_by_vni(vni) {
@@ -236,11 +227,7 @@ fn show_vrfs(request: CliRequest, db: &Arc<RoutingDb>) -> Result<CliResponse, Cl
             Err(CliError::InternalError)
         }
     } else {
-        let vrftable = db
-            .as_ref()
-            .vrftable
-            .read()
-            .map_err(|_| CliError::InternalError)?;
+        let vrftable = db.vrftable.read().map_err(|_| CliError::InternalError)?;
         Ok(CliResponse::from_request_ok(
             request,
             format!("\n{}", vrftable),
@@ -248,32 +235,20 @@ fn show_vrfs(request: CliRequest, db: &Arc<RoutingDb>) -> Result<CliResponse, Cl
     }
 }
 
-fn _handle_cli_request(request: CliRequest, db: &Arc<RoutingDb>) -> Result<CliResponse, CliError> {
+fn _handle_cli_request(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
     let response = match request.action {
         CliAction::ShowRouterInterfaces => {
-            let iftable = db
-                .as_ref()
-                .iftable
-                .read()
-                .map_err(|_| CliError::InternalError)?;
+            let iftable = db.iftable.read().map_err(|_| CliError::InternalError)?;
             CliResponse::from_request_ok(request, format!("\n{}", iftable))
         }
         CliAction::ShowRouterInterfaceAddresses => {
-            let iftable = db
-                .as_ref()
-                .iftable
-                .read()
-                .map_err(|_| CliError::InternalError)?;
+            let iftable = db.iftable.read().map_err(|_| CliError::InternalError)?;
             let iftable_addrs = IfTableAddress(&iftable);
             CliResponse::from_request_ok(request, format!("\n{}", iftable_addrs))
         }
         CliAction::ShowRouterVrfs => return show_vrfs(request, db),
         CliAction::ShowRouterEvpnRmacStore => {
-            let rmac_store = db
-                .as_ref()
-                .rmac_store
-                .read()
-                .map_err(|_| CliError::InternalError)?;
+            let rmac_store = db.rmac_store.read().map_err(|_| CliError::InternalError)?;
             CliResponse::from_request_ok(request, format!("\n{}", rmac_store))
         }
         CliAction::ShowRouterEvpnVtep => {
@@ -305,7 +280,7 @@ pub fn handle_cli_request(
     sock: &UnixDatagram,
     peer: &SocketAddr,
     request: CliRequest,
-    db: &Arc<RoutingDb>,
+    db: &RoutingDb,
 ) {
     trace!("Got cli request: {:#?} from {:?}", request, peer);
 
