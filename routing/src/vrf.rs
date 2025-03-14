@@ -9,13 +9,13 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use tracing::debug;
 
+use crate::fib::fibtype::FibId;
+use crate::fib::fibtype::FibWriter;
 use crate::nexthop::{Nhop, NhopKey, NhopStore};
 use crate::prefix::Prefix;
 use crate::pretty_utils::Frame;
 use crate::rmac::{RmacStore, Vtep};
 use crate::route_processor::FibGroup;
-use crate::softfib::fib::FibId;
-use crate::softfib::fib::FibWriter;
 use iptrie::map::RTrieMap;
 use iptrie::{Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
