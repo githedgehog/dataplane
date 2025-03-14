@@ -5,6 +5,7 @@
 //! refer to other objects like Encapsulation.
 
 use crate::encapsulation::Encapsulation;
+use crate::route_processor::PktInstruction;
 use crate::vrf::Vrf;
 
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
@@ -29,6 +30,7 @@ pub(crate) struct NhopStore(BTreeSet<Arc<Nhop>>);
 pub struct Nhop {
     pub(crate) key: NhopKey,
     pub(crate) resolvers: RwLock<Vec<Arc<Nhop>>>,
+    pub(crate) instructions: RwLock<Vec<PktInstruction>>,
 }
 
 #[derive(Debug, Default, Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
@@ -143,6 +145,7 @@ impl Nhop {
         Self {
             key: *key,
             resolvers: RwLock::new(Vec::new()),
+            instructions: RwLock::new(Vec::with_capacity(2)),
         }
     }
 

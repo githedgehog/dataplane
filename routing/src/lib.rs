@@ -12,6 +12,7 @@ mod cpi_process;
 mod display;
 mod encapsulation;
 mod errors;
+pub mod fib;
 pub mod interface;
 mod nexthop;
 pub mod prefix;
