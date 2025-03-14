@@ -7,6 +7,7 @@ use crate::adjacency::AdjacencyTable;
 use crate::errors::RouterError;
 use crate::interface::IfTable;
 use crate::rmac::{RmacStore, Vtep};
+use crate::softfib::fibtable::FibTableWriter;
 use crate::vrf::{Vrf, VrfId};
 use net::vxlan::Vni;
 use std::collections::HashMap;
@@ -18,6 +19,7 @@ use tracing::{debug, error};
 pub struct VrfTable {
     by_id: HashMap<VrfId, Arc<RwLock<Vrf>>>,
     by_vni: HashMap<Vni, Arc<RwLock<Vrf>>>,
+    fibtable: Option<FibTableWriter>,
 }
 
 #[allow(dead_code)]
@@ -31,6 +33,7 @@ impl VrfTable {
         Self {
             by_id: HashMap::new(),
             by_vni: HashMap::new(),
+            fibtable: None,
         }
     }
 
