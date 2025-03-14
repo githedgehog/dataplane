@@ -1,2 +1,2 @@
-pub mod fib;
 pub mod fibtable;
+pub mod fibtype;
