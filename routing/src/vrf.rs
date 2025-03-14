@@ -205,35 +205,23 @@ impl Vrf {
 
     #[inline(always)]
     #[must_use]
-    fn register_shared_nhop(&mut self, nhop: &RouteNhop, vrf0: Option<&Vrf>) -> Arc<Nhop> {
-        let arc_nh = self.nhstore.add_nhop(&nhop.key);
-        // resolve the next-hop lazily
-        if let Some(vrf0) = vrf0 {
-            arc_nh.lazy_resolve(vrf0);
-        } else {
-            arc_nh.lazy_resolve(self);
-        }
-        arc_nh
+    fn register_shared_nhop(&mut self, nhop: &RouteNhop) -> Arc<Nhop> {
+        self.nhstore.add_nhop(&nhop.key)
     }
 
     /////////////////////////////////////////////////////////////////////////
     /// Register a shared next-hop for the route if not there
     /////////////////////////////////////////////////////////////////////////
-    fn register_shared_nhops(
-        &mut self,
-        route: &mut Route,
-        nhops: &[RouteNhop],
-        vrf0: Option<&Vrf>,
-    ) {
+    fn register_shared_nhops(&mut self, route: &mut Route, nhops: &[RouteNhop]) {
         for nhop in nhops {
-            let shared = self.register_shared_nhop(nhop, vrf0);
+            let shared = self.register_shared_nhop(nhop);
             let ext_vrf = if nhop.vrfid != self.vrfid {
                 Some(nhop.vrfid)
             } else {
                 None
             };
             /* create shim next-hop */
-            let shim = ShimNhop::new(ext_vrf, shared);
+            let shim = ShimNhop::new(ext_vrf, shared.clone());
 
             /* add to route */
             route.s_nhops.push(shim);
@@ -258,39 +246,30 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     // Route Insertion
     /////////////////////////////////////////////////////////////////////////
-    #[inline(always)]
-    fn add_route_v4(
-        &mut self,
-        prefix: &Ipv4Prefix,
-        mut route: Route,
-        nhops: &[RouteNhop],
-        vrf0: Option<&Vrf>,
-    ) {
-        self.register_shared_nhops(&mut route, nhops, vrf0);
-        self.routesv4.insert(*prefix, route);
-    }
-
-    #[inline(always)]
-    fn add_route_v6(
-        &mut self,
-        prefix: &Ipv6Prefix,
-        mut route: Route,
-        nhops: &[RouteNhop],
-        vrf0: Option<&Vrf>,
-    ) {
-        self.register_shared_nhops(&mut route, nhops, vrf0);
-        self.routesv6.insert(*prefix, route);
-    }
     pub fn add_route(
         &mut self,
         prefix: &Prefix,
-        route: Route,
+        mut route: Route,
         nhops: &[RouteNhop],
         vrf0: Option<&Vrf>,
     ) {
+        self.register_shared_nhops(&mut route, nhops);
+
         match prefix {
-            Prefix::IPV4(p) => self.add_route_v4(p, route, nhops, vrf0),
-            Prefix::IPV6(p) => self.add_route_v6(p, route, nhops, vrf0),
+            Prefix::IPV4(p) => self.routesv4.insert(*p, route.clone()),
+            Prefix::IPV6(p) => self.routesv6.insert(*p, route.clone()),
+        };
+        // NB. above, we inserted a clone of the route, which points to the same next-hops
+        // as the route we still own at this point. This clone is cheap and convenient
+        // so that here we have access to the next-hops and can modify them.
+        for shim in &route.s_nhops {
+            if Arc::strong_count(&shim.rc) <= 2 {
+                if let Some(vrf0) = vrf0 {
+                    shim.rc.lazy_resolve(vrf0);
+                } else {
+                    shim.rc.lazy_resolve(self);
+                }
+            }
         }
     }
 
@@ -307,7 +286,12 @@ impl Vrf {
             if let Some(mut prior) = self.routesv4.insert(*prefix, Route::default()) {
                 self.deregister_shared_nexthops(&mut prior);
             }
-            self.add_route_v4(prefix, Route::default(), &[RouteNhop::default()], None);
+            self.add_route(
+                &Prefix::from(*prefix),
+                Route::default(),
+                &[RouteNhop::default()],
+                None,
+            );
         } else if let Some(found) = &mut self.routesv4.remove(prefix) {
             self.deregister_shared_nexthops(found);
         }
@@ -321,7 +305,12 @@ impl Vrf {
             if let Some(mut prior) = self.routesv6.insert(*prefix, Route::default()) {
                 self.deregister_shared_nexthops(&mut prior);
             }
-            self.add_route_v6(prefix, Route::default(), &[RouteNhop::default()], None);
+            self.add_route(
+                &Prefix::from(*prefix),
+                Route::default(),
+                &[RouteNhop::default()],
+                None,
+            );
         } else if let Some(found) = &mut self.routesv6.remove(prefix) {
             self.deregister_shared_nexthops(found);
         }
