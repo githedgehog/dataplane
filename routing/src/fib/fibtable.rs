@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use crate::softfib::fib::{Fib, FibGroupChange, FibId, FibReader, FibWriter};
+use crate::fib::fibtype::{Fib, FibGroupChange, FibId, FibReader, FibWriter};
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 use std::collections::BTreeMap;
 use std::sync::Arc;
