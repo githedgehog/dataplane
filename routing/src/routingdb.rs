@@ -414,7 +414,7 @@ mod tests {
             let mut fibgroup = FibGroup::new();
             for nhop in route.s_nhops.iter() {
                 println!("next-hop is:\n {}", nhop);
-                fibgroup.append(&mut nhop.rc.as_fib_entry_group_lazy());
+                fibgroup.extend(&nhop.rc.as_fib_entry_group_lazy());
             }
             println!("Fib group is:\n {}", fibgroup);
 
