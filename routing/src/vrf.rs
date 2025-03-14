@@ -12,6 +12,8 @@ use tracing::debug;
 use crate::nexthop::{Nhop, NhopKey, NhopStore};
 use crate::prefix::Prefix;
 use crate::pretty_utils::Frame;
+use crate::rmac::{RmacStore, Vtep};
+use crate::route_processor::FibGroup;
 use crate::softfib::fib::FibId;
 use crate::softfib::fib::FibWriter;
 use iptrie::map::RTrieMap;
@@ -263,13 +265,58 @@ impl Vrf {
         // as the route we still own at this point. This clone is cheap and convenient
         // so that here we have access to the next-hops and can modify them.
         for shim in &route.s_nhops {
-            if Arc::strong_count(&shim.rc) <= 2 {
+            // unconditionally resolve all of the next-hops for the route
+            if let Some(vrf0) = vrf0 {
+                shim.rc.lazy_resolve(vrf0);
+            } else {
+                shim.rc.lazy_resolve(self);
+            }
+        }
+    }
+
+    pub fn add_route_complete(
+        &mut self,
+        prefix: &Prefix,
+        mut route: Route,
+        nhops: &[RouteNhop],
+        vrf0: Option<&Vrf>,
+        rstore: &RmacStore,
+        vtep: &Vtep,
+    ) {
+        self.register_shared_nhops(&mut route, nhops);
+
+        match prefix {
+            Prefix::IPV4(p) => self.routesv4.insert(*p, route.clone()),
+            Prefix::IPV6(p) => self.routesv6.insert(*p, route.clone()),
+        };
+        // NB. above, we inserted a clone of the route, which points to the same next-hops
+        // as the route we still own at this point. This clone is cheap and convenient
+        // so that here we have access to the next-hops and can modify them.
+        for shim in &route.s_nhops {
+            // FIXME: we don't need to resolve next-hops all the time. That's precisely
+            // the purpose of the current design. Todo: determine when a next-hop has to be
+            // resolved (e.g. based on (Arc::strong_count(&shim.rc)).
+            if true {
                 if let Some(vrf0) = vrf0 {
                     shim.rc.lazy_resolve(vrf0);
                 } else {
                     shim.rc.lazy_resolve(self);
                 }
+                shim.rc.as_ref().refresh_fibgroup(rstore, vtep);
             }
+        }
+
+        // Fib is optional atm
+        if let Some(fibw) = &mut self.fibw {
+            // build a fib group from the fib groups of all next-hops for this route
+            let mut fibgroup = FibGroup::new();
+            for nhop in route.s_nhops.iter() {
+                let nhfibg = &*nhop.rc.fibgroup.read().unwrap();
+                fibgroup.extend(nhfibg);
+            }
+
+            // add to fib
+            fibw.add_fibgroup(prefix.clone(), fibgroup);
         }
     }
 

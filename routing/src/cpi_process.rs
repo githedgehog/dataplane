@@ -134,8 +134,8 @@ impl RpcOperation for IpRoute {
     #[allow(unused_mut)]
     fn add(&self, db: &Self::ObjectStore) -> RpcResultCode {
         let _iftable_g = db.iftable.read().unwrap();
-        let _rmac_store_g = db.rmac_store.read().unwrap();
-        let _vtep_g = db.vtep.read().unwrap();
+        let rmac_store_g = db.rmac_store.read().unwrap();
+        let vtep_g = db.vtep.read().unwrap();
 
         /*
                 let process_route = |vrftable: &mut VrfTable| -> RpcResultCode {
@@ -178,9 +178,14 @@ impl RpcOperation for IpRoute {
             if let Ok(vrf) = vrftable.get_vrf(self.vrfid) {
                 if let Ok(mut vrf) = vrf.write() {
                     if let Some(vrf0) = vrfg {
-                        vrf.add_route_rpc(self, vrf0.read().ok().as_deref());
+                        vrf.add_route_rpc(
+                            self,
+                            vrf0.read().ok().as_deref(),
+                            &rmac_store_g,
+                            &vtep_g,
+                        );
                     } else {
-                        vrf.add_route_rpc(self, None);
+                        vrf.add_route_rpc(self, None, &rmac_store_g, &vtep_g);
                     }
                     RpcResultCode::Ok
                 } else {
