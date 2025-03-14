@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 #[derive(Debug, Default)]
 #[allow(unused)]
-pub struct Fib(BTreeSet<Arc<FibGroup>>);
+pub struct TestFib(BTreeSet<Arc<FibGroup>>);
 
-impl Fib {
+impl TestFib {
     pub fn new() -> Self {
         Self::default()
     }
