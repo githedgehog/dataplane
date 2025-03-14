@@ -3,14 +3,14 @@
 
 //! Main processing functions of the CPI
 
-use crate::interface::IfTable;
+//use crate::interface::IfTable;
 #[cfg(feature = "auto-learn")]
 use crate::interface::Interface;
 
 #[cfg(feature = "auto-learn")]
 use net::vxlan::Vni;
 
-use crate::rmac::{RmacEntry, RmacStore};
+use crate::rmac::RmacEntry;
 use crate::routingdb::{RoutingDb, VrfTable};
 use crate::rpc_adapt::is_evpn_route;
 use crate::vrf::Vrf;
@@ -18,6 +18,7 @@ use bytes::Bytes;
 use dplane_rpc::msg::*;
 use dplane_rpc::socks::RpcCachedSock;
 use dplane_rpc::wire::*;
+use std::any::Any;
 use std::os::unix::net::SocketAddr;
 
 use std::path::Path;
@@ -34,13 +35,13 @@ trait RpcOperation {
     {
         RpcResultCode::InvalidRequest
     }
-    fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode
+    fn add(&self, db: &Self::ObjectStore) -> RpcResultCode
     where
         Self: Sized,
     {
         RpcResultCode::InvalidRequest
     }
-    fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode
+    fn del(&self, db: &Self::ObjectStore) -> RpcResultCode
     where
         Self: Sized,
     {
@@ -59,6 +60,21 @@ impl RpcOperation for ConnectInfo {
             RpcResultCode::Failure
         }
     }
+}
+
+trait TypeName: Any {
+    fn type_name(&self) -> &'static str;
+}
+impl<T: Any> TypeName for T {
+    fn type_name(&self) -> &'static str {
+        std::any::type_name::<T>()
+    }
+}
+
+fn poison_warn<T: 'static>(object: &RwLock<T>) -> RpcResultCode {
+    error!("Poisoned lock on {} !!", object.type_name());
+    object.clear_poison();
+    RpcResultCode::Failure
 }
 
 #[cfg(feature = "auto-learn")]
@@ -114,75 +130,134 @@ fn get_vrf0<'a>(iproute: &IpRoute, vrftable: &'a VrfTable) -> Option<&'a Arc<RwL
 }
 
 impl RpcOperation for IpRoute {
-    type ObjectStore = VrfTable;
-    fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
-        #[cfg(feature = "auto-learn")]
-        auto_learn_vrf(&self, db);
+    type ObjectStore = RoutingDb;
+    #[allow(unused_mut)]
+    fn add(&self, db: &Self::ObjectStore) -> RpcResultCode {
+        let _iftable_g = db.iftable.read().unwrap();
+        let _rmac_store_g = db.rmac_store.read().unwrap();
+        let _vtep_g = db.vtep.read().unwrap();
 
-        let vrfg = get_vrf0(self, db);
+        /*
+                let process_route = |vrftable: &mut VrfTable| -> RpcResultCode {
+                    #[cfg(feature = "auto-learn")]
+                    auto_learn_vrf(&self, vrftable);
 
-        if let Ok(vrf) = db.get_vrf(self.vrfid) {
-            if let Ok(mut vrf) = vrf.write() {
-                if let Some(vrf0) = vrfg {
-                    vrf.add_route_rpc(self, vrf0.read().ok().as_deref());
+                    let vrfg = get_vrf0(self, vrftable);
+
+                    if let Ok(vrf) = vrftable.get_vrf(self.vrfid) {
+                        if let Ok(mut vrf) = vrf.write() {
+                            if let Some(vrf0) = vrfg {
+                                vrf.add_route_rpc(self, vrf0.read().ok().as_deref());
+                            } else {
+                                vrf.add_route_rpc(self, None);
+                            }
+                            RpcResultCode::Ok
+                        } else {
+                            vrf.clear_poison();
+                            RpcResultCode::Failure
+                        }
+                    } else {
+                        RpcResultCode::Failure
+                    }
+                };
+
+                if let Ok(mut vrftable) = db.vrftable.write() {
+                    process_route(&mut vrftable)
                 } else {
-                    vrf.add_route_rpc(self, None);
+                    db.vrftable.clear_poison();
+                    RpcResultCode::Failure
                 }
-                RpcResultCode::Ok
+        */
+
+        if let Ok(mut vrftable) = db.vrftable.write() {
+            #[cfg(feature = "auto-learn")]
+            auto_learn_vrf(self, &mut vrftable);
+
+            let vrfg = get_vrf0(self, &vrftable);
+
+            if let Ok(vrf) = vrftable.get_vrf(self.vrfid) {
+                if let Ok(mut vrf) = vrf.write() {
+                    if let Some(vrf0) = vrfg {
+                        vrf.add_route_rpc(self, vrf0.read().ok().as_deref());
+                    } else {
+                        vrf.add_route_rpc(self, None);
+                    }
+                    RpcResultCode::Ok
+                } else {
+                    poison_warn(vrf)
+                }
             } else {
-                vrf.clear_poison();
+                error!("Unable to find VRF with id {}", self.vrfid);
                 RpcResultCode::Failure
             }
         } else {
-            error!("Unable to find VRF with id {}", self.vrfid);
-            RpcResultCode::Failure
+            poison_warn(&db.vrftable)
         }
     }
-    fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
-        if let Ok(vrf) = db.get_vrf(self.vrfid) {
-            if let Ok(mut vrf) = vrf.write() {
-                vrf.del_route_rpc(self);
-                RpcResultCode::Ok
+    fn del(&self, db: &Self::ObjectStore) -> RpcResultCode {
+        if let Ok(vrftable) = db.vrftable.write() {
+            if let Ok(vrf) = vrftable.get_vrf(self.vrfid) {
+                if let Ok(mut vrf) = vrf.write() {
+                    vrf.del_route_rpc(self);
+                    RpcResultCode::Ok
+                } else {
+                    poison_warn(vrf)
+                }
             } else {
-                vrf.clear_poison();
+                error!("Unable to find VRF with id {}", self.vrfid);
                 RpcResultCode::Failure
             }
         } else {
-            error!("Unable to find VRF with id {}", self.vrfid);
-            RpcResultCode::Failure
+            poison_warn(&db.vrftable)
         }
     }
 }
 impl RpcOperation for Rmac {
-    type ObjectStore = RmacStore;
-    fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
-        let rmac = RmacEntry::from(self);
-        db.add_rmac_entry(rmac);
-        RpcResultCode::Ok
+    type ObjectStore = RoutingDb;
+    fn add(&self, db: &Self::ObjectStore) -> RpcResultCode {
+        if let Ok(mut rmac_store) = db.rmac_store.write() {
+            let rmac = RmacEntry::from(self);
+            rmac_store.add_rmac_entry(rmac);
+            RpcResultCode::Ok
+        } else {
+            RpcResultCode::Failure
+        }
     }
-    fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
-        let rmac = RmacEntry::from(self);
-        db.del_rmac_entry(rmac);
-        RpcResultCode::Ok
+    fn del(&self, db: &Self::ObjectStore) -> RpcResultCode {
+        if let Ok(mut rmac_store) = db.rmac_store.write() {
+            let rmac = RmacEntry::from(self);
+            rmac_store.del_rmac_entry(rmac);
+            RpcResultCode::Ok
+        } else {
+            poison_warn(&db.rmac_store)
+        }
     }
 }
 impl RpcOperation for IfAddress {
-    type ObjectStore = IfTable;
-    fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
-        #[cfg(feature = "auto-learn")]
-        if db.get_interface(self.ifindex).is_none() {
-            db.add_interface(Interface::new(self.ifname.as_str(), self.ifindex));
-        }
-        if let Err(e) = db.add_ifaddr(self.ifindex, &(self.address, self.mask_len)) {
-            error!("Failed to add address to interface {}:{e}", self.ifname);
-            RpcResultCode::Failure
+    type ObjectStore = RoutingDb;
+    fn add(&self, db: &Self::ObjectStore) -> RpcResultCode {
+        if let Ok(mut iftable) = db.iftable.write() {
+            #[cfg(feature = "auto-learn")]
+            if iftable.get_interface(self.ifindex).is_none() {
+                iftable.add_interface(Interface::new(self.ifname.as_str(), self.ifindex));
+            }
+            if let Err(e) = iftable.add_ifaddr(self.ifindex, &(self.address, self.mask_len)) {
+                error!("Failed to add address to interface {}:{e}", self.ifname);
+                RpcResultCode::Failure
+            } else {
+                RpcResultCode::Ok
+            }
         } else {
-            RpcResultCode::Ok
+            poison_warn(&db.iftable)
         }
     }
-    fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
-        db.del_ifaddr(self.ifindex, &(self.address, self.mask_len));
-        RpcResultCode::Ok
+    fn del(&self, db: &Self::ObjectStore) -> RpcResultCode {
+        if let Ok(mut iftable) = db.iftable.write() {
+            iftable.del_ifaddr(self.ifindex, &(self.address, self.mask_len));
+            RpcResultCode::Ok
+        } else {
+            poison_warn(&db.iftable)
+        }
     }
 }
 
@@ -250,39 +325,21 @@ fn handle_request(
             error!("Received {:?} request without object!", op);
             RpcResultCode::InvalidRequest
         }
-        Some(RpcObject::IfAddress(ifaddr)) => {
-            if let Ok(mut iftable) = db.iftable.write() {
-                match op {
-                    RpcOp::Add => ifaddr.add(&mut iftable),
-                    RpcOp::Del => ifaddr.del(&mut iftable),
-                    _ => RpcResultCode::InvalidRequest,
-                }
-            } else {
-                RpcResultCode::Failure
-            }
-        }
-        Some(RpcObject::Rmac(rmac)) => {
-            if let Ok(mut rmac_store) = db.rmac_store.write() {
-                match op {
-                    RpcOp::Add => rmac.add(&mut rmac_store),
-                    RpcOp::Del => rmac.del(&mut rmac_store),
-                    _ => RpcResultCode::InvalidRequest,
-                }
-            } else {
-                RpcResultCode::Failure
-            }
-        }
-        Some(RpcObject::IpRoute(route)) => {
-            if let Ok(mut vrftable) = db.vrftable.write() {
-                match op {
-                    RpcOp::Add | RpcOp::Update => route.add(&mut vrftable),
-                    RpcOp::Del => route.del(&mut vrftable),
-                    _ => RpcResultCode::InvalidRequest,
-                }
-            } else {
-                RpcResultCode::Failure
-            }
-        }
+        Some(RpcObject::IfAddress(ifaddr)) => match op {
+            RpcOp::Add => ifaddr.add(db),
+            RpcOp::Del => ifaddr.del(db),
+            _ => RpcResultCode::InvalidRequest,
+        },
+        Some(RpcObject::Rmac(rmac)) => match op {
+            RpcOp::Add => rmac.add(db),
+            RpcOp::Del => rmac.del(db),
+            _ => RpcResultCode::InvalidRequest,
+        },
+        Some(RpcObject::IpRoute(route)) => match op {
+            RpcOp::Add | RpcOp::Update => route.add(db),
+            RpcOp::Del => route.del(db),
+            _ => RpcResultCode::InvalidRequest,
+        },
         Some(RpcObject::ConnectInfo(conninfo)) => match op {
             RpcOp::Connect => conninfo.connect(),
             _ => RpcResultCode::InvalidRequest,
