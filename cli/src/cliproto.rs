@@ -155,6 +155,8 @@ pub enum CliAction {
     ShowRouterEvpnRmacStore,
     ShowRouterEvpnVtep,
     ShowAdjacencies,
+    ShowRouterIpv4FibEntries,
+    ShowRouterIpv6FibEntries,
 
     // DPDK
     ShowDpdkPort,
