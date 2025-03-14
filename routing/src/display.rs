@@ -5,11 +5,12 @@
 
 use crate::adjacency::{Adjacency, AdjacencyTable};
 use crate::encapsulation::{Encapsulation, VxlanEncapsulation};
+use crate::fib::Fib;
 use crate::interface::{IfDataDot1q, IfDataEthernet, IfState, IfTable, IfType, Interface};
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::pretty_utils::{Heading, line};
 use crate::rmac::{RmacEntry, RmacStore, Vtep};
-use crate::route_processor::{EgressObject, FibEntry, FibEntryGroup, PktInstruction};
+use crate::route_processor::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::routingdb::VrfTable;
 use crate::vrf::{Route, ShimNhop, Vrf};
 
@@ -81,7 +82,8 @@ impl Display for NhopKey {
 impl Display for Nhop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "{}", self.key)?;
-        fmt_nhop_resolvers(f, self, 1)
+        fmt_nhop_resolvers(f, self, 1)?;
+        fmt_nhop_instruction(f, self)
     }
 }
 
@@ -94,6 +96,18 @@ fn fmt_nhop_resolvers(f: &mut std::fmt::Formatter<'_>, rc: &Nhop, depth: u8) -> 
             writeln!(f, "{} {}", indent, r.key)?;
             fmt_nhop_resolvers(f, r, depth + 1)?;
         }
+    }
+    Ok(())
+}
+
+fn fmt_nhop_instruction(f: &mut std::fmt::Formatter<'_>, rc: &Nhop) -> std::fmt::Result {
+    let instructions = rc.instructions.read().expect("poisoned");
+    if instructions.is_empty() {
+        return Ok(());
+    }
+    writeln!(f, "  Fib Instructions:")?;
+    for (i, inst) in instructions.iter().enumerate() {
+        writeln!(f, "   [{i}] {}", inst)?;
     }
     Ok(())
 }
@@ -124,6 +138,7 @@ impl Display for NhopStore {
         Heading(format!("Next-hop Store ({})", self.len())).fmt(f)?;
         for nhop in self.iter() {
             fmt_nhop_rec(f, nhop, 0)?;
+            fmt_nhop_instruction(f, nhop)?;
         }
         line(f)
     }
@@ -544,9 +559,9 @@ impl Display for AdjacencyTable {
 impl Display for EgressObject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         write!(f, "if: {}", self.ifindex)?;
-        fmt_opt_value(f, " addr", self.address, false)?;
-        fmt_opt_value(f, " smac", self.smac, false)?;
-        fmt_opt_value(f, " dmac", self.dmac, false)
+        fmt_opt_value(f, " addr", self.address, false)
+        //        fmt_opt_value(f, " smac", self.smac, false)?;
+        //        fmt_opt_value(f, " dmac", self.dmac, false)
     }
 }
 
@@ -554,7 +569,7 @@ impl Display for PktInstruction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
             PktInstruction::Drop => write!(f, "drop"),
-            PktInstruction::Xmit(egress) => write!(f, "xmit: {}", egress),
+            PktInstruction::Egress(egress) => write!(f, "egress: {}", egress),
             PktInstruction::Encap(encap) => write!(f, "encap: {}", encap),
             PktInstruction::Nat => write!(f, "NAT"),
         }
@@ -563,17 +578,26 @@ impl Display for PktInstruction {
 impl Display for FibEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         for (n, inst) in self.iter().enumerate() {
-            writeln!(f, "     {} {}", n, inst)?;
+            writeln!(f, "       {} {}", n, inst)?;
         }
         Ok(())
     }
 }
-impl Display for FibEntryGroup {
+impl Display for FibGroup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         writeln!(f, "FibGroup:")?;
         for (n, entry) in self.iter().enumerate() {
-            writeln!(f, "  Fibentry {}:", n)?;
+            writeln!(f, "    FibEntry {}:", n)?;
             writeln!(f, "{}", entry)?;
+        }
+        Ok(())
+    }
+}
+impl Display for Fib {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        Heading(format!("Fib ({} entries)", self.len())).fmt(f)?;
+        for entry in self.iter() {
+            write!(f, " {}", entry)?;
         }
         Ok(())
     }
