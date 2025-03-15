@@ -29,6 +29,9 @@ impl FibTable {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+    pub fn iter(&self) -> impl Iterator<Item = (&FibId, &Arc<FibReader>)> {
+        self.0.iter()
+    }
 }
 
 enum FibTableChange {

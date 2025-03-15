@@ -26,7 +26,7 @@ impl FibId {
 
 #[derive(Clone)]
 pub struct Fib {
-    id: FibId,
+    pub id: FibId,
     version: u64,
     routesv4: RTrieMap<Ipv4Prefix, Arc<FibGroup>>,
     routesv6: RTrieMap<Ipv6Prefix, Arc<FibGroup>>,
@@ -89,9 +89,8 @@ impl Fib {
         if let Some(e) = self.groups.get(&arc_gr) {
             Arc::clone(e)
         } else {
-            let out = Arc::clone(&arc_gr);
-            self.groups.insert(arc_gr);
-            out
+            self.groups.insert(arc_gr.clone());
+            arc_gr
         }
     }
     /// Remove a group from the shared groups
@@ -121,6 +120,12 @@ impl Fib {
     }
     pub fn iter_v6(&self) -> impl Iterator<Item = (&Ipv6Prefix, &Arc<FibGroup>)> {
         self.routesv6.iter()
+    }
+    pub fn get_v4_trie(&self) -> &RTrieMap<Ipv4Prefix, Arc<FibGroup>> {
+        &self.routesv4
+    }
+    pub fn get_v6_trie(&self) -> &RTrieMap<Ipv6Prefix, Arc<FibGroup>> {
+        &self.routesv6
     }
 }
 
