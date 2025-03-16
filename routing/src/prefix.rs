@@ -35,6 +35,10 @@ impl Prefix {
     const MAX_LEN_IPV4: u8 = 32;
     const MAX_LEN_IPV6: u8 = 128;
 
+    /// Build 224.0.0.0/4 - Ideally this would be const
+    pub fn ipv4_link_local_mcast_prefix() -> Prefix {
+        Prefix::IPV4(Ipv4Prefix::new(Ipv4Addr::new(224, 0, 0, 0), 8).expect("Bad prefix"))
+    }
     /// Build 0.0.0.0/0. "Default" is a very overloaded term. Calling this root_v4 instead of default_v4.
     pub fn root_v4() -> Prefix {
         Prefix::IPV4(Ipv4Prefix::default())
