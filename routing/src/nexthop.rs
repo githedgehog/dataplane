@@ -6,7 +6,7 @@
 
 use crate::encapsulation::Encapsulation;
 use crate::route_processor::{FibGroup, PktInstruction};
-use crate::vrf::Vrf;
+use crate::vrf::{RouteOrigin, Vrf};
 
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 use std::collections::BTreeSet;
@@ -46,6 +46,7 @@ pub enum FwAction {
 /// as return value in next-hop resolution routines.
 #[derive(Debug, Default, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct NhopKey {
+    pub origin: RouteOrigin,
     pub address: Option<IpAddr>,
     pub ifindex: Option<u32>,
     pub encap: Option<Encapsulation>,
@@ -58,12 +59,14 @@ impl NhopKey {
     /// Build a next-hop key
     //////////////////////////////////////////////////////////////////
     pub fn new(
+        origin: RouteOrigin,
         address: Option<IpAddr>,
         ifindex: Option<u32>,
         encap: Option<Encapsulation>,
         fwaction: FwAction,
     ) -> Self {
         Self {
+            origin,
             address,
             ifindex,
             encap,
@@ -72,6 +75,7 @@ impl NhopKey {
     }
     pub fn with_drop() -> Self {
         Self {
+            origin: RouteOrigin::default(),
             address: None,
             ifindex: None,
             encap: None,
@@ -222,6 +226,7 @@ impl Nhop {
                         they include an address AND an ifindex */
                         let address = r.key.address.map_or(self.key.address, |_| r.key.address);
                         result.insert(NhopKey::new(
+                            r.key.origin,
                             address,
                             Some(i),
                             self.key.encap,
