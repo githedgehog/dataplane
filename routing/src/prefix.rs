@@ -109,6 +109,7 @@ impl Prefix {
             _ => false,
         }
     }
+
     /// Build a [`Prefix`] from (&str, u8)
     /// For a mysterious reason the compiler complains about a conflicting implementation in
     /// crate core when implementing this as TryFrom<(&str, u8)> for Prefix.
@@ -125,6 +126,7 @@ impl Prefix {
         }
     }
 
+
     #[cfg(any(test, feature = "testing"))]
     pub fn expect_from<T>(val: T) -> Self
     where
@@ -132,6 +134,13 @@ impl Prefix {
         T::Error: Debug,
     {
         val.try_into().expect("Invalid prefix")
+    }
+    /// Tell if prefix is a host
+    pub fn is_host(&self) -> bool {
+        match self {
+            Prefix::IPV4(_) => self.length() == 32,
+            Prefix::IPV6(_) => self.length() == 128,
+        }
     }
 }
 
