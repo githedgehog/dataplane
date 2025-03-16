@@ -98,6 +98,13 @@ impl Prefix {
             _ => false,
         }
     }
+    /// Tell if prefix is a host
+    pub fn is_host(&self) -> bool {
+        match self {
+            Prefix::IPV4(_) => self.length() == 32,
+            Prefix::IPV6(_) => self.length() == 128,
+        }
+    }
 }
 impl From<(IpAddr, u8)> for Prefix {
     fn from(tuple: (IpAddr, u8)) -> Self {
