@@ -9,11 +9,14 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use tracing::debug;
 
+#[cfg(test)]
+use crate::pretty_utils::Frame;
+
 use crate::fib::fibtype::FibId;
 use crate::fib::fibtype::FibWriter;
-use crate::nexthop::{Nhop, NhopKey, NhopStore};
+use crate::interface::IfIndex;
+use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::prefix::Prefix;
-use crate::pretty_utils::Frame;
 use crate::rmac::{RmacStore, Vtep};
 use crate::route_processor::FibGroup;
 use iptrie::map::RTrieMap;
@@ -28,6 +31,14 @@ pub type VrfId = u32;
 pub struct RouteNhop {
     pub vrfid: VrfId,
     pub key: NhopKey,
+}
+impl RouteNhop {
+    fn from_nhkey(key: &NhopKey) -> RouteNhop {
+        Self {
+            vrfid: 0,
+            key: *key,
+        }
+    }
 }
 impl Default for RouteNhop {
     fn default() -> Self {
@@ -57,6 +68,16 @@ pub struct Route {
     pub distance: u8,
     pub metric: u32,
     pub s_nhops: Vec<ShimNhop>,
+}
+impl Route {
+    fn with_origin(origin: RouteOrigin) -> Self {
+        Self {
+            origin,
+            distance: 0,
+            metric: 0,
+            s_nhops: vec![],
+        }
+    }
 }
 impl Default for Route {
     fn default() -> Self {
@@ -124,6 +145,7 @@ impl Vrf {
             FibId::from_vrfid(self.vrfid)
         }
     }
+
     /////////////////////////////////////////////////////////////////////////
     /// Set the fib id for the fib corresponding to this VRF.
     /////////////////////////////////////////////////////////////////////////
@@ -148,6 +170,7 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     /// Dump the contents of a Vrf, preceded by some optional heading
     /////////////////////////////////////////////////////////////////////////
+    #[cfg(test)]
     pub fn dump(&self, heading: Option<&str>) {
         if let Some(heading) = heading {
             print!("{}", Frame(heading.to_owned()));
@@ -462,6 +485,25 @@ impl Vrf {
                 (Prefix::IPV6(*p), r)
             }
         }
+    }
+
+    /////////////////////////////////////////////////////////////////////////
+    /// Special routes
+    /////////////////////////////////////////////////////////////////////////
+    pub fn add_link_local_intf_multicast_route(&mut self, ifindex: IfIndex) {
+        let nhkey = NhopKey::new(
+            RouteOrigin::Local,
+            None,
+            Some(ifindex),
+            None,
+            FwAction::default(),
+        );
+        self.add_route(
+            &Prefix::ipv4_link_local_mcast_prefix(),
+            Route::with_origin(RouteOrigin::Local),
+            &[RouteNhop::from_nhkey(&nhkey)],
+            None,
+        );
     }
 }
 
