@@ -64,6 +64,15 @@ impl From<ForwardAction> for FwAction {
         }
     }
 }
+impl From<&Rmac> for RmacEntry {
+    fn from(value: &Rmac) -> Self {
+        Self {
+            address: value.address,
+            mac: Mac::from(value.mac.bytes()),
+            vni: Vni::new_checked(value.vni).expect("Invalid Vni"),
+        }
+    }
+}
 
 impl RouteNhop {
     fn from_rpc_nhop(nh: &NextHop, origin: RouteOrigin) -> Self {
@@ -81,32 +90,27 @@ impl RouteNhop {
                 origin,
                 nh.address,
                 ifindex,
-                encap, /* fixme */
+                encap,
                 FwAction::from(nh.fwaction),
             ),
             vrfid: nh.vrfid,
         }
     }
 }
+impl Route {
+    fn from_iproute(prefix: &Prefix, r: &IpRoute) -> Self {
+        let origin = if r.rtype == RouteType::Connected && prefix.is_host() {
+            RouteOrigin::Local
+        } else {
+            RouteOrigin::from(r.rtype)
+        };
 
-impl From<&IpRoute> for Route {
-    fn from(r: &IpRoute) -> Self {
         Route {
-            origin: RouteOrigin::from(r.rtype),
+            origin,
             distance: r.distance,
             metric: r.metric,
             s_nhops: Vec::with_capacity(1),
             // N.B. we don't populate yet the shim nhops here
-        }
-    }
-}
-
-impl From<&Rmac> for RmacEntry {
-    fn from(value: &Rmac) -> Self {
-        Self {
-            address: value.address,
-            mac: Mac::from(value.mac.bytes()),
-            vni: Vni::new_checked(value.vni).expect("Invalid Vni"),
         }
     }
 }
@@ -131,7 +135,7 @@ impl Vrf {
         vtep: &Vtep,
     ) {
         let prefix = Prefix::from((iproute.prefix, iproute.prefix_len));
-        let route = Route::from(iproute);
+        let route = Route::from_iproute(&prefix, iproute);
         let nhops: Vec<RouteNhop> = iproute
             .nhops
             .iter()
