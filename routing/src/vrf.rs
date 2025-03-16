@@ -367,6 +367,9 @@ impl Vrf {
             Prefix::IPV4(p) => self.del_route_v4(p),
             Prefix::IPV6(p) => self.del_route_v6(p),
         }
+        if let Some(fibw) = &mut self.fibw {
+            fibw.del_fibgroup(prefix.clone());
+        }
     }
 
     /////////////////////////////////////////////////////////////////////////
