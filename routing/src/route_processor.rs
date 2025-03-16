@@ -10,6 +10,7 @@ use crate::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::interface::IfIndex;
 use crate::nexthop::{FwAction, Nhop, NhopStore};
 use crate::rmac::{RmacStore, Vtep};
+use crate::vrf::RouteOrigin;
 
 #[allow(dead_code)]
 #[derive(Debug, Default, Clone, Ord, PartialOrd, Eq, PartialEq)]
@@ -165,6 +166,10 @@ impl Nhop {
     #[inline]
     fn build_pkt_instructions(&self) -> Vec<PktInstruction> {
         let mut instructions = Vec::with_capacity(2);
+        if self.key.origin == RouteOrigin::Local {
+            instructions.push(PktInstruction::Local(self.key.ifindex.unwrap_or(0)));
+            return instructions;
+        }
         if self.key.fwaction == FwAction::Drop {
             instructions.push(PktInstruction::Drop);
             return instructions;
