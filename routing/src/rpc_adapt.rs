@@ -64,8 +64,9 @@ impl From<ForwardAction> for FwAction {
         }
     }
 }
-impl From<&NextHop> for RouteNhop {
-    fn from(nh: &NextHop) -> Self {
+
+impl RouteNhop {
+    fn from_rpc_nhop(nh: &NextHop, origin: RouteOrigin) -> Self {
         let mut ifindex = nh.ifindex;
         let mut encap = nh.encap.as_ref().map(Encapsulation::from);
         if let Some(Encapsulation::Vxlan(vxlan)) = &mut encap {
@@ -76,6 +77,7 @@ impl From<&NextHop> for RouteNhop {
         }
         RouteNhop {
             key: NhopKey::new(
+                origin,
                 nh.address,
                 ifindex,
                 encap, /* fixme */
@@ -85,6 +87,7 @@ impl From<&NextHop> for RouteNhop {
         }
     }
 }
+
 impl From<&IpRoute> for Route {
     fn from(r: &IpRoute) -> Self {
         Route {
@@ -128,7 +131,11 @@ impl Vrf {
     ) {
         let prefix = Prefix::from((iproute.prefix, iproute.prefix_len));
         let route = Route::from(iproute);
-        let nhops: Vec<RouteNhop> = iproute.nhops.iter().map(RouteNhop::from).collect();
+        let nhops: Vec<RouteNhop> = iproute
+            .nhops
+            .iter()
+            .map(|nh| RouteNhop::from_rpc_nhop(nh, route.origin))
+            .collect();
         self.add_route_complete(&prefix, route, &nhops, vrf0, rstore, vtep);
     }
     pub fn del_route_rpc(&mut self, route: &IpRoute) {
