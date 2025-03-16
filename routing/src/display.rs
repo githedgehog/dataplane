@@ -569,16 +569,15 @@ impl Display for TestFib {
 
 impl Display for EgressObject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(f, "if: {}", self.ifindex)?;
+        fmt_opt_value(f, "if", self.ifindex, false)?;
         fmt_opt_value(f, " addr", self.address, false)
-        //        fmt_opt_value(f, " smac", self.smac, false)?;
-        //        fmt_opt_value(f, " dmac", self.dmac, false)
     }
 }
 impl Display for PktInstruction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
             PktInstruction::Drop => write!(f, "drop"),
+            PktInstruction::Local(ifindex) => write!(f, "local, ifindex {ifindex}"),
             PktInstruction::Egress(egress) => write!(f, "egress: {}", egress),
             PktInstruction::Encap(encap) => write!(f, "encap: {}", encap),
             PktInstruction::Nat => write!(f, "NAT"),
