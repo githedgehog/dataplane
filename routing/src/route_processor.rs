@@ -17,17 +17,23 @@ use crate::rmac::{RmacStore, Vtep};
 /// has to be sent and, optionally, a next-hop ip address. If
 /// no address is provided, ND/ARP is required.
 pub struct EgressObject {
-    pub(crate) ifindex: IfIndex,
+    pub(crate) ifindex: Option<IfIndex>,
     pub(crate) address: Option<IpAddr>,
 }
 
 #[allow(dead_code)]
 impl EgressObject {
-    fn new(ifindex: IfIndex, address: Option<IpAddr>) -> Self {
+    fn new(ifindex: Option<IfIndex>, address: Option<IpAddr>) -> Self {
         Self { ifindex, address }
     }
+    fn with_ifindex(ifindex: IfIndex, address: Option<IpAddr>) -> Self {
+        Self {
+            ifindex: Some(ifindex),
+            address,
+        }
+    }
     fn empty() -> Self {
-        Self::new(0, None)
+        Self::new(None, None)
     }
 }
 
@@ -115,29 +121,23 @@ impl FibEntry {
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut PktInstruction> {
         self.instructions.iter_mut()
     }
-    /// This is a sanity when adjacent next-hops don't have interface resolution but
-    /// instead resolve to interface-only next-hops. Since we want to derive the next-hop
-    /// instructions without considering their resolvers (i.e. without considering the
-    /// routing table), in this case fib entry will end with two consecutive Egress objects.
-    /// If that happens, this method merges the egress instructions into one.
-    pub fn squash(&mut self) {
+    fn squash(&mut self) {
         if self.instructions.len() == 1 {
             return;
         }
-        let mut sq: Vec<PktInstruction> = Vec::new();
-        let mut it: Vec<PktInstruction> = self.instructions.iter().rev().cloned().collect();
-        let mut aggregate = EgressObject::empty();
-        while let Some(inst) = it.pop() {
-            if let PktInstruction::Egress(egress) = &inst {
-                aggregate.merge(egress);
+        let mut out: Vec<PktInstruction> = Vec::new();
+        let mut merged = EgressObject::default();
+        for inst in &self.instructions {
+            if let PktInstruction::Egress(e) = &inst {
+                merged.merge(e);
             } else {
-                sq.push(inst.clone());
+                out.push(inst.clone());
             }
         }
-        if aggregate.ifindex != 0 {
-            sq.push(PktInstruction::Egress(aggregate));
+        if merged.ifindex.is_some() {
+            out.push(PktInstruction::Egress(merged));
         }
-        self.instructions = sq;
+        self.instructions = out;
     }
 }
 
@@ -158,28 +158,9 @@ pub enum PktInstruction {
 /* ============================ Nhop processing ======================================== */
 #[allow(dead_code)]
 impl Nhop {
-    /// Tell if a next-hop resolves directly to an interface (i.e. is adjacency).
-    /// In most cases, this should not need to take the lock to read since the
-    /// next-hop will have an ifindex.
-    #[inline]
-    fn resolves_via_interface(&self) -> Option<(IpAddr, IfIndex)> {
-        if let Some(address) = self.key.address {
-            if let Some(ifindex) = self.key.ifindex {
-                return Some((address, ifindex)); /* happy path not needing resolvers (FRR) */
-            } else if let Ok(resolvers) = self.resolvers.read() {
-                // This is a heuristic. Need to change MPLS encap object to do correctly
-                if resolvers.len() == 1 && resolvers[0].key.address.is_none() {
-                    if let Some(ifindex) = resolvers[0].key.ifindex {
-                        return Some((address, ifindex));
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Build the vector of packet instructions for a next-hop. This process does not
-    /// depend on the routing table, with the exception of adjacent next-hops.
+    /// Build the vector of packet instructions for a next-hop.
+    /// This process is independent of the resolvers for a next-hop. Hence it does not
+    /// depend on the routing table.
     #[inline]
     fn build_pkt_instructions(&self) -> Vec<PktInstruction> {
         let mut instructions = Vec::with_capacity(2);
@@ -189,13 +170,12 @@ impl Nhop {
         }
         if let Some(encap) = self.key.encap {
             instructions.push(PktInstruction::Encap(encap));
-        }
-        if let Some((address, ifindex)) = self.resolves_via_interface() {
-            let egress = EgressObject::new(ifindex, Some(address));
+            let egress = EgressObject::new(self.key.ifindex, self.key.address);
             instructions.push(PktInstruction::Egress(egress));
             return instructions;
-        } else if let Some(ifindex) = self.key.ifindex {
-            let egress = EgressObject::new(ifindex, self.key.address);
+        }
+        if self.key.ifindex.is_some() {
+            let egress = EgressObject::new(self.key.ifindex, self.key.address);
             instructions.push(PktInstruction::Egress(egress));
             return instructions;
         }
@@ -207,10 +187,9 @@ impl Nhop {
     /// So, they are not shared and have to be resolved per next-hop.
     fn resolve_instructions(&self, rstore: &RmacStore, vtep: &Vtep) {
         if let Ok(mut instructions) = self.instructions.write() {
-            instructions.clear(); // not needed
-            // build the instruction vector for this next-hop
+            // build the instruction vector. This drops any prior vector
             *instructions = self.build_pkt_instructions();
-            // resolve each PktInstruction of the vector
+            // resolve each PktInstruction
             for inst in instructions.iter_mut() {
                 inst.resolve(rstore, vtep);
             }
@@ -227,7 +206,6 @@ impl Nhop {
     }
 
     /// Recursive helper to build [`FibGroup`] for a next-hop
-    ///
     fn __as_fib_entry_group_lazy(&self, fibgroup: &mut FibGroup, mut entry: FibEntry) {
         // add the instructions for a next-hop (already completed) to the entry
         let instructions = self.get_packet_instructions();
@@ -236,9 +214,9 @@ impl Nhop {
         // check the instructions of the resolving next-hops
         if let Ok(resolvers) = self.resolvers.read() {
             if resolvers.is_empty() {
-                // squash the entry before committing it to the group
+                // squash entry before committing it to the group
                 entry.squash();
-                // create new fib entry
+                // add fib entry to group
                 fibgroup.add(entry);
             } else {
                 for resolver in resolvers.iter() {
@@ -269,11 +247,6 @@ impl Nhop {
 
 #[allow(dead_code)]
 impl NhopStore {
-    /// Derive next-hop instructions. Each next-hop may yield, non-recursively
-    /// one or more instructions. The instructions derived may need to be further
-    /// completed or resolved with missing pieces of information. This method just
-    /// iterates over all next-hops to "resolve" their instructions. Note: this does
-    /// the resolution of instructions without considering nhop resolvers.
     pub fn resolve_nhop_instructions(&self, rstore: &RmacStore, vtep: &Vtep) {
         for nhop in self.iter() {
             nhop.resolve_instructions(rstore, vtep);
@@ -281,7 +254,7 @@ impl NhopStore {
     }
 }
 
-//#[cfg(any())]
+#[cfg(test)]
 #[allow(dead_code)]
 impl Nhop {
     /// Internal: build a single [`PktInstruction`] for a given next-hop
@@ -294,9 +267,9 @@ impl Nhop {
         }
         if let Some(ifindex) = self.key.ifindex {
             let egress = if self.key.address.is_some() {
-                EgressObject::new(ifindex, self.key.address)
+                EgressObject::with_ifindex(ifindex, self.key.address)
             } else {
-                EgressObject::new(ifindex, prev)
+                EgressObject::with_ifindex(ifindex, prev)
             };
             return Some(PktInstruction::Egress(egress));
         }
@@ -348,10 +321,10 @@ impl Nhop {
 impl EgressObject {
     /// merge two egress objects appearing in a next-hop or a Fib entry
     pub fn merge(&mut self, other: &Self) {
-        if self.ifindex == 0 {
+        if self.ifindex.is_none() {
             self.ifindex = other.ifindex;
         }
-        if self.address.is_none() {
+        if other.address.is_some() {
             self.address = other.address;
         }
     }
@@ -404,16 +377,6 @@ impl PktInstruction {
             PktInstruction::Nat => {}
         }
     }
-
-    /// merge two packet instructions if they are both of xmit (egress) type. If they are not,
-    /// this method does nothing.
-    pub fn merge(&mut self, other: &Self) {
-        if let PktInstruction::Egress(egress) = self {
-            if let PktInstruction::Egress(egress_other) = other {
-                egress.merge(egress_other);
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -422,7 +385,6 @@ impl PktInstruction {
 #[allow(dead_code)]
 impl FibEntry {
     pub fn resolve(&mut self, rstore: &RmacStore, vtep: &Vtep) {
-        // FIXME signature
         for inst in self.instructions.iter_mut() {
             inst.resolve(rstore, vtep);
         }
@@ -433,7 +395,6 @@ impl FibEntry {
 #[allow(dead_code)]
 impl FibGroup {
     pub fn resolve(&mut self, rstore: &RmacStore, vtep: &Vtep) {
-        // FIXME signature
         for entry in self.entries.iter_mut() {
             entry.resolve(rstore, vtep);
         }
