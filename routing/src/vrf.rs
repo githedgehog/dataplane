@@ -39,7 +39,7 @@ impl Default for RouteNhop {
 }
 
 #[allow(unused)]
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, Eq, Hash, Copy, Ord, PartialOrd, PartialEq)]
 pub enum RouteOrigin {
     Local,
     Connected,
@@ -541,6 +541,7 @@ pub mod tests {
         encap: Option<Encapsulation>,
     ) -> RouteNhop {
         let key = NhopKey::new(
+            RouteOrigin::default(),
             address.map(mk_addr),
             ifindex, encap,FwAction::Forward);
 
@@ -807,6 +808,7 @@ pub mod tests {
         let vrf = build_test_vrf();
 
         let nhkey = NhopKey {
+            origin: RouteOrigin::default(),
             address: Some(mk_addr("7.0.0.1")),
             ifindex: None,
             encap: Some(Encapsulation::Vxlan(VxlanEncapsulation::new(
