@@ -149,6 +149,7 @@ impl FibEntry {
 pub enum PktInstruction {
     #[default]
     Drop, /* drop the packet */
+    Local(IfIndex),       /* packet is destined to gw */
     Encap(Encapsulation), /* encapsulate the packet */
     Egress(EgressObject), /* send the packet over interface to some ip */
     Nat,                  //    Push(Header),
@@ -369,6 +370,7 @@ impl PktInstruction {
     fn resolve(&mut self, rstore: &RmacStore, vtep: &Vtep) {
         match self {
             PktInstruction::Drop => {}
+            PktInstruction::Local(_) => {}
             PktInstruction::Egress(_egress) => {}
             PktInstruction::Encap(encapsulation) => match encapsulation {
                 Encapsulation::Vxlan(vxlan) => vxlan.resolve(rstore, vtep),
