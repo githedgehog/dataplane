@@ -1,13 +1,18 @@
 #![allow(dead_code)]
-use crate::prefix::Prefix;
-use crate::route_processor::{FibEntry, FibGroup, PktInstruction};
-use crate::vrf::VrfId;
 use iptrie::map::RTrieMap;
 use iptrie::{Ipv4Prefix, Ipv6Prefix};
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
-use net::vxlan::Vni;
 use std::collections::BTreeSet;
+use std::net::IpAddr;
 use std::sync::Arc;
+
+use net::buffer::PacketBufferMut;
+use net::packet::Packet;
+use net::vxlan::Vni;
+
+use crate::prefix::Prefix;
+use crate::route_processor::{FibEntry, FibGroup, PktInstruction};
+use crate::vrf::VrfId;
 
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 /// An id we use to idenfify a FIB
@@ -130,6 +135,49 @@ impl Fib {
     }
     pub fn get_v6_trie(&self) -> &RTrieMap<Ipv6Prefix, Arc<FibGroup>> {
         &self.routesv6
+    }
+    /// Do lpm lookup with the given IpAddr
+    pub fn lpm_with_prefix(&self, target: &IpAddr) -> (Prefix, &FibGroup) {
+        match target {
+            IpAddr::V4(a) => {
+                let (prefix, group) = self.routesv4.lookup(a);
+                (Prefix::IPV4(*prefix), group)
+            }
+            IpAddr::V6(a) => {
+                let (prefix, group) = self.routesv6.lookup(a);
+                (Prefix::IPV6(*prefix), group)
+            }
+        }
+    }
+    /// Identical to lpm_with_prefix, but without reporting the prefix hit
+    pub fn lpm(&self, target: &IpAddr) -> &FibGroup {
+        match target {
+            IpAddr::V4(a) => {
+                let (_, group) = self.routesv4.lookup(a);
+                group
+            }
+            IpAddr::V6(a) => {
+                let (_, group) = self.routesv6.lookup(a);
+                group
+            }
+        }
+    }
+
+    /// Given a [`Packet`], uses [`Self::lpm()`] to retrieve the [`FibGroup`] to forward a packet.
+    /// However, instead of returning the entire [`FibGroup`], returns a single [`FibEntry`] selected
+    /// by computing a hash on the invariant header fields of the IP and L4 headers.
+    pub fn lpm_entry<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> &FibEntry {
+        if let Some(destination) = packet.ip_destination() {
+            let group = self.lpm(&destination);
+            let entry_index = if group.len() == 1 {
+                0
+            } else {
+                packet.packet_hash_ecmp(0, group.len() as u8)
+            };
+            &group.entries()[entry_index as usize]
+        } else {
+            unreachable!()
+        }
     }
 }
 
