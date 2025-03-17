@@ -76,7 +76,12 @@ impl FibGroup {
     pub fn extend(&mut self, other: &Self) {
         self.entries.extend_from_slice(&other.entries);
     }
-
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
     /// merge multiple fib entry groups
     pub fn append(&mut self, other: &mut Self) {
         self.entries.append(&mut other.entries);
