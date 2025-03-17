@@ -874,6 +874,7 @@ version = "0.1.0"
 name = "dataplane-routing"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "bytes",
  "dataplane-cli",
  "dataplane-net",
