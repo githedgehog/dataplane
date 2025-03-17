@@ -393,6 +393,12 @@ mdbook *args="build":
       {{ _doc_env_container }} \
       {{ args }}
 
+# Serve rustdoc output locally (using port 8000)
+[script]
+rustdoc-serve:
+    echo "Launching web server, hit Ctrl-C to stop."
+    python -m http.server -d "target/{{ target }}/doc"
+
 # Build for each separate commit (for "pull_request") or for the HEAD of the branch (other events)
 [script]
 build-sweep start="main":
