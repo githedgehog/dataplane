@@ -9,6 +9,7 @@ license = "Apache-2.0"
 auto-learn = []
 
 [dependencies]
+ahash = { workspace = true }
 ipnet = { workspace = true }
 iptrie = { workspace = true }
 left-right = { workspace = true }
