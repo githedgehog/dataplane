@@ -1,12 +1,13 @@
 use crate::display::IfTableAddress;
+use crate::display::{FibViewV4, FibViewV6};
 use crate::display::{VrfV4Nexthops, VrfV6Nexthops, VrfViewV4, VrfViewV6};
+use crate::fib::fibtype::{FibGroupV4Filter, FibGroupV6Filter};
 use crate::routingdb::{RoutingDb, VrfTable};
 use crate::vrf::{Route, RouteOrigin, Vrf, VrfId};
 use crate::vrf::{RouteV4Filter, RouteV6Filter};
 use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, CliSerialize, RouteProtocol};
 use iptrie::{Ipv4Prefix, Ipv6Prefix};
-use std::os::unix::net::SocketAddr;
-use std::os::unix::net::UnixDatagram;
+use std::os::unix::net::{SocketAddr, UnixDatagram};
 use tracing::{error, trace};
 
 impl From<&RouteProtocol> for RouteOrigin {
@@ -235,6 +236,121 @@ fn show_vrfs(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliErro
     }
 }
 
+#[inline]
+fn show_fibgroups_ipv4(vrf: &Vrf, filter: &FibGroupV4Filter) -> String {
+    let view = FibViewV4 { vrf, filter };
+    format!("{}", &view)
+}
+#[inline]
+fn show_fibgroups_ipv6(vrf: &Vrf, filter: &FibGroupV6Filter) -> String {
+    let view = FibViewV6 { vrf, filter };
+    format!("{}", &view)
+}
+
+fn fibgroup_filter_v4(_request: &CliRequest) -> FibGroupV4Filter {
+    // Todo(fredi): filter by prefix, next-hop, interface and encap
+    let filter: FibGroupV4Filter = Box::new(|(_, _)| true);
+    filter
+}
+fn fibgroup_filter_v6(_request: &CliRequest) -> FibGroupV6Filter {
+    // Todo(fredi): filter by prefix, next-hop, interface and encap
+    let filter: FibGroupV6Filter = Box::new(|(_, _)| true);
+    filter
+}
+
+fn show_single_fib_v4(
+    request: CliRequest,
+    vrftable: &VrfTable,
+    vrfid: VrfId,
+    filter: &FibGroupV4Filter,
+) -> Result<CliResponse, CliError> {
+    let out;
+    if let Ok(vrf) = vrftable.get_vrf(vrfid) {
+        if let Ok(vrf) = vrf.read() {
+            out = show_fibgroups_ipv4(&vrf, filter);
+        } else {
+            return Err(CliError::InternalError);
+        }
+    } else {
+        return Err(CliError::NotFound(format!("No VRF with id {vrfid} exists")));
+    }
+    Ok(CliResponse::from_request_ok(request, out))
+}
+
+fn show_single_fib_v6(
+    request: CliRequest,
+    vrftable: &VrfTable,
+    vrfid: VrfId,
+    filter: &FibGroupV6Filter,
+) -> Result<CliResponse, CliError> {
+    let out;
+    if let Ok(vrf) = vrftable.get_vrf(vrfid) {
+        if let Ok(vrf) = vrf.read() {
+            out = show_fibgroups_ipv6(&vrf, filter);
+        } else {
+            return Err(CliError::InternalError);
+        }
+    } else {
+        return Err(CliError::NotFound(format!("No VRF with id {vrfid} exists")));
+    }
+    Ok(CliResponse::from_request_ok(request, out))
+}
+
+fn show_multi_fib_v4(
+    request: CliRequest,
+    vrftable: &VrfTable,
+    filter: &FibGroupV4Filter,
+) -> Result<CliResponse, CliError> {
+    let mut out = String::new();
+    for vrf in vrftable.values() {
+        if let Ok(vrf) = vrf.read() {
+            out += show_fibgroups_ipv4(&vrf, filter).as_str();
+        } else {
+            out += "There was a problem retrieving fib information";
+        }
+    }
+    Ok(CliResponse::from_request_ok(request, out))
+}
+fn show_multi_fib_v6(
+    request: CliRequest,
+    vrftable: &VrfTable,
+    filter: &FibGroupV6Filter,
+) -> Result<CliResponse, CliError> {
+    let mut out = String::new();
+    for vrf in vrftable.values() {
+        if let Ok(vrf) = vrf.read() {
+            out += show_fibgroups_ipv6(&vrf, filter).as_str();
+        } else {
+            out += "There was a problem retrieving fib information";
+        }
+    }
+    Ok(CliResponse::from_request_ok(request, out))
+}
+
+fn show_fib_groups(
+    request: CliRequest,
+    db: &RoutingDb,
+    ipv4: bool,
+) -> Result<CliResponse, CliError> {
+    let vrftable = db.vrftable.read().map_err(|_| CliError::InternalError)?;
+
+    if ipv4 {
+        let filter = fibgroup_filter_v4(&request);
+        if let Some(vrfid) = request.args.vrfid {
+            show_single_fib_v4(request, &vrftable, vrfid, &filter)
+        } else {
+            show_multi_fib_v4(request, &vrftable, &filter)
+        }
+    } else {
+        let filter = fibgroup_filter_v6(&request);
+        if let Some(vrfid) = request.args.vrfid {
+            show_single_fib_v6(request, &vrftable, vrfid, &filter)
+        } else {
+            show_multi_fib_v6(request, &vrftable, &filter)
+        }
+    }
+}
+
 fn _handle_cli_request(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
     let response = match request.action {
         CliAction::ShowRouterInterfaces => {
@@ -271,8 +387,12 @@ fn _handle_cli_request(request: CliRequest, db: &RoutingDb) -> Result<CliRespons
         CliAction::ShowRouterIpv6NextHops => {
             return show_vrf_nexthops(request, db, false);
         }
-        //CliAction::ShowRouterIpv4FibEntries => {}
-        //CliAction::ShowRouterIpv6FibEntries => {},
+        CliAction::ShowRouterIpv4FibEntries => {
+            return show_fib_groups(request, db, true);
+        }
+        CliAction::ShowRouterIpv6FibEntries => {
+            return show_fib_groups(request, db, false);
+        }
         _ => Err(CliError::NotSupported("Not implemented yet".to_owned()))?,
     };
     Ok(response)

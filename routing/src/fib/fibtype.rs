@@ -32,6 +32,10 @@ pub struct Fib {
     routesv6: RTrieMap<Ipv6Prefix, Arc<FibGroup>>,
     groups: BTreeSet<Arc<FibGroup>>, /* shared fib groups */
 }
+
+pub type FibGroupV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &Arc<FibGroup>)) -> bool>;
+pub type FibGroupV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &Arc<FibGroup>)) -> bool>;
+
 impl Fib {
     /// the default fibgroup for default routes
     pub fn drop_fibgroup() -> FibGroup {
@@ -155,6 +159,9 @@ pub struct FibWriter(WriteHandle<Fib, FibGroupChange>);
 impl FibWriter {
     pub fn new(whandle: WriteHandle<Fib, FibGroupChange>) -> Self {
         FibWriter(whandle)
+    }
+    pub fn enter(&self) -> Option<ReadGuard<'_, Fib>> {
+        self.0.enter()
     }
     pub fn add_fibgroup(&mut self, prefix: Prefix, group: FibGroup) {
         self.0.append(FibGroupChange::AddFibGroup((prefix, group)));
