@@ -98,7 +98,7 @@ _build_time := datetime_utc("%+")
 @default:
     just --list --justfile {{ justfile() }}
 
-# Run cargo with RUSTFLAGS computed based on profile.
+# Run cargo with RUSTFLAGS computed based on profile
 [script]
 cargo *args:
     # Ideally this would be done via Cargo.toml and .cargo/config.toml,
@@ -255,7 +255,7 @@ setup-test-env: allocate-2M-hugepages allocate-1G-hugepages mount-hugepages
 # Tear down environment for testing locally
 teardown-test-env: umount-hugepages
 
-# Dump the compile-env container into a sysroot for use by the build.
+# Dump the compile-env container into a sysroot for use by the build
 [script]
 create-compile-env:
     {{ _just_debuggable_ }}
@@ -368,6 +368,10 @@ push-container: build-container
       sudo -E docker push "{{ _container_repo }}:$(truncate128 "{{ _slug }}")"
     fi
 
+# Run Clippy like you're in CI
+[script]
+clippy: (cargo "clippy" "--all-targets" "--all-features" "--" "-D" "warnings")
+
 # run commands in a minimal mdbook container
 [script]
 mdbook *args="build":
@@ -389,7 +393,7 @@ mdbook *args="build":
       {{ _doc_env_container }} \
       {{ args }}
 
-# Build for each separate commit (for "pull_request") or for the HEAD of the branch (other events).
+# Build for each separate commit (for "pull_request") or for the HEAD of the branch (other events)
 [script]
 build-sweep start="main":
     {{ _just_debuggable_ }}
