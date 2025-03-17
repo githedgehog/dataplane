@@ -86,6 +86,9 @@ impl FibGroup {
     pub fn append(&mut self, other: &mut Self) {
         self.entries.append(&mut other.entries);
     }
+    pub fn entries(&self) -> &Vec<FibEntry> {
+        &self.entries
+    }
 }
 
 /* =================================== FIbEntry ========================================= */
