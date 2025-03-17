@@ -3,6 +3,8 @@
 
 //! State objects for network interfaces and interface table.
 
+#![allow(clippy::collapsible_if)]
+
 use ahash::RandomState;
 use net::eth::mac::Mac;
 use net::vlan::Vid;
@@ -206,7 +208,9 @@ impl Interface {
 
 #[derive(Clone)]
 /// A table of network interface objects, keyed by some ifindex (u32)
-pub struct IfTable(HashMap<u32, Interface, RandomState>);
+pub struct IfTable {
+    by_index: HashMap<u32, Interface, RandomState>,
+}
 
 #[allow(dead_code)]
 #[allow(clippy::new_without_default)]
@@ -216,55 +220,57 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        Self(HashMap::with_hasher(RandomState::with_seed(0)))
+        Self {
+            by_index: HashMap::with_hasher(RandomState::with_seed(0)),
+        }
     }
 
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.by_index.len()
     }
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.by_index.is_empty()
     }
     pub fn iter(&self) -> impl Iterator<Item = (&u32, &Interface)> {
-        self.0.iter()
+        self.by_index.iter()
     }
     pub fn values(&self) -> impl Iterator<Item = &Interface> {
-        self.0.values()
+        self.by_index.values()
     }
 
     //////////////////////////////////////////////////////////////////
     /// Add an interface to the table
     //////////////////////////////////////////////////////////////////
     pub fn add_interface(&mut self, iface: Interface) {
-        self.0.insert(iface.ifindex, iface);
+        self.by_index.insert(iface.ifindex, iface);
     }
 
     //////////////////////////////////////////////////////////////////
     /// Remove an interface from the table
     //////////////////////////////////////////////////////////////////
     pub fn del_interface(&mut self, ifindex: u32) {
-        self.0.remove(&ifindex);
+        self.by_index.remove(&ifindex);
     }
 
     //////////////////////////////////////////////////////////////////
     /// Get interface entry from IfTable
     //////////////////////////////////////////////////////////////////
     pub fn get_interface(&self, ifindex: u32) -> Option<&Interface> {
-        self.0.get(&ifindex)
+        self.by_index.get(&ifindex)
     }
 
     //////////////////////////////////////////////////////////////////
     /// Get interface entry from IfTable, mutably
     //////////////////////////////////////////////////////////////////
     pub fn get_interface_mut(&mut self, ifindex: u32) -> Option<&mut Interface> {
-        self.0.get_mut(&ifindex)
+        self.by_index.get_mut(&ifindex)
     }
 
     //////////////////////////////////////////////////////////////////
     /// Assign an Ip address to an interface
     //////////////////////////////////////////////////////////////////
     pub fn add_ifaddr(&mut self, ifindex: IfIndex, ifaddr: &IfAddress) -> Result<(), RouterError> {
-        if let Some(iface) = self.0.get_mut(&ifindex) {
+        if let Some(iface) = self.by_index.get_mut(&ifindex) {
             iface.add_ifaddr(ifaddr);
             Ok(())
         } else {
@@ -276,7 +282,7 @@ impl IfTable {
     /// Un-assign an Ip address from an interface.
     //////////////////////////////////////////////////////////////////
     pub fn del_ifaddr(&mut self, ifindex: IfIndex, ifaddr: &IfAddress) {
-        if let Some(iface) = self.0.get_mut(&ifindex) {
+        if let Some(iface) = self.by_index.get_mut(&ifindex) {
             iface.del_ifaddr(&(ifaddr.0, ifaddr.1));
         }
         // if interface does not exist or the address was not configured,
@@ -287,8 +293,7 @@ impl IfTable {
     /// Detach all interfaces attached to some VRF
     //////////////////////////////////////////////////////////////////
     pub fn detach_vrf_interfaces(&mut self, vrf: &Arc<RwLock<Vrf>>) {
-        for iface in self.0.values_mut() {
-            #[allow(clippy::collapsible_if)]
+        for iface in self.by_index.values_mut() {
             if let Some(if_vrf) = &iface.vrf {
                 if Arc::ptr_eq(if_vrf, vrf) {
                     iface.detach();
@@ -376,7 +381,7 @@ pub mod tests {
         iftable.add_interface(vlan100);
         iftable.add_interface(vlan200);
 
-        assert_eq!(iftable.0.len(), 5);
+        assert_eq!(iftable.len(), 5);
 
         iftable
     }
