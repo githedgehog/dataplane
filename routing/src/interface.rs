@@ -3,14 +3,15 @@
 
 //! State objects for network interfaces and interface table.
 
-use crate::errors::RouterError;
-use crate::vrf::Vrf;
+use ahash::RandomState;
 use net::eth::mac::Mac;
 use net::vlan::Vid;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::Arc;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
+
+use crate::errors::RouterError;
+use crate::vrf::Vrf;
 
 /// A type to uniquely identify a network interface
 pub type IfIndex = u32;
@@ -19,19 +20,22 @@ pub type IfIndex = u32;
 type IfAddress = (IpAddr, u8);
 
 #[allow(dead_code)]
+#[derive(Clone)]
 /// Specific data for ethernet interfaces
 pub struct IfDataEthernet {
     pub mac: Mac,
 }
 
-/// Specific data for vlan (sub)interfaces
 #[allow(dead_code)]
+#[derive(Clone)]
+/// Specific data for vlan (sub)interfaces
 pub struct IfDataDot1q {
     pub mac: Mac,
     pub vlanid: Vid,
 }
 
 /// Type that contains data specific to the type of interface
+#[derive(Clone)]
 #[allow(dead_code)]
 pub enum IfType {
     Unknown,
@@ -42,7 +46,7 @@ pub enum IfType {
 }
 
 #[allow(dead_code)]
-#[derive(Default, Eq, PartialEq)]
+#[derive(Clone, Default, Eq, PartialEq)]
 pub enum IfState {
     #[default]
     Unknown = 0,
@@ -50,6 +54,7 @@ pub enum IfState {
     Up = 2,
 }
 
+#[derive(Clone)]
 #[allow(dead_code)]
 /// An object representing a network interface and its state
 pub struct Interface {
@@ -199,8 +204,9 @@ impl Interface {
     }
 }
 
+#[derive(Clone)]
 /// A table of network interface objects, keyed by some ifindex (u32)
-pub struct IfTable(HashMap<u32, Interface>);
+pub struct IfTable(HashMap<u32, Interface, RandomState>);
 
 #[allow(dead_code)]
 #[allow(clippy::new_without_default)]
@@ -210,8 +216,7 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        Self(HashMap::new())
-        // TODO: set a fast hasher
+        Self(HashMap::with_hasher(RandomState::with_seed(0)))
     }
 
     pub fn len(&self) -> usize {
