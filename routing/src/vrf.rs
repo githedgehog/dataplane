@@ -114,9 +114,6 @@ pub struct Vrf {
     pub(crate) fibw: Option<FibWriter>,
 }
 
-// pub type RouteV4FilterTuple<'a> = (&'a Ipv4Prefix, &'a Route);
-// pub type RouteV6FilterTuple<'a> = (&'a Ipv6Prefix, &'a Route);
-
 pub type RouteV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &Route)) -> bool>;
 pub type RouteV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &Route)) -> bool>;
 
