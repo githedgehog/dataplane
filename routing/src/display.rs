@@ -5,6 +5,8 @@
 
 use crate::adjacency::{Adjacency, AdjacencyTable};
 use crate::encapsulation::{Encapsulation, VxlanEncapsulation};
+use crate::fib::fibtable::FibTable;
+use crate::fib::fibtype::{Fib, FibId};
 use crate::interface::{IfDataDot1q, IfDataEthernet, IfState, IfTable, IfType, Interface};
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::pretty_utils::{Heading, line};
@@ -34,7 +36,7 @@ fn fmt_opt_value<T: Display>(
     if nl { writeln!(f) } else { Ok(()) }
 }
 
-//=================== VRFs, routes and next-hops ====================//
+//========================= Encapsulations ==========================//
 impl Display for VxlanEncapsulation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -82,8 +84,8 @@ impl Display for NhopKey {
 impl Display for Nhop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "{}", self.key)?;
-        fmt_nhop_resolvers(f, self, 1)?;
-        fmt_nhop_instruction(f, self)
+        fmt_nhop_resolvers(f, self, 1)
+        //fmt_nhop_instruction(f, self)
     }
 }
 
@@ -127,10 +129,15 @@ fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Arc<Nhop>, depth: u8) -> s
         sym,
         rc.key
     )?;
-
+    //    fmt_nhop_instruction(f, rc)?;
     for r in rc.resolvers.read().expect("poisoned").iter() {
         fmt_nhop_rec(f, r, depth + 1)?;
     }
+
+    //    if let Ok(fg) = rc.as_ref().fibgroup.read() {
+    //        writeln!(f, "FibG {}", fg)?;
+    //    }
+
     Ok(())
 }
 impl Display for NhopStore {
@@ -557,7 +564,7 @@ impl Display for AdjacencyTable {
 //========================= Test Fib ================================//
 impl Display for TestFib {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        Heading(format!("Fib ({} entries)", self.len())).fmt(f)?;
+        Heading(format!("TestFib ({} entries)", self.len())).fmt(f)?;
         for entry in self.iter() {
             write!(f, " {}", entry)?;
         }
@@ -577,7 +584,7 @@ impl Display for PktInstruction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
             PktInstruction::Drop => write!(f, "drop"),
-            PktInstruction::Local(ifindex) => write!(f, "local, ifindex {ifindex}"),
+            PktInstruction::Local(ifindex) => write!(f, "Local (if {})", ifindex),
             PktInstruction::Egress(egress) => write!(f, "egress: {}", egress),
             PktInstruction::Encap(encap) => write!(f, "encap: {}", encap),
             PktInstruction::Nat => write!(f, "NAT"),
@@ -586,18 +593,149 @@ impl Display for PktInstruction {
 }
 impl Display for FibEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        writeln!(f, "     ■ FibEntry ({} actions):", self.len())?;
         for (n, inst) in self.iter().enumerate() {
-            writeln!(f, "       {} {}", n, inst)?;
+            writeln!(f, "         {} {}", n, inst)?;
         }
         Ok(())
     }
 }
 impl Display for FibGroup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        writeln!(f, "FibGroup:")?;
-        for (n, entry) in self.iter().enumerate() {
-            writeln!(f, "    FibEntry {}:", n)?;
+        writeln!(f, "FibGroup ({} entries):", self.len())?;
+        for entry in self.iter() {
             writeln!(f, "{}", entry)?;
+        }
+        Ok(())
+    }
+}
+
+impl Display for FibId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match self {
+            FibId::Id(vrfid) => write!(f, "vrfid: {}", vrfid)?,
+            FibId::Vni(vni) => write!(f, "vni: {:?}", vni)?,
+        }
+        Ok(())
+    }
+}
+
+fn fmt_fib_trie<P: IpPrefix, F: Fn(&(&P, &Arc<FibGroup>)) -> bool>(
+    f: &mut std::fmt::Formatter<'_>,
+    fibid: &FibId,
+    show_string: &str,
+    trie: &RTrieMap<P, Arc<FibGroup>>,
+    group_filter: F,
+) -> std::fmt::Result {
+    Heading(format!(
+        "{} Fib ({}) -- {} prefixes",
+        show_string,
+        fibid,
+        trie.len()
+    ))
+    .fmt(f)?;
+    for (prefix, group) in trie.iter().filter(group_filter) {
+        write!(f, "  {:?}: {}", prefix, group)?;
+    }
+    Ok(())
+}
+
+impl Display for Fib {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        fmt_fib_trie(f, &self.id, "Ipv4", self.get_v4_trie(), |_| true)?;
+        fmt_fib_trie(f, &self.id, "Ipv6", self.get_v6_trie(), |_| true)?;
+        Ok(())
+    }
+}
+impl Display for FibTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        Heading(format!(" Fib Table ({} fibs)", self.len())).fmt(f)?;
+        for (_fibid, fibr) in self.iter() {
+            if let Some(fib) = fibr.enter() {
+                write!(f, "{}", *fib)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+pub struct FibViewV4<'a, F>
+where
+    F: Fn(&(&Ipv4Prefix, &Arc<FibGroup>)) -> bool,
+{
+    pub vrf: &'a Vrf,
+    pub filter: &'a F,
+}
+impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Arc<FibGroup>)) -> bool> Display for FibViewV4<'_, F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(fibw) = &self.vrf.fibw {
+            if let Some(fibr) = fibw.enter() {
+                let rt_iter = fibr.iter_v4().filter(&self.filter);
+                let total_entries = fibr.len_v4();
+                let mut displayed = 0;
+
+                writeln!(
+                    f,
+                    "\n ━━━━━━━━━\n Vrf: '{}' (id: {})",
+                    self.vrf.name, self.vrf.vrfid
+                )?;
+                Heading(format!("Ipv4 FIB ({} groups)", total_entries)).fmt(f)?;
+                for (prefix, group) in rt_iter {
+                    write!(f, "  {:?} {}", prefix, group)?;
+                    displayed += 1;
+                }
+
+                if displayed != total_entries {
+                    writeln!(
+                        f,
+                        "\n  (Displayed {} groups out of {})",
+                        displayed, total_entries
+                    )?;
+                }
+            }
+        } else {
+            writeln!(f, "No fib")?;
+        }
+        Ok(())
+    }
+}
+
+pub struct FibViewV6<'a, F>
+where
+    F: Fn(&(&Ipv6Prefix, &Arc<FibGroup>)) -> bool,
+{
+    pub vrf: &'a Vrf,
+    pub filter: &'a F,
+}
+impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Arc<FibGroup>)) -> bool> Display for FibViewV6<'_, F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(fibw) = &self.vrf.fibw {
+            if let Some(fibr) = fibw.enter() {
+                let rt_iter = fibr.iter_v6().filter(&self.filter);
+                let total_entries = fibr.len_v6();
+                let mut displayed = 0;
+
+                writeln!(
+                    f,
+                    "\n ━━━━━━━━━\n Vrf: '{}' (id: {})",
+                    self.vrf.name, self.vrf.vrfid
+                )?;
+                Heading(format!("Ipv6 FIB ({} groups)", total_entries)).fmt(f)?;
+                for (prefix, group) in rt_iter {
+                    write!(f, "  {:?} {}", prefix, group)?;
+                    displayed += 1;
+                }
+
+                if displayed != total_entries {
+                    writeln!(
+                        f,
+                        "\n  (Displayed {} groups out of {})",
+                        displayed, total_entries
+                    )?;
+                }
+            }
+        } else {
+            writeln!(f, "No fib")?;
         }
         Ok(())
     }
