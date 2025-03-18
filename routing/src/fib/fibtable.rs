@@ -1,27 +1,44 @@
-#![allow(dead_code)]
 use crate::fib::fibtype::{FibId, FibReader, FibWriter};
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
+use net::vxlan::Vni;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, error};
 
 #[derive(Clone, Default)]
 pub struct FibTable(BTreeMap<FibId, Arc<FibReader>>);
 
 impl FibTable {
-    /// Add a new Fib (Fibreader)
+    /// Add a new Fib ([`FibReader`])
     pub fn add_fib(&mut self, id: FibId, fibr: Arc<FibReader>) {
+        debug!("Creating FIB with id {}", id);
         self.0.insert(id, fibr);
     }
-    /// Del a Fib (reader)
+    /// Del a Fib ([`FibReader`])
     pub fn del_fib(&mut self, id: &FibId) {
+        debug!("Deleting FIB with id {}", id);
         self.0.remove(id);
     }
-    /// Get the Fib(reader) for the fib with the given [`FibId`]
-    pub fn get_fib(&self, id: FibId) -> Option<&Arc<FibReader>> {
-        self.0.get(&id)
+    /// Register a Fib ([`FibReader`]) with a given [`Vni`]
+    /// This allows finding the Fib from the [`Vni`]
+    pub fn register_by_vni(&mut self, id: &FibId, vni: &Vni) {
+        if let Some(fibr) = self.get_fib(id) {
+            self.0.insert(FibId::Vni(*vni), fibr.clone());
+            debug!("Registered Fib {} with vni {}", id, vni.as_u32());
+        } else {
+            error!(
+                "Failed to register Fib {} with vni {}: no fib",
+                id,
+                vni.as_u32()
+            );
+        }
     }
-    /// Number of Fibs(readers) in the fib table
+
+    /// Get the [`FibReader`] for the fib with the given [`FibId`]
+    pub fn get_fib(&self, id: &FibId) -> Option<&Arc<FibReader>> {
+        self.0.get(id)
+    }
+    /// Number of [`FibReader`]s in the fib table
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -29,6 +46,7 @@ impl FibTable {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+    /// Provide iterator
     pub fn iter(&self) -> impl Iterator<Item = (&FibId, &Arc<FibReader>)> {
         self.0.iter()
     }
@@ -37,6 +55,7 @@ impl FibTable {
 enum FibTableChange {
     Add((FibId, Arc<FibReader>)),
     Del(FibId),
+    RegisterByVni((FibId, Vni)),
 }
 
 impl Absorb<FibTableChange> for FibTable {
@@ -44,6 +63,7 @@ impl Absorb<FibTableChange> for FibTable {
         match change {
             FibTableChange::Add((id, fibr)) => self.add_fib(id.clone(), fibr.clone()),
             FibTableChange::Del(id) => self.del_fib(id),
+            FibTableChange::RegisterByVni((id, vni)) => self.register_by_vni(id, vni),
         };
     }
     fn drop_first(self: Box<Self>) {}
@@ -66,12 +86,13 @@ impl FibTableWriter {
         self.0
             .append(FibTableChange::Add((id.clone(), fibr_arc.clone())));
         self.0.publish();
-        debug!("Created FIB with id {}", id);
         (fibw, fibr_arc)
     }
+    pub fn register_fib_by_vni(&mut self, id: FibId, vni: Vni) {
+        self.0.append(FibTableChange::RegisterByVni((id, vni)));
+        self.0.publish();
+    }
     pub fn del_fib(&mut self, id: &FibId) {
-        // TODO: detach interfaces
-        debug!("Deleting FIB with id {}", id);
         self.0.append(FibTableChange::Del(id.clone()));
         self.0.publish();
     }
