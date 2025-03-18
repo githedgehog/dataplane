@@ -52,7 +52,7 @@ impl EthType {
 
     /// get the raw `u16` value (native-endian)
     #[must_use]
-    pub const fn raw(self) -> u16 {
+    pub const fn as_u16(self) -> u16 {
         self.0.0
     }
 }
@@ -65,7 +65,7 @@ impl From<u16> for EthType {
 
 impl From<EthType> for u16 {
     fn from(value: EthType) -> Self {
-        value.raw()
+        value.as_u16()
     }
 }
 

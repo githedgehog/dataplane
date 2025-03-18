@@ -183,7 +183,8 @@ pub struct ObservedVtep {
 pub struct ImpliedBridge {
     #[multi_index(hashed_unique)]
     pub name: InterfaceName,
-    pub vlan_protocol: Option<EthType>,
+    pub vlan_filtering: bool,
+    pub vlan_protocol: EthType,
 }
 
 #[derive(
@@ -203,7 +204,8 @@ pub struct ImpliedBridge {
 pub struct ObservedBridge {
     #[multi_index(hashed_unique)]
     pub name: InterfaceName,
-    pub vlan_protocol: Option<EthType>,
+    pub vlan_filtering: bool,
+    pub vlan_protocol: EthType,
     #[multi_index(hashed_unique)]
     pub if_index: IfIndex,
 }
@@ -623,6 +625,7 @@ impl ObservedBridge {
     pub fn to_implied(&self) -> ImpliedBridge {
         ImpliedBridge {
             name: self.name.clone(),
+            vlan_filtering: self.vlan_filtering,
             vlan_protocol: self.vlan_protocol,
         }
     }
@@ -676,25 +679,19 @@ impl ObservedInformationBase {
             .unwrap();
         let bridges_to_create = desired_bridges.difference(&extant_bridges);
         let bridge_create_results = join_all(bridges_to_create.map(|bridge| {
-            match bridge.vlan_protocol {
-                None => handle
-                    .link()
-                    .add(LinkBridge::new(bridge.name.as_ref()).build())
-                    .execute(),
-                Some(proto) => handle
-                    .link()
-                    .add(
-                        LinkBridge::new(bridge.name.as_ref())
-                            .append_extra_attribute(LinkAttribute::LinkInfo(vec![LinkInfo::Data(
-                                InfoData::Bridge(vec![
-                                    InfoBridge::VlanProtocol(proto.raw()),
-                                    InfoBridge::VlanFiltering(true),
-                                ]),
-                            )]))
-                            .build(),
-                    )
-                    .execute(),
-            }
+            handle
+                .link()
+                .add(
+                    LinkBridge::new(bridge.name.as_ref())
+                        .append_extra_attribute(LinkAttribute::LinkInfo(vec![LinkInfo::Data(
+                            InfoData::Bridge(vec![
+                                InfoBridge::VlanFiltering(bridge.vlan_filtering),
+                                InfoBridge::VlanProtocol(bridge.vlan_protocol.as_u16()),
+                            ]),
+                        )]))
+                        .build(),
+                )
+                .execute()
         }))
         .await;
         // todo: this is slop.  Handle errors properly
@@ -840,9 +837,11 @@ impl ObservedInformationBase {
                             for info in infos {
                                 if let LinkInfo::Data(InfoData::Bridge(bridge_info)) = info {
                                     for info in bridge_info {
+                                        if let InfoBridge::VlanFiltering(filtering) = info {
+                                            builder.vlan_filtering(*filtering);
+                                        }
                                         if let InfoBridge::VlanProtocol(raw_eth_type) = info {
-                                            builder
-                                                .vlan_protocol(Some(EthType::new(*raw_eth_type)));
+                                            builder.vlan_protocol(EthType::new(*raw_eth_type));
                                         }
                                     }
                                 }
