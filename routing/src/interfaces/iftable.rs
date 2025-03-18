@@ -37,6 +37,9 @@ impl IfTable {
     pub fn len(&self) -> usize {
         self.by_index.len()
     }
+    pub fn len_by_mapping(&self) -> usize {
+        self.by_mapping.len()
+    }
     pub fn is_empty(&self) -> bool {
         self.by_index.is_empty()
     }
@@ -111,10 +114,17 @@ impl IfTable {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Get interface entry from IfTable
+    /// Get interface entry from IfTable by ifindex
     //////////////////////////////////////////////////////////////////
     pub fn get_interface(&self, ifindex: u32) -> Option<&Rc<RefCell<Interface>>> {
         self.by_index.get(&ifindex)
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Get interface entry from IfTable by a mapping
+    //////////////////////////////////////////////////////////////////
+    pub fn get_interface_by_mapping(&self, ifmap: &IfMapping) -> Option<&Rc<RefCell<Interface>>> {
+        self.by_mapping.get(ifmap)
     }
 
     //////////////////////////////////////////////////////////////////
