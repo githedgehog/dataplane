@@ -8,7 +8,9 @@ use crate::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::fib::fibtable::FibTable;
 use crate::fib::fibtype::{Fib, FibId};
 use crate::interfaces::iftable::IfTable;
-use crate::interfaces::interface::{IfDataDot1q, IfDataEthernet, IfState, IfType, Interface};
+use crate::interfaces::interface::{
+    IfDataDot1q, IfDataEthernet, IfMapping, IfState, IfType, Interface,
+};
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::pretty_utils::{Heading, line};
 use crate::rmac::{RmacEntry, RmacStore, Vtep};
@@ -477,6 +479,13 @@ impl Display for IfTableAddress<'_> {
             fmt_interface_addresses(f, &iface.borrow())?;
         }
         Ok(())
+    }
+}
+
+//========================= Interface mappings ================================//
+impl Display for IfMapping {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "mac: {} vlan: {:?}", self.mac, self.vlan)
     }
 }
 

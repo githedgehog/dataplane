@@ -46,9 +46,8 @@ pub mod tests {
         eth1.set_admin_state(IfState::Up);
         eth1.set_oper_state(IfState::Up);
         eth1.set_description("Downlink from Mars");
-        eth1.set_iftype(IfType::Dot1q(IfDataDot1q {
+        eth1.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: Mac::from([0x0, 0xbb, 0x0, 0x0, 0x0, 0x2]),
-            vlanid: Vid::new(100).unwrap(),
         }));
 
         /* create Eth2 */
@@ -56,13 +55,12 @@ pub mod tests {
         eth2.set_admin_state(IfState::Up);
         eth2.set_oper_state(IfState::Up);
         eth2.set_description("Downlink from Sun");
-        eth2.set_iftype(IfType::Dot1q(IfDataDot1q {
+        eth2.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: Mac::from([0x0, 0xbb, 0x0, 0x0, 0x0, 0x3]),
-            vlanid: Vid::new(100).unwrap(),
         }));
 
         /* create vlan.100 */
-        let mut vlan100 = Interface::new("eth1.100", 4);
+        let mut vlan100 = Interface::new("eth1.100", 5);
         vlan100.set_admin_state(IfState::Up);
         vlan100.set_oper_state(IfState::Up);
         vlan100.set_description("External customer 1");
@@ -72,7 +70,7 @@ pub mod tests {
         }));
 
         /* create vlan.200 */
-        let mut vlan200 = Interface::new("eth1.200", 5);
+        let mut vlan200 = Interface::new("eth1.200", 6);
         vlan200.set_admin_state(IfState::Up);
         vlan200.set_oper_state(IfState::Up);
         vlan200.set_description("External customer 2");
@@ -82,14 +80,14 @@ pub mod tests {
         }));
 
         /* Add the interfaces to the iftable */
-        iftable.add_interface(lo);
-        iftable.add_interface(eth0);
-        iftable.add_interface(eth1);
-        iftable.add_interface(eth2);
-        iftable.add_interface(vlan100);
-        iftable.add_interface(vlan200);
+        iftable.add_interface(lo).expect("Should succeed");
+        iftable.add_interface(eth0).expect("Should succeed");
+        iftable.add_interface(eth1).expect("Should succeed");
+        iftable.add_interface(eth2).expect("Should succeed");
+        iftable.add_interface(vlan100).expect("Should succeed");
+        iftable.add_interface(vlan200).expect("Should succeed");
 
-        assert_eq!(iftable.len(), 5);
+        assert_eq!(iftable.len(), 6);
 
         iftable
     }
