@@ -13,7 +13,7 @@ use tracing::debug;
 use crate::pretty_utils::Frame;
 
 use crate::fib::fibtype::FibWriter;
-use crate::interface::IfIndex;
+use crate::interfaces::interface::IfIndex;
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::prefix::Prefix;
 use crate::rmac::{RmacStore, Vtep};
@@ -478,7 +478,7 @@ impl Vrf {
 pub mod tests {
     use super::*;
     use std::str::FromStr;
-    use crate::interface::IfIndex;
+    use crate::interfaces::interface::IfIndex;
     use crate::vrf::VrfId;
     use crate::nexthop::{FwAction, NhopKey};
     use crate::encapsulation::{Encapsulation, VxlanEncapsulation};
