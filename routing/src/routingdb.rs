@@ -154,7 +154,7 @@ impl VrfTable {
     //////////////////////////////////////////////////////////////////
     /// Remove the vrf with the given id
     //////////////////////////////////////////////////////////////////
-    pub fn remove_vrf(&mut self, vrfid: VrfId, iftable: &mut IfTable) -> Result<(), RouterError> {
+    pub fn remove_vrf(&mut self, vrfid: VrfId, iftable: &IfTable) -> Result<(), RouterError> {
         if let Some(vrf) = self.by_id.remove(&vrfid) {
             if let Some(fibtablew) = &mut self.fibtable {
                 if let Ok(vrf) = vrf.read() {
@@ -266,7 +266,7 @@ mod tests {
     fn vrf_table() {
         let (fibtw, _fibtr) = FibTableWriter::new();
         let mut vrftable = VrfTable::new(Some(fibtw));
-        let mut iftable = build_test_iftable();
+        let iftable = build_test_iftable();
 
         /* add VRFs */
         let vrf0 = vrftable.add_vrf("default", 0, None).unwrap();
@@ -331,7 +331,7 @@ mod tests {
 
         /* remove VRFs 0 - interfaces should be automatically detached */
         {
-            let _ = vrftable.remove_vrf(0, &mut iftable);
+            let _ = vrftable.remove_vrf(0, &iftable);
             assert!(
                 vrftable
                     .get_vrf(0)
@@ -354,7 +354,7 @@ mod tests {
         }
 
         /* remove VRFs 1 - interfaces should be automatically detached */
-        let _ = vrftable.remove_vrf(1, &mut iftable);
+        let _ = vrftable.remove_vrf(1, &iftable);
         assert!(
             vrftable
                 .get_vrf(1)
