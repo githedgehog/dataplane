@@ -8,8 +8,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
-use tracing::warn;
+use tracing::{debug, error, warn};
 
+use super::interface::IfMapping;
 use crate::errors::RouterError;
 use crate::interfaces::interface::{IfAddress, IfIndex, Interface};
 use crate::vrf::Vrf;
@@ -18,6 +19,7 @@ use crate::vrf::Vrf;
 /// A table of network interface objects, keyed by some ifindex (u32)
 pub struct IfTable {
     by_index: HashMap<u32, Rc<RefCell<Interface>>, RandomState>,
+    by_mapping: HashMap<IfMapping, Rc<RefCell<Interface>>, RandomState>,
 }
 
 #[allow(dead_code)]
@@ -29,9 +31,9 @@ impl IfTable {
     pub fn new() -> Self {
         Self {
             by_index: HashMap::with_hasher(RandomState::with_seed(0)),
+            by_mapping: HashMap::with_hasher(RandomState::with_seed(0)),
         }
     }
-
     pub fn len(&self) -> usize {
         self.by_index.len()
     }
@@ -46,19 +48,66 @@ impl IfTable {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Add an interface to the table
+    /// Add an interface to the table. Interfaces are univocally
+    /// identified by an [`IfIndex`], which acts as the master hash key.
+    /// A separate index is kept for interfaces that require an [`IfMapping`].
+    /// This function is idempotent and will unconditionally add the
+    /// provided interface, replacing any previous with the same ifindex,
+    /// provided that the interface mapping does not collide with any other.
     //////////////////////////////////////////////////////////////////
-    pub fn add_interface(&mut self, iface: Interface) {
+    pub fn add_interface(&mut self, iface: Interface) -> Result<(), RouterError> {
+        /* enure we don't overwrite any interface mapping */
+        if let Some(inc_map) = iface.mapping() {
+            if let Some(exist) = self.by_mapping.get(&inc_map) {
+                let eref = exist.borrow();
+                if eref.ifindex != iface.ifindex {
+                    let e = format!(
+                        "Can't add interface {} (ifindex {}): existing interface {} (ifindex {}) has the same mapping {}",
+                        iface.name, iface.ifindex, eref.name, eref.ifindex, inc_map
+                    );
+                    error!("{}", &e);
+                    return Err(RouterError::Rejected(e));
+                }
+            }
+        }
+
+        /* add interface to iftable */
         let ifindex = iface.ifindex;
+        let mapping = iface.mapping();
         let rc_if = Rc::new(RefCell::new(iface));
-        self.by_index.insert(ifindex, rc_if);
+        if let Some(prior) = self.by_index.insert(ifindex, rc_if.clone()) {
+            /* if there existed an interface and it had mapping, remove it */
+            if let Some(exist_mapping) = prior.borrow().mapping() {
+                debug!("Unregistering mapping {}...", exist_mapping);
+                self.by_mapping.remove(&exist_mapping);
+            }
+        }
+        if let Some(mapping) = mapping {
+            debug!(
+                "Registering mapping {} for '{}'",
+                mapping,
+                rc_if.borrow().name
+            );
+            self.by_mapping.insert(mapping, rc_if);
+        }
+        Ok(())
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Remove an interface from the table
+    /// Remove an interface from the table. If the interface has a MAC
+    /// the mac is unregistered too.
     //////////////////////////////////////////////////////////////////
     pub fn del_interface(&mut self, ifindex: u32) {
-        self.by_index.remove(&ifindex);
+        // remove interface given its ifindex
+        if let Some(iface) = self.by_index.remove(&ifindex) {
+            let ifr = iface.borrow();
+            if let Some(mapping) = ifr.mapping() {
+                if self.by_mapping.remove(&mapping).is_some() {
+                    debug!("Deleted mapping {:?}", mapping);
+                }
+            }
+            debug!("Deleted interface '{}'", ifr.name);
+        }
     }
 
     //////////////////////////////////////////////////////////////////
@@ -67,6 +116,7 @@ impl IfTable {
     pub fn get_interface(&self, ifindex: u32) -> Option<&Rc<RefCell<Interface>>> {
         self.by_index.get(&ifindex)
     }
+
     //////////////////////////////////////////////////////////////////
     /// Assign an Ip address to an interface
     //////////////////////////////////////////////////////////////////
@@ -97,8 +147,8 @@ impl IfTable {
         if let Ok(vrf) = vrf.read() {
             if let Some(fibw) = &vrf.fibw {
                 if let Some(fibid) = fibw.as_fibreader().get_id() {
-                    for interface in self.by_index.values() {
-                        interface.borrow_mut().detach_from_fib(&fibid);
+                    for iface in self.by_index.values() {
+                        iface.borrow_mut().detach_from_fib(&fibid);
                     }
                 }
             }
