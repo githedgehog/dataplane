@@ -211,6 +211,9 @@ impl FibWriter {
     pub fn enter(&self) -> Option<ReadGuard<'_, Fib>> {
         self.0.enter()
     }
+    pub fn get_id(&self) -> Option<FibId> {
+        self.0.enter().map(|fib| fib.id.clone())
+    }
     pub fn add_fibgroup(&mut self, prefix: Prefix, group: FibGroup) {
         self.0.append(FibGroupChange::AddFibGroup((prefix, group)));
         self.0.publish();
@@ -218,6 +221,9 @@ impl FibWriter {
     pub fn del_fibgroup(&mut self, prefix: Prefix) {
         self.0.append(FibGroupChange::DelFibGroup(prefix));
         self.0.publish();
+    }
+    pub fn as_fibreader(&self) -> FibReader {
+        FibReader::new(self.0.clone())
     }
 }
 
@@ -229,5 +235,8 @@ impl FibReader {
     }
     pub fn enter(&self) -> Option<ReadGuard<'_, Fib>> {
         self.0.enter()
+    }
+    pub fn get_id(&self) -> Option<FibId> {
+        self.0.enter().map(|fib| fib.id.clone())
     }
 }
