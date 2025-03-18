@@ -34,6 +34,11 @@ impl FibTable {
         }
     }
 
+    /// Remove any entry referring to the given Vni
+    pub fn unregister_vni(&mut self, vni: &Vni) {
+        self.0.remove(&FibId::Vni(*vni));
+    }
+
     /// Get the [`FibReader`] for the fib with the given [`FibId`]
     pub fn get_fib(&self, id: &FibId) -> Option<&Arc<FibReader>> {
         self.0.get(id)
@@ -56,6 +61,7 @@ enum FibTableChange {
     Add((FibId, Arc<FibReader>)),
     Del(FibId),
     RegisterByVni((FibId, Vni)),
+    UnRegisterVni(Vni),
 }
 
 impl Absorb<FibTableChange> for FibTable {
@@ -64,6 +70,7 @@ impl Absorb<FibTableChange> for FibTable {
             FibTableChange::Add((id, fibr)) => self.add_fib(id.clone(), fibr.clone()),
             FibTableChange::Del(id) => self.del_fib(id),
             FibTableChange::RegisterByVni((id, vni)) => self.register_by_vni(id, vni),
+            FibTableChange::UnRegisterVni(vni) => self.unregister_vni(vni),
         };
     }
     fn drop_first(self: Box<Self>) {}
@@ -80,11 +87,14 @@ impl FibTableWriter {
     }
     #[allow(clippy::arc_with_non_send_sync)]
     #[must_use]
-    pub fn add_fib(&mut self, id: FibId) -> (FibWriter, Arc<FibReader>) {
+    pub fn add_fib(&mut self, id: FibId, vni: Option<Vni>) -> (FibWriter, Arc<FibReader>) {
         let (fibw, fibr) = FibWriter::new(id.clone());
         let fibr_arc = Arc::new(fibr);
         self.0
             .append(FibTableChange::Add((id.clone(), fibr_arc.clone())));
+        if let Some(vni) = vni {
+            self.0.append(FibTableChange::RegisterByVni((id, vni)));
+        }
         self.0.publish();
         (fibw, fibr_arc)
     }
@@ -92,8 +102,11 @@ impl FibTableWriter {
         self.0.append(FibTableChange::RegisterByVni((id, vni)));
         self.0.publish();
     }
-    pub fn del_fib(&mut self, id: &FibId) {
+    pub fn del_fib(&mut self, id: &FibId, vni: Option<Vni>) {
         self.0.append(FibTableChange::Del(id.clone()));
+        if let Some(vni) = vni {
+            self.0.append(FibTableChange::UnRegisterVni(vni));
+        }
         self.0.publish();
     }
 }
