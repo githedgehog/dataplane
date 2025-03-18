@@ -12,7 +12,6 @@ use tracing::debug;
 #[cfg(test)]
 use crate::pretty_utils::Frame;
 
-use crate::fib::fibtype::FibId;
 use crate::fib::fibtype::FibWriter;
 use crate::interface::IfIndex;
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
@@ -110,7 +109,6 @@ pub struct Vrf {
     pub(crate) routesv6: RTrieMap<Ipv6Prefix, Route>,
     pub(crate) nhstore: NhopStore,
     pub(crate) vni: Option<Vni>,
-    pub(crate) fibid: Option<FibId>,
     pub(crate) fibw: Option<FibWriter>,
 }
 
@@ -126,42 +124,6 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     pub fn new(name: &str, vrfid: VrfId, fibw: Option<FibWriter>) -> Self {
         Self::with_capacities(name, vrfid, 0, 0, fibw)
-    }
-
-    /////////////////////////////////////////////////////////////////////////
-    /// Calculate the FibId corresponding to a VRF. We need FibIds to identify the fib
-    /// object corresponding to a VRF, so that we can do certain lookups from the vni.
-    /// If a VRF does not have a vni, we don't need it to be in the fibtable, but
-    /// we add it for convenience. Note that the Fib object exists anyway. We're
-    /// just registering a fibreader so that the Fib is readily readable.
-    /////////////////////////////////////////////////////////////////////////
-    pub fn fib_id(&self) -> FibId {
-        if let Some(vni) = self.vni {
-            FibId::from_vni(vni)
-        } else {
-            FibId::from_vrfid(self.vrfid)
-        }
-    }
-
-    /////////////////////////////////////////////////////////////////////////
-    /// Set the fib id for the fib corresponding to this VRF.
-    /////////////////////////////////////////////////////////////////////////
-    pub fn set_fib_id(&mut self) {
-        self.fibid = Some(self.fib_id());
-    }
-
-    /////////////////////////////////////////////////////////////////////////
-    /// Get the current fib id for a VRF, if any
-    /////////////////////////////////////////////////////////////////////////
-    pub fn get_fib_id(&self) -> &Option<FibId> {
-        &self.fibid
-    }
-
-    /////////////////////////////////////////////////////////////////////////
-    /// Set the fibw for a given VRF
-    /////////////////////////////////////////////////////////////////////////
-    pub fn set_fibw(&mut self, fibw: FibWriter) {
-        self.fibw = Some(fibw);
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -191,8 +153,7 @@ impl Vrf {
             routesv4: RTrieMap::with_capacity(capa_v4),
             routesv6: RTrieMap::with_capacity(capa_v6),
             nhstore: NhopStore::new(),
-            vni: None,   /* not set yet */
-            fibid: None, /* not set yet */
+            vni: None, /* not set yet */
             fibw,
         };
 
@@ -210,6 +171,13 @@ impl Vrf {
             None,
         );
         vrf
+    }
+
+    ////////////////////////////////////////////////////////////////////////
+    /// Set the fibw for a given VRF
+    /////////////////////////////////////////////////////////////////////////
+    pub fn set_fibw(&mut self, fibw: FibWriter) {
+        self.fibw = Some(fibw);
     }
 
     /////////////////////////////////////////////////////////////////////////

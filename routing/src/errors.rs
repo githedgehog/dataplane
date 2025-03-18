@@ -23,7 +23,7 @@ pub enum RouterError {
     #[error("Invalid VNI value {0} ")]
     VniInvalid(u32),
 
-    #[error("The interface is already attached to a distinct VRF")]
+    #[error("The interface is already attached to a distinct entity")]
     AlreadyAttached,
 
     #[error("Some internal error ocurred")]
