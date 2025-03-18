@@ -46,8 +46,8 @@ pub struct IfDataDot1q {
 /// [`IfMapping`] stems from the fact that a [`Mac`] may not suffice for that purpose
 /// in case we have sub-interfaces (e.g. 802.1q).
 pub struct IfMapping {
-    vlan: Option<Vid>, /* we don't support QinQ yet */
-    mac: Mac,
+    pub vlan: Option<Vid>, /* we don't support QinQ yet */
+    pub mac: Mac,
 }
 
 /// Trait for interfaces requiring an [`IfMapping`]
