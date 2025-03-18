@@ -54,6 +54,10 @@ impl Absorb<FibTableChange> for FibTable {
 
 pub struct FibTableWriter(WriteHandle<FibTable, FibTableChange>);
 impl FibTableWriter {
+    pub fn new() -> (FibTableWriter, FibTableReader) {
+        let (write, read) = left_right::new::<FibTable, FibTableChange>();
+        (FibTableWriter(write), FibTableReader(read))
+    }
     #[allow(clippy::arc_with_non_send_sync)]
     #[must_use]
     pub fn add_fib(&mut self, id: FibId) -> (FibWriter, Arc<FibReader>) {
@@ -62,12 +66,12 @@ impl FibTableWriter {
         self.0
             .append(FibTableChange::Add((id.clone(), fibr_arc.clone())));
         self.0.publish();
-        debug!("Created FIB with id {:?}", id);
+        debug!("Created FIB with id {}", id);
         (fibw, fibr_arc)
     }
     pub fn del_fib(&mut self, id: &FibId) {
         // TODO: detach interfaces
-        debug!("Deleting FIB with id {:?}", id);
+        debug!("Deleting FIB with id {}", id);
         self.0.append(FibTableChange::Del(id.clone()));
         self.0.publish();
     }
@@ -83,11 +87,4 @@ impl FibTableReader {
     pub fn factory(&self) -> ReadHandleFactory<FibTable> {
         self.0.factory()
     }
-}
-
-/// Main function to create the FIB table
-pub fn create_fibtable() -> (FibTableWriter, FibTableReader) {
-    debug!("Creating FIB table");
-    let (write, read) = left_right::new::<FibTable, FibTableChange>();
-    (FibTableWriter(write), FibTableReader(read))
 }

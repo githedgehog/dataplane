@@ -9,7 +9,7 @@ const DEFAULT_DP_UX_PATH_CLI: &str = "/tmp/dataplane_ctl.sock";
 use crate::cli::handle_cli_request;
 use crate::cpi_process::process_rx_data;
 use crate::errors::RouterError;
-use crate::fib::fibtable::{FibTable, create_fibtable};
+use crate::fib::fibtable::{FibTable, FibTableWriter};
 use crate::routingdb::RoutingDb;
 use left_right::ReadHandleFactory;
 use std::sync::RwLock;
@@ -155,7 +155,7 @@ pub fn start_cpi(conf: &CpiConf) -> Result<CpiHandle, RouterError> {
         let mut run = true;
 
         /* create FIB table and writer and reader */
-        let (mut fibt_w, fibt_r) = create_fibtable();
+        let (mut fibt_w, fibt_r) = FibTableWriter::new();
 
         /* TODO: create default VRF upfront ? */
 
