@@ -205,8 +205,10 @@ impl Absorb<FibGroupChange> for Fib {
 
 pub struct FibWriter(WriteHandle<Fib, FibGroupChange>);
 impl FibWriter {
-    pub fn new(whandle: WriteHandle<Fib, FibGroupChange>) -> Self {
-        FibWriter(whandle)
+    /// create a fib, providing a writer and a reader
+    pub fn new(id: FibId) -> (FibWriter, FibReader) {
+        let (w, r) = left_right::new_from_empty::<Fib, FibGroupChange>(Fib::new(id.clone()));
+        (FibWriter(w), FibReader(r))
     }
     pub fn enter(&self) -> Option<ReadGuard<'_, Fib>> {
         self.0.enter()

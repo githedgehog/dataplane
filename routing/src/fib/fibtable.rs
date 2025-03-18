@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use crate::fib::fibtype::{Fib, FibGroupChange, FibId, FibReader, FibWriter};
+use crate::fib::fibtype::{FibId, FibReader, FibWriter};
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -57,13 +57,13 @@ impl FibTableWriter {
     #[allow(clippy::arc_with_non_send_sync)]
     #[must_use]
     pub fn add_fib(&mut self, id: FibId) -> (FibWriter, Arc<FibReader>) {
-        let (w, r) = left_right::new_from_empty::<Fib, FibGroupChange>(Fib::new(id.clone()));
-        let fibreader = Arc::new(FibReader::new(r));
+        let (fibw, fibr) = FibWriter::new(id.clone());
+        let fibr_arc = Arc::new(fibr);
         self.0
-            .append(FibTableChange::Add((id.clone(), fibreader.clone())));
+            .append(FibTableChange::Add((id.clone(), fibr_arc.clone())));
         self.0.publish();
         debug!("Created FIB with id {:?}", id);
-        (FibWriter::new(w), fibreader)
+        (fibw, fibr_arc)
     }
     pub fn del_fib(&mut self, id: &FibId) {
         // TODO: detach interfaces
