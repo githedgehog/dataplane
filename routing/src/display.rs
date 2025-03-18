@@ -436,7 +436,7 @@ impl Display for IfTable {
         Heading(format!("interfaces ({})", self.len())).fmt(f)?;
         fmt_interface_heading(f)?;
         for iface in self.values() {
-            writeln!(f, " {iface}")?;
+            writeln!(f, " {}", iface.borrow())?;
         }
         Ok(())
     }
@@ -473,7 +473,7 @@ impl Display for IfTableAddress<'_> {
         Heading("interface addresses".to_string()).fmt(f)?;
         fmt_interface_addr_heading(f)?;
         for iface in self.0.values() {
-            fmt_interface_addresses(f, iface)?;
+            fmt_interface_addresses(f, &iface.borrow())?;
         }
         Ok(())
     }

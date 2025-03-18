@@ -6,6 +6,7 @@
 use crate::adjacency::AdjacencyTable;
 use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
+use crate::fib::fibtype::FibId;
 use crate::interface::IfTable;
 use crate::rmac::{RmacStore, Vtep};
 use crate::vrf::{Vrf, VrfId};
@@ -67,20 +68,18 @@ impl VrfTable {
             return Err(RouterError::VrfExists(vrfid));
         }
 
-        /* Build new VRF (no writer is passed yet since we don't create it until checking
-        the vni) */
+        /* Build VRF */
         let mut vrf = Vrf::new(name, vrfid, None);
-        if let Some(vni) = vni_checked {
-            vrf.set_vni(vni);
-        }
 
         /* create fib if we have a fibtablewriter */
-        if let Some(fibwriter) = self.fibtable.as_mut() {
-            vrf.set_fib_id(); /* only set if we're going to have a fib */
-
-            /* fixme: add_fib() */
-            let (fibw, _) = fibwriter.add_fib(vrf.fib_id());
+        if let Some(fibtw) = self.fibtable.as_mut() {
+            let (fibw, _) = fibtw.add_fib(FibId::Id(vrf.vrfid));
             vrf.set_fibw(fibw);
+        }
+
+        /* set vni if there */
+        if let Some(vni) = vni_checked {
+            vrf.set_vni(vni);
         }
 
         // FIXME: replace ARC by RC
@@ -160,9 +159,7 @@ impl VrfTable {
             if let Some(fibtablew) = &mut self.fibtable {
                 if let Ok(vrf) = vrf.read() {
                     if vrf.fibw.is_some() {
-                        if let Some(id) = vrf.get_fib_id() {
-                            fibtablew.del_fib(id);
-                        }
+                        fibtablew.del_fib(&FibId::Id(vrfid));
                     }
                 }
             }
@@ -256,6 +253,7 @@ impl RoutingDb {
 mod tests {
     use super::*;
     use crate::adjacency::tests::build_test_atable;
+    use crate::fib::fibtype::FibId;
     use crate::interface::tests::build_test_iftable;
     use crate::rmac::tests::{build_sample_rmac_store, build_sample_vtep};
     use crate::route_processor::FibGroup;
@@ -265,7 +263,8 @@ mod tests {
 
     #[test]
     fn vrf_table() {
-        let mut vrftable = VrfTable::new(None);
+        let (fibtw, _fibtr) = FibTableWriter::new();
+        let mut vrftable = VrfTable::new(Some(fibtw));
         let mut iftable = build_test_iftable();
 
         /* add VRFs */
@@ -299,29 +298,59 @@ mod tests {
         assert_eq!(vrf3_2.read().unwrap().name, "VPC-3");
 
         /* get interfaces from iftable and attach them */
-        let eth0 = iftable.get_interface_mut(2).expect("Should be there");
-        eth0.attach(&vrf0).expect("Should succeed");
+        {
+            let mut eth0 = iftable
+                .get_interface(2)
+                .expect("Should be there")
+                .borrow_mut();
+            eth0.attach(&vrf0).expect("Should succeed");
+            assert!(eth0.is_attached_to_fib(&FibId::Id(0)));
 
-        let eth1 = iftable.get_interface_mut(3).expect("Should be there");
-        eth1.attach(&vrf0).expect("Should succeed");
+            let mut eth1 = iftable
+                .get_interface(3)
+                .expect("Should be there")
+                .borrow_mut();
+            eth1.attach(&vrf0).expect("Should succeed");
+            assert!(eth1.is_attached_to_fib(&FibId::Id(0)));
 
-        let vlan100 = iftable.get_interface_mut(4).expect("Should be there");
-        vlan100.attach(&vrf1).expect("Should succeed");
+            let mut vlan100 = iftable
+                .get_interface(4)
+                .expect("Should be there")
+                .borrow_mut();
+            vlan100.attach(&vrf1).expect("Should succeed");
+            assert!(vlan100.is_attached_to_fib(&FibId::Id(1)));
 
-        let vlan200 = iftable.get_interface_mut(5).expect("Should be there");
-        vlan200.attach(&vrf1).expect("Should succeed");
+            let mut vlan200 = iftable
+                .get_interface(5)
+                .expect("Should be there")
+                .borrow_mut();
+            vlan200.attach(&vrf1).expect("Should succeed");
+            assert!(vlan200.is_attached_to_fib(&FibId::Id(1)));
+        }
 
         /* remove VRFs 0 - interfaces should be automatically detached */
-        let _ = vrftable.remove_vrf(0, &mut iftable);
-        assert!(
-            vrftable
-                .get_vrf(0)
-                .is_err_and(|e| e == RouterError::NoSuchVrf)
-        );
-        let eth0 = iftable.get_interface(2).expect("Should be there");
-        assert!(eth0.vrf.is_none(), "Eth0 should be detached");
-        let eth1 = iftable.get_interface(3).expect("Should be there");
-        assert!(eth1.vrf.is_none(), "Eth1 should be detached");
+        {
+            let _ = vrftable.remove_vrf(0, &mut iftable);
+            assert!(
+                vrftable
+                    .get_vrf(0)
+                    .is_err_and(|e| e == RouterError::NoSuchVrf)
+            );
+
+            let eth0 = iftable
+                .get_interface(2)
+                .expect("Should be there")
+                .borrow_mut();
+
+            assert!(eth0.vrf.is_none(), "Eth0 should be detached");
+            assert!(!eth0.is_attached_to_fib(&FibId::Id(0)));
+
+            let eth1 = iftable
+                .get_interface(3)
+                .expect("Should be there")
+                .borrow_mut();
+            assert!(eth1.vrf.is_none(), "Eth1 should be detached");
+        }
 
         /* remove VRFs 1 - interfaces should be automatically detached */
         let _ = vrftable.remove_vrf(1, &mut iftable);
@@ -330,9 +359,17 @@ mod tests {
                 .get_vrf(1)
                 .is_err_and(|e| e == RouterError::NoSuchVrf)
         );
-        let vlan100 = iftable.get_interface(4).expect("Should be there");
+        let vlan100 = iftable
+            .get_interface(4)
+            .expect("Should be there")
+            .borrow_mut();
         assert!(vlan100.vrf.is_none(), "vlan100 should be detached");
-        let vlan200 = iftable.get_interface(5).expect("Should be there");
+
+        let vlan200 = iftable
+            .get_interface(5)
+            .expect("Should be there")
+            .borrow_mut();
+
         assert!(vlan200.vrf.is_none(), "vlan200 should be detached");
 
         /* Should be gone from by_vni map */
