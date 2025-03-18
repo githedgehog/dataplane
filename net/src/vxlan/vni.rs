@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::num::NonZero;
-
 #[allow(unused_imports)] // re-export
 #[cfg(any(test, feature = "arbitrary"))]
 pub use contract::*;
+use diff::Diff;
+use std::num::NonZero;
 
 /// A [VXLAN][RFC7348] Network Identifier.
 ///
@@ -38,7 +38,7 @@ pub use contract::*;
 /// [RFC7348]: https://datatracker.ietf.org/doc/html/rfc7348#section-5
 /// [overlay network]: https://en.wikipedia.org/wiki/Overlay_network
 /// [transparent]: https://doc.rust-lang.org/reference/type-layout.html#the-transparent-representation
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Diff, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "u32", into = "u32"))]
 #[repr(transparent)]

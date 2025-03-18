@@ -14,8 +14,8 @@ const MAX_LEN: usize = 16;
 /// The maximum legal length of an `InterfaceName` is 16 characters (including the terminating null).
 /// Thus, the _effective_ maximum length is 15 characters.
 #[repr(transparent)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
 pub struct InterfaceName(String);
 
@@ -25,8 +25,9 @@ impl Display for InterfaceName {
     }
 }
 
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug,
+)]
 pub enum OpInterfaceName {
     None,
     Change {
@@ -114,6 +115,14 @@ impl TryFrom<String> for InterfaceName {
             return Err(IllegalInterfaceName::TooLong(value));
         }
         Ok(InterfaceName(value))
+    }
+}
+
+impl TryFrom<&str> for InterfaceName {
+    type Error = IllegalInterfaceName;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::try_from(value.to_string())
     }
 }
 

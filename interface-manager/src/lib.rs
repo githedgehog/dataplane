@@ -14,14 +14,19 @@
 #![allow(clippy::should_panic_without_expect)] // we panic in contract checks with simple unwrap()
 #![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used)] // TODO(blocking)
 
-use netlink_sys::AsyncSocket;
+use nix::unistd::ForkResult;
 use std::ffi::OsString;
 use std::os::fd::{AsRawFd, BorrowedFd};
 use std::path::Path;
 
+mod actor;
 mod interface;
+mod manager;
+mod message;
 mod name;
-mod schedule;
+mod reconcile;
+mod resource;
+mod subscribe;
 
 pub use interface::*;
 pub use name::*;
@@ -33,8 +38,8 @@ use nix::fcntl::OFlag;
 use nix::libc::exit;
 use nix::sched::CloneFlags;
 use nix::sys::stat::Mode;
-use nix::unistd::ForkResult;
 use rtnetlink::packet_route::link::{InfoBridge, InfoData, LinkAttribute, LinkInfo};
+use rtnetlink::sys::AsyncSocket;
 use rtnetlink::{Handle, LinkBridge, LinkUnspec, LinkVrf, new_connection};
 
 #[tokio::test(flavor = "current_thread")]

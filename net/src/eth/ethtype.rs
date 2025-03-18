@@ -3,11 +3,11 @@
 
 //! Ethernet type related fields and parsing
 
-use etherparse::EtherType;
-
 #[cfg(any(test, feature = "arbitrary"))]
 #[allow(unused_imports)] // just re-exporting conditionally included feature
 pub use contract::*;
+use etherparse::EtherType;
+use serde::{Deserializer, Serializer};
 
 /// The ethernet header's ethertype field.
 ///
@@ -18,7 +18,10 @@ pub use contract::*;
 /// 2. Permit the implementation of the `TypeGenerator` trait on this type
 ///    to allow us to property test the rest of our code.
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(from = "u16", into = "u16")]
 pub struct EthType(pub(crate) EtherType);
 
 impl EthType {
@@ -51,6 +54,18 @@ impl EthType {
     #[must_use]
     pub const fn raw(self) -> u16 {
         self.0.0
+    }
+}
+
+impl From<u16> for EthType {
+    fn from(value: u16) -> Self {
+        EthType::new(value)
+    }
+}
+
+impl From<EthType> for u16 {
+    fn from(value: EthType) -> Self {
+        value.raw()
     }
 }
 

@@ -7,6 +7,7 @@
 #![allow(clippy::missing_errors_doc)] // TEMP(blocking for merge)
 
 use crate::InterfaceName;
+use diff::Diff;
 use net::eth::mac::SourceMac;
 use net::vlan::Vlan;
 use std::collections::BTreeSet;
@@ -15,9 +16,9 @@ use std::num::NonZero;
 
 /// A network interface id (also known as ifindex in linux).
 #[repr(transparent)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(try_from = "u32", into = "u32"))]
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "u32", into = "u32")]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Diff)]
 pub struct IfIndex(NonZero<u32>);
 
 impl Debug for IfIndex {
@@ -47,8 +48,8 @@ impl IfIndex {
     }
 
     #[must_use]
-    pub fn to_u32(self) -> NonZero<u32> {
-        self.0
+    pub fn to_u32(self) -> u32 {
+        self.0.get()
     }
 }
 
@@ -62,7 +63,7 @@ impl TryFrom<u32> for IfIndex {
 
 impl From<IfIndex> for u32 {
     fn from(value: IfIndex) -> Self {
-        value.to_u32().get()
+        value.to_u32()
     }
 }
 

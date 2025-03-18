@@ -4,22 +4,28 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["serde"]
-serde = ["dep:serde", "multi_index_map/serde", "net/serde"]
+default = ["tracing/release_max_level_debug"]
 
 
 [dependencies]
-id = { workspace = true }
-net = { workspace = true }
+id = { workspace = true, features = ["serde"] }
+net = { workspace = true, features = ["serde"] }
 
-diff-struct = { version = "0.5.3", features = ["default"] }
+arc-swap = { version = "1.7.1", features = ["serde"] }
+derive_builder = { workspace = true, default-features = false, features = ["default"] }
+diff-struct = { workspace = true, features = ["default"] }
 futures = { workspace = true, features = ["default"] }
-multi_index_map = { version = "0.11.0" }
-netlink-sys = "*"
-nix = { version = "0.29.0", features = ["sched", "fs"] }
+left-right = { workspace = true, default-features = false, features = [] }
+multi_index_map = { workspace = true, features = ["serde"] }
+netlink-sys = { workspace = true }
+nix = { workspace = true, features = ["sched", "fs"] }
 rtnetlink = { workspace = true, features = ["default", "tokio"] }
-serde = { workspace = true, optional = true, features = ["rc"] }
+serde = { workspace = true, features = ["rc", "derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "sync"] }
+tracing = { workspace = true, features = ["attributes"] }
+
+crossbeam = { version = "0.8.4", features = ["default"] }
+bitflags = "2.9.0"
 
 
