@@ -11,6 +11,9 @@ pub enum RouterError {
     #[error("No such interface (ifindex {0})")]
     NoSuchInterface(u32),
 
+    #[error("Rejected: {0}")]
+    Rejected(String),
+
     #[error("No such VRF")]
     NoSuchVrf,
 
@@ -20,7 +23,7 @@ pub enum RouterError {
     #[error("A VRF with Vni {0} already exists")]
     VniInUse(u32),
 
-    #[error("Invalid VNI value {0} ")]
+    #[error("Invalid VNI value {0}")]
     VniInvalid(u32),
 
     #[error("The interface is already attached to a distinct entity")]
