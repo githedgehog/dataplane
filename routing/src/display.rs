@@ -642,8 +642,8 @@ fn fmt_fib_trie<P: IpPrefix, F: Fn(&(&P, &Arc<FibGroup>)) -> bool>(
 
 impl Display for Fib {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        fmt_fib_trie(f, &self.id, "Ipv4", self.get_v4_trie(), |_| true)?;
-        fmt_fib_trie(f, &self.id, "Ipv6", self.get_v6_trie(), |_| true)?;
+        fmt_fib_trie(f, self.get_id(), "Ipv4", self.get_v4_trie(), |_| true)?;
+        fmt_fib_trie(f, self.get_id(), "Ipv6", self.get_v6_trie(), |_| true)?;
         Ok(())
     }
 }
