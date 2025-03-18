@@ -7,7 +7,7 @@ use crate::adjacency::AdjacencyTable;
 use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
 use crate::fib::fibtype::FibId;
-use crate::interface::IfTable;
+use crate::interfaces::iftable::IfTable;
 use crate::rmac::{RmacStore, Vtep};
 use crate::vrf::{Vrf, VrfId};
 use net::vxlan::Vni;
@@ -254,7 +254,8 @@ mod tests {
     use super::*;
     use crate::adjacency::tests::build_test_atable;
     use crate::fib::fibtype::FibId;
-    use crate::interface::tests::build_test_iftable;
+    use crate::interfaces::tests::build_test_iftable;
+
     use crate::rmac::tests::{build_sample_rmac_store, build_sample_vtep};
     use crate::route_processor::FibGroup;
     use crate::testfib::TestFib;

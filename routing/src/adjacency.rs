@@ -3,7 +3,7 @@
 
 //! State objects to keep adjacency information
 
-use crate::interface::IfIndex;
+use crate::interfaces::interface::IfIndex;
 use dplane_rpc::msg::Ifindex;
 use net::eth::mac::Mac;
 use std::collections::HashMap;
