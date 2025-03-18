@@ -71,15 +71,15 @@ impl VrfTable {
         /* Build VRF */
         let mut vrf = Vrf::new(name, vrfid, None);
 
-        /* create fib if we have a fibtablewriter */
-        if let Some(fibtw) = self.fibtable.as_mut() {
-            let (fibw, _) = fibtw.add_fib(FibId::Id(vrf.vrfid));
-            vrf.set_fibw(fibw);
-        }
-
         /* set vni if there */
         if let Some(vni) = vni_checked {
             vrf.set_vni(vni);
+        }
+
+        /* create fib if we have a fibtablewriter */
+        if let Some(fibtw) = self.fibtable.as_mut() {
+            let (fibw, _) = fibtw.add_fib(FibId::Id(vrf.vrfid), vrf.vni);
+            vrf.set_fibw(fibw);
         }
 
         // FIXME: replace ARC by RC
@@ -159,7 +159,7 @@ impl VrfTable {
             if let Some(fibtablew) = &mut self.fibtable {
                 if let Ok(vrf) = vrf.read() {
                     if vrf.fibw.is_some() {
-                        fibtablew.del_fib(&FibId::Id(vrfid));
+                        fibtablew.del_fib(&FibId::Id(vrfid), vrf.vni);
                     }
                 }
             }
