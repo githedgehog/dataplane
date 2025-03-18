@@ -8,9 +8,10 @@ use crate::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::fib::fibtable::FibTable;
 use crate::fib::fibtype::{Fib, FibId};
 use crate::interfaces::iftable::IfTable;
-use crate::interfaces::interface::{
-    IfDataDot1q, IfDataEthernet, IfMapping, IfState, IfType, Interface,
-};
+use crate::interfaces::interface::Attachment;
+use crate::interfaces::interface::{IfDataDot1q, IfDataEthernet};
+use crate::interfaces::interface::{IfMapping, IfState, IfType, Interface};
+
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::pretty_utils::{Heading, line};
 use crate::rmac::{RmacEntry, RmacStore, Vtep};
@@ -355,9 +356,25 @@ impl Display for VrfTable {
 
 //========================= Interfaces ================================//
 
+impl Display for Attachment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Attachment::BD => write!(f, "BD")?,
+            Attachment::VRF(fibr) => {
+                if let Some(id) = fibr.get_id() {
+                    write!(f, "VRF: {}", id)?;
+                } else {
+                    write!(f, "missing fib id!")?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 macro_rules! INTERFACE_TBL_FMT {
     () => {
-        " {:<16} {:>4} {:>10} {:<10} {:20} {:>12} {}"
+        " {:<16} {:>4} {:9} {:9} {:<20} {}"
     };
 }
 fn fmt_interface_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -366,7 +383,7 @@ fn fmt_interface_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         "{}",
         format_args!(
             INTERFACE_TBL_FMT!(),
-            "name", "id", "opState", "AdmState", "VRF", "addresses", "type"
+            "name", "id", "OpStatus", "AdmStatus", "attachment", "type"
         )
     )
 }
@@ -374,9 +391,9 @@ fn fmt_interface_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 impl Display for IfState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self {
-            IfState::Unknown => write!(f, "unknown")?,
-            IfState::Up => write!(f, "up")?,
-            IfState::Down => write!(f, "down")?,
+            IfState::Unknown => write!(f, "{:9}", "unknown")?,
+            IfState::Up => write!(f, "{:9}", "up")?,
+            IfState::Down => write!(f, "{:9}", "down")?,
         }
         Ok(())
     }
@@ -413,20 +430,21 @@ impl Display for IfType {
 }
 impl Display for Interface {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let vrf_name = self
-            .get_vrf_name()
-            .map_or_else(|| "-detached-".to_owned(), |name| name);
+        let attachment = if let Some(attachment) = &self.attachment {
+            format!("{}", attachment)
+        } else {
+            "---".to_string()
+        };
         write!(
             f,
             "{}",
             format_args!(
                 INTERFACE_TBL_FMT!(),
                 self.name,
-                self.ifindex.to_string(),
+                format!("{:>4}", self.ifindex),
                 self.admin_state,
                 self.oper_state,
-                vrf_name,
-                self.addresses.len(),
+                attachment,
                 self.iftype,
             )
         )?;
@@ -439,7 +457,7 @@ impl Display for IfTable {
         Heading(format!("interfaces ({})", self.len())).fmt(f)?;
         fmt_interface_heading(f)?;
         for iface in self.values() {
-            writeln!(f, " {}", iface.borrow())?;
+            writeln!(f, "{}", iface.borrow())?;
         }
         Ok(())
     }
@@ -485,7 +503,47 @@ impl Display for IfTableAddress<'_> {
 //========================= Interface mappings ================================//
 impl Display for IfMapping {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "mac: {} vlan: {:?}", self.mac, self.vlan)
+        write!(f, "mac: {:<17}", self.mac)?;
+        if let Some(vlan) = &self.vlan {
+            write!(f, " vlan: {:<6}", format!("{}", vlan))
+        } else {
+            write!(f, " vlan: {:<6}", format!("{}", "none"))
+        }
+    }
+}
+macro_rules! INTERFACE_MAPPING_FMT {
+    () => {
+        " {:35} {:16} {:}"
+    };
+}
+fn fmt_interface_mapping_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    writeln!(
+        f,
+        "{}",
+        format_args!(INTERFACE_MAPPING_FMT!(), "mapping", "interface", "ifindex")
+    )
+}
+fn fmt_interface_mapping(
+    f: &mut std::fmt::Formatter<'_>,
+    mapping: &IfMapping,
+    iface: &Interface,
+) -> std::fmt::Result {
+    writeln!(
+        f,
+        "{}",
+        format_args!(INTERFACE_MAPPING_FMT!(), mapping, iface.name, iface.ifindex)
+    )
+}
+#[repr(transparent)]
+pub struct IfTableMapping<'a>(pub &'a IfTable);
+impl Display for IfTableMapping<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Heading("interface map".to_string()).fmt(f)?;
+        fmt_interface_mapping_heading(f)?;
+        for (mapping, iface) in self.0.iter_by_mapping() {
+            fmt_interface_mapping(f, mapping, &iface.borrow())?;
+        }
+        Ok(())
     }
 }
 
