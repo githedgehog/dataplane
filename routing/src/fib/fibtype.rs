@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use iptrie::map::RTrieMap;
 use iptrie::{Ipv4Prefix, Ipv6Prefix};
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
@@ -31,7 +30,7 @@ impl FibId {
 
 #[derive(Clone)]
 pub struct Fib {
-    pub id: FibId,
+    id: FibId,
     version: u64,
     routesv4: RTrieMap<Ipv4Prefix, Arc<FibGroup>>,
     routesv6: RTrieMap<Ipv6Prefix, Arc<FibGroup>>,
@@ -59,7 +58,9 @@ impl Fib {
         fib.add_fibgroup(Prefix::root_v6(), group);
         fib
     }
-
+    pub fn get_id(&self) -> &FibId {
+        &self.id
+    }
     pub fn add_fibgroup(&mut self, prefix: Prefix, group: FibGroup) {
         let gr_arc = self.store_group(group);
         match prefix {
@@ -214,7 +215,7 @@ impl FibWriter {
         self.0.enter()
     }
     pub fn get_id(&self) -> Option<FibId> {
-        self.0.enter().map(|fib| fib.id.clone())
+        self.0.enter().map(|fib| fib.get_id().clone())
     }
     pub fn add_fibgroup(&mut self, prefix: Prefix, group: FibGroup) {
         self.0.append(FibGroupChange::AddFibGroup((prefix, group)));
@@ -239,6 +240,6 @@ impl FibReader {
         self.0.enter()
     }
     pub fn get_id(&self) -> Option<FibId> {
-        self.0.enter().map(|fib| fib.id.clone())
+        self.0.enter().map(|fib| fib.get_id().clone())
     }
 }
