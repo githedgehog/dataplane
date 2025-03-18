@@ -39,6 +39,55 @@ pub struct IfDataDot1q {
     pub vlanid: Vid,
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+/// An [`IfMapping`] is an object that allows determining what physical or logical
+/// interface a packet arrived on with a hash lookup operation. The need for an
+/// [`IfMapping`] stems from the fact that a [`Mac`] may not suffice for that purpose
+/// in case we have sub-interfaces (e.g. 802.1q).
+pub struct IfMapping {
+    vlan: Option<Vid>, /* we don't support QinQ yet */
+    mac: Mac,
+}
+
+/// Trait for interfaces requiring an [`IfMapping`]
+trait HasIfMapping {
+    fn mapping(&self) -> IfMapping;
+}
+impl HasIfMapping for IfDataEthernet {
+    fn mapping(&self) -> IfMapping {
+        IfMapping {
+            vlan: None,
+            mac: self.mac,
+        }
+    }
+}
+impl HasIfMapping for IfDataDot1q {
+    fn mapping(&self) -> IfMapping {
+        IfMapping {
+            vlan: Some(self.vlanid),
+            mac: self.mac,
+        }
+    }
+}
+
+/// Trait that interfaces having a [`Mac`] should implement.
+#[allow(dead_code)]
+trait HasMac {
+    fn get_mac(&self) -> &Mac;
+}
+
+impl HasMac for IfDataEthernet {
+    fn get_mac(&self) -> &Mac {
+        &self.mac
+    }
+}
+impl HasMac for IfDataDot1q {
+    fn get_mac(&self) -> &Mac {
+        &self.mac
+    }
+}
+
 /// Type that contains data specific to the type of interface
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -250,10 +299,21 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Get mac address of interface, if any
     //////////////////////////////////////////////////////////////////
-    pub fn get_mac(&self) -> Option<&Mac> {
+    pub fn get_mac(&self) -> Option<Mac> {
         match &self.iftype {
-            IfType::Ethernet(inner) => Some(&inner.mac),
-            IfType::Dot1q(inner) => Some(&inner.mac),
+            IfType::Ethernet(inner) => Some(*inner.get_mac()),
+            IfType::Dot1q(inner) => Some(*inner.get_mac()),
+            _ => None,
+        }
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Tell what the mapping should be for an interface, if any
+    //////////////////////////////////////////////////////////////////
+    pub fn mapping(&self) -> Option<IfMapping> {
+        match &self.iftype {
+            IfType::Ethernet(inner) => Some(inner.mapping()),
+            IfType::Dot1q(inner) => Some(inner.mapping()),
             _ => None,
         }
     }
