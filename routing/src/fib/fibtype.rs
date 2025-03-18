@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
+//! Fib implementation for IP packet lookups
+
 use iptrie::map::RTrieMap;
 use iptrie::{Ipv4Prefix, Ipv6Prefix};
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};

@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
+//! The Fib table, which allows accessing all FIBs
+
 use crate::fib::fibtype::{FibId, FibReader, FibWriter};
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 use net::vxlan::Vni;
