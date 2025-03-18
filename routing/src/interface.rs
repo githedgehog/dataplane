@@ -5,15 +5,21 @@
 
 #![allow(clippy::collapsible_if)]
 
+use crate::fib::fibtype::FibId;
 use ahash::RandomState;
+use dplane_rpc::log::warn;
 use net::eth::mac::Mac;
 use net::vlan::Vid;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
+use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use crate::errors::RouterError;
+use crate::fib::fibtype::FibReader;
 use crate::vrf::Vrf;
+use tracing::error;
 
 /// A type to uniquely identify a network interface
 pub type IfIndex = u32;
@@ -57,6 +63,12 @@ pub enum IfState {
 }
 
 #[derive(Clone)]
+pub enum Attachment {
+    VRF(FibReader),
+    BD,
+}
+
+#[derive(Clone)]
 #[allow(dead_code)]
 /// An object representing a network interface and its state
 pub struct Interface {
@@ -68,6 +80,7 @@ pub struct Interface {
     pub oper_state: IfState,
     pub addresses: HashSet<IfAddress>,
     pub vrf: Option<Arc<RwLock<Vrf>>>,
+    pub attachment: Option<Attachment>,
 }
 
 #[allow(dead_code)]
@@ -85,6 +98,7 @@ impl Interface {
             admin_state: IfState::Unknown,
             oper_state: IfState::Unknown,
             addresses: HashSet::new(),
+            attachment: None,
             vrf: None,
         }
     }
@@ -122,34 +136,75 @@ impl Interface {
             // Todo: log change
         }
     }
-    // Todo: decide if set_oper_state() and set_admin_state() will be
-    // the ones to trigger the enforcement of the new state
-    // (e.g. by requesting the interface manager to bring up/down
-    // interfaces in kernel), or, instead, they just update the
-    // interface object seen by the rest of the routing system.
-
     //////////////////////////////////////////////////////////////////
-    /// Attach an interface to a VRF. It is assumed that both the
-    /// interface and the VRF exist.
+    /// Attach an interface to a VRF. The interface is attached to a
+    /// FibReader so that IP packets received on that interface can
+    /// be readily forwarded performing an LPM operation on the
+    /// corresponding FIB.
     //////////////////////////////////////////////////////////////////
+    #[allow(clippy::arc_with_non_send_sync)]
     pub fn attach(&mut self, vrf: &Arc<RwLock<Vrf>>) -> Result<(), RouterError> {
-        if let Some(exist_vrf) = &self.vrf {
-            if !Arc::ptr_eq(exist_vrf, vrf) {
-                Err(RouterError::AlreadyAttached)
+        if let Ok(vrf) = vrf.read() {
+            if let Some(fibw) = &vrf.fibw {
+                if let Some(id) = fibw.get_id() {
+                    if self.is_attached_to_fib(&id) {
+                        Ok(())
+                    } else if self.attachment.is_some() {
+                        Err(RouterError::AlreadyAttached)
+                    } else {
+                        // create attachment object with a Fibreader
+                        self.attachment = Some(Attachment::VRF(fibw.as_fibreader()));
+                        Ok(())
+                    }
+                } else {
+                    error!(
+                        "Failed to attach interface {} to VRF {}: can't get fib id",
+                        self.name, vrf.name
+                    );
+                    Err(RouterError::Internal)
+                }
             } else {
-                Ok(())
+                error!(
+                    "Can't attach interface {} to vrf {} since it has no FIB",
+                    self.name, vrf.name
+                );
+                Err(RouterError::Internal)
             }
         } else {
-            self.vrf = Some(vrf.clone());
-            Ok(())
+            error!("Poisoned lock");
+            Err(RouterError::Internal)
         }
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Detach an interface from its VRF (whichever it is)
+    /// Detach an interface from its VRF, unconditionally
     //////////////////////////////////////////////////////////////////
     pub fn detach(&mut self) {
-        self.vrf.take();
+        self.attachment.take();
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Tell if an interface is attached to a Fib with the given Id
+    //////////////////////////////////////////////////////////////////
+    pub fn is_attached_to_fib(&self, fibid: &FibId) -> bool {
+        if let Some(Attachment::VRF(fibr)) = &self.attachment {
+            fibr.get_id() == Some(fibid.clone())
+        } else {
+            false
+        }
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Detach interface from VRF if the associated fib has the given id
+    //////////////////////////////////////////////////////////////////
+    pub fn detach_from_fib(&mut self, fibid: &FibId) {
+        self.attachment.take_if(|attachment| {
+            if let Attachment::VRF(fibr) = &attachment {
+                fibr.get_id() == Some(fibid.clone())
+            } else {
+                false
+            }
+        });
     }
 
     //////////////////////////////////////////////////////////////////
@@ -209,7 +264,7 @@ impl Interface {
 #[derive(Clone)]
 /// A table of network interface objects, keyed by some ifindex (u32)
 pub struct IfTable {
-    by_index: HashMap<u32, Interface, RandomState>,
+    by_index: HashMap<u32, Rc<RefCell<Interface>>, RandomState>,
 }
 
 #[allow(dead_code)]
@@ -231,10 +286,10 @@ impl IfTable {
     pub fn is_empty(&self) -> bool {
         self.by_index.is_empty()
     }
-    pub fn iter(&self) -> impl Iterator<Item = (&u32, &Interface)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&IfIndex, &Rc<RefCell<Interface>>)> {
         self.by_index.iter()
     }
-    pub fn values(&self) -> impl Iterator<Item = &Interface> {
+    pub fn values(&self) -> impl Iterator<Item = &Rc<RefCell<Interface>>> {
         self.by_index.values()
     }
 
@@ -242,7 +297,9 @@ impl IfTable {
     /// Add an interface to the table
     //////////////////////////////////////////////////////////////////
     pub fn add_interface(&mut self, iface: Interface) {
-        self.by_index.insert(iface.ifindex, iface);
+        let ifindex = iface.ifindex;
+        let rc_if = Rc::new(RefCell::new(iface));
+        self.by_index.insert(ifindex, rc_if);
     }
 
     //////////////////////////////////////////////////////////////////
@@ -255,23 +312,15 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     /// Get interface entry from IfTable
     //////////////////////////////////////////////////////////////////
-    pub fn get_interface(&self, ifindex: u32) -> Option<&Interface> {
+    pub fn get_interface(&self, ifindex: u32) -> Option<&Rc<RefCell<Interface>>> {
         self.by_index.get(&ifindex)
     }
-
-    //////////////////////////////////////////////////////////////////
-    /// Get interface entry from IfTable, mutably
-    //////////////////////////////////////////////////////////////////
-    pub fn get_interface_mut(&mut self, ifindex: u32) -> Option<&mut Interface> {
-        self.by_index.get_mut(&ifindex)
-    }
-
     //////////////////////////////////////////////////////////////////
     /// Assign an Ip address to an interface
     //////////////////////////////////////////////////////////////////
     pub fn add_ifaddr(&mut self, ifindex: IfIndex, ifaddr: &IfAddress) -> Result<(), RouterError> {
         if let Some(iface) = self.by_index.get_mut(&ifindex) {
-            iface.add_ifaddr(ifaddr);
+            iface.borrow_mut().add_ifaddr(ifaddr);
             Ok(())
         } else {
             Err(RouterError::NoSuchInterface(ifindex))
@@ -283,7 +332,7 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     pub fn del_ifaddr(&mut self, ifindex: IfIndex, ifaddr: &IfAddress) {
         if let Some(iface) = self.by_index.get_mut(&ifindex) {
-            iface.del_ifaddr(&(ifaddr.0, ifaddr.1));
+            iface.borrow_mut().del_ifaddr(&(ifaddr.0, ifaddr.1));
         }
         // if interface does not exist or the address was not configured,
         // we'll do nothing
@@ -293,19 +342,28 @@ impl IfTable {
     /// Detach all interfaces attached to some VRF
     //////////////////////////////////////////////////////////////////
     pub fn detach_vrf_interfaces(&mut self, vrf: &Arc<RwLock<Vrf>>) {
-        for iface in self.by_index.values_mut() {
-            if let Some(if_vrf) = &iface.vrf {
-                if Arc::ptr_eq(if_vrf, vrf) {
-                    iface.detach();
+        if let Ok(vrf) = vrf.read() {
+            if let Some(fibw) = &vrf.fibw {
+                if let Some(fibid) = fibw.as_fibreader().get_id() {
+                    for interface in self.by_index.values() {
+                        interface.borrow_mut().detach_from_fib(&fibid);
+                    }
                 }
             }
+        } else {
+            vrf.clear_poison();
+            warn!("Poisoned lock in VRF");
         }
     }
 }
 
 #[cfg(test)]
 pub mod tests {
+    use crate::fib::fibtype::FibWriter;
+
     use super::{IfDataDot1q, IfDataEthernet, IfState, IfTable, IfType, Interface, Vrf};
+    use crate::fib::fibtype::FibId;
+    use crate::interface::Attachment;
     use net::eth::mac::Mac;
     use net::vlan::Vid;
     use std::net::IpAddr;
@@ -389,16 +447,16 @@ pub mod tests {
     #[test]
     fn interface_basic() {
         /* create interface table  */
-        let mut iftable = build_test_iftable();
+        let iftable = build_test_iftable();
 
         /* lookup interface with non-existent index */
-        let iface = iftable.get_interface_mut(100);
+        let iface = iftable.get_interface(100);
         assert!(iface.is_none());
 
         /* Lookup interface by ifindex 2 */
-        let iface = iftable.get_interface_mut(2);
+        let iface = iftable.get_interface(2);
         assert!(iface.is_some());
-        let eth0 = iface.unwrap();
+        let mut eth0 = iface.unwrap().borrow_mut();
         assert_eq!(eth0.name, "eth0", "We should get eth0");
         assert_eq!(eth0.ifindex, 2, "eth0 has ifindex 2");
 
@@ -407,18 +465,25 @@ pub mod tests {
         eth0.add_ifaddr(&(address, 24));
         assert!(eth0.has_address(&address));
 
-        /* Suppose a VRF exists already, somewhere... */
-        let vrf = Arc::new(RwLock::new(Vrf::new("default-vrf", 0, None)));
+        /* Create a fib */
+        let (fibw, fibr) = FibWriter::new(FibId::Id(0));
 
-        /* Attach to VRF */
+        /* Create a VRF for that fib */
+        #[allow(clippy::arc_with_non_send_sync)]
+        let vrf = Arc::new(RwLock::new(Vrf::new("default-vrf", 0, Some(fibw))));
+
+        /* Attach eth0 to the VRF */
         let e = eth0.attach(&vrf);
         assert_eq!(e, Ok(()));
-
-        assert!(eth0.get_vrf().is_some());
-        assert!(Arc::ptr_eq(eth0.vrf.as_ref().unwrap(), &vrf));
+        assert!(matches!(eth0.attachment, Some(Attachment::VRF(_))));
+        if let Some(Attachment::VRF(r)) = &eth0.attachment {
+            assert_eq!(r.get_id(), fibr.get_id());
+        } else {
+            unreachable!()
+        }
 
         /* Detach */
         eth0.detach();
-        assert!(eth0.vrf.is_none());
+        assert!(eth0.attachment.is_none());
     }
 }
