@@ -5,7 +5,7 @@
 
 //use crate::interface::IfTable;
 #[cfg(feature = "auto-learn")]
-use crate::interface::Interface;
+use crate::interfaces::interface::Interface;
 
 #[cfg(feature = "auto-learn")]
 use net::vxlan::Vni;
@@ -241,10 +241,11 @@ impl RpcOperation for Rmac {
 impl RpcOperation for IfAddress {
     type ObjectStore = RoutingDb;
     fn add(&self, db: &Self::ObjectStore) -> RpcResultCode {
+        #[allow(unused_mut)] // remove when don't use RwLock
         if let Ok(mut iftable) = db.iftable.write() {
             #[cfg(feature = "auto-learn")]
             if iftable.get_interface(self.ifindex).is_none() {
-                iftable.add_interface(Interface::new(self.ifname.as_str(), self.ifindex));
+                let _ = iftable.add_interface(Interface::new(self.ifname.as_str(), self.ifindex));
             }
             if let Err(e) = iftable.add_ifaddr(self.ifindex, &(self.address, self.mask_len)) {
                 error!("Failed to add address to interface {}:{e}", self.ifname);
@@ -257,7 +258,7 @@ impl RpcOperation for IfAddress {
         }
     }
     fn del(&self, db: &Self::ObjectStore) -> RpcResultCode {
-        if let Ok(mut iftable) = db.iftable.write() {
+        if let Ok(iftable) = db.iftable.write() {
             iftable.del_ifaddr(self.ifindex, &(self.address, self.mask_len));
             RpcResultCode::Ok
         } else {
