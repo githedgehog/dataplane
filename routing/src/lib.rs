@@ -13,7 +13,7 @@ mod display;
 mod encapsulation;
 mod errors;
 pub mod fib;
-pub mod interface;
+pub mod interfaces;
 mod nexthop;
 pub mod prefix;
 pub mod pretty_utils;

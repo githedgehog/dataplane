@@ -266,7 +266,8 @@ pub fn start_cpi(conf: &CpiConf) -> Result<CpiHandle, RouterError> {
 mod tests {
     use crate::cpi::{CpiConf, start_cpi};
     use crate::errors::RouterError;
-    use crate::interface::{IfTable, Interface};
+    use crate::interfaces::iftable::IfTable;
+    use crate::interfaces::interface::Interface;
     use crate::rmac::RmacStore;
     use crate::routingdb::{RoutingDb, VrfTable};
     use crate::vrf::Vrf;

@@ -7,7 +7,7 @@ use std::net::IpAddr;
 use tracing::warn;
 
 use crate::encapsulation::{Encapsulation, VxlanEncapsulation};
-use crate::interface::IfIndex;
+use crate::interfaces::interface::IfIndex;
 use crate::nexthop::{FwAction, Nhop, NhopStore};
 use crate::rmac::{RmacStore, Vtep};
 use crate::vrf::RouteOrigin;
