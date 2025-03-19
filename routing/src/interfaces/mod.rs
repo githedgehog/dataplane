@@ -20,7 +20,6 @@ pub mod tests {
     use net::vlan::Vid;
     use std::net::IpAddr;
     use std::str::FromStr;
-    use std::sync::{Arc, RwLock};
 
     // create a test interface table
     fn populate_test_iftable() -> IfTable {
@@ -110,7 +109,7 @@ pub mod tests {
 
         /* Create a VRF for that fib */
         #[allow(clippy::arc_with_non_send_sync)]
-        let vrf = Arc::new(RwLock::new(Vrf::new("default-vrf", 0, Some(fibw))));
+        let vrf = Vrf::new("default-vrf", 0, Some(fibw));
 
         /* lookup interface with non-existent index */
         let iface = iftable.get_interface(100);
