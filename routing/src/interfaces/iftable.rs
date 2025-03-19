@@ -158,11 +158,9 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     pub fn detach_vrf_interfaces(&self, vrf: &Arc<RwLock<Vrf>>) {
         if let Ok(vrf) = vrf.read() {
-            if let Some(fibw) = &vrf.fibw {
-                if let Some(fibid) = fibw.as_fibreader().get_id() {
-                    for iface in self.by_index.values() {
-                        iface.borrow_mut().detach_from_fib(&fibid);
-                    }
+            if let Some(fibid) = vrf.get_vrf_fibid() {
+                for iface in self.by_index.values() {
+                    iface.borrow_mut().detach_from_fib(&fibid);
                 }
             }
         } else {
