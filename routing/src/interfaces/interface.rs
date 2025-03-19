@@ -7,8 +7,6 @@
 
 use std::collections::HashSet;
 use std::net::IpAddr;
-use std::sync::Arc;
-use std::sync::RwLock;
 
 use net::eth::mac::Mac;
 use net::vlan::Vid;
@@ -16,7 +14,7 @@ use net::vlan::Vid;
 use crate::errors::RouterError;
 use crate::fib::fibtype::{FibId, FibReader};
 use crate::vrf::Vrf;
-use tracing::error;
+use tracing::{error, info};
 
 /// A type to uniquely identify a network interface
 pub type IfIndex = u32;
@@ -167,8 +165,11 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     pub fn set_oper_state(&mut self, state: IfState) {
         if self.oper_state != state {
+            info!(
+                "Operational state of interface {} changed: {} -> {}",
+                self.name, self.oper_state, state
+            );
             self.oper_state = state;
-            // Todo: log change
         }
     }
 
@@ -177,8 +178,11 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     pub fn set_admin_state(&mut self, state: IfState) {
         if self.admin_state != state {
+            info!(
+                "Admin state of interface {} changed: {} -> {}",
+                self.name, self.admin_state, state
+            );
             self.admin_state = state;
-            // Todo: log change
         }
     }
 
@@ -188,36 +192,30 @@ impl Interface {
     /// be readily forwarded performing an LPM operation on the
     /// corresponding FIB.
     //////////////////////////////////////////////////////////////////
-    #[allow(clippy::arc_with_non_send_sync)]
-    pub fn attach(&mut self, vrf: &Arc<RwLock<Vrf>>) -> Result<(), RouterError> {
-        if let Ok(vrf) = vrf.read() {
-            if let Some(fibw) = &vrf.fibw {
-                if let Some(id) = fibw.get_id() {
-                    if self.is_attached_to_fib(&id) {
-                        Ok(())
-                    } else if self.attachment.is_some() {
-                        Err(RouterError::AlreadyAttached)
-                    } else {
-                        // create attachment object with a Fibreader
-                        self.attachment = Some(Attachment::VRF(fibw.as_fibreader()));
-                        Ok(())
-                    }
+    pub fn attach(&mut self, vrf: &Vrf) -> Result<(), RouterError> {
+        if let Some(fibr) = vrf.get_vrf_fibr() {
+            if let Some(id) = fibr.get_id() {
+                if self.is_attached_to_fib(&id) {
+                    Ok(())
+                } else if self.attachment.is_some() {
+                    Err(RouterError::AlreadyAttached)
                 } else {
-                    error!(
-                        "Failed to attach interface {} to VRF {}: can't get fib id",
-                        self.name, vrf.name
-                    );
-                    Err(RouterError::Internal)
+                    // create attachment object with a Fibreader
+                    self.attachment = Some(Attachment::VRF(fibr));
+                    Ok(())
                 }
             } else {
                 error!(
-                    "Can't attach interface {} to vrf {} since it has no FIB",
+                    "Failed to attach interface {} to VRF {}: can't get fib id",
                     self.name, vrf.name
                 );
                 Err(RouterError::Internal)
             }
         } else {
-            error!("Poisoned lock");
+            error!(
+                "Can't attach interface {} to vrf {} since it has no FIB",
+                self.name, vrf.name
+            );
             Err(RouterError::Internal)
         }
     }
@@ -227,6 +225,10 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     pub fn detach(&mut self) {
         self.attachment.take();
+    }
+
+    pub fn attach_vrf(&mut self, fibr: FibReader) {
+        self.attachment = Some(Attachment::VRF(fibr));
     }
 
     //////////////////////////////////////////////////////////////////
