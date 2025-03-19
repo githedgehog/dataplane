@@ -4,7 +4,7 @@
 use crate::message::MessageContains;
 use crate::resource::{
     ImpliedBridge, ImpliedInformationBase, MultiIndexVpcMap, NetworkDiscriminant, ObservedBridge,
-    ObservedBridgeBuilder, ObservedInformationBase, RouteTableId, Vpc,
+    ObservedBridgeBuilder, ObservedInformationBase, ObservedInterface, RouteTableId, Vpc,
 };
 use bitflags::bitflags;
 use futures::channel::mpsc::{TryRecvError, UnboundedReceiver};
@@ -421,10 +421,10 @@ impl ObservedLinks {
     }
 
     async fn run(&mut self) {
-        enum Update {
-            New(LinkMessage),
-            Del(LinkMessage),
-            Set(LinkMessage),
+        enum Update<T> {
+            New(T),
+            Del(T),
+            Set(T),
         }
         let mut buffer = Vec::with_capacity(LinkMonitor::QUEUE_DEPTH);
         self.recv
@@ -445,7 +445,7 @@ impl ObservedLinks {
                             continue;
                         }
                         NetlinkPayload::Error(e) => {
-                            debug!("{e:?}");
+                            error!("{e:?}");
                             continue;
                         }
                         NetlinkPayload::Overrun(e) => {
@@ -458,48 +458,13 @@ impl ObservedLinks {
                     };
                     match update {
                         Update::New(message) => {
-                            if message.message_contains(InfoKind::Bridge) {
-                                let mut builder = ObservedBridgeBuilder::default();
-                                builder.if_index(message.header.index.try_into().unwrap());
-                                for attr in &message.attributes {
-                                    if let LinkAttribute::LinkInfo(infos) = attr {
-                                        for info in infos {
-                                            if let LinkInfo::Data(InfoData::Bridge(bridge_datas)) =
-                                                info
-                                            {
-                                                for data in bridge_datas {
-                                                    match data {
-                                                        InfoBridge::VlanProtocol(proto) => {
-                                                            builder.vlan_protocol(EthType::from(
-                                                                *proto,
-                                                            ));
-                                                        }
-                                                        InfoBridge::VlanFiltering(f) => {
-                                                            builder.vlan_filtering(*f);
-                                                        }
-                                                        _ => {}
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
+                            match ObservedInterface::try_from(message) {
+                                Ok(ObservedInterface::Vrf(vrf)) => {
+                                    // Arc::make_mut(&mut self.observed)
                                 }
-                                match builder.build() {
-                                    Ok(bridge) => {
-                                        match Arc::make_mut(&mut self.observed)
-                                            .bridges
-                                            .try_insert(bridge)
-                                        {
-                                            Ok(b) => debug!("observed new bridge: {b:?}"),
-                                            Err(e) => {
-                                                error!("{e:?}");
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("{e:?}");
-                                    }
-                                }
+                                Ok(ObservedInterface::Bridge(bridge)) => {}
+                                Ok(ObservedInterface::Vtep(vtep)) => {}
+                                Err(message) => {}
                             }
                         }
                         Update::Del(message) => {}

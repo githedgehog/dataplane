@@ -18,7 +18,7 @@ use net::vlan::Vid;
 use net::vxlan::Vni;
 use rtnetlink::packet_route::link::LinkInfo::PortData;
 use rtnetlink::packet_route::link::{
-    InfoBridge, InfoData, InfoKind, InfoVrf, LinkAttribute, LinkInfo,
+    InfoBridge, InfoData, InfoKind, InfoVrf, InfoVxlan, LinkAttribute, LinkInfo, LinkMessage,
 };
 use rtnetlink::sys::AsyncSocket;
 use rtnetlink::{Handle, LinkBridge, LinkVrf, new_connection};
@@ -192,11 +192,14 @@ impl ImpliedVtep {
 )]
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ObservedVtep {
+    #[multi_index(hashed_unique)]
+    name: InterfaceName,
     #[multi_index(ordered_unique)]
     if_index: IfIndex,
     #[multi_index(ordered_unique)]
     vni: Vni,
-    local: IpAddr,
+    local: Option<Ipv4Addr>,
+    ttl: u8,
 }
 
 #[derive(
@@ -382,6 +385,7 @@ pub struct InterfaceConstraint {
 pub struct ObservedInformationBase {
     pub(crate) vrfs: MultiIndexObservedVrfMap,
     pub(crate) bridges: MultiIndexObservedBridgeMap,
+    pub(crate) vteps: MultiIndexObservedVtepMap,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
@@ -983,6 +987,269 @@ impl ObservedInformationBase {
             }
         }
         this
+    }
+}
+
+pub enum ObservedInterface {
+    Bridge(ObservedBridge),
+    Vrf(ObservedVrf),
+    Vtep(ObservedVtep),
+}
+
+impl TryFrom<LinkMessage> for ObservedBridge {
+    type Error = LinkMessage;
+
+    fn try_from(message: LinkMessage) -> Result<Self, Self::Error> {
+        if !message.message_contains(InfoKind::Bridge) {
+            return Err(message);
+        }
+        let mut builder = ObservedBridgeBuilder::default();
+        match IfIndex::try_from(message.header.index) {
+            Ok(index) => builder.if_index(index),
+            Err(err) => {
+                error!("{err:?}");
+                return Err(message);
+            }
+        };
+        builder.if_index(message.header.index.try_into().unwrap());
+        for attr in &message.attributes {
+            match attr {
+                LinkAttribute::LinkInfo(infos) => {
+                    for info in infos {
+                        if let LinkInfo::Data(InfoData::Bridge(datas)) = info {
+                            for data in datas {
+                                match data {
+                                    InfoBridge::VlanProtocol(raw) => {
+                                        builder.vlan_protocol(EthType::new(*raw));
+                                    }
+                                    InfoBridge::VlanFiltering(filtering) => {
+                                        builder.vlan_filtering(*filtering);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+                LinkAttribute::IfName(name) => match InterfaceName::try_from(name.clone()) {
+                    Ok(name) => {
+                        builder.name(name);
+                    }
+                    Err(illegal_name) => {
+                        error!("{illegal_name:?}");
+                        return Err(message);
+                    }
+                },
+                _ => {}
+            }
+        }
+        builder.build().map_err(|err| {
+            error!("{err:?}");
+            message
+        })
+    }
+}
+
+impl TryFrom<LinkMessage> for ObservedVrf {
+    type Error = LinkMessage;
+
+    fn try_from(message: LinkMessage) -> Result<Self, Self::Error> {
+        if !message.message_contains(InfoKind::Bridge) {
+            return Err(message);
+        }
+        let mut builder = ObservedVrfBuilder::default();
+        match IfIndex::try_from(message.header.index) {
+            Ok(index) => builder.if_index(index),
+            Err(err) => {
+                error!("{err:?}");
+                return Err(message);
+            }
+        };
+        builder.if_index(message.header.index.try_into().unwrap());
+        for attr in &message.attributes {
+            match attr {
+                LinkAttribute::LinkInfo(infos) => {
+                    for info in infos {
+                        if let LinkInfo::Data(InfoData::Vrf(datas)) = info {
+                            for data in datas {
+                                if let InfoVrf::TableId(raw) = data {
+                                    builder.route_table(RouteTableId::from(*raw));
+                                }
+                            }
+                        }
+                    }
+                }
+                LinkAttribute::IfName(name) => match InterfaceName::try_from(name.clone()) {
+                    Ok(name) => {
+                        builder.name(name);
+                    }
+                    Err(illegal_name) => {
+                        error!("{illegal_name:?}");
+                        return Err(message);
+                    }
+                },
+                _ => {}
+            }
+        }
+        builder.build().map_err(|err| {
+            error!("{err:?}");
+            message
+        })
+    }
+}
+
+impl TryFrom<LinkMessage> for ObservedVtep {
+    type Error = LinkMessage;
+
+    fn try_from(message: LinkMessage) -> Result<Self, Self::Error> {
+        if !message.message_contains(InfoKind::Bridge) {
+            return Err(message);
+        }
+        let mut builder = ObservedVtepBuilder::default();
+        match IfIndex::try_from(message.header.index) {
+            Ok(index) => builder.if_index(index),
+            Err(err) => {
+                error!("{err:?}");
+                return Err(message);
+            }
+        };
+        builder.if_index(message.header.index.try_into().unwrap());
+        for attr in &message.attributes {
+            match attr {
+                LinkAttribute::LinkInfo(infos) => {
+                    for info in infos {
+                        if let LinkInfo::Data(InfoData::Vxlan(datas)) = info {
+                            for data in datas {
+                                match data {
+                                    InfoVxlan::Id(id) => match Vni::new_checked(*id) {
+                                        Ok(vni) => {
+                                            builder.vni(vni);
+                                        }
+                                        Err(invalid_vni) => {
+                                            error!("{invalid_vni:?}");
+                                            return Err(message);
+                                        }
+                                    },
+                                    InfoVxlan::Local(ip) => {
+                                        builder.local(Some(*ip));
+                                    }
+                                    InfoVxlan::Ttl(ttl) => {
+                                        builder.ttl(*ttl);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+                LinkAttribute::IfName(name) => match InterfaceName::try_from(name.clone()) {
+                    Ok(name) => {
+                        builder.name(name);
+                    }
+                    Err(illegal_name) => {
+                        error!("{illegal_name:?}");
+                        return Err(message);
+                    }
+                },
+                _ => {}
+            }
+        }
+        builder.build().map_err(|err| {
+            error!("{err:?}");
+            message
+        })
+    }
+}
+
+impl TryFrom<LinkMessage> for ObservedInterface {
+    type Error = LinkMessage;
+
+    fn try_from(message: LinkMessage) -> Result<Self, Self::Error> {
+        let message = match ObservedBridge::try_from(message) {
+            Ok(x) => return Ok(ObservedInterface::Bridge(x)),
+            Err(message) => message,
+        };
+        let message = match ObservedVrf::try_from(message) {
+            Ok(x) => return Ok(ObservedInterface::Vrf(x)),
+            Err(message) => message,
+        };
+        Ok(ObservedInterface::Vtep(ObservedVtep::try_from(message)?))
+    }
+}
+
+impl ObservedInformationBase {
+    fn try_add_bridge(
+        &mut self,
+        bridge: ObservedBridge,
+    ) -> Result<&ObservedBridge, UniquenessError<ObservedBridge>> {
+        self.bridges.try_insert(bridge).map_err(|err| {
+            error!("{err:?}");
+            err
+        })
+    }
+
+    fn try_add_vrf(
+        &mut self,
+        vrf: ObservedVrf,
+    ) -> Result<&ObservedVrf, UniquenessError<ObservedVrf>> {
+        self.vrfs.try_insert(vrf).map_err(|err| {
+            error!("{err:?}");
+            err
+        })
+    }
+
+    fn try_add_vtep(
+        &mut self,
+        vtep: ObservedVtep,
+    ) -> Result<&ObservedVtep, UniquenessError<ObservedVtep>> {
+        self.vteps.try_insert(vtep).map_err(|err| {
+            error!("{err:?}");
+            err
+        })
+    }
+    fn try_add_interface(&mut self, interface: ObservedInterface) -> Result<(), ObservedInterface> {
+        match interface {
+            ObservedInterface::Bridge(bridge) => self
+                .try_add_bridge(bridge)
+                .map(|_| ())
+                .map_err(|e| ObservedInterface::Bridge(e.0)),
+            ObservedInterface::Vrf(vrf) => self
+                .try_add_vrf(vrf)
+                .map(|_| ())
+                .map_err(|e| ObservedInterface::Vrf(e.0)),
+            ObservedInterface::Vtep(vtep) => self
+                .try_add_vtep(vtep)
+                .map(|_| ())
+                .map_err(|e| ObservedInterface::Vtep(e.0)),
+        }
+    }
+
+    fn try_remove_bridge(&mut self, index: IfIndex) -> Option<ObservedBridge> {
+        self.bridges.remove_by_if_index(&index)
+    }
+
+    fn try_remove_vrf(&mut self, index: IfIndex) -> Option<ObservedVrf> {
+        self.vrfs.remove_by_if_index(&index)
+    }
+
+    fn try_remove_vtep(&mut self, index: IfIndex) -> Option<ObservedVtep> {
+        self.vteps.remove_by_if_index(&index)
+    }
+
+    fn try_remove_interface(&mut self, index: IfIndex) -> Option<ObservedInterface> {
+        match self.try_remove_bridge(index).map(ObservedInterface::Bridge) {
+            None => {}
+            Some(x) => return Some(x),
+        }
+        match self.try_remove_vrf(index).map(ObservedInterface::Vrf) {
+            None => {}
+            Some(x) => return Some(x),
+        }
+        match self.try_remove_vtep(index).map(ObservedInterface::Vtep) {
+            None => {}
+            Some(x) => return Some(x),
+        }
+        None
     }
 }
 
