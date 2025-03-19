@@ -12,7 +12,7 @@ use tracing::debug;
 #[cfg(test)]
 use crate::pretty_utils::Frame;
 
-use crate::fib::fibtype::FibWriter;
+use crate::fib::fibtype::{FibId, FibReader, FibWriter};
 use crate::interfaces::interface::IfIndex;
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::prefix::Prefix;
@@ -178,6 +178,20 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     pub fn set_fibw(&mut self, fibw: FibWriter) {
         self.fibw = Some(fibw);
+    }
+
+    ////////////////////////////////////////////////////////////////////////
+    /// Get a fibreader for the fib associated to this VRF
+    /////////////////////////////////////////////////////////////////////////
+    pub fn get_vrf_fibr(&self) -> Option<FibReader> {
+        self.fibw.as_ref().map(|fibw| fibw.as_fibreader())
+    }
+
+    ////////////////////////////////////////////////////////////////////////
+    /// Get the FibId of the Fib associated to this VRF
+    /////////////////////////////////////////////////////////////////////////
+    pub fn get_vrf_fibid(&self) -> Option<FibId> {
+        self.get_vrf_fibr()?.get_id()
     }
 
     /////////////////////////////////////////////////////////////////////////
