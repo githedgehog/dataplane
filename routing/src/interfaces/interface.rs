@@ -126,7 +126,6 @@ pub struct Interface {
     pub admin_state: IfState,
     pub oper_state: IfState,
     pub addresses: HashSet<IfAddress>,
-    pub vrf: Option<Arc<RwLock<Vrf>>>,
     pub attachment: Option<Attachment>,
 }
 
@@ -146,7 +145,6 @@ impl Interface {
             oper_state: IfState::Unknown,
             addresses: HashSet::new(),
             attachment: None,
-            vrf: None,
         }
     }
 
@@ -183,6 +181,7 @@ impl Interface {
             // Todo: log change
         }
     }
+
     //////////////////////////////////////////////////////////////////
     /// Attach an interface to a VRF. The interface is attached to a
     /// FibReader so that IP packets received on that interface can
@@ -252,21 +251,6 @@ impl Interface {
                 false
             }
         });
-    }
-
-    //////////////////////////////////////////////////////////////////
-    /// Get the VRF that an interface is attached to, or None otherwise
-    //////////////////////////////////////////////////////////////////
-    pub fn get_vrf(&self) -> Option<&RwLock<Vrf>> {
-        self.vrf.as_deref()
-    }
-
-    //////////////////////////////////////////////////////////////////
-    /// Get the name of the VRF that an interface is attached to or None
-    //////////////////////////////////////////////////////////////////
-    pub fn get_vrf_name(&self) -> Option<String> {
-        self.get_vrf()
-            .map(|vrf| vrf.read().expect("RWlock-error").name.to_owned())
     }
 
     //////////////////////////////////////////////////////////////////
