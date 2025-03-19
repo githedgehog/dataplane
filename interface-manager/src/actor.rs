@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::resource::{ImpliedBridge, ObservedBridge};
+use crate::resource::{ImpliedBridge, ObservedBridge, ObservedInformationBase};
 use bitflags::bitflags;
-use futures::channel::mpsc::UnboundedReceiver;
+use futures::channel::mpsc::{TryRecvError, UnboundedReceiver};
+use futures::{StreamExt, TryStreamExt};
 use rtnetlink::packet_core::NetlinkMessage;
 use rtnetlink::packet_route::RouteNetlinkMessage;
 use rtnetlink::packet_route::link::{InfoBridge, InfoData, LinkAttribute, LinkInfo, LinkMessage};
@@ -15,9 +16,13 @@ use rtnetlink::{
 use std::rc::Rc;
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use tokio::sync::mpsc::error::{SendError, TrySendError};
+use tracing::{error, info, span, trace, warn};
 
 type Watch<T> = tokio::sync::watch::Receiver<T>;
 type Notify<T> = tokio::sync::watch::Sender<T>;
+type Sender<T> = tokio::sync::mpsc::Sender<T>;
+type Receiver<T> = tokio::sync::mpsc::Receiver<T>;
 
 type Message<T> = <T as Actor>::Message;
 
@@ -54,6 +59,14 @@ impl From<LinkSetRequest> for NetlinkAgentMessage {
     fn from(value: LinkSetRequest) -> Self {
         NetlinkAgentMessage::LinkSet(value)
     }
+}
+
+#[non_exhaustive]
+pub struct BridgeManager2 {
+    handle: Arc<Handle>,
+    objective: Option<Rc<ImpliedBridge>>,
+    observation: Option<Rc<ObservedBridge>>,
+    agent: tokio::sync::mpsc::Sender<NetlinkAgentMessage>,
 }
 
 #[non_exhaustive]
@@ -157,36 +170,6 @@ impl Actor for BridgeManager {
     }
 }
 
-pub struct NetlinkLinkMonitor {
-    handle: Arc<Handle>,
-    watch: UnboundedReceiver<(NetlinkMessage<RouteNetlinkMessage>, SocketAddr)>,
-}
-
-impl NetlinkLinkMonitor {
-    fn new() -> (Self, Connection<RouteNetlinkMessage>, Arc<Handle>) {
-        let Ok((mut connection, handle, watch)) = new_connection() else {
-            panic!("failed to create connection");
-        };
-        let subscribe_to = { NetlinkNotificationGroups::Link };
-        let addr = SocketAddr::new(0, subscribe_to.bits());
-
-        let mut sock = connection.socket_mut().socket_mut();
-        sock.set_rx_buf_sz(212_992).unwrap();
-        sock.bind(&addr).expect("failed to bind to netlink socket");
-
-        let handle = Arc::new(handle);
-
-        (
-            Self {
-                handle: handle.clone(),
-                watch,
-            },
-            connection,
-            handle,
-        )
-    }
-}
-
 pub struct NetlinkAgent {
     handle: Arc<Handle>,
 }
@@ -235,20 +218,181 @@ bitflags! {
     }
 }
 
+#[derive(Debug)]
+pub enum LinkMonitorMessage {
+    Update(NetlinkMessage<RouteNetlinkMessage>),
+    Refresh(Vec<LinkMessage>),
+}
+
+#[derive(Debug)]
+pub struct LinkMonitor {
+    handle: Arc<Handle>,
+    recv: UnboundedReceiver<(NetlinkMessage<RouteNetlinkMessage>, SocketAddr)>,
+    queue: Sender<LinkMonitorMessage>,
+}
+
+impl LinkMonitor {
+    /// The depth of the tx channel
+    const QUEUE_DEPTH: usize = 1024;
+
+    /// NOTE: this method requires an already spawned async context
+    fn new() -> (Self, Receiver<LinkMonitorMessage>) {
+        let (tx, rx) = tokio::sync::mpsc::channel(Self::QUEUE_DEPTH);
+        let Ok((mut connection, handle, recv)) = new_connection() else {
+            panic!("failed to create connection");
+        };
+        let subscribe_to = { NetlinkNotificationGroups::Link | NetlinkNotificationGroups::Notify };
+        let addr = SocketAddr::new(0, subscribe_to.bits());
+
+        let sock = connection.socket_mut().socket_mut();
+        // this is the default max value on my machine.  Make this a proper const later.
+        sock.set_rx_buf_sz(212_992).unwrap();
+        sock.bind(&addr).expect("failed to bind to netlink socket");
+        tokio::spawn(connection);
+        let this = Self {
+            handle: Arc::new(handle),
+            recv,
+            queue: tx,
+        };
+        (this, rx)
+    }
+
+    async fn refresh(&self) {
+        const MAX_CHUNK_SIZE: usize = 16 * LinkMonitor::QUEUE_DEPTH;
+        let messages = self
+            .handle
+            .link()
+            .get()
+            .execute()
+            .try_ready_chunks(MAX_CHUNK_SIZE)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .flatten()
+            .flatten()
+            .collect::<Vec<_>>();
+        self.queue
+            .send(LinkMonitorMessage::Refresh(messages))
+            .await
+            .expect("NetlinkMonitor message queue disconnected");
+    }
+
+    async fn check_for_updates(&mut self) {
+        match self.recv.try_next() {
+            Ok(Some((message, _))) => {
+                match self.queue.try_send(LinkMonitorMessage::Update(message)) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(message)) => {
+                        warn!("NetlinkMonitor transmit queue full, triggering refresh");
+                        self.queue
+                            .send(message)
+                            .await
+                            .expect("NetlinkMonitor message queue disconnected");
+                        self.refresh().await;
+                    }
+                    Err(TrySendError::Closed(_)) => {
+                        error!("NetlinkMonitor message queue disconnected");
+                        panic!("NetlinkMonitor message queue disconnected");
+                    }
+                }
+            }
+            Err(_) => {
+                trace!("consumed monitor backlog, refreshing system state");
+                self.refresh().await;
+                let Some((message, _)) = self.recv.next().await else {
+                    info!("netlink monitor recv channel closed");
+                    return;
+                };
+                match self.queue.try_send(LinkMonitorMessage::Update(message)) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(message)) => {
+                        warn!("NetlinkMonitor transmit queue full");
+                        self.queue
+                            .send(message)
+                            .await
+                            .expect("NetlinkMonitor message queue disconnected");
+                    }
+                    Err(TrySendError::Closed(_)) => {
+                        error!("NetlinkMonitor message queue disconnected");
+                        panic!("NetlinkMonitor message queue disconnected");
+                    }
+                }
+            }
+            Ok(None) => {
+                error!("netlink monitor recv channel closed");
+            }
+        }
+    }
+
+    #[tracing::instrument(level = "info")]
+    async fn run(&mut self) {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            tokio::select! {
+                instant = interval.tick() => {
+                    trace!("refreshing link monitor at {instant:?}");
+                    self.refresh().await;
+                }
+                () = self.check_for_updates() => { /* ok */ }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 pub mod test {
-    use crate::actor::{
-        Actor, BridgeManager, BridgeMessage, NetlinkAgent, NetlinkAgentMessage,
-        NetlinkNotificationGroups,
-    };
-    use crate::resource::{ImpliedBridge, ObservedBridgeBuilder};
-    use futures::{StreamExt, TryStreamExt};
-    use net::eth::ethtype::EthType;
-    use rtnetlink::new_connection;
-    use rtnetlink::packet_route::link::{InfoBridge, InfoData, LinkAttribute, LinkInfo};
+    use crate::actor::{LinkMonitor, LinkMonitorMessage, NetlinkNotificationGroups};
+    use futures::StreamExt;
     use rtnetlink::sys::{AsyncSocket, SocketAddr};
+    use rtnetlink::{LinkBridge, new_connection};
+    use std::io::Write;
     use std::rc::Rc;
-    use std::sync::Arc;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn link_monitor() {
+        let mut log_file = std::fs::File::create("/tmp/link_monitor.log").unwrap();
+        let (monitor, mut recv) = LinkMonitor::new();
+        let mut monitor = Box::new(monitor);
+        let handle = monitor.handle.clone();
+        let mut counter = 0;
+        tokio::spawn(async move {
+            loop {
+                match recv.recv().await {
+                    None => {
+                        panic!("link monitor recv channel closed");
+                    }
+                    Some(message) => {
+                        counter += 1;
+                        match message {
+                            LinkMonitorMessage::Update(update) => {
+                                log_file
+                                    .write_all(format!("{counter:>4}: update\n").as_bytes())
+                                    .expect("unable to write to log file");
+                            }
+                            LinkMonitorMessage::Refresh(_) => {
+                                log_file
+                                    .write_all(format!("{counter:>4}: refresh\n").as_bytes())
+                                    .expect("unable to write to log file");
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            for i in 1..1000 {
+                handle
+                    .link()
+                    .add(LinkBridge::new(format!("potato{i}").as_ref()).build())
+                    .execute()
+                    .await
+                    .unwrap();
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        });
+        monitor.run().await;
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn subscribe_and_save() {
@@ -258,7 +402,7 @@ pub mod test {
         let subscribe_to = { NetlinkNotificationGroups::Link };
         let addr = SocketAddr::new(0, subscribe_to.bits());
 
-        let mut sock = connection.socket_mut().socket_mut();
+        let sock = connection.socket_mut().socket_mut();
         sock.set_rx_buf_sz(212_992).unwrap();
         sock.bind(&addr).expect("failed to bind to netlink socket");
 
@@ -283,77 +427,76 @@ pub mod test {
         }
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn check_me() {
-        let Ok((mut connection, handle, mut recv)) = new_connection() else {
-            panic!("failed to create connection");
-        };
-        let subscribe_to = { NetlinkNotificationGroups::Link };
-        let addr = SocketAddr::new(0, subscribe_to.bits());
-
-        let mut sock = connection.socket_mut().socket_mut();
-        sock.set_rx_buf_sz(212_992).unwrap();
-        sock.bind(&addr).expect("failed to bind to netlink socket");
-
-        tokio::spawn(connection);
-
-        let handle = Arc::new(handle);
-        let implied_bridge = Rc::new(ImpliedBridge {
-            name: "potato".to_string().try_into().unwrap(),
-            vlan_filtering: true,
-            vlan_protocol: EthType::VLAN,
-        });
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
-        let mut bridge_actor = BridgeManager::new(handle.clone(), tx);
-        let mut agent = NetlinkAgent {
-            handle: handle.clone(),
-        };
-        tokio::spawn(async move {
-            while let Some(message) = rx.recv().await {
-                agent.process(message).await;
-            }
-        });
-        let implication = BridgeMessage::ObjectiveUpdate(Some(implied_bridge.clone()));
-        bridge_actor.process(implication).await;
-        let mut resp = handle
-            .link()
-            .get()
-            .match_name("potato".to_string())
-            .execute();
-        let Ok(Some(resp)) = resp.try_next().await else {
-            let message = BridgeMessage::ObservationUpdate(None);
-            bridge_actor.process(message).await;
-            continue;
-        };
-        loop {
-            let mut observation_builder = ObservedBridgeBuilder::default();
-            observation_builder.if_index(resp.header.index.try_into().unwrap());
-            for attr in &resp.attributes {
-                match attr {
-                    LinkAttribute::LinkInfo(infos) => {
-                        for info in infos {
-                            if let LinkInfo::Data(InfoData::Bridge(bridge_info)) = info {
-                                for info in bridge_info {
-                                    if let InfoBridge::VlanFiltering(filtering) = info {
-                                        observation_builder.vlan_filtering(*filtering);
-                                    }
-                                    if let InfoBridge::VlanProtocol(raw) = info {
-                                        observation_builder.vlan_protocol(EthType::from(*raw));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    LinkAttribute::IfName(name) => {
-                        observation_builder.name(name.to_string().try_into().unwrap());
-                    }
-                    _ => {}
-                }
-            }
-            let observed_bridge = Some(Rc::new(observation_builder.build().unwrap()));
-            let message = BridgeMessage::ObservationUpdate(observed_bridge);
-            bridge_actor.process(message).await;
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    }
+    // #[tokio::test(flavor = "current_thread")]
+    // async fn check_me() {
+    //     let Ok((mut connection, handle, mut recv)) = new_connection() else {
+    //         panic!("failed to create connection");
+    //     };
+    //     let subscribe_to = { NetlinkNotificationGroups::Link };
+    //     let addr = SocketAddr::new(0, subscribe_to.bits());
+    //
+    //     let mut sock = connection.socket_mut().socket_mut();
+    //     sock.set_rx_buf_sz(212_992).unwrap();
+    //     sock.bind(&addr).expect("failed to bind to netlink socket");
+    //
+    //     tokio::spawn(connection);
+    //
+    //     let handle = Arc::new(handle);
+    //     let implied_bridge = Rc::new(ImpliedBridge {
+    //         name: "potato".to_string().try_into().unwrap(),
+    //         vlan_filtering: true,
+    //         vlan_protocol: EthType::VLAN,
+    //     });
+    //     let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+    //     let mut bridge_actor = BridgeManager::new(handle.clone(), tx);
+    //     let mut agent = NetlinkAgent {
+    //         handle: handle.clone(),
+    //     };
+    //     tokio::spawn(async move {
+    //         while let Some(message) = rx.recv().await {
+    //             agent.process(message).await;
+    //         }
+    //     });
+    //     let implication = BridgeMessage::ObjectiveUpdate(Some(implied_bridge.clone()));
+    //     bridge_actor.process(implication).await;
+    //     let mut resp = handle
+    //         .link()
+    //         .get()
+    //         .match_name("potato".to_string())
+    //         .execute();
+    //     let Ok(Some(resp)) = resp.try_next().await else {
+    //         let message = BridgeMessage::ObservationUpdate(None);
+    //         bridge_actor.process(message).await;
+    //     };
+    //     loop {
+    //         let mut observation_builder = ObservedBridgeBuilder::default();
+    //         observation_builder.if_index(resp.header.index.try_into().unwrap());
+    //         for attr in &resp.attributes {
+    //             match attr {
+    //                 LinkAttribute::LinkInfo(infos) => {
+    //                     for info in infos {
+    //                         if let LinkInfo::Data(InfoData::Bridge(bridge_info)) = info {
+    //                             for info in bridge_info {
+    //                                 if let InfoBridge::VlanFiltering(filtering) = info {
+    //                                     observation_builder.vlan_filtering(*filtering);
+    //                                 }
+    //                                 if let InfoBridge::VlanProtocol(raw) = info {
+    //                                     observation_builder.vlan_protocol(EthType::from(*raw));
+    //                                 }
+    //                             }
+    //                         }
+    //                     }
+    //                 }
+    //                 LinkAttribute::IfName(name) => {
+    //                     observation_builder.name(name.to_string().try_into().unwrap());
+    //                 }
+    //                 _ => {}
+    //             }
+    //         }
+    //         let observed_bridge = Some(Rc::new(observation_builder.build().unwrap()));
+    //         let message = BridgeMessage::ObservationUpdate(observed_bridge);
+    //         bridge_actor.process(message).await;
+    //         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    //     }
+    // }
 }
