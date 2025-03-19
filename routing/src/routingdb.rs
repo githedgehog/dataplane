@@ -163,8 +163,8 @@ impl VrfTable {
                     }
                 }
             }
-            iftable.detach_vrf_interfaces(&vrf);
             if let Ok(vrf) = vrf.read() {
+                iftable.detach_vrf_interfaces(&vrf);
                 if let Some(vni) = vrf.vni {
                     self.by_vni.remove(&vni);
                 }
@@ -303,28 +303,32 @@ mod tests {
                 .get_interface(2)
                 .expect("Should be there")
                 .borrow_mut();
-            eth0.attach(&vrf0).expect("Should succeed");
+            eth0.attach(&vrf0.read().unwrap()).expect("Should succeed");
             assert!(eth0.is_attached_to_fib(&FibId::Id(0)));
 
             let mut eth1 = iftable
                 .get_interface(3)
                 .expect("Should be there")
                 .borrow_mut();
-            eth1.attach(&vrf0).expect("Should succeed");
+            eth1.attach(&vrf0.read().unwrap()).expect("Should succeed");
             assert!(eth1.is_attached_to_fib(&FibId::Id(0)));
 
             let mut vlan100 = iftable
                 .get_interface(4)
                 .expect("Should be there")
                 .borrow_mut();
-            vlan100.attach(&vrf1).expect("Should succeed");
+            vlan100
+                .attach(&vrf1.read().unwrap())
+                .expect("Should succeed");
             assert!(vlan100.is_attached_to_fib(&FibId::Id(1)));
 
             let mut vlan200 = iftable
                 .get_interface(5)
                 .expect("Should be there")
                 .borrow_mut();
-            vlan200.attach(&vrf1).expect("Should succeed");
+            vlan200
+                .attach(&vrf1.read().unwrap())
+                .expect("Should succeed");
             assert!(vlan200.is_attached_to_fib(&FibId::Id(1)));
         }
 
