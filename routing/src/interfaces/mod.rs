@@ -4,6 +4,7 @@
 //! Interfaces module
 
 pub mod iftable;
+pub mod iftablerw;
 pub mod interface;
 
 #[cfg(test)]
