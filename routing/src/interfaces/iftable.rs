@@ -7,12 +7,12 @@ use ahash::RandomState;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Arc, RwLock};
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use super::interface::IfMapping;
 use crate::errors::RouterError;
-use crate::interfaces::interface::{IfAddress, IfIndex, Interface};
+use crate::fib::fibtype::{FibId, FibReader};
+use crate::interfaces::interface::{IfAddress, IfIndex, IfState, Interface};
 use crate::vrf::Vrf;
 
 #[derive(Clone)]
@@ -62,7 +62,7 @@ impl IfTable {
     /// provided that the interface mapping does not collide with any other.
     //////////////////////////////////////////////////////////////////
     pub fn add_interface(&mut self, iface: Interface) -> Result<(), RouterError> {
-        /* enure we don't overwrite any interface mapping */
+        /* ensure we don't overwrite any interface mapping */
         if let Some(inc_map) = iface.mapping() {
             if let Some(exist) = self.by_mapping.get(&inc_map) {
                 let eref = exist.borrow();
@@ -156,16 +156,56 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     /// Detach all interfaces attached to some VRF
     //////////////////////////////////////////////////////////////////
-    pub fn detach_vrf_interfaces(&self, vrf: &Arc<RwLock<Vrf>>) {
-        if let Ok(vrf) = vrf.read() {
-            if let Some(fibid) = vrf.get_vrf_fibid() {
-                for iface in self.by_index.values() {
-                    iface.borrow_mut().detach_from_fib(&fibid);
-                }
+    pub fn detach_vrf_interfaces(&self, vrf: &Vrf) {
+        if let Some(fibid) = vrf.get_vrf_fibid() {
+            for iface in self.by_index.values() {
+                iface.borrow_mut().detach_from_fib(&fibid);
             }
+        }
+    }
+
+    /// Detach all interfaces attached to the Vrf whose fib has id FibId
+    pub fn detach_interfaces_from_vrf(&self, fibid: FibId) {
+        for iface in self.by_index.values() {
+            iface.borrow_mut().detach_from_fib(&fibid);
+        }
+    }
+
+    /// Attach interface with ifindex to the provided Fib reader
+    pub fn attach_interface_to_vrf(&self, ifindex: IfIndex, fibr: FibReader) {
+        if let Some(iface) = self.get_interface(ifindex) {
+            iface.borrow_mut().attach_vrf(fibr);
         } else {
-            vrf.clear_poison();
-            warn!("Poisoned lock in VRF");
+            error!(
+                "Unable to attach interface with ifindex {}: not found",
+                ifindex
+            );
+        }
+    }
+
+    /// Detach interface from wherever it is attached
+    pub fn detach_interface_from_vrf(&self, ifindex: IfIndex) {
+        if let Some(iface) = self.get_interface(ifindex) {
+            iface.borrow_mut().detach();
+        } else {
+            error!(
+                "Unable to detach interface with ifindex {}: not found",
+                ifindex
+            );
+        }
+    }
+
+    /// Set the operational state of an interface
+    pub fn set_iface_oper_state(&self, ifindex: IfIndex, state: IfState) {
+        if let Some(ifr) = self.get_interface(ifindex) {
+            ifr.borrow_mut().set_oper_state(state)
+        }
+    }
+
+    /// Set the admin state of an interface
+    pub fn set_iface_admin_state(&self, ifindex: IfIndex, state: IfState) {
+        if let Some(ifr) = self.get_interface(ifindex) {
+            ifr.borrow_mut().set_admin_state(state)
         }
     }
 }
