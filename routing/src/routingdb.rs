@@ -343,14 +343,14 @@ mod tests {
                 .expect("Should be there")
                 .borrow_mut();
 
-            assert!(eth0.vrf.is_none(), "Eth0 should be detached");
             assert!(!eth0.is_attached_to_fib(&FibId::Id(0)));
 
             let eth1 = iftable
                 .get_interface(3)
                 .expect("Should be there")
                 .borrow_mut();
-            assert!(eth1.vrf.is_none(), "Eth1 should be detached");
+
+            assert!(!eth1.is_attached_to_fib(&FibId::Id(0)));
         }
 
         /* remove VRFs 1 - interfaces should be automatically detached */
@@ -364,14 +364,15 @@ mod tests {
             .get_interface(4)
             .expect("Should be there")
             .borrow_mut();
-        assert!(vlan100.vrf.is_none(), "vlan100 should be detached");
+
+        assert!(!vlan100.is_attached_to_fib(&FibId::Id(1)));
 
         let vlan200 = iftable
             .get_interface(5)
             .expect("Should be there")
             .borrow_mut();
 
-        assert!(vlan200.vrf.is_none(), "vlan200 should be detached");
+        assert!(!vlan200.is_attached_to_fib(&FibId::Id(1)));
 
         /* Should be gone from by_vni map */
         assert!(
