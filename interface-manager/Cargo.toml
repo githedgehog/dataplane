@@ -12,6 +12,8 @@ id = { workspace = true, features = ["serde"] }
 net = { workspace = true, features = ["serde"] }
 
 arc-swap = { version = "1.7.1", features = ["serde"] }
+bitflags = "2.9.0"
+crossbeam = { version = "0.8.4", features = ["default"] }
 derive_builder = { workspace = true, default-features = false, features = ["default"] }
 diff-struct = { workspace = true, features = ["default"] }
 futures = { workspace = true, features = ["default"] }
@@ -21,11 +23,9 @@ netlink-sys = { workspace = true }
 nix = { workspace = true, features = ["sched", "fs"] }
 rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["rc", "derive"] }
+serde_yml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "sync"] }
 tracing = { workspace = true, features = ["attributes"] }
-
-crossbeam = { version = "0.8.4", features = ["default"] }
-bitflags = "2.9.0"
 
 

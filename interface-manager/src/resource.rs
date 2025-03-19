@@ -25,12 +25,12 @@ use rtnetlink::{Handle, LinkBridge, LinkVrf, new_connection};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use tracing::{debug, error, info};
 
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize, Diff)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize, Diff)]
 #[serde(from = "u32", into = "u32")]
 #[repr(transparent)]
 pub struct RouteTableId(u32);
@@ -59,13 +59,23 @@ impl Display for RouteTableId {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
-enum NetworkDiscriminant {
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+pub enum NetworkDiscriminant {
     EvpnVxlan { vni: Vni },
 }
 
 #[derive(
-    Clone, Debug, Eq, Hash, MultiIndexMap, Ord, PartialEq, PartialOrd, Deserialize, Serialize,
+    Builder,
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    Hash,
+    MultiIndexMap,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
 )]
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Vpc {
@@ -73,12 +83,12 @@ pub struct Vpc {
     id: Id<Vpc>,
     #[multi_index(ordered_unique)]
     route_table: RouteTableId,
-    #[multi_index(ordered_non_unique)]
+    #[multi_index(ordered_unique)]
     discriminant: NetworkDiscriminant,
 }
 
 impl Vpc {
-    fn new(route_table: RouteTableId, discriminant: NetworkDiscriminant) -> Self {
+    pub fn new(route_table: RouteTableId, discriminant: NetworkDiscriminant) -> Self {
         Self {
             id: Id::new(),
             route_table,
@@ -108,6 +118,16 @@ pub struct ImpliedVrf {
     route_table: RouteTableId,
 }
 
+impl ImpliedVrf {
+    fn from_vpc(vpc: &Vpc) -> ImpliedVrf {
+        let name = InterfaceName::try_from(format!("vrf{}", vpc.route_table)).unwrap();
+        ImpliedVrf {
+            route_table: vpc.route_table,
+            name,
+        }
+    }
+}
+
 #[derive(Builder, Clone, Debug, Eq, MultiIndexMap, PartialEq, Serialize, Deserialize)]
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ObservedVrf {
@@ -115,7 +135,7 @@ pub struct ObservedVrf {
     #[multi_index(ordered_unique)]
     name: InterfaceName,
     #[builder(private)]
-    #[multi_index(ordered_unique)]
+    #[multi_index(ordered_non_unique)]
     route_table: RouteTableId,
     #[builder(private)]
     #[multi_index(ordered_unique)]
@@ -142,6 +162,19 @@ pub struct ImpliedVtep {
     #[multi_index(ordered_unique)]
     vni: Vni,
     local: IpAddr,
+}
+
+impl ImpliedVtep {
+    fn from_vpc(vpc: &Vpc) -> ImpliedVtep {
+        let name = InterfaceName::try_from(format!("vtep{}", vpc.route_table)).unwrap();
+        let NetworkDiscriminant::EvpnVxlan { vni } = vpc.discriminant;
+        ImpliedVtep {
+            name,
+            vni,
+            // TODO: needs real ip
+            local: IpAddr::V4(Ipv4Addr::new(169, 254, 0, 1)),
+        }
+    }
 }
 
 #[derive(
@@ -185,6 +218,17 @@ pub struct ImpliedBridge {
     pub name: InterfaceName,
     pub vlan_filtering: bool,
     pub vlan_protocol: EthType,
+}
+
+impl ImpliedBridge {
+    fn from_vpc(vpc: &Vpc) -> ImpliedBridge {
+        let name = InterfaceName::try_from(format!("br{}", vpc.route_table)).unwrap();
+        ImpliedBridge {
+            name,
+            vlan_protocol: EthType::VLAN,
+            vlan_filtering: false,
+        }
+    }
 }
 
 #[derive(
@@ -254,9 +298,56 @@ pub struct ImpliedVrfMembership {
 
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
 pub struct ImpliedInformationBase {
-    vrfs: MultiIndexImpliedVrfMap,
-    bridges: MultiIndexImpliedBridgeMap,
-    constraints: InformationBaseConstraints,
+    pub(crate) vrfs: MultiIndexImpliedVrfMap,
+    pub(crate) bridges: MultiIndexImpliedBridgeMap,
+    pub(crate) vteps: MultiIndexImpliedVtepMap,
+    pub(crate) constraints: InformationBaseConstraints,
+}
+
+impl ImpliedInformationBase {
+    // TODO: proper error handling
+    pub fn try_add_vpc(&mut self, vpc: &Vpc) {
+        let vrf = ImpliedVrf::from_vpc(vpc);
+        let bridge = ImpliedBridge::from_vpc(vpc);
+        let vtep = ImpliedVtep::from_vpc(vpc);
+        let constraints = [
+            InterfaceConstraint {
+                name: vrf.name.clone(),
+                controller_name: None,
+            },
+            InterfaceConstraint {
+                name: bridge.name.clone(),
+                controller_name: Some(vrf.name.clone()),
+            },
+            InterfaceConstraint {
+                name: vtep.name.clone(),
+                controller_name: Some(bridge.name.clone()),
+            },
+        ];
+        self.vrfs.try_insert(vrf).unwrap();
+        self.bridges.try_insert(bridge).unwrap();
+        self.vteps.try_insert(vtep).unwrap();
+        for constraint in constraints {
+            self.constraints.interface.try_insert(constraint).unwrap();
+        }
+    }
+
+    pub fn try_remove_vpc_by_route_table_id(&mut self, route_table_id: RouteTableId) {
+        let vrf = self.vrfs.remove_by_route_table(&route_table_id).unwrap();
+        for bridge in self
+            .constraints
+            .interface
+            .remove_by_controller_name(&Some(vrf.name))
+        {
+            for vtep in self
+                .constraints
+                .interface
+                .remove_by_controller_name(&Some(bridge.name))
+            {
+                self.vteps.remove_by_name(&vtep.name).unwrap();
+            }
+        }
+    }
 }
 
 // Kept for constraint tracking
@@ -289,18 +380,15 @@ pub struct InterfaceConstraint {
 
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
 pub struct ObservedInformationBase {
-    vrfs: MultiIndexObservedVrfMap,
-    bridges: MultiIndexObservedBridgeMap,
+    pub(crate) vrfs: MultiIndexObservedVrfMap,
+    pub(crate) bridges: MultiIndexObservedBridgeMap,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
 pub struct InformationBase {
-    implied: ImpliedInformationBase,
-    observed: ObservedInformationBase,
+    implied: Arc<ImpliedInformationBase>,
+    observed: Arc<ObservedInformationBase>,
 }
-
-#[derive(Clone, Debug, Deserialize, Serialize, Default)]
-pub struct InformationBase2 {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Requirement {
@@ -635,7 +723,7 @@ impl ObservedVrf {
     pub fn to_implied(&self) -> ImpliedVrf {
         ImpliedVrf {
             name: self.name.clone(),
-            route_table: self.route_table.clone(),
+            route_table: self.route_table,
         }
     }
 }
@@ -668,7 +756,7 @@ impl ObservedInformationBase {
             .unwrap();
         let vrfs_to_remove = extant_vrfs.difference(&desired_vrfs);
         let vrf_removal_results = join_all(vrfs_to_remove.map(|vrf| {
-            let observed = self.vrfs.get_by_route_table(&vrf.route_table).unwrap();
+            let observed = self.vrfs.get_by_name(&vrf.name).unwrap();
             handle.link().del(observed.if_index.to_u32()).execute()
         }))
         .await;
@@ -703,7 +791,7 @@ impl ObservedInformationBase {
         let vrf_create_results = join_all(vrfs_to_create.map(|vrf| {
             handle
                 .link()
-                .add(LinkVrf::new(vrf.name.as_ref(), vrf.route_table.clone().into()).build())
+                .add(LinkVrf::new(vrf.name.as_ref(), vrf.route_table.into()).build())
                 .execute()
         }))
         .await;
@@ -732,7 +820,7 @@ impl Reconcile {
 impl InformationBase {
     async fn reconcile(&mut self, handle: &Handle) {
         // TODO: refresh of whole thing is drastic.  Add in monitor
-        self.observed = *ObservedInformationBase::observe(handle).await;
+        self.observed = ObservedInformationBase::observe(handle).await;
 
         let extant_bridges: HashSet<ImpliedBridge> = self
             .observed
@@ -824,8 +912,8 @@ impl InformationBase {
 }
 
 impl ObservedInformationBase {
-    async fn observe(handle: &Handle) -> Box<ObservedInformationBase> {
-        let mut this = Box::new(ObservedInformationBase::default());
+    async fn observe(handle: &Handle) -> Arc<ObservedInformationBase> {
+        let mut this = Arc::new(ObservedInformationBase::default());
         let mut req = handle.link().get().execute();
         while let Ok(Some(resp)) = req.try_next().await {
             if resp.message_contains(InfoKind::Bridge) {
@@ -855,7 +943,7 @@ impl ObservedInformationBase {
                 }
                 let bridge = builder.build().unwrap();
 
-                match this.bridges.try_insert(bridge) {
+                match Arc::make_mut(&mut this).bridges.try_insert(bridge) {
                     Ok(_) => {}
                     Err(err) => {
                         info!("{err:?}");
@@ -886,7 +974,7 @@ impl ObservedInformationBase {
                 }
                 let vrf = builder.build().unwrap();
 
-                match this.vrfs.try_insert(vrf) {
+                match Arc::make_mut(&mut this).vrfs.try_insert(vrf) {
                     Ok(_) => {}
                     Err(err) => {
                         info!("{err:?}");
