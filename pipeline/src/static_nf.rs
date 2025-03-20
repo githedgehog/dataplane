@@ -57,6 +57,7 @@ impl<Buf: PacketBufferMut, NF1: NetworkFunction<Buf>, NF2: NetworkFunction<Buf>>
 ///
 /// </div>
 pub trait StaticChain<Buf: PacketBufferMut>: NetworkFunction<Buf> {
+    /// Chain a network function (self) with another, producing a third
     #[allow(unused)]
     fn chain<NF: NetworkFunction<Buf>>(self, nf: NF) -> impl NetworkFunction<Buf>;
 }
@@ -80,8 +81,8 @@ mod test {
     use net::eth::mac::{DestinationMac, Mac};
     use net::headers::{TryEth, TryIpv4};
 
-    use crate::pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders, Passthrough};
-    use crate::pipeline::{NetworkFunction, StaticChain};
+    use crate::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders, Passthrough};
+    use crate::{NetworkFunction, StaticChain};
     use net::packet::test_utils::build_test_ipv4_packet;
 
     #[test]

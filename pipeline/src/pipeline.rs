@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::pipeline::dyn_nf::DynNetworkFunctionImpl;
-use crate::pipeline::{DynNetworkFunction, NetworkFunction, nf_dyn};
+#![allow(clippy::missing_errors_doc)]
+
+use crate::dyn_nf::DynNetworkFunctionImpl;
+use crate::{DynNetworkFunction, NetworkFunction, nf_dyn};
 use dyn_iter::{DynIter, IntoDynIterator};
 use id::Id;
 use net::buffer::PacketBufferMut;
@@ -10,6 +12,7 @@ use net::packet::Packet;
 use ordermap::OrderMap;
 use std::any::Any;
 
+/// A type that represents an Id for a stage or NF
 pub type StageId<Buf> = Id<Box<dyn DynNetworkFunction<Buf>>>;
 
 /// A dynamic pipeline that can be updated at runtime.
@@ -31,7 +34,9 @@ pub enum PipelineError {
 }
 
 impl<Buf: PacketBufferMut> DynPipeline<Buf> {
+    /// Create a [`DynPipeline`].
     #[allow(unused)]
+    #[must_use]
     pub fn new() -> Self {
         Self {
             nfs: OrderMap::new(),
@@ -43,6 +48,7 @@ impl<Buf: PacketBufferMut> DynPipeline<Buf> {
     /// This method takes a [`NetworkFunction`] and adds it to the pipeline.
     ///
     #[allow(unused)]
+    #[must_use]
     pub fn add_stage<NF: NetworkFunction<Buf> + 'static>(self, nf: NF) -> Self {
         self.add_stage_dyn(nf_dyn(nf))
     }
@@ -69,6 +75,7 @@ impl<Buf: PacketBufferMut> DynPipeline<Buf> {
     /// [`DynNetworkFunction`]
     /// [`nf_dyn`]
     #[allow(unused)]
+    #[must_use]
     pub fn add_stage_dyn(mut self, nf: Box<dyn DynNetworkFunction<Buf>>) -> Self {
         self.internal_add_stage_dyn_with_id(StageId::<Buf>::new(), nf);
         self
@@ -153,6 +160,7 @@ impl<Buf: PacketBufferMut> DynPipeline<Buf> {
     /// # See Also
     ///
     #[allow(unused)]
+    #[must_use]
     pub fn get_stage_dyn_by_id<T: DynNetworkFunction<Buf>>(&self, id: &StageId<Buf>) -> Option<&T> {
         self.nfs
             .get(id)
@@ -186,10 +194,10 @@ mod test {
     use net::eth::mac::{DestinationMac, Mac};
     use net::headers::{Net, TryEth, TryIp, TryIpv4};
 
-    use crate::pipeline::dyn_nf::DynNetworkFunctionImpl;
-    use crate::pipeline::sample_nfs::DecrementTtl;
-    use crate::pipeline::test_utils::DynStageGenerator;
-    use crate::pipeline::{DynNetworkFunction, DynPipeline, NetworkFunction, StageId};
+    use crate::dyn_nf::DynNetworkFunctionImpl;
+    use crate::sample_nfs::DecrementTtl;
+    use crate::test_utils::DynStageGenerator;
+    use crate::{DynNetworkFunction, DynPipeline, NetworkFunction, StageId};
     use net::packet::test_utils::build_test_ipv4_packet;
 
     type TestStageId = StageId<TestBuffer>;

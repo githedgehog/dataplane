@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::pipeline::NetworkFunction;
+use crate::NetworkFunction;
 use dyn_iter::{DynIter, IntoDynIterator};
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;

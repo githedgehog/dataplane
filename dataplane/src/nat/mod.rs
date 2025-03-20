@@ -43,7 +43,7 @@ mod prefixtrie;
 use crate::nat::fabric::{PeeringPolicy, Pif, Vpc};
 use crate::nat::iplist::IpList;
 use crate::nat::prefixtrie::PrefixTrie;
-use crate::pipeline::NetworkFunction;
+use pipeline::NetworkFunction;
 
 use net::buffer::PacketBufferMut;
 use net::headers::Net;

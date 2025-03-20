@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::pipeline::NetworkFunction;
+use crate::NetworkFunction;
 use net::buffer::PacketBufferMut;
 use net::eth::mac::{DestinationMac, Mac};
 use net::headers::{TryEthMut, TryHeaders, TryIpv4Mut, TryIpv6Mut};

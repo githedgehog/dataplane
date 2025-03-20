@@ -7,7 +7,6 @@
 
 mod args;
 mod nat;
-mod pipeline;
 
 use dpdk::dev::{Dev, TxOffloadConfig};
 use dpdk::eal::Eal;
@@ -19,9 +18,9 @@ use dpdk::{dev, eal, socket};
 use tracing::{info, trace, warn};
 
 use crate::args::{CmdArgs, Parser};
-use crate::pipeline::sample_nfs::Passthrough;
-use crate::pipeline::{DynPipeline, NetworkFunction};
 use net::packet::Packet;
+use pipeline::sample_nfs::Passthrough;
+use pipeline::{DynPipeline, NetworkFunction};
 
 #[global_allocator]
 static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();

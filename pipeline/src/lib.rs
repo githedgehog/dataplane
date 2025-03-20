@@ -2,10 +2,12 @@
 // Copyright Open Network Fabric Authors
 
 #![allow(rustdoc::private_doc_tests)]
+#![deny(clippy::all)]
+#![deny(clippy::pedantic)]
 
 //! # Pipeline Building Blocks
 //!
-//! This module provides the building blocks for constructing pipelines of network functions.
+//! This crate provides the building blocks for constructing pipelines of network functions.
 //! There are two main methods provided for linking network functions together in sequence:
 //!
 //! - `StaticChain`: A trait for statically chaining network functions together.
@@ -22,13 +24,18 @@
 //! method. [`StaticChain`] is implemented for all types that implement [`NetworkFunction`].
 //!
 //! ```rust
-//! use crate::dataplane::pipeline::{NetworkFunction, StaticChain};
-//! use crate::dataplane::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
+//! use pipeline::{NetworkFunction, StaticChain};
+//! use pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
+//! use net::buffer::PacketBufferMut;
+//! use net::packet::Packet;
+//! use net::packet::test_utils::TestBuffer;
 //!
 //! /// This creates a chain of functions that first does a `debug!` on the packet contents then
 //! /// sets the destination mac to the broadcast mac address then decrements the TTL value of the
 //! /// IP packet.
 //! let mut pipeline = InspectHeaders.chain(BroadcastMacs).chain(DecrementTtl);
+//! let pkts: Vec<Packet<TestBuffer>> = vec![];
+//! pipeline.process(pkts.into_iter());
 //! ```
 //! Note that `pipeline` implements the [`NetworkFunction`] trait and can be used anywhere a
 //! network function is expected.
@@ -48,10 +55,11 @@
 //! together a series of network functions.
 //!
 //! ```rust
-//! use crate::dataplane::pipeline::DynPipeline;
-//! use crate::dataplane::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
+//! use pipeline::DynPipeline;
+//! use pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
+//! use net::packet::test_utils::TestBuffer;
 //!
-//! let mut pipeline = DynPipeline::new();
+//! let mut pipeline = DynPipeline::<TestBuffer>::new();
 //! pipeline = pipeline.add_stage(InspectHeaders);
 //! pipeline = pipeline.add_stage(BroadcastMacs);
 //! pipeline = pipeline.add_stage(DecrementTtl);
@@ -68,10 +76,11 @@
 //! You can also combine dynamic chaining with static chaining.
 //!
 //! ```rust
-//! use crate::dataplane::pipeline::{DynPipeline, NetworkFunction, StaticChain};
-//! use crate::dataplane::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
+//! use pipeline::{DynPipeline, NetworkFunction, StaticChain};
+//! use pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
+//! use net::packet::test_utils::TestBuffer;
 //!
-//! let mut pipeline = DynPipeline::new();
+//! let mut pipeline: DynPipeline<TestBuffer> = DynPipeline::new();
 //! // Add a dynamic stage that is the static chain of `InspectHeaders` and `BroadcastMacs`
 //! pipeline = pipeline.add_stage(InspectHeaders.chain(BroadcastMacs));
 //! pipeline = pipeline.add_stage(DecrementTtl);
@@ -100,8 +109,8 @@
 )]
 
 mod dyn_nf;
-#[allow(clippy::module_inception)]
 mod pipeline;
+/// Sample network functions
 pub mod sample_nfs;
 mod static_nf;
 
@@ -121,8 +130,8 @@ mod test {
     use net::eth::mac::{DestinationMac, Mac};
     use net::headers::{TryEth, TryIpv4};
 
-    use crate::pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, Passthrough};
-    use crate::pipeline::{DynPipeline, NetworkFunction, StaticChain};
+    use crate::sample_nfs::{BroadcastMacs, DecrementTtl, Passthrough};
+    use crate::{DynPipeline, NetworkFunction, StaticChain};
     use net::packet::test_utils::build_test_ipv4_packet;
 
     #[test]

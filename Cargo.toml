@@ -8,6 +8,7 @@ members = [
 	"errno",
 	"id",
 	"net",
+	"pipeline",
 	"routing",
 ]
 
@@ -17,6 +18,7 @@ default-members = [
 	"errno",
 	"id",
 	"net",
+	"pipeline",
 	"routing",
 ]
 
@@ -32,6 +34,7 @@ dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", version = 
 errno = { path = "./errno", package = "dataplane-errno" }
 id = { path = "./id", package = "dataplane-id" }
 net = { path = "./net" }
+pipeline = { path = "./pipeline" }
 routing = { path = "./routing" }
 
 # External

@@ -4,7 +4,7 @@
 //! [`PacketBuffer`] and related traits
 
 #[cfg(any(test, feature = "test_buffer"))]
-mod test_buffer;
+pub mod test_buffer;
 
 use core::fmt::Debug;
 #[allow(unused_imports)] // re-export

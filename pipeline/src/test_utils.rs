@@ -3,8 +3,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use crate::pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders, Passthrough};
-use crate::pipeline::{DynNetworkFunction, nf_dyn};
+use crate::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders, Passthrough};
+use crate::{DynNetworkFunction, nf_dyn};
 use net::buffer::TestBuffer;
 
 /// Generates an infinite sequence of network functions.
