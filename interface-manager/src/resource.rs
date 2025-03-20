@@ -113,9 +113,9 @@ impl Vpc {
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ImpliedVrf {
     #[multi_index(hashed_unique)]
-    name: InterfaceName,
+    pub name: InterfaceName,
     #[multi_index(hashed_unique)]
-    route_table: RouteTableId,
+    pub route_table: RouteTableId,
 }
 
 impl ImpliedVrf {
@@ -158,10 +158,10 @@ pub struct ObservedVrf {
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ImpliedVtep {
     #[multi_index(ordered_unique)]
-    name: InterfaceName,
+    pub name: InterfaceName,
     #[multi_index(ordered_unique)]
-    vni: Vni,
-    local: IpAddr,
+    pub vni: Vni,
+    pub local: Ipv4Addr,
 }
 
 impl ImpliedVtep {
@@ -172,7 +172,7 @@ impl ImpliedVtep {
             name,
             vni,
             // TODO: needs real ip
-            local: IpAddr::V4(Ipv4Addr::new(169, 254, 0, 1)),
+            local: Ipv4Addr::new(169, 254, 0, 1),
         }
     }
 }
@@ -198,7 +198,7 @@ pub struct ObservedVtep {
     pub(crate) if_index: IfIndex,
     #[multi_index(ordered_unique)]
     vni: Vni,
-    local: Option<Ipv4Addr>,
+    local: Ipv4Addr,
     ttl: u8,
 }
 
@@ -732,6 +732,16 @@ impl ObservedVrf {
     }
 }
 
+impl ObservedVtep {
+    pub fn to_implied(&self) -> ImpliedVtep {
+        ImpliedVtep {
+            name: self.name.clone(),
+            local: self.local,
+            vni: self.vni,
+        }
+    }
+}
+
 impl ObservedInformationBase {
     async fn drive_to(&self, handle: &Handle, target: &ImpliedInformationBase) {
         let extant_bridges: HashSet<ImpliedBridge> = self
@@ -990,7 +1000,7 @@ impl ObservedInformationBase {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ObservedInterface {
     Bridge(ObservedBridge),
     Vrf(ObservedVrf),
@@ -1055,7 +1065,7 @@ impl TryFrom<LinkMessage> for ObservedVrf {
     type Error = LinkMessage;
 
     fn try_from(message: LinkMessage) -> Result<Self, Self::Error> {
-        if !message.message_contains(InfoKind::Bridge) {
+        if !message.message_contains(InfoKind::Vrf) {
             return Err(message);
         }
         let mut builder = ObservedVrfBuilder::default();
@@ -1103,7 +1113,7 @@ impl TryFrom<LinkMessage> for ObservedVtep {
     type Error = LinkMessage;
 
     fn try_from(message: LinkMessage) -> Result<Self, Self::Error> {
-        if !message.message_contains(InfoKind::Bridge) {
+        if !message.message_contains(InfoKind::Vxlan) {
             return Err(message);
         }
         let mut builder = ObservedVtepBuilder::default();
@@ -1132,7 +1142,7 @@ impl TryFrom<LinkMessage> for ObservedVtep {
                                         }
                                     },
                                     InfoVxlan::Local(ip) => {
-                                        builder.local(Some(*ip));
+                                        builder.local(*ip);
                                     }
                                     InfoVxlan::Ttl(ttl) => {
                                         builder.ttl(*ttl);
