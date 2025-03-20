@@ -3,10 +3,10 @@
 
 //! Main processing functions of the CPI
 
-//use crate::interface::IfTable;
+#[cfg(feature = "auto-learn")]
+use crate::interfaces::iftablerw::IfTableWriter;
 #[cfg(feature = "auto-learn")]
 use crate::interfaces::interface::Interface;
-
 #[cfg(feature = "auto-learn")]
 use net::vxlan::Vni;
 
@@ -35,13 +35,13 @@ trait RpcOperation {
     {
         RpcResultCode::InvalidRequest
     }
-    fn add(&self, db: &Self::ObjectStore) -> RpcResultCode
+    fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode
     where
         Self: Sized,
     {
         RpcResultCode::InvalidRequest
     }
-    fn del(&self, db: &Self::ObjectStore) -> RpcResultCode
+    fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode
     where
         Self: Sized,
     {
@@ -132,42 +132,9 @@ fn get_vrf0<'a>(iproute: &IpRoute, vrftable: &'a VrfTable) -> Option<&'a Arc<RwL
 impl RpcOperation for IpRoute {
     type ObjectStore = RoutingDb;
     #[allow(unused_mut)]
-    fn add(&self, db: &Self::ObjectStore) -> RpcResultCode {
-        let _iftable_g = db.iftable.read().unwrap();
+    fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         let rmac_store_g = db.rmac_store.read().unwrap();
         let vtep_g = db.vtep.read().unwrap();
-
-        /*
-                let process_route = |vrftable: &mut VrfTable| -> RpcResultCode {
-                    #[cfg(feature = "auto-learn")]
-                    auto_learn_vrf(&self, vrftable);
-
-                    let vrfg = get_vrf0(self, vrftable);
-
-                    if let Ok(vrf) = vrftable.get_vrf(self.vrfid) {
-                        if let Ok(mut vrf) = vrf.write() {
-                            if let Some(vrf0) = vrfg {
-                                vrf.add_route_rpc(self, vrf0.read().ok().as_deref());
-                            } else {
-                                vrf.add_route_rpc(self, None);
-                            }
-                            RpcResultCode::Ok
-                        } else {
-                            vrf.clear_poison();
-                            RpcResultCode::Failure
-                        }
-                    } else {
-                        RpcResultCode::Failure
-                    }
-                };
-
-                if let Ok(mut vrftable) = db.vrftable.write() {
-                    process_route(&mut vrftable)
-                } else {
-                    db.vrftable.clear_poison();
-                    RpcResultCode::Failure
-                }
-        */
 
         if let Ok(mut vrftable) = db.vrftable.write() {
             #[cfg(feature = "auto-learn")]
@@ -199,7 +166,7 @@ impl RpcOperation for IpRoute {
             poison_warn(&db.vrftable)
         }
     }
-    fn del(&self, db: &Self::ObjectStore) -> RpcResultCode {
+    fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         if let Ok(vrftable) = db.vrftable.write() {
             if let Ok(vrf) = vrftable.get_vrf(self.vrfid) {
                 if let Ok(mut vrf) = vrf.write() {
@@ -219,7 +186,7 @@ impl RpcOperation for IpRoute {
 }
 impl RpcOperation for Rmac {
     type ObjectStore = RoutingDb;
-    fn add(&self, db: &Self::ObjectStore) -> RpcResultCode {
+    fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         if let Ok(mut rmac_store) = db.rmac_store.write() {
             let rmac = RmacEntry::from(self);
             rmac_store.add_rmac_entry(rmac);
@@ -228,7 +195,7 @@ impl RpcOperation for Rmac {
             RpcResultCode::Failure
         }
     }
-    fn del(&self, db: &Self::ObjectStore) -> RpcResultCode {
+    fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         if let Ok(mut rmac_store) = db.rmac_store.write() {
             let rmac = RmacEntry::from(self);
             rmac_store.del_rmac_entry(rmac);
@@ -238,32 +205,32 @@ impl RpcOperation for Rmac {
         }
     }
 }
-impl RpcOperation for IfAddress {
-    type ObjectStore = RoutingDb;
-    fn add(&self, db: &Self::ObjectStore) -> RpcResultCode {
-        #[allow(unused_mut)] // remove when don't use RwLock
-        if let Ok(mut iftable) = db.iftable.write() {
-            #[cfg(feature = "auto-learn")]
-            if iftable.get_interface(self.ifindex).is_none() {
-                let _ = iftable.add_interface(Interface::new(self.ifname.as_str(), self.ifindex));
-            }
-            if let Err(e) = iftable.add_ifaddr(self.ifindex, &(self.address, self.mask_len)) {
-                error!("Failed to add address to interface {}:{e}", self.ifname);
-                RpcResultCode::Failure
-            } else {
-                RpcResultCode::Ok
-            }
-        } else {
-            poison_warn(&db.iftable)
+
+#[cfg(feature = "auto-learn")]
+fn auto_learn_interface(a: &IfAddress, iftw: &mut IfTableWriter) {
+    let mut create = false;
+    if let Some(iftable) = iftw.enter() {
+        if iftable.get_interface(a.ifindex).is_none() {
+            create = true;
         }
     }
-    fn del(&self, db: &Self::ObjectStore) -> RpcResultCode {
-        if let Ok(iftable) = db.iftable.write() {
-            iftable.del_ifaddr(self.ifindex, &(self.address, self.mask_len));
-            RpcResultCode::Ok
-        } else {
-            poison_warn(&db.iftable)
-        }
+    if create {
+        let _ = iftw.add_interface(Interface::new(a.ifname.as_str(), a.ifindex));
+    }
+}
+impl RpcOperation for IfAddress {
+    type ObjectStore = RoutingDb;
+    fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
+        #[cfg(feature = "auto-learn")]
+        auto_learn_interface(self, &mut db.iftw);
+        db.iftw
+            .add_ip_address(self.ifindex, (self.address, self.mask_len));
+        RpcResultCode::Ok
+    }
+    fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
+        db.iftw
+            .del_ip_address(self.ifindex, (self.address, self.mask_len));
+        RpcResultCode::Ok
     }
 }
 
@@ -312,7 +279,12 @@ fn handle_get_request(csock: &mut RpcCachedSock, peer: &SocketAddr, req: &RpcReq
     let resp_msg = build_response_msg(req, res_code, Some(objects));
     csock.send_msg(resp_msg, peer);
 }
-fn handle_request(csock: &mut RpcCachedSock, peer: &SocketAddr, req: &RpcRequest, db: &RoutingDb) {
+fn handle_request(
+    csock: &mut RpcCachedSock,
+    peer: &SocketAddr,
+    req: &RpcRequest,
+    db: &mut RoutingDb,
+) {
     let op = req.get_op();
     let object = req.get_object();
     debug!("Handling {}", req);
@@ -355,7 +327,7 @@ fn handle_notification(_csock: &RpcCachedSock, peer: &SocketAddr, _notif: &RpcNo
     warn!("Received a notification message from {:?}", peer);
 }
 fn handle_control(_csock: &RpcCachedSock, _peer: &SocketAddr, _ctl: &RpcControl) {}
-fn handle_rpc_msg(csock: &mut RpcCachedSock, peer: &SocketAddr, msg: &RpcMsg, db: &RoutingDb) {
+fn handle_rpc_msg(csock: &mut RpcCachedSock, peer: &SocketAddr, msg: &RpcMsg, db: &mut RoutingDb) {
     match msg {
         RpcMsg::Control(ctl) => handle_control(csock, peer, ctl),
         RpcMsg::Request(req) => handle_request(csock, peer, req, db),
@@ -366,7 +338,12 @@ fn handle_rpc_msg(csock: &mut RpcCachedSock, peer: &SocketAddr, msg: &RpcMsg, db
 
 /* process rx data from UX sock */
 #[allow(unused)]
-pub fn process_rx_data(csock: &mut RpcCachedSock, peer: &SocketAddr, data: &[u8], db: &RoutingDb) {
+pub fn process_rx_data(
+    csock: &mut RpcCachedSock,
+    peer: &SocketAddr,
+    data: &[u8],
+    db: &mut RoutingDb,
+) {
     let peer_addr = peer.as_pathname().unwrap_or_else(|| Path::new("unnamed"));
     trace!("CPI: recvd {} bytes from {:?}...", data.len(), peer_addr);
     let mut buf_rx = Bytes::copy_from_slice(data); // TODO: avoid this copy
