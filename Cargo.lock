@@ -881,6 +881,7 @@ dependencies = [
  "ipnet",
  "iptrie",
  "left-right",
+ "mac_address",
  "mio",
  "serde",
  "serde_yml",
