@@ -10,6 +10,7 @@ use crate::cli::handle_cli_request;
 use crate::cpi_process::process_rx_data;
 use crate::errors::RouterError;
 use crate::fib::fibtable::{FibTable, FibTableWriter};
+use crate::interfaces::iftablerw::IfTableWriter;
 use crate::routingdb::RoutingDb;
 use left_right::ReadHandleFactory;
 use std::sync::RwLock;
@@ -43,7 +44,6 @@ pub enum CpiCtlMsg {
 pub struct CpiHandle {
     pub ctl: Sender<CpiCtlMsg>,
     pub handle: JoinHandle<()>,
-    pub fibr_fact: ReadHandleFactory<FibTable>,
 }
 #[allow(unused)]
 impl CpiHandle {
@@ -80,7 +80,11 @@ fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
 }
 
 #[allow(unused)]
-pub fn start_cpi(conf: &CpiConf) -> Result<CpiHandle, RouterError> {
+pub fn start_cpi(
+    conf: &CpiConf,
+    fibtw: FibTableWriter,
+    iftw: IfTableWriter,
+) -> Result<CpiHandle, RouterError> {
     /* get desired loglevel and set it */
     let loglevel = conf
         .rpc_loglevel
@@ -140,11 +144,6 @@ pub fn start_cpi(conf: &CpiConf) -> Result<CpiHandle, RouterError> {
         .register(&mut ev_clisock, CLISOCK, Interest::READABLE)
         .expect("Failed to register CLI sock");
 
-    /* placeholder to get read handle factory from CPI */
-    let mut fibt_r_fact: Arc<RwLock<Option<ReadHandleFactory<FibTable>>>> =
-        Arc::new(RwLock::new(None));
-    let fibt_r_fact_clone = fibt_r_fact.clone();
-
     /* CPI & CLI loop */
     let cpi_loop = move || {
         info!("CPI Listening at {}.", cp_sock_path);
@@ -154,18 +153,10 @@ pub fn start_cpi(conf: &CpiConf) -> Result<CpiHandle, RouterError> {
         let mut buf = vec![0; 1024];
         let mut run = true;
 
-        /* create FIB table and writer and reader */
-        let (mut fibt_w, fibt_r) = FibTableWriter::new();
-
         /* TODO: create default VRF upfront ? */
 
-        /* pass factory of fibtable read handles back */
-        if let Ok(mut x) = fibt_r_fact_clone.write() {
-            *x = Some(fibt_r.factory());
-        }
-
         /* create routing database */
-        let mut db = RoutingDb::new(Some(fibt_w));
+        let mut db = RoutingDb::new(Some(fibtw), iftw);
 
         if let Ok(mut vtep) = db.vtep.write() {
             vtep.set_ip(IpAddr::from_str("7.0.0.1").unwrap());
@@ -232,32 +223,7 @@ pub fn start_cpi(conf: &CpiConf) -> Result<CpiHandle, RouterError> {
         .spawn(cpi_loop)
         .map_err(|_| RouterError::CpiFailure)?;
 
-    /* wait for the CPI thread to provide the read handle factory for the fibtable */
-    let mut fibr_fact;
-    loop {
-        let now = Instant::now();
-        if let Ok(read_guard) = fibt_r_fact.read() {
-            if let Some(fact) = &*read_guard {
-                fibr_fact = fact.clone();
-                break;
-            }
-        } else {
-            panic!("Impossible to access Fibtable reader");
-        }
-        /* Sanity */
-        if now.elapsed().as_secs() > 5 {
-            error!("CPI failed to provide fibtable access in a reasonable time");
-            tx.send(CpiCtlMsg::Finish)
-                .map_err(|_| RouterError::CpiFailure)?;
-            return Err(RouterError::Internal);
-        }
-    }
-
-    Ok(CpiHandle {
-        ctl: tx,
-        handle,
-        fibr_fact,
-    })
+    Ok(CpiHandle { ctl: tx, handle })
 }
 
 #[allow(unused)]
@@ -267,6 +233,7 @@ mod tests {
     use crate::cpi::{CpiConf, start_cpi};
     use crate::errors::RouterError;
     use crate::interfaces::iftable::IfTable;
+    use crate::interfaces::iftablerw::IfTableWriter;
     use crate::interfaces::interface::Interface;
     use crate::rmac::RmacStore;
     use crate::routingdb::{RoutingDb, VrfTable};
@@ -284,8 +251,11 @@ mod tests {
             cli_sock_path: None,
         };
 
+        /* create interface table */
+        let (mut iftw, iftr) = IfTableWriter::new();
+
         /* start CPI */
-        let cpi = start_cpi(&conf).expect("Should succeed");
+        let cpi = start_cpi(&conf, iftw).expect("Should succeed");
         thread::sleep(Duration::from_secs(3));
         assert_eq!(cpi.finish(), Ok(()));
     }
@@ -298,8 +268,11 @@ mod tests {
             cli_sock_path: None,
         };
 
+        /* create interface table */
+        let (mut iftw, iftr) = IfTableWriter::new();
+
         /* start CPI */
-        let cpi = start_cpi(&conf);
+        let cpi = start_cpi(&conf, iftw);
         assert!(cpi.is_err_and(|e| e == RouterError::InvalidSockPath));
     }
 }
