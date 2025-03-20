@@ -354,13 +354,19 @@ fn show_fib_groups(
 fn _handle_cli_request(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
     let response = match request.action {
         CliAction::ShowRouterInterfaces => {
-            let iftable = db.iftable.read().map_err(|_| CliError::InternalError)?;
-            CliResponse::from_request_ok(request, format!("\n{}", iftable))
+            if let Some(iftable) = db.iftw.enter() {
+                CliResponse::from_request_ok(request, format!("\n{}", *iftable))
+            } else {
+                CliResponse::from_request_fail(request, CliError::InternalError)
+            }
         }
         CliAction::ShowRouterInterfaceAddresses => {
-            let iftable = db.iftable.read().map_err(|_| CliError::InternalError)?;
-            let iftable_addrs = IfTableAddress(&iftable);
-            CliResponse::from_request_ok(request, format!("\n{}", iftable_addrs))
+            if let Some(iftable) = db.iftw.enter() {
+                let iftable_addrs = IfTableAddress(&iftable);
+                CliResponse::from_request_ok(request, format!("\n{}", iftable_addrs))
+            } else {
+                CliResponse::from_request_fail(request, CliError::InternalError)
+            }
         }
         CliAction::ShowRouterVrfs => return show_vrfs(request, db),
         CliAction::ShowRouterEvpnRmacStore => {

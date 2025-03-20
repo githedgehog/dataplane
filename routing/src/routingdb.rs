@@ -230,7 +230,6 @@ impl VrfTable {
 /// Routing database
 pub struct RoutingDb {
     pub vrftable: RwLock<VrfTable>,
-    pub iftable: RwLock<IfTable>,
     pub rmac_store: RwLock<RmacStore>,
     pub vtep: RwLock<Vtep>,
     pub atable: RwLock<AdjacencyTable>,
@@ -243,7 +242,6 @@ impl RoutingDb {
     pub fn new(fibtable: Option<FibTableWriter>, iftw: IfTableWriter) -> Self {
         Self {
             vrftable: RwLock::new(VrfTable::new(fibtable)),
-            iftable: RwLock::new(IfTable::new()),
             rmac_store: RwLock::new(RmacStore::new()),
             vtep: RwLock::new(Vtep::new()),
             atable: RwLock::new(AdjacencyTable::new()),

@@ -9,11 +9,9 @@ const DEFAULT_DP_UX_PATH_CLI: &str = "/tmp/dataplane_ctl.sock";
 use crate::cli::handle_cli_request;
 use crate::cpi_process::process_rx_data;
 use crate::errors::RouterError;
-use crate::fib::fibtable::{FibTable, FibTableWriter};
+use crate::fib::fibtable::FibTableWriter;
 use crate::interfaces::iftablerw::IfTableWriter;
 use crate::routingdb::RoutingDb;
-use left_right::ReadHandleFactory;
-use std::sync::RwLock;
 
 use cli::cliproto::CliRequest;
 use cli::cliproto::CliSerialize;
@@ -30,10 +28,9 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
 use std::str::FromStr;
-use std::sync::Arc;
 use std::sync::mpsc::{Sender, TryRecvError, channel};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tracing::{debug, error, info};
 
 #[allow(unused)]
@@ -186,7 +183,7 @@ pub fn start_cpi(
                     CPSOCK => {
                         while event.is_readable() {
                             if let Ok((len, peer)) = cached_sock.recv_from(buf.as_mut_slice()) {
-                                process_rx_data(&mut cached_sock, &peer, &buf[..len], &db);
+                                process_rx_data(&mut cached_sock, &peer, &buf[..len], &mut db);
                             } else {
                                 break;
                             }
@@ -232,6 +229,7 @@ pub fn start_cpi(
 mod tests {
     use crate::cpi::{CpiConf, start_cpi};
     use crate::errors::RouterError;
+    use crate::fib::fibtable::FibTableWriter;
     use crate::interfaces::iftable::IfTable;
     use crate::interfaces::iftablerw::IfTableWriter;
     use crate::interfaces::interface::Interface;
@@ -254,8 +252,11 @@ mod tests {
         /* create interface table */
         let (mut iftw, iftr) = IfTableWriter::new();
 
+        /* create fib table */
+        let (mut fibtw, fibtr) = FibTableWriter::new();
+
         /* start CPI */
-        let cpi = start_cpi(&conf, iftw).expect("Should succeed");
+        let cpi = start_cpi(&conf, fibtw, iftw).expect("Should succeed");
         thread::sleep(Duration::from_secs(3));
         assert_eq!(cpi.finish(), Ok(()));
     }
@@ -271,8 +272,11 @@ mod tests {
         /* create interface table */
         let (mut iftw, iftr) = IfTableWriter::new();
 
+        /* create fib table */
+        let (mut fibtw, fibtr) = FibTableWriter::new();
+
         /* start CPI */
-        let cpi = start_cpi(&conf, iftw);
+        let cpi = start_cpi(&conf, fibtw, iftw);
         assert!(cpi.is_err_and(|e| e == RouterError::InvalidSockPath));
     }
 }
