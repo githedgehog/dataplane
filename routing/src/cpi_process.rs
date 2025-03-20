@@ -6,11 +6,17 @@
 #[cfg(feature = "auto-learn")]
 use crate::interfaces::iftablerw::IfTableWriter;
 #[cfg(feature = "auto-learn")]
+use crate::interfaces::interface::IfDataEthernet;
+#[cfg(feature = "auto-learn")]
 use crate::interfaces::interface::IfState;
 #[cfg(feature = "auto-learn")]
 use crate::interfaces::interface::IfType;
 #[cfg(feature = "auto-learn")]
 use crate::interfaces::interface::Interface;
+#[cfg(feature = "auto-learn")]
+use mac_address::mac_address_by_name;
+#[cfg(feature = "auto-learn")]
+use net::eth::mac::Mac;
 #[cfg(feature = "auto-learn")]
 use net::vxlan::Vni;
 
@@ -231,6 +237,12 @@ fn auto_learn_interface(a: &IfAddress, iftw: &mut IfTableWriter, vrftable: &RwLo
         iface.set_oper_state(IfState::Up);
         if a.ifindex == 1 {
             iface.set_iftype(IfType::Loopback);
+        } else if let Ok(res) = mac_address_by_name(a.ifname.as_str()) {
+            if let Some(mac) = &res {
+                iface.set_iftype(IfType::Ethernet(IfDataEthernet {
+                    mac: Mac::from(mac.bytes()),
+                }));
+            }
         }
 
         /* add to interface table */
