@@ -240,13 +240,18 @@ pub struct RoutingDb {
 impl RoutingDb {
     #[allow(dead_code)]
     pub fn new(fibtable: Option<FibTableWriter>, iftw: IfTableWriter) -> Self {
-        Self {
+        let mut db = Self {
             vrftable: RwLock::new(VrfTable::new(fibtable)),
             rmac_store: RwLock::new(RmacStore::new()),
             vtep: RwLock::new(Vtep::new()),
             atable: RwLock::new(AdjacencyTable::new()),
             iftw,
+        };
+        /* create default vrf */
+        if let Ok(mut vrftable) = db.vrftable.write() {
+            vrftable.add_vrf("default", 0, None);
         }
+        db
     }
 }
 
