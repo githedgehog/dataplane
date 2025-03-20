@@ -6,6 +6,10 @@
 #[cfg(feature = "auto-learn")]
 use crate::interfaces::iftablerw::IfTableWriter;
 #[cfg(feature = "auto-learn")]
+use crate::interfaces::interface::IfState;
+#[cfg(feature = "auto-learn")]
+use crate::interfaces::interface::IfType;
+#[cfg(feature = "auto-learn")]
 use crate::interfaces::interface::Interface;
 #[cfg(feature = "auto-learn")]
 use net::vxlan::Vni;
@@ -207,7 +211,7 @@ impl RpcOperation for Rmac {
 }
 
 #[cfg(feature = "auto-learn")]
-fn auto_learn_interface(a: &IfAddress, iftw: &mut IfTableWriter) {
+fn auto_learn_interface(a: &IfAddress, iftw: &mut IfTableWriter, vrftable: &RwLock<VrfTable>) {
     let mut create = false;
     if let Some(iftable) = iftw.enter() {
         if iftable.get_interface(a.ifindex).is_none() {
@@ -215,14 +219,35 @@ fn auto_learn_interface(a: &IfAddress, iftw: &mut IfTableWriter) {
         }
     }
     if create {
-        let _ = iftw.add_interface(Interface::new(a.ifname.as_str(), a.ifindex));
+        debug!(
+            "Creating interface {}, ifindex {}",
+            a.ifname.as_str(),
+            a.ifindex
+        );
+
+        /* create interface */
+        let mut iface = Interface::new(a.ifname.as_str(), a.ifindex);
+        iface.set_admin_state(IfState::Up);
+        iface.set_oper_state(IfState::Up);
+        if a.ifindex == 1 {
+            iface.set_iftype(IfType::Loopback);
+        }
+
+        /* add to interface table */
+        let _ = iftw.add_interface(iface);
+
+        /* attach to default vrf */
+        if let Ok(vrftable) = vrftable.read() {
+            debug!("Attaching {} to default VRF", a.ifname.as_str());
+            let _ = iftw.attach_interface_to_vrf(a.ifindex, 0, &vrftable);
+        }
     }
 }
 impl RpcOperation for IfAddress {
     type ObjectStore = RoutingDb;
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         #[cfg(feature = "auto-learn")]
-        auto_learn_interface(self, &mut db.iftw);
+        auto_learn_interface(self, &mut db.iftw, &db.vrftable);
         db.iftw
             .add_ip_address(self.ifindex, (self.address, self.mask_len));
         RpcResultCode::Ok
