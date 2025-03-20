@@ -10,6 +10,7 @@ use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
 use crate::fib::fibtype::FibId;
 use crate::interfaces::iftable::IfTable;
+use crate::interfaces::iftablerw::IfTableWriter;
 use crate::rmac::{RmacStore, Vtep};
 use crate::vrf::{Vrf, VrfId};
 use net::vxlan::Vni;
@@ -233,18 +234,20 @@ pub struct RoutingDb {
     pub rmac_store: RwLock<RmacStore>,
     pub vtep: RwLock<Vtep>,
     pub atable: RwLock<AdjacencyTable>,
+    pub iftw: IfTableWriter,
 }
 #[allow(unused)]
 #[allow(clippy::new_without_default)]
 impl RoutingDb {
     #[allow(dead_code)]
-    pub fn new(fibtable: Option<FibTableWriter>) -> Self {
+    pub fn new(fibtable: Option<FibTableWriter>, iftw: IfTableWriter) -> Self {
         Self {
             vrftable: RwLock::new(VrfTable::new(fibtable)),
             iftable: RwLock::new(IfTable::new()),
             rmac_store: RwLock::new(RmacStore::new()),
             vtep: RwLock::new(Vtep::new()),
             atable: RwLock::new(AdjacencyTable::new()),
+            iftw,
         }
     }
 }
