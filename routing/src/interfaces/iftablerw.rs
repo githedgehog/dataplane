@@ -158,3 +158,5 @@ impl IfTableReader {
         self.0.enter()
     }
 }
+
+unsafe impl Send for IfTableWriter {}

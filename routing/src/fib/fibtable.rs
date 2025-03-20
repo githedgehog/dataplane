@@ -127,3 +127,5 @@ impl FibTableReader {
         self.0.factory()
     }
 }
+
+unsafe impl Send for FibTableWriter {}
