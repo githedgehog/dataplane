@@ -420,6 +420,7 @@ impl ObservedLinks {
         (this, watch)
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn run(&mut self) {
         enum Update<T> {
             New(T),
@@ -457,21 +458,98 @@ impl ObservedLinks {
                         }
                     };
                     match update {
-                        Update::New(message) => {
-                            match ObservedInterface::try_from(message) {
-                                Ok(ObservedInterface::Vrf(vrf)) => {
-                                    // Arc::make_mut(&mut self.observed)
+                        Update::New(message) => match ObservedInterface::try_from(message) {
+                            Ok(ObservedInterface::Vrf(vrf)) => {
+                                match Arc::make_mut(&mut self.observed).try_add_vrf(vrf) {
+                                    Ok(_) => {}
+                                    Err(err) => {
+                                        error!("{err:?}");
+                                    }
                                 }
-                                Ok(ObservedInterface::Bridge(bridge)) => {}
-                                Ok(ObservedInterface::Vtep(vtep)) => {}
-                                Err(message) => {}
                             }
+                            Ok(ObservedInterface::Bridge(bridge)) => {
+                                match Arc::make_mut(&mut self.observed).try_add_bridge(bridge) {
+                                    Ok(_) => {}
+                                    Err(err) => {
+                                        error!("{err:?}");
+                                    }
+                                }
+                            }
+                            Ok(ObservedInterface::Vtep(vtep)) => {
+                                match Arc::make_mut(&mut self.observed).try_add_vtep(vtep) {
+                                    Ok(_) => {}
+                                    Err(err) => {
+                                        error!("{err:?}");
+                                    }
+                                }
+                            }
+                            Err(message) => {}
+                        },
+                        Update::Del(message) => match ObservedInterface::try_from(message) {
+                            Ok(ObservedInterface::Vrf(vrf)) => {
+                                match Arc::make_mut(&mut self.observed).try_remove_vrf(vrf.if_index)
+                                {
+                                    None => {
+                                        debug!(
+                                            "failed to remove vrf {vrf:?} from observation base: no such interface"
+                                        );
+                                    }
+                                    Some(observed) => {
+                                        debug!("removed vrf {observed:?} from observation base");
+                                    }
+                                }
+                            }
+                            Ok(ObservedInterface::Bridge(bridge)) => {
+                                match Arc::make_mut(&mut self.observed)
+                                    .try_remove_bridge(bridge.if_index)
+                                {
+                                    None => {
+                                        debug!(
+                                            "failed to remove bridge {bridge:?} from observation base: no such interface"
+                                        );
+                                    }
+                                    Some(observed) => {
+                                        debug!("removed bridge {observed:?} from observation base");
+                                    }
+                                }
+                            }
+                            Ok(ObservedInterface::Vtep(vtep)) => {
+                                match Arc::make_mut(&mut self.observed)
+                                    .try_remove_vtep(vtep.if_index)
+                                {
+                                    None => {
+                                        debug!(
+                                            "failed to remove btep {vtep:?} from observation base: no such interface"
+                                        );
+                                    }
+                                    Some(observed) => {
+                                        debug!("removed vtep {observed:?} from observation base");
+                                    }
+                                }
+                            }
+                            Err(_) => {}
+                        },
+                        Update::Set(message) => {
+                            warn!("not yet handled set message: {message:?}");
                         }
-                        Update::Del(message) => {}
-                        Update::Set(message) => {}
                     }
                 }
-                LinkMonitorMessage::Refresh(_) => {}
+                LinkMonitorMessage::Refresh(messages) => {
+                    // TODO: this is much too basic of a refresh.
+                    // We loose all out mutation info with this approach
+                    let mut ib = Arc::new(ObservedInformationBase::default());
+                    for message in messages {
+                        if let Ok(interface) = ObservedInterface::try_from(message) {
+                            match Arc::make_mut(&mut ib).try_add_interface(interface) {
+                                Ok(()) => {}
+                                Err(e) => {
+                                    error!("failed to add observed interface: {e:?}");
+                                }
+                            }
+                        }
+                    }
+                    self.observed = ib;
+                }
             }
         }
     }

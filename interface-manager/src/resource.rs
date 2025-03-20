@@ -139,7 +139,7 @@ pub struct ObservedVrf {
     route_table: RouteTableId,
     #[builder(private)]
     #[multi_index(ordered_unique)]
-    if_index: IfIndex,
+    pub(crate) if_index: IfIndex, // TODO: make private
 }
 
 #[derive(
@@ -195,7 +195,7 @@ pub struct ObservedVtep {
     #[multi_index(hashed_unique)]
     name: InterfaceName,
     #[multi_index(ordered_unique)]
-    if_index: IfIndex,
+    pub(crate) if_index: IfIndex,
     #[multi_index(ordered_unique)]
     vni: Vni,
     local: Option<Ipv4Addr>,
@@ -990,6 +990,7 @@ impl ObservedInformationBase {
     }
 }
 
+#[derive(Debug)]
 pub enum ObservedInterface {
     Bridge(ObservedBridge),
     Vrf(ObservedVrf),
@@ -1178,7 +1179,7 @@ impl TryFrom<LinkMessage> for ObservedInterface {
 }
 
 impl ObservedInformationBase {
-    fn try_add_bridge(
+    pub fn try_add_bridge(
         &mut self,
         bridge: ObservedBridge,
     ) -> Result<&ObservedBridge, UniquenessError<ObservedBridge>> {
@@ -1188,7 +1189,7 @@ impl ObservedInformationBase {
         })
     }
 
-    fn try_add_vrf(
+    pub fn try_add_vrf(
         &mut self,
         vrf: ObservedVrf,
     ) -> Result<&ObservedVrf, UniquenessError<ObservedVrf>> {
@@ -1198,7 +1199,7 @@ impl ObservedInformationBase {
         })
     }
 
-    fn try_add_vtep(
+    pub fn try_add_vtep(
         &mut self,
         vtep: ObservedVtep,
     ) -> Result<&ObservedVtep, UniquenessError<ObservedVtep>> {
@@ -1207,7 +1208,10 @@ impl ObservedInformationBase {
             err
         })
     }
-    fn try_add_interface(&mut self, interface: ObservedInterface) -> Result<(), ObservedInterface> {
+    pub fn try_add_interface(
+        &mut self,
+        interface: ObservedInterface,
+    ) -> Result<(), ObservedInterface> {
         match interface {
             ObservedInterface::Bridge(bridge) => self
                 .try_add_bridge(bridge)
@@ -1224,19 +1228,19 @@ impl ObservedInformationBase {
         }
     }
 
-    fn try_remove_bridge(&mut self, index: IfIndex) -> Option<ObservedBridge> {
+    pub fn try_remove_bridge(&mut self, index: IfIndex) -> Option<ObservedBridge> {
         self.bridges.remove_by_if_index(&index)
     }
 
-    fn try_remove_vrf(&mut self, index: IfIndex) -> Option<ObservedVrf> {
+    pub fn try_remove_vrf(&mut self, index: IfIndex) -> Option<ObservedVrf> {
         self.vrfs.remove_by_if_index(&index)
     }
 
-    fn try_remove_vtep(&mut self, index: IfIndex) -> Option<ObservedVtep> {
+    pub fn try_remove_vtep(&mut self, index: IfIndex) -> Option<ObservedVtep> {
         self.vteps.remove_by_if_index(&index)
     }
 
-    fn try_remove_interface(&mut self, index: IfIndex) -> Option<ObservedInterface> {
+    pub fn try_remove_interface(&mut self, index: IfIndex) -> Option<ObservedInterface> {
         match self.try_remove_bridge(index).map(ObservedInterface::Bridge) {
             None => {}
             Some(x) => return Some(x),
