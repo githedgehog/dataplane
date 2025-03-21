@@ -114,7 +114,7 @@ impl Vpc {
 pub struct ImpliedVrf {
     #[multi_index(hashed_unique)]
     pub name: InterfaceName,
-    #[multi_index(hashed_unique)]
+    #[multi_index(ordered_unique)]
     pub route_table: RouteTableId,
 }
 
@@ -140,6 +140,29 @@ pub struct ObservedVrf {
     #[builder(private)]
     #[multi_index(ordered_unique)]
     pub if_index: IfIndex, // TODO: make private
+}
+
+impl PartialEq<ObservedVrf> for ImpliedVrf {
+    fn eq(&self, other: &ObservedVrf) -> bool {
+        self.name == other.name && self.route_table == other.route_table
+    }
+}
+
+impl PartialEq<MultiIndexObservedVrfMap> for MultiIndexImpliedVrfMap {
+    fn eq(&self, other: &MultiIndexObservedVrfMap) -> bool {
+        if self.iter().len() != other.iter().len() {
+            return false;
+        }
+        for (_, observed) in other.iter() {
+            let Some(vtep) = self.get_by_name(&observed.name) else {
+                return false;
+            };
+            if vtep != &observed.to_implied() {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 #[derive(
@@ -202,6 +225,29 @@ pub struct ObservedVtep {
     pub ttl: u8,
 }
 
+impl PartialEq<ObservedVtep> for ImpliedVtep {
+    fn eq(&self, other: &ObservedVtep) -> bool {
+        self.vni == other.vni && self.local == other.local && self.name == other.name
+    }
+}
+
+impl PartialEq<MultiIndexObservedVtepMap> for MultiIndexImpliedVtepMap {
+    fn eq(&self, other: &MultiIndexObservedVtepMap) -> bool {
+        if self.iter().len() != other.iter().len() {
+            return false;
+        }
+        for (_, observed) in other.iter() {
+            let Some(vrf) = self.get_by_name(&observed.name) else {
+                return false;
+            };
+            if vrf != &observed.to_implied() {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 #[derive(
     Builder,
     Clone,
@@ -255,6 +301,31 @@ pub struct ObservedBridge {
     pub vlan_protocol: EthType,
     #[multi_index(hashed_unique)]
     pub if_index: IfIndex,
+}
+
+impl PartialEq<ObservedBridge> for ImpliedBridge {
+    fn eq(&self, other: &ObservedBridge) -> bool {
+        self.name == other.name
+            && self.vlan_filtering == other.vlan_filtering
+            && self.vlan_protocol == other.vlan_protocol
+    }
+}
+
+impl PartialEq<MultiIndexObservedBridgeMap> for MultiIndexImpliedBridgeMap {
+    fn eq(&self, other: &MultiIndexObservedBridgeMap) -> bool {
+        if self.iter().len() != other.iter().len() {
+            return false;
+        }
+        for (_, observed) in other.iter() {
+            let Some(bridge) = self.get_by_name(&observed.name) else {
+                return false;
+            };
+            if bridge != &observed.to_implied() {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 #[derive(
@@ -386,6 +457,13 @@ pub struct ObservedInformationBase {
     pub(crate) vrfs: MultiIndexObservedVrfMap,
     pub(crate) bridges: MultiIndexObservedBridgeMap,
     pub(crate) vteps: MultiIndexObservedVtepMap,
+}
+
+impl PartialEq<ObservedInformationBase> for ImpliedInformationBase {
+    fn eq(&self, other: &ObservedInformationBase) -> bool {
+        // TODO: constraints check
+        self.bridges == other.bridges && self.vrfs == other.vrfs && self.vteps == other.vteps
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
