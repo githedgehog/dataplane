@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![allow(unused)]
+
 pub(crate) use clap::Parser;
+use tracing::debug;
+
 #[derive(Parser)]
 #[command(name = "Hedgehog Fabric Gateway dataplane")]
 #[command(version = "1.0")] // FIXME
@@ -21,9 +25,17 @@ pub(crate) struct CmdArgs {
     iova_mode: Option<String>,
     #[arg(long, value_name = "loglevel for a specific component")]
     log_level: Vec<String>,
-    // other non-EAL params (NAT, routing, etc.)
+    // Non-eal params
+    #[arg(long, value_name = "packet driver to use: kernel or dpdk")]
+    driver: Option<String>,
 }
 impl CmdArgs {
+    pub fn get_driver_name(&self) -> &str {
+        match &self.driver {
+            None => "dpdk",
+            Some(name) => name,
+        }
+    }
     pub fn eal_params(&self) -> Vec<String> {
         let mut out = Vec::new();
         /* hardcoded (always) */
@@ -70,7 +82,7 @@ impl CmdArgs {
         }
 
         // To replace by log
-        println!("DPDK EAL init params: {out:#?}");
+        debug!("DPDK EAL init params: {out:?}");
 
         out
     }
