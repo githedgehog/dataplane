@@ -14,7 +14,7 @@ pub enum Request<T: Reconcile<Required, Observed>, Required, Observed> {
     Remove(<T as Reconcile<Required, Observed>>::Remove),
 }
 
-pub trait Reconcile<Required, Observed: Into<Required>>: Sized {
+pub trait Reconcile<Required, Observed>: Sized {
     type Create;
     type Update;
     type Remove;

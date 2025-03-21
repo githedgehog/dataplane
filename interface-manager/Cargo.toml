@@ -25,7 +25,12 @@ rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["rc", "derive"] }
 serde_yml = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "test-util", "sync"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 tracing = { workspace = true, features = ["attributes"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+
 
 
