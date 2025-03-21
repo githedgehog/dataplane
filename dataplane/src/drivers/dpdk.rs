@@ -5,6 +5,7 @@
 
 #![allow(unused)]
 
+use crate::drivers::Driver;
 use dpdk::dev::{Dev, TxOffloadConfig};
 use dpdk::eal::Eal;
 use dpdk::lcore::{LCoreId, WorkerThread};
@@ -14,6 +15,8 @@ use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, eal, socket};
 use tracing::{info, trace, warn};
 
+use crate::CmdArgs;
+use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use pipeline::sample_nfs::Passthrough;
 use pipeline::{self, DynPipeline, NetworkFunction};
@@ -94,7 +97,7 @@ fn init_devices(eal: &Eal) -> Vec<Dev> {
         .collect()
 }
 
-fn start_rte_workers(devices: &[Dev]) {
+fn start_rte_workers(devices: &[Dev], mut _pipeline: DynPipeline<Mbuf>) {
     LCoreId::iter().enumerate().for_each(|(i, lcore_id)| {
         info!("Starting RTE Worker on {lcore_id:?}");
         WorkerThread::launch(lcore_id, move || {
@@ -120,4 +123,26 @@ fn start_rte_workers(devices: &[Dev]) {
             }
         });
     });
+}
+
+pub struct DriverDpdk;
+
+impl Driver<Mbuf> for DriverDpdk {
+    type InitEnv = Eal;
+    type Devices = Dev;
+    fn name(&self) -> &'static str {
+        "dpdk"
+    }
+    fn get_args(&self, args: &CmdArgs) -> Vec<String> {
+        args.eal_params()
+    }
+    fn init_driver(&self, args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
+        init_eal(args)
+    }
+    fn init_devs(&self, env: &Self::InitEnv) -> Vec<Self::Devices> {
+        init_devices(env)
+    }
+    fn start(&self, devices: &[Self::Devices], pipeline: DynPipeline<Mbuf>) {
+        start_rte_workers(devices, pipeline);
+    }
 }
