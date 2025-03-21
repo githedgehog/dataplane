@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![allow(unused)]
+
 pub(crate) use clap::Parser;
 #[derive(Parser)]
 #[command(name = "Hedgehog Fabric Gateway dataplane")]
