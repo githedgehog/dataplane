@@ -115,6 +115,7 @@ cargo *args:
           ;;
         --release|--profile=release|--profile=bench)
           [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_RELEASE}"
+          [ -z "${RUSTDOCFLAGS:-}" ] && declare -rx RUSTDOCFLAGS="${RUSTDOCFLAGS_RELEASE}"
           extra_args+=("$arg")
           ;;
         --profile=fuzz)
