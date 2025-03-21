@@ -4,6 +4,7 @@
 #![allow(unused)]
 
 pub(crate) use clap::Parser;
+use tracing::debug;
 
 #[derive(Parser)]
 #[command(name = "Hedgehog Fabric Gateway dataplane")]
@@ -81,7 +82,7 @@ impl CmdArgs {
         }
 
         // To replace by log
-        println!("DPDK EAL init params: {out:#?}");
+        debug!("DPDK EAL init params: {out:?}");
 
         out
     }
