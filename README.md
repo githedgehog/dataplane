@@ -122,13 +122,6 @@ To run the test suite under release mode
 just cargo test --profile=release
 ```
 
-> [!WARNING]
-> Release builds may not work on your development machine!
->
-> The release build's dependencies are compiled with `-march=x86-64-v4` because we expect to release with a very new processor.
-> As a result, getting `SIGILL` on an older chip is no surprise.
-> We test release builds in CI, but they may not work on your dev box ¯\\\_(ツ)\_\/¯
-
 > [!NOTE]
 > Why the `just` in `just cargo build ...`?
 >
