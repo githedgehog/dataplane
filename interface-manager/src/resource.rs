@@ -133,13 +133,13 @@ impl ImpliedVrf {
 pub struct ObservedVrf {
     #[builder(private)]
     #[multi_index(ordered_unique)]
-    name: InterfaceName,
+    pub name: InterfaceName,
     #[builder(private)]
     #[multi_index(ordered_non_unique)]
-    route_table: RouteTableId,
+    pub route_table: RouteTableId,
     #[builder(private)]
     #[multi_index(ordered_unique)]
-    pub(crate) if_index: IfIndex, // TODO: make private
+    pub if_index: IfIndex, // TODO: make private
 }
 
 #[derive(
@@ -193,13 +193,13 @@ impl ImpliedVtep {
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ObservedVtep {
     #[multi_index(hashed_unique)]
-    name: InterfaceName,
+    pub name: InterfaceName,
     #[multi_index(ordered_unique)]
-    pub(crate) if_index: IfIndex,
+    pub if_index: IfIndex,
     #[multi_index(ordered_unique)]
-    vni: Vni,
-    local: Ipv4Addr,
-    ttl: u8,
+    pub vni: Vni,
+    pub local: Ipv4Addr,
+    pub ttl: u8,
 }
 
 #[derive(
@@ -390,8 +390,8 @@ pub struct ObservedInformationBase {
 
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
 pub struct InformationBase {
-    implied: Arc<ImpliedInformationBase>,
-    observed: Arc<ObservedInformationBase>,
+    pub implied: Arc<ImpliedInformationBase>,
+    pub observed: Arc<ObservedInformationBase>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
