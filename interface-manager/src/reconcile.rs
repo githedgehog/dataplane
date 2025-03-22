@@ -638,8 +638,8 @@ impl MultiIndexImpliedVrfMap {
 mod test {
     use crate::reconcile::{InterfaceOp, Reconcile, Request};
     use crate::resource::{
-        ImpliedInformationBase, ImpliedVtep, NetworkDiscriminant, ObservedInformationBase,
-        ObservedInterface, ObservedVtep, Vpc,
+        ImpliedInformationBase, ImpliedVtep, MultiIndexObservedInterfaceConstraintMap,
+        NetworkDiscriminant, ObservedInformationBase, ObservedInterface, ObservedVtep, Vpc,
     };
     use futures::StreamExt;
     use futures::TryStreamExt;
@@ -944,5 +944,22 @@ mod test {
                 }
             }
         }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn cheese2() {
+        let Ok((mut connection, handle, _recv)) = rtnetlink::new_connection() else {
+            panic!("failed to create connection");
+        };
+
+        connection
+            .socket_mut()
+            .socket_mut()
+            .set_rx_buf_sz(212_992)
+            .unwrap();
+        tokio::spawn(connection);
+        let x = MultiIndexObservedInterfaceConstraintMap::get(&handle).await;
+        println!("{x:?}");
     }
 }

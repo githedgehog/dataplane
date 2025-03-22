@@ -390,6 +390,8 @@ impl LinkMonitor {
         let Ok((mut connection, handle, mut recv)) = new_connection() else {
             panic!("failed to create connection");
         };
+        // this is the default max value on my machine.  Make this a proper const later.
+        // sock.set_rx_buf_sz(212_992).unwrap();
         connection
             .socket_mut()
             .socket_mut()
@@ -405,8 +407,6 @@ impl LinkMonitor {
             .socket_mut()
             .add_membership(NetlinkNotificationGroups::Link.bits())
             .unwrap();
-        // this is the default max value on my machine.  Make this a proper const later.
-        // sock.set_rx_buf_sz(212_992).unwrap();
         connection
             .socket_mut()
             .socket_mut()

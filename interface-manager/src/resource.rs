@@ -8,6 +8,7 @@ use crossbeam::epoch;
 use crossbeam::epoch::Atomic;
 use derive_builder::Builder;
 use diff::Diff;
+use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::future::join_all;
 use id::Id;
@@ -18,7 +19,8 @@ use net::vlan::Vid;
 use net::vxlan::Vni;
 use rtnetlink::packet_route::link::LinkInfo::PortData;
 use rtnetlink::packet_route::link::{
-    InfoBridge, InfoData, InfoKind, InfoVrf, InfoVxlan, LinkAttribute, LinkInfo, LinkMessage,
+    AfSpecBridge, InfoBridge, InfoData, InfoKind, InfoVrf, InfoVxlan, LinkAttribute, LinkInfo,
+    LinkMessage, LinkProtoInfoBridge,
 };
 use rtnetlink::sys::AsyncSocket;
 use rtnetlink::{Handle, LinkBridge, LinkVrf, new_connection};
@@ -484,6 +486,74 @@ impl ObservedInterfaceConstraint {
             name: self.name.clone(),
             controller_name: self.controller_name.clone(),
         }
+    }
+}
+
+impl MultiIndexObservedInterfaceConstraintMap {
+    pub async fn get(handle: &Handle) -> Self {
+        #[derive(Debug, Builder)]
+        struct Relation {
+            pub name: InterfaceName,
+            pub index: IfIndex,
+            pub controller: Option<IfIndex>,
+        }
+        let links = handle
+            .link()
+            .get()
+            .execute()
+            .try_ready_chunks(1024)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .flatten()
+            .flatten()
+            .collect::<Vec<_>>();
+        let mut interface_map: HashMap<IfIndex, Relation> = HashMap::with_capacity(links.len());
+        for link in links {
+            let mut builder = RelationBuilder::default();
+            builder.index(link.header.index.try_into().unwrap());
+            for attr in &link.attributes {
+                match attr {
+                    LinkAttribute::IfName(name) => {
+                        builder.name(name.clone().try_into().unwrap());
+                    }
+                    LinkAttribute::Controller(idx) => {
+                        builder.controller(Some((*idx).try_into().unwrap()));
+                    }
+                    _ => {}
+                }
+            }
+            let Ok(relation) = builder.build() else {
+                continue;
+            };
+            interface_map.insert(relation.index, relation);
+        }
+        let mut this = MultiIndexObservedInterfaceConstraintMap::default();
+        for entry in interface_map.values() {
+            let mut builder = ObservedInterfaceConstraintBuilder::default();
+            builder.if_index(entry.index);
+            builder.name(entry.name.clone());
+            builder.controller_if_index(entry.controller);
+            if let Some(controller_if_index) = entry.controller {
+                if let Some(controller) = interface_map.get(&controller_if_index) {
+                    builder.controller_name(Some(controller.name.clone()));
+                } else {
+                    error!("missing entry in observation!");
+                }
+            }
+            match builder.build() {
+                Ok(constraint) => match this.try_insert(constraint) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("{e:?}");
+                    }
+                },
+                Err(e) => {
+                    error!("{e:?}");
+                }
+            }
+        }
+        this
     }
 }
 
