@@ -18,6 +18,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "512761e0bb2578dd7380c6baaa0f4ce03e84f95e960231d1dec8bf4d7d6e2627"
 
 [[package]]
+name = "afpacket"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa514b7c2d4cb8ac9d54925c91900d21fdda508877694661858744211c11c69c"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -430,6 +439,7 @@ dependencies = [
 name = "dataplane"
 version = "0.1.0"
 dependencies = [
+ "afpacket",
  "clap",
  "ctrlc",
  "dataplane-id",
@@ -438,6 +448,7 @@ dependencies = [
  "iptrie",
  "mio",
  "net",
+ "nom 8.0.0",
  "ordermap",
  "pipeline",
  "routing",
