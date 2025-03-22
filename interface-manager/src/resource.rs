@@ -429,9 +429,9 @@ impl ImpliedInformationBase {
 
 // Kept for constraint tracking
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
-struct ImpliedInformationBaseConstraints {
+pub struct ImpliedInformationBaseConstraints {
     /* names which we expect to exist or have observed mapped to their controller (if any) */
-    interface: MultiIndexImpliedInterfaceConstraintMap,
+    pub interface: MultiIndexImpliedInterfaceConstraintMap,
 }
 
 #[derive(
@@ -469,8 +469,33 @@ pub struct ImpliedInterfaceConstraint {
     Serialize,
 )]
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ObservedInterfaceConstraint {
+pub struct PlannedInterfaceConstraint {
+    #[multi_index(ordered_unique)]
+    pub name: InterfaceName,
+    #[multi_index(ordered_non_unique)]
+    pub controller_name: Option<InterfaceName>,
     #[multi_index(hashed_unique)]
+    pub if_index: IfIndex,
+    #[multi_index(ordered_non_unique)]
+    pub controller_if_index: Option<IfIndex>,
+}
+
+#[derive(
+    Builder,
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    Hash,
+    MultiIndexMap,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+)]
+#[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ObservedInterfaceConstraint {
+    #[multi_index(ordered_unique)]
     pub name: InterfaceName,
     #[multi_index(ordered_non_unique)]
     pub controller_name: Option<InterfaceName>,
@@ -486,6 +511,21 @@ impl ObservedInterfaceConstraint {
             name: self.name.clone(),
             controller_name: self.controller_name.clone(),
         }
+    }
+}
+
+impl PartialEq<ObservedInterfaceConstraint> for PlannedInterfaceConstraint {
+    fn eq(&self, other: &ObservedInterfaceConstraint) -> bool {
+        self.name == other.name
+            && self.controller_name == other.controller_name
+            && self.if_index == other.if_index
+            && self.controller_if_index == other.controller_if_index
+    }
+}
+
+impl PartialEq<PlannedInterfaceConstraint> for ImpliedInterfaceConstraint {
+    fn eq(&self, other: &PlannedInterfaceConstraint) -> bool {
+        self.name == other.name && self.controller_name == other.controller_name
     }
 }
 
@@ -537,6 +577,7 @@ impl MultiIndexObservedInterfaceConstraintMap {
         for link in links {
             let mut builder = RelationBuilder::default();
             builder.index(link.header.index.try_into().unwrap());
+            builder.controller(None);
             for attr in &link.attributes {
                 match attr {
                     LinkAttribute::IfName(name) => {
@@ -565,6 +606,8 @@ impl MultiIndexObservedInterfaceConstraintMap {
                 } else {
                     error!("missing entry in observation!");
                 }
+            } else {
+                builder.controller_name(None);
             }
             match builder.build() {
                 Ok(constraint) => match this.try_insert(constraint) {
@@ -584,9 +627,9 @@ impl MultiIndexObservedInterfaceConstraintMap {
 
 // Kept for constraint tracking
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
-pub struct ObservedInformationBaseConstraints {
+pub struct InterfaceRelations {
     /* names which we expect to exist or have observed mapped to their controller (if any) */
-    interface: MultiIndexObservedInterfaceConstraintMap,
+    pub observed: MultiIndexObservedInterfaceConstraintMap,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
@@ -594,7 +637,7 @@ pub struct ObservedInformationBase {
     pub(crate) vrfs: MultiIndexObservedVrfMap,
     pub(crate) bridges: MultiIndexObservedBridgeMap,
     pub(crate) vteps: MultiIndexObservedVtepMap,
-    pub(crate) constraints: ObservedInformationBaseConstraints,
+    pub(crate) constraints: InterfaceRelations,
 }
 
 impl PartialEq<ObservedInformationBase> for ImpliedInformationBase {
@@ -1410,7 +1453,7 @@ impl ObservedInformationBase {
         bridge: ObservedBridge,
     ) -> Result<&ObservedBridge, UniquenessError<ObservedBridge>> {
         self.bridges.try_insert(bridge).map_err(|err| {
-            error!("{err:?}");
+            debug!("{err:?}");
             err
         })
     }
@@ -1420,7 +1463,7 @@ impl ObservedInformationBase {
         vrf: ObservedVrf,
     ) -> Result<&ObservedVrf, UniquenessError<ObservedVrf>> {
         self.vrfs.try_insert(vrf).map_err(|err| {
-            error!("{err:?}");
+            debug!("{err:?}");
             err
         })
     }
@@ -1430,7 +1473,7 @@ impl ObservedInformationBase {
         vtep: ObservedVtep,
     ) -> Result<&ObservedVtep, UniquenessError<ObservedVtep>> {
         self.vteps.try_insert(vtep).map_err(|err| {
-            error!("{err:?}");
+            debug!("{err:?}");
             err
         })
     }
@@ -1480,6 +1523,26 @@ impl ObservedInformationBase {
             Some(x) => return Some(x),
         }
         None
+    }
+
+    pub fn try_add_association(
+        &mut self,
+        association: ObservedInterfaceConstraint,
+    ) -> Result<&ObservedInterfaceConstraint, UniquenessError<ObservedInterfaceConstraint>> {
+        self.constraints
+            .observed
+            .try_insert(association)
+            .map_err(|err| {
+                debug!("{err:?}");
+                err
+            })
+    }
+
+    pub fn try_remove_association(
+        &mut self,
+        index: IfIndex,
+    ) -> Option<ObservedInterfaceConstraint> {
+        self.constraints.observed.remove_by_if_index(&index)
     }
 }
 

@@ -6,8 +6,8 @@ use crate::resource::{
     MultiIndexImpliedBridgeMap, MultiIndexImpliedInterfaceConstraintMap, MultiIndexImpliedVrfMap,
     MultiIndexImpliedVtepMap, MultiIndexObservedBridgeMap,
     MultiIndexObservedInterfaceConstraintMap, MultiIndexObservedVrfMap, MultiIndexObservedVtepMap,
-    ObservedBridge, ObservedInformationBase, ObservedInterfaceConstraint, ObservedVrf,
-    ObservedVtep,
+    MultiIndexPlannedInterfaceConstraintMap, ObservedBridge, ObservedInformationBase,
+    ObservedInterfaceConstraint, ObservedVrf, ObservedVtep, PlannedInterfaceConstraint,
 };
 use crate::{IfIndex, InterfaceName};
 use rtnetlink::packet_route::link::{InfoBridge, InfoData, LinkAttribute, LinkInfo, LinkMessage};
@@ -373,6 +373,192 @@ pub enum InterfaceOp {
     Bridge(Request<Handle, ImpliedBridge, ObservedBridge>),
     Vrf(Request<Handle, ImpliedVrf, ObservedVrf>),
     Vtep(Request<Handle, ImpliedVtep, ObservedVtep>),
+    Associate(LinkAddRequest),
+}
+
+// impl Reconcile<ImpliedInterfaceConstraint, ObservedInterfaceConstraint> for Handle {
+//     type Create = Option<LinkSetRequest>;
+//     type Update = Option<LinkSetRequest>;
+//     type Remove = Option<LinkSetRequest>;
+//
+//     fn request_create(&self, required: &ImpliedInterfaceConstraint) -> Self::Create {
+//         None
+//     }
+//
+//     fn request_remove(&self, observed: &ObservedInterfaceConstraint) -> Self::Remove {
+//         observed.controller_if_index.map(|_| {
+//             self.link().set(
+//                 LinkUnspec::new_with_name(observed.name.as_ref())
+//                     .nocontroller()
+//                     .down()
+//                     .build(),
+//             )
+//         })
+//     }
+//
+//     fn request_update(
+//         &self,
+//         required: &ImpliedInterfaceConstraint,
+//         observed: &ObservedInterfaceConstraint,
+//     ) -> Self::Update {
+//         match &required.controller_name {
+//             None => self.request_remove(observed),
+//             Some(required_controller_name) => match &observed.controller_name {
+//                 None => self.request_remove(observed),
+//                 Some(observed_controller_name) => {
+//                     if required_controller_name == observed_controller_name {
+//                         return None;
+//                     }
+//                     self.link().set(LinkUnspec::new_with_name(required.name.as_ref()).controller())
+//                 }
+//             },
+//         }
+//     }
+// }
+
+impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterfaceConstraintMap>
+    for Handle
+{
+    type Create = ();
+    type Update = Vec<LinkAddRequest>;
+    type Remove = ();
+
+    fn request_create(&self, _required: &MultiIndexImpliedInterfaceConstraintMap) -> Self::Create {}
+
+    fn request_remove(&self, _observed: &MultiIndexObservedInterfaceConstraintMap) -> Self::Remove {
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn request_update(
+        &self,
+        required: &MultiIndexImpliedInterfaceConstraintMap,
+        observed: &MultiIndexObservedInterfaceConstraintMap,
+    ) -> Self::Update {
+        let mut plans = MultiIndexPlannedInterfaceConstraintMap::default();
+        for (_, current) in observed.iter() {
+            if let Some(desired) = required.get_by_name(&current.name) {
+                match &desired.controller_name {
+                    None => {
+                        let plan = PlannedInterfaceConstraint {
+                            name: current.name.clone(),
+                            controller_name: None,
+                            if_index: current.if_index,
+                            controller_if_index: None,
+                        };
+                        match plans.try_insert(plan) {
+                            Ok(_) => {}
+                            Err(err) => {
+                                trace!("duplicate plan scheduled: {err:?}");
+                            }
+                        }
+                    }
+                    Some(desired_controller_name) => {
+                        match observed.get_by_name(desired_controller_name) {
+                            None => {
+                                debug!("can't yet satisfy association");
+                            }
+                            Some(controller) => {
+                                let plan = PlannedInterfaceConstraint {
+                                    name: current.name.clone(),
+                                    controller_name: desired.controller_name.clone(),
+                                    controller_if_index: Some(controller.if_index),
+                                    if_index: current.if_index,
+                                };
+                                match plans.try_insert(plan) {
+                                    Ok(_) => {}
+                                    Err(err) => {
+                                        trace!("duplicate plan scheduled: {err:?}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (_, desired) in required.iter() {
+            if let Some(found) = observed.get_by_name(&desired.name) {
+                match (&desired.controller_name, &found.controller_name) {
+                    (Some(desired_controller_name), Some(found_controller_name)) => {
+                        if desired_controller_name == found_controller_name {
+                            continue;
+                        }
+                        match observed.get_by_name(desired_controller_name) {
+                            None => {
+                                debug!("can't yet satisfy association");
+                            }
+                            Some(desired_controller) => {
+                                match plans.try_insert(PlannedInterfaceConstraint {
+                                    name: desired.name.clone(),
+                                    controller_name: Some(desired_controller.name.clone()),
+                                    if_index: found.if_index,
+                                    controller_if_index: Some(desired_controller.if_index),
+                                }) {
+                                    Ok(_) => {}
+                                    Err(err) => {
+                                        trace!("duplicate plan scheduled: {err:?}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    (Some(desired_controller_name), None) => {
+                        match observed.get_by_name(desired_controller_name) {
+                            None => {
+                                debug!("can't yet satisfy association");
+                            }
+                            Some(desired_controller) => {
+                                match plans.try_insert(PlannedInterfaceConstraint {
+                                    name: desired.name.clone(),
+                                    controller_name: Some(desired_controller.name.clone()),
+                                    if_index: found.if_index,
+                                    controller_if_index: Some(desired_controller.if_index),
+                                }) {
+                                    Ok(_) => {}
+                                    Err(err) => {
+                                        trace!("duplicate plan scheduled: {err:?}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    (None, Some(_)) => {
+                        match plans.try_insert(PlannedInterfaceConstraint {
+                            name: desired.name.clone(),
+                            controller_name: None,
+                            if_index: found.if_index,
+                            controller_if_index: None,
+                        }) {
+                            Ok(_) => {}
+                            Err(err) => {
+                                trace!("duplicate plan scheduled: {err:?}");
+                            }
+                        }
+                    }
+                    (None, None) => {}
+                }
+            }
+        }
+        plans
+            .iter()
+            .map(|(_, step)| match step.controller_if_index {
+                None => self.link().set_port({
+                    let mut message = LinkUnspec::new_with_name(step.name.as_ref())
+                        .nocontroller()
+                        .build();
+                    message.header.index = step.if_index.to_u32();
+                    message
+                }),
+                Some(controller_index) => self.link().set_port({
+                    let mut message = LinkUnspec::new_with_name(step.name.as_ref())
+                        .controller(controller_index.to_u32())
+                        .build();
+                    message.header.index = step.if_index.to_u32();
+                    message
+                }),
+            })
+            .collect()
+    }
 }
 
 impl Reconcile<ImpliedInformationBase, ObservedInformationBase> for Handle {
@@ -432,148 +618,15 @@ impl Reconcile<ImpliedInformationBase, ObservedInformationBase> for Handle {
                     .into_iter()
                     .map(InterfaceOp::Vtep),
             )
+            .chain(
+                self.request_update(
+                    &required.constraints.interface,
+                    &observed.constraints.observed,
+                )
+                .into_iter()
+                .map(InterfaceOp::Associate),
+            )
             .collect()
-    }
-}
-
-impl Reconcile<ImpliedInterfaceConstraint, ObservedInterfaceConstraint>
-    for (&Handle, Option<IfIndex>)
-{
-    type Create = Option<LinkSetRequest>;
-    type Update = Option<LinkSetRequest>;
-    type Remove = Option<LinkSetRequest>;
-
-    fn request_create(&self, required: &ImpliedInterfaceConstraint) -> Self::Create {
-        self.1.map(|idx| {
-            self.0.link().set(
-                LinkUnspec::new_with_name(required.name.as_ref())
-                    .controller(idx.to_u32())
-                    .build(),
-            )
-        })
-    }
-
-    fn request_remove(&self, observed: &ObservedInterfaceConstraint) -> Self::Remove {
-        observed.controller_if_index.map(|_| {
-            self.0.link().set(
-                LinkUnspec::new_with_name(observed.name.as_ref())
-                    .nocontroller()
-                    .down()
-                    .build(),
-            )
-        })
-    }
-
-    fn request_update(
-        &self,
-        required: &ImpliedInterfaceConstraint,
-        observed: &ObservedInterfaceConstraint,
-    ) -> Self::Update {
-        match required.controller_name {
-            None => {
-                if self.1.is_some() {
-                    self.request_remove(observed)
-                } else {
-                    None
-                }
-            }
-            Some(_) => match (observed.controller_if_index, self.1) {
-                (Some(o), Some(r)) => {
-                    if o == r {
-                        return None;
-                    }
-                    self.request_create(required)
-                }
-                (Some(_), None) => self.request_remove(observed),
-                (None, None) => None,
-                (None, Some(_)) => self.request_create(required),
-            },
-        }
-    }
-}
-
-impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterfaceConstraintMap>
-    for (Handle, HashMap<InterfaceName, IfIndex>)
-{
-    type Create = Vec<LinkSetRequest>;
-    type Update = Vec<LinkSetRequest>;
-    type Remove = Vec<LinkSetRequest>;
-
-    fn request_create(&self, required: &MultiIndexImpliedInterfaceConstraintMap) -> Self::Create {
-        let mut ret = vec![];
-        for (_, requirement) in required.iter() {
-            match &requirement.controller_name {
-                None => {}
-                Some(controller_name) => match self.1.get(controller_name) {
-                    None => {
-                        debug!("controller not found");
-                    }
-                    Some(controller_idx) => {
-                        match (&self.0, Some(*controller_idx)).request_create(requirement) {
-                            None => {}
-                            Some(request) => ret.push(request),
-                        }
-                    }
-                },
-            }
-        }
-        ret
-    }
-
-    fn request_remove(&self, observed: &MultiIndexObservedInterfaceConstraintMap) -> Self::Remove {
-        let mut ret = vec![];
-        for (_, observation) in observed.iter() {
-            match &observation.controller_if_index {
-                None => {}
-                Some(idx) => match (&self.0, Some(*idx)).request_remove(observation) {
-                    None => {}
-                    Some(request) => {
-                        ret.push(request);
-                    }
-                },
-            }
-        }
-        ret
-    }
-
-    fn request_update(
-        &self,
-        required: &MultiIndexImpliedInterfaceConstraintMap,
-        observed: &MultiIndexObservedInterfaceConstraintMap,
-    ) -> Self::Update {
-        let removes = observed.iter().filter_map(|(_, observation)| {
-            match required.get_by_name(&observation.name) {
-                None => (&self.0, observation.controller_if_index).request_remove(observation),
-                Some(requirement) => {
-                    if *requirement != observation.to_implied() {
-                        return (&self.0, observation.controller_if_index)
-                            .request_create(requirement);
-                    }
-                    None
-                }
-            }
-        });
-        let updates = required.iter().filter_map(|(_, requirement)| {
-            let observation = observed.get_by_name(&requirement.name);
-            match &requirement.controller_name {
-                None => match observation {
-                    None => None,
-                    Some(observation) => {
-                        (&self.0, observation.controller_if_index).request_remove(observation)
-                    }
-                },
-                Some(name) => match observation {
-                    Some(observation) => {
-                        if requirement == observation {
-                            return None;
-                        }
-                        (&self.0, observation.controller_if_index).request_remove(observation)
-                    }
-                    None => (&self.0, self.1.get(name).copied()).request_create(requirement),
-                },
-            }
-        });
-        removes.chain(updates).collect()
     }
 }
 
@@ -587,7 +640,7 @@ mod test {
     use futures::StreamExt;
     use futures::TryStreamExt;
     use rtnetlink::sys::AsyncSocket;
-    use tracing::trace;
+    use tracing::{debug, trace};
 
     #[tokio::test(flavor = "current_thread")]
     async fn biscuit() {
@@ -835,6 +888,15 @@ mod test {
                     ob.try_add_interface(interface).unwrap();
                 }
             }
+            let x = MultiIndexObservedInterfaceConstraintMap::get(&handle).await;
+            for (_, association) in x.iter() {
+                match ob.try_add_association(association.clone()) {
+                    Ok(_) => {}
+                    Err(err) => {
+                        eprintln!("{err:?}");
+                    }
+                }
+            }
             let Some(actions) = handle.request_reconcile(Some(&ib), Some(&ob)) else {
                 tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
                 continue;
@@ -842,6 +904,7 @@ mod test {
             let mut removes = vec![];
             let mut updates = vec![];
             let mut creates = vec![];
+            let mut associates = vec![];
 
             match actions {
                 Request::Create(x) | Request::Remove(x) | Request::Update(x) => {
@@ -861,11 +924,16 @@ mod test {
                             Request::Update(z) => updates.push(z),
                             Request::Remove(z) => removes.push(z),
                         },
+                        InterfaceOp::Associate(z) => associates.push(z),
                     });
                 }
             }
 
-            if removes.is_empty() && updates.is_empty() && creates.is_empty() {
+            if removes.is_empty()
+                && updates.is_empty()
+                && creates.is_empty()
+                && associates.is_empty()
+            {
                 tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
             }
             for remove in removes {
@@ -884,6 +952,15 @@ mod test {
                 match create.execute().await {
                     Ok(()) => {}
                     Err(err) => trace!("{err:?}"),
+                }
+            }
+            for associate in associates {
+                match associate.execute().await {
+                    Ok(()) => {}
+                    Err(err) => {
+                        eprintln!("{err:?}");
+                        debug!("{err:?}");
+                    }
                 }
             }
         }
