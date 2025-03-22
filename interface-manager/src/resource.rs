@@ -450,9 +450,9 @@ struct ImpliedInformationBaseConstraints {
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ImpliedInterfaceConstraint {
     #[multi_index(hashed_unique)]
-    name: InterfaceName,
+    pub name: InterfaceName,
     #[multi_index(ordered_non_unique)]
-    controller_name: Option<InterfaceName>,
+    pub controller_name: Option<InterfaceName>,
 }
 
 #[derive(
@@ -471,21 +471,46 @@ pub struct ImpliedInterfaceConstraint {
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ObservedInterfaceConstraint {
     #[multi_index(hashed_unique)]
-    name: InterfaceName,
+    pub name: InterfaceName,
     #[multi_index(ordered_non_unique)]
-    controller_name: Option<InterfaceName>,
+    pub controller_name: Option<InterfaceName>,
     #[multi_index(hashed_unique)]
-    if_index: IfIndex,
+    pub if_index: IfIndex,
     #[multi_index(ordered_non_unique)]
-    controller_if_index: Option<IfIndex>,
+    pub controller_if_index: Option<IfIndex>,
 }
 
 impl ObservedInterfaceConstraint {
-    fn to_implied(&self) -> ImpliedInterfaceConstraint {
+    pub fn to_implied(&self) -> ImpliedInterfaceConstraint {
         ImpliedInterfaceConstraint {
             name: self.name.clone(),
             controller_name: self.controller_name.clone(),
         }
+    }
+}
+
+impl PartialEq<ObservedInterfaceConstraint> for ImpliedInterfaceConstraint {
+    fn eq(&self, other: &ObservedInterfaceConstraint) -> bool {
+        self.name == other.name && self.controller_name == other.controller_name
+    }
+}
+
+impl PartialEq<MultiIndexObservedInterfaceConstraintMap>
+    for MultiIndexImpliedInterfaceConstraintMap
+{
+    fn eq(&self, observed: &MultiIndexObservedInterfaceConstraintMap) -> bool {
+        if self.iter().len() != observed.len() {
+            return false;
+        }
+        for (_, observed) in observed.iter() {
+            let Some(required) = self.get_by_name(&observed.name) else {
+                return false;
+            };
+            if required != observed {
+                return false;
+            }
+        }
+        true
     }
 }
 

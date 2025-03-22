@@ -2,14 +2,21 @@
 // Copyright Open Network Fabric Authors
 
 use crate::resource::{
-    ImpliedBridge, ImpliedInformationBase, ImpliedVrf, ImpliedVtep, MultiIndexImpliedBridgeMap,
-    MultiIndexImpliedVrfMap, MultiIndexImpliedVtepMap, MultiIndexObservedBridgeMap,
-    MultiIndexObservedVrfMap, MultiIndexObservedVtepMap, ObservedBridge, ObservedInformationBase,
-    ObservedVrf, ObservedVtep,
+    ImpliedBridge, ImpliedInformationBase, ImpliedInterfaceConstraint, ImpliedVrf, ImpliedVtep,
+    MultiIndexImpliedBridgeMap, MultiIndexImpliedInterfaceConstraintMap, MultiIndexImpliedVrfMap,
+    MultiIndexImpliedVtepMap, MultiIndexObservedBridgeMap,
+    MultiIndexObservedInterfaceConstraintMap, MultiIndexObservedVrfMap, MultiIndexObservedVtepMap,
+    ObservedBridge, ObservedInformationBase, ObservedInterfaceConstraint, ObservedVrf,
+    ObservedVtep,
 };
-use rtnetlink::packet_route::link::{InfoBridge, InfoData, LinkAttribute, LinkInfo};
-use rtnetlink::{Handle, LinkAddRequest, LinkBridge, LinkDelRequest, LinkVrf, LinkVxlan};
+use crate::{IfIndex, InterfaceName};
+use rtnetlink::packet_route::link::{InfoBridge, InfoData, LinkAttribute, LinkInfo, LinkMessage};
+use rtnetlink::{
+    Handle, LinkAddRequest, LinkBridge, LinkDelRequest, LinkSetRequest, LinkUnspec, LinkVrf,
+    LinkVxlan,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use tracing::{debug, error, trace};
 
 pub enum Request<T: Reconcile<Required, Observed>, Required: PartialEq<Observed>, Observed> {
@@ -429,210 +436,146 @@ impl Reconcile<ImpliedInformationBase, ObservedInformationBase> for Handle {
     }
 }
 
-// impl Reconcile<MultiIndexImpliedVtepMap, MultiIndexObservedVtepMap> for Handle {
-//     type Create = Vec<Request<Handle, ImpliedVtep, ObservedVtep>>;
-//     type Update = Vec<Request<Handle, ImpliedVtep, ObservedVtep>>;
-//     type Remove = Vec<Request<Handle, ImpliedVtep, ObservedVtep>>;
-//
-//     fn request_create(&self, required: &MultiIndexImpliedVtepMap) -> Self::Create {
-//         required
-//             .iter()
-//             .map(|(_, vrf)| Request::Create(self.request_create(vrf)))
-//             .collect()
-//     }
-//
-//     fn request_remove(&self, observed: &MultiIndexObservedVtepMap) -> Self::Remove {
-//         observed
-//             .iter()
-//             .map(|(_, vrf)| Request::Remove(self.request_remove(vrf)))
-//             .collect()
-//     }
-//
-//     fn request_update(
-//         &self,
-//         required: &MultiIndexImpliedVrfMap,
-//         observed: &MultiIndexObservedVrfMap,
-//     ) -> Self::Update {
-//         let mut updates = vec![];
-//         for implied in required.iter_by_route_table() {
-//             let with_matching_route_table = observed.get_by_route_table(&implied.route_table);
-//             let with_matching_name = observed.get_by_name(&implied.name);
-//             if let Some(with_matching_name) = with_matching_name {
-//                 for with_matching_route_table in with_matching_route_table {
-//                     if with_matching_name != with_matching_route_table {
-//                         updates.push(Request::Remove(
-//                             self.request_remove(with_matching_route_table),
-//                         ));
-//                     }
-//                 }
-//                 if implied != with_matching_name {
-//                     updates.push(Request::Remove(self.request_remove(with_matching_name)));
-//                 }
-//             } else if with_matching_route_table.is_empty() {
-//                 updates.push(Request::Create(self.request_create(implied)));
-//             } else {
-//                 for matching in with_matching_route_table {
-//                     updates.push(Request::Remove(self.request_remove(matching)));
-//                 }
-//             }
-//         }
-//         updates
-//     }
-// }
+impl Reconcile<ImpliedInterfaceConstraint, ObservedInterfaceConstraint>
+    for (&Handle, Option<IfIndex>)
+{
+    type Create = Option<LinkSetRequest>;
+    type Update = Option<LinkSetRequest>;
+    type Remove = Option<LinkSetRequest>;
 
-pub struct VrfSync<'a> {
-    vrfs: &'a MultiIndexImpliedVrfMap,
-    handle: &'a Handle,
-}
+    fn request_create(&self, required: &ImpliedInterfaceConstraint) -> Self::Create {
+        self.1.map(|idx| {
+            self.0.link().set(
+                LinkUnspec::new_with_name(required.name.as_ref())
+                    .controller(idx.to_u32())
+                    .build(),
+            )
+        })
+    }
 
-impl MultiIndexImpliedVrfMap {
-    fn with<'a>(&'a self, handle: &'a Handle) -> VrfSync<'a> {
-        VrfSync { vrfs: self, handle }
+    fn request_remove(&self, observed: &ObservedInterfaceConstraint) -> Self::Remove {
+        observed.controller_if_index.map(|_| {
+            self.0.link().set(
+                LinkUnspec::new_with_name(observed.name.as_ref())
+                    .nocontroller()
+                    .down()
+                    .build(),
+            )
+        })
+    }
+
+    fn request_update(
+        &self,
+        required: &ImpliedInterfaceConstraint,
+        observed: &ObservedInterfaceConstraint,
+    ) -> Self::Update {
+        match required.controller_name {
+            None => {
+                if self.1.is_some() {
+                    self.request_remove(observed)
+                } else {
+                    None
+                }
+            }
+            Some(_) => match (observed.controller_if_index, self.1) {
+                (Some(o), Some(r)) => {
+                    if o == r {
+                        return None;
+                    }
+                    self.request_create(required)
+                }
+                (Some(_), None) => self.request_remove(observed),
+                (None, None) => None,
+                (None, Some(_)) => self.request_create(required),
+            },
+        }
     }
 }
 
-// impl<'a> VrfSync<'a> {
-//     fn reconcile_request(
-//         &'a self,
-//         observed: &'a MultiIndexObservedVrfMap,
-//     ) -> impl Iterator<Item = LinkAddRequest> + use<'a> {
-//         self.vrfs.iter().map(|(_, objective)| {
-//             let interface = VrfInterface {
-//                 objective,
-//                 handle: self.handle,
-//             };
-//             match observed.get_by_name(&objective.name) {
-//                 None => interface.request_create(),
-//                 Some(observed) => interface.request_update(observed),
-//             }
-//         })
-//     }
-// }
-//
-// pub struct BridgeSync<'a> {
-//     bridges: &'a MultiIndexImpliedBridgeMap,
-//     handle: &'a Handle,
-// }
-//
-// impl MultiIndexImpliedBridgeMap {
-//     fn with<'a>(&'a self, handle: &'a Handle) -> BridgeSync<'a> {
-//         BridgeSync {
-//             bridges: self,
-//             handle,
-//         }
-//     }
-// }
-//
-// impl<'a> BridgeSync<'a> {
-//     fn reconcile_request(
-//         &'a self,
-//         observed: &'a MultiIndexObservedBridgeMap,
-//     ) -> impl Iterator<Item = LinkAddRequest> + use<'a> {
-//         self.bridges.iter().map(|(_, objective)| {
-//             let interface = BridgeInterface {
-//                 objective,
-//                 handle: self.handle,
-//             };
-//             match observed.get_by_name(&objective.name) {
-//                 None => interface.request_create(),
-//                 Some(observed) => interface.request_update(observed),
-//             }
-//         })
-//     }
-// }
-//
-// pub struct VtepSync<'a> {
-//     vteps: &'a MultiIndexImpliedVtepMap,
-//     handle: &'a Handle,
-// }
-//
-// impl MultiIndexImpliedVtepMap {
-//     fn with<'a>(&'a self, handle: &'a Handle) -> VtepSync<'a> {
-//         VtepSync {
-//             vteps: self,
-//             handle,
-//         }
-//     }
-// }
-//
-// impl<'a> VtepSync<'a> {
-//     fn reconcile_request(
-//         &'a self,
-//         observed: &'a MultiIndexObservedVtepMap,
-//     ) -> impl Iterator<Item = LinkAddRequest> + use<'a> {
-//         self.vteps.iter().map(|(_, objective)| {
-//             let interface = VtepInterface {
-//                 objective,
-//                 handle: self.handle,
-//             };
-//             match observed.get_by_name(&objective.name) {
-//                 None => interface.request_create(),
-//                 Some(observed) => interface.request_update(observed),
-//             }
-//         })
-//     }
-// }
-//
-// pub struct ImpliedInformationBaseSync<'a> {
-//     ib: &'a ImpliedInformationBase,
-//     handle: &'a Handle,
-// }
-//
-// impl ImpliedInformationBase {
-//     fn with<'a>(&'a self, handle: &'a Handle) -> ImpliedInformationBaseSync<'a> {
-//         ImpliedInformationBaseSync { ib: self, handle }
-//     }
-// }
-//
-// impl<'a> ImpliedInformationBaseSync<'a> {
-//     fn reconcile_request(&'a self, observed: &'a ObservedInformationBase) -> Vec<LinkAddRequest> {
-//         let vrfs = self.ib.vrfs.with(self.handle);
-//         let bridges = self.ib.bridges.with(self.handle);
-//         let vteps = self.ib.vteps.with(self.handle);
-//         vrfs.reconcile_request(&observed.vrfs)
-//             .chain(bridges.reconcile_request(&observed.bridges))
-//             .chain(vteps.reconcile_request(&observed.vteps))
-//             .collect()
-//     }
-// }
-//
-// pub struct InformationBaseSync<'a> {
-//     ib: &'a InformationBase,
-//     handle: &'a Handle,
-// }
-//
-// impl InformationBase {
-//     fn with<'a>(&'a self, handle: &'a Handle) -> InformationBaseSync<'a> {
-//         InformationBaseSync { ib: self, handle }
-//     }
-// }
-//
-// impl<'a> InformationBaseSync<'a> {
-//     fn reconcile_request(&'a self) -> Vec<LinkAddRequest> {
-//         self.ib
-//             .implied
-//             .with(self.handle)
-//             .reconcile_request(&self.ib.observed)
-//     }
-// }
+impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterfaceConstraintMap>
+    for (Handle, HashMap<InterfaceName, IfIndex>)
+{
+    type Create = Vec<LinkSetRequest>;
+    type Update = Vec<LinkSetRequest>;
+    type Remove = Vec<LinkSetRequest>;
 
-// impl Reconcile<ObservedInformationBase> for ImpliedInformationBase {
-//     type Create = ();
-//     type Update = ();
-//     type Remove = ();
-//
-//     fn request_create(&self, required: &ObservedInformationBase) -> Self::Create {
-//         todo!()
-//     }
-//
-//     fn request_remove(&self, observed: &Observed) -> Self::Remove {
-//         todo!()
-//     }
-//
-//     fn request_update(&self, required: &ObservedInformationBase, observed: &Observed) -> Self::Update {
-//         todo!()
-//     }
-// }
+    fn request_create(&self, required: &MultiIndexImpliedInterfaceConstraintMap) -> Self::Create {
+        let mut ret = vec![];
+        for (_, requirement) in required.iter() {
+            match &requirement.controller_name {
+                None => {}
+                Some(controller_name) => match self.1.get(controller_name) {
+                    None => {
+                        debug!("controller not found");
+                    }
+                    Some(controller_idx) => {
+                        match (&self.0, Some(*controller_idx)).request_create(requirement) {
+                            None => {}
+                            Some(request) => ret.push(request),
+                        }
+                    }
+                },
+            }
+        }
+        ret
+    }
+
+    fn request_remove(&self, observed: &MultiIndexObservedInterfaceConstraintMap) -> Self::Remove {
+        let mut ret = vec![];
+        for (_, observation) in observed.iter() {
+            match &observation.controller_if_index {
+                None => {}
+                Some(idx) => match (&self.0, Some(*idx)).request_remove(observation) {
+                    None => {}
+                    Some(request) => {
+                        ret.push(request);
+                    }
+                },
+            }
+        }
+        ret
+    }
+
+    fn request_update(
+        &self,
+        required: &MultiIndexImpliedInterfaceConstraintMap,
+        observed: &MultiIndexObservedInterfaceConstraintMap,
+    ) -> Self::Update {
+        let removes = observed.iter().filter_map(|(_, observation)| {
+            match required.get_by_name(&observation.name) {
+                None => (&self.0, observation.controller_if_index).request_remove(observation),
+                Some(requirement) => {
+                    if *requirement != observation.to_implied() {
+                        return (&self.0, observation.controller_if_index)
+                            .request_create(requirement);
+                    }
+                    None
+                }
+            }
+        });
+        let updates = required.iter().filter_map(|(_, requirement)| {
+            let observation = observed.get_by_name(&requirement.name);
+            match &requirement.controller_name {
+                None => match observation {
+                    None => None,
+                    Some(observation) => {
+                        (&self.0, observation.controller_if_index).request_remove(observation)
+                    }
+                },
+                Some(name) => match observation {
+                    Some(observation) => {
+                        if requirement == observation {
+                            return None;
+                        }
+                        (&self.0, observation.controller_if_index).request_remove(observation)
+                    }
+                    None => (&self.0, self.1.get(name).copied()).request_create(requirement),
+                },
+            }
+        });
+        removes.chain(updates).collect()
+    }
+}
 
 #[cfg(test)]
 mod test {
