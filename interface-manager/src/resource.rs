@@ -301,6 +301,7 @@ pub struct ObservedBridge {
     pub vlan_protocol: EthType,
     #[multi_index(hashed_unique)]
     pub if_index: IfIndex,
+    pub controller: Option<IfIndex>,
 }
 
 impl PartialEq<ObservedBridge> for ImpliedBridge {
@@ -375,7 +376,7 @@ pub struct ImpliedInformationBase {
     pub(crate) vrfs: MultiIndexImpliedVrfMap,
     pub(crate) bridges: MultiIndexImpliedBridgeMap,
     pub(crate) vteps: MultiIndexImpliedVtepMap,
-    pub(crate) constraints: InformationBaseConstraints,
+    pub(crate) constraints: ImpliedInformationBaseConstraints,
 }
 
 impl ImpliedInformationBase {
@@ -385,15 +386,15 @@ impl ImpliedInformationBase {
         let bridge = ImpliedBridge::from_vpc(vpc);
         let vtep = ImpliedVtep::from_vpc(vpc);
         let constraints = [
-            InterfaceConstraint {
+            ImpliedInterfaceConstraint {
                 name: vrf.name.clone(),
                 controller_name: None,
             },
-            InterfaceConstraint {
+            ImpliedInterfaceConstraint {
                 name: bridge.name.clone(),
                 controller_name: Some(vrf.name.clone()),
             },
-            InterfaceConstraint {
+            ImpliedInterfaceConstraint {
                 name: vtep.name.clone(),
                 controller_name: Some(bridge.name.clone()),
             },
@@ -426,9 +427,9 @@ impl ImpliedInformationBase {
 
 // Kept for constraint tracking
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
-struct InformationBaseConstraints {
-    /* names which we expect to exist or have observed mapped to their controller (if any)*/
-    interface: MultiIndexInterfaceConstraintMap,
+struct ImpliedInformationBaseConstraints {
+    /* names which we expect to exist or have observed mapped to their controller (if any) */
+    interface: MultiIndexImpliedInterfaceConstraintMap,
 }
 
 #[derive(
@@ -445,11 +446,52 @@ struct InformationBaseConstraints {
     Serialize,
 )]
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct InterfaceConstraint {
+pub struct ImpliedInterfaceConstraint {
     #[multi_index(hashed_unique)]
     name: InterfaceName,
     #[multi_index(ordered_non_unique)]
     controller_name: Option<InterfaceName>,
+}
+
+#[derive(
+    Builder,
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    Hash,
+    MultiIndexMap,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+)]
+#[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ObservedInterfaceConstraint {
+    #[multi_index(hashed_unique)]
+    name: InterfaceName,
+    #[multi_index(ordered_non_unique)]
+    controller_name: Option<InterfaceName>,
+    #[multi_index(hashed_unique)]
+    if_index: IfIndex,
+    #[multi_index(ordered_non_unique)]
+    controller_if_index: Option<IfIndex>,
+}
+
+impl ObservedInterfaceConstraint {
+    fn to_implied(&self) -> ImpliedInterfaceConstraint {
+        ImpliedInterfaceConstraint {
+            name: self.name.clone(),
+            controller_name: self.controller_name.clone(),
+        }
+    }
+}
+
+// Kept for constraint tracking
+#[derive(Clone, Debug, Deserialize, Serialize, Default)]
+pub struct ObservedInformationBaseConstraints {
+    /* names which we expect to exist or have observed mapped to their controller (if any) */
+    interface: MultiIndexObservedInterfaceConstraintMap,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
@@ -457,6 +499,7 @@ pub struct ObservedInformationBase {
     pub(crate) vrfs: MultiIndexObservedVrfMap,
     pub(crate) bridges: MultiIndexObservedBridgeMap,
     pub(crate) vteps: MultiIndexObservedVtepMap,
+    pub(crate) constraints: ObservedInformationBaseConstraints,
 }
 
 impl PartialEq<ObservedInformationBase> for ImpliedInformationBase {
@@ -476,7 +519,7 @@ pub struct InformationBase {
 pub enum Requirement {
     Vrf(ImpliedVrf),
     Bridge(ImpliedBridge),
-    Interface(InterfaceConstraint),
+    Interface(ImpliedInterfaceConstraint),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

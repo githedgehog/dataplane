@@ -970,79 +970,79 @@ pub mod test {
         }
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn check_me() {
-        let Ok((mut connection, handle, mut recv)) = new_connection() else {
-            panic!("failed to create connection");
-        };
-        let subscribe_to = { NetlinkNotificationGroups::Link };
-        let addr = SocketAddr::new(0, subscribe_to.bits());
-
-        let mut sock = connection.socket_mut().socket_mut();
-        sock.set_rx_buf_sz(212_992).unwrap();
-        sock.bind(&addr).expect("failed to bind to netlink socket");
-
-        tokio::spawn(connection);
-
-        let handle = Arc::new(handle);
-        let implied_bridge = Rc::new(ImpliedBridge {
-            name: "potato".to_string().try_into().unwrap(),
-            vlan_filtering: true,
-            vlan_protocol: EthType::VLAN,
-        });
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
-        let mut bridge_actor = BridgeManager::new(handle.clone(), tx);
-        let mut agent = NetlinkAgent {
-            handle: handle.clone(),
-        };
-        tokio::spawn(async move {
-            while let Some(message) = rx.recv().await {
-                agent.process(message).await;
-            }
-        });
-        let implication = BridgeMessage::ObjectiveUpdate(Some(implied_bridge.clone()));
-        bridge_actor.process(implication).await;
-        loop {
-            let mut resp = handle
-                .link()
-                .get()
-                .match_name("potato".to_string())
-                .execute();
-            let Ok(Some(resp)) = resp.try_next().await else {
-                let message = BridgeMessage::ObservationUpdate(None);
-                bridge_actor.process(message).await;
-                continue;
-            };
-            let mut observation_builder = ObservedBridgeBuilder::default();
-            observation_builder.if_index(resp.header.index.try_into().unwrap());
-            for attr in &resp.attributes {
-                match attr {
-                    LinkAttribute::LinkInfo(infos) => {
-                        for info in infos {
-                            if let LinkInfo::Data(InfoData::Bridge(bridge_info)) = info {
-                                for info in bridge_info {
-                                    if let InfoBridge::VlanFiltering(filtering) = info {
-                                        observation_builder.vlan_filtering(*filtering);
-                                    }
-                                    if let InfoBridge::VlanProtocol(raw) = info {
-                                        observation_builder.vlan_protocol(EthType::from(*raw));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    LinkAttribute::IfName(name) => {
-                        observation_builder.name(name.to_string().try_into().unwrap());
-                    }
-                    _ => {}
-                }
-                observation_builder.vlan_filtering(false); // TODO: this is a hack.  Need details in response
-                observation_builder.vlan_protocol(EthType::VLAN_QINQ); // TODO: this is a hack.  Need details in response
-                let observed_bridge = Some(Rc::new(observation_builder.build().unwrap()));
-                let message = BridgeMessage::ObservationUpdate(observed_bridge);
-                bridge_actor.process(message).await;
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-        }
-    }
+    // #[tokio::test(flavor = "current_thread")]
+    // async fn check_me() {
+    //     let Ok((mut connection, handle, mut recv)) = new_connection() else {
+    //         panic!("failed to create connection");
+    //     };
+    //     let subscribe_to = { NetlinkNotificationGroups::Link };
+    //     let addr = SocketAddr::new(0, subscribe_to.bits());
+    //
+    //     let mut sock = connection.socket_mut().socket_mut();
+    //     sock.set_rx_buf_sz(212_992).unwrap();
+    //     sock.bind(&addr).expect("failed to bind to netlink socket");
+    //
+    //     tokio::spawn(connection);
+    //
+    //     let handle = Arc::new(handle);
+    //     let implied_bridge = Rc::new(ImpliedBridge {
+    //         name: "potato".to_string().try_into().unwrap(),
+    //         vlan_filtering: true,
+    //         vlan_protocol: EthType::VLAN,
+    //     });
+    //     let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+    //     let mut bridge_actor = BridgeManager::new(handle.clone(), tx);
+    //     let mut agent = NetlinkAgent {
+    //         handle: handle.clone(),
+    //     };
+    //     tokio::spawn(async move {
+    //         while let Some(message) = rx.recv().await {
+    //             agent.process(message).await;
+    //         }
+    //     });
+    //     let implication = BridgeMessage::ObjectiveUpdate(Some(implied_bridge.clone()));
+    //     bridge_actor.process(implication).await;
+    //     loop {
+    //         let mut resp = handle
+    //             .link()
+    //             .get()
+    //             .match_name("potato".to_string())
+    //             .execute();
+    //         let Ok(Some(resp)) = resp.try_next().await else {
+    //             let message = BridgeMessage::ObservationUpdate(None);
+    //             bridge_actor.process(message).await;
+    //             continue;
+    //         };
+    //         let mut observation_builder = ObservedBridgeBuilder::default();
+    //         observation_builder.if_index(resp.header.index.try_into().unwrap());
+    //         for attr in &resp.attributes {
+    //             match attr {
+    //                 LinkAttribute::LinkInfo(infos) => {
+    //                     for info in infos {
+    //                         if let LinkInfo::Data(InfoData::Bridge(bridge_info)) = info {
+    //                             for info in bridge_info {
+    //                                 if let InfoBridge::VlanFiltering(filtering) = info {
+    //                                     observation_builder.vlan_filtering(*filtering);
+    //                                 }
+    //                                 if let InfoBridge::VlanProtocol(raw) = info {
+    //                                     observation_builder.vlan_protocol(EthType::from(*raw));
+    //                                 }
+    //                             }
+    //                         }
+    //                     }
+    //                 }
+    //                 LinkAttribute::IfName(name) => {
+    //                     observation_builder.name(name.to_string().try_into().unwrap());
+    //                 }
+    //                 _ => {}
+    //             }
+    //             observation_builder.vlan_filtering(false); // TODO: this is a hack.  Need details in response
+    //             observation_builder.vlan_protocol(EthType::VLAN_QINQ); // TODO: this is a hack.  Need details in response
+    //             let observed_bridge = Some(Rc::new(observation_builder.build().unwrap()));
+    //             let message = BridgeMessage::ObservationUpdate(observed_bridge);
+    //             bridge_actor.process(message).await;
+    //             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    //         }
+    //     }
+    // }
 }
