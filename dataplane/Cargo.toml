@@ -13,7 +13,7 @@ id = { workspace = true }
 iptrie = { workspace = true }
 dyn-iter = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
-net = { workspace = true, features = ["serde"] }
+net = { workspace = true, features = ["serde", "test_buffer"] }
 ordermap = { workspace = true, features = ["std"] }
 pipeline = { workspace = true }
 routing = { workspace = true }
