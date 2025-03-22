@@ -156,6 +156,24 @@ impl Reconcile<MultiIndexImpliedVrfMap, MultiIndexObservedVrfMap> for Handle {
     ) -> Self::Update {
         let mut to_create = MultiIndexImpliedVrfMap::default();
         let mut to_remove = MultiIndexObservedVrfMap::default();
+        for (_, observed) in observed.iter() {
+            if required.get_by_name(&observed.name).is_none() {
+                match to_remove.try_insert(observed.clone()) {
+                    Ok(_) => {}
+                    Err(err) => {
+                        trace!("duplicate removal scheduled: {err:?}");
+                    }
+                }
+            }
+            if required.get_by_route_table(&observed.route_table).is_none() {
+                match to_remove.try_insert(observed.clone()) {
+                    Ok(_) => {}
+                    Err(err) => {
+                        trace!("duplicate removal scheduled: {err:?}");
+                    }
+                }
+            }
+        }
         for (_, requirement) in required.iter() {
             for observed_with_matching_route_table in
                 observed.get_by_route_table(&requirement.route_table)
@@ -227,6 +245,18 @@ impl Reconcile<MultiIndexImpliedVtepMap, MultiIndexObservedVtepMap> for Handle {
     ) -> Self::Update {
         let mut to_create = MultiIndexImpliedVtepMap::default();
         let mut to_remove = MultiIndexObservedVtepMap::default();
+        for (_, observed) in observed.iter() {
+            if required.get_by_name(&observed.name).is_none()
+                || required.get_by_vni(&observed.vni).is_none()
+            {
+                match to_remove.try_insert(observed.clone()) {
+                    Ok(_) => {}
+                    Err(err) => {
+                        trace!("duplicate removal scheduled: {err:?}");
+                    }
+                }
+            }
+        }
         for (_, requirement) in required.iter() {
             if let Some(observed_with_matching_name) = observed.get_by_name(&requirement.name) {
                 if requirement == observed_with_matching_name {
@@ -295,6 +325,16 @@ impl Reconcile<MultiIndexImpliedBridgeMap, MultiIndexObservedBridgeMap> for Hand
     ) -> Self::Update {
         let mut to_create = MultiIndexImpliedBridgeMap::default();
         let mut to_remove = MultiIndexObservedBridgeMap::default();
+        for (_, observed) in observed.iter() {
+            if required.get_by_name(&observed.name).is_none() {
+                match to_remove.try_insert(observed.clone()) {
+                    Ok(_) => {}
+                    Err(err) => {
+                        trace!("duplicate removal scheduled: {err:?}");
+                    }
+                }
+            }
+        }
         for (_, requirement) in required.iter() {
             if let Some(observed_with_matching_name) = observed.get_by_name(&requirement.name) {
                 if requirement == observed_with_matching_name {
@@ -604,6 +644,7 @@ mod test {
     use futures::StreamExt;
     use futures::TryStreamExt;
     use rtnetlink::sys::AsyncSocket;
+    use tracing::trace;
 
     #[tokio::test(flavor = "current_thread")]
     async fn biscuit() {
@@ -852,66 +893,54 @@ mod test {
                 }
             }
             let Some(actions) = handle.request_reconcile(Some(&ib), Some(&ob)) else {
-                break;
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                continue;
             };
+            let mut removes = vec![];
+            let mut updates = vec![];
+            let mut creates = vec![];
+
             match actions {
                 Request::Create(x) | Request::Remove(x) | Request::Update(x) => {
-                    for x in x {
-                        match x {
-                            InterfaceOp::Bridge(x) => match x {
-                                Request::Update(x) | Request::Create(x) => {
-                                    match x.execute().await {
-                                        Ok(()) => {}
-                                        Err(e) => {
-                                            eprintln!("{e:?}");
-                                        }
-                                    }
-                                }
-                                Request::Remove(x) => match x.execute().await {
-                                    Ok(()) => {}
-                                    Err(e) => {
-                                        eprintln!("{e:?}");
-                                    }
-                                },
-                            },
-                            InterfaceOp::Vrf(x) => match x {
-                                Request::Update(y) | Request::Create(y) => {
-                                    match y.execute().await {
-                                        Ok(()) => {}
-                                        Err(e) => {
-                                            eprintln!("{e:?}");
-                                        }
-                                    }
-                                }
-                                Request::Remove(x) => match x.execute().await {
-                                    Ok(_) => {}
-                                    Err(e) => {
-                                        eprintln!("{e:?}");
-                                    }
-                                },
-                            },
-                            InterfaceOp::Vtep(x) => match x {
-                                Request::Create(x) => match x.execute().await {
-                                    Ok(()) => {}
-                                    Err(e) => {
-                                        eprintln!("{e:?}");
-                                    }
-                                },
-                                Request::Update(y) => match y.execute().await {
-                                    Ok(()) => {}
-                                    Err(e) => {
-                                        eprintln!("{e:?}");
-                                    }
-                                },
-                                Request::Remove(x) => match x.execute().await {
-                                    Ok(()) => {}
-                                    Err(e) => {
-                                        eprintln!("{e:?}");
-                                    }
-                                },
-                            },
-                        }
-                    }
+                    x.into_iter().for_each(|y| match y {
+                        InterfaceOp::Bridge(z) => match z {
+                            Request::Create(z) => creates.push(z),
+                            Request::Update(z) => updates.push(z),
+                            Request::Remove(z) => removes.push(z),
+                        },
+                        InterfaceOp::Vrf(z) => match z {
+                            Request::Create(z) => creates.push(z),
+                            Request::Update(z) => updates.push(z),
+                            Request::Remove(z) => removes.push(z),
+                        },
+                        InterfaceOp::Vtep(z) => match z {
+                            Request::Create(z) => creates.push(z),
+                            Request::Update(z) => updates.push(z),
+                            Request::Remove(z) => removes.push(z),
+                        },
+                    });
+                }
+            }
+
+            if removes.is_empty() && updates.is_empty() && creates.is_empty() {
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+            }
+            for remove in removes {
+                match remove.execute().await {
+                    Ok(()) => {}
+                    Err(err) => trace!("{err:?}"),
+                }
+            }
+            for update in updates {
+                match update.execute().await {
+                    Ok(()) => {}
+                    Err(err) => trace!("{err:?}"),
+                }
+            }
+            for create in creates {
+                match create.execute().await {
+                    Ok(()) => {}
+                    Err(err) => trace!("{err:?}"),
                 }
             }
         }
