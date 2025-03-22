@@ -14,6 +14,8 @@ use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, eal, socket};
 use tracing::{info, trace, warn};
 
+use crate::CmdArgs;
+use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use pipeline::sample_nfs::Passthrough;
 use pipeline::{self, DynPipeline, NetworkFunction};
@@ -94,7 +96,7 @@ fn init_devices(eal: &Eal) -> Vec<Dev> {
         .collect()
 }
 
-fn start_rte_workers(devices: &[Dev]) {
+fn start_rte_workers(devices: &[Dev], mut _pipeline: DynPipeline<Mbuf>) {
     LCoreId::iter().enumerate().for_each(|(i, lcore_id)| {
         info!("Starting RTE Worker on {lcore_id:?}");
         WorkerThread::launch(lcore_id, move || {
@@ -120,4 +122,14 @@ fn start_rte_workers(devices: &[Dev]) {
             }
         });
     });
+}
+
+pub struct DriverDpdk;
+
+impl DriverDpdk {
+    pub fn start(args: impl IntoIterator<Item = impl AsRef<str>>, pipeline: DynPipeline<Mbuf>) {
+        let eal = init_eal(args);
+        let devices = init_devices(&eal);
+        start_rte_workers(&devices, pipeline);
+    }
 }
