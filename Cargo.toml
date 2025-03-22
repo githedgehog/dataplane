@@ -38,6 +38,7 @@ pipeline = { path = "./pipeline" }
 routing = { path = "./routing" }
 
 # External
+afpacket = { version = "0.2.3", default-features = false, features = [] } 
 ahash = { version = "0.8.11", default-features = false, features = [] }
 arbitrary = { version = "1.4.1", default-features = false, features = [] }
 arc-swap = { version = "1.7.1" , default-features = false, features = [] }
