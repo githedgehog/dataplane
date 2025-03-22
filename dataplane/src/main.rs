@@ -7,18 +7,61 @@
 
 use crate::args::CmdArgs;
 use clap::Parser;
-use tracing::info;
+use tracing::{error, info};
 
 mod args;
 mod drivers;
 mod nat;
 
+use drivers::dpdk::DriverDpdk;
+use drivers::kernel::DriverKernel;
+use net::buffer::PacketBufferMut;
+use pipeline::DynPipeline;
+use pipeline::sample_nfs::InspectHeaders;
+
+fn init_logging() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_target(true)
+        .with_thread_ids(true)
+        .with_line_number(true)
+        .with_thread_names(true)
+        .init();
+}
+
+fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
+    let pipeline = DynPipeline::new();
+    pipeline.add_stage(InspectHeaders)
+}
+
 fn main() {
+    init_logging();
+    info!("Starting gateway process...");
+
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
     ctrlc::set_handler(move || stop_tx.send(()).expect("Error sending SIGINT signal"))
         .expect("failed to set SIGINT handler");
 
-    let _args = CmdArgs::parse();
+    /* parse cmd line args */
+    let args = CmdArgs::parse();
+
+    /* start driver */
+    match args.get_driver_name() {
+        "dpdk" => {
+            info!("Using driver DPDK...");
+            let pipeline = setup_pipeline();
+            DriverDpdk::start(args.eal_params(), pipeline);
+        }
+        "kernel" => {
+            info!("Using driver kernel...");
+            let pipeline = setup_pipeline();
+            DriverKernel::start(args.kernel_params(), pipeline);
+        }
+        other => {
+            error!("Unknown driver '{other}'. Aborting...");
+            std::process::exit(0);
+        }
+    }
 
     stop_rx.recv().expect("failed to receive stop signal");
     info!("Shutting down dataplane");
