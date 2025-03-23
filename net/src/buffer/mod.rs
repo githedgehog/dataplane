@@ -16,8 +16,14 @@ pub trait PacketBuffer: AsRef<[u8]> + Headroom + 'static {}
 impl<T> PacketBuffer for T where T: AsRef<[u8]> + Headroom + 'static {}
 
 /// Super trait representing the abstract operations which may be performed on mutable a packet buffer.
-pub trait PacketBufferMut: PacketBuffer + AsMut<[u8]> + Prepend + TrimFromStart {}
-impl<T> PacketBufferMut for T where T: PacketBuffer + AsMut<[u8]> + Prepend + TrimFromStart {}
+pub trait PacketBufferMut:
+    PacketBuffer + AsMut<[u8]> + Prepend + TrimFromStart + Headroom + Tailroom
+{
+}
+impl<T> PacketBufferMut for T where
+    T: PacketBuffer + AsMut<[u8]> + Prepend + TrimFromStart + Headroom + Tailroom
+{
+}
 
 /// Trait representing the ability to get the unused headroom in a packet buffer.
 pub trait Headroom {
