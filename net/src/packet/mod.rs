@@ -32,7 +32,7 @@ pub struct Packet<Buf: PacketBufferMut> {
     consumed: NonZero<u16>,
     mbuf: Option<Buf>,
     // packet metadata added by stages to drive other stages down the pipeline
-    pub meta: PacketMeta,
+    meta: PacketMeta,
 }
 #[derive(Debug, thiserror::Error)]
 pub struct InvalidPacket<Buf: PacketBufferMut> {
@@ -174,6 +174,31 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             Some(DoneReason::Delivered) | None => Some(self),
             Some(_) => None,
         }
+    }
+
+    /// Get a reference to the headers of this `Packet`
+    pub fn get_headers(&self) -> &Headers {
+        &self.headers
+    }
+
+    /// Get a reference to the consumed value of this `Packet`
+    pub fn get_consumed(&self) -> NonZero<u16> {
+        self.consumed
+    }
+
+    /// Get a reference to the buffer of this `Packet`
+    pub fn get_buf(&self) -> &Option<Buf> {
+        &self.mbuf
+    }
+
+    /// Get a an immutable reference to the metadata of this `Packet`
+    pub fn get_meta(&self) -> &PacketMeta {
+        &self.meta
+    }
+
+    /// Get a an mutable reference to the metadata of this `Packet`
+    pub fn get_meta_mut(&mut self) -> &mut PacketMeta {
+        &mut self.meta
     }
 }
 
