@@ -2,24 +2,20 @@
 // Copyright Open Network Fabric Authors
 
 use crate::resource::{
-    AdminState, ImpliedBridge, ImpliedInformationBase, ImpliedInterfaceConstraint, ImpliedVrf,
-    ImpliedVtep, MultiIndexImpliedBridgeMap, MultiIndexImpliedInterfaceConstraintMap,
-    MultiIndexImpliedVrfMap, MultiIndexImpliedVtepMap, MultiIndexObservedBridgeMap,
+    AdminState, ImpliedBridge, ImpliedInformationBase, ImpliedVrf, ImpliedVtep,
+    MultiIndexImpliedBridgeMap, MultiIndexImpliedInterfaceConstraintMap, MultiIndexImpliedVrfMap,
+    MultiIndexImpliedVtepMap, MultiIndexObservedBridgeMap,
     MultiIndexObservedInterfaceConstraintMap, MultiIndexObservedVrfMap, MultiIndexObservedVtepMap,
-    MultiIndexPlannedInterfaceConstraintMap, ObservedBridge, ObservedInformationBase,
-    ObservedInterfaceConstraint, ObservedVrf, ObservedVtep, PlannedInterfaceConstraint,
+    MultiIndexPlannedInterfaceConstraintMap, ObservedBridge, ObservedInformationBase, ObservedVrf,
+    ObservedVtep, PlannedInterfaceConstraint,
 };
-use crate::{IfIndex, InterfaceName};
-use derive_builder::Builder;
-use multi_index_map::MultiIndexMap;
-use rtnetlink::packet_route::link::{InfoBridge, InfoData, LinkAttribute, LinkInfo, LinkMessage};
+use rtnetlink::packet_route::link::{InfoBridge, InfoData, LinkAttribute, LinkInfo};
 use rtnetlink::{
     Handle, LinkAddRequest, LinkBridge, LinkDelRequest, LinkSetRequest, LinkUnspec, LinkVrf,
     LinkVxlan,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use tracing::{debug, error, trace};
+use tracing::{debug, trace};
 
 pub enum Request<T: Reconcile<Required, Observed>, Required: PartialEq<Observed>, Observed> {
     Create(<T as Reconcile<Required, Observed>>::Create),
@@ -684,13 +680,13 @@ mod test {
             Some(request) => {
                 println!("requested");
                 match request {
-                    Request::Create(x) => {
+                    Request::Create(_) => {
                         println!("create");
                     }
-                    Request::Update(y) => {
+                    Request::Update(_) => {
                         println!("update");
                     }
-                    Request::Remove(z) => {
+                    Request::Remove(_) => {
                         println!("remove");
                     }
                 }
