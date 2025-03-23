@@ -1,7 +1,7 @@
 #![allow(clippy::ref_option)] // generated code :shrug:
 #![allow(clippy::unsafe_derive_deserialize)] // trusting multi index map but could use a review
 
-use crate::message::MessageContains;
+use crate::message::MessageIsOfKind;
 use crate::reconcile::ScheduledConstraintAction;
 use crate::{InterfaceIndex, InterfaceName};
 use derive_builder::Builder;
@@ -522,7 +522,7 @@ pub struct ObservedInterfaceAssociation {
 }
 
 impl ObservedInterfaceAssociation {
-    pub fn to_implied(&self) -> RequiredInterfaceAssociation {
+    pub fn to_requirement(&self) -> RequiredInterfaceAssociation {
         RequiredInterfaceAssociation {
             name: self.name.clone(),
             controller_name: self.controller_name.clone(),
@@ -935,7 +935,7 @@ impl ObservedInformationBase {
         let mut this = Arc::new(ObservedInformationBase::default());
         let mut req = handle.link().get().execute();
         while let Ok(Some(resp)) = req.try_next().await {
-            if resp.message_contains(InfoKind::Bridge) {
+            if resp.message_is_of_kind(InfoKind::Bridge) {
                 let mut builder = ObservedBridgeBuilder::default();
                 builder.index(resp.header.index.into());
                 for attr in &resp.attributes {
@@ -969,7 +969,7 @@ impl ObservedInformationBase {
                     }
                 }
             }
-            if resp.message_contains(InfoKind::Vrf) {
+            if resp.message_is_of_kind(InfoKind::Vrf) {
                 let mut builder = ObservedVrfBuilder::default();
                 builder.index(resp.header.index.into());
                 for attr in &resp.attributes {
@@ -1016,7 +1016,7 @@ impl TryFrom<LinkMessage> for ObservedBridge {
     type Error = LinkMessage;
 
     fn try_from(message: LinkMessage) -> Result<Self, Self::Error> {
-        if !message.message_contains(InfoKind::Bridge) {
+        if !message.message_is_of_kind(InfoKind::Bridge) {
             return Err(message);
         }
         let mut builder = ObservedBridgeBuilder::default();
@@ -1063,7 +1063,7 @@ impl TryFrom<LinkMessage> for ObservedVrf {
     type Error = LinkMessage;
 
     fn try_from(message: LinkMessage) -> Result<Self, Self::Error> {
-        if !message.message_contains(InfoKind::Vrf) {
+        if !message.message_is_of_kind(InfoKind::Vrf) {
             return Err(message);
         }
         let mut builder = ObservedVrfBuilder::default();
@@ -1104,7 +1104,7 @@ impl TryFrom<LinkMessage> for ObservedVtep {
     type Error = LinkMessage;
 
     fn try_from(message: LinkMessage) -> Result<Self, Self::Error> {
-        if !message.message_contains(InfoKind::Vxlan) {
+        if !message.message_is_of_kind(InfoKind::Vxlan) {
             return Err(message);
         }
         let mut builder = ObservedVtepBuilder::default();
