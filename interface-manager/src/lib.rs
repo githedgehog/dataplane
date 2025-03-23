@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! Network interface management tools for the dataplane
 
 #![deny(
@@ -21,17 +22,13 @@ use std::path::Path;
 
 mod actor;
 mod interface;
-mod manager;
 mod message;
 mod name;
 mod reconcile;
 mod resource;
-mod subscribe;
 
 pub use interface::*;
 pub use name::*;
-
-// SPDX-License-Identifier: MIT
 
 use futures::stream::TryStreamExt;
 use nix::fcntl::OFlag;
@@ -56,11 +53,7 @@ async fn biscuit() -> Result<(), String> {
     tokio::spawn(connection);
 
     create_bridge(handle).await.map_err(|e| format!("{e}"))?;
-    // create_vtep(handle).await.map_err(|e| format!("{e}"))?;
     Ok(())
-    // create_macvlan(handle, link_name.to_string(), Some(mac_address.as_bytes().to_vec()))
-    //     .await
-    //     .map_err(|e| format!("{e}"))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -146,21 +139,6 @@ async fn create_bridge(handle: Handle) -> Result<(), rtnetlink::Error> {
         );
 
         controller_request.execute().await
-
-        // while let Some(link) = bridge_query.try_next().await? {
-        //     if !link.attributes.iter().any(|x| match x {
-        //         LinkAttribute::IfName(x) => {
-        //             println!("{x:?} ?== br_biscuit");
-        //             x == "br_biscuit"
-        //         }
-        //         _ => false,
-        //     }) {
-        //         continue;
-        //     }
-        //     let mut req2 = handle.link().del(link.header.index);
-        //     return req2.execute().await;
-        // }
-        // panic!("biscuits")
     })?;
 
     let mut links = handle.link().get().execute();
@@ -173,93 +151,7 @@ async fn create_bridge(handle: Handle) -> Result<(), rtnetlink::Error> {
     }
 
     Ok(())
-
-    // in_netns(
-    //     netns_path.as_os_str().to_str().unwrap(),
-    //     |handle| async move {
-    //         let mut bridge_query = handle
-    //             .link()
-    //             .get()
-    //             .match_name("br_biscuit".to_string())
-    //             .execute();
-    //
-    //         let Ok(Some(bridge)) = bridge_query.try_next().await else {
-    //             panic!("WRONG");
-    //         };
-    //
-    //         let Ok(None) = bridge_query.try_next().await else {
-    //             panic!("VERY WRONG");
-    //         };
-    //
-    //         let mut vrf_query = handle
-    //             .link()
-    //             .get()
-    //             .match_name("science".to_string())
-    //             .execute();
-    //
-    //         let Ok(Some(vrf)) = vrf_query.try_next().await else {
-    //             panic!("WRONG");
-    //         };
-    //
-    //         let Ok(None) = vrf_query.try_next().await else {
-    //             panic!("VERY WRONG");
-    //         };
-    //
-    //         let mut controller_request = handle.link().set(
-    //             LinkUnspec::new_with_index(bridge.header.index)
-    //                 .controller(vrf.header.index)
-    //                 .build(),
-    //         );
-    //
-    //         controller_request.execute().await
-    //
-    //         // while let Some(link) = bridge_query.try_next().await? {
-    //         //     if !link.attributes.iter().any(|x| match x {
-    //         //         LinkAttribute::IfName(x) => {
-    //         //             println!("{x:?} ?== br_biscuit");
-    //         //             x == "br_biscuit"
-    //         //         }
-    //         //         _ => false,
-    //         //     }) {
-    //         //         continue;
-    //         //     }
-    //         //     let mut req2 = handle.link().del(link.header.index);
-    //         //     return req2.execute().await;
-    //         // }
-    //         // panic!("biscuits")
-    //     },
-    // )
-    // .await
 }
-
-// async fn create_vtep(handle: Handle) -> Result<(), rtnetlink::Error> {
-//     handle
-//         .link()
-//         .add(LinkVxlan::new("biscuit", 0))
-//         .local("192.168.99.3".parse().unwrap())
-//         .udp_csum(false)
-//         .learning(false)
-//         .up()
-//         .port(4789)
-//         .ttl(64)
-//         .collect_metadata(true)
-//         .execute()
-//         .await?;
-//
-//     let mut ret = handle.link().get().execute();
-//
-//     if ret.try_next().await?.is_some() {
-//         if let Some(other_link) = ret.try_next().await? {
-//             unreachable!(
-//                 "multiple links with same name: {other_link:?}",
-//                 other_link = other_link
-//             );
-//         }
-//         Ok(())
-//     } else {
-//         Err(rtnetlink::Error::RequestFailed)
-//     }
-// }
 
 async fn in_netns<
     F: Future<Output = Result<(), rtnetlink::Error>> + Send,
@@ -405,26 +297,6 @@ fn in_netns3<
         .unwrap();
     (handle, tx_request, rx_response)
 }
-
-// async fn create_macvlan(
-//     handle: Handle,
-//     link_name: String,
-//     mac_address: Option<Vec<u8>>,
-// ) -> Result<(), rtnetlink::Error> {
-//     let mut parent_links = handle.link().get().match_name(link_name.clone()).execute();
-//     if let Some(parent) = parent_links.try_next().await? {
-//         let mut request = handle.link().add().macvlan(
-//             "my-macvlan".to_string(),
-//             parent.header.index,
-//         );
-//         if let Some(mac) = mac_address {
-//             request = request.address(mac);
-//         }
-//         request.execute().await
-//     } else {
-//         panic!("no link {link_name} found");
-//     }
-// }
 
 fn swap_to_netns(netns_path: &String) -> Result<(), rtnetlink::Error> {
     let setns_flags = CloneFlags::CLONE_NEWNET;
