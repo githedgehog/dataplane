@@ -28,6 +28,8 @@ pub(crate) struct CmdArgs {
     // Non-eal params
     #[arg(long, value_name = "packet driver to use: kernel or dpdk")]
     driver: Option<String>,
+    #[arg(long, value_name = "name of kernel interface")]
+    interface: Vec<String>,
 }
 impl CmdArgs {
     pub fn get_driver_name(&self) -> &str {
@@ -38,7 +40,7 @@ impl CmdArgs {
     }
     #[allow(clippy::unused_self)]
     pub fn kernel_params(&self) -> Vec<String> {
-        vec![]
+        self.interface.clone()
     }
     pub fn eal_params(&self) -> Vec<String> {
         let mut out = Vec::new();
