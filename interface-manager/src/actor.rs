@@ -187,7 +187,7 @@ impl BridgeManager {
                 message = self.handle.link().del(observation.index.to_u32()).into();
             }
             (Some(objective), Some(observation)) => {
-                if *objective.as_ref() == observation.to_implied() {
+                if *objective.as_ref() == observation.to_requirement() {
                     return;
                 }
                 let mut link_message = objective.create_message();
@@ -216,7 +216,7 @@ impl VrfManager {
                 message = self.handle.link().del(observation.index.to_u32()).into();
             }
             (Some(objective), Some(observation)) => {
-                if *objective.as_ref() == observation.to_implied() {
+                if *objective.as_ref() == observation.to_requirement() {
                     return;
                 }
                 let mut link_message = objective.create_message();

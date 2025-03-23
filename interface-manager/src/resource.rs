@@ -151,7 +151,7 @@ impl PartialEq<MultiIndexObservedVrfMap> for MultiIndexRequiredVrfMap {
             let Some(vtep) = self.get_by_name(&observed.name) else {
                 return false;
             };
-            if vtep != &observed.to_implied() {
+            if vtep != &observed.to_requirement() {
                 return false;
             }
         }
@@ -315,7 +315,7 @@ impl PartialEq<MultiIndexObservedBridgeMap> for MultiIndexRequiredBridgeMap {
             let Some(bridge) = self.get_by_name(&observed.name) else {
                 return false;
             };
-            if bridge != &observed.to_implied() {
+            if bridge != &observed.to_requirement() {
                 return false;
             }
         }
@@ -732,7 +732,7 @@ pub enum InformationBaseUpdateError {
 }
 
 impl ObservedBridge {
-    pub fn to_implied(&self) -> RequiredBridge {
+    pub fn to_requirement(&self) -> RequiredBridge {
         RequiredBridge {
             name: self.name.clone(),
             vlan_filtering: self.vlan_filtering,
@@ -742,7 +742,7 @@ impl ObservedBridge {
 }
 
 impl ObservedVrf {
-    pub fn to_implied(&self) -> RequiredVrf {
+    pub fn to_requirement(&self) -> RequiredVrf {
         RequiredVrf {
             name: self.name.clone(),
             route_table: self.route_table,
@@ -765,14 +765,14 @@ impl ObservedInformationBase {
         let extant_bridges: HashSet<RequiredBridge> = self
             .bridges
             .iter_by_name()
-            .map(ObservedBridge::to_implied)
+            .map(ObservedBridge::to_requirement)
             .collect();
         let desired_bridges: HashSet<RequiredBridge> =
             target.bridges.iter_by_name().cloned().collect();
         let extant_vrfs: HashSet<RequiredVrf> = self
             .vrfs
             .iter_by_name()
-            .map(ObservedVrf::to_implied)
+            .map(ObservedVrf::to_requirement)
             .collect();
         let desired_vrfs: HashSet<RequiredVrf> = target.vrfs.iter_by_name().cloned().collect();
         let bridges_to_remove = extant_bridges.difference(&desired_bridges);
@@ -844,7 +844,7 @@ impl InformationBase {
             .observed
             .bridges
             .iter_by_name()
-            .map(ObservedBridge::to_implied)
+            .map(ObservedBridge::to_requirement)
             .collect();
         let desired_bridges: HashSet<RequiredBridge> =
             self.implied.bridges.iter_by_name().cloned().collect();
@@ -852,7 +852,7 @@ impl InformationBase {
             .observed
             .vrfs
             .iter_by_name()
-            .map(ObservedVrf::to_implied)
+            .map(ObservedVrf::to_requirement)
             .collect();
         let desired_vrfs: HashSet<RequiredVrf> =
             self.implied.vrfs.iter_by_name().cloned().collect();
