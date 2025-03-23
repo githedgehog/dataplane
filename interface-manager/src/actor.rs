@@ -2,9 +2,9 @@
 // Copyright Open Network Fabric Authors
 
 use crate::resource::{
-    ImpliedBridge, ImpliedInformationBase, ImpliedVrf, ImpliedVtep, NetworkDiscriminant,
-    ObservedBridge, ObservedInformationBase, ObservedInterface, ObservedVrf, ObservedVtep,
-    RouteTableId, Vpc,
+    NetworkDiscriminant, ObservedBridge, ObservedInformationBase, ObservedInterface, ObservedVrf,
+    ObservedVtep, RequiredBridge, RequiredInformationBase, RequiredVrf, RequiredVtep, RouteTableId,
+    Vpc,
 };
 use bitflags::bitflags;
 use futures::channel::mpsc::UnboundedReceiver;
@@ -38,16 +38,16 @@ pub trait Actor {
 }
 
 pub enum BridgeMessage {
-    ObjectiveUpdate(Option<Rc<ImpliedBridge>>),
+    ObjectiveUpdate(Option<Rc<RequiredBridge>>),
     ObservationUpdate(Option<Rc<ObservedBridge>>),
 }
 pub enum VrfMessage {
-    ObjectiveUpdate(Option<Rc<ImpliedVrf>>),
+    ObjectiveUpdate(Option<Rc<RequiredVrf>>),
     ObservationUpdate(Option<Rc<ObservedVrf>>),
 }
 
 pub enum VtepMessage {
-    ObjectiveUpdate(Option<Rc<ImpliedVtep>>),
+    ObjectiveUpdate(Option<Rc<RequiredVtep>>),
     ObservationUpdate(Option<Rc<ObservedVtep>>),
 }
 
@@ -78,7 +78,7 @@ impl From<LinkSetRequest> for NetlinkAgentMessage {
 
 pub struct VtepManager {
     handle: Arc<Handle>,
-    objective: Option<Rc<ImpliedVtep>>,
+    objective: Option<Rc<RequiredVtep>>,
     observation: Option<Rc<ObservedVtep>>,
     agent: tokio::sync::mpsc::Sender<NetlinkAgentMessage>,
 }
@@ -99,7 +99,7 @@ impl VtepManager {
 
 pub struct VrfManager {
     handle: Arc<Handle>,
-    objective: Option<Rc<ImpliedVrf>>,
+    objective: Option<Rc<RequiredVrf>>,
     observation: Option<Rc<ObservedVrf>>,
     agent: tokio::sync::mpsc::Sender<NetlinkAgentMessage>,
 }
@@ -121,7 +121,7 @@ impl VrfManager {
 #[non_exhaustive]
 pub struct BridgeManager {
     handle: Arc<Handle>,
-    objective: Option<Rc<ImpliedBridge>>,
+    objective: Option<Rc<RequiredBridge>>,
     observation: Option<Rc<ObservedBridge>>,
     agent: tokio::sync::mpsc::Sender<NetlinkAgentMessage>,
 }
@@ -140,7 +140,7 @@ impl BridgeManager {
     }
 }
 
-impl ImpliedBridge {
+impl RequiredBridge {
     fn create_message(&self) -> LinkMessage {
         let mut message = LinkBridge::new(self.name.as_ref()).build();
         for attr in &mut message.attributes {
@@ -155,13 +155,13 @@ impl ImpliedBridge {
     }
 }
 
-impl ImpliedVrf {
+impl RequiredVrf {
     fn create_message(&self) -> LinkMessage {
         LinkVrf::new(self.name.as_ref(), self.route_table.into()).build()
     }
 }
 
-impl ImpliedVtep {
+impl RequiredVtep {
     fn create_message(&self) -> LinkMessage {
         LinkVxlan::new(self.name.as_ref(), self.vni.as_u32())
             .local(self.local)
@@ -245,7 +245,7 @@ impl VtepManager {
                 message = self.handle.link().del(observation.index.to_u32()).into();
             }
             (Some(objective), Some(observation)) => {
-                if *objective.as_ref() == observation.to_implied() {
+                if *objective.as_ref() == observation.to_requirement() {
                     return;
                 }
                 let mut link_message = objective.create_message();
@@ -519,15 +519,15 @@ pub enum ConfigurationUpdate {
 
 pub struct ConfigurationMonitor {
     instruction: Receiver<ConfigurationUpdate>,
-    information_base: Arc<ImpliedInformationBase>,
-    queue: Notify<Arc<ImpliedInformationBase>>,
+    information_base: Arc<RequiredInformationBase>,
+    queue: Notify<Arc<RequiredInformationBase>>,
 }
 
 impl ConfigurationMonitor {
     fn new(
         channel: Receiver<ConfigurationUpdate>,
-    ) -> (ConfigurationMonitor, Watch<Arc<ImpliedInformationBase>>) {
-        let information_base = Arc::new(ImpliedInformationBase::default());
+    ) -> (ConfigurationMonitor, Watch<Arc<RequiredInformationBase>>) {
+        let information_base = Arc::new(RequiredInformationBase::default());
         let (queue, watch) = tokio::sync::watch::channel(information_base.clone());
         let this = ConfigurationMonitor {
             information_base,
@@ -537,7 +537,7 @@ impl ConfigurationMonitor {
         (this, watch)
     }
 
-    fn get_information_base(&self) -> Arc<ImpliedInformationBase> {
+    fn get_information_base(&self) -> Arc<RequiredInformationBase> {
         self.information_base.clone()
     }
 

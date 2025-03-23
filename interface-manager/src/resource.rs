@@ -105,17 +105,17 @@ impl Vpc {
     Serialize,
 )]
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ImpliedVrf {
+pub struct RequiredVrf {
     #[multi_index(hashed_unique)]
     pub name: InterfaceName,
     #[multi_index(ordered_unique)]
     pub route_table: RouteTableId,
 }
 
-impl ImpliedVrf {
-    fn from_vpc(vpc: &Vpc) -> ImpliedVrf {
+impl RequiredVrf {
+    fn from_vpc(vpc: &Vpc) -> RequiredVrf {
         let name = InterfaceName::try_from(format!("vrf{}", vpc.route_table)).unwrap();
-        ImpliedVrf {
+        RequiredVrf {
             route_table: vpc.route_table,
             name,
         }
@@ -136,13 +136,13 @@ pub struct ObservedVrf {
     pub index: InterfaceIndex, // TODO: make private
 }
 
-impl PartialEq<ObservedVrf> for ImpliedVrf {
+impl PartialEq<ObservedVrf> for RequiredVrf {
     fn eq(&self, other: &ObservedVrf) -> bool {
         self.name == other.name && self.route_table == other.route_table
     }
 }
 
-impl PartialEq<MultiIndexObservedVrfMap> for MultiIndexImpliedVrfMap {
+impl PartialEq<MultiIndexObservedVrfMap> for MultiIndexRequiredVrfMap {
     fn eq(&self, other: &MultiIndexObservedVrfMap) -> bool {
         if self.iter().len() != other.iter().len() {
             return false;
@@ -173,7 +173,7 @@ impl PartialEq<MultiIndexObservedVrfMap> for MultiIndexImpliedVrfMap {
     Serialize,
 )]
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ImpliedVtep {
+pub struct RequiredVtep {
     #[multi_index(ordered_unique)]
     pub name: InterfaceName,
     #[multi_index(ordered_unique)]
@@ -181,11 +181,11 @@ pub struct ImpliedVtep {
     pub local: Ipv4Addr,
 }
 
-impl ImpliedVtep {
-    fn from_vpc(vpc: &Vpc) -> ImpliedVtep {
+impl RequiredVtep {
+    fn from_vpc(vpc: &Vpc) -> RequiredVtep {
         let name = InterfaceName::try_from(format!("vtep{}", vpc.route_table)).unwrap();
         let NetworkDiscriminant::EvpnVxlan { vni } = vpc.discriminant;
-        ImpliedVtep {
+        RequiredVtep {
             name,
             vni,
             // TODO: needs real ip
@@ -219,13 +219,13 @@ pub struct ObservedVtep {
     pub ttl: u8,
 }
 
-impl PartialEq<ObservedVtep> for ImpliedVtep {
+impl PartialEq<ObservedVtep> for RequiredVtep {
     fn eq(&self, other: &ObservedVtep) -> bool {
         self.vni == other.vni && self.local == other.local && self.name == other.name
     }
 }
 
-impl PartialEq<MultiIndexObservedVtepMap> for MultiIndexImpliedVtepMap {
+impl PartialEq<MultiIndexObservedVtepMap> for MultiIndexRequiredVtepMap {
     fn eq(&self, other: &MultiIndexObservedVtepMap) -> bool {
         if self.iter().len() != other.iter().len() {
             return false;
@@ -234,7 +234,7 @@ impl PartialEq<MultiIndexObservedVtepMap> for MultiIndexImpliedVtepMap {
             let Some(vrf) = self.get_by_name(&observed.name) else {
                 return false;
             };
-            if vrf != &observed.to_implied() {
+            if vrf != &observed.to_requirement() {
                 return false;
             }
         }
@@ -256,17 +256,17 @@ impl PartialEq<MultiIndexObservedVtepMap> for MultiIndexImpliedVtepMap {
     Serialize,
 )]
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ImpliedBridge {
+pub struct RequiredBridge {
     #[multi_index(hashed_unique)]
     pub name: InterfaceName,
     pub vlan_filtering: bool,
     pub vlan_protocol: EthType,
 }
 
-impl ImpliedBridge {
-    fn from_vpc(vpc: &Vpc) -> ImpliedBridge {
+impl RequiredBridge {
+    fn from_vpc(vpc: &Vpc) -> RequiredBridge {
         let name = InterfaceName::try_from(format!("br{}", vpc.route_table)).unwrap();
-        ImpliedBridge {
+        RequiredBridge {
             name,
             vlan_protocol: EthType::VLAN,
             vlan_filtering: false,
@@ -298,7 +298,7 @@ pub struct ObservedBridge {
     pub controller: Option<InterfaceIndex>,
 }
 
-impl PartialEq<ObservedBridge> for ImpliedBridge {
+impl PartialEq<ObservedBridge> for RequiredBridge {
     fn eq(&self, other: &ObservedBridge) -> bool {
         self.name == other.name
             && self.vlan_filtering == other.vlan_filtering
@@ -306,7 +306,7 @@ impl PartialEq<ObservedBridge> for ImpliedBridge {
     }
 }
 
-impl PartialEq<MultiIndexObservedBridgeMap> for MultiIndexImpliedBridgeMap {
+impl PartialEq<MultiIndexObservedBridgeMap> for MultiIndexRequiredBridgeMap {
     fn eq(&self, other: &MultiIndexObservedBridgeMap) -> bool {
         if self.iter().len() != other.iter().len() {
             return false;
@@ -337,7 +337,7 @@ impl PartialEq<MultiIndexObservedBridgeMap> for MultiIndexImpliedBridgeMap {
     Serialize,
 )]
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ImpliedVtepBridgeMembership {
+pub struct RequiredVtepBridgeMembership {
     #[multi_index(hashed_unique)]
     bridge: InterfaceName,
     #[multi_index(hashed_unique)]
@@ -358,7 +358,7 @@ pub struct ImpliedVtepBridgeMembership {
     Serialize,
 )]
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ImpliedVrfMembership {
+pub struct RequiredVrfMembership {
     #[multi_index(hashed_unique)]
     vrf: InterfaceName,
     #[multi_index(hashed_unique)]
@@ -366,31 +366,31 @@ pub struct ImpliedVrfMembership {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
-pub struct ImpliedInformationBase {
-    pub(crate) vrfs: MultiIndexImpliedVrfMap,
-    pub(crate) bridges: MultiIndexImpliedBridgeMap,
-    pub(crate) vteps: MultiIndexImpliedVtepMap,
-    pub(crate) constraints: ImpliedInformationBaseConstraints,
+pub struct RequiredInformationBase {
+    pub(crate) vrfs: MultiIndexRequiredVrfMap,
+    pub(crate) bridges: MultiIndexRequiredBridgeMap,
+    pub(crate) vteps: MultiIndexRequiredVtepMap,
+    pub(crate) constraints: RequiredConstraints,
 }
 
-impl ImpliedInformationBase {
+impl RequiredInformationBase {
     // TODO: proper error handling
     pub fn try_add_vpc(&mut self, vpc: &Vpc) {
-        let vrf = ImpliedVrf::from_vpc(vpc);
-        let bridge = ImpliedBridge::from_vpc(vpc);
-        let vtep = ImpliedVtep::from_vpc(vpc);
+        let vrf = RequiredVrf::from_vpc(vpc);
+        let bridge = RequiredBridge::from_vpc(vpc);
+        let vtep = RequiredVtep::from_vpc(vpc);
         let constraints = [
-            ImpliedInterfaceConstraint {
+            RequiredInterfaceAssociation {
                 name: vrf.name.clone(),
                 controller_name: None,
                 admin_state: AdminState::Up,
             },
-            ImpliedInterfaceConstraint {
+            RequiredInterfaceAssociation {
                 name: bridge.name.clone(),
                 controller_name: Some(vrf.name.clone()),
                 admin_state: AdminState::Up,
             },
-            ImpliedInterfaceConstraint {
+            RequiredInterfaceAssociation {
                 name: vtep.name.clone(),
                 controller_name: Some(bridge.name.clone()),
                 admin_state: AdminState::Up,
@@ -424,9 +424,9 @@ impl ImpliedInformationBase {
 
 // Kept for constraint tracking
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
-pub struct ImpliedInformationBaseConstraints {
+pub struct RequiredConstraints {
     /* names which we expect to exist or have observed mapped to their controller (if any) */
-    pub interface: MultiIndexImpliedInterfaceConstraintMap,
+    pub interface: MultiIndexRequiredInterfaceAssociationMap,
 }
 
 #[derive(
@@ -443,7 +443,7 @@ pub struct ImpliedInformationBaseConstraints {
     Serialize,
 )]
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ImpliedInterfaceConstraint {
+pub struct RequiredInterfaceAssociation {
     #[multi_index(hashed_unique)]
     pub name: InterfaceName,
     #[multi_index(ordered_non_unique)]
@@ -508,7 +508,7 @@ pub enum OperationalState {
     Serialize,
 )]
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ObservedInterfaceConstraint {
+pub struct ObservedInterfaceAssociation {
     #[multi_index(ordered_unique)]
     pub name: InterfaceName,
     #[multi_index(ordered_non_unique)]
@@ -521,9 +521,9 @@ pub struct ObservedInterfaceConstraint {
     pub operational_state: OperationalState,
 }
 
-impl ObservedInterfaceConstraint {
-    pub fn to_implied(&self) -> ImpliedInterfaceConstraint {
-        ImpliedInterfaceConstraint {
+impl ObservedInterfaceAssociation {
+    pub fn to_implied(&self) -> RequiredInterfaceAssociation {
+        RequiredInterfaceAssociation {
             name: self.name.clone(),
             controller_name: self.controller_name.clone(),
             admin_state: self.admin_state,
@@ -531,8 +531,8 @@ impl ObservedInterfaceConstraint {
     }
 }
 
-impl PartialEq<ObservedInterfaceConstraint> for PlannedInterfaceConstraint {
-    fn eq(&self, other: &ObservedInterfaceConstraint) -> bool {
+impl PartialEq<ObservedInterfaceAssociation> for PlannedInterfaceConstraint {
+    fn eq(&self, other: &ObservedInterfaceAssociation) -> bool {
         self.name == other.name
             && self.controller_name == other.controller_name
             && self.index == other.index
@@ -541,7 +541,7 @@ impl PartialEq<ObservedInterfaceConstraint> for PlannedInterfaceConstraint {
     }
 }
 
-impl PartialEq<PlannedInterfaceConstraint> for ImpliedInterfaceConstraint {
+impl PartialEq<PlannedInterfaceConstraint> for RequiredInterfaceAssociation {
     fn eq(&self, other: &PlannedInterfaceConstraint) -> bool {
         self.name == other.name
             && self.controller_name == other.controller_name
@@ -549,23 +549,23 @@ impl PartialEq<PlannedInterfaceConstraint> for ImpliedInterfaceConstraint {
     }
 }
 
-impl PartialEq<ObservedInterfaceConstraint> for ImpliedInterfaceConstraint {
-    fn eq(&self, other: &ObservedInterfaceConstraint) -> bool {
+impl PartialEq<ObservedInterfaceAssociation> for RequiredInterfaceAssociation {
+    fn eq(&self, other: &ObservedInterfaceAssociation) -> bool {
         self.name == other.name
             && self.controller_name == other.controller_name
             && self.admin_state == other.admin_state
     }
 }
-impl PartialEq<ImpliedInterfaceConstraint> for ObservedInterfaceConstraint {
-    fn eq(&self, other: &ImpliedInterfaceConstraint) -> bool {
+impl PartialEq<RequiredInterfaceAssociation> for ObservedInterfaceAssociation {
+    fn eq(&self, other: &RequiredInterfaceAssociation) -> bool {
         other == self
     }
 }
 
-impl PartialEq<MultiIndexObservedInterfaceConstraintMap>
-    for MultiIndexImpliedInterfaceConstraintMap
+impl PartialEq<MultiIndexObservedInterfaceAssociationMap>
+    for MultiIndexRequiredInterfaceAssociationMap
 {
-    fn eq(&self, observed: &MultiIndexObservedInterfaceConstraintMap) -> bool {
+    fn eq(&self, observed: &MultiIndexObservedInterfaceAssociationMap) -> bool {
         if self.iter().len() != observed.len() {
             return false;
         }
@@ -581,7 +581,7 @@ impl PartialEq<MultiIndexObservedInterfaceConstraintMap>
     }
 }
 
-impl MultiIndexObservedInterfaceConstraintMap {
+impl MultiIndexObservedInterfaceAssociationMap {
     pub async fn get(handle: &Handle) -> Self {
         #[derive(Debug, Builder)]
         struct Relation {
@@ -632,9 +632,9 @@ impl MultiIndexObservedInterfaceConstraintMap {
             };
             interface_map.insert(relation.index, relation);
         }
-        let mut this = MultiIndexObservedInterfaceConstraintMap::default();
+        let mut this = MultiIndexObservedInterfaceAssociationMap::default();
         for entry in interface_map.values() {
-            let mut builder = ObservedInterfaceConstraintBuilder::default();
+            let mut builder = ObservedInterfaceAssociationBuilder::default();
             builder.index(entry.index);
             builder.name(entry.name.clone());
             builder.controller_index(entry.controller);
@@ -673,7 +673,7 @@ impl MultiIndexObservedInterfaceConstraintMap {
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
 pub struct InterfaceRelations {
     /* names which we expect to exist or have observed mapped to their controller (if any) */
-    pub observed: MultiIndexObservedInterfaceConstraintMap,
+    pub observed: MultiIndexObservedInterfaceAssociationMap,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
@@ -684,7 +684,7 @@ pub struct ObservedInformationBase {
     pub(crate) constraints: InterfaceRelations,
 }
 
-impl PartialEq<ObservedInformationBase> for ImpliedInformationBase {
+impl PartialEq<ObservedInformationBase> for RequiredInformationBase {
     fn eq(&self, other: &ObservedInformationBase) -> bool {
         // TODO: constraints check
         self.bridges == other.bridges && self.vrfs == other.vrfs && self.vteps == other.vteps
@@ -693,15 +693,15 @@ impl PartialEq<ObservedInformationBase> for ImpliedInformationBase {
 
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
 pub struct InformationBase {
-    pub implied: Arc<ImpliedInformationBase>,
+    pub implied: Arc<RequiredInformationBase>,
     pub observed: Arc<ObservedInformationBase>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Requirement {
-    Vrf(ImpliedVrf),
-    Bridge(ImpliedBridge),
-    Interface(ImpliedInterfaceConstraint),
+    Vrf(RequiredVrf),
+    Bridge(RequiredBridge),
+    Interface(RequiredInterfaceAssociation),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -725,15 +725,15 @@ pub enum Input {
 
 #[derive(Debug)]
 pub enum InformationBaseUpdateError {
-    DuplicateVrf(ImpliedVrf),
-    DuplicateBridge(ImpliedBridge),
-    NoSuchVrf(ImpliedVrf),
-    NoSuchBridge(ImpliedBridge),
+    DuplicateVrf(RequiredVrf),
+    DuplicateBridge(RequiredBridge),
+    NoSuchVrf(RequiredVrf),
+    NoSuchBridge(RequiredBridge),
 }
 
 impl ObservedBridge {
-    pub fn to_implied(&self) -> ImpliedBridge {
-        ImpliedBridge {
+    pub fn to_implied(&self) -> RequiredBridge {
+        RequiredBridge {
             name: self.name.clone(),
             vlan_filtering: self.vlan_filtering,
             vlan_protocol: self.vlan_protocol,
@@ -742,8 +742,8 @@ impl ObservedBridge {
 }
 
 impl ObservedVrf {
-    pub fn to_implied(&self) -> ImpliedVrf {
-        ImpliedVrf {
+    pub fn to_implied(&self) -> RequiredVrf {
+        RequiredVrf {
             name: self.name.clone(),
             route_table: self.route_table,
         }
@@ -751,8 +751,8 @@ impl ObservedVrf {
 }
 
 impl ObservedVtep {
-    pub fn to_implied(&self) -> ImpliedVtep {
-        ImpliedVtep {
+    pub fn to_requirement(&self) -> RequiredVtep {
+        RequiredVtep {
             name: self.name.clone(),
             local: self.local,
             vni: self.vni,
@@ -761,20 +761,20 @@ impl ObservedVtep {
 }
 
 impl ObservedInformationBase {
-    async fn drive_to(&self, handle: &Handle, target: &ImpliedInformationBase) {
-        let extant_bridges: HashSet<ImpliedBridge> = self
+    async fn drive_to(&self, handle: &Handle, target: &RequiredInformationBase) {
+        let extant_bridges: HashSet<RequiredBridge> = self
             .bridges
             .iter_by_name()
             .map(ObservedBridge::to_implied)
             .collect();
-        let desired_bridges: HashSet<ImpliedBridge> =
+        let desired_bridges: HashSet<RequiredBridge> =
             target.bridges.iter_by_name().cloned().collect();
-        let extant_vrfs: HashSet<ImpliedVrf> = self
+        let extant_vrfs: HashSet<RequiredVrf> = self
             .vrfs
             .iter_by_name()
             .map(ObservedVrf::to_implied)
             .collect();
-        let desired_vrfs: HashSet<ImpliedVrf> = target.vrfs.iter_by_name().cloned().collect();
+        let desired_vrfs: HashSet<RequiredVrf> = target.vrfs.iter_by_name().cloned().collect();
         let bridges_to_remove = extant_bridges.difference(&desired_bridges);
         let bridge_removal_results = join_all(bridges_to_remove.map(|bridge| {
             let observed = self.bridges.get_by_name(&bridge.name).unwrap();
@@ -835,40 +835,27 @@ impl ObservedInformationBase {
     }
 }
 
-pub struct Reconcile {
-    ib: InformationBase,
-    schedule: Vec<Input>,
-}
-
-impl Reconcile {
-    fn new(ib: InformationBase) -> Self {
-        Self {
-            ib,
-            schedule: Vec::new(),
-        }
-    }
-}
-
 impl InformationBase {
     async fn reconcile(&mut self, handle: &Handle) {
         // TODO: refresh of whole thing is drastic.  Add in monitor
         self.observed = ObservedInformationBase::observe(handle).await;
 
-        let _: HashSet<ImpliedBridge> = self
+        let _: HashSet<RequiredBridge> = self
             .observed
             .bridges
             .iter_by_name()
             .map(ObservedBridge::to_implied)
             .collect();
-        let desired_bridges: HashSet<ImpliedBridge> =
+        let desired_bridges: HashSet<RequiredBridge> =
             self.implied.bridges.iter_by_name().cloned().collect();
-        let _: HashSet<ImpliedVrf> = self
+        let _: HashSet<RequiredVrf> = self
             .observed
             .vrfs
             .iter_by_name()
             .map(ObservedVrf::to_implied)
             .collect();
-        let desired_vrfs: HashSet<ImpliedVrf> = self.implied.vrfs.iter_by_name().cloned().collect();
+        let desired_vrfs: HashSet<RequiredVrf> =
+            self.implied.vrfs.iter_by_name().cloned().collect();
 
         let observed_bridge_names = self.observed.bridges.iter_by_name().map(|x| &x.name);
         let observed_vrf_names = self.observed.vrfs.iter_by_name().map(|x| &x.name);
@@ -1265,8 +1252,8 @@ impl ObservedInformationBase {
 
     pub fn try_add_association(
         &mut self,
-        association: ObservedInterfaceConstraint,
-    ) -> Result<&ObservedInterfaceConstraint, UniquenessError<ObservedInterfaceConstraint>> {
+        association: ObservedInterfaceAssociation,
+    ) -> Result<&ObservedInterfaceAssociation, UniquenessError<ObservedInterfaceAssociation>> {
         self.constraints
             .observed
             .try_insert(association)
@@ -1279,7 +1266,7 @@ impl ObservedInformationBase {
     pub fn try_remove_association(
         &mut self,
         index: InterfaceIndex,
-    ) -> Option<ObservedInterfaceConstraint> {
+    ) -> Option<ObservedInterfaceAssociation> {
         self.constraints.observed.remove_by_index(&index)
     }
 }

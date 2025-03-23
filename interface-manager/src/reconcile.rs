@@ -2,12 +2,12 @@
 // Copyright Open Network Fabric Authors
 
 use crate::resource::{
-    AdminState, ImpliedBridge, ImpliedInformationBase, ImpliedVrf, ImpliedVtep,
-    MultiIndexImpliedBridgeMap, MultiIndexImpliedInterfaceConstraintMap, MultiIndexImpliedVrfMap,
-    MultiIndexImpliedVtepMap, MultiIndexObservedBridgeMap,
-    MultiIndexObservedInterfaceConstraintMap, MultiIndexObservedVrfMap, MultiIndexObservedVtepMap,
-    MultiIndexPlannedInterfaceConstraintMap, ObservedBridge, ObservedInformationBase, ObservedVrf,
-    ObservedVtep, PlannedInterfaceConstraint,
+    AdminState, MultiIndexObservedBridgeMap, MultiIndexObservedInterfaceAssociationMap,
+    MultiIndexObservedVrfMap, MultiIndexObservedVtepMap, MultiIndexPlannedInterfaceConstraintMap,
+    MultiIndexRequiredBridgeMap, MultiIndexRequiredInterfaceAssociationMap,
+    MultiIndexRequiredVrfMap, MultiIndexRequiredVtepMap, ObservedBridge, ObservedInformationBase,
+    ObservedVrf, ObservedVtep, PlannedInterfaceConstraint, RequiredBridge, RequiredInformationBase,
+    RequiredVrf, RequiredVtep,
 };
 use rtnetlink::packet_route::link::{InfoBridge, InfoData, LinkAttribute, LinkInfo};
 use rtnetlink::{
@@ -54,12 +54,12 @@ where
     }
 }
 
-impl Reconcile<ImpliedVrf, ObservedVrf> for Handle {
+impl Reconcile<RequiredVrf, ObservedVrf> for Handle {
     type Create = LinkAddRequest;
     type Update = LinkAddRequest;
     type Remove = LinkDelRequest;
 
-    fn request_create(&self, required: &ImpliedVrf) -> Self::Create {
+    fn request_create(&self, required: &RequiredVrf) -> Self::Create {
         self.link()
             .add(LinkVrf::new(required.name.as_ref(), required.route_table.into()).build())
     }
@@ -68,19 +68,19 @@ impl Reconcile<ImpliedVrf, ObservedVrf> for Handle {
         self.link().del(observed.index.to_u32())
     }
 
-    fn request_update(&self, required: &ImpliedVrf, observed: &ObservedVrf) -> Self::Update {
+    fn request_update(&self, required: &RequiredVrf, observed: &ObservedVrf) -> Self::Update {
         let mut message = LinkVrf::new(required.name.as_ref(), required.route_table.into()).build();
         message.header.index = observed.index.into();
         self.link().add(message).replace()
     }
 }
 
-impl Reconcile<ImpliedVtep, ObservedVtep> for Handle {
+impl Reconcile<RequiredVtep, ObservedVtep> for Handle {
     type Create = LinkAddRequest;
     type Update = LinkAddRequest;
     type Remove = LinkDelRequest;
 
-    fn request_create(&self, required: &ImpliedVtep) -> Self::Create {
+    fn request_create(&self, required: &RequiredVtep) -> Self::Create {
         self.link().add(
             LinkVxlan::new(required.name.as_ref(), required.vni.as_u32())
                 .local(required.local)
@@ -92,19 +92,19 @@ impl Reconcile<ImpliedVtep, ObservedVtep> for Handle {
         self.link().del(observed.index.to_u32())
     }
 
-    fn request_update(&self, required: &ImpliedVtep, observed: &ObservedVtep) -> Self::Update {
+    fn request_update(&self, required: &RequiredVtep, observed: &ObservedVtep) -> Self::Update {
         let mut message = LinkVxlan::new(required.name.as_ref(), required.vni.as_u32()).build();
         message.header.index = observed.index.into();
         self.link().add(message).replace()
     }
 }
 
-impl Reconcile<ImpliedBridge, ObservedBridge> for Handle {
+impl Reconcile<RequiredBridge, ObservedBridge> for Handle {
     type Create = LinkAddRequest;
     type Update = LinkAddRequest;
     type Remove = LinkDelRequest;
 
-    fn request_create(&self, required: &ImpliedBridge) -> Self::Create {
+    fn request_create(&self, required: &RequiredBridge) -> Self::Create {
         self.link().add(
             LinkBridge::new(required.name.as_ref())
                 .append_extra_attribute(LinkAttribute::LinkInfo(vec![LinkInfo::Data(
@@ -121,7 +121,7 @@ impl Reconcile<ImpliedBridge, ObservedBridge> for Handle {
         self.link().del(observed.index.to_u32())
     }
 
-    fn request_update(&self, required: &ImpliedBridge, observed: &ObservedBridge) -> Self::Update {
+    fn request_update(&self, required: &RequiredBridge, observed: &ObservedBridge) -> Self::Update {
         let mut message = LinkBridge::new(required.name.as_ref())
             .append_extra_attribute(LinkAttribute::LinkInfo(vec![LinkInfo::Data(
                 InfoData::Bridge(vec![
@@ -135,12 +135,12 @@ impl Reconcile<ImpliedBridge, ObservedBridge> for Handle {
     }
 }
 
-impl Reconcile<MultiIndexImpliedVrfMap, MultiIndexObservedVrfMap> for Handle {
-    type Create = Vec<Request<Handle, ImpliedVrf, ObservedVrf>>;
-    type Update = Vec<Request<Handle, ImpliedVrf, ObservedVrf>>;
-    type Remove = Vec<Request<Handle, ImpliedVrf, ObservedVrf>>;
+impl Reconcile<MultiIndexRequiredVrfMap, MultiIndexObservedVrfMap> for Handle {
+    type Create = Vec<Request<Handle, RequiredVrf, ObservedVrf>>;
+    type Update = Vec<Request<Handle, RequiredVrf, ObservedVrf>>;
+    type Remove = Vec<Request<Handle, RequiredVrf, ObservedVrf>>;
 
-    fn request_create(&self, required: &MultiIndexImpliedVrfMap) -> Self::Create {
+    fn request_create(&self, required: &MultiIndexRequiredVrfMap) -> Self::Create {
         required
             .iter()
             .map(|(_, vrf)| Request::Create(self.request_create(vrf)))
@@ -156,10 +156,10 @@ impl Reconcile<MultiIndexImpliedVrfMap, MultiIndexObservedVrfMap> for Handle {
 
     fn request_update(
         &self,
-        required: &MultiIndexImpliedVrfMap,
+        required: &MultiIndexRequiredVrfMap,
         observed: &MultiIndexObservedVrfMap,
     ) -> Self::Update {
-        let mut to_create = MultiIndexImpliedVrfMap::default();
+        let mut to_create = MultiIndexRequiredVrfMap::default();
         let mut to_remove = MultiIndexObservedVrfMap::default();
         for (_, observed) in observed.iter() {
             if required.get_by_name(&observed.name).is_none() {
@@ -224,12 +224,12 @@ impl Reconcile<MultiIndexImpliedVrfMap, MultiIndexObservedVrfMap> for Handle {
     }
 }
 
-impl Reconcile<MultiIndexImpliedVtepMap, MultiIndexObservedVtepMap> for Handle {
-    type Create = Vec<Request<Handle, ImpliedVtep, ObservedVtep>>;
-    type Update = Vec<Request<Handle, ImpliedVtep, ObservedVtep>>;
-    type Remove = Vec<Request<Handle, ImpliedVtep, ObservedVtep>>;
+impl Reconcile<MultiIndexRequiredVtepMap, MultiIndexObservedVtepMap> for Handle {
+    type Create = Vec<Request<Handle, RequiredVtep, ObservedVtep>>;
+    type Update = Vec<Request<Handle, RequiredVtep, ObservedVtep>>;
+    type Remove = Vec<Request<Handle, RequiredVtep, ObservedVtep>>;
 
-    fn request_create(&self, required: &MultiIndexImpliedVtepMap) -> Self::Create {
+    fn request_create(&self, required: &MultiIndexRequiredVtepMap) -> Self::Create {
         required
             .iter()
             .map(|(_, vtep)| Request::Create(self.request_create(vtep)))
@@ -245,10 +245,10 @@ impl Reconcile<MultiIndexImpliedVtepMap, MultiIndexObservedVtepMap> for Handle {
 
     fn request_update(
         &self,
-        required: &MultiIndexImpliedVtepMap,
+        required: &MultiIndexRequiredVtepMap,
         observed: &MultiIndexObservedVtepMap,
     ) -> Self::Update {
-        let mut to_create = MultiIndexImpliedVtepMap::default();
+        let mut to_create = MultiIndexRequiredVtepMap::default();
         let mut to_remove = MultiIndexObservedVtepMap::default();
         for (_, observed) in observed.iter() {
             if required.get_by_name(&observed.name).is_none()
@@ -304,12 +304,12 @@ impl Reconcile<MultiIndexImpliedVtepMap, MultiIndexObservedVtepMap> for Handle {
     }
 }
 
-impl Reconcile<MultiIndexImpliedBridgeMap, MultiIndexObservedBridgeMap> for Handle {
-    type Create = Vec<Request<Handle, ImpliedBridge, ObservedBridge>>;
-    type Update = Vec<Request<Handle, ImpliedBridge, ObservedBridge>>;
-    type Remove = Vec<Request<Handle, ImpliedBridge, ObservedBridge>>;
+impl Reconcile<MultiIndexRequiredBridgeMap, MultiIndexObservedBridgeMap> for Handle {
+    type Create = Vec<Request<Handle, RequiredBridge, ObservedBridge>>;
+    type Update = Vec<Request<Handle, RequiredBridge, ObservedBridge>>;
+    type Remove = Vec<Request<Handle, RequiredBridge, ObservedBridge>>;
 
-    fn request_create(&self, required: &MultiIndexImpliedBridgeMap) -> Self::Create {
+    fn request_create(&self, required: &MultiIndexRequiredBridgeMap) -> Self::Create {
         required
             .iter()
             .map(|(_, bridge)| Request::Create(self.request_create(bridge)))
@@ -325,10 +325,10 @@ impl Reconcile<MultiIndexImpliedBridgeMap, MultiIndexObservedBridgeMap> for Hand
 
     fn request_update(
         &self,
-        required: &MultiIndexImpliedBridgeMap,
+        required: &MultiIndexRequiredBridgeMap,
         observed: &MultiIndexObservedBridgeMap,
     ) -> Self::Update {
-        let mut to_create = MultiIndexImpliedBridgeMap::default();
+        let mut to_create = MultiIndexRequiredBridgeMap::default();
         let mut to_remove = MultiIndexObservedBridgeMap::default();
         for (_, observed) in observed.iter() {
             if required.get_by_name(&observed.name).is_none() {
@@ -368,9 +368,9 @@ impl Reconcile<MultiIndexImpliedBridgeMap, MultiIndexObservedBridgeMap> for Hand
 }
 
 pub enum InterfaceOp {
-    Bridge(Request<Handle, ImpliedBridge, ObservedBridge>),
-    Vrf(Request<Handle, ImpliedVrf, ObservedVrf>),
-    Vtep(Request<Handle, ImpliedVtep, ObservedVtep>),
+    Bridge(Request<Handle, RequiredBridge, ObservedBridge>),
+    Vrf(Request<Handle, RequiredVrf, ObservedVrf>),
+    Vtep(Request<Handle, RequiredVtep, ObservedVtep>),
     Associate(LinkStep),
 }
 
@@ -385,23 +385,30 @@ pub enum ScheduledConstraintAction {
     ReAssociate,
 }
 
-impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterfaceConstraintMap>
+impl Reconcile<MultiIndexRequiredInterfaceAssociationMap, MultiIndexObservedInterfaceAssociationMap>
     for Handle
 {
     type Create = ();
     type Update = Vec<LinkStep>;
     type Remove = ();
 
-    fn request_create(&self, _required: &MultiIndexImpliedInterfaceConstraintMap) -> Self::Create {}
+    fn request_create(
+        &self,
+        _required: &MultiIndexRequiredInterfaceAssociationMap,
+    ) -> Self::Create {
+    }
 
-    fn request_remove(&self, _observed: &MultiIndexObservedInterfaceConstraintMap) -> Self::Remove {
+    fn request_remove(
+        &self,
+        _observed: &MultiIndexObservedInterfaceAssociationMap,
+    ) -> Self::Remove {
     }
 
     #[allow(clippy::too_many_lines)]
     fn request_update(
         &self,
-        required: &MultiIndexImpliedInterfaceConstraintMap,
-        observed: &MultiIndexObservedInterfaceConstraintMap,
+        required: &MultiIndexRequiredInterfaceAssociationMap,
+        observed: &MultiIndexObservedInterfaceAssociationMap,
     ) -> Self::Update {
         let mut plans = MultiIndexPlannedInterfaceConstraintMap::default();
         for (_, current) in observed.iter() {
@@ -524,12 +531,12 @@ impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterf
     }
 }
 
-impl Reconcile<ImpliedInformationBase, ObservedInformationBase> for Handle {
+impl Reconcile<RequiredInformationBase, ObservedInformationBase> for Handle {
     type Create = Vec<InterfaceOp>;
     type Update = Vec<InterfaceOp>;
     type Remove = Vec<InterfaceOp>;
 
-    fn request_create(&self, required: &ImpliedInformationBase) -> Self::Create {
+    fn request_create(&self, required: &RequiredInformationBase) -> Self::Create {
         self.request_create(&required.vrfs)
             .into_iter()
             .map(InterfaceOp::Vrf)
@@ -565,7 +572,7 @@ impl Reconcile<ImpliedInformationBase, ObservedInformationBase> for Handle {
 
     fn request_update(
         &self,
-        required: &ImpliedInformationBase,
+        required: &RequiredInformationBase,
         observed: &ObservedInformationBase,
     ) -> Self::Update {
         self.request_update(&required.vrfs, &observed.vrfs)
@@ -597,8 +604,8 @@ impl Reconcile<ImpliedInformationBase, ObservedInformationBase> for Handle {
 mod test {
     use crate::reconcile::{InterfaceOp, LinkStep, Reconcile, Request};
     use crate::resource::{
-        ImpliedInformationBase, ImpliedVtep, MultiIndexObservedInterfaceConstraintMap,
-        NetworkDiscriminant, ObservedInformationBase, ObservedInterface, ObservedVtep, Vpc,
+        MultiIndexObservedInterfaceAssociationMap, NetworkDiscriminant, ObservedInformationBase,
+        ObservedInterface, ObservedVtep, RequiredInformationBase, RequiredVtep, Vpc,
     };
     use futures::StreamExt;
     use futures::TryStreamExt;
@@ -617,7 +624,7 @@ mod test {
             .unwrap();
         tokio::spawn(connection);
 
-        let implied_vtep = ImpliedVtep {
+        let implied_vtep = RequiredVtep {
             name: "some_vtep".try_into().unwrap(),
             vni: 18.try_into().unwrap(),
             local: "192.168.32.53".parse().unwrap(),
@@ -729,7 +736,7 @@ mod test {
             ),
         ];
 
-        let mut ib = ImpliedInformationBase::default();
+        let mut ib = RequiredInformationBase::default();
 
         for vpc in vpcs {
             ib.try_add_vpc(&vpc);
@@ -826,7 +833,7 @@ mod test {
                 },
             ),
         ];
-        let mut ib = ImpliedInformationBase::default();
+        let mut ib = RequiredInformationBase::default();
 
         for vpc in vpcs {
             ib.try_add_vpc(&vpc);
@@ -850,7 +857,7 @@ mod test {
                     ob.try_add_interface(interface).unwrap();
                 }
             }
-            let x = MultiIndexObservedInterfaceConstraintMap::get(&handle).await;
+            let x = MultiIndexObservedInterfaceAssociationMap::get(&handle).await;
             for (_, association) in x.iter() {
                 match ob.try_add_association(association.clone()) {
                     Ok(_) => {}
@@ -948,7 +955,7 @@ mod test {
             .set_rx_buf_sz(212_992)
             .unwrap();
         tokio::spawn(connection);
-        let x = MultiIndexObservedInterfaceConstraintMap::get(&handle).await;
+        let x = MultiIndexObservedInterfaceAssociationMap::get(&handle).await;
         println!("{x:?}");
     }
 }
