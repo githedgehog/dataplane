@@ -7,7 +7,6 @@
 #[allow(unused_imports)] // just re-exporting conditionally included feature
 pub use contract::*;
 use etherparse::EtherType;
-use serde::{Deserializer, Serializer};
 
 /// The ethernet header's ethertype field.
 ///

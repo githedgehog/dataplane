@@ -1,36 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::message::MessageContains;
 use crate::resource::{
-    ImpliedBridge, ImpliedInformationBase, ImpliedVrf, ImpliedVtep, MultiIndexVpcMap,
-    NetworkDiscriminant, ObservedBridge, ObservedBridgeBuilder, ObservedInformationBase,
-    ObservedInterface, ObservedVrf, ObservedVtep, RouteTableId, Vpc,
+    ImpliedBridge, ImpliedInformationBase, ImpliedVrf, ImpliedVtep, NetworkDiscriminant,
+    ObservedBridge, ObservedInformationBase, ObservedInterface, ObservedVrf, ObservedVtep,
+    RouteTableId, Vpc,
 };
 use bitflags::bitflags;
-use futures::channel::mpsc::{TryRecvError, UnboundedReceiver};
+use futures::channel::mpsc::UnboundedReceiver;
 use futures::{StreamExt, TryStreamExt};
-use id::Id;
-use net::eth::ethtype::EthType;
 use rtnetlink::packet_core::{NetlinkMessage, NetlinkPayload};
 use rtnetlink::packet_route::RouteNetlinkMessage;
-use rtnetlink::packet_route::link::{
-    InfoBridge, InfoData, InfoKind, LinkAttribute, LinkInfo, LinkMessage,
-};
-use rtnetlink::proto::Connection;
+use rtnetlink::packet_route::link::{InfoBridge, InfoData, LinkAttribute, LinkInfo, LinkMessage};
 use rtnetlink::sys::{AsyncSocket, SocketAddr};
 use rtnetlink::{
     Handle, LinkAddRequest, LinkBridge, LinkDelRequest, LinkSetRequest, LinkVrf, LinkVxlan,
     new_connection,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::io::Write;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::thread::JoinHandle;
-use tokio::sync::mpsc::error::{SendError, TrySendError};
-use tracing::{debug, error, info, span, trace, warn};
+use tokio::sync::mpsc::error::TrySendError;
+use tracing::{debug, error, info, trace, warn};
 
 type Watch<T> = tokio::sync::watch::Receiver<T>;
 type Notify<T> = tokio::sync::watch::Sender<T>;
@@ -387,7 +378,7 @@ impl LinkMonitor {
         let (tx, rx) = tokio::sync::mpsc::channel(Self::QUEUE_DEPTH);
         let subscribe_to = { NetlinkNotificationGroups::Link | NetlinkNotificationGroups::all() };
         let addr = SocketAddr::new(0, subscribe_to.bits());
-        let Ok((mut connection, handle, mut recv)) = new_connection() else {
+        let Ok((mut connection, handle, recv)) = new_connection() else {
             panic!("failed to create connection");
         };
         // this is the default max value on my machine.  Make this a proper const later.
@@ -626,7 +617,7 @@ impl ObservedLinks {
                                 error!("{e:?}");
                                 continue;
                             }
-                            NetlinkPayload::Overrun(e) => {
+                            NetlinkPayload::Overrun(_) => {
                                 warn!("netlink message overrun");
                                 continue;
                             }
@@ -672,7 +663,7 @@ impl ObservedLinks {
                                             }
                                         }
                                     }
-                                    Err(message) => {}
+                                    Err(_) => {}
                                 }
                             }
                             Update::Del(message) => match ObservedInterface::try_from(message) {
@@ -777,20 +768,12 @@ impl ObservedLinks {
 #[cfg(test)]
 pub mod test {
     use crate::actor::{
-        Actor, AddVpc, BridgeManager, BridgeMessage, ConfigurationMonitor, ConfigurationUpdate,
-        DelVpcBy, LinkMonitor, LinkMonitorMessage, NetlinkAgent, NetlinkNotificationGroups,
-        Observation, ObservedLinks,
+        AddVpc, ConfigurationMonitor, ConfigurationUpdate, DelVpcBy, LinkMonitor,
+        LinkMonitorMessage, Observation, ObservedLinks,
     };
-    use crate::resource::{ImpliedBridge, NetworkDiscriminant, ObservedBridgeBuilder};
-    use futures::{StreamExt, TryStreamExt};
-    use net::eth::Eth;
-    use net::eth::ethtype::EthType;
-    use rtnetlink::packet_route::link::{InfoBridge, InfoData, LinkAttribute, LinkInfo};
-    use rtnetlink::sys::{AsyncSocket, SocketAddr};
-    use rtnetlink::{LinkBridge, new_connection};
+    use crate::resource::NetworkDiscriminant;
+    use rtnetlink::LinkBridge;
     use std::io::Write;
-    use std::rc::Rc;
-    use std::sync::Arc;
 
     #[tokio::test(flavor = "current_thread")]
     async fn observed_links() {
@@ -907,7 +890,7 @@ pub mod test {
                     Some(message) => {
                         counter += 1;
                         match message {
-                            LinkMonitorMessage::Update(update) => {
+                            LinkMonitorMessage::Update(_) => {
                                 log_file
                                     .write_all(format!("{counter:>4}: update\n").as_bytes())
                                     .expect("unable to write to log file");
@@ -936,113 +919,4 @@ pub mod test {
         });
         monitor.run().await;
     }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn subscribe_and_save() {
-        let Ok((mut connection, handle, mut recv)) = new_connection() else {
-            panic!("failed to create connection");
-        };
-        let subscribe_to = { NetlinkNotificationGroups::Link };
-        let addr = SocketAddr::new(0, subscribe_to.bits());
-
-        let sock = connection.socket_mut().socket_mut();
-        sock.set_rx_buf_sz(212_992).unwrap();
-        sock.bind(&addr).expect("failed to bind to netlink socket");
-
-        tokio::spawn(connection);
-        let handle = Rc::new(handle);
-
-        let mut counter = 0;
-
-        loop {
-            println!("looping");
-            match recv.next().await {
-                None => {}
-                Some((message, sock)) => {
-                    println!("{message:?}");
-                    counter += 1;
-                }
-            }
-
-            if counter >= 3 {
-                break;
-            }
-        }
-    }
-
-    // #[tokio::test(flavor = "current_thread")]
-    // async fn check_me() {
-    //     let Ok((mut connection, handle, mut recv)) = new_connection() else {
-    //         panic!("failed to create connection");
-    //     };
-    //     let subscribe_to = { NetlinkNotificationGroups::Link };
-    //     let addr = SocketAddr::new(0, subscribe_to.bits());
-    //
-    //     let mut sock = connection.socket_mut().socket_mut();
-    //     sock.set_rx_buf_sz(212_992).unwrap();
-    //     sock.bind(&addr).expect("failed to bind to netlink socket");
-    //
-    //     tokio::spawn(connection);
-    //
-    //     let handle = Arc::new(handle);
-    //     let implied_bridge = Rc::new(ImpliedBridge {
-    //         name: "potato".to_string().try_into().unwrap(),
-    //         vlan_filtering: true,
-    //         vlan_protocol: EthType::VLAN,
-    //     });
-    //     let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
-    //     let mut bridge_actor = BridgeManager::new(handle.clone(), tx);
-    //     let mut agent = NetlinkAgent {
-    //         handle: handle.clone(),
-    //     };
-    //     tokio::spawn(async move {
-    //         while let Some(message) = rx.recv().await {
-    //             agent.process(message).await;
-    //         }
-    //     });
-    //     let implication = BridgeMessage::ObjectiveUpdate(Some(implied_bridge.clone()));
-    //     bridge_actor.process(implication).await;
-    //     loop {
-    //         let mut resp = handle
-    //             .link()
-    //             .get()
-    //             .match_name("potato".to_string())
-    //             .execute();
-    //         let Ok(Some(resp)) = resp.try_next().await else {
-    //             let message = BridgeMessage::ObservationUpdate(None);
-    //             bridge_actor.process(message).await;
-    //             continue;
-    //         };
-    //         let mut observation_builder = ObservedBridgeBuilder::default();
-    //         observation_builder.if_index(resp.header.index.try_into().unwrap());
-    //         for attr in &resp.attributes {
-    //             match attr {
-    //                 LinkAttribute::LinkInfo(infos) => {
-    //                     for info in infos {
-    //                         if let LinkInfo::Data(InfoData::Bridge(bridge_info)) = info {
-    //                             for info in bridge_info {
-    //                                 if let InfoBridge::VlanFiltering(filtering) = info {
-    //                                     observation_builder.vlan_filtering(*filtering);
-    //                                 }
-    //                                 if let InfoBridge::VlanProtocol(raw) = info {
-    //                                     observation_builder.vlan_protocol(EthType::from(*raw));
-    //                                 }
-    //                             }
-    //                         }
-    //                     }
-    //                 }
-    //                 LinkAttribute::IfName(name) => {
-    //                     observation_builder.name(name.to_string().try_into().unwrap());
-    //                 }
-    //                 _ => {}
-    //             }
-    //             observation_builder.vlan_filtering(false); // TODO: this is a hack.  Need details in response
-    //             observation_builder.vlan_protocol(EthType::VLAN_QINQ); // TODO: this is a hack.  Need details in response
-    //             let observed_bridge = Some(Rc::new(observation_builder.build().unwrap()));
-    //             let message = BridgeMessage::ObservationUpdate(observed_bridge);
-    //             bridge_actor.process(message).await;
-    //             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    //         }
-    //     }
-    // }
 }

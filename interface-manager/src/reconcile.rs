@@ -667,7 +667,7 @@ mod test {
 
         let observed_vtep = ObservedVtep {
             name: "some_vtep".try_into().unwrap(),
-            if_index: 29.try_into().unwrap(),
+            if_index: 29.into(),
             vni: 18.try_into().unwrap(),
             local: "192.168.32.54".parse().unwrap(),
             ttl: 62,
@@ -699,13 +699,13 @@ mod test {
             Some(request) => {
                 println!("requested");
                 match request {
-                    Request::Create(x) => {
+                    Request::Create(_) => {
                         println!("create");
                     }
-                    Request::Update(y) => {
+                    Request::Update(_) => {
                         println!("update");
                     }
-                    Request::Remove(z) => {
+                    Request::Remove(_) => {
                         println!("remove");
                     }
                 }

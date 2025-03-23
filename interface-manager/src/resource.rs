@@ -1,36 +1,28 @@
 #![allow(clippy::ref_option)] // generated code :shrug:
 #![allow(clippy::unsafe_derive_deserialize)] // trusting multi index map but could use a review
 
-use crate::message::{MessageContains, message_is_of_kind};
-use crate::reconcile::{LinkStep, ScheduledConstraintAction};
+use crate::message::MessageContains;
+use crate::reconcile::ScheduledConstraintAction;
 use crate::{IfIndex, InterfaceName};
-use arc_swap::ArcSwap;
-use crossbeam::epoch;
-use crossbeam::epoch::Atomic;
 use derive_builder::Builder;
 use diff::Diff;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::future::join_all;
 use id::Id;
-use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
 use multi_index_map::{MultiIndexMap, UniquenessError};
 use net::eth::ethtype::EthType;
-use net::vlan::Vid;
 use net::vxlan::Vni;
-use rtnetlink::packet_route::link::LinkInfo::PortData;
 use rtnetlink::packet_route::link::{
-    AfSpecBridge, InfoBridge, InfoData, InfoKind, InfoVrf, InfoVxlan, LinkAttribute, LinkFlags,
-    LinkInfo, LinkMessage, LinkProtoInfoBridge, State,
+    InfoBridge, InfoData, InfoKind, InfoVrf, InfoVxlan, LinkAttribute, LinkFlags, LinkInfo,
+    LinkMessage, State,
 };
-use rtnetlink::sys::AsyncSocket;
-use rtnetlink::{Handle, LinkBridge, LinkVrf, new_connection};
+use rtnetlink::{Handle, LinkBridge, LinkVrf};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicPtr, Ordering};
 use tracing::{debug, error, info};
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize, Diff)]
@@ -614,7 +606,7 @@ impl MultiIndexObservedInterfaceConstraintMap {
         let mut interface_map: HashMap<IfIndex, Relation> = HashMap::with_capacity(links.len());
         for link in links {
             let mut builder = RelationBuilder::default();
-            builder.index(link.header.index.try_into().unwrap());
+            builder.index(link.header.index.into());
             builder.controller(None);
             builder.state(if link.header.flags.contains(LinkFlags::Up) {
                 AdminState::Up
@@ -627,7 +619,7 @@ impl MultiIndexObservedInterfaceConstraintMap {
                         builder.name(name.clone().try_into().unwrap());
                     }
                     LinkAttribute::Controller(idx) => {
-                        builder.controller(Some((*idx).try_into().unwrap()));
+                        builder.controller(Some((*idx).into()));
                     }
                     LinkAttribute::OperState(state) => {
                         builder.oper_state(*state);
@@ -862,7 +854,7 @@ impl InformationBase {
         // TODO: refresh of whole thing is drastic.  Add in monitor
         self.observed = ObservedInformationBase::observe(handle).await;
 
-        let extant_bridges: HashSet<ImpliedBridge> = self
+        let _: HashSet<ImpliedBridge> = self
             .observed
             .bridges
             .iter_by_name()
@@ -870,7 +862,7 @@ impl InformationBase {
             .collect();
         let desired_bridges: HashSet<ImpliedBridge> =
             self.implied.bridges.iter_by_name().cloned().collect();
-        let observed_vrfs: HashSet<ImpliedVrf> = self
+        let _: HashSet<ImpliedVrf> = self
             .observed
             .vrfs
             .iter_by_name()
@@ -907,42 +899,42 @@ impl InformationBase {
             .copied()
             .collect();
 
-        let desired_bridge_names: HashSet<_> = desired_bridges.iter().map(|x| &x.name).collect();
-        let desired_vrf_names: HashSet<_> = desired_vrfs.iter().map(|x| &x.name).collect();
+        let _: HashSet<_> = desired_bridges.iter().map(|x| &x.name).collect();
+        let _: HashSet<_> = desired_vrfs.iter().map(|x| &x.name).collect();
 
         for name in interfaces_to_remove {
-            if let Some(bridge) = self.observed.bridges.get_by_name(name) {
+            if self.observed.bridges.get_by_name(name).is_some() {
                 // remove bridge as the controller of any needed interfaces
                 // schedule bridge removal
                 continue;
             }
-            let Some(vrf) = self.observed.vrfs.get_by_name(name) else {
+            let Some(_) = self.observed.vrfs.get_by_name(name) else {
                 unreachable!("logic error on removal of interface {name}", name = name);
             };
             // schedule vrf for removal
         }
 
         for name in interfaces_to_create {
-            if let Some(bridge) = self.implied.bridges.get_by_name(name) {
+            if self.implied.bridges.get_by_name(name).is_some() {
                 // schedule bridge creation
                 continue;
             }
-            let Some(vrf) = self.implied.vrfs.get_by_name(name) else {
+            let Some(_) = self.implied.vrfs.get_by_name(name) else {
                 unreachable!("logic error on creation of interface {name}", name = name);
             };
             // schedule vrf for creation
         }
 
         for name in interfaces_to_update {
-            if let Some(observed_bridge) = self.observed.bridges.get_by_name(name) {
-                let Some(desired_bridge) = self.implied.bridges.get_by_name(name) else {
+            if self.observed.bridges.get_by_name(name).is_some() {
+                let Some(_) = self.implied.bridges.get_by_name(name) else {
                     unreachable!("logic error on update of interface {name}", name = name);
                 };
                 // compare observed with desired and schedule update
                 continue;
             }
-            if let Some(observed_vrf) = self.observed.vrfs.get_by_name(name) {
-                let Some(desired_vrf) = self.implied.vrfs.get_by_name(name) else {
+            if self.observed.vrfs.get_by_name(name).is_some() {
+                let Some(_) = self.implied.vrfs.get_by_name(name) else {
                     unreachable!("logic error on update of interface {name}", name = name);
                 };
                 // compare observed with desired and schedule update
@@ -958,7 +950,7 @@ impl ObservedInformationBase {
         while let Ok(Some(resp)) = req.try_next().await {
             if resp.message_contains(InfoKind::Bridge) {
                 let mut builder = ObservedBridgeBuilder::default();
-                builder.if_index(resp.header.index.try_into().unwrap());
+                builder.if_index(resp.header.index.into());
                 for attr in &resp.attributes {
                     match attr {
                         LinkAttribute::LinkInfo(infos) => {
@@ -992,7 +984,7 @@ impl ObservedInformationBase {
             }
             if resp.message_contains(InfoKind::Vrf) {
                 let mut builder = ObservedVrfBuilder::default();
-                builder.if_index(resp.header.index.try_into().unwrap());
+                builder.if_index(resp.header.index.into());
                 for attr in &resp.attributes {
                     match attr {
                         LinkAttribute::LinkInfo(infos) => {
@@ -1041,14 +1033,7 @@ impl TryFrom<LinkMessage> for ObservedBridge {
             return Err(message);
         }
         let mut builder = ObservedBridgeBuilder::default();
-        match IfIndex::try_from(message.header.index) {
-            Ok(index) => builder.if_index(index),
-            Err(err) => {
-                error!("{err:?}");
-                return Err(message);
-            }
-        };
-        builder.if_index(message.header.index.try_into().unwrap());
+        builder.if_index(message.header.index.into());
         for attr in &message.attributes {
             match attr {
                 LinkAttribute::LinkInfo(infos) => {
@@ -1095,14 +1080,7 @@ impl TryFrom<LinkMessage> for ObservedVrf {
             return Err(message);
         }
         let mut builder = ObservedVrfBuilder::default();
-        match IfIndex::try_from(message.header.index) {
-            Ok(index) => builder.if_index(index),
-            Err(err) => {
-                error!("{err:?}");
-                return Err(message);
-            }
-        };
-        builder.if_index(message.header.index.try_into().unwrap());
+        builder.if_index(message.header.index.into());
         for attr in &message.attributes {
             match attr {
                 LinkAttribute::LinkInfo(infos) => {
@@ -1143,14 +1121,7 @@ impl TryFrom<LinkMessage> for ObservedVtep {
             return Err(message);
         }
         let mut builder = ObservedVtepBuilder::default();
-        match IfIndex::try_from(message.header.index) {
-            Ok(index) => builder.if_index(index),
-            Err(err) => {
-                error!("{err:?}");
-                return Err(message);
-            }
-        };
-        builder.if_index(message.header.index.try_into().unwrap());
+        builder.if_index(message.header.index.into());
         for attr in &message.attributes {
             match attr {
                 LinkAttribute::LinkInfo(infos) => {

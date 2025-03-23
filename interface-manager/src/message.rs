@@ -2,20 +2,9 @@
 // Copyright Open Network Fabric Authors
 //
 
-use futures::{Stream, StreamExt};
-use futures::{TryStream, TryStreamExt};
 use rtnetlink::packet_route::link::{InfoKind, LinkAttribute, LinkInfo, LinkMessage};
 use std::fmt::Debug;
-use std::rc::Rc;
 use tracing::error;
-
-pub trait FilterByKind {
-    fn filter_by_kind(self, kind: InfoKind) -> impl Iterator<Item = LinkMessage>;
-}
-
-pub trait StreamFilterByKind {
-    async fn filter_by_kind(self, kind: InfoKind) -> impl TryStream<Ok = LinkMessage>;
-}
 
 #[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
 enum HighlanderError<T: Iterator> {
@@ -92,27 +81,4 @@ impl MessageContains<InfoKind> for LinkMessage {
     fn message_contains(&self, quality: InfoKind) -> bool {
         message_is_of_kind(self, quality)
     }
-}
-
-impl<T> FilterByKind for T
-where
-    T: Iterator<Item = LinkMessage>,
-{
-    #[tracing::instrument(level = "trace", skip(self))]
-    fn filter_by_kind(self, kind: InfoKind) -> impl Iterator<Item = LinkMessage> {
-        self.filter(move |message| message.message_contains(kind.clone()))
-    }
-}
-
-pub struct BridgeMessage(LinkMessage);
-pub struct VrfMessage(LinkMessage);
-pub struct VtepMessage(LinkMessage);
-pub struct LoopbackMessage(LinkMessage);
-
-pub enum QualifiedMessage {
-    Bridge(BridgeMessage),
-    Vrf(VrfMessage),
-    Vtep(VtepMessage),
-    Loopback(LoopbackMessage),
-    Other(LinkMessage),
 }

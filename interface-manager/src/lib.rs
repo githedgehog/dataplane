@@ -23,12 +23,10 @@ use std::path::Path;
 mod actor;
 mod interface;
 mod message;
-mod name;
 mod reconcile;
 mod resource;
 
 pub use interface::*;
-pub use name::*;
 
 use futures::stream::TryStreamExt;
 use nix::fcntl::OFlag;
