@@ -683,13 +683,13 @@ mod test {
             Some(request) => {
                 println!("requested");
                 match request {
-                    Request::Create(x) => {
+                    Request::Create(_) => {
                         println!("create");
                     }
-                    Request::Update(y) => {
+                    Request::Update(_) => {
                         println!("update");
                     }
-                    Request::Remove(z) => {
+                    Request::Remove(_) => {
                         println!("remove");
                     }
                 }
@@ -770,7 +770,7 @@ mod test {
                     break;
                 }
                 Some(actions) => match actions {
-                    Request::Create(create) => {
+                    Request::Create(_) => {
                         println!("c");
                     }
                     Request::Update(update) => {
@@ -786,7 +786,7 @@ mod test {
                             }
                         }
                     }
-                    Request::Remove(remove) => {
+                    Request::Remove(_) => {
                         println!("r");
                     }
                 },
