@@ -6,7 +6,8 @@
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
 };
-use etherparse::Icmpv4Header;
+use etherparse::{Icmpv4Header, Icmpv4Type};
+
 use std::num::NonZero;
 
 #[allow(unused_imports)] // re-export
@@ -16,6 +17,19 @@ pub use contract::*;
 /// An `ICMPv4` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Icmp4(Icmpv4Header);
+
+impl Icmp4 {
+    /// Get the icmp type (reference) field value
+    #[must_use]
+    pub fn icmp_type(&self) -> &Icmpv4Type {
+        &self.0.icmp_type
+    }
+    /// Get the icmp type checksum
+    #[must_use]
+    pub fn checksum(&self) -> u16 {
+        self.0.checksum
+    }
+}
 
 impl Parse for Icmp4 {
     type Error = LengthError;
