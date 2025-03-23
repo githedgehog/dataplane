@@ -184,14 +184,14 @@ impl BridgeManager {
                 message = self.handle.link().add(objective.create_message()).into();
             }
             (None, Some(observation)) => {
-                message = self.handle.link().del(observation.if_index.to_u32()).into();
+                message = self.handle.link().del(observation.index.to_u32()).into();
             }
             (Some(objective), Some(observation)) => {
                 if *objective.as_ref() == observation.to_implied() {
                     return;
                 }
                 let mut link_message = objective.create_message();
-                link_message.header.index = observation.if_index.to_u32();
+                link_message.header.index = observation.index.to_u32();
                 message = self.handle.link().add(link_message).replace().into();
             }
         }
@@ -242,14 +242,14 @@ impl VtepManager {
                 message = self.handle.link().add(objective.create_message()).into();
             }
             (None, Some(observation)) => {
-                message = self.handle.link().del(observation.if_index.to_u32()).into();
+                message = self.handle.link().del(observation.index.to_u32()).into();
             }
             (Some(objective), Some(observation)) => {
                 if *objective.as_ref() == observation.to_implied() {
                     return;
                 }
                 let mut link_message = objective.create_message();
-                link_message.header.index = observation.if_index.to_u32();
+                link_message.header.index = observation.index.to_u32();
                 message = self.handle.link().add(link_message).replace().into();
             }
         }
@@ -685,7 +685,7 @@ impl ObservedLinks {
                                 }
                                 Ok(ObservedInterface::Bridge(bridge)) => {
                                     match Arc::make_mut(&mut self.observed)
-                                        .try_remove_bridge(bridge.if_index)
+                                        .try_remove_bridge(bridge.index)
                                     {
                                         None => {
                                             debug!(
@@ -701,7 +701,7 @@ impl ObservedLinks {
                                 }
                                 Ok(ObservedInterface::Vtep(vtep)) => {
                                     match Arc::make_mut(&mut self.observed)
-                                        .try_remove_vtep(vtep.if_index)
+                                        .try_remove_vtep(vtep.index)
                                     {
                                         None => {
                                             debug!(

@@ -89,12 +89,12 @@ impl Reconcile<ImpliedVtep, ObservedVtep> for Handle {
     }
 
     fn request_remove(&self, observed: &ObservedVtep) -> Self::Remove {
-        self.link().del(observed.if_index.to_u32())
+        self.link().del(observed.index.to_u32())
     }
 
     fn request_update(&self, required: &ImpliedVtep, observed: &ObservedVtep) -> Self::Update {
         let mut message = LinkVxlan::new(required.name.as_ref(), required.vni.as_u32()).build();
-        message.header.index = observed.if_index.into();
+        message.header.index = observed.index.into();
         self.link().add(message).replace()
     }
 }
@@ -118,7 +118,7 @@ impl Reconcile<ImpliedBridge, ObservedBridge> for Handle {
     }
 
     fn request_remove(&self, observed: &ObservedBridge) -> Self::Remove {
-        self.link().del(observed.if_index.to_u32())
+        self.link().del(observed.index.to_u32())
     }
 
     fn request_update(&self, required: &ImpliedBridge, observed: &ObservedBridge) -> Self::Update {
@@ -130,7 +130,7 @@ impl Reconcile<ImpliedBridge, ObservedBridge> for Handle {
                 ]),
             )]))
             .build();
-        message.header.index = observed.if_index.into();
+        message.header.index = observed.index.into();
         self.link().add(message).replace()
     }
 }
@@ -374,46 +374,6 @@ pub enum InterfaceOp {
     Associate(LinkStep),
 }
 
-// impl Reconcile<ImpliedInterfaceConstraint, ObservedInterfaceConstraint> for Handle {
-//     type Create = Option<LinkSetRequest>;
-//     type Update = Option<LinkSetRequest>;
-//     type Remove = Option<LinkSetRequest>;
-//
-//     fn request_create(&self, required: &ImpliedInterfaceConstraint) -> Self::Create {
-//         None
-//     }
-//
-//     fn request_remove(&self, observed: &ObservedInterfaceConstraint) -> Self::Remove {
-//         observed.controller_if_index.map(|_| {
-//             self.link().set(
-//                 LinkUnspec::new_with_name(observed.name.as_ref())
-//                     .nocontroller()
-//                     .down()
-//                     .build(),
-//             )
-//         })
-//     }
-//
-//     fn request_update(
-//         &self,
-//         required: &ImpliedInterfaceConstraint,
-//         observed: &ObservedInterfaceConstraint,
-//     ) -> Self::Update {
-//         match &required.controller_name {
-//             None => self.request_remove(observed),
-//             Some(required_controller_name) => match &observed.controller_name {
-//                 None => self.request_remove(observed),
-//                 Some(observed_controller_name) => {
-//                     if required_controller_name == observed_controller_name {
-//                         return None;
-//                     }
-//                     self.link().set(LinkUnspec::new_with_name(required.name.as_ref()).controller())
-//                 }
-//             },
-//         }
-//     }
-// }
-
 pub enum LinkStep {
     Associate(LinkAddRequest),
     ChangeAdminState(LinkSetRequest),
@@ -455,8 +415,8 @@ impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterf
                     let plan = PlannedInterfaceConstraint {
                         name: desired.name.clone(),
                         controller_name: desired.controller_name.clone(),
-                        index: current.if_index,
-                        controller_if_index: current.controller_if_index,
+                        index: current.index,
+                        controller_index: current.controller_index,
                         admin_state: AdminState::Down,
                         scheduled_action: ScheduledConstraintAction::SetAdminState,
                     };
@@ -474,8 +434,8 @@ impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterf
                     let plan = PlannedInterfaceConstraint {
                         name: desired.name.clone(),
                         controller_name: desired.controller_name.clone(),
-                        index: current.if_index,
-                        controller_if_index: current.controller_if_index,
+                        index: current.index,
+                        controller_index: current.controller_index,
                         admin_state: desired.admin_state,
                         scheduled_action: ScheduledConstraintAction::SetAdminState,
                     };
@@ -492,8 +452,8 @@ impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterf
                         let plan = PlannedInterfaceConstraint {
                             name: desired.name.clone(),
                             controller_name: None,
-                            index: current.if_index,
-                            controller_if_index: None,
+                            index: current.index,
+                            controller_index: None,
                             admin_state: desired.admin_state,
                             scheduled_action: ScheduledConstraintAction::ReAssociate,
                         };
@@ -513,8 +473,8 @@ impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterf
                                 let plan = PlannedInterfaceConstraint {
                                     name: current.name.clone(),
                                     controller_name: desired.controller_name.clone(),
-                                    controller_if_index: Some(controller.if_index),
-                                    index: current.if_index,
+                                    controller_index: Some(controller.index),
+                                    index: current.index,
                                     admin_state: desired.admin_state,
                                     scheduled_action: ScheduledConstraintAction::ReAssociate,
                                 };
@@ -546,7 +506,7 @@ impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterf
                     })
                 }
                 ScheduledConstraintAction::ReAssociate => {
-                    LinkStep::Associate(match step.controller_if_index {
+                    LinkStep::Associate(match step.controller_index {
                         None => self.link().set_port(
                             LinkUnspec::new_with_name(step.name.as_ref())
                                 .nocontroller()
@@ -665,7 +625,7 @@ mod test {
 
         let observed_vtep = ObservedVtep {
             name: "some_vtep".try_into().unwrap(),
-            if_index: 29.into(),
+            index: 29.into(),
             vni: 18.try_into().unwrap(),
             local: "192.168.32.54".parse().unwrap(),
             ttl: 62,

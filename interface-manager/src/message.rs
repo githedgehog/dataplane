@@ -47,14 +47,14 @@ pub fn message_is_of_kind(message: &LinkMessage, kind: InfoKind) -> bool {
             match there_can_be_only_one(filter) {
                 Ok(_) => true,
                 Err(HighlanderError::None) => {
-                    let if_index = message.header.index;
-                    error!(if_index, "no kind attribute found: {message:?}");
+                    let index = message.header.index;
+                    error!(index, "no kind attribute found: {message:?}");
                     false
                 }
                 Err(e) => {
-                    let if_index = message.header.index;
+                    let index = message.header.index;
                     error!(
-                        if_index,
+                        index,
                         "there can be only one kind attribute: {e:?} (message: {message:?})"
                     );
                     false

@@ -212,7 +212,7 @@ pub struct ObservedVtep {
     #[multi_index(hashed_unique)]
     pub name: InterfaceName,
     #[multi_index(ordered_unique)]
-    pub if_index: InterfaceIndex,
+    pub index: InterfaceIndex,
     #[multi_index(ordered_unique)]
     pub vni: Vni,
     pub local: Ipv4Addr,
@@ -294,7 +294,7 @@ pub struct ObservedBridge {
     pub vlan_filtering: bool,
     pub vlan_protocol: EthType,
     #[multi_index(hashed_unique)]
-    pub if_index: InterfaceIndex,
+    pub index: InterfaceIndex,
     pub controller: Option<InterfaceIndex>,
 }
 
@@ -473,7 +473,7 @@ pub struct PlannedInterfaceConstraint {
     #[multi_index(hashed_unique)]
     pub index: InterfaceIndex,
     #[multi_index(ordered_non_unique)]
-    pub controller_if_index: Option<InterfaceIndex>,
+    pub controller_index: Option<InterfaceIndex>,
     pub admin_state: AdminState,
     pub scheduled_action: ScheduledConstraintAction,
 }
@@ -514,9 +514,9 @@ pub struct ObservedInterfaceConstraint {
     #[multi_index(ordered_non_unique)]
     pub controller_name: Option<InterfaceName>,
     #[multi_index(hashed_unique)]
-    pub if_index: InterfaceIndex,
+    pub index: InterfaceIndex,
     #[multi_index(ordered_non_unique)]
-    pub controller_if_index: Option<InterfaceIndex>,
+    pub controller_index: Option<InterfaceIndex>,
     pub admin_state: AdminState,
     pub operational_state: OperationalState,
 }
@@ -535,8 +535,8 @@ impl PartialEq<ObservedInterfaceConstraint> for PlannedInterfaceConstraint {
     fn eq(&self, other: &ObservedInterfaceConstraint) -> bool {
         self.name == other.name
             && self.controller_name == other.controller_name
-            && self.index == other.if_index
-            && self.controller_if_index == other.controller_if_index
+            && self.index == other.index
+            && self.controller_index == other.controller_index
             && self.admin_state == other.admin_state
     }
 }
@@ -635,17 +635,17 @@ impl MultiIndexObservedInterfaceConstraintMap {
         let mut this = MultiIndexObservedInterfaceConstraintMap::default();
         for entry in interface_map.values() {
             let mut builder = ObservedInterfaceConstraintBuilder::default();
-            builder.if_index(entry.index);
+            builder.index(entry.index);
             builder.name(entry.name.clone());
-            builder.controller_if_index(entry.controller);
+            builder.controller_index(entry.controller);
             builder.admin_state(entry.state);
             builder.operational_state(match entry.oper_state {
                 State::Down => OperationalState::Down,
                 State::Up => OperationalState::Up,
                 _ => OperationalState::Unknown,
             });
-            if let Some(controller_if_index) = entry.controller {
-                if let Some(controller) = interface_map.get(&controller_if_index) {
+            if let Some(controller_index) = entry.controller {
+                if let Some(controller) = interface_map.get(&controller_index) {
                     builder.controller_name(Some(controller.name.clone()));
                 } else {
                     error!("missing entry in observation!");
@@ -778,7 +778,7 @@ impl ObservedInformationBase {
         let bridges_to_remove = extant_bridges.difference(&desired_bridges);
         let bridge_removal_results = join_all(bridges_to_remove.map(|bridge| {
             let observed = self.bridges.get_by_name(&bridge.name).unwrap();
-            handle.link().del(observed.if_index.to_u32()).execute()
+            handle.link().del(observed.index.to_u32()).execute()
         }))
         .await;
         // todo: this is slop.  Handle errors properly
@@ -950,7 +950,7 @@ impl ObservedInformationBase {
         while let Ok(Some(resp)) = req.try_next().await {
             if resp.message_contains(InfoKind::Bridge) {
                 let mut builder = ObservedBridgeBuilder::default();
-                builder.if_index(resp.header.index.into());
+                builder.index(resp.header.index.into());
                 for attr in &resp.attributes {
                     match attr {
                         LinkAttribute::LinkInfo(infos) => {
@@ -1033,7 +1033,7 @@ impl TryFrom<LinkMessage> for ObservedBridge {
             return Err(message);
         }
         let mut builder = ObservedBridgeBuilder::default();
-        builder.if_index(message.header.index.into());
+        builder.index(message.header.index.into());
         for attr in &message.attributes {
             match attr {
                 LinkAttribute::LinkInfo(infos) => {
@@ -1121,7 +1121,7 @@ impl TryFrom<LinkMessage> for ObservedVtep {
             return Err(message);
         }
         let mut builder = ObservedVtepBuilder::default();
-        builder.if_index(message.header.index.into());
+        builder.index(message.header.index.into());
         for attr in &message.attributes {
             match attr {
                 LinkAttribute::LinkInfo(infos) => {
@@ -1236,7 +1236,7 @@ impl ObservedInformationBase {
     }
 
     pub fn try_remove_bridge(&mut self, index: InterfaceIndex) -> Option<ObservedBridge> {
-        self.bridges.remove_by_if_index(&index)
+        self.bridges.remove_by_index(&index)
     }
 
     pub fn try_remove_vrf(&mut self, index: InterfaceIndex) -> Option<ObservedVrf> {
@@ -1244,7 +1244,7 @@ impl ObservedInformationBase {
     }
 
     pub fn try_remove_vtep(&mut self, index: InterfaceIndex) -> Option<ObservedVtep> {
-        self.vteps.remove_by_if_index(&index)
+        self.vteps.remove_by_index(&index)
     }
 
     pub fn try_remove_interface(&mut self, index: InterfaceIndex) -> Option<ObservedInterface> {
@@ -1280,6 +1280,6 @@ impl ObservedInformationBase {
         &mut self,
         index: InterfaceIndex,
     ) -> Option<ObservedInterfaceConstraint> {
-        self.constraints.observed.remove_by_if_index(&index)
+        self.constraints.observed.remove_by_index(&index)
     }
 }
