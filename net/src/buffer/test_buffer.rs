@@ -52,6 +52,20 @@ impl TestBuffer {
             tailroom,
         }
     }
+
+    /// Create a new `TestBuffer` from a given slice of octets
+    #[must_use]
+    pub fn from_raw_data(data: &[u8]) -> TestBuffer {
+        let mut buffer = Vec::with_capacity(TestBuffer::CAPACITY as usize);
+        buffer.extend_from_slice(&[0; TestBuffer::HEADROOM as usize]);
+        buffer.extend_from_slice(data);
+        buffer.extend_from_slice(&[0; TestBuffer::TAILROOM as usize]);
+        TestBuffer {
+            buffer,
+            headroom: TestBuffer::HEADROOM,
+            tailroom: TestBuffer::TAILROOM,
+        }
+    }
 }
 
 impl Default for TestBuffer {
