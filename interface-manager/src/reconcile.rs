@@ -469,7 +469,7 @@ impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterf
                         Err(err) => {
                             trace!("duplicate plan scheduled: {err:?}");
                         }
-                    };
+                    }
                     continue;
                 }
                 if current.controller_name == desired.controller_name
@@ -488,7 +488,7 @@ impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterf
                         Err(err) => {
                             trace!("duplicate plan scheduled: {err:?}");
                         }
-                    };
+                    }
                     continue;
                 }
                 match &desired.controller_name {
@@ -534,94 +534,6 @@ impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterf
                 }
             }
         }
-        // for (_, desired) in required.iter() {
-        //     if let Some(found) = observed.get_by_name(&desired.name) {
-        //         if *found == *desired {
-        //             continue;
-        //         }
-        //         match (&desired.controller_name, &found.controller_name) {
-        //             (Some(desired_controller_name), Some(found_controller_name)) => {
-        //                 if desired_controller_name == found_controller_name {
-        //                     if found.admin_state == desired.admin_state {
-        //                         error!(
-        //                             "logic error: controller and admin stat aligned but not equal: found: {found:?}, desired: {desired:?}"
-        //                         );
-        //                         continue;
-        //                     }
-        //                     match plans.try_insert(PlannedInterfaceConstraint {
-        //                         name: found.name.clone(),
-        //                         controller_name: found.controller_name.clone(),
-        //                         if_index: found.if_index,
-        //                         controller_if_index: found.controller_if_index,
-        //                         admin_state: desired.admin_state,
-        //                     }) {
-        //                         Ok(_) => {}
-        //                         Err(err) => {
-        //                             trace!("duplicate plan scheduled: {err:?}");
-        //                         }
-        //                     }
-        //                     continue;
-        //                 }
-        //                 match observed.get_by_name(desired_controller_name) {
-        //                     None => {
-        //                         debug!("can't yet satisfy association");
-        //                     }
-        //                     Some(desired_controller) => {
-        //                         match plans.try_insert(PlannedInterfaceConstraint {
-        //                             name: desired.name.clone(),
-        //                             controller_name: Some(desired_controller.name.clone()),
-        //                             if_index: found.if_index,
-        //                             controller_if_index: Some(desired_controller.if_index),
-        //                             // set interface to down during association assignment
-        //                             admin_state: desired.admin_state,
-        //                         }) {
-        //                             Ok(_) => {}
-        //                             Err(err) => {
-        //                                 trace!("duplicate plan scheduled: {err:?}");
-        //                             }
-        //                         }
-        //                     }
-        //                 }
-        //             }
-        //             (Some(desired_controller_name), None) => {
-        //                 match observed.get_by_name(desired_controller_name) {
-        //                     None => {
-        //                         debug!("can't yet satisfy association");
-        //                     }
-        //                     Some(desired_controller) => {
-        //                         match plans.try_insert(PlannedInterfaceConstraint {
-        //                             name: desired.name.clone(),
-        //                             controller_name: Some(desired_controller.name.clone()),
-        //                             if_index: found.if_index,
-        //                             controller_if_index: Some(desired_controller.if_index),
-        //                             admin_state: desired.admin_state,
-        //                         }) {
-        //                             Ok(_) => {}
-        //                             Err(err) => {
-        //                                 trace!("duplicate plan scheduled: {err:?}");
-        //                             }
-        //                         }
-        //                     }
-        //                 }
-        //             }
-        //             (None, Some(_)) => {
-        //                 match plans.try_insert(PlannedInterfaceConstraint {
-        //                     name: desired.name.clone(),
-        //                     controller_name: None,
-        //                     if_index: found.if_index,
-        //                     controller_if_index: None,
-        //                     admin_state: desired.admin_state,
-        //                 }) {
-        //                     Ok(_) => {}
-        //                     Err(err) => {
-        //                         trace!("duplicate plan scheduled: {err:?}");
-        //                     }
-        //                 }
-        //             }
-        //             (None, None) => {}
-        //         }
-        //     }
-        // }
         plans
             .iter()
             .map(|(_, step)| match step.scheduled_action {
@@ -1030,8 +942,8 @@ mod test {
                 && creates.is_empty()
                 && associates.is_empty()
             {
+                tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
                 continue;
-                // tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
             }
             let mut tasks = tokio::task::JoinSet::new();
 
@@ -1065,7 +977,7 @@ mod test {
                     }
                 }
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(225)).await;
         }
     }
 
