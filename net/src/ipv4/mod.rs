@@ -88,6 +88,12 @@ impl Ipv4 {
         self.0.header_len()
     }
 
+    /// Value of total length ip header field
+    #[must_use]
+    pub fn total_len(&self) -> u16 {
+        self.0.total_len
+    }
+
     /// The number of routing hops the packet is allowed to take.
     #[must_use]
     pub fn ttl(&self) -> u8 {
