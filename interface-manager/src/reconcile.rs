@@ -645,7 +645,7 @@ mod test {
     use futures::StreamExt;
     use futures::TryStreamExt;
     use rtnetlink::sys::AsyncSocket;
-    use tracing::{debug, error, trace};
+    use tracing::{error, trace};
 
     #[tokio::test(flavor = "current_thread")]
     async fn biscuit() {

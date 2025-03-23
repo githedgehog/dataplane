@@ -383,6 +383,7 @@ fn in_netns3<
             swap_to_netns(&netns_str).expect("failed to swap to netns");
             let tokio_runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_io()
+                .enable_time()
                 .build()
                 .unwrap();
             tokio_runtime.block_on(async move {
