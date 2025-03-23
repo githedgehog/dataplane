@@ -3,6 +3,7 @@
 
 //! IPv4 address types
 
+use std::fmt::{Display, Formatter};
 use std::net::Ipv4Addr;
 
 /// Thin wrapper around [`Ipv4Addr`]
@@ -33,6 +34,12 @@ impl UnicastIpv4Addr {
     #[must_use]
     pub fn inner(&self) -> Ipv4Addr {
         self.0
+    }
+}
+
+impl Display for UnicastIpv4Addr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
     }
 }
 
