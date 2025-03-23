@@ -5,7 +5,7 @@
 
 #[cfg(feature = "ecmp")]
 use arrayvec::ArrayVec;
-use interface_manager::IfIndex;
+use interface_manager::InterfaceIndex;
 use net::eth::mac::SourceMac;
 use net::vlan::Vid;
 use net::vxlan::Vni;
@@ -15,7 +15,7 @@ pub const MAX_ECMP: usize = 4;
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
 pub struct EthernetNeighbor {
-    interface: IfIndex,
+    interface: InterfaceIndex,
     mac: SourceMac,
 }
 

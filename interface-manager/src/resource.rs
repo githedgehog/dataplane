@@ -3,7 +3,7 @@
 
 use crate::message::MessageContains;
 use crate::reconcile::ScheduledConstraintAction;
-use crate::{IfIndex, InterfaceName};
+use crate::{InterfaceIndex, InterfaceName};
 use derive_builder::Builder;
 use futures::StreamExt;
 use futures::TryStreamExt;
@@ -133,7 +133,7 @@ pub struct ObservedVrf {
     pub route_table: RouteTableId,
     #[builder(private)]
     #[multi_index(ordered_unique)]
-    pub if_index: IfIndex, // TODO: make private
+    pub index: InterfaceIndex, // TODO: make private
 }
 
 impl PartialEq<ObservedVrf> for ImpliedVrf {
@@ -212,7 +212,7 @@ pub struct ObservedVtep {
     #[multi_index(hashed_unique)]
     pub name: InterfaceName,
     #[multi_index(ordered_unique)]
-    pub if_index: IfIndex,
+    pub if_index: InterfaceIndex,
     #[multi_index(ordered_unique)]
     pub vni: Vni,
     pub local: Ipv4Addr,
@@ -294,8 +294,8 @@ pub struct ObservedBridge {
     pub vlan_filtering: bool,
     pub vlan_protocol: EthType,
     #[multi_index(hashed_unique)]
-    pub if_index: IfIndex,
-    pub controller: Option<IfIndex>,
+    pub if_index: InterfaceIndex,
+    pub controller: Option<InterfaceIndex>,
 }
 
 impl PartialEq<ObservedBridge> for ImpliedBridge {
@@ -471,9 +471,9 @@ pub struct PlannedInterfaceConstraint {
     #[multi_index(ordered_non_unique)]
     pub controller_name: Option<InterfaceName>,
     #[multi_index(hashed_unique)]
-    pub if_index: IfIndex,
+    pub index: InterfaceIndex,
     #[multi_index(ordered_non_unique)]
-    pub controller_if_index: Option<IfIndex>,
+    pub controller_if_index: Option<InterfaceIndex>,
     pub admin_state: AdminState,
     pub scheduled_action: ScheduledConstraintAction,
 }
@@ -514,9 +514,9 @@ pub struct ObservedInterfaceConstraint {
     #[multi_index(ordered_non_unique)]
     pub controller_name: Option<InterfaceName>,
     #[multi_index(hashed_unique)]
-    pub if_index: IfIndex,
+    pub if_index: InterfaceIndex,
     #[multi_index(ordered_non_unique)]
-    pub controller_if_index: Option<IfIndex>,
+    pub controller_if_index: Option<InterfaceIndex>,
     pub admin_state: AdminState,
     pub operational_state: OperationalState,
 }
@@ -535,7 +535,7 @@ impl PartialEq<ObservedInterfaceConstraint> for PlannedInterfaceConstraint {
     fn eq(&self, other: &ObservedInterfaceConstraint) -> bool {
         self.name == other.name
             && self.controller_name == other.controller_name
-            && self.if_index == other.if_index
+            && self.index == other.if_index
             && self.controller_if_index == other.controller_if_index
             && self.admin_state == other.admin_state
     }
@@ -586,8 +586,8 @@ impl MultiIndexObservedInterfaceConstraintMap {
         #[derive(Debug, Builder)]
         struct Relation {
             pub name: InterfaceName,
-            pub index: IfIndex,
-            pub controller: Option<IfIndex>,
+            pub index: InterfaceIndex,
+            pub controller: Option<InterfaceIndex>,
             pub oper_state: State,
             pub state: AdminState,
         }
@@ -602,7 +602,8 @@ impl MultiIndexObservedInterfaceConstraintMap {
             .flatten()
             .flatten()
             .collect::<Vec<_>>();
-        let mut interface_map: HashMap<IfIndex, Relation> = HashMap::with_capacity(links.len());
+        let mut interface_map: HashMap<InterfaceIndex, Relation> =
+            HashMap::with_capacity(links.len());
         for link in links {
             let mut builder = RelationBuilder::default();
             builder.index(link.header.index.into());
@@ -788,7 +789,7 @@ impl ObservedInformationBase {
         let vrfs_to_remove = extant_vrfs.difference(&desired_vrfs);
         let vrf_removal_results = join_all(vrfs_to_remove.map(|vrf| {
             let observed = self.vrfs.get_by_name(&vrf.name).unwrap();
-            handle.link().del(observed.if_index.to_u32()).execute()
+            handle.link().del(observed.index.to_u32()).execute()
         }))
         .await;
         // todo: this is slop.  Handle errors properly
@@ -983,7 +984,7 @@ impl ObservedInformationBase {
             }
             if resp.message_contains(InfoKind::Vrf) {
                 let mut builder = ObservedVrfBuilder::default();
-                builder.if_index(resp.header.index.into());
+                builder.index(resp.header.index.into());
                 for attr in &resp.attributes {
                     match attr {
                         LinkAttribute::LinkInfo(infos) => {
@@ -1079,7 +1080,7 @@ impl TryFrom<LinkMessage> for ObservedVrf {
             return Err(message);
         }
         let mut builder = ObservedVrfBuilder::default();
-        builder.if_index(message.header.index.into());
+        builder.index(message.header.index.into());
         for attr in &message.attributes {
             match attr {
                 LinkAttribute::LinkInfo(infos) => {
@@ -1234,19 +1235,19 @@ impl ObservedInformationBase {
         }
     }
 
-    pub fn try_remove_bridge(&mut self, index: IfIndex) -> Option<ObservedBridge> {
+    pub fn try_remove_bridge(&mut self, index: InterfaceIndex) -> Option<ObservedBridge> {
         self.bridges.remove_by_if_index(&index)
     }
 
-    pub fn try_remove_vrf(&mut self, index: IfIndex) -> Option<ObservedVrf> {
-        self.vrfs.remove_by_if_index(&index)
+    pub fn try_remove_vrf(&mut self, index: InterfaceIndex) -> Option<ObservedVrf> {
+        self.vrfs.remove_by_index(&index)
     }
 
-    pub fn try_remove_vtep(&mut self, index: IfIndex) -> Option<ObservedVtep> {
+    pub fn try_remove_vtep(&mut self, index: InterfaceIndex) -> Option<ObservedVtep> {
         self.vteps.remove_by_if_index(&index)
     }
 
-    pub fn try_remove_interface(&mut self, index: IfIndex) -> Option<ObservedInterface> {
+    pub fn try_remove_interface(&mut self, index: InterfaceIndex) -> Option<ObservedInterface> {
         match self.try_remove_bridge(index).map(ObservedInterface::Bridge) {
             None => {}
             Some(x) => return Some(x),
@@ -1277,7 +1278,7 @@ impl ObservedInformationBase {
 
     pub fn try_remove_association(
         &mut self,
-        index: IfIndex,
+        index: InterfaceIndex,
     ) -> Option<ObservedInterfaceConstraint> {
         self.constraints.observed.remove_by_if_index(&index)
     }

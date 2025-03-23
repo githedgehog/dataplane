@@ -10,24 +10,24 @@ use std::fmt::{Debug, Display, Formatter};
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "u32", into = "u32")]
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct IfIndex(u32);
+pub struct InterfaceIndex(u32);
 
-impl Debug for IfIndex {
+impl Debug for InterfaceIndex {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         <_ as Debug>::fmt(&self.0, f)
     }
 }
 
-impl Display for IfIndex {
+impl Display for InterfaceIndex {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         <_ as Display>::fmt(&self.0, f)
     }
 }
 
-impl IfIndex {
+impl InterfaceIndex {
     #[must_use]
-    pub fn new(raw: u32) -> IfIndex {
-        IfIndex(raw)
+    pub fn new(raw: u32) -> InterfaceIndex {
+        InterfaceIndex(raw)
     }
 
     #[must_use]
@@ -36,14 +36,14 @@ impl IfIndex {
     }
 }
 
-impl From<u32> for IfIndex {
-    fn from(value: u32) -> IfIndex {
-        IfIndex::new(value)
+impl From<u32> for InterfaceIndex {
+    fn from(value: u32) -> InterfaceIndex {
+        InterfaceIndex::new(value)
     }
 }
 
-impl From<IfIndex> for u32 {
-    fn from(value: IfIndex) -> Self {
+impl From<InterfaceIndex> for u32 {
+    fn from(value: InterfaceIndex) -> Self {
         value.to_u32()
     }
 }

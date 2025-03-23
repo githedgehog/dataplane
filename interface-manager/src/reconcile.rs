@@ -65,12 +65,12 @@ impl Reconcile<ImpliedVrf, ObservedVrf> for Handle {
     }
 
     fn request_remove(&self, observed: &ObservedVrf) -> Self::Remove {
-        self.link().del(observed.if_index.to_u32())
+        self.link().del(observed.index.to_u32())
     }
 
     fn request_update(&self, required: &ImpliedVrf, observed: &ObservedVrf) -> Self::Update {
         let mut message = LinkVrf::new(required.name.as_ref(), required.route_table.into()).build();
-        message.header.index = observed.if_index.into();
+        message.header.index = observed.index.into();
         self.link().add(message).replace()
     }
 }
@@ -455,7 +455,7 @@ impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterf
                     let plan = PlannedInterfaceConstraint {
                         name: desired.name.clone(),
                         controller_name: desired.controller_name.clone(),
-                        if_index: current.if_index,
+                        index: current.if_index,
                         controller_if_index: current.controller_if_index,
                         admin_state: AdminState::Down,
                         scheduled_action: ScheduledConstraintAction::SetAdminState,
@@ -474,7 +474,7 @@ impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterf
                     let plan = PlannedInterfaceConstraint {
                         name: desired.name.clone(),
                         controller_name: desired.controller_name.clone(),
-                        if_index: current.if_index,
+                        index: current.if_index,
                         controller_if_index: current.controller_if_index,
                         admin_state: desired.admin_state,
                         scheduled_action: ScheduledConstraintAction::SetAdminState,
@@ -492,7 +492,7 @@ impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterf
                         let plan = PlannedInterfaceConstraint {
                             name: desired.name.clone(),
                             controller_name: None,
-                            if_index: current.if_index,
+                            index: current.if_index,
                             controller_if_index: None,
                             admin_state: desired.admin_state,
                             scheduled_action: ScheduledConstraintAction::ReAssociate,
@@ -514,7 +514,7 @@ impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterf
                                     name: current.name.clone(),
                                     controller_name: desired.controller_name.clone(),
                                     controller_if_index: Some(controller.if_index),
-                                    if_index: current.if_index,
+                                    index: current.if_index,
                                     admin_state: desired.admin_state,
                                     scheduled_action: ScheduledConstraintAction::ReAssociate,
                                 };
@@ -536,15 +536,13 @@ impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterf
                 ScheduledConstraintAction::SetAdminState => {
                     LinkStep::ChangeAdminState(match step.admin_state {
                         AdminState::Down => self.link().set(
-                            LinkUnspec::new_with_index(step.if_index.to_u32())
+                            LinkUnspec::new_with_index(step.index.to_u32())
                                 .down()
                                 .build(),
                         ),
-                        AdminState::Up => self.link().set(
-                            LinkUnspec::new_with_index(step.if_index.to_u32())
-                                .up()
-                                .build(),
-                        ),
+                        AdminState::Up => self
+                            .link()
+                            .set(LinkUnspec::new_with_index(step.index.to_u32()).up().build()),
                     })
                 }
                 ScheduledConstraintAction::ReAssociate => {
