@@ -3,14 +3,13 @@
 
 //! State objects for network interfaces and interface table.
 
-use diff::Diff;
 use std::fmt::{Debug, Display, Formatter};
 
 /// A network interface id (also known as ifindex in linux).
 #[repr(transparent)]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "u32", into = "u32")]
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Diff)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct IfIndex(u32);
 
 impl Debug for IfIndex {
@@ -67,45 +66,6 @@ pub struct InterfaceName(String);
 impl Display for InterfaceName {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
-    }
-}
-
-#[derive(
-    serde::Serialize, serde::Deserialize, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug,
-)]
-pub enum OpInterfaceName {
-    None,
-    Change {
-        old: InterfaceName,
-        new: InterfaceName,
-    },
-}
-
-impl diff::Diff for InterfaceName {
-    type Repr = OpInterfaceName;
-
-    fn diff(&self, other: &Self) -> Self::Repr {
-        if *self == *other {
-            OpInterfaceName::None
-        } else {
-            OpInterfaceName::Change {
-                old: self.clone(),
-                new: other.clone(),
-            }
-        }
-    }
-
-    fn apply(&mut self, diff: &Self::Repr) {
-        match diff {
-            OpInterfaceName::None => {}
-            OpInterfaceName::Change { new, .. } => {
-                self.clone_from(new);
-            }
-        }
-    }
-
-    fn identity() -> Self {
-        InterfaceName(String::with_capacity(0))
     }
 }
 

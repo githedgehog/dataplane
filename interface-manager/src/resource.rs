@@ -5,7 +5,6 @@ use crate::message::MessageContains;
 use crate::reconcile::ScheduledConstraintAction;
 use crate::{IfIndex, InterfaceName};
 use derive_builder::Builder;
-use diff::Diff;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::future::join_all;
@@ -25,7 +24,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tracing::{debug, error, info};
 
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize, Diff)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(from = "u32", into = "u32")]
 #[repr(transparent)]
 pub struct RouteTableId(u32);

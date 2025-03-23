@@ -11,15 +11,11 @@ default = ["tracing/release_max_level_debug"]
 id = { workspace = true, features = ["serde"] }
 net = { workspace = true, features = ["serde"] }
 
-arc-swap = { version = "1.7.1", features = ["serde"] }
 bitflags = "2.9.0"
-crossbeam = { version = "0.8.4", features = ["default"] }
 derive_builder = { workspace = true, default-features = false, features = ["default"] }
-diff-struct = { workspace = true, features = ["default"] }
 futures = { workspace = true, features = ["default"] }
 left-right = { workspace = true, default-features = false, features = [] }
 multi_index_map = { workspace = true, features = ["serde"] }
-netlink-sys = { workspace = true }
 nix = { workspace = true, features = ["sched", "fs"] }
 rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["rc", "derive"] }
