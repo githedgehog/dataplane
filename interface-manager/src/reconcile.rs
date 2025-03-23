@@ -2,14 +2,16 @@
 // Copyright Open Network Fabric Authors
 
 use crate::resource::{
-    ImpliedBridge, ImpliedInformationBase, ImpliedInterfaceConstraint, ImpliedVrf, ImpliedVtep,
-    MultiIndexImpliedBridgeMap, MultiIndexImpliedInterfaceConstraintMap, MultiIndexImpliedVrfMap,
-    MultiIndexImpliedVtepMap, MultiIndexObservedBridgeMap,
+    AdminState, ImpliedBridge, ImpliedInformationBase, ImpliedInterfaceConstraint, ImpliedVrf,
+    ImpliedVtep, MultiIndexImpliedBridgeMap, MultiIndexImpliedInterfaceConstraintMap,
+    MultiIndexImpliedVrfMap, MultiIndexImpliedVtepMap, MultiIndexObservedBridgeMap,
     MultiIndexObservedInterfaceConstraintMap, MultiIndexObservedVrfMap, MultiIndexObservedVtepMap,
     MultiIndexPlannedInterfaceConstraintMap, ObservedBridge, ObservedInformationBase,
     ObservedInterfaceConstraint, ObservedVrf, ObservedVtep, PlannedInterfaceConstraint,
 };
 use crate::{IfIndex, InterfaceName};
+use derive_builder::Builder;
+use multi_index_map::MultiIndexMap;
 use rtnetlink::packet_route::link::{InfoBridge, InfoData, LinkAttribute, LinkInfo, LinkMessage};
 use rtnetlink::{
     Handle, LinkAddRequest, LinkBridge, LinkDelRequest, LinkSetRequest, LinkUnspec, LinkVrf,
@@ -373,7 +375,7 @@ pub enum InterfaceOp {
     Bridge(Request<Handle, ImpliedBridge, ObservedBridge>),
     Vrf(Request<Handle, ImpliedVrf, ObservedVrf>),
     Vtep(Request<Handle, ImpliedVtep, ObservedVtep>),
-    Associate(LinkAddRequest),
+    Associate(LinkStep),
 }
 
 // impl Reconcile<ImpliedInterfaceConstraint, ObservedInterfaceConstraint> for Handle {
@@ -416,11 +418,22 @@ pub enum InterfaceOp {
 //     }
 // }
 
+pub enum LinkStep {
+    Associate(LinkAddRequest),
+    ChangeAdminState(LinkSetRequest),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub enum ScheduledConstraintAction {
+    SetAdminState,
+    ReAssociate,
+}
+
 impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterfaceConstraintMap>
     for Handle
 {
     type Create = ();
-    type Update = Vec<LinkAddRequest>;
+    type Update = Vec<LinkStep>;
     type Remove = ();
 
     fn request_create(&self, _required: &MultiIndexImpliedInterfaceConstraintMap) -> Self::Create {}
@@ -437,13 +450,56 @@ impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterf
         let mut plans = MultiIndexPlannedInterfaceConstraintMap::default();
         for (_, current) in observed.iter() {
             if let Some(desired) = required.get_by_name(&current.name) {
+                if current == desired {
+                    continue;
+                }
+                if current.controller_name != desired.controller_name
+                    && current.admin_state == AdminState::Up
+                {
+                    let plan = PlannedInterfaceConstraint {
+                        name: desired.name.clone(),
+                        controller_name: desired.controller_name.clone(),
+                        if_index: current.if_index,
+                        controller_if_index: current.controller_if_index,
+                        admin_state: AdminState::Down,
+                        scheduled_action: ScheduledConstraintAction::SetAdminState,
+                    };
+                    match plans.try_insert(plan) {
+                        Ok(_) => {}
+                        Err(err) => {
+                            trace!("duplicate plan scheduled: {err:?}");
+                        }
+                    };
+                    continue;
+                }
+                if current.controller_name == desired.controller_name
+                    && current.admin_state != desired.admin_state
+                {
+                    let plan = PlannedInterfaceConstraint {
+                        name: desired.name.clone(),
+                        controller_name: desired.controller_name.clone(),
+                        if_index: current.if_index,
+                        controller_if_index: current.controller_if_index,
+                        admin_state: desired.admin_state,
+                        scheduled_action: ScheduledConstraintAction::SetAdminState,
+                    };
+                    match plans.try_insert(plan) {
+                        Ok(_) => {}
+                        Err(err) => {
+                            trace!("duplicate plan scheduled: {err:?}");
+                        }
+                    };
+                    continue;
+                }
                 match &desired.controller_name {
                     None => {
                         let plan = PlannedInterfaceConstraint {
-                            name: current.name.clone(),
+                            name: desired.name.clone(),
                             controller_name: None,
                             if_index: current.if_index,
                             controller_if_index: None,
+                            admin_state: desired.admin_state,
+                            scheduled_action: ScheduledConstraintAction::ReAssociate,
                         };
                         match plans.try_insert(plan) {
                             Ok(_) => {}
@@ -463,6 +519,8 @@ impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterf
                                     controller_name: desired.controller_name.clone(),
                                     controller_if_index: Some(controller.if_index),
                                     if_index: current.if_index,
+                                    admin_state: desired.admin_state,
+                                    scheduled_action: ScheduledConstraintAction::ReAssociate,
                                 };
                                 match plans.try_insert(plan) {
                                     Ok(_) => {}
@@ -476,86 +534,125 @@ impl Reconcile<MultiIndexImpliedInterfaceConstraintMap, MultiIndexObservedInterf
                 }
             }
         }
-        for (_, desired) in required.iter() {
-            if let Some(found) = observed.get_by_name(&desired.name) {
-                match (&desired.controller_name, &found.controller_name) {
-                    (Some(desired_controller_name), Some(found_controller_name)) => {
-                        if desired_controller_name == found_controller_name {
-                            continue;
-                        }
-                        match observed.get_by_name(desired_controller_name) {
-                            None => {
-                                debug!("can't yet satisfy association");
-                            }
-                            Some(desired_controller) => {
-                                match plans.try_insert(PlannedInterfaceConstraint {
-                                    name: desired.name.clone(),
-                                    controller_name: Some(desired_controller.name.clone()),
-                                    if_index: found.if_index,
-                                    controller_if_index: Some(desired_controller.if_index),
-                                }) {
-                                    Ok(_) => {}
-                                    Err(err) => {
-                                        trace!("duplicate plan scheduled: {err:?}");
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    (Some(desired_controller_name), None) => {
-                        match observed.get_by_name(desired_controller_name) {
-                            None => {
-                                debug!("can't yet satisfy association");
-                            }
-                            Some(desired_controller) => {
-                                match plans.try_insert(PlannedInterfaceConstraint {
-                                    name: desired.name.clone(),
-                                    controller_name: Some(desired_controller.name.clone()),
-                                    if_index: found.if_index,
-                                    controller_if_index: Some(desired_controller.if_index),
-                                }) {
-                                    Ok(_) => {}
-                                    Err(err) => {
-                                        trace!("duplicate plan scheduled: {err:?}");
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    (None, Some(_)) => {
-                        match plans.try_insert(PlannedInterfaceConstraint {
-                            name: desired.name.clone(),
-                            controller_name: None,
-                            if_index: found.if_index,
-                            controller_if_index: None,
-                        }) {
-                            Ok(_) => {}
-                            Err(err) => {
-                                trace!("duplicate plan scheduled: {err:?}");
-                            }
-                        }
-                    }
-                    (None, None) => {}
-                }
-            }
-        }
+        // for (_, desired) in required.iter() {
+        //     if let Some(found) = observed.get_by_name(&desired.name) {
+        //         if *found == *desired {
+        //             continue;
+        //         }
+        //         match (&desired.controller_name, &found.controller_name) {
+        //             (Some(desired_controller_name), Some(found_controller_name)) => {
+        //                 if desired_controller_name == found_controller_name {
+        //                     if found.admin_state == desired.admin_state {
+        //                         error!(
+        //                             "logic error: controller and admin stat aligned but not equal: found: {found:?}, desired: {desired:?}"
+        //                         );
+        //                         continue;
+        //                     }
+        //                     match plans.try_insert(PlannedInterfaceConstraint {
+        //                         name: found.name.clone(),
+        //                         controller_name: found.controller_name.clone(),
+        //                         if_index: found.if_index,
+        //                         controller_if_index: found.controller_if_index,
+        //                         admin_state: desired.admin_state,
+        //                     }) {
+        //                         Ok(_) => {}
+        //                         Err(err) => {
+        //                             trace!("duplicate plan scheduled: {err:?}");
+        //                         }
+        //                     }
+        //                     continue;
+        //                 }
+        //                 match observed.get_by_name(desired_controller_name) {
+        //                     None => {
+        //                         debug!("can't yet satisfy association");
+        //                     }
+        //                     Some(desired_controller) => {
+        //                         match plans.try_insert(PlannedInterfaceConstraint {
+        //                             name: desired.name.clone(),
+        //                             controller_name: Some(desired_controller.name.clone()),
+        //                             if_index: found.if_index,
+        //                             controller_if_index: Some(desired_controller.if_index),
+        //                             // set interface to down during association assignment
+        //                             admin_state: desired.admin_state,
+        //                         }) {
+        //                             Ok(_) => {}
+        //                             Err(err) => {
+        //                                 trace!("duplicate plan scheduled: {err:?}");
+        //                             }
+        //                         }
+        //                     }
+        //                 }
+        //             }
+        //             (Some(desired_controller_name), None) => {
+        //                 match observed.get_by_name(desired_controller_name) {
+        //                     None => {
+        //                         debug!("can't yet satisfy association");
+        //                     }
+        //                     Some(desired_controller) => {
+        //                         match plans.try_insert(PlannedInterfaceConstraint {
+        //                             name: desired.name.clone(),
+        //                             controller_name: Some(desired_controller.name.clone()),
+        //                             if_index: found.if_index,
+        //                             controller_if_index: Some(desired_controller.if_index),
+        //                             admin_state: desired.admin_state,
+        //                         }) {
+        //                             Ok(_) => {}
+        //                             Err(err) => {
+        //                                 trace!("duplicate plan scheduled: {err:?}");
+        //                             }
+        //                         }
+        //                     }
+        //                 }
+        //             }
+        //             (None, Some(_)) => {
+        //                 match plans.try_insert(PlannedInterfaceConstraint {
+        //                     name: desired.name.clone(),
+        //                     controller_name: None,
+        //                     if_index: found.if_index,
+        //                     controller_if_index: None,
+        //                     admin_state: desired.admin_state,
+        //                 }) {
+        //                     Ok(_) => {}
+        //                     Err(err) => {
+        //                         trace!("duplicate plan scheduled: {err:?}");
+        //                     }
+        //                 }
+        //             }
+        //             (None, None) => {}
+        //         }
+        //     }
+        // }
         plans
             .iter()
-            .map(|(_, step)| match step.controller_if_index {
-                None => self.link().set_port({
-                    let mut message = LinkUnspec::new_with_name(step.name.as_ref())
-                        .nocontroller()
-                        .build();
-                    message.header.index = step.if_index.to_u32();
-                    message
-                }),
-                Some(controller_index) => self.link().set_port({
-                    let mut message = LinkUnspec::new_with_name(step.name.as_ref())
-                        .controller(controller_index.to_u32())
-                        .build();
-                    message.header.index = step.if_index.to_u32();
-                    message
-                }),
+            .map(|(_, step)| match step.scheduled_action {
+                ScheduledConstraintAction::SetAdminState => {
+                    LinkStep::ChangeAdminState(match step.admin_state {
+                        AdminState::Down => self.link().set(
+                            LinkUnspec::new_with_index(step.if_index.to_u32())
+                                .down()
+                                .build(),
+                        ),
+                        AdminState::Up => self.link().set(
+                            LinkUnspec::new_with_index(step.if_index.to_u32())
+                                .up()
+                                .build(),
+                        ),
+                    })
+                }
+                ScheduledConstraintAction::ReAssociate => {
+                    LinkStep::Associate(match step.controller_if_index {
+                        None => self.link().set_port(
+                            LinkUnspec::new_with_name(step.name.as_ref())
+                                .nocontroller()
+                                .build(),
+                        ),
+                        Some(controller_index) => self.link().set_port(
+                            LinkUnspec::new_with_name(step.name.as_ref())
+                                .controller(controller_index.to_u32())
+                                .build(),
+                        ),
+                    })
+                }
             })
             .collect()
     }
@@ -632,7 +729,7 @@ impl Reconcile<ImpliedInformationBase, ObservedInformationBase> for Handle {
 
 #[cfg(test)]
 mod test {
-    use crate::reconcile::{InterfaceOp, Reconcile, Request};
+    use crate::reconcile::{InterfaceOp, LinkStep, Reconcile, Request};
     use crate::resource::{
         ImpliedInformationBase, ImpliedVtep, MultiIndexObservedInterfaceConstraintMap,
         NetworkDiscriminant, ObservedInformationBase, ObservedInterface, ObservedVtep, Vpc,
@@ -955,12 +1052,15 @@ mod test {
                 }
             }
             for associate in associates {
-                match associate.execute().await {
-                    Ok(()) => {}
-                    Err(err) => {
-                        eprintln!("{err:?}");
-                        debug!("{err:?}");
-                    }
+                match associate {
+                    LinkStep::ChangeAdminState(req) => match req.execute().await {
+                        Ok(()) => {}
+                        Err(err) => trace!("{err:?}"),
+                    },
+                    LinkStep::Associate(req) => match req.execute().await {
+                        Ok(()) => {}
+                        Err(err) => trace!("{err:?}"),
+                    },
                 }
             }
         }

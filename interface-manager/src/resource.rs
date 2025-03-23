@@ -2,6 +2,7 @@
 #![allow(clippy::unsafe_derive_deserialize)] // trusting multi index map but could use a review
 
 use crate::message::{MessageContains, message_is_of_kind};
+use crate::reconcile::{LinkStep, ScheduledConstraintAction};
 use crate::{IfIndex, InterfaceName};
 use arc_swap::ArcSwap;
 use crossbeam::epoch;
@@ -19,8 +20,8 @@ use net::vlan::Vid;
 use net::vxlan::Vni;
 use rtnetlink::packet_route::link::LinkInfo::PortData;
 use rtnetlink::packet_route::link::{
-    AfSpecBridge, InfoBridge, InfoData, InfoKind, InfoVrf, InfoVxlan, LinkAttribute, LinkInfo,
-    LinkMessage, LinkProtoInfoBridge,
+    AfSpecBridge, InfoBridge, InfoData, InfoKind, InfoVrf, InfoVxlan, LinkAttribute, LinkFlags,
+    LinkInfo, LinkMessage, LinkProtoInfoBridge, State,
 };
 use rtnetlink::sys::AsyncSocket;
 use rtnetlink::{Handle, LinkBridge, LinkVrf, new_connection};
@@ -391,14 +392,17 @@ impl ImpliedInformationBase {
             ImpliedInterfaceConstraint {
                 name: vrf.name.clone(),
                 controller_name: None,
+                admin_state: AdminState::Up,
             },
             ImpliedInterfaceConstraint {
                 name: bridge.name.clone(),
                 controller_name: Some(vrf.name.clone()),
+                admin_state: AdminState::Up,
             },
             ImpliedInterfaceConstraint {
                 name: vtep.name.clone(),
                 controller_name: Some(bridge.name.clone()),
+                admin_state: AdminState::Up,
             },
         ];
         self.vrfs.try_insert(vrf).unwrap();
@@ -453,6 +457,7 @@ pub struct ImpliedInterfaceConstraint {
     pub name: InterfaceName,
     #[multi_index(ordered_non_unique)]
     pub controller_name: Option<InterfaceName>,
+    pub admin_state: AdminState,
 }
 
 #[derive(
@@ -478,6 +483,24 @@ pub struct PlannedInterfaceConstraint {
     pub if_index: IfIndex,
     #[multi_index(ordered_non_unique)]
     pub controller_if_index: Option<IfIndex>,
+    pub admin_state: AdminState,
+    pub scheduled_action: ScheduledConstraintAction,
+}
+
+#[derive(
+    Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq, Default, Serialize, Deserialize,
+)]
+pub enum AdminState {
+    #[default]
+    Down,
+    Up,
+}
+
+#[derive(Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
+pub enum OperationalState {
+    Down,
+    Up,
+    Unknown,
 }
 
 #[derive(
@@ -503,6 +526,8 @@ pub struct ObservedInterfaceConstraint {
     pub if_index: IfIndex,
     #[multi_index(ordered_non_unique)]
     pub controller_if_index: Option<IfIndex>,
+    pub admin_state: AdminState,
+    pub operational_state: OperationalState,
 }
 
 impl ObservedInterfaceConstraint {
@@ -510,6 +535,7 @@ impl ObservedInterfaceConstraint {
         ImpliedInterfaceConstraint {
             name: self.name.clone(),
             controller_name: self.controller_name.clone(),
+            admin_state: self.admin_state,
         }
     }
 }
@@ -520,18 +546,28 @@ impl PartialEq<ObservedInterfaceConstraint> for PlannedInterfaceConstraint {
             && self.controller_name == other.controller_name
             && self.if_index == other.if_index
             && self.controller_if_index == other.controller_if_index
+            && self.admin_state == other.admin_state
     }
 }
 
 impl PartialEq<PlannedInterfaceConstraint> for ImpliedInterfaceConstraint {
     fn eq(&self, other: &PlannedInterfaceConstraint) -> bool {
-        self.name == other.name && self.controller_name == other.controller_name
+        self.name == other.name
+            && self.controller_name == other.controller_name
+            && self.admin_state == other.admin_state
     }
 }
 
 impl PartialEq<ObservedInterfaceConstraint> for ImpliedInterfaceConstraint {
     fn eq(&self, other: &ObservedInterfaceConstraint) -> bool {
-        self.name == other.name && self.controller_name == other.controller_name
+        self.name == other.name
+            && self.controller_name == other.controller_name
+            && self.admin_state == other.admin_state
+    }
+}
+impl PartialEq<ImpliedInterfaceConstraint> for ObservedInterfaceConstraint {
+    fn eq(&self, other: &ImpliedInterfaceConstraint) -> bool {
+        other == self
     }
 }
 
@@ -561,6 +597,8 @@ impl MultiIndexObservedInterfaceConstraintMap {
             pub name: InterfaceName,
             pub index: IfIndex,
             pub controller: Option<IfIndex>,
+            pub oper_state: State,
+            pub state: AdminState,
         }
         let links = handle
             .link()
@@ -578,6 +616,11 @@ impl MultiIndexObservedInterfaceConstraintMap {
             let mut builder = RelationBuilder::default();
             builder.index(link.header.index.try_into().unwrap());
             builder.controller(None);
+            builder.state(if link.header.flags.contains(LinkFlags::Up) {
+                AdminState::Up
+            } else {
+                AdminState::Down
+            });
             for attr in &link.attributes {
                 match attr {
                     LinkAttribute::IfName(name) => {
@@ -585,6 +628,9 @@ impl MultiIndexObservedInterfaceConstraintMap {
                     }
                     LinkAttribute::Controller(idx) => {
                         builder.controller(Some((*idx).try_into().unwrap()));
+                    }
+                    LinkAttribute::OperState(state) => {
+                        builder.oper_state(*state);
                     }
                     _ => {}
                 }
@@ -600,6 +646,12 @@ impl MultiIndexObservedInterfaceConstraintMap {
             builder.if_index(entry.index);
             builder.name(entry.name.clone());
             builder.controller_if_index(entry.controller);
+            builder.admin_state(entry.state);
+            builder.operational_state(match entry.oper_state {
+                State::Down => OperationalState::Down,
+                State::Up => OperationalState::Up,
+                _ => OperationalState::Unknown,
+            });
             if let Some(controller_if_index) = entry.controller {
                 if let Some(controller) = interface_map.get(&controller_if_index) {
                     builder.controller_name(Some(controller.name.clone()));
