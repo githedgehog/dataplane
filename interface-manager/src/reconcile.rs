@@ -737,7 +737,7 @@ mod test {
     use futures::StreamExt;
     use futures::TryStreamExt;
     use rtnetlink::sys::AsyncSocket;
-    use tracing::{debug, trace};
+    use tracing::{debug, error, trace};
 
     #[tokio::test(flavor = "current_thread")]
     async fn biscuit() {
@@ -930,7 +930,7 @@ mod test {
         connection
             .socket_mut()
             .socket_mut()
-            .set_rx_buf_sz(212_992)
+            .set_rx_buf_sz(812_992)
             .unwrap();
         tokio::spawn(connection);
 
@@ -979,7 +979,6 @@ mod test {
                 .into_iter()
                 .flatten()
                 .flatten()
-                .collect::<Vec<_>>()
             {
                 if let Ok(interface) = ObservedInterface::try_from(message) {
                     ob.try_add_interface(interface).unwrap();
@@ -995,7 +994,7 @@ mod test {
                 }
             }
             let Some(actions) = handle.request_reconcile(Some(&ib), Some(&ob)) else {
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
                 continue;
             };
             let mut removes = vec![];
@@ -1031,38 +1030,42 @@ mod test {
                 && creates.is_empty()
                 && associates.is_empty()
             {
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                continue;
+                // tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
             }
-            for remove in removes {
-                match remove.execute().await {
-                    Ok(()) => {}
-                    Err(err) => trace!("{err:?}"),
+            let mut tasks = tokio::task::JoinSet::new();
+
+            for x in removes {
+                tasks.spawn(x.execute());
+            }
+            for x in updates {
+                tasks.spawn(x.execute());
+            }
+            for x in creates {
+                tasks.spawn(x.execute());
+            }
+            for x in associates {
+                match x {
+                    LinkStep::ChangeAdminState(req) => {
+                        tasks.spawn(req.execute());
+                    }
+                    LinkStep::Associate(req) => {
+                        tasks.spawn(req.execute());
+                    }
                 }
             }
-            for update in updates {
-                match update.execute().await {
-                    Ok(()) => {}
-                    Err(err) => trace!("{err:?}"),
+            while let Some(task) = tasks.join_next().await {
+                match task {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        trace!("{err:?}");
+                    }
+                    Err(err) => {
+                        error!("{err:?}");
+                    }
                 }
             }
-            for create in creates {
-                match create.execute().await {
-                    Ok(()) => {}
-                    Err(err) => trace!("{err:?}"),
-                }
-            }
-            for associate in associates {
-                match associate {
-                    LinkStep::ChangeAdminState(req) => match req.execute().await {
-                        Ok(()) => {}
-                        Err(err) => trace!("{err:?}"),
-                    },
-                    LinkStep::Associate(req) => match req.execute().await {
-                        Ok(()) => {}
-                        Err(err) => trace!("{err:?}"),
-                    },
-                }
-            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
         }
     }
 
