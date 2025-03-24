@@ -5,6 +5,7 @@
 
 //! High-level packet structure
 
+mod display;
 mod hash;
 mod meta;
 #[cfg(any(test, feature = "test_buffer"))]

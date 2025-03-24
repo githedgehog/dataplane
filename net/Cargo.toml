@@ -18,6 +18,7 @@ bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional 
 arrayvec = { workspace = true }
 # ideally, we would do without "std" for etherparse, but we need it for error types.
 etherparse = { workspace = true, features = ["std"] }
+nom = { workspace = true, features = ["std"]  }
 serde = { workspace = true, optional = true, features = ["derive"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
