@@ -16,8 +16,9 @@ mod nat;
 use drivers::dpdk::DriverDpdk;
 use drivers::kernel::DriverKernel;
 use net::buffer::PacketBufferMut;
+use net::packet::Packet;
 use pipeline::DynPipeline;
-use pipeline::sample_nfs::InspectHeaders;
+use pipeline::sample_nfs::PacketDumper;
 
 fn init_logging() {
     tracing_subscriber::fmt()
@@ -31,7 +32,16 @@ fn init_logging() {
 
 fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
     let pipeline = DynPipeline::new();
-    pipeline.add_stage(InspectHeaders)
+    if false {
+        /* replace false by true to try filters and write your own */
+        let custom_filter = |_packet: &Packet<Buf>| -> bool {
+            /* your own filter here */
+            true
+        };
+        pipeline.add_stage(PacketDumper::new(true, Some(Box::new(custom_filter))))
+    } else {
+        pipeline.add_stage(PacketDumper::new(true, None))
+    }
 }
 
 fn main() {
