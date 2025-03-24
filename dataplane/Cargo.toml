@@ -12,6 +12,7 @@ ctrlc = { workspace = true, features = ["termination"] }
 dpdk = { workspace = true }
 id = { workspace = true }
 iptrie = { workspace = true }
+default-net = { workspace = true }
 dyn-iter = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
 net = { workspace = true, features = ["serde", "test_buffer"] }
