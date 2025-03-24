@@ -58,6 +58,12 @@ impl UdpPort {
     pub const unsafe fn new_unchecked(port: u16) -> UdpPort {
         UdpPort(unsafe { NonZero::new_unchecked(port) })
     }
+
+    /// Get the value of a [`UdpPort`] as a u16
+    #[must_use]
+    pub fn as_u16(self) -> u16 {
+        self.0.get()
+    }
 }
 
 impl From<UdpPort> for u16 {

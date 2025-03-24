@@ -47,6 +47,12 @@ impl TcpPort {
     pub const unsafe fn new_unchecked(port: u16) -> TcpPort {
         TcpPort(unsafe { NonZero::new_unchecked(port) })
     }
+
+    /// Get the value of a [`TcpPort`] as a u16
+    #[must_use]
+    pub fn as_u16(self) -> u16 {
+        self.0.get()
+    }
 }
 
 impl From<TcpPort> for u16 {
