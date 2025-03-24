@@ -156,6 +156,8 @@ compile-env *args:
     declare -r CARGO_TARGET_DIR
     rm -fr "${CARGO_TARGET_DIR}"
     mkdir -p "${CARGO_TARGET_DIR}"
+    TMPDIR="${tmp_link}/tmp"
+    mkdir "${TMPDIR}"
     ln -s /bin "${tmp_link}/bin"
     ln -s /lib "${tmp_link}/lib"
     ln -s /sysroot "${tmp_link}/sysroot"
@@ -166,6 +168,7 @@ compile-env *args:
       --network="{{ _network }}" \
       --env DOCKER_HOST="${DOCKER_HOST}" \
       --env CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" \
+      --env TMPDIR="${TMPDIR}" \
       --tmpfs "/tmp:uid=$(id -u),gid=$(id -g),nodev,noexec,nosuid" \
       --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=1777" \
       --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate" \
