@@ -20,8 +20,10 @@ use net::packet::Packet;
 use pipeline::sample_nfs::Passthrough;
 use pipeline::{self, DynPipeline, NetworkFunction};
 
+/*
 #[global_allocator]
 static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();
+ */
 
 fn init_eal(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
     let rte = eal::init(args);
