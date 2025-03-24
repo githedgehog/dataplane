@@ -157,8 +157,10 @@ impl DriverKernel {
     /// Starts the kernel driver
     pub fn start(
         args: impl IntoIterator<Item = impl AsRef<str> + Clone>,
-        mut pipeline: DynPipeline<TestBuffer>,
+        setup_pipeline: &(impl Sync + Fn() -> DynPipeline<TestBuffer>),
     ) {
+        let mut pipeline = setup_pipeline();
+
         /* build kernel interface table from interfaces available and cmd line args */
         let mut kiftable = build_kif_table(args);
 
