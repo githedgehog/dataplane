@@ -164,8 +164,8 @@ compile-env *args:
       --rm \
       --name dataplane-compile-env \
       --network="{{ _network }}" \
-      --env DOCKER_HOST \
-      --env CARGO_TARGET_DIR \
+      --env DOCKER_HOST="${DOCKER_HOST}" \
+      --env CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" \
       --tmpfs "/tmp:uid=$(id -u),gid=$(id -g),nodev,noexec,nosuid" \
       --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=1777" \
       --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate" \
