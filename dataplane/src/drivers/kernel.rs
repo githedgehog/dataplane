@@ -17,8 +17,8 @@ use std::{thread, time};
 use crate::CmdArgs;
 use default_net::Interface;
 use net::buffer::test_buffer::TestBuffer;
-use net::packet::DoneReason;
 use net::packet::Packet;
+use net::packet::{DoneReason, InterfaceId};
 use pipeline::{self, DynPipeline, NetworkFunction};
 use tracing::{debug, error, warn};
 
@@ -205,7 +205,12 @@ impl DriverKernel {
                 let mut buf = TestBuffer::from_raw_data(&raw[0..bytes]);
                 /* build Packet (parse) */
                 match Packet::new(buf) {
-                    Ok(incoming) => vec![incoming],
+                    Ok(mut incoming) => {
+                        /* set the iif id */
+                        let mut meta = incoming.get_meta_mut();
+                        meta.iif = InterfaceId::new(interface.ifindex);
+                        vec![incoming]
+                    }
                     Err(e) => {
                         error!("Fail to parse packet: e");
                         vec![]
