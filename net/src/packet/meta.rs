@@ -7,7 +7,7 @@ use std::net::IpAddr;
 /// Every VRF is univocally identified with a numerical VRF id
 pub type VrfId = u32;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Copy, Clone)]
 pub struct InterfaceId(u32);
 #[allow(unused)]
 impl InterfaceId {
@@ -21,7 +21,7 @@ impl InterfaceId {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct BridgeDomain(u32);
 #[allow(unused)]
 impl BridgeDomain {
@@ -61,20 +61,20 @@ pub enum DoneReason {
 #[allow(unused)]
 #[derive(Debug, Default)]
 pub struct PacketMeta {
-    pub(crate) iif: InterfaceId,         /* incoming interface - set early */
-    pub(crate) oif: Option<InterfaceId>, /* outgoing interface - set late */
-    pub(crate) nh_addr: Option<IpAddr>,  /* IP address of next-hop */
-    pub(crate) is_l2bcast: bool,         /* frame is broadcast */
-    pub(crate) is_iplocal: bool,         /* frame contains an ip packet for local delivery */
-    pub(crate) vrf: Option<VrfId>,       /* for IP packet, the VRF to use to route it */
-    pub(crate) bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
-    pub(crate) done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done.
-                                         This includes the delivery of the packet by the NF */
+    pub iif: InterfaceId,             /* incoming interface - set early */
+    pub oif: Option<InterfaceId>,     /* outgoing interface - set late */
+    pub nh_addr: Option<IpAddr>,      /* IP address of next-hop */
+    pub is_l2bcast: bool,             /* frame is broadcast */
+    pub is_iplocal: bool,             /* frame contains an ip packet for local delivery */
+    pub vrf: Option<VrfId>,           /* for IP packet, the VRF to use to route it */
+    pub bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
+    pub done: Option<DoneReason>,     /* if Some, the reason why a packet was marked as done.
+                                      This includes the delivery of the packet by the NF */
 
     #[cfg(test)]
     pub descr: &'static str, /* packet annotation (we may enable for testing only) */
     #[cfg(test)]
-    /* Keep the Packet in spite of calling packet.fate(). This is for testing */
+    /* Keep the Packet in spite of calling packet.enforce(). This is for testing */
     pub keep: bool,
 }
 
