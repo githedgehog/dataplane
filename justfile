@@ -30,6 +30,9 @@ _container_repo := "ghcr.io/githedgehog/dataplane"
 # the rust channel to use (choose stable, beta, or nightly)
 
 rust := "beta"
+
+# Docker images
+
 [private]
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
 [private]
@@ -37,7 +40,17 @@ _dpdk_sys_container_tag := dpdk_sys_commit + ".rust-" + rust
 [private]
 _doc_env_container := _dpdk_sys_container_repo + "/doc-env:" + _dpdk_sys_container_tag
 [private]
-_compile_env_container := _dpdk_sys_container_repo + "/compile-env:" + _dpdk_sys_container_tag
+_compile_env_image_name := _dpdk_sys_container_repo + "/compile-env"
+[private]
+_compile_env_container := _compile_env_image_name + ":" + _dpdk_sys_container_tag
+
+# Warn if the compile-env image is deprecated (or missing)
+
+[private]
+_compile_env_check := if shell('docker image list --format "{{.Repository}}:{{.Tag}}" | grep -x "' + _compile_env_image_name + ':' + _dpdk_sys_container_tag + '" || true') == '' { shell('printf "\n/!\\ Latest compile-env not found, try \"just refresh-compile-env\"\n\n" >&2') } else { '' }
+
+# Docker settings
+
 [private]
 _network := "host"
 [private]
