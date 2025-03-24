@@ -251,7 +251,6 @@ mod contract {
     }
 }
 
-#[allow(clippy::unwrap_used, clippy::expect_used)] // valid in test code for unreachable cases
 #[cfg(test)]
 mod test {
     const HEADER_LEN_USIZE: usize = Eth::HEADER_LEN.get() as usize;

@@ -1221,7 +1221,6 @@ mod contract {
 }
 
 #[cfg(any(test, kani))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod test {
     use crate::headers::Headers;
     use crate::headers::contract::CommonHeaders;

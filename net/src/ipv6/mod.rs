@@ -491,7 +491,6 @@ mod contract {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod test {
     use crate::ipv6::{Ipv6, Ipv6Error};
     use crate::parse::{DeParse, IntoNonZeroUSize, Parse, ParseError};

@@ -75,7 +75,6 @@ impl<Buf: PacketBufferMut, Nf: NetworkFunction<Buf>> StaticChain<Buf> for Nf {
     }
 }
 
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod test {
     use net::eth::mac::{DestinationMac, Mac};

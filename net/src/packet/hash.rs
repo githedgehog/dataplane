@@ -53,7 +53,6 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     }
 }
 
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(test)]
 mod tests {
     use crate::buffer::{PacketBufferMut, TestBuffer};

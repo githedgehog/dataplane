@@ -125,7 +125,6 @@ mod contract {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)] // valid in test code
 mod test {
     use super::*;
 

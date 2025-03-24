@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use crate::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders, Passthrough};
 use crate::{DynNetworkFunction, nf_dyn};
 use net::buffer::TestBuffer;

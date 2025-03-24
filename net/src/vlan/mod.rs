@@ -407,7 +407,6 @@ mod contract {
 }
 
 #[cfg(test)]
-#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod test {
     use super::*;
     use crate::vlan::Vid;

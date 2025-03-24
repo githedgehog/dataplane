@@ -186,7 +186,6 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DynPipeline<Buf> {
     }
 }
 
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod test {
     use dyn_iter::IntoDynIterator;

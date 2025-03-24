@@ -395,7 +395,6 @@ mod contract {
     }
 }
 
-#[allow(clippy::unwrap_used, clippy::expect_used)] // valid in tests
 #[cfg(test)]
 mod test {
     use crate::parse::{DeParse, IntoNonZeroUSize, Parse, ParseError};

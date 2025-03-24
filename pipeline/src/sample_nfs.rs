@@ -28,7 +28,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for InspectHeaders {
 pub struct BroadcastMacs;
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for BroadcastMacs {
-    #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    #[allow(clippy::unwrap_used)]
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,

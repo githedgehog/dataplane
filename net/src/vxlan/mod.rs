@@ -163,7 +163,6 @@ impl ParsePayload for Vxlan {
     }
 }
 
-#[allow(clippy::unwrap_used, clippy::expect_used)] // valid in test code
 #[cfg(test)]
 mod test {
     use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, Parse, ParseError};

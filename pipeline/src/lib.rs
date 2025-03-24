@@ -124,7 +124,6 @@ pub use pipeline::{DynPipeline, StageId};
 #[allow(unused)]
 pub use static_nf::{NetworkFunction, StaticChain};
 
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod test {
     use net::eth::mac::{DestinationMac, Mac};

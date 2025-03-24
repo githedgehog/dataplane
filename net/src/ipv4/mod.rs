@@ -453,7 +453,6 @@ mod contract {
     }
 }
 
-#[allow(clippy::unwrap_used, clippy::expect_used)] // valid in test code
 #[cfg(test)]
 mod test {
     use crate::ipv4::{Ipv4, Ipv4Error};
