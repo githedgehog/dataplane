@@ -796,7 +796,7 @@ mod test {
 
     #[allow(clippy::too_many_lines)]
     #[tokio::test(flavor = "current_thread")]
-    async fn cheese() {
+    async fn test_if_manager() {
         let Ok((mut connection, handle, _recv)) = rtnetlink::new_connection() else {
             panic!("failed to create connection");
         };
