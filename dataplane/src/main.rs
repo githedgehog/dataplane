@@ -59,8 +59,7 @@ fn main() {
     match args.get_driver_name() {
         "dpdk" => {
             info!("Using driver DPDK...");
-            let pipeline = setup_pipeline();
-            DriverDpdk::start(args.eal_params(), pipeline);
+            DriverDpdk::start(args.eal_params(), &setup_pipeline);
         }
         "kernel" => {
             info!("Using driver kernel...");

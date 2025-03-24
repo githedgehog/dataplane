@@ -35,13 +35,6 @@ fn init_eal(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
     rte
 }
 
-// FIXME(mvachhar) construct pipline elsewhere, ideally from config file
-fn setup_pipeline() -> DynPipeline<Mbuf> {
-    let pipeline = DynPipeline::new();
-
-    pipeline.add_stage(Passthrough)
-}
-
 fn init_devices(eal: &Eal) -> Vec<Dev> {
     eal.dev
         .iter()
@@ -96,7 +89,7 @@ fn init_devices(eal: &Eal) -> Vec<Dev> {
         .collect()
 }
 
-fn start_rte_workers(devices: &[Dev], mut _pipeline: DynPipeline<Mbuf>) {
+fn start_rte_workers(devices: &[Dev], setup_pipeline: &(impl Sync + Fn() -> DynPipeline<Mbuf>)) {
     LCoreId::iter().enumerate().for_each(|(i, lcore_id)| {
         info!("Starting RTE Worker on {lcore_id:?}");
         WorkerThread::launch(lcore_id, move || {
@@ -127,9 +120,12 @@ fn start_rte_workers(devices: &[Dev], mut _pipeline: DynPipeline<Mbuf>) {
 pub struct DriverDpdk;
 
 impl DriverDpdk {
-    pub fn start(args: impl IntoIterator<Item = impl AsRef<str>>, pipeline: DynPipeline<Mbuf>) {
+    pub fn start(
+        args: impl IntoIterator<Item = impl AsRef<str>>,
+        setup_pipeline: &(impl Sync + Fn() -> DynPipeline<Mbuf>),
+    ) {
         let eal = init_eal(args);
         let devices = init_devices(&eal);
-        start_rte_workers(&devices, pipeline);
+        start_rte_workers(&devices, setup_pipeline);
     }
 }
