@@ -289,6 +289,14 @@ remove-compile-env:
 [script]
 refresh-compile-env: pull remove-compile-env create-compile-env
 
+# clean up (delete) old compile-env images from system
+[script]
+prune-old-compile-env:
+    {{ _just_debuggable_ }}
+    docker image list "{{ _compile_env_image_name }}" --format "{{{{.Repository}}:{{{{.Tag}}" | \
+        grep -v "{{ _dpdk_sys_container_tag }}" || true | \
+        xargs -r docker image rm
+
 # Install "fake-nix" (required for local builds to function)
 [confirm("Fake a nix install (yes/no)")]
 [script]
