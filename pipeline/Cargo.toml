@@ -9,6 +9,7 @@ license = "Apache-2.0"
 doctest = false
 
 [dependencies]
+arc-swap = { workspace = true }
 dyn-iter = { workspace = true }
 id = { workspace = true }
 net = { workspace = true }

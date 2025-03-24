@@ -2,10 +2,16 @@
 // Copyright Open Network Fabric Authors
 
 use crate::NetworkFunction;
+use arc_swap::ArcSwapOption;
 use net::buffer::PacketBufferMut;
 use net::eth::mac::{DestinationMac, Mac};
+use net::headers::TryUdp;
 use net::headers::{TryEthMut, TryHeaders, TryIpv4Mut, TryIpv6Mut};
 use net::packet::Packet;
+use std::ops::Deref;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use tracing::{debug, trace};
 
 /// Network function that uses [`debug!`] to print the parsed packet headers.
@@ -18,6 +24,78 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for InspectHeaders {
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.inspect(|packet| {
             debug!("headers: {headers:?}", headers = packet.headers());
+        })
+    }
+}
+
+/// Network function that dumps packets on the logging infrastructure.
+/// The function can be enabled / disabled externally and admits an optional filter
+/// to dump only the packets that match the filtering criteria.
+pub struct PacketDumper<Buf: PacketBufferMut> {
+    enabled: AtomicBool,
+    count: u64,
+    filter: ArcSwapOption<DumperFilter<Buf>>,
+}
+
+/// A type that represents a [`Packet`] filter to selectively dump packets.
+type DumperFilter<Buf> = Box<dyn Fn(&Packet<Buf>) -> bool>;
+
+impl<Buf: PacketBufferMut> PacketDumper<Buf> {
+    /// Sample filter that allows everything (added for reference since, to
+    /// allow everything, we may just specify no filter)
+    #[must_use]
+    pub fn any_traffic() -> DumperFilter<Buf> {
+        let c = |_: &Packet<Buf>| -> bool { true };
+        Box::new(c)
+    }
+
+    /// Sample filter that allows udp traffic only
+    #[must_use]
+    pub fn udp_only() -> DumperFilter<Buf> {
+        let filter = |packet: &Packet<Buf>| -> bool { packet.try_udp().is_some() };
+        Box::new(filter)
+    }
+
+    /// Create a new Packet dumper NF.
+    #[must_use]
+    pub fn new(enabled: bool, filter: Option<DumperFilter<Buf>>) -> Self {
+        Self {
+            enabled: AtomicBool::new(enabled),
+            count: 0,
+            filter: ArcSwapOption::from_pointee(filter),
+        }
+    }
+    /// Tells if the [`PacketDumper`] is enabled.
+    pub fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+    /// Enables packet dumping on a [`PacketDumper`].
+    pub fn enable(&self) {
+        self.enabled.store(true, Ordering::Relaxed);
+    }
+    /// Disables packet dumping on a [`PacketDumper`].
+    pub fn disable(&self) {
+        self.enabled.store(false, Ordering::Relaxed);
+    }
+    /// Sets the filter of a [`PacketDumper`].
+    pub fn set_filter(&self, filter: impl Fn(&Packet<Buf>) -> bool + 'static) {
+        self.filter.swap(Some(Arc::new(Box::new(filter))));
+    }
+}
+
+impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PacketDumper<Buf> {
+    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
+        &'a mut self,
+        input: Input,
+    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
+        let enabled = self.enabled();
+        let filter = self.filter.load_full();
+        input.inspect(move |packet| {
+            // if there is no filter, dump the packet. If there is, let it decide.
+            if enabled && filter.as_ref().map_or_else(|| true, |x| x.deref()(packet)) {
+                debug!("packet ({})\n{}", self.count, packet);
+                self.count += 1;
+            }
         })
     }
 }
