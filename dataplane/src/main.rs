@@ -63,8 +63,7 @@ fn main() {
         }
         "kernel" => {
             info!("Using driver kernel...");
-            let pipeline = setup_pipeline();
-            DriverKernel::start(args.kernel_params(), pipeline);
+            DriverKernel::start(args.kernel_params(), &setup_pipeline);
         }
         other => {
             error!("Unknown driver '{other}'. Aborting...");
