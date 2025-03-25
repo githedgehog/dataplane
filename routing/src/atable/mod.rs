@@ -3,3 +3,4 @@
 
 pub mod adjacency;
 pub mod atablerw;
+pub mod resolver;
