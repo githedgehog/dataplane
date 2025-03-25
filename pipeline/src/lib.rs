@@ -110,6 +110,7 @@
 
 mod dyn_nf;
 mod pipeline;
+mod vxlan;
 /// Sample network functions
 pub mod sample_nfs;
 mod static_nf;

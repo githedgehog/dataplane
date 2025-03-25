@@ -8,6 +8,7 @@
 mod args;
 mod nat;
 
+use crate::args::{CmdArgs, Parser};
 use dpdk::dev::{Dev, TxOffloadConfig};
 use dpdk::eal::Eal;
 use dpdk::lcore::{LCoreId, WorkerThread};
@@ -15,12 +16,19 @@ use dpdk::mem::{Mbuf, Pool, PoolConfig, PoolParams, RteAllocator};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, eal, socket};
-use tracing::{info, trace, warn};
-
-use crate::args::{CmdArgs, Parser};
+use net::eth::ethtype::EthType;
+use net::eth::mac::{DestinationMac, Mac, SourceMac};
+use net::eth::Eth;
+use net::headers::{Headers, Net, Transport};
+use net::ip::NextHeader;
+use net::ipv6::{Ipv6, UnicastIpv6Addr};
 use net::packet::Packet;
-use pipeline::sample_nfs::Passthrough;
-use pipeline::{DynPipeline, NetworkFunction};
+use net::udp::port::UdpPort;
+use net::udp::{Udp, UdpEncap};
+use net::vxlan::{Vni, Vxlan, VxlanEncap};
+use pipeline::NetworkFunction;
+use std::net::Ipv6Addr;
+use tracing::{debug, error, info, trace, warn};
 
 #[global_allocator]
 static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();
@@ -37,11 +45,24 @@ fn init_eal(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
     rte
 }
 
-// FIXME(mvachhar) construct pipline elsewhere, ideally from config file
-fn setup_pipeline() -> DynPipeline<Mbuf> {
-    let pipeline = DynPipeline::new();
-
-    pipeline.add_stage(Passthrough)
+// FIXME(mvachhar) construct pipeline elsewhere, ideally from config file
+fn setup_pipeline() -> impl NetworkFunction<Mbuf> {
+    let mut encap = Headers::new(Eth::new(
+        SourceMac::new(Mac([0b10, 0, 0, 0, 0, 1])).unwrap(),
+        DestinationMac::new(Mac([0xa0, 0x88, 0xc2, 0x46, 0xa8, 0xdd])).unwrap(),
+        EthType::IPV6,
+    ));
+    let mut ipv6 = Ipv6::default();
+    ipv6.set_source(
+        UnicastIpv6Addr::new(Ipv6Addr::new(192, 168, 32, 53, 192, 168, 32, 53)).unwrap(),
+    );
+    ipv6.set_destination(Ipv6Addr::new(192, 168, 32, 53, 192, 168, 32, 53));
+    ipv6.set_next_header(NextHeader::UDP);
+    encap.net = Some(Net::Ipv6(ipv6));
+    let udp = Udp::new(UdpPort::new_checked(10000).unwrap(), Vxlan::PORT);
+    encap.transport = Some(Transport::Udp(udp));
+    encap.udp_encap = Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(1234).unwrap())));
+    VxlanEncap::new(encap).unwrap()
 }
 
 fn init_devices(eal: &Eal) -> Vec<Dev> {
@@ -112,7 +133,10 @@ fn start_rte_workers(devices: &[Dev]) {
             loop {
                 let mbufs = rx_queue.receive();
                 let pkts = mbufs.filter_map(|mbuf| match Packet::new(mbuf) {
-                    Ok(pkt) => Some(pkt),
+                    Ok(pkt) => {
+                        debug!("packet: {pkt:?}");
+                        Some(pkt)
+                    }
                     Err(e) => {
                         trace!("Failed to parse packet: {e:?}");
                         None
@@ -120,7 +144,15 @@ fn start_rte_workers(devices: &[Dev]) {
                 });
 
                 let pkts_out = pipeline.process(pkts);
-                tx_queue.transmit(pkts_out.map(Packet::reserialize));
+
+                let buffers = pkts_out.filter_map(|pkt| match pkt.serialize() {
+                    Ok(buf) => Some(buf),
+                    Err(e) => {
+                        error!("{e:?}");
+                        None
+                    }
+                });
+                tx_queue.transmit(buffers);
             }
         });
     });
