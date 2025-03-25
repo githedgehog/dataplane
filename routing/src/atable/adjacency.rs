@@ -9,7 +9,9 @@ use net::eth::mac::Mac;
 use std::collections::HashMap;
 use std::net::IpAddr;
 
+#[derive(Clone)]
 #[allow(dead_code)]
+/// Object that represents an adjacency or ARP/ND entry
 pub struct Adjacency {
     address: IpAddr,
     ifindex: IfIndex,
@@ -18,6 +20,8 @@ pub struct Adjacency {
 
 #[allow(dead_code)]
 impl Adjacency {
+    /// Create an [`Adjacency`] object
+    #[must_use]
     pub fn new(address: IpAddr, ifindex: IfIndex, mac: Mac) -> Self {
         Self {
             address,
@@ -25,29 +29,40 @@ impl Adjacency {
             mac,
         }
     }
+    /// Get the Ifindex of an [`Adjacency`] object
+    #[must_use]
     pub fn get_ifindex(&self) -> Ifindex {
         self.ifindex
     }
+
+    /// Get the MAC of an [`Adjacency`] object
+    #[must_use]
     pub fn get_mac(&self) -> Mac {
         self.mac
     }
+
+    /// Get the IP address of an [`Adjacency`] object
+    #[must_use]
     pub fn get_ip(&self) -> IpAddr {
         self.address
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct AdjacencyTable(HashMap<(IfIndex, IpAddr), Adjacency>);
 
 #[allow(dead_code)]
 impl AdjacencyTable {
+    #[must_use]
     pub fn new() -> Self {
         Self(HashMap::new())
         // Todo: use a fast hasher
     }
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -64,6 +79,7 @@ impl AdjacencyTable {
     pub fn del_adjacency(&mut self, address: IpAddr, ifindex: IfIndex) {
         self.0.remove(&(ifindex, address));
     }
+    #[must_use]
     pub fn get_adjacency(&self, address: IpAddr, ifindex: IfIndex) -> Option<&Adjacency> {
         self.0.get(&(ifindex, address))
     }
