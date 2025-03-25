@@ -5,7 +5,7 @@
 
 #![deny(clippy::all)]
 
-pub mod adjacency;
+pub mod atable;
 pub mod cli;
 pub mod cpi;
 mod cpi_process;
