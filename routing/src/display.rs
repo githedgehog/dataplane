@@ -3,7 +3,7 @@
 
 //! Module that implements Display for routing objects
 
-use crate::adjacency::{Adjacency, AdjacencyTable};
+use crate::atable::adjacency::{Adjacency, AdjacencyTable};
 use crate::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::fib::fibtable::FibTable;
 use crate::fib::fibtype::{Fib, FibId};

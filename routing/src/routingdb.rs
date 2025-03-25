@@ -5,7 +5,7 @@
 
 #![allow(clippy::collapsible_if)]
 
-use crate::adjacency::AdjacencyTable;
+use crate::atable::adjacency::AdjacencyTable;
 use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
 use crate::fib::fibtype::FibId;
@@ -259,7 +259,7 @@ impl RoutingDb {
 #[allow(dead_code)]
 mod tests {
     use super::*;
-    use crate::adjacency::tests::build_test_atable;
+    use crate::atable::adjacency::tests::build_test_atable;
     use crate::fib::fibtype::FibId;
     use crate::interfaces::tests::build_test_iftable;
 
