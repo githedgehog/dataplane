@@ -24,6 +24,10 @@ dplane-rpc = { workspace = true }
 bytes = { workspace = true, features = ["serde"] }
 cli = { path = "../cli"}
 
+# arp resolver
+procfs = { workspace = true }
+default-net = { workspace = true }
+
 [dev-dependencies]
 serde_yml = { workspace = true }
 
