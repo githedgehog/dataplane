@@ -67,6 +67,9 @@ impl AdjacencyTable {
     pub fn get_adjacency(&self, address: IpAddr, ifindex: IfIndex) -> Option<&Adjacency> {
         self.0.get(&(ifindex, address))
     }
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
 }
 
 #[cfg(test)]
