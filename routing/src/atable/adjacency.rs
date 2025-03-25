@@ -9,6 +9,7 @@ use net::eth::mac::Mac;
 use std::collections::HashMap;
 use std::net::IpAddr;
 
+#[derive(Clone)]
 #[allow(dead_code)]
 pub struct Adjacency {
     address: IpAddr,
@@ -36,7 +37,7 @@ impl Adjacency {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct AdjacencyTable(HashMap<(IfIndex, IpAddr), Adjacency>);
 
 #[allow(dead_code)]
