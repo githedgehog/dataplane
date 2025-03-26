@@ -29,7 +29,7 @@ const MAX_VLANS: usize = 4;
 const MAX_NET_EXTENSIONS: usize = 2;
 
 // TODO: remove `pub` from all fields
-#[derive(Debug, PartialEq, Eq, Default, Builder)]
+#[derive(Debug, PartialEq, Eq, Clone, Default, Builder)]
 #[builder(default)]
 pub struct Headers {
     pub eth: Option<Eth>,
