@@ -12,6 +12,7 @@ use tracing::{error, info};
 mod args;
 mod drivers;
 mod nat;
+mod packet_processor;
 
 use drivers::dpdk::DriverDpdk;
 use drivers::kernel::DriverKernel;
