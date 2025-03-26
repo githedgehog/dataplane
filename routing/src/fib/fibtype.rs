@@ -31,6 +31,12 @@ impl FibId {
     pub fn from_vni(vni: Vni) -> Self {
         FibId::Vni(vni)
     }
+    pub fn as_u32(&self) -> u32 {
+        match self {
+            FibId::Id(value) => *value,
+            FibId::Vni(value) => value.as_u32(),
+        }
+    }
 }
 
 #[derive(Clone)]
