@@ -45,6 +45,9 @@ pub trait Prepend {
     type Error: Debug + Error;
     /// Prepend data to the buffer if possible.
     ///
+    /// If successful, this method returns a slice to the net start of the buffer.
+    /// The contents of the buffer will not be otherwise altered.
+    ///
     /// # Errors
     ///
     /// Returns [`Self::Error`] if an error occurs while performing this operation.
