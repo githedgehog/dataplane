@@ -36,6 +36,12 @@ impl EgressObject {
     fn empty() -> Self {
         Self::new(None, None)
     }
+    pub fn ifindex(&self) -> &Option<IfIndex> {
+        &self.ifindex
+    }
+    pub fn address(&self) -> &Option<IpAddr> {
+        &self.address
+    }
 }
 
 /* ============================== FIbEntry Group ========================================= */
