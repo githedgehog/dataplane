@@ -82,12 +82,12 @@ fn show_ipv6_routes_single_vrf(
     request: CliRequest,
     vrftable: &VrfTable,
     vrfid: VrfId,
-    filter: RouteV6Filter,
+    filter: &RouteV6Filter,
 ) -> Result<CliResponse, CliError> {
     let out;
     if let Ok(vrf) = vrftable.get_vrf(vrfid) {
         if let Ok(vrf) = vrf.read() {
-            out = show_vrf_ipv6_routes(&vrf, &filter);
+            out = show_vrf_ipv6_routes(&vrf, filter);
         } else {
             return Err(CliError::InternalError);
         }
@@ -148,7 +148,7 @@ fn show_vrf_routes(
     } else {
         let filter = route_filter_v6(&request);
         if let Some(vrfid) = request.args.vrfid {
-            show_ipv6_routes_single_vrf(request, &vrftable, vrfid, filter)
+            show_ipv6_routes_single_vrf(request, &vrftable, vrfid, &filter)
         } else {
             show_ipv6_routes_multi(request, &vrftable, &filter)
         }
@@ -217,7 +217,7 @@ fn show_vrfs(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliErro
         if let Ok(vrftable) = db.vrftable.read() {
             if let Ok(vrf) = vrftable.get_vrf_by_vni(vni) {
                 if let Ok(vrf) = vrf.read() {
-                    Ok(CliResponse::from_request_ok(request, format!("\n{}", vrf)))
+                    Ok(CliResponse::from_request_ok(request, format!("\n{vrf}")))
                 } else {
                     Err(CliError::InternalError)
                 }
@@ -231,7 +231,7 @@ fn show_vrfs(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliErro
         let vrftable = db.vrftable.read().map_err(|_| CliError::InternalError)?;
         Ok(CliResponse::from_request_ok(
             request,
-            format!("\n{}", vrftable),
+            format!("\n{vrftable}"),
         ))
     }
 }
@@ -351,7 +351,7 @@ fn show_fib_groups(
     }
 }
 
-fn _handle_cli_request(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
+fn do_handle_cli_request(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
     let response = match request.action {
         CliAction::ShowRouterInterfaces => {
             if let Some(iftable) = db.iftw.enter() {
@@ -363,7 +363,7 @@ fn _handle_cli_request(request: CliRequest, db: &RoutingDb) -> Result<CliRespons
         CliAction::ShowRouterInterfaceAddresses => {
             if let Some(iftable) = db.iftw.enter() {
                 let iftable_addrs = IfTableAddress(&iftable);
-                CliResponse::from_request_ok(request, format!("\n{}", iftable_addrs))
+                CliResponse::from_request_ok(request, format!("\n{iftable_addrs}"))
             } else {
                 CliResponse::from_request_fail(request, CliError::InternalError)
             }
@@ -371,15 +371,18 @@ fn _handle_cli_request(request: CliRequest, db: &RoutingDb) -> Result<CliRespons
         CliAction::ShowRouterVrfs => return show_vrfs(request, db),
         CliAction::ShowRouterEvpnRmacStore => {
             let rmac_store = db.rmac_store.read().map_err(|_| CliError::InternalError)?;
-            CliResponse::from_request_ok(request, format!("\n{}", rmac_store))
+            CliResponse::from_request_ok(request, format!("\n{rmac_store}"))
         }
         CliAction::ShowRouterEvpnVtep => {
             let vtep = db.vtep.read().map_err(|_| CliError::InternalError)?;
-            CliResponse::from_request_ok(request, format!("{}", vtep))
+            CliResponse::from_request_ok(request, format!("{vtep}"))
         }
         CliAction::ShowAdjacencies => {
-            let adjtable = db.atable.read().map_err(|_| CliError::InternalError)?;
-            CliResponse::from_request_ok(request, format!("\n{}", adjtable))
+            if let Some(atable) = db.atabler.enter() {
+                CliResponse::from_request_ok(request, format!("\n{}", *atable))
+            } else {
+                CliResponse::from_request_fail(request, CliError::InternalError)
+            }
         }
         CliAction::ShowRouterIpv4Routes => {
             return show_vrf_routes(request, db, true);
@@ -412,14 +415,19 @@ pub fn handle_cli_request(
 ) {
     trace!("Got cli request: {:#?} from {:?}", request, peer);
 
-    let cliresponse = _handle_cli_request(request.clone(), db)
+    let cliresponse = do_handle_cli_request(request.clone(), db)
         .unwrap_or_else(|e| CliResponse::from_request_fail(request, e));
 
-    let response = cliresponse.serialize().expect("Serialization");
+    /* serialize the response */
+    let response = cliresponse.serialize().unwrap_or_else(|_| {
+        error!("Failed to serialize CLI response !!");
+        "Failure".into()
+    });
+
     let response_len = (response.len() as u64).to_ne_bytes();
     let _ = sock.send_to_addr(&response_len, peer); // FIXME
     match sock.send_to_addr(&response, peer) {
         Ok(len) => trace!("Sent cli response ({len} octets)"),
         Err(e) => error!("Failure sending CLI response: {e}"),
-    };
+    }
 }

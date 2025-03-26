@@ -6,6 +6,7 @@
 const DEFAULT_DP_UX_PATH: &str = "/var/run/frr/hh_dataplane.sock";
 const DEFAULT_DP_UX_PATH_CLI: &str = "/tmp/dataplane_ctl.sock";
 
+use crate::atable::atablerw::AtableReader;
 use crate::cli::handle_cli_request;
 use crate::cpi_process::process_rx_data;
 use crate::errors::RouterError;
@@ -81,6 +82,7 @@ pub fn start_cpi(
     conf: &CpiConf,
     fibtw: FibTableWriter,
     iftw: IfTableWriter,
+    atabler: AtableReader,
 ) -> Result<CpiHandle, RouterError> {
     /* get desired loglevel and set it */
     let loglevel = conf
@@ -153,7 +155,7 @@ pub fn start_cpi(
         /* TODO: create default VRF upfront ? */
 
         /* create routing database */
-        let mut db = RoutingDb::new(Some(fibtw), iftw);
+        let mut db = RoutingDb::new(Some(fibtw), iftw, atabler);
 
         if let Ok(mut vtep) = db.vtep.write() {
             vtep.set_ip(IpAddr::from_str("7.0.0.1").unwrap());
@@ -227,6 +229,7 @@ pub fn start_cpi(
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
+    use crate::atable::atablerw::AtableWriter;
     use crate::cpi::{CpiConf, start_cpi};
     use crate::errors::RouterError;
     use crate::fib::fibtable::FibTableWriter;
@@ -240,6 +243,7 @@ mod tests {
     use std::sync::RwLock;
     use std::thread;
     use std::time::Duration;
+
     #[test]
     fn test_cpi_ctl() {
         /* Build cpi configuration */
@@ -255,8 +259,11 @@ mod tests {
         /* create fib table */
         let (mut fibtw, fibtr) = FibTableWriter::new();
 
+        /* create atable */
+        let (mut atablew, atabler) = AtableWriter::new();
+
         /* start CPI */
-        let cpi = start_cpi(&conf, fibtw, iftw).expect("Should succeed");
+        let cpi = start_cpi(&conf, fibtw, iftw, atabler).expect("Should succeed");
         thread::sleep(Duration::from_secs(3));
         assert_eq!(cpi.finish(), Ok(()));
     }
@@ -275,8 +282,11 @@ mod tests {
         /* create fib table */
         let (mut fibtw, fibtr) = FibTableWriter::new();
 
+        /* create atable */
+        let (mut atablew, atabler) = AtableWriter::new();
+
         /* start CPI */
-        let cpi = start_cpi(&conf, fibtw, iftw);
+        let cpi = start_cpi(&conf, fibtw, iftw, atabler);
         assert!(cpi.is_err_and(|e| e == RouterError::InvalidSockPath));
     }
 }
