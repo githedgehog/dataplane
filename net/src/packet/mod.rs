@@ -12,14 +12,19 @@ pub mod test_utils;
 
 use crate::buffer::{Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart};
 use crate::eth::EthError;
-use crate::headers::{AbstractHeaders, AbstractHeadersMut, Headers, TryHeaders, TryHeadersMut};
+use crate::headers::{
+    AbstractHeaders, AbstractHeadersMut, Headers, Net, TryHeaders, TryHeadersMut, TryIpMut,
+    TryUdpMut, TryVxlan,
+};
 use crate::parse::{DeParse, Parse, ParseError};
-
+use crate::udp::Udp;
+use crate::vxlan::{Vxlan, VxlanEncap};
 #[allow(unused_imports)] // re-export
 pub use hash::*;
 #[allow(unused_imports)] // re-export
 pub use meta::*;
 use std::num::NonZero;
+use tracing::debug;
 
 mod utils;
 
@@ -86,6 +91,128 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Manipulating the parsed headers _does_ change the length returned by this method.
     pub fn header_len(&self) -> NonZero<u16> {
         self.headers.size()
+    }
+
+    /// If the [`Packet`] is [`Vxlan`], then this method
+    ///
+    /// 1. strips the outer headers
+    /// 2. parses the inner headers
+    /// 3. adjusts the [`Buf`] to start at the beginning of the inner frame.
+    /// 3. mutates self to use the newly parsed headers
+    /// 4. returns the (now removed) [`Vxlan`] header.
+    ///
+    /// # Errors
+    ///
+    /// * returns `None` (and does not modify `self`) if the packet is not [`Vxlan`].
+    /// * returns `Some(Err(InvalidPacket<Buf>))` if the inner packet cannot be parsed as a legal
+    ///   frame.  In this case, `self` will not be modified.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use net::buffer::PacketBufferMut;
+    /// # use net::headers::TryHeaders;
+    /// # use net::packet::Packet;
+    /// #
+    /// # fn with_received_mbuf<Buf: PacketBufferMut>(buf: Buf) {
+    /// #   let mut packet = Packet::new(buf).unwrap();
+    /// match packet.vxlan_decap() {
+    ///     Some(Ok(vxlan)) => {
+    ///         println!("We got a vni with value {vni}", vni = vxlan.vni().as_u32());
+    ///         println!("the inner packet headers are {headers:?}", headers = packet.headers());
+    ///     }
+    ///     Some(Err(bad)) => {
+    ///         eprintln!("oh no, the inner packet is bad: {bad:?}");
+    ///     }
+    ///     None => {
+    ///         eprintln!("sorry friend, this isn't a VXLAN packet")
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    pub fn vxlan_decap(&mut self) -> Option<Result<Vxlan, ParseError<EthError>>> {
+        match self.headers.try_vxlan() {
+            None => {
+                debug!("attempted to remove VXLAN header from non-vxlan packet");
+                None
+            }
+            Some(vxlan) => {
+                match Headers::parse(self.payload.as_ref()) {
+                    Ok((headers, consumed)) => {
+                        match self.payload.trim_from_start(consumed.get()) {
+                            Ok(_) => {
+                                let vxlan = *vxlan;
+                                self.headers = headers;
+                                Some(Ok(vxlan))
+                            }
+                            Err(programmer_err) => {
+                                // This most likely indicates a broken implementation of
+                                // `PacketBufferMut`
+                                unreachable!("{programmer_err:?}", programmer_err = programmer_err);
+                            }
+                        }
+                    }
+                    Err(error) => Some(Err(error)),
+                }
+            }
+        }
+    }
+
+    /// Encapsulate the packet in the supplied [`Vxlan`] [`Headers`]
+    ///
+    /// The supplied [`Headers`] will be validated to ensure they form a VXLAN header.
+    ///
+    /// # Errors
+    ///
+    /// If the supplied [`Headers`] have no
+    ///
+    /// * IP layer, then this method will return an [`VxlanEncapError::NoIp`] `Err`
+    /// * UDP layer, then this method will return an [`VxlanEncapError::NoUdp`] `Err`
+    /// * Vxlan layer, then this method will return an [`VxlanEncapError::NoVxlan`] `Err`
+    ///
+    /// If the buffer is unable to prepend the supplied [`Headers`], this method will return a
+    /// [`VxlanEncapError::PrependFailed`] `Err`.
+    ///
+    /// # Panics
+    ///
+    /// This method will panic if the resulting mbuf has a UDP length field longer than 2^16
+    /// bytes.
+    pub fn vxlan_encap(self, params: &VxlanEncap) -> Result<Self, <Buf as Prepend>::Error> {
+        let mbuf = self.serialize()?;
+        let len = mbuf.as_ref().len() + (Udp::MIN_LENGTH.get() + Vxlan::MIN_LENGTH.get()) as usize;
+        assert!(
+            u16::try_from(len).is_ok(),
+            "encap would result in frame larger than 2^16 bytes"
+        );
+        #[allow(clippy::cast_possible_truncation)] // checked
+        let udp_len = NonZero::new(len as u16).unwrap_or_else(|| unreachable!());
+        let mut headers = params.headers().clone();
+        match headers.try_ip_mut() {
+            None => unreachable!(),
+            Some(Net::Ipv6(ipv6)) => {
+                // TODO: include net_ext headers in length if included
+                #[allow(unsafe_code)] // sound usage by construction
+                unsafe {
+                    ipv6.set_payload_length(udp_len.get());
+                }
+            }
+            Some(Net::Ipv4(_)) => { /* nothing to do here */ }
+        }
+        match headers.try_udp_mut() {
+            None => {
+                unreachable!();
+            }
+            #[allow(unsafe_code)] // sound usage due to length check
+            Some(udp) => unsafe {
+                udp.set_length(udp_len);
+            },
+        }
+        let this = Self {
+            headers,
+            payload: mbuf,
+            meta: PacketMeta::default(),
+        };
+        Ok(this)
     }
 
     /// Update the packet's buffer based on any changes to the packets [`Headers`].
