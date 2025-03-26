@@ -217,6 +217,7 @@ impl RpcOperation for Rmac {
 }
 
 #[cfg(feature = "auto-learn")]
+#[allow(clippy::collapsible_match)]
 fn auto_learn_interface(a: &IfAddress, iftw: &mut IfTableWriter, vrftable: &RwLock<VrfTable>) {
     let mut create = false;
     if let Some(iftable) = iftw.enter() {
@@ -246,7 +247,7 @@ fn auto_learn_interface(a: &IfAddress, iftw: &mut IfTableWriter, vrftable: &RwLo
         }
 
         /* add to interface table */
-        let _ = iftw.add_interface(iface);
+        iftw.add_interface(iface);
 
         /* attach to default vrf */
         if let Ok(vrftable) = vrftable.read() {
