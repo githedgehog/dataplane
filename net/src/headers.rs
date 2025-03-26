@@ -28,7 +28,7 @@ const MAX_VLANS: usize = 4;
 const MAX_NET_EXTENSIONS: usize = 2;
 
 // TODO: remove `pub` from all fields
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Headers {
     pub eth: Eth,
     pub vlan: ArrayVec<Vlan, MAX_VLANS>,
