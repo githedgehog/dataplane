@@ -206,7 +206,8 @@ impl DestinationMac {
     ///
     /// Supplied [`Mac`] must be a valid destination [`Mac`].
     #[allow(unsafe_code)]
-    pub(crate) unsafe fn new_unchecked(mac: Mac) -> DestinationMac {
+    #[must_use]
+    pub unsafe fn new_unchecked(mac: Mac) -> DestinationMac {
         DestinationMac(mac)
     }
 
