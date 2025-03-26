@@ -107,6 +107,20 @@ impl Ipv6 {
         self
     }
 
+    /// Set the payload length.
+    ///
+    /// # Safety
+    ///
+    /// This method does not (and cannot) check that the length is correct in the context of the
+    /// packet as a whole.
+    #[allow(unsafe_code)] // requirements documented
+    pub unsafe fn set_payload_length(&mut self, length: u16) -> &mut Self {
+        self.0
+            .set_payload_length(length as usize)
+            .unwrap_or_else(|_| unreachable!());
+        self
+    }
+
     /// Set the destination ip address of this header
     ///
     /// # Safety
