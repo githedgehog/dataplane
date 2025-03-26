@@ -10,7 +10,7 @@ pub mod cli;
 pub mod cpi;
 mod cpi_process;
 mod display;
-mod encapsulation;
+pub mod encapsulation;
 mod errors;
 pub mod fib;
 pub mod interfaces;
