@@ -828,6 +828,7 @@ pub trait AbstractHeaders:
     + TryIcmp6
     + TryTransport
     + TryVxlan
+    + DeParse
 {
 }
 
@@ -843,11 +844,13 @@ impl<T> AbstractHeaders for T where
         + TryIcmp6
         + TryTransport
         + TryVxlan
+        + DeParse
 {
 }
 
 pub trait AbstractHeadersMut:
-    TryEthMut
+    AbstractHeaders
+    + TryEthMut
     + TryIpv4Mut
     + TryIpv6Mut
     + TryIpMut
@@ -859,8 +862,10 @@ pub trait AbstractHeadersMut:
     + TryVxlanMut
 {
 }
+
 impl<T> AbstractHeadersMut for T where
-    T: TryEthMut
+    T: AbstractHeaders
+        + TryEthMut
         + TryIpv4Mut
         + TryIpv6Mut
         + TryIpMut
