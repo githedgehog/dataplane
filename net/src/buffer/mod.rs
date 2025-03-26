@@ -7,13 +7,15 @@
 pub mod test_buffer;
 
 use core::fmt::Debug;
+use std::error::Error;
+
 #[allow(unused_imports)] // re-export
 #[cfg(any(test, feature = "test_buffer"))]
 pub use test_buffer::*;
 
 /// Super trait representing the abstract operations which may be performed on a packet buffer.
-pub trait PacketBuffer: AsRef<[u8]> + Headroom + 'static {}
-impl<T> PacketBuffer for T where T: AsRef<[u8]> + Headroom + 'static {}
+pub trait PacketBuffer: AsRef<[u8]> + Headroom + Debug + 'static {}
+impl<T> PacketBuffer for T where T: AsRef<[u8]> + Headroom + Debug + 'static {}
 
 /// Super trait representing the abstract operations which may be performed on mutable a packet buffer.
 pub trait PacketBufferMut:
@@ -40,7 +42,7 @@ pub trait Tailroom {
 /// Trait representing the ability to prepend data to a packet buffer.
 pub trait Prepend {
     /// Error which may occur when attempting to prepend data to the buffer.
-    type Error: Debug;
+    type Error: Debug + Error;
     /// Prepend data to the buffer if possible.
     ///
     /// # Errors
