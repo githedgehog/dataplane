@@ -46,7 +46,7 @@ impl Vxlan {
     /// > Flags (8-bits): where the I flag MUST be set to 1 for a valid VXLAN Network ID (VNI).
     /// > The other 7-bits (designated "R") are reserved fields and MUST be set to zero on
     /// > transmission and ignored on receipt.
-    pub const LEGAL_FLAGS: u8 = 0b0000_1000;
+    const LEGAL_FLAGS: u8 = 0b0000_1000;
 
     /// Create a new VXLAN header.
     #[must_use]
