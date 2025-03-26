@@ -73,8 +73,10 @@ impl Eq for Pool {}
 impl PartialEq for PoolInner {
     fn eq(&self, other: &Self) -> bool {
         self.config == other.config
-            && core::ptr::from_ref(unsafe { self.as_ref() })
-                == core::ptr::from_ref(unsafe { other.as_ref() })
+            && std::ptr::eq(
+                core::ptr::from_ref(unsafe { self.as_ref() }),
+                core::ptr::from_ref(unsafe { other.as_ref() }),
+            )
     }
 }
 
