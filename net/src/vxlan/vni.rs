@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use core::fmt::{Display, Formatter};
 use std::num::NonZero;
 
 #[allow(unused_imports)] // re-export
@@ -43,6 +44,12 @@ pub use contract::*;
 #[cfg_attr(feature = "serde", serde(try_from = "u32", into = "u32"))]
 #[repr(transparent)]
 pub struct Vni(NonZero<u32>);
+
+impl Display for Vni {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0.get())
+    }
+}
 
 impl Vni {
     /// The minimum legal [`Vni`] value (1).
