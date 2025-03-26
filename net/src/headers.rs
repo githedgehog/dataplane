@@ -371,7 +371,7 @@ impl Headers {
     /// Returns [`None`] if no [`Vlan`]s are on the stack.
     ///
     /// If `Some` is returned, the popped [`Vlan`]s ethtype is assigned to the `eth` header to
-    /// preserve structure.
+    /// preserve the structure.
     ///
     /// If `None` is returned, the [`Headers`] is not modified.
     pub fn pop_vlan(&mut self) -> Result<Option<Vlan>, PopVlanError> {
