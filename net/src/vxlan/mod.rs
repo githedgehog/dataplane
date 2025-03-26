@@ -108,24 +108,16 @@ impl Parse for Vxlan {
                 flags = slice[0]
             );
         }
-        if slice[1..=3] != [0, 0, 0] {
+        if slice[1..=3] != [0, 0, 0] || slice[7] != 0 {
             trace!("Received VXLAN header with reserved bits set.");
             return Err(ParseError::Invalid(VxlanError::ReservedBitsSet));
         }
         // length checked in conversion to `VxlanHeaderSlice`
         // check should be optimized out
         let bytes: [u8; 4] = slice[3..=6].try_into().unwrap_or_else(|_| unreachable!());
-        if bytes == [0, 0, 0, 0] {
-            return Err(ParseError::Invalid(VxlanError::InvalidVni(
-                InvalidVni::ReservedZero,
-            )));
-        }
         let raw_vni = u32::from_be_bytes(bytes);
         let vni = Vni::new_checked(raw_vni)
             .map_err(|e| ParseError::Invalid(VxlanError::InvalidVni(e)))?;
-        if slice[7] != 0 {
-            return Err(ParseError::Invalid(VxlanError::ReservedBitsSet));
-        }
         Ok((Vxlan { vni }, Vxlan::MIN_LENGTH))
     }
 }
