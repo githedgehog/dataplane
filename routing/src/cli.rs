@@ -378,8 +378,11 @@ fn _handle_cli_request(request: CliRequest, db: &RoutingDb) -> Result<CliRespons
             CliResponse::from_request_ok(request, format!("{}", vtep))
         }
         CliAction::ShowAdjacencies => {
-            let adjtable = db.atable.read().map_err(|_| CliError::InternalError)?;
-            CliResponse::from_request_ok(request, format!("\n{}", adjtable))
+            if let Some(atable) = db.atabler.enter() {
+                CliResponse::from_request_ok(request, format!("\n{}", *atable))
+            } else {
+                CliResponse::from_request_fail(request, CliError::InternalError)
+            }
         }
         CliAction::ShowRouterIpv4Routes => {
             return show_vrf_routes(request, db, true);

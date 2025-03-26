@@ -3,7 +3,7 @@
 
 //! Routing database keeps most of the routing information in memory
 
-use crate::atable::adjacency::AdjacencyTable;
+use crate::atable::atablerw::AtableReader;
 use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
 use crate::fib::fibtype::FibId;
@@ -230,19 +230,23 @@ pub struct RoutingDb {
     pub vrftable: RwLock<VrfTable>,
     pub rmac_store: RwLock<RmacStore>,
     pub vtep: RwLock<Vtep>,
-    pub atable: RwLock<AdjacencyTable>,
+    pub atabler: AtableReader,
     pub iftw: IfTableWriter,
 }
 #[allow(unused)]
 #[allow(clippy::new_without_default)]
 impl RoutingDb {
     #[allow(dead_code)]
-    pub fn new(fibtable: Option<FibTableWriter>, iftw: IfTableWriter) -> Self {
+    pub fn new(
+        fibtable: Option<FibTableWriter>,
+        iftw: IfTableWriter,
+        atabler: AtableReader,
+    ) -> Self {
         let mut db = Self {
             vrftable: RwLock::new(VrfTable::new(fibtable)),
             rmac_store: RwLock::new(RmacStore::new()),
             vtep: RwLock::new(Vtep::new()),
-            atable: RwLock::new(AdjacencyTable::new()),
+            atabler,
             iftw,
         };
         /* create default vrf */
@@ -257,7 +261,6 @@ impl RoutingDb {
 #[allow(dead_code)]
 mod tests {
     use super::*;
-    use crate::atable::adjacency::tests::build_test_atable;
     use crate::fib::fibtype::FibId;
     use crate::interfaces::tests::build_test_iftable;
 
@@ -397,7 +400,6 @@ mod tests {
         let rmac_store = build_sample_rmac_store();
         let vtep = build_sample_vtep();
         let _iftable = build_test_iftable();
-        let _atable = build_test_atable();
 
         {
             // do lpm just to get access to a next-hop object
@@ -446,7 +448,6 @@ mod tests {
         let rmac_store = build_sample_rmac_store();
         let vtep = build_sample_vtep();
         let _iftable = build_test_iftable();
-        let _atable = build_test_atable();
 
         // resolve beforehand, offline, and once
         vrf.nhstore.resolve_nhop_instructions(&rmac_store, &vtep);
