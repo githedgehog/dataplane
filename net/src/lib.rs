@@ -14,9 +14,6 @@
 )]
 #![allow(clippy::should_panic_without_expect)] // we panic in contract checks with simple unwrap()
 
-extern crate alloc;
-extern crate core;
-
 pub mod buffer;
 pub mod eth;
 pub mod headers;
