@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use core::fmt::{Display, Formatter};
+use core::fmt::Display;
+use std::fmt::Formatter;
 use std::num::NonZero;
 
 #[allow(unused_imports)] // re-export
