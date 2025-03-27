@@ -181,9 +181,9 @@ impl DriverKernel {
                             /* lookup outgoing interface and xmit packet */
                             if let Some(outgoing) = kiftable.get_mut_by_index(oif.get_id()) {
                                 let mut out = pkt.reserialize();
-                                /* fixme: this may fail with EAGAIN since we set all socks as
-                                non-blocking. */
                                 outgoing.sock.write_all(out.as_mut());
+                            } else {
+                                warn!("Unable to find interface with ifindex {}", oif.get_id());
                             }
                         } else {
                             warn!("Outgoing interface not set for packet");
@@ -194,33 +194,27 @@ impl DriverKernel {
         }
     }
 
-    /// Tries to receive a frame from the indicated interface and builds a `Packet`
-    /// out of it. Returns a vector of [`Packet`]s. In this version, the kernel driver
-    /// returns at most one packet per vector, unlike DPDK.
+    /// Tries to receive frames from the indicated interface and builds `Packet`s
+    /// out of them. Returns a vector of [`Packet`]s
     pub fn packet_recv(interface: &mut Kif) -> Vec<Packet<TestBuffer>> {
         let mut raw = [0u8; 2048];
-        match interface.sock.read(&mut raw) {
-            Ok(bytes) => {
-                /* build test buffer from raw data */
-                let mut buf = TestBuffer::from_raw_data(&raw[0..bytes]);
-                /* build Packet (parse) */
-                match Packet::new(buf) {
-                    Ok(mut incoming) => {
-                        /* set the iif id */
-                        let mut meta = incoming.get_meta_mut();
-                        meta.iif = InterfaceId::new(interface.ifindex);
-                        vec![incoming]
-                    }
-                    Err(e) => {
-                        error!("Fail to parse packet: e");
-                        vec![]
-                    }
+        let mut pkts = Vec::with_capacity(10);
+        while let Ok(bytes) = interface.sock.read(&mut raw) {
+            /* build test buffer from raw data */
+            let mut buf = TestBuffer::from_raw_data(&raw[0..bytes]);
+            /* build Packet (parse) */
+            match Packet::new(buf) {
+                Ok(mut incoming) => {
+                    /* set the iif id */
+                    let mut meta = incoming.get_meta_mut();
+                    meta.iif = InterfaceId::new(interface.ifindex);
+                    pkts.push(incoming);
+                }
+                Err(e) => {
+                    error!("Failed to parse packet!!: e");
                 }
             }
-            Err(e) => {
-                error!("Failed to receive from sock: e");
-                vec![]
-            }
         }
+        pkts
     }
 }
