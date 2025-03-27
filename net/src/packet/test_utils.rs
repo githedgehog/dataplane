@@ -9,8 +9,9 @@
     clippy::missing_errors_doc
 )]
 #![allow(clippy::double_must_use)]
+#![allow(missing_docs)]
 
-pub use crate::buffer::TestBuffer;
+use crate::buffer::TestBuffer;
 use crate::eth::Eth;
 use crate::eth::ethtype::EthType;
 use crate::eth::mac::{DestinationMac, Mac, SourceMac};
