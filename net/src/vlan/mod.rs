@@ -6,6 +6,7 @@
 #[allow(unused_imports)] // conditional re-export
 #[cfg(any(test, feature = "arbitrary"))]
 pub use contract::*;
+use core::fmt::{Debug, Display, Formatter};
 
 use crate::eth::ethtype::EthType;
 use crate::eth::{EthNext, parse_from_ethertype};
@@ -125,9 +126,29 @@ impl core::fmt::Display for Vid {
 /// A Priority Code Point.
 #[repr(transparent)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", serde(try_from = "u8", into = "u8"))]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct Pcp(u8);
+
+impl Display for Pcp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self.to_u8() {
+                0 => "best effort",
+                1 => "background",
+                2 => "excellent effort",
+                3 => "critical applications",
+                4 => "video",
+                5 => "voice",
+                6 => "internetwork control",
+                7 => "network control",
+                other => unreachable!("nonsense vlan PCP value: {other}", other = other),
+            }
+        )
+    }
+}
 
 /// Error type for invalid [`Pcp`] values.
 #[repr(transparent)]
@@ -159,14 +180,8 @@ impl Pcp {
 
     /// Map the [`Pcp`] value back to a `u8`.
     #[must_use]
-    pub const fn as_u8(self) -> u8 {
+    pub const fn to_u8(self) -> u8 {
         self.0
-    }
-}
-
-impl Default for Pcp {
-    fn default() -> Self {
-        Pcp::new(0).unwrap_or_else(|_| unreachable!())
     }
 }
 
@@ -174,7 +189,7 @@ impl From<Pcp> for VlanPcp {
     fn from(value: Pcp) -> Self {
         #[allow(unsafe_code)] // SAFETY: overlapping check between libraries.
         unsafe {
-            Self::new_unchecked(value.as_u8())
+            Self::new_unchecked(value.to_u8())
         }
     }
 }
@@ -191,6 +206,20 @@ impl From<Vid> for VlanId {
         unsafe {
             Self::new_unchecked(value.0.get())
         }
+    }
+}
+
+impl TryFrom<u8> for Pcp {
+    type Error = InvalidPcp;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Pcp::new(value)
+    }
+}
+
+impl From<Pcp> for u8 {
+    fn from(value: Pcp) -> Self {
+        value.to_u8()
     }
 }
 
@@ -475,8 +504,8 @@ mod test {
             .cloned()
             .for_each(|byte: u8| match Pcp::new(byte) {
                 Ok(pcp) => {
-                    assert_eq!(pcp.as_u8(), byte);
-                    assert!(pcp.as_u8() <= Pcp::MAX_BINARY);
+                    assert_eq!(pcp.to_u8(), byte);
+                    assert!(pcp.to_u8() <= Pcp::MAX_BINARY);
                     assert!(pcp <= Pcp::MAX);
                 }
                 Err(e) => {
