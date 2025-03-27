@@ -3,6 +3,8 @@
 //
 //! Implements an Ip forwarding stage
 
+use net::ip::NextHeader;
+use net::udp::{Udp, UdpEncap};
 use std::net::IpAddr;
 use tracing::{debug, error, trace, warn};
 
@@ -17,6 +19,22 @@ use routing::fib::fibtype::FibId;
 use routing::interfaces::interface::IfIndex;
 use routing::route_processor::{EgressObject, FibEntry, PktInstruction};
 use routing::vrf::VrfId;
+
+use net::eth::ethtype::EthType;
+use net::headers::Net;
+use net::ipv4::Ipv4;
+use net::ipv4::UnicastIpv4Addr;
+use net::ipv6::Ipv6;
+use net::ipv6::UnicastIpv6Addr;
+use net::vxlan::VxlanEncap;
+use routing::encapsulation::VxlanEncapsulation;
+
+use net::eth::Eth;
+use net::eth::mac::DestinationMac;
+use net::eth::mac::SourceMac;
+use net::headers::Headers;
+use net::headers::Transport;
+use net::vxlan::Vxlan;
 
 pub struct IpForwarder {
     name: String,
@@ -111,12 +129,70 @@ impl IpForwarder {
 
     #[inline]
     fn packet_exec_instruction_encap<Buf: PacketBufferMut>(
-        _packet: &mut Packet<Buf>,
+        packet: &mut Packet<Buf>,
         encap: &Encapsulation,
     ) {
+        fn build_vxlan_headers(vxlan: &VxlanEncapsulation) -> Result<VxlanEncap, ()> {
+            let Some(src_mac) = &vxlan.smac else {
+                return Err(());
+            };
+            let Some(dst_mac) = &vxlan.dmac else {
+                return Err(());
+            };
+            let Some(src_ip) = &vxlan.local else {
+                return Err(());
+            };
+            let ether_type = match &vxlan.remote {
+                IpAddr::V4(_) => EthType::IPV4,
+                IpAddr::V6(_) => EthType::IPV6,
+            };
+
+            let net = match (&src_ip, &vxlan.remote) {
+                (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
+                    let src_ip = UnicastIpv4Addr::new(*src_ip).expect("Non-unicast src ip");
+                    let mut ip = Ipv4::default();
+                    ip.set_source(src_ip).set_destination(*dst_ip).set_ttl(64);
+                    unsafe {
+                        ip.set_next_header(NextHeader::UDP);
+                    }
+                    Net::Ipv4(ip)
+                }
+                (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
+                    let src_ip = UnicastIpv6Addr::new(*src_ip).expect("Non-unicast src ipv6");
+                    let mut ip = Ipv6::default();
+                    ip.set_source(src_ip)
+                        .set_destination(*dst_ip)
+                        .set_hop_limit(64)
+                        .set_next_header(NextHeader::UDP);
+                    Net::Ipv6(ip)
+                }
+                _ => return Err(()),
+            };
+
+            let transport =
+                Transport::Udp(Udp::new(1000.try_into().unwrap(), 4789.try_into().unwrap()));
+            let udp_encap = UdpEncap::Vxlan(Vxlan::new(vxlan.vni));
+            let headers = Headers {
+                eth: Eth::new(
+                    SourceMac::new(*src_mac).expect("Bad source mac"),
+                    DestinationMac::new(*dst_mac).expect("Bad dst mac"),
+                    ether_type,
+                ),
+                vlan: Default::default(),
+                net: Some(net),
+                net_ext: Default::default(),
+                transport: Some(transport),
+                udp_encap: Some(udp_encap),
+            };
+            Ok(VxlanEncap::new(headers).unwrap())
+        }
+
         match encap {
-            Encapsulation::Mpls(_label) => {}
-            Encapsulation::Vxlan(_vxlan) => { /* TODO */ }
+            Encapsulation::Mpls(_label) => todo!(),
+            Encapsulation::Vxlan(vxlan) => {
+                let vxlan_headers = build_vxlan_headers(vxlan).unwrap();
+                packet.vxlan_encap(&vxlan_headers).unwrap();
+            }
         }
     }
 

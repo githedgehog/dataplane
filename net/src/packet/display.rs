@@ -173,6 +173,9 @@ impl Display for Headers {
         if let Some(transport) = &self.transport {
             write!(f, "{transport}")?;
         }
+        if let Some(udp_encap) = &self.udp_encap {
+            write!(f, "{udp_encap:?}")?;
+        }
         Ok(())
     }
 }
