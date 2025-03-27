@@ -12,7 +12,7 @@ use dpdk::mem::{Mbuf, Pool, PoolConfig, PoolParams, RteAllocator};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, eal, socket};
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::CmdArgs;
 use net::buffer::PacketBufferMut;
@@ -105,7 +105,10 @@ fn start_rte_workers(devices: &[Dev], setup_pipeline: &(impl Sync + Fn() -> DynP
             loop {
                 let mbufs = rx_queue.receive();
                 let pkts = mbufs.filter_map(|mbuf| match Packet::new(mbuf) {
-                    Ok(pkt) => Some(pkt),
+                    Ok(pkt) => {
+                        debug!("packet: {pkt:?}");
+                        Some(pkt)
+                    }
                     Err(e) => {
                         trace!("Failed to parse packet: {e:?}");
                         None
@@ -120,6 +123,7 @@ fn start_rte_workers(devices: &[Dev], setup_pipeline: &(impl Sync + Fn() -> DynP
                         None
                     }
                 });
+                tx_queue.transmit(buffers);
             }
         });
     });

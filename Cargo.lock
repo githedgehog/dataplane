@@ -889,6 +889,7 @@ dependencies = [
  "arrayvec",
  "bolero",
  "derive_builder",
+ "dyn-iter",
  "etherparse",
  "ordermap",
  "serde",
