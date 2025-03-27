@@ -311,4 +311,19 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     pub fn get_meta_mut(&mut self) -> &mut PacketMeta {
         &mut self.meta
     }
+
+    /// Wraps a packet in an `Option` depending on the metadata:
+    /// If [`Packet`] is to be dropped, returns `None`. Else, `Some`.
+    pub fn enforce(self) -> Option<Self> {
+        #[cfg(test)]
+        if self.meta.keep {
+            // ignore the request to drop and keep the packet instead.
+            return Some(self);
+        }
+        match self.get_done() {
+            Some(DoneReason::Delivered) | None => Some(self),
+            Some(_) => None,
+        }
+    }
+
 }
