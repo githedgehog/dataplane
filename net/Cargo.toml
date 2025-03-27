@@ -14,6 +14,7 @@ test_buffer = []
 [dependencies]
 ahash = { workspace = true }
 arbitrary = { workspace = true, features = ["derive"], optional = true }
+arc-swap = { workspace = true }
 arrayvec = { workspace = true }
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional = true }
 derive_builder = { workspace = true, features = [] }

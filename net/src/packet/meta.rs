@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![allow(missing_docs)] // TODO
+
 use std::collections::HashMap;
 use std::net::IpAddr;
 

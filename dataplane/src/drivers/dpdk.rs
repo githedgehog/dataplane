@@ -12,7 +12,7 @@ use dpdk::mem::{Mbuf, Pool, PoolConfig, PoolParams, RteAllocator};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, eal, socket};
-use tracing::{info, trace, warn};
+use tracing::{error, info, trace, warn};
 
 use crate::CmdArgs;
 use net::buffer::PacketBufferMut;
@@ -113,7 +113,13 @@ fn start_rte_workers(devices: &[Dev], setup_pipeline: &(impl Sync + Fn() -> DynP
                 });
 
                 let pkts_out = pipeline.process(pkts);
-                tx_queue.transmit(pkts_out.map(Packet::reserialize));
+                let buffers = pkts_out.filter_map(|pkt| match pkt.serialize() {
+                    Ok(buf) => Some(buf),
+                    Err(e) => {
+                        error!("{e:?}");
+                        None
+                    }
+                });
             }
         });
     });

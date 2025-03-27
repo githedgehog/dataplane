@@ -4,7 +4,6 @@
 //! Display of Packets
 
 use crate::eth::Eth;
-use crate::headers::{Headers, Net, Transport};
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
 use crate::ipv4::Ipv4;
@@ -12,7 +11,8 @@ use crate::ipv6::Ipv6;
 use crate::tcp::Tcp;
 use crate::udp::Udp;
 
-use crate::buffer::PacketBufferMut;
+use crate::buffer::{Headroom, PacketBufferMut, Tailroom};
+use crate::headers::{Headers, Net, Transport};
 use crate::packet::{BridgeDomain, DoneReason, InterfaceId, Packet, PacketMeta};
 use std::fmt::{Display, Formatter};
 
@@ -270,29 +270,23 @@ fn fmt_packet_buf<Buf: PacketBufferMut>(
     f: &mut Formatter<'_>,
     packet: &Packet<Buf>,
 ) -> std::fmt::Result {
-    if let Some(buf) = packet.get_buf() {
-        let raw = buf.as_ref();
-        writeln!(f, "{:─<width$}", "─", width = 107)?;
-        write!(f, "{}", dump_hex(raw, 32))?;
-        writeln!(f, "{:─<width$}", "─", width = 107)?;
-        writeln!(
-            f,
-            "buffer: {} data octets (headroom: {} tailroom: {}))",
-            raw.len(),
-            buf.headroom(),
-            buf.tailroom()
-        )?;
-    } else {
-        writeln!(f, "buffer: None")?;
-    }
-    Ok(())
+    let raw = packet.payload().as_ref();
+    writeln!(f, "{:─<width$}", "─", width = 100)?;
+    write!(f, "{}", dump_hex(raw, 32))?;
+    writeln!(f, "{:─<width$}", "─", width = 100)?;
+    writeln!(
+        f,
+        "buffer: {} data octets (headroom: {} tailroom: {}))",
+        raw.len(),
+        packet.headroom(),
+        packet.tailroom()
+    )
 }
 
 /* ============= Packet ================ */
 impl<Buf: PacketBufferMut> Display for Packet<Buf> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         fmt_packet_buf(f, self)?;
-        writeln!(f, "consumed: {} octets", self.get_consumed())?;
         write!(f, "headers: {}", self.get_headers())?;
         write!(f, "{}", self.get_meta())?;
         Ok(())

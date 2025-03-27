@@ -180,8 +180,14 @@ impl DriverKernel {
                         if let Some(oif) = &meta.oif {
                             /* lookup outgoing interface and xmit packet */
                             if let Some(outgoing) = kiftable.get_mut_by_index(oif.get_id()) {
-                                let mut out = pkt.reserialize();
-                                outgoing.sock.write_all(out.as_mut());
+                                match pkt.serialize() {
+                                    Ok(out) => {
+                                        outgoing.sock.write_all(out.as_ref());
+                                    }
+                                    Err(e) => {
+                                        error!("Failure serializing packet: {e:?}");
+                                    }
+                                }
                             } else {
                                 warn!("Unable to find interface with ifindex {}", oif.get_id());
                             }
