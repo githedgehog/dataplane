@@ -4,19 +4,16 @@
 //! Display of Packets
 
 use crate::eth::Eth;
-use crate::headers::Net;
-use crate::headers::Transport;
+use crate::headers::{Headers, Net, Transport};
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
 use crate::ipv4::Ipv4;
 use crate::ipv6::Ipv6;
-use crate::packet::PacketMeta;
 use crate::tcp::Tcp;
 use crate::udp::Udp;
 
 use crate::buffer::PacketBufferMut;
-use crate::headers::Headers;
-use crate::packet::Packet;
+use crate::packet::{BridgeDomain, DoneReason, InterfaceId, Packet, PacketMeta};
 use nom::HexDisplay;
 use std::fmt::{Display, Formatter};
 
@@ -102,7 +99,6 @@ impl Display for Udp {
         )
     }
 }
-
 impl Tcp {
     fn flags_as_string(&self) -> String {
         let mut flags = String::with_capacity(8 * 3);
@@ -134,7 +130,6 @@ impl Tcp {
         flags
     }
 }
-
 impl Display for Tcp {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(
@@ -157,7 +152,6 @@ impl Display for Tcp {
         )
     }
 }
-
 impl Display for Transport {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -169,6 +163,7 @@ impl Display for Transport {
     }
 }
 
+/* ============= All headers ============ */
 impl Display for Headers {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(f)?;
@@ -185,21 +180,61 @@ impl Display for Headers {
     }
 }
 
-impl Display for PacketMeta {
+/* ============= METADATA =============== */
+impl Display for DoneReason {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "  metadata:")?;
-        writeln!(f, "    iif: {:?} oif: {:?}", self.iif, self.oif)?;
-        writeln!(
-            f,
-            "    broadcast: {:?} iplocal: {:?}",
-            self.is_l2bcast, self.is_iplocal
-        )?;
-        writeln!(f, "    vrf: {:?} bd: {:?}", self.vrf, self.bridge)?;
-        writeln!(f, "    next-hop: {:?}", self.nh_addr)?;
-        writeln!(f, "    done: {:?}", self.done)
+        // using Debug at the moment since the enum may soon change
+        write!(f, "{self:?}")
     }
 }
 
+fn fmt_opt<T: Display>(
+    f: &mut Formatter<'_>,
+    name: &str,
+    optval: Option<T>,
+    nl: bool,
+) -> std::fmt::Result {
+    if nl {
+        match optval {
+            Some(x) => writeln!(f, "{name}: {x}"),
+            None => writeln!(f, "{name}: --"),
+        }
+    } else {
+        match optval {
+            Some(x) => write!(f, "{name}: {x}"),
+            None => write!(f, "{name}: --"),
+        }
+    }
+}
+impl Display for InterfaceId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.get_id())
+    }
+}
+impl Display for BridgeDomain {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.get_id())
+    }
+}
+impl Display for PacketMeta {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "  metadata:")?;
+        write!(f, "    iif: {}", self.iif.get_id())?;
+        fmt_opt(f, " oif", self.oif, true)?;
+
+        writeln!(
+            f,
+            "    bcast: {} iplocal: {}",
+            self.is_l2bcast, self.is_iplocal
+        )?;
+        fmt_opt(f, "    vrf", self.vrf, false)?;
+        fmt_opt(f, "    bd", self.bridge, true)?;
+        fmt_opt(f, "    next-hop", self.nh_addr, true)?;
+        fmt_opt(f, "    done", self.done, true)
+    }
+}
+
+/* ============= HEXDUMP ================ */
 fn fmt_packet_buf<Buf: PacketBufferMut>(
     f: &mut Formatter<'_>,
     packet: &Packet<Buf>,
@@ -222,6 +257,7 @@ fn fmt_packet_buf<Buf: PacketBufferMut>(
     Ok(())
 }
 
+/* ============= Packet ================ */
 impl<Buf: PacketBufferMut> Display for Packet<Buf> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         fmt_packet_buf(f, self)?;
