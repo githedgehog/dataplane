@@ -236,29 +236,23 @@ fn fmt_packet_buf<Buf: PacketBufferMut>(
     f: &mut Formatter<'_>,
     packet: &Packet<Buf>,
 ) -> std::fmt::Result {
-    if let Some(buf) = packet.get_buf() {
-        let raw = buf.as_ref();
-        writeln!(f, "{:─<width$}", "─", width = 100)?;
-        write!(f, "{}", raw.to_hex(16))?;
-        writeln!(f, "{:─<width$}", "─", width = 100)?;
-        writeln!(
-            f,
-            "buffer: {} data octets (headroom: {} tailroom: {}))",
-            raw.len(),
-            buf.headroom(),
-            buf.tailroom()
-        )?;
-    } else {
-        writeln!(f, "buffer: None")?;
-    }
-    Ok(())
+    let raw = packet.payload().as_ref();
+    writeln!(f, "{:─<width$}", "─", width = 100)?;
+    write!(f, "{}", raw.to_hex(16))?;
+    writeln!(f, "{:─<width$}", "─", width = 100)?;
+    writeln!(
+        f,
+        "buffer: {} data octets (headroom: {} tailroom: {}))",
+        raw.len(),
+        packet.payload.headroom(),
+        packet.payload.tailroom()
+    )
 }
 
 /* ============= Packet ================ */
 impl<Buf: PacketBufferMut> Display for Packet<Buf> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         fmt_packet_buf(f, self)?;
-        writeln!(f, "consumed: {} octets", self.get_consumed())?;
         write!(f, "headers: {}", self.get_headers())?;
         write!(f, "{}", self.get_meta())?;
         Ok(())

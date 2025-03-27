@@ -3,9 +3,9 @@
 
 //! Module to compute packet hashes
 
-use super::Packet;
 use crate::buffer::PacketBufferMut;
 use crate::headers::{Net, Transport, TryHeaders, TryIp, TryTransport};
+use crate::packet::Packet;
 use ahash::AHasher;
 use std::hash::{Hash, Hasher};
 

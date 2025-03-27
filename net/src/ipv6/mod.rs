@@ -29,6 +29,7 @@ pub use contract::*;
 /// An IPv6 header
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Ipv6(Ipv6Header);
+
 impl Ipv6 {
     /// The minimum length (in bytes) of an [`Ipv6`] header.
     #[allow(clippy::unwrap_used)] // safe due to const eval
@@ -104,6 +105,20 @@ impl Ipv6 {
     #[allow(unsafe_code)]
     pub unsafe fn set_source_unchecked(&mut self, source: Ipv6Addr) -> &mut Self {
         self.0.source = source.octets();
+        self
+    }
+
+    /// Set the payload length.
+    ///
+    /// # Safety
+    ///
+    /// This method does not (and cannot) check that the length is correct in the context of the
+    /// packet as a whole.
+    #[allow(unsafe_code)] // requirements documented
+    pub unsafe fn set_payload_length(&mut self, length: u16) -> &mut Self {
+        self.0
+            .set_payload_length(length as usize)
+            .unwrap_or_else(|_| unreachable!());
         self
     }
 
