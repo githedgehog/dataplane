@@ -5,20 +5,18 @@
 #![deny(rustdoc::all)]
 #![allow(rustdoc::missing_crate_level_docs)]
 
-use crate::args::CmdArgs;
-use clap::Parser;
-use tracing::{error, info};
-
 mod args;
 mod drivers;
 mod nat;
 
+use crate::args::{CmdArgs, Parser};
 use drivers::dpdk::DriverDpdk;
 use drivers::kernel::DriverKernel;
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
+use tracing::{error, info};
 
 fn init_logging() {
     tracing_subscriber::fmt()
