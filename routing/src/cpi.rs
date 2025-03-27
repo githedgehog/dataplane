@@ -41,20 +41,25 @@ pub enum CpiCtlMsg {
 
 pub struct CpiHandle {
     pub ctl: Sender<CpiCtlMsg>,
-    pub handle: JoinHandle<()>,
+    pub handle: Option<JoinHandle<()>>,
 }
 #[allow(unused)]
 impl CpiHandle {
-    fn finish(self) -> Result<(), RouterError> {
+    pub fn finish(&mut self) -> Result<(), RouterError> {
         debug!("Requesting CPI to stop..");
         self.ctl
             .send(CpiCtlMsg::Finish)
             .map_err(|_| RouterError::CpiFailure)?;
 
-        debug!("Waiting for CPI to terminate..");
-        self.handle.join().map_err(|_| RouterError::CpiFailure)?;
-        debug!("CPI ended successfully");
-        Ok(())
+        let handle = self.handle.take();
+        if let Some(handle) = handle {
+            debug!("Waiting for CPI to terminate..");
+            handle.join().map_err(|_| RouterError::CpiFailure)?;
+            debug!("CPI ended successfully");
+            Ok(())
+        } else {
+            Err(RouterError::Internal)
+        }
     }
 }
 
@@ -222,7 +227,10 @@ pub fn start_cpi(
         .spawn(cpi_loop)
         .map_err(|_| RouterError::CpiFailure)?;
 
-    Ok(CpiHandle { ctl: tx, handle })
+    Ok(CpiHandle {
+        ctl: tx,
+        handle: Some(handle),
+    })
 }
 
 #[allow(unused)]
@@ -263,7 +271,7 @@ mod tests {
         let (mut atablew, atabler) = AtableWriter::new();
 
         /* start CPI */
-        let cpi = start_cpi(&conf, fibtw, iftw, atabler).expect("Should succeed");
+        let mut cpi = start_cpi(&conf, fibtw, iftw, atabler).expect("Should succeed");
         thread::sleep(Duration::from_secs(3));
         assert_eq!(cpi.finish(), Ok(()));
     }
