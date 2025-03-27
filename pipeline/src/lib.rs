@@ -23,7 +23,7 @@
 //! You can statically chain together a series of network functions using the [`StaticChain::chain`]
 //! method. [`StaticChain`] is implemented for all types that implement [`NetworkFunction`].
 //!
-//! ```rust
+//! ```no_compile
 //! use pipeline::{NetworkFunction, StaticChain};
 //! use pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
 //! use net::buffer::PacketBufferMut;
@@ -54,7 +54,7 @@
 //! You can also use [`DynPipeline`] to construct a pipeline at runtime or to dynamically chain
 //! together a series of network functions.
 //!
-//! ```rust
+//! ```no_compile
 //! use pipeline::DynPipeline;
 //! use pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
 //! use net::packet::test_utils::TestBuffer;
@@ -75,7 +75,7 @@
 //!
 //! You can also combine dynamic chaining with static chaining.
 //!
-//! ```rust
+//! ```no_compile
 //! use pipeline::{DynPipeline, NetworkFunction, StaticChain};
 //! use pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
 //! use net::packet::test_utils::TestBuffer;

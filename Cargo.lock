@@ -734,8 +734,10 @@ version = "0.0.1"
 dependencies = [
  "ahash",
  "arbitrary",
+ "arc-swap",
  "arrayvec",
  "bolero",
+ "dyn-iter",
  "etherparse",
  "nom",
  "ordermap",
