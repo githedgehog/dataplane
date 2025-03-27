@@ -1,4 +1,4 @@
 # https://doc.rust-lang.org/stable/clippy/configuration.html
-allow-expect-in-tests = true
-allow-panic-in-tests = true
-allow-unwrap-in-tests = true
+allow-expect-in-tests = true # panic is completely reasonable in a test setting
+allow-panic-in-tests = true # panic is completely reasonable in a test setting
+allow-unwrap-in-tests = true # panic is completely reasonable in a test setting
