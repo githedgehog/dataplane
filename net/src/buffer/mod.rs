@@ -3,14 +3,14 @@
 
 //! [`PacketBuffer`] and related traits
 
-#[cfg(any(test, feature = "test_buffer"))]
+#[cfg(any(doc, test, feature = "test_buffer"))]
 pub mod test_buffer;
 
 use core::fmt::Debug;
 use std::error::Error;
 
 #[allow(unused_imports)] // re-export
-#[cfg(any(test, feature = "test_buffer"))]
+#[cfg(any(doc, test, feature = "test_buffer"))]
 pub use test_buffer::*;
 
 /// Super trait representing the abstract operations which may be performed on a packet buffer.

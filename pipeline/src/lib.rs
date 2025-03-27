@@ -28,7 +28,7 @@
 //! use pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
 //! use net::buffer::PacketBufferMut;
 //! use net::packet::Packet;
-//! use net::packet::test_utils::TestBuffer;
+//! use net::buffer::TestBuffer;
 //!
 //! /// This creates a chain of functions that first does a `debug!` on the packet contents then
 //! /// sets the destination mac to the broadcast mac address then decrements the TTL value of the
@@ -57,7 +57,7 @@
 //! ```rust
 //! use pipeline::DynPipeline;
 //! use pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
-//! use net::packet::test_utils::TestBuffer;
+//! use net::buffer::TestBuffer;
 //!
 //! let mut pipeline = DynPipeline::<TestBuffer>::new();
 //! pipeline = pipeline.add_stage(InspectHeaders);
@@ -78,7 +78,7 @@
 //! ```rust
 //! use pipeline::{DynPipeline, NetworkFunction, StaticChain};
 //! use pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
-//! use net::packet::test_utils::TestBuffer;
+//! use net::buffer::TestBuffer;
 //!
 //! let mut pipeline: DynPipeline<TestBuffer> = DynPipeline::new();
 //! // Add a dynamic stage that is the static chain of `InspectHeaders` and `BroadcastMacs`
