@@ -20,7 +20,7 @@ net = { workspace = true, features = ["test_buffer"] }
 netdev = { workspace = true }
 ordermap = { workspace = true, features = ["std"] }
 pipeline = { workspace = true }
-routing = { workspace = true }
+routing = { workspace = true, features = ["auto-learn"] }
 serde = { workspace = true, features = ["derive"] }
 serde_yml = { workspace = true }
 thiserror = { workspace = true }
