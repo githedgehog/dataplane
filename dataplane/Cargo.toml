@@ -18,7 +18,7 @@ mio = { workspace = true, features = ["os-ext", "net"] }
 net = { workspace = true, features = ["serde", "test_buffer"] }
 ordermap = { workspace = true, features = ["std"] }
 pipeline = { workspace = true }
-routing = { workspace = true }
+routing = { workspace = true, features = ["auto-learn"] }
 serde = { workspace = true, features = ["derive"] }
 serde_yml = { workspace = true }
 thiserror = { workspace = true }
