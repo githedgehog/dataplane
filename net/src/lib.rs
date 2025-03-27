@@ -19,6 +19,7 @@ pub mod eth;
 pub mod headers;
 pub mod icmp4;
 pub mod icmp6;
+pub mod interface;
 pub mod ip;
 pub mod ip_auth;
 pub mod ipv4;
