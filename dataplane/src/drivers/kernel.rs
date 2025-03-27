@@ -180,7 +180,10 @@ impl DriverKernel {
                         if let Some(oif) = &meta.oif {
                             /* lookup outgoing interface and xmit packet */
                             if let Some(outgoing) = kiftable.get_mut_by_index(oif.get_id()) {
-                                let mut out = pkt.reserialize();
+                                let Ok(mut out) = pkt.serialize() else {
+                                    error!("Insufficient headroom to serialize pkt!");
+                                    continue;
+                                };
                                 debug!(
                                     "Sending frame of length {} octets over interface {}",
                                     out.as_ref().len(),

@@ -113,7 +113,7 @@ fn start_rte_workers(devices: &[Dev], setup_pipeline: &(impl Sync + Fn() -> DynP
                 });
 
                 let pkts_out = pipeline.process(pkts);
-                tx_queue.transmit(pkts_out.map(Packet::reserialize));
+                tx_queue.transmit(pkts_out.filter_map(|x| x.serialize().ok()));
             }
         });
     });
