@@ -240,6 +240,24 @@ pub enum DestinationMacAddressError {
     ZeroDestination(Mac),
 }
 
+impl AsRef<Mac> for SourceMac {
+    fn as_ref(&self) -> &Mac {
+        &self.0
+    }
+}
+
+impl AsRef<Mac> for DestinationMac {
+    fn as_ref(&self) -> &Mac {
+        &self.0
+    }
+}
+
+impl From<SourceMac> for DestinationMac {
+    fn from(value: SourceMac) -> Self {
+        DestinationMac(value.0)
+    }
+}
+
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
     use crate::eth::mac::{DestinationMac, Mac, SourceMac};
