@@ -16,7 +16,7 @@ use procfs::net::arp;
 
 use crate::atable::atablerw::AtableWriter;
 use net::eth::mac::Mac;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use super::adjacency::Adjacency;
 use super::atablerw::AtableReader;
@@ -37,18 +37,21 @@ pub struct AtResolver {
     run: Arc<AtomicBool>,
     handle: Option<JoinHandle<AtableWriter>>,
     atablew: Option<AtableWriter>,
+    atabler: AtableReader,
 }
 
 #[allow(unused)]
 impl AtResolver {
     /// Create an ARP table resolver. Returns an [`AtResolver`] object
     /// and an adjacency table reader [`AtableReader`]
-    pub fn new() -> (Self, AtableReader) {
+    #[must_use]
+    pub fn new(run: bool) -> (Self, AtableReader) {
         let (atablew, atabler) = AtableWriter::new();
         let resolver = Self {
-            run: Arc::new(AtomicBool::new(true)),
+            run: Arc::new(AtomicBool::new(run)),
             handle: None,
             atablew: Some(atablew),
+            atabler: atabler.clone(),
         };
         (resolver, atabler)
     }
@@ -56,7 +59,11 @@ impl AtResolver {
     /// Start the adjacency resolver
     pub fn start(&mut self, poll_period: u64) {
         self.run.store(true, Ordering::Relaxed);
-        let mut atablew = self.atablew.take().unwrap(); /* fixme */
+        let Some(mut atablew) = self.atablew.take() else {
+            error!("Fatal: can't start resolver; no table accessor");
+            return;
+        };
+
         let run = self.run.clone();
         let handle = thread::spawn(move || {
             while run.load(Ordering::Relaxed) {
@@ -78,6 +85,12 @@ impl AtResolver {
                 self.atablew = Some(w);
             }
         }
+    }
+
+    /// Get an adjacency table reader from this resolver
+    #[must_use]
+    pub fn get_reader(&self) -> AtableReader {
+        self.atabler.clone()
     }
 
     /// Loads arp table from /proc and the kernel interfaces and
@@ -127,7 +140,9 @@ pub mod tests {
     fn watch_resolver_output(atabler: &AtableReader, times: i32) {
         let mut count = 1;
         while count <= times {
-            atabler.enter().map(|atable| println!("{}", *atable));
+            if let Some(atable) = atabler.enter() {
+                println!("{}", *atable)
+            }
             thread::sleep(Duration::from_secs(1));
             count += 1;
         }
@@ -135,16 +150,16 @@ pub mod tests {
 
     #[test]
     fn test_adjacency_resolver() {
-        let (mut resolver, atabler) = AtResolver::new();
+        let (mut resolver, atabler) = AtResolver::new(true);
         resolver.start(1);
         watch_resolver_output(&atabler, 3);
-        let _ = resolver.stop();
+        resolver.stop();
 
         println!("Stopped resolver");
         thread::sleep(Duration::from_secs(2));
 
         resolver.start(1);
         watch_resolver_output(&atabler, 3);
-        let _ = resolver.stop();
+        resolver.stop();
     }
 }
