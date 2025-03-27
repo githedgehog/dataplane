@@ -38,9 +38,13 @@ fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
             /* your own filter here */
             true
         };
-        pipeline.add_stage(PacketDumper::new(true, Some(Box::new(custom_filter))))
+        pipeline.add_stage(PacketDumper::new(
+            "default",
+            true,
+            Some(Box::new(custom_filter)),
+        ))
     } else {
-        pipeline.add_stage(PacketDumper::new(true, None))
+        pipeline.add_stage(PacketDumper::new("default", true, None))
     }
 }
 
