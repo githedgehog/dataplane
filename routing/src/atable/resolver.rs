@@ -37,18 +37,20 @@ pub struct AtResolver {
     run: Arc<AtomicBool>,
     handle: Option<JoinHandle<AtableWriter>>,
     atablew: Option<AtableWriter>,
+    atabler: AtableReader,
 }
 
 #[allow(unused)]
 impl AtResolver {
     /// Create an ARP table resolver. Returns an [`AtResolver`] object
     /// and an adjacency table reader [`AtableReader`]
-    pub fn new() -> (Self, AtableReader) {
+    pub fn new(run: bool) -> (Self, AtableReader) {
         let (atablew, atabler) = AtableWriter::new();
         let resolver = Self {
-            run: Arc::new(AtomicBool::new(true)),
+            run: Arc::new(AtomicBool::new(run)),
             handle: None,
             atablew: Some(atablew),
+            atabler: atabler.clone(),
         };
         (resolver, atabler)
     }
@@ -78,6 +80,11 @@ impl AtResolver {
                 self.atablew = Some(w);
             }
         }
+    }
+
+    /// Get an adjacency table reader from this resolver
+    pub fn get_reader(&self) -> AtableReader {
+        self.atabler.clone()
     }
 
     /// Loads arp table from /proc and the kernel interfaces and
@@ -135,7 +142,7 @@ pub mod tests {
 
     #[test]
     fn test_adjacency_resolver() {
-        let (mut resolver, atabler) = AtResolver::new();
+        let (mut resolver, atabler) = AtResolver::new(true);
         resolver.start(1);
         watch_resolver_output(&atabler, 3);
         let _ = resolver.stop();
