@@ -144,6 +144,7 @@ impl<T> Default for Id<T> {
 }
 
 impl<T> Id<T> {
+    /// Generate a new `Id<T>`.
     /// Namespace UUID used for generating namespaced [UUIDv5] identifiers
     ///
     /// [UUIDv5]: https://datatracker.ietf.org/doc/html/rfc9562#section-5.5
@@ -151,11 +152,12 @@ impl<T> Id<T> {
 
     /// Generate a new `Id<U>`.
     /// This method returns a transparently wrapped [Uuid] which is compile-time tagged with the
-    /// type parameter `U`.
+    /// type parameter `T`.
     /// The annotation consumes no space and has no runtime overhead whatsoever.
-    /// The only function of `U` is to distinguish this type from other [Id] types.
+    /// The only function of `T` is to distinguish this type from other [Id] types.
+    #[inline(always)]
     #[must_use]
-    pub fn new<U>() -> Id<U> {
+    pub fn new() -> Id<T> {
         AbstractIdType(Uuid::new_v4(), PhantomData)
     }
 
@@ -185,7 +187,7 @@ impl<T> Id<T> {
     ///
     /// You _should not_ use this method in situations where you are generating a [Uuid] and wish
     /// to associate it with a type.
-    /// In such cases use [`Id::new::<U>`] instead.
+    /// In such cases use [Id::new] instead.
     #[must_use]
     pub const fn from_raw(uuid: Uuid) -> Self {
         Self(uuid, PhantomData)
