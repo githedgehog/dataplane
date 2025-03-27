@@ -9,7 +9,6 @@ use tracing::{debug, error, trace, warn};
 use net::buffer::PacketBufferMut;
 use net::headers::{TryIpv4Mut, TryIpv6Mut};
 use net::packet::{DoneReason, InterfaceId, Packet};
-use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 
 use routing::encapsulation::Encapsulation;
@@ -87,29 +86,26 @@ impl IpForwarder {
         /* packet is destined to gateway. Here, either we send the packet to the kernel
         or, if it contains an encapsulated packet (e.g. Vxlan), we send it to the next
         stage of routing */
-
-        /* Todo: determine if packet contains a Vxlan encapsulated packet */
-
-        let is_vxlan: bool = true;
-        let vni = Vni::new_checked(33).unwrap(); /* fixme */
-
-        if is_vxlan {
-            if let Some(fibtable) = self.fibtr.enter() {
-                if let Some(fib) = fibtable.get_fib(&FibId::from_vni(vni)) {
-                    packet.get_meta_mut().vrf = Some(fib.get_id().unwrap().as_u32());
-                } else {
-                    error!(
-                        "{}: Unable to read fib for vni {}",
-                        &self.name,
-                        vni.as_u32()
-                    );
+        match packet.vxlan_decap() {
+            Some(Ok(vxlan)) => {
+                if let Some(fibtable) = self.fibtr.enter() {
+                    let vni = vxlan.vni();
+                    if let Some(fib) = fibtable.get_fib(&FibId::from_vni(vni)) {
+                        packet.get_meta_mut().vrf = Some(fib.get_id().unwrap().as_u32());
+                    } else {
+                        error!("{}: Unable to read fib for vni {}", &self.name, vni);
+                    }
                 }
             }
-        } else {
-            /* send to kernel, among other options */
-            debug!("Packet should be delivered to kernel...");
-            packet.get_meta_mut().oif = Some(packet.get_meta().iif);
-            //packet.done(DoneReason::Delivered);
+            Some(Err(bad)) => {
+                warn!("oh no, the inner packet is bad: {bad:?}");
+            }
+            None => {
+                /* send to kernel, among other options */
+                debug!("Packet should be delivered to kernel...");
+                packet.get_meta_mut().oif = Some(packet.get_meta().iif);
+                packet.done(DoneReason::Delivered);
+            }
         }
     }
 
