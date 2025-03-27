@@ -163,8 +163,8 @@ pub fn start_cpi(
         let mut db = RoutingDb::new(Some(fibtw), iftw, atabler);
 
         if let Ok(mut vtep) = db.vtep.write() {
-            vtep.set_ip(IpAddr::from_str("7.0.0.1").unwrap());
-            vtep.set_mac(Mac::from([0x02, 0, 0, 0, 0, 0xab]));
+            vtep.set_ip(IpAddr::from_str("7.0.0.100").unwrap());
+            vtep.set_mac(Mac::from([0x02, 0x00, 0x77, 0x88, 0x99, 0xaa]));
         }
 
         while run {
