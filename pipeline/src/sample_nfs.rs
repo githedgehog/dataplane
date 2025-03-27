@@ -32,6 +32,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for InspectHeaders {
 /// The function can be enabled / disabled externally and admits an optional filter
 /// to dump only the packets that match the filtering criteria.
 pub struct PacketDumper<Buf: PacketBufferMut> {
+    name: String,
     enabled: AtomicBool,
     count: u64,
     filter: ArcSwapOption<DumperFilter<Buf>>,
@@ -58,8 +59,9 @@ impl<Buf: PacketBufferMut> PacketDumper<Buf> {
 
     /// Create a new Packet dumper NF.
     #[must_use]
-    pub fn new(enabled: bool, filter: Option<DumperFilter<Buf>>) -> Self {
+    pub fn new(name: &str, enabled: bool, filter: Option<DumperFilter<Buf>>) -> Self {
         Self {
+            name: name.to_owned(),
             enabled: AtomicBool::new(enabled),
             count: 0,
             filter: ArcSwapOption::from_pointee(filter),
@@ -93,7 +95,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PacketDumper<Buf> {
         input.inspect(move |packet| {
             // if there is no filter, dump the packet. If there is, let it decide.
             if enabled && filter.as_ref().map_or_else(|| true, |x| x.deref()(packet)) {
-                debug!("packet ({})\n{}", self.count, packet);
+                debug!("@{}, packet ({})\n{}", self.name, self.count, packet);
                 self.count += 1;
             }
         })
