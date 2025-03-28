@@ -95,12 +95,12 @@ where
         }
     }
 
-    /// Looks up for the value associated with the given prefix.
+    /// Looks up for the value associated with the given address.
     #[tracing::instrument(level = "trace")]
-    pub fn find(&self, prefix: &Prefix) -> Option<&T> {
-        match prefix {
-            Prefix::IPV4(p) => {
-                let (k, v) = self.trie_ipv4.lookup(p);
+    pub fn find(&self, addr: &IpAddr) -> Option<&T> {
+        match addr {
+            IpAddr::V4(a) => {
+                let (k, v) = self.trie_ipv4.lookup(&Ipv4Prefix::from(*a));
                 // The RTrieMap lookup always return an entry; if no better
                 // match, it returns the root of the map, which always exists.
                 // This means that to check if the result is "empty", we need to
@@ -111,23 +111,14 @@ where
                     Some(v)
                 }
             }
-            Prefix::IPV6(p) => {
-                let (k, v) = self.trie_ipv6.lookup(p);
+            IpAddr::V6(a) => {
+                let (k, v) = self.trie_ipv6.lookup(&Ipv6Prefix::from(*a));
                 if Prefix::IPV6(*k).is_root() {
                     None
                 } else {
                     Some(v)
                 }
             }
-        }
-    }
-
-    /// Looks up for the value associated with the given IP address.
-    #[tracing::instrument(level = "trace")]
-    pub fn find_ip(&self, ip: &IpAddr) -> Option<&T> {
-        match ip {
-            IpAddr::V4(_) => self.find(&Prefix::from((*ip, 32))),
-            IpAddr::V6(_) => self.find(&Prefix::from((*ip, 128))),
         }
     }
 
@@ -219,27 +210,36 @@ mod tests {
 
         // Look for a single IPv4 address
         assert_eq!(
-            pt.find_ip(&addr_v4("10.1.1.1")),
-            Some("prefix_10.1.0.0/16".to_string()).as_ref()
+            pt.lookup(&addr_v4("10.1.1.1")),
+            Some((
+                Prefix::IPV4(prefix_v4("10.1.0.0/16")),
+                &"prefix_10.1.0.0/16".to_string()
+            ))
         );
 
         // Look for a single IPv6 address
         assert_eq!(
-            pt.find_ip(&addr_v6("aa:bb:cc:dd::1")),
-            Some("prefix_aa:bb:cc:dd::/32".to_string()).as_ref()
+            pt.lookup(&addr_v6("aa:bb:cc:dd::1")),
+            Some((
+                Prefix::IPV6(prefix_v6("aa:bb:cc:dd::/32")),
+                &"prefix_aa:bb:cc:dd::/32".to_string()
+            ))
         );
 
         // Look for a single IPv4 address that is not in the trie
-        assert_eq!(pt.find_ip(&addr_v4("10.2.1.1")), None);
+        assert_eq!(pt.lookup(&addr_v4("10.2.1.1")), None);
 
         // Look for a single IPv6 address that is not in the trie
-        assert_eq!(pt.find_ip(&addr_v6("aa::1")), None);
+        assert_eq!(pt.lookup(&addr_v6("aa::1")), None);
 
         // Clone the prefix trie
         let cloned_pt = pt.clone();
         assert_eq!(
-            cloned_pt.find(&prefix_v4("10.0.1.0/24").into()),
-            Some("prefix_10.0.1.0/24".to_string()).as_ref()
+            cloned_pt.lookup(&addr_v4("10.0.1.5")),
+            Some((
+                Prefix::IPV4(prefix_v4("10.0.1.0/24")),
+                &"prefix_10.0.1.0/24".to_string()
+            ))
         );
     }
 }

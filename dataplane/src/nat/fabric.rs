@@ -55,7 +55,7 @@ impl NatPeeringRuleTable {
 
     #[tracing::instrument(level = "trace")]
     fn find(&self, addr: &IpAddr) -> Option<usize> {
-        self.rules.find_ip(addr).copied()
+        self.rules.find(addr).copied()
     }
 }
 
