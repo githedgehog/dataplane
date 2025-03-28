@@ -31,6 +31,7 @@ use routing::encapsulation::VxlanEncapsulation;
 
 use net::eth::Eth;
 use net::eth::mac::DestinationMac;
+use net::eth::mac::Mac;
 use net::eth::mac::SourceMac;
 use net::headers::Headers;
 use net::headers::Transport;
@@ -41,14 +42,16 @@ pub struct IpForwarder {
     fibtr: FibTableReader,
 }
 
-#[allow(dead_code)]
 impl IpForwarder {
+    /// Build a new IP forwarding stage to use the indicated [`FibTableReader`]
     pub fn new(name: &str, fibtr: FibTableReader) -> Self {
         Self {
             name: name.to_owned(),
             fibtr,
         }
     }
+
+    /// Forward a [`Packet`]
     fn forward_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>, vrfid: VrfId) {
         /* clear any prior VRF annotation in the packet */
         packet.get_meta_mut().vrf.take();
@@ -139,12 +142,6 @@ impl IpForwarder {
     }
 
     fn build_vxlan_headers(vxlan: &VxlanEncapsulation) -> Result<VxlanEncap, ()> {
-        let Some(src_mac) = &vxlan.smac else {
-            return Err(());
-        };
-        let Some(dst_mac) = &vxlan.dmac else {
-            return Err(());
-        };
         let Some(src_ip) = &vxlan.local else {
             return Err(());
         };
@@ -152,7 +149,6 @@ impl IpForwarder {
             IpAddr::V4(_) => EthType::IPV4,
             IpAddr::V6(_) => EthType::IPV6,
         };
-
         let net = match (&src_ip, &vxlan.remote) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
                 let src_ip = UnicastIpv4Addr::new(*src_ip).expect("Non-unicast src ip");
@@ -179,9 +175,11 @@ impl IpForwarder {
             Transport::Udp(Udp::new(1000.try_into().unwrap(), 4789.try_into().unwrap()));
         let udp_encap = UdpEncap::Vxlan(Vxlan::new(vxlan.vni));
         let headers = Headers {
+            /* This eth header should be overwritten in the next stage
+            If ever Eth is Option<Eth>, set to None */
             eth: Eth::new(
-                SourceMac::new(*src_mac).expect("Bad source mac"),
-                DestinationMac::new(*dst_mac).expect("Bad dst mac"),
+                SourceMac::new(Mac([0x02, 0, 0, 0, 0, 0])).expect("Bad source mac"),
+                DestinationMac::new(Mac([0x02, 0, 0, 0, 0, 0])).expect("Bad dst mac"),
                 ether_type,
             ),
             vlan: Default::default(),
@@ -201,13 +199,29 @@ impl IpForwarder {
         match encap {
             Encapsulation::Mpls(_label) => todo!(),
             Encapsulation::Vxlan(vxlan) => {
+                let Some(src_mac) = &vxlan.smac else {
+                    packet.done(DoneReason::InternalFailure);
+                    return;
+                };
+                let Some(dst_mac) = &vxlan.dmac else {
+                    packet.done(DoneReason::InternalFailure);
+                    return;
+                };
+                packet
+                    .set_eth_source(*src_mac)
+                    .set_eth_destination(*dst_mac);
+
                 let Ok(vxlan_headers) = Self::build_vxlan_headers(vxlan) else {
                     error!("Failed to build VxLAN headers !");
+                    packet.done(DoneReason::InternalFailure);
                     return;
                 };
                 match packet.vxlan_encap(&vxlan_headers) {
                     Ok(_) => debug!("Successfully ENCAPSULATED packet with VxLAN:\n {}", packet),
-                    Err(e) => error!("Failed to ENCAPSULATE packet with VxLAN: {e}"),
+                    Err(e) => {
+                        error!("Failed to ENCAPSULATE packet with VxLAN: {e}");
+                        packet.done(DoneReason::InternalFailure);
+                    }
                 };
             }
         }
