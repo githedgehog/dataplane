@@ -14,9 +14,8 @@ test_buffer = []
 [dependencies]
 ahash = { workspace = true }
 arbitrary = { workspace = true, features = ["derive"], optional = true }
-bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional = true }
 arrayvec = { workspace = true }
-# ideally, we would do without "std" for etherparse, but we need it for error types.
+bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional = true }
 etherparse = { workspace = true, features = ["std"] }
 nom = { workspace = true, features = ["std"]  }
 serde = { workspace = true, optional = true, features = ["derive"] }
