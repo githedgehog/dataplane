@@ -11,7 +11,7 @@ use crate::ipv4::Ipv4;
 use crate::ipv6::Ipv6;
 use crate::parse::DeParse;
 use crate::tcp::Tcp;
-use crate::udp::Udp;
+use crate::udp::{Udp, UdpEncap};
 
 use crate::buffer::PacketBufferMut;
 use crate::packet::{BridgeDomain, DoneReason, InterfaceId, Packet, PacketMeta};
@@ -163,6 +163,11 @@ impl Display for Transport {
         }
     }
 }
+impl Display for UdpEncap {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "  ENCAP: {:?}", self)
+    }
+}
 
 /* ============= All headers ============ */
 impl Display for Headers {
@@ -175,7 +180,7 @@ impl Display for Headers {
             write!(f, "{transport}")?;
         }
         if let Some(udp_encap) = &self.udp_encap {
-            write!(f, "{udp_encap:?}")?;
+            write!(f, "{udp_encap}")?;
         }
         Ok(())
     }
