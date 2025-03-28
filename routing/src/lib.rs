@@ -21,6 +21,7 @@ mod nexthop;
 pub mod prefix;
 pub mod pretty_utils;
 pub mod route_processor;
+pub mod router;
 pub mod routingdb;
 mod rpc_adapt;
 pub mod testfib;
