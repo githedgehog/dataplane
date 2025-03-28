@@ -40,7 +40,7 @@ mod fabric;
 mod iplist;
 mod prefixtrie;
 
-use crate::nat::fabric::{PeeringPolicy, Pif, Vpc};
+use crate::nat::fabric::{PeeringPolicy, Pif, Vrf};
 use crate::nat::iplist::IpList;
 use crate::nat::prefixtrie::PrefixTrie;
 use pipeline::NetworkFunction;
@@ -59,7 +59,7 @@ use std::net::IpAddr;
 #[derive(Debug)]
 #[allow(dead_code)]
 struct GlobalContext {
-    vpcs: HashMap<u32, Vpc>,
+    vpcs: HashMap<u32, Vrf>,
     global_pif_trie: PrefixTrie,
     peerings: HashMap<String, PeeringPolicy>,
 }
@@ -82,7 +82,7 @@ impl GlobalContext {
     }
 
     #[tracing::instrument(level = "trace")]
-    fn insert_vpc(&mut self, vni: Vni, vpc: Vpc) {
+    fn insert_vpc(&mut self, vni: Vni, vpc: Vrf) {
         vpc.iter_pifs().for_each(|pif| {
             pif.iter_ips().for_each(|prefix| {
                 let _ = self.global_pif_trie.insert(prefix, pif.name().clone());
@@ -97,7 +97,7 @@ impl GlobalContext {
     }
 
     #[tracing::instrument(level = "trace")]
-    fn get_vpc(&self, vni: Vni) -> Option<&Vpc> {
+    fn get_vpc(&self, vni: Vni) -> Option<&Vrf> {
         self.vpcs.get(&vni.as_u32())
     }
 
@@ -202,7 +202,7 @@ impl Nat {
 
     /// Temporary, expect this to be removed in the future.
     #[tracing::instrument(level = "trace")]
-    pub fn add_vpc(&mut self, vni: Vni, vpc: Vpc) {
+    pub fn add_vpc(&mut self, vni: Vni, vpc: Vrf) {
         self.context.insert_vpc(vni, vpc);
     }
 
@@ -395,8 +395,8 @@ mod tests {
         IpAddr::V4(Ipv4Addr::from_str(s).expect("Invalid IPv4 address"))
     }
 
-    fn build_vpc1() -> Vpc {
-        let mut vpc1 = Vpc::new(
+    fn build_vpc1() -> Vrf {
+        let mut vpc1 = Vrf::new(
             "test_vpc1".into(),
             Vni::new_checked(100).expect("Failed to create VNI"),
         );
@@ -411,8 +411,8 @@ mod tests {
         vpc1
     }
 
-    fn build_vpc2() -> Vpc {
-        let mut vpc2 = Vpc::new(
+    fn build_vpc2() -> Vrf {
+        let mut vpc2 = Vrf::new(
             "test_vpc2".into(),
             Vni::new_checked(200).expect("Failed to create VNI"),
         );

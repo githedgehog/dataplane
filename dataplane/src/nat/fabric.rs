@@ -122,13 +122,13 @@ impl PeeringPolicy {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct Vpc {
+pub struct Vrf {
     name: String,
     vni: Vni,
     pif_table: PifTable,
 }
 
-impl Vpc {
+impl Vrf {
     #[tracing::instrument(level = "trace")]
     pub fn new(name: String, vni: Vni) -> Self {
         Self {
@@ -272,7 +272,7 @@ mod tests {
     fn test_fabric() {
         // Create a VPC
 
-        let mut vpc1 = Vpc::new(
+        let mut vpc1 = Vrf::new(
             "test_vpc_1".into(),
             Vni::new_checked(100).expect("Failed to create VNI"),
         );
@@ -309,7 +309,7 @@ mod tests {
 
         // Create another VPC
 
-        let mut vpc2 = Vpc::new(
+        let mut vpc2 = Vrf::new(
             "test_vpc_2".into(),
             Vni::new_checked(200).expect("Failed to create VNI"),
         );
@@ -396,7 +396,7 @@ mod tests {
         let serialized = serde_yml::to_string(&vpc1).expect("Failed to serialize");
         println!("{serialized}");
 
-        let deserialized: Vpc = serde_yml::from_str(&serialized).expect("Failed to deserialize");
+        let deserialized: Vrf = serde_yml::from_str(&serialized).expect("Failed to deserialize");
         println!("{serialized:?}");
 
         assert_eq!(deserialized.pif_table.pifs.len(), 1);
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn test_bad_pif() {
-        let mut vpc = Vpc::new(
+        let mut vpc = Vrf::new(
             "test_vpc".into(),
             Vni::new_checked(100).expect("Failed to create VNI"),
         );
