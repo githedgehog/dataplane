@@ -30,8 +30,8 @@ pub fn setup_routing_pipeline<Buf: PacketBufferMut>(
     let stage_egress = Egress::new("Egress", iftr, atreader);
     let iprouter1 = IpForwarder::new("IP-Forward-1", fibtr.clone());
     let iprouter2 = IpForwarder::new("IP-Forward-2", fibtr);
-    let dumper1 = PacketDumper::new("pre-ingress", true, Some(PacketDumper::udp_only()));
-    let dumper2 = PacketDumper::new("post-egress", true, Some(PacketDumper::udp_only()));
+    let dumper1 = PacketDumper::new("pre-ingress", true, Some(PacketDumper::vxlan_or_icmp()));
+    let dumper2 = PacketDumper::new("post-egress", true, Some(PacketDumper::vxlan_or_icmp()));
 
     DynPipeline::new()
         .add_stage(dumper1)
