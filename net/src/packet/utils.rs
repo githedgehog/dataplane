@@ -7,9 +7,11 @@ use std::net::IpAddr;
 
 use crate::eth::Eth;
 use crate::eth::ethtype::EthType;
-use crate::eth::mac::Mac;
+use crate::eth::mac::{
+    DestinationMac, DestinationMacAddressError, Mac, SourceMac, SourceMacAddressError,
+};
 use crate::headers::Net::{Ipv4, Ipv6};
-use crate::headers::{TryEth, TryIp};
+use crate::headers::{TryEth, TryEthMut, TryIp};
 use crate::ip::NextHeader;
 use crate::packet::Packet;
 use crate::packet::PacketBufferMut;
@@ -25,6 +27,28 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Returns None if the packet does not have an Ethernet header
     pub fn eth_source(&self) -> Option<Mac> {
         self.try_eth().map(|eth| eth.source().inner())
+    }
+
+    /// Set source mac in ethernet Header
+    ///
+    /// # Errors
+    ///
+    /// This method returns [`SourceMacAddressError`] if the mac is invalid as source.
+    pub fn set_eth_source(&mut self, mac: Mac) -> Result<(), SourceMacAddressError> {
+        let mac = SourceMac::new(mac)?;
+        self.try_eth_mut().map(|eth| eth.set_source(mac));
+        Ok(())
+    }
+
+    /// Set destination mac in ethernet Header
+    ///
+    /// # Errors
+    ///
+    /// This method returns [`DestinationMacAddressError`] if the mac is invalid as destination.
+    pub fn set_eth_destination(&mut self, mac: Mac) -> Result<(), DestinationMacAddressError> {
+        let mac = DestinationMac::new(mac)?;
+        self.try_eth_mut().map(|eth| eth.set_destination(mac));
+        Ok(())
     }
 
     /// Get the ether type of an [`Packet`]
