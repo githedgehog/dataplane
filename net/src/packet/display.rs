@@ -171,7 +171,10 @@ impl Display for Transport {
 
 impl Display for Headers {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "\n{}", self.eth)?;
+        writeln!(f)?;
+        if let Some(eth) = &self.eth {
+            write!(f, "{eth}")?;
+        }
         if let Some(net) = &self.net {
             write!(f, "{net}")?;
         }

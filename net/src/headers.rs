@@ -30,7 +30,7 @@ const MAX_NET_EXTENSIONS: usize = 2;
 // TODO: remove `pub` from all fields
 #[derive(Debug, PartialEq, Eq)]
 pub struct Headers {
-    pub eth: Eth,
+    pub eth: Option<Eth>,
     pub vlan: ArrayVec<Vlan, MAX_VLANS>,
     pub net: Option<Net>,
     pub net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
@@ -147,7 +147,7 @@ impl Parse for Headers {
             Reader::new(buf).map_err(|IllegalBufferLength(len)| ParseError::BufferTooLong(len))?;
         let (eth, _) = cursor.parse::<Eth>()?;
         let mut this = Headers {
-            eth: eth.clone(),
+            eth: Some(eth.clone()),
             net: None,
             transport: None,
             vlan: ArrayVec::default(),
@@ -158,7 +158,7 @@ impl Parse for Headers {
         loop {
             let header = prior.parse_payload(&mut cursor);
             match prior {
-                Header::Eth(eth) => this.eth = eth,
+                Header::Eth(eth) => this.eth = Some(eth),
                 Header::Ipv4(ip) => this.net = Some(Net::Ipv4(ip)),
                 Header::Ipv6(ip) => this.net = Some(Net::Ipv6(ip)),
                 Header::Tcp(tcp) => this.transport = Some(Transport::Tcp(tcp)),
@@ -210,7 +210,7 @@ impl DeParse for Headers {
 
     fn size(&self) -> NonZero<u16> {
         // TODO(blocking): Deal with ip{v4,v6} extensions
-        let eth = self.eth.size().get();
+        let eth = self.eth.as_ref().map(|x| x.size().get()).unwrap_or(0);
         let vlan = self.vlan.iter().map(|v| v.size().get()).sum::<u16>();
         let net = match self.net {
             None => {
@@ -241,7 +241,12 @@ impl DeParse for Headers {
         }
         let mut cursor = Writer::new(buf)
             .map_err(|IllegalBufferLength(len)| DeParseError::BufferTooLong(len))?;
-        cursor.write(&self.eth)?;
+        match &self.eth {
+            None => {}
+            Some(eth) => {
+                cursor.write(eth)?;
+            }
+        }
         for vlan in self.vlan.iter().rev() {
             cursor.write(vlan)?;
         }
@@ -293,14 +298,24 @@ impl DeParse for Headers {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("Header already has as many VLAN headers as parser can support (max is {MAX_VLANS})")]
-pub struct TooManyVlans;
+pub enum PushVlanError {
+    #[error("can't push vlan without an ethernet header")]
+    NoEthernetHeader,
+    #[error("Header already has as many VLAN headers as parser can support (max is {MAX_VLANS})")]
+    TooManyVlans,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PopVlanError {
+    #[error("can't push vlan without an ethernet header")]
+    NoEthernetHeader,
+}
 
 impl Headers {
     /// Create a new [`Headers`] with the supplied `Eth` header.
     pub fn new(eth: Eth) -> Headers {
         Headers {
-            eth,
+            eth: Some(eth),
             vlan: ArrayVec::default(),
             net: None,
             net_ext: ArrayVec::default(),
@@ -327,12 +342,12 @@ impl Headers {
     /// (e.g. [`EthType::VLAN`] or [`EthType::VLAN_QINQ`])
     #[allow(unsafe_code)]
     #[allow(dead_code)]
-    unsafe fn push_vlan_header_unchecked(&mut self, vlan: Vlan) -> Result<(), TooManyVlans> {
+    unsafe fn push_vlan_header_unchecked(&mut self, vlan: Vlan) -> Result<(), PushVlanError> {
         if self.vlan.len() < MAX_VLANS {
             self.vlan.push(vlan);
             Ok(())
         } else {
-            Err(TooManyVlans)
+            Err(PushVlanError::TooManyVlans)
         }
     }
 
@@ -340,15 +355,22 @@ impl Headers {
     ///
     /// This method will ensure that the `eth` field has its [`EthType`] adjusted to
     /// [`EthType::VLAN`] if there are no [`Vlan`]s on the stack at the time this method was called.
-    pub fn push_vlan(&mut self, vid: Vid) -> Result<(), TooManyVlans> {
+    pub fn push_vlan(&mut self, vid: Vid) -> Result<(), PushVlanError> {
         if self.vlan.len() >= MAX_VLANS {
-            return Err(TooManyVlans);
+            return Err(PushVlanError::TooManyVlans);
         }
-        let old_eth_type = self.eth.ether_type();
-        self.eth.set_ether_type(EthType::VLAN);
-        let new_vlan_header = Vlan::new(vid, old_eth_type, Pcp::default(), false);
-        self.vlan.push(new_vlan_header);
-        Ok(())
+        match &mut self.eth {
+            None => {
+                Err(PushVlanError::NoEthernetHeader)
+            }
+            Some(eth) => {
+                let old_eth_type = eth.ether_type();
+                eth.set_ether_type(EthType::VLAN);
+                let new_vlan_header = Vlan::new(vid, old_eth_type, Pcp::default(), false);
+                self.vlan.push(new_vlan_header);
+                Ok(())
+            }
+        }
     }
 
     /// Pop a vlan header from the stack.
@@ -359,12 +381,17 @@ impl Headers {
     /// preserve structure.
     ///
     /// If `None` is returned, the [`Headers`] is not modified.
-    pub fn pop_vlan(&mut self) -> Option<Vlan> {
-        match self.vlan.pop() {
-            None => None,
-            Some(vlan) => {
-                self.eth.set_ether_type(vlan.inner_ethtype());
-                Some(vlan)
+    pub fn pop_vlan(&mut self) -> Result<Option<Vlan>, PopVlanError> {
+        match &mut self.eth {
+            None => {
+                Err(PopVlanError::NoEthernetHeader)
+            }
+            Some(eth) => match self.vlan.pop() {
+                None => Ok(None),
+                Some(vlan) => {
+                    eth.set_ether_type(vlan.inner_ethtype());
+                    Ok(Some(vlan))
+                }
             }
         }
     }
@@ -388,27 +415,15 @@ pub trait TryEthMut {
     fn try_eth_mut(&mut self) -> Option<&mut Eth>;
 }
 
-impl WithEth for Headers {
-    fn eth(&self) -> &Eth {
-        &self.eth
-    }
-}
-
-impl WithEthMut for Headers {
-    fn eth_mut(&mut self) -> &mut Eth {
-        &mut self.eth
-    }
-}
-
 impl TryEth for Headers {
     fn try_eth(&self) -> Option<&Eth> {
-        Some(self.eth())
+        self.eth.as_ref()
     }
 }
 
 impl TryEthMut for Headers {
     fn try_eth_mut(&mut self) -> Option<&mut Eth> {
-        Some(self.eth_mut())
+       self.eth.as_mut() 
     }
 }
 
@@ -1137,7 +1152,7 @@ mod contract {
                         ipv4::CommonNextHeader::Tcp => {
                             let tcp: Tcp = driver.produce()?;
                             let headers = Headers {
-                                eth,
+                                eth: Some(eth),
                                 vlan: Default::default(),
                                 net: Some(Net::Ipv4(ipv4)),
                                 net_ext: Default::default(),
@@ -1149,7 +1164,7 @@ mod contract {
                         ipv4::CommonNextHeader::Udp => {
                             let udp: Udp = driver.produce()?;
                             let headers = Headers {
-                                eth,
+                                eth: Some(eth),
                                 vlan: Default::default(),
                                 net: Some(Net::Ipv4(ipv4)),
                                 net_ext: Default::default(),
@@ -1161,7 +1176,7 @@ mod contract {
                         ipv4::CommonNextHeader::Icmp4 => {
                             let icmp: Icmp4 = driver.produce()?;
                             let headers = Headers {
-                                eth,
+                                eth: Some(eth),
                                 vlan: Default::default(),
                                 net: Some(Net::Ipv4(ipv4)),
                                 net_ext: Default::default(),
@@ -1180,7 +1195,7 @@ mod contract {
                         ipv6::CommonNextHeader::Tcp => {
                             let tcp: Tcp = driver.produce()?;
                             let headers = Headers {
-                                eth,
+                                eth: Some(eth),
                                 vlan: Default::default(),
                                 net: Some(Net::Ipv6(ipv6)),
                                 net_ext: Default::default(),
@@ -1192,7 +1207,7 @@ mod contract {
                         ipv6::CommonNextHeader::Udp => {
                             let udp: Udp = driver.produce()?;
                             let headers = Headers {
-                                eth,
+                                eth: Some(eth),
                                 vlan: Default::default(),
                                 net: Some(Net::Ipv6(ipv6)),
                                 net_ext: Default::default(),
@@ -1204,7 +1219,7 @@ mod contract {
                         ipv6::CommonNextHeader::Icmp6 => {
                             let icmp6: Icmp6 = driver.produce()?;
                             let headers = Headers {
-                                eth,
+                                eth: Some(eth),
                                 vlan: Default::default(),
                                 net: Some(Net::Ipv6(ipv6)),
                                 net_ext: Default::default(),
