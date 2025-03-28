@@ -14,7 +14,7 @@ pub use crate::buffer::TestBuffer;
 use crate::eth::Eth;
 use crate::eth::ethtype::EthType;
 use crate::eth::mac::{DestinationMac, Mac, SourceMac};
-use crate::headers::{Headers, Net, Transport};
+use crate::headers::{HeadersBuilder, Net, Transport};
 use crate::ip::NextHeader;
 use crate::ipv4::Ipv4;
 use crate::ipv4::addr::UnicastIpv4Addr;
@@ -33,23 +33,21 @@ use std::str::FromStr;
 /// The Ethernet source and destination MAC addresses are 0x02:00:00:00:00:01 and 0x02:00:00:00:00:02
 /// respectively.
 pub fn build_test_ipv4_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+    let mut headers = HeadersBuilder::default();
+    headers.eth(Some(Eth::new(
+        SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
+        DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
+        EthType::IPV4,
+    )));
     let mut ipv4 = Ipv4::default();
     ipv4.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(1, 2, 3, 4)).unwrap());
     ipv4.set_destination(Ipv4Addr::new(1, 2, 3, 4));
     ipv4.set_ttl(ttl);
+    headers.net(Some(Net::Ipv4(ipv4)));
 
-    let mut headers = Headers::new();
-
-    headers.eth = Some(Eth::new(
-        SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
-        DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
-        EthType::IPV4,
-    ));
-    headers.net = Some(Net::Ipv4(ipv4));
-
+    let headers = headers.build().unwrap();
     let mut buffer: TestBuffer = TestBuffer::new();
     headers.deparse(buffer.as_mut()).unwrap();
-
     Packet::new(buffer)
 }
 
@@ -70,6 +68,14 @@ pub fn build_test_udp_ipv4_frame(
     sport: u16,
     dport: u16,
 ) -> Packet<TestBuffer> {
+    let mut headers = HeadersBuilder::default();
+
+    headers.eth(Some(Eth::new(
+        SourceMac::new(src_mac).unwrap(),
+        DestinationMac::new(dst_mac).unwrap(),
+        EthType::IPV4,
+    )));
+
     let mut ipv4 = Ipv4::default();
     ipv4.set_source(UnicastIpv4Addr::new(addr_v4(src_ip)).expect("Bad unicast IPv4"));
     ipv4.set_destination(addr_v4(dst_ip));
@@ -77,23 +83,15 @@ pub fn build_test_udp_ipv4_frame(
     unsafe {
         ipv4.set_next_header(NextHeader::UDP);
     }
-
-    let mut headers = Headers::new();
-
-    headers.eth = Some(Eth::new(
-        SourceMac::new(src_mac).unwrap(),
-        DestinationMac::new(dst_mac).unwrap(),
-        EthType::IPV4,
-    ));
-    headers.net = Some(Net::Ipv4(ipv4));
+    headers.net(Some(Net::Ipv4(ipv4)));
 
     let mut udp = Udp::empty();
     udp.set_source(UdpPort::new_checked(sport).expect("Bad src port"));
     udp.set_destination(UdpPort::new_checked(dport).expect("Bad dst port"));
-    headers.transport = Some(Transport::Udp(udp));
+    headers.transport(Some(Transport::Udp(udp)));
 
     let mut buffer: TestBuffer = TestBuffer::new();
-    headers.deparse(buffer.as_mut()).unwrap();
+    headers.build().unwrap().deparse(buffer.as_mut()).unwrap();
 
     Packet::new(buffer).unwrap()
 }
