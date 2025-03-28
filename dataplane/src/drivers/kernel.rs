@@ -157,7 +157,7 @@ impl DriverKernel {
     /// Starts the kernel driver
     pub fn start(
         args: impl IntoIterator<Item = impl AsRef<str> + Clone>,
-        setup_pipeline: &(impl Sync + Fn() -> DynPipeline<TestBuffer>),
+        setup_pipeline: impl FnOnce() -> DynPipeline<TestBuffer>,
     ) {
         let mut pipeline = setup_pipeline();
 
@@ -181,9 +181,14 @@ impl DriverKernel {
                             /* lookup outgoing interface and xmit packet */
                             if let Some(outgoing) = kiftable.get_mut_by_index(oif.get_id()) {
                                 let mut out = pkt.reserialize();
+                                debug!(
+                                    "Sending frame of length {} octets over interface {}",
+                                    out.as_ref().len(),
+                                    &outgoing.name
+                                );
                                 outgoing.sock.write_all(out.as_mut());
                             } else {
-                                warn!("Unable to find interface with ifindex {}", oif.get_id())
+                                warn!("Unable to find interface with ifindex {}", oif.get_id());
                             }
                         } else {
                             warn!("Outgoing interface not set for packet");

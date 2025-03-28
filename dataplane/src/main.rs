@@ -21,6 +21,9 @@ use net::packet::Packet;
 use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
 
+use packet_processor::setup_routing_pipeline;
+use routing::router::Router;
+
 fn init_logging() {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
@@ -39,9 +42,13 @@ fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
             /* your own filter here */
             true
         };
-        pipeline.add_stage(PacketDumper::new(true, Some(Box::new(custom_filter))))
+        pipeline.add_stage(PacketDumper::new(
+            "default",
+            true,
+            Some(Box::new(custom_filter)),
+        ))
     } else {
-        pipeline.add_stage(PacketDumper::new(true, None))
+        pipeline.add_stage(PacketDumper::new("default", true, None))
     }
 }
 
@@ -56,6 +63,14 @@ fn main() {
     /* parse cmd line args */
     let args = CmdArgs::parse();
 
+    let router = Router::new("demo");
+    let pipeline = setup_routing_pipeline(
+        router.get_iftabler(),
+        router.get_fibtr(),
+        router.get_atabler(),
+    );
+    let builder = move || pipeline;
+
     /* start driver */
     match args.get_driver_name() {
         "dpdk" => {
@@ -64,7 +79,7 @@ fn main() {
         }
         "kernel" => {
             info!("Using driver kernel...");
-            DriverKernel::start(args.kernel_params(), &setup_pipeline);
+            DriverKernel::start(args.kernel_params(), builder);
         }
         other => {
             error!("Unknown driver '{other}'. Aborting...");
