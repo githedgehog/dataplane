@@ -17,6 +17,7 @@ use net::vxlan::Vni;
 use crate::prefix::Prefix;
 use crate::route_processor::{FibEntry, FibGroup, PktInstruction};
 use crate::vrf::VrfId;
+use tracing::debug;
 
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 /// An id we use to idenfify a FIB
@@ -184,9 +185,35 @@ impl Fib {
             let entry_index = if group.len() == 1 {
                 0
             } else {
-                packet.packet_hash_ecmp(0, group.len() as u8)
+                debug!(
+                    "Hashing packet to determine one FibEntry out of {}",
+                    group.len()
+                );
+                packet.packet_hash_ecmp(0, (group.len() - 1) as u8)
             };
             &group.entries()[entry_index as usize]
+        } else {
+            unreachable!()
+        }
+    }
+
+    /// Same as lpm_entry but reporting prefix
+    pub fn lpm_entry_prefix<Buf: PacketBufferMut>(
+        &self,
+        packet: &Packet<Buf>,
+    ) -> (Prefix, &FibEntry) {
+        if let Some(destination) = packet.ip_destination() {
+            let (prefix, group) = self.lpm_with_prefix(&destination);
+            let entry_index = if group.len() == 1 {
+                0
+            } else {
+                debug!(
+                    "Hashing packet to determine one FibEntry out of {}",
+                    group.len()
+                );
+                packet.packet_hash_ecmp(0, (group.len() - 1) as u8)
+            };
+            (prefix, &group.entries()[entry_index as usize])
         } else {
             unreachable!()
         }
