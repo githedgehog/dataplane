@@ -314,14 +314,7 @@ pub enum PopVlanError {
 impl Headers {
     /// Create a new [`Headers`] with the supplied `Eth` header.
     pub fn new() -> Headers {
-        Headers {
-            eth: None,
-            vlan: ArrayVec::default(),
-            net: None,
-            net_ext: ArrayVec::default(),
-            transport: None,
-            udp_encap: None,
-        }
+        Headers::default()
     }
 
     /// Push a VLAN header to the top of the stack.
