@@ -28,7 +28,7 @@ const MAX_VLANS: usize = 4;
 const MAX_NET_EXTENSIONS: usize = 2;
 
 // TODO: remove `pub` from all fields
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Default)]
 pub struct Headers {
     pub eth: Option<Eth>,
     pub vlan: ArrayVec<Vlan, MAX_VLANS>,
@@ -360,9 +360,7 @@ impl Headers {
             return Err(PushVlanError::TooManyVlans);
         }
         match &mut self.eth {
-            None => {
-                Err(PushVlanError::NoEthernetHeader)
-            }
+            None => Err(PushVlanError::NoEthernetHeader),
             Some(eth) => {
                 let old_eth_type = eth.ether_type();
                 eth.set_ether_type(EthType::VLAN);
@@ -383,16 +381,14 @@ impl Headers {
     /// If `None` is returned, the [`Headers`] is not modified.
     pub fn pop_vlan(&mut self) -> Result<Option<Vlan>, PopVlanError> {
         match &mut self.eth {
-            None => {
-                Err(PopVlanError::NoEthernetHeader)
-            }
+            None => Err(PopVlanError::NoEthernetHeader),
             Some(eth) => match self.vlan.pop() {
                 None => Ok(None),
                 Some(vlan) => {
                     eth.set_ether_type(vlan.inner_ethtype());
                     Ok(Some(vlan))
                 }
-            }
+            },
         }
     }
 }
@@ -423,7 +419,7 @@ impl TryEth for Headers {
 
 impl TryEthMut for Headers {
     fn try_eth_mut(&mut self) -> Option<&mut Eth> {
-       self.eth.as_mut() 
+        self.eth.as_mut()
     }
 }
 
