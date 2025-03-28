@@ -42,6 +42,20 @@ where
             trie_ipv6: RTrieMap::new(),
         }
     }
+}
+
+impl<T> PrefixTrie<T>
+where
+    T: Debug,
+{
+    /// Creates a new [`PrefixTrie`].
+    #[tracing::instrument(level = "trace")]
+    pub fn with_roots(root_v4: T, root_v6: T) -> Self {
+        Self {
+            trie_ipv4: RTrieMap::with_root(root_v4),
+            trie_ipv6: RTrieMap::with_root(root_v6),
+        }
+    }
 
     /// Inserts a new IPv4 prefix and its associated value into the trie.
     ///
@@ -114,6 +128,32 @@ where
         match ip {
             IpAddr::V4(_) => self.find(&Prefix::from((*ip, 32))),
             IpAddr::V6(_) => self.find(&Prefix::from((*ip, 128))),
+        }
+    }
+
+    #[tracing::instrument(level = "trace")]
+    pub fn lookup(&self, addr: &IpAddr) -> Option<(Prefix, &T)> {
+        match addr {
+            IpAddr::V4(ip) => {
+                let (&k, v) = self.trie_ipv4.lookup(ip);
+                // The RTrieMap lookup always return an entry; if no better
+                // match, it returns the root of the map, which always exists.
+                // This means that to check if the result is "empty", we need to
+                // check whether the returned entry is the root for the map.
+                if Prefix::IPV4(k).is_root() {
+                    None
+                } else {
+                    Some((Prefix::IPV4(k), v))
+                }
+            }
+            IpAddr::V6(ip) => {
+                let (&k, v) = self.trie_ipv6.lookup(ip);
+                if Prefix::IPV6(k).is_root() {
+                    None
+                } else {
+                    Some((Prefix::IPV6(k), v))
+                }
+            }
         }
     }
 }
