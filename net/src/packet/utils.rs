@@ -7,9 +7,9 @@ use std::net::IpAddr;
 
 use crate::eth::Eth;
 use crate::eth::ethtype::EthType;
-use crate::eth::mac::Mac;
+use crate::eth::mac::{DestinationMac, Mac, SourceMac};
 use crate::headers::Net::{Ipv4, Ipv6};
-use crate::headers::{TryEth, TryIp};
+use crate::headers::{TryEth, TryEthMut, TryIp};
 use crate::ip::NextHeader;
 use crate::packet::Packet;
 use crate::packet::PacketBufferMut;
@@ -25,6 +25,22 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Returns None if the packet does not have an Ethernet header
     pub fn eth_source(&self) -> Option<Mac> {
         self.try_eth().map(|eth| eth.source().inner())
+    }
+
+    /// Set source mac in ethernet Header
+    pub fn set_eth_source(&mut self, mac: Mac) -> &mut Self {
+        // TODO: adjust this when Eth is Option
+        self.try_eth_mut()
+            .map(|eth| eth.set_source(SourceMac::new(mac).expect("Bad source mac")));
+        self
+    }
+
+    /// Set destination mac in ethernet Header
+    pub fn set_eth_destination(&mut self, mac: Mac) -> &mut Self {
+        // TODO: adjust this when Eth is Option
+        self.try_eth_mut()
+            .map(|eth| eth.set_destination(DestinationMac::new(mac).expect("Bad destination mac")));
+        self
     }
 
     /// Get the ether type of an [`Packet`]
