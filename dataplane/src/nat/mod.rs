@@ -248,7 +248,7 @@ impl Nat {
     ///     - For the target range, the list of publicly-exposed IP addresses from
     ///       the source PIF.
     #[tracing::instrument(level = "trace")]
-    fn find_src_nat_ranges(
+    fn find_src_nat_ranges_legacy(
         &self,
         dst_ip: &IpAddr,
         src_ip: &IpAddr,
@@ -273,17 +273,48 @@ impl Nat {
     ///   the destination PIF.
     /// - For the target range, the list of endpoints from the destination PIF.
     #[tracing::instrument(level = "trace")]
-    fn find_dst_nat_ranges(&self, dst_ip: &IpAddr) -> Option<(IpList, IpList)> {
+    fn find_dst_nat_ranges_legacy(&self, dst_ip: &IpAddr) -> Option<(IpList, IpList)> {
         let dst_pif = self.find_dst_pif(dst_ip)?;
         IpList::generate_ranges(dst_pif.iter_ips(), dst_pif.iter_endpoints(), dst_ip)
     }
 
     #[tracing::instrument(level = "trace")]
-    fn find_nat_ranges(&self, net: &mut Net, vni: Option<Vni>) -> Option<(IpList, IpList)> {
+    fn find_nat_ranges_legacy(&self, net: &mut Net, vni: Option<Vni>) -> Option<(IpList, IpList)> {
         let dst_ip = &get_dst_addr(net);
         match self.direction {
-            NatDirection::SrcNat => self.find_src_nat_ranges(dst_ip, &get_src_addr(net), vni),
-            NatDirection::DstNat => self.find_dst_nat_ranges(dst_ip),
+            NatDirection::SrcNat => {
+                self.find_src_nat_ranges_legacy(dst_ip, &get_src_addr(net), vni)
+            }
+            NatDirection::DstNat => self.find_dst_nat_ranges_legacy(dst_ip),
+        }
+    }
+
+    #[tracing::instrument(level = "trace")]
+    fn find_src_nat_ranges(&self, net: &Net, vni: Vni) -> Option<(IpList, IpList)> {
+        let vrf = self.context.vpcs.get(&vni.as_u32())?;
+        let src_ip = &get_src_addr(net);
+        match vrf.lookup_src_prefix(src_ip) {
+            Some((c, t)) => Some((IpList::new(c, None), IpList::new(t.clone(), None))),
+            None => return None,
+        }
+    }
+
+    #[tracing::instrument(level = "trace")]
+    fn find_dst_nat_ranges(&self, net: &Net, vni: Vni) -> Option<(IpList, IpList)> {
+        let vrf = self.context.vpcs.get(&vni.as_u32())?;
+        let dst_ip = &get_dst_addr(net);
+        match vrf.lookup_dst_prefix(dst_ip) {
+            Some((c, t)) => Some((IpList::new(c, None), IpList::new(t.clone(), None))),
+            None => return None,
+        }
+    }
+
+    #[tracing::instrument(level = "trace")]
+    fn find_nat_ranges(&self, net: &mut Net, vni_opt: Option<Vni>) -> Option<(IpList, IpList)> {
+        let vni = vni_opt?;
+        match self.direction {
+            NatDirection::SrcNat => self.find_src_nat_ranges(net, vni),
+            NatDirection::DstNat => self.find_dst_nat_ranges(net, vni),
         }
     }
 
@@ -347,10 +378,7 @@ impl Nat {
         // ----------------------------------------------------
         // TODO: Get VNI
         // Currently hardcoded as required to have the tests pass, for demonstration purposes
-        let vni = match self.direction {
-            NatDirection::SrcNat => Vni::new_checked(200).ok(),
-            NatDirection::DstNat => Vni::new_checked(100).ok(),
-        };
+        let vni = Vni::new_checked(100).ok();
         // ----------------------------------------------------
         let Some(net) = packet.headers_mut().try_ip_mut() else {
             return;
@@ -379,6 +407,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Nat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nat::fabric::{Peering, PeeringAs, PeeringEntry, PeeringIps};
     use iptrie::Ipv4Prefix;
     use net::buffer::TestBuffer;
     use net::headers::TryIpv4;
@@ -439,8 +468,7 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_src_nat_stateless_44() {
+    fn test_src_nat_stateless_44_legacy() {
         let mut nat = Nat::new::<TestBuffer>(NatDirection::SrcNat, NatMode::Stateless);
         let vpc1 = build_vpc1();
         nat.add_vpc(Vni::new_checked(100).expect("Failed to create VNI"), vpc1);
@@ -462,8 +490,7 @@ mod tests {
         assert_eq!(hdr0_out.source().inner(), addr_v4("4.4.4.4"));
     }
 
-    #[test]
-    fn test_dst_nat_stateless_44() {
+    fn test_dst_nat_stateless_44_legacy() {
         let mut nat = Nat::new::<TestBuffer>(NatDirection::DstNat, NatMode::Stateless);
         let vpc1 = build_vpc1();
         nat.add_vpc(Vni::new_checked(100).expect("Failed to create VNI"), vpc1);
@@ -483,5 +510,112 @@ mod tests {
             .expect("Failed to get IPv4 header");
         println!("L3 header: {hdr0_out:?}");
         assert_eq!(hdr0_out.destination(), addr_v4("8.8.8.4"));
+    }
+
+    fn build_context() -> (Vrf, Vrf, Peering) {
+        let mut vpc1 = Vrf::new(
+            "test_vpc1".into(),
+            Vni::new_checked(100).expect("Failed to create VNI"),
+        );
+        let mut vpc2 = Vrf::new(
+            "test_vpc2".into(),
+            Vni::new_checked(200).expect("Failed to create VNI"),
+        );
+
+        let mut peering = Peering {
+            name: "test_peering".into(),
+            entries: HashMap::new(),
+        };
+        peering.entries.insert(
+            "test_vpc1".into(),
+            PeeringEntry {
+                internal: vec![
+                    PeeringIps {
+                        cidr: prefix_v4("1.2.3.0/24"),
+                    },
+                    PeeringIps {
+                        cidr: prefix_v4("4.5.6.0/24"),
+                    },
+                    PeeringIps {
+                        cidr: prefix_v4("7.8.9.0/24"),
+                    },
+                ],
+                external: vec![
+                    PeeringAs {
+                        cidr: prefix_v4("10.0.1.0/24"),
+                    },
+                    PeeringAs {
+                        cidr: prefix_v4("10.0.2.0/24"),
+                    },
+                    PeeringAs {
+                        cidr: prefix_v4("10.0.3.0/24"),
+                    },
+                ],
+            },
+        );
+        peering.entries.insert(
+            "test_vpc2".into(),
+            PeeringEntry {
+                internal: vec![
+                    PeeringIps {
+                        cidr: prefix_v4("9.9.0.0/16"),
+                    },
+                    PeeringIps {
+                        cidr: prefix_v4("99.99.0.0/16"),
+                    },
+                ],
+                external: vec![
+                    PeeringAs {
+                        cidr: prefix_v4("1.1.0.0/16"),
+                    },
+                    PeeringAs {
+                        cidr: prefix_v4("1.2.0.0/16"),
+                    },
+                ],
+            },
+        );
+
+        vpc1.add_peering(&peering).expect("Failed to add peering");
+        vpc2.add_peering(&peering).expect("Failed to add peering");
+
+        (vpc1, vpc2, peering)
+    }
+
+    #[test]
+    fn test_dst_nat_stateless_44() {
+        let (vpc1, vpc2, _) = build_context();
+        let mut nat = Nat::new::<TestBuffer>(NatDirection::DstNat, NatMode::Stateless);
+        nat.add_vpc(Vni::new_checked(100).expect("Failed to create VNI"), vpc1);
+        nat.add_vpc(Vni::new_checked(200).expect("Failed to create VNI"), vpc2);
+
+        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
+        let packets_out: Vec<_> = nat.process(packets).collect();
+
+        assert_eq!(packets_out.len(), 1);
+
+        let hdr0_out = &packets_out[0]
+            .try_ipv4()
+            .expect("Failed to get IPv4 header");
+        println!("L3 header: {hdr0_out:?}");
+        assert_eq!(hdr0_out.destination(), addr_v4("99.99.3.4"));
+    }
+
+    #[test]
+    fn test_src_nat_stateless_44() {
+        let (vpc1, vpc2, _) = build_context();
+        let mut nat = Nat::new::<TestBuffer>(NatDirection::SrcNat, NatMode::Stateless);
+        nat.add_vpc(Vni::new_checked(100).expect("Failed to create VNI"), vpc1);
+        nat.add_vpc(Vni::new_checked(200).expect("Failed to create VNI"), vpc2);
+
+        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
+        let packets_out: Vec<_> = nat.process(packets).collect();
+
+        assert_eq!(packets_out.len(), 1);
+
+        let hdr0_out = &packets_out[0]
+            .try_ipv4()
+            .expect("Failed to get IPv4 header");
+        println!("L3 header: {hdr0_out:?}");
+        assert_eq!(hdr0_out.source().inner(), addr_v4("10.0.1.4"));
     }
 }

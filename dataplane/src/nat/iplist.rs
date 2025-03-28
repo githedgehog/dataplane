@@ -73,7 +73,7 @@ pub struct IpList {
 impl IpList {
     /// Creates a new [`IpList`] with the given prefix and optional exclusion prefixes.
     #[tracing::instrument(level = "trace")]
-    fn new(prefix: Prefix, excludes_opt: Option<Vec<Prefix>>) -> Self {
+    pub fn new(prefix: Prefix, excludes_opt: Option<Vec<Prefix>>) -> Self {
         let mut list = IpList {
             prefix,
             excludes: vec![],
