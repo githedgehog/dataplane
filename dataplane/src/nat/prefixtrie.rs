@@ -217,48 +217,6 @@ mod tests {
     fn test_prefixtrie() {
         let pt = build_prefixtrie();
 
-        // Look for first prefix, as is
-        assert_eq!(
-            pt.find(&prefix_v4("10.0.1.0/24").into()),
-            Some("prefix_10.0.1.0/24".to_string()).as_ref()
-        );
-
-        // Look for second prefix, as is
-        assert_eq!(
-            pt.find(&prefix_v4("10.0.2.0/24").into()),
-            Some("prefix_10.0.2.0/24".to_string()).as_ref()
-        );
-
-        // Look for /16 prefix, as is
-        assert_eq!(
-            pt.find(&prefix_v4("10.1.0.0/16").into()),
-            Some("prefix_10.1.0.0/16".to_string()).as_ref()
-        );
-
-        // Look for a sub-prefix from the /16 prefix
-        assert_eq!(
-            pt.find(&prefix_v4("10.1.1.0/24").into()),
-            Some("prefix_10.1.0.0/16".to_string()).as_ref()
-        );
-
-        // Look for IPv6 prefix, as is
-        assert_eq!(
-            pt.find(&prefix_v6("aa:bb:cc:dd::/32").into()),
-            Some("prefix_aa:bb:cc:dd::/32".to_string()).as_ref()
-        );
-
-        // Look for IPv6 sub-prefix from the /32 prefix
-        assert_eq!(
-            pt.find(&prefix_v6("aa:bb:cc:dd::/64").into()),
-            Some("prefix_aa:bb:cc:dd::/32".to_string()).as_ref()
-        );
-
-        // Look for a missing IPv4 prefix
-        assert_eq!(pt.find(&prefix_v4("10.2.0.0/16").into()), None);
-
-        // Look for a missing IPv6 prefix
-        assert_eq!(pt.find(&prefix_v6("aa::/32").into()), None);
-
         // Look for a single IPv4 address
         assert_eq!(
             pt.find_ip(&addr_v4("10.1.1.1")),

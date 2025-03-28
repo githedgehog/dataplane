@@ -87,55 +87,6 @@ impl IpList {
         list
     }
 
-    /// Generates a pair of [`IpList`] objects representing the current prefix
-    /// for a given IP address, and the corresponding target prefix for NAT
-    /// translation.
-    ///
-    /// For a given `current_ip`, `current_prefixes` is typically an iterator
-    /// over the list of prefixes in the PIF that the IP address belongs to;
-    /// `target_prefixes` is typically an iterator over the list of prefixes in
-    /// the NAT configuration that we may translate the IP address to. The
-    /// function returns a pair of [`IpList`] objects, one representing the
-    /// specific set of addresses that `current_ip` belongs to (subset of
-    /// `current_prefixes`), the other one being the corresponding set of target
-    /// addresses, of the same size, such that a 1:1 mapping can be established
-    /// between the two sets for NAT translation.
-    ///
-    /// Arguments `current_prefixes` and `target_prefixes` do not contain
-    /// exclusion prefixes; this may be subject to change in the future.
-    pub fn generate_ranges<'a, I, J>(
-        current_prefixes: I,
-        target_prefixes: J,
-        current_ip: &IpAddr,
-    ) -> Option<(Self, Self)>
-    where
-        I: Iterator<Item = &'a Prefix>,
-        J: Iterator<Item = &'a Prefix>,
-    {
-        for (prefix_from_current, prefix_from_target) in current_prefixes.zip(target_prefixes) {
-            match (prefix_from_target, prefix_from_current) {
-                (Prefix::IPV4(_), Prefix::IPV4(_)) | (Prefix::IPV6(_), Prefix::IPV6(_)) => (),
-                // We do not support this case, although the check should move
-                // to the configuration setp.
-                _ => unimplemented!(
-                    "IP version mismatch between potential current and target prefixes"
-                ),
-            }
-            if prefix_from_current.size() != prefix_from_target.size() {
-                // We do not support this case, although the check should move
-                // to the configuration setp.
-                unreachable!("Prefix size mismatch between potential current and target prefixes");
-            }
-            if prefix_from_current.covers_addr(current_ip) {
-                return Some((
-                    IpList::new(prefix_from_current.clone(), None),
-                    IpList::new(prefix_from_target.clone(), None),
-                ));
-            }
-        }
-        None
-    }
-
     /// Adds an exclusion prefix to the [`IpList`].
     #[tracing::instrument(level = "trace")]
     pub fn add_exclude(&mut self, prefix: Prefix) -> Result<(), IpListError> {
