@@ -60,7 +60,7 @@ use std::net::IpAddr;
 #[allow(dead_code)]
 struct GlobalContext {
     vpcs: HashMap<u32, Vrf>,
-    global_pif_trie: PrefixTrie,
+    global_pif_trie: PrefixTrie<String>,
     peerings: HashMap<String, PeeringPolicy>,
 }
 
@@ -92,7 +92,7 @@ impl GlobalContext {
     }
 
     #[tracing::instrument(level = "trace")]
-    fn find_pif_by_ip(&self, ip: &IpAddr) -> Option<String> {
+    fn find_pif_by_ip(&self, ip: &IpAddr) -> Option<&String> {
         self.global_pif_trie.find_ip(ip)
     }
 
@@ -229,7 +229,7 @@ impl Nat {
     fn find_dst_pif(&self, dst_ip: &IpAddr) -> Option<&Pif> {
         self.context
             .find_pif_by_ip(dst_ip)
-            .and_then(|name| self.context.find_pif_by_name(&name))
+            .and_then(|name| self.context.find_pif_by_name(name))
     }
 
     /// Finds the two [`IpList`] objects necessary to perform _source_ NAT on the

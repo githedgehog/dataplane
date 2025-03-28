@@ -25,12 +25,15 @@ pub enum TrieError {
 ///
 /// Internally, it relies on two different tries, one for IPv4 and one for IPv6.
 #[derive(Default, Clone)]
-pub struct PrefixTrie {
-    trie_ipv4: RTrieMap<Ipv4Prefix, String>,
-    trie_ipv6: RTrieMap<Ipv6Prefix, String>,
+pub struct PrefixTrie<T> {
+    trie_ipv4: RTrieMap<Ipv4Prefix, T>,
+    trie_ipv6: RTrieMap<Ipv6Prefix, T>,
 }
 
-impl PrefixTrie {
+impl<T> PrefixTrie<T>
+where
+    T: Default + Debug,
+{
     /// Creates a new [`PrefixTrie`].
     #[tracing::instrument(level = "trace")]
     pub fn new() -> Self {
@@ -43,7 +46,7 @@ impl PrefixTrie {
     /// Inserts a new IPv4 prefix and its associated value into the trie.
     ///
     /// Note: This method is not thread-safe.
-    pub fn insert_ipv4(&mut self, prefix: Ipv4Prefix, value: String) -> Result<(), TrieError> {
+    pub fn insert_ipv4(&mut self, prefix: Ipv4Prefix, value: T) -> Result<(), TrieError> {
         // Insertion always succeeds even if the key already in the map.
         // So we first need to ensure the key is not already in use.
         //
@@ -58,7 +61,7 @@ impl PrefixTrie {
     /// Inserts a new IPv6 prefix and its associated value into the trie.
     ///
     /// Note: This method is not thread-safe.
-    pub fn insert_ipv6(&mut self, prefix: Ipv6Prefix, value: String) -> Result<(), TrieError> {
+    pub fn insert_ipv6(&mut self, prefix: Ipv6Prefix, value: T) -> Result<(), TrieError> {
         // See comment for IPv4
         if self.trie_ipv6.get(&prefix).is_some() {
             return Err(TrieError::EntryExists);
@@ -71,7 +74,7 @@ impl PrefixTrie {
     ///
     /// Note: This method is not thread-safe.
     #[tracing::instrument(level = "trace")]
-    pub fn insert(&mut self, prefix: &Prefix, value: String) -> Result<(), TrieError> {
+    pub fn insert(&mut self, prefix: &Prefix, value: T) -> Result<(), TrieError> {
         match prefix {
             Prefix::IPV4(p) => self.insert_ipv4(*p, value),
             Prefix::IPV6(p) => self.insert_ipv6(*p, value),
@@ -80,7 +83,7 @@ impl PrefixTrie {
 
     /// Looks up for the value associated with the given prefix.
     #[tracing::instrument(level = "trace")]
-    pub fn find(&self, prefix: &Prefix) -> Option<String> {
+    pub fn find(&self, prefix: &Prefix) -> Option<&T> {
         match prefix {
             Prefix::IPV4(p) => {
                 let (k, v) = self.trie_ipv4.lookup(p);
@@ -91,7 +94,7 @@ impl PrefixTrie {
                 if Prefix::IPV4(*k).is_root() {
                     None
                 } else {
-                    Some(v.to_string())
+                    Some(v)
                 }
             }
             Prefix::IPV6(p) => {
@@ -99,7 +102,7 @@ impl PrefixTrie {
                 if Prefix::IPV6(*k).is_root() {
                     None
                 } else {
-                    Some(v.to_string())
+                    Some(v)
                 }
             }
         }
@@ -107,7 +110,7 @@ impl PrefixTrie {
 
     /// Looks up for the value associated with the given IP address.
     #[tracing::instrument(level = "trace")]
-    pub fn find_ip(&self, ip: &IpAddr) -> Option<String> {
+    pub fn find_ip(&self, ip: &IpAddr) -> Option<&T> {
         match ip {
             IpAddr::V4(_) => self.find(&Prefix::from((*ip, 32))),
             IpAddr::V6(_) => self.find(&Prefix::from((*ip, 128))),
@@ -115,7 +118,10 @@ impl PrefixTrie {
     }
 }
 
-impl Debug for PrefixTrie {
+impl<T> Debug for PrefixTrie<T>
+where
+    T: Debug,
+{
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_map()
             .entries(self.trie_ipv4.iter())
@@ -146,7 +152,7 @@ mod tests {
         IpAddr::V6(Ipv6Addr::from_str(s).expect("Invalid IPv6 address"))
     }
 
-    fn build_prefixtrie() -> PrefixTrie {
+    fn build_prefixtrie() -> PrefixTrie<String> {
         let mut pt = PrefixTrie::new();
 
         pt.insert_ipv4(prefix_v4("10.0.1.0/24"), "prefix_10.0.1.0/24".to_string())
@@ -174,37 +180,37 @@ mod tests {
         // Look for first prefix, as is
         assert_eq!(
             pt.find(&prefix_v4("10.0.1.0/24").into()),
-            Some("prefix_10.0.1.0/24".to_string())
+            Some("prefix_10.0.1.0/24".to_string()).as_ref()
         );
 
         // Look for second prefix, as is
         assert_eq!(
             pt.find(&prefix_v4("10.0.2.0/24").into()),
-            Some("prefix_10.0.2.0/24".to_string())
+            Some("prefix_10.0.2.0/24".to_string()).as_ref()
         );
 
         // Look for /16 prefix, as is
         assert_eq!(
             pt.find(&prefix_v4("10.1.0.0/16").into()),
-            Some("prefix_10.1.0.0/16".to_string())
+            Some("prefix_10.1.0.0/16".to_string()).as_ref()
         );
 
         // Look for a sub-prefix from the /16 prefix
         assert_eq!(
             pt.find(&prefix_v4("10.1.1.0/24").into()),
-            Some("prefix_10.1.0.0/16".to_string())
+            Some("prefix_10.1.0.0/16".to_string()).as_ref()
         );
 
         // Look for IPv6 prefix, as is
         assert_eq!(
             pt.find(&prefix_v6("aa:bb:cc:dd::/32").into()),
-            Some("prefix_aa:bb:cc:dd::/32".to_string())
+            Some("prefix_aa:bb:cc:dd::/32".to_string()).as_ref()
         );
 
         // Look for IPv6 sub-prefix from the /32 prefix
         assert_eq!(
             pt.find(&prefix_v6("aa:bb:cc:dd::/64").into()),
-            Some("prefix_aa:bb:cc:dd::/32".to_string())
+            Some("prefix_aa:bb:cc:dd::/32".to_string()).as_ref()
         );
 
         // Look for a missing IPv4 prefix
@@ -216,13 +222,13 @@ mod tests {
         // Look for a single IPv4 address
         assert_eq!(
             pt.find_ip(&addr_v4("10.1.1.1")),
-            Some("prefix_10.1.0.0/16".to_string())
+            Some("prefix_10.1.0.0/16".to_string()).as_ref()
         );
 
         // Look for a single IPv6 address
         assert_eq!(
             pt.find_ip(&addr_v6("aa:bb:cc:dd::1")),
-            Some("prefix_aa:bb:cc:dd::/32".to_string())
+            Some("prefix_aa:bb:cc:dd::/32".to_string()).as_ref()
         );
 
         // Look for a single IPv4 address that is not in the trie
@@ -235,7 +241,7 @@ mod tests {
         let cloned_pt = pt.clone();
         assert_eq!(
             cloned_pt.find(&prefix_v4("10.0.1.0/24").into()),
-            Some("prefix_10.0.1.0/24".to_string())
+            Some("prefix_10.0.1.0/24".to_string()).as_ref()
         );
     }
 }

@@ -154,7 +154,7 @@ impl Vrf {
     }
 
     #[tracing::instrument(level = "trace")]
-    pub fn find_pif_by_endpoint(&self, ip: &IpAddr) -> Option<String> {
+    pub fn find_pif_by_endpoint(&self, ip: &IpAddr) -> Option<&String> {
         self.pif_table.find_pif_by_endpoint(ip)
     }
 
@@ -172,7 +172,7 @@ impl Vrf {
 #[derive(Debug, Default, Clone)]
 struct PifTable {
     pifs: HashMap<String, Pif>,
-    endpoint_trie: PrefixTrie,
+    endpoint_trie: PrefixTrie<String>,
 }
 
 impl PifTable {
@@ -200,7 +200,7 @@ impl PifTable {
     }
 
     #[tracing::instrument(level = "trace")]
-    fn find_pif_by_endpoint(&self, ip: &IpAddr) -> Option<String> {
+    fn find_pif_by_endpoint(&self, ip: &IpAddr) -> Option<&String> {
         self.endpoint_trie.find_ip(ip)
     }
 }
@@ -367,24 +367,24 @@ mod tests {
 
         assert_eq!(
             vpc1.find_pif_by_endpoint(&addr_v4("10.0.0.1")),
-            Some(pif1.name.clone())
+            Some(&pif1.name)
         );
         assert_eq!(
             vpc1.find_pif_by_endpoint(&addr_v4("10.0.0.27")),
-            Some(pif1.name.clone())
+            Some(&pif1.name)
         );
         assert_eq!(
             vpc1.find_pif_by_endpoint(&addr_v6("1111::27")),
-            Some(pif1.name.clone())
+            Some(&pif1.name)
         );
 
         assert_eq!(
             vpc2.find_pif_by_endpoint(&addr_v4("10.0.2.2")),
-            Some(pif2.name.clone())
+            Some(&pif2.name)
         );
         assert_eq!(
             vpc2.find_pif_by_endpoint(&addr_v4("10.0.3.255")),
-            Some(pif2.name.clone())
+            Some(&pif2.name)
         );
 
         assert_eq!(vpc1.find_pif_by_endpoint(&addr_v4("22.22.22.22")), None);
