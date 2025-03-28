@@ -19,6 +19,7 @@ pub mod prefix;
 mod pretty_utils;
 mod rmac;
 pub mod route_processor;
+pub mod router;
 pub mod routingdb;
 mod rpc_adapt;
 pub mod testfib;
