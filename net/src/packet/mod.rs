@@ -25,7 +25,7 @@ pub use hash::*;
 #[allow(unused_imports)] // re-export
 pub use meta::*;
 use std::num::NonZero;
-use tracing::{debug, info};
+use tracing::debug;
 
 mod utils;
 
@@ -60,8 +60,6 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 return Err(InvalidPacket { mbuf, error });
             }
         };
-        info!("{}", &headers);
-        info!("consumed: {}", consumed);
         mbuf.trim_from_start(consumed.get())
             .unwrap_or_else(|e| unreachable!("{:?}", e));
         Ok(Packet {
