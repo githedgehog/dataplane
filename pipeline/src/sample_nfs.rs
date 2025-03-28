@@ -9,6 +9,7 @@ use net::headers::TryIcmp;
 use net::headers::TryUdp;
 use net::headers::{TryEthMut, TryHeaders, TryIpv4Mut, TryIpv6Mut};
 use net::packet::Packet;
+use net::vxlan::Vxlan;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -55,6 +56,33 @@ impl<Buf: PacketBufferMut> PacketDumper<Buf> {
     #[must_use]
     pub fn udp_only() -> DumperFilter<Buf> {
         let filter = |packet: &Packet<Buf>| -> bool { packet.try_udp().is_some() };
+        Box::new(filter)
+    }
+
+    /// Sample filter that allows only vxlan traffic
+    #[must_use]
+    pub fn vxlan_only() -> DumperFilter<Buf> {
+        let filter = |packet: &Packet<Buf>| -> bool {
+            let Some(udp) = &packet.try_udp() else {
+                return false;
+            };
+            udp.source() == Vxlan::PORT || udp.destination() == Vxlan::PORT
+        };
+        Box::new(filter)
+    }
+
+    /// Sample filter that allows only vxlan traffic or ICMP
+    #[must_use]
+    pub fn vxlan_or_icmp() -> DumperFilter<Buf> {
+        // TODO: fix this
+        let filter = |packet: &Packet<Buf>| -> bool {
+            packet.try_icmp().is_some() || {
+                let Some(udp) = &packet.try_udp() else {
+                    return false;
+                };
+                udp.source() == Vxlan::PORT || udp.destination() == Vxlan::PORT
+            }
+        };
         Box::new(filter)
     }
 
