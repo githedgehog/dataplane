@@ -488,7 +488,7 @@ impl Mbuf {
     /// The only defense made against invalid pointers is to check that the pointer is non-null.
     #[must_use]
     #[tracing::instrument(level = "trace", ret)]
-    pub(crate) fn new_from_raw(raw: *mut dpdk_sys::rte_mbuf) -> Option<Mbuf> {
+    pub(crate) unsafe fn new_from_raw(raw: *mut dpdk_sys::rte_mbuf) -> Option<Mbuf> {
         let raw = match NonNull::new(raw) {
             None => {
                 debug_assert!(false, "Attempted to create Mbuf from null pointer");

@@ -40,8 +40,11 @@ impl TestBuffer {
     pub fn new() -> TestBuffer {
         let mut buffer = Vec::with_capacity(TestBuffer::CAPACITY as usize);
         let headroom = TestBuffer::HEADROOM;
-        let tailroom = TestBuffer::TAILROOM;
-        // fill buffer with simple pattern of bytes to help debug any memory access errors
+        const {
+            assert!(TestBuffer::CAPACITY >= TestBuffer::HEADROOM + TestBuffer::TAILROOM);
+        }
+        let tailroom = TestBuffer::CAPACITY - headroom;
+        // fill the buffer with a simple pattern of bytes to help debug any memory access errors
         for i in 0..buffer.capacity() {
             #[allow(clippy::cast_possible_truncation)] // sound due to bitwise and
             buffer.push((i & u8::MAX as usize) as u8);
@@ -126,9 +129,14 @@ impl Append for TestBuffer {
 
 impl TrimFromStart for TestBuffer {
     type Error = MemoryBufferNotLongEnough;
+
+    #[tracing::instrument(level = "trace", skip(self))]
     fn trim_from_start(&mut self, len: u16) -> Result<&mut [u8], MemoryBufferNotLongEnough> {
         debug_assert!((self.headroom + self.tailroom) as usize <= self.buffer.len());
-        if (self.headroom + self.tailroom + len) as usize >= self.buffer.len() {
+        debug_assert!(
+            (self.headroom + self.tailroom) as usize + self.as_ref().len() == self.buffer.len()
+        );
+        if (self.headroom + self.tailroom + len) as usize > self.buffer.len() {
             return Err(MemoryBufferNotLongEnough);
         }
         self.headroom += len;
@@ -138,9 +146,14 @@ impl TrimFromStart for TestBuffer {
 
 impl TrimFromEnd for TestBuffer {
     type Error = MemoryBufferNotLongEnough;
+
+    #[tracing::instrument(level = "trace", skip(self))]
     fn trim_from_end(&mut self, len: u16) -> Result<&mut [u8], MemoryBufferNotLongEnough> {
         debug_assert!((self.headroom + self.tailroom) as usize <= self.buffer.len());
-        if (self.headroom + self.tailroom + len) as usize >= self.buffer.len() {
+        debug_assert!(
+            (self.headroom + self.tailroom) as usize + self.as_ref().len() == self.buffer.len()
+        );
+        if (self.headroom + self.tailroom + len) as usize > self.buffer.len() {
             return Err(MemoryBufferNotLongEnough);
         }
         self.tailroom += len;
