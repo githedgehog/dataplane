@@ -9,6 +9,7 @@ use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
 use crate::ipv4::Ipv4;
 use crate::ipv6::Ipv6;
+use crate::parse::DeParse;
 use crate::tcp::Tcp;
 use crate::udp::Udp;
 
@@ -239,7 +240,11 @@ fn fmt_packet_buf<Buf: PacketBufferMut>(
     f: &mut Formatter<'_>,
     packet: &Packet<Buf>,
 ) -> std::fmt::Result {
-    let raw = packet.payload().as_ref();
+    //let raw = packet.payload().as_ref();
+    let v = packet.headers.size().get();
+    let mut raw = vec![0; v as usize];
+    let _ = packet.headers.deparse(raw.as_mut());
+
     writeln!(f, "{:─<width$}", "─", width = 100)?;
     write!(f, "{}", raw.to_hex(16))?;
     writeln!(f, "{:─<width$}", "─", width = 100)?;
