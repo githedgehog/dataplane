@@ -21,6 +21,7 @@ use crate::vlan::{Pcp, Vid, Vlan};
 use crate::vxlan::Vxlan;
 use arrayvec::ArrayVec;
 use core::fmt::Debug;
+use derive_builder::Builder;
 use std::num::NonZero;
 use tracing::debug;
 
@@ -28,7 +29,8 @@ const MAX_VLANS: usize = 4;
 const MAX_NET_EXTENSIONS: usize = 2;
 
 // TODO: remove `pub` from all fields
-#[derive(Debug, PartialEq, Eq, Default)]
+#[derive(Debug, PartialEq, Eq, Default, Builder)]
+#[builder(default)]
 pub struct Headers {
     pub eth: Option<Eth>,
     pub vlan: ArrayVec<Vlan, MAX_VLANS>,
