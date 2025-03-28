@@ -150,6 +150,10 @@ impl VrfTable {
                 arc_vrf.clear_poison();
             }
             self.by_vni.insert(vni, arc_vrf.clone());
+
+            if let Some(fibtw) = &mut self.fibtable {
+                fibtw.register_fib_by_vni(FibId::from_vrfid(vrfid), vni);
+            }
         }
         Ok(())
     }
