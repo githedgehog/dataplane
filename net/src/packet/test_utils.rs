@@ -38,7 +38,9 @@ pub fn build_test_ipv4_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPack
     ipv4.set_destination(Ipv4Addr::new(1, 2, 3, 4));
     ipv4.set_ttl(ttl);
 
-    let mut headers = Headers::new(Eth::new(
+    let mut headers = Headers::new();
+
+    headers.eth = Some(Eth::new(
         SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
         DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
         EthType::IPV4,
@@ -76,7 +78,9 @@ pub fn build_test_udp_ipv4_frame(
         ipv4.set_next_header(NextHeader::UDP);
     }
 
-    let mut headers = Headers::new(Eth::new(
+    let mut headers = Headers::new();
+
+    headers.eth = Some(Eth::new(
         SourceMac::new(src_mac).unwrap(),
         DestinationMac::new(dst_mac).unwrap(),
         EthType::IPV4,

@@ -313,9 +313,9 @@ pub enum PopVlanError {
 
 impl Headers {
     /// Create a new [`Headers`] with the supplied `Eth` header.
-    pub fn new(eth: Eth) -> Headers {
+    pub fn new() -> Headers {
         Headers {
-            eth: Some(eth),
+            eth: None,
             vlan: ArrayVec::default(),
             net: None,
             net_ext: ArrayVec::default(),
