@@ -585,8 +585,8 @@ impl Display for RmacStore {
 impl Display for Vtep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "\n ───────── Local VTEP ─────────")?;
-        fmt_opt_value(f, "ip address", self.get_ip(), true)?;
-        fmt_opt_value(f, "Mac address", self.get_mac(), true)
+        fmt_opt_value(f, " ip address", self.get_ip(), true)?;
+        fmt_opt_value(f, " Mac address", self.get_mac(), true)
     }
 }
 
