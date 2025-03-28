@@ -4,7 +4,7 @@
 //! Implements an Ip forwarding stage
 
 use std::net::IpAddr;
-use tracing::{trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use net::buffer::PacketBufferMut;
 use net::headers::{TryIpv4Mut, TryIpv6Mut};
@@ -38,10 +38,14 @@ impl IpForwarder {
 
         /* get ip destination address */
         if let Some(dst) = packet.ip_destination() {
-            trace!("{}: process pkt to {} with vrf {}", &self.name, dst, vrfid);
+            debug!("{}: process pkt to {} with vrf {}", &self.name, dst, vrfid);
 
             /* decrement TTL */
-            Self::decrement_ttl(packet, dst);
+            if false {
+                Self::decrement_ttl(packet, dst);
+            } else {
+                warn!("TTL decrement disabled!");
+            }
 
             /* packet may be done if TTL is exceeded */
             if packet.is_done() {
@@ -57,16 +61,20 @@ impl IpForwarder {
                 if let Some(fibr) = fibtr.get_fib(&FibId::from_vrfid(vrfid)) {
                     if let Some(fib) = fibr.enter() {
                         let fibentry = fib.lpm_entry(packet);
+                        debug!("{}: Pkt will use fib entry:\n{}", &self.name, &fibentry);
                         self.packet_exec_instructions(packet, fibentry);
                     } else {
-                        warn!("Unable to read fib for vrf {vrfid}");
+                        error!("{}: Unable to read fib for vrf {vrfid}", &self.name);
                     }
                 } else {
-                    warn!("Unable to find fib for vrf {vrfid}");
+                    error!("{}: Unable to find fib for vrf {vrfid}", &self.name);
                 }
             }
         } else {
-            warn!("Failed to get destination ip address for packet");
+            error!(
+                "{}: Failed to get destination ip address for packet",
+                &self.name
+            );
         }
     }
 
@@ -90,11 +98,18 @@ impl IpForwarder {
                 if let Some(fib) = fibtable.get_fib(&FibId::from_vni(vni)) {
                     packet.get_meta_mut().vrf = Some(fib.get_id().unwrap().as_u32());
                 } else {
-                    warn!("Unable to read from fib for vni {}", vni.as_u32());
+                    error!(
+                        "{}: Unable to read fib for vni {}",
+                        &self.name,
+                        vni.as_u32()
+                    );
                 }
             }
         } else {
             /* send to kernel, among other options */
+            debug!("Packet should be delivered to kernel...");
+            packet.get_meta_mut().oif = Some(packet.get_meta().iif);
+            //packet.done(DoneReason::Delivered);
         }
     }
 
@@ -186,13 +201,12 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         trace!("{}'", self.name);
-        let nfi = self.name.clone(); /* fixme */
         input.filter_map(move |mut packet| {
             if !packet.is_done() {
                 if let Some(vrfid) = packet.get_meta().vrf {
                     self.forward_packet(&mut packet, vrfid);
                 } else if packet.get_meta().oif.is_none() && !packet.get_meta().is_iplocal {
-                    warn!("{nfi}: missing information to handle packet");
+                    warn!("{}: missing information to handle packet", self.name);
                 }
             }
             packet.enforce()

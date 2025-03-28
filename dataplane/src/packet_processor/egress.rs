@@ -4,13 +4,12 @@
 //! Implements an egress stage
 
 use std::net::IpAddr;
-use tracing::{error, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use net::buffer::PacketBufferMut;
 use net::eth::mac::{DestinationMac, SourceMac};
 use net::headers::TryEthMut;
-use net::packet::DoneReason;
-use net::packet::Packet;
+use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 
 use routing::atable::atablerw::AtableReader;
@@ -46,11 +45,11 @@ fn interface_egress_ethernet<Buf: PacketBufferMut>(
         if let Some(eth) = packet.try_eth_mut() {
             eth.set_source(SourceMac::new(our_mac).expect("Bad interface mac")); // fixme: interface should store Source mac?
             eth.set_destination(dst_mac);
-            trace!(
+            debug!(
                 "Packet can be sent over iface {}  MAC {}",
                 interface.name, dst_mac
             );
-            /* serialize and send */
+            /* processing is complete! */
             packet.done(DoneReason::Delivered);
         } else {
             // this should never happen at this stage
@@ -75,7 +74,7 @@ fn interface_egress<Buf: PacketBufferMut>(
     } else {
         match interface.iftype {
             IfType::Ethernet(_) | IfType::Dot1q(_) => {
-                interface_egress_ethernet(interface, dst_mac, packet)
+                interface_egress_ethernet(interface, dst_mac, packet);
             }
             _ => packet.done(DoneReason::InterfaceUnsupported),
         }
@@ -94,7 +93,7 @@ fn get_adj_mac<Buf: PacketBufferMut>(
         if let Some(adj) = atable.get_adjacency(addr, ifindex) {
             unsafe { Some(DestinationMac::new_unchecked(adj.get_mac())) }
         } else {
-            warn!("{nfi}: missing adj info to {}", addr);
+            warn!("{nfi}: missing L2 info for {}", addr);
             packet.done(DoneReason::MissL2resolution);
             None
         }
@@ -103,6 +102,26 @@ fn get_adj_mac<Buf: PacketBufferMut>(
         packet.done(DoneReason::InternalFailure);
         None
     }
+}
+
+fn resolve_next_mac<Buf: PacketBufferMut>(
+    nfi: &str,
+    atabler: &AtableReader,
+    ifindex: IfIndex,
+    packet: &mut Packet<Buf>,
+) -> Option<DestinationMac> {
+    // if packet was annotated with a next-hop address, try to resolve it using the
+    // adjacency table. Otherwise, that means that the packet is directly connected
+    // to us (on the same subnet). So, fetch the destination IP address and try to
+    // resolve it with the adjacency table as well. If that fails, that's where the
+    // ARP/ND would need to be triggered.
+    let next_ip = if let Some(nh_addr) = packet.get_meta().nh_addr {
+        nh_addr
+    } else {
+        packet.ip_destination().expect("No ip dest address")
+    };
+    // figure out MAC
+    get_adj_mac(nfi, atabler, packet, next_ip, ifindex)
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Egress {
@@ -120,39 +139,28 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Egress {
             if !packet.is_done() {
                 // we must know where to send the packet at this stage
                 let Some(oif) = packet.get_meta().oif else {
-                    warn!("{nfi}: Missing oif metadata!");
+                    warn!("{}: Missing oif metadata!", &self.name);
                     packet.done(DoneReason::RouteFailure);
                     return packet.enforce();
                 };
                 let oif = oif.get_id();
 
-                // if packet was annotated with next-hop address, try to resolve its
-                // mac address.
-                if let Some(nh_addr) = packet.get_meta().nh_addr {
-                    if let Some(dst_mac) =
-                        get_adj_mac(&nfi, &self.atabler, &mut packet, nh_addr, oif)
-                    {
-                        if let Some(iftable) = self.iftr.enter() {
-                            if let Some(interface) = iftable.get_interface(oif) {
-                                let interface = &interface.borrow();
-                                interface_egress(interface, &mut packet, dst_mac);
-                            } else {
-                                warn!("{nfi}: Unknown interface with id {}", oif);
-                                packet.done(DoneReason::InterfaceUnknown);
-                            }
+                if let Some(dst_mac) = resolve_next_mac(&nfi, &self.atabler, oif, &mut packet) {
+                    if let Some(iftable) = self.iftr.enter() {
+                        if let Some(interface) = iftable.get_interface(oif) {
+                            let interface = &interface.borrow();
+                            interface_egress(interface, &mut packet, dst_mac);
                         } else {
-                            warn!("{nfi}: Fib iftable no longer readable!");
-                            packet.done(DoneReason::InternalFailure);
+                            warn!("{}: Unknown interface with id {}", &self.name, oif);
+                            packet.done(DoneReason::InterfaceUnknown);
                         }
                     } else {
-                        // adjacency resolution failed; get_adj_mac() set the done reason
-                        // and we stop processing pkts here.
+                        warn!("{}: Fib iftable no longer readable!", &self.name);
+                        packet.done(DoneReason::InternalFailure);
                     }
                 } else {
-                    // we have not been told next-hop address. The recipient of the packet must be directly
-                    // connected. So we need to resolve the destination. However, ARP resolution is not yet
-                    // ready.
-                    packet.done(DoneReason::Unhandled);
+                    // we could not figure out the destination MAC.
+                    // resolve_next_mac() already deals with calling packet.done().
                 }
             }
             packet.enforce()

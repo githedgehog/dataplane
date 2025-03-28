@@ -3,7 +3,7 @@
 //
 //! Implements an ingress stage
 
-use tracing::{trace, warn};
+use tracing::{debug, trace, warn};
 
 use net::buffer::PacketBufferMut;
 use net::eth::mac::Mac;
@@ -24,6 +24,7 @@ pub struct Ingress {
 
 #[allow(dead_code)]
 impl Ingress {
+    /// Creates a new [`Ingress`] stage
     pub fn new(name: &str, iftr: IfTableReader) -> Self {
         Self {
             name: name.to_owned(),
@@ -52,7 +53,9 @@ fn interface_ingress_eth_ucast_local<Buf: PacketBufferMut>(
     if packet.try_ipv4().is_some() || packet.try_ipv6().is_some() {
         match &interface.attachment {
             Some(Attachment::VRF(fibr)) => {
-                packet.get_meta_mut().vrf = Some(fibr.get_id().unwrap().as_u32());
+                let vrfid = fibr.get_id().unwrap().as_u32();
+                debug!("Packet is for VRF {}", vrfid);
+                packet.get_meta_mut().vrf = Some(vrfid);
             }
             Some(Attachment::BD) => unimplemented!(),
             None => {
@@ -76,7 +79,7 @@ fn interface_ingress_eth_non_local<Buf: PacketBufferMut>(
     /* Here we would check if the interface is part of some
     bridge domain. But we don't support bridging yet. */
     warn!(
-        "{nfi}: Recvd frame for mac {}. Bridging is not supported",
+        "{nfi}: Recvd frame for mac {} not for us and bridging is not supported",
         dst_mac
     );
     packet.done(DoneReason::MacNotForUs);
@@ -89,6 +92,10 @@ fn interface_ingress_eth<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
 ) {
     if let Some(if_mac) = interface.get_mac() {
+        debug!(
+            "Got packet over interface '{}' ({}) mac:{}",
+            interface.name, interface.ifindex, if_mac
+        );
         match packet.try_eth() {
             None => packet.done(DoneReason::NotEthernet),
             Some(eth) => {
