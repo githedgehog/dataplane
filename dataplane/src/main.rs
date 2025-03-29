@@ -8,6 +8,7 @@
 mod args;
 mod nat;
 
+use crate::args::{CmdArgs, Parser};
 use dpdk::dev::{Dev, TxOffloadConfig};
 use dpdk::eal::Eal;
 use dpdk::lcore::{LCoreId, WorkerThread};
@@ -15,12 +16,10 @@ use dpdk::mem::{Mbuf, Pool, PoolConfig, PoolParams, RteAllocator};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, eal, socket};
-use tracing::{info, trace, warn};
-
-use crate::args::{CmdArgs, Parser};
 use net::packet::Packet;
 use pipeline::sample_nfs::Passthrough;
 use pipeline::{DynPipeline, NetworkFunction};
+use tracing::{debug, error, info, trace, warn};
 
 #[global_allocator]
 static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();
@@ -112,7 +111,10 @@ fn start_rte_workers(devices: &[Dev]) {
             loop {
                 let mbufs = rx_queue.receive();
                 let pkts = mbufs.filter_map(|mbuf| match Packet::new(mbuf) {
-                    Ok(pkt) => Some(pkt),
+                    Ok(pkt) => {
+                        debug!("packet: {pkt:?}");
+                        Some(pkt)
+                    }
                     Err(e) => {
                         trace!("Failed to parse packet: {e:?}");
                         None
@@ -120,7 +122,15 @@ fn start_rte_workers(devices: &[Dev]) {
                 });
 
                 let pkts_out = pipeline.process(pkts);
-                tx_queue.transmit(pkts_out.map(Packet::reserialize));
+
+                let buffers = pkts_out.filter_map(|pkt| match pkt.serialize() {
+                    Ok(buf) => Some(buf),
+                    Err(e) => {
+                        error!("{e:?}");
+                        None
+                    }
+                });
+                tx_queue.transmit(buffers);
             }
         });
     });

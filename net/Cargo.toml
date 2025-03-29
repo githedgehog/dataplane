@@ -14,11 +14,14 @@ test_buffer = []
 [dependencies]
 ahash = { workspace = true }
 arbitrary = { workspace = true, features = ["derive"], optional = true }
+arc-swap = { workspace = true }
 arrayvec = { workspace = true }
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional = true }
 derive_builder = { workspace = true, features = [] }
+dyn-iter = { workspace = true }
 etherparse = { workspace = true, features = ["std"] }
 nom = { workspace = true, features = ["std"]  }
+ordermap = { workspace = true }
 serde = { workspace = true, optional = true, features = ["derive"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }

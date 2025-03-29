@@ -11,6 +11,10 @@ use crate::buffer::{
 };
 use tracing::trace;
 
+// only included for doc ref
+#[cfg(doc)]
+use crate::buffer::PacketBuffer;
+
 // Caution: do not implement Clone for `TestBuffer`.
 // Clone would significantly deviate from the actual mechanics of a DPDK mbuf.
 /// Toy data structure which implements [`PacketBuffer`]

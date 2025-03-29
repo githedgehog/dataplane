@@ -29,7 +29,7 @@ const MAX_VLANS: usize = 4;
 const MAX_NET_EXTENSIONS: usize = 2;
 
 // TODO: remove `pub` from all fields
-#[derive(Debug, PartialEq, Eq, Default, Builder)]
+#[derive(Debug, PartialEq, Eq, Clone, Default, Builder)]
 #[builder(default)]
 pub struct Headers {
     pub eth: Option<Eth>,
@@ -371,7 +371,7 @@ impl Headers {
     /// Returns [`None`] if no [`Vlan`]s are on the stack.
     ///
     /// If `Some` is returned, the popped [`Vlan`]s ethtype is assigned to the `eth` header to
-    /// preserve structure.
+    /// preserve the structure.
     ///
     /// If `None` is returned, the [`Headers`] is not modified.
     pub fn pop_vlan(&mut self) -> Result<Option<Vlan>, PopVlanError> {
@@ -834,6 +834,7 @@ pub trait AbstractHeaders:
     + TryIcmp6
     + TryTransport
     + TryVxlan
+    + DeParse
 {
 }
 
@@ -849,11 +850,13 @@ impl<T> AbstractHeaders for T where
         + TryIcmp6
         + TryTransport
         + TryVxlan
+        + DeParse
 {
 }
 
 pub trait AbstractHeadersMut:
-    TryEthMut
+    AbstractHeaders
+    + TryEthMut
     + TryIpv4Mut
     + TryIpv6Mut
     + TryIpMut
@@ -865,8 +868,10 @@ pub trait AbstractHeadersMut:
     + TryVxlanMut
 {
 }
+
 impl<T> AbstractHeadersMut for T where
-    T: TryEthMut
+    T: AbstractHeaders
+        + TryEthMut
         + TryIpv4Mut
         + TryIpv6Mut
         + TryIpMut
