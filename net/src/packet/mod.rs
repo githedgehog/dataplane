@@ -12,9 +12,13 @@ pub mod test_utils;
 
 use crate::buffer::{Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart};
 use crate::eth::EthError;
-use crate::headers::{AbstractHeaders, AbstractHeadersMut, Headers, TryHeaders, TryHeadersMut};
+use crate::headers::{
+    AbstractHeaders, AbstractHeadersMut, Headers, Net, TryHeaders, TryHeadersMut, TryIpMut,
+    TryUdpMut,
+};
 use crate::parse::{DeParse, Parse, ParseError};
-
+use crate::udp::Udp;
+use crate::vxlan::{Vxlan, VxlanEncap};
 #[allow(unused_imports)] // re-export
 pub use hash::*;
 #[allow(unused_imports)] // re-export
@@ -86,6 +90,61 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Manipulating the parsed headers _does_ change the length returned by this method.
     pub fn header_len(&self) -> NonZero<u16> {
         self.headers.size()
+    }
+
+    /// Encapsulate the packet in the supplied [`Vxlan`] [`Headers`]
+    ///
+    /// The supplied [`Headers`] will be validated to ensure they form a VXLAN header.
+    ///
+    /// # Errors
+    ///
+    /// If the buffer is unable to prepend the supplied [`Headers`], this method will return a
+    /// `<Buf as Prepend>::PrependFailed` `Err` variant.
+    ///
+    /// # Panics
+    ///
+    /// This method will panic if the resulting mbuf has a UDP length field longer than 2^16
+    /// bytes.
+    /// This is extremely unlikely in that the maximum mbuf length is far less than that, and we
+    /// don't currently support multi-segment packets.
+    pub fn vxlan_encap(&mut self, params: &VxlanEncap) -> Result<(), <Buf as Prepend>::Error> {
+        let needed = self.headers.size().get();
+        let buf = self.payload.prepend(needed)?;
+        self.headers
+            .deparse(buf)
+            .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
+
+        let len = self.payload.as_ref().len()
+            + (Udp::MIN_LENGTH.get() + Vxlan::MIN_LENGTH.get()) as usize;
+        assert!(
+            u16::try_from(len).is_ok(),
+            "encap would result in frame larger than 2^16 bytes"
+        );
+        #[allow(clippy::cast_possible_truncation)] // checked
+        let udp_len = NonZero::new(len as u16).unwrap_or_else(|| unreachable!());
+        let mut headers = params.headers().clone();
+        match headers.try_ip_mut() {
+            None => unreachable!(),
+            Some(Net::Ipv6(ipv6)) => {
+                // TODO: include net_ext headers in length if included
+                #[allow(unsafe_code)] // sound usage by construction
+                unsafe {
+                    ipv6.set_payload_length(udp_len.get());
+                }
+            }
+            Some(Net::Ipv4(_)) => { /* nothing to do here */ }
+        }
+        match headers.try_udp_mut() {
+            None => {
+                unreachable!();
+            }
+            #[allow(unsafe_code)] // sound usage due to length check
+            Some(udp) => unsafe {
+                udp.set_length(udp_len);
+                udp.set_checksum(0);
+            },
+        }
+        Ok(())
     }
 
     /// Update the packet's buffer based on any changes to the packets [`Headers`].
