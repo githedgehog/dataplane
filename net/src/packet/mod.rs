@@ -14,7 +14,7 @@ use crate::buffer::{Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart}
 use crate::eth::EthError;
 use crate::headers::{
     AbstractHeaders, AbstractHeadersMut, Headers, Net, TryHeaders, TryHeadersMut, TryIpMut,
-    TryUdpMut,
+    TryUdpMut, TryVxlan,
 };
 use crate::parse::{DeParse, Parse, ParseError};
 use crate::udp::Udp;
@@ -24,6 +24,7 @@ pub use hash::*;
 #[allow(unused_imports)] // re-export
 pub use meta::*;
 use std::num::NonZero;
+use tracing::debug;
 
 mod utils;
 
@@ -90,6 +91,71 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Manipulating the parsed headers _does_ change the length returned by this method.
     pub fn header_len(&self) -> NonZero<u16> {
         self.headers.size()
+    }
+
+    /// If the [`Packet`] is [`Vxlan`], then this method
+    ///
+    /// 1. strips the outer headers
+    /// 2. parses the inner headers
+    /// 3. adjusts the `Buf` to start at the beginning of the inner frame.
+    /// 3. mutates self to use the newly parsed headers
+    /// 4. returns the (now removed) [`Vxlan`] header.
+    ///
+    /// # Errors
+    ///
+    /// * returns `None` (and does not modify `self`) if the packet is not [`Vxlan`].
+    /// * returns `Some(Err(InvalidPacket<Buf>))` if the inner packet cannot be parsed as a legal
+    ///   frame.  In this case, `self` will not be modified.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use net::buffer::PacketBufferMut;
+    /// # use net::headers::TryHeaders;
+    /// # use net::packet::Packet;
+    /// #
+    /// # fn with_received_mbuf<Buf: PacketBufferMut>(buf: Buf) {
+    /// #   let mut packet = Packet::new(buf).unwrap();
+    /// match packet.vxlan_decap() {
+    ///     Some(Ok(vxlan)) => {
+    ///         println!("We got a vni with value {vni}", vni = vxlan.vni().as_u32());
+    ///         println!("the inner packet headers are {headers:?}", headers = packet.headers());
+    ///     }
+    ///     Some(Err(bad)) => {
+    ///         eprintln!("oh no, the inner packet is bad: {bad:?}");
+    ///     }
+    ///     None => {
+    ///         eprintln!("sorry friend, this isn't a VXLAN packet")
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    pub fn vxlan_decap(&mut self) -> Option<Result<Vxlan, ParseError<EthError>>> {
+        match self.headers.try_vxlan() {
+            None => {
+                debug!("attempted to remove VXLAN header from non-vxlan packet");
+                None
+            }
+            Some(vxlan) => {
+                match Headers::parse(self.payload.as_ref()) {
+                    Ok((headers, consumed)) => {
+                        match self.payload.trim_from_start(consumed.get()) {
+                            Ok(_) => {
+                                let vxlan = *vxlan;
+                                self.headers = headers;
+                                Some(Ok(vxlan))
+                            }
+                            Err(programmer_err) => {
+                                // This most likely indicates a broken implementation of
+                                // `PacketBufferMut`
+                                unreachable!("{programmer_err:?}", programmer_err = programmer_err);
+                            }
+                        }
+                    }
+                    Err(error) => Some(Err(error)),
+                }
+            }
+        }
     }
 
     /// Encapsulate the packet in the supplied [`Vxlan`] [`Headers`]
