@@ -5,6 +5,7 @@
 //!
 //! [RFC7348]: https://datatracker.ietf.org/doc/html/rfc7348#section-5
 
+mod encap;
 mod vni;
 
 use crate::parse::{
@@ -12,6 +13,7 @@ use crate::parse::{
 };
 use crate::udp::port::UdpPort;
 use core::num::NonZero;
+pub use encap::{VxlanEncap, VxlanEncapError};
 use tracing::trace;
 pub use vni::{InvalidVni, Vni};
 
