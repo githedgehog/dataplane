@@ -37,11 +37,9 @@
 //!   is in order to make the 1:1 address mapping work.
 
 mod fabric;
-mod iplist;
 mod prefixtrie;
 
 use crate::nat::fabric::Vrf;
-use crate::nat::iplist::IpList;
 use net::buffer::PacketBufferMut;
 use net::headers::Net;
 use net::headers::{TryHeadersMut, TryIpMut};
@@ -50,9 +48,10 @@ use net::ipv6::UnicastIpv6Addr;
 use net::packet::Packet;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
+use routing::prefix::Prefix;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[derive(Debug)]
 struct GlobalContext {
@@ -97,6 +96,39 @@ fn get_dst_addr(net: &Net) -> IpAddr {
     match net {
         Net::Ipv4(hdr) => IpAddr::V4(hdr.destination()),
         Net::Ipv6(hdr) => IpAddr::V6(hdr.destination()),
+    }
+}
+
+#[tracing::instrument(level = "trace")]
+fn addr_offset_in_prefix(ip: &IpAddr, prefix: &Prefix) -> Option<u128> {
+    if !prefix.covers_addr(ip) {
+        return None;
+    }
+    match (ip, prefix.as_address()) {
+        (IpAddr::V4(ip), IpAddr::V4(start)) => {
+            Some(u128::from(ip.to_bits()) - u128::from(start.to_bits()))
+        }
+        (IpAddr::V6(ip), IpAddr::V6(start)) => Some(ip.to_bits() - start.to_bits()),
+        // We can't have the prefix covering the address if we have an IP
+        // version mismatch, and we'd have returned from the function earlier.
+        _ => unreachable!(),
+    }
+}
+
+#[tracing::instrument(level = "trace")]
+fn addr_from_prefix_offset(prefix: &Prefix, offset: u128) -> Option<IpAddr> {
+    if offset >= prefix.size() {
+        return None;
+    }
+    match prefix.as_address() {
+        IpAddr::V4(start) => {
+            let bits = start.to_bits() + u32::try_from(offset).ok()?;
+            Some(IpAddr::V4(Ipv4Addr::from(bits)))
+        }
+        IpAddr::V6(start) => {
+            let bits = start.to_bits() + offset;
+            Some(IpAddr::V6(Ipv6Addr::from(bits)))
+        }
     }
 }
 
@@ -160,27 +192,21 @@ impl Nat {
     }
 
     #[tracing::instrument(level = "trace")]
-    fn find_src_nat_ranges(&self, net: &Net, vni: Vni) -> Option<(IpList, IpList)> {
+    fn find_src_nat_ranges(&self, net: &Net, vni: Vni) -> Option<(Prefix, &Prefix)> {
         let vrf = self.context.vpcs.get(&vni.as_u32())?;
         let src_ip = &get_src_addr(net);
-        match vrf.lookup_src_prefix(src_ip) {
-            Some((c, t)) => Some((IpList::new(c, None), IpList::new(t.clone(), None))),
-            None => return None,
-        }
+        vrf.lookup_src_prefix(src_ip)
     }
 
     #[tracing::instrument(level = "trace")]
-    fn find_dst_nat_ranges(&self, net: &Net, vni: Vni) -> Option<(IpList, IpList)> {
+    fn find_dst_nat_ranges(&self, net: &Net, vni: Vni) -> Option<(Prefix, &Prefix)> {
         let vrf = self.context.vpcs.get(&vni.as_u32())?;
         let dst_ip = &get_dst_addr(net);
-        match vrf.lookup_dst_prefix(dst_ip) {
-            Some((c, t)) => Some((IpList::new(c, None), IpList::new(t.clone(), None))),
-            None => return None,
-        }
+        vrf.lookup_dst_prefix(dst_ip)
     }
 
     #[tracing::instrument(level = "trace")]
-    fn find_nat_ranges(&self, net: &mut Net, vni_opt: Option<Vni>) -> Option<(IpList, IpList)> {
+    fn find_nat_ranges(&self, net: &mut Net, vni_opt: Option<Vni>) -> Option<(Prefix, &Prefix)> {
         let vni = vni_opt?;
         match self.direction {
             NatDirection::SrcNat => self.find_src_nat_ranges(net, vni),
@@ -191,12 +217,12 @@ impl Nat {
     #[tracing::instrument(level = "trace")]
     fn map_ip(
         &self,
-        current_range: &IpList,
-        target_range: &IpList,
+        current_range: &Prefix,
+        target_range: &Prefix,
         current_ip: &IpAddr,
     ) -> Option<IpAddr> {
-        let offset = current_range.get_offset(current_ip)?;
-        target_range.get_addr(offset)
+        let offset = addr_offset_in_prefix(current_ip, current_range)?;
+        addr_from_prefix_offset(target_range, offset)
     }
 
     /// Applies network address translation to a packet, knowing the current and
@@ -205,8 +231,8 @@ impl Nat {
     fn translate(
         &self,
         net: &mut Net,
-        current_range: &IpList,
-        target_range: &IpList,
+        current_range: &Prefix,
+        target_range: &Prefix,
     ) -> Option<()> {
         let current_ip = match self.direction {
             NatDirection::SrcNat => get_src_addr(net),
@@ -258,7 +284,7 @@ impl Nat {
         let Some((current_range, target_range)) = ranges else {
             return;
         };
-        self.translate(net, &current_range, &target_range);
+        self.translate(net, &current_range, target_range);
     }
 }
 
