@@ -132,6 +132,9 @@ impl TrimFromStart for TestBuffer {
     type Error = MemoryBufferNotLongEnough;
     fn trim_from_start(&mut self, len: u16) -> Result<&mut [u8], MemoryBufferNotLongEnough> {
         debug_assert!((self.headroom + self.tailroom) as usize <= self.buffer.len());
+        debug_assert!(
+            (self.headroom + self.tailroom) as usize + self.as_ref().len() == self.buffer.len()
+        );
         if (self.headroom + self.tailroom + len) as usize > self.buffer.len() {
             return Err(MemoryBufferNotLongEnough);
         }
@@ -144,6 +147,9 @@ impl TrimFromEnd for TestBuffer {
     type Error = MemoryBufferNotLongEnough;
     fn trim_from_end(&mut self, len: u16) -> Result<&mut [u8], MemoryBufferNotLongEnough> {
         debug_assert!((self.headroom + self.tailroom) as usize <= self.buffer.len());
+        debug_assert!(
+            (self.headroom + self.tailroom) as usize + self.as_ref().len() == self.buffer.len()
+        );
         if (self.headroom + self.tailroom + len) as usize > self.buffer.len() {
             return Err(MemoryBufferNotLongEnough);
         }
