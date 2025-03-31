@@ -4,6 +4,7 @@
 //! User terminal frontend
 
 use crate::cmdtree::Node;
+use colored::Colorize;
 use rustyline::config::{ColorMode, CompletionType, Config};
 use rustyline::{Cmd, Event, KeyCode, KeyEvent, Modifiers};
 use smallvec::SmallVec;
@@ -17,6 +18,18 @@ use std::rc::Rc;
 
 // our completer
 use crate::completions::CmdCompleter;
+
+#[macro_export]
+// macro to print errors in cli binary
+macro_rules! print_err {
+    () => {
+        $crate::print!("\n")
+    };
+    ($($arg:tt)*) => {{
+        let msg = format!($($arg)*).red();
+        println!(" {}",msg);
+    }};
+}
 
 fn rustyline_editor_config() -> Config {
     Config::builder()
@@ -171,7 +184,7 @@ impl Terminal {
             self.sock = new_sock;
         }
         if let Err(error) = self.sock.connect(remote_addr) {
-            println!(
+            print_err!(
                 "Failed to connect to '{:?}': {}",
                 remote_addr.as_ref(),
                 error

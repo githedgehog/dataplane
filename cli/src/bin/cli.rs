@@ -6,6 +6,7 @@
 use cli::argsparse::{ArgsError, CliArgs};
 use cli::cliproto::{CliAction, CliRequest, CliResponse, CliSerialize};
 use cli::cmdtree_dp::gw_cmd_tree;
+use cli::print_err;
 use cli::terminal::Terminal;
 use colored::Colorize;
 use enum_primitive::FromPrimitive;
@@ -21,16 +22,6 @@ const DEFAULT_DATAPLANE_PATH: &str = "/tmp/dataplane_ctl.sock";
 fn greetings() {
     println!("\n{}.", "Gateway dataplane CLI".bright_white().bold());
     println!("© 2025 Hedgehog Open Network Fabric.\n");
-}
-
-macro_rules! print_err {
-    () => {
-        $crate::print!("\n")
-    };
-    ($($arg:tt)*) => {{
-        let msg = format!($($arg)*).red();
-        println!(" {}",msg);
-    }};
 }
 
 fn ask_user(question: &str) -> bool {
