@@ -198,9 +198,9 @@ fn main() {
 
     // infinite loop until user quits
     while terminal.runs() {
+        let mut bad_syntax = false;
         let mut input = terminal.prompt();
         if let Some(node) = cmds.find_best(input.get_tokens()) {
-            terminal.add_history_entry(input.get_line().to_owned());
             if let Some(action) = &node.action {
                 if let Ok(args) = process_args(input.get_line()) {
                     execute_action(*action, &args, &mut terminal);
@@ -214,8 +214,12 @@ fn main() {
                     print_err!("Command is not implemented");
                 }
             } else {
-                print_err!("Unrecognized input");
+                print_err!("syntax error");
+                bad_syntax = true;
             }
+        }
+        if !bad_syntax || input.get_line().starts_with("#") {
+            terminal.add_history_entry(input.get_line().to_owned());
         }
     }
 }
