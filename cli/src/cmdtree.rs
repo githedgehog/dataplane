@@ -143,15 +143,15 @@ impl Node {
         }
         let indent = "    ".repeat(self.depth as usize);
         if !self.hidden {
-            if self.depth == 1 || self.action.is_some() {
-                print!("{} {}", indent, self.name.bold());
+            if self.depth == 1 {
+                print!("{} {}", indent, self.name.bold().white());
             } else {
                 print!("{} {}", indent, self.name);
             }
             self.args.iter().for_each(|arg| {
                 print!(" @{}", arg.name);
                 if !arg.choices.is_empty() {
-                    print!("{}", "[".yellow());
+                    print!("{}", "=[".yellow());
                     arg.choices
                         .iter()
                         .for_each(|choice| print!(" {}", choice.yellow()));
