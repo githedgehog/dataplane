@@ -4,11 +4,11 @@
 //! Adds command completions
 
 use crate::cmdtree::Node;
+use rustyline::Helper;
 use rustyline::completion::Completer;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
-use rustyline::Helper;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
