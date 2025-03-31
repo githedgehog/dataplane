@@ -2365,7 +2365,6 @@ dependencies = [
  "bitflags 1.2.1",
  "cfg-if",
  "clipboard-win",
- "dirs-next",
  "fd-lock",
  "libc",
  "log",
