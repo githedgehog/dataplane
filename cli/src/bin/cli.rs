@@ -93,22 +93,22 @@ fn process_cli_response(sock: &UnixDatagram) {
 }
 
 fn execute_remote_action(
-    action: CliAction,       /* action to perform */
-    args: &CliArgs,          /* action arguments */
-    terminal: &mut Terminal, /* this terminal */
+    action: CliAction,       // action to perform
+    args: &CliArgs,          // action arguments
+    terminal: &mut Terminal, // this terminal
 ) {
-    /* don't issue request if we're not connected to dataplane */
+    // don't issue request if we're not connected to dataplane
     if !terminal.is_connected() {
         print_err!("Not connnected to dataplane.");
         return;
     }
 
-    /* warn if want to restart dataplane (adding this as an example of asking user) */
+    // warn if want to restart dataplane (adding this as an example of asking user)
     if matches!(action, CliAction::Restart) && !ask_user("Are you sure [yes|no]?") {
         return;
     }
 
-    /* serialize request and send it */
+    // serialize request and send it
     if let Ok(request) = CliRequest::new(action, args.remote.clone()).serialize() {
         match terminal.sock.send(&request) {
             Ok(_) => process_cli_response(&terminal.sock),
@@ -126,9 +126,9 @@ fn execute_remote_action(
 }
 
 fn execute_action(
-    action: u16,             /* action to perform */
-    args: &CliArgs,          /* action arguments */
-    terminal: &mut Terminal, /* this terminal */
+    action: u16,             // action to perform
+    args: &CliArgs,          // action arguments
+    terminal: &mut Terminal, // this terminal
 ) {
     let cli_action = CliAction::from_u16(action).expect("Valid cli action code");
     match cli_action {
@@ -148,7 +148,7 @@ fn execute_action(
                 .unwrap_or_else(|| DEFAULT_CLI_BIND.to_owned());
             terminal.connect(&bind_addr, &path);
         }
-        /* all others are remote */
+        // all others are remote
         _ => execute_remote_action(cli_action, args, terminal),
     }
 }
@@ -197,15 +197,15 @@ fn process_args(input_line: &str) -> Result<CliArgs, ()> {
 }
 
 fn main() {
-    /* build command tree */
+    // build command tree
     let cmds = Rc::new(gw_cmd_tree());
     let mut terminal = Terminal::new("dataplane", cmds.clone());
     terminal.clear();
 
-    /* be polite */
+    // be polite
     greetings();
 
-    /* infinite loop until user quits */
+    // infinite loop until user quits
     while terminal.runs() {
         let mut input = terminal.prompt();
         if let Some(node) = cmds.find_best(input.get_tokens()) {
