@@ -6,8 +6,8 @@
 use crate::cmdtree::Node;
 use colored::Colorize;
 use rustyline::config::{ColorMode, CompletionType, Config};
+use rustyline::history::MemHistory;
 use rustyline::{Cmd, Event, KeyCode, KeyEvent, Modifiers};
-use smallvec::SmallVec;
 use std::collections::VecDeque;
 use std::fs;
 use std::net::Shutdown;
@@ -35,7 +35,9 @@ fn rustyline_editor_config() -> Config {
     Config::builder()
         .auto_add_history(false)
         .history_ignore_dups(true)
+        .expect("Editor config:'history ignore dups' failed")
         .max_history_size(400)
+        .expect("Editor config:'max-history size' failed")
         .color_mode(ColorMode::Enabled)
         .completion_type(CompletionType::List)
         .build()
@@ -45,7 +47,7 @@ pub struct Terminal {
     prompt: String,
     prompt_name: String,
     cmdtree: Rc<Node>,
-    editor: rustyline::Editor<CmdCompleter>,
+    editor: rustyline::Editor<CmdCompleter, MemHistory>,
     run: bool,
     connected: bool,
     pub sock: UnixDatagram,
@@ -73,7 +75,10 @@ impl Terminal {
             prompt: prompt.to_owned(),
             prompt_name: prompt.to_owned(),
             cmdtree: cmdtree.clone(),
-            editor: rustyline::Editor::<CmdCompleter>::with_config(rustyline_editor_config()),
+            editor: rustyline::Editor::<CmdCompleter, MemHistory>::with_config(
+                rustyline_editor_config(),
+            )
+            .expect("Editor config failed"),
             run: true,
             connected: false,
             sock: UnixDatagram::unbound().expect("Failed to create unix socket"),
@@ -94,10 +99,7 @@ impl Terminal {
     pub fn set_helper(mut self, helper: CmdCompleter) -> Self {
         self.editor.set_helper(Some(helper));
         self.editor.bind_sequence(
-            Event::KeySeq(SmallVec::from(vec![KeyEvent(
-                KeyCode::Tab,
-                Modifiers::NONE,
-            )])),
+            Event::KeySeq(vec![KeyEvent(KeyCode::Tab, Modifiers::NONE)]),
             Cmd::Complete,
         );
         self
