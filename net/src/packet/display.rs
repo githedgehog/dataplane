@@ -14,7 +14,6 @@ use crate::udp::Udp;
 
 use crate::buffer::PacketBufferMut;
 use crate::packet::{BridgeDomain, DoneReason, InterfaceId, Packet, PacketMeta};
-use nom::HexDisplay;
 use std::fmt::{Display, Formatter};
 
 impl Display for Eth {
@@ -235,15 +234,47 @@ impl Display for PacketMeta {
 }
 
 /* ============= HEXDUMP ================ */
+
+#[inline]
+fn min(a: usize, b: usize) -> usize {
+    if a < b { a } else { b }
+}
+static HEX_CHARS: &[u8] = b"0123456789abcdef";
+fn dump_hex(raw: &[u8], chunk_size: usize) -> String {
+    let mut out = Vec::with_capacity(raw.len() * 3);
+    let mut count = 0;
+    let chunks = raw.chunks(chunk_size);
+    for chunk in chunks {
+        let range = format!(
+            "[{:04}-{:04}]",
+            count,
+            count + min(chunk_size, chunk.len()) - 1
+        );
+        for &byte in range.as_bytes() {
+            out.push(byte);
+        }
+        out.push(b' ');
+        count += chunk_size;
+
+        for &byte in chunk {
+            out.push(HEX_CHARS[(byte >> 4) as usize]);
+            out.push(HEX_CHARS[(byte & 0xf) as usize]);
+            out.push(b' ');
+        }
+        out.push(b'\n');
+    }
+    String::from_utf8_lossy(&out[..]).into_owned()
+}
+
 fn fmt_packet_buf<Buf: PacketBufferMut>(
     f: &mut Formatter<'_>,
     packet: &Packet<Buf>,
 ) -> std::fmt::Result {
     if let Some(buf) = packet.get_buf() {
         let raw = buf.as_ref();
-        writeln!(f, "{:─<width$}", "─", width = 100)?;
-        write!(f, "{}", raw.to_hex(16))?;
-        writeln!(f, "{:─<width$}", "─", width = 100)?;
+        writeln!(f, "{:─<width$}", "─", width = 107)?;
+        write!(f, "{}", dump_hex(raw, 32))?;
+        writeln!(f, "{:─<width$}", "─", width = 107)?;
         writeln!(
             f,
             "buffer: {} data octets (headroom: {} tailroom: {}))",

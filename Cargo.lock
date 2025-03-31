@@ -889,7 +889,6 @@ dependencies = [
  "bolero",
  "derive_builder",
  "etherparse",
- "nom",
  "ordermap",
  "serde",
  "thiserror 2.0.12",
