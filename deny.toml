@@ -11,7 +11,8 @@ no-default-features = false
 feature-depth = 1
 
 [advisories]
-ignore = []
+ignore = ["RUSTSEC-2024-0436"]
+
 [licenses]
 unused-allowed-license = "allow"
 allow = [
@@ -199,6 +200,16 @@ reason = "needed for test tracing.  Remove this exception when https://github.co
 [[bans.skip]]
 name = "regex-syntax"
 reason = "needed for test tracing.  Remove this exception when https://github.com/tokio-rs/tracing/pull/3033 lands"
+
+[[bans.skip]]
+name = "thiserror"
+version = "1.0.69"
+reason = "temporarily allowing this. Remove when default-net is updated"
+
+[[bans.skip]]
+name = "thiserror-impl"
+version = "1.0.69"
+reason = "temporarily allowing this. Remove when default-net is updated"
 
 # This section is considered when running `cargo deny check sources`.
 # More documentation about the 'sources' section can be found here:
