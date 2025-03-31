@@ -57,6 +57,7 @@ ipnet = { version = "2.11.0", default-features = false, features = [] }
 iptrie = { version = "0.10.3", default-features = false, features = [] }
 mio = { version = "1.0.3", default-features = false, features = [] }
 ordermap = { version = "0.5.7", default-features = false, features = [] }
+rustyline = { version = "8.0.0", default-features = false, features = [] }
 serde = { version = "1.0.219", default-features = false, features = [] }
 serde_yml = { version = "0.0.12", default-features = false, features = [] }
 smallvec = { version = "1.14.0" }
