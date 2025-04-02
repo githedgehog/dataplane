@@ -13,7 +13,6 @@ required-features = ["cli"]
 [dependencies]
 colored = "3.0.0"
 bincode2 = "2.0.1"
-enum_primitive = "0.1.1"
 log = { version = "^0.4.25", features = ["serde"]}
 rustyline = { workspace = true , features = ["with-fuzzy", "custom-bindings"] }
 serde = {workspace = true, features = ["derive", "serde_derive"]}

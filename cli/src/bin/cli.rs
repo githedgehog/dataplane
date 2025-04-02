@@ -9,7 +9,6 @@ use cli::cmdtree_dp::gw_cmd_tree;
 use cli::print_err;
 use cli::terminal::Terminal;
 use colored::Colorize;
-use enum_primitive::FromPrimitive;
 use std::collections::HashMap;
 use std::io::stdin;
 use std::os::unix::net::UnixDatagram;
@@ -121,7 +120,7 @@ fn execute_action(
     args: &CliArgs,          // action arguments
     terminal: &mut Terminal, // this terminal
 ) {
-    let cli_action = CliAction::from_u16(action).expect("Valid cli action code");
+    let cli_action = action.try_into().expect("Bad action code");
     match cli_action {
         CliAction::Clear => terminal.clear(),
         CliAction::Quit => terminal.stop(),
