@@ -3,10 +3,10 @@
 
 //! Defines the cli protocol for the dataplane
 
-use enum_primitive::enum_from_primitive;
 use log::Level;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
+use strum::IntoEnumIterator;
 use strum::{AsRefStr, EnumIter, EnumString};
 use thiserror::Error;
 
@@ -119,12 +119,11 @@ impl CliResponse {
     }
 }
 
-enum_from_primitive! {
+#[repr(u16)]
 #[allow(unused)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-
+#[derive(Debug, Clone, Serialize, Deserialize, EnumIter)]
 pub enum CliAction {
-    Clear,
+    Clear = 0,
     Connect,
     Disconnect,
     Help,
@@ -169,4 +168,20 @@ pub enum CliAction {
     ShowNatRules,
     ShowNatPortUsage,
 }
+
+impl CliAction {
+    fn discriminant(&self) -> u16 {
+        unsafe { *<*const _>::from(self).cast::<u16>() }
+    }
+}
+impl TryFrom<u16> for CliAction {
+    type Error = ();
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        for a in CliAction::iter() {
+            if a.discriminant() == value {
+                return Ok(a);
+            }
+        }
+        Err(())
+    }
 }
