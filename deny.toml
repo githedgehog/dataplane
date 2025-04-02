@@ -195,14 +195,6 @@ version = "*"
 reason = "cbindgen is always a dev dependency for us and we don't care if it pulls in other versions of things"
 
 [[bans.skip]]
-name = "regex-automata"
-reason = "needed for test tracing.  Remove this exception when https://github.com/tokio-rs/tracing/pull/3033 lands"
-
-[[bans.skip]]
-name = "regex-syntax"
-reason = "needed for test tracing.  Remove this exception when https://github.com/tokio-rs/tracing/pull/3033 lands"
-
-[[bans.skip]]
 name = "thiserror"
 version = "1.0.69"
 reason = "temporarily allowing this. Remove when default-net is updated"
@@ -211,6 +203,19 @@ reason = "temporarily allowing this. Remove when default-net is updated"
 name = "thiserror-impl"
 version = "1.0.69"
 reason = "temporarily allowing this. Remove when default-net is updated"
+
+[[bans.skip]]
+name = "regex-automata"
+reason = "needed for test tracing.  Remove this exception when https://github.com/tokio-rs/tracing/pull/3033 lands"
+
+[[bans.skip]]
+name = "regex-syntax"
+reason = "needed for test tracing.  Remove this exception when https://github.com/tokio-rs/tracing/pull/3033 lands"
+
+[[bans.skip-tree]]
+name = "rustyline"
+version = "*"
+reason = "Only used by cli"
 
 # This section is considered when running `cargo deny check sources`.
 # More documentation about the 'sources' section can be found here:
