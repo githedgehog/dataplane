@@ -55,7 +55,7 @@ impl From<InterfaceIndex> for u32 {
     }
 }
 
-const MAX_LEN: usize = 16;
+const MAX_INTERFACE_NAME_LEN: usize = 16;
 
 /// A string which has been checked to be a legal linux network interface name.
 ///
@@ -78,7 +78,7 @@ impl Display for InterfaceName {
 
 impl InterfaceName {
     /// The maximum legal length of a linux network interface name (including the trailing NUL)
-    pub const MAX_LEN: usize = MAX_LEN;
+    pub const MAX_LEN: usize = MAX_INTERFACE_NAME_LEN;
 }
 
 /// Errors which may occur when mapping a general `String` into an `InterfaceName`.
