@@ -3,7 +3,8 @@
 
 //! Data structures and methods for interacting with / describing network interfaces
 
-mod bridge;
+mod bridge
+mod vrf;
 
 use std::fmt::{Debug, Display, Formatter};
 
