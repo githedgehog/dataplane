@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Data structures and methods for interacting with / describing network interfaces
+#![allow(missing_docs)] // generated code is not documented and it angers clippy
 
-mod bridge;
-mod vrf;
-mod vtep;
+//! Data structures and methods for interacting with / describing network interfaces
 
 use crate::eth::mac::SourceMac;
 use derive_builder::Builder;
@@ -18,6 +16,9 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display, Formatter};
 use tracing::error;
 
+mod bridge;
+mod vrf;
+mod vtep;
 
 use crate::eth::ethtype::EthType;
 use crate::route::RouteTableId;
