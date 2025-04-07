@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Network interface management tools for the dataplane
+// Network interface management tools for the dataplane
 
 #![deny(
     unsafe_code,
