@@ -2,5 +2,6 @@
 // Copyright Open Network Fabric Authors
 
 mod bridge;
+mod properties;
 mod vrf;
 mod vtep;
