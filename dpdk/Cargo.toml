@@ -5,17 +5,13 @@ edition = "2024"
 publish = false
 license = "Apache-2.0"
 
-[features]
-default = ["serde"]
-serde = ["dep:serde"]
-
 [dependencies]
 
 dpdk-sys = { workspace = true }
 errno = { workspace = true }
 net = { workspace = true }
 
-serde = { workspace = true, optional = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 
