@@ -16,11 +16,14 @@ arbitrary = { workspace = true, features = ["derive"], optional = true }
 arc-swap = { workspace = true }
 arrayvec = { workspace = true }
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional = true }
-derive_builder = { workspace = true, features = [] }
+derive_builder = { workspace = true, features = ["alloc"] }
 etherparse = { workspace = true, features = ["std"] }
+multi_index_map = { workspace = true, default-features = false, features = ["serde"] }
+ordermap = { workspace = true }
 serde = { workspace = true, features = ["derive", "std"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+rtnetlink = { workspace = true }
 
 [dev-dependencies]
 arbitrary = { workspace = true, features = ["derive"] }
