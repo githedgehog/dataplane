@@ -10,13 +10,12 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 pub use std::net::IpAddr;
 pub use std::net::{Ipv4Addr, Ipv6Addr};
-#[cfg(test)]
 use std::str::FromStr;
 
 /// Type to represent both IPv4 and IPv6 prefixes to expose an IP version-independent API.
 /// Since we will not store prefixes, putting Ipv6 on the same basket as IPv4 will not penalize the
 /// memory requirements of Ipv4
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub enum Prefix {
     IPV4(Ipv4Prefix),
     IPV6(Ipv6Prefix),
@@ -144,7 +143,6 @@ impl From<Ipv6Prefix> for Prefix {
     }
 }
 
-#[cfg(test)]
 /// Only for testing. Will panic with badly formed address strings
 impl From<(&str, u8)> for Prefix {
     fn from(tuple: (&str, u8)) -> Self {
