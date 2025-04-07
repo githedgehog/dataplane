@@ -6,7 +6,7 @@ members = [
 	"dpdk-sys",
 	"dpdk-sysroot-helper",
 	"errno",
-	"id",
+	"id", "mgmt",
 	"net",
 	"pipeline",
 	"routing",
