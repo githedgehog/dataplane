@@ -104,12 +104,12 @@ impl Mac {
     ///
     /// # Errors
     ///
-    /// Multicast and zero are not legal source [`Mac`].
-    pub fn valid_src(&self) -> Result<(), SourceMacAddressError> {
+    /// Multicast and zero are not legal [`SourceMac`].
+    pub fn valid_src(&self) -> Result<(), SourceMacError> {
         if self.is_zero() {
-            Err(SourceMacAddressError::ZeroSource(*self))
+            Err(SourceMacError::ZeroSource(*self))
         } else if self.is_multicast() {
-            Err(SourceMacAddressError::MulticastSource(*self))
+            Err(SourceMacError::MulticastSource(*self))
         } else {
             Ok(())
         }
@@ -167,8 +167,8 @@ impl SourceMac {
     ///
     /// # Errors
     ///
-    /// Will return a [`SourceMacAddressError`] if the supplied [`Mac`] is not a legal source [`Mac`].
-    pub fn new(mac: Mac) -> Result<SourceMac, SourceMacAddressError> {
+    /// Will return a [`SourceMacError`] if the supplied [`Mac`] is not a legal source [`Mac`].
+    pub fn new(mac: Mac) -> Result<SourceMac, SourceMacError> {
         mac.valid_src().map(|()| SourceMac(mac))
     }
 
@@ -226,13 +226,24 @@ impl DestinationMac {
 ///
 /// [`Packet`]: crate::headers::Headers
 #[derive(Debug, thiserror::Error)]
-pub enum SourceMacAddressError {
+pub enum SourceMacError {
     /// Multicast [`Mac`]s are not legal as a source [`Mac`]
     #[error("invalid source MAC address: multicast MACs are illegal as source macs")]
     MulticastSource(Mac),
     /// Zero is not a legal source
     #[error("invalid source MAC address: zero MAC is illegal as source MAC")]
     ZeroSource(Mac),
+}
+
+/// Errors which may occur when parsing a [`SourceMac`] from a `Vec<u8>`
+#[derive(Debug, thiserror::Error)]
+pub enum SourceMacParseError {
+    /// Class of errors which are not valid as [`SourceMac`]
+    #[error(transparent)]
+    SourceMacError(#[from] SourceMacError),
+    /// Not a [`Mac`] at all
+    #[error("length error: invalid MAC {0:?}")]
+    NotAMac(Vec<u8>),
 }
 
 /// Errors which can occur while setting the destination [`Mac`] of a [`Packet`]
@@ -260,6 +271,25 @@ impl AsRef<Mac> for DestinationMac {
 impl From<SourceMac> for DestinationMac {
     fn from(value: SourceMac) -> Self {
         DestinationMac(value.0)
+    }
+}
+
+impl TryFrom<&Vec<u8>> for SourceMac {
+    type Error = SourceMacParseError;
+
+    fn try_from(addr: &Vec<u8>) -> Result<Self, Self::Error> {
+        match TryInto::<[u8; 6]>::try_into(addr.as_ref()) {
+            Ok(array) => match SourceMac::new(Mac::from(array)) {
+                Ok(mac) => Ok(mac),
+                Err(SourceMacError::ZeroSource(zero)) => Err(SourceMacParseError::SourceMacError(
+                    SourceMacError::ZeroSource(zero),
+                )),
+                Err(SourceMacError::MulticastSource(mac)) => Err(
+                    SourceMacParseError::SourceMacError(SourceMacError::MulticastSource(mac)),
+                ),
+            },
+            Err(_) => Err(SourceMacParseError::NotAMac(addr.clone())),
+        }
     }
 }
 

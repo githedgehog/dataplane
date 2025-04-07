@@ -7,9 +7,7 @@ pub mod ethtype;
 pub mod mac;
 
 use crate::eth::ethtype::EthType;
-use crate::eth::mac::{
-    DestinationMac, DestinationMacAddressError, Mac, SourceMac, SourceMacAddressError,
-};
+use crate::eth::mac::{DestinationMac, DestinationMacAddressError, Mac, SourceMac, SourceMacError};
 use crate::headers::Header;
 use crate::ipv4::Ipv4;
 use crate::ipv6::Ipv6;
@@ -34,7 +32,7 @@ pub struct Eth(Ethernet2Header);
 pub enum EthError {
     /// Source [`Mac`] is invalid.
     #[error(transparent)]
-    InvalidSource(SourceMacAddressError),
+    InvalidSource(SourceMacError),
     /// Dest [`Mac`] is invalid.
     #[error(transparent)]
     InvalidDestination(DestinationMacAddressError),
@@ -254,7 +252,7 @@ mod contract {
 #[cfg(test)]
 mod test {
     const HEADER_LEN_USIZE: usize = Eth::HEADER_LEN.get() as usize;
-    use crate::eth::{DestinationMacAddressError, Eth, EthError, SourceMacAddressError};
+    use crate::eth::{DestinationMacAddressError, Eth, EthError, SourceMacError};
     use crate::parse::{DeParse, IntoNonZeroUSize, Parse, ParseError};
 
     #[test]
@@ -291,14 +289,14 @@ mod test {
             }
             Err(ParseError::Invalid(
                 EthError::InvalidDestination(DestinationMacAddressError::ZeroDestination(z))
-                | EthError::InvalidSource(SourceMacAddressError::ZeroSource(z)),
+                | EthError::InvalidSource(SourceMacError::ZeroSource(z)),
             )) => {
                 assert!(buf.len() >= Eth::HEADER_LEN.into_non_zero_usize().get());
                 assert!(z.is_zero());
             }
-            Err(ParseError::Invalid(EthError::InvalidSource(
-                SourceMacAddressError::MulticastSource(m),
-            ))) => {
+            Err(ParseError::Invalid(EthError::InvalidSource(SourceMacError::MulticastSource(
+                m,
+            )))) => {
                 assert!(buf.len() >= Eth::HEADER_LEN.into_non_zero_usize().get());
                 assert!(m.is_multicast());
             }
