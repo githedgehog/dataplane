@@ -10,3 +10,7 @@ net = { workspace = true }
 routing = { workspace = true }
 tracing = { workspace = true }
 
+tonic = "0.13.0"
+prost = "0.13.0"
+serde = { workspace = true, features = ["derive"] }
+serde_yml = { workspace = true }

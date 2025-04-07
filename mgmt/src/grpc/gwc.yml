@@ -1,0 +1,95 @@
+generation: 1
+devices:
+- index: 0
+  ipaddr: '192.168.1.1'
+  name: device1
+  pciaddr: '0000:00:01.0'
+  type: 2
+- index: 1
+  ipaddr: '192.168.1.2'
+  name: device2
+  pciaddr: '0000:00:02.0'
+  type: 2
+peerings:
+- name: peering1
+  entries:
+    vpc2.1:
+      as:
+      - cidr: '10.2.1.0/24'
+        not: '10.2.1.4/30'
+      ips:
+      - cidr: '192.168.2.0/24'
+        not: '192.168.2.4/30'
+    vpc1.1:
+      as:
+      - cidr: '10.1.1.0/24'
+        not: '10.1.1.4/30'
+      ips:
+      - cidr: '192.168.1.0/24'
+        not: '192.168.1.4/30'
+vrfs:
+- name: vrf1
+  router:
+    asn: '65000'
+    router_id: '10.1.0.1'
+    neighbors:
+    - address: '10.1.0.2'
+      remote_asn: '65001'
+      address_families:
+      - ipv4
+      - l2vpn
+    options:
+    - redistribute_connected: true
+      redistribute_static: false
+      send_community: true
+      advertise_all_vni: true
+      ipv4_enable: true
+      l2vpn_enable: true
+    route_maps:
+    - name: route-map1.1
+      match_prefix_lists:
+      - prefix-list1.1
+      action: permit
+      sequence: 10
+  vpc:
+    id: vpc-011
+    name: vpc1.1
+    vni: '10001'
+    subnets:
+    - cidr: '10.1.1.0/24'
+      name: subnet1.1
+    - cidr: '10.1.2.0/24'
+      name: subnet1.2
+- name: vrf2
+  router:
+    asn: '75000'
+    router_id: '10.2.0.1'
+    neighbors:
+    - address: '10.2.0.2'
+      remote_asn: '75001'
+      address_families:
+      - ipv4
+      - l2vpn
+    options:
+    - redistribute_connected: true
+      redistribute_static: false
+      send_community: true
+      advertise_all_vni: true
+      ipv4_enable: true
+      l2vpn_enable: true
+    route_maps:
+    - name: route-map2.1
+      match_prefix_lists:
+      - prefix-list2.1
+      action: permit
+      sequence: 10
+  vpc:
+    id: vpc-021
+    name: vpc2.1
+    vni: '20001'
+    subnets:
+    - cidr: '10.2.1.0/24'
+      name: subnet2.1
+    - cidr: '10.2.2.0/24'
+      name: subnet2.2
+
