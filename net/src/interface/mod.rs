@@ -5,6 +5,7 @@
 
 mod bridge
 mod vrf;
+mod vtep;
 
 use std::fmt::{Debug, Display, Formatter};
 
