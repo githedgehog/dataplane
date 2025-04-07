@@ -3,6 +3,8 @@
 
 //! Data structures and methods for interacting with / describing network interfaces
 
+mod bridge;
+
 use std::fmt::{Debug, Display, Formatter};
 
 /// A network interface id (also known as ifindex in linux).
