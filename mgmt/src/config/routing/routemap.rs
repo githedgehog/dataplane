@@ -4,8 +4,7 @@
 //! Dataplane configuration model: route maps
 
 use net::vxlan::Vni;
-use std::collections::BTreeSet;
-use std::fmt::Display;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum MatchingPolicy {
@@ -66,6 +65,9 @@ pub struct RouteMap {
     pub entries: BTreeSet<RouteMapEntry>,
 }
 
+#[derive(Debug, Default)]
+pub struct RouteMapTable(BTreeMap<String, RouteMap>);
+
 /* Impl basic ops */
 impl RouteMapEntry {
     pub fn new(seq: u32, policy: MatchingPolicy) -> Self {
@@ -94,5 +96,16 @@ impl RouteMap {
     }
     pub fn add_entry(&mut self, entry: RouteMapEntry) {
         self.entries.insert(entry);
+    }
+}
+impl RouteMapTable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn add_route_map(&mut self, rmap: RouteMap) {
+        self.0.insert(rmap.name.clone(), rmap);
+    }
+    pub fn values(&self) -> impl Iterator<Item = &RouteMap> {
+        self.0.values()
     }
 }

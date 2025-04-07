@@ -4,7 +4,7 @@
 //! Dataplane configuration model: prefix list
 
 use routing::prefix::Prefix;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Ord, Eq, PartialOrd, PartialEq)]
 pub enum PrefixListAction {
@@ -32,12 +32,15 @@ pub struct PrefixListEntry {
     pub len_match: Option<PrefixListMatchLen>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct PrefixList {
     pub name: String,
     pub description: Option<String>,
     pub entries: BTreeSet<PrefixListEntry>,
 }
+
+#[derive(Debug, Default)]
+pub struct PrefixListTable(BTreeMap<String, PrefixList>);
 
 /* Impl basic ops */
 impl PrefixList {
@@ -65,5 +68,16 @@ impl PrefixListEntry {
             prefix,
             len_match,
         }
+    }
+}
+impl PrefixListTable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn add_prefix_list(&mut self, plist: PrefixList) {
+        self.0.insert(plist.name.clone(), plist);
+    }
+    pub fn values(&self) -> impl Iterator<Item = &PrefixList> {
+        self.0.values()
     }
 }
