@@ -27,14 +27,15 @@ use etherparse::{SingleVlanHeader, VlanId, VlanPcp};
 /// (which we should generally be doing anyway).
 #[repr(transparent)]
 #[allow(clippy::unsafe_derive_deserialize)] // use of unsafe in trivially sound const expression
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(try_from = "u16", into = "u16"))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "u16", into = "u16")]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Vid(NonZero<u16>);
 
 /// Errors which can occur when converting a `u16` to a validated [`Vid`]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(
+    Copy, Clone, Debug, PartialEq, Eq, thiserror::Error, serde::Serialize, serde::Deserialize,
+)]
 #[must_use]
 pub enum InvalidVid {
     /// 0 is a reserved [`Vid`] which basically means "the native vlan."
@@ -125,8 +126,8 @@ impl core::fmt::Display for Vid {
 
 /// A Priority Code Point.
 #[repr(transparent)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(try_from = "u8", into = "u8"))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "u8", into = "u8")]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct Pcp(u8);
 
@@ -152,8 +153,8 @@ impl Display for Pcp {
 
 /// Error type for invalid [`Pcp`] values.
 #[repr(transparent)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, thiserror::Error)]
 #[error("Invalid PCP value: {0} (3-bit max)")]
 pub struct InvalidPcp(u8);

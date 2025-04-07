@@ -11,9 +11,10 @@ use std::fmt::{Debug, Display, Formatter};
 /// You can't generally meaningfully persist or assign them.
 /// They don't typically mean anything "between" machines or even reboots.
 #[repr(transparent)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(
+    Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "u32", into = "u32")]
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InterfaceIndex(u32);
 
 impl Debug for InterfaceIndex {

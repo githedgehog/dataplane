@@ -24,8 +24,8 @@ pub use vni::{InvalidVni, Vni};
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(bolero::TypeGenerator))]
 #[allow(clippy::unsafe_derive_deserialize)] // all uses of unsafe are compile time and trivial
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct Vxlan {
     vni: Vni,
 }
