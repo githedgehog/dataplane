@@ -2,4 +2,3 @@
 allow-expect-in-tests = true # panic is completely reasonable in a test setting
 allow-panic-in-tests = true # panic is completely reasonable in a test setting
 allow-unwrap-in-tests = true # panic is completely reasonable in a test setting
-allow-should-panic-without-expect = true # we panic in contract checks with simple unwrap()
