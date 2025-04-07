@@ -264,3 +264,245 @@ impl Vpc {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use crate::{RequiredInformationBase, RequiredInformationBaseBuilder, VpcManager};
+    use irekon::interface::{
+        BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec,
+        InterfaceSpecBuilder, MultiIndexBridgePropertiesSpecMap,
+        MultiIndexInterfaceAssociationSpecMap, MultiIndexInterfaceSpecMap,
+        MultiIndexVrfPropertiesSpecMap, MultiIndexVtepPropertiesSpecMap, VrfPropertiesSpec,
+        VtepPropertiesSpec,
+    };
+    use net::eth::ethtype::EthType;
+    use net::interface::AdminState;
+    use rekon::{Observe, Reconcile};
+    use rtnetlink::sys::AsyncSocket;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[allow(clippy::too_many_lines)] // TEMPORARY: DO NOT MERGE
+    #[tokio::test]
+    async fn reconcile_test() {
+        let mut required_interface_map = MultiIndexInterfaceSpecMap::default();
+        let interfaces = [
+            InterfaceSpecBuilder::default()
+                .name("vrf1".try_into().unwrap())
+                .admin_state(AdminState::Up)
+                .properties(InterfacePropertiesSpec::Vrf(VrfPropertiesSpec {
+                    route_table_id: 1.into(),
+                }))
+                .build()
+                .unwrap(),
+            InterfaceSpecBuilder::default()
+                .name("vrf2".try_into().unwrap())
+                .admin_state(AdminState::Up)
+                .properties(InterfacePropertiesSpec::Vrf(VrfPropertiesSpec {
+                    route_table_id: 2.into(),
+                }))
+                .build()
+                .unwrap(),
+            InterfaceSpecBuilder::default()
+                .name("vtep1".try_into().unwrap())
+                .admin_state(AdminState::Up)
+                .properties(InterfacePropertiesSpec::Vtep(VtepPropertiesSpec {
+                    vni: 1.try_into().unwrap(),
+                    local: "192.168.5.155".parse().unwrap(),
+                    ttl: 64,
+                }))
+                .build()
+                .unwrap(),
+            InterfaceSpecBuilder::default()
+                .name("vtep2".try_into().unwrap())
+                .admin_state(AdminState::Up)
+                .properties(InterfacePropertiesSpec::Vtep(VtepPropertiesSpec {
+                    vni: 2.try_into().unwrap(),
+                    local: "192.168.5.155".parse().unwrap(),
+                    ttl: 64,
+                }))
+                .build()
+                .unwrap(),
+            InterfaceSpecBuilder::default()
+                .name("br1".try_into().unwrap())
+                .admin_state(AdminState::Up)
+                .properties(InterfacePropertiesSpec::Bridge(BridgePropertiesSpec {
+                    vlan_protocol: EthType::VLAN,
+                    vlan_filtering: false,
+                }))
+                .build()
+                .unwrap(),
+            InterfaceSpecBuilder::default()
+                .name("br2".try_into().unwrap())
+                .admin_state(AdminState::Up)
+                .properties(InterfacePropertiesSpec::Bridge(BridgePropertiesSpec {
+                    vlan_protocol: EthType::VLAN,
+                    vlan_filtering: false,
+                }))
+                .build()
+                .unwrap(),
+        ];
+
+        for interface in interfaces {
+            required_interface_map.try_insert(interface).unwrap();
+        }
+
+        let mut vtep_props = MultiIndexVtepPropertiesSpecMap::default();
+        let mut bridge_props = MultiIndexBridgePropertiesSpecMap::default();
+        let mut vrf_props = MultiIndexVrfPropertiesSpecMap::default();
+
+        for (_, interface) in required_interface_map.iter() {
+            match &interface.properties {
+                InterfacePropertiesSpec::Vtep(prop) => {
+                    vtep_props.try_insert(prop.clone()).unwrap();
+                }
+                InterfacePropertiesSpec::Bridge(prop) => {
+                    bridge_props.try_insert(prop.clone()).unwrap();
+                }
+                InterfacePropertiesSpec::Vrf(prop) => {
+                    vrf_props.try_insert(prop.clone()).unwrap();
+                }
+            }
+        }
+
+        let mut associations = MultiIndexInterfaceAssociationSpecMap::default();
+        associations
+            .try_insert(InterfaceAssociationSpec {
+                name: "vtep1".to_string().try_into().unwrap(),
+                controller_name: Some("br1".to_string().try_into().unwrap()),
+            })
+            .unwrap();
+        associations
+            .try_insert(InterfaceAssociationSpec {
+                name: "vtep2".to_string().try_into().unwrap(),
+                controller_name: Some("br2".to_string().try_into().unwrap()),
+            })
+            .unwrap();
+        associations
+            .try_insert(InterfaceAssociationSpec {
+                name: "br1".to_string().try_into().unwrap(),
+                controller_name: Some("vrf1".to_string().try_into().unwrap()),
+            })
+            .unwrap();
+        associations
+            .try_insert(InterfaceAssociationSpec {
+                name: "br2".to_string().try_into().unwrap(),
+                controller_name: Some("vrf2".to_string().try_into().unwrap()),
+            })
+            .unwrap();
+
+        let mut required = RequiredInformationBaseBuilder::default()
+            .interfaces(required_interface_map)
+            .vteps(vtep_props)
+            .vrfs(vrf_props)
+            .associations(associations)
+            .build()
+            .unwrap();
+
+        let Ok((mut connection, handle, _recv)) = rtnetlink::new_connection() else {
+            panic!("failed to create connection");
+        };
+        connection
+            .socket_mut()
+            .socket_mut()
+            .set_rx_buf_sz(812_992)
+            .unwrap();
+        tokio::spawn(connection);
+
+        let inject_new_requirements = move |req: &mut RequiredInformationBase| {
+            let interfaces = [
+                InterfaceSpecBuilder::default()
+                    .name("vrf3".try_into().unwrap())
+                    .admin_state(AdminState::Up)
+                    .controller(None)
+                    .properties(InterfacePropertiesSpec::Vrf(VrfPropertiesSpec {
+                        route_table_id: 3.into(),
+                    }))
+                    .build()
+                    .unwrap(),
+                InterfaceSpecBuilder::default()
+                    .name("vtep3".try_into().unwrap())
+                    .admin_state(AdminState::Up)
+                    .controller(None)
+                    .properties(InterfacePropertiesSpec::Vtep(VtepPropertiesSpec {
+                        vni: 3.try_into().unwrap(),
+                        local: "192.168.5.155".parse().unwrap(),
+                        ttl: 64,
+                    }))
+                    .build()
+                    .unwrap(),
+                InterfaceSpecBuilder::default()
+                    .name("br3".try_into().unwrap())
+                    .admin_state(AdminState::Up)
+                    .controller(None)
+                    .properties(InterfacePropertiesSpec::Bridge(BridgePropertiesSpec {
+                        vlan_protocol: EthType::VLAN,
+                        vlan_filtering: false,
+                    }))
+                    .build()
+                    .unwrap(),
+            ];
+            for interface in interfaces {
+                match &interface.properties {
+                    InterfacePropertiesSpec::Bridge(_) => {}
+                    InterfacePropertiesSpec::Vtep(props) => {
+                        req.vteps.try_insert(props.clone()).unwrap();
+                    }
+                    InterfacePropertiesSpec::Vrf(props) => {
+                        req.vrfs.try_insert(props.clone()).unwrap();
+                    }
+                }
+                req.interfaces.try_insert(interface).unwrap();
+            }
+            req.associations
+                .try_insert(InterfaceAssociationSpec {
+                    name: "vtep3".to_string().try_into().unwrap(),
+                    controller_name: Some("br3".to_string().try_into().unwrap()),
+                })
+                .unwrap();
+            req.associations
+                .try_insert(InterfaceAssociationSpec {
+                    name: "br3".to_string().try_into().unwrap(),
+                    controller_name: Some("vrf3".to_string().try_into().unwrap()),
+                })
+                .unwrap();
+        };
+
+        let remove_some_requirement = move |req: &mut RequiredInformationBase| {
+            req.interfaces
+                .remove_by_name(&"br1".to_string().try_into().unwrap())
+                .unwrap();
+            req.interfaces
+                .remove_by_name(&"vrf1".to_string().try_into().unwrap())
+                .unwrap();
+            req.interfaces
+                .remove_by_name(&"vtep1".to_string().try_into().unwrap())
+                .unwrap();
+            req.associations
+                .remove_by_name(&"br1".to_string().try_into().unwrap())
+                .unwrap();
+            req.associations
+                .remove_by_name(&"vtep1".to_string().try_into().unwrap())
+                .unwrap();
+        };
+
+        let vpcs = VpcManager::<RequiredInformationBase>::new(Arc::new(handle));
+
+        for _ in 0..25 {
+            let observed = vpcs.observe().await.unwrap();
+            vpcs.reconcile(&mut required, &observed).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        inject_new_requirements(&mut required);
+        for _ in 0..25 {
+            let observed = vpcs.observe().await.unwrap();
+            vpcs.reconcile(&mut required, &observed).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        remove_some_requirement(&mut required);
+        for _ in 0..25 {
+            let observed = vpcs.observe().await.unwrap();
+            vpcs.reconcile(&mut required, &observed).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+}
