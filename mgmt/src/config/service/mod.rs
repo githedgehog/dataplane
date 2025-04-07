@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Dataplane management module
+//! Dataplane configuration model: services
 
-pub mod config;
-pub mod grpc;
-pub mod processor;
+pub mod vpc;
+pub mod vpcpeering;
