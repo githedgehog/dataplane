@@ -75,12 +75,9 @@ jobs:
       fail-fast: false
       matrix:
         rust:
-          # Disabled until we reach 1.86 as stable, as it always fails.
-          # Uncomment when we revert commit 643de7afc7fc
-          # ("fix(justfile): Use beta release of rust, not stable")
-          #- # failures on stable block release
-          #  version: "stable"
-          #  optional: true
+          - # failures on stable block release
+            version: "stable"
+            optional: false
           - # failures on beta block release
             version: "beta"
             optional: false

@@ -29,7 +29,7 @@ _container_repo := "ghcr.io/githedgehog/dataplane"
 
 # the rust channel to use (choose stable, beta, or nightly)
 
-rust := "beta"
+rust := "stable"
 
 # Docker images
 

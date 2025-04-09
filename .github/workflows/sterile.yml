@@ -62,7 +62,7 @@ jobs:
       fail-fast: false
       matrix:
         rust:
-          - "beta"
+          - "stable"
     name: "Sterile test run"
     steps:
       - name: "login to ghcr.io"
@@ -135,7 +135,7 @@ jobs:
       fail-fast: false
       matrix:
         rust:
-          - "beta"
+          - "stable"
         debug_justfile:
           - "${{inputs.debug_justfile || false}}"
     name: "Push containers"
