@@ -13,6 +13,7 @@
     clippy::panic
 )]
 #![allow(clippy::should_panic_without_expect)] // we panic in contract checks with simple unwrap()
+#![allow(clippy::unsafe_derive_deserialize)] // some generated code uses unsafe
 
 pub mod buffer;
 pub mod eth;
@@ -26,6 +27,7 @@ pub mod ipv4;
 pub mod ipv6;
 pub mod packet;
 pub mod parse;
+pub mod route;
 pub mod tcp;
 pub mod udp;
 pub mod vlan;

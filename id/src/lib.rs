@@ -113,8 +113,8 @@ pub type Id<T> = AbstractIdType<*const T, Uuid>;
 /// </div>
 ///
 /// [UUID]: https://en.wikipedia.org/wiki/Universally_unique_identifier
-#[cfg_attr(feature = "serde", allow(clippy::unsafe_derive_deserialize))] // not used in deserialize method
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[allow(clippy::unsafe_derive_deserialize)] // not used in deserialize method
+#[derive(serde::Serialize, serde::Deserialize)]
 #[repr(transparent)]
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AbstractIdType<T, U = Uuid>(U, PhantomData<T>);

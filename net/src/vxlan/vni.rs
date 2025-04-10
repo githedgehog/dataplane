@@ -40,9 +40,10 @@ pub use contract::*;
 /// [RFC7348]: https://datatracker.ietf.org/doc/html/rfc7348#section-5
 /// [overlay network]: https://en.wikipedia.org/wiki/Overlay_network
 /// [transparent]: https://doc.rust-lang.org/reference/type-layout.html#the-transparent-representation
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-#[cfg_attr(feature = "serde", serde(try_from = "u32", into = "u32"))]
+#[derive(
+    Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Deserialize, serde::Serialize,
+)]
+#[serde(try_from = "u32", into = "u32")]
 #[repr(transparent)]
 pub struct Vni(NonZero<u32>);
 
@@ -89,8 +90,19 @@ impl AsRef<NonZero<u32>> for Vni {
 
 /// Errors that can occur when converting a `u32` to a [`Vni`]
 #[must_use]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, thiserror::Error)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    thiserror::Error,
+    serde::Deserialize,
+    serde::Serialize,
+)]
 pub enum InvalidVni {
     /// Zero is not a legal Vni in many EVPN / VXLAN implementations.  Don't use it.
     #[error("Zero is not a legal Vni")]

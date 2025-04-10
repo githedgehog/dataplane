@@ -10,7 +10,7 @@ use core::fmt::{Display, Formatter};
 /// [checksum]: https://en.wikipedia.org/wiki/Transmission_Control_Protocol#Checksum_computation
 /// [`Udp`]: crate::udp::Udp
 #[repr(transparent)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(bolero::TypeGenerator))]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug, Hash)]
 pub struct UdpChecksum(pub(crate) u16);
