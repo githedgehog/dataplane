@@ -513,13 +513,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "dataplane-vpc-manager"
+name = "dataplane-interface-manager"
 version = "0.1.0"
 dependencies = [
  "dataplane-id",
  "derive_builder",
  "futures",
- "irekon",
+ "multi_index_map",
+ "net",
+ "nix",
+ "rekon",
+ "rtnetlink",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dataplane-vpc-manager"
+version = "0.1.0"
+dependencies = [
+ "dataplane-id",
+ "dataplane-interface-manager",
+ "derive_builder",
+ "futures",
  "multi_index_map",
  "net",
  "nix",
@@ -861,23 +878,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d3e70916e16da178ce4d131f29381c51f52b33416f110827a31e954ee1ca8b1"
 dependencies = [
  "ipnet",
-]
-
-[[package]]
-name = "irekon"
-version = "0.1.0"
-dependencies = [
- "dataplane-id",
- "derive_builder",
- "futures",
- "multi_index_map",
- "net",
- "nix",
- "rekon",
- "rtnetlink",
- "serde",
- "tokio",
- "tracing",
 ]
 
 [[package]]

@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 # internal
 id = { workspace = true }
-irekon = { workspace = true }
+interface-manager = { workspace = true }
 net = { workspace = true }
 rekon = { workspace = true }
 

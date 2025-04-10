@@ -7,7 +7,7 @@ members = [
 	"dpdk-sysroot-helper",
 	"errno",
 	"id",
-	"irekon",
+	"interface-manager",
 	"net",
 	"pipeline",
 	"rekon",
@@ -20,7 +20,7 @@ default-members = [
 	"dpdk-sysroot-helper",
 	"errno",
 	"id",
-	"irekon",
+	"interface-manager",
 	"net",
 	"pipeline",
 	"rekon",
@@ -39,7 +39,7 @@ dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper" }
 dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", version = "1.0.0" }
 errno = { path = "./errno", package = "dataplane-errno" }
 id = { path = "./id", package = "dataplane-id" }
-irekon = { path = "./irekon" }
+interface-manager = { path = "./interface-manager", package = "dataplane-interface-manager" }
 net = { path = "./net", features = ["test_buffer"] }
 pipeline = { path = "./pipeline" }
 rekon = { path = "./rekon" }

@@ -4,8 +4,8 @@
 use derive_builder::Builder;
 use futures::TryStreamExt;
 use id::Id;
-use irekon::Manager;
-use irekon::interface::{
+use interface_manager::Manager;
+use interface_manager::interface::{
     MultiIndexInterfaceAssociationSpecMap, MultiIndexInterfaceSpecMap,
     MultiIndexVrfPropertiesSpecMap, MultiIndexVtepPropertiesSpecMap,
 };
@@ -267,7 +267,7 @@ impl Vpc {
 #[cfg(test)]
 mod tests {
     use crate::{RequiredInformationBase, RequiredInformationBaseBuilder, VpcManager};
-    use irekon::interface::{
+    use interface_manager::interface::{
         BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec,
         InterfaceSpecBuilder, MultiIndexBridgePropertiesSpecMap,
         MultiIndexInterfaceAssociationSpecMap, MultiIndexInterfaceSpecMap,
