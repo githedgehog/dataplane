@@ -196,6 +196,7 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     /// Create an interface table. All interfaces should live here.
     //////////////////////////////////////////////////////////////////
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self(HashMap::new())
         // TODO: set a fast hasher
