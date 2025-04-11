@@ -11,22 +11,26 @@
 pub mod device;
 pub mod interfaces;
 pub mod routing;
-pub mod service;
 
 use crate::config::device::DeviceConfig;
 use crate::config::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
 use crate::config::routing::evpn::VtepConfig;
 use crate::config::routing::frr::Frr;
+use crate::config::routing::prefixlist::{PrefixList, PrefixListTable};
+use crate::config::routing::routemap::{RouteMap, RouteMapTable};
 use crate::config::routing::vrf::{VrfConfig, VrfConfigTable};
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 /* Main internal GW configuration */
 pub struct GwConfig {
-    device_config: Option<DeviceConfig>,
-    frr: Option<Frr>,
-    vtep: Option<VtepConfig>,
-    vrfs: VrfConfigTable,
-    interfaces: InterfaceConfigTable,
+    pub generation: u64,
+    pub device_config: Option<DeviceConfig>,
+    pub frr: Option<Frr>,
+    pub vtep: Option<VtepConfig>, // As a network interface
+    pub vrfs: VrfConfigTable,
+    pub interfaces: InterfaceConfigTable,
+    pub plist_table: PrefixListTable,
+    pub rmap_table: RouteMapTable,
 }
 
 impl GwConfig {
@@ -47,5 +51,11 @@ impl GwConfig {
     }
     pub fn add_interface_config(&mut self, if_cfg: InterfaceConfig) {
         self.interfaces.add_interface_config(if_cfg);
+    }
+    pub fn add_prefix_list(&mut self, plist: PrefixList) {
+        self.plist_table.add_prefix_list(plist);
+    }
+    pub fn add_route_map(&mut self, rmap: RouteMap) {
+        self.rmap_table.add_route_map(rmap);
     }
 }

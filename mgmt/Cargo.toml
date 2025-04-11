@@ -9,4 +9,4 @@ license = "Apache-2.0"
 net = { workspace = true }
 routing = { workspace = true }
 tracing = { workspace = true }
-
+thiserror = { workspace = true }
