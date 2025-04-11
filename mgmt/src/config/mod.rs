@@ -22,7 +22,7 @@ use crate::config::routing::vrf::{VrfConfig, VrfConfigTable};
 
 #[derive(Debug, Default)]
 /* Main internal GW configuration */
-pub struct GwConfig {
+pub struct InternalConfig {
     pub generation: u64,
     pub device_config: Option<DeviceConfig>,
     pub frr: Option<Frr>,
@@ -33,7 +33,7 @@ pub struct GwConfig {
     pub rmap_table: RouteMapTable,
 }
 
-impl GwConfig {
+impl InternalConfig {
     pub fn new() -> Self {
         Self::default()
     }
