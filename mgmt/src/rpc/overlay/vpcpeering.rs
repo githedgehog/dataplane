@@ -44,13 +44,13 @@ impl VpcExpose {
 
 #[derive(Debug, Default)]
 pub struct VpcExposeManifest {
-    pub vpc: String, /* key: name of vpc */
+    pub name: String, /* key: name of vpc */
     pub exposes: Vec<VpcExpose>,
 }
 impl VpcExposeManifest {
-    pub fn new(vpc: &str) -> Self {
+    pub fn new(vpc_name: &str) -> Self {
         Self {
-            vpc: vpc.to_owned(),
+            name: vpc_name.to_owned(),
             ..Default::default()
         }
     }
