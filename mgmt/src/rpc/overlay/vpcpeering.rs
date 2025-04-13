@@ -98,10 +98,11 @@ impl VpcPeering {
 #[derive(Debug, Default)]
 pub struct VpcPeeringTable(BTreeMap<String, VpcPeering>);
 impl VpcPeeringTable {
-    /// Create new vpc peering table table
+    /// Create a new, empty [`VpcPeeringTable`]
     pub fn new() -> Self {
         Self::default()
     }
+    /// Add a [`VpcPeering`] to a [`VpcPeeringTable`]
     pub fn add(&mut self, peering: VpcPeering) -> ApiResult {
         peering.validate()?;
         if let Some(peering) = self.0.insert(peering.name.to_owned(), peering) {
@@ -110,6 +111,7 @@ impl VpcPeeringTable {
             Ok(())
         }
     }
+    /// Iterate over all [`VpcPeering`]s in a [`VpcPeeringTable`]
     pub fn values(&self) -> impl Iterator<Item = &VpcPeering> {
         self.0.values()
     }

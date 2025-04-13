@@ -38,6 +38,7 @@ impl VpcTable {
     pub fn new() -> Self {
         Self::default()
     }
+    /// Add a [`Vpc`] to the vpc table
     pub fn add(&mut self, vpc: Vpc) -> ApiResult {
         // Vni must have not been used before
         if !self.vnis.insert(vpc.vni) {
@@ -49,12 +50,11 @@ impl VpcTable {
             Ok(())
         }
     }
+    /// Get a [`Vpc`] from the vpc table by name
     pub fn get_vpc(&self, vpc_name: &str) -> Option<&Vpc> {
         self.vpcs.get(vpc_name)
     }
-    pub fn get_vpc_mut(&mut self, vpc_name: &str) -> Option<&mut Vpc> {
-        self.vpcs.get_mut(vpc_name)
-    }
+    /// Iterate over [`Vpc`]s in a [`VpcTable`]
     pub fn values(&self) -> impl Iterator<Item = &Vpc> {
         self.vpcs.values()
     }
