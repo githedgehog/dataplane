@@ -5,13 +5,13 @@
 
 #[cfg(test)]
 #[allow(dead_code)]
-pub mod tests {
-    use crate::rpc::ApiError;
-    use crate::rpc::Overlay;
+pub mod test {
     use crate::rpc::overlay::vpc::{Vpc, VpcTable};
     use crate::rpc::overlay::vpcpeering::VpcExpose;
     use crate::rpc::overlay::vpcpeering::VpcExposeManifest;
     use crate::rpc::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
+    use crate::rpc::overlay::Overlay;
+    use crate::rpc::ApiError;
 
     use routing::prefix::Prefix;
 
