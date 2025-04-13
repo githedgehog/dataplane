@@ -39,7 +39,7 @@ pub struct Underlay {
 
 #[allow(unused)]
 /// The configuration object as seen by the gRPC server
-pub struct GwConfiguration {
+pub struct GwConfig {
     generation: u64,      /* configuration version */
     device: DeviceConfig, /* goes as-is into the internal config */
     underlay: Underlay,   /* goes as-is into the internal config */

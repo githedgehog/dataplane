@@ -7,10 +7,12 @@
 #[allow(dead_code)]
 pub mod tests {
     use crate::rpc::ApiError;
+    use crate::rpc::Overlay;
     use crate::rpc::overlay::vpc::{Vpc, VpcTable};
     use crate::rpc::overlay::vpcpeering::VpcExpose;
     use crate::rpc::overlay::vpcpeering::VpcExposeManifest;
     use crate::rpc::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
+
     use routing::prefix::Prefix;
 
     /* Build sample manifests for a peering */
@@ -48,29 +50,7 @@ pub mod tests {
     }
 
     #[test]
-    fn test_overlay() {
-        /* build VPCs */
-        let vpc1 = Vpc::new("VPC-1", 3000).expect("Should succeed");
-        let vpc2 = Vpc::new("VPC-2", 4000).expect("Should succeed");
-
-        /* build peering */
-        let peering = build_vpc_peering();
-
-        /* build VPC table */
-        let mut vpc_table = VpcTable::new();
-        vpc_table.add(vpc1).expect("Should succeed");
-        vpc_table.add(vpc2).expect("Should succeed");
-
-        /* build VPC pering table and add one peering */
-        let mut peering_table = VpcPeeringTable::new();
-        peering_table.add(peering).expect("Should succeed");
-
-        println!("{vpc_table:#?}");
-        println!("{peering_table:#?}");
-    }
-
-    #[test]
-    fn test_overlay_vpc_checks() {
+    fn test_vpc_checks() {
         let mut vpc_table = VpcTable::new();
 
         /* invalid vni should be rejected */
@@ -91,5 +71,73 @@ pub mod tests {
         /* vpc with colliding VNI should be rejected */
         let vpc2 = Vpc::new("VPC-2", 3000).expect("Should succeed");
         assert_eq!(vpc_table.add(vpc2), Err(ApiError::DuplicateVpcVni(3000)));
+    }
+
+    #[test]
+    fn test_vpc_peering_checks() {
+        /* must have name */
+        let peering = VpcPeering::new("");
+        assert_eq!(peering.validate(), Err(ApiError::MissingPeeringName));
+
+        /* VPC data can't me missing */
+        let mut peering = VpcPeering::new("Some-peering");
+        peering.set_one(build_manifest_vpc1());
+        assert_eq!(
+            peering.validate(),
+            Err(ApiError::IncompletePeeringData("Some-peering".to_owned()))
+        );
+
+        let mut peering = VpcPeering::new("Some-peering");
+        peering.set_one(build_manifest_vpc1());
+        peering.set_two(build_manifest_vpc1());
+        assert_eq!(peering.validate(), Ok(()));
+    }
+
+    #[test]
+    fn test_overlay_missing_vpc() {
+        /* build VPCs */
+        let vpc1 = Vpc::new("VPC-1", 3000).expect("Should succeed");
+
+        /* build VPC table */
+        let mut vpc_table = VpcTable::new();
+        vpc_table.add(vpc1).expect("Should succeed");
+
+        /* build peering, referring to non-declared VPC VPC-2 */
+        let peering = build_vpc_peering();
+
+        /* build VPC pering table and add one peering */
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table.add(peering).expect("Should succeed");
+
+        /* build overlay object and validate it */
+        let overlay = Overlay::new(vpc_table, peering_table);
+        assert_eq!(
+            overlay.validate(),
+            Err(ApiError::NoSuchVpc("VPC-2".to_owned()))
+        );
+    }
+
+    #[test]
+    fn test_overlay() {
+        /* build VPCs */
+        let vpc1 = Vpc::new("VPC-1", 3000).expect("Should succeed");
+        let vpc2 = Vpc::new("VPC-2", 4000).expect("Should succeed");
+
+        /* build peering */
+        let peering = build_vpc_peering();
+
+        /* build VPC table */
+        let mut vpc_table = VpcTable::new();
+        vpc_table.add(vpc1).expect("Should succeed");
+        vpc_table.add(vpc2).expect("Should succeed");
+
+        /* build VPC pering table and add one peering */
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table.add(peering).expect("Should succeed");
+
+        /* build overlay object and validate it */
+        let overlay = Overlay::new(vpc_table, peering_table);
+        assert_eq!(overlay.validate(), Ok(()));
+        println!("{overlay:#?}");
     }
 }
