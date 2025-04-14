@@ -8,7 +8,7 @@ pub mod vpc;
 pub mod vpcpeering;
 
 use crate::rpc::overlay::vpc::VpcTable;
-use crate::rpc::overlay::vpcpeering::VpcExposeManifest;
+use crate::rpc::overlay::vpcpeering::VpcManifest;
 use crate::rpc::overlay::vpcpeering::VpcPeeringTable;
 use tracing::error;
 
@@ -27,7 +27,7 @@ impl Overlay {
             peering_table,
         }
     }
-    fn check_peering_vpc(&self, peering: &str, manifest: &Option<VpcExposeManifest>) -> ApiResult {
+    fn check_peering_vpc(&self, peering: &str, manifest: &Option<VpcManifest>) -> ApiResult {
         if let Some(vpc) = manifest {
             if self.vpc_table.get_vpc(&vpc.name).is_none() {
                 error!("peering '{}': unknown VPC '{}'", peering, vpc.name);

@@ -6,18 +6,18 @@
 #[cfg(test)]
 #[allow(dead_code)]
 pub mod test {
+    use crate::rpc::ApiError;
+    use crate::rpc::overlay::Overlay;
     use crate::rpc::overlay::vpc::{Vpc, VpcTable};
     use crate::rpc::overlay::vpcpeering::VpcExpose;
-    use crate::rpc::overlay::vpcpeering::VpcExposeManifest;
+    use crate::rpc::overlay::vpcpeering::VpcManifest;
     use crate::rpc::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
-    use crate::rpc::overlay::Overlay;
-    use crate::rpc::ApiError;
 
     use routing::prefix::Prefix;
 
     /* Build sample manifests for a peering */
-    fn build_manifest_vpc1() -> VpcExposeManifest {
-        let mut vpc1 = VpcExposeManifest::new("VPC-1");
+    fn build_manifest_vpc1() -> VpcManifest {
+        let mut vpc1 = VpcManifest::new("VPC-1");
         let expose = VpcExpose::empty()
             .ip(Prefix::from(("10.0.0.0", 25)))
             .ip(Prefix::from(("10.0.2.128", 25)))
@@ -28,8 +28,8 @@ pub mod test {
         vpc1.add_expose(expose).expect("Should succeed");
         vpc1
     }
-    fn build_manifest_vpc2() -> VpcExposeManifest {
-        let mut vpc1 = VpcExposeManifest::new("VPC-2");
+    fn build_manifest_vpc2() -> VpcManifest {
+        let mut vpc1 = VpcManifest::new("VPC-2");
         let expose = VpcExpose::empty()
             .ip(Prefix::from(("10.0.0.0", 24)))
             .as_range(Prefix::from(("100.64.2.0", 24)));
@@ -146,29 +146,29 @@ pub mod test {
     fn test_peering_iter() {
         let mut peering_table = VpcPeeringTable::new();
 
-        let m1 = VpcExposeManifest::new("VPC-1");
-        let m2 = VpcExposeManifest::new("VPC-2");
+        let m1 = VpcManifest::new("VPC-1");
+        let m2 = VpcManifest::new("VPC-2");
         let mut peering = VpcPeering::new("Peering-1");
         peering.set_one(m1);
         peering.set_two(m2);
         peering_table.add(peering).unwrap();
 
-        let m1 = VpcExposeManifest::new("VPC-1");
-        let m2 = VpcExposeManifest::new("VPC-3");
+        let m1 = VpcManifest::new("VPC-1");
+        let m2 = VpcManifest::new("VPC-3");
         let mut peering = VpcPeering::new("Peering-2");
         peering.set_one(m1);
         peering.set_two(m2);
         peering_table.add(peering).unwrap();
 
-        let m1 = VpcExposeManifest::new("VPC-2");
-        let m2 = VpcExposeManifest::new("VPC-4");
+        let m1 = VpcManifest::new("VPC-2");
+        let m2 = VpcManifest::new("VPC-4");
         let mut peering = VpcPeering::new("Peering-3");
         peering.set_one(m1);
         peering.set_two(m2);
         peering_table.add(peering).unwrap();
 
-        let m1 = VpcExposeManifest::new("VPC-1");
-        let m2 = VpcExposeManifest::new("VPC-4");
+        let m1 = VpcManifest::new("VPC-1");
+        let m2 = VpcManifest::new("VPC-4");
         let mut peering = VpcPeering::new("Peering-4");
         peering.set_one(m1);
         peering.set_two(m2);

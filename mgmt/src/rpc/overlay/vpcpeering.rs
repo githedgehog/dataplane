@@ -43,11 +43,11 @@ impl VpcExpose {
 }
 
 #[derive(Debug, Default)]
-pub struct VpcExposeManifest {
+pub struct VpcManifest {
     pub name: String, /* key: name of vpc */
     pub exposes: Vec<VpcExpose>,
 }
-impl VpcExposeManifest {
+impl VpcManifest {
     pub fn new(vpc_name: &str) -> Self {
         Self {
             name: vpc_name.to_owned(),
@@ -64,8 +64,8 @@ impl VpcExposeManifest {
 #[derive(Debug)]
 pub struct VpcPeering {
     pub name: String, /* key: name of peering */
-    pub vpc1: Option<VpcExposeManifest>,
-    pub vpc2: Option<VpcExposeManifest>,
+    pub vpc1: Option<VpcManifest>,
+    pub vpc2: Option<VpcManifest>,
 }
 impl VpcPeering {
     pub fn new(name: &str) -> Self {
@@ -85,10 +85,10 @@ impl VpcPeering {
             Ok(())
         }
     }
-    pub fn set_one(&mut self, exp_manifest: VpcExposeManifest) {
+    pub fn set_one(&mut self, exp_manifest: VpcManifest) {
         self.vpc1 = Some(exp_manifest);
     }
-    pub fn set_two(&mut self, exp_manifest: VpcExposeManifest) {
+    pub fn set_two(&mut self, exp_manifest: VpcManifest) {
         self.vpc2 = Some(exp_manifest);
     }
 
