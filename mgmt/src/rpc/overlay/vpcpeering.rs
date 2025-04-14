@@ -115,4 +115,31 @@ impl VpcPeeringTable {
     pub fn values(&self) -> impl Iterator<Item = &VpcPeering> {
         self.0.values()
     }
+    /// Produce iterator of [`VpcPeering`]s that involve the vpc with the provided name
+    pub fn peerings_vpc(&self, vpc: &str) -> impl Iterator<Item = &VpcPeering> {
+        self.0.values().filter(|peering| {
+            // VPCs are options to ease builders but should always be there
+            let name1 = peering.vpc1.as_ref().map(|m| m.name.as_str());
+            let name2 = peering.vpc2.as_ref().map(|m| m.name.as_str());
+            if name1.is_none() || name2.is_none() {
+                false
+            } else {
+                name1 == Some(vpc) || name2 == Some(vpc)
+            }
+        })
+    }
+    /// Produce iterator of [`VpcPeering`]s between the two provided vpcs.
+    /// In principle there should be one peering at the most between two vpcs ?
+    pub fn peerings_between(&self, vpc1: &str, vpc2: &str) -> impl Iterator<Item = &VpcPeering> {
+        self.0.values().filter(|peering| {
+            let name1 = peering.vpc1.as_ref().map(|m| m.name.as_str());
+            let name2 = peering.vpc2.as_ref().map(|m| m.name.as_str());
+            if name1.is_none() || name2.is_none() {
+                false
+            } else {
+                name1 == Some(vpc1) && name2 == Some(vpc2)
+                    || name1 == Some(vpc2) && name2 == Some(vpc1)
+            }
+        })
+    }
 }

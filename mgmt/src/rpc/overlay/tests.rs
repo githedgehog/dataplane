@@ -37,6 +37,7 @@ pub mod test {
         vpc1.add_expose(expose).expect("Should succeed");
         vpc1
     }
+
     /* build sample peering between VPC-1 and VPC-2 */
     fn build_vpc_peering() -> VpcPeering {
         // build vpc manifests
@@ -139,5 +140,56 @@ pub mod test {
         let overlay = Overlay::new(vpc_table, peering_table);
         assert_eq!(overlay.validate(), Ok(()));
         println!("{overlay:#?}");
+    }
+
+    #[test]
+    fn test_peering_iter() {
+        let mut peering_table = VpcPeeringTable::new();
+
+        let m1 = VpcExposeManifest::new("VPC-1");
+        let m2 = VpcExposeManifest::new("VPC-2");
+        let mut peering = VpcPeering::new("Peering-1");
+        peering.set_one(m1);
+        peering.set_two(m2);
+        peering_table.add(peering).unwrap();
+
+        let m1 = VpcExposeManifest::new("VPC-1");
+        let m2 = VpcExposeManifest::new("VPC-3");
+        let mut peering = VpcPeering::new("Peering-2");
+        peering.set_one(m1);
+        peering.set_two(m2);
+        peering_table.add(peering).unwrap();
+
+        let m1 = VpcExposeManifest::new("VPC-2");
+        let m2 = VpcExposeManifest::new("VPC-4");
+        let mut peering = VpcPeering::new("Peering-3");
+        peering.set_one(m1);
+        peering.set_two(m2);
+        peering_table.add(peering).unwrap();
+
+        let m1 = VpcExposeManifest::new("VPC-1");
+        let m2 = VpcExposeManifest::new("VPC-4");
+        let mut peering = VpcPeering::new("Peering-4");
+        peering.set_one(m1);
+        peering.set_two(m2);
+        peering_table.add(peering).unwrap();
+
+        // all peerings of VPC-1
+        let x: Vec<String> = peering_table
+            .peerings_vpc("VPC-1")
+            .map(|p| p.name.clone())
+            .collect();
+
+        assert!(x.contains(&"Peering-1".to_owned()));
+        assert!(x.contains(&"Peering-2".to_owned()));
+        assert!(x.contains(&"Peering-4".to_owned()));
+        assert!(!x.contains(&"Peering-3".to_owned()), "not there");
+
+        // all peerings of VPC-2 with VPC-4
+        let x: Vec<String> = peering_table
+            .peerings_between("VPC-2", "VPC-4")
+            .map(|p| p.name.clone())
+            .collect();
+        assert!(x.contains(&"Peering-3".to_owned()));
     }
 }
