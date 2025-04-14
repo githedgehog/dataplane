@@ -130,6 +130,7 @@ jobs:
 
           # If we didn't create any commits, we don't need to create a PR message
           if [[ "$(git rev-parse HEAD)" = "${BASE}" ]]; then
+              rm -f -- upgrade_output.txt list_packages.txt commit_msg.txt
               exit 0
           fi
           echo '::notice::We created the following commits:'
