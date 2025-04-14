@@ -11,8 +11,8 @@ use std::fmt::{Debug, Display, Formatter};
 /// You can't generally meaningfully persist or assign them.
 /// They don't typically mean anything "between" machines or even reboots.
 #[repr(transparent)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(try_from = "u32", into = "u32")]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "u32", into = "u32"))]
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InterfaceIndex(u32);
 
@@ -64,8 +64,8 @@ const MAX_LEN: usize = 16;
 /// The maximum legal length of an `InterfaceName` is 16 bytes (including the terminating null).
 /// Thus, the _effective_ maximum length is 15 bytes (not characters).
 #[repr(transparent)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
 pub struct InterfaceName(String);
 
