@@ -154,7 +154,7 @@ jobs:
             echo 'EOF';
           } >> "${GITHUB_OUTPUT}"
 
-          rm upgrade.log upgrade_output.txt list_packages.txt commit_msg.txt
+          rm -f -- upgrade.log upgrade_output.txt list_packages.txt commit_msg.txt
       - name: "deny check (post)"
         run: |
           cargo deny check
