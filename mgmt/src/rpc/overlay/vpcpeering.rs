@@ -98,6 +98,15 @@ impl VpcPeeringTable {
     pub fn new() -> Self {
         Self::default()
     }
+    /// Number of peerings in [`VpcPeeringTable`]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    /// Tells if [`VpcPeeringTable`] contains peerings or not
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Add a [`VpcPeering`] to a [`VpcPeeringTable`]
     pub fn add(&mut self, peering: VpcPeering) -> ApiResult {
         peering.validate()?;

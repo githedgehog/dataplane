@@ -63,6 +63,15 @@ impl VpcTable {
     pub fn new() -> Self {
         Self::default()
     }
+    /// Number of VPCs in [`VpcTable`]
+    pub fn len(&self) -> usize {
+        self.vpcs.len()
+    }
+    /// Tells if [`VpcTable`] is empty
+    pub fn is_empty(&self) -> bool {
+        self.vpcs.is_empty()
+    }
+
     /// Add a [`Vpc`] to the vpc table
     pub fn add(&mut self, vpc: Vpc) -> ApiResult {
         // Vni must have not been used before
