@@ -88,6 +88,9 @@ pub enum IllegalInterfaceName {
     /// A string which is longer than 15 characters was submitted.
     #[error("interface name must be at least one character")]
     Empty,
+    /// You can't make an interface named ., ..
+    #[error("name must not be . or ..")]
+    MustNotIncludeOnlyDots(String),
     /// A string which is longer than 15 characters was submitted.
     #[error("interface name {0} is too long")]
     TooLong(String),
@@ -111,6 +114,9 @@ impl TryFrom<String> for InterfaceName {
         const LEGAL_PUNCT: [char; 3] = ['.', '-', '_'];
         if value.is_empty() {
             return Err(IllegalInterfaceName::Empty);
+        }
+        if value == "." || value == ".." {
+            return Err(IllegalInterfaceName::MustNotIncludeOnlyDots(value));
         }
         if value.contains('\0') {
             return Err(IllegalInterfaceName::InteriorNull(value));
