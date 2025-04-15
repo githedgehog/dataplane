@@ -6,14 +6,25 @@ use std::num::NonZero;
 #[repr(transparent)]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(bolero::TypeGenerator))]
 #[allow(clippy::unsafe_derive_deserialize)] // both try_from and into u16 are safe for this type
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(try_from = "u16", into = "u16"))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "u16", into = "u16")]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
 pub struct TcpPort(NonZero<u16>);
 
 #[repr(transparent)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, thiserror::Error)]
+#[derive(
+    Copy,
+    Clone,
+    Ord,
+    PartialOrd,
+    Eq,
+    PartialEq,
+    Hash,
+    Debug,
+    thiserror::Error,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum TcpPortError {
     #[error("port must be non-zero")]
     Zero,

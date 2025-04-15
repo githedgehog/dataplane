@@ -7,7 +7,6 @@ license = "Apache-2.0"
 
 [features]
 default = []
-serde = ["dep:serde"]
 arbitrary = ["dep:bolero"]
 test_buffer = []
 
@@ -18,7 +17,7 @@ bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional 
 derive_builder = { workspace = true, features = [] }
 etherparse = { workspace = true, features = ["std"] }
 ordermap = { workspace = true }
-serde = { workspace = true, optional = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

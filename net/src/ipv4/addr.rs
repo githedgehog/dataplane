@@ -13,7 +13,9 @@ use std::net::Ipv4Addr;
 /// This wrapper is zero cost save for the need to check that the [`Ipv4Addr`] is in fact unicast.
 #[non_exhaustive]
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct UnicastIpv4Addr(Ipv4Addr);
 
 impl UnicastIpv4Addr {

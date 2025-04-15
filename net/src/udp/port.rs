@@ -12,16 +12,27 @@ use std::num::NonZero;
 #[repr(transparent)]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(bolero::TypeGenerator))]
 #[allow(clippy::unsafe_derive_deserialize)] // both try_from and into u16 are safe for this type
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(try_from = "u16", into = "u16"))]
-#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[derive(
+    Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(try_from = "u16", into = "u16")]
 pub struct UdpPort(NonZero<u16>);
 
 /// Errors which may occur in the creation or parsing of a [`UdpPort`].
 #[repr(transparent)]
-#[derive(Debug, thiserror::Error)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[derive(
+    Debug,
+    thiserror::Error,
+    serde::Serialize,
+    serde::Deserialize,
+    Copy,
+    Clone,
+    Ord,
+    PartialOrd,
+    Eq,
+    PartialEq,
+    Hash,
+)]
 pub enum UdpPortError {
     /// The spec reserves zero to mean "any port."  It isn't valid in the context of a packet parser.
     #[error("port must be non-zero")]

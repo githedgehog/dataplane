@@ -17,8 +17,8 @@ use etherparse::EtherType;
 /// 2. Permit the implementation of the `TypeGenerator` trait on this type
 ///    to allow us to property test the rest of our code.
 #[repr(transparent)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(from = "u16", into = "u16"))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(from = "u16", into = "u16")]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EthType(pub(crate) EtherType);
 

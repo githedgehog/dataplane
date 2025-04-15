@@ -14,8 +14,8 @@ use etherparse::Ipv6FlowLabel;
 /// [flow label]: https://www.rfc-editor.org/rfc/rfc6437.html
 /// [`Ipv6`]: crate::ipv6::Ipv6
 #[allow(clippy::unsafe_derive_deserialize)] // safety: no (non-const eval) unsafe code used
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(try_from = "u32", into = "u32"))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "u32", into = "u32")]
 #[derive(Copy, Clone, Default, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct FlowLabel(pub(crate) Ipv6FlowLabel);
 
