@@ -18,6 +18,7 @@ derive_builder = { workspace = true, features = ["alloc"] }
 etherparse = { workspace = true, features = ["std"] }
 multi_index_map = { workspace = true, default-features = false, features = ["serde"] }
 ordermap = { workspace = true, features = ["std"] }
+rtnetlink = { workspace = true, features = ["tokio"] }
 serde = { workspace = true, features = ["derive", "std"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }

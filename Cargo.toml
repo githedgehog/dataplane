@@ -63,6 +63,7 @@ iptrie = { version = "0.10.3", default-features = false, features = [] }
 mio = { version = "1.0.3", default-features = false, features = [] }
 multi_index_map = { version = "0.12.1", default-features = false, features = [] }
 ordermap = { version = "0.5.7", default-features = false, features = [] }
+rtnetlink = { version = "0.16.0", default-features = false, features = [] }
 serde = { version = "1.0.219", default-features = false, features = [] }
 serde_yml = { version = "0.0.12", default-features = false, features = [] }
 thiserror = { version = "2.0.12", default-features = false, features = [] }
