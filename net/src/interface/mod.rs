@@ -35,6 +35,9 @@ pub use vrf::*;
 #[allow(unused_imports)] // re-export
 pub use vtep::*;
 
+#[cfg(any(test, feature = "arbitrary"))]
+pub use contract::*;
+
 /// A network interface id (also known as ifindex in linux).
 ///
 /// These are 32-bit values that are generally assigned by the linux kernel.
@@ -512,5 +515,72 @@ mod contract {
                 properties: driver.produce()?,
             })
         }
+    }
+}
+
+#[cfg(test)]
+pub mod test {
+    use super::*;
+
+    #[test]
+    fn interface_name_validates() {
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .for_each(|x: InterfaceName| {
+                InterfaceName::try_from(x.0).unwrap();
+            });
+    }
+
+    #[test]
+    fn interface_name_with_illegal_char_rejects() {
+        bolero::check!().with_type().for_each(|x: &InterfaceName| {
+            let mut illegal_name = x.0.clone();
+            illegal_name.push('/');
+            match InterfaceName::try_from(illegal_name.as_str()) {
+                Err(IllegalInterfaceName::IllegalCharacters(wrong)) => {
+                    assert_eq!(illegal_name, wrong);
+                }
+                _ => unreachable!(),
+            }
+        });
+    }
+
+    #[test]
+    fn interface_name_with_null_char_rejects() {
+        bolero::check!().with_type().for_each(|x: &InterfaceName| {
+            let mut illegal_name = x.0.clone();
+            illegal_name.push('\0');
+            match InterfaceName::try_from(illegal_name.as_str()) {
+                Err(IllegalInterfaceName::InteriorNull(wrong)) => {
+                    assert_eq!(illegal_name, wrong);
+                }
+                _ => unreachable!(),
+            }
+        });
+    }
+
+    #[test]
+    fn empty_interface_name_is_rejected() {
+        match InterfaceName::try_from("").unwrap_err() {
+            IllegalInterfaceName::Empty => {}
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn too_long_interface_name_rejected() {
+        bolero::check!().with_type().for_each(|x: &InterfaceName| {
+            let legal_name = x.0.clone();
+            let repeats = 1 + InterfaceName::MAX_LEN / legal_name.len();
+            let illegal_name = legal_name.repeat(repeats);
+            match InterfaceName::try_from(illegal_name.as_str()).unwrap_err() {
+                IllegalInterfaceName::TooLong(wrong) => {
+                    assert_eq!(illegal_name, wrong);
+                    assert!(illegal_name.len() > InterfaceName::MAX_LEN);
+                }
+                _ => unreachable!(),
+            }
+        });
     }
 }
