@@ -1,12 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-#![allow(missing_docs)] // multi-index-map generated code is not documented and it angers clippy
+// multi-index-map generated code is not documented and it angers clippy
+#![allow(missing_docs)]
+// multi-index-map can't be convinced to attach this to the derived types
+#![allow(clippy::unsafe_derive_deserialize)]
 
 //! Data structures and methods for interacting with / describing network interfaces
 
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display, Formatter};
+
+mod bridge;
+
+#[allow(unused_imports)] // re-export
+pub use bridge::*;
 
 /// A network interface id (also known as ifindex in linux).
 ///
@@ -161,7 +169,7 @@ impl AsRef<str> for InterfaceName {
 /// The administrative state of a network interface.
 ///
 /// Basically, this describes the intended state of a network interface. (as opposed to its
-// /// [`OperationalState`])
+/// [`OperationalState`])
 #[derive(Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum AdminState {
