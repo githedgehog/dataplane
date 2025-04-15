@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![allow(missing_docs)] // multi-index-map generated code is not documented and it angers clippy
+
 //! Data structures and methods for interacting with / describing network interfaces
 
 use std::fmt::{Debug, Display, Formatter};
 
 /// A network interface id (also known as ifindex in linux).
 ///
-/// These are 32 bit values which are generally assigned by the linux kernel.
+/// These are 32-bit values that are generally assigned by the linux kernel.
 /// You can't generally meaningfully persist or assign them.
 /// They don't typically mean anything "between" machines or even reboots.
 #[repr(transparent)]
@@ -54,7 +56,7 @@ impl From<InterfaceIndex> for u32 {
     }
 }
 
-const MAX_LEN: usize = 16;
+const MAX_INTERFACE_NAME_LEN: usize = 16;
 
 /// A string which has been checked to be a legal linux network interface name.
 ///
@@ -77,7 +79,7 @@ impl Display for InterfaceName {
 
 impl InterfaceName {
     /// The maximum legal length of a linux network interface name (including the trailing NUL)
-    pub const MAX_LEN: usize = MAX_LEN;
+    pub const MAX_LEN: usize = MAX_INTERFACE_NAME_LEN;
 }
 
 /// Errors which may occur when mapping a general `String` into an `InterfaceName`.
