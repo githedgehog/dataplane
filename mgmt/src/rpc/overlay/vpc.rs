@@ -14,6 +14,9 @@ use crate::rpc::overlay::VpcManifest;
 use crate::rpc::overlay::VpcPeeringTable;
 use crate::rpc::{ApiError, ApiResult};
 
+/// This is nearly identical to [`VpcPeering`], but with some subtle differences.
+/// [`Peering`] is owned by a Vpc while [`VpcPeering`] remains in the [`VpcPeeringTable`].
+/// Most importantly, [`Peering`] has a notion of local and remote, while [`VpcPeering`] is symmetrical.
 #[derive(Debug, PartialEq)]
 pub struct Peering {
     pub name: String,        /* name of peering */

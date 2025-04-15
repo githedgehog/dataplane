@@ -3,6 +3,7 @@
 
 //! Dataplane configuration model: overlay configuration
 
+pub mod display;
 pub mod tests;
 pub mod vpc;
 pub mod vpcpeering;
