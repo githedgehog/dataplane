@@ -44,8 +44,8 @@ impl Overlay {
         has a unique name and that it refers to two VPCs. Here we validate that the
         referred-to VPCs do actually exist in the VPC table. */
         for peering in self.peering_table.values() {
-            self.check_peering_vpc(&peering.name, &peering.vpc1)?;
-            self.check_peering_vpc(&peering.name, &peering.vpc2)?;
+            self.check_peering_vpc(&peering.name, &peering.left)?;
+            self.check_peering_vpc(&peering.name, &peering.right)?;
         }
         Ok(())
     }

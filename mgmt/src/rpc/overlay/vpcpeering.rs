@@ -64,32 +64,32 @@ impl VpcManifest {
 #[derive(Debug)]
 pub struct VpcPeering {
     pub name: String, /* key: name of peering */
-    pub vpc1: Option<VpcManifest>,
-    pub vpc2: Option<VpcManifest>,
+    pub left: Option<VpcManifest>,
+    pub right: Option<VpcManifest>,
 }
 impl VpcPeering {
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_owned(),
-            vpc1: None,
-            vpc2: None,
+            left: None,
+            right: None,
         }
     }
     pub fn validate(&self) -> ApiResult {
         if self.name.is_empty() {
             return Err(ApiError::MissingPeeringName);
         }
-        if self.vpc1.is_none() || self.vpc2.is_none() {
+        if self.left.is_none() || self.right.is_none() {
             Err(ApiError::IncompletePeeringData(self.name.clone()))
         } else {
             Ok(())
         }
     }
     pub fn set_one(&mut self, exp_manifest: VpcManifest) {
-        self.vpc1 = Some(exp_manifest);
+        self.left = Some(exp_manifest);
     }
     pub fn set_two(&mut self, exp_manifest: VpcManifest) {
-        self.vpc2 = Some(exp_manifest);
+        self.right = Some(exp_manifest);
     }
 
     // TODO add all exposes to the VpcPeering
@@ -119,26 +119,12 @@ impl VpcPeeringTable {
     pub fn peerings_vpc(&self, vpc: &str) -> impl Iterator<Item = &VpcPeering> {
         self.0.values().filter(|peering| {
             // VPCs are options to ease builders but should always be there
-            let name1 = peering.vpc1.as_ref().map(|m| m.name.as_str());
-            let name2 = peering.vpc2.as_ref().map(|m| m.name.as_str());
+            let name1 = peering.left.as_ref().map(|m| m.name.as_str());
+            let name2 = peering.right.as_ref().map(|m| m.name.as_str());
             if name1.is_none() || name2.is_none() {
                 false
             } else {
                 name1 == Some(vpc) || name2 == Some(vpc)
-            }
-        })
-    }
-    /// Produce iterator of [`VpcPeering`]s between the two provided vpcs.
-    /// In principle there should be one peering at the most between two vpcs ?
-    pub fn peerings_between(&self, vpc1: &str, vpc2: &str) -> impl Iterator<Item = &VpcPeering> {
-        self.0.values().filter(|peering| {
-            let name1 = peering.vpc1.as_ref().map(|m| m.name.as_str());
-            let name2 = peering.vpc2.as_ref().map(|m| m.name.as_str());
-            if name1.is_none() || name2.is_none() {
-                false
-            } else {
-                name1 == Some(vpc1) && name2 == Some(vpc2)
-                    || name1 == Some(vpc2) && name2 == Some(vpc1)
             }
         })
     }

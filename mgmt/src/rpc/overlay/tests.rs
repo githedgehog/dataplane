@@ -184,12 +184,5 @@ pub mod test {
         assert!(x.contains(&"Peering-2".to_owned()));
         assert!(x.contains(&"Peering-4".to_owned()));
         assert!(!x.contains(&"Peering-3".to_owned()), "not there");
-
-        // all peerings of VPC-2 with VPC-4
-        let x: Vec<String> = peering_table
-            .peerings_between("VPC-2", "VPC-4")
-            .map(|p| p.name.clone())
-            .collect();
-        assert!(x.contains(&"Peering-3".to_owned()));
     }
 }
