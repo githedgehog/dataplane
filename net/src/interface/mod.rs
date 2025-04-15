@@ -160,7 +160,8 @@ impl AsRef<str> for InterfaceName {
 
 /// The administrative state of a network interface.
 ///
-/// Basically, this describes the intended state of a network interface.
+/// Basically, this describes the intended state of a network interface. (as opposed to its
+// /// [`OperationalState`])
 #[derive(Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum AdminState {
@@ -168,4 +169,21 @@ pub enum AdminState {
     Down = 0,
     /// The interface is set to the up state.
     Up = 1,
+}
+
+/// The observed state of a network interface.
+///
+/// Basically, this describes what state a network interface is actually in (as opposed to the state
+/// we would like it to be in, i.e., the [`AdminState`])
+#[derive(Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
+pub enum OperationalState {
+    /// The interface is down
+    Down,
+    /// The interface is up
+    Up,
+    /// The interface condition is unknown.  This is common for L3 interfaces.
+    Unknown,
+    /// Complex: the interface is in some other more complex state (which should be regarded as down
+    /// mostly)
+    Complex,
 }
