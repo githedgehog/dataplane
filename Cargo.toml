@@ -10,6 +10,7 @@ members = [
 	"mgmt",
 	"net",
 	"pipeline",
+	"rekon",
 	"routing",
 ]
 
@@ -21,6 +22,7 @@ default-members = [
 	"mgmt",
 	"net",
 	"pipeline",
+	"rekon",
 	"routing",
 ]
 
@@ -37,6 +39,7 @@ errno = { path = "./errno", package = "dataplane-errno" }
 id = { path = "./id", package = "dataplane-id" }
 net = { path = "./net", features = ["test_buffer"] }
 pipeline = { path = "./pipeline" }
+rekon = { path = "./rekon" }
 routing = { path = "./routing" }
 
 # External
