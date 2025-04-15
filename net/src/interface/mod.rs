@@ -5,6 +5,7 @@
 
 //! Data structures and methods for interacting with / describing network interfaces
 
+use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display, Formatter};
 
 /// A network interface id (also known as ifindex in linux).
@@ -155,4 +156,16 @@ impl AsRef<str> for InterfaceName {
     fn as_ref(&self) -> &str {
         self.0.as_str()
     }
+}
+
+/// The administrative state of a network interface.
+///
+/// Basically, this describes the intended state of a network interface.
+#[derive(Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum AdminState {
+    /// The interface is set to down
+    Down = 0,
+    /// The interface is set to the up state.
+    Up = 1,
 }
