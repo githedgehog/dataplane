@@ -14,7 +14,7 @@ mod errors;
 pub mod interface;
 mod nexthop;
 pub mod prefix;
-mod pretty_utils;
+pub mod pretty_utils;
 mod rmac;
 mod routingdb;
 mod rpc_adapt;

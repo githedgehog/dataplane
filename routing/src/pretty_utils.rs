@@ -7,7 +7,7 @@ use std::fmt::Display;
 
 const LINE_WIDTH: usize = 81;
 
-pub struct Frame(pub(crate) String);
+pub struct Frame(pub String);
 impl Display for Frame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let len = self.0.len() + 2;
@@ -16,7 +16,7 @@ impl Display for Frame {
         writeln!(f, "┗{:━<width$}┛", "━", width = len)
     }
 }
-pub struct Heading(pub(crate) String);
+pub struct Heading(pub String);
 impl Display for Heading {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let len = (LINE_WIDTH - (self.0.len() + 2)) / 2;
