@@ -12,9 +12,12 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display, Formatter};
 
 mod bridge;
+mod vrf;
 
 #[allow(unused_imports)] // re-export
 pub use bridge::*;
+#[allow(unused_imports)] // re-export
+pub use vrf::*;
 
 /// A network interface id (also known as ifindex in linux).
 ///
