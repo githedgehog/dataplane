@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use crate::rpc::{ApiError, ApiResult};
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExpose {
     pub ips: BTreeSet<Prefix>,
     pub nots: BTreeSet<Prefix>,
@@ -42,7 +42,7 @@ impl VpcExpose {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcManifest {
     pub name: String, /* key: name of vpc */
     pub exposes: Vec<VpcExpose>,
@@ -61,7 +61,7 @@ impl VpcManifest {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct VpcPeering {
     pub name: String,       /* name of peering (key in table) */
     pub left: VpcManifest,  /* manifest for one side of the peering */
@@ -80,6 +80,14 @@ impl VpcPeering {
             return Err(ApiError::MissingPeeringName);
         }
         Ok(())
+    }
+    /// Given a peering fetch the manifests, in order depending on the provided vpc name
+    pub fn get_peers(&self, vpc: &str) -> (&VpcManifest, &VpcManifest) {
+        if self.left.name == vpc {
+            (&self.left, &self.right)
+        } else {
+            (&self.right, &self.left)
+        }
     }
 }
 
