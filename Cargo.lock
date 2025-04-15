@@ -214,9 +214,9 @@ dependencies = [
 
 [[package]]
 name = "bolero-engine"
-version = "0.13.0"
+version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b2496696794ca673fd085c7237d2b64b825bfe0dedbd5e947ca633532d8132b"
+checksum = "32055adc738f76a97e05f80bdec982a6c466e83d62ba36b1f4bfa45c45c9d813"
 dependencies = [
  "anyhow",
  "backtrace",
@@ -229,9 +229,9 @@ dependencies = [
 
 [[package]]
 name = "bolero-generator"
-version = "0.13.1"
+version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06b0c9bd47ec1d25ce698a2b4a0c3d8e527d0046919a04c800035e30bf4ea6d1"
+checksum = "fcd12c7e60aa56f3289f83bbac49f734af9557e3988d350a1dbf138dc8bf6020"
 dependencies = [
  "arbitrary",
  "bolero-generator-derive",
@@ -243,9 +243,9 @@ dependencies = [
 
 [[package]]
 name = "bolero-generator-derive"
-version = "0.13.0"
+version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "385f38498675c06532bed10cd40a4313691a8fb7d9b698fcf096739d422e1764"
+checksum = "7ac18dce1c2863a0e35482b9a456d7ed5ec9f36b1a9f9e088e49bc3dc51e9ad4"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -787,7 +787,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
