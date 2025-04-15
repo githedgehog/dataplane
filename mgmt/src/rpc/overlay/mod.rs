@@ -27,15 +27,10 @@ impl Overlay {
             peering_table,
         }
     }
-    fn check_peering_vpc(&self, peering: &str, manifest: &Option<VpcManifest>) -> ApiResult {
-        if let Some(vpc) = manifest {
-            if self.vpc_table.get_vpc(&vpc.name).is_none() {
-                error!("peering '{}': unknown VPC '{}'", peering, vpc.name);
-                return Err(ApiError::NoSuchVpc(vpc.name.clone()));
-            }
-        } else {
-            // should never happen
-            return Err(ApiError::IncompletePeeringData(peering.to_owned()));
+    fn check_peering_vpc(&self, peering: &str, manifest: &VpcManifest) -> ApiResult {
+        if self.vpc_table.get_vpc(&manifest.name).is_none() {
+            error!("peering '{}': unknown VPC '{}'", peering, manifest.name);
+            return Err(ApiError::NoSuchVpc(manifest.name.clone()));
         }
         Ok(())
     }

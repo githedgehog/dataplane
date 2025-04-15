@@ -44,10 +44,7 @@ pub mod test {
         let m1 = build_manifest_vpc1();
         let m2 = build_manifest_vpc2();
         // build vpc peering with the manifests
-        let mut peering = VpcPeering::new("VPC-1-to-VPC-2");
-        peering.set_one(m1);
-        peering.set_two(m2);
-        peering
+        VpcPeering::new("VPC-1-to-VPC-2", m1, m2)
     }
 
     #[test]
@@ -72,26 +69,6 @@ pub mod test {
         /* vpc with colliding VNI should be rejected */
         let vpc2 = Vpc::new("VPC-2", 3000).expect("Should succeed");
         assert_eq!(vpc_table.add(vpc2), Err(ApiError::DuplicateVpcVni(3000)));
-    }
-
-    #[test]
-    fn test_vpc_peering_checks() {
-        /* must have name */
-        let peering = VpcPeering::new("");
-        assert_eq!(peering.validate(), Err(ApiError::MissingPeeringName));
-
-        /* VPC data can't me missing */
-        let mut peering = VpcPeering::new("Some-peering");
-        peering.set_one(build_manifest_vpc1());
-        assert_eq!(
-            peering.validate(),
-            Err(ApiError::IncompletePeeringData("Some-peering".to_owned()))
-        );
-
-        let mut peering = VpcPeering::new("Some-peering");
-        peering.set_one(build_manifest_vpc1());
-        peering.set_two(build_manifest_vpc1());
-        assert_eq!(peering.validate(), Ok(()));
     }
 
     #[test]
@@ -148,30 +125,22 @@ pub mod test {
 
         let m1 = VpcManifest::new("VPC-1");
         let m2 = VpcManifest::new("VPC-2");
-        let mut peering = VpcPeering::new("Peering-1");
-        peering.set_one(m1);
-        peering.set_two(m2);
+        let peering = VpcPeering::new("Peering-1", m1, m2);
         peering_table.add(peering).unwrap();
 
         let m1 = VpcManifest::new("VPC-1");
         let m2 = VpcManifest::new("VPC-3");
-        let mut peering = VpcPeering::new("Peering-2");
-        peering.set_one(m1);
-        peering.set_two(m2);
+        let peering = VpcPeering::new("Peering-2", m1, m2);
         peering_table.add(peering).unwrap();
 
         let m1 = VpcManifest::new("VPC-2");
         let m2 = VpcManifest::new("VPC-4");
-        let mut peering = VpcPeering::new("Peering-3");
-        peering.set_one(m1);
-        peering.set_two(m2);
+        let peering = VpcPeering::new("Peering-3", m1, m2);
         peering_table.add(peering).unwrap();
 
         let m1 = VpcManifest::new("VPC-1");
         let m2 = VpcManifest::new("VPC-4");
-        let mut peering = VpcPeering::new("Peering-4");
-        peering.set_one(m1);
-        peering.set_two(m2);
+        let peering = VpcPeering::new("Peering-4", m1, m2);
         peering_table.add(peering).unwrap();
 
         // all peerings of VPC-1

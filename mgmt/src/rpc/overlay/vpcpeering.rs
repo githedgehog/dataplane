@@ -63,36 +63,24 @@ impl VpcManifest {
 
 #[derive(Debug)]
 pub struct VpcPeering {
-    pub name: String, /* key: name of peering */
-    pub left: Option<VpcManifest>,
-    pub right: Option<VpcManifest>,
+    pub name: String,       /* name of peering (key in table) */
+    pub left: VpcManifest,  /* manifest for one side of the peering */
+    pub right: VpcManifest, /* manifest for the other side */
 }
 impl VpcPeering {
-    pub fn new(name: &str) -> Self {
+    pub fn new(name: &str, left: VpcManifest, right: VpcManifest) -> Self {
         Self {
             name: name.to_owned(),
-            left: None,
-            right: None,
+            left,
+            right,
         }
     }
     pub fn validate(&self) -> ApiResult {
         if self.name.is_empty() {
             return Err(ApiError::MissingPeeringName);
         }
-        if self.left.is_none() || self.right.is_none() {
-            Err(ApiError::IncompletePeeringData(self.name.clone()))
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
-    pub fn set_one(&mut self, exp_manifest: VpcManifest) {
-        self.left = Some(exp_manifest);
-    }
-    pub fn set_two(&mut self, exp_manifest: VpcManifest) {
-        self.right = Some(exp_manifest);
-    }
-
-    // TODO add all exposes to the VpcPeering
 }
 
 #[derive(Debug, Default)]
@@ -117,15 +105,8 @@ impl VpcPeeringTable {
     }
     /// Produce iterator of [`VpcPeering`]s that involve the vpc with the provided name
     pub fn peerings_vpc(&self, vpc: &str) -> impl Iterator<Item = &VpcPeering> {
-        self.0.values().filter(|peering| {
-            // VPCs are options to ease builders but should always be there
-            let name1 = peering.left.as_ref().map(|m| m.name.as_str());
-            let name2 = peering.right.as_ref().map(|m| m.name.as_str());
-            if name1.is_none() || name2.is_none() {
-                false
-            } else {
-                name1 == Some(vpc) || name2 == Some(vpc)
-            }
-        })
+        self.0
+            .values()
+            .filter(move |p| p.left.name == vpc || p.right.name == vpc)
     }
 }
