@@ -6,6 +6,7 @@ members = [
 	"dpdk-sys",
 	"dpdk-sysroot-helper",
 	"errno",
+	"fixin",
 	"id",
 	"mgmt",
 	"net",
@@ -17,6 +18,7 @@ default-members = [
 	"dataplane",
 	"dpdk-sysroot-helper",
 	"errno",
+	"fixin",
 	"id",
 	"mgmt",
 	"net",
@@ -34,6 +36,7 @@ dpdk-sys = { path = "./dpdk-sys" }
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper" }
 dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", version = "1.0.0" }
 errno = { path = "./errno", package = "dataplane-errno" }
+fixin = { path = "fixin" }
 id = { path = "./id", package = "dataplane-id" }
 net = { path = "./net", features = ["test_buffer"]}
 pipeline = { path = "./pipeline" }
@@ -50,8 +53,8 @@ bolero = { version = "0.13.2", default-features = false, features = [] }
 bytes = { version = "1.10.1", default-features = false, features = [] }
 clap = { version = "4.5.36", default-features = true, features = [] }
 ctrlc = { version = "3.4.6", default-features = false, features = [] }
-derive_builder = { version = "0.20.2", default-features = false, features = ["default"] }
 default-net = { version = "0.22.0", default-features = false, features = [] }
+derive_builder = { version = "0.20.2", default-features = false, features = ["default"] }
 doxygen-rs = { version = "0.4.2", default-features = false, features = [] }
 dyn-iter = { version = "1.0.1", default-features = false, features = [] }
 etherparse = { version = "0.17.0", default-features = false, features = [] }
@@ -59,8 +62,11 @@ ipnet = { version = "2.11.0", default-features = false, features = [] }
 iptrie = { version = "0.10.3", default-features = false, features = [] }
 mio = { version = "1.0.3", default-features = false, features = [] }
 ordermap = { version = "0.5.7", default-features = false, features = [] }
+proc-macro-error2 = {  version = "2.0.1", default-features = false, features = [] }
+quote = {  version = "1.0.40", default-features = false, features = [] }
 serde = { version = "1.0.219", default-features = false, features = [] }
 serde_yml = { version = "0.0.12", default-features = false, features = [] }
+syn = {  version = "2.0.100", default-features = false, features = [] }
 thiserror = { version = "2.0.12", default-features = false, features = [] }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] } # attribute feature is so commonly used that we should just leave it on globally
 tracing-subscriber = { version = "0.3.19", default-features = false, features = [] }
