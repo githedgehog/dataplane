@@ -5,6 +5,10 @@
 
 #![allow(unused)]
 
+use net::eth::ethtype::EthType;
+use net::eth::mac::Mac;
+use net::vlan::Vid;
+use net::vxlan::Vni;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::net::IpAddr;
@@ -17,22 +21,55 @@ pub struct InterfaceAddress {
     pub mask_len: u8,
 }
 
-pub enum InterfaceType {
-    Bridge,
-    Vtep,
-    Vrf,
-    Vlan,
+#[derive(Debug)]
+pub struct IfVlanConfig {
+    pub mac: Option<Mac>,
+    pub vlan_id: Vid,
+}
+#[derive(Debug)]
+pub struct IfEthConfig {
+    pub mac: Option<Mac>,
+}
+#[derive(Debug)]
+pub struct IfBridgeConfig {
+    pub vlan_filtering: bool,
+    pub vlan_protocol: EthType,
+    pub mac: Option<Mac>,
+}
+#[derive(Debug)]
+pub struct IfVtepConfig {
+    pub mac: Option<Mac>,
+    pub vni: Option<Vni>,
+    pub ttl: Option<u8>,
+    pub local: IpAddr,
 }
 
 #[derive(Debug)]
-/// A network interface configuration. An interface can be user-specified or internal
+pub struct IfVrfConfig {
+    pub table_id: u32, // FIXME: interface manager has specific type
+}
+
+#[derive(Debug)]
+pub enum InterfaceType {
+    Loopback,
+    Ethernet(IfEthConfig),
+    Vlan(IfVlanConfig),
+    Bridge(IfBridgeConfig),
+    Vtep(IfVtepConfig),
+    Vrf(IfVrfConfig),
+}
+
+#[derive(Debug)]
+/// A network interface configuration. An interface can be user-specified or internal. This config object
+/// includes data to create the interface in the kernel and configure it for routing (e.g. FRR)
 pub struct InterfaceConfig {
-    pub internal: bool,
-    pub name: String,
+    pub name: String, /* key */
+    pub iftype: InterfaceType,
     pub description: Option<String>,
     pub vrf: Option<String>,
     pub addresses: BTreeSet<InterfaceAddress>,
     pub mtu: Option<u16>,
+    pub internal: bool, /* true if automatically created */
 }
 
 #[derive(Debug, Default)]
@@ -46,14 +83,15 @@ impl InterfaceAddress {
 }
 
 impl InterfaceConfig {
-    pub fn new(name: &str, internal: bool) -> Self {
+    pub fn new(name: &str, iftype: InterfaceType, internal: bool) -> Self {
         Self {
-            internal,
             name: name.to_owned(),
+            iftype,
             description: None,
             vrf: None,
             addresses: BTreeSet::new(),
             mtu: None,
+            internal,
         }
     }
     pub fn set_description(mut self, description: &str) -> Self {
