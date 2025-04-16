@@ -5,6 +5,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::config::{InterfaceConfig, InterfaceConfigTable};
 use net::vxlan::Vni;
 use routing::prefix::Prefix;
 
@@ -21,6 +22,7 @@ pub struct VrfConfig {
     pub subnets: BTreeSet<Prefix>,
     pub static_routes: BTreeSet<StaticRoute>,
     pub bgp: Option<BgpConfig>,
+    pub interfaces: InterfaceConfigTable,
 }
 
 impl VrfConfig {
@@ -33,6 +35,7 @@ impl VrfConfig {
             subnets: BTreeSet::new(),
             static_routes: BTreeSet::new(),
             bgp: None,
+            interfaces: InterfaceConfigTable::new(),
         }
     }
     pub fn set_table_id(mut self, tableid: u32) -> Self {
@@ -61,6 +64,9 @@ impl VrfConfig {
     }
     pub fn add_static_route(&mut self, static_route: StaticRoute) {
         self.static_routes.insert(static_route);
+    }
+    pub fn add_interface_config(&mut self, if_cfg: InterfaceConfig) {
+        self.interfaces.add_interface_config(if_cfg);
     }
 }
 

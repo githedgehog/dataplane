@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 
-#[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// An Ip address configured on a local interface
 /// Fixme(fredi): this type should be inherited from routing crate on new merge
 pub struct InterfaceAddress {
@@ -21,22 +21,22 @@ pub struct InterfaceAddress {
     pub mask_len: u8,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct IfVlanConfig {
     pub mac: Option<Mac>,
     pub vlan_id: Vid,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct IfEthConfig {
     pub mac: Option<Mac>,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct IfBridgeConfig {
     pub vlan_filtering: bool,
     pub vlan_protocol: EthType,
     pub mac: Option<Mac>,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct IfVtepConfig {
     pub mac: Option<Mac>,
     pub vni: Option<Vni>,
@@ -44,12 +44,12 @@ pub struct IfVtepConfig {
     pub local: IpAddr,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct IfVrfConfig {
     pub table_id: u32, // FIXME: interface manager has specific type
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum InterfaceType {
     Loopback,
     Ethernet(IfEthConfig),
@@ -59,7 +59,7 @@ pub enum InterfaceType {
     Vrf(IfVrfConfig),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 /// A network interface configuration. An interface can be user-specified or internal. This config object
 /// includes data to create the interface in the kernel and configure it for routing (e.g. FRR)
 pub struct InterfaceConfig {
@@ -72,7 +72,7 @@ pub struct InterfaceConfig {
     pub internal: bool, /* true if automatically created */
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 /// An interface configuration table
 pub struct InterfaceConfigTable(BTreeMap<String, InterfaceConfig>);
 
