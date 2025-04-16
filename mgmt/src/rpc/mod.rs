@@ -29,5 +29,7 @@ pub enum ApiError {
     FailureApply,
     #[error("Forbidden")]
     Forbidden,
+    #[error("Incomplete config: missing {0} configuration")]
+    IncompleteConfig(&'static str),
 }
-type ApiResult = Result<(), ApiError>;
+pub type ApiResult = Result<(), ApiError>;

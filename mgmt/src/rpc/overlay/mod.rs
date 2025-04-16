@@ -11,7 +11,7 @@ pub mod vpcpeering;
 use crate::rpc::overlay::vpc::VpcTable;
 use crate::rpc::overlay::vpcpeering::VpcManifest;
 use crate::rpc::overlay::vpcpeering::VpcPeeringTable;
-use tracing::error;
+use tracing::{debug, error};
 
 use super::{ApiError, ApiResult};
 
@@ -36,6 +36,7 @@ impl Overlay {
         Ok(())
     }
     pub fn validate(&self) -> ApiResult {
+        debug!("Validating overlay configuration");
         /* Vpc peerings are validated on insertion: there, we check that the peering
         has a unique name and that it refers to two VPCs. Here we validate that the
         referred-to VPCs do actually exist in the VPC table. */

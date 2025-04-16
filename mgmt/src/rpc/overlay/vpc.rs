@@ -9,6 +9,7 @@ use net::vxlan::Vni;
 use routing::prefix::Prefix;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use tracing::{debug, warn};
 
 use crate::rpc::overlay::VpcManifest;
 use crate::rpc::overlay::VpcPeeringTable;
@@ -53,6 +54,10 @@ impl Vpc {
                 }
             })
             .collect();
+
+        if self.peerings.is_empty() {
+            warn!("Warning, VPC {} has no configured peerings", &self.name);
+        }
     }
 }
 
@@ -101,6 +106,7 @@ impl VpcTable {
     }
     /// Collect peerings for all [`Vpc`]s in this [`VpcTable`]
     pub fn collect_peerings(&mut self, peering_table: &VpcPeeringTable) {
+        debug!("Collecting peerings for all VPCs..");
         self.values_mut()
             .for_each(|vpc| vpc.collect_peerings(peering_table));
     }

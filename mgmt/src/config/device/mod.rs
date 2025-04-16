@@ -8,6 +8,9 @@ pub mod settings;
 
 use ports::PortConfig;
 use settings::DeviceSettings;
+use tracing::warn;
+
+use crate::rpc::ApiResult;
 
 #[derive(Clone, Debug)]
 pub struct DeviceConfig {
@@ -20,5 +23,9 @@ impl DeviceConfig {
             settings,
             ports: vec![],
         }
+    }
+    pub fn validate(&self) -> ApiResult {
+        warn!("Validating device configuration (TODO");
+        Ok(())
     }
 }
