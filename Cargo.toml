@@ -33,12 +33,12 @@ dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper" }
 dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", version = "1.0.0" }
 errno = { path = "./errno", package = "dataplane-errno" }
 id = { path = "./id", package = "dataplane-id" }
-net = { path = "./net", features = ["test_buffer"]}
+net = { path = "./net", features = ["test_buffer"] }
 pipeline = { path = "./pipeline" }
 routing = { path = "./routing" }
 
 # External
-afpacket = { version = "0.2.3", default-features = false, features = [] } 
+afpacket = { version = "0.2.3", default-features = false, features = [] }
 ahash = { version = "0.8.11", default-features = false, features = [] }
 arbitrary = { version = "1.4.1", default-features = false, features = [] }
 arc-swap = { version = "1.7.1", default-features = false, features = [] }
