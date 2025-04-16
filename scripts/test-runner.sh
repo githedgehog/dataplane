@@ -117,6 +117,7 @@ source "${script_dir}/dpdk-sys.env"
 # * If you adjust the list of --cap-add arguments, then you need to adjust the above setcap command as well.
 "${SUDO}" --preserve-env docker run \
   --rm \
+  --mount "type=bind,source=${HOME}/.rustup,destination=${HOME}/.rustup,readonly=true,bind-propagation=rprivate" \
   --mount "type=bind,source=${1},target=${1},readonly=true,bind-propagation=rprivate" \
   --mount "type=bind,source=${project_dir},target=${project_dir},readonly=true,bind-propagation=rprivate" \
   --mount "type=bind,source=$(get_docker_sock),target=$(get_docker_sock),readonly=false,bind-propagation=rprivate" \
