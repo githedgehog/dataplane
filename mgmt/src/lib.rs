@@ -13,3 +13,6 @@ pub mod processor;
 
 /* external model */
 pub mod rpc;
+
+/* Frr drivers */
+pub mod frr;
