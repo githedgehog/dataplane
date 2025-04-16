@@ -11,7 +11,7 @@ use std::net::{IpAddr, Ipv4Addr};
 
 // FRR defaults {datacenter | traditional}
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub enum Protocol {
     #[default]
     Connected,
@@ -21,33 +21,33 @@ pub enum Protocol {
     ISIS,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Redistribute {
     pub protocol: Protocol,
     pub metric: Option<u32>,
     pub rmap: Option<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 /// VRF leaking
 pub struct VrfImports {
     pub from_vrf: BTreeSet<String>,
     pub routemap: Option<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct AfIpv4Ucast {
     pub redistribute: Vec<Redistribute>,
     pub imports: Option<VrfImports>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct AfIpv6Ucast {
     pub redistribute: Vec<Redistribute>,
     pub imports: Option<VrfImports>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct AfL2vpnEvpn {
     pub adv_all_vni: bool,
     pub adv_default_gw: bool,
@@ -60,7 +60,7 @@ pub struct AfL2vpnEvpn {
     pub default_originate_ipv6: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct BgpNeighCapabilities {
     pub dynamic: bool,
     pub ext_nhop: bool,
@@ -69,7 +69,7 @@ pub struct BgpNeighCapabilities {
     //ORF
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum NeighSendCommunities {
     All,
     Both,
@@ -78,13 +78,13 @@ pub enum NeighSendCommunities {
     Standard,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum BgpUpdateSource {
     Address(IpAddr),
     Interface(String),
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub enum BgpNeighType {
     #[default]
     Unset,
@@ -92,7 +92,7 @@ pub enum BgpNeighType {
     PeerGroup(String),
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 /// A BGP neighbor config
 pub struct BgpNeighbor {
     pub ntype: BgpNeighType,
@@ -132,7 +132,7 @@ pub struct BgpNeighbor {
     pub l2vpn_evpn: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct BgpDefaultsAF {
     flow_spec: bool,
     labeled_unicast: bool,
@@ -141,7 +141,7 @@ pub struct BgpDefaultsAF {
     vpn: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 /// BGP configuration options
 pub struct BgpDefaults {
     dynamic_capability: bool,
@@ -150,7 +150,7 @@ pub struct BgpDefaults {
     l2vpn_evpn: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 /// BGP global configuration options
 pub struct BgpOptions {
     pub network_import_check: bool,
@@ -163,7 +163,7 @@ pub struct BgpOptions {
     pub listen_limit: Option<u16>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 /// A BGP instance config, within a certain VRF
 pub struct BgpConfig {
     pub asn: u32,

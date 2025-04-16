@@ -11,7 +11,7 @@ use routing::prefix::Prefix;
 use super::bgp::BgpConfig;
 use super::statics::StaticRoute;
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 
 pub struct VrfConfig {
     pub name: String,

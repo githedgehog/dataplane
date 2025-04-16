@@ -6,7 +6,7 @@
 use routing::prefix::Prefix;
 use std::net::IpAddr;
 
-#[derive(Debug, Ord, Eq, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Ord, Eq, PartialEq, PartialOrd)]
 pub enum StaticRouteNhop {
     Unset,
     Interface(String),
@@ -16,7 +16,7 @@ pub enum StaticRouteNhop {
     Reject,
 }
 
-#[derive(Debug, Ord, Eq, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Ord, Eq, PartialEq, PartialOrd)]
 pub struct StaticRoute {
     pub prefix: Prefix,
     pub next_hop: StaticRouteNhop,
