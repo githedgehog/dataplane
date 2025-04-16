@@ -16,7 +16,7 @@ arrayvec = { workspace = true }
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional = true }
 derive_builder = { workspace = true, features = [] }
 etherparse = { workspace = true, features = ["std"] }
-ordermap = { workspace = true, features = [] }
+ordermap = { workspace = true, features = ["std"] }
 serde = { workspace = true, features = ["derive", "std"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
