@@ -28,7 +28,6 @@ pub struct InternalConfig {
     pub frr: Option<Frr>,
     pub vtep: Option<VtepConfig>, // As a network interface
     pub vrfs: VrfConfigTable,
-    pub interfaces: InterfaceConfigTable,
     pub plist_table: PrefixListTable,
     pub rmap_table: RouteMapTable,
 }
@@ -48,9 +47,6 @@ impl InternalConfig {
     }
     pub fn add_vrf_config(&mut self, vrf_cfg: VrfConfig) {
         self.vrfs.add_vrf_config(vrf_cfg);
-    }
-    pub fn add_interface_config(&mut self, if_cfg: InterfaceConfig) {
-        self.interfaces.add_interface_config(if_cfg);
     }
     pub fn add_prefix_list(&mut self, plist: PrefixList) {
         self.plist_table.add_prefix_list(plist);
