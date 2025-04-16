@@ -59,6 +59,8 @@ _docker_sock_cmd := replace_regex(_just_debuggable_, ".+", "$0;") + '''
   declare -r without_unix="${DOCKER_HOST##unix://}"
   if [ -S "${without_unix}" ]; then
     printf -- '%s' "${without_unix}"
+  elif [ -S "/run/docker/docker.sock" ]; then
+    printf -- '%s' "/run/docker/docker.sock"
   elif [ -S /var/run/docker.sock ]; then
     printf -- '%s' "/var/run/docker.sock"
   fi
@@ -154,6 +156,9 @@ compile-env *args:
     GID="$(id -g)"
     declare -rxi GID
     declare -rx USER="${USER:-runner}"
+    declare  DOCKER_GID
+    DOCKER_GID="$(getent group docker | cut -d: -f3)"
+    declare -rxi DOCKER_GID
     envsubst < dev-env-template/etc.template/group.template > dev-env-template/etc/group
     envsubst < dev-env-template/etc.template/passwd.template > dev-env-template/etc/passwd
     mkdir -p "$(pwd)/sterile"
@@ -181,6 +186,7 @@ compile-env *args:
       --network="{{ _network }}" \
       --env DOCKER_HOST="${DOCKER_HOST}" \
       --env CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" \
+      --env DOCKER_HOST="${DOCKER_HOST:-unix:///var/run/docker.sock}" \
       --env TMPDIR="${TMPDIR}" \
       --tmpfs "/tmp:uid=$(id -u),gid=$(id -g),nodev,noexec,nosuid" \
       --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=1777" \
@@ -188,9 +194,10 @@ compile-env *args:
       --mount "type=bind,source=${tmp_link},destination=$(pwd)/compile-env,bind-propagation=rprivate" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly" \
-      --mount "type=bind,source=${CARGO_TARGET_DIR},destination=${CARGO_TARGET_DIR},bind-propagation=rprivate" \
-      --mount "type=bind,source={{ DOCKER_SOCK }},destination=/var/run/docker.sock" \
+      --mount "type=bind,source=${CARGO_TARGET_DIR},destination=${CARGO_TARGET_DIR}" \
+      --mount "type=bind,source={{ DOCKER_SOCK }},destination={{ DOCKER_SOCK }}" \
       --user "$(id -u):$(id -g)" \
+      --group-add="$(getent group docker | cut -d: -f3)" \
       --workdir "$(pwd)" \
       "{{ _compile_env_container }}" \
       {{ args }}
