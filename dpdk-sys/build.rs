@@ -3,7 +3,6 @@
 
 use bindgen::callbacks::ParseCallbacks;
 use std::env;
-use std::panic::catch_unwind;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -11,12 +10,12 @@ struct Cb;
 
 impl ParseCallbacks for Cb {
     fn process_comment(&self, comment: &str) -> Option<String> {
-        match catch_unwind(|| match doxygen_rs::generator::rustdoc(comment.into()) {
-            Ok(transformed) => transformed,
-            Err(_) => comment.into(),
-        }) {
-            Ok(s) => Some(s),
-            Err(_) => Some(comment.into()),
+        match doxygen_bindgen::transform(comment) {
+            Ok(yup) => Some(yup),
+            Err(nope) => {
+                eprintln!("failed to transform doxygen comment: {nope}");
+                Some(comment.to_string())
+            }
         }
     }
 }
