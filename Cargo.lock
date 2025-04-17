@@ -515,7 +515,13 @@ dependencies = [
 name = "dataplane-interface-manager"
 version = "0.0.1"
 dependencies = [
+ "bolero",
+ "derive_builder",
+ "multi_index_map",
+ "net",
+ "rekon",
  "rtnetlink",
+ "serde",
 ]
 
 [[package]]

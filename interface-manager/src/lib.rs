@@ -18,6 +18,8 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+pub mod interface;
+
 use rtnetlink::Handle;
 
 /// `Manager` is the primary entry point to interface reconciliation logic.

@@ -6,15 +6,23 @@ license = "Apache-2.0"
 publish = false
 
 [features]
-bolero = []
+bolero = ["dep:bolero", "net/arbitrary"]
 
 [dependencies]
 # internal
+net = { workspace = true }
+rekon = { workspace = true }
 
 # external
+bolero = { workspace = true, optional = true, features = ["alloc"] }
+derive_builder = { workspace = true, features = ["alloc"] }
+multi_index_map = { workspace = true, features = ["serde"] }
 rtnetlink = { workspace = true, features = ["tokio"] }
+serde = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 # internal
+net = { workspace = true, features = ["arbitrary"] }
 
 # external
+bolero = { workspace = true, features = ["alloc"] }
