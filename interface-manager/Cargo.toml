@@ -14,15 +14,20 @@ net = { workspace = true }
 rekon = { workspace = true }
 
 # external
-bolero = { workspace = true, optional = true, features = ["alloc"] }
-derive_builder = { workspace = true, features = ["alloc"] }
+bolero = { workspace = true, optional = true, default-features = false, features = ["alloc"] }
+derive_builder = { workspace = true, default-features = false, features = ["default"] }
 multi_index_map = { workspace = true, features = ["serde"] }
-rtnetlink = { workspace = true, features = ["tokio"] }
+nix = { workspace = true, features = [] }
+rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tracing = { workspace = true, features = ["attributes"] }
 
 [dev-dependencies]
 # internal
 net = { workspace = true, features = ["arbitrary"] }
 
 # external
-bolero = { workspace = true, features = ["alloc"] }
+bolero = { workspace = true, default-features = false, features = ["alloc"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time", "test-util"] }
+
