@@ -5,6 +5,9 @@
 
 mod bridge;
 mod vrf;
+mod vtep;
 
 #[allow(unused_imports)] // re-export
 pub use vrf::*;
+#[allow(unused_imports)] // re-export
+pub use vtep::*;
