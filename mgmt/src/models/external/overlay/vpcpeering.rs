@@ -91,7 +91,7 @@ impl VpcPeering {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct VpcPeeringTable(BTreeMap<String, VpcPeering>);
 impl VpcPeeringTable {
     /// Create a new, empty [`VpcPeeringTable`]

@@ -19,7 +19,7 @@ use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceC
 /// This is nearly identical to [`VpcPeering`], but with some subtle differences.
 /// [`Peering`] is owned by a Vpc while [`VpcPeering`] remains in the [`VpcPeeringTable`].
 /// Most importantly, [`Peering`] has a notion of local and remote, while [`VpcPeering`] is symmetrical.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Peering {
     pub name: String,        /* name of peering */
     pub local: VpcManifest,  /* local manifest */
@@ -27,7 +27,7 @@ pub struct Peering {
 }
 
 /// Representation of a VPC from the RPC
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Vpc {
     pub name: String,                     /* key */
     pub vni: Vni,                         /* mandatory */
@@ -69,7 +69,7 @@ impl Vpc {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct VpcTable {
     vpcs: BTreeMap<String, Vpc>,
     vnis: BTreeSet<Vni>,

@@ -22,8 +22,8 @@ impl GwConfigDatabase {
         Self::default()
     }
     pub fn add(&mut self, config: GwConfig) {
-        debug!("Adding config '{}' to config db...", config.meta.genid);
-        self.configs.insert(config.meta.genid, config);
+        debug!("Adding config '{}' to config db...", config.genid());
+        self.configs.insert(config.external.genid, config);
     }
     pub fn get(&self, genid: GenId) -> Option<&GwConfig> {
         self.configs.get(&genid)
