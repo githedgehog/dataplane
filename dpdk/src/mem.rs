@@ -150,7 +150,7 @@ impl Pool {
             .map(|_| unsafe { transmute(null_mut::<dpdk_sys::rte_mbuf>()) })
             .collect();
         let ret = unsafe {
-            dpdk_sys::rte_pktmbuf_alloc_bulk_w(
+            dpdk_sys::rte_pktmbuf_alloc_bulk(
                 self.0.as_mut_ptr(),
                 transmute::<*mut Mbuf, *mut *mut dpdk_sys::rte_mbuf>(mbufs.as_mut_ptr()),
                 num as c_uint,
