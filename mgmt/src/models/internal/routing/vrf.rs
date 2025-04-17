@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::config::{InterfaceConfig, InterfaceConfigTable};
+use crate::models::internal::{InterfaceConfig, InterfaceConfigTable};
 use net::vxlan::Vni;
 use routing::prefix::Prefix;
 

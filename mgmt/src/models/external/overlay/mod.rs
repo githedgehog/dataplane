@@ -8,9 +8,9 @@ pub mod tests;
 pub mod vpc;
 pub mod vpcpeering;
 
-use crate::rpc::overlay::vpc::VpcTable;
-use crate::rpc::overlay::vpcpeering::VpcManifest;
-use crate::rpc::overlay::vpcpeering::VpcPeeringTable;
+use crate::models::external::overlay::vpc::VpcTable;
+use crate::models::external::overlay::vpcpeering::VpcManifest;
+use crate::models::external::overlay::vpcpeering::VpcPeeringTable;
 use tracing::{debug, error};
 
 use super::{ApiError, ApiResult};

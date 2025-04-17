@@ -3,13 +3,10 @@
 
 //! Dataplane management module
 
-/* internal configuration of the gw */
-pub mod config;
+/* models for internal and external configurations of the gw */
+pub mod models;
 /* gRPC entry point */
 pub mod grpc;
 
 /* Configuration processor */
 pub mod processor;
-
-/* external model */
-pub mod rpc;

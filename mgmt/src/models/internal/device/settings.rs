@@ -9,7 +9,7 @@ use tracing::Level;
 
 #[derive(Clone, Debug, Default)]
 
-pub struct EalConfig {}
+pub struct DpdkPortConfig {}
 
 #[derive(Clone, Debug)]
 
@@ -17,7 +17,7 @@ pub struct KernelPacketConfig {}
 
 #[derive(Clone, Debug)]
 pub enum PacketDriver {
-    DPDK(EalConfig),
+    DPDK(DpdkPortConfig),
     Kernel(KernelPacketConfig),
 }
 
@@ -33,7 +33,7 @@ impl Default for DeviceSettings {
         Self {
             hostname: None,
             loglevel: Level::ERROR,
-            driver: PacketDriver::DPDK(EalConfig::default()),
+            driver: PacketDriver::DPDK(DpdkPortConfig::default()),
         }
     }
 }

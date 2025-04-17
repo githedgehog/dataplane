@@ -7,11 +7,11 @@
 use std::time::SystemTime;
 use tracing::{debug, info, warn};
 
-use crate::config::InternalConfig;
-use crate::config::device::DeviceConfig;
-use crate::config::routing::vrf::VrfConfig;
-use crate::rpc::overlay::Overlay;
-use crate::rpc::{ApiError, ApiResult};
+use crate::models::external::overlay::Overlay;
+use crate::models::external::{ApiError, ApiResult};
+use crate::models::internal::InternalConfig;
+use crate::models::internal::device::DeviceConfig;
+use crate::models::internal::routing::vrf::VrfConfig;
 
 #[allow(unused)]
 pub struct Underlay {

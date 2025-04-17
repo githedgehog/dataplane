@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::rpc::overlay::vpc::Vpc;
+use crate::models::external::overlay::vpc::Vpc;
 use routing::pretty_utils::Heading;
 use std::fmt::Display;
 
-use crate::rpc::overlay::VpcManifest;
-use crate::rpc::overlay::vpc::Peering;
-use crate::rpc::overlay::vpc::VpcTable;
-use crate::rpc::overlay::vpcpeering::{VpcExpose, VpcPeering, VpcPeeringTable};
+use crate::models::external::overlay::VpcManifest;
+use crate::models::external::overlay::vpc::Peering;
+use crate::models::external::overlay::vpc::VpcTable;
+use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcPeering, VpcPeeringTable};
 
 const SEP: &str = "       ";
 

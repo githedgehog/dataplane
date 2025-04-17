@@ -7,7 +7,7 @@ use routing::prefix::Prefix;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-use crate::rpc::{ApiError, ApiResult};
+use crate::models::external::{ApiError, ApiResult};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExpose {

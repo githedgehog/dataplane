@@ -6,8 +6,8 @@
 use std::collections::BTreeMap;
 use tracing::{debug, error, info};
 
-use crate::rpc::configdb::gwconfig::GwConfig;
-use crate::rpc::{ApiError, ApiResult};
+use crate::models::external::configdb::gwconfig::GwConfig;
+use crate::models::external::{ApiError, ApiResult};
 
 #[derive(Default)]
 #[allow(unused)]

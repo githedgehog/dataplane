@@ -11,10 +11,10 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use tracing::{debug, warn};
 
-use crate::config::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
-use crate::rpc::overlay::VpcManifest;
-use crate::rpc::overlay::VpcPeeringTable;
-use crate::rpc::{ApiError, ApiResult};
+use crate::models::external::overlay::VpcManifest;
+use crate::models::external::overlay::VpcPeeringTable;
+use crate::models::external::{ApiError, ApiResult};
+use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
 
 /// This is nearly identical to [`VpcPeering`], but with some subtle differences.
 /// [`Peering`] is owned by a Vpc while [`VpcPeering`] remains in the [`VpcPeeringTable`].

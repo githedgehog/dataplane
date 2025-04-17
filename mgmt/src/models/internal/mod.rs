@@ -12,13 +12,13 @@ pub mod device;
 pub mod interfaces;
 pub mod routing;
 
-use crate::config::device::DeviceConfig;
-use crate::config::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
-use crate::config::routing::evpn::VtepConfig;
-use crate::config::routing::frr::Frr;
-use crate::config::routing::prefixlist::{PrefixList, PrefixListTable};
-use crate::config::routing::routemap::{RouteMap, RouteMapTable};
-use crate::config::routing::vrf::{VrfConfig, VrfConfigTable};
+use crate::models::internal::device::DeviceConfig;
+use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
+use crate::models::internal::routing::evpn::VtepConfig;
+use crate::models::internal::routing::frr::Frr;
+use crate::models::internal::routing::prefixlist::{PrefixList, PrefixListTable};
+use crate::models::internal::routing::routemap::{RouteMap, RouteMapTable};
+use crate::models::internal::routing::vrf::{VrfConfig, VrfConfigTable};
 
 #[derive(Debug, Default)]
 /* Main internal GW configuration */

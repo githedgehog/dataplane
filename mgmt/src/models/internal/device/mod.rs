@@ -10,7 +10,7 @@ use ports::PortConfig;
 use settings::DeviceSettings;
 use tracing::warn;
 
-use crate::rpc::ApiResult;
+use crate::models::external::ApiResult;
 
 #[derive(Clone, Debug)]
 pub struct DeviceConfig {
