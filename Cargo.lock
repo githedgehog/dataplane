@@ -512,6 +512,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-interface-manager"
+version = "0.0.1"
+
+[[package]]
 name = "default-net"
 version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
