@@ -18,8 +18,8 @@ pub use vrf::*;
 #[allow(unused_imports)] // re-export
 pub use vtep::*;
 
-use crate::Manager;
 use crate::interface::properties::InterfacePropertiesSpec;
+use crate::{Manager, manager_of};
 use derive_builder::Builder;
 use multi_index_map::MultiIndexMap;
 use net::eth::mac::SourceMac;
@@ -404,5 +404,62 @@ impl Update for Manager<AdminState> {
                     .await
             }
         }
+    }
+}
+
+impl Update for Manager<Interface> {
+    type Requirement<'a>
+        = &'a InterfaceSpec
+    where
+        Self: 'a;
+    type Observation<'a>
+        = &'a Interface
+    where
+        Self: 'a;
+    type Outcome<'a>
+        = Result<(), rtnetlink::Error>
+    where
+        Self: 'a,
+        Interface: 'a;
+
+    async fn update<'a>(
+        &self,
+        required: &InterfaceSpec,
+        observed: &Interface,
+    ) -> Result<(), rtnetlink::Error> {
+        if required.properties != observed.properties {
+            // If properties are drifting, then we need to just kill and fill the thing.
+            // Many properties are not possible to update in a reliable way.
+            // We might not even be dealing with an aligned interface type.
+            manager_of::<Interface>(self).remove(observed).await?;
+            return Ok(());
+        }
+        if required.name != observed.name {
+            manager_of::<InterfaceName>(self)
+                .update(&required.name, observed)
+                .await?;
+        }
+        if required.mac != observed.mac {
+            match required.mac {
+                None => { /* no mac specified */ }
+                Some(mac) => {
+                    manager_of::<SourceMac>(self).update(mac, observed).await?;
+                    return Ok(());
+                }
+            }
+        }
+        if required.controller != observed.controller {
+            manager_of::<InterfaceAssociation>(self)
+                .update(required.controller, observed)
+                .await?;
+            return Ok(());
+        }
+        if required.admin_state != observed.admin_state {
+            manager_of::<AdminState>(self)
+                .update(required.admin_state, observed)
+                .await?;
+            return Ok(());
+        }
+        Ok(())
     }
 }
