@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use tracing::{debug, warn};
 
+use crate::config::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
 use crate::rpc::overlay::VpcManifest;
 use crate::rpc::overlay::VpcPeeringTable;
 use crate::rpc::{ApiError, ApiResult};
@@ -28,9 +29,10 @@ pub struct Peering {
 /// Representation of a VPC from the RPC
 #[derive(Debug, PartialEq)]
 pub struct Vpc {
-    pub name: String,           /* key */
-    pub vni: Vni,               /* mandatory */
-    pub peerings: Vec<Peering>, /* peerings of this VPC - NOT set via gRPC */
+    pub name: String,                     /* key */
+    pub vni: Vni,                         /* mandatory */
+    pub interfaces: InterfaceConfigTable, /* user-defined interfaces in this VPC */
+    pub peerings: Vec<Peering>,           /* peerings of this VPC - NOT set via gRPC */
 }
 impl Vpc {
     pub fn new(name: &str, vni: u32) -> Result<Self, ApiError> {
@@ -38,9 +40,15 @@ impl Vpc {
         Ok(Self {
             name: name.to_owned(),
             vni,
+            interfaces: InterfaceConfigTable::new(),
             peerings: vec![],
         })
     }
+    /// Add an [`InterfaceConfig`] to this [`Vpc`]
+    pub fn add_interface_config(&mut self, if_cfg: InterfaceConfig) {
+        self.interfaces.add_interface_config(if_cfg);
+    }
+
     /// Collect all peerings from the [`VpcPeeringTable`] table that involve this vpc
     pub fn collect_peerings(&mut self, peering_table: &VpcPeeringTable) {
         self.peerings = peering_table
