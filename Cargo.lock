@@ -296,6 +296,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "caps"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "190baaad529bcfbde9e1a19022c42781bdb6ff9de25721abdb8fd98c0807730b"
+dependencies = [
+ "libc",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "cbindgen"
 version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -528,6 +538,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-vpc-manager"
+version = "0.1.0"
+dependencies = [
+ "bolero",
+ "caps",
+ "dataplane-id",
+ "dataplane-interface-manager",
+ "derive_builder",
+ "fixin",
+ "futures",
+ "multi_index_map",
+ "net",
+ "rekon",
+ "rtnetlink",
+ "serde",
+ "tokio",
+ "tracing",
+ "tracing-test",
+]
+
+[[package]]
 name = "default-net"
 version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -691,6 +722,16 @@ name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+
+[[package]]
+name = "fixin"
+version = "0.0.1"
+source = "git+https://github.com/githedgehog/fixin?branch=main#9afddc5d845e3d7c769560be659a6cb0fbd148e2"
+dependencies = [
+ "proc-macro-error2",
+ "quote",
+ "syn 2.0.100",
+]
 
 [[package]]
 name = "fnv"
