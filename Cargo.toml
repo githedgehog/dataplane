@@ -41,7 +41,7 @@ routing = { path = "./routing" }
 
 # External
 afpacket = { version = "0.2.3", default-features = false, features = [] }
-ahash = { version = "0.8.11", default-features = false, features = [] }
+ahash = { git = "https://github.com/githedgehog/aHash", branch = "pr/daniel-noland/bump-zero-copy", default-features = false, features = ["no-rng"] }
 arbitrary = { version = "1.4.1", default-features = false, features = [] }
 arc-swap = { version = "1.7.1", default-features = false, features = [] }
 arrayvec = { version = "0.7.6", default-features = false, features = [] }
