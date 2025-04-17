@@ -1039,7 +1039,6 @@ dependencies = [
  "etherparse",
  "multi_index_map",
  "ordermap",
- "rtnetlink",
  "serde",
  "thiserror 2.0.12",
  "tracing",
