@@ -24,7 +24,7 @@ use derive_builder::Builder;
 use multi_index_map::MultiIndexMap;
 use net::eth::mac::SourceMac;
 use net::interface::{AdminState, Interface, InterfaceIndex, InterfaceName};
-use rekon::{AsRequirement, Create};
+use rekon::{AsRequirement, Create, Remove};
 use rtnetlink::packet_route::link::{InfoBridge, InfoData, InfoVxlan, LinkAttribute};
 use rtnetlink::{LinkBridge, LinkVrf, LinkVxlan};
 use serde::{Deserialize, Serialize};
@@ -135,5 +135,28 @@ impl Create for Manager<Interface> {
                 .push(LinkAttribute::Address(mac.inner().0.to_vec()));
         }
         self.handle.link().add(message).execute().await
+    }
+}
+
+impl Remove for Manager<Interface> {
+    type Observation<'a>
+        = &'a Interface
+    where
+        Self: 'a;
+    type Outcome<'a>
+        = Result<(), rtnetlink::Error>
+    where
+        Self: 'a,
+        Interface: 'a;
+
+    async fn remove<'a>(&self, observation: &'a Interface) -> Result<(), rtnetlink::Error>
+    where
+        Self: 'a,
+    {
+        self.handle
+            .link()
+            .del(observation.index.to_u32())
+            .execute()
+            .await
     }
 }
