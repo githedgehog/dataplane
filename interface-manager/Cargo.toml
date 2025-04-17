@@ -12,6 +12,7 @@ bolero = []
 # internal
 
 # external
+rtnetlink = { workspace = true, features = ["tokio"] }
 
 [dev-dependencies]
 # internal
