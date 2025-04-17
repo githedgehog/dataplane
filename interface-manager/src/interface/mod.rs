@@ -14,22 +14,33 @@ pub use association::*;
 #[allow(unused_imports)] // re-export
 pub use bridge::*;
 #[allow(unused_imports)] // re-export
+pub use properties::*;
+#[allow(unused_imports)] // re-export
 pub use vrf::*;
 #[allow(unused_imports)] // re-export
 pub use vtep::*;
 
-use crate::interface::properties::InterfacePropertiesSpec;
 use crate::{Manager, manager_of};
 use derive_builder::Builder;
 use multi_index_map::MultiIndexMap;
+use net::eth::ethtype::EthType;
 use net::eth::mac::SourceMac;
 use net::interface::{
-    AdminState, Interface, InterfaceIndex, InterfaceName, InterfaceProperties, OperationalState,
+    AdminState, BridgePropertiesBuilder, Interface, InterfaceBuilder, InterfaceBuilderError,
+    InterfaceIndex, InterfaceName, InterfaceProperties, OperationalState, VrfPropertiesBuilder,
+    VtepPropertiesBuilder,
 };
+use net::ipv4::addr::UnicastIpv4Addr;
+use net::route::RouteTableId;
+use net::vxlan::InvalidVni;
 use rekon::{AsRequirement, Create, Op, Reconcile, Remove, Update};
-use rtnetlink::packet_route::link::{InfoBridge, InfoData, InfoVrf, InfoVxlan, LinkAttribute};
+use rtnetlink::packet_route::link::{
+    InfoBridge, InfoData, InfoVrf, InfoVxlan, LinkAttribute, LinkFlags, LinkInfo, LinkMessage,
+    State,
+};
 use rtnetlink::{LinkBridge, LinkUnspec, LinkVrf, LinkVxlan};
 use serde::{Deserialize, Serialize};
+use tracing::{error, warn};
 
 /// The specified / intended state for a network interface.
 ///
@@ -514,6 +525,181 @@ impl Reconcile for Manager<Interface> {
                 Some(Op::Update(self.update(requirement, observed).await))
             }
         }
+    }
+}
+
+pub trait TryFromLinkMessage {
+    type Error;
+    /// Try to construct this type from a netlink [`LinkMessage`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if unable to construct `Self` from that message.
+    fn try_from_link_message(message: &LinkMessage) -> Result<Self, Self::Error>
+    where
+        Self: Sized;
+}
+
+fn extract_vrf_data(builder: &mut VrfPropertiesBuilder, info: &LinkInfo) {
+    if let LinkInfo::Data(InfoData::Vrf(datas)) = info {
+        for data in datas {
+            if let InfoVrf::TableId(raw) = data {
+                match RouteTableId::try_from(*raw) {
+                    Ok(route_table) => {
+                        builder.route_table_id(route_table);
+                    }
+                    Err(err) => {
+                        error!("zero is not a legal route table id!: {err:?}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn extract_vxlan_info(builder: &mut VtepPropertiesBuilder, info: &LinkInfo) {
+    if let LinkInfo::Data(InfoData::Vxlan(datas)) = info {
+        for data in datas {
+            match data {
+                InfoVxlan::Id(vni) => {
+                    match (*vni).try_into() {
+                        Ok(vni) => {
+                            builder.vni(Some(vni));
+                        }
+                        Err(InvalidVni::ReservedZero) => {
+                            builder.vni(None); // likely an external vtep
+                        }
+                        Err(InvalidVni::TooLarge(wrong)) => {
+                            error!("found too large VNI: {wrong}");
+                        }
+                    }
+                }
+                InfoVxlan::Local(local) => match UnicastIpv4Addr::try_from(*local) {
+                    Ok(local) => {
+                        if local.inner().is_unspecified() {
+                            warn!(
+                                "likely OS error: unspecified local ipv4 address for vtep: {local}"
+                            );
+                            builder.local(None);
+                        }
+                        builder.local(Some(local));
+                    }
+                    Err(err) => {
+                        error!("{err}");
+                        builder.local(None);
+                    }
+                },
+                InfoVxlan::Ttl(ttl) => {
+                    builder.ttl(Some(*ttl));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn extract_bridge_info(builder: &mut BridgePropertiesBuilder, info: &LinkInfo) -> bool {
+    let mut is_bridge = false;
+    if let LinkInfo::Data(InfoData::Bridge(datas)) = info {
+        is_bridge = true;
+        for data in datas {
+            match data {
+                InfoBridge::VlanFiltering(f) => {
+                    builder.vlan_filtering(*f);
+                }
+                InfoBridge::VlanProtocol(p) => {
+                    builder.vlan_protocol(EthType::from(*p));
+                }
+                _ => {}
+            }
+        }
+    }
+    is_bridge
+}
+
+impl TryFromLinkMessage for Interface {
+    type Error = InterfaceBuilderError;
+
+    fn try_from_link_message(message: &LinkMessage) -> Result<Self, Self::Error> {
+        let mut builder = InterfaceBuilder::default();
+        builder.index(message.header.index.into());
+        let mut vtep_builder = VtepPropertiesBuilder::default();
+        let mut vrf_builder = VrfPropertiesBuilder::default();
+        let mut bridge_builder = BridgePropertiesBuilder::default();
+        let mut is_bridge = false;
+        builder.admin_state(if message.header.flags.contains(LinkFlags::Up) {
+            AdminState::Up
+        } else {
+            AdminState::Down
+        });
+        builder.controller(None);
+        builder.mac(None);
+
+        for attr in &message.attributes {
+            match attr {
+                LinkAttribute::Address(addr) => {
+                    builder.mac(SourceMac::try_from(addr).ok());
+                }
+                LinkAttribute::LinkInfo(infos) => {
+                    for info in infos {
+                        extract_vrf_data(&mut vrf_builder, info);
+                        extract_vxlan_info(&mut vtep_builder, info);
+                        is_bridge |= extract_bridge_info(&mut bridge_builder, info);
+                    }
+                }
+                LinkAttribute::IfName(name) => match InterfaceName::try_from(name.clone()) {
+                    Ok(name) => {
+                        builder.name(name);
+                    }
+                    Err(illegal_name) => {
+                        error!("{illegal_name:?}");
+                    }
+                },
+                LinkAttribute::Controller(c) => {
+                    builder.controller(Some(InterfaceIndex::new(*c)));
+                }
+                LinkAttribute::OperState(state) => match state {
+                    State::Up => {
+                        builder.operational_state(OperationalState::Up);
+                    }
+                    State::Unknown => {
+                        builder.operational_state(OperationalState::Unknown);
+                    }
+                    State::Down => {
+                        builder.operational_state(OperationalState::Down);
+                    }
+                    _ => {
+                        builder.operational_state(OperationalState::Complex);
+                    }
+                },
+                _ => {}
+            }
+        }
+
+        match (vrf_builder.build(), vtep_builder.build()) {
+            (Ok(vrf), Err(_)) => {
+                builder.properties(InterfaceProperties::Vrf(vrf));
+            }
+            (Err(_), Ok(vtep)) => {
+                builder.properties(InterfaceProperties::Vtep(vtep));
+            }
+            (Err(_), Err(_)) => {
+                if is_bridge {
+                    match bridge_builder.build() {
+                        Ok(bridge) => {
+                            builder.properties(InterfaceProperties::Bridge(bridge));
+                        }
+                        Err(err) => {
+                            error!("{err:?}");
+                        }
+                    }
+                }
+            }
+            (Ok(vrf), Ok(vtep)) => {
+                error!("multiple link types satisfied at once: {vrf:?}, {vtep:?}");
+            }
+        }
+        builder.build()
     }
 }
 
