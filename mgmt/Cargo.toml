@@ -10,3 +10,4 @@ net = { workspace = true }
 routing = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+derive_builder = { workspace = true }

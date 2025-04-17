@@ -856,6 +856,7 @@ dependencies = [
 name = "mgmt"
 version = "0.1.0"
 dependencies = [
+ "derive_builder",
  "net",
  "routing",
  "thiserror 2.0.12",
