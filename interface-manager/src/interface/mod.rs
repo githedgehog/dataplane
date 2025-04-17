@@ -516,3 +516,53 @@ impl Reconcile for Manager<Interface> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::interface::InterfaceSpec;
+    use net::interface::{Interface, InterfaceProperties};
+    use rekon::AsRequirement;
+
+    #[test]
+    fn as_requirement_obeys_contract() {
+        bolero::check!()
+            .with_type()
+            .with_test_time(std::time::Duration::from_secs(5))
+            .for_each(|interface: &Interface| {
+                if interface.properties == InterfaceProperties::Other {
+                    assert!(interface.as_requirement().is_none());
+                    return;
+                }
+                match interface.as_requirement() {
+                    None => match &interface.properties {
+                        InterfaceProperties::Vtep(props) => {
+                            assert!(props.as_requirement().is_none());
+                        }
+                        _ => unreachable!(),
+                    },
+                    Some(requirement) => {
+                        assert_eq!(&requirement, interface);
+                        assert_eq!(requirement, interface.as_requirement().unwrap());
+                    }
+                }
+            });
+    }
+
+    #[test]
+    fn equality_meaning() {
+        bolero::check!().with_type().for_each(
+            |(requirement, observation): &(InterfaceSpec, Interface)| {
+                if requirement == observation {
+                    assert_eq!(requirement, &observation.as_requirement().unwrap());
+                } else {
+                    match observation.as_requirement() {
+                        None => {}
+                        Some(as_req) => {
+                            assert_ne!(&as_req, requirement);
+                        }
+                    }
+                }
+            },
+        );
+    }
+}
