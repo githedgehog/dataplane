@@ -12,6 +12,8 @@ pub mod device;
 pub mod interfaces;
 pub mod routing;
 
+use crate::models::external::configdb::gwconfig::GenId;
+
 use crate::models::internal::device::DeviceConfig;
 use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
 use crate::models::internal::routing::evpn::VtepConfig;
@@ -23,7 +25,6 @@ use crate::models::internal::routing::vrf::{VrfConfig, VrfConfigTable};
 #[derive(Debug, Default)]
 /* Main internal GW configuration */
 pub struct InternalConfig {
-    pub generation: u64,
     pub device_config: Option<DeviceConfig>,
     pub frr: Option<Frr>,
     pub vtep: Option<VtepConfig>, // As a network interface

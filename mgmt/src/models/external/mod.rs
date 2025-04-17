@@ -4,6 +4,7 @@
 pub mod configdb;
 pub mod overlay;
 
+use crate::models::external::configdb::gwconfig::GenId;
 use thiserror::Error;
 
 /// The reasons why we may reject a configuration
@@ -24,7 +25,7 @@ pub enum ApiError {
     #[error("VPC peering name is missing")]
     MissingPeeringName,
     #[error("Config with id {0} not found")]
-    NoSuchConfig(u64),
+    NoSuchConfig(GenId),
     #[error("Failure applying config")]
     FailureApply,
     #[error("Forbidden")]
@@ -32,4 +33,6 @@ pub enum ApiError {
     #[error("Incomplete config: missing {0} configuration")]
     IncompleteConfig(&'static str),
 }
+
+/// Result-like type for configurations
 pub type ApiResult = Result<(), ApiError>;

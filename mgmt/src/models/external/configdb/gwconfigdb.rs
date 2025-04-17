@@ -6,15 +6,15 @@
 use std::collections::BTreeMap;
 use tracing::{debug, error, info};
 
-use crate::models::external::configdb::gwconfig::GwConfig;
+use crate::models::external::configdb::gwconfig::{GenId, GwConfig};
 use crate::models::external::{ApiError, ApiResult};
 
 #[derive(Default)]
 #[allow(unused)]
-/// Configuration database, keeps a set of [`GwConfig`]s keyed by generation
+/// Configuration database, keeps a set of [`GwConfig`]s keyed by generation id [`GenId`]
 pub struct GwConfigDatabase {
-    configs: BTreeMap<u64, GwConfig>, /* collection of configs */
-    current: Option<u64>,             /* generation (Id) of currently applied config */
+    configs: BTreeMap<GenId, GwConfig>, /* collection of configs */
+    current: Option<GenId>,             /* [`GenId`] of currently applied config */
 }
 
 impl GwConfigDatabase {
@@ -22,39 +22,39 @@ impl GwConfigDatabase {
         Self::default()
     }
     pub fn add(&mut self, config: GwConfig) {
-        debug!("Adding config '{}' to config db...", config.meta.generation);
-        self.configs.insert(config.meta.generation, config);
+        debug!("Adding config '{}' to config db...", config.meta.genid);
+        self.configs.insert(config.meta.genid, config);
     }
-    pub fn get(&self, generation: u64) -> Option<&GwConfig> {
-        self.configs.get(&generation)
+    pub fn get(&self, genid: GenId) -> Option<&GwConfig> {
+        self.configs.get(&genid)
     }
-    pub fn remove(&mut self, generation: u64) -> ApiResult {
-        debug!("Removing config '{}' from config db...", generation);
-        if let Some(config) = &self.configs.get(&generation) {
+    pub fn remove(&mut self, genid: GenId) -> ApiResult {
+        debug!("Removing config '{}' from config db...", genid);
+        if let Some(config) = &self.configs.get(&genid) {
             if config.meta.is_applied {
-                error!("Can't remove config {}: in use", generation);
+                error!("Can't remove config {}: in use", genid);
                 Err(ApiError::Forbidden)
             } else {
-                debug!("Successfully removed config '{}'", generation);
-                self.configs.remove(&generation);
+                debug!("Successfully removed config '{}'", genid);
+                self.configs.remove(&genid);
                 Ok(())
             }
         } else {
-            error!("Can't remove config {}: not found", generation);
-            Err(ApiError::NoSuchConfig(generation))
+            error!("Can't remove config {}: not found", genid);
+            Err(ApiError::NoSuchConfig(genid))
         }
     }
-    pub fn apply(&mut self, generation: u64) -> ApiResult {
-        debug!("Applying config '{}'...", generation);
-        let Some(config) = self.configs.get_mut(&generation) else {
-            error!("Can't apply config {}: not found", generation);
-            return Err(ApiError::NoSuchConfig(generation));
+    pub fn apply(&mut self, genid: GenId) -> ApiResult {
+        debug!("Applying config '{}'...", genid);
+        let Some(config) = self.configs.get_mut(&genid) else {
+            error!("Can't apply config {}: not found", genid);
+            return Err(ApiError::NoSuchConfig(genid));
         };
         // apply the selected config
         let res = config.apply();
         if res.is_ok() {
-            info!("Successfully applied config '{}'", generation);
-            self.current = Some(generation);
+            info!("Successfully applied config '{}'", genid);
+            self.current = Some(genid);
         } else {
             // TODO: roll back
         }

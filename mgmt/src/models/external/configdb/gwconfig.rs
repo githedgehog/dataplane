@@ -13,6 +13,9 @@ use crate::models::internal::InternalConfig;
 use crate::models::internal::device::DeviceConfig;
 use crate::models::internal::routing::vrf::VrfConfig;
 
+/// Alias for a config generation number
+pub type GenId = u64;
+
 #[allow(unused)]
 pub struct Underlay {
     pub vrf: VrfConfig, /* default vrf */
@@ -26,15 +29,15 @@ impl Underlay {
 
 /// Configuration metadata. Every config object stored by the dataplane has metadata
 pub struct GwConfigMeta {
-    pub generation: u64,             /* configuration version */
+    pub genid: GenId,                /* configuration generation id (version) */
     pub created: SystemTime,         /* time when config was built (received) */
     pub applied: Option<SystemTime>, /* last time when config was applied successfully */
     pub is_applied: bool,            /* True if the config is currently applied */
 }
 impl GwConfigMeta {
-    fn new(generation: u64) -> Self {
+    fn new(genid: GenId) -> Self {
         Self {
-            generation,
+            genid,
             created: SystemTime::now(),
             applied: None,
             is_applied: false,
@@ -53,9 +56,9 @@ pub struct GwConfig {
 }
 
 impl GwConfig {
-    pub fn new(generation: u64) -> Self {
+    pub fn new(genid: GenId) -> Self {
         Self {
-            meta: GwConfigMeta::new(generation),
+            meta: GwConfigMeta::new(genid),
             device: None,
             underlay: None,
             overlay: None,
@@ -74,7 +77,7 @@ impl GwConfig {
 
     /// Validate a [`GwConfig`]
     pub fn validate(&mut self) -> ApiResult {
-        debug!("Validating config {} ..", self.meta.generation);
+        debug!("Validating config {} ..", self.meta.genid);
         if let Some(device) = &self.device {
             device.validate()?;
         } else {
@@ -96,10 +99,7 @@ impl GwConfig {
 
     /// Build the [`InternalConfig`] for this [`GwConfig`]
     pub fn build_internal_config(&mut self) -> ApiResult {
-        debug!(
-            "Building internal config for config {} ..",
-            self.meta.generation
-        );
+        debug!("Building internal config for config {} ..", self.meta.genid);
         // Build internal config object
         let mut internal = InternalConfig::new();
 
@@ -127,13 +127,13 @@ impl GwConfig {
 
         // set the internal config
         self.internal = Some(internal);
-        info!("Internal config built for {}", self.meta.generation);
+        info!("Internal config built for {}", self.meta.genid);
         Ok(())
     }
 
     /// Apply a [`GwConfig`]
     pub fn apply(&mut self) -> ApiResult {
-        info!("Applying config {}...", self.meta.generation);
+        info!("Applying config {}...", self.meta.genid);
         if self.internal.is_none() {
             debug!("Config has no internal config...");
             self.build_internal_config()?;
@@ -146,10 +146,10 @@ impl GwConfig {
         if success {
             self.meta.applied = Some(SystemTime::now());
             self.meta.is_applied = true;
-            info!("Applied config {}", self.meta.generation);
+            info!("Applied config {}", self.meta.genid);
             Ok(())
         } else {
-            info!("Failed to apply config {}", self.meta.generation);
+            info!("Failed to apply config {}", self.meta.genid);
             Err(ApiError::FailureApply)
         }
     }
