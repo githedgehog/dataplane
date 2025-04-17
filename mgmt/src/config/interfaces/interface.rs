@@ -21,22 +21,22 @@ pub struct InterfaceAddress {
     pub mask_len: u8,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct IfVlanConfig {
     pub mac: Option<Mac>,
     pub vlan_id: Vid,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct IfEthConfig {
     pub mac: Option<Mac>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct IfBridgeConfig {
     pub vlan_filtering: bool,
     pub vlan_protocol: EthType,
     pub mac: Option<Mac>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct IfVtepConfig {
     pub mac: Option<Mac>,
     pub vni: Option<Vni>,
@@ -44,12 +44,12 @@ pub struct IfVtepConfig {
     pub local: IpAddr,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct IfVrfConfig {
     pub table_id: u32, // FIXME: interface manager has specific type
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum InterfaceType {
     Loopback,
     Ethernet(IfEthConfig),
@@ -59,7 +59,7 @@ pub enum InterfaceType {
     Vrf(IfVrfConfig),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 /// A network interface configuration. An interface can be user-specified or internal. This config object
 /// includes data to create the interface in the kernel and configure it for routing (e.g. FRR)
 pub struct InterfaceConfig {
@@ -72,7 +72,7 @@ pub struct InterfaceConfig {
     pub internal: bool, /* true if automatically created */
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 /// An interface configuration table
 pub struct InterfaceConfigTable(BTreeMap<String, InterfaceConfig>);
 
