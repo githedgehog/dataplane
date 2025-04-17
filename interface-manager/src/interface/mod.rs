@@ -22,7 +22,8 @@ use crate::interface::properties::InterfacePropertiesSpec;
 use derive_builder::Builder;
 use multi_index_map::MultiIndexMap;
 use net::eth::mac::SourceMac;
-use net::interface::{AdminState, InterfaceIndex, InterfaceName};
+use net::interface::{AdminState, Interface, InterfaceIndex, InterfaceName};
+use rekon::AsRequirement;
 use serde::{Deserialize, Serialize};
 
 /// The specified / intended state for a network interface.
@@ -71,4 +72,21 @@ pub struct InterfaceSpec {
     pub controller: Option<InterfaceIndex>,
     /// Interface-specific properties.
     pub properties: InterfacePropertiesSpec,
+}
+
+impl AsRequirement<InterfaceSpec> for Interface {
+    type Requirement<'a>
+        = Option<InterfaceSpec>
+    where
+        Self: 'a;
+
+    fn as_requirement<'a>(&self) -> Self::Requirement<'a> {
+        Some(InterfaceSpec {
+            name: self.name.clone(),
+            mac: self.mac,
+            admin_state: self.admin_state,
+            controller: self.controller,
+            properties: self.properties.as_requirement()?,
+        })
+    }
 }
