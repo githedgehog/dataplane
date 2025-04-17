@@ -26,7 +26,7 @@ use net::eth::mac::SourceMac;
 use net::interface::{
     AdminState, Interface, InterfaceIndex, InterfaceName, InterfaceProperties, OperationalState,
 };
-use rekon::{AsRequirement, Create, Remove, Update};
+use rekon::{AsRequirement, Create, Op, Reconcile, Remove, Update};
 use rtnetlink::packet_route::link::{InfoBridge, InfoData, InfoVrf, InfoVxlan, LinkAttribute};
 use rtnetlink::{LinkBridge, LinkUnspec, LinkVrf, LinkVxlan};
 use serde::{Deserialize, Serialize};
@@ -477,6 +477,41 @@ impl PartialEq<Interface> for InterfaceSpec {
                         false
                     }
                 }
+            }
+        }
+    }
+}
+
+impl Reconcile for Manager<Interface> {
+    type Requirement<'a>
+        = &'a InterfaceSpec
+    where
+        Self: 'a;
+    type Observation<'a>
+        = Option<&'a Interface>
+    where
+        Self: 'a;
+    type Outcome<'a>
+        = Option<Op<'a, Self>>
+    where
+        Self: 'a,
+        Interface: 'a;
+
+    async fn reconcile<'a>(
+        &self,
+        requirement: &'a InterfaceSpec,
+        observation: Option<&'a Interface>,
+    ) -> Self::Outcome<'a>
+    where
+        Self: 'a,
+    {
+        match observation {
+            None => Some(Op::Create(self.create(requirement).await)),
+            Some(observed) => {
+                if requirement == observed {
+                    return None;
+                }
+                Some(Op::Update(self.update(requirement, observed).await))
             }
         }
     }
