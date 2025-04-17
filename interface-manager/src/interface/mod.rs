@@ -18,12 +18,15 @@ pub use vrf::*;
 #[allow(unused_imports)] // re-export
 pub use vtep::*;
 
+use crate::Manager;
 use crate::interface::properties::InterfacePropertiesSpec;
 use derive_builder::Builder;
 use multi_index_map::MultiIndexMap;
 use net::eth::mac::SourceMac;
 use net::interface::{AdminState, Interface, InterfaceIndex, InterfaceName};
-use rekon::AsRequirement;
+use rekon::{AsRequirement, Create};
+use rtnetlink::packet_route::link::{InfoBridge, InfoData, InfoVxlan, LinkAttribute};
+use rtnetlink::{LinkBridge, LinkVrf, LinkVxlan};
 use serde::{Deserialize, Serialize};
 
 /// The specified / intended state for a network interface.
@@ -88,5 +91,49 @@ impl AsRequirement<InterfaceSpec> for Interface {
             controller: self.controller,
             properties: self.properties.as_requirement()?,
         })
+    }
+}
+
+impl Create for Manager<Interface> {
+    type Requirement<'a>
+        = &'a InterfaceSpec
+    where
+        Self: 'a;
+    type Outcome<'a>
+        = Result<(), rtnetlink::Error>
+    where
+        Self: 'a;
+    async fn create<'a>(&self, requirement: &'a InterfaceSpec) -> Self::Outcome<'a>
+    where
+        Self: 'a,
+    {
+        let mut message = match &requirement.properties {
+            InterfacePropertiesSpec::Bridge(properties) => {
+                LinkBridge::new(requirement.name.as_ref())
+                    .set_info_data(InfoData::Bridge(vec![
+                        InfoBridge::VlanFiltering(properties.vlan_filtering),
+                        InfoBridge::VlanProtocol(properties.vlan_protocol.as_u16()),
+                    ]))
+                    .build()
+            }
+            InterfacePropertiesSpec::Vtep(properties) => {
+                LinkVxlan::new(requirement.name.as_ref(), properties.vni.as_u32())
+                    .set_info_data(InfoData::Vxlan(vec![
+                        InfoVxlan::Id(properties.vni.as_u32()),
+                        InfoVxlan::Ttl(properties.ttl),
+                        InfoVxlan::Local(properties.local.inner()),
+                    ]))
+                    .build()
+            }
+            InterfacePropertiesSpec::Vrf(properties) => {
+                LinkVrf::new(requirement.name.as_ref(), properties.route_table_id.into()).build()
+            }
+        };
+        if let Some(mac) = requirement.mac {
+            message
+                .attributes
+                .push(LinkAttribute::Address(mac.inner().0.to_vec()));
+        }
+        self.handle.link().add(message).execute().await
     }
 }
