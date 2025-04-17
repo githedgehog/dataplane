@@ -360,3 +360,49 @@ impl Update for Manager<SourceMac> {
             .await
     }
 }
+
+impl Update for Manager<AdminState> {
+    type Requirement<'a>
+        = AdminState
+    where
+        Self: 'a;
+    type Observation<'a>
+        = &'a Interface
+    where
+        Self: 'a;
+    type Outcome<'a>
+        = Result<(), rtnetlink::Error>
+    where
+        Self: 'a;
+
+    async fn update<'a>(
+        &self,
+        requirement: AdminState,
+        observation: &Interface,
+    ) -> Result<(), rtnetlink::Error> {
+        match requirement {
+            AdminState::Down => {
+                self.handle
+                    .link()
+                    .set(
+                        LinkUnspec::new_with_index(observation.index.to_u32())
+                            .down()
+                            .build(),
+                    )
+                    .execute()
+                    .await
+            }
+            AdminState::Up => {
+                self.handle
+                    .link()
+                    .set(
+                        LinkUnspec::new_with_index(observation.index.to_u32())
+                            .up()
+                            .build(),
+                    )
+                    .execute()
+                    .await
+            }
+        }
+    }
+}
