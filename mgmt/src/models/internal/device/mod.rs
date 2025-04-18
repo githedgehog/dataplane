@@ -14,8 +14,8 @@ use crate::models::external::ApiResult;
 
 #[derive(Clone, Debug)]
 pub struct DeviceConfig {
-    settings: DeviceSettings,
-    ports: Vec<PortConfig>,
+    pub settings: DeviceSettings,
+    pub ports: Vec<PortConfig>,
 }
 impl DeviceConfig {
     pub fn new(settings: DeviceSettings) -> Self {
