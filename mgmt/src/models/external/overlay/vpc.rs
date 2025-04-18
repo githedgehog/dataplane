@@ -16,6 +16,9 @@ use crate::models::external::overlay::VpcPeeringTable;
 use crate::models::external::{ApiError, ApiResult};
 use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
 
+#[cfg(doc)]
+use crate::models::external::overlay::vpcpeering::VpcPeering;
+
 /// This is nearly identical to [`VpcPeering`], but with some subtle differences.
 /// [`Peering`] is owned by a Vpc while [`VpcPeering`] remains in the [`VpcPeeringTable`].
 /// Most importantly, [`Peering`] has a notion of local and remote, while [`VpcPeering`] is symmetrical.
