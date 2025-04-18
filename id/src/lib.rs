@@ -98,8 +98,6 @@ pub use contract::*;
 ///
 /// if you need to use `MySpecialType` instead of [`Uuid`] for your special type of tagged id.
 ///
-/// </div>
-///
 /// [UUID]: https://en.wikipedia.org/wiki/Universally_unique_identifier
 #[cfg_attr(feature = "serde", allow(clippy::unsafe_derive_deserialize))] // not used in deserialize method
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
