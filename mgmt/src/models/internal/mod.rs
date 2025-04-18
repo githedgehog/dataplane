@@ -12,6 +12,8 @@ pub mod device;
 pub mod interfaces;
 pub mod routing;
 
+use derive_builder::Builder;
+
 use crate::models::external::configdb::gwconfig::GenId;
 
 use crate::models::internal::device::DeviceConfig;
@@ -22,11 +24,11 @@ use crate::models::internal::routing::prefixlist::{PrefixList, PrefixListTable};
 use crate::models::internal::routing::routemap::{RouteMap, RouteMapTable};
 use crate::models::internal::routing::vrf::{VrfConfig, VrfConfigTable};
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 /* Main internal GW configuration */
 pub struct InternalConfig {
-    pub device_config: Option<DeviceConfig>,
-    pub frr: Option<Frr>,
+    pub dev_cfg: DeviceConfig,
+    pub frr: Frr,
     pub vtep: Option<VtepConfig>, // As a network interface
     pub vrfs: VrfConfigTable,
     pub plist_table: PrefixListTable,
@@ -34,14 +36,19 @@ pub struct InternalConfig {
 }
 
 impl InternalConfig {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn set_device_config(&mut self, device_config: &DeviceConfig) {
-        self.device_config = Some(device_config.clone());
-    }
-    pub fn set_frr(&mut self, frr: Frr) {
-        self.frr = Some(frr);
+    pub fn new(dev_cfg: DeviceConfig) -> Self {
+        let frr = Frr::new(
+            routing::frr::FrrProfile::Datacenter,
+            &dev_cfg.settings.hostname,
+        );
+        Self {
+            dev_cfg,
+            frr,
+            vtep: None,
+            vrfs: VrfConfigTable::new(),
+            plist_table: PrefixListTable::new(),
+            rmap_table: RouteMapTable::new(),
+        }
     }
     pub fn set_vtep(&mut self, vtep: VtepConfig) {
         self.vtep = Some(vtep);

@@ -94,7 +94,7 @@ impl GwConfig {
     pub fn build_internal_config(&mut self) -> ApiResult {
         debug!("Building internal config for config {} ..", self.genid());
         // Build internal config object: TODO
-        let internal = InternalConfig::new();
+        let internal = InternalConfig::new(self.external.device.clone());
 
         // set the internal config
         self.internal = Some(internal);

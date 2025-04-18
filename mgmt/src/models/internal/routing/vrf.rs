@@ -74,6 +74,9 @@ impl VrfConfig {
 pub struct VrfConfigTable(Vec<VrfConfig>);
 
 impl VrfConfigTable {
+    pub fn new() -> Self {
+        VrfConfigTable(vec![])
+    }
     pub fn add_vrf_config(&mut self, vrf_cfg: VrfConfig) {
         self.0.push(vrf_cfg);
     }
