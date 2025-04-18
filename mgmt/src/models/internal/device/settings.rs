@@ -23,27 +23,18 @@ pub enum PacketDriver {
 
 #[derive(Clone, Debug)]
 pub struct DeviceSettings {
-    hostname: Option<String>,
+    hostname: String,
     loglevel: Level,
     driver: PacketDriver,
 }
 
-impl Default for DeviceSettings {
-    fn default() -> Self {
+impl DeviceSettings {
+    pub fn new(hostname: &str) -> Self {
         Self {
-            hostname: None,
+            hostname: hostname.to_owned(),
             loglevel: Level::ERROR,
             driver: PacketDriver::DPDK(DpdkPortConfig::default()),
         }
-    }
-}
-impl DeviceSettings {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn set_hostname(mut self, hostname: &str) -> Self {
-        self.hostname = Some(hostname.to_owned());
-        self
     }
     pub fn set_loglevel(mut self, loglevel: Level) -> Self {
         self.loglevel = loglevel;
