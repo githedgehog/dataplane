@@ -23,9 +23,9 @@ pub enum PacketDriver {
 
 #[derive(Clone, Debug)]
 pub struct DeviceSettings {
-    hostname: String,
-    loglevel: Level,
-    driver: PacketDriver,
+    pub hostname: String,
+    pub loglevel: Level,
+    pub driver: PacketDriver,
 }
 
 impl DeviceSettings {
