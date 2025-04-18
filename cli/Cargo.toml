@@ -1,0 +1,24 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[[bin]]
+name = "cli"
+path = "src/bin/cli.rs"
+required-features = ["cli"]
+
+[dependencies]
+colored = "3.0.0"
+bincode2 = "2.0.1"
+log = { version = "^0.4.25", features = ["serde"]}
+rustyline = { workspace = true , features = ["with-fuzzy", "custom-bindings"] }
+serde = {workspace = true, features = ["derive", "serde_derive"]}
+strum = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+cli = []
+
