@@ -10,12 +10,12 @@ afpacket = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "usage"] }
 ctrlc = { workspace = true, features = ["termination"] }
 dpdk = { workspace = true }
+dyn-iter = { workspace = true }
 id = { workspace = true }
 iptrie = { workspace = true }
-default-net = { workspace = true }
-dyn-iter = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
 net = { workspace = true, features = ["test_buffer"] }
+netdev = { workspace = true }
 ordermap = { workspace = true, features = ["std"] }
 pipeline = { workspace = true }
 routing = { workspace = true }

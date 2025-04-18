@@ -15,10 +15,10 @@ use std::os::fd::RawFd;
 use std::{thread, time};
 
 use crate::CmdArgs;
-use default_net::Interface;
 use net::buffer::test_buffer::TestBuffer;
 use net::packet::Packet;
 use net::packet::{DoneReason, InterfaceId};
+use netdev::Interface;
 use pipeline::{self, DynPipeline, NetworkFunction};
 use tracing::{debug, error, warn};
 
@@ -117,7 +117,7 @@ fn get_interface_ifindex(interfaces: &[Interface], name: &str) -> Option<u32> {
 /// Argument --interface ANY|any instructs the driver to capture on all interfaces.
 fn build_kif_table(args: impl IntoIterator<Item = impl AsRef<str> + Clone>) -> KifTable {
     /* learn about existing kernel network interfaces. We need these to know their ifindex  */
-    let interfaces = default_net::get_interfaces();
+    let interfaces = netdev::get_interfaces();
 
     /* build kiftable */
     let mut kiftable = KifTable::new();
