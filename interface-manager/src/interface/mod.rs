@@ -194,3 +194,61 @@ impl Update for Manager<InterfaceName> {
             .await
     }
 }
+
+impl Update for Manager<InterfaceAssociation> {
+    type Requirement<'a>
+        = Option<InterfaceIndex>
+    where
+        Self: 'a;
+    type Observation<'a>
+        = &'a Interface
+    where
+        Self: 'a;
+    type Outcome<'a>
+        = Result<(), rtnetlink::Error>
+    where
+        Self: 'a;
+
+    async fn update<'a>(
+        &self,
+        requirement: Option<InterfaceIndex>,
+        observation: &Interface,
+    ) -> Result<(), rtnetlink::Error> {
+        if observation.operational_state != OperationalState::Down {
+            self.handle
+                .link()
+                .set_port(
+                    LinkUnspec::new_with_index(observation.index.to_u32())
+                        .down()
+                        .build(),
+                )
+                .execute()
+                .await?;
+        }
+        match requirement {
+            None => {
+                self.handle
+                    .link()
+                    .set_port(
+                        LinkUnspec::new_with_index(observation.index.to_u32())
+                            .down()
+                            .nocontroller()
+                            .build(),
+                    )
+                    .execute()
+                    .await
+            }
+            Some(controller) => {
+                self.handle
+                    .link()
+                    .set_port(
+                        LinkUnspec::new_with_index(observation.index.to_u32())
+                            .controller(controller.to_u32())
+                            .build(),
+                    )
+                    .execute()
+                    .await
+            }
+        }
+    }
+}
