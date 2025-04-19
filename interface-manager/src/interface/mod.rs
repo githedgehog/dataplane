@@ -252,3 +252,76 @@ impl Update for Manager<InterfaceAssociation> {
         }
     }
 }
+
+impl Update for Manager<InterfaceProperties> {
+    type Requirement<'a>
+        = &'a InterfacePropertiesSpec
+    where
+        Self: 'a;
+    type Observation<'a>
+        = &'a Interface
+    where
+        Self: 'a;
+    type Outcome<'a>
+        = Result<(), rtnetlink::Error>
+    where
+        Self: 'a;
+
+    async fn update<'a>(
+        &self,
+        requirement: &InterfacePropertiesSpec,
+        observation: &Interface,
+    ) -> Result<(), rtnetlink::Error> {
+        match (requirement, &observation.properties) {
+            (InterfacePropertiesSpec::Bridge(req), InterfaceProperties::Bridge(_)) => {
+                self.handle
+                    .link()
+                    .set_port(
+                        LinkUnspec::new_with_index(observation.index.to_u32())
+                            .set_info_data(InfoData::Bridge(vec![
+                                InfoBridge::VlanProtocol(req.vlan_protocol.as_u16()),
+                                InfoBridge::VlanFiltering(req.vlan_filtering),
+                            ]))
+                            .build(),
+                    )
+                    .execute()
+                    .await
+            }
+            (InterfacePropertiesSpec::Vrf(req), InterfaceProperties::Vrf(_)) => {
+                self.handle
+                    .link()
+                    .set_port(
+                        LinkUnspec::new_with_index(observation.index.to_u32())
+                            .set_info_data(InfoData::Vrf(vec![InfoVrf::TableId(
+                                req.route_table_id.into(),
+                            )]))
+                            .build(),
+                    )
+                    .execute()
+                    .await
+            }
+            (InterfacePropertiesSpec::Vtep(req), InterfaceProperties::Vtep(_)) => {
+                self.handle
+                    .link()
+                    .set_port(
+                        LinkUnspec::new_with_index(observation.index.to_u32())
+                            .set_info_data(InfoData::Vxlan(vec![
+                                InfoVxlan::Id(req.vni.as_u32()),
+                                InfoVxlan::Ttl(req.ttl),
+                                InfoVxlan::Local(req.local.inner()),
+                            ]))
+                            .build(),
+                    )
+                    .execute()
+                    .await
+            }
+            (_, _) => {
+                self.handle
+                    .link()
+                    .del(observation.index.to_u32())
+                    .execute()
+                    .await
+            }
+        }
+    }
+}
