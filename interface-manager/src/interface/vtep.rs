@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::{Manager, manager_of};
 use derive_builder::Builder;
 use multi_index_map::MultiIndexMap;
-use net::interface::{Interface, InterfaceProperties, VtepProperties};
+use net::interface::VtepProperties;
 use net::ipv4::UnicastIpv4Addr;
 use net::vxlan::Vni;
-use rekon::{AsRequirement, Remove, Update};
+use rekon::AsRequirement;
 use serde::{Deserialize, Serialize};
 
 /// The "planned" properties of a VTEP / vxlan device.
