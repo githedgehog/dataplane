@@ -463,3 +463,21 @@ impl Update for Manager<Interface> {
         Ok(())
     }
 }
+
+impl PartialEq<Interface> for InterfaceSpec {
+    fn eq(&self, other: &Interface) -> bool {
+        match other.as_requirement() {
+            None => false,
+            Some(mut other) => {
+                *self == other || {
+                    if self.mac.is_none() {
+                        other.mac = None;
+                        *self == other
+                    } else {
+                        false
+                    }
+                }
+            }
+        }
+    }
+}
