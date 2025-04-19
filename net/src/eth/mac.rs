@@ -3,7 +3,6 @@
 
 //! Mac address type and logic.
 
-use std::convert::TryFrom;
 use std::fmt::Display;
 
 /// A [MAC Address] type.
@@ -238,6 +237,17 @@ pub enum SourceMacAddressError {
     ZeroSource(Mac),
 }
 
+/// Errors which may occur when parsing a [`SourceMac`] from a `Vec<u8>`
+#[derive(Debug, thiserror::Error)]
+pub enum SourceMacParseError {
+    /// Class of errors which are not valid as [`SourceMac`]
+    #[error(transparent)]
+    SourceMacError(#[from] SourceMacAddressError),
+    /// Not a [`Mac`] at all
+    #[error("length error: invalid MAC {0:?}")]
+    NotAMac(Vec<u8>),
+}
+
 /// Errors which can occur while setting the destination [`Mac`] of a [`Packet`]
 ///
 /// [`Packet`]: crate::headers::Headers
@@ -277,6 +287,27 @@ impl TryFrom<Mac> for SourceMac {
 
     fn try_from(value: Mac) -> Result<Self, Self::Error> {
         SourceMac::new(value)
+    }
+}
+
+impl TryFrom<&Vec<u8>> for SourceMac {
+    type Error = SourceMacParseError;
+
+    fn try_from(addr: &Vec<u8>) -> Result<Self, Self::Error> {
+        match TryInto::<[u8; 6]>::try_into(addr.as_ref()) {
+            Ok(array) => match SourceMac::new(Mac::from(array)) {
+                Ok(mac) => Ok(mac),
+                Err(SourceMacAddressError::ZeroSource(zero)) => Err(
+                    SourceMacParseError::SourceMacError(SourceMacAddressError::ZeroSource(zero)),
+                ),
+                Err(SourceMacAddressError::MulticastSource(mac)) => {
+                    Err(SourceMacParseError::SourceMacError(
+                        SourceMacAddressError::MulticastSource(mac),
+                    ))
+                }
+            },
+            Err(_) => Err(SourceMacParseError::NotAMac(addr.clone())),
+        }
     }
 }
 
