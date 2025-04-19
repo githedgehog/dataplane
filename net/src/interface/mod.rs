@@ -8,6 +8,9 @@
 
 //! Data structures and methods for interacting with / describing network interfaces
 
+use crate::eth::mac::SourceMac;
+use derive_builder::Builder;
+use multi_index_map::MultiIndexMap;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display, Formatter};
 
@@ -200,6 +203,40 @@ pub enum OperationalState {
     /// Complex: the interface is in some other more complex state (which should be regarded as down
     /// mostly)
     Complex,
+}
+
+/// An "observed" network interface.
+#[derive(
+    Builder,
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    MultiIndexMap,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Deserialize,
+    Serialize,
+)]
+#[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Interface {
+    /// The index of the interface.
+    #[multi_index(hashed_unique)]
+    pub index: InterfaceIndex,
+    /// The name of the interface.
+    #[multi_index(hashed_unique)]
+    pub name: InterfaceName,
+    /// The MAC (if any) associated with this network interface.
+    pub mac: Option<SourceMac>,
+    /// The `AdminState` of the interface.
+    pub admin_state: AdminState,
+    /// The observed `OperationalState` of the network interface.
+    pub operational_state: OperationalState,
+    /// The controller (i.e., the bridge, bond, or VRF which this interface is a member of).
+    pub controller: Option<InterfaceIndex>,
+    /// The type-specific properties of this interface.
+    pub properties: InterfaceProperties,
 }
 
 /// Interface-specific properties.
