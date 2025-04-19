@@ -201,3 +201,16 @@ pub enum OperationalState {
     /// mostly)
     Complex,
 }
+
+/// Interface-specific properties.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+pub enum InterfaceProperties {
+    /// Properties of bridges
+    Bridge(BridgeProperties),
+    /// Properties of VTEPs (vxlan devices)
+    Vtep(VtepProperties),
+    /// Properties of VRFs
+    Vrf(VrfProperties),
+    /// Properties of something we don't currently support manipulating
+    Other,
+}
