@@ -325,3 +325,38 @@ impl Update for Manager<InterfaceProperties> {
         }
     }
 }
+
+impl Update for Manager<SourceMac> {
+    type Requirement<'a>
+        = SourceMac
+    where
+        Self: 'a;
+    type Observation<'a>
+        = &'a Interface
+    where
+        Self: 'a;
+    type Outcome<'a>
+        = Result<(), rtnetlink::Error>
+    where
+        Self: 'a;
+
+    async fn update<'a>(
+        &self,
+        requirement: SourceMac,
+        observation: &Interface,
+    ) -> Result<(), rtnetlink::Error>
+    where
+        Self: 'a,
+    {
+        self.handle
+            .link()
+            .set(
+                LinkUnspec::new_with_index(observation.index.to_u32())
+                    .down()
+                    .address(requirement.inner().0.to_vec())
+                    .build(),
+            )
+            .execute()
+            .await
+    }
+}
