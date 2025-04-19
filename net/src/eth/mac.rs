@@ -3,6 +3,7 @@
 
 //! Mac address type and logic.
 
+use std::convert::TryFrom;
 use std::fmt::Display;
 
 /// A [MAC Address] type.
@@ -102,7 +103,7 @@ impl Mac {
     ///
     /// # Errors
     ///
-    /// Multicast and zero are not legal source [`Mac`].
+    /// Multicast and zero are not legal [`SourceMac`].
     pub fn valid_src(&self) -> Result<(), SourceMacAddressError> {
         if self.is_zero() {
             Err(SourceMacAddressError::ZeroSource(*self))
@@ -142,11 +143,13 @@ impl Display for Mac {
         )
     }
 }
+
 impl Display for SourceMac {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.inner().fmt(f)
     }
 }
+
 impl Display for DestinationMac {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.inner().fmt(f)
@@ -154,7 +157,11 @@ impl Display for DestinationMac {
 }
 
 /// A [`Mac`] which is legal as a source in an ethernet header.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[allow(clippy::unsafe_derive_deserialize)] // unsafe methods not called in Deserialize
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Deserialize, serde::Serialize,
+)]
+#[serde(try_from = "Mac", into = "Mac")]
 #[repr(transparent)]
 pub struct SourceMac(Mac);
 
@@ -253,9 +260,23 @@ impl AsRef<Mac> for DestinationMac {
     }
 }
 
+impl From<SourceMac> for Mac {
+    fn from(value: SourceMac) -> Self {
+        value.0
+    }
+}
+
 impl From<SourceMac> for DestinationMac {
     fn from(value: SourceMac) -> Self {
         DestinationMac(value.0)
+    }
+}
+
+impl TryFrom<Mac> for SourceMac {
+    type Error = SourceMacAddressError;
+
+    fn try_from(value: Mac) -> Result<Self, Self::Error> {
+        SourceMac::new(value)
     }
 }
 
