@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::interface::{BridgePropertiesSpec, VrfPropertiesSpec, VtepPropertiesSpec};
+use crate::interface::bridge::BridgePropertiesSpec;
+use crate::interface::{VrfPropertiesSpec, VtepPropertiesSpec};
 use net::interface::InterfaceProperties;
 use rekon::AsRequirement;
 use serde::{Deserialize, Serialize};
