@@ -1,13 +1,32 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![allow(missing_docs)] // multi-index-map generated code is not documented and it angers clippy
+#![allow(clippy::unsafe_derive_deserialize)] // multi-index-map can't be convinced to attach this
+// to the derived types
+
 //! Data structures and methods for interacting with / describing network interfaces
 
+use crate::eth::mac::SourceMac;
+use derive_builder::Builder;
+use multi_index_map::MultiIndexMap;
+use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display, Formatter};
+
+mod bridge;
+mod vrf;
+mod vtep;
+
+#[allow(unused_imports)] // re-export
+pub use bridge::*;
+#[allow(unused_imports)] // re-export
+pub use vrf::*;
+#[allow(unused_imports)] // re-export
+pub use vtep::*;
 
 /// A network interface id (also known as ifindex in linux).
 ///
-/// These are 32 bit values which are generally assigned by the linux kernel.
+/// These are 32-bit values that are generally assigned by the linux kernel.
 /// You can't generally meaningfully persist or assign them.
 /// They don't typically mean anything "between" machines or even reboots.
 #[repr(transparent)]
@@ -54,7 +73,7 @@ impl From<InterfaceIndex> for u32 {
     }
 }
 
-const MAX_LEN: usize = 16;
+const MAX_INTERFACE_NAME_LEN: usize = 16;
 
 /// A string which has been checked to be a legal linux network interface name.
 ///
@@ -77,7 +96,7 @@ impl Display for InterfaceName {
 
 impl InterfaceName {
     /// The maximum legal length of a linux network interface name (including the trailing NUL)
-    pub const MAX_LEN: usize = MAX_LEN;
+    pub const MAX_LEN: usize = MAX_INTERFACE_NAME_LEN;
 }
 
 /// Errors which may occur when mapping a general `String` into an `InterfaceName`.
@@ -86,6 +105,9 @@ pub enum IllegalInterfaceName {
     /// A string which is longer than 15 characters was submitted.
     #[error("interface name must be at least one character")]
     Empty,
+    /// You can't make an interface named ., ..
+    #[error("name must not be . or ..")]
+    MustNotIncludeOnlyDots(String),
     /// A string which is longer than 15 characters was submitted.
     #[error("interface name {0} is too long")]
     TooLong(String),
@@ -109,6 +131,9 @@ impl TryFrom<String> for InterfaceName {
         const LEGAL_PUNCT: [char; 3] = ['.', '-', '_'];
         if value.is_empty() {
             return Err(IllegalInterfaceName::Empty);
+        }
+        if value == "." || value == ".." {
+            return Err(IllegalInterfaceName::MustNotIncludeOnlyDots(value));
         }
         if value.contains('\0') {
             return Err(IllegalInterfaceName::InteriorNull(value));
@@ -147,4 +172,81 @@ impl AsRef<str> for InterfaceName {
     fn as_ref(&self) -> &str {
         self.0.as_str()
     }
+}
+
+/// The administrative state of a network interface.
+///
+/// Basically, this describes the intended state of a network interface. (as opposed to its
+// /// [`OperationalState`])
+#[derive(Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum AdminState {
+    /// The interface is set to down
+    Down = 0,
+    /// The interface is set to the up state.
+    Up = 1,
+}
+
+/// The observed state of a network interface.
+///
+/// Basically, this describes what state a network interface is actually in (as opposed to the state
+/// we would like it to be in, i.e., the [`AdminState`])
+#[derive(Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
+pub enum OperationalState {
+    /// The interface is down
+    Down,
+    /// The interface is up
+    Up,
+    /// The interface condition is unknown.  This is common for L3 interfaces.
+    Unknown,
+    /// Complex: the interface is in some other more complex state (which should be regarded as down
+    /// mostly)
+    Complex,
+}
+
+/// An "observed" network interface.
+#[derive(
+    Builder,
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    MultiIndexMap,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Deserialize,
+    Serialize,
+)]
+#[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Interface {
+    /// The index of the interface.
+    #[multi_index(hashed_unique)]
+    pub index: InterfaceIndex,
+    /// The name of the interface.
+    #[multi_index(hashed_unique)]
+    pub name: InterfaceName,
+    /// The MAC (if any) associated with this network interface.
+    pub mac: Option<SourceMac>,
+    /// The `AdminState` of the interface.
+    pub admin_state: AdminState,
+    /// The observed `OperationalState` of the network interface.
+    pub operational_state: OperationalState,
+    /// The controller (i.e., the bridge, bond, or VRF which this interface is a member of).
+    pub controller: Option<InterfaceIndex>,
+    /// The type-specific properties of this interface.
+    pub properties: InterfaceProperties,
+}
+
+/// Interface-specific properties.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+pub enum InterfaceProperties {
+    /// Properties of bridges
+    Bridge(BridgeProperties),
+    /// Properties of VTEPs (vxlan devices)
+    Vtep(VtepProperties),
+    /// Properties of VRFs
+    Vrf(VrfProperties),
+    /// Properties of something we don't currently support manipulating
+    Other,
 }

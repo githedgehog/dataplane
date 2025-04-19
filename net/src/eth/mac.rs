@@ -102,7 +102,7 @@ impl Mac {
     ///
     /// # Errors
     ///
-    /// Multicast and zero are not legal source [`Mac`].
+    /// Multicast and zero are not legal [`SourceMac`].
     pub fn valid_src(&self) -> Result<(), SourceMacAddressError> {
         if self.is_zero() {
             Err(SourceMacAddressError::ZeroSource(*self))
@@ -142,11 +142,13 @@ impl Display for Mac {
         )
     }
 }
+
 impl Display for SourceMac {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.inner().fmt(f)
     }
 }
+
 impl Display for DestinationMac {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.inner().fmt(f)
@@ -154,7 +156,11 @@ impl Display for DestinationMac {
 }
 
 /// A [`Mac`] which is legal as a source in an ethernet header.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[allow(clippy::unsafe_derive_deserialize)] // unsafe methods not called in Deserialize
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Deserialize, serde::Serialize,
+)]
+#[serde(try_from = "Mac", into = "Mac")]
 #[repr(transparent)]
 pub struct SourceMac(Mac);
 
@@ -231,6 +237,17 @@ pub enum SourceMacAddressError {
     ZeroSource(Mac),
 }
 
+/// Errors which may occur when parsing a [`SourceMac`] from a `Vec<u8>`
+#[derive(Debug, thiserror::Error)]
+pub enum SourceMacParseError {
+    /// Class of errors which are not valid as [`SourceMac`]
+    #[error(transparent)]
+    SourceMacError(#[from] SourceMacAddressError),
+    /// Not a [`Mac`] at all
+    #[error("length error: invalid MAC {0:?}")]
+    NotAMac(Vec<u8>),
+}
+
 /// Errors which can occur while setting the destination [`Mac`] of a [`Packet`]
 ///
 /// [`Packet`]: crate::headers::Headers
@@ -253,9 +270,44 @@ impl AsRef<Mac> for DestinationMac {
     }
 }
 
+impl From<SourceMac> for Mac {
+    fn from(value: SourceMac) -> Self {
+        value.0
+    }
+}
+
 impl From<SourceMac> for DestinationMac {
     fn from(value: SourceMac) -> Self {
         DestinationMac(value.0)
+    }
+}
+
+impl TryFrom<Mac> for SourceMac {
+    type Error = SourceMacAddressError;
+
+    fn try_from(value: Mac) -> Result<Self, Self::Error> {
+        SourceMac::new(value)
+    }
+}
+
+impl TryFrom<&Vec<u8>> for SourceMac {
+    type Error = SourceMacParseError;
+
+    fn try_from(addr: &Vec<u8>) -> Result<Self, Self::Error> {
+        match TryInto::<[u8; 6]>::try_into(addr.as_ref()) {
+            Ok(array) => match SourceMac::new(Mac::from(array)) {
+                Ok(mac) => Ok(mac),
+                Err(SourceMacAddressError::ZeroSource(zero)) => Err(
+                    SourceMacParseError::SourceMacError(SourceMacAddressError::ZeroSource(zero)),
+                ),
+                Err(SourceMacAddressError::MulticastSource(mac)) => {
+                    Err(SourceMacParseError::SourceMacError(
+                        SourceMacAddressError::MulticastSource(mac),
+                    ))
+                }
+            },
+            Err(_) => Err(SourceMacParseError::NotAMac(addr.clone())),
+        }
     }
 }
 

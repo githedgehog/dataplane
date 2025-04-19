@@ -45,6 +45,20 @@ impl Display for UnicastIpv4Addr {
     }
 }
 
+impl TryFrom<Ipv4Addr> for UnicastIpv4Addr {
+    type Error = Ipv4Addr;
+
+    fn try_from(value: Ipv4Addr) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<UnicastIpv4Addr> for Ipv4Addr {
+    fn from(value: UnicastIpv4Addr) -> Self {
+        value.inner()
+    }
+}
+
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
     use crate::ipv4::addr::UnicastIpv4Addr;
