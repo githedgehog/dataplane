@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use crate::{Manager, manager_of};
 use derive_builder::Builder;
 use multi_index_map::MultiIndexMap;
-use net::interface::VtepProperties;
+use net::interface::{Interface, InterfaceProperties, VtepProperties};
 use net::ipv4::UnicastIpv4Addr;
 use net::vxlan::Vni;
-use rekon::AsRequirement;
+use rekon::{AsRequirement, Remove, Update};
 use serde::{Deserialize, Serialize};
 
 /// The "planned" properties of a VTEP / vxlan device.
@@ -58,6 +59,39 @@ impl PartialEq<VtepProperties> for VtepPropertiesSpec {
             None => false,
             Some(props) => self == &props,
         }
+    }
+}
+
+impl Update for Manager<VtepProperties> {
+    type Requirement<'a>
+        = &'a VtepPropertiesSpec
+    where
+        Self: 'a;
+    type Observation<'a>
+        = &'a Interface
+    where
+        Self: 'a;
+    type Outcome<'a>
+        = Result<(), rtnetlink::Error>
+    where
+        Self: 'a;
+
+    /// Linux does not really support update for most vtep properties.  All you can do is destroy
+    /// the interface and the wait for the reconcile loop to address re-create
+    async fn update<'a>(
+        &self,
+        requirement: Self::Requirement<'a>,
+        observation: Self::Observation<'a>,
+    ) -> Result<(), rtnetlink::Error>
+    where
+        Self: 'a,
+    {
+        if let InterfaceProperties::Vtep(props) = &observation.properties {
+            if requirement == props {
+                return Ok(());
+            }
+        }
+        manager_of::<Interface>(self).remove(observation).await
     }
 }
 
