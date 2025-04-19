@@ -23,10 +23,12 @@ use crate::interface::properties::InterfacePropertiesSpec;
 use derive_builder::Builder;
 use multi_index_map::MultiIndexMap;
 use net::eth::mac::SourceMac;
-use net::interface::{AdminState, Interface, InterfaceIndex, InterfaceName};
-use rekon::{AsRequirement, Create, Remove};
-use rtnetlink::packet_route::link::{InfoBridge, InfoData, InfoVxlan, LinkAttribute};
-use rtnetlink::{LinkBridge, LinkVrf, LinkVxlan};
+use net::interface::{
+    AdminState, Interface, InterfaceIndex, InterfaceName, InterfaceProperties, OperationalState,
+};
+use rekon::{AsRequirement, Create, Remove, Update};
+use rtnetlink::packet_route::link::{InfoBridge, InfoData, InfoVrf, InfoVxlan, LinkAttribute};
+use rtnetlink::{LinkBridge, LinkUnspec, LinkVrf, LinkVxlan};
 use serde::{Deserialize, Serialize};
 
 /// The specified / intended state for a network interface.
@@ -156,6 +158,38 @@ impl Remove for Manager<Interface> {
         self.handle
             .link()
             .del(observation.index.to_u32())
+            .execute()
+            .await
+    }
+}
+
+impl Update for Manager<InterfaceName> {
+    type Requirement<'a>
+        = &'a InterfaceName
+    where
+        Self: 'a;
+    type Observation<'a>
+        = &'a Interface
+    where
+        Self: 'a;
+    type Outcome<'a>
+        = Result<(), rtnetlink::Error>
+    where
+        Self: 'a;
+
+    async fn update<'a>(
+        &self,
+        requirement: &InterfaceName,
+        observation: &Interface,
+    ) -> Result<(), rtnetlink::Error> {
+        self.handle
+            .link()
+            .set(
+                LinkUnspec::new_with_index(observation.index.to_u32())
+                    .down()
+                    .name(requirement.to_string())
+                    .build(),
+            )
             .execute()
             .await
     }
