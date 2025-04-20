@@ -53,29 +53,44 @@ pub mod test {
         let mut vpc_table = VpcTable::new();
 
         /* invalid vni should be rejected */
-        let vpc1 = Vpc::new("VPC-1", 0);
+        let vpc1 = Vpc::new("VPC-1", "AAAAA", 0);
         assert_eq!(vpc1, Err(ApiError::InvalidVpcVni(0)));
 
         /* add vpc with valid vni 3000 */
-        let vpc1 = Vpc::new("VPC-1", 3000).expect("Should succeed");
+        let vpc1 = Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed");
         vpc_table.add(vpc1).expect("Should succeed");
 
         /* vpc with duplicate name should be rejected */
-        let vpc2 = Vpc::new("VPC-1", 2000).expect("Should succeed");
+        let bad = Vpc::new("VPC-1", "BBBBB", 2000).expect("Should succeed");
         assert_eq!(
-            vpc_table.add(vpc2),
-            Err(ApiError::DuplicateVpcId("VPC-1".to_string()))
+            vpc_table.add(bad),
+            Err(ApiError::DuplicateVpcName("VPC-1".to_string()))
         );
 
         /* vpc with colliding VNI should be rejected */
-        let vpc2 = Vpc::new("VPC-2", 3000).expect("Should succeed");
-        assert_eq!(vpc_table.add(vpc2), Err(ApiError::DuplicateVpcVni(3000)));
+        let bad = Vpc::new("VPC-2", "CCCCC", 3000).expect("Should succeed");
+        assert_eq!(vpc_table.add(bad), Err(ApiError::DuplicateVpcVni(3000)));
+
+        /* vpc with colliding Id should be rejected */
+        let bad = Vpc::new("VPC-2", "AAAAA", 9000).expect("Should succeed");
+        assert_eq!(
+            vpc_table.add(bad),
+            Err(ApiError::DuplicateVpcId("AAAAA".try_into().unwrap()))
+        );
+
+        /* vpc with bad Id should not build */
+        let bad = Vpc::new("VPC-2", "AAA", 9000);
+        assert_eq!(bad, Err(ApiError::BadVpcId("AAA".to_string())));
+
+        /* vpc with bad Id should not build */
+        let bad = Vpc::new("VPC-2", "!1234", 9000);
+        assert_eq!(bad, Err(ApiError::BadVpcId("!1234".to_string())));
     }
 
     #[test]
     fn test_overlay_missing_vpc() {
         /* build VPCs */
-        let vpc1 = Vpc::new("VPC-1", 3000).expect("Should succeed");
+        let vpc1 = Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed");
 
         /* build VPC table */
         let mut vpc_table = VpcTable::new();
@@ -99,8 +114,8 @@ pub mod test {
     #[test]
     fn test_overlay() {
         /* build VPCs */
-        let vpc1 = Vpc::new("VPC-1", 3000).expect("Should succeed");
-        let vpc2 = Vpc::new("VPC-2", 4000).expect("Should succeed");
+        let vpc1 = Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed");
+        let vpc2 = Vpc::new("VPC-2", "BBBBB", 4000).expect("Should succeed");
 
         /* build peering */
         let peering = build_vpc_peering();
@@ -228,10 +243,10 @@ pub mod test {
 
         /* build VPC table with 3 vpcs */
         let mut vpc_table = VpcTable::new();
-        let _ = vpc_table.add(Vpc::new("VPC-1", 3000).expect("Should succeed"));
-        let _ = vpc_table.add(Vpc::new("VPC-2", 4000).expect("Should succeed"));
-        let _ = vpc_table.add(Vpc::new("VPC-3", 2000).expect("Should succeed"));
-        let _ = vpc_table.add(Vpc::new("VPC-4", 6000).expect("Should succeed"));
+        let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed"));
+        let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 4000).expect("Should succeed"));
+        let _ = vpc_table.add(Vpc::new("VPC-3", "CCCCC", 2000).expect("Should succeed"));
+        let _ = vpc_table.add(Vpc::new("VPC-4", "DDDDD", 6000).expect("Should succeed"));
 
         /* build peering table with 3 peerings */
         let mut peering_table = VpcPeeringTable::new();

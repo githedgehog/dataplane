@@ -29,19 +29,43 @@ pub struct Peering {
     pub remote: VpcManifest, /* remote manifest */
 }
 
+#[derive(Clone, Debug, PartialEq, Ord, PartialOrd, Eq)]
+/// Type for a fixed-sized VPC unique id
+pub struct VpcId(pub(crate) [char; 5]);
+impl VpcId {
+    pub fn new(a: char, b: char, c: char, d: char, e: char) -> Self {
+        Self([a, b, c, d, e])
+    }
+}
+impl TryFrom<&str> for VpcId {
+    type Error = ApiError;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        if value.len() != 5 {
+            return Err(ApiError::BadVpcId(value.to_owned()));
+        }
+        if !value.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Err(ApiError::BadVpcId(value.to_owned()));
+        }
+        let chars: Vec<char> = value.chars().collect();
+        Ok(VpcId::new(chars[0], chars[1], chars[2], chars[3], chars[4]))
+    }
+}
+
 /// Representation of a VPC from the RPC
 #[derive(Clone, Debug, PartialEq)]
 pub struct Vpc {
-    pub name: String,                     /* key */
+    pub name: String,                     /* name of vpc, used as key */
+    pub id: VpcId,                        /* internal Id, unique*/
     pub vni: Vni,                         /* mandatory */
     pub interfaces: InterfaceConfigTable, /* user-defined interfaces in this VPC */
     pub peerings: Vec<Peering>,           /* peerings of this VPC - NOT set via gRPC */
 }
 impl Vpc {
-    pub fn new(name: &str, vni: u32) -> Result<Self, ApiError> {
+    pub fn new(name: &str, id: &str, vni: u32) -> Result<Self, ApiError> {
         let vni = Vni::new_checked(vni).map_err(|_| ApiError::InvalidVpcVni(vni))?;
         Ok(Self {
             name: name.to_owned(),
+            id: VpcId::try_from(id)?,
             vni,
             interfaces: InterfaceConfigTable::new(),
             peerings: vec![],
@@ -76,6 +100,7 @@ impl Vpc {
 pub struct VpcTable {
     vpcs: BTreeMap<String, Vpc>,
     vnis: BTreeSet<Vni>,
+    ids: BTreeSet<VpcId>,
 }
 impl VpcTable {
     /// Create new vpc table
@@ -93,15 +118,19 @@ impl VpcTable {
 
     /// Add a [`Vpc`] to the vpc table
     pub fn add(&mut self, vpc: Vpc) -> ApiResult {
-        // Vni must have not been used before
-        if !self.vnis.insert(vpc.vni) {
+        if self.vnis.contains(&vpc.vni) {
             return Err(ApiError::DuplicateVpcVni(vpc.vni.as_u32()));
         }
-        if let Some(vpc) = self.vpcs.insert(vpc.name.to_owned(), vpc) {
-            Err(ApiError::DuplicateVpcId(vpc.name.clone()))
-        } else {
-            Ok(())
+        if self.ids.contains(&vpc.id) {
+            return Err(ApiError::DuplicateVpcId(vpc.id));
         }
+        if self.vpcs.contains_key(&vpc.name) {
+            return Err(ApiError::DuplicateVpcName(vpc.name.clone()));
+        }
+        self.vnis.insert(vpc.vni);
+        self.ids.insert(vpc.id.clone());
+        self.vpcs.insert(vpc.name.to_owned(), vpc);
+        Ok(())
     }
     /// Get a [`Vpc`] from the vpc table by name
     pub fn get_vpc(&self, vpc_name: &str) -> Option<&Vpc> {

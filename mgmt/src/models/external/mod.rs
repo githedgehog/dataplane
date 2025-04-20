@@ -5,13 +5,19 @@ pub mod configdb;
 pub mod overlay;
 
 use crate::models::external::configdb::gwconfig::GenId;
+use crate::models::external::overlay::vpc::VpcId;
+
 use thiserror::Error;
 
 /// The reasons why we may reject a configuration
 #[derive(Debug, Error, PartialEq)]
 pub enum ApiError {
+    #[error("A VPC with name '{0}' already exists")]
+    DuplicateVpcName(String),
     #[error("A VPC with id '{0}' already exists")]
-    DuplicateVpcId(String),
+    DuplicateVpcId(VpcId),
+    #[error("VNI '{0}' is already in use")]
+    DuplicateVpcVni(u32),
     #[error("A VPC peering with id '{0}' already exists")]
     DuplicateVpcPeeringId(String),
     #[error("The VPC peering '{0}' is incomplete")]
@@ -20,8 +26,6 @@ pub enum ApiError {
     NoSuchVpc(String),
     #[error("'{0}' is not a valid VNI")]
     InvalidVpcVni(u32),
-    #[error("VNI '{0}' is already in use")]
-    DuplicateVpcVni(u32),
     #[error("VPC peering name is missing")]
     MissingPeeringName,
     #[error("Config with id {0} not found")]
@@ -30,8 +34,8 @@ pub enum ApiError {
     FailureApply,
     #[error("Forbidden")]
     Forbidden,
-    #[error("Incomplete config: missing {0} configuration")]
-    IncompleteConfig(&'static str),
+    #[error("Bad VPC Id")]
+    BadVpcId(String),
 }
 
 /// Result-like type for configurations

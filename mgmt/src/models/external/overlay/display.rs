@@ -6,8 +6,7 @@ use routing::pretty_utils::Heading;
 use std::fmt::Display;
 
 use crate::models::external::overlay::VpcManifest;
-use crate::models::external::overlay::vpc::Peering;
-use crate::models::external::overlay::vpc::VpcTable;
+use crate::models::external::overlay::vpc::{Peering, VpcId, VpcTable};
 use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcPeering, VpcPeeringTable};
 
 const SEP: &str = "       ";
@@ -82,7 +81,7 @@ impl Display for Peering {
 
 macro_rules! VPC_TBL_FMT {
     () => {
-        " {:<18} {:<8} {:<9} {:<18} {:<18}"
+        " {:<18} {:<6} {:<8} {:<9} {:<18} {:<18}"
     };
 }
 fn fmt_vpc_table_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -91,9 +90,19 @@ fn fmt_vpc_table_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         "{}",
         format_args!(
             VPC_TBL_FMT!(),
-            "VPC", "VNI", "peers", "remote", "peering name"
+            "VPC", "Id", "VNI", "peers", "remote", "peering name"
         )
     )
+}
+
+impl Display for VpcId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}{}{}{}{}",
+            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4]
+        )
+    }
 }
 
 // Auxiliary type to implement detailed VPC display
@@ -102,7 +111,7 @@ impl Display for VpcDetailed<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let vpc = self.0;
         Heading(format!("vpc: {}", vpc.name)).fmt(f)?;
-        writeln!(f, " name: {}", vpc.name)?;
+        writeln!(f, " name: {} Id: {}", vpc.name, vpc.id)?;
         writeln!(f, " vni : {}", vpc.vni)?;
         writeln!(f, " peerings: {}", vpc.peerings.len())?;
         Heading(format!("Peerings of {}", vpc.name)).fmt(f)?;
@@ -120,26 +129,27 @@ impl Display for Vpc {
             writeln!(
                 f,
                 "{}",
-                format_args!(VPC_TBL_FMT!(), &self.name, self.vni, "", "", "")
+                format_args!(VPC_TBL_FMT!(), &self.name, self.id, self.vni, "", "", "")
             )?;
         } else {
             // VPC that has peerings
             for (num, peering) in self.peerings.iter().enumerate() {
-                let (name, vni, num_peers) = if num == 0 {
+                let (name, id, vni, num_peers) = if num == 0 {
                     (
                         self.name.as_str(),
+                        self.id.to_string(),
                         self.vni.to_string(),
                         self.peerings.len().to_string(),
                     )
                 } else {
-                    ("", "".to_string(), "".to_string())
+                    ("", "".to_string(), "".to_string(), "".to_string())
                 };
                 writeln!(
                     f,
                     "{}",
                     format_args!(
                         VPC_TBL_FMT!(),
-                        name, vni, num_peers, peering.remote.name, peering.name
+                        name, id, vni, num_peers, peering.remote.name, peering.name
                     )
                 )?;
             }
