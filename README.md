@@ -2,10 +2,22 @@
 
 ## SCRATCH TEST OF DIAGRAMS
 
-![plan diagram](./plan.svg?page=4)
+![plan diagram](./plan.svg)
 
+![key](./plan-key.draw.io.svg)
 > Scratch test of figure
 
+![stage 1 diagram](./plan-stage1.draw.io.svg)
+> Stage 1 of transition
+
+![stage 2 diagram](./plan-stage2.draw.io.svg)
+> Stage 2 of transition
+
+![stage 3 diagram](./plan-stage3.draw.io.svg)
+> Stage 3 of transition
+
+![raw draw.io file](./plan.drawio)
+> Raw draw.io file
 
 This repository contains the Dataplane for [Hedgehog's Open Network
 Fabric][fabric-docs]. This component acts as a gateway between different VPCs
