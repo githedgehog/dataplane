@@ -7,7 +7,8 @@
 ![plan diagram](./plan.svg)
 
 <figcaption>
-Scratch test of figure html
+
+> Scratch test of figure html
 </figcaption>
 
 </figure>
