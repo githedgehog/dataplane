@@ -2,7 +2,16 @@
 
 ## SCRATCH TEST OF DIAGRAMS
 
+<figure>
+
 ![plan diagram](./plan.svg)
+
+<figcaption>
+Scratch test of figure html
+</figcaption>
+
+</figure>
+
 
 This repository contains the Dataplane for [Hedgehog's Open Network
 Fabric][fabric-docs]. This component acts as a gateway between different VPCs
