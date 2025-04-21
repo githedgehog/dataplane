@@ -4,24 +4,19 @@
 
 AND HERE IS A PNG
 
-![png diagram](./plan.png)
+![plan diagram](./plan.svg?sanitize=true)
 
-![plan diagram](./plan.svg)
-
-![key](./plan-key.draw.io.svg)
+![key](./plan-key.draw.io.svg?sanitize=true)
 > Scratch test of figure
 
-![stage 1 diagram](./plan-stage1.draw.io.svg)
+![stage 1 diagram](./plan-stage1.draw.io.svg?sanitize=true)
 > Stage 1 of transition
 
-![stage 2 diagram](./plan-stage2.draw.io.svg)
+![stage 2 diagram](./plan-stage2.draw.io.svg?sanitize=true)
 > Stage 2 of transition
 
-![stage 3 diagram](./plan-stage3.draw.io.svg)
+![stage 3 diagram](./plan-stage3.draw.io.svg?sanitize=true)
 > Stage 3 of transition
-
-![raw draw.io file](./plan.drawio)
-> Raw draw.io file
 
 This repository contains the Dataplane for [Hedgehog's Open Network
 Fabric][fabric-docs]. This component acts as a gateway between different VPCs
