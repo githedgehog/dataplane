@@ -2,6 +2,10 @@
 
 ## SCRATCH TEST OF DIAGRAMS
 
+AND HERE IS A PNG
+
+![png diagram](./plan.png)
+
 ![plan diagram](./plan.svg)
 
 ![key](./plan-key.draw.io.svg)
