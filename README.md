@@ -2,16 +2,9 @@
 
 ## SCRATCH TEST OF DIAGRAMS
 
-<figure>
+![plan diagram](./plan.svg?page=2)
 
-![plan diagram](./plan.svg)
-
-<figcaption>
-
-> Scratch test of figure html
-</figcaption>
-
-</figure>
+> Scratch test of figure
 
 
 This repository contains the Dataplane for [Hedgehog's Open Network
