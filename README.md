@@ -1,5 +1,9 @@
 # Hedgehog Dataplane
 
+## SCRATCH TEST OF DIAGRAMS
+
+![plan diagram](./plan.svg)
+
 This repository contains the Dataplane for [Hedgehog's Open Network
 Fabric][fabric-docs]. This component acts as a gateway between different VPCs
 managed by the Fabric, or to communicate with endpoints outside of the Fabric.
