@@ -2,7 +2,7 @@
 
 ## SCRATCH TEST OF DIAGRAMS
 
-![plan diagram](./plan.svg?page=3)
+![plan diagram](./plan.svg?page=4)
 
 > Scratch test of figure
 
