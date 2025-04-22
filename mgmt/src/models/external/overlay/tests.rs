@@ -8,6 +8,7 @@
 pub mod test {
     use crate::models::external::ApiError;
     use crate::models::external::overlay::Overlay;
+    use crate::models::external::overlay::VpcIdMap;
     use crate::models::external::overlay::display::VpcDetailed;
     use crate::models::external::overlay::vpc::{Vpc, VpcTable};
     use crate::models::external::overlay::vpcpeering::VpcExpose;
@@ -104,7 +105,7 @@ pub mod test {
         peering_table.add(peering).expect("Should succeed");
 
         /* build overlay object and validate it */
-        let overlay = Overlay::new(vpc_table, peering_table);
+        let mut overlay = Overlay::new(vpc_table, peering_table);
         assert_eq!(
             overlay.validate(),
             Err(ApiError::NoSuchVpc("VPC-2".to_owned()))
@@ -132,7 +133,7 @@ pub mod test {
         println!("{peering_table}");
 
         /* build overlay object and validate it */
-        let overlay = Overlay::new(vpc_table, peering_table);
+        let mut overlay = Overlay::new(vpc_table, peering_table);
         assert_eq!(overlay.validate(), Ok(()));
     }
 
@@ -285,8 +286,14 @@ pub mod test {
         /* display peering table */
         println!("{peering_table}");
 
+        /* collect ids */
+        let id_map: VpcIdMap = vpc_table
+            .values()
+            .map(|vpc| (vpc.name.clone(), vpc.id.clone()))
+            .collect();
+
         /* collect the peerings for each VPC */
-        vpc_table.collect_peerings(&peering_table);
+        vpc_table.collect_peerings(&peering_table, &id_map);
 
         /* display VPC table */
         println!("{vpc_table}");
