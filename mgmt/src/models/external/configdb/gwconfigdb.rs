@@ -60,4 +60,16 @@ impl GwConfigDatabase {
         }
         res
     }
+    /// Get the generation Id of the currently applied config, if any.
+    pub fn get_current_gen(&self) -> Option<GenId> {
+        self.current
+    }
+    /// Get a reference to the config currently applied, if any.
+    pub fn get_current_config(&self) -> Option<&GwConfig> {
+        if let Some(genid) = self.current {
+            self.get(genid)
+        } else {
+            None
+        }
+    }
 }
