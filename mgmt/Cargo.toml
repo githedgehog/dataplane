@@ -6,8 +6,14 @@ publish = false
 license = "Apache-2.0"
 
 [dependencies]
+async-trait = { workspace = true }
+derive_builder = { workspace = true }
+gateway_config = { workspace = true }
 net = { workspace = true }
 routing = { workspace = true }
-tracing = { workspace = true }
 thiserror = { workspace = true }
-derive_builder = { workspace = true }
+tokio = { workspace = true }    
+tonic = { workspace = true }
+tracing = { workspace = true }
+
+
