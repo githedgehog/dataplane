@@ -45,17 +45,7 @@ impl VrfConfig {
         self.tableid = Some(tableid);
         self
     }
-    pub fn set_vni(mut self, vni: Vni) -> Self {
-        if self.default {
-            panic!("Can't set VNI for default vrf");
-        }
-        self.vni = Some(vni);
-        self
-    }
     pub fn set_bgp(&mut self, mut bgp: BgpConfig) -> &Self {
-        if !self.default {
-            bgp = bgp.set_vrf_name(&self.name);
-        }
         self.bgp = Some(bgp);
         self
     }

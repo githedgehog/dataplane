@@ -361,8 +361,8 @@ impl BasicConfigManager {
             .set_default_originate_ipv6(false);
 
         let mut bgpconfig = BgpConfig::new(asn);
-        bgpconfig = bgpconfig.clone().set_router_id(router_id); // This is because we are loosing ref
-        bgpconfig = bgpconfig.clone().set_bgp_options(options).clone();
+        bgpconfig.set_router_id(router_id);
+        bgpconfig.set_bgp_options(options);
         bgpconfig.set_af_ipv4unicast(af_ipv4unicast);
         bgpconfig.set_af_l2vpn_evpn(af_l2vpnevpn);
         // Add each neighbor to the BGP config
