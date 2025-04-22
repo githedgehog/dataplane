@@ -194,9 +194,8 @@ impl VrfImports {
         self.routemap = Some(routemap.to_owned());
         self
     }
-    pub fn add_vrf(mut self, vrf: &str) -> Self {
+    pub fn add_vrf(&mut self, vrf: &str) {
         self.from_vrf.insert(vrf.to_owned());
-        self
     }
 }
 impl AfIpv4Ucast {
@@ -483,11 +482,11 @@ impl BgpConfig {
             ..Default::default()
         }
     }
-    pub fn set_vrf_name(mut self, vrf: &str) -> Self {
-        self.vrf = Some(vrf.to_owned());
+    pub fn set_vrf_name(mut self, vrf_name: String) -> Self {
+        self.vrf = Some(vrf_name);
         self
     }
-    pub fn set_router_id(mut self, router_id: Ipv4Addr) -> Self {
+    pub fn set_router_id(&mut self, router_id: Ipv4Addr) -> &Self {
         self.router_id = Some(router_id);
         self
     }

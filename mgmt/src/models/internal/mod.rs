@@ -37,6 +37,7 @@ pub struct InternalConfig {
 
 impl InternalConfig {
     pub fn new(dev_cfg: DeviceConfig) -> Self {
+        // Frr profile is not configurable for the time being
         let frr = Frr::new(
             routing::frr::FrrProfile::Datacenter,
             &dev_cfg.settings.hostname,
