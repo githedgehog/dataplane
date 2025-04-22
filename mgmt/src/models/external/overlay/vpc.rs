@@ -27,6 +27,7 @@ pub struct Peering {
     pub name: String,        /* name of peering */
     pub local: VpcManifest,  /* local manifest */
     pub remote: VpcManifest, /* remote manifest */
+    pub remote_id: VpcId,
 }
 
 #[derive(Clone, Debug, PartialEq, Ord, PartialOrd, Eq)]
@@ -50,6 +51,8 @@ impl TryFrom<&str> for VpcId {
         Ok(VpcId::new(chars[0], chars[1], chars[2], chars[3], chars[4]))
     }
 }
+
+pub(crate) type VpcIdMap = BTreeMap<String, VpcId>;
 
 /// Representation of a VPC from the RPC
 #[derive(Clone, Debug, PartialEq)]
@@ -76,22 +79,27 @@ impl Vpc {
         self.interfaces.add_interface_config(if_cfg);
     }
 
-    /// Collect all peerings from the [`VpcPeeringTable`] table that involve this vpc
-    pub fn collect_peerings(&mut self, peering_table: &VpcPeeringTable) {
+    /// Collect all peerings from the [`VpcPeeringTable`] table this vpc participates in
+    pub fn collect_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
+        debug!("Collecting peerings for vpc '{}'...", self.name);
         self.peerings = peering_table
             .peerings_vpc(&self.name)
             .map(|p| {
-                let (local, remote) = p.get_peers(&self.name);
+                let (local, remote) = p.get_peering_manifests(&self.name);
+                let remote_id = idmap.get(&remote.name).unwrap();
                 Peering {
                     name: p.name.clone(),
                     local: local.clone(),
                     remote: remote.clone(),
+                    remote_id: remote_id.clone(),
                 }
             })
             .collect();
 
         if self.peerings.is_empty() {
             warn!("Warning, VPC {} has no configured peerings", &self.name);
+        } else {
+            debug!("Vpc '{}' has {} peerings", self.name, self.peerings.len());
         }
     }
 }
@@ -145,9 +153,9 @@ impl VpcTable {
         self.vpcs.values_mut()
     }
     /// Collect peerings for all [`Vpc`]s in this [`VpcTable`]
-    pub fn collect_peerings(&mut self, peering_table: &VpcPeeringTable) {
+    pub fn collect_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
         debug!("Collecting peerings for all VPCs..");
         self.values_mut()
-            .for_each(|vpc| vpc.collect_peerings(peering_table));
+            .for_each(|vpc| vpc.collect_peerings(peering_table, idmap));
     }
 }

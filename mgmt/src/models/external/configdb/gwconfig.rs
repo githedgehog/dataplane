@@ -16,6 +16,8 @@ use crate::models::internal::routing::vrf::VrfConfig;
 
 /// Alias for a config generation number
 pub type GenId = u64;
+use crate::processor::proc::apply_gw_config;
+use crate::processor::proc::build_internal_config;
 
 #[derive(Clone)]
 pub struct Underlay {
@@ -57,15 +59,11 @@ impl ExternalConfig {
     pub fn validate(&mut self) -> ApiResult {
         self.device.validate()?;
         self.underlay.validate()?;
-        self.overlay
-            .vpc_table
-            .collect_peerings(&self.overlay.peering_table);
         self.overlay.validate()?;
         Ok(())
     }
 }
 
-/// The configuration object as seen by the gRPC server
 pub struct GwConfig {
     pub meta: GwConfigMeta,               /* config metadata */
     pub external: ExternalConfig,         /* external config: received */
@@ -92,11 +90,8 @@ impl GwConfig {
 
     /// Build the [`InternalConfig`] for this [`GwConfig`]
     pub fn build_internal_config(&mut self) -> ApiResult {
-        debug!("Building internal config for config {} ..", self.genid());
-        // Build internal config object: TODO
-        let internal = InternalConfig::new(self.external.device.clone());
-
-        // set the internal config
+        /* build and set internal config */
+        let internal = build_internal_config(self);
         self.internal = Some(internal);
         info!("Internal config built for {}", self.genid());
         Ok(())
@@ -110,18 +105,17 @@ impl GwConfig {
             self.build_internal_config()?;
         }
 
-        /*
-            TODO: apply internal configuration
-        */
-        let success = true;
-        if success {
-            self.meta.applied = Some(SystemTime::now());
-            self.meta.is_applied = true;
-            info!("Applied config {}", self.genid());
-            Ok(())
-        } else {
-            info!("Failed to apply config {}", self.genid());
-            Err(ApiError::FailureApply)
+        /* Apply this gw config */
+        match apply_gw_config(self) {
+            Ok(()) => {
+                self.meta.applied = Some(SystemTime::now());
+                self.meta.is_applied = true;
+                Ok(())
+            }
+            Err(e) => {
+                info!("Failed to apply config {}: {e}", self.genid());
+                Err(ApiError::FailureApply)
+            }
         }
     }
 }
