@@ -8,7 +8,6 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use crate::models::external::{ApiError, ApiResult};
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExpose {
     pub ips: BTreeSet<Prefix>,
@@ -81,8 +80,8 @@ impl VpcPeering {
         }
         Ok(())
     }
-    /// Given a peering fetch the manifests, in order depending on the provided vpc name
-    pub fn get_peers(&self, vpc: &str) -> (&VpcManifest, &VpcManifest) {
+    /// Given a peering fetch the manifests, orderly depending on the provided vpc name
+    pub fn get_peering_manifests(&self, vpc: &str) -> (&VpcManifest, &VpcManifest) {
         if self.left.name == vpc {
             (&self.left, &self.right)
         } else {
