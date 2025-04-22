@@ -4,7 +4,7 @@
 //! Dataplane configuration processor.
 //! This module implements the core logic to determine and build internal configurations.
 
-mod confbuild;
+pub mod confbuild;
 mod namegen;
 pub mod proc;
 mod tests;

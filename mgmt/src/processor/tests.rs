@@ -5,6 +5,7 @@
 #[allow(dead_code)]
 pub mod test {
     use routing::prefix::Prefix;
+    use tracing_test::traced_test;
     //    use net::eth::mac::Mac;
     use std::net::IpAddr;
     use std::net::Ipv4Addr;
@@ -257,6 +258,7 @@ pub mod test {
     }
 
     #[test]
+    #[traced_test]
     fn test_sample_config() {
         /* build sample external config */
         let external = sample_external_config();

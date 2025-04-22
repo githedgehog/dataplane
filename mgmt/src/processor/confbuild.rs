@@ -9,6 +9,8 @@ use crate::models::external::overlay::Overlay;
 use crate::models::external::overlay::vpc::Vpc;
 use crate::models::external::overlay::vpcpeering::VpcManifest;
 
+use crate::models::external::configdb::gwconfig::GwConfig;
+
 use crate::models::internal::InternalConfig;
 use crate::models::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
 use crate::models::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
@@ -189,15 +191,41 @@ fn build_vpc_internal_config(
     internal.add_vrf_config(vrf_cfg);
 }
 
-pub(crate) fn build_internal_overlay_config(
+fn build_internal_overlay_config(
     overlay: &Overlay,
     asn: u32,
     router_id: Option<Ipv4Addr>,
     internal: &mut InternalConfig,
 ) {
-    debug!("Building internal overlay config...");
+    debug!("Building overlay config...");
+    debug!(
+        "Requested overlay is:\n{}\n{}",
+        overlay.vpc_table, overlay.peering_table
+    );
     for vpc in overlay.vpc_table.values() {
         build_vpc_internal_config(vpc, asn, router_id, internal);
     }
-    println!("{internal:#?}");
+    debug!("Internal config is:\n{internal:#?}");
+}
+
+/// Top-level function to build internal config from external config
+pub fn build_internal_config(config: &GwConfig) -> InternalConfig {
+    debug!("Building internal config for gen {}", config.genid());
+    let external = &config.external;
+
+    /* Build internal config object: device and underlay configs are copied as received */
+    let mut internal = InternalConfig::new(external.device.clone());
+    internal.add_vrf_config(external.underlay.vrf.clone());
+
+    if let Some(bgp) = &external.underlay.vrf.bgp {
+        let asn = bgp.asn;
+        let router_id = bgp.router_id;
+
+        // Build internal config for overlay config
+        build_internal_overlay_config(&external.overlay, asn, router_id, &mut internal);
+    } else {
+        // TODO: we should reject this config
+    }
+    debug!("Built internal config for gen {}", config.genid());
+    internal
 }

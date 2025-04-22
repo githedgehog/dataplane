@@ -14,10 +14,11 @@ use crate::models::internal::InternalConfig;
 use crate::models::internal::device::DeviceConfig;
 use crate::models::internal::routing::vrf::VrfConfig;
 
+use crate::processor::confbuild::build_internal_config;
+
 /// Alias for a config generation number
 pub type GenId = u64;
 use crate::processor::proc::apply_gw_config;
-use crate::processor::proc::build_internal_config;
 
 #[derive(Clone)]
 pub struct Underlay {
