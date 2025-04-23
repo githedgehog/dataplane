@@ -5,3 +5,4 @@
 //! Implements gRPC request reception and response building.
 
 pub mod server;
+pub mod test;
