@@ -5,9 +5,9 @@ use routing::prefix::Prefix;
 use std::net::Ipv4Addr;
 use tracing::debug;
 
-use crate::models::external::overlay::Overlay;
 use crate::models::external::overlay::vpc::Vpc;
 use crate::models::external::overlay::vpcpeering::VpcManifest;
+use crate::models::external::{ApiError, overlay::Overlay};
 
 use crate::models::external::configdb::gwconfig::GwConfig;
 
@@ -209,7 +209,7 @@ fn build_internal_overlay_config(
 }
 
 /// Top-level function to build internal config from external config
-pub fn build_internal_config(config: &GwConfig) -> InternalConfig {
+pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, ApiError> {
     debug!("Building internal config for gen {}", config.genid());
     let external = &config.external;
 
@@ -220,12 +220,10 @@ pub fn build_internal_config(config: &GwConfig) -> InternalConfig {
     if let Some(bgp) = &external.underlay.vrf.bgp {
         let asn = bgp.asn;
         let router_id = bgp.router_id;
-
-        // Build internal config for overlay config
         build_internal_overlay_config(&external.overlay, asn, router_id, &mut internal);
     } else {
-        // TODO: we should reject this config
+        return Err(ApiError::IncompleteConfig("Missing BGP config".to_string()));
     }
     debug!("Built internal config for gen {}", config.genid());
-    internal
+    Ok(internal)
 }
