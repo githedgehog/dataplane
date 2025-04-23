@@ -5,7 +5,6 @@
 
 use async_trait::async_trait;
 use net::vlan::Vid;
-use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -241,27 +240,20 @@ impl BasicConfigManager {
 
     /// Convert gRPC VRF to internal VrfConfig
     fn convert_vrf_to_vrf_config(&self, vrf: &gateway_config::Vrf) -> Result<VrfConfig, String> {
-        // Convert interfaces to InterfaceConfigTable
-        let interfaces = self.convert_interfaces_to_table(&vrf.interfaces)?;
-
-        // Convert BGP config if present
-        let bgp = vrf
-            .router
-            .as_ref()
-            .map(|router| self.convert_router_config_to_bgp_config(router))
-            .transpose()?;
-
         // Create VRF config
-        let vrf_config = VrfConfig {
-            name: vrf.name.clone(),
-            default: vrf.name == "default", // Set default to true if name is "default"
-            tableid: None,                  // handle this later
-            vni: None,                      // handle this later
-            subnets: BTreeSet::new(),       // Empty set
-            static_routes: BTreeSet::new(), // Empty set
-            bgp,
-            interfaces,
-        };
+        let mut vrf_config = VrfConfig::new(&vrf.name, None, true /* default vrf */);
+
+        // Convert BGP config if present and add it to VRF
+        if let Some(router) = &vrf.router {
+            let bgp = self.convert_router_config_to_bgp_config(router)?;
+            vrf_config.set_bgp(bgp);
+        }
+
+        // convert each interface
+        for iface in &vrf.interfaces {
+            let iface_config = self.convert_interface_to_interface_config(iface)?;
+            vrf_config.add_interface_config(iface_config);
+        }
 
         Ok(vrf_config)
     }
@@ -300,21 +292,6 @@ impl BasicConfigManager {
             interface_config = interface_config.add_address(new_addr, netmask);
         }
         Ok(interface_config)
-    }
-
-    /// Convert gRPC interfaces to InterfaceConfigTable
-    fn convert_interfaces_to_table(
-        &self,
-        interfaces: &[gateway_config::Interface],
-    ) -> Result<InterfaceConfigTable, String> {
-        let mut table = InterfaceConfigTable::new();
-
-        for iface in interfaces {
-            let iface_config = self.convert_interface_to_interface_config(iface)?;
-            table.add_interface_config(iface_config);
-        }
-
-        Ok(table)
     }
 
     /// Convert gRPC RouterConfig to internal BgpConfig
