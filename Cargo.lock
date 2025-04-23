@@ -1207,6 +1207,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
+ "tracing-test",
 ]
 
 [[package]]
