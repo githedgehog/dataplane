@@ -24,12 +24,12 @@ impl Vpc {
         self.id.vrf_name()
     }
     pub(crate) fn import_route_map_ipv4(&self) -> String {
-        format!("RM-IMPORT-V4-{}", self.name.to_uppercase())
+        format!("RM-IMPORT-{}", self.name.to_uppercase())
     }
     pub(crate) fn plist_with_vpc(&self, remote_name: &str) -> String {
-        format!("PL-{}-{}", &self.name, remote_name)
+        format!("{}-FROM-{}", &self.name, remote_name)
     }
     pub(crate) fn plist_with_vpc_descr(&self, remote_name: &str) -> String {
-        format!("Destinations reachable at {remote_name}")
+        format!("Prefixes of {} reachable by {}", remote_name, self.name)
     }
 }
