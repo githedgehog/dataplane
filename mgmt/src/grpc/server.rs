@@ -34,7 +34,7 @@ use crate::models::internal::routing::vrf::VrfConfig;
 
 use crate::models::internal::routing::bgp::{
     AfIpv4Ucast, AfL2vpnEvpn, BgpConfig, BgpNeighCapabilities, BgpNeighType, BgpNeighbor,
-    BgpOptions, BgpUpdateSource, NeighSendCommunities,
+    BgpOptions, NeighSendCommunities,
 };
 
 // Import proto-generated types
@@ -386,28 +386,14 @@ impl BasicConfigManager {
         neighbor: &gateway_config::BgpNeighbor,
     ) -> Result<BgpNeighbor, String> {
         // Parse remote ASN
-        let remote_as = Some(
-            neighbor
-                .remote_asn
-                .parse::<u32>()
-                .map_err(|_| format!("Invalid remote ASN format: {}", neighbor.remote_asn))?,
-        );
+        let remote_as = neighbor
+            .remote_asn
+            .parse::<u32>()
+            .map_err(|_| format!("Invalid remote ASN format: {}", neighbor.remote_asn))?;
 
         // Create neighbor address for ntype
         let neighbor_addr = IpAddr::from_str(&neighbor.address)
             .map_err(|_| format!("Invalid neighbor address: {}", neighbor.address))?;
-
-        // Create neighbor type
-        let ntype = BgpNeighType::Host(neighbor_addr);
-
-        // Create update source
-        let update_source = Some(BgpUpdateSource::Address(neighbor_addr));
-
-        // Set capabilities to default
-        let capabilities = BgpNeighCapabilities::default();
-
-        // Set send community to "Send Both"
-        let send_community = Some(NeighSendCommunities::Both);
 
         // Determine which address families are activated
         let mut ipv4_unicast = false;
@@ -424,43 +410,15 @@ impl BasicConfigManager {
         }
 
         // Create the neighbor config
-        Ok(BgpNeighbor {
-            ntype,
-            remote_as,
-            peer_group: None,
-            description: None,
-            route_map_in: None,
-            route_map_out: None, // FIXME: Route maps need to be configured
-            update_source,
-            weight: None,
-            capabilities,
-            send_community,
-            ebgp_multihop: None,
-            ttl_sec_hops: None,
-            advertisement_interval: None,
-            maximum_prefix: None,
-            maximum_prefix_out: None,
-            timer_connect: None,
-            timer_delay_open: None,
-            tcp_mss: None,
-
-            // SMATOV: Switches all default to false, adjust it later?
-            passive: false,
-            as_override: false,
-            strict_capability_match: false,
-            dont_capability_negotiate: false,
-            allow_as_in: false,
-            extended_link_bandwidth: false,
-            next_hop_self: false,
-            remove_private_as: false,
-            rr_client: false,
-            default_originate: false,
-
-            // Address families as determined from gRPC
-            ipv4_unicast,
-            ipv6_unicast,
-            l2vpn_evpn,
-        })
+        let neigh = BgpNeighbor::new_host(neighbor_addr)
+            .set_remote_as(remote_as)
+            .set_update_source_address(neighbor_addr)
+            .set_capabilities(BgpNeighCapabilities::default())
+            .set_send_community(NeighSendCommunities::Both)
+            .ipv4_unicast_activate(ipv4_unicast)
+            .ipv6_unicast_activate(ipv6_unicast)
+            .l2vpn_evpn_activate(l2vpn_evpn);
+        Ok(neigh)
     }
 
     /// Convert a gRPC VPC to internal Vpc
