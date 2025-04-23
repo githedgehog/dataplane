@@ -36,6 +36,8 @@ pub enum ApiError {
     Forbidden,
     #[error("Bad VPC Id")]
     BadVpcId(String),
+    #[error("Incomplete configuration {0}")]
+    IncompleteConfig(String),
 }
 
 /// Result-like type for configurations
