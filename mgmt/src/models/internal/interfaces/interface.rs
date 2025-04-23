@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 
+use crate::models::internal::routing::ospf::OspfInterface;
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// An Ip address configured on a local interface
 /// Fixme(fredi): this type should be inherited from routing crate on new merge
@@ -70,6 +72,7 @@ pub struct InterfaceConfig {
     pub addresses: BTreeSet<InterfaceAddress>,
     pub mtu: Option<u16>,
     pub internal: bool, /* true if automatically created */
+    pub ospf: Option<OspfInterface>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -92,6 +95,7 @@ impl InterfaceConfig {
             addresses: BTreeSet::new(),
             mtu: None,
             internal,
+            ospf: None,
         }
     }
     pub fn set_description(mut self, description: &str) -> Self {
@@ -109,6 +113,10 @@ impl InterfaceConfig {
     }
     pub fn set_vrf(mut self, vrfname: &str) -> Self {
         self.vrf = Some(vrfname.to_owned());
+        self
+    }
+    pub fn set_ospf(mut self, ospf: OspfInterface) -> Self {
+        self.ospf = Some(ospf);
         self
     }
 }
