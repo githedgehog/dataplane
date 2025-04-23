@@ -7,6 +7,7 @@ pub mod bgp;
 pub mod builder;
 pub mod frr;
 pub mod interface;
+pub mod ospf;
 pub mod prefixlist;
 pub mod routemap;
 pub mod statics;
@@ -48,6 +49,9 @@ impl Render for InternalConfig {
 
         /* Vrf BGP instances */
         cfg += self.vrfs.render_vrf_bgp();
+
+        /* vrf OSPF instance */
+        cfg += self.vrfs.render_vrf_ospf();
 
         /* route maps */
         cfg += self.rmap_table.render(&());
