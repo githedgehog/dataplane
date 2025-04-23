@@ -92,8 +92,7 @@ impl GwConfig {
     /// Build the [`InternalConfig`] for this [`GwConfig`]
     pub fn build_internal_config(&mut self) -> ApiResult {
         /* build and set internal config */
-        let internal = build_internal_config(self);
-        self.internal = Some(internal);
+        self.internal = Some(build_internal_config(self)?);
         info!("Internal config built for {}", self.genid());
         Ok(())
     }
