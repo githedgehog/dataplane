@@ -150,7 +150,7 @@ pub struct BgpDefaults {
     l2vpn_evpn: bool,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 /// BGP global configuration options
 pub struct BgpOptions {
     pub network_import_check: bool,
@@ -161,6 +161,20 @@ pub struct BgpOptions {
     pub minimum_holdtime: Option<u16>,
     pub listen_range: Option<(Prefix, String)>,
     pub listen_limit: Option<u16>,
+}
+impl Default for BgpOptions {
+    fn default() -> Self {
+        Self {
+            network_import_check: false,
+            ebgp_requires_policy: false,
+            bgp_default_unicast: false,
+            supress_duplicates: true,
+            supress_fib_pending: false,
+            minimum_holdtime: None,
+            listen_range: None,
+            listen_limit: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
