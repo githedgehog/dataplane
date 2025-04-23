@@ -12,7 +12,6 @@ pub mod test {
     use std::str::FromStr;
     use tracing::Level;
 
-    use crate::models::internal::device::DeviceConfig;
     use crate::models::internal::device::settings::DeviceSettings;
     use crate::models::internal::device::settings::KernelPacketConfig;
     use crate::models::internal::device::settings::PacketDriver;
@@ -24,7 +23,9 @@ pub mod test {
     use crate::models::internal::routing::bgp::BgpNeighbor;
     use crate::models::internal::routing::bgp::BgpOptions;
     use crate::models::internal::routing::bgp::NeighSendCommunities;
+    use crate::models::internal::routing::ospf::{OspfInterface, OspfNetwork};
     use crate::models::internal::routing::vrf::VrfConfig;
+    use crate::models::internal::{device::DeviceConfig, routing::ospf::Ospf};
 
     use crate::models::internal::interfaces::interface::InterfaceConfig;
     //    use crate::models::internal::routing::evpn::VtepConfig;
@@ -61,7 +62,11 @@ pub mod test {
     }
     fn man_vpc2_with_vpc1() -> VpcManifest {
         let mut m1 = VpcManifest::new("VPC-2");
-        let expose = VpcExpose::empty().ip(Prefix::from(("192.168.80.0", 24)));
+        let expose = VpcExpose::empty()
+            .ip(Prefix::from(("192.168.80.0", 24)))
+            .ip(Prefix::from(("192.168.90.0", 24)))
+            .not(Prefix::from(("192.168.90.2", 32)))
+            .not(Prefix::from(("192.168.90.7", 32)));
         m1.add_expose(expose).expect("Should succeed");
         m1
     }
@@ -163,22 +168,34 @@ pub mod test {
         bgp
     }
 
+    /* UNDERLAY, default VRF OSPF config */
+    fn sample_config_ospf_default_vrf(router_id: Ipv4Addr) -> Ospf {
+        Ospf::new(router_id)
+    }
+
     /* UNDERLAY, default VRF interface table */
     fn sample_config_default_vrf_interfaces(vrf_cfg: &mut VrfConfig, loopback: IpAddr) {
         /* configure loopback interface */
+        let ospf =
+            OspfInterface::new(Ipv4Addr::from_str("0.0.0.0").expect("Bad area")).set_passive(true);
         let lo = InterfaceConfig::new("lo", InterfaceType::Loopback, false)
             .set_description("Main loopback interface")
-            .add_address(loopback, 32);
+            .add_address(loopback, 32)
+            .set_ospf(ospf);
         vrf_cfg.add_interface_config(lo);
 
         /* configure eth0 interface */
+        let ospf = OspfInterface::new(Ipv4Addr::from_str("0.0.0.0").expect("Bad area"))
+            .set_passive(false)
+            .set_network(OspfNetwork::Point2Point);
         let eth0 = InterfaceConfig::new(
             "eth0",
             InterfaceType::Ethernet(IfEthConfig { mac: None }),
             false,
         )
         .set_description("Link to spine")
-        .add_address(IpAddr::from_str("10.0.0.14").expect("Bad address"), 30);
+        .add_address(IpAddr::from_str("10.0.0.14").expect("Bad address"), 30)
+        .set_ospf(ospf);
         vrf_cfg.add_interface_config(eth0);
 
         /* configure eth1 interface */
@@ -192,13 +209,17 @@ pub mod test {
         vrf_cfg.add_interface_config(eth1);
 
         /* configure eth2 interface */
+        let ospf = OspfInterface::new(Ipv4Addr::from_str("0.0.0.0").expect("Bad area"))
+            .set_passive(false)
+            .set_network(OspfNetwork::Point2Point);
         let eth2 = InterfaceConfig::new(
             "eth2",
             InterfaceType::Ethernet(IfEthConfig { mac: None }),
             false,
         )
         .set_description("Link to spine")
-        .add_address(IpAddr::from_str("10.0.1.14").expect("Bad address"), 30);
+        .add_address(IpAddr::from_str("10.0.1.14").expect("Bad address"), 30)
+        .set_ospf(ospf);
         vrf_cfg.add_interface_config(eth2);
     }
 
@@ -210,6 +231,10 @@ pub mod test {
         /* Add BGP configuration */
         let bgp = sample_config_bgp_default_vrf(asn, loopback, router_id);
         vrf_cfg.set_bgp(bgp);
+
+        /* Add OSPF configuration */
+        let ospf = sample_config_ospf_default_vrf(router_id);
+        vrf_cfg.set_ospf(ospf);
 
         /* Add interface configuration */
         sample_config_default_vrf_interfaces(&mut vrf_cfg, loopback);
