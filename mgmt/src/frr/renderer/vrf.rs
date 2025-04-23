@@ -50,11 +50,23 @@ impl VrfConfig {
         }
         cfg
     }
+    pub fn render_vrf_ospf(&self) -> ConfigBuilder {
+        let mut cfg = ConfigBuilder::new();
+        if let Some(ospf) = self.ospf.as_ref() {
+            cfg += ospf.render(&());
+        }
+        cfg
+    }
 }
 impl VrfConfigTable {
     pub fn render_vrf_bgp(&self) -> ConfigBuilder {
         let mut cfg = ConfigBuilder::new();
         self.iter().for_each(|vrf| cfg += vrf.render_vrf_bgp());
+        cfg
+    }
+    pub fn render_vrf_ospf(&self) -> ConfigBuilder {
+        let mut cfg = ConfigBuilder::new();
+        self.iter().for_each(|vrf| cfg += vrf.render_vrf_ospf());
         cfg
     }
 }
