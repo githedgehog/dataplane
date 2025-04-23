@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn test_reload_frr() {
-        let bin = binpath("pass.sh");
+        let bin = binpath("pass");
         let result = reload_frr(bin.as_str(), FRR_CONFIG);
         assert!(
             result.is_ok(),
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn test_reload_frr_fail_errcode() {
-        let result = frr_do_reload(binpath("fail-errcode.sh").as_str(), FRR_CONFIG);
+        let result = frr_do_reload(binpath("fail-errcode").as_str(), FRR_CONFIG);
         assert!(
             result.is_err(),
             "FRR config test succeeded unexpectedly: {:?}",
@@ -113,7 +113,7 @@ mod tests {
 
     #[test]
     fn test_reload_frr_fail_stderr() {
-        let result = frr_do_reload(binpath("fail-stderr.sh").as_str(), FRR_CONFIG);
+        let result = frr_do_reload(binpath("fail-stderr").as_str(), FRR_CONFIG);
         assert!(
             result.is_err(),
             "FRR cofig test succeeded unexpectedly: {:?}",
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn test_reload_frr_errcode_stderr() {
-        let result = frr_do_reload(binpath("fail-errcode-stderr.sh").as_str(), FRR_CONFIG);
+        let result = frr_do_reload(binpath("fail-errcode-stderr").as_str(), FRR_CONFIG);
         assert!(
             result.is_err(),
             "FRR cofig test succeeded unexpectedly: {:?}",
