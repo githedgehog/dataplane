@@ -40,6 +40,9 @@ impl Render for InterfaceConfig {
             config += format!(" description {description}");
         }
         self.addresses.iter().for_each(|a| config += a.to_string());
+        if let Some(ospf) = &self.ospf {
+            config += ospf.render(&());
+        }
         config += "exit";
         config += MARKER;
         config
