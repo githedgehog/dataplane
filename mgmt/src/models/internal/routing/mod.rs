@@ -7,6 +7,7 @@ pub mod bfd;
 pub mod bgp;
 pub mod evpn;
 pub mod frr;
+pub mod ospf;
 pub mod prefixlist;
 pub mod routemap;
 pub mod statics;
