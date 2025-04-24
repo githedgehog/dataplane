@@ -401,7 +401,7 @@ push-container: build-container
 
 # Run Clippy like you're in CI
 [script]
-clippy: (cargo "clippy" "--all-targets" "--all-features" "--" "-D" "warnings")
+clippy *args: (cargo "clippy" "--all-targets" "--all-features" args "--" "-D" "warnings")
 
 # run commands in a minimal mdbook container
 [script]
