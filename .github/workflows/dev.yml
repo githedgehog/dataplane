@@ -130,7 +130,6 @@ jobs:
             cargo test
           just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-gnu \
             cargo doc
-        continue-on-error: ${{ matrix.rust.optional }}
 
       - id: "gnu_release_test"
         name: "test gnu release"
@@ -139,14 +138,12 @@ jobs:
             cargo test
           just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-gnu \
             cargo doc
-        continue-on-error: ${{ matrix.rust.optional }}
 
       - id: "clippy"
         name: "run clippy"
         run: |
           just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} \
             cargo clippy --all-targets --all-features -- -D warnings
-        continue-on-error: ${{ matrix.rust.optional }}
 
       - id: "build_each_commit"
         name: "build each commit"
@@ -156,7 +153,6 @@ jobs:
           just debug_justfile="${{matrix.debug_justfile}}" rust="${{matrix.rust.version}}" \
             build-sweep ${BASE}
           printf "::notice::HEAD back to %s\n" "$(git log --oneline --no-decorate -n 1)"
-        continue-on-error: ${{ matrix.rust.optional }}
 
       - name: "Note failure of optional steps"
         uses: "actions/github-script@v7"
