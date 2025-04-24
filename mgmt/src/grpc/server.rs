@@ -266,34 +266,62 @@ impl BasicConfigManager {
         // Convert interface type
         let iftype = match iface.r#type {
             0 => InterfaceType::Ethernet(IfEthConfig { mac: None }),
-            1 => InterfaceType::Vlan(IfVlanConfig {
-                mac: None,
-                vlan_id: unsafe { Vid::new_unchecked(iface.vlan.unwrap().try_into().unwrap()) },
-            }),
+            1 => {
+                // Safely handle the VLAN ID conversion
+                let vlan_id = iface
+                    .vlan
+                    .ok_or_else(|| "VLAN interface requires vlan ID".to_string())?;
+
+                // Try to convert to u16
+                let vlan_u16 =
+                    u16::try_from(vlan_id).map_err(|_| format!("Invalid VLAN ID: {}", vlan_id))?;
+
+                // Create a safe Vid
+                let vid = Vid::new(vlan_u16)
+                    .map_err(|_| format!("Invalid VLAN ID value: {}", vlan_u16))?;
+
+                InterfaceType::Vlan(IfVlanConfig {
+                    mac: None,
+                    vlan_id: vid,
+                })
+            }
             2 => InterfaceType::Loopback,
-            3 => InterfaceType::Vtep(IfVtepConfig {
-                mac: None,
-                vni: None,
-                ttl: None,
-                local: IpAddr::from_str(&iface.ipaddr)
-                    .map_err(|_| format!("Invalid local IP address: {}", iface.ipaddr))?,
-            }),
+            3 => {
+                // For VTEP, parse the local IP from the ipaddr field
+                if iface.ipaddr.is_empty() {
+                    return Err("VTEP interface requires IP address".to_string());
+                }
+
+                // Parse IP address for VTEP
+                let ip_parts: Vec<&str> = iface.ipaddr.split('/').collect();
+                let ip_str = ip_parts[0]; // Get just the IP part, not the CIDR
+
+                let local_ip = IpAddr::from_str(ip_str)
+                    .map_err(|_| format!("Invalid local IP address for VTEP: {}", ip_str))?;
+
+                InterfaceType::Vtep(IfVtepConfig {
+                    mac: None,
+                    vni: None,
+                    ttl: None,
+                    local: local_ip,
+                })
+            }
             _ => return Err(format!("Invalid interface type value: {}", iface.r#type)),
         };
+
         // Create new InterfaceConfig
-        let mut interface_config = InterfaceConfig::new(&iface.name.clone(), iftype, false);
+        let mut interface_config = InterfaceConfig::new(&iface.name, iftype, false);
 
         // Add the address from gRPC if present
         if !iface.ipaddr.is_empty() {
-            let ipaddr = iface.ipaddr.clone();
-            let (ip_str, netmask) = self.parse_cidr(&ipaddr)?;
+            let (ip_str, netmask) = self.parse_cidr(&iface.ipaddr)?;
             let new_addr =
                 IpAddr::from_str(&ip_str).map_err(|_| format!("Invalid IP address: {}", ip_str))?;
             interface_config = interface_config.add_address(new_addr, netmask);
         }
+
         Ok(interface_config)
     }
-
     /// Convert gRPC RouterConfig to internal BgpConfig
     fn convert_router_config_to_bgp_config(
         &self,
@@ -306,14 +334,10 @@ impl BasicConfigManager {
             .map_err(|_| format!("Invalid ASN format: {}", router.asn))?;
 
         // Parse router_id from string to Ipv4Addr
-        let router_id = if router.router_id.is_empty() {
-            None
-        } else {
-            Some(
-                Ipv4Addr::from_str(&router.router_id)
-                    .map_err(|_| format!("Invalid router ID format: {}", router.router_id))?,
-            )
-        };
+        let router_id = router
+            .router_id
+            .parse::<Ipv4Addr>()
+            .map_err(|_| format!("Invalid router ID format: {}", router.router_id))?;
 
         // Use default options
         let options = BgpOptions::default();
@@ -325,36 +349,29 @@ impl BasicConfigManager {
         }
 
         // Convert IPv4 Unicast address family if present
-        let af_ipv4unicast = router.ipv4_unicast.as_ref().map(|_ipv4| AfIpv4Ucast {
-            ..AfIpv4Ucast::default()
-        });
+        let af_ipv4unicast = AfIpv4Ucast::new();
 
-        let af_ipv6unicast = None;
+        let af_l2vpnevpn = AfL2vpnEvpn::new()
+            .set_adv_all_vni(true)
+            .set_adv_default_gw(true)
+            .set_adv_svi_ip(true)
+            .set_adv_ipv4_unicast(true)
+            .set_adv_ipv6_unicast(false)
+            .set_default_originate_ipv4(false)
+            .set_default_originate_ipv6(false);
 
-        // Convert L2VPN EVPN address family if present
-        let af_l2vpnevpn = router.l2vpn_evpn.as_ref().map(|_l2vpn| AfL2vpnEvpn {
-            adv_all_vni: true,
-            adv_default_gw: true,
-            adv_svi_ip: true,
-            adv_ipv4_unicast: true,
-            adv_ipv6_unicast: false,
-            adv_ipv4_unicast_rmap: None,
-            adv_ipv6_unicast_rmap: None,
-            default_originate_ipv4: false,
-            default_originate_ipv6: false,
-        });
+        let mut bgpconfig = BgpConfig::new(asn);
+        bgpconfig = bgpconfig.clone().set_router_id(router_id); // This is because we are loosing ref
+        bgpconfig = bgpconfig.clone().set_bgp_options(options).clone();
+        bgpconfig.set_af_ipv4unicast(af_ipv4unicast);
+        bgpconfig.set_af_l2vpn_evpn(af_l2vpnevpn);
+        // Add each neighbor to the BGP config
 
-        // Create BgpConfig
-        Ok(BgpConfig {
-            asn,
-            vrf: None,
-            router_id,
-            options,
-            neighbors,
-            af_ipv4unicast,
-            af_ipv6unicast,
-            af_l2vpnevpn,
-        })
+        for neighbor in &router.neighbors {
+            bgpconfig.add_neighbor(self.convert_bgp_neighbor(neighbor)?);
+        }
+
+        Ok(bgpconfig)
     }
 
     /// Convert gRPC BgpNeighbor to internal BgpNeighbor
