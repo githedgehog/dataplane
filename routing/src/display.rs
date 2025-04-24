@@ -72,7 +72,7 @@ impl Display for Encapsulation {
         write!(f, "")?;
         match self {
             Encapsulation::Vxlan(e) => write!(f, "Vxlan (vni:{})", e.vni.as_u32())?,
-            Encapsulation::Mpls(label) => write!(f, "MPLS (label:{})", label)?,
+            Encapsulation::Mpls(label) => write!(f, "MPLS (label:{label})")?,
         }
         Ok(())
     }
@@ -81,7 +81,7 @@ impl Display for Route {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "{:?} [{}/{}]", self.rtype, self.distance, self.metric)?;
         for slim in &self.s_nhops {
-            writeln!(f, "       {}", slim)?;
+            writeln!(f, "       {slim}")?;
         }
         Ok(())
     }
@@ -92,9 +92,9 @@ fn fmt_vrf_trie<P: iptrie::IpPrefix>(
     show_string: &str,
     trie: &RTrieMap<P, Route>,
 ) -> std::fmt::Result {
-    Heading(format!("{} routes ({})", show_string, trie.len())).fmt(f)?;
+    Heading(format!("{show_string} routes ({})", trie.len())).fmt(f)?;
     for (prefix, route) in trie.iter() {
-        writeln!(f, "  {:?} {}", prefix, route)?;
+        writeln!(f, "  {prefix:?} {route}")?;
     }
     Ok(())
 }
@@ -205,7 +205,7 @@ impl Display for Interface {
         if !self.addresses.is_empty() {
             write!(f, "      addresses:")?;
             for (addr, mask_len) in self.addresses.iter() {
-                write!(f, " {}/{}", addr, mask_len)?;
+                write!(f, " {addr}/{mask_len}")?;
             }
         }
         Ok(())
@@ -215,7 +215,7 @@ impl Display for IfTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading(format!("interfaces ({})", self.0.len())).fmt(f)?;
         for iface in self.0.values() {
-            writeln!(f, " {}", iface)?;
+            writeln!(f, " {iface}")?;
         }
         Ok(())
     }
@@ -232,7 +232,7 @@ impl Display for RmacStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading(format!("Rmac store ({})", self.len())).fmt(f)?;
         for rmac in self.values() {
-            writeln!(f, " {}", rmac)?;
+            writeln!(f, " {rmac}")?;
         }
         Ok(())
     }

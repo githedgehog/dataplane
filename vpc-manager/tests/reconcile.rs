@@ -73,7 +73,7 @@ where
                     Ok(()) => {}
                     Err(err) => {
                         let netns_name = netns_name.as_ref();
-                        panic!("failed to create network namespace {netns_name}: {}", err);
+                        panic!("failed to create network namespace {netns_name}: {err}");
                     }
                 }
             });
@@ -85,7 +85,7 @@ where
                     Ok(()) => {}
                     Err(err) => {
                         let netns_name = netns_name.as_ref();
-                        panic!("failed to remove network namespace {netns_name}: {}", err);
+                        panic!("failed to remove network namespace {netns_name}: {err}");
                     }
                 }
             });
@@ -114,7 +114,7 @@ fn with_caps<F: UnwindSafe + FnOnce() -> T, T>(
             Ok(current_caps) => current_caps,
             Err(err) => {
                 error!("caps error: {}", err);
-                panic!("caps error: {}", err);
+                panic!("caps error: {err}");
             }
         };
         let needed_caps: Vec<_> = caps

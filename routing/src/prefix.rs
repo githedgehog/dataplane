@@ -154,8 +154,8 @@ impl From<(&str, u8)> for Prefix {
 impl Display for Prefix {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Prefix::IPV4(p) => write!(f, "{}", p),
-            Prefix::IPV6(p) => write!(f, "{}", p),
+            Prefix::IPV4(p) => write!(f, "{p}"),
+            Prefix::IPV6(p) => write!(f, "{p}"),
         }
     }
 }
