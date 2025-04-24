@@ -40,10 +40,17 @@ impl ConfigBuilder {
         }
     }
     fn append(&mut self, stanza: &str) {
-        self.lines.push(stanza.to_owned());
+        match self.lines.last() {
+            Some(x) if x == MARKER && stanza == MARKER => {}
+            _ => self.lines.push(stanza.to_owned()),
+        }
     }
     fn merge(&mut self, other: &mut Self) {
         self.lines.append(&mut other.lines);
+        self.dedup();
+    }
+    fn dedup(&mut self) {
+        self.lines.dedup_by(|a, b| a == b && a == MARKER);
     }
 }
 
