@@ -7,4 +7,4 @@
 pub mod confbuild;
 mod namegen;
 pub mod proc;
-mod tests;
+pub mod tests;

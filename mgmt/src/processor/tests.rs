@@ -125,8 +125,8 @@ pub mod test {
         /* build AF L2vn evpn config */
         let af_l2vpn_evpn = AfL2vpnEvpn::new()
             .set_adv_all_vni(true)
-            .set_adv_svi_ip(true)
-            .set_adv_default_gw(true);
+            .set_adv_svi_ip(false)
+            .set_adv_default_gw(false);
 
         /* build AF IPv4 unicast config */
         let af_ipv4unicast = AfIpv4Ucast::new();
@@ -160,7 +160,6 @@ pub mod test {
             .l2vpn_evpn_activate(true)
             .ipv4_unicast_activate(false)
             .set_allow_as_in(false)
-            .set_tcp_mss(1400)
             .set_capabilities(capabilities)
             .set_default_originate(false);
 
@@ -260,7 +259,7 @@ pub mod test {
     }
 
     /* build sample external config as it would be received via gRPC */
-    fn sample_external_config() -> ExternalConfig {
+    pub fn sample_external_config() -> ExternalConfig {
         /* build sample DEVICE config and add it to config */
         let device_cfg = sample_device_config();
 
