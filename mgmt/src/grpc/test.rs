@@ -306,20 +306,18 @@ mod tests {
         for (name, original_iface) in &original_interfaces {
             let converted_iface = converted_interfaces
                 .get(name)
-                .unwrap_or_else(|| panic!("Interface {} not found in converted config", name));
+                .unwrap_or_else(|| panic!("Interface {name} not found in converted config"));
 
             assert_eq!(
                 converted_iface.r#type, original_iface.r#type,
-                "Interface type mismatch for {}",
-                name
+                "Interface type mismatch for {name}",
             );
 
             // For non-empty addresses
             if !original_iface.ipaddr.is_empty() {
                 assert!(
                     !converted_iface.ipaddr.is_empty(),
-                    "Interface address missing for {}",
-                    name
+                    "Interface address missing for {name}",
                 );
             }
 
@@ -328,8 +326,7 @@ mod tests {
                 // VLAN type
                 assert_eq!(
                     converted_iface.vlan, original_iface.vlan,
-                    "VLAN ID mismatch for interface {}",
-                    name
+                    "VLAN ID mismatch for interface {name}",
                 );
             }
         }
@@ -464,17 +461,15 @@ mod tests {
         for (name, original_vpc) in &original_vpcs {
             let converted_vpc = converted_vpcs
                 .get(name)
-                .unwrap_or_else(|| panic!("VPC {} not found in converted config", name));
+                .unwrap_or_else(|| panic!("VPC {name} not found in converted config"));
 
             assert_eq!(
                 converted_vpc.id, original_vpc.id,
-                "VPC ID mismatch for {}",
-                name
+                "VPC ID mismatch for {name}",
             );
             assert_eq!(
                 converted_vpc.vni, original_vpc.vni,
-                "VPC VNI mismatch for {}",
-                name
+                "VPC VNI mismatch for {name}",
             );
 
             // Note: We're not checking interfaces yet as they are not fully implemented
@@ -504,14 +499,13 @@ mod tests {
         for (name, original_peering) in &original_peerings {
             let converted_peering = converted_peerings
                 .get(name)
-                .unwrap_or_else(|| panic!("VPC peering {} not found in converted config", name));
+                .unwrap_or_else(|| panic!("VPC peering {name} not found in converted config"));
 
             // Check for count
             assert_eq!(
                 converted_peering.r#for.len(),
                 original_peering.r#for.len(),
-                "VPC peering entry count mismatch for {}",
-                name
+                "VPC peering entry count mismatch for {name}",
             );
 
             // Check each VPC in the peering

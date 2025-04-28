@@ -76,7 +76,7 @@ impl ConfigService for ConfigServiceImpl {
             .config_manager
             .get_current_config()
             .await
-            .map_err(|e| Status::internal(format!("Failed to get configuration: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Failed to get configuration: {e}")))?;
 
         Ok(Response::new(current_config))
     }
@@ -89,7 +89,7 @@ impl ConfigService for ConfigServiceImpl {
             .config_manager
             .get_generation()
             .await
-            .map_err(|e| Status::internal(format!("Failed to get generation: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Failed to get generation: {e}")))?;
 
         Ok(Response::new(GetConfigGenerationResponse { generation }))
     }
@@ -111,7 +111,7 @@ impl ConfigService for ConfigServiceImpl {
             })),
             Err(e) => Ok(Response::new(UpdateConfigResponse {
                 error: Error::ApplyFailed as i32,
-                message: format!("Failed to apply configuration: {}", e),
+                message: format!("Failed to apply configuration: {e}"),
             })),
         }
     }
@@ -169,7 +169,7 @@ impl BasicConfigManager {
             .underlay(underlay_config)
             .overlay(overlay_config)
             .build()
-            .map_err(|e| format!("Failed to build ExternalConfig: {}", e))?;
+            .map_err(|e| format!("Failed to build ExternalConfig: {e}"))?;
 
         Ok(external_config)
     }
@@ -274,11 +274,11 @@ impl BasicConfigManager {
 
                 // Try to convert to u16
                 let vlan_u16 =
-                    u16::try_from(vlan_id).map_err(|_| format!("Invalid VLAN ID: {}", vlan_id))?;
+                    u16::try_from(vlan_id).map_err(|_| format!("Invalid VLAN ID: {vlan_id}"))?;
 
                 // Create a safe Vid
-                let vid = Vid::new(vlan_u16)
-                    .map_err(|_| format!("Invalid VLAN ID value: {}", vlan_u16))?;
+                let vid =
+                    Vid::new(vlan_u16).map_err(|_| format!("Invalid VLAN ID value: {vlan_u16}"))?;
 
                 InterfaceType::Vlan(IfVlanConfig {
                     mac: None,
@@ -297,7 +297,7 @@ impl BasicConfigManager {
                 let ip_str = ip_parts[0]; // Get just the IP part, not the CIDR
 
                 let local_ip = IpAddr::from_str(ip_str)
-                    .map_err(|_| format!("Invalid local IP address for VTEP: {}", ip_str))?;
+                    .map_err(|_| format!("Invalid local IP address for VTEP: {ip_str}"))?;
 
                 InterfaceType::Vtep(IfVtepConfig {
                     mac: None,
@@ -316,7 +316,7 @@ impl BasicConfigManager {
         if !iface.ipaddr.is_empty() {
             let (ip_str, netmask) = self.parse_cidr(&iface.ipaddr)?;
             let new_addr =
-                IpAddr::from_str(&ip_str).map_err(|_| format!("Invalid IP address: {}", ip_str))?;
+                IpAddr::from_str(&ip_str).map_err(|_| format!("Invalid IP address: {ip_str}"))?;
             interface_config = interface_config.add_address(new_addr, netmask);
         }
 
@@ -399,7 +399,7 @@ impl BasicConfigManager {
                 0 => ipv4_unicast = true,
                 1 => ipv6_unicast = true,
                 2 => l2vpn_evpn = true,
-                _ => return Err(format!("Unknown BGP address family: {}", af)),
+                _ => return Err(format!("Unknown BGP address family: {af}")),
             }
         }
 
@@ -419,7 +419,7 @@ impl BasicConfigManager {
     fn convert_vpc_from_grpc(&self, vpc_grpc: &gateway_config::Vpc) -> Result<Vpc, String> {
         // Create a new VPC with name and VNI
         let vpc = Vpc::new(&vpc_grpc.name, &vpc_grpc.id, vpc_grpc.vni)
-            .map_err(|e| format!("Failed to create VPC: {}", e))?;
+            .map_err(|e| format!("Failed to create VPC: {e}"))?;
 
         // Convert and add interfaces if any
         // SMATOV: TODO: We will add this handling later. TBD
@@ -472,8 +472,8 @@ impl BasicConfigManager {
             let expose = self.convert_expose_from_grpc(expose_grpc)?;
             manifest.add_expose(expose).map_err(|e| {
                 format!(
-                    "Failed to add expose to manifest for VPC {}: {}",
-                    entry.vpc, e
+                    "Failed to add expose to manifest for VPC {}: {e}",
+                    entry.vpc
                 )
             })?;
         }
@@ -540,13 +540,13 @@ impl BasicConfigManager {
     fn parse_cidr(&self, cidr: &str) -> Result<(String, u8), String> {
         let parts: Vec<&str> = cidr.split('/').collect();
         if parts.len() != 2 {
-            return Err(format!("Invalid CIDR format: {}", cidr));
+            return Err(format!("Invalid CIDR format: {cidr}"));
         }
 
         let ip = parts[0].to_string();
         let netmask = parts[1]
             .parse::<u8>()
-            .map_err(|_| format!("Invalid netmask in CIDR {}: {}", cidr, parts[1]))?;
+            .map_err(|_| format!("Invalid netmask in CIDR {cidr}: {}", parts[1]))?;
 
         Ok((ip, netmask))
     }
@@ -566,7 +566,7 @@ impl BasicConfigManager {
 
             vpc_table
                 .add(vpc)
-                .map_err(|e| format!("Failed to add VPC {}: {}", vpc_grpc.name, e))?;
+                .map_err(|e| format!("Failed to add VPC {}: {e}", vpc_grpc.name))?;
         }
 
         // Create peering table
@@ -580,7 +580,7 @@ impl BasicConfigManager {
             // Add to table
             peering_table
                 .add(peering)
-                .map_err(|e| format!("Failed to add peering {}: {}", peering_grpc.name, e))?;
+                .map_err(|e| format!("Failed to add peering {}: {e}", peering_grpc.name))?;
         }
 
         // Create overlay with the tables
@@ -622,19 +622,15 @@ impl BasicConfigManager {
         addr: &str,
         netmask: u8,
     ) -> Result<String, String> {
-        let ip =
-            IpAddr::from_str(addr).map_err(|e| format!("Invalid IP address {}: {}", addr, e))?;
+        let ip = IpAddr::from_str(addr).map_err(|e| format!("Invalid IP address {addr}: {e}"))?;
 
         // Validate netmask range based on IP type
         let max_mask = if ip.is_ipv4() { 32 } else { 128 };
         if netmask > max_mask {
-            return Err(format!(
-                "Invalid netmask {}: must be <= {}",
-                netmask, max_mask
-            ));
+            return Err(format!("Invalid netmask {netmask}: must be <= {max_mask}"));
         }
 
-        Ok(format!("{}/{}", ip, netmask))
+        Ok(format!("{ip}/{netmask}"))
     }
 
     pub fn convert_interfaces_to_grpc(
@@ -703,7 +699,7 @@ impl BasicConfigManager {
         let address = match &neighbor.ntype {
             BgpNeighType::Host(addr) => addr.to_string(),
             BgpNeighType::PeerGroup(name) => {
-                return Err(format!("Peer group type not supported in gRPC: {}", name));
+                return Err(format!("Peer group type not supported in gRPC: {name}"));
             }
             BgpNeighType::Unset => {
                 return Err("Unset BGP neighbor type not supported in gRPC".to_string());
