@@ -18,6 +18,7 @@ use crate::models::external::overlay::Overlay;
 use crate::models::external::overlay::vpc::{Vpc, VpcTable};
 use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
 use crate::models::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
+use crate::models::internal::routing::ospf::{Ospf, OspfInterface, OspfNetwork};
 
 use routing::prefix::Prefix;
 
@@ -255,7 +256,74 @@ impl BasicConfigManager {
             vrf_config.add_interface_config(iface_config);
         }
 
+        // Convert ospf config if present
+        if let Some(ospf_config) = &vrf.ospf {
+            let ospf = self.convert_ospf_config_from_grpc(ospf_config)?;
+            vrf_config.set_ospf(ospf);
+        }
+
         Ok(vrf_config)
+    }
+
+    /// Convert gRPC OspfConfig to internal Ospf
+    fn convert_ospf_config_from_grpc(
+        &self,
+        ospf_config: &gateway_config::config::OspfConfig,
+    ) -> Result<Ospf, String> {
+        // Parse router_id from string to Ipv4Addr
+        let router_id = ospf_config
+            .router_id
+            .parse::<Ipv4Addr>()
+            .map_err(|_| format!("Invalid OSPF router ID format: {}", ospf_config.router_id))?;
+
+        // Create a new Ospf instance
+        let mut ospf = Ospf::new(router_id);
+
+        // Set VRF name if present
+        if let Some(vrf_name) = &ospf_config.vrf {
+            if !vrf_name.is_empty() {
+                ospf.set_vrf_name(vrf_name.clone());
+            }
+        }
+
+        Ok(ospf)
+    }
+
+    /// Convert gRPC OspfInterface to internal OspfInterface
+    fn convert_ospf_interface_from_grpc(
+        &self,
+        ospf_interface: &gateway_config::config::OspfInterface,
+    ) -> Result<OspfInterface, String> {
+        // Parse area from string to Ipv4Addr
+        let area = ospf_interface
+            .area
+            .parse::<Ipv4Addr>()
+            .map_err(|_| format!("Invalid OSPF area format: {}", ospf_interface.area))?;
+
+        // Create a new OspfInterface instance
+        let mut ospf_iface = OspfInterface::new(area);
+
+        // Set passive state
+        ospf_iface = ospf_iface.set_passive(ospf_interface.passive);
+
+        // Set cost if present
+        if let Some(cost) = ospf_interface.cost {
+            ospf_iface = ospf_iface.set_cost(cost);
+        }
+
+        // Set network type if present
+        if let Some(network_type) = &ospf_interface.network_type {
+            let network = match network_type {
+                0 => OspfNetwork::Broadcast,
+                1 => OspfNetwork::NonBroadcast,
+                2 => OspfNetwork::Point2Point,
+                3 => OspfNetwork::Point2Multipoint,
+                _ => return Err(format!("Invalid OSPF network type: {}", network_type)),
+            };
+            ospf_iface = ospf_iface.set_network(network);
+        }
+
+        Ok(ospf_iface)
     }
 
     /// Convert a gRPC Interface to internal InterfaceConfig
@@ -320,8 +388,15 @@ impl BasicConfigManager {
             interface_config = interface_config.add_address(new_addr, netmask);
         }
 
+        // Add OSPF interface configuration if present
+        if let Some(ospf_iface) = &iface.ospf {
+            let ospf_interface = self.convert_ospf_interface_from_grpc(ospf_iface)?;
+            interface_config = interface_config.set_ospf(ospf_interface);
+        }
+
         Ok(interface_config)
     }
+
     /// Convert gRPC RouterConfig to internal BgpConfig
     fn convert_router_config_to_bgp_config(
         &self,
@@ -633,6 +708,29 @@ impl BasicConfigManager {
         Ok(format!("{ip}/{netmask}"))
     }
 
+    fn convert_ospf_interface_to_grpc(
+        &self,
+        ospf_interface: &OspfInterface,
+    ) -> gateway_config::config::OspfInterface {
+        // Convert network type if present
+        let network_type = ospf_interface
+            .network
+            .as_ref()
+            .map(|network| match network {
+                OspfNetwork::Broadcast => 0,
+                OspfNetwork::NonBroadcast => 1,
+                OspfNetwork::Point2Point => 2,
+                OspfNetwork::Point2Multipoint => 3,
+            });
+
+        gateway_config::config::OspfInterface {
+            passive: ospf_interface.passive,
+            area: ospf_interface.area.to_string(),
+            cost: ospf_interface.cost,
+            network_type,
+        }
+    }
+
     pub fn convert_interfaces_to_grpc(
         &self,
         interfaces: &InterfaceConfigTable,
@@ -673,6 +771,11 @@ impl BasicConfigManager {
                 _ => None,
             };
 
+            // Convert OSPF interface if present - FIXED
+            let ospf = match &interface.ospf {
+                Some(ospf_config) => Some(self.convert_ospf_interface_to_grpc(ospf_config)),
+                None => None,
+            };
             // Create the gRPC interface
             let grpc_iface = gateway_config::Interface {
                 name: interface.name.clone(),
@@ -682,6 +785,7 @@ impl BasicConfigManager {
                 macaddr,
                 system_name: None, // TODO: Implement when needed
                 role: 0,           // Default to Fabric
+                ospf,
             };
 
             grpc_interfaces.push(grpc_iface);
@@ -788,7 +892,15 @@ impl BasicConfigManager {
         })
     }
 
-    // Improved VRF conversion
+    /// Convert gRPC OSPF to internal Ospf
+    fn convert_ospf_to_grpc(&self, ospf: &Ospf) -> gateway_config::config::OspfConfig {
+        gateway_config::config::OspfConfig {
+            router_id: ospf.router_id.to_string(),
+            vrf: ospf.vrf.clone(),
+        }
+    }
+
+    /// Convert gRPC VRF to internal VrfConfig
     fn convert_vrf_config_to_grpc(&self, vrf: &VrfConfig) -> Result<gateway_config::Vrf, String> {
         // Convert interfaces
         let interfaces = self.convert_interfaces_to_grpc(&vrf.interfaces)?;
@@ -799,10 +911,17 @@ impl BasicConfigManager {
             None => None,
         };
 
+        // Convert OSPF config if present - FIXED
+        let ospf = match &vrf.ospf {
+            Some(ospf) => Some(self.convert_ospf_to_grpc(ospf)),
+            None => None,
+        };
+
         Ok(gateway_config::Vrf {
             name: vrf.name.clone(),
             interfaces,
             router,
+            ospf,
         })
     }
 
