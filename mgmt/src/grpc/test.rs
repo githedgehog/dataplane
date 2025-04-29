@@ -31,6 +31,7 @@ mod tests {
             vlan: None,
             macaddr: Some("00:11:22:33:44:55".to_string()),
             system_name: Some("".to_string()),
+            ospf: None,
         };
 
         let lo0 = gateway_config::Interface {
@@ -41,6 +42,7 @@ mod tests {
             vlan: None,
             macaddr: Some("".to_string()),
             system_name: Some("".to_string()),
+            ospf: None,
         };
 
         // Create BGP neighbor
@@ -71,6 +73,7 @@ mod tests {
             name: "default".to_string(),
             interfaces: vec![eth0, lo0],
             router: Some(router_config),
+            ospf: None,
         };
 
         // Create Underlay
@@ -85,6 +88,7 @@ mod tests {
             vlan: None,
             macaddr: Some("".to_string()),
             system_name: Some("".to_string()),
+            ospf: None,
         };
 
         let vpc2_if1 = gateway_config::Interface {
@@ -95,6 +99,7 @@ mod tests {
             vlan: None,
             macaddr: Some("".to_string()),
             system_name: Some("".to_string()),
+            ospf: None,
         };
 
         // Create VPCs
