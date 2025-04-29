@@ -13,6 +13,7 @@ dpdk = { workspace = true }
 dyn-iter = { workspace = true }
 id = { workspace = true }
 iptrie = { workspace = true }
+mgmt = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
 net = { workspace = true, features = ["test_buffer"] }
 netdev = { workspace = true }
