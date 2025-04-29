@@ -554,6 +554,7 @@ dependencies = [
  "dpdk",
  "dyn-iter",
  "iptrie",
+ "mgmt",
  "mio",
  "net",
  "netdev",
