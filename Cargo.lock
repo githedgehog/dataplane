@@ -877,7 +877,7 @@ dependencies = [
 [[package]]
 name = "gateway_config"
 version = "0.1.0"
-source = "git+https://github.com/githedgehog/gateway-proto#812ab8d2c072d9aca3b582af543b53324040f1bb"
+source = "git+https://github.com/githedgehog/gateway-proto?branch=pr%2Fsmatov%2Fospf-initial#f6dfe1f2385e924a46e4f9455775db2e1d172475"
 dependencies = [
  "async-trait",
  "futures",
