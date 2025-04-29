@@ -551,6 +551,7 @@ dependencies = [
  "ctrlc",
  "dataplane-dpdk",
  "dataplane-id",
+ "dataplane-mgmt",
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-routing",
