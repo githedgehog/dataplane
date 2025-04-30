@@ -11,7 +11,6 @@ use crate::models::external::configdb::gwconfig::GenId;
 use std::fs;
 use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
-//use std::os::unix::net::UnixDatagram;
 use std::path::Path;
 use thiserror::Error;
 use tracing::{debug, error, info};
@@ -69,7 +68,7 @@ impl FrrMi {
         let _ = self.sock.shutdown(Shutdown::Both);
     }
     pub async fn apply_config(&self, genid: GenId, config: &ConfigBuilder) -> Result<(), FrrErr> {
-        info!("Applying config {genid} over frrmi...");
+        info!("Applying FRR config for genid {genid} over frrmi...");
         let conf_str = config.to_string();
         let length = conf_str.len() as u64;
 
@@ -85,16 +84,16 @@ impl FrrMi {
             FrrErr::FailSend(e.to_string())
         })?;
 
-        debug!("Waiting for reply...");
+        debug!("AWaiting for a reply from frr-agent...");
 
-        /* recv (blocking) - fixme: make non-blocking w/ tokio */
+        /* recv */
         let mut rx_buff = vec![0u8; 1024];
         self.sock
             .recv(&mut rx_buff)
             .await
             .map_err(|e| FrrErr::ErrorRx(e.to_string()))?;
 
-        info!("Successfully applied config with id {genid}");
+        info!("Successfully applied FRR config with id {genid}");
         Ok(())
     }
 }

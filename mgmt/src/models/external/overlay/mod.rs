@@ -38,7 +38,7 @@ impl Overlay {
         Ok(())
     }
     pub fn validate(&mut self) -> ApiResult {
-        debug!("Validating overlay configuration");
+        debug!("Validating overlay configuration...");
         /* check if the VPCs referred in a peering exist */
         for peering in self.peering_table.values() {
             self.check_peering_vpc(&peering.name, &peering.left)?;
@@ -55,6 +55,8 @@ impl Overlay {
         /* collect peerings of every VPC */
         self.vpc_table
             .collect_peerings(&self.peering_table, &id_map);
+
+        debug!("Overlay configuration is VALID");
         Ok(())
     }
 }

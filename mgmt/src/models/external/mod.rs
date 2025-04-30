@@ -38,6 +38,8 @@ pub enum ApiError {
     BadVpcId(String),
     #[error("Incomplete configuration {0}")]
     IncompleteConfig(String),
+    #[error("Error applying FRR config {0}")]
+    FrrApplyError(String),
 }
 
 /// Result-like type for configurations

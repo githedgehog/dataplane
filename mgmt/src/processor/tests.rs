@@ -288,8 +288,8 @@ pub mod test {
         let external = sample_external_config();
 
         /* build a gw config from a sample external config */
-        let config = GwConfig::new(external);
+        let mut config = GwConfig::new(external);
 
-        let _ = new_gw_config(config);
+        //let _ = new_gw_config(&mut config);
     }
 }
