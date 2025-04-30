@@ -9,7 +9,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
-use tracing::Level;
+use tracing::{Level, error};
 
 use crate::models::external::configdb::gwconfig::{
     ExternalConfig, ExternalConfigBuilder, GwConfig, Underlay,
@@ -42,6 +42,9 @@ use gateway_config::{
     ConfigService, ConfigServiceServer, Error, GatewayConfig, GetConfigGenerationRequest,
     GetConfigGenerationResponse, GetConfigRequest, UpdateConfigRequest, UpdateConfigResponse,
 };
+
+use crate::frr::frrmi::FrrMi;
+use crate::processor::proc::new_gw_config;
 
 // Import database access
 use crate::models::external::configdb::gwconfigdb::GwConfigDatabase;
@@ -121,11 +124,12 @@ impl ConfigService for ConfigServiceImpl {
 /// Basic configuration manager implementation
 pub struct BasicConfigManager {
     config_db: Arc<RwLock<GwConfigDatabase>>,
+    frrmi: FrrMi,
 }
 
 impl BasicConfigManager {
-    pub fn new(config_db: Arc<RwLock<GwConfigDatabase>>) -> Self {
-        Self { config_db }
+    pub fn new(config_db: Arc<RwLock<GwConfigDatabase>>, frrmi: FrrMi) -> Self {
+        Self { config_db, frrmi }
     }
 
     // Helper method to safely get the first address from interface
@@ -772,10 +776,11 @@ impl BasicConfigManager {
             };
 
             // Convert OSPF interface if present - FIXED
-            let ospf = match &interface.ospf {
-                Some(ospf_config) => Some(self.convert_ospf_interface_to_grpc(ospf_config)),
-                None => None,
-            };
+            let ospf = interface
+                .ospf
+                .as_ref()
+                .map(|ospf_config| self.convert_ospf_interface_to_grpc(ospf_config));
+
             // Create the gRPC interface
             let grpc_iface = gateway_config::Interface {
                 name: interface.name.clone(),
@@ -912,10 +917,10 @@ impl BasicConfigManager {
         };
 
         // Convert OSPF config if present - FIXED
-        let ospf = match &vrf.ospf {
-            Some(ospf) => Some(self.convert_ospf_to_grpc(ospf)),
-            None => None,
-        };
+        let ospf = vrf
+            .ospf
+            .as_ref()
+            .map(|ospf| self.convert_ospf_to_grpc(ospf));
 
         Ok(gateway_config::Vrf {
             name: vrf.name.clone(),
@@ -1092,9 +1097,11 @@ impl ConfigManager for BasicConfigManager {
 
     async fn get_generation(&self) -> Result<u64, String> {
         let config_db = self.config_db.read().await;
-        let gw_config_gen = config_db.get_current_gen();
-
-        Ok(gw_config_gen.unwrap())
+        if let Some(gw_config_gen) = config_db.get_current_gen() {
+            Ok(gw_config_gen)
+        } else {
+            Err("No config is currently applied".to_string())
+        }
     }
 
     async fn apply_config(&self, grpc_config: GatewayConfig) -> Result<(), String> {
@@ -1107,18 +1114,22 @@ impl ConfigManager for BasicConfigManager {
         // Get a write lock on the DB
         let mut config_db = self.config_db.write().await;
 
-        // Store the new config
-        config_db.add(gw_config);
-
-        Ok(())
+        // trigger processing the config
+        new_gw_config(&mut config_db, gw_config, &self.frrmi)
+            .await
+            .map_err(|e| {
+                error!("Applying config failed: {e}");
+                e.to_string()
+            })
     }
 }
 
 /// Function to create the gRPC service
 pub fn create_config_service(
     config_db: Arc<RwLock<GwConfigDatabase>>,
+    frrmi: FrrMi,
 ) -> ConfigServiceServer<ConfigServiceImpl> {
-    let config_manager = Arc::new(BasicConfigManager::new(config_db));
+    let config_manager = Arc::new(BasicConfigManager::new(config_db, frrmi));
     let service = ConfigServiceImpl::new(config_manager);
     ConfigServiceServer::new(service)
 }
