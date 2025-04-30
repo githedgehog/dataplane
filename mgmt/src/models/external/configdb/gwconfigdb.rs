@@ -58,11 +58,10 @@ impl GwConfigDatabase {
 
         /* Abort if the requested config is already applied */
         if let Some(last) = last {
-            /* if last == genid {
+            if last == genid {
                 info!("Config {} is already applied", last);
                 return Ok(());
             }
-            */
             debug!("The current config is {last}");
         } else {
             debug!("There is no current config applied");
