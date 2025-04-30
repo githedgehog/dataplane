@@ -7,10 +7,10 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::RwLock;
     // Import proto-generated types
+    use crate::frr::frrmi::FrrMi;
     use crate::grpc::server::BasicConfigManager;
     use crate::models::external::configdb::gwconfigdb::GwConfigDatabase;
     use gateway_config::GatewayConfig;
-    use crate::frr::frrmi::FrrMi;
 
     // Helper function to create a test GatewayConfig
     fn create_test_gateway_config() -> GatewayConfig {
@@ -187,10 +187,15 @@ mod tests {
         }
     }
 
+    use crate::frr::frrmi::open_unix_sock_async;
+
     #[tokio::test]
     async fn test_convert_to_grpc_config() {
         // Create a mock database
         let config_db = Arc::new(RwLock::new(GwConfigDatabase::new()));
+
+        #[allow(unused_variables)]
+        let sock = open_unix_sock_async("/tmp/frr-agent.sock").expect("Should succeed");
 
         /* create frr management interface */
         let frrmi = FrrMi::new("/tmp/frrmi.sock", "/tmp/frr-agent.sock").unwrap();
