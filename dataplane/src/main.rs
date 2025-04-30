@@ -61,7 +61,10 @@ fn main() {
 
     let grpc_address = "[::1]:50051".parse().expect("Bad grpc address");
 
-    start_mgmt(grpc_address);
+    if let Err(e) = start_mgmt(grpc_address) {
+        error!("Failed to start management service: {e}");
+        std::process::exit(0);
+    }
 
     debug!("Starting pipeline....");
 

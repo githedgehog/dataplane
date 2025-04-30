@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use std::io::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::thread;
@@ -85,7 +86,7 @@ async fn start_grpc_server(
     frrmi: FrrMi,
     addr: SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    info!("Starting Gateway Config gRPC server on {:?}", addr);
+    info!("Starting gRPC server on {:?}", addr);
 
     let config_service = create_config_service(config_db, frrmi);
 
@@ -98,29 +99,39 @@ async fn start_grpc_server(
 }
 
 /// Start the mgmt service
-pub fn start_mgmt(grpc_address: SocketAddr) -> std::thread::JoinHandle<()> {
-    debug!("Starting dataplane management");
-    /* start gRPC server */
-    thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .enable_time()
-            .build()
-            .unwrap();
+pub fn start_mgmt(grpc_address: SocketAddr) -> Result<std::thread::JoinHandle<()>, Error> {
+    debug!("Starting management");
 
-        let _guard = rt.enter();
+    /* create runtime */
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .unwrap();
 
-        /* create endpoint to talk to frr-agent */
-        let frrmi = FrrMi::new("/var/run/frr/frrmi.sock", "/var/run/frr/frr-agent.sock").unwrap();
+    /* enter runtime to create frrmi */
+    let _guard = rt.enter();
 
-        /* create config database */
-        let config_db = Arc::new(RwLock::new(GwConfigDatabase::new()));
+    /* create frrmi to talk to frr-agent */
+    let Ok(frrmi) = FrrMi::new("/var/run/frr/frrmi.sock", "/var/run/frr/frr-agent.sock") else {
+        error!("Failed to start frrmi");
+        return Err(Error::other("Failed to start frrmi"));
+    };
 
-        /* start gRPC server with the config DB */
-        rt.block_on(async move {
-            start_grpc_server(config_db, frrmi, grpc_address)
-                .await
-                .unwrap();
-        });
-    })
+    /* create config database */
+    let config_db = Arc::new(RwLock::new(GwConfigDatabase::new()));
+
+    /* start management thread and move all context: the management thread will own the frrmi and the config db. */
+    thread::Builder::new()
+        .name("mgmt".to_string())
+        .spawn(move || {
+            debug!("Starting dataplane management thread");
+
+            /* start gRPC server with the config DB and frrmi */
+            rt.block_on(async move {
+                start_grpc_server(config_db, frrmi, grpc_address)
+                    .await
+                    .unwrap();
+            });
+        })
 }
