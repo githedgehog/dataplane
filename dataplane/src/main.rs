@@ -16,7 +16,7 @@ use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 fn init_logging() {
     tracing_subscriber::fmt()
@@ -46,6 +46,8 @@ fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
     }
 }
 
+use mgmt::processor::proc::start_mgmt;
+
 fn main() {
     init_logging();
     info!("Starting gateway process...");
@@ -56,6 +58,12 @@ fn main() {
 
     /* parse cmd line args */
     let args = CmdArgs::parse();
+
+    let grpc_address = "[::1]:50051".parse().expect("Bad grpc address");
+
+    start_mgmt(grpc_address);
+
+    debug!("Starting pipeline....");
 
     /* start driver */
     match args.get_driver_name() {
