@@ -30,6 +30,9 @@ impl GwConfigDatabase {
     pub fn get(&self, genid: GenId) -> Option<&GwConfig> {
         self.configs.get(&genid)
     }
+    pub fn contains(&self, genid: GenId) -> bool {
+        self.configs.contains_key(&genid)
+    }
     pub fn get_mut(&mut self, generation: GenId) -> Option<&mut GwConfig> {
         self.configs.get_mut(&generation)
     }

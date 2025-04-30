@@ -54,7 +54,6 @@ pub struct FrrMi {
 }
 impl FrrMi {
     pub fn new(bind_addr: &str, remote_addr: &str) -> Result<FrrMi, FrrErr> {
-        // fixme: use non-blocking
         let sock = open_unix_sock_async(bind_addr).map_err(FrrErr::FailOpen)?;
         sock.connect(remote_addr).map_err(|e| {
             error!("Failed to connect to {remote_addr}");

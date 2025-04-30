@@ -17,7 +17,7 @@ use tracing::{debug, error};
 
 use super::{ApiError, ApiResult};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Overlay {
     pub vpc_table: VpcTable,
     pub peering_table: VpcPeeringTable,
