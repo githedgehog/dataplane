@@ -8,12 +8,21 @@ use tokio::sync::RwLock;
 use tonic::transport::Server;
 
 use crate::frr::renderer::builder::Render;
+use crate::models::external::configdb::gwconfig::ExternalConfig;
 use crate::models::external::configdb::gwconfigdb::GwConfigDatabase;
 use crate::models::external::{ApiResult, configdb::gwconfig::GwConfig};
 use crate::{frr::frrmi::FrrMi, models::external::ApiError};
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::grpc::server::create_config_service;
+
+#[allow(unused)]
+/// Build an empty config and apply it
+async fn blank_config_apply(configdb: &mut GwConfigDatabase, frrmi: &FrrMi) {
+    let external = ExternalConfig::new();
+    let blank = GwConfig::new(external);
+    let _ = new_gw_config(configdb, blank, frrmi).await;
+}
 
 /// Entry point for new configurations, [`GwConfig`]
 pub async fn new_gw_config(
@@ -21,14 +30,25 @@ pub async fn new_gw_config(
     mut config: GwConfig,
     frrmi: &FrrMi,
 ) -> ApiResult {
-    debug!("Processing new configuration. Genid:'{}'..", config.genid());
+    debug!(
+        "Processing received configuration. Genid:'{}'..",
+        config.genid()
+    );
+
+    /* get id of incoming config */
+    let genid = config.genid();
+
+    /* reject config if it uses id of existing one */
+    if configdb.contains(genid) {
+        error!("Rejecting config request: a config with id {genid} exists");
+        return Err(ApiError::ConfigAlreadyExists(genid));
+    }
+
     /* validate the config */
     config.validate()?;
 
     /* build internal config for this config */
     config.build_internal_config()?;
-
-    let genid = config.genid();
 
     /* add to config database */
     configdb.add(config);
@@ -65,9 +85,9 @@ async fn start_grpc_server(
     frrmi: FrrMi,
     addr: SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let config_service = create_config_service(config_db, frrmi);
-
     info!("Starting Gateway Config gRPC server on {:?}", addr);
+
+    let config_service = create_config_service(config_db, frrmi);
 
     Server::builder()
         .add_service(config_service)

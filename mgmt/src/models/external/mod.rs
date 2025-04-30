@@ -30,6 +30,8 @@ pub enum ApiError {
     MissingPeeringName,
     #[error("Config with id {0} not found")]
     NoSuchConfig(GenId),
+    #[error("A config with id {0} already exists")]
+    ConfigAlreadyExists(GenId),
     #[error("Failure applying config")]
     FailureApply,
     #[error("Forbidden")]

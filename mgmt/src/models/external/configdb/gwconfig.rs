@@ -8,11 +8,11 @@ use derive_builder::Builder;
 use std::time::SystemTime;
 use tracing::{debug, info, warn};
 
-use crate::models::external::overlay::Overlay;
 use crate::models::external::{ApiError, ApiResult};
 use crate::models::internal::InternalConfig;
 use crate::models::internal::device::DeviceConfig;
 use crate::models::internal::routing::vrf::VrfConfig;
+use crate::models::{external::overlay::Overlay, internal::device::settings::DeviceSettings};
 
 use crate::frr::frrmi::FrrMi;
 use crate::processor::confbuild::build_internal_config;
@@ -21,11 +21,14 @@ use crate::processor::confbuild::build_internal_config;
 pub type GenId = u64;
 use crate::processor::proc::apply_gw_config;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Underlay {
     pub vrf: VrfConfig, /* default vrf */
 }
 impl Underlay {
+    pub fn new() -> Self {
+        Self::default()
+    }
     pub fn validate(&self) -> ApiResult {
         warn!("Validating underlay configuration (TODO)");
         Ok(())
@@ -58,6 +61,15 @@ pub struct ExternalConfig {
     pub overlay: Overlay,     /* VPCs and peerings -- get highly developed in internal config */
 }
 impl ExternalConfig {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self {
+            genid: 0,
+            device: DeviceConfig::new(DeviceSettings::new("Unset")),
+            underlay: Underlay::default(),
+            overlay: Overlay::default(),
+        }
+    }
     pub fn validate(&mut self) -> ApiResult {
         self.device.validate()?;
         self.underlay.validate()?;
