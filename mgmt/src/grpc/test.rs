@@ -10,6 +10,7 @@ mod tests {
     use crate::grpc::server::BasicConfigManager;
     use crate::models::external::configdb::gwconfigdb::GwConfigDatabase;
     use gateway_config::GatewayConfig;
+    use crate::frr::frrmi::FrrMi;
 
     // Helper function to create a test GatewayConfig
     fn create_test_gateway_config() -> GatewayConfig {
@@ -191,8 +192,11 @@ mod tests {
         // Create a mock database
         let config_db = Arc::new(RwLock::new(GwConfigDatabase::new()));
 
+        /* create frr management interface */
+        let frrmi = FrrMi::new("/tmp/frrmi.sock", "/tmp/frr-agent.sock").unwrap();
+
         // Create the manager
-        let manager = BasicConfigManager::new(Arc::clone(&config_db));
+        let manager = BasicConfigManager::new(Arc::clone(&config_db), frrmi);
 
         // Create test data
         let grpc_config = create_test_gateway_config();

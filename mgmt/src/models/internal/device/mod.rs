@@ -25,7 +25,7 @@ impl DeviceConfig {
         }
     }
     pub fn validate(&self) -> ApiResult {
-        warn!("Validating device configuration (TODO");
+        warn!("Validating device configuration (TODO)");
         Ok(())
     }
 }
