@@ -1,38 +1,106 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-#![allow(dead_code)]
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::thread;
+use tokio::sync::RwLock;
+use tonic::transport::Server;
 
 use crate::frr::renderer::builder::Render;
+use crate::models::external::configdb::gwconfigdb::GwConfigDatabase;
 use crate::models::external::{ApiResult, configdb::gwconfig::GwConfig};
+use crate::{frr::frrmi::FrrMi, models::external::ApiError};
 use tracing::{debug, info};
 
+use crate::grpc::server::create_config_service;
+
 /// Entry point for new configurations, [`GwConfig`]
-pub fn new_gw_config(mut config: GwConfig) -> ApiResult {
-    debug!("Processing new configuration '{}'..", config.genid());
+pub async fn new_gw_config(
+    configdb: &mut GwConfigDatabase,
+    mut config: GwConfig,
+    frrmi: &FrrMi,
+) -> ApiResult {
+    debug!("Processing new configuration. Genid:'{}'..", config.genid());
     /* validate the config */
     config.validate()?;
 
     /* build internal config for this config */
     config.build_internal_config()?;
 
-    /* add to config database */
+    let genid = config.genid();
 
-    /* apply it */
-    config.apply()?;
+    /* add to config database */
+    configdb.add(config);
+
+    /* apply the configuration just stored */
+    configdb.apply(genid, frrmi).await?;
 
     Ok(())
 }
 
 /// Main logic to apply a [`GwConfig`]. This is called from GwConfig::apply()
-pub(crate) fn apply_gw_config(config: &mut GwConfig) -> ApiResult {
+pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &FrrMi) -> ApiResult {
+    /* apply in interface manager - async (TODO) */
+
     /* apply in frr: need to render and call frr-reload */
     if let Some(internal) = &config.internal {
-        debug!("FRR configuration is:\n{}", internal.render(config))
+        debug!("Generating FRR config for genid {}...", config.genid());
+        let rendered = internal.render(config);
+        debug!("FRR configuration is:\n{}", rendered.to_string());
+
+        frrmi
+            .apply_config(config.genid(), &rendered)
+            .await
+            .map_err(|e| ApiError::FrrApplyError(e.to_string()))?;
     }
 
-    /* apply in interface manager - async */
-
-    info!("Successfully applied config {}", config.genid());
+    info!("Successfully applied config with genid {}", config.genid());
     Ok(())
+}
+
+/// Start the gRPC server
+async fn start_grpc_server(
+    config_db: Arc<RwLock<GwConfigDatabase>>,
+    frrmi: FrrMi,
+    addr: SocketAddr,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config_service = create_config_service(config_db, frrmi);
+
+    info!("Starting Gateway Config gRPC server on {:?}", addr);
+
+    Server::builder()
+        .add_service(config_service)
+        .serve(addr)
+        .await?;
+
+    Ok(())
+}
+
+/// Start the mgmt service
+pub fn start_mgmt(grpc_address: SocketAddr) -> std::thread::JoinHandle<()> {
+    debug!("Starting dataplane management");
+    /* start gRPC server */
+    thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        let _guard = rt.enter();
+
+        /* create endpoint to talk to frr-agent */
+        let frrmi = FrrMi::new("/var/run/frr/frrmi.sock", "/var/run/frr/frr-agent.sock").unwrap();
+
+        /* create config database */
+        let config_db = Arc::new(RwLock::new(GwConfigDatabase::new()));
+
+        /* start gRPC server with the config DB */
+        rt.block_on(async move {
+            start_grpc_server(config_db, frrmi, grpc_address)
+                .await
+                .unwrap();
+        });
+    })
 }
