@@ -35,7 +35,7 @@ pub enum FrrErr {
     ReloadErr(String),
 }
 
-fn open_unix_sock_async<P: AsRef<Path> + ?Sized + std::fmt::Display>(
+pub fn open_unix_sock_async<P: AsRef<Path> + ?Sized + std::fmt::Display>(
     bind_addr: &P,
 ) -> Result<UnixDatagram, &'static str> {
     let _ = std::fs::remove_file(bind_addr);
