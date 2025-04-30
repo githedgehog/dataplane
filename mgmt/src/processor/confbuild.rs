@@ -224,6 +224,9 @@ pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, ApiErr
     } else {
         return Err(ApiError::IncompleteConfig("Missing BGP config".to_string()));
     }
-    debug!("Built internal config for gen {}", config.genid());
+    debug!(
+        "Successfully built internal config for genid {}",
+        config.genid()
+    );
     Ok(internal)
 }

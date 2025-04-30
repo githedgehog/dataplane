@@ -14,6 +14,7 @@ use crate::models::internal::InternalConfig;
 use crate::models::internal::device::DeviceConfig;
 use crate::models::internal::routing::vrf::VrfConfig;
 
+use crate::frr::frrmi::FrrMi;
 use crate::processor::confbuild::build_internal_config;
 
 /// Alias for a config generation number
@@ -26,7 +27,7 @@ pub struct Underlay {
 }
 impl Underlay {
     pub fn validate(&self) -> ApiResult {
-        warn!("Validating underlay configuration (TODO");
+        warn!("Validating underlay configuration (TODO)");
         Ok(())
     }
 }
@@ -85,7 +86,7 @@ impl GwConfig {
 
     /// Validate a [`GwConfig`]
     pub fn validate(&mut self) -> ApiResult {
-        debug!("Validating config {} ..", self.genid());
+        debug!("Validating external config with genid {} ..", self.genid());
         self.external.validate()
     }
 
@@ -93,20 +94,19 @@ impl GwConfig {
     pub fn build_internal_config(&mut self) -> ApiResult {
         /* build and set internal config */
         self.internal = Some(build_internal_config(self)?);
-        info!("Internal config built for {}", self.genid());
         Ok(())
     }
 
     /// Apply a [`GwConfig`]
-    pub fn apply(&mut self) -> ApiResult {
-        info!("Applying config {}...", self.genid());
+    pub async fn apply(&mut self, frrmi: &FrrMi) -> ApiResult {
+        info!("Applying config with genid {}...", self.genid());
         if self.internal.is_none() {
             debug!("Config has no internal config...");
             self.build_internal_config()?;
         }
 
         /* Apply this gw config */
-        match apply_gw_config(self) {
+        match apply_gw_config(self, frrmi).await {
             Ok(()) => {
                 self.meta.applied = Some(SystemTime::now());
                 self.meta.is_applied = true;

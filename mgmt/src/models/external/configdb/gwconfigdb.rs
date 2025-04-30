@@ -3,6 +3,7 @@
 
 //! Configuration database: entity able to store multiple gateway configurations
 
+use crate::frr::frrmi::FrrMi;
 use std::collections::BTreeMap;
 use tracing::{debug, error, info};
 
@@ -29,7 +30,7 @@ impl GwConfigDatabase {
     pub fn get(&self, genid: GenId) -> Option<&GwConfig> {
         self.configs.get(&genid)
     }
-    pub fn get_mut(&mut self, generation: u64) -> Option<&mut GwConfig> {
+    pub fn get_mut(&mut self, generation: GenId) -> Option<&mut GwConfig> {
         self.configs.get_mut(&generation)
     }
     pub fn remove(&mut self, genid: GenId) -> ApiResult {
@@ -48,18 +49,23 @@ impl GwConfigDatabase {
             Err(ApiError::NoSuchConfig(genid))
         }
     }
-    pub fn apply(&mut self, genid: GenId) -> ApiResult {
-        debug!("Applying config '{}'...", genid);
+
+    pub async fn apply(&mut self, genid: GenId, frrmi: &FrrMi) -> ApiResult {
+        debug!("Applying config with genid '{}'...", genid);
 
         /* get the generation (id) of the currently applied config, if any */
         let last = self.current;
 
         /* Abort if the requested config is already applied */
         if let Some(last) = last {
-            if last == genid {
+            /* if last == genid {
                 info!("Config {} is already applied", last);
                 return Ok(());
             }
+            */
+            debug!("The current config is {last}");
+        } else {
+            debug!("There is no current config applied");
         }
 
         /* look up the config to apply */
@@ -67,9 +73,10 @@ impl GwConfigDatabase {
             error!("Can't apply config {}: not found", genid);
             return Err(ApiError::NoSuchConfig(genid));
         };
+        debug!("Config with id {genid} found");
 
         /* attempt to apply the configuration found */
-        let res = config.apply();
+        let res = config.apply(frrmi).await;
         if res.is_ok() {
             info!("Successfully applied config '{}'", genid);
             self.current = Some(genid);
@@ -79,7 +86,7 @@ impl GwConfigDatabase {
                 info!("Rolling back to prior config '{}'", current);
                 let mut config = self.get_mut(current);
                 if let Some(config) = &mut config {
-                    if let Err(e) = config.apply() {
+                    if let Err(e) = config.apply(frrmi).await {
                         error!("Fatal: could not roll-back to prior config: {e}");
                     }
                 }
@@ -90,6 +97,7 @@ impl GwConfigDatabase {
         }
         res
     }
+
     /// Get the generation Id of the currently applied config, if any.
     pub fn get_current_gen(&self) -> Option<GenId> {
         self.current
