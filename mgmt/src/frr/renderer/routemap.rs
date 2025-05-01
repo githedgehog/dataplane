@@ -185,7 +185,7 @@ mod tests {
 
         let mut rmap_table = RouteMapTable::new();
         rmap_table.add_route_map(rmap);
-        println!("{:#?}", rmap_table);
+        println!("{rmap_table:#?}");
         println!("{}", rmap_table.render(&()));
     }
 }

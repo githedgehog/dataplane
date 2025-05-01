@@ -9,13 +9,13 @@ use crate::models::external::overlay::vpc::{Vpc, VpcId};
 
 impl VpcId {
     pub(crate) fn vrf_name(&self) -> String {
-        format!("{}-vrf", self)
+        format!("{self}-vrf")
     }
     pub(crate) fn bridge_name(&self) -> String {
-        format!("{}-bri", self)
+        format!("{self}-bri")
     }
     pub(crate) fn vtep_name(&self) -> String {
-        format!("{}-vtp", self)
+        format!("{self}-vtp")
     }
 }
 
@@ -30,6 +30,6 @@ impl Vpc {
         format!("PL-{}-{}", &self.name, remote_name)
     }
     pub(crate) fn plist_with_vpc_descr(&self, remote_name: &str) -> String {
-        format!("Destinations reachable at {}", remote_name)
+        format!("Destinations reachable at {remote_name}")
     }
 }

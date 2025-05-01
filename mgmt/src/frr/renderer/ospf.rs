@@ -44,7 +44,7 @@ impl Render for OspfInterface {
         let mut config = ConfigBuilder::new();
         config += format!(" ip ospf area {}", self.area);
         if let Some(network) = &self.network {
-            config += format!(" ip ospf network {}", network);
+            config += format!(" ip ospf network {network}");
         }
         if let Some(cost) = &self.cost {
             config += format!(" ip ospf cost {cost}");
