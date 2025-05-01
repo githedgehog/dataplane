@@ -107,6 +107,6 @@ mod tests {
         ));
 
         let out = plist.render(&());
-        println!("{}", out);
+        println!("{out}");
     }
 }
