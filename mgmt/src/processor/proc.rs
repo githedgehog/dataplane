@@ -98,25 +98,26 @@ async fn start_grpc_server(
     Ok(())
 }
 
+async fn start_frrmi() -> Result<FrrMi, Error> {
+    /* create frrmi to talk to frr-agent */
+    let Ok(frrmi) = FrrMi::new("/var/run/frr/frrmi.sock", "/var/run/frr/frr-agent.sock").await
+    else {
+        error!("Failed to start frrmi");
+        return Err(Error::other("Failed to start frrmi"));
+    };
+    Ok(frrmi)
+}
+
 /// Start the mgmt service
 pub fn start_mgmt(grpc_address: SocketAddr) -> Result<std::thread::JoinHandle<()>, Error> {
-    debug!("Starting management");
+    debug!("Starting management. gRPC address is {grpc_address:?}");
 
     /* create runtime */
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()
         .build()
-        .unwrap();
-
-    /* enter runtime to create frrmi */
-    let _guard = rt.enter();
-
-    /* create frrmi to talk to frr-agent */
-    let Ok(frrmi) = FrrMi::new("/var/run/frr/frrmi.sock", "/var/run/frr/frr-agent.sock") else {
-        error!("Failed to start frrmi");
-        return Err(Error::other("Failed to start frrmi"));
-    };
+        .expect("Tokio runtime creation failed");
 
     /* create config database */
     let config_db = Arc::new(RwLock::new(GwConfigDatabase::new()));
@@ -126,6 +127,8 @@ pub fn start_mgmt(grpc_address: SocketAddr) -> Result<std::thread::JoinHandle<()
         .name("mgmt".to_string())
         .spawn(move || {
             debug!("Starting dataplane management thread");
+
+            let frrmi = rt.block_on(async { start_frrmi().await.unwrap() });
 
             /* start gRPC server with the config DB and frrmi */
             rt.block_on(async move {
