@@ -53,7 +53,7 @@ impl GwConfigMeta {
 }
 
 /// The configuration object as seen by the gRPC server
-#[derive(Builder)]
+#[derive(Builder, Clone)]
 pub struct ExternalConfig {
     pub genid: GenId,         /* configuration generation id (version) */
     pub device: DeviceConfig, /* goes as-is into the internal config */
@@ -78,6 +78,7 @@ impl ExternalConfig {
     }
 }
 
+#[derive(Clone)]
 pub struct GwConfig {
     pub meta: GwConfigMeta,               /* config metadata */
     pub external: ExternalConfig,         /* external config: received */
