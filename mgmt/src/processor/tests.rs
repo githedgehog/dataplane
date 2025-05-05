@@ -286,7 +286,7 @@ pub mod test {
     }
 
     use crate::frr::frrmi::FrrMi;
-    use crate::frr::frrmi::open_unix_sock_async;
+    use crate::frr::frrmi::tests::fake_frr_agent;
 
     #[traced_test]
     #[tokio::test]
@@ -294,19 +294,13 @@ pub mod test {
         /* create a config database */
         let mut configdb = GwConfigDatabase::new();
 
-        /* create faked frr-agent */
-        let sock = open_unix_sock_async("/tmp/frr-agent.sock").expect("Should succeed");
-        tokio::spawn(async move {
-            let mut rx_buff = vec![0u8; 8192];
-            let (_, _) = sock.recv_from(&mut rx_buff).await.unwrap();
-            let (_, _) = sock.recv_from(&mut rx_buff).await.unwrap();
-            sock.send_to("Ok".to_string().as_bytes(), "/tmp/frrmi.sock")
-                .await
-                .unwrap();
-        });
+        /* start faked frr-agent */
+        let frr_agent = fake_frr_agent("/tmp/frr-agent.sock").await;
 
         /* open frrmi and connect to the faked frr-agent */
-        let frrmi = FrrMi::new("/tmp/frrmi.sock", "/tmp/frr-agent.sock").unwrap();
+        let frrmi = FrrMi::new("/tmp/frrmi.sock", "/tmp/frr-agent.sock")
+            .await
+            .unwrap();
 
         /* build sample external config */
         let external = sample_external_config();
@@ -318,5 +312,7 @@ pub mod test {
         new_gw_config(&mut configdb, config, &frrmi)
             .await
             .expect("Faked frr-agent answers ok");
+
+        frr_agent.abort();
     }
 }
