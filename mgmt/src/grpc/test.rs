@@ -187,18 +187,22 @@ mod tests {
         }
     }
 
-    use crate::frr::frrmi::open_unix_sock_async;
+    use crate::frr::frrmi::tests::fake_frr_agent;
 
     #[tokio::test]
     async fn test_convert_to_grpc_config() {
         // Create a mock database
         let config_db = Arc::new(RwLock::new(GwConfigDatabase::new()));
 
-        #[allow(unused_variables)]
-        let sock = open_unix_sock_async("/tmp/frr-agent.sock").expect("Should succeed");
+        // create faked frr-agent. This should not be needed in this test.
+        let frr_agent = fake_frr_agent("/tmp/grpc/frr-agent.sock").await;
 
-        /* create frr management interface */
-        let frrmi = FrrMi::new("/tmp/frrmi.sock", "/tmp/frr-agent.sock").unwrap();
+        // create frrmi
+        let frrmi = FrrMi::new("/tmp/frrmi.sock", "/tmp/grpc/frr-agent.sock")
+            .await
+            .unwrap();
+
+        frr_agent.abort();
 
         // Create the manager
         let manager = BasicConfigManager::new(Arc::clone(&config_db), frrmi);
