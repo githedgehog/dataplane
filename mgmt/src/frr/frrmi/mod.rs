@@ -38,7 +38,20 @@ pub enum FrrErr {
 pub fn open_unix_sock_async<P: AsRef<Path> + ?Sized + std::fmt::Display>(
     bind_addr: &P,
 ) -> Result<UnixDatagram, &'static str> {
+    debug!("Opening sock at {bind_addr}...");
+
+    /* remove entry from filesystem */
     let _ = std::fs::remove_file(bind_addr);
+
+    /* create intermediate directories */
+    let path = Path::new(bind_addr.as_ref());
+    if let Some(parent_dir) = path.parent() {
+        debug!("Creating directory at {parent_dir:?}...");
+        fs::create_dir_all(parent_dir)
+            .map_err(|_| "Failed to create path to unix sock local address")?;
+    }
+
+    /* create sock */
     let sock = UnixDatagram::bind(bind_addr).map_err(|_| "Failed to bind socket")?;
     let mut perms = fs::metadata(bind_addr)
         .map_err(|_| "Failed to retrieve path metadata")?
@@ -107,7 +120,7 @@ mod tests {
 
     #[tokio::test]
     #[traced_test]
-    async fn test_reloader() {
+    async fn test_frrmi() {
         /* build some sample config */
         let external = sample_external_config();
         let mut config = GwConfig::new(external);
@@ -115,19 +128,24 @@ mod tests {
         config.build_internal_config().expect("Should succeed");
         let rendered = config.internal.as_ref().unwrap().render(&config);
 
-        /* create faked frr-agent */
-        let sock = open_unix_sock_async("/tmp/frr-agent.sock").expect("Should succeed");
+        /* create faked frr-agent: socknames include name of test to avoid issues with other tests
+        running concurrently */
+        let sock = open_unix_sock_async("/tmp/frrmi-test/frr-agent.sock").expect("Should succeed");
         tokio::spawn(async move {
             let mut rx_buff = vec![0u8; 8192];
             let (_, _) = sock.recv_from(&mut rx_buff).await.unwrap();
             let (_, _) = sock.recv_from(&mut rx_buff).await.unwrap();
-            sock.send_to("Ok".to_string().as_bytes(), "/tmp/frrmi.sock")
+            sock.send_to("Ok".to_string().as_bytes(), "/tmp/frrmi-test/frrmi.sock")
                 .await
                 .unwrap();
         });
 
         /* open frrmi */
-        let frrmi = FrrMi::new("/tmp/frrmi.sock", "/tmp/frr-agent.sock").unwrap();
+        let frrmi = FrrMi::new(
+            "/tmp/frrmi-test/frrmi.sock",
+            "/tmp/frrmi-test/frr-agent.sock",
+        )
+        .unwrap();
 
         /* apply config over frrmi */
         if let Err(e) = frrmi.apply_config(config.genid(), &rendered).await {
