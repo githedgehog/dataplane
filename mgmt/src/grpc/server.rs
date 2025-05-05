@@ -322,7 +322,7 @@ impl BasicConfigManager {
                 1 => OspfNetwork::NonBroadcast,
                 2 => OspfNetwork::Point2Point,
                 3 => OspfNetwork::Point2Multipoint,
-                _ => return Err(format!("Invalid OSPF network type: {}", network_type)),
+                _ => return Err(format!("Invalid OSPF network type: {network_type}")),
             };
             ospf_iface = ospf_iface.set_network(network);
         }
