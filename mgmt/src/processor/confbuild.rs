@@ -9,7 +9,7 @@ use crate::models::external::overlay::vpc::Vpc;
 use crate::models::external::overlay::vpcpeering::VpcManifest;
 use crate::models::external::{ApiError, overlay::Overlay};
 
-use crate::models::external::configdb::gwconfig::GwConfig;
+use crate::models::external::gwconfig::GwConfig;
 
 use crate::models::internal::InternalConfig;
 use crate::models::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};

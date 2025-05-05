@@ -9,9 +9,9 @@ use tokio::sync::RwLock;
 use tonic::transport::Server;
 
 use crate::frr::renderer::builder::Render;
-use crate::models::external::configdb::gwconfig::ExternalConfig;
-use crate::models::external::configdb::gwconfigdb::GwConfigDatabase;
-use crate::models::external::{ApiResult, configdb::gwconfig::GwConfig};
+use crate::models::external::gwconfig::ExternalConfig;
+use crate::models::external::{ApiResult, gwconfig::GwConfig};
+use crate::processor::gwconfigdb::GwConfigDatabase;
 use crate::{frr::frrmi::FrrMi, models::external::ApiError};
 use tracing::{debug, error, info};
 

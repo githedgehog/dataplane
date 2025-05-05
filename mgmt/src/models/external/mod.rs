@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-pub mod configdb;
+pub mod gwconfig;
 pub mod overlay;
 
-use crate::models::external::configdb::gwconfig::GenId;
+use crate::models::external::gwconfig::GenId;
 use crate::models::external::overlay::vpc::VpcId;
 
 use thiserror::Error;

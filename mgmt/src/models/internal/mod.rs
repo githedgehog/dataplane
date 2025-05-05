@@ -14,7 +14,7 @@ pub mod routing;
 
 use derive_builder::Builder;
 
-use crate::models::external::configdb::gwconfig::GenId;
+use crate::models::external::gwconfig::GenId;
 
 use crate::models::internal::device::DeviceConfig;
 use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
@@ -24,7 +24,7 @@ use crate::models::internal::routing::prefixlist::{PrefixList, PrefixListTable};
 use crate::models::internal::routing::routemap::{RouteMap, RouteMapTable};
 use crate::models::internal::routing::vrf::{VrfConfig, VrfConfigTable};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 /* Main internal GW configuration */
 pub struct InternalConfig {
     pub dev_cfg: DeviceConfig,

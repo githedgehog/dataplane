@@ -19,12 +19,12 @@ use crate::frr::frrmi::FrrMi;
 use crate::processor::proc::new_gw_config;
 
 // Import database access
-use crate::models::external::configdb::gwconfigdb::GwConfigDatabase;
+use crate::processor::gwconfigdb::GwConfigDatabase;
 use tokio::sync::RwLock;
 
 // Import converter module for async functions
 use crate::grpc::converter;
-use crate::models::external::configdb::gwconfig::GwConfig;
+use crate::models::external::gwconfig::GwConfig;
 
 /// Trait for configuration management
 #[async_trait]

@@ -12,8 +12,10 @@ pub mod test {
     use std::str::FromStr;
     use tracing::Level;
 
+    use crate::models::internal::device::settings::DeviceSettings;
     use crate::models::internal::device::settings::KernelPacketConfig;
     use crate::models::internal::device::settings::PacketDriver;
+    use crate::models::internal::interfaces::interface::InterfaceConfig;
     use crate::models::internal::interfaces::interface::*;
     use crate::models::internal::routing::bgp::AfIpv4Ucast;
     use crate::models::internal::routing::bgp::AfL2vpnEvpn;
@@ -25,18 +27,13 @@ pub mod test {
     use crate::models::internal::routing::ospf::{OspfInterface, OspfNetwork};
     use crate::models::internal::routing::vrf::VrfConfig;
     use crate::models::internal::{device::DeviceConfig, routing::ospf::Ospf};
-    use crate::models::{
-        external::configdb::gwconfigdb::GwConfigDatabase,
-        internal::device::settings::DeviceSettings,
-    };
-
-    use crate::models::internal::interfaces::interface::InterfaceConfig;
+    use crate::processor::gwconfigdb::GwConfigDatabase;
     //    use crate::models::internal::routing::evpn::VtepConfig;
 
-    use crate::models::external::configdb::gwconfig::ExternalConfig;
-    use crate::models::external::configdb::gwconfig::ExternalConfigBuilder;
-    use crate::models::external::configdb::gwconfig::GwConfig;
-    use crate::models::external::configdb::gwconfig::Underlay;
+    use crate::models::external::gwconfig::ExternalConfig;
+    use crate::models::external::gwconfig::ExternalConfigBuilder;
+    use crate::models::external::gwconfig::GwConfig;
+    use crate::models::external::gwconfig::Underlay;
     // use crate::models::external::configdb::gwconfigdb::GwConfigDatabase;
 
     use crate::models::external::overlay::Overlay;

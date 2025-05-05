@@ -67,7 +67,7 @@ impl VrfConfig {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct VrfConfigTable(Vec<VrfConfig>);
 
 impl VrfConfigTable {

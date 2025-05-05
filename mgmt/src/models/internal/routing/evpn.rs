@@ -6,7 +6,7 @@
 use net::eth::mac::Mac;
 use std::net::IpAddr;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct VtepConfig {
     pub address: IpAddr,
     pub mac: Mac,

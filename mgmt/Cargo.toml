@@ -12,7 +12,7 @@ gateway_config = { workspace = true }
 net = { workspace = true }
 routing = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }    
+tokio = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-test = { workspace = true }

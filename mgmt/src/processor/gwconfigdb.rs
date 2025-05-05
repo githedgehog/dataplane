@@ -7,7 +7,7 @@ use crate::frr::frrmi::FrrMi;
 use std::collections::BTreeMap;
 use tracing::{debug, error, info};
 
-use crate::models::external::configdb::gwconfig::{GenId, GwConfig};
+use crate::models::external::gwconfig::{GenId, GwConfig};
 use crate::models::external::{ApiError, ApiResult};
 
 #[derive(Default)]

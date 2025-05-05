@@ -8,7 +8,7 @@ use std::str;
 use tokio::time::{Duration, timeout};
 
 use crate::frr::renderer::builder::ConfigBuilder;
-use crate::models::external::configdb::gwconfig::GenId;
+use crate::models::external::gwconfig::GenId;
 
 use std::fs;
 use std::net::Shutdown;
@@ -243,7 +243,7 @@ impl FrrMi {
 pub mod tests {
     use super::*;
     use crate::frr::renderer::builder::Render;
-    use crate::models::external::configdb::gwconfig::GwConfig;
+    use crate::models::external::gwconfig::GwConfig;
     use crate::processor::tests::test::sample_external_config;
     use tokio::task::JoinHandle;
     use tracing_test::traced_test;
