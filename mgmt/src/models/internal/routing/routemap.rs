@@ -6,13 +6,13 @@
 use net::vxlan::Vni;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum MatchingPolicy {
     Deny,
     Permit,
 }
 
-#[derive(Debug, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum RouteMapMatch {
     SrcVrf(String),
     Ipv4AddressPrefixList(String),
@@ -27,7 +27,7 @@ pub enum RouteMapMatch {
     // TODO: complete as needed
 }
 
-#[derive(Debug, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum RouteMapSetAction {
     Tag(u32),
     Distance(u8),
@@ -37,7 +37,7 @@ pub enum RouteMapSetAction {
     //TODO: complete as needed
 }
 
-#[derive(Debug, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Community {
     None,
     ASNVAL(u16, u16),
@@ -51,7 +51,7 @@ pub enum Community {
     //TODO: complete as needed
 }
 
-#[derive(Debug, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub struct RouteMapEntry {
     pub seq: u32,
     pub policy: MatchingPolicy,
@@ -59,13 +59,13 @@ pub struct RouteMapEntry {
     pub actions: Vec<RouteMapSetAction>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct RouteMap {
     pub name: String,
     pub entries: BTreeSet<RouteMapEntry>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct RouteMapTable(BTreeMap<String, RouteMap>);
 
 /* Impl basic ops */

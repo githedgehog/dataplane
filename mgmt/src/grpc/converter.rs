@@ -6,7 +6,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 use tracing::Level;
 
-use crate::models::external::configdb::gwconfig::{
+use crate::models::external::gwconfig::{
     ExternalConfig, ExternalConfigBuilder, GwConfig, Underlay,
 };
 use crate::models::external::overlay::Overlay;
