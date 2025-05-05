@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-// An FRR config reloader object
+// FRRMI: FRR management interface
 
 use std::str;
 use tokio::time::{Duration, timeout};
@@ -229,12 +229,33 @@ impl FrrMi {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use crate::frr::renderer::builder::Render;
     use crate::models::external::configdb::gwconfig::GwConfig;
     use crate::processor::tests::test::sample_external_config;
+    use tokio::task::JoinHandle;
     use tracing_test::traced_test;
+
+    /// Create a fake frr-agent async task for testing.
+    /// The agent can be stopped by calling abort() on the returned handle.
+    pub async fn fake_frr_agent(agent_address: &str) -> JoinHandle<()> {
+        /* N.B: socknames include name of test to avoid issues with other tests running concurrently */
+        let sock = open_unix_sock_async(agent_address).expect("Should succeed");
+        tokio::spawn(async move {
+            loop {
+                let mut rx_buff = vec![0u8; 8192];
+                let (_, _) = sock.recv_from(&mut rx_buff).await.unwrap();
+                let (_, requestor) = sock.recv_from(&mut rx_buff).await.unwrap();
+                sock.send_to(
+                    "Ok".to_string().as_bytes(),
+                    requestor.as_pathname().unwrap(),
+                )
+                .await
+                .unwrap();
+            }
+        })
+    }
 
     #[tokio::test]
     #[traced_test]
@@ -246,23 +267,15 @@ mod tests {
         config.build_internal_config().expect("Should succeed");
         let rendered = config.internal.as_ref().unwrap().render(&config);
 
-        /* create faked frr-agent: socknames include name of test to avoid issues with other tests
-        running concurrently */
-        let sock = open_unix_sock_async("/tmp/frrmi-test/frr-agent.sock").expect("Should succeed");
-        tokio::spawn(async move {
-            let mut rx_buff = vec![0u8; 8192];
-            let (_, _) = sock.recv_from(&mut rx_buff).await.unwrap();
-            let (_, _) = sock.recv_from(&mut rx_buff).await.unwrap();
-            sock.send_to("Ok".to_string().as_bytes(), "/tmp/frrmi-test/frrmi.sock")
-                .await
-                .unwrap();
-        });
+        /* start faked frr-agent */
+        let frr_agent = fake_frr_agent("/tmp/frrmi-test/frr-agent.sock").await;
 
         /* open frrmi */
         let frrmi = FrrMi::new(
             "/tmp/frrmi-test/frrmi.sock",
             "/tmp/frrmi-test/frr-agent.sock",
         )
+        .await
         .unwrap();
 
         /* apply config over frrmi */
@@ -271,5 +284,8 @@ mod tests {
         } else {
             info!("Successfully applied config");
         }
+
+        /* stop fake frr-agent */
+        frr_agent.abort();
     }
 }
