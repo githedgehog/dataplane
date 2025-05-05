@@ -4,6 +4,7 @@
 // An FRR config reloader object
 
 use std::str;
+use tokio::time::{Duration, timeout};
 
 use crate::frr::renderer::builder::ConfigBuilder;
 use crate::models::external::configdb::gwconfig::GenId;
@@ -30,6 +31,9 @@ pub enum FrrErr {
 
     #[error("Failed to communicate with frr-agent: {0}")]
     FailCommFrrAgent(String),
+
+    #[error("Timeout: did not receive response in time")]
+    TimeOut,
 
     #[error("Reloading error: {0}")]
     ReloadErr(String),
@@ -68,8 +72,11 @@ pub struct FrrMi {
     remote: String,
     connected: bool,
     up: bool,
+    rx_timeout: Duration,
 }
 impl FrrMi {
+    const REPLY_TIMEOUT: u64 = 10;
+
     /// Create an frrmi to talk to an frr-agent.
     pub async fn new(bind_addr: &str, remote_addr: &str) -> Result<FrrMi, FrrErr> {
         let sock = open_unix_sock_async(bind_addr).map_err(FrrErr::FailOpen)?;
@@ -79,6 +86,7 @@ impl FrrMi {
             remote: remote_addr.to_string(),
             connected: false,
             up: false,
+            rx_timeout: Duration::from_secs(Self::REPLY_TIMEOUT),
         };
         /* attempt connect to frr-agent. If successful, probe the frr-agent */
         frrmi.connect();
@@ -136,9 +144,24 @@ impl FrrMi {
     /// Receive a response
     async fn receive_response(&self) -> Result<(), FrrErr> {
         debug!("Awaiting reply from frr-agent at {}...", self.remote);
+
+        /* start a timeout for the reception of the response */
         let mut rx_buff = vec![0u8; 1024];
-        match self.sock.recv(&mut rx_buff).await {
+        let result = match timeout(self.rx_timeout, self.sock.recv(&mut rx_buff)).await {
+            Ok(result) => result,
+            Err(_) => {
+                error!(
+                    "Got no response from frr-agent in {:?} seconds",
+                    self.rx_timeout
+                );
+                return Err(FrrErr::TimeOut);
+            }
+        };
+
+        /* we received response in time. Check it */
+        match result {
             Ok(len) => {
+                /* decode response as a string */
                 if let Ok(response) = String::from_utf8(rx_buff[0..len].to_vec()) {
                     debug!("Frr-agent answered: {response}");
                     match response.as_str() {
