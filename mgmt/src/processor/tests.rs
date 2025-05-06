@@ -311,7 +311,7 @@ pub mod test {
         /* apply the config */
         new_gw_config(&mut configdb, config, &frrmi)
             .await
-            .expect("Faked frr-agent answers ok");
+            .expect("Faked frr-agent should answer ok");
 
         frr_agent.abort();
     }
