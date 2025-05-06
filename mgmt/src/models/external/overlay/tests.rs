@@ -6,7 +6,7 @@
 #[cfg(test)]
 #[allow(dead_code)]
 pub mod test {
-    use crate::models::external::ApiError;
+    use crate::models::external::ConfigError;
     use crate::models::external::overlay::Overlay;
     use crate::models::external::overlay::VpcIdMap;
     use crate::models::external::overlay::display::VpcDetailed;
@@ -55,7 +55,7 @@ pub mod test {
 
         /* invalid vni should be rejected */
         let vpc1 = Vpc::new("VPC-1", "AAAAA", 0);
-        assert_eq!(vpc1, Err(ApiError::InvalidVpcVni(0)));
+        assert_eq!(vpc1, Err(ConfigError::InvalidVpcVni(0)));
 
         /* add vpc with valid vni 3000 */
         let vpc1 = Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed");
@@ -65,27 +65,27 @@ pub mod test {
         let bad = Vpc::new("VPC-1", "BBBBB", 2000).expect("Should succeed");
         assert_eq!(
             vpc_table.add(bad),
-            Err(ApiError::DuplicateVpcName("VPC-1".to_string()))
+            Err(ConfigError::DuplicateVpcName("VPC-1".to_string()))
         );
 
         /* vpc with colliding VNI should be rejected */
         let bad = Vpc::new("VPC-2", "CCCCC", 3000).expect("Should succeed");
-        assert_eq!(vpc_table.add(bad), Err(ApiError::DuplicateVpcVni(3000)));
+        assert_eq!(vpc_table.add(bad), Err(ConfigError::DuplicateVpcVni(3000)));
 
         /* vpc with colliding Id should be rejected */
         let bad = Vpc::new("VPC-2", "AAAAA", 9000).expect("Should succeed");
         assert_eq!(
             vpc_table.add(bad),
-            Err(ApiError::DuplicateVpcId("AAAAA".try_into().unwrap()))
+            Err(ConfigError::DuplicateVpcId("AAAAA".try_into().unwrap()))
         );
 
         /* vpc with bad Id should not build */
         let bad = Vpc::new("VPC-2", "AAA", 9000);
-        assert_eq!(bad, Err(ApiError::BadVpcId("AAA".to_string())));
+        assert_eq!(bad, Err(ConfigError::BadVpcId("AAA".to_string())));
 
         /* vpc with bad Id should not build */
         let bad = Vpc::new("VPC-2", "!1234", 9000);
-        assert_eq!(bad, Err(ApiError::BadVpcId("!1234".to_string())));
+        assert_eq!(bad, Err(ConfigError::BadVpcId("!1234".to_string())));
     }
 
     #[test]
@@ -108,7 +108,7 @@ pub mod test {
         let mut overlay = Overlay::new(vpc_table, peering_table);
         assert_eq!(
             overlay.validate(),
-            Err(ApiError::NoSuchVpc("VPC-2".to_owned()))
+            Err(ConfigError::NoSuchVpc("VPC-2".to_owned()))
         );
     }
 

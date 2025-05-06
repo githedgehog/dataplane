@@ -8,7 +8,7 @@ use derive_builder::Builder;
 use std::time::SystemTime;
 use tracing::{debug, info, warn};
 
-use crate::models::external::{ApiError, ApiResult};
+use crate::models::external::{ConfigError, ConfigResult};
 use crate::models::internal::InternalConfig;
 use crate::models::internal::device::DeviceConfig;
 use crate::models::internal::routing::vrf::VrfConfig;
@@ -29,7 +29,7 @@ impl Underlay {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn validate(&self) -> ApiResult {
+    pub fn validate(&self) -> ConfigResult {
         warn!("Validating underlay configuration (TODO)");
         Ok(())
     }
@@ -70,7 +70,7 @@ impl ExternalConfig {
             overlay: Overlay::default(),
         }
     }
-    pub fn validate(&mut self) -> ApiResult {
+    pub fn validate(&mut self) -> ConfigResult {
         self.device.validate()?;
         self.underlay.validate()?;
         self.overlay.validate()?;
@@ -98,20 +98,20 @@ impl GwConfig {
     }
 
     /// Validate a [`GwConfig`]
-    pub fn validate(&mut self) -> ApiResult {
+    pub fn validate(&mut self) -> ConfigResult {
         debug!("Validating external config with genid {} ..", self.genid());
         self.external.validate()
     }
 
     /// Build the [`InternalConfig`] for this [`GwConfig`]
-    pub fn build_internal_config(&mut self) -> ApiResult {
+    pub fn build_internal_config(&mut self) -> ConfigResult {
         /* build and set internal config */
         self.internal = Some(build_internal_config(self)?);
         Ok(())
     }
 
     /// Apply a [`GwConfig`]
-    pub async fn apply(&mut self, frrmi: &FrrMi) -> ApiResult {
+    pub async fn apply(&mut self, frrmi: &FrrMi) -> ConfigResult {
         info!("Applying config with genid {}...", self.genid());
         if self.internal.is_none() {
             debug!("Config has no internal config...");
@@ -127,7 +127,7 @@ impl GwConfig {
             }
             Err(e) => {
                 info!("Failed to apply config {}: {e}", self.genid());
-                Err(ApiError::FailureApply)
+                Err(ConfigError::FailureApply)
             }
         }
     }

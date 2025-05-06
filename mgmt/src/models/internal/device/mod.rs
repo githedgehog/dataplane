@@ -10,7 +10,7 @@ use ports::PortConfig;
 use settings::DeviceSettings;
 use tracing::warn;
 
-use crate::models::external::ApiResult;
+use crate::models::external::ConfigResult;
 
 #[derive(Clone, Debug)]
 pub struct DeviceConfig {
@@ -24,7 +24,7 @@ impl DeviceConfig {
             ports: vec![],
         }
     }
-    pub fn validate(&self) -> ApiResult {
+    pub fn validate(&self) -> ConfigResult {
         warn!("Validating device configuration (TODO)");
         Ok(())
     }

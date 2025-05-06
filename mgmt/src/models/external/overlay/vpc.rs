@@ -13,7 +13,7 @@ use tracing::{debug, warn};
 
 use crate::models::external::overlay::VpcManifest;
 use crate::models::external::overlay::VpcPeeringTable;
-use crate::models::external::{ApiError, ApiResult};
+use crate::models::external::{ConfigError, ConfigResult};
 use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
 
 #[cfg(doc)]
@@ -39,13 +39,13 @@ impl VpcId {
     }
 }
 impl TryFrom<&str> for VpcId {
-    type Error = ApiError;
+    type Error = ConfigError;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         if value.len() != 5 {
-            return Err(ApiError::BadVpcId(value.to_owned()));
+            return Err(ConfigError::BadVpcId(value.to_owned()));
         }
         if !value.chars().all(|c| c.is_ascii_alphanumeric()) {
-            return Err(ApiError::BadVpcId(value.to_owned()));
+            return Err(ConfigError::BadVpcId(value.to_owned()));
         }
         let chars: Vec<char> = value.chars().collect();
         Ok(VpcId::new(chars[0], chars[1], chars[2], chars[3], chars[4]))
@@ -64,8 +64,8 @@ pub struct Vpc {
     pub peerings: Vec<Peering>,           /* peerings of this VPC - NOT set via gRPC */
 }
 impl Vpc {
-    pub fn new(name: &str, id: &str, vni: u32) -> Result<Self, ApiError> {
-        let vni = Vni::new_checked(vni).map_err(|_| ApiError::InvalidVpcVni(vni))?;
+    pub fn new(name: &str, id: &str, vni: u32) -> Result<Self, ConfigError> {
+        let vni = Vni::new_checked(vni).map_err(|_| ConfigError::InvalidVpcVni(vni))?;
         Ok(Self {
             name: name.to_owned(),
             id: VpcId::try_from(id)?,
@@ -125,15 +125,15 @@ impl VpcTable {
     }
 
     /// Add a [`Vpc`] to the vpc table
-    pub fn add(&mut self, vpc: Vpc) -> ApiResult {
+    pub fn add(&mut self, vpc: Vpc) -> ConfigResult {
         if self.vnis.contains(&vpc.vni) {
-            return Err(ApiError::DuplicateVpcVni(vpc.vni.as_u32()));
+            return Err(ConfigError::DuplicateVpcVni(vpc.vni.as_u32()));
         }
         if self.ids.contains(&vpc.id) {
-            return Err(ApiError::DuplicateVpcId(vpc.id));
+            return Err(ConfigError::DuplicateVpcId(vpc.id));
         }
         if self.vpcs.contains_key(&vpc.name) {
-            return Err(ApiError::DuplicateVpcName(vpc.name.clone()));
+            return Err(ConfigError::DuplicateVpcName(vpc.name.clone()));
         }
         self.vnis.insert(vpc.vni);
         self.ids.insert(vpc.id.clone());
