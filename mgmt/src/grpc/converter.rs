@@ -654,10 +654,7 @@ pub fn convert_interfaces_to_grpc(
         };
 
         // Convert OSPF interface if present
-        let ospf = interface
-            .ospf
-            .as_ref()
-            .map(|ospf_config| convert_ospf_interface_to_grpc(ospf_config));
+        let ospf = interface.ospf.as_ref().map(convert_ospf_interface_to_grpc);
 
         // Create the gRPC interface
         let grpc_iface = gateway_config::Interface {
@@ -791,7 +788,7 @@ pub fn convert_vrf_config_to_grpc(vrf: &VrfConfig) -> Result<gateway_config::Vrf
     };
 
     // Convert OSPF config if present
-    let ospf = vrf.ospf.as_ref().map(|ospf| convert_ospf_to_grpc(ospf));
+    let ospf = vrf.ospf.as_ref().map(convert_ospf_to_grpc);
 
     Ok(gateway_config::Vrf {
         name: vrf.name.clone(),
@@ -1004,10 +1001,7 @@ impl TryFrom<&InterfaceConfig> for gateway_config::Interface {
         };
 
         // Convert OSPF interface if present
-        let ospf = interface
-            .ospf
-            .as_ref()
-            .map(|ospf_config| convert_ospf_interface_to_grpc(ospf_config));
+        let ospf = interface.ospf.as_ref().map(convert_ospf_interface_to_grpc);
 
         Ok(gateway_config::Interface {
             name: interface.name.clone(),
