@@ -24,6 +24,8 @@ updates:
       - "automated"
       - "dependencies"
     versioning-strategy: "lockfile-only"
+    ignore:
+      - dependency-name: "gateway_config"
     groups:
       dependencies:
         applies-to: "version-updates"
