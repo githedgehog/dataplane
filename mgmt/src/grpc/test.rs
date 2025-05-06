@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 #[cfg(test)]
+#[allow(clippy::uninlined_format_args)]
 mod tests {
     use gateway_config::GatewayConfig;
     use std::collections::HashMap;
@@ -78,7 +79,7 @@ mod tests {
         };
 
         // Create Underlay
-        let underlay = gateway_config::Underlay { vrf: vec![vrf] };
+        let underlay = gateway_config::Underlay { vrfs: vec![vrf] };
 
         // Create interfaces for VPCs
         let vpc1_if1 = gateway_config::Interface {
@@ -187,16 +188,12 @@ mod tests {
         }
     }
 
-    use crate::frr::frrmi::open_unix_sock_async;
-
     #[tokio::test]
     async fn test_convert_to_grpc_config() {
         // Create a mock database
         #[allow(unused_variables)]
-        let sock = open_unix_sock_async("/tmp/frr-agent.sock").expect("Should succeed");
         // Create test data
         let grpc_config = create_test_gateway_config();
-
         // Call the conversion function (gRPC -> ExternalConfig)
         // Using standalone function instead of manager method
         let result = converter::convert_from_grpc_config(&grpc_config).await;
@@ -285,24 +282,24 @@ mod tests {
 
         // Check VRF count
         assert_eq!(
-            converted_underlay.vrf.len(),
-            original_underlay.vrf.len(),
+            converted_underlay.vrfs.len(),
+            original_underlay.vrfs.len(),
             "VRF count mismatch"
         );
 
         // Get the default VRF from both configs
         let original_default_vrf = original_underlay
-            .vrf
+            .vrfs
             .iter()
             .find(|vrf| vrf.name == "default")
-            .or_else(|| original_underlay.vrf.first())
+            .or_else(|| original_underlay.vrfs.first())
             .expect("No VRF found in original config");
 
         let converted_default_vrf = converted_underlay
-            .vrf
+            .vrfs
             .iter()
             .find(|vrf| vrf.name == "default")
-            .or_else(|| converted_underlay.vrf.first())
+            .or_else(|| converted_underlay.vrfs.first())
             .expect("No VRF found in converted config");
 
         // Check VRF name
