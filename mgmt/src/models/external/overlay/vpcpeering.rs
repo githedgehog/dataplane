@@ -7,7 +7,7 @@ use routing::prefix::Prefix;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-use crate::models::external::{ApiError, ApiResult};
+use crate::models::external::{ConfigError, ConfigResult};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExpose {
     pub ips: BTreeSet<Prefix>,
@@ -35,7 +35,7 @@ impl VpcExpose {
         self.not_as.insert(prefix);
         self
     }
-    pub fn validate(&self) -> ApiResult {
+    pub fn validate(&self) -> ConfigResult {
         // TODO
         Ok(())
     }
@@ -53,7 +53,7 @@ impl VpcManifest {
             ..Default::default()
         }
     }
-    pub fn add_expose(&mut self, expose: VpcExpose) -> ApiResult {
+    pub fn add_expose(&mut self, expose: VpcExpose) -> ConfigResult {
         expose.validate()?;
         self.exposes.push(expose);
         Ok(())
@@ -74,9 +74,9 @@ impl VpcPeering {
             right,
         }
     }
-    pub fn validate(&self) -> ApiResult {
+    pub fn validate(&self) -> ConfigResult {
         if self.name.is_empty() {
-            return Err(ApiError::MissingPeeringName);
+            return Err(ConfigError::MissingPeeringName);
         }
         Ok(())
     }
@@ -107,10 +107,10 @@ impl VpcPeeringTable {
     }
 
     /// Add a [`VpcPeering`] to a [`VpcPeeringTable`]
-    pub fn add(&mut self, peering: VpcPeering) -> ApiResult {
+    pub fn add(&mut self, peering: VpcPeering) -> ConfigResult {
         peering.validate()?;
         if let Some(peering) = self.0.insert(peering.name.to_owned(), peering) {
-            Err(ApiError::DuplicateVpcPeeringId(peering.name.clone()))
+            Err(ConfigError::DuplicateVpcPeeringId(peering.name.clone()))
         } else {
             Ok(())
         }

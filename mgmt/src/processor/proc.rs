@@ -13,9 +13,9 @@ use tokio::{spawn, sync::mpsc::Sender};
 use tonic::transport::Server;
 
 use crate::models::external::gwconfig::ExternalConfig;
-use crate::models::external::{ApiResult, gwconfig::GwConfig};
+use crate::models::external::{ConfigResult, gwconfig::GwConfig};
 use crate::processor::gwconfigdb::GwConfigDatabase;
-use crate::{frr::frrmi::FrrMi, models::external::ApiError};
+use crate::{frr::frrmi::FrrMi, models::external::ConfigError};
 use crate::{frr::renderer::builder::Render, models::external::gwconfig::GenId};
 use tracing::{debug, error, info, warn};
 
@@ -35,7 +35,7 @@ pub(crate) async fn new_gw_config(
     configdb: &mut GwConfigDatabase,
     mut config: GwConfig,
     frrmi: &FrrMi,
-) -> ApiResult {
+) -> ConfigResult {
     /* get id of incoming config */
     let genid = config.genid();
     debug!("Processing config with id:'{genid}'..");
@@ -43,7 +43,7 @@ pub(crate) async fn new_gw_config(
     /* reject config if it uses id of existing one */
     if configdb.contains(genid) {
         error!("Rejecting config request: a config with id {genid} exists");
-        return Err(ApiError::ConfigAlreadyExists(genid));
+        return Err(ConfigError::ConfigAlreadyExists(genid));
     }
 
     /* validate the config */
@@ -70,7 +70,7 @@ pub enum ConfigRequest {
 
 /// A response from the [`ConfigProcessor`]
 pub enum ConfigResponse {
-    ApplyConfig(ApiResult),
+    ApplyConfig(ConfigResult),
     GetCurrentConfig(Option<GwConfig>),
     GetGeneration(Option<GenId>),
 }
@@ -154,7 +154,7 @@ impl ConfigProcessor {
     }
 }
 
-pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &FrrMi) -> ApiResult {
+pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &FrrMi) -> ConfigResult {
     /* apply in interface manager - async (TODO) */
 
     /* apply in frr: need to render and call frr-reload */
@@ -166,7 +166,7 @@ pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &FrrMi) -> ApiResult 
         frrmi
             .apply_config(config.genid(), &rendered)
             .await
-            .map_err(|e| ApiError::FrrApplyError(e.to_string()))?;
+            .map_err(|e| ConfigError::FrrApplyError(e.to_string()))?;
     }
 
     info!("Successfully applied config with genid {}", config.genid());
