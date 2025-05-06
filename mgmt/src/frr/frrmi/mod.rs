@@ -200,13 +200,13 @@ impl FrrMi {
         /* send length of message */
         let length = msg.len() as u64;
         self.sock.send(&length.to_ne_bytes()).await.map_err(|e| {
-            error!("Fatal: Failed to send msg length: {e}");
+            error!("Fatal: Failed to send message length: {e}");
             FrrErr::FailCommFrrAgent(e.to_string())
         })?;
 
         /* send message (e.g. a config or a keepalive) */
         self.sock.send(msg.as_bytes()).await.map_err(|e| {
-            error!("Fatal: Failed to message: {e}");
+            error!("Fatal: Failed to send message: {e}");
             FrrErr::FailCommFrrAgent(e.to_string())
         })?;
 
