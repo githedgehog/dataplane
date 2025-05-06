@@ -153,16 +153,16 @@ pub fn convert_device_from_grpc(device: &gateway_config::Device) -> Result<Devic
 /// Convert gRPC Underlay to internal Underlay
 pub fn convert_underlay_from_grpc(underlay: &gateway_config::Underlay) -> Result<Underlay, String> {
     // Find the default VRF or first VRF if default not found
-    if underlay.vrf.is_empty() {
+    if underlay.vrfs.is_empty() {
         return Err("Underlay must contain at least one VRF".to_string());
     }
 
     // Look for the default VRF or use the first one
     let default_vrf = underlay
-        .vrf
+        .vrfs
         .iter()
         .find(|vrf| vrf.name == "default")
-        .unwrap_or(&underlay.vrf[0]);
+        .unwrap_or(&underlay.vrfs[0]);
 
     // Convert VRF to VrfConfig
     let vrf_config = convert_vrf_to_vrf_config(default_vrf)?;
@@ -804,7 +804,7 @@ pub fn convert_underlay_to_grpc(underlay: &Underlay) -> Result<gateway_config::U
     let vrf_grpc = convert_vrf_config_to_grpc(&underlay.vrf)?;
 
     Ok(gateway_config::Underlay {
-        vrf: vec![vrf_grpc],
+        vrfs: vec![vrf_grpc],
     })
 }
 
