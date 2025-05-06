@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-#![allow(unused)] // TEMPORARY
+#![allow(unreachable_code)]
 
 use std::io::Error;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::thread;
-use tokio::sync::RwLock;
-use tokio::sync::mpsc::Sender;
+
+use tokio::sync::oneshot::Receiver;
 use tokio::sync::{mpsc, oneshot};
+use tokio::{spawn, sync::mpsc::Sender};
 use tonic::transport::Server;
 
 use crate::models::external::gwconfig::ExternalConfig;
@@ -21,21 +21,21 @@ use tracing::{debug, error, info, warn};
 
 use crate::grpc::server::create_config_service;
 
-
 /// Build an empty config and apply it
+#[allow(unused)]
 async fn blank_config_apply(configdb: &mut GwConfigDatabase, frrmi: &FrrMi) {
+    debug!("Applying empty configuration...");
     let external = ExternalConfig::new();
     let blank = GwConfig::new(external);
     let _ = new_gw_config(configdb, blank, frrmi).await;
 }
 
 /// Entry point for new configurations, [`GwConfig`]
-pub async fn new_gw_config(
+pub(crate) async fn new_gw_config(
     configdb: &mut GwConfigDatabase,
     mut config: GwConfig,
     frrmi: &FrrMi,
 ) -> ApiResult {
-
     /* get id of incoming config */
     let genid = config.genid();
     debug!("Processing config with id:'{genid}'..");
@@ -62,14 +62,14 @@ pub async fn new_gw_config(
 }
 
 /// A request type to the [`ConfigProcessor`]
-pub(crate) enum ConfigRequest {
+pub enum ConfigRequest {
     ApplyConfig(GwConfig),
     GetCurrentConfig,
     GetGeneration,
 }
 
 /// A response from the [`ConfigProcessor`]
-pub(crate) enum ConfigResponse {
+pub enum ConfigResponse {
     ApplyConfig(ApiResult),
     GetCurrentConfig(Option<GwConfig>),
     GetGeneration(Option<GenId>),
@@ -78,9 +78,17 @@ type ConfigResponseChannel = oneshot::Sender<ConfigResponse>;
 
 /// A type that includes a request to the [`ConfigProcessor`] and a channel to
 /// issue the response back
-struct ConfigChannelRequest {
+pub struct ConfigChannelRequest {
     request: ConfigRequest,          /* a request to the mgmt processor */
     reply_tx: ConfigResponseChannel, /* the one-shot channel to respond */
+}
+impl ConfigChannelRequest {
+    #[must_use]
+    pub fn new(request: ConfigRequest) -> (Self, Receiver<ConfigResponse>) {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let request = Self { request, reply_tx };
+        (request, reply_rx)
+    }
 }
 
 /// A configuration processor entity. This is the RPC-independent entity responsible for
@@ -93,8 +101,11 @@ struct ConfigProcessor {
 }
 
 impl ConfigProcessor {
+    const CHANNEL_SIZE: usize = 1; // process one at a time
+
     fn new(frrmi: FrrMi) -> (Self, Sender<ConfigChannelRequest>) {
-        let (tx, rx) = mpsc::channel(1);
+        debug!("Creating config processor...");
+        let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
         let processor = Self {
             config_db: GwConfigDatabase::new(),
             rx,
@@ -103,12 +114,15 @@ impl ConfigProcessor {
         (processor, tx)
     }
     async fn handle_apply_config(&mut self, config: GwConfig) -> ConfigResponse {
+        debug!("Handling apply configuration request...");
         ConfigResponse::ApplyConfig(new_gw_config(&mut self.config_db, config, &self.frrmi).await)
     }
     fn handle_get_generation(&self) -> ConfigResponse {
+        debug!("Handling get generation request...");
         ConfigResponse::GetGeneration(self.config_db.get_current_gen())
     }
     fn handle_get_config(&self) -> ConfigResponse {
+        debug!("Handling get running configuration request...");
         if let Some(current) = self.config_db.get_current_config() {
             ConfigResponse::GetCurrentConfig(Some(current.clone()))
         } else {
@@ -116,18 +130,21 @@ impl ConfigProcessor {
         }
     }
     /// Run the configuration processor
-    async fn run(&mut self) {
-        debug!("Starting config processor...");
+    #[allow(unreachable_code)]
+    async fn run(mut self) {
+        info!("Running config processor...");
         loop {
             match self.rx.recv().await {
                 Some(req) => {
                     let response = match req.request {
-                        ConfigRequest::ApplyConfig(config) => self.handle_apply_config(config).await,
+                        ConfigRequest::ApplyConfig(config) => {
+                            self.handle_apply_config(config).await
+                        }
                         ConfigRequest::GetCurrentConfig => self.handle_get_config(),
                         ConfigRequest::GetGeneration => self.handle_get_generation(),
                     };
                     // check error
-                    req.reply_tx.send(response);
+                    let _ = req.reply_tx.send(response);
                 }
                 None => {
                     warn!("Channel to config processor was closed!");
@@ -137,7 +154,6 @@ impl ConfigProcessor {
     }
 }
 
-/// Main logic to apply a [`GwConfig`]. This is called from GwConfig::apply()
 pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &FrrMi) -> ApiResult {
     /* apply in interface manager - async (TODO) */
 
@@ -158,21 +174,14 @@ pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &FrrMi) -> ApiResult 
 }
 
 /// Start the gRPC server
-async fn start_grpc_server(
-    config_db: Arc<RwLock<GwConfigDatabase>>,
-    frrmi: FrrMi,
-    addr: SocketAddr,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn start_grpc_server(addr: SocketAddr, channel_tx: Sender<ConfigChannelRequest>) {
     info!("Starting gRPC server on {:?}", addr);
+    let config_service = create_config_service(channel_tx);
 
-    let config_service = create_config_service(config_db, frrmi);
-
-    Server::builder()
+    let _ = Server::builder()
         .add_service(config_service)
         .serve(addr)
-        .await?;
-
-    Ok(())
+        .await;
 }
 
 async fn start_frrmi() -> Result<FrrMi, Error> {
@@ -187,31 +196,26 @@ async fn start_frrmi() -> Result<FrrMi, Error> {
 
 /// Start the mgmt service
 pub fn start_mgmt(grpc_address: SocketAddr) -> Result<std::thread::JoinHandle<()>, Error> {
-    debug!("Starting management. gRPC address is {grpc_address:?}");
+    debug!("Initializing management...");
 
-    /* create runtime */
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .enable_time()
-        .build()
-        .expect("Tokio runtime creation failed");
-
-    /* create config database */
-    let config_db = Arc::new(RwLock::new(GwConfigDatabase::new()));
-
-    /* start management thread and move all context: the management thread will own the frrmi and the config db. */
     thread::Builder::new()
         .name("mgmt".to_string())
         .spawn(move || {
             debug!("Starting dataplane management thread");
 
-            let frrmi = rt.block_on(async { start_frrmi().await.unwrap() });
+            /* create tokio runtime */
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .enable_time()
+                .build()
+                .expect("Tokio runtime creation failed");
 
-            /* start gRPC server with the config DB and frrmi */
-            rt.block_on(async move {
-                start_grpc_server(config_db, frrmi, grpc_address)
-                    .await
-                    .unwrap();
+            /* block thread to run gRPC and configuration processor */
+            rt.block_on(async {
+                let frrmi = start_frrmi().await.unwrap();
+                let (processor, tx) = ConfigProcessor::new(frrmi);
+                spawn(async { processor.run().await });
+                start_grpc_server(grpc_address, tx).await; /* must be last */
             });
         })
 }

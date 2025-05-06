@@ -4,6 +4,7 @@
 #[cfg(test)]
 #[allow(clippy::uninlined_format_args)]
 mod tests {
+    // Import proto-generated types
     use gateway_config::GatewayConfig;
     use std::collections::HashMap;
     use std::convert::TryFrom;
@@ -190,8 +191,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_convert_to_grpc_config() {
-        // Create a mock database
-        #[allow(unused_variables)]
         // Create test data
         let grpc_config = create_test_gateway_config();
         // Call the conversion function (gRPC -> ExternalConfig)
