@@ -3,6 +3,7 @@
 
 // FRRMI: FRR management interface
 
+use nix::sys::socket::{setsockopt, sockopt};
 use std::str;
 use tokio::time::{Duration, timeout};
 
@@ -11,7 +12,9 @@ use crate::models::external::configdb::gwconfig::GenId;
 
 use std::fs;
 use std::net::Shutdown;
+use std::os::fd::BorrowedFd;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use thiserror::Error;
 use tracing::{debug, error, info};
@@ -57,6 +60,14 @@ pub fn open_unix_sock_async<P: AsRef<Path> + ?Sized + std::fmt::Display>(
 
     /* create sock */
     let sock = UnixDatagram::bind(bind_addr).map_err(|_| "Failed to bind socket")?;
+    let raw_fd = sock.as_raw_fd();
+    let send_buf_size = 8 * 1024 * 1024;
+    let borrowed_fd = unsafe { BorrowedFd::borrow_raw(raw_fd) };
+    setsockopt(&borrowed_fd, sockopt::SndBuf, &send_buf_size)
+        .map_err(|_| "Failed to set send buffer size")?;
+    let recv_buf_size = 8 * 1024 * 1024;
+    setsockopt(&borrowed_fd, sockopt::RcvBuf, &recv_buf_size)
+        .map_err(|_| "Failed to set receive buffer size")?;
     let mut perms = fs::metadata(bind_addr)
         .map_err(|_| "Failed to retrieve path metadata")?
         .permissions();
