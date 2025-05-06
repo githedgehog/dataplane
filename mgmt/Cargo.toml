@@ -16,4 +16,5 @@ tokio = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-test = { workspace = true }
+nix = { workspace = true }
 
