@@ -97,14 +97,14 @@ mod tests {
             let hash_value = hash_ip_packet(packet);
             vals.insert(u16::try_from(n).expect("Conversion failed"), hash_value);
         }
-        let mut file = File::create("net/artifacts/ahash_fingerprint.txt")
+        let mut file = File::create("artifacts/ahash_fingerprint.txt")
             .expect("Failed to open ahash fingerprint file");
         file.write_all(format!("{vals:#?}").as_bytes())
             .expect("Failed to write fingerprint");
     }
 
     // hashes the test packets storing the results in an ordermap and then compares
-    // the whole ordermap with a reference stored in net/artifacts/ahash_fingerprint.
+    // the whole ordermap with a reference stored in artifacts/ahash_fingerprint.txt.
     // This test should fail if ahash changes to produce distinct output.
     // If that happens, set update_fingerprint to true and commit the fingerprint
     // file.
@@ -121,7 +121,7 @@ mod tests {
             vals.insert(u16::try_from(n).expect("Conversion failed"), hash_value);
         }
         let fingerprint = format!("{vals:#?}");
-        let reference = fs::read_to_string("net/artifacts/ahash_fingerprint.txt")
+        let reference = fs::read_to_string("artifacts/ahash_fingerprint.txt")
             .expect("Missing fingerprint file");
         assert_eq!(fingerprint, reference);
     }
