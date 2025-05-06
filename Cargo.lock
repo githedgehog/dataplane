@@ -1203,6 +1203,7 @@ dependencies = [
  "derive_builder",
  "gateway_config",
  "net",
+ "nix",
  "routing",
  "thiserror 2.0.12",
  "tokio",
