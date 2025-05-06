@@ -164,7 +164,7 @@ impl ConfigManager for BasicConfigManager {
             .map_err(|_| "Failure receiving from config processor".to_string())?;
         match response {
             ConfigResponse::GetCurrentConfig(opt_config) => {
-                if let Some(config) = &opt_config {
+                if let Some(config) = *opt_config {
                     Ok(convert_to_grpc_config(&config.external)
                         .await
                         .expect("Failed to convert to gRPC"))
@@ -211,8 +211,8 @@ impl ConfigManager for BasicConfigManager {
         // Use the async converter function
         let external_config = converter::convert_from_grpc_config(&grpc_config).await?;
 
-        // Create a new GwConfig
-        let gw_config = GwConfig::new(external_config);
+        // Create a new GwConfig with this ExternalConfig
+        let gw_config = Box::new(GwConfig::new(external_config));
 
         // build a request to the config processor, send it and get the response
         let (req, rx) = ConfigChannelRequest::new(ConfigRequest::ApplyConfig(gw_config));

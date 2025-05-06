@@ -63,7 +63,7 @@ pub(crate) async fn new_gw_config(
 
 /// A request type to the [`ConfigProcessor`]
 pub enum ConfigRequest {
-    ApplyConfig(GwConfig),
+    ApplyConfig(Box<GwConfig>),
     GetCurrentConfig,
     GetGeneration,
 }
@@ -71,7 +71,7 @@ pub enum ConfigRequest {
 /// A response from the [`ConfigProcessor`]
 pub enum ConfigResponse {
     ApplyConfig(ConfigResult),
-    GetCurrentConfig(Option<GwConfig>),
+    GetCurrentConfig(Box<Option<GwConfig>>),
     GetGeneration(Option<GenId>),
 }
 type ConfigResponseChannel = oneshot::Sender<ConfigResponse>;
@@ -123,11 +123,8 @@ impl ConfigProcessor {
     }
     fn handle_get_config(&self) -> ConfigResponse {
         debug!("Handling get running configuration request...");
-        if let Some(current) = self.config_db.get_current_config() {
-            ConfigResponse::GetCurrentConfig(Some(current.clone()))
-        } else {
-            ConfigResponse::GetCurrentConfig(None)
-        }
+        let cfg = Box::new(self.config_db.get_current_config().cloned());
+        ConfigResponse::GetCurrentConfig(cfg)
     }
     /// Run the configuration processor
     #[allow(unreachable_code)]
@@ -138,7 +135,7 @@ impl ConfigProcessor {
                 Some(req) => {
                     let response = match req.request {
                         ConfigRequest::ApplyConfig(config) => {
-                            self.handle_apply_config(config).await
+                            self.handle_apply_config(*config).await
                         }
                         ConfigRequest::GetCurrentConfig => self.handle_get_config(),
                         ConfigRequest::GetGeneration => self.handle_get_generation(),
