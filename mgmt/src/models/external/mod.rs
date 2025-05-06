@@ -11,7 +11,7 @@ use thiserror::Error;
 
 /// The reasons why we may reject a configuration
 #[derive(Debug, Error, PartialEq)]
-pub enum ApiError {
+pub enum ConfigError {
     #[error("A VPC with name '{0}' already exists")]
     DuplicateVpcName(String),
     #[error("A VPC with id '{0}' already exists")]
@@ -20,8 +20,6 @@ pub enum ApiError {
     DuplicateVpcVni(u32),
     #[error("A VPC peering with id '{0}' already exists")]
     DuplicateVpcPeeringId(String),
-    #[error("The VPC peering '{0}' is incomplete")]
-    IncompletePeeringData(String),
     #[error("A VPC peering object refers to non-existent VPC '{0}'")]
     NoSuchVpc(String),
     #[error("'{0}' is not a valid VNI")]
@@ -45,4 +43,4 @@ pub enum ApiError {
 }
 
 /// Result-like type for configurations
-pub type ApiResult = Result<(), ApiError>;
+pub type ConfigResult = Result<(), ConfigError>;

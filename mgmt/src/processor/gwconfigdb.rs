@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use tracing::{debug, error, info};
 
 use crate::models::external::gwconfig::{GenId, GwConfig};
-use crate::models::external::{ApiError, ApiResult};
+use crate::models::external::{ConfigError, ConfigResult};
 
 #[derive(Default)]
 #[allow(unused)]
@@ -36,12 +36,12 @@ impl GwConfigDatabase {
     pub fn get_mut(&mut self, generation: GenId) -> Option<&mut GwConfig> {
         self.configs.get_mut(&generation)
     }
-    pub fn remove(&mut self, genid: GenId) -> ApiResult {
+    pub fn remove(&mut self, genid: GenId) -> ConfigResult {
         debug!("Removing config '{}' from config db...", genid);
         if let Some(config) = &self.configs.get(&genid) {
             if config.meta.is_applied {
                 error!("Can't remove config {}: in use", genid);
-                Err(ApiError::Forbidden)
+                Err(ConfigError::Forbidden)
             } else {
                 debug!("Successfully removed config '{}'", genid);
                 self.configs.remove(&genid);
@@ -49,11 +49,11 @@ impl GwConfigDatabase {
             }
         } else {
             error!("Can't remove config {}: not found", genid);
-            Err(ApiError::NoSuchConfig(genid))
+            Err(ConfigError::NoSuchConfig(genid))
         }
     }
 
-    pub async fn apply(&mut self, genid: GenId, frrmi: &FrrMi) -> ApiResult {
+    pub async fn apply(&mut self, genid: GenId, frrmi: &FrrMi) -> ConfigResult {
         debug!("Applying config with genid '{}'...", genid);
 
         /* get the generation (id) of the currently applied config, if any */
@@ -73,7 +73,7 @@ impl GwConfigDatabase {
         /* look up the config to apply */
         let Some(config) = self.get_mut(genid) else {
             error!("Can't apply config {}: not found", genid);
-            return Err(ApiError::NoSuchConfig(genid));
+            return Err(ConfigError::NoSuchConfig(genid));
         };
         debug!("Config with id {genid} found");
 
