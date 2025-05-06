@@ -30,7 +30,7 @@ use crate::models::external::configdb::gwconfig::GwConfig;
 #[async_trait]
 pub trait ConfigManager: Send + Sync {
     async fn get_current_config(&self) -> Result<GatewayConfig, String>;
-    async fn get_generation(&self) -> Result<u64, String>;
+    async fn get_generation(&self) -> Result<i64, String>;
     async fn apply_config(&self, config: GatewayConfig) -> Result<(), String>;
 }
 
@@ -170,7 +170,7 @@ impl ConfigManager for BasicConfigManager {
         converter::convert_to_grpc_config(&gw_config.external).await
     }
 
-    async fn get_generation(&self) -> Result<u64, String> {
+    async fn get_generation(&self) -> Result<i64, String> {
         let config_db = self.config_db.read().await;
         if let Some(gw_config_gen) = config_db.get_current_gen() {
             Ok(gw_config_gen)
@@ -187,7 +187,7 @@ impl ConfigManager for BasicConfigManager {
 
         // Validate interfaces in all VRFs
         if let Some(underlay) = &grpc_config.underlay {
-            for vrf in &underlay.vrf {
+            for vrf in &underlay.vrfs {
                 self.validate_interfaces(&vrf.interfaces).await?;
             }
         }

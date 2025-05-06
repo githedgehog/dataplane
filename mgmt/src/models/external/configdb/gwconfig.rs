@@ -18,7 +18,7 @@ use crate::frr::frrmi::FrrMi;
 use crate::processor::confbuild::build_internal_config;
 
 /// Alias for a config generation number
-pub type GenId = u64;
+pub type GenId = i64;
 use crate::processor::proc::apply_gw_config;
 
 #[derive(Clone, Default)]
