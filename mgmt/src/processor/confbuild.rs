@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#[allow(unused)]
+use tracing::{debug, error};
+
 use routing::prefix::Prefix;
 use std::net::Ipv4Addr;
-use tracing::debug;
 
 use crate::models::external::overlay::vpc::Vpc;
 use crate::models::external::overlay::vpcpeering::VpcManifest;
 use crate::models::external::{ConfigError, overlay::Overlay};
 
-use crate::models::external::gwconfig::GwConfig;
+use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
 
 use crate::models::internal::InternalConfig;
 use crate::models::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
@@ -221,7 +223,8 @@ pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, Config
         let asn = bgp.asn;
         let router_id = bgp.router_id;
         build_internal_overlay_config(&external.overlay, asn, router_id, &mut internal);
-    } else {
+    } else if config.genid() != ExternalConfig::BLANK_GENID {
+        error!("Config has no BGP configuration");
         return Err(ConfigError::IncompleteConfig(
             "Missing BGP config".to_string(),
         ));
