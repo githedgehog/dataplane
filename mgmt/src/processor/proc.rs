@@ -12,52 +12,16 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::{spawn, sync::mpsc::Sender};
 use tonic::transport::Server;
 
-use crate::models::external::{ConfigResult, gwconfig::GwConfig};
+use crate::grpc::server::create_config_service;
+use crate::models::external::{
+    ConfigResult,
+    gwconfig::{ExternalConfig, GwConfig},
+};
 use crate::processor::gwconfigdb::GwConfigDatabase;
 use crate::{frr::frrmi::FrrMi, models::external::ConfigError};
 use crate::{frr::renderer::builder::Render, models::external::gwconfig::GenId};
+
 use tracing::{debug, error, info, warn};
-
-use crate::grpc::server::create_config_service;
-
-/// Build an empty config and apply it
-#[allow(unused)]
-async fn blank_config_apply(configdb: &mut GwConfigDatabase, frrmi: &FrrMi) {
-    debug!("Applying empty configuration...");
-    let blank = GwConfig::blank();
-    let _ = new_gw_config(configdb, blank, frrmi).await;
-}
-
-/// Entry point for new configurations, [`GwConfig`]
-pub(crate) async fn new_gw_config(
-    configdb: &mut GwConfigDatabase,
-    mut config: GwConfig,
-    frrmi: &FrrMi,
-) -> ConfigResult {
-    /* get id of incoming config */
-    let genid = config.genid();
-    debug!("Processing config with id:'{genid}'..");
-
-    /* reject config if it uses id of existing one */
-    if configdb.contains(genid) {
-        error!("Rejecting config request: a config with id {genid} exists");
-        return Err(ConfigError::ConfigAlreadyExists(genid));
-    }
-
-    /* validate the config */
-    config.validate()?;
-
-    /* build internal config for this config */
-    config.build_internal_config()?;
-
-    /* add to config database */
-    configdb.add(config);
-
-    /* apply the configuration just stored */
-    configdb.apply(genid, frrmi).await?;
-
-    Ok(())
-}
 
 /// A request type to the [`ConfigProcessor`]
 pub enum ConfigRequest {
@@ -92,7 +56,7 @@ impl ConfigChannelRequest {
 /// A configuration processor entity. This is the RPC-independent entity responsible for
 /// accepting/rejecting configurations, storing them in the configuration database and
 /// applying them.
-struct ConfigProcessor {
+pub(crate) struct ConfigProcessor {
     config_db: GwConfigDatabase,
     rx: mpsc::Receiver<ConfigChannelRequest>,
     frrmi: FrrMi,
@@ -101,7 +65,8 @@ struct ConfigProcessor {
 impl ConfigProcessor {
     const CHANNEL_SIZE: usize = 1; // process one at a time
 
-    fn new(frrmi: FrrMi) -> (Self, Sender<ConfigChannelRequest>) {
+    /// Create a [`ConfigProcessor`]
+    pub(crate) fn new(frrmi: FrrMi) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
         let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
         let processor = Self {
@@ -111,24 +76,80 @@ impl ConfigProcessor {
         };
         (processor, tx)
     }
+
+    /// Main entry point for new configurations. When invoked, this method:
+    ///   * forbids the addition of a config if a config with same id exists
+    ///   * validates the incoming config
+    ///   * builds an internal config for it
+    ///   * stores the config in the config database
+    ///   * applies the config
+    pub(crate) async fn process_incoming_config(&mut self, mut config: GwConfig) -> ConfigResult {
+        /* get id of incoming config */
+        let genid = config.genid();
+        debug!("Processing config with id:'{genid}'..");
+
+        /* reject config if it uses id of existing one */
+        if genid != ExternalConfig::BLANK_GENID && self.config_db.contains(genid) {
+            error!("Rejecting config request: a config with id {genid} exists");
+            return Err(ConfigError::ConfigAlreadyExists(genid));
+        }
+
+        /* validate the config */
+        config.validate()?;
+
+        /* build internal config for this config */
+        config.build_internal_config()?;
+
+        /* add to config database */
+        self.config_db.add(config);
+
+        /* apply the configuration just stored */
+        self.config_db.apply(genid, &self.frrmi).await?;
+
+        debug!("Current config is {:?}", self.config_db.get_current_gen());
+
+        Ok(())
+    }
+
+    /// Method to apply a blank configuration
+    async fn apply_blank_config(&mut self) -> ConfigResult {
+        self.config_db
+            .apply(ExternalConfig::BLANK_GENID, &self.frrmi)
+            .await
+    }
+
+    /// RPC handler to apply a config
     async fn handle_apply_config(&mut self, config: GwConfig) -> ConfigResponse {
         debug!("Handling apply configuration request...");
-        ConfigResponse::ApplyConfig(new_gw_config(&mut self.config_db, config, &self.frrmi).await)
+        ConfigResponse::ApplyConfig(self.process_incoming_config(config).await)
     }
+
+    /// RPC handler to get current config generation id
     fn handle_get_generation(&self) -> ConfigResponse {
         debug!("Handling get generation request...");
         ConfigResponse::GetGeneration(self.config_db.get_current_gen())
     }
+
+    /// RPC handler to get the currently applied config
     fn handle_get_config(&self) -> ConfigResponse {
         debug!("Handling get running configuration request...");
         let cfg = Box::new(self.config_db.get_current_config().cloned());
         ConfigResponse::GetCurrentConfig(cfg)
     }
+
     /// Run the configuration processor
     #[allow(unreachable_code)]
     async fn run(mut self) {
-        info!("Running config processor...");
+        info!("Starting config processor...");
+
+        // apply initial blank config: we may want to remove this to handle the case
+        // where dataplane is restarted and we don't want to flush the state of the system.
+        if let Err(e) = self.apply_blank_config().await {
+            warn!("Failed to apply blank config!: {e}");
+        }
+
         loop {
+            // receive config requests over channel
             match self.rx.recv().await {
                 Some(req) => {
                     let response = match req.request {

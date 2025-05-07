@@ -27,7 +27,6 @@ pub mod test {
     use crate::models::internal::routing::ospf::{OspfInterface, OspfNetwork};
     use crate::models::internal::routing::vrf::VrfConfig;
     use crate::models::internal::{device::DeviceConfig, routing::ospf::Ospf};
-    use crate::processor::gwconfigdb::GwConfigDatabase;
     //    use crate::models::internal::routing::evpn::VtepConfig;
 
     use crate::models::external::gwconfig::ExternalConfig;
@@ -41,9 +40,6 @@ pub mod test {
     use crate::models::external::overlay::vpcpeering::{
         VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
     };
-
-    #[allow(unused)]
-    use crate::processor::proc::new_gw_config;
 
     /* OVERLAY config sample builders */
     fn sample_vpc_table() -> VpcTable {
@@ -284,13 +280,11 @@ pub mod test {
 
     use crate::frr::frrmi::FrrMi;
     use crate::frr::frrmi::tests::fake_frr_agent;
+    use crate::processor::proc::ConfigProcessor;
 
     #[traced_test]
     #[tokio::test]
     async fn test_sample_config() {
-        /* create a config database */
-        let mut configdb = GwConfigDatabase::new();
-
         /* start faked frr-agent */
         let frr_agent = fake_frr_agent("/tmp/frr-agent.sock").await;
 
@@ -305,11 +299,17 @@ pub mod test {
         /* build a gw config from a sample external config */
         let config = GwConfig::new(external);
 
-        /* apply the config */
-        new_gw_config(&mut configdb, config, &frrmi)
+        /* build config processor (N.B. we don't use the channels). The config processor
+        embedds a config database and we equip it with the frrmi */
+        let (mut processor, _sender) = ConfigProcessor::new(frrmi);
+
+        /* let the processor process the config */
+        processor
+            .process_incoming_config(config)
             .await
             .expect("Faked frr-agent should answer ok");
 
+        /* stop the faked frr-agent */
         frr_agent.abort();
     }
 }
