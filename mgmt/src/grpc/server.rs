@@ -4,7 +4,6 @@
 // mgmt/src/grpc/server.rs
 
 use async_trait::async_trait;
-use std::convert::TryFrom;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use tracing::debug;
@@ -100,36 +99,6 @@ impl BasicConfigManager {
     pub fn new(channel_tx: Sender<ConfigChannelRequest>) -> Self {
         Self { channel_tx }
     }
-
-    // Example function showing how to use TryFrom for interface validation
-    fn validate_interfaces(&self, interfaces: &[gateway_config::Interface]) -> Result<(), String> {
-        // Convert and validate all interfaces
-        for interface in interfaces {
-            let internal_interface =
-                crate::models::internal::interfaces::interface::InterfaceConfig::try_from(
-                    interface,
-                )?;
-
-            // Perform validation
-            if internal_interface.name.is_empty() {
-                return Err("Interface name cannot be empty".to_string());
-            }
-
-            // Validate VTEP interfaces have required fields
-            if let crate::models::internal::interfaces::interface::InterfaceType::Vtep(_) =
-                &internal_interface.iftype
-            {
-                if internal_interface.addresses.is_empty() {
-                    return Err(format!(
-                        "VTEP interface {} must have an IP address",
-                        internal_interface.name
-                    ));
-                }
-            }
-        }
-
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -181,15 +150,7 @@ impl ConfigManager for BasicConfigManager {
     async fn apply_config(&self, grpc_config: GatewayConfig) -> Result<(), String> {
         debug!("Received request to apply new config");
 
-        // Validate interfaces in all VRFs
-        if let Some(underlay) = &grpc_config.underlay {
-            for vrf in &underlay.vrfs {
-                self.validate_interfaces(&vrf.interfaces)?;
-            }
-        }
-
-        // Continue with conversion and applying config
-        // Use the async converter function
+        // Convert config from gRPC to native external model
         let external_config = converter::convert_from_grpc_config(&grpc_config)?;
 
         // Create a new GwConfig with this ExternalConfig
