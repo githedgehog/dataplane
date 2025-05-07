@@ -30,8 +30,8 @@ pub enum ConfigError {
     ConfigAlreadyExists(GenId),
     #[error("Failure applying config")]
     FailureApply,
-    #[error("Forbidden")]
-    Forbidden,
+    #[error("Forbidden: {0}")]
+    Forbidden(&'static str),
     #[error("Bad VPC Id")]
     BadVpcId(String),
     #[error("Incomplete configuration {0}")]
