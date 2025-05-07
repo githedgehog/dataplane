@@ -13,7 +13,7 @@ use super::bgp::BgpConfig;
 use super::ospf::Ospf;
 use super::statics::StaticRoute;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 
 pub struct VrfConfig {
     pub name: String,
@@ -27,6 +27,22 @@ pub struct VrfConfig {
     pub ospf: Option<Ospf>,
 }
 
+impl Default for VrfConfig {
+    fn default() -> Self {
+        Self {
+            name: "default".to_owned(),
+            default: true,
+            tableid: None,
+            vni: None,
+            subnets: BTreeSet::new(),
+            static_routes: BTreeSet::new(),
+            bgp: None,
+            interfaces: InterfaceConfigTable::new(),
+            ospf: None,
+        }
+    }
+}
+
 impl VrfConfig {
     pub fn new(name: &str, vni: Option<Vni>, default: bool) -> Self {
         Self {
@@ -34,11 +50,7 @@ impl VrfConfig {
             default,
             tableid: None,
             vni,
-            subnets: BTreeSet::new(),
-            static_routes: BTreeSet::new(),
-            bgp: None,
-            interfaces: InterfaceConfigTable::new(),
-            ospf: None,
+            ..Default::default()
         }
     }
     pub fn set_table_id(mut self, tableid: u32) -> Self {
