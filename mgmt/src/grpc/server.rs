@@ -101,22 +101,6 @@ impl BasicConfigManager {
         Self { channel_tx }
     }
 
-    // Example function showing how to use TryFrom conversions for components
-    // This is not part of the ConfigManager trait but shows how to use TryFrom
-    fn validate_device(&self, device: &gateway_config::Device) -> Result<(), String> {
-        // Use TryFrom to convert to internal type
-        let device_config = crate::models::internal::device::DeviceConfig::try_from(device)?;
-
-        // Perform validation on internal type
-        if device_config.settings.hostname.is_empty() {
-            return Err("Device hostname cannot be empty".to_string());
-        }
-
-        // Could do more validation here
-
-        Ok(())
-    }
-
     // Example function showing how to use TryFrom for interface validation
     fn validate_interfaces(&self, interfaces: &[gateway_config::Interface]) -> Result<(), String> {
         // Convert and validate all interfaces
@@ -196,11 +180,6 @@ impl ConfigManager for BasicConfigManager {
 
     async fn apply_config(&self, grpc_config: GatewayConfig) -> Result<(), String> {
         debug!("Received request to apply new config");
-
-        // Example: Validate components using TryFrom conversions
-        if let Some(device) = &grpc_config.device {
-            self.validate_device(device)?;
-        }
 
         // Validate interfaces in all VRFs
         if let Some(underlay) = &grpc_config.underlay {
