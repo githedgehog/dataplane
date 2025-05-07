@@ -76,7 +76,7 @@ impl VpcPeering {
     }
     pub fn validate(&self) -> ConfigResult {
         if self.name.is_empty() {
-            return Err(ConfigError::MissingPeeringName);
+            return Err(ConfigError::MissingIdentifier("Peering name"));
         }
         Ok(())
     }

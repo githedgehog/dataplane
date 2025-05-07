@@ -24,8 +24,6 @@ pub enum ConfigError {
     NoSuchVpc(String),
     #[error("'{0}' is not a valid VNI")]
     InvalidVpcVni(u32),
-    #[error("VPC peering name is missing")]
-    MissingPeeringName,
     #[error("Config with id {0} not found")]
     NoSuchConfig(GenId),
     #[error("A config with id {0} already exists")]
@@ -42,6 +40,8 @@ pub enum ConfigError {
     FrrApplyError(String),
     #[error("Missing identifier: {0}")]
     MissingIdentifier(&'static str),
+    #[error("Missing mandatory parameter: {0}")]
+    MissingParameter(&'static str),
 }
 
 /// Result-like type for configurations
