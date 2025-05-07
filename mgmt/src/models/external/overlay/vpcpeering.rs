@@ -126,3 +126,150 @@ impl VpcPeeringTable {
             .filter(move |p| p.left.name == vpc || p.right.name == vpc)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iptrie::Ipv4Prefix;
+    use std::str::FromStr;
+
+    fn prefix_v4(s: &str) -> Prefix {
+        Ipv4Prefix::from_str(s).expect("Invalid IPv4 prefix").into()
+    }
+
+    #[test]
+    fn test_manifest_expose() {
+        let expose1 = VpcExpose::empty()
+            .ip(prefix_v4("1.1.0.0/16"))
+            .not(prefix_v4("1.1.5.0/24"))
+            .not(prefix_v4("1.1.3.0/24"))
+            .not(prefix_v4("1.1.1.0/24"))
+            .ip(prefix_v4("1.2.0.0/16"))
+            .not(prefix_v4("1.2.2.0/24"))
+            .as_range(prefix_v4("2.2.0.0/16"))
+            .not_as(prefix_v4("2.1.10.0/24"))
+            .not_as(prefix_v4("2.1.1.0/24"))
+            .not_as(prefix_v4("2.1.8.0/24"))
+            .not_as(prefix_v4("2.1.2.0/24"))
+            .as_range(prefix_v4("2.1.0.0/16"));
+        let expose2 = VpcExpose::empty()
+            .ip(prefix_v4("3.0.0.0/16"))
+            .as_range(prefix_v4("4.0.0.0/16"));
+
+        let mut manifest1 = VpcManifest::new("test_manifest1");
+        manifest1.add_expose(expose1).expect("Failed to add expose");
+        manifest1.add_expose(expose2).expect("Failed to add expose");
+
+        let expose3 = VpcExpose::empty()
+            .ip(prefix_v4("8.0.0.0/17"))
+            .not(prefix_v4("8.0.0.0/24"))
+            .ip(prefix_v4("9.0.0.0/17"))
+            .as_range(prefix_v4("3.0.0.0/16"))
+            .not_as(prefix_v4("3.0.1.0/24"));
+        let expose4 = VpcExpose::empty()
+            .ip(prefix_v4("10.0.0.0/16"))
+            .not(prefix_v4("10.0.1.0/24"))
+            .not(prefix_v4("10.0.2.0/24"))
+            .as_range(prefix_v4("1.1.0.0/17"))
+            .as_range(prefix_v4("1.2.0.0/17"))
+            .not_as(prefix_v4("1.2.0.0/24"))
+            .not_as(prefix_v4("1.2.8.0/24"));
+
+        let mut manifest2 = VpcManifest::new("test_manifest2");
+        manifest2.add_expose(expose3).expect("Failed to add expose");
+        manifest2.add_expose(expose4).expect("Failed to add expose");
+
+        let peering = VpcPeering::new("test_peering", manifest1.clone(), manifest2.clone());
+
+        assert_eq!(
+            peering.get_peering_manifests("test_manifest1"),
+            (&manifest1, &manifest2)
+        );
+    }
+
+    #[test]
+    fn test_validate_peering() {
+        let mut manifest1 = VpcManifest::new("test_manifest1");
+        manifest1
+            .add_expose(
+                VpcExpose::empty()
+                    .ip(prefix_v4("10.0.0.0/16"))
+                    .as_range(prefix_v4("2.0.0.0/16")),
+            )
+            .expect("Failed to add expose");
+        let mut manifest2 = VpcManifest::new("test_manifest2");
+        manifest2
+            .add_expose(
+                VpcExpose::empty()
+                    .ip(prefix_v4("192.168.1.0/24"))
+                    .as_range(prefix_v4("192.168.8.0/24")),
+            )
+            .expect("Failed to add expose");
+        let peering = VpcPeering::new("test_peering", manifest1.clone(), manifest2.clone());
+        assert_eq!(peering.validate(), Ok(()));
+        assert_eq!(peering.name, "test_peering");
+        assert_eq!(peering.left.name, "test_manifest1");
+        assert_eq!(peering.right.name, "test_manifest2");
+
+        // Incorrect: Missing peering name
+        let peering = VpcPeering::new("", manifest1.clone(), manifest2.clone());
+        assert_eq!(
+            peering.validate(),
+            Err(ConfigError::MissingIdentifier("Peering name"))
+        );
+    }
+
+    #[test]
+    fn test_peering_table_add() {
+        let mut manifest1 = VpcManifest::new("VPC-1");
+        manifest1
+            .add_expose(
+                VpcExpose::empty()
+                    .ip(prefix_v4("10.0.0.0/16"))
+                    .as_range(prefix_v4("2.0.0.0/16")),
+            )
+            .expect("Failed to add expose");
+        let mut manifest2 = VpcManifest::new("VPC-2");
+        manifest2
+            .add_expose(
+                VpcExpose::empty()
+                    .ip(prefix_v4("192.168.1.0/24"))
+                    .as_range(prefix_v4("192.168.8.0/24")),
+            )
+            .expect("Failed to add expose");
+        let mut table = VpcPeeringTable::new();
+        let peering = VpcPeering::new("test_peering1", manifest1.clone(), manifest2.clone());
+        assert_eq!(table.add(peering.clone()), Ok(()));
+        assert_eq!(table.len(), 1);
+
+        // Incorrect: Duplicate peering name
+        let mut manifest3 = VpcManifest::new("VPC-3");
+        manifest3
+            .add_expose(
+                VpcExpose::empty()
+                    .ip(prefix_v4("3.0.0.0/16"))
+                    .as_range(prefix_v4("4.0.0.0/16")),
+            )
+            .expect("Failed to add expose");
+        let mut manifest4 = VpcManifest::new("VPC-4");
+        manifest4
+            .add_expose(
+                VpcExpose::empty()
+                    .ip(prefix_v4("5.0.0.0/16"))
+                    .as_range(prefix_v4("6.0.0.0/16")),
+            )
+            .expect("Failed to add expose");
+
+        let peering3 = VpcPeering::new("test_peering1", manifest3.clone(), manifest4.clone());
+        assert_eq!(
+            table.add(peering3),
+            Err(ConfigError::DuplicateVpcPeeringId(
+                "test_peering1".to_string()
+            ))
+        );
+
+        let peering4 = VpcPeering::new("test_peering4", manifest3.clone(), manifest4.clone());
+        assert_eq!(table.add(peering4), Ok(()));
+        assert_eq!(table.len(), 2);
+    }
+}

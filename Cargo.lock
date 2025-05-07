@@ -1202,6 +1202,7 @@ dependencies = [
  "async-trait",
  "derive_builder",
  "gateway_config",
+ "iptrie",
  "net",
  "nix",
  "routing",
