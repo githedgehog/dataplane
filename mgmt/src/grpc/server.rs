@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use std::convert::TryFrom;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
+use tracing::debug;
 
 use crate::grpc::converter::convert_to_grpc_config;
 use crate::models::external::gwconfig::GwConfig;
@@ -102,7 +103,7 @@ impl BasicConfigManager {
 
     // Example function showing how to use TryFrom conversions for components
     // This is not part of the ConfigManager trait but shows how to use TryFrom
-    async fn validate_device(&self, device: &gateway_config::Device) -> Result<(), String> {
+    fn validate_device(&self, device: &gateway_config::Device) -> Result<(), String> {
         // Use TryFrom to convert to internal type
         let device_config = crate::models::internal::device::DeviceConfig::try_from(device)?;
 
@@ -117,10 +118,7 @@ impl BasicConfigManager {
     }
 
     // Example function showing how to use TryFrom for interface validation
-    async fn validate_interfaces(
-        &self,
-        interfaces: &[gateway_config::Interface],
-    ) -> Result<(), String> {
+    fn validate_interfaces(&self, interfaces: &[gateway_config::Interface]) -> Result<(), String> {
         // Convert and validate all interfaces
         for interface in interfaces {
             let internal_interface =
@@ -153,6 +151,8 @@ impl BasicConfigManager {
 #[async_trait]
 impl ConfigManager for BasicConfigManager {
     async fn get_current_config(&self) -> Result<GatewayConfig, String> {
+        debug!("Received request to get current config");
+
         // build a request to the config processor, send it and get the response
         let (req, rx) = ConfigChannelRequest::new(ConfigRequest::GetCurrentConfig);
         self.channel_tx
@@ -165,10 +165,7 @@ impl ConfigManager for BasicConfigManager {
         match response {
             ConfigResponse::GetCurrentConfig(opt_config) => {
                 if let Some(config) = *opt_config {
-                    Ok(
-                        convert_to_grpc_config(&config.external)
-                            .expect("Failed to convert to gRPC"),
-                    )
+                    convert_to_grpc_config(&config.external)
                 } else {
                     Err("No config is currently applied".to_string())
                 }
@@ -178,6 +175,8 @@ impl ConfigManager for BasicConfigManager {
     }
 
     async fn get_generation(&self) -> Result<GenId, String> {
+        debug!("Received request to get current config generation");
+
         // build a request to the config processor, send it and get the response
         let (req, rx) = ConfigChannelRequest::new(ConfigRequest::GetGeneration);
         self.channel_tx
@@ -196,15 +195,17 @@ impl ConfigManager for BasicConfigManager {
     }
 
     async fn apply_config(&self, grpc_config: GatewayConfig) -> Result<(), String> {
+        debug!("Received request to apply new config");
+
         // Example: Validate components using TryFrom conversions
         if let Some(device) = &grpc_config.device {
-            self.validate_device(device).await?;
+            self.validate_device(device)?;
         }
 
         // Validate interfaces in all VRFs
         if let Some(underlay) = &grpc_config.underlay {
             for vrf in &underlay.vrfs {
-                self.validate_interfaces(&vrf.interfaces).await?;
+                self.validate_interfaces(&vrf.interfaces)?;
             }
         }
 

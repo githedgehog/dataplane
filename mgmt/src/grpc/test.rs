@@ -189,8 +189,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_convert_to_grpc_config() {
+    #[test]
+    fn test_convert_to_grpc_config() {
         // Create test data
         let grpc_config = create_test_gateway_config();
         // Call the conversion function (gRPC -> ExternalConfig)
@@ -591,8 +591,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_tryfrom_conversions() {
+    #[test]
+    fn test_tryfrom_conversions() {
         // Create test data with specific components
         let device = gateway_config::Device {
             driver: 0,   // Kernel
