@@ -40,6 +40,8 @@ pub enum ConfigError {
     IncompleteConfig(String),
     #[error("Error applying FRR config {0}")]
     FrrApplyError(String),
+    #[error("Missing identifier: {0}")]
+    MissingIdentifier(&'static str),
 }
 
 /// Result-like type for configurations
