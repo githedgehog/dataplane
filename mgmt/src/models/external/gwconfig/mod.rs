@@ -6,7 +6,7 @@
 
 use derive_builder::Builder;
 use std::time::SystemTime;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::models::external::{ConfigError, ConfigResult};
 use crate::models::internal::InternalConfig;
@@ -30,7 +30,14 @@ impl Underlay {
         Self::default()
     }
     pub fn validate(&self) -> ConfigResult {
-        warn!("Validating underlay configuration (TODO)");
+        debug!("Validating underlay configuration...");
+
+        // validate interfaces
+        self.vrf
+            .interfaces
+            .values()
+            .try_for_each(|iface| iface.validate())?;
+
         Ok(())
     }
 }

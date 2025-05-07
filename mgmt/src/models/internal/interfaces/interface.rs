@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 
+use crate::models::external::ConfigError;
+use crate::models::external::ConfigResult;
 use crate::models::internal::routing::ospf::OspfInterface;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -118,6 +120,18 @@ impl InterfaceConfig {
     pub fn set_ospf(mut self, ospf: OspfInterface) -> Self {
         self.ospf = Some(ospf);
         self
+    }
+    pub fn validate(&self) -> ConfigResult {
+        // name is mandatory
+        if self.name.is_empty() {
+            return Err(ConfigError::MissingIdentifier("interface name"));
+        }
+        // Ip address is mandatory on VTEP
+        if matches!(self.iftype, InterfaceType::Vtep(_)) && self.addresses.is_empty() {
+            return Err(ConfigError::MissingParameter("Ip address"));
+        }
+
+        Ok(())
     }
 }
 
