@@ -68,10 +68,12 @@ pub struct ExternalConfig {
     pub overlay: Overlay,     /* VPCs and peerings -- get highly developed in internal config */
 }
 impl ExternalConfig {
+    pub const BLANK_GENID: GenId = 0;
+
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
-            genid: 0,
+            genid: Self::BLANK_GENID,
             device: DeviceConfig::new(DeviceSettings::new("Unset")),
             underlay: Underlay::default(),
             overlay: Overlay::default(),
@@ -93,6 +95,7 @@ pub struct GwConfig {
 }
 
 impl GwConfig {
+    /// Create a [`GwConfig`] object with a given [`ExternalConfig`].
     pub fn new(external: ExternalConfig) -> Self {
         Self {
             meta: GwConfigMeta::new(),
@@ -100,24 +103,31 @@ impl GwConfig {
             internal: None,
         }
     }
+    /// Create a blank [`GwConfig`] with an empty [`ExternalConfig`].
+    /// Such a config has generation id 0 (from the empty [`ExternalConfig`]).
+    pub fn blank() -> Self {
+        Self::new(ExternalConfig::new())
+    }
+
+    /// Return the [`GenId`] of a [`GwConfig`] object.
     pub fn genid(&self) -> GenId {
         self.external.genid
     }
 
-    /// Validate a [`GwConfig`]
+    /// Validate a [`GwConfig`].
     pub fn validate(&mut self) -> ConfigResult {
         debug!("Validating external config with genid {} ..", self.genid());
         self.external.validate()
     }
 
-    /// Build the [`InternalConfig`] for this [`GwConfig`]
+    /// Build the [`InternalConfig`] for this [`GwConfig`].
     pub fn build_internal_config(&mut self) -> ConfigResult {
         /* build and set internal config */
         self.internal = Some(build_internal_config(self)?);
         Ok(())
     }
 
-    /// Apply a [`GwConfig`]
+    /// Apply a [`GwConfig`].
     pub async fn apply(&mut self, frrmi: &FrrMi) -> ConfigResult {
         info!("Applying config with genid {}...", self.genid());
         if self.internal.is_none() {

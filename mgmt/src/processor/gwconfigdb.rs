@@ -7,7 +7,7 @@ use crate::frr::frrmi::FrrMi;
 use std::collections::BTreeMap;
 use tracing::{debug, error, info};
 
-use crate::models::external::gwconfig::{GenId, GwConfig};
+use crate::models::external::gwconfig::{ExternalConfig, GenId, GwConfig};
 use crate::models::external::{ConfigError, ConfigResult};
 
 #[derive(Default)]
@@ -21,7 +21,9 @@ pub struct GwConfigDatabase {
 impl GwConfigDatabase {
     pub fn new() -> Self {
         debug!("Building config database...");
-        Self::default()
+        let mut configdb = Self::default();
+        configdb.add(GwConfig::blank());
+        configdb
     }
     pub fn add(&mut self, config: GwConfig) {
         debug!("Adding config '{}' to config db...", config.genid());
@@ -38,10 +40,14 @@ impl GwConfigDatabase {
     }
     pub fn remove(&mut self, genid: GenId) -> ConfigResult {
         debug!("Removing config '{}' from config db...", genid);
+        if genid == ExternalConfig::BLANK_GENID {
+            error!("Can't remove config {}: forbidden", genid);
+            return Err(ConfigError::Forbidden("Cannot delete initial config"));
+        }
         if let Some(config) = &self.configs.get(&genid) {
             if config.meta.is_applied {
                 error!("Can't remove config {}: in use", genid);
-                Err(ConfigError::Forbidden)
+                Err(ConfigError::Forbidden("In use"))
             } else {
                 debug!("Successfully removed config '{}'", genid);
                 self.configs.remove(&genid);

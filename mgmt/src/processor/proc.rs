@@ -12,7 +12,6 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::{spawn, sync::mpsc::Sender};
 use tonic::transport::Server;
 
-use crate::models::external::gwconfig::ExternalConfig;
 use crate::models::external::{ConfigResult, gwconfig::GwConfig};
 use crate::processor::gwconfigdb::GwConfigDatabase;
 use crate::{frr::frrmi::FrrMi, models::external::ConfigError};
@@ -25,8 +24,7 @@ use crate::grpc::server::create_config_service;
 #[allow(unused)]
 async fn blank_config_apply(configdb: &mut GwConfigDatabase, frrmi: &FrrMi) {
     debug!("Applying empty configuration...");
-    let external = ExternalConfig::new();
-    let blank = GwConfig::new(external);
+    let blank = GwConfig::blank();
     let _ = new_gw_config(configdb, blank, frrmi).await;
 }
 
