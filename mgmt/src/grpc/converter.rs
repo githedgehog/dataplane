@@ -83,9 +83,7 @@ pub fn create_gw_config(external_config: ExternalConfig) -> GwConfig {
 //--------------------------------------------------------------------------------
 
 /// Convert from GatewayConfig (gRPC) to ExternalConfig
-pub async fn convert_from_grpc_config(
-    grpc_config: &GatewayConfig,
-) -> Result<ExternalConfig, String> {
+pub fn convert_from_grpc_config(grpc_config: &GatewayConfig) -> Result<ExternalConfig, String> {
     // Extract required components
     let device = grpc_config
         .device
@@ -917,9 +915,7 @@ pub fn convert_overlay_to_grpc(overlay: &Overlay) -> Result<gateway_config::Over
 }
 
 /// Convert from ExternalConfig to GatewayConfig (gRPC)
-pub async fn convert_to_grpc_config(
-    external_config: &ExternalConfig,
-) -> Result<GatewayConfig, String> {
+pub fn convert_to_grpc_config(external_config: &ExternalConfig) -> Result<GatewayConfig, String> {
     // Convert device config
     let device = convert_device_to_grpc(&external_config.device)?;
 
