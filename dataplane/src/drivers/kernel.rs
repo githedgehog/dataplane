@@ -217,7 +217,7 @@ impl DriverKernel {
                     pkts.push(incoming);
                 }
                 Err(e) => {
-                    error!("Failed to parse packet!!: e");
+                    error!("Failed to parse packet!!:\n{e}");
                 }
             }
         }

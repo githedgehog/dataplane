@@ -11,9 +11,9 @@ use crate::ipv6::Ipv6;
 use crate::tcp::Tcp;
 use crate::udp::Udp;
 
-use crate::buffer::{Headroom, PacketBufferMut, Tailroom};
+use crate::buffer::PacketBufferMut;
 use crate::headers::{Headers, Net, Transport};
-use crate::packet::{BridgeDomain, DoneReason, InterfaceId, Packet, PacketMeta};
+use crate::packet::{BridgeDomain, DoneReason, InterfaceId, InvalidPacket, Packet, PacketMeta};
 use std::fmt::{Display, Formatter};
 
 impl Display for Eth {
@@ -266,11 +266,8 @@ fn dump_hex(raw: &[u8], chunk_size: usize) -> String {
     String::from_utf8_lossy(&out[..]).into_owned()
 }
 
-fn fmt_packet_buf<Buf: PacketBufferMut>(
-    f: &mut Formatter<'_>,
-    packet: &Packet<Buf>,
-) -> std::fmt::Result {
-    let raw = packet.payload().as_ref();
+fn fmt_packet_buf<Buf: PacketBufferMut>(f: &mut Formatter<'_>, payload: &Buf) -> std::fmt::Result {
+    let raw = payload.as_ref();
     writeln!(f, "{:─<width$}", "─", width = 100)?;
     write!(f, "{}", dump_hex(raw, 32))?;
     writeln!(f, "{:─<width$}", "─", width = 100)?;
@@ -278,17 +275,25 @@ fn fmt_packet_buf<Buf: PacketBufferMut>(
         f,
         "buffer: {} data octets (headroom: {} tailroom: {}))",
         raw.len(),
-        packet.headroom(),
-        packet.tailroom()
+        payload.headroom(),
+        payload.tailroom()
     )
 }
 
 /* ============= Packet ================ */
 impl<Buf: PacketBufferMut> Display for Packet<Buf> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        fmt_packet_buf(f, self)?;
+        fmt_packet_buf(f, self.payload())?;
         write!(f, "headers: {}", self.get_headers())?;
         write!(f, "{}", self.get_meta())?;
+        Ok(())
+    }
+}
+impl<Buf: PacketBufferMut> Display for InvalidPacket<Buf> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Invalid packet")?;
+        fmt_packet_buf(f, &self.mbuf)?;
+        writeln!(f, "error: {}", self.error)?;
         Ok(())
     }
 }
