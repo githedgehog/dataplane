@@ -165,9 +165,10 @@ impl ConfigManager for BasicConfigManager {
         match response {
             ConfigResponse::GetCurrentConfig(opt_config) => {
                 if let Some(config) = *opt_config {
-                    Ok(convert_to_grpc_config(&config.external)
-                        .await
-                        .expect("Failed to convert to gRPC"))
+                    Ok(
+                        convert_to_grpc_config(&config.external)
+                            .expect("Failed to convert to gRPC"),
+                    )
                 } else {
                     Err("No config is currently applied".to_string())
                 }
@@ -209,7 +210,7 @@ impl ConfigManager for BasicConfigManager {
 
         // Continue with conversion and applying config
         // Use the async converter function
-        let external_config = converter::convert_from_grpc_config(&grpc_config).await?;
+        let external_config = converter::convert_from_grpc_config(&grpc_config)?;
 
         // Create a new GwConfig with this ExternalConfig
         let gw_config = Box::new(GwConfig::new(external_config));
