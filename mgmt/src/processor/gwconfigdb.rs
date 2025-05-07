@@ -99,8 +99,10 @@ impl GwConfigDatabase {
                     }
                 }
             } else {
-                info!("There was no current config. Flushing system...");
-                /* To do: build a dummy config and apply it for the purpose of flushing */
+                // This should not happen if we apply upfront the blank config and we
+                // succeed. That is not guaranteed, though since we may fail to communicate
+                // to FRR an initial, blank config.
+                info!("There was no config applied");
             }
         }
         res
