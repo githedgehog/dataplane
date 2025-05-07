@@ -25,6 +25,7 @@ fn init_logging() {
         .with_thread_ids(true)
         .with_line_number(true)
         .with_thread_names(true)
+        .with_env_filter(EnvFilter::new("debug,tonic=off,h2=off"))
         .init();
 }
 
@@ -47,6 +48,7 @@ fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
 }
 
 use mgmt::processor::proc::start_mgmt;
+use tracing_subscriber::EnvFilter;
 
 fn main() {
     init_logging();
