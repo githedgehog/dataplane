@@ -103,6 +103,27 @@ check_if_reasonable "${test_exe}"
 # This lets us pick the correct libc container.
 source "${script_dir}/dpdk-sys.env"
 
+declare -ra WRAPPED_TEST_SUITES=(
+  "dataplane"
+  "dataplane-interface-manager"
+  "dataplane-vpc-manager"
+  "integration-fixtures"
+)
+
+declare -i SHOULD_WRAP=0
+declare test_suite
+for test_suite in "${WRAPPED_TEST_SUITES[@]}"; do
+  if [ "${CARGO_PKG_NAME-CARGO_PKG_NAME_NOT_SET}" == "${test_suite}" ]; then
+    SHOULD_WRAP=1
+    break
+  fi
+done
+declare -ri SHOULD_WRAP
+
+if [ "${SHOULD_WRAP}" -eq 0 ]; then
+  exec "${@}"
+fi
+
 # Now we can run the docker container
 #
 # Notes about this command:
