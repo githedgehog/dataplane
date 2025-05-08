@@ -6,6 +6,9 @@ pub mod overlay;
 
 use crate::models::external::gwconfig::GenId;
 use crate::models::external::overlay::vpc::VpcId;
+use crate::models::external::overlay::vpcpeering::VpcExpose;
+
+use routing::prefix::Prefix;
 use thiserror::Error;
 
 /// The reasons why we may reject a configuration
@@ -41,6 +44,19 @@ pub enum ConfigError {
     FrrAgentUnreachable,
     #[error("Internal error: {0}")]
     InternalFailure(&'static str),
+
+    // Peering and VpcExpose validation
+    #[error("All prefixes are excluded in VpcExpose: {0}")]
+    ExcludedAllPrefixes(VpcExpose),
+    #[error("Exclusion prefix {0} not contained within existing allowed prefix")]
+    OutOfRangeExclusionPrefix(Prefix),
+    #[error("VPC prefixes overlap: {0} and {1}")]
+    OverlappingPrefixes(Prefix, Prefix),
+    #[error("Inconsistent IP version in VpcExpose: {0}")]
+    InconsistentIpVersion(VpcExpose),
+    // NAT-specific
+    #[error("Mismatched prefixes sizes for static NAT: {0} and {1}")]
+    MismatchedPrefixSizes(u128, u128),
 }
 
 /// Result-like type for configurations
