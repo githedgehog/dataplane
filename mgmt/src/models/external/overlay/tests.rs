@@ -23,10 +23,11 @@ pub mod test {
         let expose = VpcExpose::empty()
             .ip(Prefix::expect_from(("10.0.0.0", 25)))
             .ip(Prefix::expect_from(("10.0.2.128", 25)))
-            .not(Prefix::expect_from(("10.0.1.13", 32)))
+            .not(Prefix::expect_from(("10.0.0.13", 32)))
             .not(Prefix::expect_from(("10.0.2.130", 32)))
             .as_range(Prefix::expect_from(("100.64.1.0", 24)))
-            .not_as(Prefix::expect_from(("100.64.1.13", 32)));
+            .not_as(Prefix::expect_from(("100.64.1.13", 32)))
+            .not_as(Prefix::expect_from(("100.64.1.14", 32)));
         m1.add_expose(expose).expect("Should succeed");
         m1
     }
@@ -86,6 +87,122 @@ pub mod test {
         /* vpc with bad Id should not build */
         let bad = Vpc::new("VPC-2", "!1234", 9000);
         assert_eq!(bad, Err(ConfigError::BadVpcId("!1234".to_string())));
+    }
+
+    #[test]
+    fn test_expose_validate() {
+        let expose = VpcExpose::empty();
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty().ip("10.0.0.0/16".into());
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty().not("10.0.1.0/24".into());
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty().not_as("2.0.1.0/24".into());
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .as_range("2.0.0.0/16".into());
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .not("10.0.0.0/24".into())
+            .as_range("2.0.0.0/16".into())
+            .not_as("2.0.0.0/24".into());
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty()
+            .ip("1::/64".into())
+            .as_range("2::/64".into());
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty()
+            .not("10.0.0.0/16".into())
+            .not_as("2.0.0.0/16".into());
+        assert_eq!(expose.validate(), Ok(()));
+
+        // Incorrect: mixed IP versions
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .ip("1::/64".into())
+            .as_range("2.0.0.0/16".into())
+            .as_range("2::/64".into());
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::InconsistentIpVersion(expose.clone()))
+        );
+
+        // Incorrect: mixed IP versions
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .as_range("1::/112".into());
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::InconsistentIpVersion(expose.clone()))
+        );
+
+        // Incorrect: mixed IP versions
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .not("1::/120".into())
+            .as_range("2.0.0.0/16".into())
+            .not_as("2::/120".into());
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::InconsistentIpVersion(expose.clone()))
+        );
+
+        // Incorrect: prefix overlapping
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .ip("10.0.0.0/17".into())
+            .as_range("2.0.0.0/16".into())
+            .as_range("3.0.0.0/17".into());
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::OverlappingPrefixes(
+                "10.0.0.0/16".into(),
+                "10.0.0.0/17".into(),
+            ))
+        );
+
+        // Incorrect: out-of-range exclusion prefix
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .not("8.0.0.0/24".into())
+            .as_range("2.0.0.0/16".into())
+            .not_as("2.0.1.0/24".into());
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::OutOfRangeExclusionPrefix("8.0.0.0/24".into()))
+        );
+
+        // Incorrect: all prefixes excluded
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .not("10.0.0.0/17".into())
+            .not("10.0.128.0/17".into())
+            .as_range("2.0.0.0/16".into())
+            .not_as("2.0.0.0/17".into())
+            .not_as("2.0.128.0/17".into());
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::ExcludedAllPrefixes(expose.clone()))
+        );
+
+        // Incorrect: mismatched prefix lists sizes
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .not("10.0.1.0/24".into())
+            .as_range("2.0.0.0/24".into());
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::MismatchedPrefixSizes(65536 - 256, 256))
+        );
     }
 
     #[test]
@@ -187,7 +304,7 @@ pub mod test {
                 .not(Prefix::expect_from(("192.168.111.2", 32)))
                 .not(Prefix::expect_from(("192.168.111.254", 32)))
                 .as_range(Prefix::expect_from(("100.64.200.0", 24)))
-                .not_as(Prefix::expect_from(("100.64.200.13", 32)));
+                .not_as(Prefix::expect_from(("100.64.200.12", 31)));
             m1.add_expose(expose).expect("Should succeed");
             m1
         }
