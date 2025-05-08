@@ -23,10 +23,11 @@ pub mod test {
         let expose = VpcExpose::empty()
             .ip(Prefix::from(("10.0.0.0", 25)))
             .ip(Prefix::from(("10.0.2.128", 25)))
-            .not(Prefix::from(("10.0.1.13", 32)))
+            .not(Prefix::from(("10.0.0.13", 32)))
             .not(Prefix::from(("10.0.2.130", 32)))
             .as_range(Prefix::from(("100.64.1.0", 24)))
-            .not_as(Prefix::from(("100.64.1.13", 32)));
+            .not_as(Prefix::from(("100.64.1.13", 32)))
+            .not_as(Prefix::from(("100.64.1.14", 32)));
         m1.add_expose(expose).expect("Should succeed");
         m1
     }
@@ -187,7 +188,7 @@ pub mod test {
                 .not(Prefix::from(("192.168.111.2", 32)))
                 .not(Prefix::from(("192.168.111.254", 32)))
                 .as_range(Prefix::from(("100.64.200.0", 24)))
-                .not_as(Prefix::from(("100.64.200.13", 32)));
+                .not_as(Prefix::from(("100.64.200.12", 31)));
             m1.add_expose(expose).expect("Should succeed");
             m1
         }
