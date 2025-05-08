@@ -258,23 +258,39 @@ pub mod test {
     fn test_peering_iter() {
         let mut peering_table = VpcPeeringTable::new();
 
-        let m1 = VpcManifest::new("VPC-1");
-        let m2 = VpcManifest::new("VPC-2");
+        let mut m1 = VpcManifest::new("VPC-1");
+        m1.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
+        let mut m2 = VpcManifest::new("VPC-2");
+        m2.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
         let peering = VpcPeering::new("Peering-1", m1, m2);
         peering_table.add(peering).unwrap();
 
-        let m1 = VpcManifest::new("VPC-1");
-        let m2 = VpcManifest::new("VPC-3");
+        let mut m1 = VpcManifest::new("VPC-1");
+        m1.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
+        let mut m2 = VpcManifest::new("VPC-3");
+        m2.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
         let peering = VpcPeering::new("Peering-2", m1, m2);
         peering_table.add(peering).unwrap();
 
-        let m1 = VpcManifest::new("VPC-2");
-        let m2 = VpcManifest::new("VPC-4");
+        let mut m1 = VpcManifest::new("VPC-2");
+        m1.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
+        let mut m2 = VpcManifest::new("VPC-4");
+        m2.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
         let peering = VpcPeering::new("Peering-3", m1, m2);
         peering_table.add(peering).unwrap();
 
-        let m1 = VpcManifest::new("VPC-1");
-        let m2 = VpcManifest::new("VPC-4");
+        let mut m1 = VpcManifest::new("VPC-1");
+        m1.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
+        let mut m2 = VpcManifest::new("VPC-4");
+        m2.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
         let peering = VpcPeering::new("Peering-4", m1, m2);
         peering_table.add(peering).unwrap();
 

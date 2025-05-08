@@ -36,6 +36,8 @@ pub enum ConfigError {
     Forbidden(&'static str),
     #[error("Bad VPC Id")]
     BadVpcId(String),
+    #[error("Incomplete configuration {0}")]
+    IncompleteConfig(String),
     #[error("Missing identifier: {0}")]
     MissingIdentifier(&'static str),
     #[error("Missing mandatory parameter: {0}")]
