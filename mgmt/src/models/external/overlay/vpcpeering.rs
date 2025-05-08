@@ -141,6 +141,27 @@ impl VpcManifest {
             ..Default::default()
         }
     }
+    fn validate_expose_collisions(&self) -> ConfigResult {
+        // Check that prefixes in each expose don't overlap with prefixes in other exposes
+        for (index, expose_left) in self.exposes.iter().enumerate() {
+            // Loop over the remaining exposes in the list
+            for expose_right in self.exposes.iter().skip(index + 1) {
+                validate_overlapping(
+                    &expose_left.ips,
+                    &expose_left.nots,
+                    &expose_right.ips,
+                    &expose_right.nots,
+                )?;
+                validate_overlapping(
+                    &expose_left.as_range,
+                    &expose_left.not_as,
+                    &expose_right.as_range,
+                    &expose_right.not_as,
+                )?;
+            }
+        }
+        Ok(())
+    }
     pub fn add_expose(&mut self, expose: VpcExpose) -> ConfigResult {
         self.exposes.push(expose);
         Ok(())
@@ -152,6 +173,7 @@ impl VpcManifest {
         for expose in &self.exposes {
             expose.validate()?;
         }
+        self.validate_expose_collisions()?;
         Ok(())
     }
 }
@@ -229,4 +251,123 @@ impl VpcPeeringTable {
             .values()
             .filter(move |p| p.left.name == vpc || p.right.name == vpc)
     }
+}
+
+// Validate that two sets of prefixes, with their exclusion prefixes applied, don't overlap
+fn validate_overlapping(
+    prefixes_left: &BTreeSet<Prefix>,
+    excludes_left: &BTreeSet<Prefix>,
+    prefixes_right: &BTreeSet<Prefix>,
+    excludes_right: &BTreeSet<Prefix>,
+) -> Result<(), ConfigError> {
+    // Find colliding prefixes
+    let mut colliding = Vec::new();
+    for prefix_left in prefixes_left.iter() {
+        for prefix_right in prefixes_right.iter() {
+            if prefix_left.covers(prefix_right) || prefix_right.covers(prefix_left) {
+                colliding.push((*prefix_left, *prefix_right));
+            }
+        }
+    }
+    // If not prefixes collide, we're good - exit.
+    if colliding.is_empty() {
+        return Ok(());
+    }
+
+    // How do we determine whether there is a collision between the set of available addresses on
+    // the left side, and the set of available addresses on the right side? A collision means:
+    //
+    // - Prefixes collide, in other words, they have a non-empty intersection (we've checked that
+    //   earlier)
+    //
+    // - This intersection is not fully covered by exclusion prefixes
+    //
+    // The idea in the loop below is that for each pair of colliding prefixes:
+    //
+    // - We retrieve the size of the intersection of the colliding prefixes. This is easy, because
+    //   they're "prefixes", so if they collide we have necessarily one that is contained within the
+    //   other, and the size of the intersection is the size of the smallest one.
+    //
+    // - We retrieve the size of the union of all the exclusion prefixes (from left and right sides)
+    //   covering part of this intersection (which we know is the smallest of the two colliding
+    //   prefixes). The union of the exclusion prefixes is the set of non-overlapping exclusion
+    //   prefixes that cover the intersection of allowed prefixes, such that if exclusion prefixes
+    //   collide, we always keep the largest prefix.
+    //
+    // - If the size of the intersection of colliding allowed prefixes is bigger than the size of
+    //   the union of the exclusion prefixes applying to them, then it means that some addresses are
+    //   effectively allowed in both the left-side and the right-side set of available addresses,
+    //   and this is an error. If the sizes are identical, then all addresses in the intersection of
+    //   the prefixes are excluded on at least one side, so it's all good.
+    for (prefix_left, prefix_right) in colliding {
+        // If prefixes collide, there's necessarily one prefix that is contained inside of the
+        // other. Find the intersection of the two colliding prefixes, which is the smallest of the
+        // two prefixes.
+        let intersection_prefix = if prefix_left.covers(&prefix_right) {
+            &prefix_right
+        } else {
+            &prefix_left
+        };
+
+        // Retrieve the union of all exclusion prefixes covering the intersection of the colliding
+        // prefixes
+        let mut union_excludes = BTreeSet::new();
+
+        // Consider exclusion prefixes from excludes_left
+        'outer: for exclude_left in excludes_left.iter().filter(|exclude| {
+            exclude.covers(intersection_prefix) || intersection_prefix.covers(exclude)
+        }) {
+            for exclude_right in excludes_right.iter().filter(|exclude| {
+                exclude.covers(intersection_prefix) || intersection_prefix.covers(exclude)
+            }) {
+                if exclude_left.covers(exclude_right) {
+                    // exclude_left contains exclude_right, and given that exclusion prefixes in
+                    // list excludes_right don't overlap there's no exclusion prefix containing
+                    // exclude_left. We want to keep exclude_left as part of the union.
+                    union_excludes.insert(*exclude_left);
+                    continue 'outer;
+                } else if exclude_right.covers(exclude_left) {
+                    // exclude_left is contained within exclude_right, don't keep it as part of the
+                    // union. Process next exclusion prefix from list excludes_left.
+                    continue 'outer;
+                }
+            }
+            // No collision for this exclude_left, add it to the union
+            union_excludes.insert(*exclude_left);
+        }
+        // Consider exclusion prefixes from excludes_right
+        'outer: for exclude_right in excludes_right.iter().filter(|exclude| {
+            exclude.covers(intersection_prefix) || intersection_prefix.covers(exclude)
+        }) {
+            for exclude_left in excludes_left.iter().filter(|exclude| {
+                exclude.covers(intersection_prefix) || intersection_prefix.covers(exclude)
+            }) {
+                if exclude_right.covers(exclude_left) {
+                    // exclude_right contains exclude_left, and given that exclusions prefixes in
+                    // list excludes_left don't overlap there's no exclusion prefix containing
+                    // exclude_right. We want to keep exclude_right as part of the union.
+                    union_excludes.insert(*exclude_right);
+                    continue 'outer;
+                } else if exclude_left.covers(exclude_right) {
+                    // exclude_right is contained within exclude_left, don't keep it as part of the
+                    // union. Process next exclusion prefix from list excludes_right.
+                    continue 'outer;
+                }
+            }
+            // No collision for this exclude_right, add it to the union
+            union_excludes.insert(*exclude_right);
+        }
+
+        let union_size = union_excludes
+            .iter()
+            .map(|exclude| exclude.size())
+            .sum::<u128>();
+        if union_size < intersection_prefix.size() {
+            // Some addresses at the intersection of both prefixes are not covered by the union of
+            // all exclusion prefixes, in other words, they are available from both prefixes. This
+            // is an error.
+            return Err(ConfigError::OverlappingPrefixes(prefix_left, prefix_right));
+        }
+    }
+    Ok(())
 }
