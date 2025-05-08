@@ -206,6 +206,40 @@ pub mod test {
     }
 
     #[test]
+    fn test_manifest_expose_overlap() {
+        let expose1 = VpcExpose::empty()
+            .ip("1.0.0.0/16".into()) // expose3 overlaps with this
+            .ip("2.0.0.0/16".into())
+            .ip("3.0.0.0/16".into())
+            .as_range("11.0.0.0/16".into())
+            .as_range("12.0.0.0/16".into())
+            .as_range("13.0.0.0/16".into());
+        let expose2 = VpcExpose::empty()
+            .ip("4.0.0.0/16".into())
+            .as_range("14.0.0.0/16".into());
+        let expose3 = VpcExpose::empty()
+            .ip("5.0.0.0/16".into())
+            .ip("1.0.1.0/24".into()) // overlaps with expose1.ips
+            .as_range("15.0.0.0/16".into())
+            .as_range("16.0.0.0/24".into());
+
+        let mut manifest = VpcManifest::new("VPC-1");
+        manifest.add_expose(expose1).expect("Should succeed");
+        manifest.add_expose(expose2).expect("Should succeed");
+        assert_eq!(manifest.validate(), Ok(()));
+
+        // Overlap between a manifest's expoeses prefixes is not allowed
+        manifest.add_expose(expose3).expect("Should succeed");
+        assert_eq!(
+            manifest.validate(),
+            Err(ConfigError::OverlappingPrefixes(
+                "1.0.0.0/16".into(),
+                "1.0.1.0/24".into()
+            ))
+        );
+    }
+
+    #[test]
     fn test_overlay_missing_vpc() {
         /* build VPCs */
         let vpc1 = Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed");
