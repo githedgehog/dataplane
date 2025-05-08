@@ -216,11 +216,11 @@ pub mod test {
         }
         fn man_vpc1_with_vpc4() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-1");
-            let expose = VpcExpose::empty().ip(Prefix::from(("192.168.60.0", 24)));
+            let expose = VpcExpose::empty().ip(Prefix::from(("192.168.70.0", 24)));
             m1.add_expose(expose).expect("Should succeed");
             m1
         }
-        fn man_vpc2() -> VpcManifest {
+        fn man_vpc2_with_vpc1() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-2");
             let expose = VpcExpose::empty().ip(Prefix::from(("192.168.80.0", 24)));
             m1.add_expose(expose).expect("Should succeed");
@@ -228,17 +228,23 @@ pub mod test {
         }
         fn man_vpc2_with_vpc3() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-2");
-            let expose = VpcExpose::empty().ip(Prefix::from(("192.168.80.0", 24)));
+            let expose = VpcExpose::empty().ip(Prefix::from(("192.168.90.0", 24)));
             m1.add_expose(expose).expect("Should succeed");
             m1
         }
-        fn man_vpc3() -> VpcManifest {
+        fn man_vpc3_with_vpc1() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-3");
             let expose = VpcExpose::empty().ip(Prefix::from(("192.168.128.0", 27)));
             m1.add_expose(expose).expect("Should succeed");
             m1
         }
-        fn man_vpc4() -> VpcManifest {
+        fn man_vpc3_with_vpc2() -> VpcManifest {
+            let mut m1 = VpcManifest::new("VPC-3");
+            let expose = VpcExpose::empty().ip(Prefix::from(("192.168.128.32", 27)));
+            m1.add_expose(expose).expect("Should succeed");
+            m1
+        }
+        fn man_vpc4_with_vpc1() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-4");
             let expose = VpcExpose::empty()
                 .ip(Prefix::from(("192.168.201.1", 32)))
@@ -272,7 +278,7 @@ pub mod test {
             .add(VpcPeering::new(
                 "VPC-1--VPC-2",
                 man_vpc1_with_vpc2(),
-                man_vpc2(),
+                man_vpc2_with_vpc1(),
             ))
             .expect("Should succeed");
 
@@ -280,7 +286,7 @@ pub mod test {
             .add(VpcPeering::new(
                 "VPC-1--VPC-3",
                 man_vpc1_with_vpc3(),
-                man_vpc3(),
+                man_vpc3_with_vpc1(),
             ))
             .expect("Should succeed");
 
@@ -288,7 +294,7 @@ pub mod test {
             .add(VpcPeering::new(
                 "VPC-1--VPC-4",
                 man_vpc1_with_vpc4(),
-                man_vpc4(),
+                man_vpc4_with_vpc1(),
             ))
             .expect("Should succeed");
 
@@ -296,7 +302,7 @@ pub mod test {
             .add(VpcPeering::new(
                 "VPC-2--VPC-3",
                 man_vpc2_with_vpc3(),
-                man_vpc3(),
+                man_vpc3_with_vpc2(),
             ))
             .expect("Should succeed");
 

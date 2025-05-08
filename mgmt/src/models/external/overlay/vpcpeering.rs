@@ -6,6 +6,7 @@
 use routing::prefix::Prefix;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::ops::Bound::{Excluded, Unbounded};
 
 use crate::models::external::{ConfigError, ConfigResult};
@@ -233,8 +234,6 @@ impl VpcPeeringTable {
 
     /// Add a [`VpcPeering`] to a [`VpcPeeringTable`]
     pub fn add(&mut self, peering: VpcPeering) -> ConfigResult {
-        peering.validate()?;
-
         // First look for an existing entry, to avoid inserting a duplicate peering
         if self.0.contains_key(&peering.name) {
             return Err(ConfigError::DuplicateVpcPeeringId(peering.name.clone()));
@@ -257,6 +256,60 @@ impl VpcPeeringTable {
         self.0
             .values()
             .filter(move |p| p.left.name == vpc || p.right.name == vpc)
+    }
+
+    fn vpcs(&self) -> HashSet<&String> {
+        let mut vpcs = HashSet::new();
+        self.0.values().for_each(|p| {
+            vpcs.insert(&p.left.name);
+            vpcs.insert(&p.right.name);
+        });
+        vpcs
+    }
+    fn validate_peering_collisions(&self) -> ConfigResult {
+        // For each VPC, check that exposes in manifests for this VPC in the different peerings do
+        // not collide with the exposes in manifests for the same VPC in other peerings from the
+        // table.
+
+        // Loop on VPCs covered by the peerings from the table
+        for vpc in self.vpcs() {
+            // Loop on peerings for this VPC
+            for (index, peering) in self.peerings_vpc(vpc).enumerate() {
+                // Only process the manifest related to the current VPC
+                let (manifest_left, _) = peering.get_peering_manifests(vpc);
+                // Compare with remaining peerings for this VPC
+                for other_peering in self.peerings_vpc(vpc).skip(index + 1) {
+                    // Only process the manifest related to the current VPC
+                    let (manifest_right, _) = other_peering.get_peering_manifests(vpc);
+                    // Compare each expose from one manifest with all exposes from the other
+                    // manifest
+                    for expose_left in &manifest_left.exposes {
+                        for expose_right in &manifest_right.exposes {
+                            validate_overlapping(
+                                &expose_left.ips,
+                                &expose_left.nots,
+                                &expose_right.ips,
+                                &expose_right.nots,
+                            )?;
+                            validate_overlapping(
+                                &expose_left.as_range,
+                                &expose_left.not_as,
+                                &expose_right.as_range,
+                                &expose_right.not_as,
+                            )?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    pub fn validate(&self) -> ConfigResult {
+        for peering in self.0.values() {
+            peering.validate()?;
+        }
+        self.validate_peering_collisions()?;
+        Ok(())
     }
 }
 
@@ -631,9 +684,29 @@ mod tests {
                     .as_range(prefix_v4("192.168.8.0/24")),
             )
             .expect("Failed to add expose");
+        let mut manifest_empty = VpcManifest::new("VPC-empty");
+        manifest_empty
+            .add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
+
         let mut table = VpcPeeringTable::new();
-        let peering = VpcPeering::new("test_peering1", manifest1.clone(), manifest2.clone());
-        assert_eq!(table.add(peering.clone()), Ok(()));
+        let peering = VpcPeering::new("test_peering1", manifest1.clone(), manifest_empty.clone());
+        table.add(peering.clone()).expect("Failed to add peering");
+        assert_eq!(table.validate(), Ok(()));
+        assert_eq!(table.len(), 1);
+
+        // Incorrect: Overlapping prefixes
+        let mut table_clone = table.clone();
+        let peering2 = VpcPeering::new("test_peering2", manifest1.clone(), manifest2.clone());
+        table_clone.add(peering2).expect("Failed to add peering");
+        assert_eq!(table_clone.len(), 2);
+        assert_eq!(
+            table_clone.validate(),
+            Err(ConfigError::OverlappingPrefixes(
+                prefix_v4("10.0.0.0/16"),
+                prefix_v4("10.0.0.0/16")
+            ))
+        );
         assert_eq!(table.len(), 1);
 
         // Incorrect: Duplicate peering name
@@ -661,9 +734,12 @@ mod tests {
                 "test_peering1".to_string()
             ))
         );
+        assert_eq!(table.validate(), Ok(()));
+        assert_eq!(table.len(), 1);
 
         let peering4 = VpcPeering::new("test_peering4", manifest3.clone(), manifest4.clone());
-        assert_eq!(table.add(peering4), Ok(()));
+        table.add(peering4).expect("Failed to add peering");
+        assert_eq!(table.validate(), Ok(()));
         assert_eq!(table.len(), 2);
     }
 }
