@@ -400,7 +400,7 @@ pub mod test {
         let _ = vpc_table.add(Vpc::new("VPC-3", "CCCCC", 2000).expect("Should succeed"));
         let _ = vpc_table.add(Vpc::new("VPC-4", "DDDDD", 6000).expect("Should succeed"));
 
-        /* build peering table with 3 peerings */
+        /* build peering table with 4 peerings */
         let mut peering_table = VpcPeeringTable::new();
         peering_table
             .add(VpcPeering::new(
@@ -433,6 +433,29 @@ pub mod test {
                 man_vpc3(),
             ))
             .expect("Should succeed");
+
+        assert_eq!(peering_table.len(), 4);
+
+        /* peering with empty name cannot be added to the table */
+        let peering_empty_name = VpcPeering::new("", man_vpc1_with_vpc2(), man_vpc2());
+        assert_eq!(
+            peering_table.add(peering_empty_name),
+            Err(ConfigError::MissingIdentifier("Peering name"))
+        );
+        assert_eq!(peering_table.len(), 4);
+
+        /* peering with duplicate name cannot be added to the table */
+        let peering_duplicate_name =
+            VpcPeering::new("VPC-1--VPC-2", man_vpc1_with_vpc2(), man_vpc2());
+        assert_eq!(
+            peering_table.add(peering_duplicate_name),
+            Err(ConfigError::DuplicateVpcPeeringId(
+                "VPC-1--VPC-2".to_string()
+            ))
+        );
+
+        /* make sure erroneous entries were not inserted */
+        assert_eq!(peering_table.len(), 4);
 
         /* display peering table */
         println!("{peering_table}");
