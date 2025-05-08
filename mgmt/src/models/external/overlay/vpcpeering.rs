@@ -145,8 +145,19 @@ impl VpcManifest {
         }
     }
     pub fn add_expose(&mut self, expose: VpcExpose) -> ConfigResult {
-        expose.validate()?;
         self.exposes.push(expose);
+        Ok(())
+    }
+    pub fn validate(&self) -> ConfigResult {
+        if self.name.is_empty() {
+            return Err(ConfigError::MissingIdentifier("Manifest name"));
+        }
+        if self.exposes.is_empty() {
+            return Err(ConfigError::IncompleteConfig("Empty manifest".to_string()));
+        }
+        for expose in &self.exposes {
+            expose.validate()?;
+        }
         Ok(())
     }
 }
@@ -167,6 +178,8 @@ impl VpcPeering {
     }
     pub fn validate(&self) -> ConfigResult {
         debug!("Validating VPC peering '{}'...", &self.name);
+        self.left.validate()?;
+        self.right.validate()?;
         Ok(())
     }
     /// Given a peering fetch the manifests, orderly depending on the provided vpc name
