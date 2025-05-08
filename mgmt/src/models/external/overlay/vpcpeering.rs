@@ -234,8 +234,16 @@ impl VpcPeeringTable {
     /// Add a [`VpcPeering`] to a [`VpcPeeringTable`]
     pub fn add(&mut self, peering: VpcPeering) -> ConfigResult {
         peering.validate()?;
-        if let Some(peering) = self.0.insert(peering.name.to_owned(), peering) {
-            Err(ConfigError::DuplicateVpcPeeringId(peering.name.clone()))
+
+        // First look for an existing entry, to avoid inserting a duplicate peering
+        if self.0.contains_key(&peering.name) {
+            return Err(ConfigError::DuplicateVpcPeeringId(peering.name.clone()));
+        }
+
+        if self.0.insert(peering.name.to_owned(), peering).is_some() {
+            // We should have prevented this case by checking for duplicates just above.
+            // This should never happen, unless we have another thread modifying the table.
+            unreachable!()
         } else {
             Ok(())
         }
