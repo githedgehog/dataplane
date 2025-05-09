@@ -39,6 +39,9 @@ impl Overlay {
     }
     pub fn validate(&mut self) -> ConfigResult {
         debug!("Validating overlay configuration...");
+
+        self.peering_table.validate()?;
+
         /* check if the VPCs referred in a peering exist */
         for peering in self.peering_table.values() {
             self.check_peering_vpc(&peering.name, &peering.left)?;

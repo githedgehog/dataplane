@@ -6,7 +6,9 @@ pub mod overlay;
 
 use crate::models::external::gwconfig::GenId;
 use crate::models::external::overlay::vpc::VpcId;
+use crate::models::external::overlay::vpcpeering::VpcExpose;
 
+use routing::prefix::Prefix;
 use thiserror::Error;
 
 /// The reasons why we may reject a configuration
@@ -42,6 +44,19 @@ pub enum ConfigError {
     MissingIdentifier(&'static str),
     #[error("Missing mandatory parameter: {0}")]
     MissingParameter(&'static str),
+    // Peering and VpcExpose validation
+    #[error("All prefixes are excluded")]
+    ExcludedAllPrefixes(VpcExpose),
+    #[error("Exclusion prefix not contained within existing allowed prefix")]
+    OutOfRangeExclusionPrefix(Prefix),
+    #[error("VPC prefixes overlap")]
+    OverlappingPrefixes(Prefix, Prefix),
+    #[error("Inconsistent IP version")]
+    InconsistentIpVersion(VpcExpose),
+    // NAT-specific
+    #[error("Mismatched prefixes sizes for static NAT")]
+    MismatchedPrefixSizes(u128, u128),
+    // Other
 }
 
 /// Result-like type for configurations

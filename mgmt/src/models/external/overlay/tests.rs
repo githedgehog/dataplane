@@ -23,10 +23,11 @@ pub mod test {
         let expose = VpcExpose::empty()
             .ip(Prefix::from(("10.0.0.0", 25)))
             .ip(Prefix::from(("10.0.2.128", 25)))
-            .not(Prefix::from(("10.0.1.13", 32)))
+            .not(Prefix::from(("10.0.0.13", 32)))
             .not(Prefix::from(("10.0.2.130", 32)))
             .as_range(Prefix::from(("100.64.1.0", 24)))
-            .not_as(Prefix::from(("100.64.1.13", 32)));
+            .not_as(Prefix::from(("100.64.1.13", 32)))
+            .not_as(Prefix::from(("100.64.1.14", 32)));
         m1.add_expose(expose).expect("Should succeed");
         m1
     }
@@ -141,23 +142,39 @@ pub mod test {
     fn test_peering_iter() {
         let mut peering_table = VpcPeeringTable::new();
 
-        let m1 = VpcManifest::new("VPC-1");
-        let m2 = VpcManifest::new("VPC-2");
+        let mut m1 = VpcManifest::new("VPC-1");
+        m1.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
+        let mut m2 = VpcManifest::new("VPC-2");
+        m2.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
         let peering = VpcPeering::new("Peering-1", m1, m2);
         peering_table.add(peering).unwrap();
 
-        let m1 = VpcManifest::new("VPC-1");
-        let m2 = VpcManifest::new("VPC-3");
+        let mut m1 = VpcManifest::new("VPC-1");
+        m1.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
+        let mut m2 = VpcManifest::new("VPC-3");
+        m2.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
         let peering = VpcPeering::new("Peering-2", m1, m2);
         peering_table.add(peering).unwrap();
 
-        let m1 = VpcManifest::new("VPC-2");
-        let m2 = VpcManifest::new("VPC-4");
+        let mut m1 = VpcManifest::new("VPC-2");
+        m1.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
+        let mut m2 = VpcManifest::new("VPC-4");
+        m2.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
         let peering = VpcPeering::new("Peering-3", m1, m2);
         peering_table.add(peering).unwrap();
 
-        let m1 = VpcManifest::new("VPC-1");
-        let m2 = VpcManifest::new("VPC-4");
+        let mut m1 = VpcManifest::new("VPC-1");
+        m1.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
+        let mut m2 = VpcManifest::new("VPC-4");
+        m2.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
         let peering = VpcPeering::new("Peering-4", m1, m2);
         peering_table.add(peering).unwrap();
 
@@ -187,7 +204,7 @@ pub mod test {
                 .not(Prefix::from(("192.168.111.2", 32)))
                 .not(Prefix::from(("192.168.111.254", 32)))
                 .as_range(Prefix::from(("100.64.200.0", 24)))
-                .not_as(Prefix::from(("100.64.200.13", 32)));
+                .not_as(Prefix::from(("100.64.200.12", 31)));
             m1.add_expose(expose).expect("Should succeed");
             m1
         }
@@ -199,11 +216,11 @@ pub mod test {
         }
         fn man_vpc1_with_vpc4() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-1");
-            let expose = VpcExpose::empty().ip(Prefix::from(("192.168.60.0", 24)));
+            let expose = VpcExpose::empty().ip(Prefix::from(("192.168.70.0", 24)));
             m1.add_expose(expose).expect("Should succeed");
             m1
         }
-        fn man_vpc2() -> VpcManifest {
+        fn man_vpc2_with_vpc1() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-2");
             let expose = VpcExpose::empty().ip(Prefix::from(("192.168.80.0", 24)));
             m1.add_expose(expose).expect("Should succeed");
@@ -211,17 +228,23 @@ pub mod test {
         }
         fn man_vpc2_with_vpc3() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-2");
-            let expose = VpcExpose::empty().ip(Prefix::from(("192.168.80.0", 24)));
+            let expose = VpcExpose::empty().ip(Prefix::from(("192.168.90.0", 24)));
             m1.add_expose(expose).expect("Should succeed");
             m1
         }
-        fn man_vpc3() -> VpcManifest {
+        fn man_vpc3_with_vpc1() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-3");
             let expose = VpcExpose::empty().ip(Prefix::from(("192.168.128.0", 27)));
             m1.add_expose(expose).expect("Should succeed");
             m1
         }
-        fn man_vpc4() -> VpcManifest {
+        fn man_vpc3_with_vpc2() -> VpcManifest {
+            let mut m1 = VpcManifest::new("VPC-3");
+            let expose = VpcExpose::empty().ip(Prefix::from(("192.168.128.32", 27)));
+            m1.add_expose(expose).expect("Should succeed");
+            m1
+        }
+        fn man_vpc4_with_vpc1() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-4");
             let expose = VpcExpose::empty()
                 .ip(Prefix::from(("192.168.201.1", 32)))
@@ -255,7 +278,7 @@ pub mod test {
             .add(VpcPeering::new(
                 "VPC-1--VPC-2",
                 man_vpc1_with_vpc2(),
-                man_vpc2(),
+                man_vpc2_with_vpc1(),
             ))
             .expect("Should succeed");
 
@@ -263,7 +286,7 @@ pub mod test {
             .add(VpcPeering::new(
                 "VPC-1--VPC-3",
                 man_vpc1_with_vpc3(),
-                man_vpc3(),
+                man_vpc3_with_vpc1(),
             ))
             .expect("Should succeed");
 
@@ -271,7 +294,7 @@ pub mod test {
             .add(VpcPeering::new(
                 "VPC-1--VPC-4",
                 man_vpc1_with_vpc4(),
-                man_vpc4(),
+                man_vpc4_with_vpc1(),
             ))
             .expect("Should succeed");
 
@@ -279,7 +302,7 @@ pub mod test {
             .add(VpcPeering::new(
                 "VPC-2--VPC-3",
                 man_vpc2_with_vpc3(),
-                man_vpc3(),
+                man_vpc3_with_vpc2(),
             ))
             .expect("Should succeed");
 
