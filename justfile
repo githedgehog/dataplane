@@ -36,7 +36,7 @@ rust := "stable"
 [private]
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
 [private]
-_dpdk_sys_container_tag := dpdk_sys_commit + ".rust-" + rust
+_dpdk_sys_container_tag := dpdk_sys_commit
 [private]
 _doc_env_container := _dpdk_sys_container_repo + "/doc-env:" + _dpdk_sys_container_tag
 [private]
@@ -96,7 +96,7 @@ _clean := ```
 # The slug is the branch name (sanitized) with a marker if the tree is dirty
 
 [private]
-_slug := (if _clean == "clean" { "" } else { "dirty-_-" }) + _branch
+_slug := (if _clean == "clean" { "" } else { "dirty." }) + _branch
 
 # Define a function to truncate long lines to the limit for containers tags
 
