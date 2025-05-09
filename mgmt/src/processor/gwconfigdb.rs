@@ -29,6 +29,10 @@ impl GwConfigDatabase {
         debug!("Adding config '{}' to config db...", config.genid());
         self.configs.insert(config.external.genid, config);
     }
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        self.configs.len()
+    }
     pub fn get(&self, genid: GenId) -> Option<&GwConfig> {
         self.configs.get(&genid)
     }
@@ -86,9 +90,12 @@ impl GwConfigDatabase {
         /* attempt to apply the configuration found */
         let res = config.apply(frrmi).await;
         if res.is_ok() {
-            info!("Successfully applied config '{}'", genid);
+            info!("Config with genid '{}' is now the current", genid);
             self.current = Some(genid);
         } else {
+            /* delete the config we wanted to apply */
+            debug!("Deleting config with id {genid}");
+            let _ = self.configs.remove(&genid);
             /* roll-back */
             if let Some(current) = last {
                 info!("Rolling back to prior config '{}'", current);
@@ -105,6 +112,10 @@ impl GwConfigDatabase {
                 info!("There was no config applied");
             }
         }
+        debug!(
+            "Number of configs in the database is: {}",
+            self.configs.len()
+        );
         res
     }
 
