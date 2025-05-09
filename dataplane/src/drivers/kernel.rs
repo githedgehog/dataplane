@@ -217,7 +217,9 @@ impl DriverKernel {
                     pkts.push(incoming);
                 }
                 Err(e) => {
-                    error!("Failed to parse packet!!:\n{e}");
+                    if interface.name != "lo" {
+                        error!("Failed to parse packet!!:\n{e}");
+                    }
                 }
             }
         }
