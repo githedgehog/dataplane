@@ -197,6 +197,11 @@ compile-env *args:
       --mount "type=bind,source=${CARGO_TARGET_DIR},destination=${CARGO_TARGET_DIR}" \
       --mount "type=bind,source={{ DOCKER_SOCK }},destination={{ DOCKER_SOCK }}" \
       --user "$(id -u):$(id -g)" \
+      --cap-drop ALL \
+      --cap-add SETUID `# needed for sudo in test-runner` \
+      --cap-add SETGID `# needed for sudo in test-runner` \
+      --cap-add SETFCAP `# needed by test-runner to grant/limit caps of tests` \
+      --read-only \
       --group-add="$(getent group docker | cut -d: -f3)" \
       --workdir "$(pwd)" \
       "{{ _compile_env_container }}" \
@@ -340,6 +345,10 @@ fake-nix refake="":
 
 # Run a "sterile" command
 sterile *args: (compile-env "just" ("debug_justfile=" + debug_justfile) ("rust=" + rust) ("target=" + target) ("profile=" + profile) args)
+
+[script]
+sh *args:
+    /bin/sh -i -c "{{ args }}"
 
 # Build containers in a sterile environment
 [script]
