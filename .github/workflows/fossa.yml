@@ -1,0 +1,30 @@
+# Run FOSSA scan
+#
+# Resources:
+#
+# - GitHub Action:
+#   https://github.com/marketplace/actions/official-fossa-action
+#
+# - Reports:
+#   https://app.fossa.com/projects/custom%252B43661%252Fgithub.com%252Fgithedgehog%252Fdataplane/
+
+name: "fossa.yml"
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.event.after || github.event.merge_group && github.run_id }}"
+  cancel-in-progress: true
+
+jobs:
+  fossa-scan:
+    name: "FOSSA Scan"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: fossas/fossa-action@v1
+        with:
+          api-key: ${{secrets.FOSSA_API_KEY}}
