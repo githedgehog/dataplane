@@ -144,7 +144,7 @@ impl FrrMi {
         }
         if self.is_connected() {
             debug!("Probing frr-agent...");
-            let up = self.send_receive("KEEPALIVE").await.is_ok();
+            let up = self.send_receive(0, "KEEPALIVE").await.is_ok();
             if up != self.up {
                 info!("Frr-agent at {} is up", self.remote);
                 self.up = up
@@ -195,7 +195,7 @@ impl FrrMi {
     ///
     /// Returns error if message could not be sent, or the response could not
     /// be received, or a response was received but it was not "Ok"
-    async fn send_receive(&self, msg: &str) -> Result<(), FrrErr> {
+    async fn send_receive(&self, genid: GenId, msg: &str) -> Result<(), FrrErr> {
         if !self.is_connected() || !self.is_up() {
             /* // FIXME: this requires frrmi to be mutable
                        self.probe();
@@ -215,6 +215,12 @@ impl FrrMi {
             FrrErr::FailCommFrrAgent(e.to_string())
         })?;
 
+        /* send genid (0 in keepalives) */
+        self.sock.send(&genid.to_ne_bytes()).await.map_err(|e| {
+            error!("Fatal: Failed to send genid: {e}");
+            FrrErr::FailCommFrrAgent(e.to_string())
+        })?;
+
         /* send message (e.g. a config or a keepalive) */
         self.sock.send(msg.as_bytes()).await.map_err(|e| {
             error!("Fatal: Failed to send message: {e}");
@@ -229,7 +235,7 @@ impl FrrMi {
     pub async fn apply_config(&self, genid: GenId, config: &ConfigBuilder) -> Result<(), FrrErr> {
         info!("Applying FRR config. Genid={genid} agent={}", &self.remote);
         let conf_str = config.to_string();
-        if let Err(e) = self.send_receive(&conf_str).await {
+        if let Err(e) = self.send_receive(genid, &conf_str).await {
             error!("Failed to apply config for gen {genid}: {e}");
             Err(e)
         } else {
