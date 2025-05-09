@@ -86,7 +86,6 @@ impl ConfigProcessor {
     pub(crate) async fn process_incoming_config(&mut self, mut config: GwConfig) -> ConfigResult {
         /* get id of incoming config */
         let genid = config.genid();
-        debug!("Processing config with id:'{genid}'..");
 
         /* reject config if it uses id of existing one */
         if genid != ExternalConfig::BLANK_GENID && self.config_db.contains(genid) {
@@ -106,8 +105,6 @@ impl ConfigProcessor {
         /* apply the configuration just stored */
         self.config_db.apply(genid, &self.frrmi).await?;
 
-        debug!("Current config is {:?}", self.config_db.get_current_gen());
-
         Ok(())
     }
 
@@ -120,19 +117,22 @@ impl ConfigProcessor {
 
     /// RPC handler to apply a config
     async fn handle_apply_config(&mut self, config: GwConfig) -> ConfigResponse {
-        debug!("Handling apply configuration request...");
+        debug!(
+            "━━━━━━ Handling apply configuration request. Genid {} ━━━━━━",
+            config.genid()
+        );
         ConfigResponse::ApplyConfig(self.process_incoming_config(config).await)
     }
 
     /// RPC handler to get current config generation id
     fn handle_get_generation(&self) -> ConfigResponse {
-        debug!("Handling get generation request...");
+        debug!("Handling get generation request");
         ConfigResponse::GetGeneration(self.config_db.get_current_gen())
     }
 
     /// RPC handler to get the currently applied config
     fn handle_get_config(&self) -> ConfigResponse {
-        debug!("Handling get running configuration request...");
+        debug!("Handling get running configuration request");
         let cfg = Box::new(self.config_db.get_current_config().cloned());
         ConfigResponse::GetCurrentConfig(cfg)
     }
