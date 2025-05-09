@@ -182,6 +182,19 @@ impl<'a> From<&'a Prefix> for &'a Ipv6Prefix {
         }
     }
 }
+/// Only for testing. Will panic with badly formatted prefix strings
+#[cfg(any(test, feature = "testing"))]
+impl From<&str> for Prefix {
+    fn from(s: &str) -> Self {
+        if let Ok(p) = Ipv4Net::from_str(s) {
+            Prefix::IPV4(Ipv4Prefix::from(p))
+        } else if let Ok(p) = Ipv6Net::from_str(s) {
+            Prefix::IPV6(Ipv6Prefix::from(p))
+        } else {
+            panic!("Not a valid IP prefix")
+        }
+    }
+}
 
 impl Display for Prefix {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -302,6 +315,37 @@ mod tests {
         let iptrie_pfx = Ipv6Prefix::new(address, 0).unwrap();
         let prefix = Prefix::from(iptrie_pfx);
         assert_eq!(prefix, Prefix::root_v6());
+    }
+
+    #[test]
+    fn test_prefix_from() {
+        let prefix_v4_1 = Prefix::from("1.2.3.0/24");
+        let prefix_v4_2: Prefix = "1.2.3.0/24".into();
+        let prefix_v4_3: Prefix = Ipv4Prefix::from_str("1.2.3.0/24")
+            .expect("Invalid IPv4 prefix")
+            .into();
+        let prefix_v4_4 = Prefix::from(("1.2.3.0", 24));
+        let prefix_v4_5: Prefix = Ipv4Net::from_str("1.2.3.0/24")
+            .expect("Invalid IPv4 prefix")
+            .into();
+        assert_eq!(prefix_v4_1, prefix_v4_2);
+        assert_eq!(prefix_v4_1, prefix_v4_3);
+        assert_eq!(prefix_v4_1, prefix_v4_4);
+        assert_eq!(prefix_v4_1, prefix_v4_5);
+
+        let prefix_v6_1 = Prefix::from("2001:a:b:c::/64");
+        let prefix_v6_2: Prefix = "2001:a:b:c::/64".into();
+        let prefix_v6_3: Prefix = Ipv6Prefix::from_str("2001:a:b:c::/64")
+            .expect("Invalid IPv6 prefix")
+            .into();
+        let prefix_v6_4 = Prefix::from(("2001:a:b:c::", 64));
+        let prefix_v6_5: Prefix = Ipv6Net::from_str("2001:a:b:c::/64")
+            .expect("Invalid IPv6 prefix")
+            .into();
+        assert_eq!(prefix_v6_1, prefix_v6_2);
+        assert_eq!(prefix_v6_1, prefix_v6_3);
+        assert_eq!(prefix_v6_1, prefix_v6_4);
+        assert_eq!(prefix_v6_1, prefix_v6_5);
     }
 
     #[test]
