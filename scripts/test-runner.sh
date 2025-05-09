@@ -136,5 +136,5 @@ source "${script_dir}/dpdk-sys.env"
   --cap-add SYS_ADMIN \
   --cap-add SYS_RAWIO \
   --read-only \
-  "ghcr.io/githedgehog/dpdk-sys/libc-env:${DPDK_SYS_COMMIT}.rust-stable" \
+  "ghcr.io/githedgehog/dpdk-sys/libc-env:${DPDK_SYS_COMMIT}.debug.rust-stable" \
   "${@}"
