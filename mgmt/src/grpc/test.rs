@@ -2,14 +2,16 @@
 // Copyright Open Network Fabric Authors
 
 #[cfg(test)]
+#[allow(clippy::uninlined_format_args)]
 mod tests {
-    use std::collections::HashMap;
-    use std::sync::Arc;
-    use tokio::sync::RwLock;
-    // Import proto-generated types
-    use crate::grpc::server::BasicConfigManager;
-    use crate::models::external::configdb::gwconfigdb::GwConfigDatabase;
     use gateway_config::GatewayConfig;
+    use std::collections::HashMap;
+    use std::convert::TryFrom;
+
+    // Import converter module
+    use crate::grpc::converter;
+    use crate::models::internal::device::DeviceConfig;
+    use crate::models::internal::interfaces::interface::InterfaceConfig;
 
     // Helper function to create a test GatewayConfig
     fn create_test_gateway_config() -> GatewayConfig {
@@ -31,6 +33,7 @@ mod tests {
             vlan: None,
             macaddr: Some("00:11:22:33:44:55".to_string()),
             system_name: Some("".to_string()),
+            ospf: None,
         };
 
         let lo0 = gateway_config::Interface {
@@ -41,6 +44,7 @@ mod tests {
             vlan: None,
             macaddr: Some("".to_string()),
             system_name: Some("".to_string()),
+            ospf: None,
         };
 
         // Create BGP neighbor
@@ -71,10 +75,11 @@ mod tests {
             name: "default".to_string(),
             interfaces: vec![eth0, lo0],
             router: Some(router_config),
+            ospf: None,
         };
 
         // Create Underlay
-        let underlay = gateway_config::Underlay { vrf: vec![vrf] };
+        let underlay = gateway_config::Underlay { vrfs: vec![vrf] };
 
         // Create interfaces for VPCs
         let vpc1_if1 = gateway_config::Interface {
@@ -85,6 +90,7 @@ mod tests {
             vlan: None,
             macaddr: Some("".to_string()),
             system_name: Some("".to_string()),
+            ospf: None,
         };
 
         let vpc2_if1 = gateway_config::Interface {
@@ -95,6 +101,7 @@ mod tests {
             vlan: None,
             macaddr: Some("".to_string()),
             system_name: Some("".to_string()),
+            ospf: None,
         };
 
         // Create VPCs
@@ -184,16 +191,12 @@ mod tests {
     #[tokio::test]
     async fn test_convert_to_grpc_config() {
         // Create a mock database
-        let config_db = Arc::new(RwLock::new(GwConfigDatabase::new()));
-
-        // Create the manager
-        let manager = BasicConfigManager::new(Arc::clone(&config_db));
-
+        #[allow(unused_variables)]
         // Create test data
         let grpc_config = create_test_gateway_config();
-
         // Call the conversion function (gRPC -> ExternalConfig)
-        let result = manager.convert_from_grpc_config(&grpc_config).await;
+        // Using standalone function instead of manager method
+        let result = converter::convert_from_grpc_config(&grpc_config).await;
 
         // Verify result
         assert!(
@@ -204,7 +207,8 @@ mod tests {
         let external_config = result.unwrap();
 
         // Call the conversion function (ExternalConfig -> gRPC)
-        let result = manager.convert_to_grpc_config(&external_config).await;
+        // Using standalone function instead of manager method
+        let result = converter::convert_to_grpc_config(&external_config).await;
 
         // Verify result
         assert!(
@@ -243,6 +247,29 @@ mod tests {
             "Device log level mismatch"
         );
 
+        // --- Test TryFrom implementation ---
+        // Convert device using TryFrom
+        let device_result = DeviceConfig::try_from(original_device);
+        assert!(
+            device_result.is_ok(),
+            "TryFrom conversion for device failed"
+        );
+        let internal_device = device_result.unwrap();
+
+        // Convert back to gRPC using TryFrom
+        let device_grpc_result = gateway_config::Device::try_from(&internal_device);
+        assert!(
+            device_grpc_result.is_ok(),
+            "TryFrom conversion back to gRPC device failed"
+        );
+        let device_grpc = device_grpc_result.unwrap();
+
+        // Verify conversion via TryFrom
+        assert_eq!(
+            device_grpc.hostname, original_device.hostname,
+            "Device hostname mismatch using TryFrom"
+        );
+
         // --- UNDERLAY CONFIGURATION TESTS ---
         let original_underlay = grpc_config
             .underlay
@@ -255,24 +282,24 @@ mod tests {
 
         // Check VRF count
         assert_eq!(
-            converted_underlay.vrf.len(),
-            original_underlay.vrf.len(),
+            converted_underlay.vrfs.len(),
+            original_underlay.vrfs.len(),
             "VRF count mismatch"
         );
 
         // Get the default VRF from both configs
         let original_default_vrf = original_underlay
-            .vrf
+            .vrfs
             .iter()
             .find(|vrf| vrf.name == "default")
-            .or_else(|| original_underlay.vrf.first())
+            .or_else(|| original_underlay.vrfs.first())
             .expect("No VRF found in original config");
 
         let converted_default_vrf = converted_underlay
-            .vrf
+            .vrfs
             .iter()
             .find(|vrf| vrf.name == "default")
-            .or_else(|| converted_underlay.vrf.first())
+            .or_else(|| converted_underlay.vrfs.first())
             .expect("No VRF found in converted config");
 
         // Check VRF name
@@ -329,6 +356,24 @@ mod tests {
                     "VLAN ID mismatch for interface {name}",
                 );
             }
+
+            // Test TryFrom for interface
+            let interface_result = InterfaceConfig::try_from(*original_iface);
+            assert!(
+                interface_result.is_ok(),
+                "TryFrom conversion for interface failed for {}",
+                name
+            );
+
+            let internal_interface = interface_result.unwrap();
+
+            // Test converting back
+            let interface_grpc_result = gateway_config::Interface::try_from(&internal_interface);
+            assert!(
+                interface_grpc_result.is_ok(),
+                "TryFrom conversion back to gRPC interface failed for {}",
+                name
+            );
         }
 
         // --- BGP CONFIGURATION TESTS ---
@@ -545,5 +590,74 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_tryfrom_conversions() {
+        // Create test data with specific components
+        let device = gateway_config::Device {
+            driver: 0,   // Kernel
+            loglevel: 2, // INFO
+            hostname: "test-device".to_string(),
+            ports: Vec::new(),
+            eal: None,
+        };
+
+        let interface = gateway_config::Interface {
+            name: "eth0".to_string(),
+            ipaddr: "192.168.1.1/24".to_string(),
+            r#type: 0, // Ethernet
+            role: 0,   // Fabric
+            vlan: None,
+            macaddr: Some("00:11:22:33:44:55".to_string()),
+            system_name: Some("".to_string()),
+            ospf: None,
+        };
+
+        // Test DeviceConfig TryFrom
+        let device_config_result = DeviceConfig::try_from(&device);
+        assert!(
+            device_config_result.is_ok(),
+            "TryFrom for DeviceConfig failed"
+        );
+        let device_config = device_config_result.unwrap();
+
+        // Verify conversion result
+        assert_eq!(device_config.settings.hostname, "test-device");
+
+        // Convert back using TryFrom
+        let device_back_result = gateway_config::Device::try_from(&device_config);
+        assert!(device_back_result.is_ok(), "TryFrom back to Device failed");
+        let device_back = device_back_result.unwrap();
+
+        // Verify round trip conversion
+        assert_eq!(device_back.hostname, device.hostname);
+        assert_eq!(device_back.driver, device.driver);
+        assert_eq!(device_back.loglevel, device.loglevel);
+
+        // Test InterfaceConfig TryFrom
+        let interface_config_result = InterfaceConfig::try_from(&interface);
+        assert!(
+            interface_config_result.is_ok(),
+            "TryFrom for InterfaceConfig failed"
+        );
+        let interface_config = interface_config_result.unwrap();
+
+        // Verify conversion result
+        assert_eq!(interface_config.name, "eth0");
+        assert!(!interface_config.addresses.is_empty());
+
+        // Convert back using TryFrom
+        let interface_back_result = gateway_config::Interface::try_from(&interface_config);
+        assert!(
+            interface_back_result.is_ok(),
+            "TryFrom back to Interface failed"
+        );
+        let interface_back = interface_back_result.unwrap();
+
+        // Verify round trip conversion
+        assert_eq!(interface_back.name, interface.name);
+        assert_eq!(interface_back.r#type, interface.r#type);
+        assert!(!interface_back.ipaddr.is_empty());
     }
 }

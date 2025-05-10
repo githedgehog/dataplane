@@ -8,14 +8,16 @@ pub mod tests;
 pub mod vpc;
 pub mod vpcpeering;
 
+use crate::models::external::overlay::vpc::VpcIdMap;
 use crate::models::external::overlay::vpc::VpcTable;
 use crate::models::external::overlay::vpcpeering::VpcManifest;
 use crate::models::external::overlay::vpcpeering::VpcPeeringTable;
+
 use tracing::{debug, error};
 
 use super::{ApiError, ApiResult};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Overlay {
     pub vpc_table: VpcTable,
     pub peering_table: VpcPeeringTable,
@@ -35,15 +37,26 @@ impl Overlay {
         }
         Ok(())
     }
-    pub fn validate(&self) -> ApiResult {
-        debug!("Validating overlay configuration");
-        /* Vpc peerings are validated on insertion: there, we check that the peering
-        has a unique name and that it refers to two VPCs. Here we validate that the
-        referred-to VPCs do actually exist in the VPC table. */
+    pub fn validate(&mut self) -> ApiResult {
+        debug!("Validating overlay configuration...");
+        /* check if the VPCs referred in a peering exist */
         for peering in self.peering_table.values() {
             self.check_peering_vpc(&peering.name, &peering.left)?;
             self.check_peering_vpc(&peering.name, &peering.right)?;
         }
+
+        /* temporary map of vpc names and ids */
+        let id_map: VpcIdMap = self
+            .vpc_table
+            .values()
+            .map(|vpc| (vpc.name.clone(), vpc.id.clone()))
+            .collect();
+
+        /* collect peerings of every VPC */
+        self.vpc_table
+            .collect_peerings(&self.peering_table, &id_map);
+
+        debug!("Overlay configuration is VALID");
         Ok(())
     }
 }

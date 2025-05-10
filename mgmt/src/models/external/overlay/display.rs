@@ -49,18 +49,19 @@ impl Display for VpcExpose {
 }
 
 // Vpc manifest is common to VpcPeering and Peering
-fn fmt_manifest(
-    f: &mut std::fmt::Formatter<'_>,
-    is_local: bool,
-
-    manifest: &VpcManifest,
-) -> std::fmt::Result {
-    if is_local {
-        writeln!(f, "     local:")?;
-    } else {
-        writeln!(f, "     remote, {}:", manifest.name)?;
+fn fmt_local_manifest(f: &mut std::fmt::Formatter<'_>, manifest: &VpcManifest) -> std::fmt::Result {
+    writeln!(f, "     local:")?;
+    for e in &manifest.exposes {
+        e.fmt(f)?;
     }
-
+    Ok(())
+}
+fn fmt_remote_manifest(
+    f: &mut std::fmt::Formatter<'_>,
+    manifest: &VpcManifest,
+    remote_id: &VpcId,
+) -> std::fmt::Result {
+    writeln!(f, "     remote ({}, id {}):", manifest.name, remote_id)?;
     for e in &manifest.exposes {
         e.fmt(f)?;
     }
@@ -70,9 +71,9 @@ fn fmt_manifest(
 impl Display for Peering {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "  ■ {}:", self.name)?;
-        fmt_manifest(f, true, &self.local)?;
+        fmt_local_manifest(f, &self.local)?;
         writeln!(f)?;
-        fmt_manifest(f, false, &self.remote)?;
+        fmt_remote_manifest(f, &self.remote, &self.remote_id)?;
         writeln!(f)
     }
 }

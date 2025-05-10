@@ -8,22 +8,29 @@ use derive_builder::Builder;
 use std::time::SystemTime;
 use tracing::{debug, info, warn};
 
-use crate::models::external::overlay::Overlay;
 use crate::models::external::{ApiError, ApiResult};
 use crate::models::internal::InternalConfig;
 use crate::models::internal::device::DeviceConfig;
 use crate::models::internal::routing::vrf::VrfConfig;
+use crate::models::{external::overlay::Overlay, internal::device::settings::DeviceSettings};
+
+use crate::frr::frrmi::FrrMi;
+use crate::processor::confbuild::build_internal_config;
 
 /// Alias for a config generation number
-pub type GenId = u64;
+pub type GenId = i64;
+use crate::processor::proc::apply_gw_config;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Underlay {
     pub vrf: VrfConfig, /* default vrf */
 }
 impl Underlay {
+    pub fn new() -> Self {
+        Self::default()
+    }
     pub fn validate(&self) -> ApiResult {
-        warn!("Validating underlay configuration (TODO");
+        warn!("Validating underlay configuration (TODO)");
         Ok(())
     }
 }
@@ -54,18 +61,23 @@ pub struct ExternalConfig {
     pub overlay: Overlay,     /* VPCs and peerings -- get highly developed in internal config */
 }
 impl ExternalConfig {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self {
+            genid: 0,
+            device: DeviceConfig::new(DeviceSettings::new("Unset")),
+            underlay: Underlay::default(),
+            overlay: Overlay::default(),
+        }
+    }
     pub fn validate(&mut self) -> ApiResult {
         self.device.validate()?;
         self.underlay.validate()?;
-        self.overlay
-            .vpc_table
-            .collect_peerings(&self.overlay.peering_table);
         self.overlay.validate()?;
         Ok(())
     }
 }
 
-/// The configuration object as seen by the gRPC server
 pub struct GwConfig {
     pub meta: GwConfigMeta,               /* config metadata */
     pub external: ExternalConfig,         /* external config: received */
@@ -86,42 +98,36 @@ impl GwConfig {
 
     /// Validate a [`GwConfig`]
     pub fn validate(&mut self) -> ApiResult {
-        debug!("Validating config {} ..", self.genid());
+        debug!("Validating external config with genid {} ..", self.genid());
         self.external.validate()
     }
 
     /// Build the [`InternalConfig`] for this [`GwConfig`]
     pub fn build_internal_config(&mut self) -> ApiResult {
-        debug!("Building internal config for config {} ..", self.genid());
-        // Build internal config object: TODO
-        let internal = InternalConfig::new(self.external.device.clone());
-
-        // set the internal config
-        self.internal = Some(internal);
-        info!("Internal config built for {}", self.genid());
+        /* build and set internal config */
+        self.internal = Some(build_internal_config(self)?);
         Ok(())
     }
 
     /// Apply a [`GwConfig`]
-    pub fn apply(&mut self) -> ApiResult {
-        info!("Applying config {}...", self.genid());
+    pub async fn apply(&mut self, frrmi: &FrrMi) -> ApiResult {
+        info!("Applying config with genid {}...", self.genid());
         if self.internal.is_none() {
             debug!("Config has no internal config...");
             self.build_internal_config()?;
         }
 
-        /*
-            TODO: apply internal configuration
-        */
-        let success = true;
-        if success {
-            self.meta.applied = Some(SystemTime::now());
-            self.meta.is_applied = true;
-            info!("Applied config {}", self.genid());
-            Ok(())
-        } else {
-            info!("Failed to apply config {}", self.genid());
-            Err(ApiError::FailureApply)
+        /* Apply this gw config */
+        match apply_gw_config(self, frrmi).await {
+            Ok(()) => {
+                self.meta.applied = Some(SystemTime::now());
+                self.meta.is_applied = true;
+                Ok(())
+            }
+            Err(e) => {
+                info!("Failed to apply config {}: {e}", self.genid());
+                Err(ApiError::FailureApply)
+            }
         }
     }
 }

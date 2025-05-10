@@ -3,6 +3,7 @@
 
 //! Configuration database: entity able to store multiple gateway configurations
 
+use crate::frr::frrmi::FrrMi;
 use std::collections::BTreeMap;
 use tracing::{debug, error, info};
 
@@ -19,6 +20,7 @@ pub struct GwConfigDatabase {
 
 impl GwConfigDatabase {
     pub fn new() -> Self {
+        debug!("Building config database...");
         Self::default()
     }
     pub fn add(&mut self, config: GwConfig) {
@@ -27,6 +29,12 @@ impl GwConfigDatabase {
     }
     pub fn get(&self, genid: GenId) -> Option<&GwConfig> {
         self.configs.get(&genid)
+    }
+    pub fn contains(&self, genid: GenId) -> bool {
+        self.configs.contains_key(&genid)
+    }
+    pub fn get_mut(&mut self, generation: GenId) -> Option<&mut GwConfig> {
+        self.configs.get_mut(&generation)
     }
     pub fn remove(&mut self, genid: GenId) -> ApiResult {
         debug!("Removing config '{}' from config db...", genid);
@@ -44,22 +52,54 @@ impl GwConfigDatabase {
             Err(ApiError::NoSuchConfig(genid))
         }
     }
-    pub fn apply(&mut self, genid: GenId) -> ApiResult {
-        debug!("Applying config '{}'...", genid);
-        let Some(config) = self.configs.get_mut(&genid) else {
+
+    pub async fn apply(&mut self, genid: GenId, frrmi: &FrrMi) -> ApiResult {
+        debug!("Applying config with genid '{}'...", genid);
+
+        /* get the generation (id) of the currently applied config, if any */
+        let last = self.current;
+
+        /* Abort if the requested config is already applied */
+        if let Some(last) = last {
+            if last == genid {
+                info!("Config {} is already applied", last);
+                return Ok(());
+            }
+            debug!("The current config is {last}");
+        } else {
+            debug!("There is no current config applied");
+        }
+
+        /* look up the config to apply */
+        let Some(config) = self.get_mut(genid) else {
             error!("Can't apply config {}: not found", genid);
             return Err(ApiError::NoSuchConfig(genid));
         };
-        // apply the selected config
-        let res = config.apply();
+        debug!("Config with id {genid} found");
+
+        /* attempt to apply the configuration found */
+        let res = config.apply(frrmi).await;
         if res.is_ok() {
             info!("Successfully applied config '{}'", genid);
             self.current = Some(genid);
         } else {
-            // TODO: roll back
+            /* roll-back */
+            if let Some(current) = last {
+                info!("Rolling back to prior config '{}'", current);
+                let mut config = self.get_mut(current);
+                if let Some(config) = &mut config {
+                    if let Err(e) = config.apply(frrmi).await {
+                        error!("Fatal: could not roll-back to prior config: {e}");
+                    }
+                }
+            } else {
+                info!("There was no current config. Flushing system...");
+                /* To do: build a dummy config and apply it for the purpose of flushing */
+            }
         }
         res
     }
+
     /// Get the generation Id of the currently applied config, if any.
     pub fn get_current_gen(&self) -> Option<GenId> {
         self.current

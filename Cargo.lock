@@ -554,6 +554,7 @@ dependencies = [
  "dpdk",
  "dyn-iter",
  "iptrie",
+ "mgmt",
  "mio",
  "net",
  "netdev",
@@ -875,8 +876,8 @@ dependencies = [
 
 [[package]]
 name = "gateway_config"
-version = "0.1.0"
-source = "git+https://github.com/githedgehog/gateway-proto#812ab8d2c072d9aca3b582af543b53324040f1bb"
+version = "0.2.0"
+source = "git+https://github.com/githedgehog/gateway-proto#3c6a4090967b8c9e43e1645b66fc1953ac1ff163"
 dependencies = [
  "async-trait",
  "futures",
@@ -1202,11 +1203,13 @@ dependencies = [
  "derive_builder",
  "gateway_config",
  "net",
+ "nix",
  "routing",
  "thiserror 2.0.12",
  "tokio",
  "tonic",
  "tracing",
+ "tracing-test",
 ]
 
 [[package]]

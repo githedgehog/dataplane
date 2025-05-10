@@ -10,6 +10,7 @@ use net::vxlan::Vni;
 use routing::prefix::Prefix;
 
 use super::bgp::BgpConfig;
+use super::ospf::Ospf;
 use super::statics::StaticRoute;
 
 #[derive(Clone, Debug, Default)]
@@ -23,6 +24,7 @@ pub struct VrfConfig {
     pub static_routes: BTreeSet<StaticRoute>,
     pub bgp: Option<BgpConfig>,
     pub interfaces: InterfaceConfigTable,
+    pub ospf: Option<Ospf>,
 }
 
 impl VrfConfig {
@@ -36,6 +38,7 @@ impl VrfConfig {
             static_routes: BTreeSet::new(),
             bgp: None,
             interfaces: InterfaceConfigTable::new(),
+            ospf: None,
         }
     }
     pub fn set_table_id(mut self, tableid: u32) -> Self {
@@ -45,18 +48,12 @@ impl VrfConfig {
         self.tableid = Some(tableid);
         self
     }
-    pub fn set_vni(mut self, vni: Vni) -> Self {
-        if self.default {
-            panic!("Can't set VNI for default vrf");
-        }
-        self.vni = Some(vni);
+    pub fn set_bgp(&mut self, mut bgp: BgpConfig) -> &Self {
+        self.bgp = Some(bgp);
         self
     }
-    pub fn set_bgp(&mut self, mut bgp: BgpConfig) -> &Self {
-        if !self.default {
-            bgp = bgp.set_vrf_name(&self.name);
-        }
-        self.bgp = Some(bgp);
+    pub fn set_ospf(&mut self, mut ospf: Ospf) -> &Self {
+        self.ospf = Some(ospf);
         self
     }
     pub fn add_subnet(&mut self, subnet: Prefix) {
