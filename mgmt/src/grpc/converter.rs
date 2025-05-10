@@ -490,13 +490,17 @@ pub fn convert_expose_from_grpc(expose: &gateway_config::Expose) -> Result<VpcEx
                     // Parse CIDR into IP and netmask
                     let (ip_str, netmask) = parse_cidr(cidr)?;
                     // Add as an include rule
-                    vpc_expose = vpc_expose.ip(Prefix::from((ip_str.as_str(), netmask)));
+                    vpc_expose = vpc_expose.ip(Prefix::try_from_tuple((ip_str.as_str(), netmask))
+                        .map_err(|e| e.to_string())?);
                 }
                 gateway_config::config::peering_i_ps::Rule::Not(not) => {
                     // Parse CIDR into IP and netmask for exclude rule
                     let (ip_str, netmask) = parse_cidr(not)?;
                     // Add as an exclude rule
-                    vpc_expose = vpc_expose.not(Prefix::from((ip_str.as_str(), netmask)));
+                    vpc_expose = vpc_expose.not(
+                        Prefix::try_from_tuple((ip_str.as_str(), netmask))
+                            .map_err(|e| e.to_string())?,
+                    );
                 }
             }
         } else {
@@ -512,13 +516,19 @@ pub fn convert_expose_from_grpc(expose: &gateway_config::Expose) -> Result<VpcEx
                     // Parse CIDR into IP and netmask
                     let (ip_str, netmask) = parse_cidr(cidr)?;
                     // Add as an include rule for AS
-                    vpc_expose = vpc_expose.as_range(Prefix::from((ip_str.as_str(), netmask)));
+                    vpc_expose = vpc_expose.as_range(
+                        Prefix::try_from_tuple((ip_str.as_str(), netmask))
+                            .map_err(|e| e.to_string())?,
+                    );
                 }
                 gateway_config::config::peering_as::Rule::Not(ip_exclude) => {
                     // Parse CIDR into IP and netmask for exclude rule
                     let (ip_str, netmask) = parse_cidr(ip_exclude)?;
                     // Add as an exclude rule for AS
-                    vpc_expose = vpc_expose.not_as(Prefix::from((ip_str.as_str(), netmask)));
+                    vpc_expose = vpc_expose.not_as(
+                        Prefix::try_from_tuple((ip_str.as_str(), netmask))
+                            .map_err(|e| e.to_string())?,
+                    );
                 }
             }
         } else {
