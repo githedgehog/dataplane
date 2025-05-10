@@ -11,6 +11,15 @@ use std::fmt::Display;
 pub use std::net::IpAddr;
 pub use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum PrefixError {
+    #[error("Invalid: {0}")]
+    Invalid(String),
+    #[error("Mask length {0} is invalid")]
+    InvalidLength(u8),
+}
 
 /// Type to represent both IPv4 and IPv6 prefixes to expose an IP version-independent API.
 /// Since we will not store prefixes, putting Ipv6 on the same basket as IPv4 will not penalize the
@@ -23,6 +32,9 @@ pub enum Prefix {
 
 #[allow(dead_code)]
 impl Prefix {
+    const MAX_LEN_IPV4: u8 = 32;
+    const MAX_LEN_IPV6: u8 = 128;
+
     /// Build 0.0.0.0/0. "Default" is a very overloaded term. Calling this root_v4 instead of default_v4.
     pub fn root_v4() -> Prefix {
         Prefix::IPV4(Ipv4Prefix::default())
@@ -95,6 +107,21 @@ impl Prefix {
             (Prefix::IPV4(p1), Prefix::IPV4(p2)) => p1.covers(p2),
             (Prefix::IPV6(p1), Prefix::IPV6(p2)) => p1.covers(p2),
             _ => false,
+        }
+    }
+    /// Build a [`Prefix`] from (&str, u8)
+    /// For a mysterious reason the compiler complains about a conflicting implementation in
+    /// crate core when implementing this as TryFrom<(&str, u8)> for Prefix.
+    pub fn try_from_tuple(tuple: (&str, u8)) -> Result<Self, PrefixError> {
+        let a = IpAddr::from_str(tuple.0).map_err(|e| PrefixError::Invalid(e.to_string()))?;
+        let max_len = match a {
+            IpAddr::V4(_) => Prefix::MAX_LEN_IPV4,
+            IpAddr::V6(_) => Prefix::MAX_LEN_IPV6,
+        };
+        if tuple.1 > max_len {
+            Err(PrefixError::InvalidLength(tuple.1))
+        } else {
+            Ok(Prefix::from((a, tuple.1)))
         }
     }
 }
