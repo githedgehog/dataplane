@@ -4,6 +4,7 @@
 #[cfg(test)]
 #[allow(clippy::uninlined_format_args)]
 mod tests {
+    // Import proto-generated types
     use gateway_config::GatewayConfig;
     use std::collections::HashMap;
     use std::convert::TryFrom;
@@ -188,15 +189,13 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_convert_to_grpc_config() {
-        // Create a mock database
-        #[allow(unused_variables)]
+    #[test]
+    fn test_convert_to_grpc_config() {
         // Create test data
         let grpc_config = create_test_gateway_config();
         // Call the conversion function (gRPC -> ExternalConfig)
         // Using standalone function instead of manager method
-        let result = converter::convert_from_grpc_config(&grpc_config).await;
+        let result = converter::convert_from_grpc_config(&grpc_config);
 
         // Verify result
         assert!(
@@ -208,7 +207,7 @@ mod tests {
 
         // Call the conversion function (ExternalConfig -> gRPC)
         // Using standalone function instead of manager method
-        let result = converter::convert_to_grpc_config(&external_config).await;
+        let result = converter::convert_to_grpc_config(&external_config);
 
         // Verify result
         assert!(
@@ -592,8 +591,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_tryfrom_conversions() {
+    #[test]
+    fn test_tryfrom_conversions() {
         // Create test data with specific components
         let device = gateway_config::Device {
             driver: 0,   // Kernel

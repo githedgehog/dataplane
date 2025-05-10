@@ -5,14 +5,14 @@
 
 use std::fmt::Display;
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub enum FrrProfile {
     #[default]
     Datacenter,
     Traditional,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Frr {
     pub profile: FrrProfile,
     pub hostname: String,

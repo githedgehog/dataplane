@@ -6,7 +6,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 use tracing::Level;
 
-use crate::models::external::configdb::gwconfig::{
+use crate::models::external::gwconfig::{
     ExternalConfig, ExternalConfigBuilder, GwConfig, Underlay,
 };
 use crate::models::external::overlay::Overlay;
@@ -83,9 +83,7 @@ pub fn create_gw_config(external_config: ExternalConfig) -> GwConfig {
 //--------------------------------------------------------------------------------
 
 /// Convert from GatewayConfig (gRPC) to ExternalConfig
-pub async fn convert_from_grpc_config(
-    grpc_config: &GatewayConfig,
-) -> Result<ExternalConfig, String> {
+pub fn convert_from_grpc_config(grpc_config: &GatewayConfig) -> Result<ExternalConfig, String> {
     // Extract required components
     let device = grpc_config
         .device
@@ -492,13 +490,17 @@ pub fn convert_expose_from_grpc(expose: &gateway_config::Expose) -> Result<VpcEx
                     // Parse CIDR into IP and netmask
                     let (ip_str, netmask) = parse_cidr(cidr)?;
                     // Add as an include rule
-                    vpc_expose = vpc_expose.ip(Prefix::from((ip_str.as_str(), netmask)));
+                    vpc_expose = vpc_expose.ip(Prefix::try_from_tuple((ip_str.as_str(), netmask))
+                        .map_err(|e| e.to_string())?);
                 }
                 gateway_config::config::peering_i_ps::Rule::Not(not) => {
                     // Parse CIDR into IP and netmask for exclude rule
                     let (ip_str, netmask) = parse_cidr(not)?;
                     // Add as an exclude rule
-                    vpc_expose = vpc_expose.not(Prefix::from((ip_str.as_str(), netmask)));
+                    vpc_expose = vpc_expose.not(
+                        Prefix::try_from_tuple((ip_str.as_str(), netmask))
+                            .map_err(|e| e.to_string())?,
+                    );
                 }
             }
         } else {
@@ -514,13 +516,19 @@ pub fn convert_expose_from_grpc(expose: &gateway_config::Expose) -> Result<VpcEx
                     // Parse CIDR into IP and netmask
                     let (ip_str, netmask) = parse_cidr(cidr)?;
                     // Add as an include rule for AS
-                    vpc_expose = vpc_expose.as_range(Prefix::from((ip_str.as_str(), netmask)));
+                    vpc_expose = vpc_expose.as_range(
+                        Prefix::try_from_tuple((ip_str.as_str(), netmask))
+                            .map_err(|e| e.to_string())?,
+                    );
                 }
                 gateway_config::config::peering_as::Rule::Not(ip_exclude) => {
                     // Parse CIDR into IP and netmask for exclude rule
                     let (ip_str, netmask) = parse_cidr(ip_exclude)?;
                     // Add as an exclude rule for AS
-                    vpc_expose = vpc_expose.not_as(Prefix::from((ip_str.as_str(), netmask)));
+                    vpc_expose = vpc_expose.not_as(
+                        Prefix::try_from_tuple((ip_str.as_str(), netmask))
+                            .map_err(|e| e.to_string())?,
+                    );
                 }
             }
         } else {
@@ -917,9 +925,7 @@ pub fn convert_overlay_to_grpc(overlay: &Overlay) -> Result<gateway_config::Over
 }
 
 /// Convert from ExternalConfig to GatewayConfig (gRPC)
-pub async fn convert_to_grpc_config(
-    external_config: &ExternalConfig,
-) -> Result<GatewayConfig, String> {
+pub fn convert_to_grpc_config(external_config: &ExternalConfig) -> Result<GatewayConfig, String> {
     // Convert device config
     let device = convert_device_to_grpc(&external_config.device)?;
 

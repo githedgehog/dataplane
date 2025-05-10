@@ -15,7 +15,7 @@ use crate::models::external::overlay::vpcpeering::VpcPeeringTable;
 
 use tracing::{debug, error};
 
-use super::{ApiError, ApiResult};
+use super::{ConfigError, ConfigResult};
 
 #[derive(Clone, Debug, Default)]
 pub struct Overlay {
@@ -30,14 +30,14 @@ impl Overlay {
             peering_table,
         }
     }
-    fn check_peering_vpc(&self, peering: &str, manifest: &VpcManifest) -> ApiResult {
+    fn check_peering_vpc(&self, peering: &str, manifest: &VpcManifest) -> ConfigResult {
         if self.vpc_table.get_vpc(&manifest.name).is_none() {
             error!("peering '{}': unknown VPC '{}'", peering, manifest.name);
-            return Err(ApiError::NoSuchVpc(manifest.name.clone()));
+            return Err(ConfigError::NoSuchVpc(manifest.name.clone()));
         }
         Ok(())
     }
-    pub fn validate(&mut self) -> ApiResult {
+    pub fn validate(&mut self) -> ConfigResult {
         debug!("Validating overlay configuration...");
         /* check if the VPCs referred in a peering exist */
         for peering in self.peering_table.values() {

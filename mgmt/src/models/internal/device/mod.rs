@@ -8,9 +8,9 @@ pub mod settings;
 
 use ports::PortConfig;
 use settings::DeviceSettings;
-use tracing::warn;
+use tracing::{debug, error};
 
-use crate::models::external::ApiResult;
+use crate::models::external::{ConfigError, ConfigResult};
 
 #[derive(Clone, Debug)]
 pub struct DeviceConfig {
@@ -24,8 +24,11 @@ impl DeviceConfig {
             ports: vec![],
         }
     }
-    pub fn validate(&self) -> ApiResult {
-        warn!("Validating device configuration (TODO)");
+    pub fn validate(&self) -> ConfigResult {
+        debug!("Validating device configuration..");
+        if self.settings.hostname.is_empty() {
+            return Err(ConfigError::MissingIdentifier("Device hostname"));
+        }
         Ok(())
     }
 }

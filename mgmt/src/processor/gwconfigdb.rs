@@ -7,8 +7,8 @@ use crate::frr::frrmi::FrrMi;
 use std::collections::BTreeMap;
 use tracing::{debug, error, info};
 
-use crate::models::external::configdb::gwconfig::{GenId, GwConfig};
-use crate::models::external::{ApiError, ApiResult};
+use crate::models::external::gwconfig::{ExternalConfig, GenId, GwConfig};
+use crate::models::external::{ConfigError, ConfigResult};
 
 #[derive(Default)]
 #[allow(unused)]
@@ -21,11 +21,17 @@ pub struct GwConfigDatabase {
 impl GwConfigDatabase {
     pub fn new() -> Self {
         debug!("Building config database...");
-        Self::default()
+        let mut configdb = Self::default();
+        configdb.add(GwConfig::blank());
+        configdb
     }
     pub fn add(&mut self, config: GwConfig) {
         debug!("Adding config '{}' to config db...", config.genid());
         self.configs.insert(config.external.genid, config);
+    }
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        self.configs.len()
     }
     pub fn get(&self, genid: GenId) -> Option<&GwConfig> {
         self.configs.get(&genid)
@@ -36,12 +42,16 @@ impl GwConfigDatabase {
     pub fn get_mut(&mut self, generation: GenId) -> Option<&mut GwConfig> {
         self.configs.get_mut(&generation)
     }
-    pub fn remove(&mut self, genid: GenId) -> ApiResult {
+    pub fn remove(&mut self, genid: GenId) -> ConfigResult {
         debug!("Removing config '{}' from config db...", genid);
+        if genid == ExternalConfig::BLANK_GENID {
+            error!("Can't remove config {}: forbidden", genid);
+            return Err(ConfigError::Forbidden("Cannot delete initial config"));
+        }
         if let Some(config) = &self.configs.get(&genid) {
             if config.meta.is_applied {
                 error!("Can't remove config {}: in use", genid);
-                Err(ApiError::Forbidden)
+                Err(ConfigError::Forbidden("In use"))
             } else {
                 debug!("Successfully removed config '{}'", genid);
                 self.configs.remove(&genid);
@@ -49,11 +59,11 @@ impl GwConfigDatabase {
             }
         } else {
             error!("Can't remove config {}: not found", genid);
-            Err(ApiError::NoSuchConfig(genid))
+            Err(ConfigError::NoSuchConfig(genid))
         }
     }
 
-    pub async fn apply(&mut self, genid: GenId, frrmi: &FrrMi) -> ApiResult {
+    pub async fn apply(&mut self, genid: GenId, frrmi: &FrrMi) -> ConfigResult {
         debug!("Applying config with genid '{}'...", genid);
 
         /* get the generation (id) of the currently applied config, if any */
@@ -73,16 +83,19 @@ impl GwConfigDatabase {
         /* look up the config to apply */
         let Some(config) = self.get_mut(genid) else {
             error!("Can't apply config {}: not found", genid);
-            return Err(ApiError::NoSuchConfig(genid));
+            return Err(ConfigError::NoSuchConfig(genid));
         };
         debug!("Config with id {genid} found");
 
         /* attempt to apply the configuration found */
         let res = config.apply(frrmi).await;
         if res.is_ok() {
-            info!("Successfully applied config '{}'", genid);
+            info!("Config with genid '{}' is now the current", genid);
             self.current = Some(genid);
         } else {
+            /* delete the config we wanted to apply */
+            debug!("Deleting config with id {genid}");
+            let _ = self.configs.remove(&genid);
             /* roll-back */
             if let Some(current) = last {
                 info!("Rolling back to prior config '{}'", current);
@@ -93,10 +106,16 @@ impl GwConfigDatabase {
                     }
                 }
             } else {
-                info!("There was no current config. Flushing system...");
-                /* To do: build a dummy config and apply it for the purpose of flushing */
+                // This should not happen if we apply upfront the blank config and we
+                // succeed. That is not guaranteed, though since we may fail to communicate
+                // to FRR an initial, blank config.
+                info!("There was no config applied");
             }
         }
+        debug!(
+            "Number of configs in the database is: {}",
+            self.configs.len()
+        );
         res
     }
 

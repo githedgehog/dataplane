@@ -6,25 +6,25 @@
 use routing::prefix::Prefix;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, Ord, Eq, PartialOrd, PartialEq)]
+#[derive(Clone, Debug, Ord, Eq, PartialOrd, PartialEq)]
 pub enum PrefixListAction {
     Deny,
     Permit,
 }
 
-#[derive(Debug, Ord, Eq, PartialOrd, PartialEq)]
+#[derive(Clone, Debug, Ord, Eq, PartialOrd, PartialEq)]
 pub enum PrefixListPrefix {
     Prefix(Prefix),
     Any,
 }
 
-#[derive(Debug, Ord, Eq, PartialOrd, PartialEq)]
+#[derive(Clone, Debug, Ord, Eq, PartialOrd, PartialEq)]
 pub enum PrefixListMatchLen {
     Ge(u8),
     Le(u8),
 }
 
-#[derive(Debug, Ord, Eq, PartialOrd, PartialEq)]
+#[derive(Clone, Debug, Ord, Eq, PartialOrd, PartialEq)]
 pub struct PrefixListEntry {
     pub seq: u32,
     pub action: PrefixListAction,
@@ -32,14 +32,14 @@ pub struct PrefixListEntry {
     pub len_match: Option<PrefixListMatchLen>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct PrefixList {
     pub name: String,
     pub description: Option<String>,
     pub entries: BTreeSet<PrefixListEntry>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct PrefixListTable(BTreeMap<String, PrefixList>);
 
 /* Impl basic ops */
