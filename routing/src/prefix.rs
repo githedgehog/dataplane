@@ -171,6 +171,7 @@ impl From<Ipv6Prefix> for Prefix {
 }
 
 /// Only for testing. Will panic with badly formed address strings
+#[cfg(test)]
 impl From<(&str, u8)> for Prefix {
     fn from(tuple: (&str, u8)) -> Self {
         let a = IpAddr::from_str(tuple.0).expect("Bad address");
