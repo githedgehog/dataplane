@@ -63,7 +63,7 @@ impl GwConfigDatabase {
         }
     }
 
-    pub async fn apply(&mut self, genid: GenId, frrmi: &FrrMi) -> ConfigResult {
+    pub async fn apply(&mut self, genid: GenId, frrmi: &mut FrrMi) -> ConfigResult {
         debug!("Applying config with genid '{}'...", genid);
 
         /* get the generation (id) of the currently applied config, if any */

@@ -630,6 +630,7 @@ name = "dataplane-mgmt"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "dataplane-net",
  "dataplane-routing",
  "derive_builder",
