@@ -3,12 +3,11 @@
 
 // FRRMI: FRR management interface
 
+use crate::frr::renderer::builder::ConfigBuilder;
+use crate::models::external::gwconfig::GenId;
 use nix::sys::socket::{setsockopt, sockopt};
 use std::str;
 use tokio::time::{Duration, timeout};
-
-use crate::frr::renderer::builder::ConfigBuilder;
-use crate::models::external::gwconfig::GenId;
 
 use std::fs;
 use std::net::Shutdown;
@@ -83,10 +82,10 @@ pub struct FrrMi {
     remote: String,
     connected: bool,
     up: bool,
-    rx_timeout: Duration,
+    timeout: Duration,
 }
 impl FrrMi {
-    const REPLY_TIMEOUT: u64 = 10;
+    const FRRMI_TIMEOUT: u64 = 10;
 
     /// Create an frrmi to talk to an frr-agent.
     pub async fn new(bind_addr: &str, remote_addr: &str) -> Result<FrrMi, FrrErr> {
@@ -97,7 +96,7 @@ impl FrrMi {
             remote: remote_addr.to_string(),
             connected: false,
             up: false,
-            rx_timeout: Duration::from_secs(Self::REPLY_TIMEOUT),
+            timeout: Duration::from_secs(Self::FRRMI_TIMEOUT),
         };
         /* attempt connect to frr-agent. If successful, probe the frr-agent */
         frrmi.connect();
@@ -158,12 +157,12 @@ impl FrrMi {
 
         /* start a timeout for the reception of the response */
         let mut rx_buff = vec![0u8; 1024];
-        let result = match timeout(self.rx_timeout, self.sock.recv(&mut rx_buff)).await {
+        let result = match timeout(self.timeout, self.sock.recv(&mut rx_buff)).await {
             Ok(result) => result,
             Err(_) => {
                 error!(
                     "Got no response from frr-agent in {:?} seconds",
-                    self.rx_timeout
+                    self.timeout
                 );
                 return Err(FrrErr::TimeOut);
             }
