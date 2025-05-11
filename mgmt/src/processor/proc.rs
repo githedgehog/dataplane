@@ -103,7 +103,7 @@ impl ConfigProcessor {
         self.config_db.add(config);
 
         /* apply the configuration just stored */
-        self.config_db.apply(genid, &self.frrmi).await?;
+        self.config_db.apply(genid, &mut self.frrmi).await?;
 
         Ok(())
     }
@@ -111,7 +111,7 @@ impl ConfigProcessor {
     /// Method to apply a blank configuration
     async fn apply_blank_config(&mut self) -> ConfigResult {
         self.config_db
-            .apply(ExternalConfig::BLANK_GENID, &self.frrmi)
+            .apply(ExternalConfig::BLANK_GENID, &mut self.frrmi)
             .await
     }
 
@@ -170,7 +170,7 @@ impl ConfigProcessor {
     }
 }
 
-pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &FrrMi) -> ConfigResult {
+pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &mut FrrMi) -> ConfigResult {
     /* apply in interface manager - async (TODO) */
 
     /* apply in frr: need to render and call frr-reload */
@@ -202,8 +202,7 @@ async fn start_grpc_server(addr: SocketAddr, channel_tx: Sender<ConfigChannelReq
 
 async fn start_frrmi() -> Result<FrrMi, Error> {
     /* create frrmi to talk to frr-agent */
-    let Ok(frrmi) = FrrMi::new("/var/run/frr/frrmi.sock", "/var/run/frr/frr-agent.sock").await
-    else {
+    let Ok(frrmi) = FrrMi::new("/var/run/frr/frr-agent.sock").await else {
         error!("Failed to start frrmi");
         return Err(Error::other("Failed to start frrmi"));
     };

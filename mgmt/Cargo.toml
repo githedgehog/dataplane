@@ -7,6 +7,7 @@ license = "Apache-2.0"
 
 [dependencies]
 async-trait = { workspace = true }
+bytes = { workspace = true }
 derive_builder = { workspace = true }
 gateway_config = { workspace = true }
 net = { workspace = true }

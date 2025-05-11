@@ -128,7 +128,7 @@ impl GwConfig {
     }
 
     /// Apply a [`GwConfig`].
-    pub async fn apply(&mut self, frrmi: &FrrMi) -> ConfigResult {
+    pub async fn apply(&mut self, frrmi: &mut FrrMi) -> ConfigResult {
         info!("Applying config with genid {}...", self.genid());
         if self.internal.is_none() {
             debug!("Config has no internal config...");
