@@ -45,16 +45,8 @@ impl Overlay {
             self.check_peering_vpc(&peering.name, &peering.right)?;
         }
 
-        /* temporary map of vpc names and ids */
-        let id_map: VpcIdMap = self
-            .vpc_table
-            .iter_by_name()
-            .map(|vpc| (vpc.name.clone(), vpc.id.clone()))
-            .collect();
-
         /* collect peerings of every VPC */
-        self.vpc_table
-            .collect_peerings(&self.peering_table, &id_map);
+        self.vpc_table.collect_peerings(&self.peering_table);
 
         debug!("Overlay configuration is VALID");
         Ok(())

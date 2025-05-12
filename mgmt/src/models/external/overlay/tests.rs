@@ -281,14 +281,8 @@ pub mod test {
         /* display peering table */
         println!("{peering_table}");
 
-        /* collect ids */
-        let id_map: VpcIdMap = vpc_table
-            .iter_by_name()
-            .map(|vpc| (vpc.name.clone(), vpc.id.clone()))
-            .collect();
-
         /* collect the peerings for each VPC */
-        vpc_table.collect_peerings(&peering_table, &id_map);
+        vpc_table.collect_peerings(&peering_table);
 
         /* display VPC table */
         println!("{vpc_table}");

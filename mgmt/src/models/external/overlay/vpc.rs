@@ -115,8 +115,13 @@ impl Vpc {
 }
 
 impl MultiIndexVpcMap {
-    pub fn collect_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
+    #[tracing::instrument(level = "debug", skip(self), ret)]
+    pub(crate) fn collect_peerings(&mut self, peering_table: &VpcPeeringTable) {
+        let idmap: VpcIdMap = self
+            .iter_by_name()
+            .map(|vpc| (vpc.name.clone(), vpc.id.clone()))
+            .collect();
         debug!("Collecting peerings for all VPCs..");
-        unsafe { self.iter_mut() }.for_each(|(_, vpc)| vpc.collect_peerings(peering_table, idmap));
+        unsafe { self.iter_mut() }.for_each(|(_, vpc)| vpc.collect_peerings(peering_table, &idmap));
     }
 }
