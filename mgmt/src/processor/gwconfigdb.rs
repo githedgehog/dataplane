@@ -43,9 +43,9 @@ impl GwConfigDatabase {
         self.configs.get_mut(&generation)
     }
     pub fn remove(&mut self, genid: GenId) -> ConfigResult {
-        debug!("Removing config '{}' from config db...", genid);
+        debug!("Removing config '{genid}' from config db...");
         if genid == ExternalConfig::BLANK_GENID {
-            error!("Can't remove config {}: forbidden", genid);
+            error!("Can't remove config {genid}: forbidden");
             return Err(ConfigError::Forbidden("Cannot delete initial config"));
         }
         if let Some(config) = &self.configs.get(&genid) {
@@ -94,8 +94,8 @@ impl GwConfigDatabase {
             self.current = Some(genid);
         } else {
             /* delete the config we wanted to apply */
-            debug!("Deleting config with id {genid}");
-            let _ = self.configs.remove(&genid);
+            debug!("Deleting config with id {genid}..");
+            let _ = self.remove(genid);
             /* roll-back */
             if let Some(current) = last {
                 info!("Rolling back to prior config '{}'", current);
