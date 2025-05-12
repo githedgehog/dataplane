@@ -226,7 +226,11 @@ pub mod test {
     /* UNDERLAY, default VRF */
     fn sample_config_default_vrf(asn: u32, loopback: IpAddr, router_id: Ipv4Addr) -> VrfConfig {
         /* create default vrf config object */
-        let mut vrf_cfg = VrfConfig::new("default", None, true);
+        let mut vrf_cfg = VrfConfig::new(
+            "default".try_into().unwrap_or_else(|_| unreachable!()),
+            None,
+            true,
+        );
 
         /* Add BGP configuration */
         let bgp = sample_config_bgp_default_vrf(asn, loopback, router_id);

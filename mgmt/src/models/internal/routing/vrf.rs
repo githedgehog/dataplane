@@ -8,7 +8,7 @@ use net::route::RouteTableId;
 use net::vxlan::Vni;
 use routing::prefix::Prefix;
 use std::collections::BTreeSet;
-
+use net::interface::InterfaceName;
 use super::bgp::BgpConfig;
 use super::ospf::Ospf;
 use super::statics::StaticRoute;
@@ -16,7 +16,7 @@ use super::statics::StaticRoute;
 #[derive(Clone, Debug)]
 
 pub struct VrfConfig {
-    pub name: String,
+    pub name: InterfaceName,
     pub default: bool,
     pub tableid: Option<RouteTableId>,
     pub vni: Option<Vni>,
@@ -30,7 +30,7 @@ pub struct VrfConfig {
 impl Default for VrfConfig {
     fn default() -> Self {
         Self {
-            name: "default".to_owned(),
+            name: "default".try_into().unwrap_or_else(|_| unreachable!()),
             default: true,
             tableid: None,
             vni: None,
@@ -44,9 +44,9 @@ impl Default for VrfConfig {
 }
 
 impl VrfConfig {
-    pub fn new(name: &str, vni: Option<Vni>, default: bool) -> Self {
+    pub fn new(name: InterfaceName, vni: Option<Vni>, default: bool) -> Self {
         Self {
-            name: name.to_owned(),
+            name,
             default,
             tableid: None,
             vni,

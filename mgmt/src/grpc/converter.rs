@@ -172,7 +172,8 @@ pub fn convert_underlay_from_grpc(underlay: &gateway_config::Underlay) -> Result
 /// Convert gRPC VRF to internal VrfConfig
 pub fn convert_vrf_to_vrf_config(vrf: &gateway_config::Vrf) -> Result<VrfConfig, String> {
     // Create VRF config
-    let mut vrf_config = VrfConfig::new(&vrf.name, None, true /* default vrf */);
+    let vrf_name = InterfaceName::try_from(vrf.name.as_str()).map_err(|e| e.to_string())?;
+    let mut vrf_config = VrfConfig::new(vrf_name, None, true /* default vrf */);
 
     // Convert BGP config if present and add it to VRF
     if let Some(router) = &vrf.router {
@@ -800,7 +801,7 @@ pub fn convert_vrf_config_to_grpc(vrf: &VrfConfig) -> Result<gateway_config::Vrf
     let ospf = vrf.ospf.as_ref().map(convert_ospf_to_grpc);
 
     Ok(gateway_config::Vrf {
-        name: vrf.name.clone(),
+        name: vrf.name.to_string(),
         interfaces,
         router,
         ospf,

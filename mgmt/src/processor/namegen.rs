@@ -6,21 +6,22 @@
 #![allow(unused)]
 
 use crate::models::external::overlay::vpc::{Vpc, VpcId};
+use net::interface::InterfaceName;
 
 impl VpcId {
-    pub(crate) fn vrf_name(&self) -> String {
-        format!("{self}-vrf")
+    pub(crate) fn vrf_name(&self) -> InterfaceName {
+        InterfaceName::try_from(format!("{self}-vrf")).unwrap_or_else(|_| unreachable!())
     }
-    pub(crate) fn bridge_name(&self) -> String {
-        format!("{self}-bri")
+    pub(crate) fn bridge_name(&self) -> InterfaceName {
+        InterfaceName::try_from(format!("{self}-bri")).unwrap_or_else(|_| unreachable!())
     }
-    pub(crate) fn vtep_name(&self) -> String {
-        format!("{self}-vtp")
+    pub(crate) fn vtep_name(&self) -> InterfaceName {
+        InterfaceName::try_from(format!("{self}-vtp")).unwrap_or_else(|_| unreachable!())
     }
 }
 
 impl Vpc {
-    pub(crate) fn vrf_name(&self) -> String {
+    pub(crate) fn vrf_name(&self) -> InterfaceName {
         self.id.vrf_name()
     }
     pub(crate) fn import_route_map_ipv4(&self) -> String {
