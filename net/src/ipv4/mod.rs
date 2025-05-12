@@ -16,7 +16,7 @@ use crate::parse::{
 };
 use crate::tcp::Tcp;
 use crate::udp::Udp;
-use etherparse::{IpFragOffset, IpNumber, Ipv4Dscp, Ipv4Ecn, Ipv4Header};
+use etherparse::{IpDscp, IpEcn, IpFragOffset, IpNumber, Ipv4Header};
 use std::net::Ipv4Addr;
 use std::num::NonZero;
 use tracing::{debug, trace};
@@ -105,7 +105,7 @@ impl Ipv4 {
     ///
     /// [differentiated services code point]: https://en.wikipedia.org/wiki/Differentiated_services
     #[must_use]
-    pub fn dscp(&self) -> Ipv4Dscp {
+    pub fn dscp(&self) -> IpDscp {
         self.0.dscp
     }
 
@@ -114,7 +114,7 @@ impl Ipv4 {
     ///
     /// [explicit congestion notification]: https://en.wikipedia.org/wiki/Explicit_Congestion_Notification
     #[must_use]
-    pub fn ecn(&self) -> Ipv4Ecn {
+    pub fn ecn(&self) -> IpEcn {
         self.0.ecn
     }
 

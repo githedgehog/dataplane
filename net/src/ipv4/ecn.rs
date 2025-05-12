@@ -3,12 +3,12 @@
 
 //! ECN type and contract
 
-use etherparse::Ipv4Ecn;
+use etherparse::IpEcn;
 
 /// Explicit congestion notification value
 #[repr(transparent)]
 #[derive(Copy, Clone, Default, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct Ecn(pub(crate) Ipv4Ecn);
+pub struct Ecn(pub(crate) IpEcn);
 
 /// Errors which may occur relating to illegal [`Ecn`] values
 #[derive(Debug, thiserror::Error)]
@@ -26,7 +26,7 @@ impl Ecn {
     /// Will return an [`InvalidEcnError`] if the supplied value is larger than two bits
     pub fn new(raw: u8) -> Result<Ecn, InvalidEcnError> {
         Ok(Ecn(
-            Ipv4Ecn::try_new(raw).map_err(|e| InvalidEcnError::TooLarge(e.actual))?
+            IpEcn::try_new(raw).map_err(|e| InvalidEcnError::TooLarge(e.actual))?
         ))
     }
 }
