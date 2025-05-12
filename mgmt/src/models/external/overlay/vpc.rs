@@ -62,14 +62,15 @@ pub(crate) type VpcIdMap = BTreeMap<String, VpcId>;
 #[multi_index_derive(Clone, Debug)]
 pub struct Vpc {
     #[multi_index(ordered_unique)]
-    pub name: String, /* name of vpc, used as key */
+    pub name: String,
     #[multi_index(ordered_unique)]
-    pub id: VpcId, /* internal Id, unique*/
+    pub id: VpcId,
     #[multi_index(ordered_unique)]
-    pub vni: Vni, /* mandatory */
+    pub vni: Vni,
     pub interfaces: InterfaceConfigTable, /* user-defined interfaces in this VPC */
     pub peerings: Vec<Peering>,           /* peerings of this VPC - NOT set via gRPC */
 }
+
 impl Vpc {
     pub fn new(name: &str, id: &str, vni: u32) -> Result<Self, ConfigError> {
         let vni = Vni::new_checked(vni).map_err(|_| ConfigError::InvalidVpcVni(vni))?;
@@ -81,6 +82,8 @@ impl Vpc {
             peerings: vec![],
         })
     }
+
+    // TODO: OPEN QUESTION: do we need this in the context of the vpc/interface manager
     /// Add an [`InterfaceConfig`] to this [`Vpc`]
     pub fn add_interface_config(&mut self, if_cfg: InterfaceConfig) {
         self.interfaces.add_interface_config(if_cfg);
