@@ -17,8 +17,8 @@ members = [
 ]
 
 default-members = [
-        "dataplane",
-        "dpdk-sysroot-helper",
+	"dataplane",
+	"dpdk-sysroot-helper",
 	"errno",
 	"id",
 	"interface-manager",
@@ -55,7 +55,7 @@ ahash = { git = "https://github.com/githedgehog/aHash", branch = "pr/daniel-nola
 arbitrary = { version = "1.4.1", default-features = false, features = [] }
 arc-swap = { version = "1.7.1", default-features = false, features = [] }
 arrayvec = { version = "0.7.6", default-features = false, features = [] }
-async-trait = { version = "0.1"}
+async-trait = { version = "0.1" }
 bindgen = { version = "0.71.1", default-features = false, features = [] }
 bolero = { version = "0.13.2", default-features = false, features = [] }
 bytes = { version = "1.10.1", default-features = false, features = [] }
