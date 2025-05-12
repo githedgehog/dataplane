@@ -601,27 +601,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dataplane-vpc-manager"
-version = "0.1.0"
-dependencies = [
- "bolero",
- "caps",
- "dataplane-id",
- "dataplane-interface-manager",
- "derive_builder",
- "fixin",
- "futures",
- "multi_index_map",
- "net",
- "rekon",
- "rtnetlink",
- "serde",
- "tokio",
- "tracing",
- "tracing-test",
-]
-
-[[package]]
 name = "derive_arbitrary"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1200,11 +1179,21 @@ name = "mgmt"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bolero",
+ "caps",
+ "dataplane-id",
+ "dataplane-interface-manager",
  "derive_builder",
+ "fixin",
+ "futures",
  "gateway_config",
+ "multi_index_map",
  "net",
  "nix",
+ "rekon",
  "routing",
+ "rtnetlink",
+ "serde",
  "thiserror 2.0.12",
  "tokio",
  "tonic",
