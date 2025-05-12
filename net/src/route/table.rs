@@ -28,6 +28,12 @@ impl TryFrom<u32> for RouteTableId {
     }
 }
 
+impl From<NonZero<u32>> for RouteTableId {
+    fn from(value: NonZero<u32>) -> Self {
+        RouteTableId(value)
+    }
+}
+
 impl From<RouteTableId> for u32 {
     fn from(value: RouteTableId) -> Self {
         value.0.into()
