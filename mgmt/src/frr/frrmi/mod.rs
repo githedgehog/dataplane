@@ -156,6 +156,7 @@ async fn send_msg(sock: &mut UnixStream, genid: GenId, msg: &[u8]) -> Result<(),
     Ok(())
 }
 
+#[derive(Debug)]
 pub struct FrrMi {
     sock: Option<UnixStream>,
     remote: String,
@@ -272,7 +273,7 @@ pub mod tests {
     use super::*;
     use crate::frr::renderer::builder::Render;
     use crate::models::external::gwconfig::GwConfig;
-    use crate::processor::tests::test::sample_external_config;
+    use crate::processor::tests::sample_external_config;
     use tokio::fs;
     use tokio::net::UnixListener;
     use tokio::task::JoinHandle;

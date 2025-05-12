@@ -4,12 +4,12 @@
 #[allow(unused)]
 use tracing::{debug, error, warn};
 
-use routing::prefix::Prefix;
-use std::net::Ipv4Addr;
-
 use crate::models::external::overlay::vpc::Vpc;
 use crate::models::external::overlay::vpcpeering::VpcManifest;
 use crate::models::external::{ConfigError, overlay::Overlay};
+use net::route::RouteTableId;
+use routing::prefix::Prefix;
+use std::net::Ipv4Addr;
 
 use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
 
@@ -27,12 +27,14 @@ use crate::models::internal::routing::vrf::VrfConfig;
 
 /// Build a drop route
 #[must_use]
+#[tracing::instrument(level = "debug")]
 fn build_drop_route(prefix: &Prefix) -> StaticRoute {
     StaticRoute::new(prefix.clone()).nhop_reject()
 }
 
 /// Populate a prefix list from a remote manifest
 #[must_use]
+#[tracing::instrument(level = "info")]
 fn populate_prefix_list(plist: &mut PrefixList, rmanifest: &VpcManifest) -> Vec<StaticRoute> {
     let mut sroute_vec: Vec<StaticRoute> = vec![];
     let mut seq: u32 = 1;
@@ -68,6 +70,7 @@ fn populate_prefix_list(plist: &mut PrefixList, rmanifest: &VpcManifest) -> Vec<
 
 /// Build a vector of prefix lists, one per peering, and a route-map for a given VPC
 #[must_use]
+#[tracing::instrument(level = "info")]
 fn vpc_ipv4_import_configuration(vpc: &Vpc) -> (RouteMap, Vec<PrefixList>, Vec<StaticRoute>) {
     debug!("Building import config for vpc '{}'", vpc.name);
     let mut seq: u32 = 10; /* route-map sequence number */
@@ -89,7 +92,7 @@ fn vpc_ipv4_import_configuration(vpc: &Vpc) -> (RouteMap, Vec<PrefixList>, Vec<S
         /* update route-map */
         let entry = RouteMapEntry::new(seq, MatchingPolicy::Permit)
             .add_match(RouteMapMatch::Ipv4AddressPrefixList(plist.name.clone()))
-            .add_match(RouteMapMatch::SrcVrf(p.remote_id.vrf_name()));
+            .add_match(RouteMapMatch::SrcVrf(p.remote_id.vrf_name().to_string()));
         rmap.add_entry(entry);
         seq += 10;
 
@@ -100,15 +103,17 @@ fn vpc_ipv4_import_configuration(vpc: &Vpc) -> (RouteMap, Vec<PrefixList>, Vec<S
 }
 
 /// Determine ipv4 imports for a VPC
+#[tracing::instrument(level = "debug")]
 fn vpc_ipv4_imports(vpc: &Vpc) -> VrfImports {
     let mut imports = VrfImports::new().set_routemap(&vpc.import_route_map_ipv4());
     for p in vpc.peerings.iter() {
-        imports.add_vrf(&p.remote_id.vrf_name());
+        imports.add_vrf(p.remote_id.vrf_name().as_ref());
     }
     imports
 }
 
 /// Build AF Ipv4 unicast config for a VPC VRF
+#[tracing::instrument(level = "debug")]
 fn vpc_bgp_af_ipv4(vpc: &Vpc) -> AfIpv4Ucast {
     let mut af = AfIpv4Ucast::new();
     af.set_vrf_imports(vpc_ipv4_imports(vpc));
@@ -116,6 +121,7 @@ fn vpc_bgp_af_ipv4(vpc: &Vpc) -> AfIpv4Ucast {
 }
 
 /// Build AF l2vpn EVPN config for a VPC VRF
+#[tracing::instrument(level = "debug")]
 fn vpc_bgp_af_l2vpn_evpn(_vpc: &Vpc) -> AfL2vpnEvpn {
     AfL2vpnEvpn::new()
         .set_adv_all_vni(false)
@@ -125,6 +131,7 @@ fn vpc_bgp_af_l2vpn_evpn(_vpc: &Vpc) -> AfL2vpnEvpn {
 }
 
 /// Build BGP options for a VPC VRF
+#[tracing::instrument(level = "debug")]
 fn vpc_bgp_options() -> BgpOptions {
     BgpOptions::new()
         .set_network_import_check(false)
@@ -134,6 +141,7 @@ fn vpc_bgp_options() -> BgpOptions {
 }
 
 /// Build BGP config for a VPC VRF
+#[tracing::instrument(level = "debug")]
 fn vpc_vrf_bgp_config(vpc: &Vpc, asn: u32, router_id: Option<Ipv4Addr>) -> BgpConfig {
     let mut bgp = BgpConfig::new(asn).set_vrf_name(vpc.vrf_name());
     if let Some(router_id) = router_id {
@@ -146,15 +154,16 @@ fn vpc_vrf_bgp_config(vpc: &Vpc, asn: u32, router_id: Option<Ipv4Addr>) -> BgpCo
 }
 
 /// Build VRF config for a VPC
+#[tracing::instrument(level = "debug")]
 fn vpc_vrf_config(vpc: &Vpc, asn: u32, router_id: Option<Ipv4Addr>) -> VrfConfig {
     debug!("Building VRF config for vpc '{}'", vpc.name);
     /* build vrf config */
-    let mut vrf_cfg = VrfConfig::new(&vpc.vrf_name(), Some(vpc.vni), false);
+    let mut vrf_cfg = VrfConfig::new(vpc.vrf_name(), Some(vpc.vni), false);
 
     /* set table-id: table ids should be unique per VRF. We should track them and pick unused ones.
     Setting this to the VNI is not too bad atm, except that we should avoid picking reserved values
     which may cause internal failures. FIXME: fredi */
-    vrf_cfg = vrf_cfg.set_table_id(vpc.vni.as_u32());
+    vrf_cfg = vrf_cfg.set_table_id(RouteTableId::from(*vpc.vni.as_ref()));
 
     /* build BGP config for vrf */
     vrf_cfg.set_bgp(vpc_vrf_bgp_config(vpc, asn, router_id));
@@ -162,6 +171,7 @@ fn vpc_vrf_config(vpc: &Vpc, asn: u32, router_id: Option<Ipv4Addr>) -> VrfConfig
     vrf_cfg
 }
 
+#[tracing::instrument(level = "debug")]
 fn build_vpc_internal_config(
     vpc: &Vpc,
     asn: u32,
@@ -193,6 +203,7 @@ fn build_vpc_internal_config(
     internal.add_vrf_config(vrf_cfg);
 }
 
+#[tracing::instrument(level = "debug")]
 fn build_internal_overlay_config(
     overlay: &Overlay,
     asn: u32,
@@ -204,13 +215,14 @@ fn build_internal_overlay_config(
         "Requested overlay is:\n{}\n{}",
         overlay.vpc_table, overlay.peering_table
     );
-    for vpc in overlay.vpc_table.values() {
+    for vpc in overlay.vpc_table.iter_by_name() {
         build_vpc_internal_config(vpc, asn, router_id, internal);
     }
     debug!("Internal config is:\n{internal:#?}");
 }
 
 /// Top-level function to build internal config from external config
+#[tracing::instrument(level = "info")]
 pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, ConfigError> {
     debug!("Building internal config for gen {}", config.genid());
     let external = &config.external;

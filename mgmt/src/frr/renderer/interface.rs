@@ -10,7 +10,7 @@ use crate::frr::renderer::builder::{ConfigBuilder, MARKER, Render};
 
 use crate::models::internal::interfaces::interface::InterfaceAddress;
 use crate::models::internal::interfaces::interface::InterfaceConfig;
-use crate::models::internal::interfaces::interface::InterfaceConfigTable;
+use crate::models::internal::interfaces::interface::MultiIndexInterfaceConfigMap;
 
 fn ip_address_type_str(address: &IpAddr) -> &'static str {
     match address {
@@ -48,13 +48,13 @@ impl Render for InterfaceConfig {
         config
     }
 }
-impl Render for InterfaceConfigTable {
+impl Render for MultiIndexInterfaceConfigMap {
     type Context = ();
     type Output = ConfigBuilder;
     fn render(&self, _ctx: &Self::Context) -> Self::Output {
         let mut config = ConfigBuilder::new();
         // we only render config if interfaces are not marked internal
-        self.values()
+        self.iter_by_name()
             .filter(|iface| !iface.internal)
             .for_each(|iface| config += iface.render(&()));
         config
@@ -67,16 +67,18 @@ pub mod tests {
     use super::*;
     use crate::models::internal::interfaces::interface::IfEthConfig;
     use crate::models::internal::interfaces::interface::InterfaceType;
+    use net::interface::InterfaceName;
     use std::net::IpAddr;
     use std::str::FromStr;
 
     #[test]
     fn test_interface_render() {
-        let mut iface_table = InterfaceConfigTable::new();
+        let mut iface_table = MultiIndexInterfaceConfigMap::new();
 
         /* eth0: Ethernet */
+        let eth0_name = InterfaceName::try_from("eth0").expect("eth0 is a valid interface name");
         let interface = InterfaceConfig::new(
-            "eth0",
+            eth0_name,
             InterfaceType::Ethernet(IfEthConfig { mac: None }),
             false,
         )
@@ -86,15 +88,16 @@ pub mod tests {
         .add_address(IpAddr::from_str("2001:1:2:3::6").expect("Bad address"), 96)
         .set_vrf("default");
 
-        iface_table.add_interface_config(interface);
+        iface_table.try_insert(interface).unwrap();
 
         /* lo: Loopback */
-        let interface = InterfaceConfig::new("lo", InterfaceType::Loopback, false)
+        let lo_name = InterfaceName::try_from("lo").expect("lo is a valid interface name");
+        let interface = InterfaceConfig::new(lo_name, InterfaceType::Loopback, false)
             .set_description("Main loopback interface")
             .set_mtu(9000)
             .add_address(IpAddr::from_str("7.0.0.10").expect("Bad address"), 32)
             .set_vrf("default");
-        iface_table.add_interface_config(interface);
+        iface_table.try_insert(interface).unwrap();
 
         println!("{}", iface_table.render(&()));
     }

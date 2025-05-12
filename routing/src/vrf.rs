@@ -176,8 +176,8 @@ impl Vrf {
     }
     pub fn add_route(&mut self, prefix: &Prefix, route: Route, nhops: &[RouteNhop]) {
         match prefix {
-            Prefix::IPV4(p) => self.add_route_v4(p, route, nhops),
-            Prefix::IPV6(p) => self.add_route_v6(p, route, nhops),
+            Prefix::Ipv4(p) => self.add_route_v4(p, route, nhops),
+            Prefix::Ipv6(p) => self.add_route_v6(p, route, nhops),
         }
     }
 
@@ -215,8 +215,8 @@ impl Vrf {
     }
     pub fn del_route(&mut self, prefix: &Prefix) {
         match prefix {
-            Prefix::IPV4(p) => self.del_route_v4(p),
-            Prefix::IPV6(p) => self.del_route_v6(p),
+            Prefix::Ipv4(p) => self.del_route_v4(p),
+            Prefix::Ipv6(p) => self.del_route_v6(p),
         }
     }
 
@@ -234,8 +234,8 @@ impl Vrf {
     }
     pub fn get_route(&self, prefix: &Prefix) -> Option<&Route> {
         match prefix {
-            Prefix::IPV4(p) => self.get_route_v4(p),
-            Prefix::IPV6(p) => self.get_route_v6(p),
+            Prefix::Ipv4(p) => self.get_route_v4(p),
+            Prefix::Ipv6(p) => self.get_route_v6(p),
         }
     }
 
@@ -254,8 +254,8 @@ impl Vrf {
     }
     pub fn get_route_mut(&mut self, prefix: &Prefix) -> Option<&mut Route> {
         match prefix {
-            Prefix::IPV4(p) => self.get_route_v4_mut(p),
-            Prefix::IPV6(p) => self.get_route_v6_mut(p),
+            Prefix::Ipv4(p) => self.get_route_v4_mut(p),
+            Prefix::Ipv6(p) => self.get_route_v6_mut(p),
         }
     }
 
@@ -275,11 +275,11 @@ impl Vrf {
         match *target {
             IpAddr::V4(a) => {
                 let (p, r) = self.lpm_v4(&a.into());
-                (Prefix::IPV4(*p), r)
+                (Prefix::Ipv4(*p), r)
             }
             IpAddr::V6(a) => {
                 let (p, r) = self.lpm_v6(&a.into());
-                (Prefix::IPV6(*p), r)
+                (Prefix::Ipv6(*p), r)
             }
         }
     }

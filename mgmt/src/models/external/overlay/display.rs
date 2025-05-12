@@ -6,7 +6,7 @@ use routing::pretty_utils::Heading;
 use std::fmt::Display;
 
 use crate::models::external::overlay::VpcManifest;
-use crate::models::external::overlay::vpc::{Peering, VpcId, VpcTable};
+use crate::models::external::overlay::vpc::{MultiIndexVpcMap, Peering, VpcId};
 use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcPeering, VpcPeeringTable};
 
 const SEP: &str = "       ";
@@ -80,7 +80,7 @@ impl Display for Peering {
 
 /* ========= VPCs =========*/
 
-macro_rules! VPC_TBL_FMT {
+macro_rules! vpc_tbl_fmt {
     () => {
         " {:<18} {:<6} {:<8} {:<9} {:<18} {:<18}"
     };
@@ -90,7 +90,7 @@ fn fmt_vpc_table_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f,
         "{}",
         format_args!(
-            VPC_TBL_FMT!(),
+            vpc_tbl_fmt!(),
             "VPC", "Id", "VNI", "peers", "remote", "peering name"
         )
     )
@@ -130,7 +130,7 @@ impl Display for Vpc {
             writeln!(
                 f,
                 "{}",
-                format_args!(VPC_TBL_FMT!(), &self.name, self.id, self.vni, "", "", "")
+                format_args!(vpc_tbl_fmt!(), &self.name, self.id, self.vni, "", "", "")
             )?;
         } else {
             // VPC that has peerings
@@ -149,7 +149,7 @@ impl Display for Vpc {
                     f,
                     "{}",
                     format_args!(
-                        VPC_TBL_FMT!(),
+                        vpc_tbl_fmt!(),
                         name, id, vni, num_peers, peering.remote.name, peering.name
                     )
                 )?;
@@ -158,11 +158,11 @@ impl Display for Vpc {
         Ok(())
     }
 }
-impl Display for VpcTable {
+impl Display for MultiIndexVpcMap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading(format!("VPCs ({})", self.len())).fmt(f)?;
         fmt_vpc_table_heading(f)?;
-        for vpc in self.values() {
+        for vpc in self.iter_by_name() {
             vpc.fmt(f)?;
         }
         Ok(())

@@ -5,10 +5,10 @@
 
 #![allow(unused)]
 
+use net::interface::InterfaceName;
 use routing::prefix::Prefix;
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr};
-
 // FRR defaults {datacenter | traditional}
 
 #[derive(Clone, Debug, Default)]
@@ -181,7 +181,7 @@ impl Default for BgpOptions {
 /// A BGP instance config, within a certain VRF
 pub struct BgpConfig {
     pub asn: u32,
-    pub vrf: Option<String>,
+    pub vrf: Option<InterfaceName>,
     pub router_id: Option<Ipv4Addr>,
     pub options: BgpOptions,
     pub neighbors: Vec<BgpNeighbor>,
@@ -496,7 +496,7 @@ impl BgpConfig {
             ..Default::default()
         }
     }
-    pub fn set_vrf_name(mut self, vrf_name: String) -> Self {
+    pub fn set_vrf_name(mut self, vrf_name: InterfaceName) -> Self {
         self.vrf = Some(vrf_name);
         self
     }

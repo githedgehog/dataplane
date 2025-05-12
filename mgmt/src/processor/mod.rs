@@ -9,4 +9,6 @@ mod display;
 pub mod gwconfigdb;
 mod namegen;
 pub mod proc;
+
+#[cfg(test)]
 pub mod tests;

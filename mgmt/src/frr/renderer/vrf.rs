@@ -4,7 +4,7 @@
 //! Config renderer: vrfs
 
 use crate::frr::renderer::builder::{ConfigBuilder, MARKER, Render};
-use crate::models::internal::routing::vrf::{VrfConfig, VrfConfigTable};
+use crate::models::internal::routing::vrf::{MultiIndexVrfConfigMap, VrfConfig};
 
 /* impl Render */
 impl Render for VrfConfig {
@@ -33,12 +33,12 @@ impl Render for VrfConfig {
         cfg
     }
 }
-impl Render for VrfConfigTable {
+impl Render for MultiIndexVrfConfigMap {
     type Context = ();
     type Output = ConfigBuilder;
     fn render(&self, _ctx: &Self::Context) -> Self::Output {
         let mut cfg = ConfigBuilder::new();
-        self.iter().for_each(|vrf| cfg += vrf.render(&()));
+        self.iter_by_name().for_each(|vrf| cfg += vrf.render(&()));
         cfg
     }
 }
@@ -58,15 +58,17 @@ impl VrfConfig {
         cfg
     }
 }
-impl VrfConfigTable {
+impl MultiIndexVrfConfigMap {
     pub fn render_vrf_bgp(&self) -> ConfigBuilder {
         let mut cfg = ConfigBuilder::new();
-        self.iter().for_each(|vrf| cfg += vrf.render_vrf_bgp());
+        self.iter_by_name()
+            .for_each(|vrf| cfg += vrf.render_vrf_bgp());
         cfg
     }
     pub fn render_vrf_ospf(&self) -> ConfigBuilder {
         let mut cfg = ConfigBuilder::new();
-        self.iter().for_each(|vrf| cfg += vrf.render_vrf_ospf());
+        self.iter_by_name()
+            .for_each(|vrf| cfg += vrf.render_vrf_ospf());
         cfg
     }
 }
@@ -81,7 +83,11 @@ mod tests {
 
     #[test]
     fn test_vrf_render() {
-        let mut vrf_cfg = VrfConfig::new("VPC-1", Some(Vni::new_checked(3000).unwrap()), false);
+        let mut vrf_cfg = VrfConfig::new(
+            "VPC-1".try_into().unwrap_or_else(|_| unreachable!()),
+            Some(Vni::new_checked(3000).unwrap()),
+            false,
+        );
         vrf_cfg.static_routes = build_static_routes();
         println!("\n{}", vrf_cfg.render(&()));
     }

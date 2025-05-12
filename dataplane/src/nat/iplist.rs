@@ -114,7 +114,7 @@ impl IpList {
     {
         for (prefix_from_current, prefix_from_target) in current_prefixes.zip(target_prefixes) {
             match (prefix_from_target, prefix_from_current) {
-                (Prefix::IPV4(_), Prefix::IPV4(_)) | (Prefix::IPV6(_), Prefix::IPV6(_)) => (),
+                (Prefix::Ipv4(_), Prefix::Ipv4(_)) | (Prefix::Ipv6(_), Prefix::Ipv6(_)) => (),
                 // We do not support this case, although the check should move
                 // to the configuration setp.
                 _ => unimplemented!(
@@ -141,7 +141,7 @@ impl IpList {
     pub fn add_exclude(&mut self, prefix: Prefix) -> Result<(), IpListError> {
         // Ensure we have no IP version mismatch
         match (&self.prefix, &prefix) {
-            (&Prefix::IPV4(_), &Prefix::IPV4(_)) | (&Prefix::IPV6(_), &Prefix::IPV6(_)) => (),
+            (&Prefix::Ipv4(_), &Prefix::Ipv4(_)) | (&Prefix::Ipv6(_), &Prefix::Ipv6(_)) => (),
             _ => return Err(IpListError::IpVersionMismatch),
         }
 

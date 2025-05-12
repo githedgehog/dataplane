@@ -13,3 +13,4 @@ pub mod processor;
 
 /* Frr drivers */
 pub mod frr;
+pub mod vpc_manager;

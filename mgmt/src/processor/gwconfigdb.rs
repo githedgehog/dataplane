@@ -11,32 +11,36 @@ use crate::models::external::gwconfig::{ExternalConfig, GenId, GwConfig};
 use crate::models::external::{ConfigError, ConfigResult};
 use crate::processor::display::GwConfigDatabaseSummary;
 
-#[derive(Default)]
-#[allow(unused)]
+#[derive(Default, Debug)]
 /// Configuration database, keeps a set of [`GwConfig`]s keyed by generation id [`GenId`]
 pub struct GwConfigDatabase {
-    configs: BTreeMap<GenId, GwConfig>, /* collection of configs */
-    current: Option<GenId>,             /* [`GenId`] of currently applied config */
+    pub(crate) configs: BTreeMap<GenId, GwConfig>, /* collection of configs */
+    current: Option<GenId>,                        /* [`GenId`] of currently applied config */
 }
 
 impl GwConfigDatabase {
+    #[tracing::instrument(level = "info")]
     pub fn new() -> Self {
         debug!("Building config database...");
         let mut configdb = Self::default();
         configdb.add(GwConfig::blank());
         configdb
     }
+
+    #[tracing::instrument(level = "info")]
     pub fn add(&mut self, config: GwConfig) {
         debug!("Adding config '{}' to config db...", config.genid());
         self.configs.insert(config.external.genid, config);
     }
-    #[allow(clippy::len_without_is_empty)]
+
     pub fn len(&self) -> usize {
         self.configs.len()
     }
-    pub fn iter(&self) -> impl Iterator<Item = (&GenId, &GwConfig)> {
-        self.configs.iter()
+
+    pub fn is_empty(&self) -> bool {
+        self.configs.is_empty()
     }
+
     pub fn get(&self, genid: GenId) -> Option<&GwConfig> {
         self.configs.get(&genid)
     }

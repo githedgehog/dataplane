@@ -91,7 +91,7 @@ impl ConfigService for ConfigServiceImpl {
 }
 
 /// Basic configuration manager implementation
-pub struct BasicConfigManager {
+pub(crate) struct BasicConfigManager {
     channel_tx: Sender<ConfigChannelRequest>,
 }
 
@@ -150,7 +150,7 @@ impl ConfigManager for BasicConfigManager {
     async fn apply_config(&self, grpc_config: GatewayConfig) -> Result<(), String> {
         debug!("Received request to apply new config");
 
-        // Convert config from gRPC to native external model
+        // Convert config from gRPC to the native external model
         let external_config = converter::convert_from_grpc_config(&grpc_config)?;
 
         // Create a new GwConfig with this ExternalConfig
@@ -178,7 +178,7 @@ use crate::processor::proc::ConfigChannelRequest;
 use tokio::sync::mpsc::Sender;
 
 /// Function to create the gRPC service
-pub fn create_config_service(
+pub(crate) fn create_config_service(
     channel_tx: Sender<ConfigChannelRequest>,
 ) -> ConfigServiceServer<ConfigServiceImpl> {
     let config_manager = Arc::new(BasicConfigManager::new(channel_tx));

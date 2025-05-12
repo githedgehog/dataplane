@@ -72,7 +72,7 @@ impl Display for GwConfigDatabaseSummary<'_> {
             writeln!(f, " current generation: --")?;
         }
         fmt_configdb_summary_heading(f)?;
-        for (genid, gwconfig) in self.0.iter() {
+        for (genid, gwconfig) in self.0.configs.iter() {
             fmt_gwconfig_summary(&gwconfig.meta, *genid, f)?;
         }
         Ok(())

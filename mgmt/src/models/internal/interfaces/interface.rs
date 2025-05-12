@@ -5,17 +5,18 @@
 
 #![allow(unused)]
 
+use crate::models::external::ConfigError;
+use crate::models::external::ConfigResult;
+use crate::models::internal::routing::ospf::OspfInterface;
+use multi_index_map::MultiIndexMap;
 use net::eth::ethtype::EthType;
 use net::eth::mac::Mac;
+use net::interface::InterfaceName;
 use net::vlan::Vid;
 use net::vxlan::Vni;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::net::IpAddr;
-
-use crate::models::external::ConfigError;
-use crate::models::external::ConfigResult;
-use crate::models::internal::routing::ospf::OspfInterface;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// An Ip address configured on a local interface
@@ -25,22 +26,22 @@ pub struct InterfaceAddress {
     pub mask_len: u8,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IfVlanConfig {
     pub mac: Option<Mac>,
     pub vlan_id: Vid,
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IfEthConfig {
     pub mac: Option<Mac>,
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IfBridgeConfig {
     pub vlan_filtering: bool,
     pub vlan_protocol: EthType,
     pub mac: Option<Mac>,
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IfVtepConfig {
     pub mac: Option<Mac>,
     pub vni: Option<Vni>,
@@ -48,12 +49,12 @@ pub struct IfVtepConfig {
     pub local: IpAddr,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IfVrfConfig {
     pub table_id: u32, // FIXME: interface manager has specific type
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InterfaceType {
     Loopback,
     Ethernet(IfEthConfig),
@@ -63,11 +64,13 @@ pub enum InterfaceType {
     Vrf(IfVrfConfig),
 }
 
-#[derive(Clone, Debug, PartialEq)]
 /// A network interface configuration. An interface can be user-specified or internal. This config object
 /// includes data to create the interface in the kernel and configure it for routing (e.g. FRR)
+#[derive(Clone, Debug, PartialEq, Eq, MultiIndexMap)]
+#[multi_index_derive(Debug, Clone)]
 pub struct InterfaceConfig {
-    pub name: String, /* key */
+    #[multi_index(ordered_unique)]
+    pub name: InterfaceName, /* key */
     pub iftype: InterfaceType,
     pub description: Option<String>,
     pub vrf: Option<String>,
@@ -77,10 +80,6 @@ pub struct InterfaceConfig {
     pub ospf: Option<OspfInterface>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-/// An interface configuration table
-pub struct InterfaceConfigTable(BTreeMap<String, InterfaceConfig>);
-
 impl InterfaceAddress {
     pub fn new(address: IpAddr, mask_len: u8) -> Self {
         Self { address, mask_len }
@@ -88,9 +87,9 @@ impl InterfaceAddress {
 }
 
 impl InterfaceConfig {
-    pub fn new(name: &str, iftype: InterfaceType, internal: bool) -> Self {
+    pub fn new(name: InterfaceName, iftype: InterfaceType, internal: bool) -> Self {
         Self {
-            name: name.to_owned(),
+            name,
             iftype,
             description: None,
             vrf: None,
@@ -122,10 +121,6 @@ impl InterfaceConfig {
         self
     }
     pub fn validate(&self) -> ConfigResult {
-        // name is mandatory
-        if self.name.is_empty() {
-            return Err(ConfigError::MissingIdentifier("interface name"));
-        }
         // Ip address is mandatory on VTEP
         if matches!(self.iftype, InterfaceType::Vtep(_)) && self.addresses.is_empty() {
             return Err(ConfigError::MissingParameter("Ip address"));
@@ -135,14 +130,8 @@ impl InterfaceConfig {
     }
 }
 
-impl InterfaceConfigTable {
+impl MultiIndexInterfaceConfigMap {
     pub fn new() -> Self {
-        Self(BTreeMap::new())
-    }
-    pub fn add_interface_config(&mut self, cfg: InterfaceConfig) {
-        self.0.insert(cfg.name.to_owned(), cfg);
-    }
-    pub fn values(&self) -> impl Iterator<Item = &InterfaceConfig> {
-        self.0.values()
+        Self::default()
     }
 }

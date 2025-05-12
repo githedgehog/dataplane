@@ -6,23 +6,19 @@
 //! Any configuration received externally (e.g. via gRPC) causes an internal configuration to be built and applied.
 //! This module should contain all the tools to build a configuration in memory.
 
-#![allow(unused)]
-
 pub mod device;
 pub mod interfaces;
 pub mod routing;
 
-use derive_builder::Builder;
-
-use crate::models::external::gwconfig::GenId;
-
 use crate::models::internal::device::DeviceConfig;
-use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
+use crate::models::internal::interfaces::interface::{
+    InterfaceConfig, MultiIndexInterfaceConfigMap,
+};
 use crate::models::internal::routing::evpn::VtepConfig;
 use crate::models::internal::routing::frr::Frr;
 use crate::models::internal::routing::prefixlist::{PrefixList, PrefixListTable};
 use crate::models::internal::routing::routemap::{RouteMap, RouteMapTable};
-use crate::models::internal::routing::vrf::{VrfConfig, VrfConfigTable};
+use crate::models::internal::routing::vrf::{MultiIndexVrfConfigMap, VrfConfig};
 
 #[derive(Clone, Debug)]
 /* Main internal GW configuration */
@@ -30,7 +26,7 @@ pub struct InternalConfig {
     pub dev_cfg: DeviceConfig,
     pub frr: Frr,
     pub vtep: Option<VtepConfig>, // As a network interface
-    pub vrfs: VrfConfigTable,
+    pub vrfs: MultiIndexVrfConfigMap,
     pub plist_table: PrefixListTable,
     pub rmap_table: RouteMapTable,
 }
@@ -46,7 +42,7 @@ impl InternalConfig {
             dev_cfg,
             frr,
             vtep: None,
-            vrfs: VrfConfigTable::new(),
+            vrfs: MultiIndexVrfConfigMap::new(),
             plist_table: PrefixListTable::new(),
             rmap_table: RouteMapTable::new(),
         }

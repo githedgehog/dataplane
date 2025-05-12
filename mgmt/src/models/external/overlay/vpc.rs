@@ -5,6 +5,7 @@
 
 #![allow(unused)]
 
+use multi_index_map::{MultiIndexMap, UniquenessError};
 use net::vxlan::Vni;
 use routing::prefix::Prefix;
 use std::collections::BTreeMap;
@@ -14,14 +15,15 @@ use tracing::{debug, warn};
 use crate::models::external::overlay::VpcManifest;
 use crate::models::external::overlay::VpcPeeringTable;
 use crate::models::external::{ConfigError, ConfigResult};
-use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
-
-#[cfg(doc)]
-use crate::models::external::overlay::vpcpeering::VpcPeering;
+use crate::models::internal::interfaces::interface::{
+    InterfaceConfig, MultiIndexInterfaceConfigMap,
+};
 
 /// This is nearly identical to [`VpcPeering`], but with some subtle differences.
 /// [`Peering`] is owned by a Vpc while [`VpcPeering`] remains in the [`VpcPeeringTable`].
 /// Most importantly, [`Peering`] has a notion of local and remote, while [`VpcPeering`] is symmetrical.
+///
+/// [`VpcPeering`]: crate::models::external::overlay::vpcpeering::VpcPeering
 #[derive(Clone, Debug, PartialEq)]
 pub struct Peering {
     pub name: String,        /* name of peering */
@@ -34,10 +36,11 @@ pub struct Peering {
 /// Type for a fixed-sized VPC unique id
 pub struct VpcId(pub(crate) [char; 5]);
 impl VpcId {
-    pub fn new(a: char, b: char, c: char, d: char, e: char) -> Self {
+    fn new_unchecked(a: char, b: char, c: char, d: char, e: char) -> Self {
         Self([a, b, c, d, e])
     }
 }
+
 impl TryFrom<&str> for VpcId {
     type Error = ConfigError;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
@@ -48,39 +51,77 @@ impl TryFrom<&str> for VpcId {
             return Err(ConfigError::BadVpcId(value.to_owned()));
         }
         let chars: Vec<char> = value.chars().collect();
-        Ok(VpcId::new(chars[0], chars[1], chars[2], chars[3], chars[4]))
+        Ok(VpcId::new_unchecked(
+            chars[0], chars[1], chars[2], chars[3], chars[4],
+        ))
     }
 }
 
 pub(crate) type VpcIdMap = BTreeMap<String, VpcId>;
 
 /// Representation of a VPC from the RPC
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, MultiIndexMap)]
+#[multi_index_derive(Clone, Debug)]
 pub struct Vpc {
-    pub name: String,                     /* name of vpc, used as key */
-    pub id: VpcId,                        /* internal Id, unique*/
-    pub vni: Vni,                         /* mandatory */
-    pub interfaces: InterfaceConfigTable, /* user-defined interfaces in this VPC */
-    pub peerings: Vec<Peering>,           /* peerings of this VPC - NOT set via gRPC */
+    #[multi_index(ordered_unique)]
+    pub name: String,
+    #[multi_index(ordered_unique)]
+    pub id: VpcId,
+    #[multi_index(ordered_unique)]
+    pub vni: Vni,
+    pub interfaces: MultiIndexInterfaceConfigMap, /* user-defined interfaces in this VPC */
+    pub peerings: Vec<Peering>,                   /* peerings of this VPC - NOT set via gRPC */
 }
+
+impl PartialEq for Vpc {
+    fn eq(&self, other: &Self) -> bool {
+        if self.name != other.name
+            || self.id != other.id
+            || self.vni != other.vni
+            || self.peerings != other.peerings
+        {
+            return false;
+        }
+        if self.interfaces.len() != other.interfaces.len() {
+            return false;
+        }
+        self.interfaces
+            .iter_by_name()
+            .zip(other.interfaces.iter_by_name())
+            .all(|(i, o)| i == o)
+    }
+}
+
 impl Vpc {
+    #[tracing::instrument(level = "info")]
     pub fn new(name: &str, id: &str, vni: u32) -> Result<Self, ConfigError> {
-        let vni = Vni::new_checked(vni).map_err(|_| ConfigError::InvalidVpcVni(vni))?;
-        Ok(Self {
+        let vni = Vni::new_checked(vni).map_err(ConfigError::InvalidVpcVni)?;
+        let mut ret = Self {
             name: name.to_owned(),
             id: VpcId::try_from(id)?,
             vni,
-            interfaces: InterfaceConfigTable::new(),
+            interfaces: MultiIndexInterfaceConfigMap::new(),
             peerings: vec![],
-        })
+        };
+        let mut map = VpcIdMap::default();
+        map.insert(ret.name.clone(), ret.id.clone());
+        ret.collect_peerings(&VpcPeeringTable::default(), &map);
+        Ok(ret)
     }
+
+    // TODO: OPEN QUESTION: do we need this in the context of the vpc/interface manager?
     /// Add an [`InterfaceConfig`] to this [`Vpc`]
-    pub fn add_interface_config(&mut self, if_cfg: InterfaceConfig) {
-        self.interfaces.add_interface_config(if_cfg);
+    #[tracing::instrument(level = "info")]
+    pub fn add_interface_config(
+        &mut self,
+        if_cfg: InterfaceConfig,
+    ) -> Result<&InterfaceConfig, UniquenessError<InterfaceConfig>> {
+        self.interfaces.try_insert(if_cfg)
     }
 
     /// Collect all peerings from the [`VpcPeeringTable`] table this vpc participates in
-    pub fn collect_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
+    #[tracing::instrument(level = "debug")]
+    fn collect_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
         debug!("Collecting peerings for vpc '{}'...", self.name);
         self.peerings = peering_table
             .peerings_vpc(&self.name)
@@ -97,65 +138,24 @@ impl Vpc {
             .collect();
 
         if self.peerings.is_empty() {
+            // TODO: why is this a warning?
             warn!("Warning, VPC {} has no configured peerings", &self.name);
         } else {
+            // TODO: should this be trace?
             debug!("Vpc '{}' has {} peerings", self.name, self.peerings.len());
         }
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct VpcTable {
-    vpcs: BTreeMap<String, Vpc>,
-    vnis: BTreeSet<Vni>,
-    ids: BTreeSet<VpcId>,
-}
-impl VpcTable {
-    /// Create new vpc table
-    pub fn new() -> Self {
-        Self::default()
-    }
-    /// Number of VPCs in [`VpcTable`]
-    pub fn len(&self) -> usize {
-        self.vpcs.len()
-    }
-    /// Tells if [`VpcTable`] is empty
-    pub fn is_empty(&self) -> bool {
-        self.vpcs.is_empty()
-    }
-
-    /// Add a [`Vpc`] to the vpc table
-    pub fn add(&mut self, vpc: Vpc) -> ConfigResult {
-        if self.vnis.contains(&vpc.vni) {
-            return Err(ConfigError::DuplicateVpcVni(vpc.vni.as_u32()));
-        }
-        if self.ids.contains(&vpc.id) {
-            return Err(ConfigError::DuplicateVpcId(vpc.id));
-        }
-        if self.vpcs.contains_key(&vpc.name) {
-            return Err(ConfigError::DuplicateVpcName(vpc.name.clone()));
-        }
-        self.vnis.insert(vpc.vni);
-        self.ids.insert(vpc.id.clone());
-        self.vpcs.insert(vpc.name.to_owned(), vpc);
-        Ok(())
-    }
-    /// Get a [`Vpc`] from the vpc table by name
-    pub fn get_vpc(&self, vpc_name: &str) -> Option<&Vpc> {
-        self.vpcs.get(vpc_name)
-    }
-    /// Iterate over [`Vpc`]s in a [`VpcTable`]
-    pub fn values(&self) -> impl Iterator<Item = &Vpc> {
-        self.vpcs.values()
-    }
-    /// Iterate over [`Vpc`]s in a [`VpcTable`] mutably
-    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Vpc> {
-        self.vpcs.values_mut()
-    }
-    /// Collect peerings for all [`Vpc`]s in this [`VpcTable`]
-    pub fn collect_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
-        debug!("Collecting peerings for all VPCs..");
-        self.values_mut()
-            .for_each(|vpc| vpc.collect_peerings(peering_table, idmap));
+impl MultiIndexVpcMap {
+    #[tracing::instrument(level = "debug")]
+    pub(crate) fn collect_peerings(&mut self, peering_table: &VpcPeeringTable) {
+        debug!("collecting peerings");
+        let idmap = self
+            .iter_by_name()
+            .map(|vpc| (vpc.name.clone(), vpc.id.clone()))
+            .collect();
+        #[allow(unsafe_code)] // obeys the requirement to not mutate indexed fields
+        unsafe { self.iter_mut() }.for_each(|(_, vpc)| vpc.collect_peerings(peering_table, &idmap));
     }
 }

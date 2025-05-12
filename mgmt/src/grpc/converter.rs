@@ -10,7 +10,7 @@ use crate::models::external::gwconfig::{
     ExternalConfig, ExternalConfigBuilder, GwConfig, Underlay,
 };
 use crate::models::external::overlay::Overlay;
-use crate::models::external::overlay::vpc::{Vpc, VpcTable};
+use crate::models::external::overlay::vpc::{MultiIndexVpcMap, Vpc};
 use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
 use crate::models::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
 use crate::models::internal::routing::ospf::{Ospf, OspfInterface, OspfNetwork};
@@ -22,7 +22,8 @@ use crate::models::internal::device::{
     settings::{DeviceSettings, DpdkPortConfig, KernelPacketConfig, PacketDriver},
 };
 use crate::models::internal::interfaces::interface::{
-    IfEthConfig, IfVlanConfig, IfVtepConfig, InterfaceConfig, InterfaceConfigTable, InterfaceType,
+    IfEthConfig, IfVlanConfig, IfVtepConfig, InterfaceConfig, InterfaceType,
+    MultiIndexInterfaceConfigMap,
 };
 
 use crate::models::internal::routing::vrf::VrfConfig;
@@ -34,7 +35,7 @@ use crate::models::internal::routing::bgp::{
 
 // Import proto-generated types
 use gateway_config::GatewayConfig;
-
+use net::interface::InterfaceName;
 // Helper Functions
 //--------------------------------------------------------------------------------
 
@@ -49,14 +50,14 @@ pub fn get_primary_address(interface: &InterfaceConfig) -> Result<String, String
 
 /// Parse a CIDR string into IP and netmask
 pub fn parse_cidr(cidr: &str) -> Result<(String, u8), String> {
-    let parts: Vec<&str> = cidr.split('/').collect();
+    let parts: Vec<_> = cidr.split('/').collect();
     if parts.len() != 2 {
         return Err(format!("Invalid CIDR format: {cidr}"));
     }
 
     let ip = parts[0].to_string();
     let netmask = parts[1]
-        .parse::<u8>()
+        .parse()
         .map_err(|_| format!("Invalid netmask in CIDR {cidr}: {}", parts[1]))?;
 
     Ok((ip, netmask))
@@ -148,6 +149,7 @@ pub fn convert_device_from_grpc(device: &gateway_config::Device) -> Result<Devic
     Ok(device_config)
 }
 
+// TODO: this method makes no sense to me at all
 /// Convert gRPC Underlay to internal Underlay
 pub fn convert_underlay_from_grpc(underlay: &gateway_config::Underlay) -> Result<Underlay, String> {
     // Find the default VRF or first VRF if default not found
@@ -155,6 +157,8 @@ pub fn convert_underlay_from_grpc(underlay: &gateway_config::Underlay) -> Result
         return Err("Underlay must contain at least one VRF".to_string());
     }
 
+    // TODO: why do we use the first one if we fail to find the default?
+    // TODO: do we have a way to prevent multiple entries being marked as default?
     // Look for the default VRF or use the first one
     let default_vrf = underlay
         .vrfs
@@ -172,7 +176,8 @@ pub fn convert_underlay_from_grpc(underlay: &gateway_config::Underlay) -> Result
 /// Convert gRPC VRF to internal VrfConfig
 pub fn convert_vrf_to_vrf_config(vrf: &gateway_config::Vrf) -> Result<VrfConfig, String> {
     // Create VRF config
-    let mut vrf_config = VrfConfig::new(&vrf.name, None, true /* default vrf */);
+    let vrf_name = InterfaceName::try_from(vrf.name.as_str()).map_err(|e| e.to_string())?;
+    let mut vrf_config = VrfConfig::new(vrf_name, None, true /* default vrf */);
 
     // Convert BGP config if present and add it to VRF
     if let Some(router) = &vrf.router {
@@ -183,7 +188,9 @@ pub fn convert_vrf_to_vrf_config(vrf: &gateway_config::Vrf) -> Result<VrfConfig,
     // convert each interface
     for iface in &vrf.interfaces {
         let iface_config = convert_interface_to_interface_config(iface)?;
-        vrf_config.add_interface_config(iface_config);
+        vrf_config
+            .add_interface_config(iface_config)
+            .map_err(|e| format!("Failed to add interface to interface: {}", e))?;
     }
 
     // Convert ospf config if present
@@ -258,6 +265,7 @@ pub fn convert_ospf_interface_from_grpc(
 pub fn convert_interface_to_interface_config(
     iface: &gateway_config::Interface,
 ) -> Result<InterfaceConfig, String> {
+    let interface_name = InterfaceName::try_from(iface.name.clone()).map_err(|e| format!("{e}"))?;
     // Convert interface type
     let iftype = match iface.r#type {
         0 => InterfaceType::Ethernet(IfEthConfig { mac: None }),
@@ -305,7 +313,7 @@ pub fn convert_interface_to_interface_config(
     };
 
     // Create new InterfaceConfig
-    let mut interface_config = InterfaceConfig::new(&iface.name, iftype, false);
+    let mut interface_config = InterfaceConfig::new(interface_name, iftype, false);
 
     // Add the address from gRPC if present
     if !iface.ipaddr.is_empty() {
@@ -542,7 +550,7 @@ pub fn convert_expose_from_grpc(expose: &gateway_config::Expose) -> Result<VpcEx
 /// Convert Overlay from gRPC
 pub fn convert_overlay_from_grpc(overlay: &gateway_config::Overlay) -> Result<Overlay, String> {
     // Create VPC table
-    let mut vpc_table = VpcTable::new();
+    let mut vpc_table = MultiIndexVpcMap::default();
 
     // Add VPCs
     for vpc_grpc in &overlay.vpcs {
@@ -550,7 +558,7 @@ pub fn convert_overlay_from_grpc(overlay: &gateway_config::Overlay) -> Result<Ov
         let vpc = convert_vpc_from_grpc(vpc_grpc)?;
 
         vpc_table
-            .add(vpc)
+            .try_insert(vpc)
             .map_err(|e| format!("Failed to add VPC {}: {e}", vpc_grpc.name))?;
     }
 
@@ -625,11 +633,11 @@ pub fn convert_ospf_interface_to_grpc(
 }
 
 pub fn convert_interfaces_to_grpc(
-    interfaces: &InterfaceConfigTable,
+    interfaces: &MultiIndexInterfaceConfigMap,
 ) -> Result<Vec<gateway_config::Interface>, String> {
     let mut grpc_interfaces = Vec::new();
 
-    for interface in interfaces.values() {
+    for interface in interfaces.iter_by_name() {
         // Get IP address safely
         let ipaddr = get_primary_address(interface)?;
 
@@ -666,7 +674,7 @@ pub fn convert_interfaces_to_grpc(
 
         // Create the gRPC interface
         let grpc_iface = gateway_config::Interface {
-            name: interface.name.clone(),
+            name: interface.name.to_string(),
             ipaddr,
             r#type: if_type,
             vlan,
@@ -799,7 +807,7 @@ pub fn convert_vrf_config_to_grpc(vrf: &VrfConfig) -> Result<gateway_config::Vrf
     let ospf = vrf.ospf.as_ref().map(convert_ospf_to_grpc);
 
     Ok(gateway_config::Vrf {
-        name: vrf.name.clone(),
+        name: vrf.name.to_string(),
         interfaces,
         router,
         ospf,
@@ -910,7 +918,7 @@ pub fn convert_overlay_to_grpc(overlay: &Overlay) -> Result<gateway_config::Over
     let mut peerings = Vec::new();
 
     // Convert VPCs
-    for vpc in overlay.vpc_table.values() {
+    for vpc in overlay.vpc_table.iter_by_name() {
         let grpc_vpc = convert_vpc_to_grpc(vpc)?;
         vpcs.push(grpc_vpc);
     }
@@ -1010,7 +1018,7 @@ impl TryFrom<&InterfaceConfig> for gateway_config::Interface {
         let ospf = interface.ospf.as_ref().map(convert_ospf_interface_to_grpc);
 
         Ok(gateway_config::Interface {
-            name: interface.name.clone(),
+            name: interface.name.to_string(),
             ipaddr,
             r#type: if_type,
             vlan,

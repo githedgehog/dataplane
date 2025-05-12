@@ -23,7 +23,7 @@ impl Ospf {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum OspfNetwork {
     Broadcast,
     NonBroadcast,
@@ -32,7 +32,7 @@ pub enum OspfNetwork {
     Point2Multipoint,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OspfInterface {
     pub passive: bool,
     pub area: Ipv4Addr,

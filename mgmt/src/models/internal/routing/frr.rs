@@ -3,8 +3,6 @@
 
 //! Dataplane configuration model: frr
 
-use std::fmt::Display;
-
 #[derive(Clone, Debug, Default)]
 pub enum FrrProfile {
     #[default]
