@@ -73,7 +73,7 @@ pub struct Vpc {
 
 impl Vpc {
     pub fn new(name: &str, id: &str, vni: u32) -> Result<Self, ConfigError> {
-        let vni = Vni::new_checked(vni).map_err(|_| ConfigError::InvalidVpcVni(vni))?;
+        let vni = Vni::new_checked(vni).map_err(ConfigError::InvalidVpcVni)?;
         Ok(Self {
             name: name.to_owned(),
             id: VpcId::try_from(id)?,
