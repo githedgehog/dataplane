@@ -550,6 +550,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "dataplane-id",
+ "dataplane-routing",
  "dpdk",
  "dyn-iter",
  "iptrie",
@@ -558,7 +559,6 @@ dependencies = [
  "netdev",
  "ordermap",
  "pipeline",
- "routing",
  "serde",
  "serde_yml",
  "thiserror 2.0.12",
@@ -596,6 +596,23 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "dataplane-routing"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "dplane-rpc",
+ "ipnet",
+ "iptrie",
+ "mio",
+ "net",
+ "serde",
+ "serde_yml",
+ "thiserror 2.0.12",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1207,10 +1224,10 @@ name = "mgmt"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "dataplane-routing",
  "derive_builder",
  "gateway_config",
  "net",
- "routing",
  "thiserror 2.0.12",
  "tokio",
  "tonic",
@@ -1736,23 +1753,6 @@ checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 [[package]]
 name = "rekon"
 version = "0.1.0"
-
-[[package]]
-name = "routing"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "dplane-rpc",
- "ipnet",
- "iptrie",
- "mio",
- "net",
- "serde",
- "serde_yml",
- "thiserror 2.0.12",
- "tracing",
- "tracing-subscriber",
-]
 
 [[package]]
 name = "rtnetlink"

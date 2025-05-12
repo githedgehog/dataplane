@@ -46,7 +46,7 @@ interface-manager = { path = "./interface-manager", package = "dataplane-interfa
 net = { path = "./net", features = ["test_buffer"] }
 pipeline = { path = "./pipeline" }
 rekon = { path = "./rekon" }
-routing = { path = "./routing" }
+routing = { path = "./routing", package = "dataplane-routing" }
 vpc-manager = { path = "./vpc-manager", package = "dataplane-vpc-manager" }
 
 # External
