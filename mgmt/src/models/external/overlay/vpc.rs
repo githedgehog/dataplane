@@ -34,7 +34,7 @@ pub struct Peering {
 /// Type for a fixed-sized VPC unique id
 pub struct VpcId(pub(crate) [char; 5]);
 impl VpcId {
-    pub fn new(a: char, b: char, c: char, d: char, e: char) -> Self {
+    fn new_unchecked(a: char, b: char, c: char, d: char, e: char) -> Self {
         Self([a, b, c, d, e])
     }
 }
@@ -48,7 +48,9 @@ impl TryFrom<&str> for VpcId {
             return Err(ConfigError::BadVpcId(value.to_owned()));
         }
         let chars: Vec<char> = value.chars().collect();
-        Ok(VpcId::new(chars[0], chars[1], chars[2], chars[3], chars[4]))
+        Ok(VpcId::new_unchecked(
+            chars[0], chars[1], chars[2], chars[3], chars[4],
+        ))
     }
 }
 
