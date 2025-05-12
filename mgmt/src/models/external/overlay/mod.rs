@@ -9,7 +9,6 @@ pub mod vpc;
 pub mod vpcpeering;
 
 use crate::models::external::overlay::vpc::MultiIndexVpcMap;
-use crate::models::external::overlay::vpc::VpcIdMap;
 use crate::models::external::overlay::vpcpeering::VpcManifest;
 use crate::models::external::overlay::vpcpeering::VpcPeeringTable;
 
