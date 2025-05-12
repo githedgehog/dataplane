@@ -90,7 +90,8 @@ impl Vpc {
     }
 
     /// Collect all peerings from the [`VpcPeeringTable`] table this vpc participates in
-    pub fn collect_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
+    #[tracing::instrument(level = "debug")]
+    fn collect_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
         debug!("Collecting peerings for vpc '{}'...", self.name);
         self.peerings = peering_table
             .peerings_vpc(&self.name)

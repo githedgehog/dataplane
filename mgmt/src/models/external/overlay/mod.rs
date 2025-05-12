@@ -36,6 +36,8 @@ impl Overlay {
         }
         Ok(())
     }
+
+    #[tracing::instrument(level = "debug", skip(self))]
     pub fn validate(&mut self) -> ConfigResult {
         debug!("Validating overlay configuration...");
         /* check if the VPCs referred in a peering exist */
