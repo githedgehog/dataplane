@@ -3,11 +3,11 @@
 
 //! Dataplane configuration model: VRFs
 
-use std::collections::BTreeSet;
-
 use crate::models::internal::{InterfaceConfig, InterfaceConfigTable};
+use net::route::RouteTableId;
 use net::vxlan::Vni;
 use routing::prefix::Prefix;
+use std::collections::BTreeSet;
 
 use super::bgp::BgpConfig;
 use super::ospf::Ospf;
@@ -18,7 +18,7 @@ use super::statics::StaticRoute;
 pub struct VrfConfig {
     pub name: String,
     pub default: bool,
-    pub tableid: Option<u32>,
+    pub tableid: Option<RouteTableId>,
     pub vni: Option<Vni>,
     pub subnets: BTreeSet<Prefix>,
     pub static_routes: BTreeSet<StaticRoute>,
@@ -53,7 +53,7 @@ impl VrfConfig {
             ..Default::default()
         }
     }
-    pub fn set_table_id(mut self, tableid: u32) -> Self {
+    pub fn set_table_id(mut self, tableid: RouteTableId) -> Self {
         if self.default {
             panic!("Can't set table id for default vrf");
         }
