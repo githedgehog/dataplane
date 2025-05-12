@@ -5,6 +5,7 @@
 
 #![allow(unused)]
 
+use multi_index_map::MultiIndexMap;
 use net::vxlan::Vni;
 use routing::prefix::Prefix;
 use std::collections::BTreeMap;
@@ -57,11 +58,14 @@ impl TryFrom<&str> for VpcId {
 pub(crate) type VpcIdMap = BTreeMap<String, VpcId>;
 
 /// Representation of a VPC from the RPC
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, MultiIndexMap)]
 pub struct Vpc {
-    pub name: String,                     /* name of vpc, used as key */
-    pub id: VpcId,                        /* internal Id, unique*/
-    pub vni: Vni,                         /* mandatory */
+    #[multi_index(ordered_unique)]
+    pub name: String, /* name of vpc, used as key */
+    #[multi_index(ordered_unique)]
+    pub id: VpcId, /* internal Id, unique*/
+    #[multi_index(ordered_unique)]
+    pub vni: Vni, /* mandatory */
     pub interfaces: InterfaceConfigTable, /* user-defined interfaces in this VPC */
     pub peerings: Vec<Peering>,           /* peerings of this VPC - NOT set via gRPC */
 }
