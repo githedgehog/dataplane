@@ -67,6 +67,7 @@ pub mod tests {
     use super::*;
     use crate::models::internal::interfaces::interface::IfEthConfig;
     use crate::models::internal::interfaces::interface::InterfaceType;
+    use net::interface::InterfaceName;
     use std::net::IpAddr;
     use std::str::FromStr;
 
@@ -75,8 +76,9 @@ pub mod tests {
         let mut iface_table = InterfaceConfigTable::new();
 
         /* eth0: Ethernet */
+        let eth0_name = InterfaceName::try_from("eth0").expect("eth0 is a valid interface name");
         let interface = InterfaceConfig::new(
-            "eth0",
+            eth0_name,
             InterfaceType::Ethernet(IfEthConfig { mac: None }),
             false,
         )
@@ -89,7 +91,8 @@ pub mod tests {
         iface_table.add_interface_config(interface);
 
         /* lo: Loopback */
-        let interface = InterfaceConfig::new("lo", InterfaceType::Loopback, false)
+        let lo_name = InterfaceName::try_from("lo").expect("lo is a valid interface name");
+        let interface = InterfaceConfig::new(lo_name, InterfaceType::Loopback, false)
             .set_description("Main loopback interface")
             .set_mtu(9000)
             .add_address(IpAddr::from_str("7.0.0.10").expect("Bad address"), 32)

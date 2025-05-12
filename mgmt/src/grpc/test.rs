@@ -6,9 +6,9 @@
 mod tests {
     // Import proto-generated types
     use gateway_config::GatewayConfig;
+    use net::interface::InterfaceName;
     use std::collections::HashMap;
     use std::convert::TryFrom;
-
     // Import converter module
     use crate::grpc::converter;
     use crate::models::internal::device::DeviceConfig;
@@ -643,7 +643,8 @@ mod tests {
         let interface_config = interface_config_result.unwrap();
 
         // Verify conversion result
-        assert_eq!(interface_config.name, "eth0");
+        let eth0 = InterfaceName::try_from("eth0").unwrap();
+        assert_eq!(interface_config.name, eth0);
         assert!(!interface_config.addresses.is_empty());
 
         // Convert back using TryFrom

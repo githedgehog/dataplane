@@ -34,7 +34,7 @@ use crate::models::internal::routing::bgp::{
 
 // Import proto-generated types
 use gateway_config::GatewayConfig;
-
+use net::interface::InterfaceName;
 // Helper Functions
 //--------------------------------------------------------------------------------
 
@@ -258,6 +258,7 @@ pub fn convert_ospf_interface_from_grpc(
 pub fn convert_interface_to_interface_config(
     iface: &gateway_config::Interface,
 ) -> Result<InterfaceConfig, String> {
+    let interface_name = InterfaceName::try_from(iface.name.clone()).map_err(|e| format!("{e}"))?;
     // Convert interface type
     let iftype = match iface.r#type {
         0 => InterfaceType::Ethernet(IfEthConfig { mac: None }),
@@ -305,7 +306,7 @@ pub fn convert_interface_to_interface_config(
     };
 
     // Create new InterfaceConfig
-    let mut interface_config = InterfaceConfig::new(&iface.name, iftype, false);
+    let mut interface_config = InterfaceConfig::new(interface_name, iftype, false);
 
     // Add the address from gRPC if present
     if !iface.ipaddr.is_empty() {
@@ -666,7 +667,7 @@ pub fn convert_interfaces_to_grpc(
 
         // Create the gRPC interface
         let grpc_iface = gateway_config::Interface {
-            name: interface.name.clone(),
+            name: interface.name.to_string(),
             ipaddr,
             r#type: if_type,
             vlan,
@@ -1010,7 +1011,7 @@ impl TryFrom<&InterfaceConfig> for gateway_config::Interface {
         let ospf = interface.ospf.as_ref().map(convert_ospf_interface_to_grpc);
 
         Ok(gateway_config::Interface {
-            name: interface.name.clone(),
+            name: interface.name.to_string(),
             ipaddr,
             r#type: if_type,
             vlan,

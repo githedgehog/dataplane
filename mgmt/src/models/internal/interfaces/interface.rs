@@ -5,17 +5,17 @@
 
 #![allow(unused)]
 
+use crate::models::external::ConfigError;
+use crate::models::external::ConfigResult;
+use crate::models::internal::routing::ospf::OspfInterface;
 use net::eth::ethtype::EthType;
 use net::eth::mac::Mac;
+use net::interface::InterfaceName;
 use net::vlan::Vid;
 use net::vxlan::Vni;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::net::IpAddr;
-
-use crate::models::external::ConfigError;
-use crate::models::external::ConfigResult;
-use crate::models::internal::routing::ospf::OspfInterface;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// An Ip address configured on a local interface
@@ -67,7 +67,7 @@ pub enum InterfaceType {
 /// A network interface configuration. An interface can be user-specified or internal. This config object
 /// includes data to create the interface in the kernel and configure it for routing (e.g. FRR)
 pub struct InterfaceConfig {
-    pub name: String, /* key */
+    pub name: InterfaceName, /* key */
     pub iftype: InterfaceType,
     pub description: Option<String>,
     pub vrf: Option<String>,
@@ -79,7 +79,7 @@ pub struct InterfaceConfig {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 /// An interface configuration table
-pub struct InterfaceConfigTable(BTreeMap<String, InterfaceConfig>);
+pub struct InterfaceConfigTable(BTreeMap<InterfaceName, InterfaceConfig>);
 
 impl InterfaceAddress {
     pub fn new(address: IpAddr, mask_len: u8) -> Self {
@@ -88,9 +88,9 @@ impl InterfaceAddress {
 }
 
 impl InterfaceConfig {
-    pub fn new(name: &str, iftype: InterfaceType, internal: bool) -> Self {
+    pub fn new(name: InterfaceName, iftype: InterfaceType, internal: bool) -> Self {
         Self {
-            name: name.to_owned(),
+            name,
             iftype,
             description: None,
             vrf: None,
@@ -122,10 +122,6 @@ impl InterfaceConfig {
         self
     }
     pub fn validate(&self) -> ConfigResult {
-        // name is mandatory
-        if self.name.is_empty() {
-            return Err(ConfigError::MissingIdentifier("interface name"));
-        }
         // Ip address is mandatory on VTEP
         if matches!(self.iftype, InterfaceType::Vtep(_)) && self.addresses.is_empty() {
             return Err(ConfigError::MissingParameter("Ip address"));
@@ -140,7 +136,7 @@ impl InterfaceConfigTable {
         Self(BTreeMap::new())
     }
     pub fn add_interface_config(&mut self, cfg: InterfaceConfig) {
-        self.0.insert(cfg.name.to_owned(), cfg);
+        self.0.insert(cfg.name.clone(), cfg);
     }
     pub fn values(&self) -> impl Iterator<Item = &InterfaceConfig> {
         self.0.values()

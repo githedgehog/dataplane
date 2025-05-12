@@ -7,11 +7,6 @@ pub mod test {
     use routing::prefix::Prefix;
     use tracing_test::traced_test;
     //    use net::eth::mac::Mac;
-    use std::net::IpAddr;
-    use std::net::Ipv4Addr;
-    use std::str::FromStr;
-    use tracing::Level;
-
     use crate::models::internal::device::settings::DeviceSettings;
     use crate::models::internal::device::settings::KernelPacketConfig;
     use crate::models::internal::device::settings::PacketDriver;
@@ -27,6 +22,11 @@ pub mod test {
     use crate::models::internal::routing::ospf::{OspfInterface, OspfNetwork};
     use crate::models::internal::routing::vrf::VrfConfig;
     use crate::models::internal::{device::DeviceConfig, routing::ospf::Ospf};
+    use net::interface::InterfaceName;
+    use std::net::IpAddr;
+    use std::net::Ipv4Addr;
+    use std::str::FromStr;
+    use tracing::Level;
     //    use crate::models::internal::routing::evpn::VtepConfig;
 
     use crate::models::external::gwconfig::ExternalConfig;
@@ -174,7 +174,8 @@ pub mod test {
         /* configure loopback interface */
         let ospf =
             OspfInterface::new(Ipv4Addr::from_str("0.0.0.0").expect("Bad area")).set_passive(true);
-        let lo = InterfaceConfig::new("lo", InterfaceType::Loopback, false)
+        let lo_name = InterfaceName::try_from("lo").expect("lo is a valid interface name");
+        let lo = InterfaceConfig::new(lo_name, InterfaceType::Loopback, false)
             .set_description("Main loopback interface")
             .add_address(loopback, 32)
             .set_ospf(ospf);
@@ -184,8 +185,9 @@ pub mod test {
         let ospf = OspfInterface::new(Ipv4Addr::from_str("0.0.0.0").expect("Bad area"))
             .set_passive(false)
             .set_network(OspfNetwork::Point2Point);
+        let eth0_name = InterfaceName::try_from("eth0").expect("eth0 is a valid interface name");
         let eth0 = InterfaceConfig::new(
-            "eth0",
+            eth0_name,
             InterfaceType::Ethernet(IfEthConfig { mac: None }),
             false,
         )
@@ -195,8 +197,9 @@ pub mod test {
         vrf_cfg.add_interface_config(eth0);
 
         /* configure eth1 interface */
+        let eth1_name = InterfaceName::try_from("eth1").expect("eth1 is a valid interface name");
         let eth1 = InterfaceConfig::new(
-            "eth1",
+            eth1_name,
             InterfaceType::Ethernet(IfEthConfig { mac: None }),
             false,
         )
@@ -208,8 +211,9 @@ pub mod test {
         let ospf = OspfInterface::new(Ipv4Addr::from_str("0.0.0.0").expect("Bad area"))
             .set_passive(false)
             .set_network(OspfNetwork::Point2Point);
+        let eth2_name = InterfaceName::try_from("eth2").expect("eth2 is a valid interface name");
         let eth2 = InterfaceConfig::new(
-            "eth2",
+            eth2_name,
             InterfaceType::Ethernet(IfEthConfig { mac: None }),
             false,
         )
