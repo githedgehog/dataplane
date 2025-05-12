@@ -61,11 +61,11 @@ fn main() {
     /* parse cmd line args */
     let args = CmdArgs::parse();
 
-    let grpc_address = "[::1]:50051".parse().expect("Bad grpc address");
-
-    if let Err(e) = start_mgmt(grpc_address) {
+    // Get the gRPC address from command line args
+    let grpc_addr = args.get_grpc_address();
+    if let Err(e) = start_mgmt(grpc_addr) {
         error!("Failed to start management service: {e}");
-        std::process::exit(0);
+        panic!("Management service failed to start. Aborting...");
     }
 
     debug!("Starting pipeline....");
@@ -82,7 +82,7 @@ fn main() {
         }
         other => {
             error!("Unknown driver '{other}'. Aborting...");
-            std::process::exit(0);
+            panic!("Packet processing pipeline failed to start. Aborting...");
         }
     }
 

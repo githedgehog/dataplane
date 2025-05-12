@@ -4,6 +4,7 @@
 #![allow(unused)]
 
 pub(crate) use clap::Parser;
+use std::net::SocketAddr;
 use tracing::debug;
 
 #[derive(Parser)]
@@ -30,7 +31,16 @@ pub(crate) struct CmdArgs {
     driver: Option<String>,
     #[arg(long, value_name = "name of kernel interface")]
     interface: Vec<String>,
+
+    // gRPC server address
+    #[arg(
+        long,
+        value_name = "gRPC server address",
+        default_value = "[::1]:50051"
+    )]
+    grpc_address: String,
 }
+
 impl CmdArgs {
     pub fn get_driver_name(&self) -> &str {
         match &self.driver {
@@ -91,5 +101,16 @@ impl CmdArgs {
         debug!("DPDK EAL init params: {out:?}");
 
         out
+    }
+
+    /// Get the gRPC server address
+    pub fn get_grpc_address(&self) -> SocketAddr {
+        match self.grpc_address.parse() {
+            Ok(addr) => addr,
+            Err(e) => {
+                eprintln!("Error: Invalid gRPC address '{}': {}", self.grpc_address, e);
+                panic!("Process receives unexpected gRPC address. Aborting...");
+            }
+        }
     }
 }
