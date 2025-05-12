@@ -9,7 +9,7 @@ use nix::fcntl::OFlag;
 use nix::sched::CloneFlags;
 use nix::sys::stat::Mode;
 use std::future::Future;
-use std::os::fd::BorrowedFd;
+use std::os::fd::{AsRawFd, BorrowedFd};
 use std::path::Path;
 use tracing::error;
 
@@ -103,7 +103,7 @@ pub unsafe fn swap_thread_to_netns(netns_path: &String) -> Result<(), rtnetlink:
     if let Err(e) = nix::sched::setns(
         #[allow(unsafe_code)]
         unsafe {
-            BorrowedFd::borrow_raw(file_descriptor)
+            BorrowedFd::borrow_raw(file_descriptor.as_raw_fd())
         },
         CloneFlags::CLONE_NEWNET,
     ) {
