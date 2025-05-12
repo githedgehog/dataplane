@@ -204,7 +204,7 @@ fn build_internal_overlay_config(
         "Requested overlay is:\n{}\n{}",
         overlay.vpc_table, overlay.peering_table
     );
-    for vpc in overlay.vpc_table.values() {
+    for vpc in overlay.vpc_table.iter_by_name() {
         build_vpc_internal_config(vpc, asn, router_id, internal);
     }
     debug!("Internal config is:\n{internal:#?}");

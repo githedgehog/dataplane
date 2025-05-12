@@ -59,6 +59,7 @@ pub(crate) type VpcIdMap = BTreeMap<String, VpcId>;
 
 /// Representation of a VPC from the RPC
 #[derive(Clone, Debug, PartialEq, MultiIndexMap)]
+#[multi_index_derive(Clone, Debug)]
 pub struct Vpc {
     #[multi_index(ordered_unique)]
     pub name: String, /* name of vpc, used as key */
@@ -110,58 +111,9 @@ impl Vpc {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct VpcTable {
-    vpcs: BTreeMap<String, Vpc>,
-    vnis: BTreeSet<Vni>,
-    ids: BTreeSet<VpcId>,
-}
-impl VpcTable {
-    /// Create new vpc table
-    pub fn new() -> Self {
-        Self::default()
-    }
-    /// Number of VPCs in [`VpcTable`]
-    pub fn len(&self) -> usize {
-        self.vpcs.len()
-    }
-    /// Tells if [`VpcTable`] is empty
-    pub fn is_empty(&self) -> bool {
-        self.vpcs.is_empty()
-    }
-
-    /// Add a [`Vpc`] to the vpc table
-    pub fn add(&mut self, vpc: Vpc) -> ConfigResult {
-        if self.vnis.contains(&vpc.vni) {
-            return Err(ConfigError::DuplicateVpcVni(vpc.vni.as_u32()));
-        }
-        if self.ids.contains(&vpc.id) {
-            return Err(ConfigError::DuplicateVpcId(vpc.id));
-        }
-        if self.vpcs.contains_key(&vpc.name) {
-            return Err(ConfigError::DuplicateVpcName(vpc.name.clone()));
-        }
-        self.vnis.insert(vpc.vni);
-        self.ids.insert(vpc.id.clone());
-        self.vpcs.insert(vpc.name.to_owned(), vpc);
-        Ok(())
-    }
-    /// Get a [`Vpc`] from the vpc table by name
-    pub fn get_vpc(&self, vpc_name: &str) -> Option<&Vpc> {
-        self.vpcs.get(vpc_name)
-    }
-    /// Iterate over [`Vpc`]s in a [`VpcTable`]
-    pub fn values(&self) -> impl Iterator<Item = &Vpc> {
-        self.vpcs.values()
-    }
-    /// Iterate over [`Vpc`]s in a [`VpcTable`] mutably
-    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Vpc> {
-        self.vpcs.values_mut()
-    }
-    /// Collect peerings for all [`Vpc`]s in this [`VpcTable`]
+impl MultiIndexVpcMap {
     pub fn collect_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
         debug!("Collecting peerings for all VPCs..");
-        self.values_mut()
-            .for_each(|vpc| vpc.collect_peerings(peering_table, idmap));
+        unsafe { self.iter_mut() }.for_each(|(_, vpc)| vpc.collect_peerings(peering_table, idmap));
     }
 }

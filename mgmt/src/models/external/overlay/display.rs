@@ -6,7 +6,7 @@ use routing::pretty_utils::Heading;
 use std::fmt::Display;
 
 use crate::models::external::overlay::VpcManifest;
-use crate::models::external::overlay::vpc::{Peering, VpcId, VpcTable};
+use crate::models::external::overlay::vpc::{MultiIndexVpcMap, Peering, VpcId};
 use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcPeering, VpcPeeringTable};
 
 const SEP: &str = "       ";
@@ -158,11 +158,11 @@ impl Display for Vpc {
         Ok(())
     }
 }
-impl Display for VpcTable {
+impl Display for MultiIndexVpcMap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading(format!("VPCs ({})", self.len())).fmt(f)?;
         fmt_vpc_table_heading(f)?;
-        for vpc in self.values() {
+        for vpc in self.iter_by_name() {
             vpc.fmt(f)?;
         }
         Ok(())

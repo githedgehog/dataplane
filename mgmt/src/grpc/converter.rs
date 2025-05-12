@@ -10,7 +10,7 @@ use crate::models::external::gwconfig::{
     ExternalConfig, ExternalConfigBuilder, GwConfig, Underlay,
 };
 use crate::models::external::overlay::Overlay;
-use crate::models::external::overlay::vpc::{Vpc, VpcTable};
+use crate::models::external::overlay::vpc::{MultiIndexVpcMap, Vpc};
 use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
 use crate::models::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
 use crate::models::internal::routing::ospf::{Ospf, OspfInterface, OspfNetwork};
@@ -544,7 +544,7 @@ pub fn convert_expose_from_grpc(expose: &gateway_config::Expose) -> Result<VpcEx
 /// Convert Overlay from gRPC
 pub fn convert_overlay_from_grpc(overlay: &gateway_config::Overlay) -> Result<Overlay, String> {
     // Create VPC table
-    let mut vpc_table = VpcTable::new();
+    let mut vpc_table = MultiIndexVpcMap::default();
 
     // Add VPCs
     for vpc_grpc in &overlay.vpcs {
@@ -552,7 +552,7 @@ pub fn convert_overlay_from_grpc(overlay: &gateway_config::Overlay) -> Result<Ov
         let vpc = convert_vpc_from_grpc(vpc_grpc)?;
 
         vpc_table
-            .add(vpc)
+            .try_insert(vpc)
             .map_err(|e| format!("Failed to add VPC {}: {e}", vpc_grpc.name))?;
     }
 
@@ -912,7 +912,7 @@ pub fn convert_overlay_to_grpc(overlay: &Overlay) -> Result<gateway_config::Over
     let mut peerings = Vec::new();
 
     // Convert VPCs
-    for vpc in overlay.vpc_table.values() {
+    for vpc in overlay.vpc_table.iter_by_name() {
         let grpc_vpc = convert_vpc_to_grpc(vpc)?;
         vpcs.push(grpc_vpc);
     }

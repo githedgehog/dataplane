@@ -36,17 +36,17 @@ pub mod test {
     // use crate::models::external::configdb::gwconfigdb::GwConfigDatabase;
 
     use crate::models::external::overlay::Overlay;
-    use crate::models::external::overlay::vpc::{Vpc, VpcTable};
+    use crate::models::external::overlay::vpc::{MultiIndexVpcMap, Vpc};
     use crate::models::external::overlay::vpcpeering::{
         VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
     };
 
     /* OVERLAY config sample builders */
-    fn sample_vpc_table() -> VpcTable {
-        let mut vpc_table = VpcTable::new();
-        let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed"));
-        let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 4000).expect("Should succeed"));
-        let _ = vpc_table.add(Vpc::new("VPC-3", "CCCCC", 2000).expect("Should succeed"));
+    fn sample_vpc_table() -> MultiIndexVpcMap {
+        let mut vpc_table = MultiIndexVpcMap::default();
+        let _ = vpc_table.try_insert(Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed"));
+        let _ = vpc_table.try_insert(Vpc::new("VPC-2", "BBBBB", 4000).expect("Should succeed"));
+        let _ = vpc_table.try_insert(Vpc::new("VPC-3", "CCCCC", 2000).expect("Should succeed"));
         vpc_table
     }
     fn man_vpc1_with_vpc2() -> VpcManifest {

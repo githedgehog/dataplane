@@ -10,10 +10,11 @@ pub mod test {
     use crate::models::external::overlay::Overlay;
     use crate::models::external::overlay::VpcIdMap;
     use crate::models::external::overlay::display::VpcDetailed;
-    use crate::models::external::overlay::vpc::{Vpc, VpcTable};
+    use crate::models::external::overlay::vpc::{MultiIndexVpcMap, Vpc};
     use crate::models::external::overlay::vpcpeering::VpcExpose;
     use crate::models::external::overlay::vpcpeering::VpcManifest;
     use crate::models::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
+    use multi_index_map::UniquenessError;
 
     use routing::prefix::Prefix;
 
@@ -51,7 +52,7 @@ pub mod test {
 
     #[test]
     fn test_vpc_checks() {
-        let mut vpc_table = VpcTable::new();
+        let mut vpc_table = MultiIndexVpcMap::default();
 
         /* invalid vni should be rejected */
         let vpc1 = Vpc::new("VPC-1", "AAAAA", 0);
@@ -59,25 +60,19 @@ pub mod test {
 
         /* add vpc with valid vni 3000 */
         let vpc1 = Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed");
-        vpc_table.add(vpc1).expect("Should succeed");
+        vpc_table.try_insert(vpc1).expect("Should succeed");
 
         /* vpc with duplicate name should be rejected */
         let bad = Vpc::new("VPC-1", "BBBBB", 2000).expect("Should succeed");
-        assert_eq!(
-            vpc_table.add(bad),
-            Err(ConfigError::DuplicateVpcName("VPC-1".to_string()))
-        );
+        assert_eq!(vpc_table.try_insert(bad.clone()), Err(UniquenessError(bad)));
 
         /* vpc with colliding VNI should be rejected */
         let bad = Vpc::new("VPC-2", "CCCCC", 3000).expect("Should succeed");
-        assert_eq!(vpc_table.add(bad), Err(ConfigError::DuplicateVpcVni(3000)));
+        assert_eq!(vpc_table.try_insert(bad.clone()), Err(UniquenessError(bad)));
 
         /* vpc with colliding Id should be rejected */
         let bad = Vpc::new("VPC-2", "AAAAA", 9000).expect("Should succeed");
-        assert_eq!(
-            vpc_table.add(bad),
-            Err(ConfigError::DuplicateVpcId("AAAAA".try_into().unwrap()))
-        );
+        assert_eq!(vpc_table.try_insert(bad.clone()), Err(UniquenessError(bad)));
 
         /* vpc with bad Id should not build */
         let bad = Vpc::new("VPC-2", "AAA", 9000);
@@ -94,8 +89,8 @@ pub mod test {
         let vpc1 = Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed");
 
         /* build VPC table */
-        let mut vpc_table = VpcTable::new();
-        vpc_table.add(vpc1).expect("Should succeed");
+        let mut vpc_table = MultiIndexVpcMap::default();
+        vpc_table.try_insert(vpc1).expect("Should succeed");
 
         /* build peering, referring to non-declared VPC VPC-2 */
         let peering = build_vpc_peering();
@@ -122,9 +117,9 @@ pub mod test {
         let peering = build_vpc_peering();
 
         /* build VPC table */
-        let mut vpc_table = VpcTable::new();
-        vpc_table.add(vpc1).expect("Should succeed");
-        vpc_table.add(vpc2).expect("Should succeed");
+        let mut vpc_table = MultiIndexVpcMap::default();
+        vpc_table.try_insert(vpc1).expect("Should succeed");
+        vpc_table.try_insert(vpc2).expect("Should succeed");
 
         /* build VPC pering table and add one peering */
         let mut peering_table = VpcPeeringTable::new();
@@ -243,11 +238,11 @@ pub mod test {
         }
 
         /* build VPC table with 3 vpcs */
-        let mut vpc_table = VpcTable::new();
-        let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed"));
-        let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 4000).expect("Should succeed"));
-        let _ = vpc_table.add(Vpc::new("VPC-3", "CCCCC", 2000).expect("Should succeed"));
-        let _ = vpc_table.add(Vpc::new("VPC-4", "DDDDD", 6000).expect("Should succeed"));
+        let mut vpc_table = MultiIndexVpcMap::default();
+        let _ = vpc_table.try_insert(Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed"));
+        let _ = vpc_table.try_insert(Vpc::new("VPC-2", "BBBBB", 4000).expect("Should succeed"));
+        let _ = vpc_table.try_insert(Vpc::new("VPC-3", "CCCCC", 2000).expect("Should succeed"));
+        let _ = vpc_table.try_insert(Vpc::new("VPC-4", "DDDDD", 6000).expect("Should succeed"));
 
         /* build peering table with 3 peerings */
         let mut peering_table = VpcPeeringTable::new();
@@ -288,7 +283,7 @@ pub mod test {
 
         /* collect ids */
         let id_map: VpcIdMap = vpc_table
-            .values()
+            .iter_by_name()
             .map(|vpc| (vpc.name.clone(), vpc.id.clone()))
             .collect();
 
@@ -299,7 +294,7 @@ pub mod test {
         println!("{vpc_table}");
 
         /* get vpc VPC1 */
-        if let Some(vpc) = vpc_table.get_vpc("VPC-1") {
+        if let Some(vpc) = vpc_table.get_by_name("VPC-1") {
             println!("{}", VpcDetailed(vpc));
         }
     }
