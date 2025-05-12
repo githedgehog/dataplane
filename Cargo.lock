@@ -549,22 +549,48 @@ dependencies = [
  "afpacket",
  "clap",
  "ctrlc",
+ "dataplane-dpdk",
  "dataplane-id",
+ "dataplane-net",
+ "dataplane-pipeline",
  "dataplane-routing",
- "dpdk",
  "dyn-iter",
  "iptrie",
  "mio",
- "net",
  "netdev",
  "ordermap",
- "pipeline",
  "serde",
  "serde_yml",
  "thiserror 2.0.12",
  "tracing",
  "tracing-subscriber",
 ]
+
+[[package]]
+name = "dataplane-dpdk"
+version = "0.1.0"
+dependencies = [
+ "dataplane-dpdk-sys",
+ "dataplane-dpdk-sysroot-helper",
+ "dataplane-errno",
+ "dataplane-net",
+ "serde",
+ "thiserror 2.0.12",
+ "tracing",
+]
+
+[[package]]
+name = "dataplane-dpdk-sys"
+version = "0.0.1"
+dependencies = [
+ "bindgen",
+ "dataplane-dpdk-sysroot-helper",
+ "doxygen-bindgen",
+]
+
+[[package]]
+name = "dataplane-dpdk-sysroot-helper"
+version = "0.0.1"
 
 [[package]]
 name = "dataplane-errno"
@@ -587,11 +613,11 @@ name = "dataplane-interface-manager"
 version = "0.0.1"
 dependencies = [
  "bolero",
+ "dataplane-net",
+ "dataplane-rekon",
  "derive_builder",
  "multi_index_map",
- "net",
  "nix 0.30.1",
- "rekon",
  "rtnetlink",
  "serde",
  "tokio",
@@ -599,15 +625,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-net"
+version = "0.0.1"
+dependencies = [
+ "ahash",
+ "arbitrary",
+ "arrayvec",
+ "bolero",
+ "derive_builder",
+ "etherparse",
+ "multi_index_map",
+ "ordermap",
+ "serde",
+ "thiserror 2.0.12",
+ "tracing",
+]
+
+[[package]]
+name = "dataplane-pipeline"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "dataplane-id",
+ "dataplane-net",
+ "dyn-iter",
+ "ordermap",
+ "thiserror 2.0.12",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "dataplane-rekon"
+version = "0.1.0"
+
+[[package]]
 name = "dataplane-routing"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "dataplane-net",
  "dplane-rpc",
  "ipnet",
  "iptrie",
  "mio",
- "net",
  "serde",
  "serde_yml",
  "thiserror 2.0.12",
@@ -623,12 +684,12 @@ dependencies = [
  "caps",
  "dataplane-id",
  "dataplane-interface-manager",
+ "dataplane-net",
+ "dataplane-rekon",
  "derive_builder",
  "fixin",
  "futures",
  "multi_index_map",
- "net",
- "rekon",
  "rtnetlink",
  "serde",
  "tokio",
@@ -697,32 +758,6 @@ checksum = "93ba4ed6eedf7f4ace1632149d8f0e8a65a480534024d65a7c3b9daacdedbad3"
 dependencies = [
  "yap",
 ]
-
-[[package]]
-name = "dpdk"
-version = "0.1.0"
-dependencies = [
- "dataplane-errno",
- "dpdk-sys",
- "dpdk-sysroot-helper",
- "net",
- "serde",
- "thiserror 2.0.12",
- "tracing",
-]
-
-[[package]]
-name = "dpdk-sys"
-version = "0.0.1"
-dependencies = [
- "bindgen",
- "doxygen-bindgen",
- "dpdk-sysroot-helper",
-]
-
-[[package]]
-name = "dpdk-sysroot-helper"
-version = "0.0.1"
 
 [[package]]
 name = "dplane-rpc"
@@ -1224,10 +1259,10 @@ name = "mgmt"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "dataplane-net",
  "dataplane-routing",
  "derive_builder",
  "gateway_config",
- "net",
  "thiserror 2.0.12",
  "tokio",
  "tonic",
@@ -1289,23 +1324,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
-]
-
-[[package]]
-name = "net"
-version = "0.0.1"
-dependencies = [
- "ahash",
- "arbitrary",
- "arrayvec",
- "bolero",
- "derive_builder",
- "etherparse",
- "multi_index_map",
- "ordermap",
- "serde",
- "thiserror 2.0.12",
- "tracing",
 ]
 
 [[package]]
@@ -1553,20 +1571,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
-name = "pipeline"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "dataplane-id",
- "dyn-iter",
- "net",
- "ordermap",
- "thiserror 2.0.12",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "ppv-lite86"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1749,10 +1753,6 @@ name = "regex-syntax"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
-
-[[package]]
-name = "rekon"
-version = "0.1.0"
 
 [[package]]
 name = "rtnetlink"

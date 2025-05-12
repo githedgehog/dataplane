@@ -24,8 +24,8 @@
 //! method. [`StaticChain`] is implemented for all types that implement [`NetworkFunction`].
 //!
 //! ```rust
-//! use pipeline::{NetworkFunction, StaticChain};
-//! use pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
+//! use dataplane_pipeline::{NetworkFunction, StaticChain};
+//! use dataplane_pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
 //! use net::buffer::PacketBufferMut;
 //! use net::packet::Packet;
 //! use net::buffer::TestBuffer;
@@ -55,8 +55,8 @@
 //! together a series of network functions.
 //!
 //! ```rust
-//! use pipeline::DynPipeline;
-//! use pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
+//! use dataplane_pipeline::DynPipeline;
+//! use dataplane_pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
 //! use net::buffer::TestBuffer;
 //!
 //! let mut pipeline = DynPipeline::<TestBuffer>::new();
@@ -76,8 +76,8 @@
 //! You can also combine dynamic chaining with static chaining.
 //!
 //! ```rust
-//! use pipeline::{DynPipeline, NetworkFunction, StaticChain};
-//! use pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
+//! use dataplane_pipeline::{DynPipeline, NetworkFunction, StaticChain};
+//! use dataplane_pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
 //! use net::buffer::TestBuffer;
 //!
 //! let mut pipeline: DynPipeline<TestBuffer> = DynPipeline::new();

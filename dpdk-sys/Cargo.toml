@@ -1,5 +1,5 @@
 [package]
-name = "dpdk-sys"
+name = "dataplane-dpdk-sys"
 version = "0.0.1"
 edition = "2024"
 description = "Low-level bindings to the Data Plane Development Kit (DPDK)"

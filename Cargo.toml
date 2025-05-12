@@ -35,17 +35,17 @@ resolver = "3"
 [workspace.dependencies]
 
 # Internal
-dpdk = { path = "./dpdk" }
-dpdk-sys = { path = "./dpdk-sys" }
-dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper" }
+dpdk = { path = "./dpdk", package = "dataplane-dpdk" }
+dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys" }
+dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpdk-sysroot-helper" }
 dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", version = "1.0.0" }
 errno = { path = "./errno", package = "dataplane-errno" }
 gateway_config = { git = "https://github.com/githedgehog/gateway-proto", tag = "v0.2.0", version = "0.1.0" }
 id = { path = "./id", package = "dataplane-id" }
 interface-manager = { path = "./interface-manager", package = "dataplane-interface-manager" }
-net = { path = "./net", features = ["test_buffer"] }
-pipeline = { path = "./pipeline" }
-rekon = { path = "./rekon" }
+net = { path = "./net", package = "dataplane-net", features = ["test_buffer"] }
+pipeline = { path = "./pipeline", package = "dataplane-pipeline" }
+rekon = { path = "./rekon", package = "dataplane-rekon" }
 routing = { path = "./routing", package = "dataplane-routing" }
 vpc-manager = { path = "./vpc-manager", package = "dataplane-vpc-manager" }
 

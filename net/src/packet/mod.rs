@@ -111,9 +111,9 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// # Example
     ///
     /// ```
-    /// # use net::buffer::PacketBufferMut;
-    /// # use net::headers::TryHeaders;
-    /// # use net::packet::Packet;
+    /// # use dataplane_net::buffer::PacketBufferMut;
+    /// # use dataplane_net::headers::TryHeaders;
+    /// # use dataplane_net::packet::Packet;
     /// #
     /// # fn with_received_mbuf<Buf: PacketBufferMut>(buf: Buf) {
     /// #   let mut packet = Packet::new(buf).unwrap();
