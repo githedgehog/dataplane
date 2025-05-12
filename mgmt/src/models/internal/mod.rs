@@ -6,15 +6,9 @@
 //! Any configuration received externally (e.g. via gRPC) causes an internal configuration to be built and applied.
 //! This module should contain all the tools to build a configuration in memory.
 
-#![allow(unused)]
-
 pub mod device;
 pub mod interfaces;
 pub mod routing;
-
-use derive_builder::Builder;
-
-use crate::models::external::gwconfig::GenId;
 
 use crate::models::internal::device::DeviceConfig;
 use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
