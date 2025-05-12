@@ -8,14 +8,13 @@
 pub mod test {
     use crate::models::external::ConfigError;
     use crate::models::external::overlay::Overlay;
-    use crate::models::external::overlay::VpcIdMap;
     use crate::models::external::overlay::display::VpcDetailed;
     use crate::models::external::overlay::vpc::{MultiIndexVpcMap, Vpc};
     use crate::models::external::overlay::vpcpeering::VpcExpose;
     use crate::models::external::overlay::vpcpeering::VpcManifest;
     use crate::models::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
     use multi_index_map::UniquenessError;
-
+    use net::vxlan::InvalidVni;
     use routing::prefix::Prefix;
 
     /* Build sample manifests for a peering */
@@ -56,7 +55,10 @@ pub mod test {
 
         /* invalid vni should be rejected */
         let vpc1 = Vpc::new("VPC-1", "AAAAA", 0);
-        assert_eq!(vpc1, Err(ConfigError::InvalidVpcVni(0)));
+        assert_eq!(
+            vpc1,
+            Err(ConfigError::InvalidVpcVni(InvalidVni::ReservedZero))
+        );
 
         /* add vpc with valid vni 3000 */
         let vpc1 = Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed");
