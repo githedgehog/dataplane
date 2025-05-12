@@ -3,15 +3,15 @@
 
 //! Dataplane configuration model: VRFs
 
+use super::bgp::BgpConfig;
+use super::ospf::Ospf;
+use super::statics::StaticRoute;
 use crate::models::internal::{InterfaceConfig, InterfaceConfigTable};
+use net::interface::InterfaceName;
 use net::route::RouteTableId;
 use net::vxlan::Vni;
 use routing::prefix::Prefix;
 use std::collections::BTreeSet;
-use net::interface::InterfaceName;
-use super::bgp::BgpConfig;
-use super::ospf::Ospf;
-use super::statics::StaticRoute;
 
 #[derive(Clone, Debug)]
 
@@ -60,11 +60,11 @@ impl VrfConfig {
         self.tableid = Some(tableid);
         self
     }
-    pub fn set_bgp(&mut self, mut bgp: BgpConfig) -> &Self {
+    pub fn set_bgp(&mut self, bgp: BgpConfig) -> &Self {
         self.bgp = Some(bgp);
         self
     }
-    pub fn set_ospf(&mut self, mut ospf: Ospf) -> &Self {
+    pub fn set_ospf(&mut self, ospf: Ospf) -> &Self {
         self.ospf = Some(ospf);
         self
     }

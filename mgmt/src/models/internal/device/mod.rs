@@ -8,7 +8,7 @@ pub mod settings;
 
 use ports::PortConfig;
 use settings::DeviceSettings;
-use tracing::{debug, error};
+use tracing::debug;
 
 use crate::models::external::{ConfigError, ConfigResult};
 

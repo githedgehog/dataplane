@@ -81,7 +81,11 @@ mod tests {
 
     #[test]
     fn test_vrf_render() {
-        let mut vrf_cfg = VrfConfig::new("VPC-1", Some(Vni::new_checked(3000).unwrap()), false);
+        let mut vrf_cfg = VrfConfig::new(
+            "VPC-1".try_into().unwrap_or_else(|_| unreachable!()),
+            Some(Vni::new_checked(3000).unwrap()),
+            false,
+        );
         vrf_cfg.static_routes = build_static_routes();
         println!("\n{}", vrf_cfg.render(&()));
     }

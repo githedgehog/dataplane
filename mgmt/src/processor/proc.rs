@@ -5,7 +5,6 @@
 
 use std::io::Error;
 use std::net::SocketAddr;
-use std::thread;
 
 use tokio::sync::oneshot::Receiver;
 use tokio::sync::{mpsc, oneshot};
@@ -214,7 +213,7 @@ async fn start_frrmi() -> Result<FrrMi, Error> {
 pub fn start_mgmt(grpc_address: SocketAddr) -> Result<std::thread::JoinHandle<()>, Error> {
     debug!("Initializing management...");
 
-    thread::Builder::new()
+    std::thread::Builder::new()
         .name("mgmt".to_string())
         .spawn(move || {
             debug!("Starting dataplane management thread");
