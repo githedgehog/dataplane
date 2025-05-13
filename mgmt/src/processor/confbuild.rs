@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 #[allow(unused)]
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use routing::prefix::Prefix;
 use std::net::Ipv4Addr;
@@ -224,11 +224,9 @@ pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, Config
         let router_id = bgp.router_id;
         build_internal_overlay_config(&external.overlay, asn, router_id, &mut internal);
     } else if config.genid() != ExternalConfig::BLANK_GENID {
-        error!("Config has no BGP configuration");
-        return Err(ConfigError::IncompleteConfig(
-            "Missing BGP config".to_string(),
-        ));
+        warn!("Config has no BGP configuration");
     }
+
     debug!(
         "Successfully built internal config for genid {}",
         config.genid()
