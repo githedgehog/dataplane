@@ -171,9 +171,12 @@ impl FrrMi {
             remote: remote_addr.to_string(),
             timeout: Duration::from_secs(Self::FRRMI_TIMEOUT),
         };
-        frrmi.connect().await;
+        let _ = frrmi.connect().await;
         if frrmi.is_connected() {
-            frrmi.probe().await;
+            let _ = frrmi.probe().await;
+            if !frrmi.is_connected() {
+                warn!("Frrmi is NOT connected to agent");
+            }
         }
         info!(
             "Created frrmi. remote: {} connected: {}",
@@ -182,28 +185,24 @@ impl FrrMi {
         );
         Ok(frrmi)
     }
-    pub async fn connect(&mut self) {
+    pub async fn connect(&mut self) -> Result<(), FrrErr> {
         let timeout = Duration::from_secs(Self::FRRMI_TIMEOUT);
-        if let Ok(stream) = connect_sock_stream(&self.remote, timeout).await {
-            self.sock = Some(stream);
-        }
+        let stream = connect_sock_stream(&self.remote, timeout).await?;
+        self.sock = Some(stream);
+        Ok(())
     }
     pub fn is_connected(&self) -> bool {
         self.sock.is_some()
     }
 
     /// Probe the frr-agent with this [`FrrMi`] by sending a keepalive message
-    /// FIXME: decide if we need probing with stream sockets
-    pub async fn probe(&mut self) {
+    pub async fn probe(&mut self) -> Result<(), FrrErr> {
         if !self.is_connected() {
-            self.connect().await;
+            debug!("Frrmi is not connected to agent...");
+            self.connect().await?;
         }
-        if self.is_connected() {
-            debug!("Probing frr-agent...");
-            if self.send_receive(0, "KEEPALIVE").await.is_ok() {
-                info!("Contacted Frr-agent at {}", self.remote);
-            }
-        }
+        debug!("Probing frr-agent...");
+        self.send_receive(0, "KEEPALIVE").await
     }
 
     /// Receive a response
@@ -230,10 +229,7 @@ impl FrrMi {
     async fn send_receive(&mut self, genid: GenId, msg: &str) -> Result<(), FrrErr> {
         if !self.is_connected() {
             debug!("Frmmi is not connected to agent...");
-            self.connect().await;
-            if !self.is_connected() {
-                return Err(FrrErr::NotConnected);
-            }
+            self.connect().await?;
         }
 
         if let Some(sock) = &mut self.sock {
