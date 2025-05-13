@@ -173,6 +173,13 @@ impl ConfigProcessor {
 }
 
 pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &mut FrrMi) -> ConfigResult {
+    /* probe the FRR agent. If unreachable, there's no point in trying to apply
+    a configuration, either in interface manager or frr */
+    frrmi
+        .probe()
+        .await
+        .map_err(|_| ConfigError::FrrAgentUnreachable)?;
+
     /* apply in interface manager - async (TODO) */
 
     /* apply in frr: need to render and call frr-reload */
