@@ -9,6 +9,7 @@ use tracing::{debug, error, info};
 
 use crate::models::external::gwconfig::{ExternalConfig, GenId, GwConfig};
 use crate::models::external::{ConfigError, ConfigResult};
+use crate::processor::display::GwConfigDatabaseSummary;
 
 #[derive(Default)]
 #[allow(unused)]
@@ -33,6 +34,9 @@ impl GwConfigDatabase {
     pub fn len(&self) -> usize {
         self.configs.len()
     }
+    pub fn iter(&self) -> impl Iterator<Item = (&GenId, &GwConfig)> {
+        self.configs.iter()
+    }
     pub fn get(&self, genid: GenId) -> Option<&GwConfig> {
         self.configs.get(&genid)
     }
@@ -41,6 +45,14 @@ impl GwConfigDatabase {
     }
     pub fn get_mut(&mut self, generation: GenId) -> Option<&mut GwConfig> {
         self.configs.get_mut(&generation)
+    }
+    pub fn unmark_current(&mut self, value: bool) {
+        if let Some(genid) = &self.current {
+            if let Some(config) = self.configs.get_mut(genid) {
+                config.set_applied(value);
+                debug!("Marked config with genid {genid} as inactive");
+            }
+        }
     }
     pub fn remove(&mut self, genid: GenId) -> ConfigResult {
         debug!("Removing config '{genid}' from config db...");
@@ -77,15 +89,21 @@ impl GwConfigDatabase {
             }
             debug!("The current config is {last}");
         } else {
-            debug!("There is no current config applied");
+            debug!("There is no config applied");
         }
 
-        /* look up the config to apply */
+        if self.contains(genid) {
+            /* mark the current config, if any, as not applied anymore. It is unfortunate
+            to do this here, hence the check, since otherwise the borrow checker complains
+            of double mutable borrow */
+            self.unmark_current(false);
+        }
+
+        /* look up the config to apply: this should always succeed */
         let Some(config) = self.get_mut(genid) else {
             error!("Can't apply config {}: not found", genid);
             return Err(ConfigError::NoSuchConfig(genid));
         };
-        debug!("Config with id {genid} found");
 
         /* attempt to apply the configuration found */
         let res = config.apply(frrmi).await;
@@ -96,25 +114,29 @@ impl GwConfigDatabase {
             /* delete the config we wanted to apply */
             debug!("Deleting config with id {genid}..");
             let _ = self.remove(genid);
-            /* roll-back */
-            if let Some(current) = last {
-                info!("Rolling back to prior config '{}'", current);
-                let mut config = self.get_mut(current);
+
+            /* roll-back to a previous config (if there) or the blank config (to wipe out),
+            except if the failed config is the blank itself.
+
+            Question: if a config fails because frr-agent did not respond, rolling back to
+            that config will not help, since we will fail to re-apply the FRR config
+            which was previously successful. On the other hand,  since the frr-agent will test
+            before applying a config, we can confident that a failed config needs not be re-applied
+            because, hopefully, frr-reload will not break it ? */
+            if genid != ExternalConfig::BLANK_GENID {
+                let previous = last.unwrap_or(ExternalConfig::BLANK_GENID);
+                info!("Rolling back to config '{}'...", previous);
+                let mut config = self.get_mut(previous);
                 if let Some(config) = &mut config {
                     if let Err(e) = config.apply(frrmi).await {
-                        error!("Fatal: could not roll-back to prior config: {e}");
+                        error!("Fatal: could not roll-back to previous config: {e}");
                     }
                 }
-            } else {
-                // This should not happen if we apply upfront the blank config and we
-                // succeed. That is not guaranteed, though since we may fail to communicate
-                // to FRR an initial, blank config.
-                info!("There was no config applied");
             }
         }
         debug!(
-            "Number of configs in the database is: {}",
-            self.configs.len()
+            "The current config database looks as follows:\n{}",
+            GwConfigDatabaseSummary(self)
         );
         res
     }

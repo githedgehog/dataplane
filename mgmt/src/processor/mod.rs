@@ -5,6 +5,7 @@
 //! This module implements the core logic to determine and build internal configurations.
 
 pub mod confbuild;
+mod display;
 pub mod gwconfigdb;
 mod namegen;
 pub mod proc;
