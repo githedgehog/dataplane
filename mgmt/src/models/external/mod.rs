@@ -34,8 +34,6 @@ pub enum ConfigError {
     Forbidden(&'static str),
     #[error("Bad VPC Id")]
     BadVpcId(String),
-    #[error("Incomplete configuration {0}")]
-    IncompleteConfig(String),
     #[error("Error applying FRR config {0}")]
     FrrApplyError(String),
     #[error("Missing identifier: {0}")]
