@@ -44,6 +44,7 @@ gateway_config = { git = "https://github.com/githedgehog/gateway-proto", tag = "
 id = { path = "./id", package = "dataplane-id" }
 interface-manager = { path = "./interface-manager", package = "dataplane-interface-manager" }
 net = { path = "./net", package = "dataplane-net", features = ["test_buffer"] }
+mgmt = { path = "./mgmt", package = "dataplane-mgmt"}
 pipeline = { path = "./pipeline", package = "dataplane-pipeline" }
 rekon = { path = "./rekon", package = "dataplane-rekon" }
 routing = { path = "./routing", package = "dataplane-routing" }
