@@ -8,7 +8,7 @@ use derive_builder::Builder;
 use std::time::SystemTime;
 use tracing::{debug, info};
 
-use crate::models::external::{ConfigError, ConfigResult};
+use crate::models::external::ConfigResult;
 use crate::models::internal::InternalConfig;
 use crate::models::internal::device::DeviceConfig;
 use crate::models::internal::routing::vrf::VrfConfig;
@@ -136,16 +136,9 @@ impl GwConfig {
         }
 
         /* Apply this gw config */
-        match apply_gw_config(self, frrmi).await {
-            Ok(()) => {
-                self.meta.applied = Some(SystemTime::now());
-                self.meta.is_applied = true;
-                Ok(())
-            }
-            Err(e) => {
-                info!("Failed to apply config {}: {e}", self.genid());
-                Err(ConfigError::FailureApply)
-            }
-        }
+        apply_gw_config(self, frrmi).await?;
+        self.meta.applied = Some(SystemTime::now());
+        self.meta.is_applied = true;
+        Ok(())
     }
 }

@@ -6,7 +6,6 @@ pub mod overlay;
 
 use crate::models::external::gwconfig::GenId;
 use crate::models::external::overlay::vpc::VpcId;
-
 use thiserror::Error;
 
 /// The reasons why we may reject a configuration
@@ -34,13 +33,23 @@ pub enum ConfigError {
     Forbidden(&'static str),
     #[error("Bad VPC Id")]
     BadVpcId(String),
-    #[error("Error applying FRR config {0}")]
+    #[error("Error applying FRR config: {0}")]
     FrrApplyError(String),
     #[error("Missing identifier: {0}")]
     MissingIdentifier(&'static str),
     #[error("Missing mandatory parameter: {0}")]
     MissingParameter(&'static str),
+
+    #[error("Frr agent is unreachable")]
+    FrrAgentUnreachable,
 }
 
 /// Result-like type for configurations
 pub type ConfigResult = Result<(), ConfigError>;
+
+pub fn stringify(conf_result: &ConfigResult) -> String {
+    match conf_result {
+        Ok(()) => "Ok".to_string(),
+        Err(e) => format!("FAILED: {e}"),
+    }
+}
