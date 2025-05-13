@@ -25,8 +25,8 @@ impl Display for StaticRouteNhop {
 
 fn ip_route_type_str(prefix: &Prefix) -> &'static str {
     match prefix {
-        Prefix::IPV4(_) => "ip",
-        Prefix::IPV6(_) => "ipv6",
+        Prefix::Ipv4(_) => "ip",
+        Prefix::Ipv6(_) => "ipv6",
     }
 }
 

@@ -17,12 +17,11 @@ use crate::models::external::overlay::VpcPeeringTable;
 use crate::models::external::{ConfigError, ConfigResult};
 use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
 
-#[cfg(doc)]
-use crate::models::external::overlay::vpcpeering::VpcPeering;
-
 /// This is nearly identical to [`VpcPeering`], but with some subtle differences.
 /// [`Peering`] is owned by a Vpc while [`VpcPeering`] remains in the [`VpcPeeringTable`].
 /// Most importantly, [`Peering`] has a notion of local and remote, while [`VpcPeering`] is symmetrical.
+///
+/// [`VpcPeering`]: crate::models::external::overlay::vpcpeering::VpcPeering
 #[derive(Clone, Debug, PartialEq)]
 pub struct Peering {
     pub name: String,        /* name of peering */
@@ -39,6 +38,7 @@ impl VpcId {
         Self([a, b, c, d, e])
     }
 }
+
 impl TryFrom<&str> for VpcId {
     type Error = ConfigError;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
@@ -72,19 +72,25 @@ pub struct Vpc {
 }
 
 impl Vpc {
+    #[tracing::instrument(level = "info")]
     pub fn new(name: &str, id: &str, vni: u32) -> Result<Self, ConfigError> {
         let vni = Vni::new_checked(vni).map_err(ConfigError::InvalidVpcVni)?;
-        Ok(Self {
+        let mut ret = Self {
             name: name.to_owned(),
             id: VpcId::try_from(id)?,
             vni,
             interfaces: InterfaceConfigTable::new(),
             peerings: vec![],
-        })
+        };
+        let mut map = VpcIdMap::default();
+        map.insert(ret.name.clone(), ret.id.clone());
+        ret.collect_peerings(&VpcPeeringTable::default(), &map);
+        Ok(ret)
     }
 
-    // TODO: OPEN QUESTION: do we need this in the context of the vpc/interface manager
+    // TODO: OPEN QUESTION: do we need this in the context of the vpc/interface manager?
     /// Add an [`InterfaceConfig`] to this [`Vpc`]
+    #[tracing::instrument(level = "info")]
     pub fn add_interface_config(&mut self, if_cfg: InterfaceConfig) {
         self.interfaces.add_interface_config(if_cfg);
     }
@@ -108,21 +114,24 @@ impl Vpc {
             .collect();
 
         if self.peerings.is_empty() {
+            // TODO: why is this a warning?
             warn!("Warning, VPC {} has no configured peerings", &self.name);
         } else {
+            // TODO: should this be trace?
             debug!("Vpc '{}' has {} peerings", self.name, self.peerings.len());
         }
     }
 }
 
 impl MultiIndexVpcMap {
-    #[tracing::instrument(level = "debug", skip(self), ret)]
+    #[tracing::instrument(level = "debug")]
     pub(crate) fn collect_peerings(&mut self, peering_table: &VpcPeeringTable) {
-        let idmap: VpcIdMap = self
+        debug!("collecting peerings");
+        let idmap = self
             .iter_by_name()
             .map(|vpc| (vpc.name.clone(), vpc.id.clone()))
             .collect();
-        debug!("Collecting peerings for all VPCs..");
+        #[allow(unsafe_code)] // obeys the requirement to not mutate indexed fields
         unsafe { self.iter_mut() }.for_each(|(_, vpc)| vpc.collect_peerings(peering_table, &idmap));
     }
 }

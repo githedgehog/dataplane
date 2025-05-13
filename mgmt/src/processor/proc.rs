@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-#![allow(unreachable_code)]
-
 use std::io::Error;
 use std::net::SocketAddr;
 
@@ -23,14 +21,16 @@ use crate::{frr::renderer::builder::Render, models::external::gwconfig::GenId};
 use tracing::{debug, error, info, warn};
 
 /// A request type to the [`ConfigProcessor`]
-pub enum ConfigRequest {
+#[derive(Debug)]
+pub(crate) enum ConfigRequest {
     ApplyConfig(Box<GwConfig>),
     GetCurrentConfig,
     GetGeneration,
 }
 
 /// A response from the [`ConfigProcessor`]
-pub enum ConfigResponse {
+#[derive(Debug)]
+pub(crate) enum ConfigResponse {
     ApplyConfig(ConfigResult),
     GetCurrentConfig(Box<Option<GwConfig>>),
     GetGeneration(Option<GenId>),
@@ -39,12 +39,14 @@ type ConfigResponseChannel = oneshot::Sender<ConfigResponse>;
 
 /// A type that includes a request to the [`ConfigProcessor`] and a channel to
 /// issue the response back
-pub struct ConfigChannelRequest {
+#[derive(Debug)]
+pub(crate) struct ConfigChannelRequest {
     request: ConfigRequest,          /* a request to the mgmt processor */
     reply_tx: ConfigResponseChannel, /* the one-shot channel to respond */
 }
 impl ConfigChannelRequest {
     #[must_use]
+    #[tracing::instrument(level = "debug")]
     pub fn new(request: ConfigRequest) -> (Self, Receiver<ConfigResponse>) {
         let (reply_tx, reply_rx) = oneshot::channel();
         let request = Self { request, reply_tx };
@@ -55,6 +57,7 @@ impl ConfigChannelRequest {
 /// A configuration processor entity. This is the RPC-independent entity responsible for
 /// accepting/rejecting configurations, storing them in the configuration database and
 /// applying them.
+#[derive(Debug)]
 pub(crate) struct ConfigProcessor {
     config_db: GwConfigDatabase,
     rx: mpsc::Receiver<ConfigChannelRequest>,
@@ -62,9 +65,12 @@ pub(crate) struct ConfigProcessor {
 }
 
 impl ConfigProcessor {
+    // TODO: i'm not sure 1 is a good limit in an async context.  Is there something wrong with a
+    // queue of them?
     const CHANNEL_SIZE: usize = 1; // process one at a time
 
     /// Create a [`ConfigProcessor`]
+    #[tracing::instrument(level = "info")]
     pub(crate) fn new(frrmi: FrrMi) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
         let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
@@ -82,6 +88,7 @@ impl ConfigProcessor {
     ///   * builds an internal config for it
     ///   * stores the config in the config database
     ///   * applies the config
+    #[tracing::instrument(level = "info")]
     pub(crate) async fn process_incoming_config(&mut self, mut config: GwConfig) -> ConfigResult {
         /* get id of incoming config */
         let genid = config.genid();
@@ -108,6 +115,7 @@ impl ConfigProcessor {
     }
 
     /// Method to apply a blank configuration
+    #[tracing::instrument(level = "info")]
     async fn apply_blank_config(&mut self) -> ConfigResult {
         self.config_db
             .apply(ExternalConfig::BLANK_GENID, &self.frrmi)
@@ -115,21 +123,26 @@ impl ConfigProcessor {
     }
 
     /// RPC handler to apply a config
+    #[tracing::instrument(level = "debug")]
     async fn handle_apply_config(&mut self, config: GwConfig) -> ConfigResponse {
+        let genid = config.genid();
         debug!(
-            "━━━━━━ Handling apply configuration request. Genid {} ━━━━━━",
+            genid,
+            "handling apply configuration request. Genid {}",
             config.genid()
         );
         ConfigResponse::ApplyConfig(self.process_incoming_config(config).await)
     }
 
     /// RPC handler to get current config generation id
+    #[tracing::instrument(level = "debug")]
     fn handle_get_generation(&self) -> ConfigResponse {
         debug!("Handling get generation request");
         ConfigResponse::GetGeneration(self.config_db.get_current_gen())
     }
 
     /// RPC handler to get the currently applied config
+    #[tracing::instrument(level = "info")]
     fn handle_get_config(&self) -> ConfigResponse {
         debug!("Handling get running configuration request");
         let cfg = Box::new(self.config_db.get_current_config().cloned());
@@ -137,7 +150,7 @@ impl ConfigProcessor {
     }
 
     /// Run the configuration processor
-    #[allow(unreachable_code)]
+    #[tracing::instrument(level = "info")]
     async fn run(mut self) {
         info!("Starting config processor...");
 
@@ -169,6 +182,7 @@ impl ConfigProcessor {
     }
 }
 
+#[tracing::instrument(level = "info")]
 pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &FrrMi) -> ConfigResult {
     /* apply in interface manager - async (TODO) */
 
@@ -189,6 +203,7 @@ pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &FrrMi) -> ConfigResu
 }
 
 /// Start the gRPC server
+#[tracing::instrument(level = "info")]
 async fn start_grpc_server(addr: SocketAddr, channel_tx: Sender<ConfigChannelRequest>) {
     info!("Starting gRPC server on {:?}", addr);
     let config_service = create_config_service(channel_tx);
@@ -199,6 +214,7 @@ async fn start_grpc_server(addr: SocketAddr, channel_tx: Sender<ConfigChannelReq
         .await;
 }
 
+#[tracing::instrument(level = "info")]
 async fn start_frrmi() -> Result<FrrMi, Error> {
     /* create frrmi to talk to frr-agent */
     let Ok(frrmi) = FrrMi::new("/var/run/frr/frrmi.sock", "/var/run/frr/frr-agent.sock").await
@@ -210,6 +226,7 @@ async fn start_frrmi() -> Result<FrrMi, Error> {
 }
 
 /// Start the mgmt service
+#[tracing::instrument(level = "info")]
 pub fn start_mgmt(grpc_address: SocketAddr) -> Result<std::thread::JoinHandle<()>, Error> {
     debug!("Initializing management...");
 

@@ -38,7 +38,7 @@ impl Overlay {
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    pub fn validate(&mut self) -> ConfigResult {
+    pub fn validate(&self) -> ConfigResult {
         debug!("Validating overlay configuration...");
         /* check if the VPCs referred in a peering exist */
         for peering in self.peering_table.values() {
@@ -46,8 +46,9 @@ impl Overlay {
             self.check_peering_vpc(&peering.name, &peering.right)?;
         }
 
-        /* collect peerings of every VPC */
-        self.vpc_table.collect_peerings(&self.peering_table);
+        // TODO: why do we need to mutate in the validate function?
+        // /* collect peerings of every VPC */
+        // self.vpc_table.collect_peerings(&self.peering_table);
 
         debug!("Overlay configuration is VALID");
         Ok(())

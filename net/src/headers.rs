@@ -25,6 +25,10 @@ use derive_builder::Builder;
 use std::num::NonZero;
 use tracing::debug;
 
+#[allow(unused_imports)] // re-export
+#[cfg(any(test, feature = "arbitrary"))]
+pub use contract::*;
+
 const MAX_VLANS: usize = 4;
 const MAX_NET_EXTENSIONS: usize = 2;
 

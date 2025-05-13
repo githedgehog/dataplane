@@ -49,14 +49,14 @@ pub fn get_primary_address(interface: &InterfaceConfig) -> Result<String, String
 
 /// Parse a CIDR string into IP and netmask
 pub fn parse_cidr(cidr: &str) -> Result<(String, u8), String> {
-    let parts: Vec<&str> = cidr.split('/').collect();
+    let parts: Vec<_> = cidr.split('/').collect();
     if parts.len() != 2 {
         return Err(format!("Invalid CIDR format: {cidr}"));
     }
 
     let ip = parts[0].to_string();
     let netmask = parts[1]
-        .parse::<u8>()
+        .parse()
         .map_err(|_| format!("Invalid netmask in CIDR {cidr}: {}", parts[1]))?;
 
     Ok((ip, netmask))
@@ -148,6 +148,7 @@ pub fn convert_device_from_grpc(device: &gateway_config::Device) -> Result<Devic
     Ok(device_config)
 }
 
+// TODO: this method makes no sense to me at all
 /// Convert gRPC Underlay to internal Underlay
 pub fn convert_underlay_from_grpc(underlay: &gateway_config::Underlay) -> Result<Underlay, String> {
     // Find the default VRF or first VRF if default not found
@@ -155,6 +156,8 @@ pub fn convert_underlay_from_grpc(underlay: &gateway_config::Underlay) -> Result
         return Err("Underlay must contain at least one VRF".to_string());
     }
 
+    // TODO: why do we use the first one if we fail to find the default?
+    // TODO: do we have a way to prevent multiple entries being marked as default?
     // Look for the default VRF or use the first one
     let default_vrf = underlay
         .vrfs

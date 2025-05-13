@@ -7,18 +7,22 @@ use super::bgp::BgpConfig;
 use super::ospf::Ospf;
 use super::statics::StaticRoute;
 use crate::models::internal::{InterfaceConfig, InterfaceConfigTable};
+use multi_index_map::MultiIndexMap;
 use net::interface::InterfaceName;
 use net::route::RouteTableId;
 use net::vxlan::Vni;
 use routing::prefix::Prefix;
 use std::collections::BTreeSet;
 
-#[derive(Clone, Debug)]
-
+#[derive(Clone, Debug, MultiIndexMap)]
+#[multi_index_derive(Debug, Clone)]
 pub struct VrfConfig {
+    #[multi_index(ordered_unique)]
     pub name: InterfaceName,
     pub default: bool,
+    #[multi_index(ordered_unique)]
     pub tableid: Option<RouteTableId>,
+    #[multi_index(ordered_unique)]
     pub vni: Option<Vni>,
     pub subnets: BTreeSet<Prefix>,
     pub static_routes: BTreeSet<StaticRoute>,
@@ -79,17 +83,12 @@ impl VrfConfig {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct VrfConfigTable(Vec<VrfConfig>);
-
-impl VrfConfigTable {
+impl MultiIndexVrfConfigMap {
     pub fn new() -> Self {
-        VrfConfigTable(vec![])
+        MultiIndexVrfConfigMap::default()
     }
     pub fn add_vrf_config(&mut self, vrf_cfg: VrfConfig) {
-        self.0.push(vrf_cfg);
-    }
-    pub fn iter(&self) -> impl Iterator<Item = &VrfConfig> {
-        self.0.iter()
+        // TODO: must not panic here
+        self.try_insert(vrf_cfg).expect("Can't insert vrf config");
     }
 }

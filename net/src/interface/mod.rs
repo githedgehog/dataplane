@@ -16,10 +16,13 @@ use std::convert::TryFrom;
 use std::fmt::{Debug, Display, Formatter};
 use tracing::error;
 
+mod address;
 mod bridge;
 mod vrf;
 mod vtep;
 
+#[allow(unused_imports)] // re-export
+pub use address::*;
 #[allow(unused_imports)] // re-export
 pub use bridge::*;
 #[allow(unused_imports)] // re-export

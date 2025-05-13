@@ -102,7 +102,7 @@ pub mod test {
         peering_table.add(peering).expect("Should succeed");
 
         /* build overlay object and validate it */
-        let mut overlay = Overlay::new(vpc_table, peering_table);
+        let overlay = Overlay::new(vpc_table, peering_table);
         assert_eq!(
             overlay.validate(),
             Err(ConfigError::NoSuchVpc("VPC-2".to_owned()))
@@ -130,7 +130,7 @@ pub mod test {
         println!("{peering_table}");
 
         /* build overlay object and validate it */
-        let mut overlay = Overlay::new(vpc_table, peering_table);
+        let overlay = Overlay::new(vpc_table, peering_table);
         assert_eq!(overlay.validate(), Ok(()));
     }
 

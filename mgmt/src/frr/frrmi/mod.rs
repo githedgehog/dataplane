@@ -77,6 +77,7 @@ pub fn open_unix_sock_async<P: AsRef<Path> + ?Sized + std::fmt::Display>(
     Ok(sock)
 }
 
+#[derive(Debug)]
 pub struct FrrMi {
     sock: UnixDatagram,
     local: String,
@@ -250,7 +251,7 @@ pub mod tests {
     use super::*;
     use crate::frr::renderer::builder::Render;
     use crate::models::external::gwconfig::GwConfig;
-    use crate::processor::tests::test::sample_external_config;
+    use crate::processor::tests::sample_external_config;
     use tokio::task::JoinHandle;
     use tracing_test::traced_test;
 

@@ -73,8 +73,8 @@ impl PrefixTrie {
     #[tracing::instrument(level = "trace")]
     pub fn insert(&mut self, prefix: &Prefix, value: String) -> Result<(), TrieError> {
         match prefix {
-            Prefix::IPV4(p) => self.insert_ipv4(*p, value),
-            Prefix::IPV6(p) => self.insert_ipv6(*p, value),
+            Prefix::Ipv4(p) => self.insert_ipv4(*p, value),
+            Prefix::Ipv6(p) => self.insert_ipv6(*p, value),
         }
     }
 
@@ -82,21 +82,21 @@ impl PrefixTrie {
     #[tracing::instrument(level = "trace")]
     pub fn find(&self, prefix: &Prefix) -> Option<String> {
         match prefix {
-            Prefix::IPV4(p) => {
+            Prefix::Ipv4(p) => {
                 let (k, v) = self.trie_ipv4.lookup(p);
                 // The RTrieMap lookup always return an entry; if no better
                 // match, it returns the root of the map, which always exists.
                 // This means that to check if the result is "empty", we need to
                 // check whether the returned entry is the root for the map.
-                if Prefix::IPV4(*k).is_root() {
+                if Prefix::Ipv4(*k).is_root() {
                     None
                 } else {
                     Some(v.to_string())
                 }
             }
-            Prefix::IPV6(p) => {
+            Prefix::Ipv6(p) => {
                 let (k, v) = self.trie_ipv6.lookup(p);
-                if Prefix::IPV6(*k).is_root() {
+                if Prefix::Ipv6(*k).is_root() {
                     None
                 } else {
                     Some(v.to_string())

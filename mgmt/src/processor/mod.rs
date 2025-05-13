@@ -8,4 +8,6 @@ pub mod confbuild;
 pub mod gwconfigdb;
 mod namegen;
 pub mod proc;
+
+#[cfg(test)]
 pub mod tests;

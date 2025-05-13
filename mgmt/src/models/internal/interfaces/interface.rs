@@ -8,6 +8,7 @@
 use crate::models::external::ConfigError;
 use crate::models::external::ConfigResult;
 use crate::models::internal::routing::ospf::OspfInterface;
+use multi_index_map::MultiIndexMap;
 use net::eth::ethtype::EthType;
 use net::eth::mac::Mac;
 use net::interface::InterfaceName;
@@ -63,10 +64,12 @@ pub enum InterfaceType {
     Vrf(IfVrfConfig),
 }
 
-#[derive(Clone, Debug, PartialEq)]
 /// A network interface configuration. An interface can be user-specified or internal. This config object
 /// includes data to create the interface in the kernel and configure it for routing (e.g. FRR)
+#[derive(Clone, Debug, PartialEq, MultiIndexMap)]
+#[multi_index_derive(Debug, Clone)]
 pub struct InterfaceConfig {
+    #[multi_index(ordered_unique)]
     pub name: InterfaceName, /* key */
     pub iftype: InterfaceType,
     pub description: Option<String>,
