@@ -17,7 +17,6 @@ tokio = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-test = { workspace = true }
-nix = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]

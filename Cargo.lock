@@ -669,7 +669,6 @@ dependencies = [
  "dataplane-routing",
  "derive_builder",
  "gateway_config",
- "nix 0.30.1",
  "thiserror 2.0.12",
  "tokio",
  "tonic",
