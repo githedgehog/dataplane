@@ -22,7 +22,8 @@ use crate::models::internal::device::{
     settings::{DeviceSettings, DpdkPortConfig, KernelPacketConfig, PacketDriver},
 };
 use crate::models::internal::interfaces::interface::{
-    IfEthConfig, IfVlanConfig, IfVtepConfig, InterfaceConfig, InterfaceConfigTable, InterfaceType,
+    IfEthConfig, IfVlanConfig, IfVtepConfig, InterfaceConfig, InterfaceType,
+    MultiIndexInterfaceConfigMap,
 };
 
 use crate::models::internal::routing::vrf::VrfConfig;
@@ -187,7 +188,9 @@ pub fn convert_vrf_to_vrf_config(vrf: &gateway_config::Vrf) -> Result<VrfConfig,
     // convert each interface
     for iface in &vrf.interfaces {
         let iface_config = convert_interface_to_interface_config(iface)?;
-        vrf_config.add_interface_config(iface_config);
+        vrf_config
+            .add_interface_config(iface_config)
+            .map_err(|e| format!("Failed to add interface to interface: {}", e))?;
     }
 
     // Convert ospf config if present
@@ -630,11 +633,11 @@ pub fn convert_ospf_interface_to_grpc(
 }
 
 pub fn convert_interfaces_to_grpc(
-    interfaces: &InterfaceConfigTable,
+    interfaces: &MultiIndexInterfaceConfigMap,
 ) -> Result<Vec<gateway_config::Interface>, String> {
     let mut grpc_interfaces = Vec::new();
 
-    for interface in interfaces.values() {
+    for interface in interfaces.iter_by_name() {
         // Get IP address safely
         let ipaddr = get_primary_address(interface)?;
 

@@ -5,7 +5,7 @@
 
 #![allow(unused)]
 
-use multi_index_map::MultiIndexMap;
+use multi_index_map::{MultiIndexMap, UniquenessError};
 use net::vxlan::Vni;
 use routing::prefix::Prefix;
 use std::collections::BTreeMap;
@@ -15,7 +15,9 @@ use tracing::{debug, warn};
 use crate::models::external::overlay::VpcManifest;
 use crate::models::external::overlay::VpcPeeringTable;
 use crate::models::external::{ConfigError, ConfigResult};
-use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
+use crate::models::internal::interfaces::interface::{
+    InterfaceConfig, MultiIndexInterfaceConfigMap,
+};
 
 /// This is nearly identical to [`VpcPeering`], but with some subtle differences.
 /// [`Peering`] is owned by a Vpc while [`VpcPeering`] remains in the [`VpcPeeringTable`].
@@ -58,7 +60,7 @@ impl TryFrom<&str> for VpcId {
 pub(crate) type VpcIdMap = BTreeMap<String, VpcId>;
 
 /// Representation of a VPC from the RPC
-#[derive(Clone, Debug, PartialEq, MultiIndexMap)]
+#[derive(Clone, Debug, MultiIndexMap)]
 #[multi_index_derive(Clone, Debug)]
 pub struct Vpc {
     #[multi_index(ordered_unique)]
@@ -67,8 +69,27 @@ pub struct Vpc {
     pub id: VpcId,
     #[multi_index(ordered_unique)]
     pub vni: Vni,
-    pub interfaces: InterfaceConfigTable, /* user-defined interfaces in this VPC */
-    pub peerings: Vec<Peering>,           /* peerings of this VPC - NOT set via gRPC */
+    pub interfaces: MultiIndexInterfaceConfigMap, /* user-defined interfaces in this VPC */
+    pub peerings: Vec<Peering>,                   /* peerings of this VPC - NOT set via gRPC */
+}
+
+impl PartialEq for Vpc {
+    fn eq(&self, other: &Self) -> bool {
+        if self.name != other.name
+            || self.id != other.id
+            || self.vni != other.vni
+            || self.peerings != other.peerings
+        {
+            return false;
+        }
+        if self.interfaces.len() != other.interfaces.len() {
+            return false;
+        }
+        self.interfaces
+            .iter_by_name()
+            .zip(other.interfaces.iter_by_name())
+            .all(|(i, o)| i == o)
+    }
 }
 
 impl Vpc {
@@ -79,7 +100,7 @@ impl Vpc {
             name: name.to_owned(),
             id: VpcId::try_from(id)?,
             vni,
-            interfaces: InterfaceConfigTable::new(),
+            interfaces: MultiIndexInterfaceConfigMap::new(),
             peerings: vec![],
         };
         let mut map = VpcIdMap::default();
@@ -91,8 +112,11 @@ impl Vpc {
     // TODO: OPEN QUESTION: do we need this in the context of the vpc/interface manager?
     /// Add an [`InterfaceConfig`] to this [`Vpc`]
     #[tracing::instrument(level = "info")]
-    pub fn add_interface_config(&mut self, if_cfg: InterfaceConfig) {
-        self.interfaces.add_interface_config(if_cfg);
+    pub fn add_interface_config(
+        &mut self,
+        if_cfg: InterfaceConfig,
+    ) -> Result<&InterfaceConfig, UniquenessError<InterfaceConfig>> {
+        self.interfaces.try_insert(if_cfg)
     }
 
     /// Collect all peerings from the [`VpcPeeringTable`] table this vpc participates in

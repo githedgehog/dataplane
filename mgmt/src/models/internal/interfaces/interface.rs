@@ -26,22 +26,22 @@ pub struct InterfaceAddress {
     pub mask_len: u8,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IfVlanConfig {
     pub mac: Option<Mac>,
     pub vlan_id: Vid,
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IfEthConfig {
     pub mac: Option<Mac>,
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IfBridgeConfig {
     pub vlan_filtering: bool,
     pub vlan_protocol: EthType,
     pub mac: Option<Mac>,
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IfVtepConfig {
     pub mac: Option<Mac>,
     pub vni: Option<Vni>,
@@ -49,12 +49,12 @@ pub struct IfVtepConfig {
     pub local: IpAddr,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IfVrfConfig {
     pub table_id: u32, // FIXME: interface manager has specific type
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InterfaceType {
     Loopback,
     Ethernet(IfEthConfig),
@@ -66,7 +66,7 @@ pub enum InterfaceType {
 
 /// A network interface configuration. An interface can be user-specified or internal. This config object
 /// includes data to create the interface in the kernel and configure it for routing (e.g. FRR)
-#[derive(Clone, Debug, PartialEq, MultiIndexMap)]
+#[derive(Clone, Debug, PartialEq, Eq, MultiIndexMap)]
 #[multi_index_derive(Debug, Clone)]
 pub struct InterfaceConfig {
     #[multi_index(ordered_unique)]
@@ -79,10 +79,6 @@ pub struct InterfaceConfig {
     pub internal: bool, /* true if automatically created */
     pub ospf: Option<OspfInterface>,
 }
-
-#[derive(Clone, Debug, Default, PartialEq)]
-/// An interface configuration table
-pub struct InterfaceConfigTable(BTreeMap<InterfaceName, InterfaceConfig>);
 
 impl InterfaceAddress {
     pub fn new(address: IpAddr, mask_len: u8) -> Self {
@@ -134,14 +130,8 @@ impl InterfaceConfig {
     }
 }
 
-impl InterfaceConfigTable {
+impl MultiIndexInterfaceConfigMap {
     pub fn new() -> Self {
-        Self(BTreeMap::new())
-    }
-    pub fn add_interface_config(&mut self, cfg: InterfaceConfig) {
-        self.0.insert(cfg.name.clone(), cfg);
-    }
-    pub fn values(&self) -> impl Iterator<Item = &InterfaceConfig> {
-        self.0.values()
+        Self::default()
     }
 }

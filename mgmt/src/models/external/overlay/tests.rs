@@ -56,8 +56,8 @@ pub mod test {
         /* invalid vni should be rejected */
         let vpc1 = Vpc::new("VPC-1", "AAAAA", 0);
         assert_eq!(
-            vpc1,
-            Err(ConfigError::InvalidVpcVni(InvalidVni::ReservedZero))
+            vpc1.unwrap_err(),
+            ConfigError::InvalidVpcVni(InvalidVni::ReservedZero)
         );
 
         /* add vpc with valid vni 3000 */

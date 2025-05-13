@@ -6,8 +6,8 @@
 use super::bgp::BgpConfig;
 use super::ospf::Ospf;
 use super::statics::StaticRoute;
-use crate::models::internal::{InterfaceConfig, InterfaceConfigTable};
-use multi_index_map::MultiIndexMap;
+use crate::models::internal::{InterfaceConfig, MultiIndexInterfaceConfigMap};
+use multi_index_map::{MultiIndexMap, UniquenessError};
 use net::interface::InterfaceName;
 use net::route::RouteTableId;
 use net::vxlan::Vni;
@@ -27,7 +27,7 @@ pub struct VrfConfig {
     pub subnets: BTreeSet<Prefix>,
     pub static_routes: BTreeSet<StaticRoute>,
     pub bgp: Option<BgpConfig>,
-    pub interfaces: InterfaceConfigTable,
+    pub interfaces: MultiIndexInterfaceConfigMap,
     pub ospf: Option<Ospf>,
 }
 
@@ -41,7 +41,7 @@ impl Default for VrfConfig {
             subnets: BTreeSet::new(),
             static_routes: BTreeSet::new(),
             bgp: None,
-            interfaces: InterfaceConfigTable::new(),
+            interfaces: MultiIndexInterfaceConfigMap::new(),
             ospf: None,
         }
     }
@@ -78,8 +78,11 @@ impl VrfConfig {
     pub fn add_static_route(&mut self, static_route: StaticRoute) {
         self.static_routes.insert(static_route);
     }
-    pub fn add_interface_config(&mut self, if_cfg: InterfaceConfig) {
-        self.interfaces.add_interface_config(if_cfg);
+    pub fn add_interface_config(
+        &mut self,
+        if_cfg: InterfaceConfig,
+    ) -> Result<&InterfaceConfig, UniquenessError<InterfaceConfig>> {
+        self.interfaces.try_insert(if_cfg)
     }
 }
 

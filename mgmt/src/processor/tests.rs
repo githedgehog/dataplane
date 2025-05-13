@@ -173,7 +173,7 @@ fn sample_config_default_vrf_interfaces(vrf_cfg: &mut VrfConfig, loopback: IpAdd
         .set_description("Main loopback interface")
         .add_address(loopback, 32)
         .set_ospf(ospf);
-    vrf_cfg.add_interface_config(lo);
+    vrf_cfg.add_interface_config(lo).unwrap();
 
     /* configure eth0 interface */
     let ospf = OspfInterface::new(Ipv4Addr::from_str("0.0.0.0").expect("Bad area"))
@@ -188,7 +188,7 @@ fn sample_config_default_vrf_interfaces(vrf_cfg: &mut VrfConfig, loopback: IpAdd
     .set_description("Link to spine")
     .add_address(IpAddr::from_str("10.0.0.14").expect("Bad address"), 30)
     .set_ospf(ospf);
-    vrf_cfg.add_interface_config(eth0);
+    vrf_cfg.add_interface_config(eth0).unwrap();
 
     /* configure eth1 interface */
     let eth1_name = InterfaceName::try_from("eth1").expect("eth1 is a valid interface name");
@@ -199,7 +199,7 @@ fn sample_config_default_vrf_interfaces(vrf_cfg: &mut VrfConfig, loopback: IpAdd
     )
     .set_description("Link to external device ext-1")
     .add_address(IpAddr::from_str("172.16.0.1").expect("Bad address"), 24);
-    vrf_cfg.add_interface_config(eth1);
+    vrf_cfg.add_interface_config(eth1).unwrap();
 
     /* configure eth2 interface */
     let ospf = OspfInterface::new(Ipv4Addr::from_str("0.0.0.0").expect("Bad area"))
@@ -214,7 +214,7 @@ fn sample_config_default_vrf_interfaces(vrf_cfg: &mut VrfConfig, loopback: IpAdd
     .set_description("Link to spine")
     .add_address(IpAddr::from_str("10.0.1.14").expect("Bad address"), 30)
     .set_ospf(ospf);
-    vrf_cfg.add_interface_config(eth2);
+    vrf_cfg.add_interface_config(eth2).unwrap();
 }
 
 /* UNDERLAY, default VRF */

@@ -35,7 +35,7 @@ impl Underlay {
         // validate interfaces
         self.vrf
             .interfaces
-            .values()
+            .iter_by_name()
             .try_for_each(|iface| iface.validate())?;
 
         Ok(())

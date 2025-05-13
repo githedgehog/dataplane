@@ -11,7 +11,9 @@ pub mod interfaces;
 pub mod routing;
 
 use crate::models::internal::device::DeviceConfig;
-use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
+use crate::models::internal::interfaces::interface::{
+    InterfaceConfig, MultiIndexInterfaceConfigMap,
+};
 use crate::models::internal::routing::evpn::VtepConfig;
 use crate::models::internal::routing::frr::Frr;
 use crate::models::internal::routing::prefixlist::{PrefixList, PrefixListTable};
