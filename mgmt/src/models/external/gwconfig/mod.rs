@@ -45,15 +45,17 @@ impl Underlay {
 #[derive(Clone)]
 /// Configuration metadata. Every config object stored by the dataplane has metadata
 pub struct GwConfigMeta {
-    pub created: SystemTime,         /* time when config was built (received) */
-    pub applied: Option<SystemTime>, /* last time when config was applied successfully */
-    pub is_applied: bool,            /* True if the config is currently applied */
+    pub created: SystemTime,           /* time when config was built (received) */
+    pub applied: Option<SystemTime>,   /* last time when config was applied successfully */
+    pub unapplied: Option<SystemTime>, /* time when config was un-applied */
+    pub is_applied: bool,              /* True if the config is currently applied */
 }
 impl GwConfigMeta {
     fn new() -> Self {
         Self {
             created: SystemTime::now(),
             applied: None,
+            unapplied: None,
             is_applied: false,
         }
     }
@@ -112,6 +114,17 @@ impl GwConfig {
     /// Return the [`GenId`] of a [`GwConfig`] object.
     pub fn genid(&self) -> GenId {
         self.external.genid
+    }
+
+    /// Mark/unmark config as applied
+    pub fn set_applied(&mut self, value: bool) {
+        if value {
+            self.meta.applied = Some(SystemTime::now());
+            self.meta.unapplied.take();
+        } else {
+            self.meta.unapplied = Some(SystemTime::now());
+        }
+        self.meta.is_applied = value;
     }
 
     /// Validate a [`GwConfig`].

@@ -161,8 +161,9 @@ impl ConfigProcessor {
                         ConfigRequest::GetCurrentConfig => self.handle_get_config(),
                         ConfigRequest::GetGeneration => self.handle_get_generation(),
                     };
-                    // check error
-                    let _ = req.reply_tx.send(response);
+                    if req.reply_tx.send(response).is_err() {
+                        warn!("Failed to send reply from config processor: receiver dropped?");
+                    }
                 }
                 None => {
                     warn!("Channel to config processor was closed!");
