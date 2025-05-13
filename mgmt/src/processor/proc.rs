@@ -13,10 +13,9 @@ use tokio::{spawn, sync::mpsc::Sender};
 use tonic::transport::Server;
 
 use crate::grpc::server::create_config_service;
-use crate::models::external::{
-    ConfigResult,
-    gwconfig::{ExternalConfig, GwConfig},
-};
+use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
+use crate::models::external::{ConfigResult, stringify};
+
 use crate::processor::gwconfigdb::GwConfigDatabase;
 use crate::{frr::frrmi::FrrMi, models::external::ConfigError};
 use crate::{frr::renderer::builder::Render, models::external::gwconfig::GenId};
@@ -117,11 +116,14 @@ impl ConfigProcessor {
 
     /// RPC handler to apply a config
     async fn handle_apply_config(&mut self, config: GwConfig) -> ConfigResponse {
+        let genid = config.genid();
+        debug!("━━━━━━ Handling apply configuration request. Genid {genid} ━━━━━━");
+        let result = self.process_incoming_config(config).await;
         debug!(
-            "━━━━━━ Handling apply configuration request. Genid {} ━━━━━━",
-            config.genid()
+            "━━━━━━ Completed configuration for Genid {genid}: {} ━━━━━━",
+            stringify(&result)
         );
-        ConfigResponse::ApplyConfig(self.process_incoming_config(config).await)
+        ConfigResponse::ApplyConfig(result)
     }
 
     /// RPC handler to get current config generation id
