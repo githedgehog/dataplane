@@ -51,8 +51,8 @@ use net::vxlan::Vni;
 use std::fmt::Debug;
 use std::net::IpAddr;
 
-/// A helper to retrieve the source IP address from a [`Net`] object,
-/// independently of the IP version.
+/// A helper to retrieve the source IP address from a [`Net`] object, independently of the IP
+/// version.
 fn get_src_addr(net: &Net) -> IpAddr {
     match net {
         Net::Ipv4(hdr) => IpAddr::V4(hdr.source().inner()),
@@ -60,8 +60,8 @@ fn get_src_addr(net: &Net) -> IpAddr {
     }
 }
 
-/// A helper to retrieve the destination IP address from a [`Net`] object,
-/// independently of the IP version.
+/// A helper to retrieve the destination IP address from a [`Net`] object, independently of the IP
+/// version.
 fn get_dst_addr(net: &Net) -> IpAddr {
     match net {
         Net::Ipv4(hdr) => IpAddr::V4(hdr.destination()),
@@ -69,14 +69,11 @@ fn get_dst_addr(net: &Net) -> IpAddr {
     }
 }
 
-/// Indicates whether a [`Nat`] processor should perform source NAT or destination
-/// NAT.
+/// Indicates whether a [`Nat`] processor should perform source NAT or destination NAT.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NatDirection {
-    #[allow(dead_code)]
     /// Source NAT
     SrcNat,
-    #[allow(dead_code)]
     /// Destination NAT
     DstNat,
 }
@@ -89,9 +86,8 @@ pub enum NatMode {
     Stateful,
 }
 
-/// A NAT processor, implementing the [`NetworkFunction`] trait. [`Nat`] processes
-/// packets to run source or destination Network Address Translation (NAT) on
-/// their IP addresses.
+/// A NAT processor, implementing the [`NetworkFunction`] trait. [`Nat`] processes packets to run
+/// source or destination Network Address Translation (NAT) on their IP addresses.
 #[derive(Debug)]
 pub struct Nat {
     mode: NatMode,
@@ -99,9 +95,9 @@ pub struct Nat {
 }
 
 impl Nat {
-    /// Creates a new [`Nat`] processor. The `direction` indicates whether this
-    /// processor should perform source or destination NAT. The `mode` indicates
-    /// whether this processor should perform stateless or stateful NAT.
+    /// Creates a new [`Nat`] processor. The `direction` indicates whether this processor should
+    /// perform source or destination NAT. The `mode` indicates whether this processor should
+    /// perform stateless or stateful NAT.
     pub fn new<Buf: PacketBufferMut>(direction: NatDirection, mode: NatMode) -> Self {
         Self {
             mode,
@@ -196,9 +192,8 @@ impl Nat {
         Some(())
     }
 
-    /// Processes one packet. This is the main entry point for processing a
-    /// packet. This is also the function that we pass to [`Nat::process`] to
-    /// iterate over packets.
+    /// Processes one packet. This is the main entry point for processing a packet. This is also the
+    /// function that we pass to [`Nat::process`] to iterate over packets.
     fn process_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
         if !self.nat_supported() {
             return;
