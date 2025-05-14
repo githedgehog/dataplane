@@ -10,6 +10,7 @@
 
 pub mod device;
 pub mod interfaces;
+pub mod nat;
 pub mod routing;
 
 use derive_builder::Builder;
