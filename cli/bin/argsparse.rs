@@ -3,7 +3,7 @@
 
 //! Adds main parser for command arguments
 
-use crate::cliproto::{RequestArgs, RouteProtocol};
+use dataplane_cli::cliproto::{RequestArgs, RouteProtocol};
 use log::Level;
 use std::collections::HashMap;
 use std::net::IpAddr;

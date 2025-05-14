@@ -3,12 +3,18 @@
 
 //! Adds main parser for command arguments
 
+mod argsparse;
+mod cmdtree;
+mod cmdtree_dp;
+mod completions;
+mod terminal;
+
+
 use colored::Colorize;
-use dataplane_cli::argsparse::{ArgsError, CliArgs};
+use argsparse::{ArgsError, CliArgs};
 use dataplane_cli::cliproto::{CliAction, CliRequest, CliResponse, CliSerialize};
-use dataplane_cli::cmdtree_dp::gw_cmd_tree;
-use dataplane_cli::print_err;
-use dataplane_cli::terminal::Terminal;
+use cmdtree_dp::gw_cmd_tree;
+use terminal::Terminal;
 use std::collections::HashMap;
 use std::io::stdin;
 use std::os::unix::net::UnixDatagram;

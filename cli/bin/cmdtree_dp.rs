@@ -3,8 +3,8 @@
 
 //! Builds our command tree for dataplane
 
-use crate::cliproto::{CliAction, RouteProtocol};
 use crate::cmdtree::{Node, NodeArg};
+use dataplane_cli::cliproto::{CliAction, RouteProtocol};
 use log::Level;
 use std::convert::AsRef;
 use strum::IntoEnumIterator;
