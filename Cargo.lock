@@ -824,6 +824,7 @@ dependencies = [
  "futures",
  "gateway_config",
  "hyper 0.14.32",
+ "iptrie",
  "multi_index_map",
  "rtnetlink",
  "serde",

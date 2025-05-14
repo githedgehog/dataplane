@@ -20,6 +20,7 @@ gateway_config = { workspace = true }
 hyper = { workspace = true, features = ["server", "http1", "tcp", "stream"] }
 id = { workspace = true }
 interface-manager = { workspace = true }
+iptrie = { workspace = true }
 net = { workspace = true }
 rekon = { workspace = true }
 routing = { workspace = true }
@@ -55,4 +56,3 @@ test-utils = { workspace = true }
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
 tracing-test = { workspace = true, features = [] }
 caps = { workspace = true }
-
