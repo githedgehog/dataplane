@@ -817,6 +817,7 @@ dependencies = [
  "gateway_config",
  "thiserror 2.0.12",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tracing",
  "tracing-test",

@@ -9,7 +9,7 @@ mod args;
 mod drivers;
 mod nat;
 
-use crate::args::{CmdArgs, Parser};
+use crate::args::{CmdArgs, GrpcAddress, Parser};
 use drivers::dpdk::DriverDpdk;
 use drivers::kernel::DriverKernel;
 use net::buffer::PacketBufferMut;
@@ -47,7 +47,7 @@ fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
     }
 }
 
-use mgmt::processor::proc::start_mgmt;
+use mgmt::processor::proc::{start_mgmt_tcp, start_mgmt_unix};
 use tracing_subscriber::EnvFilter;
 
 fn main() {
@@ -61,11 +61,28 @@ fn main() {
     /* parse cmd line args */
     let args = CmdArgs::parse();
 
-    // Get the gRPC address from command line args
-    let grpc_addr = args.get_grpc_address();
-    if let Err(e) = start_mgmt(grpc_addr) {
-        error!("Failed to start management service: {e}");
-        panic!("Management service failed to start. Aborting...");
+    let grpc_addr = match args.get_grpc_address() {
+        Ok(addr) => addr,
+        Err(e) => {
+            error!("Invalid gRPC address configuration: {}", e);
+            panic!("Management service configuration error. Aborting...");
+        }
+    };
+    match grpc_addr {
+        GrpcAddress::Tcp(addr) => {
+            info!("Starting gRPC server on TCP address: {}", addr);
+            if let Err(e) = start_mgmt_tcp(addr) {
+                error!("Failed to start management service on TCP listener: {e}");
+                panic!("Management service failed to start. Aborting...");
+            }
+        }
+        GrpcAddress::UnixSocket(path) => {
+            info!("Starting gRPC server on UNIX socket: {:?}", path);
+            if let Err(e) = start_mgmt_unix(&path) {
+                error!("Failed to start management service on UNIX socket: {e}");
+                panic!("Management service failed to start. Aborting...");
+            }
+        }
     }
 
     debug!("Starting pipeline....");

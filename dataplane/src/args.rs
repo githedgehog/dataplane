@@ -5,7 +5,15 @@
 
 pub(crate) use clap::Parser;
 use std::net::SocketAddr;
-use tracing::debug;
+use std::path::PathBuf;
+use tracing::{debug, error};
+
+/// Enum to represent either a TCP socket address or a UNIX socket path
+#[derive(Debug, Clone)]
+pub(crate) enum GrpcAddress {
+    Tcp(SocketAddr),
+    UnixSocket(PathBuf),
+}
 
 #[derive(Parser)]
 #[command(name = "Hedgehog Fabric Gateway dataplane")]
@@ -32,13 +40,13 @@ pub(crate) struct CmdArgs {
     #[arg(long, value_name = "name of kernel interface")]
     interface: Vec<String>,
 
-    // gRPC server address
-    #[arg(
-        long,
-        value_name = "gRPC server address",
-        default_value = "[::1]:50051"
-    )]
+    /// gRPC server address (IP:PORT for TCP or path for UNIX socket)
+    #[arg(long, value_name = "ADDRESS", default_value = "[::1]:50051")]
     grpc_address: String,
+
+    /// Treat grpc-address as a UNIX socket path
+    #[arg(long, help = "Use UNIX socket instead of TCP")]
+    grpc_unix_socket: bool,
 }
 
 impl CmdArgs {
@@ -48,10 +56,12 @@ impl CmdArgs {
             Some(name) => name,
         }
     }
+
     #[allow(clippy::unused_self)]
     pub fn kernel_params(&self) -> Vec<String> {
         self.interface.clone()
     }
+
     pub fn eal_params(&self) -> Vec<String> {
         let mut out = Vec::new();
         /* hardcoded (always) */
@@ -103,14 +113,28 @@ impl CmdArgs {
         out
     }
 
-    /// Get the gRPC server address
-    pub fn get_grpc_address(&self) -> SocketAddr {
-        match self.grpc_address.parse() {
-            Ok(addr) => addr,
-            Err(e) => {
-                eprintln!("Error: Invalid gRPC address '{}': {}", self.grpc_address, e);
-                panic!("Process receives unexpected gRPC address. Aborting...");
+    /// Get the gRPC server address configuration
+    pub fn get_grpc_address(&self) -> Result<GrpcAddress, String> {
+        // If UNIX socket flag is set, treat the address as a UNIX socket path
+        if self.grpc_unix_socket {
+            // Validate that the address is a valid UNIX socket path
+            let grpc_path = PathBuf::from(&self.grpc_address);
+            if !grpc_path.is_absolute() {
+                return Err(format!(
+                    "Invalid configuration: --grpc-unix-socket flag is set, but --grpc-address '{}' is not a valid absolute UNIX socket path",
+                    self.grpc_address
+                ));
             }
+            return Ok(GrpcAddress::UnixSocket(grpc_path));
+        }
+
+        // Otherwise, parse as a TCP socket address
+        match self.grpc_address.parse::<SocketAddr>() {
+            Ok(addr) => Ok(GrpcAddress::Tcp(addr)),
+            Err(e) => Err(format!(
+                "Invalid gRPC TCP address '{}': {e}",
+                self.grpc_address
+            )),
         }
     }
 }

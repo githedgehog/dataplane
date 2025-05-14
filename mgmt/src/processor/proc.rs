@@ -5,11 +5,15 @@
 
 use std::io::Error;
 use std::net::SocketAddr;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::thread;
 
+use tokio::net::UnixListener;
 use tokio::sync::oneshot::Receiver;
 use tokio::sync::{mpsc, oneshot};
 use tokio::{spawn, sync::mpsc::Sender};
+use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
 
 use crate::grpc::server::create_config_service;
@@ -199,15 +203,77 @@ pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &mut FrrMi) -> Config
     Ok(())
 }
 
-/// Start the gRPC server
-async fn start_grpc_server(addr: SocketAddr, channel_tx: Sender<ConfigChannelRequest>) {
-    info!("Starting gRPC server on {:?}", addr);
+/// Start the gRPC server on TCP
+async fn start_grpc_server_tcp(
+    addr: SocketAddr,
+    channel_tx: Sender<ConfigChannelRequest>,
+) -> Result<(), Error> {
+    info!("Starting gRPC server on TCP address: {:?}", addr);
     let config_service = create_config_service(channel_tx);
 
     let _ = Server::builder()
         .add_service(config_service)
         .serve(addr)
         .await;
+    Ok(())
+}
+
+/// Start the gRPC server on UNIX socket
+async fn start_grpc_server_unix(
+    socket_path: &Path,
+    channel_tx: Sender<ConfigChannelRequest>,
+) -> Result<(), Error> {
+    info!("Starting gRPC server on UNIX socket: {:?}", socket_path);
+
+    // Remove existing socket file if present
+    if socket_path.exists() {
+        if let Err(e) = std::fs::remove_file(socket_path) {
+            error!("Failed to remove existing socket file: {}", e);
+            return Err(e);
+        }
+    }
+
+    // Create parent directory if it doesn't exist
+    if let Some(parent) = socket_path.parent() {
+        if !parent.exists() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                error!("Failed to create parent directory: {}", e);
+                return Err(e);
+            }
+        }
+    }
+
+    // Create the UNIX socket listener
+    let uds = match UnixListener::bind(socket_path) {
+        Ok(listener) => listener,
+        Err(e) => {
+            error!("Failed to bind UNIX socket: {}", e);
+            return Err(e);
+        }
+    };
+
+    // Set socket permissions if needed
+    match std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o660)) {
+        Ok(_) => debug!("Socket permissions set to 0660"),
+        Err(e) => error!("Failed to set socket permissions: {}", e),
+    }
+
+    // Create the gRPC service
+    let config_service = create_config_service(channel_tx);
+
+    // Start the server with UNIX domain socket
+    let _ = Server::builder()
+        .add_service(config_service)
+        .serve_with_incoming(UnixListenerStream::new(uds))
+        .await;
+
+    // Clean up the socket file after server shutdown
+    if socket_path.exists() {
+        if let Err(e) = std::fs::remove_file(socket_path) {
+            error!("Failed to remove socket file: {}", e);
+        }
+    }
+    Ok(())
 }
 
 async fn start_frrmi() -> Result<FrrMi, Error> {
@@ -219,9 +285,18 @@ async fn start_frrmi() -> Result<FrrMi, Error> {
     Ok(frrmi)
 }
 
-/// Start the mgmt service
-pub fn start_mgmt(grpc_address: SocketAddr) -> Result<std::thread::JoinHandle<()>, Error> {
-    debug!("Initializing management...");
+/// Enum for the different types of server addresses
+enum ServerAddress {
+    Tcp(SocketAddr),
+    Unix(PathBuf),
+}
+
+/// Start the mgmt service with either type of socket
+fn start_mgmt_internal(addr: ServerAddress) -> Result<std::thread::JoinHandle<()>, Error> {
+    match &addr {
+        ServerAddress::Tcp(_sock_addr) => debug!("Initializing management with TCP socket..."),
+        ServerAddress::Unix(_path) => debug!("Initializing management with UNIX socket..."),
+    }
 
     thread::Builder::new()
         .name("mgmt".to_string())
@@ -240,7 +315,27 @@ pub fn start_mgmt(grpc_address: SocketAddr) -> Result<std::thread::JoinHandle<()
                 let frrmi = start_frrmi().await.unwrap();
                 let (processor, tx) = ConfigProcessor::new(frrmi);
                 spawn(async { processor.run().await });
-                start_grpc_server(grpc_address, tx).await; /* must be last */
+
+                // Start the appropriate server based on address type
+                let result = match addr {
+                    ServerAddress::Tcp(sock_addr) => start_grpc_server_tcp(sock_addr, tx).await,
+                    ServerAddress::Unix(path) => start_grpc_server_unix(&path, tx).await,
+                };
+                if let Err(e) = result {
+                    error!("Failed to start gRPC server: {}", e);
+                }
             });
         })
+}
+
+/// Start the mgmt service with TCP socket
+pub fn start_mgmt_tcp(grpc_address: SocketAddr) -> Result<std::thread::JoinHandle<()>, Error> {
+    start_mgmt_internal(ServerAddress::Tcp(grpc_address))
+}
+
+/// Start the mgmt service with UNIX socket
+pub fn start_mgmt_unix(socket_path: &Path) -> Result<std::thread::JoinHandle<()>, Error> {
+    // Clone the path for the thread
+    let socket_path = socket_path.to_path_buf();
+    start_mgmt_internal(ServerAddress::Unix(socket_path))
 }
