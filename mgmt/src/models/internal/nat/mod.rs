@@ -10,3 +10,4 @@
 #![deny(rustdoc::all)]
 
 mod prefixtrie;
+pub mod tables;
