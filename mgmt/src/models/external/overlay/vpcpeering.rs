@@ -6,6 +6,7 @@
 use routing::prefix::Prefix;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use tracing::debug;
 
 use crate::models::external::{ConfigError, ConfigResult};
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -75,9 +76,7 @@ impl VpcPeering {
         }
     }
     pub fn validate(&self) -> ConfigResult {
-        if self.name.is_empty() {
-            return Err(ConfigError::MissingIdentifier("Peering name"));
-        }
+        debug!("Validating VPC peering '{}'...", &self.name);
         Ok(())
     }
     /// Given a peering fetch the manifests, orderly depending on the provided vpc name
@@ -105,10 +104,18 @@ impl VpcPeeringTable {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
-
+    /// Empty a [`VpcPeeringTable`]
+    pub fn clear(&mut self) {
+        debug!("Emptying peering table...");
+        self.0.clear();
+    }
     /// Add a [`VpcPeering`] to a [`VpcPeeringTable`]
     pub fn add(&mut self, peering: VpcPeering) -> ConfigResult {
-        peering.validate()?;
+        if peering.name.is_empty() {
+            return Err(ConfigError::MissingIdentifier("Peering name"));
+        }
+        /* no validations here please, since this gets called directly by the gRPC
+        server, which makes logs very confusing */
         if let Some(peering) = self.0.insert(peering.name.to_owned(), peering) {
             Err(ConfigError::DuplicateVpcPeeringId(peering.name.clone()))
         } else {
