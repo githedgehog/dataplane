@@ -10,4 +10,5 @@
 #![deny(rustdoc::all)]
 
 mod prefixtrie;
+pub mod table_extend;
 pub mod tables;
