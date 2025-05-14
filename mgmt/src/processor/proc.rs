@@ -122,7 +122,9 @@ impl ConfigProcessor {
         self.config_db.add(config);
 
         /* apply the configuration just stored */
-        self.config_db.apply(genid, &mut self.frrmi).await?;
+        self.config_db
+            .apply(genid, &mut self.frrmi, &mut self.netlink)
+            .await?;
 
         Ok(())
     }
@@ -131,7 +133,11 @@ impl ConfigProcessor {
     #[tracing::instrument(level = "info")]
     async fn apply_blank_config(&mut self) -> ConfigResult {
         self.config_db
-            .apply(ExternalConfig::BLANK_GENID, &mut self.frrmi)
+            .apply(
+                ExternalConfig::BLANK_GENID,
+                &mut self.frrmi,
+                &mut self.netlink,
+            )
             .await
     }
 
@@ -139,10 +145,10 @@ impl ConfigProcessor {
     #[tracing::instrument(level = "debug")]
     async fn handle_apply_config(&mut self, config: GwConfig) -> ConfigResponse {
         let genid = config.genid();
-        debug!("━━━━━━ Handling apply configuration request. Genid {genid} ━━━━━━");
+        debug!("handling apply configuration request. Genid {genid}");
         let result = self.process_incoming_config(config).await;
         debug!(
-            "━━━━━━ Completed configuration for Genid {genid}: {} ━━━━━━",
+            "completed configuration for Genid {genid}: {}",
             stringify(&result)
         );
         ConfigResponse::ApplyConfig(result)
@@ -205,7 +211,11 @@ impl ConfigProcessor {
 }
 
 #[tracing::instrument(level = "info")]
-pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &mut FrrMi) -> ConfigResult {
+pub async fn apply_gw_config(
+    config: &mut GwConfig,
+    frrmi: &mut FrrMi,
+    netlink: &mut rtnetlink::Handle,
+) -> ConfigResult {
     /* probe the FRR agent. If unreachable, there's no point in trying to apply
     a configuration, either in interface manager or frr */
     frrmi
@@ -228,6 +238,7 @@ pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &mut FrrMi) -> Config
             .map_err(|e| ConfigError::FrrApplyError(e.to_string()))?;
     }
 
+    // TODO: I think this log message is incorrect
     info!("Successfully applied config with genid {}", config.genid());
     Ok(())
 }

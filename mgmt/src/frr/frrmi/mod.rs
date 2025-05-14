@@ -251,6 +251,7 @@ impl FrrMi {
     }
 
     /// Apply the config in FRR represented by [`ConfigBuilder`] using this [`FrrMi`]
+    #[tracing::instrument(level = "info")]
     pub async fn apply_config(
         &mut self,
         genid: GenId,

@@ -148,7 +148,11 @@ impl GwConfig {
     }
 
     /// Apply a [`GwConfig`].
-    pub async fn apply(&mut self, frrmi: &mut FrrMi) -> ConfigResult {
+    pub async fn apply(
+        &mut self,
+        frrmi: &mut FrrMi,
+        netlink: &mut rtnetlink::Handle,
+    ) -> ConfigResult {
         info!("Applying config with genid {}...", self.genid());
         if self.internal.is_none() {
             debug!("Config has no internal config...");
@@ -156,7 +160,7 @@ impl GwConfig {
         }
 
         /* Apply this gw config */
-        apply_gw_config(self, frrmi).await?;
+        apply_gw_config(self, frrmi, netlink).await?;
         self.meta.applied = Some(SystemTime::now());
         self.meta.is_applied = true;
         Ok(())
