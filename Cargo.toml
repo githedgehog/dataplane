@@ -17,6 +17,7 @@ members = [ "cli",
 ]
 
 default-members = [
+	"cli",
 	"dataplane",
 	"dpdk-sysroot-helper",
 	"errno",
@@ -35,6 +36,7 @@ resolver = "3"
 [workspace.dependencies]
 
 # Internal
+cli = { path = "./cli", package = "dataplane-cli", features = [] }
 dpdk = { path = "./dpdk", package = "dataplane-dpdk" }
 dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys" }
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpdk-sysroot-helper" }

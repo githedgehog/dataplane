@@ -524,19 +524,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f46ad14479a25103f283c0f10005961cf086d8dc42205bb44c46ac563475dca6"
 
 [[package]]
-name = "cli"
-version = "0.1.0"
-dependencies = [
- "bincode2",
- "colored",
- "log",
- "rustyline",
- "serde",
- "strum",
- "thiserror 2.0.12",
-]
-
-[[package]]
 name = "clipboard-win"
 version = "5.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -744,6 +731,19 @@ dependencies = [
  "thiserror 2.0.12",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "dataplane-cli"
+version = "0.1.0"
+dependencies = [
+ "bincode2",
+ "colored",
+ "log",
+ "rustyline",
+ "serde",
+ "strum",
+ "thiserror 2.0.12",
 ]
 
 [[package]]

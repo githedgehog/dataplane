@@ -3,12 +3,12 @@
 
 //! Adds main parser for command arguments
 
-use cli::argsparse::{ArgsError, CliArgs};
-use cli::cliproto::{CliAction, CliRequest, CliResponse, CliSerialize};
-use cli::cmdtree_dp::gw_cmd_tree;
-use cli::print_err;
-use cli::terminal::Terminal;
 use colored::Colorize;
+use dataplane_cli::argsparse::{ArgsError, CliArgs};
+use dataplane_cli::cliproto::{CliAction, CliRequest, CliResponse, CliSerialize};
+use dataplane_cli::cmdtree_dp::gw_cmd_tree;
+use dataplane_cli::print_err;
+use dataplane_cli::terminal::Terminal;
 use std::collections::HashMap;
 use std::io::stdin;
 use std::os::unix::net::UnixDatagram;
