@@ -23,6 +23,7 @@ use net::interface::{
 };
 use net::ipv4::UnicastIpv4Addr;
 use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::{debug, error, info, warn};
 
@@ -167,7 +168,7 @@ impl GwConfig {
     pub async fn apply(
         &mut self,
         frrmi: &mut FrrMi,
-        netlink: &mut rtnetlink::Handle,
+        netlink: Arc<rtnetlink::Handle>,
     ) -> ConfigResult {
         info!("Applying config with genid {}...", self.genid());
         if self.internal.is_none() {

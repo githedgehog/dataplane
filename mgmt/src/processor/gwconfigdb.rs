@@ -5,6 +5,7 @@
 
 use crate::frr::frrmi::FrrMi;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use tracing::{debug, error, info};
 
 use crate::models::external::gwconfig::{ExternalConfig, GenId, GwConfig};
@@ -83,7 +84,7 @@ impl GwConfigDatabase {
         &mut self,
         genid: GenId,
         frrmi: &mut FrrMi,
-        netlink: &mut rtnetlink::Handle,
+        netlink: Arc<rtnetlink::Handle>,
     ) -> ConfigResult {
         debug!("Applying config with genid '{}'...", genid);
 
@@ -115,7 +116,7 @@ impl GwConfigDatabase {
         };
 
         /* attempt to apply the configuration found */
-        let res = config.apply(frrmi, netlink).await;
+        let res = config.apply(frrmi, netlink.clone()).await;
         if res.is_ok() {
             info!("Config with genid '{}' is now the current", genid);
             self.current = Some(genid);

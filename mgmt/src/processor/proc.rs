@@ -3,7 +3,7 @@
 
 use std::io::Error;
 use std::net::SocketAddr;
-
+use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot::Receiver;
 use tokio::sync::{mpsc, oneshot};
@@ -18,7 +18,8 @@ use crate::processor::gwconfigdb::GwConfigDatabase;
 use crate::{frr::frrmi::FrrMi, models::external::ConfigError};
 use crate::{frr::renderer::builder::Render, models::external::gwconfig::GenId};
 
-use crate::vpc_manager::RequiredInformationBase;
+use crate::vpc_manager::{RequiredInformationBase, VpcManager};
+use rekon::{Observe, Reconcile};
 use tracing::{debug, error, info, warn};
 
 /// A request type to the [`ConfigProcessor`]
@@ -64,7 +65,7 @@ pub(crate) struct ConfigProcessor {
     rx: mpsc::Receiver<ConfigChannelRequest>,
     frrmi: FrrMi,
     cancellation_token: CancellationToken,
-    netlink: rtnetlink::Handle,
+    netlink: Arc<rtnetlink::Handle>,
 }
 
 impl ConfigProcessor {
@@ -85,6 +86,7 @@ impl ConfigProcessor {
             panic!("failed to create connection");
         };
         tokio::spawn(connection);
+        let netlink = Arc::new(netlink);
 
         let processor = Self {
             config_db: GwConfigDatabase::new(),
@@ -124,7 +126,7 @@ impl ConfigProcessor {
 
         /* apply the configuration just stored */
         self.config_db
-            .apply(genid, &mut self.frrmi, &mut self.netlink)
+            .apply(genid, &mut self.frrmi, self.netlink.clone())
             .await?;
 
         Ok(())
@@ -137,7 +139,7 @@ impl ConfigProcessor {
             .apply(
                 ExternalConfig::BLANK_GENID,
                 &mut self.frrmi,
-                &mut self.netlink,
+                self.netlink.clone(),
             )
             .await
     }
@@ -215,7 +217,7 @@ impl ConfigProcessor {
 pub async fn apply_gw_config(
     config: &mut GwConfig,
     frrmi: &mut FrrMi,
-    netlink: &mut rtnetlink::Handle,
+    netlink: Arc<rtnetlink::Handle>,
 ) -> ConfigResult {
     /* probe the FRR agent. If unreachable, there's no point in trying to apply
     a configuration, either in interface manager or frr */
@@ -224,14 +226,31 @@ pub async fn apply_gw_config(
         .await
         .map_err(|_| ConfigError::FrrAgentUnreachable)?;
 
-    /* apply in frr: need to render and call frr-reload */
     if let Some(internal) = &config.internal {
-        /* apply in interface manager - async (TODO) */
-        let rib: Result<RequiredInformationBase, _> = internal.try_into();
+        let mut rib: RequiredInformationBase = match internal.try_into() {
+            Ok(rib) => rib,
+            Err(err) => {
+                error!("{err}");
+                return Err(ConfigError::FailureApply);
+            }
+        };
+
+        let manager = VpcManager::<RequiredInformationBase>::new(netlink);
+        let mut required_passes = 0;
+        while !manager
+            .reconcile(&mut rib, &manager.observe().await.unwrap())
+            .await
+        {
+            required_passes += 1;
+            if required_passes >= 300 {
+                panic!("took more than 300 passes to reconcile interfaces")
+            }
+        }
         debug!("Generating FRR config for genid {}...", config.genid());
         let rendered = internal.render(config);
         debug!("FRR configuration is:\n{}", rendered.to_string());
 
+        /* apply in frr: need to render and call frr-reload */
         frrmi
             .apply_config(config.genid(), &rendered)
             .await
