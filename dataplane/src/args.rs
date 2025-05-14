@@ -5,7 +5,7 @@
 
 pub(crate) use clap::Parser;
 use std::net::SocketAddr;
-use tracing::debug;
+use tracing::{debug, error};
 
 #[derive(Parser)]
 #[command(name = "Hedgehog Fabric Gateway dataplane")]
@@ -108,7 +108,7 @@ impl CmdArgs {
         match self.grpc_address.parse() {
             Ok(addr) => addr,
             Err(e) => {
-                eprintln!("Error: Invalid gRPC address '{}': {}", self.grpc_address, e);
+                error!("Invalid gRPC address '{}': {}", self.grpc_address, e);
                 panic!("Process receives unexpected gRPC address. Aborting...");
             }
         }

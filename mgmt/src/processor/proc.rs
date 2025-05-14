@@ -4,9 +4,9 @@
 use std::io::Error;
 use std::net::SocketAddr;
 
+use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot::Receiver;
 use tokio::sync::{mpsc, oneshot};
-use tokio::{spawn, sync::mpsc::Sender};
 use tonic::transport::Server;
 
 use crate::grpc::server::create_config_service;
@@ -61,6 +61,7 @@ pub(crate) struct ConfigProcessor {
     config_db: GwConfigDatabase,
     rx: mpsc::Receiver<ConfigChannelRequest>,
     frrmi: FrrMi,
+    netlink: rtnetlink::Handle,
 }
 
 impl ConfigProcessor {
@@ -73,10 +74,17 @@ impl ConfigProcessor {
     pub(crate) fn new(frrmi: FrrMi) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
         let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
+
+        let Ok((connection, netlink, _)) = rtnetlink::new_connection() else {
+            panic!("failed to create connection");
+        };
+        tokio::spawn(connection);
+
         let processor = Self {
             config_db: GwConfigDatabase::new(),
             rx,
             frrmi,
+            netlink,
         };
         (processor, tx)
     }
@@ -193,6 +201,7 @@ pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &mut FrrMi) -> Config
         .map_err(|_| ConfigError::FrrAgentUnreachable)?;
 
     /* apply in interface manager - async (TODO) */
+    // TODO: need to pipe rtnetlink socket here
 
     /* apply in frr: need to render and call frr-reload */
     if let Some(internal) = &config.internal {
@@ -216,10 +225,17 @@ async fn start_grpc_server(addr: SocketAddr, channel_tx: Sender<ConfigChannelReq
     info!("Starting gRPC server on {:?}", addr);
     let config_service = create_config_service(channel_tx);
 
-    let _ = Server::builder()
+    match Server::builder()
         .add_service(config_service)
         .serve(addr)
-        .await;
+        .await
+    {
+        Ok(()) => {}
+        Err(err) => {
+            error!("Failed to start gRPC server: {err}");
+            panic!("Failed to start gRPC server: {err}");
+        }
+    }
 }
 
 #[tracing::instrument(level = "info")]
@@ -232,14 +248,18 @@ async fn start_frrmi() -> Result<FrrMi, Error> {
     Ok(frrmi)
 }
 
+// TODO: implement shutdown logic
 /// Start the mgmt service
 #[tracing::instrument(level = "info")]
-pub fn start_mgmt(grpc_address: SocketAddr) -> Result<std::thread::JoinHandle<()>, Error> {
+pub fn start_mgmt<'scope, 'env: 'scope>(
+    grpc_address: SocketAddr,
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+) -> Result<std::thread::ScopedJoinHandle<'scope, ()>, Error> {
     debug!("Initializing management...");
 
     std::thread::Builder::new()
         .name("mgmt".to_string())
-        .spawn(move || {
+        .spawn_scoped(scope, move || {
             debug!("Starting dataplane management thread");
 
             /* create tokio runtime */
@@ -253,8 +273,15 @@ pub fn start_mgmt(grpc_address: SocketAddr) -> Result<std::thread::JoinHandle<()
             rt.block_on(async {
                 let frrmi = start_frrmi().await.unwrap();
                 let (processor, tx) = ConfigProcessor::new(frrmi);
-                spawn(async { processor.run().await });
-                start_grpc_server(grpc_address, tx).await; /* must be last */
+                let p = tokio::spawn(processor.run());
+                let g = tokio::spawn(start_grpc_server(grpc_address, tx));
+                match tokio::try_join!(p, g) {
+                    Ok(((), ())) => {}
+                    Err(err) => {
+                        error!("{err}");
+                        panic!("{err}");
+                    }
+                }
             });
         })
 }

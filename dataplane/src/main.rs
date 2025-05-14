@@ -51,42 +51,48 @@ use mgmt::processor::proc::start_mgmt;
 use tracing_subscriber::EnvFilter;
 
 fn main() {
-    init_logging();
-    info!("Starting gateway process...");
+    std::thread::scope(|scope| {
+        init_logging();
+        info!("Starting gateway process...");
 
-    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-    ctrlc::set_handler(move || stop_tx.send(()).expect("Error sending SIGINT signal"))
-        .expect("failed to set SIGINT handler");
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+        ctrlc::set_handler(move || stop_tx.send(()).expect("Error sending SIGINT signal"))
+            .expect("failed to set SIGINT handler");
 
-    /* parse cmd line args */
-    let args = CmdArgs::parse();
+        /* parse cmd line args */
+        let args = CmdArgs::parse();
 
-    // Get the gRPC address from command line args
-    let grpc_addr = args.get_grpc_address();
-    if let Err(e) = start_mgmt(grpc_addr) {
-        error!("Failed to start management service: {e}");
-        panic!("Management service failed to start. Aborting...");
-    }
+        // Get the gRPC address from command line args
+        let grpc_addr = args.get_grpc_address();
+        // TODO: need to gracefully clean up mgmt thread
+        let _mgmt_handle = match start_mgmt(grpc_addr, scope) {
+            Ok(handle) => handle,
+            Err(e) => {
+                error!("{e}");
+                panic!("{e}");
+            }
+        };
 
-    debug!("Starting pipeline....");
+        debug!("Starting pipeline....");
 
-    /* start driver */
-    match args.get_driver_name() {
-        "dpdk" => {
-            info!("Using driver DPDK...");
-            DriverDpdk::start(args.eal_params(), &setup_pipeline);
+        /* start driver */
+        match args.get_driver_name() {
+            "dpdk" => {
+                info!("Using driver DPDK...");
+                DriverDpdk::start(args.eal_params(), &setup_pipeline);
+            }
+            "kernel" => {
+                info!("Using driver kernel...");
+                DriverKernel::start(args.kernel_params(), &setup_pipeline);
+            }
+            other => {
+                error!("Unknown driver '{other}'. Aborting...");
+                panic!("Packet processing pipeline failed to start. Aborting...");
+            }
         }
-        "kernel" => {
-            info!("Using driver kernel...");
-            DriverKernel::start(args.kernel_params(), &setup_pipeline);
-        }
-        other => {
-            error!("Unknown driver '{other}'. Aborting...");
-            panic!("Packet processing pipeline failed to start. Aborting...");
-        }
-    }
 
-    stop_rx.recv().expect("failed to receive stop signal");
-    info!("Shutting down dataplane");
-    std::process::exit(0);
+        stop_rx.recv().expect("failed to receive stop signal");
+        info!("Shutting down dataplane");
+        std::process::exit(0);
+    });
 }

@@ -41,7 +41,6 @@ pub enum ConfigError {
     MissingIdentifier(&'static str),
     #[error("Missing mandatory parameter: {0}")]
     MissingParameter(&'static str),
-
     #[error("Frr agent is unreachable")]
     FrrAgentUnreachable,
 }
