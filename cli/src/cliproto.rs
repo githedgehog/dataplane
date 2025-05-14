@@ -129,7 +129,6 @@ pub enum CliAction {
     Help,
     Quit,
 
-    Restart,
     SetLoglevel,
 
     // vpcs

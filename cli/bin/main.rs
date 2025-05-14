@@ -28,6 +28,7 @@ fn greetings() {
     println!("© 2025 Hedgehog Open Network Fabric.\n");
 }
 
+#[allow(unused)]
 fn ask_user(question: &str) -> bool {
     let mut answer = String::new();
     loop {
@@ -95,11 +96,6 @@ fn execute_remote_action(
     // don't issue request if we're not connected to dataplane
     if !terminal.is_connected() {
         print_err!("Not connnected to dataplane.");
-        return;
-    }
-
-    // warn if want to restart dataplane (adding this as an example of asking user)
-    if matches!(action, CliAction::Restart) && !ask_user("Are you sure [yes|no]?") {
         return;
     }
 

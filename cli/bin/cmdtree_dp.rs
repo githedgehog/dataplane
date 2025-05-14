@@ -206,9 +206,6 @@ fn cmd_set() -> Node {
 }
 fn cmd_mgmt() -> Node {
     let mut root = Node::new("");
-    root += Node::new("restart")
-        .desc("Restart the dataplane")
-        .action(CliAction::Restart as u16);
     root += cmd_set();
     root
 }

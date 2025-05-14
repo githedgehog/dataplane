@@ -10,6 +10,8 @@ use rustyline::history::MemHistory;
 use rustyline::{Cmd, Event, KeyCode, KeyEvent, Modifiers};
 use std::collections::VecDeque;
 use std::fs;
+use std::io::Write;
+use std::io::stdout;
 use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
@@ -114,6 +116,7 @@ impl Terminal {
     }
     pub fn clear(&self) {
         print!("\x1b[H\x1b[2J");
+        let _ = stdout().flush();
     }
     fn proc_line(&mut self, line: &str) -> Option<TermInput> {
         let mut split = line.split_whitespace();
