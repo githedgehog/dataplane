@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot::Receiver;
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 
 use crate::grpc::server::create_config_service;
@@ -61,6 +62,7 @@ pub(crate) struct ConfigProcessor {
     config_db: GwConfigDatabase,
     rx: mpsc::Receiver<ConfigChannelRequest>,
     frrmi: FrrMi,
+    cancellation_token: CancellationToken,
     netlink: rtnetlink::Handle,
 }
 
@@ -71,7 +73,10 @@ impl ConfigProcessor {
 
     /// Create a [`ConfigProcessor`]
     #[tracing::instrument(level = "info")]
-    pub(crate) fn new(frrmi: FrrMi) -> (Self, Sender<ConfigChannelRequest>) {
+    pub(crate) fn new(
+        frrmi: FrrMi,
+        cancellation_token: CancellationToken,
+    ) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
         let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
 
@@ -85,6 +90,7 @@ impl ConfigProcessor {
             rx,
             frrmi,
             netlink,
+            cancellation_token,
         };
         (processor, tx)
     }
@@ -112,7 +118,7 @@ impl ConfigProcessor {
         /* build internal config for this config */
         config.build_internal_config()?;
 
-        /* add to config database */
+        /* add to a config database */
         self.config_db.add(config);
 
         /* apply the configuration just stored */
@@ -169,22 +175,29 @@ impl ConfigProcessor {
         }
 
         loop {
-            // receive config requests over channel
-            match self.rx.recv().await {
-                Some(req) => {
-                    let response = match req.request {
-                        ConfigRequest::ApplyConfig(config) => {
-                            self.handle_apply_config(*config).await
+            tokio::select! {
+                // receive config requests over channel
+                request = self.rx.recv() => {match request {
+                    Some(req) => {
+                        let response = match req.request {
+                            ConfigRequest::ApplyConfig(config) => {
+                                self.handle_apply_config(*config).await
+                            }
+                            ConfigRequest::GetCurrentConfig => self.handle_get_config(),
+                            ConfigRequest::GetGeneration => self.handle_get_generation(),
+                        };
+                        if req.reply_tx.send(response).is_err() {
+                            warn!("Failed to send reply from config processor: receiver dropped?");
                         }
-                        ConfigRequest::GetCurrentConfig => self.handle_get_config(),
-                        ConfigRequest::GetGeneration => self.handle_get_generation(),
-                    };
-                    if req.reply_tx.send(response).is_err() {
-                        warn!("Failed to send reply from config processor: receiver dropped?");
                     }
-                }
-                None => {
-                    warn!("Channel to config processor was closed!");
+                    None => {
+                        info!("channel to config processor was closed!");
+                        break;
+                    },
+                }}
+                _ = self.cancellation_token.cancelled() => {
+                    info!("configuration processor task canceled");
+                    self.rx.close();
                 }
             }
         }
@@ -253,6 +266,7 @@ async fn start_frrmi() -> Result<FrrMi, Error> {
 #[tracing::instrument(level = "info")]
 pub fn start_mgmt<'scope, 'env: 'scope>(
     grpc_address: SocketAddr,
+    cancellation_token: CancellationToken,
     scope: &'scope std::thread::Scope<'scope, 'env>,
 ) -> Result<std::thread::ScopedJoinHandle<'scope, ()>, Error> {
     debug!("Initializing management...");
@@ -269,19 +283,42 @@ pub fn start_mgmt<'scope, 'env: 'scope>(
                 .build()
                 .expect("Tokio runtime creation failed");
 
+            let _guard = rt.enter();
+
             /* block thread to run gRPC and configuration processor */
             rt.block_on(async {
                 let frrmi = start_frrmi().await.unwrap();
-                let (processor, tx) = ConfigProcessor::new(frrmi);
-                let p = tokio::spawn(processor.run());
-                let g = tokio::spawn(start_grpc_server(grpc_address, tx));
-                match tokio::try_join!(p, g) {
-                    Ok(((), ())) => {}
-                    Err(err) => {
-                        error!("{err}");
-                        panic!("{err}");
+                let (processor, tx) = ConfigProcessor::new(frrmi, cancellation_token.clone());
+                let config_processor = tokio::spawn(processor.run());
+                let grpc_server = tokio::spawn(start_grpc_server(grpc_address, tx));
+                tokio::select! {
+                    _ = cancellation_token.cancelled() => {
+                        info!("shutting down management thread");
+                    }
+                    config_processor = config_processor => {
+                        match config_processor {
+                            Ok(()) => {
+                                info!("configuration processor has shut down");
+                            },
+                            Err(err) => {
+                                error!("{err}");
+                                panic!("{err}");
+                            }
+                        }
+                    }
+                    grpc_server = grpc_server => {
+                        match grpc_server {
+                            Ok(()) => {
+                                info!("grpc_server has shut down");
+                            }
+                            Err(err) => {
+                                error!("{err}");
+                                panic!("{err}");
+                            }
+                        }
                     }
                 }
+                info!("management thread async runtime has shutdown");
             });
         })
 }

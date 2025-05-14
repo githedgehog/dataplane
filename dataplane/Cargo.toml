@@ -25,6 +25,8 @@ serde_yml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["default"] }
+tokio = { workspace = true, features = ["rt", "time", "io-std"] }
+tokio-util = { version = "0.7.15", features = [] }
 
 [dev-dependencies]
 net = { workspace = true, features = ["test_buffer"] }

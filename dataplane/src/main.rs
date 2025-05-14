@@ -16,6 +16,7 @@ use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 fn init_logging() {
@@ -65,7 +66,8 @@ fn main() {
         // Get the gRPC address from command line args
         let grpc_addr = args.get_grpc_address();
         // TODO: need to gracefully clean up mgmt thread
-        let _mgmt_handle = match start_mgmt(grpc_addr, scope) {
+        let cancellation_token = CancellationToken::new();
+        let _mgmt_handle = match start_mgmt(grpc_addr, cancellation_token.clone(), scope) {
             Ok(handle) => handle,
             Err(e) => {
                 error!("{e}");
@@ -92,7 +94,10 @@ fn main() {
         }
 
         stop_rx.recv().expect("failed to receive stop signal");
-        info!("Shutting down dataplane");
+        info!("shutting down dataplane");
+        info!("sending shutdown request to management thread");
+        cancellation_token.cancel();
+        info!("management thread shutdown");
         std::process::exit(0);
     });
 }

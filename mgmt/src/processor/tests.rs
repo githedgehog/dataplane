@@ -21,6 +21,7 @@ use routing::prefix::Prefix;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
+use tokio_util::sync::CancellationToken;
 use tracing::Level;
 use tracing_test::traced_test;
 
@@ -299,9 +300,11 @@ async fn test_sample_config() {
     /* build a gw config from a sample external config */
     let config = GwConfig::new(external);
 
+    let cancellation_token = CancellationToken::new();
+
     /* build config processor (N.B. we don't use the channels). The config processor
     embedds a config database and we equip it with the frrmi */
-    let (mut processor, _sender) = ConfigProcessor::new(frrmi);
+    let (mut processor, _sender) = ConfigProcessor::new(frrmi, cancellation_token);
 
     /* let the processor process the config */
     processor
