@@ -824,6 +824,7 @@ dependencies = [
  "fixin",
  "futures",
  "gateway_config",
+ "iptrie",
  "multi_index_map",
  "pretty_assertions",
  "rtnetlink",
