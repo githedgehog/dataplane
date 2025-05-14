@@ -4,22 +4,38 @@
 //! Gateway configuration (external)
 //! The external config contains the intended configuration externally received (e.g. via gRPC)
 
-use derive_builder::Builder;
-use std::time::SystemTime;
-use tracing::{debug, info};
-
 use crate::models::external::ConfigResult;
 use crate::models::internal::InternalConfig;
 use crate::models::internal::device::DeviceConfig;
 use crate::models::internal::routing::vrf::VrfConfig;
 use crate::models::{external::overlay::Overlay, internal::device::settings::DeviceSettings};
+use derive_builder::Builder;
+use interface_manager::interface::{
+    BridgePropertiesSpec, BridgePropertiesSpecBuilder, InterfaceAssociationSpec,
+    InterfaceAssociationSpecBuilder, InterfacePropertiesSpec, InterfaceSpecBuilder,
+    MultiIndexInterfaceAssociationSpecMap, MultiIndexInterfaceSpecMap,
+    MultiIndexVrfPropertiesSpecMap, MultiIndexVtepPropertiesSpecMap, VrfPropertiesSpecBuilder,
+    VtepPropertiesSpecBuilder,
+};
+use net::eth::mac::SourceMac;
+use net::interface::{
+    AdminState, BridgePropertiesBuilder, InterfaceBuilder, VtepPropertiesBuilder,
+};
+use net::ipv4::UnicastIpv4Addr;
+use std::net::IpAddr;
+use std::time::SystemTime;
+use tracing::{debug, error, info, warn};
 
 use crate::frr::frrmi::FrrMi;
+use crate::models::internal::interfaces::interface::InterfaceType;
 use crate::processor::confbuild::build_internal_config;
 
 /// Alias for a config generation number
 pub type GenId = i64;
 use crate::processor::proc::apply_gw_config;
+use crate::vpc_manager::{
+    RequiredInformationBase, RequiredInformationBaseBuilder, RequiredInformationBaseBuilderError,
+};
 
 #[derive(Clone, Default, Debug)]
 pub struct Underlay {
@@ -166,11 +182,185 @@ impl GwConfig {
         Ok(())
     }
 }
-//
-// impl From<InternalConfig> for RequiredInformationBase {
-//     fn from(config: InternalConfig) -> Self {
-//         for vrf_config in config.vrfs.iter() {
-//             vrf_config.tableid
-//         }
-//     }
-// }
+
+// This is very hacky, but I need it to validate the design.  Will break this down soon.
+impl TryFrom<&InternalConfig> for RequiredInformationBase {
+    type Error = RequiredInformationBaseBuilderError;
+
+    fn try_from(config: &InternalConfig) -> Result<Self, Self::Error> {
+        let mut rib = RequiredInformationBaseBuilder::default();
+        let mut interfaces = MultiIndexInterfaceSpecMap::default();
+        let mut vrfs = MultiIndexVrfPropertiesSpecMap::default();
+        let mut vteps = MultiIndexVtepPropertiesSpecMap::default();
+        let mut associations = MultiIndexInterfaceAssociationSpecMap::default();
+        for config in config.vrfs.iter_by_name() {
+            if config.default {
+                continue;
+            }
+            let mut vrf = InterfaceSpecBuilder::default();
+            let mut vtep = InterfaceSpecBuilder::default();
+            let mut bridge = InterfaceSpecBuilder::default();
+            for iface in config.interfaces.iter_by_name() {
+                match &iface.iftype {
+                    InterfaceType::Loopback
+                    | InterfaceType::Ethernet(_)
+                    | InterfaceType::Vlan(_) => {}
+                    InterfaceType::Bridge(bridge_config) => {
+                        let mut properties = BridgePropertiesSpecBuilder::default();
+                        properties.vlan_filtering(bridge_config.vlan_filtering);
+                        properties.vlan_protocol(bridge_config.vlan_protocol);
+                        #[allow(clippy::expect_used)]
+                        // we _just_ put together all the needed fields.
+                        let properties = properties.build().expect("programmer error");
+                        bridge.properties(InterfacePropertiesSpec::Bridge(properties));
+                        bridge.name(iface.name.clone());
+                        bridge.admin_state(AdminState::Up);
+                    }
+                    InterfaceType::Vtep(vtep_config) => {
+                        let mut properties = VtepPropertiesSpecBuilder::default();
+                        let Some(vni) = vtep_config.vni else {
+                            continue;
+                        };
+                        let Some(mac) = vtep_config.mac else {
+                            continue;
+                        };
+                        let Ok(mac) = SourceMac::new(mac) else {
+                            error!("vtep given multicast mac: {mac}");
+                            continue;
+                        };
+                        properties.vni(vni);
+                        vtep.name(iface.name.clone());
+                        vtep.mac(Some(mac));
+                        vtep.admin_state(AdminState::Up);
+                        match vtep_config.local {
+                            IpAddr::V4(ip) => {
+                                let Ok(local) = UnicastIpv4Addr::new(ip) else {
+                                    error!("multicast vtep local specified: {ip}");
+                                    continue;
+                                };
+                                properties.local(local);
+                            }
+                            IpAddr::V6(ip) => {
+                                warn!("unable to configure vtep with ipv6 local: {ip}");
+                                continue;
+                            }
+                        }
+                        if let Some(ttl) = vtep_config.ttl {
+                            properties.ttl(ttl);
+                        }
+                        #[allow(clippy::expect_used)] // we _just_ filled out all the fields
+                        let properties = properties.build().expect("programmer error");
+                        vtep.properties(InterfacePropertiesSpec::Vtep(properties));
+                    }
+                    InterfaceType::Vrf(vrf_config) => {
+                        let mut vrf_properties = VrfPropertiesSpecBuilder::default();
+                        vrf_properties.route_table_id(vrf_config.table_id);
+                        let vrf_properties = match vrf_properties.build() {
+                            Ok(spec) => spec,
+                            Err(err) => {
+                                // we _just_ set the route table id
+                                error!("failed to build vrf properties: {err}");
+                                unreachable!("failed to build vrf properties");
+                            }
+                        };
+                        vrf.properties(InterfacePropertiesSpec::Vrf(vrf_properties));
+                        vrf.admin_state(AdminState::Up);
+                        vrf.name(iface.name.clone());
+                    }
+                }
+            }
+            match (vrf.build(), bridge.build(), vtep.build()) {
+                (Ok(vrf), Ok(bridge), Ok(vtep)) => {
+                    match interfaces.try_insert(vrf.clone()) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("{e}")
+                        }
+                    }
+                    match interfaces.try_insert(bridge.clone()) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("{e}")
+                        }
+                    }
+                    match interfaces.try_insert(vtep.clone()) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("{e}")
+                        }
+                    }
+                    match &vrf.properties {
+                        InterfacePropertiesSpec::Vrf(props) => {
+                            match vrfs.try_insert(props.clone()) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    error!("{e}")
+                                }
+                            }
+                        }
+                        _ => unreachable!(),
+                    };
+                    match &vtep.properties {
+                        InterfacePropertiesSpec::Vtep(props) => {
+                            match vteps.try_insert(props.clone()) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    error!("{e}")
+                                }
+                            }
+                        }
+                        _ => unreachable!(),
+                    };
+
+                    let vrf_in_nothing = InterfaceAssociationSpec {
+                        name: vrf.name.clone(),
+                        controller_name: None,
+                    };
+                    let bridge_in_vrf = InterfaceAssociationSpec {
+                        name: bridge.name.clone(),
+                        controller_name: Some(vrf.name.clone()),
+                    };
+                    let vtep_in_bridge = InterfaceAssociationSpec {
+                        name: vtep.name.clone(),
+                        controller_name: Some(bridge.name.clone()),
+                    };
+                    match associations.try_insert(vrf_in_nothing) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("{e}");
+                        }
+                    }
+                    match associations.try_insert(bridge_in_vrf) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("{e}");
+                        }
+                    }
+                    match associations.try_insert(vtep_in_bridge) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("{e}");
+                        }
+                    }
+                }
+                (Err(e), _, _) => {
+                    warn!("{e}");
+                    continue;
+                }
+                (_, Err(e), _) => {
+                    warn!("{e}");
+                    continue;
+                }
+                (_, _, Err(e)) => {
+                    warn!("{e}");
+                    continue;
+                }
+            }
+        }
+        rib.interfaces(interfaces);
+        rib.vteps(vteps);
+        rib.vrfs(vrfs);
+        rib.associations(associations);
+        rib.build()
+    }
+}

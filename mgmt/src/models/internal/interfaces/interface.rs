@@ -12,6 +12,7 @@ use multi_index_map::MultiIndexMap;
 use net::eth::ethtype::EthType;
 use net::eth::mac::Mac;
 use net::interface::InterfaceName;
+use net::route::RouteTableId;
 use net::vlan::Vid;
 use net::vxlan::Vni;
 use std::collections::BTreeMap;
@@ -51,7 +52,7 @@ pub struct IfVtepConfig {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IfVrfConfig {
-    pub table_id: u32, // FIXME: interface manager has specific type
+    pub table_id: RouteTableId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

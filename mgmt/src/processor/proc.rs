@@ -18,6 +18,7 @@ use crate::processor::gwconfigdb::GwConfigDatabase;
 use crate::{frr::frrmi::FrrMi, models::external::ConfigError};
 use crate::{frr::renderer::builder::Render, models::external::gwconfig::GenId};
 
+use crate::vpc_manager::RequiredInformationBase;
 use tracing::{debug, error, info, warn};
 
 /// A request type to the [`ConfigProcessor`]
@@ -223,11 +224,10 @@ pub async fn apply_gw_config(
         .await
         .map_err(|_| ConfigError::FrrAgentUnreachable)?;
 
-    /* apply in interface manager - async (TODO) */
-    // TODO: need to pipe rtnetlink socket here
-
     /* apply in frr: need to render and call frr-reload */
     if let Some(internal) = &config.internal {
+        /* apply in interface manager - async (TODO) */
+        let rib: Result<RequiredInformationBase, _> = internal.try_into();
         debug!("Generating FRR config for genid {}...", config.genid());
         let rendered = internal.render(config);
         debug!("FRR configuration is:\n{}", rendered.to_string());
