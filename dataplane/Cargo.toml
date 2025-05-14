@@ -29,6 +29,7 @@ tracing-subscriber = { workspace = true, features = ["default"] }
 
 [dev-dependencies]
 net = { workspace = true, features = ["test_buffer"] }
+routing = { workspace = true, features = ["testing"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(none)'] }
