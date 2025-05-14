@@ -36,13 +36,9 @@
 //!   IP addresses covered by the full set of externally-exposed IP prefixes; this
 //!   is in order to make the 1:1 address mapping work.
 
-mod fabric;
 mod iplist;
-mod prefixtrie;
 
-use crate::nat::fabric::{PeeringPolicy, Pif, Vpc};
 use crate::nat::iplist::IpList;
-use crate::nat::prefixtrie::PrefixTrie;
 use pipeline::NetworkFunction;
 
 use net::buffer::PacketBufferMut;
@@ -52,93 +48,11 @@ use net::ipv4::UnicastIpv4Addr;
 use net::ipv6::UnicastIpv6Addr;
 use net::packet::Packet;
 use net::vxlan::Vni;
-use std::collections::HashMap;
 use std::fmt::Debug;
 use std::net::IpAddr;
 
-#[derive(Debug)]
-#[allow(dead_code)]
-struct GlobalContext {
-    vpcs: HashMap<u32, Vpc>,
-    global_pif_trie: PrefixTrie,
-    peerings: HashMap<String, PeeringPolicy>,
-}
-
-/// An object containing the [`Nat`] object state, not in terms of stateful NAT
-/// processing, but instead holding references to the different fabric objects
-/// that the [`Nat`] component uses, namely VPCs and their PIFs, and peering
-/// interfaces.
-///
-/// This context will likely change and be shared with other components in the
-/// future.
-impl GlobalContext {
-    #[tracing::instrument(level = "trace")]
-    fn new() -> Self {
-        Self {
-            vpcs: HashMap::new(),
-            global_pif_trie: PrefixTrie::new(),
-            peerings: HashMap::new(),
-        }
-    }
-
-    #[tracing::instrument(level = "trace")]
-    fn insert_vpc(&mut self, vni: Vni, vpc: Vpc) {
-        vpc.iter_pifs().for_each(|pif| {
-            pif.iter_ips().for_each(|prefix| {
-                let _ = self.global_pif_trie.insert(prefix, pif.name().clone());
-            });
-        });
-        let _ = self.vpcs.insert(vni.as_u32(), vpc);
-    }
-
-    #[tracing::instrument(level = "trace")]
-    fn find_pif_by_ip(&self, ip: &IpAddr) -> Option<String> {
-        self.global_pif_trie.find_ip(ip)
-    }
-
-    #[tracing::instrument(level = "trace")]
-    fn get_vpc(&self, vni: Vni) -> Option<&Vpc> {
-        self.vpcs.get(&vni.as_u32())
-    }
-
-    #[tracing::instrument(level = "trace")]
-    fn find_pif_by_name(&self, name: &String) -> Option<&Pif> {
-        self.vpcs.values().find_map(|vpc| vpc.get_pif(name))
-    }
-
-    #[tracing::instrument(level = "trace")]
-    fn find_src_pif(&self, src_vpc_vni: Vni, dst_pif: &Pif, dst_ip: &IpAddr) -> Option<&Pif> {
-        // Iterate on destination PIF's peering policies
-        for peering_name in dst_pif.iter_peerings() {
-            let peering = self.peerings.get(peering_name)?;
-            let peer_pif_idx = peering.get_peer_index(dst_pif);
-            let peer_pif_vni = peering.vnis()[peer_pif_idx];
-
-            // Filter peering policies, discard if not attached to source VPC
-            if peer_pif_vni != src_vpc_vni {
-                continue;
-            }
-
-            // Retrieve destination PIF's peer PIF for the policy
-            let src_vpc = self.get_vpc(src_vpc_vni)?;
-            let peer_pif_name = &peering.pifs()[peer_pif_idx];
-            let peer_pif = src_vpc.get_pif(peer_pif_name)?;
-
-            // Search peer PIF's endpoints for packet's destination IP
-            if peer_pif
-                .iter_endpoints()
-                .any(|endpoint| endpoint.covers_addr(dst_ip))
-            {
-                return Some(peer_pif);
-            }
-        }
-        None
-    }
-}
-
 /// A helper to retrieve the source IP address from a [`Net`] object,
 /// independently of the IP version.
-#[tracing::instrument(level = "trace")]
 fn get_src_addr(net: &Net) -> IpAddr {
     match net {
         Net::Ipv4(hdr) => IpAddr::V4(hdr.source().inner()),
@@ -148,7 +62,6 @@ fn get_src_addr(net: &Net) -> IpAddr {
 
 /// A helper to retrieve the destination IP address from a [`Net`] object,
 /// independently of the IP version.
-#[tracing::instrument(level = "trace")]
 fn get_dst_addr(net: &Net) -> IpAddr {
     match net {
         Net::Ipv4(hdr) => IpAddr::V4(hdr.destination()),
@@ -181,7 +94,6 @@ pub enum NatMode {
 /// their IP addresses.
 #[derive(Debug)]
 pub struct Nat {
-    context: GlobalContext,
     mode: NatMode,
     direction: NatDirection,
 }
@@ -190,29 +102,13 @@ impl Nat {
     /// Creates a new [`Nat`] processor. The `direction` indicates whether this
     /// processor should perform source or destination NAT. The `mode` indicates
     /// whether this processor should perform stateless or stateful NAT.
-    #[tracing::instrument(level = "trace")]
     pub fn new<Buf: PacketBufferMut>(direction: NatDirection, mode: NatMode) -> Self {
-        let context = GlobalContext::new();
         Self {
-            context,
             mode,
             direction,
         }
     }
 
-    /// Temporary, expect this to be removed in the future.
-    #[tracing::instrument(level = "trace")]
-    pub fn add_vpc(&mut self, vni: Vni, vpc: Vpc) {
-        self.context.insert_vpc(vni, vpc);
-    }
-
-    /// Temporary, expect this to be removed in the future.
-    #[tracing::instrument(level = "trace")]
-    pub fn add_peering_policy(&mut self, pp: PeeringPolicy) {
-        self.context.peerings.insert(pp.name().clone(), pp);
-    }
-
-    #[tracing::instrument(level = "trace")]
     fn nat_supported(&self) -> bool {
         // We only support stateless NAT for now
         match self.mode {
@@ -223,43 +119,13 @@ impl Nat {
         true
     }
 
-    /// From the destination IP address contained in `net`, finds the
-    /// destination PIF for the packet.
-    #[tracing::instrument(level = "trace")]
-    fn find_dst_pif(&self, dst_ip: &IpAddr) -> Option<&Pif> {
-        self.context
-            .find_pif_by_ip(dst_ip)
-            .and_then(|name| self.context.find_pif_by_name(&name))
-    }
-
-    /// Finds the two [`IpList`] objects necessary to perform _source_ NAT on the
-    /// packet represented by the network header `net`. These objects represent
-    /// two lists of IP addresses, such that the NAT operation translates one IP
-    /// from the first list to one in the second list.
-    ///
-    /// To find these ranges:
-    ///
-    /// - First we lookup for the destination PIF, based on the destination IP
-    ///   address.
-    /// - Then we derive the source PIF from the destination PIF and source IP
-    ///   address (see [`GlobalContext::find_src_pif()`]).
-    /// - At last, we get the relevant NAT ranges from the source PIF:
-    ///     - For the initial range, the list of endpoints from the source PIF.
-    ///     - For the target range, the list of publicly-exposed IP addresses from
-    ///       the source PIF.
-    #[tracing::instrument(level = "trace")]
     fn find_src_nat_ranges(
         &self,
-        dst_ip: &IpAddr,
-        src_ip: &IpAddr,
-        vni_opt: Option<Vni>,
+        _dst_ip: &IpAddr,
+        _src_ip: &IpAddr,
+        _vni_opt: Option<Vni>,
     ) -> Option<(IpList, IpList)> {
-        // For now we don't support NAT if we don't have a VNI
-        let vni = vni_opt?;
-        let dst_pif = self.find_dst_pif(dst_ip)?;
-        let src_pif = self.context.find_src_pif(vni, dst_pif, dst_ip)?;
-
-        IpList::generate_ranges(src_pif.iter_endpoints(), src_pif.iter_ips(), dst_ip)
+        todo!();
     }
 
     /// Finds the two [`IpList`] objects necessary to perform _destination NAT_ on
@@ -272,13 +138,10 @@ impl Nat {
     /// - For the initial range, the list of publicly-exposed IP addresses from
     ///   the destination PIF.
     /// - For the target range, the list of endpoints from the destination PIF.
-    #[tracing::instrument(level = "trace")]
-    fn find_dst_nat_ranges(&self, dst_ip: &IpAddr) -> Option<(IpList, IpList)> {
-        let dst_pif = self.find_dst_pif(dst_ip)?;
-        IpList::generate_ranges(dst_pif.iter_ips(), dst_pif.iter_endpoints(), dst_ip)
+    fn find_dst_nat_ranges(&self, _dst_ip: &IpAddr) -> Option<(IpList, IpList)> {
+        todo!();
     }
 
-    #[tracing::instrument(level = "trace")]
     fn find_nat_ranges(&self, net: &mut Net, vni: Option<Vni>) -> Option<(IpList, IpList)> {
         let dst_ip = &get_dst_addr(net);
         match self.direction {
@@ -287,20 +150,17 @@ impl Nat {
         }
     }
 
-    #[tracing::instrument(level = "trace")]
     fn map_ip(
         &self,
-        current_range: &IpList,
-        target_range: &IpList,
-        current_ip: &IpAddr,
+        _current_range: &IpList,
+        _target_range: &IpList,
+        _current_ip: &IpAddr,
     ) -> Option<IpAddr> {
-        let offset = current_range.get_offset(current_ip)?;
-        target_range.get_addr(offset)
+        todo!();
     }
 
     /// Applies network address translation to a packet, knowing the current and
     /// target ranges.
-    #[tracing::instrument(level = "trace")]
     fn translate(
         &self,
         net: &mut Net,
@@ -373,115 +233,5 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Nat {
             self.process_packet(&mut packet);
             packet
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use iptrie::Ipv4Prefix;
-    use net::buffer::TestBuffer;
-    use net::headers::TryIpv4;
-    use net::packet::test_utils::build_test_ipv4_packet;
-    use routing::prefix::Prefix;
-    use std::net::Ipv4Addr;
-    use std::str::FromStr;
-
-    fn prefix_v4(s: &str) -> Prefix {
-        Ipv4Prefix::from_str(s).expect("Invalid IPv4 prefix").into()
-    }
-
-    fn addr_v4(s: &str) -> IpAddr {
-        IpAddr::V4(Ipv4Addr::from_str(s).expect("Invalid IPv4 address"))
-    }
-
-    fn build_vpc1() -> Vpc {
-        let mut vpc1 = Vpc::new(
-            "test_vpc1".into(),
-            Vni::new_checked(100).expect("Failed to create VNI"),
-        );
-        let mut pif1 = Pif::new("pif1".into(), "test_vpc1".into());
-        pif1.add_endpoint(prefix_v4("10.0.0.0/24"));
-        pif1.add_endpoint(prefix_v4("8.8.8.0/24"));
-        pif1.add_ip(prefix_v4("192.168.0.0/24"));
-        pif1.add_ip(prefix_v4("1.2.3.0/24"));
-        pif1.add_peering("peering_policy".into());
-
-        vpc1.add_pif(pif1.clone()).expect("Failed to add PIF");
-        vpc1
-    }
-
-    fn build_vpc2() -> Vpc {
-        let mut vpc2 = Vpc::new(
-            "test_vpc2".into(),
-            Vni::new_checked(200).expect("Failed to create VNI"),
-        );
-        let mut pif2 = Pif::new("pif2".into(), "test_vpc2".into());
-        pif2.add_endpoint(prefix_v4("10.0.2.0/24"));
-        pif2.add_endpoint(prefix_v4("1.2.3.0/24"));
-        pif2.add_ip(prefix_v4("192.168.2.0/24"));
-        pif2.add_ip(prefix_v4("4.4.4.0/24"));
-        pif2.add_peering("peering_policy".into());
-
-        vpc2.add_pif(pif2.clone()).expect("Failed to add PIF");
-
-        vpc2
-    }
-
-    fn build_peering_policy() -> PeeringPolicy {
-        PeeringPolicy::new(
-            "peering_policy".into(),
-            [
-                Vni::new_checked(100).expect("Failed to create VNI"),
-                Vni::new_checked(200).expect("Failed to create VNI"),
-            ],
-            ["pif1".into(), "pif2".into()],
-        )
-    }
-
-    #[test]
-    fn test_src_nat_stateless_44() {
-        let mut nat = Nat::new::<TestBuffer>(NatDirection::SrcNat, NatMode::Stateless);
-        let vpc1 = build_vpc1();
-        nat.add_vpc(Vni::new_checked(100).expect("Failed to create VNI"), vpc1);
-        let vpc2 = build_vpc2();
-        nat.add_vpc(Vni::new_checked(200).expect("Failed to create VNI"), vpc2);
-
-        let pp = build_peering_policy();
-        nat.add_peering_policy(pp);
-
-        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
-        let packets_out: Vec<_> = nat.process(packets).collect();
-
-        assert_eq!(packets_out.len(), 1);
-
-        let hdr0_out = &packets_out[0]
-            .try_ipv4()
-            .expect("Failed to get IPv4 header");
-        println!("L3 header: {hdr0_out:?}");
-        assert_eq!(hdr0_out.source().inner(), addr_v4("4.4.4.4"));
-    }
-
-    #[test]
-    fn test_dst_nat_stateless_44() {
-        let mut nat = Nat::new::<TestBuffer>(NatDirection::DstNat, NatMode::Stateless);
-        let vpc1 = build_vpc1();
-        nat.add_vpc(Vni::new_checked(100).expect("Failed to create VNI"), vpc1);
-        let vpc2 = build_vpc2();
-        nat.add_vpc(Vni::new_checked(200).expect("Failed to create VNI"), vpc2);
-
-        let pp = build_peering_policy();
-        nat.add_peering_policy(pp);
-
-        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
-        let packets_out: Vec<_> = nat.process(packets).collect();
-
-        assert_eq!(packets_out.len(), 1);
-
-        let hdr0_out = &packets_out[0]
-            .try_ipv4()
-            .expect("Failed to get IPv4 header");
-        println!("L3 header: {hdr0_out:?}");
-        assert_eq!(hdr0_out.destination(), addr_v4("8.8.8.4"));
     }
 }
