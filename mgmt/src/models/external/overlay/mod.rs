@@ -57,6 +57,7 @@ impl Overlay {
         /* collect peerings of every VPC */
         self.vpc_table
             .collect_peerings(&self.peering_table, &id_map);
+        self.vpc_table.validate()?;
 
         debug!(
             "Overlay configuration is VALID and looks as:\n{}\n{}",

@@ -264,6 +264,40 @@ pub mod test {
     }
 
     #[test]
+    fn test_overlay_duplicate_peering() {
+        /* build VPCs */
+        let vpc1 = Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed");
+        let vpc2 = Vpc::new("VPC-2", "BBBBB", 4000).expect("Should succeed");
+
+        /* build VPC table */
+        let mut vpc_table = VpcTable::new();
+        vpc_table.add(vpc1).expect("Should succeed");
+        vpc_table.add(vpc2).expect("Should succeed");
+
+        /* build peerings */
+        let peering1 = build_vpc_peering();
+        let mut peering2 = build_vpc_peering();
+        peering2.name = "Peering-2".to_owned();
+
+        let name1 = peering1.name.clone();
+
+        assert_eq!(peering1.validate(), Ok(()));
+        assert_eq!(peering2.validate(), Ok(()));
+
+        /* build peering table */
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table.add(peering1).expect("Should succeed");
+        peering_table.add(peering2).expect("Should succeed");
+
+        /* build overlay object and validate it */
+        let mut overlay = Overlay::new(vpc_table, peering_table);
+        assert_eq!(
+            overlay.validate(),
+            Err(ConfigError::DuplicateVpcPeerings(name1))
+        );
+    }
+
+    #[test]
     fn test_overlay() {
         /* build VPCs */
         let vpc1 = Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed");

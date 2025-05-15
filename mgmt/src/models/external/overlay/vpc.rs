@@ -170,4 +170,21 @@ impl VpcTable {
     pub fn clear_ids(&mut self) {
         self.ids.clear();
     }
+    /// Validate the [`VpcTable`]
+    pub fn validate(&self) -> ConfigResult {
+        for vpc in self.values() {
+            let mut peers = BTreeSet::new();
+            // For each VPC, loop over all peerings
+            for peering in &vpc.peerings {
+                // Check whether we have duplicate remote VPCs between peerings.
+                // If we fail to insert, this means the remote VPC ID is already in our set,
+                // and we have a duplicate peering: this is a configuration error.
+                if (!peers.insert(peering.remote_id.clone())) {
+                    return Err(ConfigError::DuplicateVpcPeerings(peering.name.clone()));
+                }
+            }
+            peers.clear();
+        }
+        Ok(())
+    }
 }
