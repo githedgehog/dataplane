@@ -162,4 +162,24 @@ impl VpcTable {
         self.values_mut()
             .for_each(|vpc| vpc.collect_peerings(peering_table, idmap));
     }
+    /// Validate the [`VpcTable`]
+    pub fn validate(&self) -> ConfigResult {
+        for vpc in self.values() {
+            // For each VPC, loop over all peerings
+            for (index, peering) in vpc.peerings.iter().enumerate() {
+                // For each peering, compare with all remaining peerings for the same (local) VPC
+                for other_peering in vpc.peerings.iter().skip(index + 1) {
+                    // If several peerings, for the given local VPC, refer to the same remote VPC as
+                    // well, this is a configuration error
+                    if peering.remote_id == other_peering.remote_id {
+                        return Err(ConfigError::DuplicateVpcPeerings(
+                            peering.name.clone(),
+                            other_peering.name.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
