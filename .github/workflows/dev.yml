@@ -60,7 +60,7 @@ jobs:
         with:
           filters: |
             devfiles:
-              - '!(README.md|LICENSE|design-docs/**|.gitignore|.github/**)'
+              - '!(README.md|LICENSE|.gitignore|.github/**)'
               - '.github/workflows/dev.yml'
 
   build:
