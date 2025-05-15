@@ -22,6 +22,8 @@ pub enum ConfigError {
     DuplicateVpcVni(u32),
     #[error("A VPC peering with id '{0}' already exists")]
     DuplicateVpcPeeringId(String),
+    #[error("Peerings '{0}' and '{1}' refer to the same two VPCs")]
+    DuplicateVpcPeerings(String, String),
     #[error("A VPC peering object refers to non-existent VPC '{0}'")]
     NoSuchVpc(String),
     #[error("'{0}' is not a valid VNI")]
