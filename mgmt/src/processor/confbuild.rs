@@ -111,7 +111,9 @@ fn vpc_ipv4_imports(vpc: &Vpc) -> VrfImports {
 /// Build AF Ipv4 unicast config for a VPC VRF
 fn vpc_bgp_af_ipv4(vpc: &Vpc) -> AfIpv4Ucast {
     let mut af = AfIpv4Ucast::new();
-    af.set_vrf_imports(vpc_ipv4_imports(vpc));
+    if vpc.num_peerings() > 0 {
+        af.set_vrf_imports(vpc_ipv4_imports(vpc));
+    }
     af
 }
 

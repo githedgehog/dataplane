@@ -102,6 +102,10 @@ impl Vpc {
             debug!("Vpc '{}' has {} peerings", self.name, self.peerings.len());
         }
     }
+    /// Tell how many peerings this VPC has
+    pub fn num_peerings(&self) -> usize {
+        self.peerings.len()
+    }
 }
 
 #[derive(Clone, Debug, Default)]
