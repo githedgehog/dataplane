@@ -143,22 +143,6 @@ impl From<Ipv6Net> for Prefix {
         Prefix::IPV6(Ipv6Prefix::from(value))
     }
 }
-impl<'a> From<&'a Prefix> for &'a Ipv4Prefix {
-    fn from(value: &Prefix) -> &Ipv4Prefix {
-        match value {
-            Prefix::IPV4(p) => p,
-            Prefix::IPV6(_) => panic!("Not an IPv4 prefix!"),
-        }
-    }
-}
-impl<'a> From<&'a Prefix> for &'a Ipv6Prefix {
-    fn from(value: &Prefix) -> &Ipv6Prefix {
-        match value {
-            Prefix::IPV4(_) => panic!("Not an IPv6 prefix!"),
-            Prefix::IPV6(p) => p,
-        }
-    }
-}
 impl From<Ipv4Prefix> for Prefix {
     fn from(value: Ipv4Prefix) -> Self {
         Self::IPV4(value)
@@ -176,6 +160,26 @@ impl From<(&str, u8)> for Prefix {
     fn from(tuple: (&str, u8)) -> Self {
         let a = IpAddr::from_str(tuple.0).expect("Bad address");
         Prefix::from((a, tuple.1))
+    }
+}
+/// Only for testing. Will panic with non-IPv4 prefixes
+#[cfg(any(test, feature = "testing"))]
+impl<'a> From<&'a Prefix> for &'a Ipv4Prefix {
+    fn from(value: &Prefix) -> &Ipv4Prefix {
+        match value {
+            Prefix::IPV4(p) => p,
+            Prefix::IPV6(_) => panic!("Not an IPv4 prefix!"),
+        }
+    }
+}
+/// Only for testing. Will panic with non-IPv6 prefixes
+#[cfg(any(test, feature = "testing"))]
+impl<'a> From<&'a Prefix> for &'a Ipv6Prefix {
+    fn from(value: &Prefix) -> &Ipv6Prefix {
+        match value {
+            Prefix::IPV4(_) => panic!("Not an IPv6 prefix!"),
+            Prefix::IPV6(p) => p,
+        }
     }
 }
 
