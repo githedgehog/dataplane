@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-#![allow(unreachable_code)]
-
+use std::fmt::Display;
 use std::io::Error;
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
@@ -208,7 +207,7 @@ async fn start_grpc_server_tcp(
     addr: SocketAddr,
     channel_tx: Sender<ConfigChannelRequest>,
 ) -> Result<(), Error> {
-    info!("Starting gRPC server on TCP address: {:?}", addr);
+    info!("Starting gRPC server on TCP address: {addr}");
     let config_service = create_config_service(channel_tx);
 
     let _ = Server::builder()
@@ -223,7 +222,10 @@ async fn start_grpc_server_unix(
     socket_path: &Path,
     channel_tx: Sender<ConfigChannelRequest>,
 ) -> Result<(), Error> {
-    info!("Starting gRPC server on UNIX socket: {:?}", socket_path);
+    info!(
+        "Starting gRPC server on UNIX socket: {}",
+        socket_path.display()
+    );
 
     // Remove existing socket file if present
     if socket_path.exists() {
@@ -286,17 +288,35 @@ async fn start_frrmi() -> Result<FrrMi, Error> {
 }
 
 /// Enum for the different types of server addresses
+#[derive(Debug)]
 enum ServerAddress {
     Tcp(SocketAddr),
     Unix(PathBuf),
 }
+impl Display for ServerAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServerAddress::Tcp(addr) => write!(f, "tcp:{addr}"),
+            ServerAddress::Unix(path) => write!(f, "unix:{}", path.display()),
+        }
+    }
+}
+
+/// Enum to represent either a TCP socket address or a UNIX socket path
+#[derive(Debug, Clone)]
+pub enum GrpcAddress {
+    Tcp(SocketAddr),
+    UnixSocket(PathBuf),
+}
 
 /// Start the mgmt service with either type of socket
-fn start_mgmt_internal(addr: ServerAddress) -> Result<std::thread::JoinHandle<()>, Error> {
-    match &addr {
-        ServerAddress::Tcp(_sock_addr) => debug!("Initializing management with TCP socket..."),
-        ServerAddress::Unix(_path) => debug!("Initializing management with UNIX socket..."),
-    }
+pub fn start_mgmt(grpc_addr: GrpcAddress) -> Result<std::thread::JoinHandle<()>, Error> {
+    /* build server address from provided grpc address */
+    let server_address = match grpc_addr {
+        GrpcAddress::Tcp(addr) => ServerAddress::Tcp(addr),
+        GrpcAddress::UnixSocket(path) => ServerAddress::Unix(path.to_path_buf()),
+    };
+    debug!("Will start gRPC listening on {server_address}");
 
     thread::Builder::new()
         .name("mgmt".to_string())
@@ -317,7 +337,7 @@ fn start_mgmt_internal(addr: ServerAddress) -> Result<std::thread::JoinHandle<()
                 spawn(async { processor.run().await });
 
                 // Start the appropriate server based on address type
-                let result = match addr {
+                let result = match server_address {
                     ServerAddress::Tcp(sock_addr) => start_grpc_server_tcp(sock_addr, tx).await,
                     ServerAddress::Unix(path) => start_grpc_server_unix(&path, tx).await,
                 };
@@ -326,22 +346,4 @@ fn start_mgmt_internal(addr: ServerAddress) -> Result<std::thread::JoinHandle<()
                 }
             });
         })
-}
-
-/// Enum to represent either a TCP socket address or a UNIX socket path
-#[derive(Debug, Clone)]
-pub enum GrpcAddress {
-    Tcp(SocketAddr),
-    UnixSocket(PathBuf),
-}
-
-pub fn start_mgmt(grpc_addr: GrpcAddress) -> Result<std::thread::JoinHandle<()>, Error> {
-    /* build server address from provided grpc address */
-    let server_address = match grpc_addr {
-        GrpcAddress::Tcp(addr) => ServerAddress::Tcp(addr),
-        GrpcAddress::UnixSocket(path) => ServerAddress::Unix(path.to_path_buf()),
-    };
-
-    /* start server */
-    start_mgmt_internal(server_address)
 }
