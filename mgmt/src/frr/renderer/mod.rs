@@ -44,7 +44,7 @@ impl Render for InternalConfig {
 
         /* interfaces live in vrfs. So, we iterate over all VRFs */
         self.vrfs
-            .iter()
+            .iter_by_tableid()
             .for_each(|vrf| cfg += vrf.interfaces.render(&()));
 
         /* Vrf BGP instances */

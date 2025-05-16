@@ -370,13 +370,16 @@ pub fn start_mgmt<'scope, 'env: 'scope>(grpc_addr: GrpcAddress) -> Result<std::t
             rt.block_on(async {
                 let frrmi = start_frrmi().await.unwrap();
                 let (processor, tx) = ConfigProcessor::new(frrmi);
-                let grpc_server = async {
+                let grpc_server = spawn(async {
                     match server_address {
                         ServerAddress::Tcp(sock_addr) => start_grpc_server_tcp(sock_addr, tx).await,
                         ServerAddress::Unix(path) => start_grpc_server_unix(&path, tx).await,
                     }
-                };
-                tokio::try_join!(spawn(processor.run()), spawn(grpc_server)).unwrap();
+                });
+                // todo: no random unwraps!
+                match tokio::try_join!(spawn(processor.run()), grpc_server).unwrap() {
+                    (_, _) => {}
+                }
             });
         })
 }

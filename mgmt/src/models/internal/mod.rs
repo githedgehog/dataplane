@@ -22,7 +22,7 @@ use crate::models::internal::routing::evpn::VtepConfig;
 use crate::models::internal::routing::frr::Frr;
 use crate::models::internal::routing::prefixlist::{PrefixList, PrefixListTable};
 use crate::models::internal::routing::routemap::{RouteMap, RouteMapTable};
-use crate::models::internal::routing::vrf::{VrfConfig, VrfConfigTable};
+use crate::models::internal::routing::vrf::{MultiIndexVrfConfigMap, VrfConfig, VrfConfigTable};
 
 #[derive(Clone, Debug)]
 /* Main internal GW configuration */
@@ -30,7 +30,7 @@ pub struct InternalConfig {
     pub dev_cfg: DeviceConfig,
     pub frr: Frr,
     pub vtep: Option<VtepConfig>, // As a network interface
-    pub vrfs: VrfConfigTable,
+    pub vrfs: MultiIndexVrfConfigMap,
     pub plist_table: PrefixListTable,
     pub rmap_table: RouteMapTable,
 }
