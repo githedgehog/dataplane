@@ -5,6 +5,7 @@
 //! The external config contains the intended configuration externally received (e.g. via gRPC)
 
 use derive_builder::Builder;
+use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::{debug, info};
 
@@ -21,7 +22,7 @@ use crate::processor::confbuild::build_internal_config;
 pub type GenId = i64;
 use crate::processor::proc::apply_gw_config;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct Underlay {
     pub vrf: VrfConfig, /* default vrf */
 }
@@ -42,7 +43,7 @@ impl Underlay {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 /// Configuration metadata. Every config object stored by the dataplane has metadata
 pub struct GwConfigMeta {
     pub created: SystemTime,           /* time when config was built (received) */
@@ -62,7 +63,7 @@ impl GwConfigMeta {
 }
 
 /// The configuration object as seen by the gRPC server
-#[derive(Builder, Clone)]
+#[derive(Builder, Clone, Debug)]
 pub struct ExternalConfig {
     pub genid: GenId,         /* configuration generation id (version) */
     pub device: DeviceConfig, /* goes as-is into the internal config */
@@ -89,7 +90,7 @@ impl ExternalConfig {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct GwConfig {
     pub meta: GwConfigMeta,               /* config metadata */
     pub external: ExternalConfig,         /* external config: received */
@@ -141,7 +142,11 @@ impl GwConfig {
     }
 
     /// Apply a [`GwConfig`].
-    pub async fn apply(&mut self, frrmi: &mut FrrMi) -> ConfigResult {
+    pub async fn apply(
+        &mut self,
+        frrmi: &mut FrrMi,
+        netlink: Arc<rtnetlink::Handle>,
+    ) -> ConfigResult {
         info!("Applying config with genid {}...", self.genid());
         if self.internal.is_none() {
             debug!("Config has no internal config...");
@@ -149,7 +154,7 @@ impl GwConfig {
         }
 
         /* Apply this gw config */
-        apply_gw_config(self, frrmi).await?;
+        apply_gw_config(self, frrmi, netlink).await?;
         self.meta.applied = Some(SystemTime::now());
         self.meta.is_applied = true;
         Ok(())
