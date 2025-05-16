@@ -6,6 +6,9 @@ pub mod overlay;
 
 use crate::models::external::gwconfig::GenId;
 use crate::models::external::overlay::vpc::VpcId;
+use crate::models::external::overlay::vpcpeering::VpcExpose;
+
+use routing::prefix::Prefix;
 use thiserror::Error;
 
 /// The reasons why we may reject a configuration
@@ -19,6 +22,8 @@ pub enum ConfigError {
     DuplicateVpcVni(u32),
     #[error("A VPC peering with id '{0}' already exists")]
     DuplicateVpcPeeringId(String),
+    #[error("Peerings '{0}' and '{1}' refer to the same two VPCs")]
+    DuplicateVpcPeerings(String, String),
     #[error("A VPC peering object refers to non-existent VPC '{0}'")]
     NoSuchVpc(String),
     #[error("'{0}' is not a valid VNI")]
@@ -33,6 +38,8 @@ pub enum ConfigError {
     Forbidden(&'static str),
     #[error("Bad VPC Id")]
     BadVpcId(String),
+    #[error("Incomplete configuration {0}")]
+    IncompleteConfig(String),
     #[error("Error applying FRR config: {0}")]
     FrrApplyError(String),
     #[error("Missing identifier: {0}")]
@@ -42,6 +49,19 @@ pub enum ConfigError {
 
     #[error("Frr agent is unreachable")]
     FrrAgentUnreachable,
+
+    // Peering and VpcExpose validation
+    #[error("All prefixes are excluded in VpcExpose: {0}")]
+    ExcludedAllPrefixes(VpcExpose),
+    #[error("Exclusion prefix {0} not contained within existing allowed prefix")]
+    OutOfRangeExclusionPrefix(Prefix),
+    #[error("VPC prefixes overlap: {0} and {1}")]
+    OverlappingPrefixes(Prefix, Prefix),
+    #[error("Inconsistent IP version in VpcExpose: {0}")]
+    InconsistentIpVersion(VpcExpose),
+    // NAT-specific
+    #[error("Mismatched prefixes sizes for static NAT: {0} and {1}")]
+    MismatchedPrefixSizes(u128, u128),
 }
 
 /// Result-like type for configurations
