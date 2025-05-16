@@ -4,12 +4,12 @@
 #[allow(unused)]
 use tracing::{debug, error, warn};
 
-use routing::prefix::Prefix;
-use std::net::Ipv4Addr;
-
 use crate::models::external::overlay::vpc::Vpc;
 use crate::models::external::overlay::vpcpeering::VpcManifest;
 use crate::models::external::{ConfigError, overlay::Overlay};
+use net::route::RouteTableId;
+use routing::prefix::Prefix;
+use std::net::Ipv4Addr;
 
 use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
 
@@ -89,7 +89,7 @@ fn vpc_ipv4_import_configuration(vpc: &Vpc) -> (RouteMap, Vec<PrefixList>, Vec<S
         /* update route-map */
         let entry = RouteMapEntry::new(seq, MatchingPolicy::Permit)
             .add_match(RouteMapMatch::Ipv4AddressPrefixList(plist.name.clone()))
-            .add_match(RouteMapMatch::SrcVrf(p.remote_id.vrf_name()));
+            .add_match(RouteMapMatch::SrcVrf(p.remote_id.vrf_name().to_string()));
         rmap.add_entry(entry);
         seq += 10;
 
@@ -103,7 +103,7 @@ fn vpc_ipv4_import_configuration(vpc: &Vpc) -> (RouteMap, Vec<PrefixList>, Vec<S
 fn vpc_ipv4_imports(vpc: &Vpc) -> VrfImports {
     let mut imports = VrfImports::new().set_routemap(&vpc.import_route_map_ipv4());
     for p in vpc.peerings.iter() {
-        imports.add_vrf(&p.remote_id.vrf_name());
+        imports.add_vrf(p.remote_id.vrf_name().as_ref());
     }
     imports
 }
@@ -156,7 +156,8 @@ fn vpc_vrf_config(vpc: &Vpc, asn: u32, router_id: Option<Ipv4Addr>) -> VrfConfig
     /* set table-id: table ids should be unique per VRF. We should track them and pick unused ones.
     Setting this to the VNI is not too bad atm, except that we should avoid picking reserved values
     which may cause internal failures. FIXME: fredi */
-    vrf_cfg = vrf_cfg.set_table_id(vpc.vni.as_u32());
+    // TODO: we can't just unwrap here
+    vrf_cfg = vrf_cfg.set_table_id(RouteTableId::try_from(vpc.vni.as_u32()).unwrap());
 
     /* build BGP config for vrf */
     vrf_cfg.set_bgp(vpc_vrf_bgp_config(vpc, asn, router_id));
