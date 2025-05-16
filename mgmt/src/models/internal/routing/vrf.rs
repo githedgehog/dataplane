@@ -3,29 +3,37 @@
 
 //! Dataplane configuration model: VRFs
 
-use std::collections::BTreeSet;
-
-use crate::models::internal::{InterfaceConfig, InterfaceConfigTable};
-use net::vxlan::Vni;
-use routing::prefix::Prefix;
-
 use super::bgp::BgpConfig;
 use super::ospf::Ospf;
 use super::statics::StaticRoute;
+use crate::models::external::overlay::vpc::VpcId;
+use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
+use multi_index_map::MultiIndexMap;
+use net::route::RouteTableId;
+use net::vxlan::Vni;
+use routing::prefix::Prefix;
+use std::collections::BTreeSet;
 
-#[derive(Clone, Debug)]
-
+#[derive(Clone, Debug, MultiIndexMap)]
+#[multi_index_derive(Debug, Clone)]
 pub struct VrfConfig {
+    #[multi_index(ordered_unique)]
     pub name: String,
     pub default: bool,
-    pub tableid: Option<u32>,
+    #[multi_index(ordered_unique)]
+    pub tableid: Option<RouteTableId>,
+    #[multi_index(ordered_unique)]
     pub vni: Option<Vni>,
     pub subnets: BTreeSet<Prefix>,
     pub static_routes: BTreeSet<StaticRoute>,
     pub bgp: Option<BgpConfig>,
     pub interfaces: InterfaceConfigTable,
     pub ospf: Option<Ospf>,
+    #[multi_index(ordered_unique)]
+    pub vpc_id: Option<VpcId>,
 }
+
+pub type VrfConfigTable = MultiIndexVrfConfigMap;
 
 impl Default for VrfConfig {
     fn default() -> Self {
@@ -38,6 +46,7 @@ impl Default for VrfConfig {
             static_routes: BTreeSet::new(),
             bgp: None,
             interfaces: InterfaceConfigTable::new(),
+            vpc_id: None,
             ospf: None,
         }
     }
@@ -53,7 +62,16 @@ impl VrfConfig {
             ..Default::default()
         }
     }
-    pub fn set_table_id(mut self, tableid: u32) -> Self {
+
+    pub fn set_vpc_id(mut self, vpc_id: VpcId) -> Self {
+        if self.default {
+            panic!("Can't set vpc_id for default vrf");
+        }
+        self.vpc_id = Some(vpc_id);
+        self
+    }
+
+    pub fn set_table_id(mut self, tableid: RouteTableId) -> Self {
         if self.default {
             panic!("Can't set table id for default vrf");
         }
@@ -79,17 +97,12 @@ impl VrfConfig {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct VrfConfigTable(Vec<VrfConfig>);
-
-impl VrfConfigTable {
+impl MultiIndexVrfConfigMap {
     pub fn new() -> Self {
-        VrfConfigTable(vec![])
+        MultiIndexVrfConfigMap::default()
     }
     pub fn add_vrf_config(&mut self, vrf_cfg: VrfConfig) {
-        self.0.push(vrf_cfg);
-    }
-    pub fn iter(&self) -> impl Iterator<Item = &VrfConfig> {
-        self.0.iter()
+        // TODO: must not panic here
+        self.try_insert(vrf_cfg).expect("Can't insert vrf config");
     }
 }
