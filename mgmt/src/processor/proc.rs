@@ -255,7 +255,7 @@ async fn start_grpc_server_tcp(
 async fn start_grpc_server_unix(
     socket_path: &Path,
     channel_tx: Sender<ConfigChannelRequest>,
-) -> Result<(), Error> {
+) -> Result<(), std::io::Error> {
     info!("Starting gRPC server on UNIX socket: {:?}", socket_path);
 
     // Remove existing socket file if present
@@ -326,7 +326,7 @@ enum ServerAddress {
 
 // TODO: implement shutdown logic
 /// Start the mgmt service with either type of socket
-pub fn start_mgmt_internal<'scope, 'env: 'scope>(
+fn start_mgmt_internal<'scope, 'env: 'scope>(
     addr: ServerAddress,
 ) -> Result<std::thread::JoinHandle<()>, Error> {
     match &addr {
@@ -350,13 +350,16 @@ pub fn start_mgmt_internal<'scope, 'env: 'scope>(
             rt.block_on(async {
                 let frrmi = start_frrmi().await.unwrap();
                 let (processor, tx) = ConfigProcessor::new(frrmi);
-                let grpc_server = async {
+                let grpc_server = spawn(async {
                     match addr {
                         ServerAddress::Tcp(sock_addr) => start_grpc_server_tcp(sock_addr, tx).await,
                         ServerAddress::Unix(path) => start_grpc_server_unix(&path, tx).await,
                     }
-                };
-                tokio::try_join!(spawn(processor.run()), spawn(grpc_server)).unwrap();
+                });
+                // todo: no random unwraps!
+                match tokio::try_join!(spawn(processor.run()), grpc_server).unwrap() {
+                    (_, _) => {}
+                }
             });
         })
 }
