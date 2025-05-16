@@ -9,7 +9,7 @@ mod args;
 mod drivers;
 mod nat;
 
-use crate::args::{CmdArgs, GrpcAddress, Parser};
+use crate::args::{CmdArgs, Parser};
 use drivers::dpdk::DriverDpdk;
 use drivers::kernel::DriverKernel;
 use net::buffer::PacketBufferMut;
@@ -47,7 +47,7 @@ fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
     }
 }
 
-use mgmt::processor::proc::{start_mgmt_tcp, start_mgmt_unix};
+use mgmt::processor::proc::start_mgmt;
 use tracing_subscriber::EnvFilter;
 
 fn main() {
@@ -68,22 +68,7 @@ fn main() {
             panic!("Management service configuration error. Aborting...");
         }
     };
-    match grpc_addr {
-        GrpcAddress::Tcp(addr) => {
-            info!("Starting gRPC server on TCP address: {}", addr);
-            if let Err(e) = start_mgmt_tcp(addr) {
-                error!("Failed to start management service on TCP listener: {e}");
-                panic!("Management service failed to start. Aborting...");
-            }
-        }
-        GrpcAddress::UnixSocket(path) => {
-            info!("Starting gRPC server on UNIX socket: {:?}", path);
-            if let Err(e) = start_mgmt_unix(&path) {
-                error!("Failed to start management service on UNIX socket: {e}");
-                panic!("Management service failed to start. Aborting...");
-            }
-        }
-    }
+    start_mgmt(grpc_addr);
 
     debug!("Starting pipeline....");
 

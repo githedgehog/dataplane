@@ -4,16 +4,10 @@
 #![allow(unused)]
 
 pub(crate) use clap::Parser;
+use mgmt::processor::proc::GrpcAddress;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing::{debug, error};
-
-/// Enum to represent either a TCP socket address or a UNIX socket path
-#[derive(Debug, Clone)]
-pub(crate) enum GrpcAddress {
-    Tcp(SocketAddr),
-    UnixSocket(PathBuf),
-}
 
 #[derive(Parser)]
 #[command(name = "Hedgehog Fabric Gateway dataplane")]

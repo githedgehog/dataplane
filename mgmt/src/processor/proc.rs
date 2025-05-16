@@ -329,13 +329,39 @@ fn start_mgmt_internal(addr: ServerAddress) -> Result<std::thread::JoinHandle<()
 }
 
 /// Start the mgmt service with TCP socket
-pub fn start_mgmt_tcp(grpc_address: SocketAddr) -> Result<std::thread::JoinHandle<()>, Error> {
+fn start_mgmt_tcp(grpc_address: SocketAddr) -> Result<std::thread::JoinHandle<()>, Error> {
     start_mgmt_internal(ServerAddress::Tcp(grpc_address))
 }
 
 /// Start the mgmt service with UNIX socket
-pub fn start_mgmt_unix(socket_path: &Path) -> Result<std::thread::JoinHandle<()>, Error> {
+fn start_mgmt_unix(socket_path: &Path) -> Result<std::thread::JoinHandle<()>, Error> {
     // Clone the path for the thread
     let socket_path = socket_path.to_path_buf();
     start_mgmt_internal(ServerAddress::Unix(socket_path))
+}
+
+/// Enum to represent either a TCP socket address or a UNIX socket path
+#[derive(Debug, Clone)]
+pub enum GrpcAddress {
+    Tcp(SocketAddr),
+    UnixSocket(PathBuf),
+}
+
+pub fn start_mgmt(grpc_addr: GrpcAddress) {
+    match grpc_addr {
+        GrpcAddress::Tcp(addr) => {
+            info!("Starting gRPC server on TCP address: {}", addr);
+            if let Err(e) = start_mgmt_tcp(addr) {
+                error!("Failed to start management service on TCP listener: {e}");
+                panic!("Management service failed to start. Aborting...");
+            }
+        }
+        GrpcAddress::UnixSocket(path) => {
+            info!("Starting gRPC server on UNIX socket: {:?}", path);
+            if let Err(e) = start_mgmt_unix(&path) {
+                error!("Failed to start management service on UNIX socket: {e}");
+                panic!("Management service failed to start. Aborting...");
+            }
+        }
+    }
 }
