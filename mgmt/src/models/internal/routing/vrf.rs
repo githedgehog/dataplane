@@ -97,12 +97,16 @@ impl VrfConfig {
     }
 }
 
+use tracing::{debug, error};
 impl MultiIndexVrfConfigMap {
     pub fn new() -> Self {
         MultiIndexVrfConfigMap::default()
     }
     pub fn add_vrf_config(&mut self, vrf_cfg: VrfConfig) {
-        // TODO: must not panic here
-        self.try_insert(vrf_cfg).expect("Can't insert vrf config");
+        debug!("Adding VRF config: {:#?}", &vrf_cfg);
+        if let Err(e) = self.try_insert(vrf_cfg) {
+            error!("Failed to add vrf cfg: {e}");
+            error!("Set of configs known: {:#?}", self);
+        }
     }
 }
