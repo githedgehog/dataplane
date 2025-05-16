@@ -13,7 +13,6 @@ members = [ "cli",
 	"pipeline",
 	"rekon",
 	"routing",
-	"vpc-manager",
 ]
 
 default-members = [
@@ -28,7 +27,6 @@ default-members = [
 	"pipeline",
 	"rekon",
 	"routing",
-	"vpc-manager",
 ]
 
 resolver = "3"

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use dataplane_mgmt as mgmt;
+
 use caps::{CapSet, Capability};
-use dataplane_vpc_manager::{RequiredInformationBase, RequiredInformationBaseBuilder, VpcManager};
 use fixin::wrap;
 use interface_manager::interface::{
     BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpecBuilder,
@@ -11,6 +12,7 @@ use interface_manager::interface::{
     VrfPropertiesSpec, VtepPropertiesSpec,
 };
 use interface_manager::netns::swap_thread_to_netns;
+use mgmt::vpc_manager::{RequiredInformationBase, RequiredInformationBaseBuilder, VpcManager};
 use net::eth::ethtype::EthType;
 use net::interface::AdminState;
 use rekon::{Observe, Reconcile};
@@ -136,7 +138,6 @@ fn with_caps<F: UnwindSafe + FnOnce() -> T, T>(
 
 #[test]
 #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
-#[wrap(in_scoped_netns("reconcile_fuzz"))]
 #[traced_test]
 fn reconcile_fuzz() {
     let runtime = tokio::runtime::Builder::new_current_thread()

@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-#![allow(unreachable_code)]
-
 use std::io::Error;
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::thread;
+use std::sync::Arc;
 
 use tokio::net::UnixListener;
+use tokio::spawn;
+use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot::Receiver;
 use tokio::sync::{mpsc, oneshot};
-use tokio::{spawn, sync::mpsc::Sender};
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
 
@@ -24,9 +23,12 @@ use crate::processor::gwconfigdb::GwConfigDatabase;
 use crate::{frr::frrmi::FrrMi, models::external::ConfigError};
 use crate::{frr::renderer::builder::Render, models::external::gwconfig::GenId};
 
+use crate::vpc_manager::{RequiredInformationBase, VpcManager};
+use rekon::{Observe, Reconcile};
 use tracing::{debug, error, info, warn};
 
 /// A request type to the [`ConfigProcessor`]
+#[derive(Debug)]
 pub enum ConfigRequest {
     ApplyConfig(Box<GwConfig>),
     GetCurrentConfig,
@@ -34,6 +36,7 @@ pub enum ConfigRequest {
 }
 
 /// A response from the [`ConfigProcessor`]
+#[derive(Debug)]
 pub enum ConfigResponse {
     ApplyConfig(ConfigResult),
     GetCurrentConfig(Box<Option<GwConfig>>),
@@ -63,19 +66,30 @@ pub(crate) struct ConfigProcessor {
     config_db: GwConfigDatabase,
     rx: mpsc::Receiver<ConfigChannelRequest>,
     frrmi: FrrMi,
+    netlink: Arc<rtnetlink::Handle>,
 }
 
 impl ConfigProcessor {
+    // TODO: i'm not sure 1 is a good limit in an async context.  Is there something wrong with a
+    // queue of them?
     const CHANNEL_SIZE: usize = 1; // process one at a time
 
     /// Create a [`ConfigProcessor`]
     pub(crate) fn new(frrmi: FrrMi) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
         let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
+
+        let Ok((connection, netlink, _)) = rtnetlink::new_connection() else {
+            panic!("failed to create connection");
+        };
+        spawn(connection);
+        let netlink = Arc::new(netlink);
+
         let processor = Self {
             config_db: GwConfigDatabase::new(),
             rx,
             frrmi,
+            netlink,
         };
         (processor, tx)
     }
@@ -106,7 +120,9 @@ impl ConfigProcessor {
         self.config_db.add(config);
 
         /* apply the configuration just stored */
-        self.config_db.apply(genid, &mut self.frrmi).await?;
+        self.config_db
+            .apply(genid, &mut self.frrmi, self.netlink.clone())
+            .await?;
 
         Ok(())
     }
@@ -114,7 +130,11 @@ impl ConfigProcessor {
     /// Method to apply a blank configuration
     async fn apply_blank_config(&mut self) -> ConfigResult {
         self.config_db
-            .apply(ExternalConfig::BLANK_GENID, &mut self.frrmi)
+            .apply(
+                ExternalConfig::BLANK_GENID,
+                &mut self.frrmi,
+                self.netlink.clone(),
+            )
             .await
     }
 
@@ -144,7 +164,6 @@ impl ConfigProcessor {
     }
 
     /// Run the configuration processor
-    #[allow(unreachable_code)]
     async fn run(mut self) {
         info!("Starting config processor...");
 
@@ -154,30 +173,24 @@ impl ConfigProcessor {
             warn!("Failed to apply blank config!: {e}");
         }
 
-        loop {
-            // receive config requests over channel
-            match self.rx.recv().await {
-                Some(req) => {
-                    let response = match req.request {
-                        ConfigRequest::ApplyConfig(config) => {
-                            self.handle_apply_config(*config).await
-                        }
-                        ConfigRequest::GetCurrentConfig => self.handle_get_config(),
-                        ConfigRequest::GetGeneration => self.handle_get_generation(),
-                    };
-                    if req.reply_tx.send(response).is_err() {
-                        warn!("Failed to send reply from config processor: receiver dropped?");
-                    }
-                }
-                None => {
-                    warn!("Channel to config processor was closed!");
-                }
+        while let Some(req) = self.rx.recv().await {
+            let response = match req.request {
+                ConfigRequest::ApplyConfig(config) => self.handle_apply_config(*config).await,
+                ConfigRequest::GetCurrentConfig => self.handle_get_config(),
+                ConfigRequest::GetGeneration => self.handle_get_generation(),
+            };
+            if req.reply_tx.send(response).is_err() {
+                warn!("Failed to send reply from config processor: receiver dropped?");
             }
         }
     }
 }
 
-pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &mut FrrMi) -> ConfigResult {
+pub async fn apply_gw_config(
+    config: &mut GwConfig,
+    frrmi: &mut FrrMi,
+    netlink: Arc<rtnetlink::Handle>,
+) -> ConfigResult {
     /* probe the FRR agent. If unreachable, there's no point in trying to apply
     a configuration, either in interface manager or frr */
     frrmi
@@ -185,10 +198,29 @@ pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &mut FrrMi) -> Config
         .await
         .map_err(|_| ConfigError::FrrAgentUnreachable)?;
 
-    /* apply in interface manager - async (TODO) */
-
-    /* apply in frr: need to render and call frr-reload */
     if let Some(internal) = &config.internal {
+        info!("internal information base {internal:?}");
+        let mut rib: RequiredInformationBase = match internal.try_into() {
+            Ok(rib) => rib,
+            Err(err) => {
+                error!("{err}");
+                return Err(ConfigError::FailureApply);
+            }
+        };
+
+        info!("required information base: {rib:?}");
+
+        let manager = VpcManager::<RequiredInformationBase>::new(netlink);
+        let mut required_passes = 0;
+        while !manager
+            .reconcile(&mut rib, &manager.observe().await.unwrap())
+            .await
+        {
+            required_passes += 1;
+            if required_passes >= 300 {
+                panic!("took more than 300 passes to reconcile interfaces")
+            }
+        }
         debug!("Generating FRR config for genid {}...", config.genid());
         let rendered = internal.render(config);
         debug!("FRR configuration is:\n{}", rendered.to_string());
@@ -199,6 +231,7 @@ pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &mut FrrMi) -> Config
             .map_err(|e| ConfigError::FrrApplyError(e.to_string()))?;
     }
 
+    // TODO: I think this log message is incorrect
     info!("Successfully applied config with genid {}", config.genid());
     Ok(())
 }
@@ -211,11 +244,11 @@ async fn start_grpc_server_tcp(
     info!("Starting gRPC server on TCP address: {:?}", addr);
     let config_service = create_config_service(channel_tx);
 
-    let _ = Server::builder()
+    Server::builder()
         .add_service(config_service)
         .serve(addr)
-        .await;
-    Ok(())
+        .await
+        .map_err(|err| panic!("failed to start gRPC server: {err}"))
 }
 
 /// Start the gRPC server on UNIX socket
@@ -291,14 +324,17 @@ enum ServerAddress {
     Unix(PathBuf),
 }
 
+// TODO: implement shutdown logic
 /// Start the mgmt service with either type of socket
-fn start_mgmt_internal(addr: ServerAddress) -> Result<std::thread::JoinHandle<()>, Error> {
+pub fn start_mgmt_internal<'scope, 'env: 'scope>(
+    addr: ServerAddress,
+) -> Result<std::thread::JoinHandle<()>, Error> {
     match &addr {
         ServerAddress::Tcp(_sock_addr) => debug!("Initializing management with TCP socket..."),
         ServerAddress::Unix(_path) => debug!("Initializing management with UNIX socket..."),
-    }
+    };
 
-    thread::Builder::new()
+    std::thread::Builder::new()
         .name("mgmt".to_string())
         .spawn(move || {
             debug!("Starting dataplane management thread");
@@ -314,16 +350,13 @@ fn start_mgmt_internal(addr: ServerAddress) -> Result<std::thread::JoinHandle<()
             rt.block_on(async {
                 let frrmi = start_frrmi().await.unwrap();
                 let (processor, tx) = ConfigProcessor::new(frrmi);
-                spawn(async { processor.run().await });
-
-                // Start the appropriate server based on address type
-                let result = match addr {
-                    ServerAddress::Tcp(sock_addr) => start_grpc_server_tcp(sock_addr, tx).await,
-                    ServerAddress::Unix(path) => start_grpc_server_unix(&path, tx).await,
+                let grpc_server = async {
+                    match addr {
+                        ServerAddress::Tcp(sock_addr) => start_grpc_server_tcp(sock_addr, tx).await,
+                        ServerAddress::Unix(path) => start_grpc_server_unix(&path, tx).await,
+                    }
                 };
-                if let Err(e) = result {
-                    error!("Failed to start gRPC server: {}", e);
-                }
+                tokio::try_join!(spawn(processor.run()), spawn(grpc_server)).unwrap();
             });
         })
 }

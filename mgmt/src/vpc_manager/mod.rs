@@ -3,7 +3,6 @@
 
 use derive_builder::Builder;
 use futures::TryStreamExt;
-use id::Id;
 use interface_manager::Manager;
 use interface_manager::interface::{
     MultiIndexInterfaceAssociationSpecMap, MultiIndexInterfaceSpecMap,
@@ -21,7 +20,7 @@ use rtnetlink::Handle;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::sync::Arc;
-use tracing::error;
+use tracing::{debug, error};
 
 #[derive(Clone, Debug)]
 pub struct VpcManager<R> {
@@ -59,8 +58,6 @@ impl<T, U> From<&VpcManager<T>> for VpcManager<U> {
 )]
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Vpc {
-    #[multi_index(hashed_unique)]
-    id: Id<Vpc>,
     #[multi_index(ordered_unique)]
     route_table: RouteTableId,
     #[multi_index(ordered_unique)]
@@ -115,7 +112,7 @@ impl Observe for VpcManager<RequiredInformationBase> {
                     }
                 },
                 Err(err) => {
-                    error!("{err:?}");
+                    debug!("{err:?}");
                 }
             }
         }
@@ -276,7 +273,6 @@ impl Vpc {
     #[must_use]
     pub fn new(route_table: RouteTableId, discriminant: VpcDiscriminant) -> Self {
         Self {
-            id: Id::new(),
             route_table,
             discriminant,
         }
@@ -295,9 +291,8 @@ impl Vpc {
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
-    use crate::{RequiredInformationBase, Vpc, VpcDiscriminant};
+    use crate::vpc_manager::{RequiredInformationBase, Vpc, VpcDiscriminant};
     use bolero::{Driver, TypeGenerator};
-    use id::Id;
     use interface_manager::interface::{
         InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpec,
     };
@@ -314,7 +309,6 @@ mod contract {
     impl TypeGenerator for Vpc {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
             Some(Self {
-                id: Id::new(),
                 route_table: driver.produce()?,
                 discriminant: driver.produce()?,
             })
