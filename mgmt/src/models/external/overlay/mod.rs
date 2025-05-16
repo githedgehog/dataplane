@@ -58,11 +58,15 @@ impl Overlay {
         self.vpc_table
             .collect_peerings(&self.peering_table, &id_map);
 
+        debug!(
+            "Overlay configuration is VALID and looks as:\n{}\n{}",
+            self.vpc_table, self.peering_table
+        );
+
         /* empty peering table: we no longer need it since we have collected
         all of the peerings and added them to the corresponding VPCs */
         self.peering_table.clear();
 
-        debug!("Overlay configuration is VALID");
         Ok(())
     }
 }

@@ -202,10 +202,6 @@ fn build_internal_overlay_config(
     internal: &mut InternalConfig,
 ) {
     debug!("Building overlay config...");
-    debug!(
-        "Requested overlay is:\n{}\n{}",
-        overlay.vpc_table, overlay.peering_table
-    );
     for vpc in overlay.vpc_table.values() {
         build_vpc_internal_config(vpc, asn, router_id, internal);
     }
