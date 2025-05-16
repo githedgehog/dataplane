@@ -122,7 +122,7 @@ impl Render for RouteMap {
     fn render(&self, _ctx: &Self::Context) -> Self::Output {
         let mut config = ConfigBuilder::new();
         config += MARKER;
-        let prefix = format!("route-map {}", self.name.to_uppercase());
+        let prefix = format!("route-map {}", self.name);
         self.entries
             .iter()
             .for_each(|e| config += e.render(&prefix));

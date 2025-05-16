@@ -27,7 +27,11 @@ impl Vpc {
         format!("RM-IMPORT-{}", self.name.to_uppercase())
     }
     pub(crate) fn plist_with_vpc(&self, remote_name: &str) -> String {
-        format!("{}-FROM-{}", &self.name, remote_name)
+        format!(
+            "{}-FROM-{}",
+            &self.name.to_uppercase(),
+            remote_name.to_uppercase()
+        )
     }
     pub(crate) fn plist_with_vpc_descr(&self, remote_name: &str) -> String {
         format!("Prefixes of {} reachable by {}", remote_name, self.name)

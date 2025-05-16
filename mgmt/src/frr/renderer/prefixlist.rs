@@ -50,7 +50,7 @@ impl Render for PrefixList {
     type Output = ConfigBuilder;
     fn render(&self, _: &Self::Context) -> ConfigBuilder {
         let mut config = ConfigBuilder::new();
-        let pfx = format!("ip prefix-list {}", self.name.to_uppercase());
+        let pfx = format!("ip prefix-list {}", self.name);
         if let Some(description) = &self.description {
             config += format!("{pfx} description \"{description}\"");
         }
