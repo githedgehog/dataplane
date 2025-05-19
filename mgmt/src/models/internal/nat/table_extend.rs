@@ -44,7 +44,9 @@ fn get_private_trie_value(expose: &VpcExpose, prefix: &Prefix) -> TrieValue {
 ///
 /// Returns an error if some lists of prefixes contain duplicates
 pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), TrieError> {
-    peering.local.exposes.iter().try_for_each(|expose| {
+    let new_peering = optimize_peering(peering);
+
+    new_peering.local.exposes.iter().try_for_each(|expose| {
         // Create new peering table for source NAT
         let mut peering_table = NatPrefixRuleTable::new();
 
@@ -73,7 +75,7 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Tri
     })?;
 
     // Update table for destination NAT
-    peering.remote.exposes.iter().try_for_each(|expose| {
+    new_peering.remote.exposes.iter().try_for_each(|expose| {
         // For each public prefix, add an entry containing the exclusion prefixes and the set of
         // private prefixes
         expose.as_range.iter().try_for_each(|prefix| {
@@ -162,11 +164,8 @@ fn optimize_expose(
     (clone, clone_not)
 }
 
-/// Optimize a [`Peering`] object:
-///
-/// - Optimize both [`VpcManifest`] objects
-#[must_use]
-pub fn optimize_peering(peering: &Peering) -> Peering {
+/// Optimize a Peering object: collapse prefixes and exclusion prefixes when possible
+fn optimize_peering(peering: &Peering) -> Peering {
     // Collapse prefixes and exclusion prefixes
     let mut clone = peering.clone();
     for expose in &mut clone.local.exposes {
