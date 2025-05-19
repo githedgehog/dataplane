@@ -110,8 +110,11 @@ jobs:
           # Check updates available with "cargo upgrade",
           # then bump each package individually through separate commits
           cargo upgrade --incompatible=allow --dry-run > upgrade_output.txt
-          sed '0,/^====/d; s/ .*//' upgrade_output.txt > list_packages.txt
+          sed '/^====/d; /^name .* new req$/d; s/ .*//' upgrade_output.txt > list_packages.txt
           nb_upgrades=$(wc -l < list_packages.txt)
+
+          echo "Found the following ${nb_upgrades} upgrade(s) available:"
+          cat list_packages.txt
 
           while read -r package; do
               echo "bump(cargo)!: bump $package (cargo upgrade)" | tee commit_msg.txt
