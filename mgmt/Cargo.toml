@@ -6,7 +6,7 @@ publish = false
 license = "Apache-2.0"
 
 [features]
-default = ["bolero"]
+default = []
 bolero = ["dep:bolero", "interface-manager/bolero", "id/bolero", "net/arbitrary"]
 
 [dependencies]
