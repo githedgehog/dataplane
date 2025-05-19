@@ -47,6 +47,7 @@ impl RmacStore {
     /// Delete an rmac entry. The mac address must match (sanity)
     pub fn del_rmac(&mut self, vni: Vni, address: IpAddr, mac: Mac) {
         let key = (address, vni);
+        #[allow(clippy::collapsible_if)]
         if let Entry::Occupied(o) = self.0.entry(key) {
             if o.get().mac == mac {
                 self.0.remove_entry(&key);
@@ -57,6 +58,7 @@ impl RmacStore {
     /// Identical to[`add_rmac`], but getting the entry as param
     pub fn del_rmac_entry(&mut self, entry: RmacEntry) {
         let key = (entry.address, entry.vni);
+        #[allow(clippy::collapsible_if)]
         if let Entry::Occupied(o) = self.0.entry(key) {
             if o.get().mac == entry.mac {
                 self.0.remove_entry(&key);

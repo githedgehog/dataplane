@@ -228,6 +228,7 @@ async fn start_grpc_server_unix(
     );
 
     // Remove existing socket file if present
+    #[allow(clippy::collapsible_if)]
     if socket_path.exists() {
         if let Err(e) = std::fs::remove_file(socket_path) {
             error!("Failed to remove existing socket file: {}", e);
@@ -236,6 +237,7 @@ async fn start_grpc_server_unix(
     }
 
     // Create parent directory if it doesn't exist
+    #[allow(clippy::collapsible_if)]
     if let Some(parent) = socket_path.parent() {
         if !parent.exists() {
             if let Err(e) = std::fs::create_dir_all(parent) {
@@ -270,6 +272,7 @@ async fn start_grpc_server_unix(
         .await;
 
     // Clean up the socket file after server shutdown
+    #[allow(clippy::collapsible_if)]
     if socket_path.exists() {
         if let Err(e) = std::fs::remove_file(socket_path) {
             error!("Failed to remove socket file: {}", e);

@@ -86,6 +86,7 @@ impl Update for Manager<VtepProperties> {
     where
         Self: 'a,
     {
+        #[allow(clippy::collapsible_if)]
         if let InterfaceProperties::Vtep(props) = &observation.properties {
             if requirement == props {
                 return Ok(());

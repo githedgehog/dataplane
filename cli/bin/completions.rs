@@ -72,6 +72,7 @@ impl Completer for CmdCompleter {
         // FIXME
         if let Some(word) = left.front() {
             if word.contains("=") {
+                #[allow(clippy::collapsible_if)]
                 if let Some((arg_side, value_side)) = word.split_once("=") {
                     if let Some(arg) = node.find_arg(arg_side) {
                         // if left side of = is arg and it has choices, offer them

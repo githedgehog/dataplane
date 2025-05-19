@@ -234,6 +234,7 @@ impl FrrMi {
 
         if let Some(sock) = &mut self.sock {
             /* send the request: if sending fails, we may disconnect */
+            #[allow(clippy::collapsible_if)]
             if let Err(e) = send_msg(sock, genid, msg.as_bytes()).await {
                 if matches!(e, FrrErr::PeerLeft | FrrErr::RxFail(_) | FrrErr::TxFail(_)) {
                     warn!("Got error: {e}. Disconnecting frrmi...");

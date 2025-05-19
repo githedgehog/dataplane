@@ -47,6 +47,7 @@ impl GwConfigDatabase {
         self.configs.get_mut(&generation)
     }
     pub fn unmark_current(&mut self, value: bool) {
+        #[allow(clippy::collapsible_if)]
         if let Some(genid) = &self.current {
             if let Some(config) = self.configs.get_mut(genid) {
                 config.set_applied(value);
@@ -127,6 +128,7 @@ impl GwConfigDatabase {
                 let previous = last.unwrap_or(ExternalConfig::BLANK_GENID);
                 info!("Rolling back to config '{}'...", previous);
                 let mut config = self.get_mut(previous);
+                #[allow(clippy::collapsible_if)]
                 if let Some(config) = &mut config {
                     if let Err(e) = config.apply(frrmi).await {
                         error!("Fatal: could not roll-back to previous config: {e}");

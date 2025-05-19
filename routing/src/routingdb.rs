@@ -47,6 +47,7 @@ impl VrfTable {
         };
 
         /* Forbid VRF addition if one exists with same vni */
+        #[allow(clippy::collapsible_if)]
         if let Some(vni) = vni_checked {
             if self.by_vni.contains_key(&vni) {
                 return Err(RouterError::VniInUse(vni.as_u32()));
@@ -78,6 +79,7 @@ impl VrfTable {
     pub fn remove_vrf(&mut self, vrfid: VrfId, iftable: &mut IfTable) -> Result<(), RouterError> {
         if let Some(vrf) = self.by_id.remove(&vrfid) {
             iftable.detach_vrf_interfaces(&vrf);
+            #[allow(clippy::collapsible_if)]
             if let Ok(vrf) = vrf.read() {
                 if let Some(vni) = vrf.vni {
                     self.by_vni.remove(&vni);

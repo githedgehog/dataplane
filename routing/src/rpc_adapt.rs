@@ -45,6 +45,7 @@ impl From<ForwardAction> for FwAction {
 impl From<&NextHop> for RouteNhop {
     fn from(nh: &NextHop) -> Self {
         let mut encap = nh.encap.as_ref().map(Encapsulation::from);
+        #[allow(clippy::collapsible_if)]
         if let Some(Encapsulation::Vxlan(vxlan)) = &mut encap {
             if let Some(address) = nh.address {
                 vxlan.remote = address;

@@ -258,6 +258,7 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     pub fn detach_vrf_interfaces(&mut self, vrf: &Arc<RwLock<Vrf>>) {
         for iface in self.0.values_mut() {
+            #[allow(clippy::collapsible_if)]
             if let Some(if_vrf) = &iface.vrf {
                 if Arc::ptr_eq(if_vrf, vrf) {
                     iface.detach();

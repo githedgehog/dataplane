@@ -209,6 +209,7 @@ pub fn convert_ospf_config_from_grpc(
     let mut ospf = Ospf::new(router_id);
 
     // Set VRF name if present
+    #[allow(clippy::collapsible_if)]
     if let Some(vrf_name) = &ospf_config.vrf {
         if !vrf_name.is_empty() {
             ospf.set_vrf_name(vrf_name.clone());

@@ -279,6 +279,7 @@ impl NhopStore {
     pub(crate) fn del_nhop(&mut self, key: &NhopKey) {
         let target = Nhop::new_from_key(key);
         let mut remove: bool = false;
+        #[allow(clippy::collapsible_if)]
         if let Some(existing) = self.0.get(&target) {
             if Arc::strong_count(existing) == 1 {
                 remove = true;
