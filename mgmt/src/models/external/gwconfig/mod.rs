@@ -21,7 +21,7 @@ use crate::processor::confbuild::build_internal_config;
 pub type GenId = i64;
 use crate::processor::proc::apply_gw_config;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct Underlay {
     pub vrf: VrfConfig, /* default vrf */
 }
@@ -42,7 +42,7 @@ impl Underlay {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 /// Configuration metadata. Every config object stored by the dataplane has metadata
 pub struct GwConfigMeta {
     pub created: SystemTime,           /* time when config was built (received) */
@@ -62,7 +62,7 @@ impl GwConfigMeta {
 }
 
 /// The configuration object as seen by the gRPC server
-#[derive(Builder, Clone)]
+#[derive(Builder, Clone, Debug)]
 pub struct ExternalConfig {
     pub genid: GenId,         /* configuration generation id (version) */
     pub device: DeviceConfig, /* goes as-is into the internal config */
@@ -89,7 +89,7 @@ impl ExternalConfig {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct GwConfig {
     pub meta: GwConfigMeta,               /* config metadata */
     pub external: ExternalConfig,         /* external config: received */

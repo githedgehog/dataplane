@@ -26,6 +26,7 @@ use crate::{frr::renderer::builder::Render, models::external::gwconfig::GenId};
 use tracing::{debug, error, info, warn};
 
 /// A request type to the [`ConfigProcessor`]
+#[derive(Debug)]
 pub enum ConfigRequest {
     ApplyConfig(Box<GwConfig>),
     GetCurrentConfig,
@@ -33,6 +34,7 @@ pub enum ConfigRequest {
 }
 
 /// A response from the [`ConfigProcessor`]
+#[derive(Debug)]
 pub enum ConfigResponse {
     ApplyConfig(ConfigResult),
     GetCurrentConfig(Box<Option<GwConfig>>),
