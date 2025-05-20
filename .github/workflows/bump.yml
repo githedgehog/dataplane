@@ -107,6 +107,13 @@ jobs:
           git config user.email '<41898282+github-actions[bot]@users.noreply.github.com>'
           BASE="$(git rev-parse HEAD)"
 
+          # Run "cargo update"
+          cargo update
+          if ! git diff --quiet; then
+              git add Cargo.lock
+              git commit -sm "bump(cargo)!: bump dependencies (cargo update)"
+          fi
+
           # Check updates available with "cargo upgrade",
           # then bump each package individually through separate commits
           cargo upgrade --incompatible=allow --dry-run > upgrade_output.txt
@@ -123,13 +130,6 @@ jobs:
               git add Cargo.toml Cargo.lock
               git commit -sF commit_msg.txt
           done < list_packages.txt
-
-          # Run "cargo update"
-          cargo update
-          if ! git diff --quiet; then
-              git add Cargo.lock
-              git commit -sm "bump(cargo)!: bump dependencies (cargo update)"
-          fi
 
           # If we didn't create any commits, we don't need to create a PR message
           if [[ "$(git rev-parse HEAD)" = "${BASE}" ]]; then
