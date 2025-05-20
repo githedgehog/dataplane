@@ -57,6 +57,8 @@ pub enum DoneReason {
     Filtered,             /* The packet was administratively filtered */
     Unhandled,            /* there exists no support to handle this type of packet */
     MissL2resolution,     /* adjacency failure: we don't know mac of some ip next-hop */
+    Malformed,            /* the packet does not conform / is malformed */
+    MissingEtherType,     /* can't determine ethertype to use */
     Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
 }
 
