@@ -4,7 +4,7 @@
 use net::vlan::Vid;
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
-use tracing::Level;
+use tracing::{Level, warn};
 
 use crate::models::external::gwconfig::{
     ExternalConfig, ExternalConfigBuilder, GwConfig, Underlay,
@@ -84,26 +84,29 @@ pub fn create_gw_config(external_config: ExternalConfig) -> GwConfig {
 
 /// Convert from GatewayConfig (gRPC) to ExternalConfig
 pub fn convert_from_grpc_config(grpc_config: &GatewayConfig) -> Result<ExternalConfig, String> {
-    // Extract required components
-    let device = grpc_config
-        .device
-        .as_ref()
-        .ok_or_else(|| "Missing device configuration".to_string())?;
+    // convert device if present or provide a default
+    let device_config = if let Some(device) = &grpc_config.device {
+        convert_device_from_grpc(device)?
+    } else {
+        warn!("Missing device configuration!");
+        DeviceConfig::new(DeviceSettings::new("Unset"))
+    };
 
-    let underlay = grpc_config
-        .underlay
-        .as_ref()
-        .ok_or_else(|| "Missing underlay configuration".to_string())?;
+    // convert underlay or provide a default (empty)
+    let underlay_config = if let Some(underlay) = &grpc_config.underlay {
+        convert_underlay_from_grpc(underlay)?
+    } else {
+        warn!("Missing underlay configuration!");
+        Underlay::default()
+    };
 
-    let overlay = grpc_config
-        .overlay
-        .as_ref()
-        .ok_or_else(|| "Missing overlay configuration".to_string())?;
-
-    // Convert each component
-    let device_config = convert_device_from_grpc(device)?;
-    let underlay_config = convert_underlay_from_grpc(underlay)?;
-    let overlay_config = convert_overlay_from_grpc(overlay)?;
+    // convert overlay or provide a default (empty)
+    let overlay_config = if let Some(overlay) = &grpc_config.overlay {
+        convert_overlay_from_grpc(overlay)?
+    } else {
+        warn!("Missing overlay configuration!");
+        Overlay::default()
+    };
 
     // Create the ExternalConfig using the builder pattern
     let external_config = ExternalConfigBuilder::default()
