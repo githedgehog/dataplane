@@ -6,15 +6,24 @@ use std::io::Error;
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+
+use tokio::io;
 use tokio::net::UnixListener;
 use tokio::spawn;
+
+use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
+use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver;
-use tokio::sync::{mpsc, oneshot};
-use tokio_stream::wrappers::UnixListenerStream;
+use tokio_stream::Stream;
+
 use tonic::transport::Server;
+
+use hyper::server::accept::Accept;
 
 use crate::grpc::server::create_config_service;
 use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
@@ -291,11 +300,53 @@ async fn start_grpc_server_tcp(
     info!("Starting gRPC server on TCP address: {addr}");
     let config_service = create_config_service(channel_tx);
 
-    let _ = Server::builder()
+    Server::builder()
         .add_service(config_service)
         .serve(addr)
-        .await;
-    Ok(())
+        .await
+        .map_err(|e| {
+            error!("Failed to start gRPC server");
+            Error::other(e.to_string())
+        })
+}
+
+/// UnixListener wrapper type to implement Accept and hyper Stream traits
+/// This is only used/needed when we bind gRPC to a Unix socket
+struct UnixAcceptor {
+    listener: UnixListener,
+}
+
+// Implementation of the Accept trait for UnixListener
+impl Accept for UnixAcceptor {
+    type Conn = tokio::net::UnixStream;
+    type Error = io::Error;
+
+    fn poll_accept(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Self::Conn, Self::Error>>> {
+        let this = unsafe { self.get_unchecked_mut() };
+        match this.listener.poll_accept(cx) {
+            Poll::Ready(Ok((stream, addr))) => {
+                debug!("Accepted connection on gRPC unix socket from {addr:?}");
+                Poll::Ready(Some(Ok(stream)))
+            }
+            Poll::Ready(Err(e)) => {
+                warn!("Error accepting connection on gRPC unix sock: {e}");
+                Poll::Ready(Some(Err(e)))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+// Implementation of hyper Stream trait for UnixAcceptor
+impl Stream for UnixAcceptor {
+    type Item = Result<tokio::net::UnixStream, io::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.poll_accept(cx)
+    }
 }
 
 /// Start the gRPC server on UNIX socket
@@ -312,8 +363,7 @@ async fn start_grpc_server_unix(
     #[allow(clippy::collapsible_if)]
     if socket_path.exists() {
         if let Err(e) = std::fs::remove_file(socket_path) {
-            error!("Failed to remove existing socket file: {}", e);
-            return Err(e);
+            warn!("Failed to remove existing socket file: {}", e);
         }
     }
 
@@ -329,8 +379,11 @@ async fn start_grpc_server_unix(
     }
 
     // Create the UNIX socket listener
-    let uds = match UnixListener::bind(socket_path) {
-        Ok(listener) => listener,
+    let listener = match UnixListener::bind(socket_path) {
+        Ok(listener) => {
+            debug!("Bound unix sock to {}", socket_path.display());
+            listener
+        }
         Err(e) => {
             error!("Failed to bind UNIX socket: {}", e);
             return Err(e);
@@ -338,19 +391,26 @@ async fn start_grpc_server_unix(
     };
 
     // Set socket permissions if needed
-    match std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o660)) {
-        Ok(_) => debug!("Socket permissions set to 0660"),
+    match std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o666)) {
+        Ok(_) => debug!("Socket permissions set to 0666"),
         Err(e) => error!("Failed to set socket permissions: {}", e),
     }
+
+    // Build Unix acceptor wrapper to asynchronously accept connections inside the server
+    let acceptor = UnixAcceptor { listener };
 
     // Create the gRPC service
     let config_service = create_config_service(channel_tx);
 
     // Start the server with UNIX domain socket
-    let _ = Server::builder()
+    Server::builder()
         .add_service(config_service)
-        .serve_with_incoming(UnixListenerStream::new(uds))
-        .await;
+        .serve_with_incoming(acceptor)
+        .await
+        .map_err(|e| {
+            error!("Failed to start gRPC server");
+            Error::other(e.to_string())
+        })?;
 
     // Clean up the socket file after server shutdown
     #[allow(clippy::collapsible_if)]

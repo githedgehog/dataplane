@@ -72,6 +72,7 @@ dyn-iter = { version = "1.0.1", default-features = false, features = [] }
 etherparse = { version = "0.18.0", default-features = false, features = [] }
 fixin = { git = "https://github.com/githedgehog/fixin", branch = "main" }
 futures = { version = "0.3.31", default-features = false, features = [] }
+hyper = { version = "0.14", default-features = false, features = []  }
 ipnet = { version = "2.11.0", default-features = false, features = [] }
 iptrie = { version = "0.10.3", default-features = false, features = [] }
 mio = { version = "1.0.3", default-features = false, features = [] }
