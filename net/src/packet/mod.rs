@@ -12,6 +12,7 @@ pub mod test_utils;
 
 use crate::buffer::{Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart};
 use crate::eth::EthError;
+use crate::eth::Eth;
 use crate::headers::{
     AbstractHeaders, AbstractHeadersMut, Headers, Net, TryHeaders, TryHeadersMut, TryIpMut,
     TryUdpMut, TryVxlan,
@@ -72,6 +73,11 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Get a reference to the payload of this packet
     pub fn payload(&self) -> &Buf {
         &self.payload
+    }
+
+    /// Add / Replace Ethernet header
+    pub fn set_eth(&mut self, eth: Eth) {
+        self.headers.set_eth(eth);
     }
 
     /// Get the length of the packet's payload

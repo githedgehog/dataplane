@@ -319,6 +319,11 @@ impl Headers {
         Headers::default()
     }
 
+    /// Add / Replace Ethernet header
+    pub fn set_eth(&mut self, eth: Eth) {
+        self.eth = Some(eth);
+    }
+
     /// Push a VLAN header to the top of the stack.
     ///
     /// # Errors:
