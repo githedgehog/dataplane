@@ -5,6 +5,7 @@
 
 use crate::frr::frrmi::FrrMi;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use tracing::{debug, error, info};
 
 use crate::models::external::gwconfig::{ExternalConfig, GenId, GwConfig};
@@ -76,7 +77,12 @@ impl GwConfigDatabase {
         }
     }
 
-    pub async fn apply(&mut self, genid: GenId, frrmi: &mut FrrMi) -> ConfigResult {
+    pub async fn apply(
+        &mut self,
+        genid: GenId,
+        frrmi: &mut FrrMi,
+        netlink: Arc<rtnetlink::Handle>,
+    ) -> ConfigResult {
         debug!("Applying config with genid '{}'...", genid);
 
         /* get the generation (id) of the currently applied config, if any */
@@ -107,7 +113,7 @@ impl GwConfigDatabase {
         };
 
         /* attempt to apply the configuration found */
-        let res = config.apply(frrmi).await;
+        let res = config.apply(frrmi, netlink.clone()).await;
         if res.is_ok() {
             info!("Config with genid '{}' is now the current", genid);
             self.current = Some(genid);
@@ -130,7 +136,7 @@ impl GwConfigDatabase {
                 let mut config = self.get_mut(previous);
                 #[allow(clippy::collapsible_if)]
                 if let Some(config) = &mut config {
-                    if let Err(e) = config.apply(frrmi).await {
+                    if let Err(e) = config.apply(frrmi, netlink).await {
                         error!("Fatal: could not roll-back to previous config: {e}");
                     }
                 }

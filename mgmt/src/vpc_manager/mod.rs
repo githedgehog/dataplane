@@ -296,7 +296,7 @@ impl Vpc {
     }
 }
 
-// This is very hacky, but I need it to validate the design.  Will break this down soon.
+// TODO: break up this method into smaller components
 impl TryFrom<&InternalConfig> for RequiredInformationBase {
     type Error = RequiredInformationBaseBuilderError;
 

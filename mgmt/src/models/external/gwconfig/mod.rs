@@ -5,6 +5,7 @@
 //! The external config contains the intended configuration externally received (e.g. via gRPC)
 
 use derive_builder::Builder;
+use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::{debug, info};
 
@@ -141,7 +142,11 @@ impl GwConfig {
     }
 
     /// Apply a [`GwConfig`].
-    pub async fn apply(&mut self, frrmi: &mut FrrMi) -> ConfigResult {
+    pub async fn apply(
+        &mut self,
+        frrmi: &mut FrrMi,
+        netlink: Arc<rtnetlink::Handle>,
+    ) -> ConfigResult {
         info!("Applying config with genid {}...", self.genid());
         if self.internal.is_none() {
             debug!("Config has no internal config...");
@@ -149,7 +154,7 @@ impl GwConfig {
         }
 
         /* Apply this gw config */
-        apply_gw_config(self, frrmi).await?;
+        apply_gw_config(self, frrmi, netlink).await?;
         self.meta.applied = Some(SystemTime::now());
         self.meta.is_applied = true;
         Ok(())

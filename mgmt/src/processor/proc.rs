@@ -6,12 +6,13 @@ use std::io::Error;
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::thread;
+use std::sync::Arc;
 
 use tokio::net::UnixListener;
+use tokio::spawn;
+use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot::Receiver;
 use tokio::sync::{mpsc, oneshot};
-use tokio::{spawn, sync::mpsc::Sender};
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
 
@@ -23,6 +24,8 @@ use crate::processor::gwconfigdb::GwConfigDatabase;
 use crate::{frr::frrmi::FrrMi, models::external::ConfigError};
 use crate::{frr::renderer::builder::Render, models::external::gwconfig::GenId};
 
+use crate::vpc_manager::{RequiredInformationBase, VpcManager};
+use rekon::{Observe, Reconcile};
 use tracing::{debug, error, info, warn};
 
 /// A request type to the [`ConfigProcessor`]
@@ -64,6 +67,7 @@ pub(crate) struct ConfigProcessor {
     config_db: GwConfigDatabase,
     rx: mpsc::Receiver<ConfigChannelRequest>,
     frrmi: FrrMi,
+    netlink: Arc<rtnetlink::Handle>,
 }
 
 impl ConfigProcessor {
@@ -73,10 +77,18 @@ impl ConfigProcessor {
     pub(crate) fn new(frrmi: FrrMi) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
         let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
+
+        let Ok((connection, netlink, _)) = rtnetlink::new_connection() else {
+            panic!("failed to create connection");
+        };
+        spawn(connection);
+        let netlink = Arc::new(netlink);
+
         let processor = Self {
             config_db: GwConfigDatabase::new(),
             rx,
             frrmi,
+            netlink,
         };
         (processor, tx)
     }
@@ -107,7 +119,9 @@ impl ConfigProcessor {
         self.config_db.add(config);
 
         /* apply the configuration just stored */
-        self.config_db.apply(genid, &mut self.frrmi).await?;
+        self.config_db
+            .apply(genid, &mut self.frrmi, self.netlink.clone())
+            .await?;
 
         Ok(())
     }
@@ -115,7 +129,11 @@ impl ConfigProcessor {
     /// Method to apply a blank configuration
     async fn apply_blank_config(&mut self) -> ConfigResult {
         self.config_db
-            .apply(ExternalConfig::BLANK_GENID, &mut self.frrmi)
+            .apply(
+                ExternalConfig::BLANK_GENID,
+                &mut self.frrmi,
+                self.netlink.clone(),
+            )
             .await
     }
 
@@ -178,7 +196,11 @@ impl ConfigProcessor {
     }
 }
 
-pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &mut FrrMi) -> ConfigResult {
+pub async fn apply_gw_config(
+    config: &mut GwConfig,
+    frrmi: &mut FrrMi,
+    netlink: Arc<rtnetlink::Handle>,
+) -> ConfigResult {
     /* probe the FRR agent. If unreachable, there's no point in trying to apply
     a configuration, either in interface manager or frr */
     frrmi
@@ -190,6 +212,28 @@ pub async fn apply_gw_config(config: &mut GwConfig, frrmi: &mut FrrMi) -> Config
 
     /* apply in frr: need to render and call frr-reload */
     if let Some(internal) = &config.internal {
+        debug!("internal information base {internal:?}");
+        let mut rib: RequiredInformationBase = match internal.try_into() {
+            Ok(rib) => rib,
+            Err(err) => {
+                error!("{err}");
+                return Err(ConfigError::FailureApply);
+            }
+        };
+
+        debug!("required information base: {rib:?}");
+
+        let manager = VpcManager::<RequiredInformationBase>::new(netlink);
+        let mut required_passes = 0;
+        while !manager
+            .reconcile(&mut rib, &manager.observe().await.unwrap())
+            .await
+        {
+            required_passes += 1;
+            if required_passes >= 300 {
+                panic!("took more than 300 passes to reconcile interfaces")
+            }
+        }
         debug!("Generating FRR config for genid {}...", config.genid());
         let rendered = internal.render(config);
         debug!("FRR configuration is:\n{}", rendered.to_string());
@@ -323,7 +367,7 @@ pub fn start_mgmt(grpc_addr: GrpcAddress) -> Result<std::thread::JoinHandle<()>,
     };
     debug!("Will start gRPC listening on {server_address}");
 
-    thread::Builder::new()
+    std::thread::Builder::new()
         .name("mgmt".to_string())
         .spawn(move || {
             debug!("Starting dataplane management thread");

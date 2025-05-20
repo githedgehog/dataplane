@@ -7,11 +7,6 @@ pub mod test {
     use routing::prefix::Prefix;
     use tracing_test::traced_test;
     //    use net::eth::mac::Mac;
-    use std::net::IpAddr;
-    use std::net::Ipv4Addr;
-    use std::str::FromStr;
-    use tracing::Level;
-
     use crate::models::internal::device::settings::DeviceSettings;
     use crate::models::internal::device::settings::KernelPacketConfig;
     use crate::models::internal::device::settings::PacketDriver;
@@ -27,6 +22,12 @@ pub mod test {
     use crate::models::internal::routing::ospf::{OspfInterface, OspfNetwork};
     use crate::models::internal::routing::vrf::VrfConfig;
     use crate::models::internal::{device::DeviceConfig, routing::ospf::Ospf};
+    use caps::Capability::CAP_NET_ADMIN;
+    use std::net::IpAddr;
+    use std::net::Ipv4Addr;
+    use std::str::FromStr;
+    use test_utils::with_caps;
+    use tracing::Level;
     //    use crate::models::internal::routing::evpn::VtepConfig;
 
     use crate::models::external::gwconfig::ExternalConfig;
@@ -284,6 +285,7 @@ pub mod test {
 
     #[traced_test]
     #[tokio::test]
+    #[fixin::wrap(with_caps([CAP_NET_ADMIN]))]
     async fn test_sample_config() {
         /* start faked frr-agent */
         let frr_agent = fake_frr_agent("/tmp/frr-agent.sock").await;
