@@ -3,15 +3,15 @@
 
 //! Dataplane configuration model: VRFs
 
+use super::bgp::BgpConfig;
+use super::ospf::Ospf;
+use super::statics::StaticRoute;
+use crate::models::external::overlay::vpc::VpcId;
 use crate::models::internal::{InterfaceConfig, InterfaceConfigTable};
 use net::route::RouteTableId;
 use net::vxlan::Vni;
 use routing::prefix::Prefix;
 use std::collections::BTreeSet;
-
-use super::bgp::BgpConfig;
-use super::ospf::Ospf;
-use super::statics::StaticRoute;
 
 #[derive(Clone, Debug)]
 
@@ -25,6 +25,7 @@ pub struct VrfConfig {
     pub bgp: Option<BgpConfig>,
     pub interfaces: InterfaceConfigTable,
     pub ospf: Option<Ospf>,
+    pub vpc_id: Option<VpcId>,
 }
 
 impl Default for VrfConfig {
@@ -38,6 +39,7 @@ impl Default for VrfConfig {
             static_routes: BTreeSet::new(),
             bgp: None,
             interfaces: InterfaceConfigTable::new(),
+            vpc_id: None,
             ospf: None,
         }
     }
@@ -53,6 +55,15 @@ impl VrfConfig {
             ..Default::default()
         }
     }
+
+    pub fn set_vpc_id(mut self, vpc_id: VpcId) -> Self {
+        if self.default {
+            panic!("Can't set vpc_id for default vrf");
+        }
+        self.vpc_id = Some(vpc_id);
+        self
+    }
+
     pub fn set_table_id(mut self, tableid: RouteTableId) -> Self {
         if self.default {
             panic!("Can't set table id for default vrf");

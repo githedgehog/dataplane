@@ -152,7 +152,8 @@ fn vpc_vrf_bgp_config(vpc: &Vpc, asn: u32, router_id: Option<Ipv4Addr>) -> BgpCo
 fn vpc_vrf_config(vpc: &Vpc, asn: u32, router_id: Option<Ipv4Addr>) -> VrfConfig {
     debug!("Building VRF config for vpc '{}'", vpc.name);
     /* build vrf config */
-    let mut vrf_cfg = VrfConfig::new(&vpc.vrf_name(), Some(vpc.vni), false);
+    let mut vrf_cfg =
+        VrfConfig::new(&vpc.vrf_name(), Some(vpc.vni), false).set_vpc_id(vpc.id.clone());
 
     /* set table-id: table ids should be unique per VRF. We should track them and pick unused ones.
     Setting this to the VNI is not too bad atm, except that we should avoid picking reserved values
