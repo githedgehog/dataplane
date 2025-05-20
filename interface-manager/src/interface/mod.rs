@@ -135,6 +135,7 @@ impl Create for Manager<Interface> {
                         InfoVxlan::Id(properties.vni.as_u32()),
                         InfoVxlan::Ttl(properties.ttl),
                         InfoVxlan::Local(properties.local.inner()),
+                        InfoVxlan::Port(properties.port.as_u16()),
                     ]))
                     .build()
             }

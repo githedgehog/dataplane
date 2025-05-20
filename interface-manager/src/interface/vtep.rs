@@ -6,7 +6,8 @@ use derive_builder::Builder;
 use multi_index_map::MultiIndexMap;
 use net::interface::{Interface, InterfaceProperties, VtepProperties};
 use net::ipv4::UnicastIpv4Addr;
-use net::vxlan::Vni;
+use net::udp::port::UdpPort;
+use net::vxlan::{Vni, Vxlan};
 use rekon::{AsRequirement, Remove, Update};
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +35,9 @@ pub struct VtepPropertiesSpec {
     /// The ttl to be used for packets encapsulated by this device.
     #[builder(default = 64)]
     pub ttl: u8,
+    /// The UDP port on which the tunnel is terminated
+    #[builder(default = Vxlan::PORT)]
+    pub port: UdpPort,
 }
 
 impl AsRequirement<VtepPropertiesSpec> for VtepProperties {
@@ -47,7 +51,12 @@ impl AsRequirement<VtepPropertiesSpec> for VtepProperties {
         Self: 'a,
     {
         match (self.vni, self.local, self.ttl) {
-            (Some(vni), Some(local), Some(ttl)) => Some(VtepPropertiesSpec { vni, local, ttl }),
+            (Some(vni), Some(local), Some(ttl)) => Some(VtepPropertiesSpec {
+                vni,
+                local,
+                ttl,
+                port: Vxlan::PORT,
+            }),
             _ => None,
         }
     }
@@ -101,6 +110,7 @@ mod contract {
     use crate::interface::VtepPropertiesSpec;
     use bolero::{Driver, TypeGenerator};
     use net::ipv4::UnicastIpv4Addr;
+    use net::vxlan::Vxlan;
     use std::net::Ipv4Addr;
 
     impl TypeGenerator for VtepPropertiesSpec {
@@ -118,6 +128,7 @@ mod contract {
                 vni: driver.produce()?,
                 local,
                 ttl: driver.produce()?,
+                port: Vxlan::PORT,
             })
         }
     }

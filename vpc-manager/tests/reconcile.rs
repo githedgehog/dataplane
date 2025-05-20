@@ -13,6 +13,7 @@ use interface_manager::interface::{
 use interface_manager::netns::swap_thread_to_netns;
 use net::eth::ethtype::EthType;
 use net::interface::AdminState;
+use net::vxlan::Vxlan;
 use rekon::{Observe, Reconcile};
 use rtnetlink::NetworkNamespace;
 use rtnetlink::sys::AsyncSocket;
@@ -219,6 +220,7 @@ async fn reconcile_demo() {
                     .try_into()
                     .unwrap(),
                 ttl: 64,
+                port: Vxlan::PORT,
             }))
             .build()
             .unwrap(),
@@ -233,6 +235,7 @@ async fn reconcile_demo() {
                     .try_into()
                     .unwrap(),
                 ttl: 64,
+                port: Vxlan::PORT,
             }))
             .build()
             .unwrap(),
@@ -336,6 +339,7 @@ async fn reconcile_demo() {
                         .try_into()
                         .unwrap(),
                     ttl: 64,
+                    port: Vxlan::PORT,
                 }))
                 .build()
                 .unwrap(),
