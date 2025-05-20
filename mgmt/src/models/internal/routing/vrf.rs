@@ -8,23 +8,28 @@ use super::ospf::Ospf;
 use super::statics::StaticRoute;
 use crate::models::external::overlay::vpc::VpcId;
 use crate::models::internal::{InterfaceConfig, InterfaceConfigTable};
+use multi_index_map::MultiIndexMap;
 use net::route::RouteTableId;
 use net::vxlan::Vni;
 use routing::prefix::Prefix;
 use std::collections::BTreeSet;
 
-#[derive(Clone, Debug)]
-
+#[derive(Clone, Debug, MultiIndexMap)]
+#[multi_index_derive(Debug, Clone)]
 pub struct VrfConfig {
+    #[multi_index(ordered_unique)]
     pub name: String,
     pub default: bool,
+    #[multi_index(ordered_unique)]
     pub tableid: Option<RouteTableId>,
+    #[multi_index(ordered_unique)]
     pub vni: Option<Vni>,
     pub subnets: BTreeSet<Prefix>,
     pub static_routes: BTreeSet<StaticRoute>,
     pub bgp: Option<BgpConfig>,
     pub interfaces: InterfaceConfigTable,
     pub ospf: Option<Ospf>,
+    #[multi_index(ordered_unique)]
     pub vpc_id: Option<VpcId>,
 }
 

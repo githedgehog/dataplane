@@ -815,6 +815,7 @@ dependencies = [
  "dataplane-routing",
  "derive_builder 0.20.2",
  "gateway_config",
+ "multi_index_map",
  "thiserror 2.0.12",
  "tokio",
  "tokio-stream",
