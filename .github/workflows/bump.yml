@@ -127,7 +127,7 @@ jobs:
               echo "bump(cargo)!: bump $package (cargo upgrade)" | tee commit_msg.txt
               echo '' | tee -a commit_msg.txt
               cargo upgrade --incompatible=allow --package "$package" | tee -a commit_msg.txt
-              git add Cargo.toml Cargo.lock
+              git add Cargo.lock Cargo.toml cli/Cargo.toml
               git commit -sF commit_msg.txt
           done < list_packages.txt
 
