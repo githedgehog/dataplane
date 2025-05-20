@@ -4,9 +4,6 @@
 name: "bump.yml"
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/bump.yml"
   workflow_dispatch:
     inputs:
       debug_enabled:
