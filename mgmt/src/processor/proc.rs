@@ -207,8 +207,9 @@ async fn apply_config_vpc_manager(
     let mut rib: RequiredInformationBase = match internal.try_into() {
         Ok(rib) => rib,
         Err(err) => {
-            error!("{err}");
-            return Err(ConfigError::FailureApply);
+            let msg = format!("Couldn't build required information base: {err}");
+            error!("{msg}");
+            return Err(ConfigError::FailureApply(msg));
         }
     };
 
@@ -222,8 +223,9 @@ async fn apply_config_vpc_manager(
     {
         required_passes += 1;
         if required_passes >= 300 {
-            error!("took more than 300 passes to reconcile interfaces!");
-            return Err(ConfigError::FailureApply);
+            let msg = "Interface reconciliation not achieved after 300 passes".to_string();
+            error!("{msg}");
+            return Err(ConfigError::FailureApply(msg));
         }
     }
     debug!("VPC-manager successfully applied config for genid {genid}");
@@ -246,7 +248,7 @@ async fn apply_config_frr(
     frrmi
         .apply_config(config.genid(), &rendered)
         .await
-        .map_err(|e| ConfigError::FrrApplyError(e.to_string()))?;
+        .map_err(|e| ConfigError::FailureApply(format!("Error applying FRR config: {e}")))?;
 
     debug!("FRR config for genid {genid} successfully applied");
     Ok(())

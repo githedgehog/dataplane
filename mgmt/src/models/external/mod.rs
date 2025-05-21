@@ -27,14 +27,12 @@ pub enum ConfigError {
     NoSuchConfig(GenId),
     #[error("A config with id {0} already exists")]
     ConfigAlreadyExists(GenId),
-    #[error("Failure applying config")]
-    FailureApply,
+    #[error("Failure applying config: {0}")]
+    FailureApply(String),
     #[error("Forbidden: {0}")]
     Forbidden(&'static str),
     #[error("Bad VPC Id")]
     BadVpcId(String),
-    #[error("Error applying FRR config: {0}")]
-    FrrApplyError(String),
     #[error("Missing identifier: {0}")]
     MissingIdentifier(&'static str),
     #[error("Missing mandatory parameter: {0}")]
