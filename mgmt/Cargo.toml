@@ -5,22 +5,46 @@ edition = "2024"
 publish = false
 license = "Apache-2.0"
 
+[features]
+default = []
+bolero = ["dep:bolero", "interface-manager/bolero", "id/bolero", "net/arbitrary"]
+
 [dependencies]
-async-trait = { workspace = true }
-bytes = { workspace = true }
-chrono = { workspace = true }
-derive_builder = { workspace = true }
+# internal
 gateway_config = { workspace = true }
-multi_index_map = { workspace = true }
+id = { workspace = true }
+interface-manager = { workspace = true }
 net = { workspace = true }
+rekon = { workspace = true }
 routing = { workspace = true }
+
+# external
+async-trait = { workspace = true }
+bolero = { workspace = true, optional = true, default-features = false, features = ["alloc"] }
+bytes = { workspace = true }
+caps = { workspace = true, default-features = false, features = [] }
+chrono = { workspace = true }
+derive_builder = { workspace = true, default-features = false, features = ["default"] }
+futures = { workspace = true, features = ["default"] }
+multi_index_map = { workspace = true, features = ["serde"] }
+rtnetlink = { workspace = true, features = ["default", "tokio"] }
+serde = { workspace = true, features = ["rc", "derive"] }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
-tracing = { workspace = true }
+tracing = { workspace = true, features = ["attributes"] }
 tracing-test = { workspace = true }
 
 [dev-dependencies]
+# internal
+fixin = { workspace = true }
+id = { workspace = true, features = ["bolero"] }
+interface-manager = { workspace = true, features = ["bolero"] }
+net = { workspace = true, features = ["arbitrary"] }
 routing = { workspace = true, features = ["testing"] }
+
+# external
+bolero = { workspace = true, default-features = false, features = ["alloc"] }
+tracing-test = { workspace = true, features = [] }
 

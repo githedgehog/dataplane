@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![cfg(feature = "bolero")]
+
+use dataplane_mgmt as mgmt;
+
 use caps::{CapSet, Capability};
-use dataplane_vpc_manager::{RequiredInformationBase, RequiredInformationBaseBuilder, VpcManager};
 use fixin::wrap;
 use interface_manager::interface::{
     BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpecBuilder,
@@ -11,6 +14,7 @@ use interface_manager::interface::{
     VrfPropertiesSpec, VtepPropertiesSpec,
 };
 use interface_manager::netns::swap_thread_to_netns;
+use mgmt::vpc_manager::{RequiredInformationBase, RequiredInformationBaseBuilder, VpcManager};
 use net::eth::ethtype::EthType;
 use net::interface::AdminState;
 use net::vxlan::Vxlan;

@@ -106,7 +106,6 @@ source "${script_dir}/dpdk-sys.env"
 declare -ra WRAPPED_TEST_SUITES=(
   "dataplane"
   "dataplane-interface-manager"
-  "dataplane-vpc-manager"
   "integration-fixtures"
 )
 

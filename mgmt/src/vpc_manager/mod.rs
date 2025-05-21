@@ -295,7 +295,7 @@ impl Vpc {
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
-    use crate::{RequiredInformationBase, Vpc, VpcDiscriminant};
+    use crate::vpc_manager::{RequiredInformationBase, Vpc, VpcDiscriminant};
     use bolero::{Driver, TypeGenerator};
     use id::Id;
     use interface_manager::interface::{
