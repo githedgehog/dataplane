@@ -11,8 +11,8 @@ mod meta;
 pub mod test_utils;
 
 use crate::buffer::{Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart};
-use crate::eth::EthError;
 use crate::eth::Eth;
+use crate::eth::EthError;
 use crate::headers::{
     AbstractHeaders, AbstractHeadersMut, Headers, Net, TryHeaders, TryHeadersMut, TryIpMut,
     TryUdpMut, TryVxlan,
@@ -338,5 +338,4 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             Some(_) => None,
         }
     }
-
 }

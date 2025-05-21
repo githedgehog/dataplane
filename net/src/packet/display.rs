@@ -4,15 +4,15 @@
 //! Display of Packets
 
 use crate::eth::Eth;
+use crate::headers::{Headers, Net, Transport};
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
 use crate::ipv4::Ipv4;
 use crate::ipv6::Ipv6;
 use crate::tcp::Tcp;
-use crate::udp::Udp;
+use crate::udp::{Udp, UdpEncap};
 
 use crate::buffer::PacketBufferMut;
-use crate::headers::{Headers, Net, Transport};
 use crate::packet::{BridgeDomain, DoneReason, InterfaceId, InvalidPacket, Packet, PacketMeta};
 use std::fmt::{Display, Formatter};
 
@@ -161,6 +161,14 @@ impl Display for Transport {
         }
     }
 }
+impl Display for UdpEncap {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "  ENCAP:")?;
+        match self {
+            UdpEncap::Vxlan(vxlan) => writeln!(f, "  vxlan, vni={}", vxlan.vni()),
+        }
+    }
+}
 
 /* ============= All headers ============ */
 impl Display for Headers {
@@ -174,6 +182,9 @@ impl Display for Headers {
         }
         if let Some(transport) = &self.transport {
             write!(f, "{transport}")?;
+        }
+        if let Some(udp_encap) = &self.udp_encap {
+            write!(f, "{udp_encap}")?;
         }
         Ok(())
     }
