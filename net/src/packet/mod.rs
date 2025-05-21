@@ -26,7 +26,6 @@ pub use hash::*;
 #[allow(unused_imports)] // re-export
 pub use meta::*;
 use std::num::NonZero;
-use tracing::debug;
 
 mod utils;
 
@@ -139,10 +138,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// ```
     pub fn vxlan_decap(&mut self) -> Option<Result<Vxlan, ParseError<EthError>>> {
         match self.headers.try_vxlan() {
-            None => {
-                debug!("attempted to remove VXLAN header from non-vxlan packet");
-                None
-            }
+            None => None,
             Some(vxlan) => {
                 match Headers::parse(self.payload.as_ref()) {
                     Ok((headers, consumed)) => {
@@ -217,7 +213,6 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 }
             }
             Some(Net::Ipv4(ipv4)) => {
-                // TODO: this isn't _technically_ unreachable
                 ipv4.set_payload_len(udp_len.get())
                     .unwrap_or_else(|e| unreachable!("{:?}", e));
                 ipv4.update_checksum();
