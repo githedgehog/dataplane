@@ -1,26 +1,33 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use crate::models::internal::InternalConfig;
+use crate::models::internal::interfaces::interface::InterfaceType;
 use derive_builder::Builder;
 use futures::TryStreamExt;
 use interface_manager::Manager;
 use interface_manager::interface::{
+    BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpecBuilder,
     MultiIndexInterfaceAssociationSpecMap, MultiIndexInterfaceSpecMap,
     MultiIndexVrfPropertiesSpecMap, MultiIndexVtepPropertiesSpecMap, TryFromLinkMessage,
+    VrfPropertiesSpec, VtepPropertiesSpec,
 };
 use multi_index_map::MultiIndexMap;
+use net::eth::ethtype::EthType;
 use net::interface::{
-    Interface, InterfaceProperties, MultiIndexInterfaceMap, MultiIndexVrfPropertiesMap,
+    AdminState, Interface, InterfaceProperties, MultiIndexInterfaceMap, MultiIndexVrfPropertiesMap,
     MultiIndexVtepPropertiesMap,
 };
+use net::ipv4::UnicastIpv4Addr;
 use net::route::RouteTableId;
-use net::vxlan::Vni;
+use net::vxlan::{Vni, Vxlan};
 use rekon::{Observe, Op, Reconcile, Remove};
 use rtnetlink::Handle;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
-use tracing::{debug, error};
+use tracing::{debug, error, info, trace, warn};
 
 #[derive(Clone, Debug)]
 pub struct VpcManager<R> {
@@ -286,6 +293,190 @@ impl Vpc {
     #[must_use]
     pub fn discriminant(&self) -> VpcDiscriminant {
         self.discriminant
+    }
+}
+
+// This is very hacky, but I need it to validate the design.  Will break this down soon.
+impl TryFrom<&InternalConfig> for RequiredInformationBase {
+    type Error = RequiredInformationBaseBuilderError;
+
+    #[tracing::instrument(level = "debug", ret)]
+    fn try_from(config: &InternalConfig) -> Result<Self, Self::Error> {
+        let mut rib = RequiredInformationBaseBuilder::default();
+        let mut interfaces = MultiIndexInterfaceSpecMap::default();
+        let mut vrfs = MultiIndexVrfPropertiesSpecMap::default();
+        let mut vteps = MultiIndexVtepPropertiesSpecMap::default();
+        let mut associations = MultiIndexInterfaceAssociationSpecMap::default();
+        let default_vrf_config = match config.vrfs.iter_by_tableid().find(|config| config.default) {
+            None => {
+                return Err(RequiredInformationBaseBuilderError::UninitializedField(
+                    "default vrf not yet set",
+                ));
+            }
+            Some(default_vrf) => default_vrf,
+        };
+        for config in config.vrfs.iter_by_tableid() {
+            if config.default {
+                trace!("skipping default config: {config:?}");
+                continue;
+            }
+            let mut vrf = InterfaceSpecBuilder::default();
+            let mut vtep = InterfaceSpecBuilder::default();
+            let mut bridge = InterfaceSpecBuilder::default();
+            vrf.controller(None);
+            vrf.admin_state(AdminState::Up);
+            match config.tableid {
+                None => {
+                    error!("no route_table_id set for config: {config:?}");
+                    panic!("no route_table_id set for config: {config:?}");
+                }
+                Some(route_table_id) => {
+                    debug!("route_table set for config: {config:?}");
+                    vrf.properties(InterfacePropertiesSpec::Vrf(VrfPropertiesSpec {
+                        route_table_id,
+                    }));
+                    match &config.vpc_id {
+                        None => {
+                            error!("no vpc_id set for config: {config:?}");
+                            panic!("no vpc_id set for config: {config:?}");
+                        }
+                        Some(id) => {
+                            vrf.name(id.vrf_name());
+                            bridge.name(id.bridge_name());
+                            vtep.name(id.vtep_name());
+                        }
+                    }
+                    bridge.admin_state(AdminState::Up);
+                    vtep.admin_state(AdminState::Up);
+                    bridge.properties(InterfacePropertiesSpec::Bridge(BridgePropertiesSpec {
+                        vlan_filtering: false,
+                        vlan_protocol: EthType::VLAN,
+                    }));
+                    let if_lo = match default_vrf_config
+                        .interfaces
+                        .values()
+                        .find(|iface| matches!(iface.iftype, InterfaceType::Loopback))
+                    {
+                        None => {
+                            error!("no vtep configured in interface list");
+                            continue;
+                        }
+                        Some(if_vtep) => if_vtep,
+                    };
+                    let vtep_ip: Ipv4Addr = match if_lo.addresses.first() {
+                        None => {
+                            error!("no loopback ip address configured");
+                            continue;
+                        }
+                        Some(addr) => match addr.address {
+                            IpAddr::V4(ip) => ip,
+                            IpAddr::V6(ip) => {
+                                info!("ipv6 address not supported for vtep at the moment: {ip}");
+                                continue;
+                            }
+                        },
+                    };
+                    vtep.properties(InterfacePropertiesSpec::Vtep(VtepPropertiesSpec {
+                        vni: config.vni.expect("vni not set"),
+                        local: UnicastIpv4Addr::new(vtep_ip).unwrap(),
+                        ttl: 64,
+                        port: Vxlan::PORT,
+                    }));
+                }
+            }
+            match (vrf.build(), bridge.build(), vtep.build()) {
+                (Ok(vrf), Ok(bridge), Ok(vtep)) => {
+                    match interfaces.try_insert(vrf.clone()) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("{e}")
+                        }
+                    }
+                    match interfaces.try_insert(bridge.clone()) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("{e}")
+                        }
+                    }
+                    match interfaces.try_insert(vtep.clone()) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("{e}")
+                        }
+                    }
+                    match &vrf.properties {
+                        InterfacePropertiesSpec::Vrf(props) => {
+                            match vrfs.try_insert(props.clone()) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    error!("{e}")
+                                }
+                            }
+                        }
+                        _ => unreachable!(),
+                    };
+                    match &vtep.properties {
+                        InterfacePropertiesSpec::Vtep(props) => {
+                            match vteps.try_insert(props.clone()) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    error!("{e}")
+                                }
+                            }
+                        }
+                        _ => unreachable!(),
+                    };
+
+                    let vrf_in_nothing = InterfaceAssociationSpec {
+                        name: vrf.name.clone(),
+                        controller_name: None,
+                    };
+                    let bridge_in_vrf = InterfaceAssociationSpec {
+                        name: bridge.name.clone(),
+                        controller_name: Some(vrf.name.clone()),
+                    };
+                    let vtep_in_bridge = InterfaceAssociationSpec {
+                        name: vtep.name.clone(),
+                        controller_name: Some(bridge.name.clone()),
+                    };
+                    match associations.try_insert(vrf_in_nothing) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("{e}");
+                        }
+                    }
+                    match associations.try_insert(bridge_in_vrf) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("{e}");
+                        }
+                    }
+                    match associations.try_insert(vtep_in_bridge) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("{e}");
+                        }
+                    }
+                }
+                (Err(e), _, _) => {
+                    warn!("{e}");
+                    continue;
+                }
+                (_, Err(e), _) => {
+                    warn!("{e}");
+                    continue;
+                }
+                (_, _, Err(e)) => {
+                    warn!("{e}");
+                    continue;
+                }
+            }
+        }
+        rib.interfaces(interfaces);
+        rib.vteps(vteps);
+        rib.vrfs(vrfs);
+        rib.associations(associations);
+        rib.build()
     }
 }
 
