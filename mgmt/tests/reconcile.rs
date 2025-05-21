@@ -141,7 +141,6 @@ fn with_caps<F: UnwindSafe + FnOnce() -> T, T>(
 
 #[test]
 #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
-#[wrap(in_scoped_netns("reconcile_fuzz"))]
 #[traced_test]
 fn reconcile_fuzz() {
     let runtime = tokio::runtime::Builder::new_current_thread()
