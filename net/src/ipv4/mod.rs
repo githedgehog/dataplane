@@ -36,6 +36,16 @@ pub use contract::*;
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Ipv4(Ipv4Header);
 
+/// Error describing illegal length in an IPv4 header
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Invalid IPv4 length requested: {requested}, max is {max} when considering all options and headers"
+)]
+pub struct Ipv4LengthError {
+    requested: usize,
+    max: usize,
+}
+
 impl Ipv4 {
     /// The minimum length of an IPv4 header (i.e., a header with no options)
     #[allow(clippy::unwrap_used)] // const-eval and trivially safe
@@ -256,6 +266,42 @@ impl Ipv4 {
     pub unsafe fn set_next_header(&mut self, next_header: NextHeader) -> &mut Self {
         self.0.protocol = next_header.0;
         self
+    }
+
+    /// get the header checksum
+    #[must_use]
+    pub fn checksum(&self) -> u16 {
+        self.0.header_checksum
+    }
+
+    /// set the header checksum
+    pub fn set_checksum(&mut self, checksum: u16) -> &mut Self {
+        self.0.header_checksum = checksum;
+        self
+    }
+
+    /// update the header checksum
+    pub fn update_checksum(&mut self) -> &mut Self {
+        self.set_checksum(self.0.calc_header_checksum());
+        self
+    }
+
+    /// Set the length _of the payload_ of the ipv4 packet.
+    ///
+    /// This method will adjust the total length of the header to account for options and the length
+    /// of this header.
+    ///
+    /// This method _will not_ update the checksum of the header.
+    /// # Errors
+    ///    This method returns [`Ipv4LengthError`] if the value is too big
+    pub fn set_payload_len(&mut self, payload_len: u16) -> Result<(), Ipv4LengthError> {
+        match self.0.set_payload_len(payload_len as usize) {
+            Ok(()) => Ok(()),
+            Err(err) => Err(Ipv4LengthError {
+                requested: payload_len as usize + self.header_len(),
+                max: err.max_allowed,
+            }),
+        }
     }
 }
 
