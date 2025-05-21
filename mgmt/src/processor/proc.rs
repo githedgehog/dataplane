@@ -18,10 +18,12 @@ use tonic::transport::Server;
 
 use crate::grpc::server::create_config_service;
 use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
-use crate::models::external::{ConfigResult, stringify};
+use crate::models::external::{ConfigError, ConfigResult, stringify};
 
+use crate::models::internal::InternalConfig;
+
+use crate::frr::frrmi::FrrMi;
 use crate::processor::gwconfigdb::GwConfigDatabase;
-use crate::{frr::frrmi::FrrMi, models::external::ConfigError};
 use crate::{frr::renderer::builder::Render, models::external::gwconfig::GenId};
 
 use crate::vpc_manager::{RequiredInformationBase, VpcManager};
@@ -196,11 +198,67 @@ impl ConfigProcessor {
     }
 }
 
+/// Apply config using VPC manager
+async fn apply_config_vpc_manager(
+    netlink: Arc<rtnetlink::Handle>,
+    internal: &InternalConfig,
+    genid: GenId,
+) -> ConfigResult {
+    let mut rib: RequiredInformationBase = match internal.try_into() {
+        Ok(rib) => rib,
+        Err(err) => {
+            error!("{err}");
+            return Err(ConfigError::FailureApply);
+        }
+    };
+
+    debug!("Required information base for genid {genid} is:\n{rib:?}");
+
+    let manager = VpcManager::<RequiredInformationBase>::new(netlink);
+    let mut required_passes = 0;
+    while !manager
+        .reconcile(&mut rib, &manager.observe().await.unwrap())
+        .await
+    {
+        required_passes += 1;
+        if required_passes >= 300 {
+            error!("took more than 300 passes to reconcile interfaces!");
+            return Err(ConfigError::FailureApply);
+        }
+    }
+    debug!("VPC-manager successfully applied config for genid {genid}");
+    Ok(())
+}
+
+/// Apply config over frrmi with frr-agent
+async fn apply_config_frr(
+    frrmi: &mut FrrMi,
+    config: &GwConfig,
+    internal: &InternalConfig,
+) -> ConfigResult {
+    let genid = config.genid();
+
+    debug!("Generating FRR config for genid {genid}...");
+
+    let rendered = internal.render(config);
+    debug!("FRR configuration is:\n{}", rendered.to_string());
+
+    frrmi
+        .apply_config(config.genid(), &rendered)
+        .await
+        .map_err(|e| ConfigError::FrrApplyError(e.to_string()))?;
+
+    debug!("FRR config for genid {genid} successfully applied");
+    Ok(())
+}
+
 pub async fn apply_gw_config(
     config: &mut GwConfig,
     frrmi: &mut FrrMi,
     netlink: Arc<rtnetlink::Handle>,
 ) -> ConfigResult {
+    let genid = config.genid();
+
     /* probe the FRR agent. If unreachable, there's no point in trying to apply
     a configuration, either in interface manager or frr */
     frrmi
@@ -208,43 +266,18 @@ pub async fn apply_gw_config(
         .await
         .map_err(|_| ConfigError::FrrAgentUnreachable)?;
 
-    /* apply in interface manager - async (TODO) */
-
-    /* apply in frr: need to render and call frr-reload */
     if let Some(internal) = &config.internal {
-        debug!("internal information base {internal:?}");
-        let mut rib: RequiredInformationBase = match internal.try_into() {
-            Ok(rib) => rib,
-            Err(err) => {
-                error!("{err}");
-                return Err(ConfigError::FailureApply);
-            }
-        };
+        /* apply config with VPC manager */
+        apply_config_vpc_manager(netlink, internal, genid).await?;
 
-        debug!("required information base: {rib:?}");
-
-        let manager = VpcManager::<RequiredInformationBase>::new(netlink);
-        let mut required_passes = 0;
-        while !manager
-            .reconcile(&mut rib, &manager.observe().await.unwrap())
-            .await
-        {
-            required_passes += 1;
-            if required_passes >= 300 {
-                panic!("took more than 300 passes to reconcile interfaces")
-            }
-        }
-        debug!("Generating FRR config for genid {}...", config.genid());
-        let rendered = internal.render(config);
-        debug!("FRR configuration is:\n{}", rendered.to_string());
-
-        frrmi
-            .apply_config(config.genid(), &rendered)
-            .await
-            .map_err(|e| ConfigError::FrrApplyError(e.to_string()))?;
+        /* apply config with frrmi to frr-agent */
+        apply_config_frr(frrmi, config, internal).await?;
+    } else {
+        /* we should have built an internal config */
+        unreachable!()
     }
 
-    info!("Successfully applied config with genid {}", config.genid());
+    info!("Successfully applied config for genid {genid}");
     Ok(())
 }
 
