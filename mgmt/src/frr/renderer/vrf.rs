@@ -38,7 +38,8 @@ impl Render for VrfConfigTable {
     type Output = ConfigBuilder;
     fn render(&self, _ctx: &Self::Context) -> Self::Output {
         let mut cfg = ConfigBuilder::new();
-        self.iter().for_each(|vrf| cfg += vrf.render(&()));
+        self.iter_by_tableid()
+            .for_each(|vrf| cfg += vrf.render(&()));
         cfg
     }
 }
@@ -61,12 +62,14 @@ impl VrfConfig {
 impl VrfConfigTable {
     pub fn render_vrf_bgp(&self) -> ConfigBuilder {
         let mut cfg = ConfigBuilder::new();
-        self.iter().for_each(|vrf| cfg += vrf.render_vrf_bgp());
+        self.iter_by_tableid()
+            .for_each(|vrf| cfg += vrf.render_vrf_bgp());
         cfg
     }
     pub fn render_vrf_ospf(&self) -> ConfigBuilder {
         let mut cfg = ConfigBuilder::new();
-        self.iter().for_each(|vrf| cfg += vrf.render_vrf_ospf());
+        self.iter_by_tableid()
+            .for_each(|vrf| cfg += vrf.render_vrf_ospf());
         cfg
     }
 }

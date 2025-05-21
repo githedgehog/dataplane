@@ -95,17 +95,19 @@ impl VrfConfig {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct VrfConfigTable(Vec<VrfConfig>);
+pub type VrfConfigTable = MultiIndexVrfConfigMap;
 
-impl VrfConfigTable {
+use tracing::{debug, error};
+impl MultiIndexVrfConfigMap {
     pub fn new() -> Self {
-        VrfConfigTable(vec![])
+        MultiIndexVrfConfigMap::default()
     }
     pub fn add_vrf_config(&mut self, vrf_cfg: VrfConfig) {
-        self.0.push(vrf_cfg);
-    }
-    pub fn iter(&self) -> impl Iterator<Item = &VrfConfig> {
-        self.0.iter()
+        // TODO: validation failure should be a hard error here
+        debug!("Adding VRF config: {:#?}", &vrf_cfg);
+        if let Err(e) = self.try_insert(vrf_cfg) {
+            error!("Failed to add vrf cfg: {e}");
+            error!("Set of configs known: {:#?}", self);
+        }
     }
 }
