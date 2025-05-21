@@ -5,6 +5,11 @@ edition = "2024"
 publish = false
 license = "Apache-2.0"
 
+[[test]]
+name = "reconcile"
+path = "tests/reconcile.rs"
+required-features = ["bolero"]
+
 [features]
 default = []
 bolero = ["dep:bolero", "interface-manager/bolero", "id/bolero", "net/arbitrary"]
@@ -43,8 +48,10 @@ id = { workspace = true, features = ["bolero"] }
 interface-manager = { workspace = true, features = ["bolero"] }
 net = { workspace = true, features = ["arbitrary"] }
 routing = { workspace = true, features = ["testing"] }
+test-utils = { workspace = true }
 
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
 tracing-test = { workspace = true, features = [] }
+caps = { workspace = true }
 

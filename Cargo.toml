@@ -13,6 +13,7 @@ members = [ "cli",
 	"pipeline",
 	"rekon",
 	"routing",
+	"test-utils",
 ]
 
 default-members = [
@@ -27,6 +28,7 @@ default-members = [
 	"pipeline",
 	"rekon",
 	"routing",
+	"test-utils",
 ]
 
 resolver = "3"

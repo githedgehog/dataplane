@@ -19,7 +19,6 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 pub mod interface;
-pub mod netns;
 
 use rtnetlink::Handle;
 

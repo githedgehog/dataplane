@@ -1,0 +1,13 @@
+[package]
+name = "dataplane-test-utils"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+caps = { version = "0.5.5", default-features = false, features = [] }
+nix = { workspace = true, default-features = false, features = ["sched", "fs"] }
+rtnetlink = { workspace = true, default-features = false, features = ["tokio_socket"] }
+tokio = { workspace = true, default-features = false, features = ["rt", "net", "time"] }
+tracing = { workspace = true, default-features = false, features = [] }
