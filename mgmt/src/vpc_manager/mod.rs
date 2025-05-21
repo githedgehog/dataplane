@@ -20,7 +20,7 @@ use rtnetlink::Handle;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::sync::Arc;
-use tracing::error;
+use tracing::{debug, error};
 
 #[derive(Clone, Debug)]
 pub struct VpcManager<R> {
@@ -112,7 +112,7 @@ impl Observe for VpcManager<RequiredInformationBase> {
                     }
                 },
                 Err(err) => {
-                    error!("{err:?}");
+                    debug!("{err:?}");
                 }
             }
         }
