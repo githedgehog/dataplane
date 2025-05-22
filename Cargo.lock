@@ -713,6 +713,7 @@ name = "dataplane"
 version = "0.1.0"
 dependencies = [
  "afpacket",
+ "arrayvec",
  "clap",
  "ctrlc",
  "dataplane-dpdk",
