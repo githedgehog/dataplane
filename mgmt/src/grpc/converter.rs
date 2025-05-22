@@ -4,7 +4,7 @@
 use net::vlan::Vid;
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
-use tracing::{Level, warn};
+use tracing::{Level, error, warn};
 
 use crate::models::external::gwconfig::{
     ExternalConfig, ExternalConfigBuilder, GwConfig, Underlay,
@@ -553,9 +553,11 @@ pub fn convert_overlay_from_grpc(overlay: &gateway_config::Overlay) -> Result<Ov
         // Convert VPC
         let vpc = convert_vpc_from_grpc(vpc_grpc)?;
 
-        vpc_table
-            .add(vpc)
-            .map_err(|e| format!("Failed to add VPC {}: {e}", vpc_grpc.name))?;
+        vpc_table.add(vpc).map_err(|e| {
+            let msg = format!("Failed to add VPC {}: {e}", vpc_grpc.name);
+            error!("{msg}");
+            msg
+        })?;
     }
 
     // Create peering table
