@@ -57,11 +57,11 @@ impl GwConfigDatabase {
         }
     }
     pub fn remove(&mut self, genid: GenId) -> ConfigResult {
-        debug!("Removing config '{genid}' from config db...");
         if genid == ExternalConfig::BLANK_GENID {
-            error!("Can't remove config {genid}: forbidden");
-            return Err(ConfigError::Forbidden("Cannot delete initial config"));
+            debug!("Will not remove config {genid} as it is protected");
+            return Ok(());
         }
+        debug!("Removing config '{genid}' from config db...");
         if let Some(config) = &self.configs.get(&genid) {
             if config.meta.is_applied {
                 error!("Can't remove config {}: in use", genid);
