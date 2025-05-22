@@ -67,6 +67,10 @@ impl Overlay {
         all of the peerings and added them to the corresponding VPCs */
         self.peering_table.clear();
 
+        /* empty collections used for validation */
+        self.vpc_table.clear_vnis();
+        self.vpc_table.clear_ids();
+
         Ok(())
     }
 }

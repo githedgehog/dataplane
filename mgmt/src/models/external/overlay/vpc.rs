@@ -162,4 +162,12 @@ impl VpcTable {
         self.values_mut()
             .for_each(|vpc| vpc.collect_peerings(peering_table, idmap));
     }
+    /// Clear set of vnis
+    pub fn clear_vnis(&mut self) {
+        self.vnis.clear();
+    }
+    /// Clear set of ids
+    pub fn clear_ids(&mut self) {
+        self.ids.clear();
+    }
 }
