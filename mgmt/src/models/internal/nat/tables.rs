@@ -10,7 +10,7 @@ use std::net::IpAddr;
 /// An object containing the rules for the NAT pipeline stage, not in terms of states for the
 /// different connections established, but instead holding the base rules for stateful or static
 /// NAT.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NatTables {
     pub tables: HashMap<u32, PerVniTable>,
 }
@@ -38,7 +38,7 @@ impl Default for NatTables {
 
 /// A table containing all rules for both source and destination static NAT, for packets with a
 /// given source VNI.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PerVniTable {
     pub(crate) dst_nat: NatPrefixRuleTable,
     pub(crate) src_nat_peers: NatPeerRuleTable,
@@ -103,7 +103,7 @@ pub struct NatPrefixRuleTable {
 
 /// From a current address prefix, find the relevant [`NatPrefixRuleTable`] for the target prefix
 /// lookup.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NatPeerRuleTable {
     pub rules: PrefixTrie<usize>,
 }
