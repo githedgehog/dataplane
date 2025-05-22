@@ -19,6 +19,7 @@ use crate::models::external::gwconfig::GenId;
 
 use crate::models::internal::device::DeviceConfig;
 use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
+use crate::models::internal::nat::tables::NatTables;
 use crate::models::internal::routing::evpn::VtepConfig;
 use crate::models::internal::routing::frr::Frr;
 use crate::models::internal::routing::prefixlist::{PrefixList, PrefixListTable};
@@ -36,6 +37,7 @@ pub struct InternalConfig {
     pub vrfs: VrfConfigTable,
     pub plist_table: PrefixListTable,
     pub rmap_table: RouteMapTable,
+    pub nat_table: Option<NatTables>,
 }
 
 impl InternalConfig {
@@ -52,6 +54,7 @@ impl InternalConfig {
             vrfs: VrfConfigTable::new(),
             plist_table: PrefixListTable::new(),
             rmap_table: RouteMapTable::new(),
+            nat_table: None,
         }
     }
     pub fn set_vtep(&mut self, vtep: VtepConfig) {
@@ -68,5 +71,8 @@ impl InternalConfig {
     }
     pub fn add_route_map(&mut self, rmap: RouteMap) {
         self.rmap_table.add_route_map(rmap);
+    }
+    pub fn add_nat_tables(&mut self, nat_tables: NatTables) {
+        self.nat_table = Some(nat_tables);
     }
 }

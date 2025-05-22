@@ -16,6 +16,8 @@ use std::net::{IpAddr, Ipv4Addr};
 use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
 use crate::models::internal::InternalConfig;
 use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceType};
+use crate::models::internal::nat::table_extend::add_peering;
+use crate::models::internal::nat::tables::{NatTables, PerVniTable};
 use crate::models::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
 use crate::models::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
 use crate::models::internal::routing::evpn::VtepConfig;
@@ -256,6 +258,20 @@ fn build_vtep_config(external: &ExternalConfig, internal: &mut InternalConfig) -
     Ok(())
 }
 
+fn build_nat_internal_config(overlay: &Overlay, internal: &mut InternalConfig) -> ConfigResult {
+    let mut nat_tables = NatTables::new();
+    for vpc in overlay.vpc_table.values() {
+        let mut table = PerVniTable::new();
+        for peering in &vpc.peerings {
+            add_peering(&mut table, peering)
+                .map_err(|e| ConfigError::FailureApply(e.to_string()))?;
+        }
+        nat_tables.add_table(vpc.vni, table);
+    }
+    internal.add_nat_tables(nat_tables);
+    Ok(())
+}
+
 fn build_internal_overlay_config(
     overlay: &Overlay,
     asn: u32,
@@ -266,6 +282,7 @@ fn build_internal_overlay_config(
     for vpc in overlay.vpc_table.values() {
         build_vpc_internal_config(vpc, asn, router_id, internal)?;
     }
+    build_nat_internal_config(overlay, internal)?;
     debug!("Internal config is:\n{internal:#?}");
     Ok(())
 }
