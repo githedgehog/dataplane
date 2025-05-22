@@ -277,16 +277,16 @@ pub async fn apply_gw_config(
         .await
         .map_err(|_| ConfigError::FrrAgentUnreachable)?;
 
-    if let Some(internal) = &config.internal {
-        /* apply config with VPC manager */
-        apply_config_vpc_manager(netlink, internal, genid).await?;
+    let Some(internal) = &config.internal else {
+        error!("Config for genid {genid} does not have internal config");
+        return Err(ConfigError::InternalFailure("No internal config was built"));
+    };
 
-        /* apply config with frrmi to frr-agent */
-        apply_config_frr(frrmi, config, internal).await?;
-    } else {
-        /* we should have built an internal config */
-        unreachable!()
-    }
+    /* apply config with VPC manager */
+    apply_config_vpc_manager(netlink, internal, genid).await?;
+
+    /* apply config with frrmi to frr-agent */
+    apply_config_frr(frrmi, config, internal).await?;
 
     info!("Successfully applied config for genid {genid}");
     Ok(())
