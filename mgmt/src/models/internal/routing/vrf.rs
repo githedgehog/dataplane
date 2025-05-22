@@ -6,8 +6,8 @@
 use super::bgp::BgpConfig;
 use super::ospf::Ospf;
 use super::statics::StaticRoute;
-use crate::models::external::overlay::vpc::VpcId;
-use crate::models::internal::{InterfaceConfig, InterfaceConfigTable};
+use crate::models::external::{ConfigError, overlay::vpc::VpcId};
+use crate::models::internal::{ConfigResult, InterfaceConfig, InterfaceConfigTable};
 use multi_index_map::MultiIndexMap;
 use net::route::RouteTableId;
 use net::vxlan::Vni;
@@ -60,7 +60,6 @@ impl VrfConfig {
             ..Default::default()
         }
     }
-
     pub fn set_vpc_id(mut self, vpc_id: VpcId) -> Self {
         if self.default {
             panic!("Can't set vpc_id for default vrf");
@@ -68,7 +67,6 @@ impl VrfConfig {
         self.vpc_id = Some(vpc_id);
         self
     }
-
     pub fn set_table_id(mut self, tableid: RouteTableId) -> Self {
         if self.default {
             panic!("Can't set table id for default vrf");
@@ -98,16 +96,24 @@ impl VrfConfig {
 pub type VrfConfigTable = MultiIndexVrfConfigMap;
 
 use tracing::{debug, error};
-impl MultiIndexVrfConfigMap {
+impl VrfConfigTable {
     pub fn new() -> Self {
-        MultiIndexVrfConfigMap::default()
+        VrfConfigTable::default()
     }
-    pub fn add_vrf_config(&mut self, vrf_cfg: VrfConfig) {
-        // TODO: validation failure should be a hard error here
-        debug!("Adding VRF config: {:#?}", &vrf_cfg);
+    pub fn add_vrf_config(&mut self, vrf_cfg: VrfConfig) -> ConfigResult {
+        let name = vrf_cfg.name.clone();
+        debug!(
+            "Adding VRF config for vrf: {} vpcid: {:?} tableid: {:?} vni: {:?}",
+            vrf_cfg.name, vrf_cfg.vpc_id, vrf_cfg.tableid, vrf_cfg.vni,
+        );
         if let Err(e) = self.try_insert(vrf_cfg) {
-            error!("Failed to add vrf cfg: {e}");
-            error!("Set of configs known: {:#?}", self);
+            let msg = format!("Failed to add vrf {name}: {e}");
+            error!("{msg}");
+            Err(ConfigError::InternalFailure(
+                "Duplicate VRF fields when building internal config. This is a bug.",
+            ))
+        } else {
+            Ok(())
         }
     }
 }

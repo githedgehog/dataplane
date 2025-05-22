@@ -8,9 +8,9 @@ use net::route::RouteTableId;
 use routing::prefix::Prefix;
 use std::net::Ipv4Addr;
 
-use crate::models::external::overlay::vpc::Vpc;
 use crate::models::external::overlay::vpcpeering::VpcManifest;
 use crate::models::external::{ConfigError, overlay::Overlay};
+use crate::models::external::{ConfigResult, overlay::vpc::Vpc};
 
 use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
 
@@ -172,7 +172,7 @@ fn build_vpc_internal_config(
     asn: u32,
     router_id: Option<Ipv4Addr>,
     internal: &mut InternalConfig,
-) {
+) -> ConfigResult {
     debug!("Building internal config for vpc '{}'", vpc.name);
 
     /* build VRF config */
@@ -195,7 +195,9 @@ fn build_vpc_internal_config(
         .for_each(|static_route| vrf_cfg.add_static_route(static_route));
 
     /* add vrf config */
-    internal.add_vrf_config(vrf_cfg);
+    internal.add_vrf_config(vrf_cfg)?;
+
+    Ok(())
 }
 
 fn build_internal_overlay_config(
@@ -203,12 +205,13 @@ fn build_internal_overlay_config(
     asn: u32,
     router_id: Option<Ipv4Addr>,
     internal: &mut InternalConfig,
-) {
+) -> ConfigResult {
     debug!("Building overlay config...");
     for vpc in overlay.vpc_table.values() {
-        build_vpc_internal_config(vpc, asn, router_id, internal);
+        build_vpc_internal_config(vpc, asn, router_id, internal)?;
     }
     debug!("Internal config is:\n{internal:#?}");
+    Ok(())
 }
 
 /// Top-level function to build internal config from external config
@@ -218,12 +221,12 @@ pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, Config
 
     /* Build internal config object: device and underlay configs are copied as received */
     let mut internal = InternalConfig::new(external.device.clone());
-    internal.add_vrf_config(external.underlay.vrf.clone());
+    internal.add_vrf_config(external.underlay.vrf.clone())?;
 
     if let Some(bgp) = &external.underlay.vrf.bgp {
         let asn = bgp.asn;
         let router_id = bgp.router_id;
-        build_internal_overlay_config(&external.overlay, asn, router_id, &mut internal);
+        build_internal_overlay_config(&external.overlay, asn, router_id, &mut internal)?;
     } else if config.genid() != ExternalConfig::BLANK_GENID {
         warn!("Config has no BGP configuration");
     }

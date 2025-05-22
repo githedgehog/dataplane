@@ -24,6 +24,8 @@ use crate::models::internal::routing::prefixlist::{PrefixList, PrefixListTable};
 use crate::models::internal::routing::routemap::{RouteMap, RouteMapTable};
 use crate::models::internal::routing::vrf::{VrfConfig, VrfConfigTable};
 
+use super::external::ConfigResult;
+
 #[derive(Clone, Debug)]
 /* Main internal GW configuration */
 pub struct InternalConfig {
@@ -54,8 +56,8 @@ impl InternalConfig {
     pub fn set_vtep(&mut self, vtep: VtepConfig) {
         self.vtep = Some(vtep);
     }
-    pub fn add_vrf_config(&mut self, vrf_cfg: VrfConfig) {
-        self.vrfs.add_vrf_config(vrf_cfg);
+    pub fn add_vrf_config(&mut self, vrf_cfg: VrfConfig) -> ConfigResult {
+        self.vrfs.add_vrf_config(vrf_cfg)
     }
     pub fn add_prefix_list(&mut self, plist: PrefixList) {
         self.plist_table.add_prefix_list(plist);
