@@ -7,6 +7,7 @@ license = "Apache-2.0"
 
 [dependencies]
 afpacket = { workspace = true }
+arrayvec = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "usage"] }
 ctrlc = { workspace = true, features = ["termination"] }
 dpdk = { workspace = true }
