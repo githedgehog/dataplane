@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::headers::{Headers, TryIp, TryUdp, TryVxlan};
+use crate::headers::{Headers, TryIp, TryVxlan};
 use tracing::error;
 
 /// Configuration for [`VxlanEncap`] operation
@@ -39,11 +39,10 @@ impl VxlanEncap {
     ///
     /// Returns a [`VxlanEncapError`] if the supplied [`Headers`] are not a legal VXLAN header.
     pub fn new(headers: Headers) -> Result<VxlanEncap, VxlanEncapError> {
-        match (headers.try_ip(), headers.try_udp(), headers.try_vxlan()) {
-            (None, _, _) => Err(VxlanEncapError::Ip),
-            (_, None, _) => Err(VxlanEncapError::Udp),
-            (_, _, None) => Err(VxlanEncapError::Vxlan),
-            (Some(_), Some(_), Some(_)) => Ok(Self { headers }),
+        match (headers.try_ip(), headers.try_vxlan()) {
+            (None, _) => Err(VxlanEncapError::Ip),
+            (_, None) => Err(VxlanEncapError::Vxlan),
+            (Some(_), Some(_)) => Ok(Self { headers }),
         }
     }
 
