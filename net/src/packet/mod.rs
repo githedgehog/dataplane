@@ -14,8 +14,8 @@ use crate::buffer::{Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart}
 use crate::eth::Eth;
 use crate::eth::EthError;
 use crate::headers::{
-    AbstractHeaders, AbstractHeadersMut, Headers, Net, TryHeaders, TryHeadersMut, TryIpMut,
-    TryUdpMut, TryVxlan,
+    AbstractHeaders, AbstractHeadersMut, Headers, Net, Transport, TryHeaders, TryHeadersMut,
+    TryIpMut, TryVxlan,
 };
 use crate::parse::{DeParse, Parse, ParseError};
 use crate::udp::Udp;
@@ -180,6 +180,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// This is extremely unlikely in that the maximum mbuf length is far less than that, and we
     /// don't currently support multi-segment packets.
     pub fn vxlan_encap(&mut self, params: &VxlanEncap) -> Result<(), <Buf as Prepend>::Error> {
+        //compute room required
         let needed = self.headers.size().get();
         let buf = self.payload.prepend(needed)?;
         self.headers
@@ -192,17 +193,26 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             u16::try_from(len).is_ok(),
             "encap would result in frame larger than 2^16 bytes"
         );
+
+        // compute UDP entropy source port for UDP header
+        let udp_src_port = self
+            .packet_hash_vxlan()
+            .try_into()
+            .unwrap_or_else(|_| unreachable!());
+
+        // build UDP header for Vxlan, setting ports, length and checksum.
+        let mut udp = Udp::new(udp_src_port, Vxlan::PORT);
+        udp.set_checksum(0); /* optional in ipv4 (must be zero if unused) */
+
         #[allow(clippy::cast_possible_truncation)] // checked
         let udp_len = NonZero::new(len as u16).unwrap_or_else(|| unreachable!());
-        let mut headers = params.headers().clone();
-        let Some(udp) = headers.try_udp_mut() else {
-            unreachable!("programmer error: no udp header in vxlan encap operation?");
-        };
         #[allow(unsafe_code)] // sound usage due to length check
         unsafe {
-            udp.set_length(udp_len)
-        };
-        udp.set_checksum(0);
+            udp.set_length(udp_len);
+        }
+
+        let mut headers = params.headers().clone();
+        headers.transport = Some(Transport::Udp(udp));
         match headers.try_ip_mut() {
             None => unreachable!(),
             Some(Net::Ipv6(ipv6)) => {
