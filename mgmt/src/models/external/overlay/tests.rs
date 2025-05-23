@@ -23,10 +23,11 @@ pub mod test {
         let expose = VpcExpose::empty()
             .ip(Prefix::from(("10.0.0.0", 25)))
             .ip(Prefix::from(("10.0.2.128", 25)))
-            .not(Prefix::from(("10.0.1.13", 32)))
+            .not(Prefix::from(("10.0.0.13", 32)))
             .not(Prefix::from(("10.0.2.130", 32)))
             .as_range(Prefix::from(("100.64.1.0", 24)))
-            .not_as(Prefix::from(("100.64.1.13", 32)));
+            .not_as(Prefix::from(("100.64.1.13", 32)))
+            .not_as(Prefix::from(("100.64.1.14", 32)));
         m1.add_expose(expose).expect("Should succeed");
         m1
     }
@@ -89,6 +90,156 @@ pub mod test {
     }
 
     #[test]
+    fn test_expose_validate() {
+        let expose = VpcExpose::empty();
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty().ip("10.0.0.0/16".into());
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty().not("10.0.1.0/24".into());
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty().not_as("2.0.1.0/24".into());
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .as_range("2.0.0.0/16".into());
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .not("10.0.0.0/24".into())
+            .as_range("2.0.0.0/16".into())
+            .not_as("2.0.0.0/24".into());
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty()
+            .ip("1::/64".into())
+            .as_range("2::/64".into());
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty()
+            .not("10.0.0.0/16".into())
+            .not_as("2.0.0.0/16".into());
+        assert_eq!(expose.validate(), Ok(()));
+
+        // Incorrect: mixed IP versions
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .ip("1::/64".into())
+            .as_range("2.0.0.0/16".into())
+            .as_range("2::/64".into());
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::InconsistentIpVersion(expose.clone()))
+        );
+
+        // Incorrect: mixed IP versions
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .as_range("1::/112".into());
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::InconsistentIpVersion(expose.clone()))
+        );
+
+        // Incorrect: mixed IP versions
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .not("1::/120".into())
+            .as_range("2.0.0.0/16".into())
+            .not_as("2::/120".into());
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::InconsistentIpVersion(expose.clone()))
+        );
+
+        // Incorrect: prefix overlapping
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .ip("10.0.0.0/17".into())
+            .as_range("2.0.0.0/16".into())
+            .as_range("3.0.0.0/17".into());
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::OverlappingPrefixes(
+                "10.0.0.0/16".into(),
+                "10.0.0.0/17".into(),
+            ))
+        );
+
+        // Incorrect: out-of-range exclusion prefix
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .not("8.0.0.0/24".into())
+            .as_range("2.0.0.0/16".into())
+            .not_as("2.0.1.0/24".into());
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::OutOfRangeExclusionPrefix("8.0.0.0/24".into()))
+        );
+
+        // Incorrect: all prefixes excluded
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .not("10.0.0.0/17".into())
+            .not("10.0.128.0/17".into())
+            .as_range("2.0.0.0/16".into())
+            .not_as("2.0.0.0/17".into())
+            .not_as("2.0.128.0/17".into());
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::ExcludedAllPrefixes(expose.clone()))
+        );
+
+        // Incorrect: mismatched prefix lists sizes
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .not("10.0.1.0/24".into())
+            .as_range("2.0.0.0/24".into());
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::MismatchedPrefixSizes(65536 - 256, 256))
+        );
+    }
+
+    #[test]
+    fn test_manifest_expose_overlap() {
+        let expose1 = VpcExpose::empty()
+            .ip("1.0.0.0/16".into()) // expose3 overlaps with this
+            .ip("2.0.0.0/16".into())
+            .ip("3.0.0.0/16".into())
+            .as_range("11.0.0.0/16".into())
+            .as_range("12.0.0.0/16".into())
+            .as_range("13.0.0.0/16".into());
+        let expose2 = VpcExpose::empty()
+            .ip("4.0.0.0/16".into())
+            .as_range("14.0.0.0/16".into());
+        let expose3 = VpcExpose::empty()
+            .ip("5.0.0.0/16".into())
+            .ip("1.0.1.0/24".into()) // overlaps with expose1.ips
+            .as_range("15.0.0.0/16".into())
+            .as_range("16.0.0.0/24".into());
+
+        let mut manifest = VpcManifest::new("VPC-1");
+        manifest.add_expose(expose1).expect("Should succeed");
+        manifest.add_expose(expose2).expect("Should succeed");
+        assert_eq!(manifest.validate(), Ok(()));
+
+        // Overlap between a manifest's expoeses prefixes is not allowed
+        manifest.add_expose(expose3).expect("Should succeed");
+        assert_eq!(
+            manifest.validate(),
+            Err(ConfigError::OverlappingPrefixes(
+                "1.0.0.0/16".into(),
+                "1.0.1.0/24".into()
+            ))
+        );
+    }
+
+    #[test]
     fn test_overlay_missing_vpc() {
         /* build VPCs */
         let vpc1 = Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed");
@@ -109,6 +260,41 @@ pub mod test {
         assert_eq!(
             overlay.validate(),
             Err(ConfigError::NoSuchVpc("VPC-2".to_owned()))
+        );
+    }
+
+    #[test]
+    fn test_overlay_duplicate_peering() {
+        /* build VPCs */
+        let vpc1 = Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed");
+        let vpc2 = Vpc::new("VPC-2", "BBBBB", 4000).expect("Should succeed");
+
+        /* build VPC table */
+        let mut vpc_table = VpcTable::new();
+        vpc_table.add(vpc1).expect("Should succeed");
+        vpc_table.add(vpc2).expect("Should succeed");
+
+        /* build peerings */
+        let peering1 = build_vpc_peering();
+        let mut peering2 = build_vpc_peering();
+        peering2.name = "Peering-2".to_owned();
+
+        let name1 = peering1.name.clone();
+        let name2 = peering2.name.clone();
+
+        assert_eq!(peering1.validate(), Ok(()));
+        assert_eq!(peering2.validate(), Ok(()));
+
+        /* build peering table */
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table.add(peering1).expect("Should succeed");
+        peering_table.add(peering2).expect("Should succeed");
+
+        /* build overlay object and validate it */
+        let mut overlay = Overlay::new(vpc_table, peering_table);
+        assert_eq!(
+            overlay.validate(),
+            Err(ConfigError::DuplicateVpcPeerings(name2, name1))
         );
     }
 
@@ -141,23 +327,39 @@ pub mod test {
     fn test_peering_iter() {
         let mut peering_table = VpcPeeringTable::new();
 
-        let m1 = VpcManifest::new("VPC-1");
-        let m2 = VpcManifest::new("VPC-2");
+        let mut m1 = VpcManifest::new("VPC-1");
+        m1.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
+        let mut m2 = VpcManifest::new("VPC-2");
+        m2.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
         let peering = VpcPeering::new("Peering-1", m1, m2);
         peering_table.add(peering).unwrap();
 
-        let m1 = VpcManifest::new("VPC-1");
-        let m2 = VpcManifest::new("VPC-3");
+        let mut m1 = VpcManifest::new("VPC-1");
+        m1.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
+        let mut m2 = VpcManifest::new("VPC-3");
+        m2.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
         let peering = VpcPeering::new("Peering-2", m1, m2);
         peering_table.add(peering).unwrap();
 
-        let m1 = VpcManifest::new("VPC-2");
-        let m2 = VpcManifest::new("VPC-4");
+        let mut m1 = VpcManifest::new("VPC-2");
+        m1.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
+        let mut m2 = VpcManifest::new("VPC-4");
+        m2.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
         let peering = VpcPeering::new("Peering-3", m1, m2);
         peering_table.add(peering).unwrap();
 
-        let m1 = VpcManifest::new("VPC-1");
-        let m2 = VpcManifest::new("VPC-4");
+        let mut m1 = VpcManifest::new("VPC-1");
+        m1.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
+        let mut m2 = VpcManifest::new("VPC-4");
+        m2.add_expose(VpcExpose::empty())
+            .expect("Failed to add expose");
         let peering = VpcPeering::new("Peering-4", m1, m2);
         peering_table.add(peering).unwrap();
 
@@ -187,7 +389,7 @@ pub mod test {
                 .not(Prefix::from(("192.168.111.2", 32)))
                 .not(Prefix::from(("192.168.111.254", 32)))
                 .as_range(Prefix::from(("100.64.200.0", 24)))
-                .not_as(Prefix::from(("100.64.200.13", 32)));
+                .not_as(Prefix::from(("100.64.200.12", 31)));
             m1.add_expose(expose).expect("Should succeed");
             m1
         }
@@ -249,7 +451,7 @@ pub mod test {
         let _ = vpc_table.add(Vpc::new("VPC-3", "CCCCC", 2000).expect("Should succeed"));
         let _ = vpc_table.add(Vpc::new("VPC-4", "DDDDD", 6000).expect("Should succeed"));
 
-        /* build peering table with 3 peerings */
+        /* build peering table with 4 peerings */
         let mut peering_table = VpcPeeringTable::new();
         peering_table
             .add(VpcPeering::new(
@@ -282,6 +484,29 @@ pub mod test {
                 man_vpc3(),
             ))
             .expect("Should succeed");
+
+        assert_eq!(peering_table.len(), 4);
+
+        /* peering with empty name cannot be added to the table */
+        let peering_empty_name = VpcPeering::new("", man_vpc1_with_vpc2(), man_vpc2());
+        assert_eq!(
+            peering_table.add(peering_empty_name),
+            Err(ConfigError::MissingIdentifier("Peering name"))
+        );
+        assert_eq!(peering_table.len(), 4);
+
+        /* peering with duplicate name cannot be added to the table */
+        let peering_duplicate_name =
+            VpcPeering::new("VPC-1--VPC-2", man_vpc1_with_vpc2(), man_vpc2());
+        assert_eq!(
+            peering_table.add(peering_duplicate_name),
+            Err(ConfigError::DuplicateVpcPeeringId(
+                "VPC-1--VPC-2".to_string()
+            ))
+        );
+
+        /* make sure erroneous entries were not inserted */
+        assert_eq!(peering_table.len(), 4);
 
         /* display peering table */
         println!("{peering_table}");
