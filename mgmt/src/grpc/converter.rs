@@ -408,7 +408,7 @@ pub fn convert_bgp_neighbor(neighbor: &gateway_config::BgpNeighbor) -> Result<Bg
     // Create the neighbor config
     let neigh = BgpNeighbor::new_host(neighbor_addr)
         .set_remote_as(remote_as)
-        .set_update_source_address(neighbor_addr)
+        .set_update_source_interface("lo")
         .set_capabilities(BgpNeighCapabilities::default())
         .set_send_community(NeighSendCommunities::Both)
         .ipv4_unicast_activate(ipv4_unicast)
