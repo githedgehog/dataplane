@@ -17,7 +17,6 @@ bolero = ["dep:bolero", "interface-manager/bolero", "id/bolero", "net/arbitrary"
 [dependencies]
 # internal
 gateway_config = { workspace = true }
-hyper = { workspace = true, features = ["server", "http1", "tcp", "stream"] }
 id = { workspace = true }
 interface-manager = { workspace = true }
 net = { workspace = true }

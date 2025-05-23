@@ -23,8 +23,6 @@ use tokio_stream::Stream;
 
 use tonic::transport::Server;
 
-use hyper::server::accept::Accept;
-
 use crate::grpc::server::create_config_service;
 use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
 use crate::models::external::{ConfigError, ConfigResult, stringify};
@@ -310,21 +308,17 @@ async fn start_grpc_server_tcp(
         })
 }
 
-/// UnixListener wrapper type to implement Accept and hyper Stream traits
+/// UnixListener wrapper type to implement tokyo Stream trait
 /// This is only used/needed when we bind gRPC to a Unix socket
 struct UnixAcceptor {
     listener: UnixListener,
 }
 
-// Implementation of the Accept trait for UnixListener
-impl Accept for UnixAcceptor {
-    type Conn = tokio::net::UnixStream;
-    type Error = io::Error;
+// Implementation of the Stream trait for UnixAcceptor
+impl Stream for UnixAcceptor {
+    type Item = Result<tokio::net::UnixStream, io::Error>;
 
-    fn poll_accept(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Self::Conn, Self::Error>>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = unsafe { self.get_unchecked_mut() };
         match this.listener.poll_accept(cx) {
             Poll::Ready(Ok((stream, addr))) => {
@@ -337,15 +331,6 @@ impl Accept for UnixAcceptor {
             }
             Poll::Pending => Poll::Pending,
         }
-    }
-}
-
-// Implementation of hyper Stream trait for UnixAcceptor
-impl Stream for UnixAcceptor {
-    type Item = Result<tokio::net::UnixStream, io::Error>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.poll_accept(cx)
     }
 }
 
