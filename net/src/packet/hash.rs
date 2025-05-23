@@ -3,9 +3,9 @@
 
 //! Module to compute packet hashes
 
-use crate::buffer::PacketBufferMut;
 use crate::headers::{Net, Transport, TryHeaders, TryIp, TryTransport};
 use crate::packet::Packet;
+use crate::{buffer::PacketBufferMut, headers::TryEth};
 use ahash::AHasher;
 use std::hash::{Hash, Hasher};
 
@@ -44,12 +44,38 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         }
     }
 
+    /// Computes a hash over a `Packet` including Ethernet header, vlans if present and IP invariant fields
+    pub fn hash_l2_frame<H: Hasher>(&self, state: &mut H) {
+        // ethernet
+        if let Some(eth) = self.headers().try_eth() {
+            eth.source().hash(state);
+            eth.destination().hash(state);
+            eth.ether_type().hash(state);
+        }
+        // vlan tags - we don't include PCP/DEI
+        for tag in &self.headers.vlan {
+            tag.vid().hash(state);
+        }
+        // Ip and transport
+        self.hash_ip(state);
+    }
+
     #[allow(unused)]
     /// Uses the ip hash `Packet` method to provide a value in the range [first, last].
     pub fn packet_hash_ecmp(&self, first: u8, last: u8) -> u64 {
         let mut hasher = AHasher::default();
         self.hash_ip(&mut hasher);
         hasher.finish() % u64::from(last - first + 1) + u64::from(first)
+    }
+
+    #[allow(unused)]
+    /// Uses the `hash_l2_frame` `Packet` method to provide a hash in the range [49152,65535] suitable
+    /// as UDP source port for vxlan-encapsulated packets, as recommended by RFC7348.
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn packet_hash_vxlan(&self) -> u16 {
+        let mut hasher = AHasher::default();
+        self.hash_l2_frame(&mut hasher);
+        (hasher.finish() % (65535u64 - 49152 + 1) + 49152u64) as u16
     }
 }
 
