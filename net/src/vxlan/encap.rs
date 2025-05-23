@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::headers::{Headers, TryIp, TryVxlan};
-use tracing::error;
+use crate::headers::{Headers, TryIp, TryTransportMut, TryVxlan};
+use tracing::{error, warn};
 
 /// Configuration for [`VxlanEncap`] operation
 ///
@@ -38,7 +38,11 @@ impl VxlanEncap {
     /// # Errors
     ///
     /// Returns a [`VxlanEncapError`] if the supplied [`Headers`] are not a legal VXLAN header.
-    pub fn new(headers: Headers) -> Result<VxlanEncap, VxlanEncapError> {
+    pub fn new(mut headers: Headers) -> Result<VxlanEncap, VxlanEncapError> {
+        if headers.try_transport_mut().is_some() {
+            headers.transport.take();
+            warn!("BUG: should not provide transport header; it will be ignored");
+        }
         match (headers.try_ip(), headers.try_vxlan()) {
             (None, _) => Err(VxlanEncapError::Ip),
             (_, None) => Err(VxlanEncapError::Vxlan),
