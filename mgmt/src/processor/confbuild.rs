@@ -4,19 +4,21 @@
 #[allow(unused)]
 use tracing::{debug, error, warn};
 
-use net::route::RouteTableId;
-use routing::prefix::Prefix;
-use std::net::Ipv4Addr;
-
 use crate::models::external::overlay::vpcpeering::VpcManifest;
 use crate::models::external::{ConfigError, overlay::Overlay};
 use crate::models::external::{ConfigResult, overlay::vpc::Vpc};
+use net::eth::mac::{Mac, SourceMac};
+use net::ipv4::UnicastIpv4Addr;
+use net::route::RouteTableId;
+use routing::prefix::Prefix;
+use std::net::{IpAddr, Ipv4Addr};
 
 use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
-
 use crate::models::internal::InternalConfig;
+use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceType};
 use crate::models::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
 use crate::models::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
+use crate::models::internal::routing::evpn::VtepConfig;
 use crate::models::internal::routing::prefixlist::{
     PrefixList, PrefixListAction, PrefixListEntry, PrefixListPrefix,
 };
@@ -200,6 +202,59 @@ fn build_vpc_internal_config(
     Ok(())
 }
 
+/// Get the config for the (a) loopback interface
+fn get_loopback_interface_config(
+    external: &ExternalConfig,
+) -> Result<&InterfaceConfig, ConfigError> {
+    external
+        .underlay
+        .vrf
+        .interfaces
+        .values()
+        .find(|config| matches!(config.iftype, InterfaceType::Loopback))
+        .ok_or(ConfigError::MissingParameter(
+            "loopback interface configuration",
+        ))
+}
+
+/// Get address (one of them) from loopback interface
+fn get_loopback_address(external: &ExternalConfig) -> Result<UnicastIpv4Addr, ConfigError> {
+    let lo = get_loopback_interface_config(external)?;
+    lo.addresses
+        .iter()
+        .find_map(|assignment| match assignment.address {
+            IpAddr::V4(ip) => {
+                if assignment.mask_len != 32
+                    || ip.is_loopback()
+                    || ip.is_broadcast()
+                    || ip.is_unspecified()
+                {
+                    return None;
+                }
+                UnicastIpv4Addr::new(ip).ok()
+            }
+            IpAddr::V6(_) => None,
+        })
+        .ok_or(ConfigError::MissingParameter("loopback interface address"))
+}
+
+/// Build the Vtep config
+fn build_vtep_config(external: &ExternalConfig, internal: &mut InternalConfig) -> ConfigResult {
+    // TODO: The vtep configuration should come from the external config, but I am deriving it from
+    // assumptions about our config until the API can pass it in.
+    let vtep_ip = get_loopback_address(external)?;
+
+    // TODO: This should be configurable, but I'm making an arbitrary choice for the stub.
+    let vtep_mac = SourceMac::new(Mac([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x01]))
+        .unwrap_or_else(|e| unreachable!("{}", e));
+
+    internal.vtep = Some(VtepConfig {
+        address: vtep_ip.into(),
+        mac: vtep_mac,
+    });
+    Ok(())
+}
+
 fn build_internal_overlay_config(
     overlay: &Overlay,
     asn: u32,
@@ -216,24 +271,26 @@ fn build_internal_overlay_config(
 
 /// Top-level function to build internal config from external config
 pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, ConfigError> {
-    debug!("Building internal config for gen {}", config.genid());
+    let genid = config.genid();
+    debug!("Building internal config for gen {genid}");
     let external = &config.external;
 
     /* Build internal config object: device and underlay configs are copied as received */
     let mut internal = InternalConfig::new(external.device.clone());
     internal.add_vrf_config(external.underlay.vrf.clone())?;
 
+    /* Build overlay config */
     if let Some(bgp) = &external.underlay.vrf.bgp {
         let asn = bgp.asn;
         let router_id = bgp.router_id;
         build_internal_overlay_config(&external.overlay, asn, router_id, &mut internal)?;
+        if internal.vrfs.vpc_vrfs().count() > 0 {
+            build_vtep_config(external, &mut internal)?;
+        }
     } else if config.genid() != ExternalConfig::BLANK_GENID {
         warn!("Config has no BGP configuration");
     }
 
-    debug!(
-        "Successfully built internal config for genid {}",
-        config.genid()
-    );
+    debug!("Successfully built internal config for genid {genid}");
     Ok(internal)
 }

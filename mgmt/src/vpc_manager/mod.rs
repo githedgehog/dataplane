@@ -2,7 +2,6 @@
 // Copyright Open Network Fabric Authors
 
 use crate::models::internal::InternalConfig;
-use crate::models::internal::interfaces::interface::InterfaceType;
 use crate::models::internal::routing::evpn::VtepConfig;
 use derive_builder::Builder;
 use futures::TryStreamExt;
@@ -19,16 +18,15 @@ use net::interface::{
     AdminState, Interface, InterfaceProperties, MultiIndexInterfaceMap, MultiIndexVrfPropertiesMap,
     MultiIndexVtepPropertiesMap,
 };
-use net::ipv4::UnicastIpv4Addr;
+use net::ip::UnicastIpAddr;
 use net::route::RouteTableId;
 use net::vxlan::{Vni, Vxlan};
 use rekon::{Observe, Op, Reconcile, Remove};
 use rtnetlink::Handle;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
-use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 #[derive(Clone, Debug)]
 pub struct VpcManager<R> {
@@ -302,25 +300,26 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
     type Error = RequiredInformationBaseBuilderError;
 
     #[tracing::instrument(level = "debug", ret)]
-    fn try_from(config: &InternalConfig) -> Result<Self, Self::Error> {
+    fn try_from(internal: &InternalConfig) -> Result<Self, Self::Error> {
         let mut rib = RequiredInformationBaseBuilder::default();
         let mut interfaces = MultiIndexInterfaceSpecMap::default();
         let mut vrfs = MultiIndexVrfPropertiesSpecMap::default();
         let mut vteps = MultiIndexVtepPropertiesSpecMap::default();
         let mut associations = MultiIndexInterfaceAssociationSpecMap::default();
-        let default_vrf_config = match config.vrfs.iter_by_tableid().find(|config| config.default) {
-            None => {
-                return Err(RequiredInformationBaseBuilderError::UninitializedField(
-                    "default vrf not yet set",
-                ));
-            }
-            Some(default_vrf) => default_vrf,
-        };
-        for config in config.vrfs.iter_by_tableid() {
+        for config in internal.vrfs.iter_by_tableid() {
             if config.default {
                 trace!("skipping default config: {config:?}");
                 continue;
             }
+            let main_vtep = internal.vtep.as_ref().unwrap_or_else(|| unreachable!());
+            let vtep_ip = match main_vtep.address {
+                UnicastIpAddr::V4(vtep_ip) => vtep_ip,
+                UnicastIpAddr::V6(unsupported_ip) => {
+                    return Err(RequiredInformationBaseBuilderError::ValidationError(
+                        format!("Ipv6 vtep ip address not currently supported: {unsupported_ip:?}"),
+                    ));
+                }
+            };
             let mut vrf = InterfaceSpecBuilder::default();
             let mut vtep = InterfaceSpecBuilder::default();
             let mut bridge = InterfaceSpecBuilder::default();
@@ -353,33 +352,9 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
                         vlan_filtering: false,
                         vlan_protocol: EthType::VLAN,
                     }));
-                    let if_lo = match default_vrf_config
-                        .interfaces
-                        .values()
-                        .find(|iface| matches!(iface.iftype, InterfaceType::Loopback))
-                    {
-                        None => {
-                            error!("no vtep configured in interface list");
-                            continue;
-                        }
-                        Some(if_vtep) => if_vtep,
-                    };
-                    let vtep_ip: Ipv4Addr = match if_lo.addresses.first() {
-                        None => {
-                            error!("no loopback ip address configured");
-                            continue;
-                        }
-                        Some(addr) => match addr.address {
-                            IpAddr::V4(ip) => ip,
-                            IpAddr::V6(ip) => {
-                                info!("ipv6 address not supported for vtep at the moment: {ip}");
-                                continue;
-                            }
-                        },
-                    };
                     vtep.properties(InterfacePropertiesSpec::Vtep(VtepPropertiesSpec {
                         vni: config.vni.expect("vni not set"),
-                        local: UnicastIpv4Addr::new(vtep_ip).unwrap(),
+                        local: vtep_ip,
                         ttl: VtepConfig::TTL,
                         port: Vxlan::PORT,
                     }));
