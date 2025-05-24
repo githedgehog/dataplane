@@ -4,19 +4,21 @@
 #[allow(unused)]
 use tracing::{debug, error, warn};
 
-use net::route::RouteTableId;
-use routing::prefix::Prefix;
-use std::net::Ipv4Addr;
-
 use crate::models::external::overlay::vpcpeering::VpcManifest;
 use crate::models::external::{ConfigError, overlay::Overlay};
 use crate::models::external::{ConfigResult, overlay::vpc::Vpc};
+use net::eth::mac::{Mac, SourceMac};
+use net::ipv4::UnicastIpv4Addr;
+use net::route::RouteTableId;
+use routing::prefix::Prefix;
+use std::net::{IpAddr, Ipv4Addr};
 
 use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
-
 use crate::models::internal::InternalConfig;
+use crate::models::internal::interfaces::interface::InterfaceType;
 use crate::models::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
 use crate::models::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
+use crate::models::internal::routing::evpn::VtepConfig;
 use crate::models::internal::routing::prefixlist::{
     PrefixList, PrefixListAction, PrefixListEntry, PrefixListPrefix,
 };
@@ -235,5 +237,53 @@ pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, Config
         "Successfully built internal config for genid {}",
         config.genid()
     );
+    // TODO: The vtep configuration should come from the external config, but I am deriving it from
+    // assumptions about our config until the API can pass it in.
+    let lo = match external
+        .underlay
+        .vrf
+        .interfaces
+        .values()
+        .find(|config| matches!(config.iftype, InterfaceType::Loopback))
+    {
+        None => {
+            error!("No loopback interface found in underlay VRF");
+            return Err(ConfigError::MissingParameter(
+                "no loopback interface found in underlay VRF",
+            ));
+        }
+        Some(lo) => lo,
+    };
+    let vtep_ip = match lo
+        .addresses
+        .iter()
+        .find_map(|assignment| match assignment.address {
+            IpAddr::V4(ip) => {
+                if assignment.mask_len != 32
+                    || ip.is_loopback()
+                    || ip.is_broadcast()
+                    || ip.is_unspecified()
+                {
+                    return None;
+                }
+                UnicastIpv4Addr::new(ip).ok()
+            }
+            IpAddr::V6(_) => None,
+        }) {
+        None => {
+            error!("No loopback address found in underlay VRF");
+            return Err(ConfigError::MissingParameter(
+                "no /32 loopback address found in underlay VRF",
+            ));
+        }
+        Some(ip) => ip,
+    };
+    // TODO: This should be configurable, but for I'm making an arbitrary choice for the stub.
+    let vtep_mac = SourceMac::new(Mac([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x01]))
+        .unwrap_or_else(|e| unreachable!("{}", e));
+    internal.vtep = Some(VtepConfig {
+        address: vtep_ip,
+        mac: vtep_mac,
+    });
     Ok(internal)
 }

@@ -27,7 +27,7 @@ pub mod test {
     use std::net::Ipv4Addr;
     use std::str::FromStr;
     use test_utils::with_caps;
-    use tracing::Level;
+    use tracing::{Level, error};
     //    use crate::models::internal::routing::evpn::VtepConfig;
 
     use crate::models::external::gwconfig::ExternalConfig;
@@ -304,10 +304,13 @@ pub mod test {
         let (mut processor, _sender) = ConfigProcessor::new(frrmi);
 
         /* let the processor process the config */
-        processor
-            .process_incoming_config(config)
-            .await
-            .expect("Faked frr-agent should answer ok");
+        match processor.process_incoming_config(config).await {
+            Ok(()) => {}
+            Err(e) => {
+                error!("{e}");
+                panic!("{e}");
+            }
+        }
 
         /* stop the faked frr-agent */
         frr_agent.abort();
