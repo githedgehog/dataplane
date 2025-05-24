@@ -3,16 +3,24 @@
 
 //! Dataplane configuration model: EVPN
 
-use net::eth::mac::Mac;
-use std::net::IpAddr;
+use net::eth::mac::{Mac, SourceMac};
+use net::ipv4::UnicastIpv4Addr;
 
+/// The configuration of a VTEP (virtual tunnel endpoint) for the Hedgehog EVPN router.
 #[derive(Clone, Debug)]
 pub struct VtepConfig {
-    pub address: IpAddr,
-    pub mac: Mac,
+    /// The source IP address to be used by vxlan packets originating from this router.
+    pub address: UnicastIpv4Addr,
+    /// The source MAC address to be used by vxlan packets originating from this router.
+    pub mac: SourceMac,
 }
+
 impl VtepConfig {
-    pub fn new(address: IpAddr, mac: Mac) -> Self {
+    /// The TTL to be used by VTEPs.
+    pub const TTL: u8 = 64;
+
+    /// Creates a new VTEP configuration.
+    pub fn new(address: UnicastIpv4Addr, mac: SourceMac) -> Self {
         Self { address, mac }
     }
 }
