@@ -358,6 +358,9 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
                         ttl: VtepConfig::TTL,
                         port: Vxlan::PORT,
                     }));
+                    vrf.mac(Some(main_vtep.mac));
+                    bridge.mac(Some(main_vtep.mac));
+                    vtep.mac(Some(main_vtep.mac));
                 }
             }
             match (vrf.build(), bridge.build(), vtep.build()) {
