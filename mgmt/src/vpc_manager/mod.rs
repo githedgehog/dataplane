@@ -3,6 +3,7 @@
 
 use crate::models::internal::InternalConfig;
 use crate::models::internal::interfaces::interface::InterfaceType;
+use crate::models::internal::routing::evpn::VtepConfig;
 use derive_builder::Builder;
 use futures::TryStreamExt;
 use interface_manager::Manager;
@@ -379,7 +380,7 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
                     vtep.properties(InterfacePropertiesSpec::Vtep(VtepPropertiesSpec {
                         vni: config.vni.expect("vni not set"),
                         local: UnicastIpv4Addr::new(vtep_ip).unwrap(),
-                        ttl: 64,
+                        ttl: VtepConfig::TTL,
                         port: Vxlan::PORT,
                     }));
                 }

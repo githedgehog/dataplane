@@ -16,6 +16,9 @@ pub struct VtepConfig {
 }
 
 impl VtepConfig {
+    /// The TTL to be used by VTEPs.
+    pub const TTL: u8 = 64;
+
     /// Creates a new VTEP configuration.
     pub fn new(address: UnicastIpAddr, mac: SourceMac) -> Self {
         Self { address, mac }
