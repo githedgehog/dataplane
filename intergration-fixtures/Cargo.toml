@@ -1,0 +1,44 @@
+[package]
+name = "integration-fixtures"
+version = "0.0.1"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+autoexamples = true
+
+[[example]]
+name = "otlp"
+
+
+[dependencies]
+# internal
+interface-manager = { workspace = true }
+net = { workspace = true }
+test-utils = { workspace = true, features = [] }
+
+# external
+bollard = { workspace = true, features = ["aws-lc-rs", "buildkit", "http", "pipe"] }
+caps = { workspace = true }
+derive_builder = { workspace = true, features = ["std"] }
+futures = { workspace = true, features = [] }
+futures-util = { workspace = true }
+rtnetlink = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true, features = ["valuable", "std", "async-await", "attributes", "default"] }
+
+valuable = { version = "0.1.1", default-features = false, features = ["std", "derive", "default", "valuable-derive", "alloc"] }
+opentelemetry = { version = "0.29.1", default-features = true, features = ["tracing", "logs", "trace", "metrics"] }
+opentelemetry-appender-tracing = { version = "0.29.1", default-features = true, features = ["tracing-opentelemetry", "log"] }
+opentelemetry-otlp = { version = "0.29.0", default-features = true, features = ["tracing", "opentelemetry-http", "grpc-tonic", "logs"] }
+opentelemetry_sdk = { version = "0.29.0", default-features = true, features = ["logs", "tracing"] }
+tonic = { version = "0.13.1" }
+tracing-opentelemetry = { version = "0.30.0", default-features = true, features = ["tracing-log", "metrics", "default"] }
+tracing-subscriber = { version = "0.3.19", features = ["json", "fmt", "std", "serde", "tracing", "default", "tracing-log"] }
+opentelemetry-stdout = "0.29.0"
+tracing-loki = { version = "0.2.6", default-features = false, features = ["compat-0-2-1", "rustls"] }
+json-subscriber = { version = "0.2.4", default-features = true, features = ["default"] }
+pyroscope_pprofrs = { version = "0.2.10", default-features = true, features = ["frame-pointer"] }
+pyroscope = { version = "0.5.8", default-features = true, features = ["rustls-tls"] }
+
+[dev-dependencies]
+tracing-test = { workspace = true }

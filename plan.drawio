@@ -1,0 +1,460 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/26.1.1 Chrome/132.0.6834.210 Electron/34.5.0 Safari/537.36" version="26.1.1" pages="5">
+  <diagram name="current-situation" id="u3aCpSKPnUojbzMtTlfR">
+    <mxGraphModel dx="394" dy="516" grid="0" gridSize="10" guides="0" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="400" pageHeight="400" background="none" math="1" shadow="0" adaptiveColors="auto">
+      <root>
+        <object label="" test="science" id="0">
+          <mxCell />
+        </object>
+        <mxCell id="1" parent="0" />
+        <UserObject label="dplane-plugin" link="https://github.com/githedgehog/dplane-plugin" linkTarget="_blank" id="Yp524YPV5HahuiLbXa5e-6">
+          <mxCell style="whiteSpace=wrap;html=1;fontSize=10;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=4;fontColor=light-dark(#0623FF,#EDEDED);" vertex="1" parent="1">
+            <mxGeometry x="217" y="20" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="dataplane / gateway" link="https://github.com/githedgehog/dataplane" linkTarget="_blank" id="Yp524YPV5HahuiLbXa5e-7">
+          <mxCell style="whiteSpace=wrap;html=1;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;fontStyle=4;fontColor=light-dark(#0623FF,#EDEDED);" vertex="1" parent="1">
+            <mxGeometry x="6" y="200" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <mxCell id="Yp524YPV5HahuiLbXa5e-8" value="compile env" style="whiteSpace=wrap;html=1;imageAspect=0;fillColor=#e1d5e7;strokeColor=#9673a6;glass=0;gradientColor=none;gradientDirection=east;fillStyle=solid;shadow=0;rounded=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="6" y="101.5" width="70" height="40" as="geometry" />
+        </mxCell>
+        <UserObject label="dpdk-sys" link="https://github.com/githedgehog/dpdk-sys" linkTarget="_blank" id="Yp524YPV5HahuiLbXa5e-9">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;fontStyle=4;fontColor=light-dark(#0623FF,#EDEDED);" vertex="1" parent="1">
+            <mxGeometry x="6" y="20" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <mxCell id="Yp524YPV5HahuiLbXa5e-10" value="" style="endArrow=classicThin;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;flowAnimation=1;flowAnimationDuration=1500;strokeColor=default;endFill=1;fontSize=10;" edge="1" parent="1" source="Yp524YPV5HahuiLbXa5e-9" target="Yp524YPV5HahuiLbXa5e-8">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="36" y="60" as="sourcePoint" />
+            <mxPoint x="86" y="10" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Yp524YPV5HahuiLbXa5e-12" value="" style="endArrow=classicThin;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;orthogonalLoop=0;flowAnimation=0;sourcePortConstraint=none;anchorPointDirection=1;flowAnimationDuration=1000;entryX=0.5;entryY=0;entryDx=0;entryDy=0;textShadow=0;labelBorderColor=none;shadow=0;endFill=1;strokeColor=default;fontSize=10;" edge="1" parent="1" source="Yp524YPV5HahuiLbXa5e-8" target="Yp524YPV5HahuiLbXa5e-7">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="56.833333333333485" y="230" as="sourcePoint" />
+            <mxPoint x="46" y="250" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Yp524YPV5HahuiLbXa5e-14" value="gateway" style="whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;glass=0;gradientColor=none;gradientDirection=east;fillStyle=solid;shadow=0;rounded=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="6" y="292" width="70" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="Yp524YPV5HahuiLbXa5e-15" value="" style="endArrow=classicThin;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;flowAnimation=1;flowAnimationDuration=1500;strokeColor=default;endFill=1;fontSize=10;" edge="1" parent="1" source="Yp524YPV5HahuiLbXa5e-7" target="Yp524YPV5HahuiLbXa5e-14">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="36" y="370" as="sourcePoint" />
+            <mxPoint x="86" y="320" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="FJRCLpc7rZGTdgIx-iyL-52" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;flowAnimation=1;flowAnimationDuration=1500;strokeColor=default;endArrow=classicThin;endFill=1;fontSize=10;" edge="1" parent="1" source="Yp524YPV5HahuiLbXa5e-17" target="FJRCLpc7rZGTdgIx-iyL-35">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="FJRCLpc7rZGTdgIx-iyL-53" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;flowAnimation=1;flowAnimationDuration=1500;strokeColor=default;endArrow=classicThin;endFill=1;fontSize=10;" edge="1" parent="1" source="Yp524YPV5HahuiLbXa5e-17" target="FJRCLpc7rZGTdgIx-iyL-40">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <UserObject label="&lt;font&gt;gw-controlplane&lt;/font&gt;" link="https://github.com/githedgehog/gw-controlplane" linkTarget="_blank" id="Yp524YPV5HahuiLbXa5e-17">
+          <mxCell style="whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;rounded=1;fontSize=10;fontStyle=4;fontColor=light-dark(#0623FF,#EDEDED);" vertex="1" parent="1">
+            <mxGeometry x="217" y="99" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="dplane-rpc" link="https://github.com/githedgehog/dplane-rpc" linkTarget="_blank" id="Yp524YPV5HahuiLbXa5e-18">
+          <mxCell style="whiteSpace=wrap;html=1;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;fontStyle=4;fontColor=light-dark(#0623FF,#EDEDED);" vertex="1" parent="1">
+            <mxGeometry x="112" y="20" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="frr-fork" link="https://github.com/githedgehog/frr" id="Yp524YPV5HahuiLbXa5e-20">
+          <mxCell style="whiteSpace=wrap;html=1;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;fontStyle=4;fontColor=light-dark(#0623FF,#EDEDED);" vertex="1" parent="1">
+            <mxGeometry x="323" y="20" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <mxCell id="Yp524YPV5HahuiLbXa5e-21" value="" style="endArrow=classicThin;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;textShadow=0;labelBorderColor=none;shadow=0;flowAnimation=0;endFill=1;strokeColor=default;fontSize=10;" edge="1" parent="1" source="Yp524YPV5HahuiLbXa5e-6" target="Yp524YPV5HahuiLbXa5e-17">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="126" y="150" as="sourcePoint" />
+            <mxPoint x="176" y="100" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Yp524YPV5HahuiLbXa5e-22" value="" style="endArrow=classicThin;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;textShadow=0;labelBorderColor=none;shadow=0;flowAnimation=0;endFill=1;strokeColor=default;fontSize=10;" edge="1" parent="1" source="Yp524YPV5HahuiLbXa5e-18" target="Yp524YPV5HahuiLbXa5e-17">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="126" y="150" as="sourcePoint" />
+            <mxPoint x="176" y="100" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Yp524YPV5HahuiLbXa5e-23" value="" style="endArrow=classicThin;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;textShadow=0;labelBorderColor=none;shadow=0;flowAnimation=0;endFill=1;strokeColor=default;fontSize=10;" edge="1" parent="1" source="Yp524YPV5HahuiLbXa5e-20" target="Yp524YPV5HahuiLbXa5e-17">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="126" y="150" as="sourcePoint" />
+            <mxPoint x="176" y="100" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="FJRCLpc7rZGTdgIx-iyL-55" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;flowAnimation=0;flowAnimationDuration=1500;strokeColor=default;endArrow=classicThin;endFill=1;fontSize=10;" edge="1" parent="1" source="Yp524YPV5HahuiLbXa5e-26">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="249.75862068965512" y="342.9310344827586" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Yp524YPV5HahuiLbXa5e-26" value="frr" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;glass=0;gradientColor=none;gradientDirection=east;fillStyle=solid;shadow=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="301" y="265" width="70" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="Yp524YPV5HahuiLbXa5e-27" value="" style="endArrow=classicThin;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;flowAnimation=1;flowAnimationDuration=1500;strokeColor=default;endFill=1;fontSize=10;" edge="1" parent="1" source="Yp524YPV5HahuiLbXa5e-17" target="Yp524YPV5HahuiLbXa5e-26">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="146" y="310" as="sourcePoint" />
+            <mxPoint x="196" y="260" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Yp524YPV5HahuiLbXa5e-28" value="" style="endArrow=classicThin;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;textShadow=0;labelBorderColor=none;shadow=0;flowAnimation=0;endFill=1;strokeColor=default;fontSize=10;" edge="1" parent="1" source="Yp524YPV5HahuiLbXa5e-18" target="Yp524YPV5HahuiLbXa5e-7">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="146" y="310" as="sourcePoint" />
+            <mxPoint x="196" y="260" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="FJRCLpc7rZGTdgIx-iyL-54" style="rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;flowAnimation=0;flowAnimationDuration=1500;strokeColor=default;endArrow=classicThin;endFill=1;fontSize=10;" edge="1" parent="1" source="FJRCLpc7rZGTdgIx-iyL-35">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="250" y="343" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="FJRCLpc7rZGTdgIx-iyL-35" value="dplane-plugin" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;glass=0;gradientDirection=east;fillStyle=solid;shadow=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="140" y="263" width="70" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="FJRCLpc7rZGTdgIx-iyL-40" value="frr+plugin" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;glass=0;gradientColor=none;gradientDirection=east;fillStyle=solid;shadow=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="215" y="343" width="70" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="9FENWPelRSJVPfuXSQIc-1" value="Untitled Layer" parent="0" />
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram name="revised" id="DbGAgd-PpVVhltUxyt2_">
+    <mxGraphModel dx="794" dy="548" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="200" pageHeight="400" background="none" math="1" shadow="0" adaptiveColors="auto">
+      <root>
+        <object label="" test="science" id="Jfmz4putnhGw9q4dO3T1-0">
+          <mxCell />
+        </object>
+        <mxCell id="Jfmz4putnhGw9q4dO3T1-1" parent="Jfmz4putnhGw9q4dO3T1-0" />
+        <UserObject label="dpdk-sys" link="https://github.com/githedgehog/dpdk-sys" linkTarget="_blank" id="Jfmz4putnhGw9q4dO3T1-5">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;fontStyle=4;fontColor=light-dark(#0623FF,#EDEDED);" vertex="1" parent="Jfmz4putnhGw9q4dO3T1-1">
+            <mxGeometry x="65" y="90" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <mxCell id="Jfmz4putnhGw9q4dO3T1-6" value="" style="endArrow=classicThin;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;flowAnimation=1;flowAnimationDuration=1500;strokeColor=default;endFill=1;fontSize=10;" edge="1" parent="Jfmz4putnhGw9q4dO3T1-1" source="Jfmz4putnhGw9q4dO3T1-5" target="Jfmz4putnhGw9q4dO3T1-4">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="49" y="138" as="sourcePoint" />
+            <mxPoint x="99" y="88" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Jfmz4putnhGw9q4dO3T1-7" value="" style="endArrow=classicThin;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;orthogonalLoop=0;flowAnimation=0;sourcePortConstraint=none;anchorPointDirection=1;flowAnimationDuration=1000;entryX=0.5;entryY=0;entryDx=0;entryDy=0;textShadow=0;labelBorderColor=none;shadow=0;endFill=1;strokeColor=default;fontSize=10;" edge="1" parent="Jfmz4putnhGw9q4dO3T1-1" source="Jfmz4putnhGw9q4dO3T1-4" target="Jfmz4putnhGw9q4dO3T1-3">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="69.83333333333348" y="308" as="sourcePoint" />
+            <mxPoint x="59" y="328" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Jfmz4putnhGw9q4dO3T1-9" value="" style="endArrow=classicThin;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;flowAnimation=1;flowAnimationDuration=1500;strokeColor=default;endFill=1;fontSize=10;" edge="1" parent="Jfmz4putnhGw9q4dO3T1-1" source="Jfmz4putnhGw9q4dO3T1-3" target="Jfmz4putnhGw9q4dO3T1-8">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="49" y="448" as="sourcePoint" />
+            <mxPoint x="99" y="398" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <UserObject label="frr-fork" link="https://github.com/githedgehog/frr" id="Jfmz4putnhGw9q4dO3T1-14">
+          <mxCell style="whiteSpace=wrap;html=1;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;fontStyle=4;fontColor=light-dark(#0623FF,#EDEDED);" vertex="1" parent="Jfmz4putnhGw9q4dO3T1-1">
+            <mxGeometry x="65" y="8" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <mxCell id="J5WoLMU4N51X7IkSHy-4-0" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;flowAnimation=1;flowAnimationDuration=1500;endArrow=classicThin;endFill=1;" edge="1" parent="Jfmz4putnhGw9q4dO3T1-1" source="Jfmz4putnhGw9q4dO3T1-3" target="Jfmz4putnhGw9q4dO3T1-24">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="114.86206896551721" y="346.62068965517244" as="sourcePoint" />
+            <mxPoint x="194.8620689655172" y="346.62068965517244" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="J5WoLMU4N51X7IkSHy-4-2" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classicThin;endFill=1;" edge="1" parent="Jfmz4putnhGw9q4dO3T1-1" source="Jfmz4putnhGw9q4dO3T1-14" target="Jfmz4putnhGw9q4dO3T1-5">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="20.379310344827672" y="242.48275862068965" as="sourcePoint" />
+            <mxPoint x="100.37931034482767" y="242.48275862068965" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="J5WoLMU4N51X7IkSHy-4-4" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;flowAnimation=1;flowAnimationDuration=1500;endArrow=classicThin;endFill=1;" edge="1" parent="Jfmz4putnhGw9q4dO3T1-1" source="Jfmz4putnhGw9q4dO3T1-5" target="J5WoLMU4N51X7IkSHy-4-3">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="81.0689655172414" y="201.1034482758621" as="sourcePoint" />
+            <mxPoint x="161.0689655172414" y="201.1034482758621" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="J5WoLMU4N51X7IkSHy-4-5" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classicThin;endFill=1;" edge="1" parent="Jfmz4putnhGw9q4dO3T1-1" source="J5WoLMU4N51X7IkSHy-4-3" target="Jfmz4putnhGw9q4dO3T1-3">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="205.8965517241379" y="224.55172413793105" as="sourcePoint" />
+            <mxPoint x="285.8965517241379" y="224.55172413793105" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="XzEBz-H7fpUzzOtT8sEz-0" value="" style="group" vertex="1" connectable="0" parent="Jfmz4putnhGw9q4dO3T1-1">
+          <mxGeometry x="19" y="254" width="162" height="63" as="geometry" />
+        </mxCell>
+        <mxCell id="XzEBz-H7fpUzzOtT8sEz-4" value="" style="group" vertex="1" connectable="0" parent="XzEBz-H7fpUzzOtT8sEz-0">
+          <mxGeometry width="162" height="63" as="geometry" />
+        </mxCell>
+        <UserObject label="dataplane / gateway" link="https://github.com/githedgehog/dataplane" linkTarget="_blank" id="Jfmz4putnhGw9q4dO3T1-3">
+          <mxCell style="whiteSpace=wrap;html=1;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;fontStyle=4;fontColor=light-dark(#0623FF,#EDEDED);verticalAlign=top;" vertex="1" parent="XzEBz-H7fpUzzOtT8sEz-4">
+            <mxGeometry width="162" height="63" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="dplane-plugin&lt;div&gt;(absorbed)&lt;/div&gt;" linkTarget="_blank" id="Jfmz4putnhGw9q4dO3T1-2">
+          <mxCell style="whiteSpace=wrap;html=1;fontSize=10;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=none;fontStyle=0;fontColor=default;" vertex="1" parent="XzEBz-H7fpUzzOtT8sEz-4">
+            <mxGeometry x="80" y="20" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="dplane-rpc&lt;div&gt;(absorbed)&lt;/div&gt;" linkTarget="_blank" id="Jfmz4putnhGw9q4dO3T1-13">
+          <mxCell style="whiteSpace=wrap;html=1;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=none;fontSize=10;fontStyle=0;fontColor=default;" vertex="1" parent="XzEBz-H7fpUzzOtT8sEz-4">
+            <mxGeometry x="4" y="20" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <mxCell id="XzEBz-H7fpUzzOtT8sEz-1" value="" style="group" vertex="1" connectable="0" parent="Jfmz4putnhGw9q4dO3T1-1">
+          <mxGeometry x="19" y="172" width="162" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="Jfmz4putnhGw9q4dO3T1-4" value="compile env" style="whiteSpace=wrap;html=1;imageAspect=0;fillColor=#e1d5e7;strokeColor=#9673a6;glass=0;gradientColor=none;gradientDirection=east;fillStyle=solid;shadow=0;rounded=1;fontSize=10;" vertex="1" parent="XzEBz-H7fpUzzOtT8sEz-1">
+          <mxGeometry width="70" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="J5WoLMU4N51X7IkSHy-4-3" value="frr" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;glass=0;gradientColor=none;gradientDirection=east;fillStyle=solid;shadow=0;fontSize=10;" vertex="1" parent="XzEBz-H7fpUzzOtT8sEz-1">
+          <mxGeometry x="92" width="70" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="XzEBz-H7fpUzzOtT8sEz-3" value="" style="group" vertex="1" connectable="0" parent="Jfmz4putnhGw9q4dO3T1-1">
+          <mxGeometry x="19" y="352" width="162" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="Jfmz4putnhGw9q4dO3T1-8" value="gateway" style="whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;glass=0;gradientColor=none;gradientDirection=east;fillStyle=solid;shadow=0;rounded=1;fontSize=10;" vertex="1" parent="XzEBz-H7fpUzzOtT8sEz-3">
+          <mxGeometry width="70" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="Jfmz4putnhGw9q4dO3T1-24" value="frr+plugin" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;glass=0;gradientColor=none;gradientDirection=east;fillStyle=solid;shadow=0;fontSize=10;" vertex="1" parent="XzEBz-H7fpUzzOtT8sEz-3">
+          <mxGeometry x="92" width="70" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="Jfmz4putnhGw9q4dO3T1-25" value="Untitled Layer" parent="Jfmz4putnhGw9q4dO3T1-0" />
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram name="revised2" id="ydQSatUlN5BP3iseM5qh">
+    <mxGraphModel dx="794" dy="548" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="200" pageHeight="500" background="none" math="1" shadow="0" adaptiveColors="auto">
+      <root>
+        <object label="" test="science" id="vEyhM2p5fcP2Ii-J1kJt-0">
+          <mxCell />
+        </object>
+        <mxCell id="vEyhM2p5fcP2Ii-J1kJt-1" parent="vEyhM2p5fcP2Ii-J1kJt-0" />
+        <UserObject label="dataplane / gateway" link="https://github.com/githedgehog/dataplane" linkTarget="_blank" id="vEyhM2p5fcP2Ii-J1kJt-2">
+          <mxCell style="whiteSpace=wrap;html=1;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;fontStyle=4;fontColor=light-dark(#0623FF,#EDEDED);verticalAlign=top;" vertex="1" parent="vEyhM2p5fcP2Ii-J1kJt-1">
+            <mxGeometry x="19" y="331" width="162" height="63" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="dplane-plugin&lt;div&gt;(absorbed)&lt;/div&gt;" linkTarget="_blank" id="vEyhM2p5fcP2Ii-J1kJt-3">
+          <mxCell style="whiteSpace=wrap;html=1;fontSize=10;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=none;fontStyle=0;fontColor=default;" vertex="1" parent="vEyhM2p5fcP2Ii-J1kJt-1">
+            <mxGeometry x="111" y="351" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <mxCell id="vEyhM2p5fcP2Ii-J1kJt-4" value="compile env" style="whiteSpace=wrap;html=1;imageAspect=0;fillColor=#ffe6cc;strokeColor=#d79b00;glass=0;gradientDirection=east;fillStyle=solid;shadow=0;rounded=1;fontSize=10;" vertex="1" parent="vEyhM2p5fcP2Ii-J1kJt-1">
+          <mxGeometry x="19" y="184" width="70" height="40" as="geometry" />
+        </mxCell>
+        <UserObject label="dpdk-sys" link="https://github.com/githedgehog/dpdk-sys" linkTarget="_blank" id="vEyhM2p5fcP2Ii-J1kJt-5">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;fontStyle=4;fontColor=light-dark(#0623FF,#EDEDED);" vertex="1" parent="vEyhM2p5fcP2Ii-J1kJt-1">
+            <mxGeometry x="65" y="107" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <mxCell id="vEyhM2p5fcP2Ii-J1kJt-8" value="gateway" style="whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;glass=0;gradientColor=none;gradientDirection=east;fillStyle=solid;shadow=0;rounded=1;fontSize=10;" vertex="1" parent="vEyhM2p5fcP2Ii-J1kJt-1">
+          <mxGeometry x="19" y="427" width="70" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="vEyhM2p5fcP2Ii-J1kJt-9" value="" style="endArrow=classicThin;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;flowAnimation=1;flowAnimationDuration=1500;strokeColor=default;endFill=1;fontSize=10;" edge="1" parent="vEyhM2p5fcP2Ii-J1kJt-1" source="vEyhM2p5fcP2Ii-J1kJt-2" target="vEyhM2p5fcP2Ii-J1kJt-8">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="48" y="524" as="sourcePoint" />
+            <mxPoint x="98" y="474" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <UserObject label="dplane-rpc&lt;div&gt;(absorbed)&lt;/div&gt;" linkTarget="_blank" id="vEyhM2p5fcP2Ii-J1kJt-10">
+          <mxCell style="whiteSpace=wrap;html=1;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=none;fontSize=10;fontStyle=0;fontColor=default;" vertex="1" parent="vEyhM2p5fcP2Ii-J1kJt-1">
+            <mxGeometry x="19" y="351" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="frr-fork" link="https://github.com/githedgehog/frr" id="vEyhM2p5fcP2Ii-J1kJt-11">
+          <mxCell style="whiteSpace=wrap;html=1;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;fontStyle=4;fontColor=light-dark(#0623FF,#EDEDED);" vertex="1" parent="vEyhM2p5fcP2Ii-J1kJt-1">
+            <mxGeometry x="65" y="33" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <mxCell id="vEyhM2p5fcP2Ii-J1kJt-12" value="frr+plugin" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;glass=0;gradientColor=none;gradientDirection=east;fillStyle=solid;shadow=0;fontSize=10;" vertex="1" parent="vEyhM2p5fcP2Ii-J1kJt-1">
+          <mxGeometry x="111" y="427" width="70" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="vEyhM2p5fcP2Ii-J1kJt-13" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;flowAnimation=1;flowAnimationDuration=1500;" edge="1" parent="vEyhM2p5fcP2Ii-J1kJt-1" source="vEyhM2p5fcP2Ii-J1kJt-2" target="vEyhM2p5fcP2Ii-J1kJt-12">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="113.86206896551721" y="422.62068965517244" as="sourcePoint" />
+            <mxPoint x="193.8620689655172" y="422.62068965517244" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="vEyhM2p5fcP2Ii-J1kJt-14" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="vEyhM2p5fcP2Ii-J1kJt-1" source="vEyhM2p5fcP2Ii-J1kJt-11" target="vEyhM2p5fcP2Ii-J1kJt-5">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="25.379310344827672" y="250.48275862068965" as="sourcePoint" />
+            <mxPoint x="105.37931034482767" y="250.48275862068965" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="vEyhM2p5fcP2Ii-J1kJt-15" value="frr" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;glass=0;gradientDirection=east;fillStyle=solid;shadow=0;fontSize=10;" vertex="1" parent="vEyhM2p5fcP2Ii-J1kJt-1">
+          <mxGeometry x="111" y="184" width="70" height="40" as="geometry" />
+        </mxCell>
+        <UserObject label="gcp bucket" link="https://github.com/githedgehog/dpdk-sys" linkTarget="_blank" id="H-JDKfNHHcyw7EKXyUNe-0">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#1ba1e2;strokeColor=#006EAF;fontSize=10;fontStyle=0;fontColor=#000000;" vertex="1" parent="vEyhM2p5fcP2Ii-J1kJt-1">
+            <mxGeometry x="65" y="260" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <mxCell id="H-JDKfNHHcyw7EKXyUNe-2" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;flowAnimation=1;flowAnimationDuration=1500;" edge="1" parent="vEyhM2p5fcP2Ii-J1kJt-1" source="vEyhM2p5fcP2Ii-J1kJt-5" target="vEyhM2p5fcP2Ii-J1kJt-4">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="158.1428571428571" y="175.1428571428571" as="sourcePoint" />
+            <mxPoint x="238.1428571428571" y="175.1428571428571" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="s9zn_MWVXsEH4GLbmkYy-0" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;flowAnimation=1;flowAnimationDuration=1500;" edge="1" parent="vEyhM2p5fcP2Ii-J1kJt-1" source="vEyhM2p5fcP2Ii-J1kJt-5" target="vEyhM2p5fcP2Ii-J1kJt-15">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="120" y="156" as="sourcePoint" />
+            <mxPoint x="174.1428571428571" y="146.57142857142856" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="s9zn_MWVXsEH4GLbmkYy-1" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="vEyhM2p5fcP2Ii-J1kJt-1" source="vEyhM2p5fcP2Ii-J1kJt-4" target="H-JDKfNHHcyw7EKXyUNe-0">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="139.8571428571429" y="258.57142857142856" as="sourcePoint" />
+            <mxPoint x="219.8571428571429" y="258.57142857142856" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="s9zn_MWVXsEH4GLbmkYy-2" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="vEyhM2p5fcP2Ii-J1kJt-1" source="vEyhM2p5fcP2Ii-J1kJt-15" target="H-JDKfNHHcyw7EKXyUNe-0">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="130.71428571428567" y="238" as="sourcePoint" />
+            <mxPoint x="100" y="259" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="123" y="245" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="s9zn_MWVXsEH4GLbmkYy-3" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="vEyhM2p5fcP2Ii-J1kJt-1" source="H-JDKfNHHcyw7EKXyUNe-0" target="vEyhM2p5fcP2Ii-J1kJt-2">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="99" y="308" as="sourcePoint" />
+            <mxPoint x="174.8571428571429" y="315.1428571428571" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="vEyhM2p5fcP2Ii-J1kJt-18" value="Untitled Layer" parent="vEyhM2p5fcP2Ii-J1kJt-0" />
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram name="revised3" id="WdA6E8-3zJcg6xrlAqsO">
+    <mxGraphModel dx="794" dy="548" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="400" pageHeight="400" background="none" math="1" shadow="0" adaptiveColors="auto">
+      <root>
+        <object label="" test="science" id="NGm4Qs3EVcA7s1_j-svy-0">
+          <mxCell />
+        </object>
+        <mxCell id="NGm4Qs3EVcA7s1_j-svy-1" parent="NGm4Qs3EVcA7s1_j-svy-0" />
+        <UserObject label="dataplane / gateway" link="https://github.com/githedgehog/dataplane" linkTarget="_blank" id="NGm4Qs3EVcA7s1_j-svy-2">
+          <mxCell style="whiteSpace=wrap;html=1;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;fontStyle=4;fontColor=light-dark(#0623FF,#EDEDED);verticalAlign=top;" vertex="1" parent="NGm4Qs3EVcA7s1_j-svy-1">
+            <mxGeometry x="69.5" y="120" width="231" height="63" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="dplane-plugin&lt;div&gt;(absorbed)&lt;/div&gt;" linkTarget="_blank" id="NGm4Qs3EVcA7s1_j-svy-3">
+          <mxCell style="whiteSpace=wrap;html=1;fontSize=10;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=none;fontStyle=0;fontColor=default;" vertex="1" parent="NGm4Qs3EVcA7s1_j-svy-1">
+            <mxGeometry x="223" y="140" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <mxCell id="NGm4Qs3EVcA7s1_j-svy-4" value="compile env" style="whiteSpace=wrap;html=1;imageAspect=0;fillColor=#ffe6cc;strokeColor=#d79b00;glass=0;gradientDirection=east;fillStyle=solid;shadow=0;rounded=1;fontSize=10;" vertex="1" parent="NGm4Qs3EVcA7s1_j-svy-1">
+          <mxGeometry x="34" y="227" width="70" height="40" as="geometry" />
+        </mxCell>
+        <UserObject label="dpdk-sys&lt;div&gt;(absorbed)&lt;/div&gt;" linkTarget="_blank" id="NGm4Qs3EVcA7s1_j-svy-5">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=none;fontSize=10;fontStyle=0;fontColor=#000000;" vertex="1" parent="NGm4Qs3EVcA7s1_j-svy-1">
+            <mxGeometry x="74.5" y="140" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <mxCell id="NGm4Qs3EVcA7s1_j-svy-6" value="gateway" style="whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;glass=0;gradientColor=none;gradientDirection=east;fillStyle=solid;shadow=0;rounded=1;fontSize=10;" vertex="1" parent="NGm4Qs3EVcA7s1_j-svy-1">
+          <mxGeometry x="188.5" y="307" width="70" height="40" as="geometry" />
+        </mxCell>
+        <UserObject label="dplane-rpc&lt;div&gt;(absorbed)&lt;/div&gt;" linkTarget="_blank" id="NGm4Qs3EVcA7s1_j-svy-8">
+          <mxCell style="whiteSpace=wrap;html=1;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=none;fontSize=10;fontStyle=0;fontColor=default;" vertex="1" parent="NGm4Qs3EVcA7s1_j-svy-1">
+            <mxGeometry x="150" y="140" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <UserObject label="frr-fork" link="https://github.com/githedgehog/frr" id="NGm4Qs3EVcA7s1_j-svy-9">
+          <mxCell style="whiteSpace=wrap;html=1;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;fontStyle=4;fontColor=light-dark(#0623FF,#EDEDED);" vertex="1" parent="NGm4Qs3EVcA7s1_j-svy-1">
+            <mxGeometry x="150" y="37" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <mxCell id="NGm4Qs3EVcA7s1_j-svy-10" value="frr+plugin" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;glass=0;gradientColor=none;gradientDirection=east;fillStyle=solid;shadow=0;fontSize=10;" vertex="1" parent="NGm4Qs3EVcA7s1_j-svy-1">
+          <mxGeometry x="280.5" y="307" width="70" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="NGm4Qs3EVcA7s1_j-svy-13" value="frr" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;glass=0;gradientDirection=east;fillStyle=solid;shadow=0;fontSize=10;" vertex="1" parent="NGm4Qs3EVcA7s1_j-svy-1">
+          <mxGeometry x="126" y="227" width="70" height="40" as="geometry" />
+        </mxCell>
+        <UserObject label="gcp bucket" link="https://github.com/githedgehog/dpdk-sys" linkTarget="_blank" id="NGm4Qs3EVcA7s1_j-svy-14">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#1ba1e2;strokeColor=#006EAF;fontSize=10;fontStyle=0;fontColor=#000000;" vertex="1" parent="NGm4Qs3EVcA7s1_j-svy-1">
+            <mxGeometry x="80" y="309" width="70" height="40" as="geometry" />
+          </mxCell>
+        </UserObject>
+        <mxCell id="dwKnlair1Q4tu9jm0Kj8-0" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="NGm4Qs3EVcA7s1_j-svy-1" source="NGm4Qs3EVcA7s1_j-svy-9" target="NGm4Qs3EVcA7s1_j-svy-2">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="107.64285714285711" y="87.14285714285711" as="sourcePoint" />
+            <mxPoint x="187.6428571428571" y="87.14285714285711" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="dwKnlair1Q4tu9jm0Kj8-1" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;flowAnimation=1;flowAnimationDuration=1500;" edge="1" parent="NGm4Qs3EVcA7s1_j-svy-1" source="NGm4Qs3EVcA7s1_j-svy-2" target="NGm4Qs3EVcA7s1_j-svy-4">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="129.92857142857144" y="218.57142857142856" as="sourcePoint" />
+            <mxPoint x="209.92857142857144" y="218.57142857142856" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="dwKnlair1Q4tu9jm0Kj8-2" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;flowAnimation=1;flowAnimationDuration=1500;" edge="1" parent="NGm4Qs3EVcA7s1_j-svy-1" source="NGm4Qs3EVcA7s1_j-svy-2" target="NGm4Qs3EVcA7s1_j-svy-13">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="87.07142857142856" y="179.71428571428567" as="sourcePoint" />
+            <mxPoint x="167.07142857142856" y="179.71428571428567" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="dwKnlair1Q4tu9jm0Kj8-3" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="NGm4Qs3EVcA7s1_j-svy-1" source="NGm4Qs3EVcA7s1_j-svy-4" target="NGm4Qs3EVcA7s1_j-svy-14">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="65.35714285714289" y="263.1428571428571" as="sourcePoint" />
+            <mxPoint x="145.3571428571429" y="263.1428571428571" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="dwKnlair1Q4tu9jm0Kj8-4" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="NGm4Qs3EVcA7s1_j-svy-1" source="NGm4Qs3EVcA7s1_j-svy-13" target="NGm4Qs3EVcA7s1_j-svy-14">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="169.3571428571429" y="286.57142857142867" as="sourcePoint" />
+            <mxPoint x="249.3571428571429" y="286.57142857142867" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="dwKnlair1Q4tu9jm0Kj8-5" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;flowAnimation=1;flowAnimationDuration=1500;" edge="1" parent="NGm4Qs3EVcA7s1_j-svy-1" source="NGm4Qs3EVcA7s1_j-svy-2" target="NGm4Qs3EVcA7s1_j-svy-6">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="206.5" y="187.1428571428571" as="sourcePoint" />
+            <mxPoint x="286.5" y="187.1428571428571" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="dwKnlair1Q4tu9jm0Kj8-6" value="" style="edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;rounded=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;exitX=0.75;exitY=1;exitDx=0;exitDy=0;flowAnimation=1;flowAnimationDuration=1500;" edge="1" parent="NGm4Qs3EVcA7s1_j-svy-1" source="NGm4Qs3EVcA7s1_j-svy-2" target="NGm4Qs3EVcA7s1_j-svy-10">
+          <mxGeometry width="80" relative="1" as="geometry">
+            <mxPoint x="190" y="189" as="sourcePoint" />
+            <mxPoint x="265.92857142857133" y="175.1428571428571" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="NGm4Qs3EVcA7s1_j-svy-20" value="Untitled Layer" parent="NGm4Qs3EVcA7s1_j-svy-0" />
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="S_CTIF8Z1YdhQ6OLYeKu" name="key">
+    <mxGraphModel dx="794" dy="548" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="350" pageHeight="70" math="0" shadow="0" adaptiveColors="auto">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="gqzEQX1AKKEbP-z6chcp-1" value="git repo" style="whiteSpace=wrap;html=1;fontSize=11;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="15" y="15" width="70" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="gqzEQX1AKKEbP-z6chcp-2" value="&lt;span style=&quot;font-size: 11px;&quot;&gt;meta repo&lt;/span&gt;" style="whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="98" y="15" width="70" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="gqzEQX1AKKEbP-z6chcp-3" value="container image" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;glass=0;gradientColor=none;gradientDirection=east;fillStyle=solid;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="182" y="15" width="70" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="gqzEQX1AKKEbP-z6chcp-5" value="artifact" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;glass=0;gradientDirection=east;fillStyle=solid;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="265" y="15" width="70" height="40" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

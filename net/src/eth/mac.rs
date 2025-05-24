@@ -3,7 +3,7 @@
 
 //! Mac address type and logic.
 
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 
 /// A [MAC Address] type.
 ///
@@ -14,7 +14,7 @@ use std::fmt::Display;
 #[repr(transparent)]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(bolero::TypeGenerator))]
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+    Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub struct Mac(pub [u8; 6]);
 
@@ -133,6 +133,16 @@ impl Mac {
     }
 }
 
+impl Debug for Mac {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:<02x}:{:<02x}:{:<02x}:{:<02x}:{:<02x}:{:<02x}",
+            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4], self.0[5]
+        )
+    }
+}
+
 impl Display for Mac {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -145,13 +155,13 @@ impl Display for Mac {
 
 impl Display for SourceMac {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.inner().fmt(f)
+        std::fmt::Display::fmt(&self.inner(), f)
     }
 }
 
 impl Display for DestinationMac {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.inner().fmt(f)
+        std::fmt::Display::fmt(&self.inner(), f)
     }
 }
 

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root>
+ <rdmgr>
+  <timestamp type="u64_t">1747504209</timestamp>
+  <hostname type="string">navi</hostname>
+  <os type="string">linux</os>
+  <product type="string">Intel® VTune™ Profiler 2025.0.1</product>
+  <buildNumber type="s32_t">629235</buildNumber>
+  <logicalCPUCount type="s32_t">64</logicalCPUCount>
+  <physicalCoreCount type="s32_t">32</physicalCoreCount>
+  <processorPackageCount type="s32_t">1</processorPackageCount>
+  <CPUFrequency type="s64_t">2194000000</CPUFrequency>
+  <CPUFamily type="s32_t">25</CPUFamily>
+  <CPUModel type="s32_t">24</CPUModel>
+  <CPUStepping type="s32_t">1</CPUStepping>
+  <CPUBrandName type="string">AMD Ryzen Threadripper PRO 7975WX 32-Cores</CPUBrandName>
+  <isa type="string">avx512</isa>
+ </rdmgr>
+</root>

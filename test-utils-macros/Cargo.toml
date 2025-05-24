@@ -1,0 +1,12 @@
+[package]
+name = "dataplane-test-utils-macros"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro-error2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }

@@ -4,7 +4,6 @@
 use dataplane_mgmt as mgmt;
 
 use caps::Capability;
-use fixin::wrap;
 use interface_manager::interface::{
     BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpecBuilder,
     MultiIndexBridgePropertiesSpecMap, MultiIndexInterfaceAssociationSpecMap,
@@ -20,6 +19,7 @@ use rtnetlink::sys::AsyncSocket;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;
+use test_utils::fixin::wrap;
 use test_utils::{in_scoped_netns, with_caps};
 use tracing::info;
 use tracing_test::traced_test;

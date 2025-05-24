@@ -1,0 +1,22 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/26.1.1 Chrome/132.0.6834.210 Electron/34.5.0 Safari/537.36" version="26.1.1">
+  <diagram id="S_CTIF8Z1YdhQ6OLYeKu" name="key">
+    <mxGraphModel dx="-199" dy="-37" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="0" page="0" pageScale="1" pageWidth="350" pageHeight="70" math="0" shadow="0" adaptiveColors="auto">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="gqzEQX1AKKEbP-z6chcp-1" value="git repo" style="whiteSpace=wrap;html=1;fontSize=11;rounded=1;shadow=0;glass=0;perimeterSpacing=0;strokeWidth=1;fontFamily=Helvetica;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+          <mxGeometry x="15" y="15" width="70" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="gqzEQX1AKKEbP-z6chcp-2" value="&lt;span style=&quot;font-size: 11px;&quot;&gt;meta repo&lt;/span&gt;" style="whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;rounded=1;" parent="1" vertex="1">
+          <mxGeometry x="98" y="15" width="70" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="gqzEQX1AKKEbP-z6chcp-3" value="container image" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;glass=0;gradientColor=none;gradientDirection=east;fillStyle=solid;shadow=0;" parent="1" vertex="1">
+          <mxGeometry x="182" y="15" width="70" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="gqzEQX1AKKEbP-z6chcp-5" value="artifact" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;glass=0;gradientDirection=east;fillStyle=solid;shadow=0;" parent="1" vertex="1">
+          <mxGeometry x="265" y="15" width="70" height="40" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
