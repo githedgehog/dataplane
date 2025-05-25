@@ -35,6 +35,7 @@ concurrency:
 
 permissions:
   checks: "write"
+  pull-requests: "write"
   contents: "read"
   packages: "write"
   id-token: "write"
@@ -149,7 +150,7 @@ jobs:
           require_passed_tests: 'true'
           verbose_summary: 'true'
           include_passed: 'true'
-          update_check: 'true'
+          update_check: 'false'
           include_empty_in_summary: 'true'
           check_name: 'test report: dev/debug'
           fail_on_parse_error: 'true'
