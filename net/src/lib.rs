@@ -39,6 +39,6 @@ mod tests {
     #[test]
     fn im_a_flake() {
         let mut rng = rand::rng();
-        assert!(rng.random::<u8>() >= 200, "I'm a flake");
+        assert!(rng.random::<u8>() >= 230, "I'm a flake");
     }
 }
