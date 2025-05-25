@@ -131,3 +131,8 @@ store-success-output = true
 # Note that if a description can be extracted from the output, it is always stored in the
 # <description> element.
 store-failure-output = true
+
+# See https://github.com/githedgehog/dataplane/issues/446
+[[profile.default.overrides]]
+filter = 'test(reconcile_fuzz)'
+retries = 3
