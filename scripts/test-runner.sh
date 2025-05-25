@@ -141,7 +141,6 @@ fi
   --mount "type=bind,source=${1},target=${1},readonly=true,bind-propagation=rprivate" \
   --mount "type=bind,source=${project_dir},target=${project_dir},readonly=true,bind-propagation=rprivate" \
   --mount "type=bind,source=$(get_docker_sock),target=$(get_docker_sock),readonly=false,bind-propagation=rprivate" \
-  --mount "type=bind,source=/run/docker/netns,target=/var/run/docker/netns,readonly=false,bind-propagation=rshared" \
   --tmpfs "/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
   --tmpfs "/var/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
   --tmpfs "/tmp:nodev,noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
