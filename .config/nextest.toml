@@ -19,7 +19,7 @@ default-filter = "all()"
 # * retries = 3
 # * retries = { backoff = "fixed", count = 2, delay = "1s" }
 # * retries = { backoff = "exponential", count = 10, delay = "1s", jitter = true, max-delay = "10s" }
-retries = 3
+retries = 0
 
 # The number of threads to run tests with. Supported values are either an integer or
 # the string "num-cpus". Can be overridden through the `--test-threads` option.
@@ -131,3 +131,7 @@ store-success-output = true
 # Note that if a description can be extracted from the output, it is always stored in the
 # <description> element.
 store-failure-output = true
+
+[[profile.default.overrides]]
+filter = "test(reconcile_fuzz)"
+retries = 3

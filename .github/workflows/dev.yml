@@ -100,7 +100,7 @@ jobs:
           targets: "x86_64-unknown-linux-gnu"
           components: "rustfmt,clippy"
       - name: "install cargo binstall"
-        uses: "cargo-bins/cargo-binstall@v1.3.0"
+        uses: "cargo-bins/cargo-binstall@v1.12.5"
       - name: "Checkout"
         uses: "actions/checkout@v4"
         with:
@@ -131,6 +131,21 @@ jobs:
           just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-gnu \
             cargo doc
 
+      - name: "publish dev/debug test report"
+        uses: "mikepenz/action-junit-report@v5"
+        if: "${{ always() }}"
+        with:
+          comment: 'false'
+          annotate_only: 'true'
+          annotate_notice: 'false'
+          flaky_summary: 'true'
+          check_retries: 'false'
+          check_name: 'test report: dev/debug'
+          fail_on_parse_error: 'true'
+          fail_on_failure: 'true'
+          detailed_summary: 'true'
+          report_paths: 'target/nextest/default/junit.xml'
+
       - id: "gnu_release_test"
         name: "test gnu release"
         run: |
@@ -138,6 +153,21 @@ jobs:
             cargo nextest run
           just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-gnu \
             cargo doc
+
+      - name: "publish dev/release test report"
+        uses: "mikepenz/action-junit-report@v5"
+        if: "${{ always() }}"
+        with:
+          comment: 'false'
+          annotate_only: 'true'
+          annotate_notice: 'false'
+          flaky_summary: 'true'
+          check_retries: 'false'
+          check_name: 'test report: dev/debug'
+          fail_on_parse_error: 'true'
+          fail_on_failure: 'true'
+          detailed_summary: 'true'
+          report_paths: 'target/nextest/default/junit.xml'
 
       - id: "clippy"
         name: "run clippy"
