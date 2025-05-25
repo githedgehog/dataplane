@@ -48,7 +48,7 @@ run-extra-args = []
 # failed and retried tests.
 #
 # Can be overridden through the `--status-level` flag.
-status-level = "all"
+status-level = "skip"
 
 # Similar to status-level, show these test statuses at the end of the run.
 final-status-level = "all"
@@ -95,7 +95,7 @@ slow-timeout = { period = "60s" }
 # handles, but doesn't clean the child process up (especially when it fails).
 #
 # See <https://nexte.st/docs/features/leaky-tests> for more information.
-leak-timeout = "100ms"
+leak-timeout = "500ms"
 
 # `nextest archive` automatically includes any build output required by a standard build.
 # However sometimes extra non-standard files are required.

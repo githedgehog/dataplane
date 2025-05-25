@@ -173,6 +173,7 @@ jobs:
           annotate_only: 'true'
           annotate_notice: 'false'
           flaky_summary: 'true'
+          update_check: 'true'
           check_retries: 'false'
           check_name: 'test report: dev/debug'
           fail_on_parse_error: 'true'
