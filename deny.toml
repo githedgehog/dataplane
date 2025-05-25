@@ -61,6 +61,7 @@ allow = [
   "OSL-2.0",
   "OSL-2.1",
   "OSL-3.0",
+  "OpenSSL", # pulled in by some crypto configurations.  Permissive license
   "PHP-3.01",
   "Python-2.0",
   "QPL-1.0",
@@ -236,7 +237,10 @@ allow-git = []
 
 [sources.allow-org]
 # github.com organizations to allow git sources for
-github = ["githedgehog"]
+github = [
+  "githedgehog",
+  "tkaitchuck", # temporary: until ahash cuts a new release with version bumps
+]
 # gitlab.com organizations to allow git sources for
 gitlab = []
 # bitbucket.org organizations to allow git sources for
