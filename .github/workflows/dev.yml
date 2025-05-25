@@ -134,31 +134,10 @@ jobs:
           just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-gnu \
             cargo doc
 
-      - name: "publish dev/debug test report"
-        uses: "mikepenz/action-junit-report@v5"
+      - name: "move test report"
         if: "${{ always() }}"
-        with:
-          comment: 'true'
-          updateComment: 'true'
-          annotate_only: 'false'
-          truncate_stack_traces: 'false'
-          annotate_notice: 'true'
-          check_annotations: 'true'
-          flaky_summary: 'true'
-          check_retries: 'true'
-          include_time_in_summary: 'true'
-          simplified_summary: 'true'
-          require_passed_tests: 'true'
-          require_tests: 'true'
-          verbose_summary: 'false'
-          include_passed: 'false'
-          update_check: 'true'
-          include_empty_in_summary: 'true'
-          check_name: 'test report: dev/debug'
-          fail_on_parse_error: 'true'
-          fail_on_failure: 'true'
-          detailed_summary: 'true'
-          report_paths: 'target/nextest/default/junit.xml'
+        run: |
+          mv ./target/nextest/default/junit.xml ./target/nextest/default/debug.junit.xml
 
       - id: "gnu_release_test"
         name: "test gnu release"
@@ -167,6 +146,11 @@ jobs:
             cargo nextest run
           just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-gnu \
             cargo doc
+
+      - name: "move test report"
+        if: "${{ always() }}"
+        run: |
+          mv ./target/nextest/default/junit.xml ./target/nextest/default/release.junit.xml
 
       - name: "publish dev/release test report"
         uses: "mikepenz/action-junit-report@v5"
@@ -179,7 +163,7 @@ jobs:
           annotate_notice: 'true'
           check_annotations: 'true'
           flaky_summary: 'true'
-          check_retries: 'true'
+          check_retries: 'false'
           include_time_in_summary: 'true'
           simplified_summary: 'true'
           require_passed_tests: 'true'
@@ -192,7 +176,7 @@ jobs:
           fail_on_parse_error: 'true'
           fail_on_failure: 'true'
           detailed_summary: 'true'
-          report_paths: 'target/nextest/default/junit.xml'
+          report_paths: 'target/nextest/default/*.junit.xml'
 
       - id: "clippy"
         name: "run clippy"
