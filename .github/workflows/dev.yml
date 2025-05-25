@@ -115,11 +115,11 @@ jobs:
       - name: "install cargo-nextest"
         run: |
           cargo binstall --no-confirm cargo-nextest
-      - run: |
-          just debug_justfile="${{matrix.debug_justfile}}" cargo deny check
       - name: refresh-compile-env
         run: |
           just --yes debug_justfile="${{matrix.debug_justfile}}" refresh-compile-env
+      - run: |
+          just debug_justfile="${{matrix.debug_justfile}}" cargo deny check
       - run: |
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
 
