@@ -111,7 +111,10 @@ jobs:
           cargo binstall --no-confirm just
       - name: "install cargo-deny"
         run: |
-          cargo binstall  --no-confirm cargo-deny
+          cargo binstall --no-confirm cargo-deny
+      - name: "install cargo-nextest"
+        run: |
+          cargo binstall --no-confirm cargo-nextest
       - run: |
           just debug_justfile="${{matrix.debug_justfile}}" cargo deny check
       - name: refresh-compile-env
@@ -124,7 +127,7 @@ jobs:
         name: "test gnu dev"
         run: |
           just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-gnu \
-            cargo test
+            cargo nextest run
           just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-gnu \
             cargo doc
 
@@ -132,7 +135,7 @@ jobs:
         name: "test gnu release"
         run: |
           just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-gnu \
-            cargo test
+            cargo nextest run
           just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-gnu \
             cargo doc
 
