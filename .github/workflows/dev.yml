@@ -73,12 +73,12 @@ jobs:
           - # failures on stable block release
             version: "stable"
             optional: false
-#          - # failures on beta block release
-#            version: "beta"
-#            optional: false
-#          - # failures on the nightly channel are a clear "yellow" flag
-#            version: "nightly"
-#            optional: true
+          - # failures on beta block release
+            version: "beta"
+            optional: false
+          - # failures on the nightly channel are a clear "yellow" flag
+            version: "nightly"
+            optional: true
         debug_justfile:
           - "${{inputs.debug_justfile || false}}"
     outputs:
