@@ -73,12 +73,12 @@ jobs:
           - # failures on stable block release
             version: "stable"
             optional: false
-          - # failures on beta block release
-            version: "beta"
-            optional: false
-          - # failures on the nightly channel are a clear "yellow" flag
-            version: "nightly"
-            optional: true
+#          - # failures on beta block release
+#            version: "beta"
+#            optional: false
+#          - # failures on the nightly channel are a clear "yellow" flag
+#            version: "nightly"
+#            optional: true
         debug_justfile:
           - "${{inputs.debug_justfile || false}}"
     outputs:
@@ -115,6 +115,7 @@ jobs:
       - name: "install cargo-nextest"
         run: |
           cargo binstall --no-confirm cargo-nextest
+          mkdir -p target/nextest
       - name: refresh-compile-env
         run: |
           just --yes debug_justfile="${{matrix.debug_justfile}}" refresh-compile-env

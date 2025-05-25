@@ -1035,6 +1035,7 @@ dependencies = [
  "etherparse",
  "multi_index_map",
  "ordermap",
+ "rand 0.9.1",
  "serde",
  "thiserror 2.0.12",
  "tracing",
