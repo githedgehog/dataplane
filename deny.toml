@@ -30,6 +30,7 @@ allow = [
   "BSL-1.0",
   "CC0-1.0", # waives all copyright in all forms
   "CDDL-1.0",
+  "CDLA-Permissive-2.0", # for webpki roots. Permissive license. See https://spdx.org/licenses/CDLA-Permissive-2.0.html
   "CPAL-1.0",
   "CPL-1.0",
   "ECL-2.0",
