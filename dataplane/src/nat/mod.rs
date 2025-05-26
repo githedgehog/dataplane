@@ -39,6 +39,7 @@
 mod fabric;
 mod iplist;
 mod prefixtrie;
+mod utils;
 
 use crate::nat::fabric::{PeeringPolicy, Pif, Vpc};
 use crate::nat::iplist::IpList;
