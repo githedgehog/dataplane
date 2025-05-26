@@ -16,6 +16,7 @@ use std::net::Ipv4Addr;
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
+#[serde(transparent)]
 pub struct UnicastIpv4Addr(Ipv4Addr);
 
 impl UnicastIpv4Addr {
