@@ -100,6 +100,15 @@ impl VrfConfigTable {
     pub fn new() -> Self {
         VrfConfigTable::default()
     }
+
+    pub fn default_vrf_config(&self) -> Option<&VrfConfig> {
+        self.iter_by_name().find(|vrf| vrf.default)
+    }
+
+    pub fn vpc_vrfs(&self) -> impl Iterator<Item = &VrfConfig> {
+        self.iter_by_name().filter(|vrf| vrf.vni.is_some())
+    }
+
     pub fn add_vrf_config(&mut self, vrf_cfg: VrfConfig) -> ConfigResult {
         let name = vrf_cfg.name.clone();
         debug!(
