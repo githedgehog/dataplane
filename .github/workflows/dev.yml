@@ -200,6 +200,14 @@ jobs:
             } | tee "${GITHUB_ENV}"
           fi
 
+      - uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: flaky tests
+          ignore_empty: 'true'
+          delete: 'true'
+          skip_unchanged: 'true'
+          message: "${{ env.FLAKY_TESTS }}"
+
       - name: "publish dev/release test report"
         uses: "mikepenz/action-junit-report@v5"
         id: "report"
@@ -229,6 +237,7 @@ jobs:
           job_summary: 'true'
           verbose_summary: 'false'
           summary: "${{ env.FLAKY_TESTS }}"
+
 
       - id: "clippy"
         name: "run clippy"
