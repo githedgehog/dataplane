@@ -202,6 +202,7 @@ jobs:
 
       - name: "publish dev/release test report"
         uses: "mikepenz/action-junit-report@v5"
+        id: "report"
         if: "${{ always() }}"
         with:
           annotate_notice: 'false'
