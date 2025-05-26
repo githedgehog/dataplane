@@ -82,9 +82,10 @@ jobs:
             version: "nightly"
             optional: true
         debug_justfile:
-          - "${{inputs.debug_justfile || false}}"
+          - "${{ inputs.debug_justfile || false }}"
     outputs:
       result: "${{ matrix.rust.optional || (steps.gnu_dev_test.conclusion == 'success' && steps.gnu_release_test.conclusion == 'success' && steps.clippy.conclusion == 'success' && (steps.build_each_commit.conclusion == 'success' || steps.build_each_commit.conclusion == 'skipped')) }}"
+      flaky: "${{ steps.flaky.outputs.flaky_tests }}"
     name: "Developer build"
     runs-on: "lab"
     timeout-minutes: 45
@@ -118,7 +119,7 @@ jobs:
         run: |
           cargo binstall --no-confirm cargo-nextest
           mkdir -p target/nextest
-      - name: refresh-compile-env
+      - name: "refresh-compile-env"
         run: |
           just --yes debug_justfile="${{matrix.debug_justfile}}" refresh-compile-env
       - run: |
@@ -129,9 +130,17 @@ jobs:
       - id: "gnu_dev_test"
         name: "test gnu dev"
         run: |
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-gnu \
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            rust=${{matrix.rust.version}} \
+            profile=dev \
+            target=x86_64-unknown-linux-gnu \
             cargo nextest run
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-gnu \
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            rust=${{matrix.rust.version}} \
+            profile=dev \
+            target=x86_64-unknown-linux-gnu \
             cargo doc
 
       - name: "move test report"
@@ -142,9 +151,16 @@ jobs:
       - id: "gnu_release_test"
         name: "test gnu release"
         run: |
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-gnu \
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            rust=${{matrix.rust.version}} \
+            profile=release target=x86_64-unknown-linux-gnu \
             cargo nextest run
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-gnu \
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            rust=${{matrix.rust.version}} \
+            profile=release \
+            target=x86_64-unknown-linux-gnu \
             cargo doc
 
       - name: "move test report"
@@ -152,31 +168,53 @@ jobs:
         run: |
           mv ./target/nextest/default/junit.xml ./target/nextest/default/release.junit.xml
 
+      - name: "report flaky tests"
+        if: "${{ always() }}"
+        id: flaky
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends xq
+          for i in ./target/nextest/default/*junit.xml; do
+            xq -r '.testsuites.testsuite[].testcase[] |
+              select(.flakyFailure) |
+              .["@classname"] + "::" + .["@name"]' \
+            "${i}" >> target/nextest/default/flaky.list
+          done
+          if [ -s target/nextest/default/flaky.list ]; then
+            { 
+              echo -e "# Flaky tests\n"; 
+              cat target/nextest/default/flaky.list; 
+            } | tee \
+                >(jq --raw-input  --slurp | jq --raw-input --raw-output '"flaky_tests=" + .' > "${GITHUB_OUTPUT}") \
+                "${GITHUB_STEP_SUMMARY}" \
+                1>&2
+          fi
+
       - name: "publish dev/release test report"
         uses: "mikepenz/action-junit-report@v5"
         if: "${{ always() }}"
         with:
-          comment: 'true'
-          updateComment: 'true'
-          annotate_only: 'false'
-          truncate_stack_traces: 'false'
           annotate_notice: 'true'
+          annotate_only: 'false'
           check_annotations: 'true'
-          flaky_summary: 'true'
           check_retries: 'false'
+          comment: 'true'
+          detailed_summary: 'true'
+          fail_on_failure: 'true'
+          fail_on_parse_error: 'true'
+          flaky_summary: 'true'
+          include_empty_in_summary: 'true'
+          include_passed: 'false'
           include_time_in_summary: 'true'
-          simplified_summary: 'true'
+          report_paths: 'target/nextest/default/*.junit.xml'
           require_passed_tests: 'true'
           require_tests: 'true'
-          verbose_summary: 'false'
-          include_passed: 'false'
+          simplified_summary: 'true'
+          truncate_stack_traces: 'false'
+          updateComment: 'true'
           update_check: 'true'
-          include_empty_in_summary: 'true'
-          check_name: 'test report: dev/release'
-          fail_on_parse_error: 'true'
-          fail_on_failure: 'true'
-          detailed_summary: 'true'
-          report_paths: 'target/nextest/default/*.junit.xml'
+          verbose_summary: 'false'
+          summary: "${{ fromJSON( steps.flaky.outputs.flaky_tests ) }}"
 
       - id: "clippy"
         name: "run clippy"
