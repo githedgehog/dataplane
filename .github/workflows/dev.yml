@@ -182,7 +182,7 @@ jobs:
           for i in ./target/nextest/default/*junit.xml; do
             xq -r '.testsuites.testsuite[].testcase[] |
               select(.flakyFailure) |
-              .["@classname"] + "::" + .["@name"]' \
+              "* " .["@classname"] + "::" + .["@name"]' \
             "${i}" >> target/nextest/default/flaky.list
           done
           if [ -s target/nextest/default/flaky.list ]; then
@@ -202,7 +202,6 @@ jobs:
 
       - uses: marocchino/sticky-pull-request-comment@v2
         with:
-          header: flaky tests
           ignore_empty: 'true'
           delete: 'true'
           skip_unchanged: 'true'
