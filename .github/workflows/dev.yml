@@ -85,7 +85,6 @@ jobs:
           - "${{ inputs.debug_justfile || false }}"
     outputs:
       result: "${{ matrix.rust.optional || (steps.gnu_dev_test.conclusion == 'success' && steps.gnu_release_test.conclusion == 'success' && steps.clippy.conclusion == 'success' && (steps.build_each_commit.conclusion == 'success' || steps.build_each_commit.conclusion == 'skipped')) }}"
-      flaky: "${{ steps.flaky.outputs.flaky_tests }}"
     name: "Developer build"
     runs-on: "lab"
     timeout-minutes: 45
@@ -181,13 +180,18 @@ jobs:
             "${i}" >> target/nextest/default/flaky.list
           done
           if [ -s target/nextest/default/flaky.list ]; then
-            { 
+            {
               echo -e "# Flaky tests\n"; 
               cat target/nextest/default/flaky.list; 
-            } | tee \
-                >(jq --raw-input  --slurp | jq --raw-input --raw-output '"flaky_tests=" + .' > "${GITHUB_OUTPUT}") \
-                "${GITHUB_STEP_SUMMARY}" \
-                1>&2
+            } | tee "${GITHUB_STEP_SUMMARY}"
+          
+            EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+            {
+              echo "FLAKY_TESTS<<${EOF}"
+              echo -e "# Flaky tests\n"; 
+              cat target/nextest/default/flaky.list; 
+              echo "${EOF}"
+            } | tee "${GITHUB_ENV}"
           fi
 
       - name: "publish dev/release test report"
@@ -214,6 +218,7 @@ jobs:
           updateComment: 'true'
           update_check: 'true'
           verbose_summary: 'false'
+          summary: "${{ env.FLAKY_TESTS }}"
 
       - id: "clippy"
         name: "run clippy"
