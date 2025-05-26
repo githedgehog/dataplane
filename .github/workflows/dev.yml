@@ -173,12 +173,15 @@ jobs:
         run: |
           mv ./target/nextest/default/junit.xml ./target/nextest/default/release.junit.xml
 
+      - uses: "actions/setup-python@v5"
+        with:
+          python-version: '3.13'
+          cache: 'pip' # caching pip dependencies
+      - run: "pip install yq"
       - name: "report flaky tests"
         if: "${{ always() }}"
         id: flaky
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes yq
           for i in ./target/nextest/default/*junit.xml; do
             xq -r '.testsuites.testsuite[].testcase[] |
               select(.flakyFailure) |
