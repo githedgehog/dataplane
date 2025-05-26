@@ -214,7 +214,6 @@ jobs:
           updateComment: 'true'
           update_check: 'true'
           verbose_summary: 'false'
-          summary: "${{ fromJSON( steps.flaky.outputs.flaky_tests ) }}"
 
       - id: "clippy"
         name: "run clippy"
