@@ -175,7 +175,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends xq
           for i in ./target/nextest/default/*junit.xml; do
-            xq -r '.testsuites.testsuite[].testcase[] |
+            xq '.testsuites.testsuite[].testcase[] |
               select(.flakyFailure) |
               .["@classname"] + "::" + .["@name"]' \
             "${i}" >> target/nextest/default/flaky.list
