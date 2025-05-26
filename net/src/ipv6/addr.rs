@@ -11,7 +11,10 @@ use std::net::Ipv6Addr;
 /// A type representing the set of unicast ipv6 addresses.
 #[non_exhaustive]
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
 pub struct UnicastIpv6Addr(Ipv6Addr);
 
 impl UnicastIpv6Addr {
