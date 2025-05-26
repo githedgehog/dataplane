@@ -28,6 +28,7 @@ arbitrary = { workspace = true, features = ["derive"] }
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"] }
 etherparse = { workspace = true, default-features = false, features = ["std"] }
 ordermap = { workspace = true }
+rand = "0.9.1" # SCRATCH: just illustrataing output of flaky tests
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

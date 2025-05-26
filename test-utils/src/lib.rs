@@ -3,6 +3,8 @@
 
 //! Testing utilities for the dataplane
 
+pub use test_utils_macros as fixin;
+
 use caps::{CapSet, Capability};
 use rtnetlink::NetworkNamespace;
 use std::panic::{RefUnwindSafe, UnwindSafe, catch_unwind};
@@ -189,7 +191,7 @@ pub fn in_netns<
 /// If the current thread is bound to network resources (e.g., open sockets), then this method will
 /// exhibit undefined behavior.
 #[allow(unsafe_code)] // documented rational
-unsafe fn swap_thread_to_netns(netns_path: &String) -> Result<(), rtnetlink::Error> {
+pub unsafe fn swap_thread_to_netns(netns_path: &String) -> Result<(), rtnetlink::Error> {
     let ns_path = Path::new(netns_path);
 
     if let Err(e) = nix::sched::unshare(CloneFlags::CLONE_NEWNET) {

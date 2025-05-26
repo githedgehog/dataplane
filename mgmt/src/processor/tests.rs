@@ -26,7 +26,7 @@ pub mod test {
     use std::net::IpAddr;
     use std::net::Ipv4Addr;
     use std::str::FromStr;
-    use test_utils::with_caps;
+    use test_utils::{fixin, with_caps};
     use tracing::Level;
     //    use crate::models::internal::routing::evpn::VtepConfig;
 

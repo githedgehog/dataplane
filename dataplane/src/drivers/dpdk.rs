@@ -25,18 +25,6 @@ use pipeline::{self, DynPipeline, NetworkFunction};
 static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();
  */
 
-fn init_eal(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
-    let rte = eal::init(args);
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .with_target(true)
-        .with_thread_ids(true)
-        .with_line_number(true)
-        .with_thread_names(true)
-        .init();
-    rte
-}
-
 fn init_devices(eal: &Eal) -> Vec<Dev> {
     eal.dev
         .iter()
@@ -136,7 +124,7 @@ impl DriverDpdk {
         args: impl IntoIterator<Item = impl AsRef<str>>,
         setup_pipeline: &(impl Sync + Fn() -> DynPipeline<Mbuf>),
     ) {
-        let eal = init_eal(args);
+        let eal = eal::init(args);
         let devices = init_devices(&eal);
         start_rte_workers(&devices, setup_pipeline);
     }

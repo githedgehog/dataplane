@@ -5,12 +5,12 @@
 name: "sterile.yml"
 
 on:
-  pull_request: {}
+  pull_request: { }
   push:
     branches:
       - "main"
   merge_group:
-    types: ["checks_requested"]
+    types: [ "checks_requested" ]
   workflow_dispatch:
     inputs:
       debug_enabled:
@@ -78,9 +78,12 @@ jobs:
           toolchain: "${{ matrix.rust }}"
           targets: "x86_64-unknown-linux-gnu"
 
+      - name: "install cargo binstall"
+        uses: "cargo-bins/cargo-binstall@v1.12.5"
+
       - name: "install just"
         run: |
-          cargo install just
+          cargo binstall --no-confirm just
 
       - name: "Checkout"
         uses: "actions/checkout@v4"
@@ -153,21 +156,20 @@ jobs:
           toolchain: "${{ matrix.rust }}"
           targets: "x86_64-unknown-linux-gnu"
 
+      - name: "install cargo binstall"
+        uses: "cargo-bins/cargo-binstall@v1.12.5"
+
       - name: "install just"
         run: |
-          cargo install just
+          cargo binstall --no-confirm just
+
+      - name: "install cargo deny"
+        run: |
+          cargo binstall --no-confirm cargo-deny
 
       - name: "Checkout"
         uses: "actions/checkout@v4"
 
-      - name: "install rust"
-        uses: "dtolnay/rust-toolchain@master"
-        with:
-          toolchain: "${{ matrix.rust }}"
-          targets: "x86_64-unknown-linux-gnu"
-
-      - run: |
-          cargo install cargo-deny
       - run: |
           just debug_justfile="${{matrix.debug_just}}" cargo deny check
       - run: |

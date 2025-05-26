@@ -34,6 +34,8 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
+  checks: "write"
+  pull-requests: "write"
   contents: "read"
   packages: "write"
   id-token: "write"
@@ -66,6 +68,12 @@ jobs:
   build:
     needs: [ check_changes ]
     if: "${{ needs.check_changes.outputs.devfiles == 'true' }}"
+    permissions:
+      checks: "write"
+      pull-requests: "write"
+      contents: "read"
+      packages: "write"
+      id-token: "write"
     strategy:
       fail-fast: false
       matrix:
@@ -80,7 +88,7 @@ jobs:
             version: "nightly"
             optional: true
         debug_justfile:
-          - "${{inputs.debug_justfile || false}}"
+          - "${{ inputs.debug_justfile || false }}"
     outputs:
       result: "${{ matrix.rust.optional || (steps.gnu_dev_test.conclusion == 'success' && steps.gnu_release_test.conclusion == 'success' && steps.clippy.conclusion == 'success' && (steps.build_each_commit.conclusion == 'success' || steps.build_each_commit.conclusion == 'skipped')) }}"
     name: "Developer build"
@@ -99,6 +107,8 @@ jobs:
           toolchain: "${{ matrix.rust.version }}"
           targets: "x86_64-unknown-linux-gnu"
           components: "rustfmt,clippy"
+      - name: "install cargo binstall"
+        uses: "cargo-bins/cargo-binstall@v1.12.5"
       - name: "Checkout"
         uses: "actions/checkout@v4"
         with:
@@ -106,33 +116,83 @@ jobs:
           fetch-depth: "0"
       - name: "install just"
         run: |
-          cargo install just
+          cargo binstall --no-confirm just
       - name: "install cargo-deny"
         run: |
-          cargo install cargo-deny
-      - run: |
-          just debug_justfile="${{matrix.debug_justfile}}" cargo deny check
-      - name: refresh-compile-env
+          cargo binstall --no-confirm cargo-deny
+      - name: "install cargo-nextest"
+        run: |
+          cargo binstall --no-confirm cargo-nextest
+          mkdir -p target/nextest
+      - name: "refresh-compile-env"
         run: |
           just --yes debug_justfile="${{matrix.debug_justfile}}" refresh-compile-env
+      - run: |
+          just debug_justfile="${{matrix.debug_justfile}}" cargo deny check
       - run: |
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
 
       - id: "gnu_dev_test"
         name: "test gnu dev"
         run: |
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-gnu \
-            cargo test
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-gnu \
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            rust=${{matrix.rust.version}} \
+            profile=dev \
+            target=x86_64-unknown-linux-gnu \
+            cargo nextest run
+          mv ./target/nextest/default/junit.xml ./target/nextest/default/debug.junit.xml
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            rust=${{matrix.rust.version}} \
+            profile=dev \
+            target=x86_64-unknown-linux-gnu \
             cargo doc
 
       - id: "gnu_release_test"
         name: "test gnu release"
         run: |
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-gnu \
-            cargo test
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-gnu \
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            rust=${{matrix.rust.version}} \
+            profile=release target=x86_64-unknown-linux-gnu \
+            cargo nextest run
+          mv ./target/nextest/default/junit.xml ./target/nextest/default/release.junit.xml
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            rust=${{matrix.rust.version}} \
+            profile=release \
+            target=x86_64-unknown-linux-gnu \
             cargo doc
+
+      - name: "publish dev/release test report"
+        uses: "mikepenz/action-junit-report@v5"
+        id: "report"
+        if: "${{ always() }}"
+        with:
+          annotate_notice: 'false'
+          annotate_only: 'false'
+          check_annotations: 'true'
+          check_retries: 'false'
+          comment: 'true'
+          detailed_summary: 'true'
+          fail_on_failure: 'false'
+          fail_on_parse_error: 'true'
+          flaky_summary: 'true'
+          include_empty_in_summary: 'true'
+          include_passed: 'true'
+          include_time_in_summary: 'true'
+          report_paths: 'target/nextest/default/*junit.xml'
+          require_passed_tests: 'true'
+          require_tests: 'true'
+          simplified_summary: 'true'
+          truncate_stack_traces: 'false'
+          updateComment: 'true'
+          group_reports: 'false'
+          check_name: 'report'
+          skip_success_summary: 'true'
+          job_summary: 'true'
+          verbose_summary: 'false'
 
       - id: "clippy"
         name: "run clippy"
@@ -145,9 +205,7 @@ jobs:
         if: "${{ github.event.pull_request || github.event.merge_group }}"
         run: |
           BASE="${{ github.event.pull_request.base.sha || github.event.merge_group.base.sha }}"
-          just debug_justfile="${{matrix.debug_justfile}}" rust="${{matrix.rust.version}}" \
-            build-sweep ${BASE}
-          printf "::notice::HEAD back to %s\n" "$(git log --oneline --no-decorate -n 1)"
+          git rebase --keep-base "${BASE}" --exec 'just cargo build || echo "::warning title=commit failed to build::$(git log --oneline --no-decorate -n 1)"'
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}

@@ -1,0 +1,68 @@
+{
+  "pins": {
+    "dpdk-sys": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "dpdk-sys"
+      },
+      "branch": "main",
+      "submodules": false,
+      "revision": "70959b886c4fb4a16b4c42f51e30cf029ab4e3c8",
+      "url": "https://github.com/githedgehog/dpdk-sys/archive/70959b886c4fb4a16b4c42f51e30cf029ab4e3c8.tar.gz",
+      "hash": "00020z3db1lcrsb9qwaxk5ydwbkz082y0wv9ari9d1gf754f7qj7"
+    },
+    "dplane-rpc": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "dplane-rpc"
+      },
+      "branch": "master",
+      "submodules": false,
+      "revision": "019206ff443645684596fbef49470163f5ae58d6",
+      "url": "https://github.com/githedgehog/dplane-rpc/archive/019206ff443645684596fbef49470163f5ae58d6.tar.gz",
+      "hash": "0pz7x6v3imr10yjwjnswh1id94wscd1xh3h4z07vi1nf9cl07fcm"
+    },
+    "fixin": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "fixin"
+      },
+      "branch": "main",
+      "submodules": false,
+      "revision": "9afddc5d845e3d7c769560be659a6cb0fbd148e2",
+      "url": "https://github.com/githedgehog/fixin/archive/9afddc5d845e3d7c769560be659a6cb0fbd148e2.tar.gz",
+      "hash": "1qfggs60zagqkciy25x2a8qkvd2cb6cv7i5mn45ilwamrx8230v9"
+    },
+    "nixos-25.05": {
+      "type": "Channel",
+      "name": "nixos-25.05",
+      "url": "https://releases.nixos.org/nixos/25.05/nixos-25.05beta801537.2e1496bf8652/nixexprs.tar.xz",
+      "hash": "1xw4ifbpjsqivckd045mazsgw2h9shqf197hkabl5ifnm9aj7kxq"
+    },
+    "nixpkgs": {
+      "type": "Channel",
+      "name": "nixpkgs-unstable",
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-25.11pre801603.12a55407652e/nixexprs.tar.xz",
+      "hash": "127bg6vg2bgfgf9f0klc0ybc0657pdq9zhkxwsd5xkzw7ay6sl9j"
+    },
+    "nixpkgs-24.11-darwin": {
+      "type": "Channel",
+      "name": "nixpkgs-24.11-darwin",
+      "url": "https://releases.nixos.org/nixpkgs/24.11-darwin/nixpkgs-darwin-24.11pre718047.6b051131813a/nixexprs.tar.xz",
+      "hash": "10p84si4ln87rryjczipz53hi8h38ak91y14cz7gvgfz35928a5a"
+    },
+    "nixpkgs-unstable": {
+      "type": "Channel",
+      "name": "nixpkgs-unstable",
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-25.11pre801603.12a55407652e/nixexprs.tar.xz",
+      "hash": "127bg6vg2bgfgf9f0klc0ybc0657pdq9zhkxwsd5xkzw7ay6sl9j"
+    }
+  },
+  "version": 5
+}

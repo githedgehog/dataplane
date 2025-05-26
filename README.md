@@ -2,6 +2,24 @@
 [![FOSSA Status](https://app.fossa.com/api/projects/custom%2B43661%2Fgithub.com%2Fgithedgehog%2Fdataplane.svg?type=shield)](https://app.fossa.com/projects/custom%2B43661%2Fgithub.com%2Fgithedgehog%2Fdataplane?ref=badge_shield)
 
 
+## SCRATCH TEST OF DIAGRAMS
+
+AND HERE IS A PNG
+
+![plan diagram](./plan.svg)
+
+![key](./plan-key.draw.io.svg)
+> Scratch test of figure
+
+![stage 1 diagram](./plan-stage1.draw.io.svg)
+> Stage 1 of transition
+
+![stage 2 diagram](./plan-stage2.draw.io.svg)
+> Stage 2 of transition
+
+![stage 3 diagram](./plan-stage3.draw.io.svg)
+> Stage 3 of transition
+
 This repository contains the Dataplane for [Hedgehog's Open Network
 Fabric][fabric-docs]. This component acts as a gateway between different VPCs
 managed by the Fabric, or to communicate with endpoints outside of the Fabric.
