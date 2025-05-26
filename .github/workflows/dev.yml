@@ -68,6 +68,12 @@ jobs:
   build:
     needs: [ check_changes ]
     if: "${{ needs.check_changes.outputs.devfiles == 'true' }}"
+    permissions:
+      checks: "write"
+      pull-requests: "write"
+      contents: "read"
+      packages: "write"
+      id-token: "write"
     strategy:
       fail-fast: false
       matrix:
@@ -188,7 +194,7 @@ jobs:
             EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
             {
               echo "FLAKY_TESTS<<${EOF}"
-              echo -e "# Flaky tests\n"; 
+              echo -e "# Flaky tests (${{ matrix.rust.version }})\n"; 
               cat target/nextest/default/flaky.list; 
               echo "${EOF}"
             } | tee "${GITHUB_ENV}"
