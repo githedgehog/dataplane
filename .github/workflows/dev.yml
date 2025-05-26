@@ -178,7 +178,7 @@ jobs:
         id: flaky
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends yq
+          sudo apt-get install --yes yq
           for i in ./target/nextest/default/*junit.xml; do
             xq -r '.testsuites.testsuite[].testcase[] |
               select(.flakyFailure) |
