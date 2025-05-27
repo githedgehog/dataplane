@@ -4,7 +4,7 @@
 #![allow(unused)]
 
 pub(crate) use clap::Parser;
-use mgmt::processor::proc::GrpcAddress;
+use mgmt::processor::launch::GrpcAddress;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing::{debug, error};

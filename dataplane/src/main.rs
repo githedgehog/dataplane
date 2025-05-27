@@ -12,11 +12,13 @@ mod nat;
 use crate::args::{CmdArgs, Parser};
 use drivers::dpdk::DriverDpdk;
 use drivers::kernel::DriverKernel;
+use mgmt::processor::launch::start_mgmt;
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
 use tracing::{debug, error, info};
+use tracing_subscriber::EnvFilter;
 
 fn init_logging() {
     tracing_subscriber::fmt()
@@ -46,9 +48,6 @@ fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
         pipeline.add_stage(PacketDumper::new("default", true, None))
     }
 }
-
-use mgmt::processor::proc::start_mgmt;
-use tracing_subscriber::EnvFilter;
 
 fn main() {
     init_logging();
