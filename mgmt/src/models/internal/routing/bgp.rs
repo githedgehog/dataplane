@@ -130,6 +130,9 @@ pub struct BgpNeighbor {
     pub ipv4_unicast: bool,
     pub ipv6_unicast: bool,
     pub l2vpn_evpn: bool,
+
+    /* Networks to advertise */
+    pub networks: Vec<Prefix>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -188,6 +191,7 @@ pub struct BgpConfig {
     pub af_ipv4unicast: Option<AfIpv4Ucast>,
     pub af_ipv6unicast: Option<AfIpv6Ucast>,
     pub af_l2vpnevpn: Option<AfL2vpnEvpn>,
+    pub networks: Vec<Prefix>,
 }
 
 /* ===== impls: Builders ===== */
@@ -449,6 +453,15 @@ impl BgpNeighbor {
     }
     pub fn l2vpn_evpn_activate(mut self, value: bool) -> Self {
         self.l2vpn_evpn = value;
+        self
+    }
+    /* Networks to advertise */
+    pub fn add_network(mut self, network: Prefix) -> Self {
+        self.networks.push(network);
+        self
+    }
+    pub fn set_networks(mut self, networks: Vec<Prefix>) -> Self {
+        self.networks = networks;
         self
     }
 }

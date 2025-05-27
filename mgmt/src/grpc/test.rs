@@ -28,7 +28,7 @@ mod tests {
         // Create interfaces for VRF
         let eth0 = gateway_config::Interface {
             name: "eth0".to_string(),
-            ipaddr: "192.168.1.1/24".to_string(),
+            ipaddrs: vec!["192.168.1.1/24".to_string(), "192.168.2.1/24".to_string()],
             r#type: 0, // Ethernet
             role: 0,   // Fabric
             vlan: None,
@@ -39,7 +39,7 @@ mod tests {
 
         let lo0 = gateway_config::Interface {
             name: "lo0".to_string(),
-            ipaddr: "10.0.0.1/32".to_string(),
+            ipaddrs: vec!["10.0.0.1/32".to_string()],
             r#type: 2, // Loopback
             role: 0,   // Fabric
             vlan: None,
@@ -53,6 +53,7 @@ mod tests {
             address: "192.168.1.2".to_string(),
             remote_asn: "65002".to_string(),
             af_activate: vec![0, 2], // IPv4 Unicast and L2VPN EVPN
+            networks: Vec::new(),
         };
 
         // Create BGP router config
@@ -85,7 +86,7 @@ mod tests {
         // Create interfaces for VPCs
         let vpc1_if1 = gateway_config::Interface {
             name: "vpc1_if1".to_string(),
-            ipaddr: "10.1.1.1/24".to_string(),
+            ipaddrs: vec!["10.1.1.1/24".to_string()],
             r#type: 0, // Ethernet
             role: 0,   // Fabric
             vlan: None,
@@ -96,7 +97,7 @@ mod tests {
 
         let vpc2_if1 = gateway_config::Interface {
             name: "vpc2_if1".to_string(),
-            ipaddr: "10.2.1.1/24".to_string(),
+            ipaddrs: vec!["10.2.1.1/24".to_string()],
             r#type: 0, // Ethernet
             role: 0,   // Fabric
             vlan: None,
@@ -340,12 +341,22 @@ mod tests {
             );
 
             // For non-empty addresses
-            if !original_iface.ipaddr.is_empty() {
+            if !original_iface.ipaddrs.is_empty() {
                 assert!(
-                    !converted_iface.ipaddr.is_empty(),
+                    !converted_iface.ipaddrs.is_empty(),
                     "Interface address missing for {name}",
                 );
             }
+
+            // Check that interface addresses match (order independent)
+            let mut original_addrs: Vec<String> = original_iface.ipaddrs.clone();
+            let mut converted_addrs: Vec<String> = converted_iface.ipaddrs.clone();
+            original_addrs.sort();
+            converted_addrs.sort();
+            assert_eq!(
+                converted_addrs, original_addrs,
+                "Interface addresses mismatch for {name}"
+            );
 
             // Check VLAN if applicable
             if original_iface.r#type == 1 {
@@ -604,7 +615,7 @@ mod tests {
 
         let interface = gateway_config::Interface {
             name: "eth0".to_string(),
-            ipaddr: "192.168.1.1/24".to_string(),
+            ipaddrs: vec!["192.168.1.1/24".to_string()],
             r#type: 0, // Ethernet
             role: 0,   // Fabric
             vlan: None,
@@ -657,6 +668,6 @@ mod tests {
         // Verify round trip conversion
         assert_eq!(interface_back.name, interface.name);
         assert_eq!(interface_back.r#type, interface.r#type);
-        assert!(!interface_back.ipaddr.is_empty());
+        assert!(!interface_back.ipaddrs.is_empty());
     }
 }
