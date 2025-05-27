@@ -66,6 +66,9 @@ impl CpiHandle {
     pub fn get_ctl_tx(&self) -> RouterCtlSender {
         RouterCtlSender(self.ctl.clone())
     }
+    pub fn get_ctl_tx(&self) -> std::sync::mpsc::Sender<CpiCtlMsg> {
+        self.ctl.clone()
+    }
 }
 
 pub struct CpiConf {
