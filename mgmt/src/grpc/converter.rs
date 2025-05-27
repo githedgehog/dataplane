@@ -15,7 +15,7 @@ use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
 use crate::models::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
 use crate::models::internal::routing::ospf::{Ospf, OspfInterface, OspfNetwork};
 
-use routing::prefix::Prefix;
+use routing::prefix::{Prefix, PrefixString};
 
 use crate::models::internal::device::{
     DeviceConfig,
@@ -419,6 +419,16 @@ pub fn convert_bgp_neighbor(neighbor: &gateway_config::BgpNeighbor) -> Result<Bg
         }
     }
 
+    let networks = neighbor
+        .networks
+        .iter()
+        .map(|n| {
+            // Parse each network into a Prefix
+            Prefix::try_from(PrefixString(n))
+                .map_err(|e| format!("Invalid network prefix {n}: {e}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     // Create the neighbor config
     let neigh = BgpNeighbor::new_host(neighbor_addr)
         .set_remote_as(remote_as)
@@ -427,7 +437,8 @@ pub fn convert_bgp_neighbor(neighbor: &gateway_config::BgpNeighbor) -> Result<Bg
         .set_send_community(NeighSendCommunities::Both)
         .ipv4_unicast_activate(ipv4_unicast)
         .ipv6_unicast_activate(ipv6_unicast)
-        .l2vpn_evpn_activate(l2vpn_evpn);
+        .l2vpn_evpn_activate(l2vpn_evpn)
+        .set_networks(networks);
     Ok(neigh)
 }
 
