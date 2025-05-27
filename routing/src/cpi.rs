@@ -12,9 +12,9 @@ use crate::atable::atablerw::AtableReader;
 use crate::cli::handle_cli_request;
 use crate::cpi_process::process_rx_data;
 use crate::errors::RouterError;
+use crate::evpn::Vtep;
 use crate::fib::fibtable::FibTableWriter;
 use crate::interfaces::iftablerw::IfTableWriter;
-use crate::evpn::Vtep;
 use crate::routingdb::RoutingDb;
 
 use cli::cliproto::{CliRequest, CliSerialize};
