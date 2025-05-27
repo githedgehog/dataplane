@@ -210,7 +210,7 @@ impl RpcOperation for Rmac {
     fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         if let Ok(mut rmac_store) = db.rmac_store.write() {
             let rmac = RmacEntry::from(self);
-            rmac_store.del_rmac_entry(rmac);
+            rmac_store.del_rmac_entry(&rmac);
             RpcResultCode::Ok
         } else {
             poison_warn(&db.rmac_store)
