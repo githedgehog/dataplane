@@ -29,7 +29,7 @@ use crate::models::internal::routing::vrf::VrfConfig;
 
 use crate::models::internal::routing::bgp::{
     AfIpv4Ucast, AfL2vpnEvpn, BgpConfig, BgpNeighCapabilities, BgpNeighType, BgpNeighbor,
-    BgpOptions, NeighSendCommunities,
+    BgpOptions, BgpUpdateSource, NeighSendCommunities,
 };
 
 // Import proto-generated types
@@ -719,6 +719,32 @@ pub fn convert_interfaces_to_grpc(
     Ok(grpc_interfaces)
 }
 
+pub fn convert_bgp_update_source_to_grpc(
+    update_source: &Option<BgpUpdateSource>,
+) -> Result<Option<gateway_config::config::BgpNeighborUpdateSource>, String> {
+    match update_source {
+        Some(BgpUpdateSource::Address(addr)) => {
+            Ok(Some(gateway_config::config::BgpNeighborUpdateSource {
+                source: Some(
+                    gateway_config::config::bgp_neighbor_update_source::Source::Address(
+                        addr.to_string(),
+                    ),
+                ),
+            }))
+        }
+        Some(BgpUpdateSource::Interface(iface)) => {
+            Ok(Some(gateway_config::config::BgpNeighborUpdateSource {
+                source: Some(
+                    gateway_config::config::bgp_neighbor_update_source::Source::Interface(
+                        iface.to_string(),
+                    ),
+                ),
+            }))
+        }
+        None => Ok(None),
+    }
+}
+
 // Improved BGP conversion with better handling of address families
 pub fn convert_bgp_neighbor_to_grpc(
     neighbor: &BgpNeighbor,
@@ -759,12 +785,14 @@ pub fn convert_bgp_neighbor_to_grpc(
         .map(|n| n.to_string())
         .collect::<Vec<String>>();
 
+    let update_source = convert_bgp_update_source_to_grpc(&neighbor.update_source)?;
+
     Ok(gateway_config::BgpNeighbor {
         address,
         remote_asn,
         af_activate,
         networks,
-        // TODO(manish): Add update_source
+        update_source,
     })
 }
 

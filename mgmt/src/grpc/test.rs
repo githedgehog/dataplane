@@ -54,6 +54,13 @@ mod tests {
             remote_asn: "65002".to_string(),
             af_activate: vec![0, 2], // IPv4 Unicast and L2VPN EVPN
             networks: Vec::new(),
+            update_source: Some(gateway_config::config::BgpNeighborUpdateSource {
+                source: Some(
+                    gateway_config::config::bgp_neighbor_update_source::Source::Address(
+                        "192.168.1.2".to_string(),
+                    ),
+                ),
+            }),
         };
 
         // Create BGP router config
