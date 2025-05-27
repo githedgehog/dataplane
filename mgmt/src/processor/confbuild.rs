@@ -248,10 +248,11 @@ fn build_vtep_config(external: &ExternalConfig, internal: &mut InternalConfig) -
     let vtep_mac = SourceMac::new(Mac([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x01]))
         .unwrap_or_else(|e| unreachable!("{}", e));
 
-    internal.vtep = Some(VtepConfig {
+    let vtep = VtepConfig {
         address: vtep_ip.into(),
         mac: vtep_mac,
-    });
+    };
+    internal.set_vtep(vtep);
     Ok(())
 }
 
