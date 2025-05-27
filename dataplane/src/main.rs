@@ -13,13 +13,16 @@ mod packet_processor;
 use crate::args::{CmdArgs, Parser};
 use drivers::dpdk::DriverDpdk;
 use drivers::kernel::DriverKernel;
-use mgmt::processor::launch::start_mgmt;
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
+#[allow(unused)]
 use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
+
+use crate::packet_processor::start_router;
+use mgmt::processor::launch::start_mgmt;
 
 fn init_logging() {
     tracing_subscriber::fmt()
@@ -64,10 +67,15 @@ fn main() {
     let grpc_addr = match args.get_grpc_address() {
         Ok(addr) => addr,
         Err(e) => {
-            error!("Invalid gRPC address configuration: {}", e);
+            error!("Invalid gRPC address configuration: {e}");
             panic!("Management service configuration error. Aborting...");
         }
     };
+
+    /* start router and create routing pipeline */
+    let (router, pipeline) = start_router("demo-router");
+    let builder = move || pipeline;
+    let _router_ctl = router.get_ctl_tx();
 
     /* start management */
     if let Err(e) = start_mgmt(grpc_addr) {
@@ -75,9 +83,7 @@ fn main() {
         panic!("Failed to start gRPC server: {e}");
     }
 
-    debug!("Starting pipeline....");
-
-    /* start driver */
+    /* start driver with the provided pipeline */
     match args.get_driver_name() {
         "dpdk" => {
             info!("Using driver DPDK...");
@@ -85,7 +91,7 @@ fn main() {
         }
         "kernel" => {
             info!("Using driver kernel...");
-            DriverKernel::start(args.kernel_params(), &setup_pipeline);
+            DriverKernel::start(args.kernel_params(), builder);
         }
         other => {
             error!("Unknown driver '{other}'. Aborting...");
