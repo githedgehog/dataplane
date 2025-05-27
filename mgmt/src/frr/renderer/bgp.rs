@@ -500,7 +500,7 @@ pub mod tests {
             .set_supress_duplicates(true)
             .set_minimum_holdtime(20)
             .set_supress_fib_pending(false)
-            .set_listen_range(Prefix::from(("7.0.0.0", 24)), "SPINES".to_owned())
+            .set_listen_range(Prefix::expect_from(("7.0.0.0", 24)), "SPINES".to_owned())
             .set_listen_limit(256);
 
         bgp.set_bgp_options(options);

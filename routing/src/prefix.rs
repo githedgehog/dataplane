@@ -7,7 +7,7 @@ use ipnet::{Ipv4Net, Ipv6Net};
 use iptrie::{IpPrefix, IpPrefixCovering, Ipv4Prefix, Ipv6Prefix};
 use serde::ser::SerializeStructVariant;
 use serde::{Deserialize, Serialize};
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 pub use std::net::IpAddr;
 pub use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
@@ -124,7 +124,17 @@ impl Prefix {
             Ok(Prefix::from((a, tuple.1)))
         }
     }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub fn expect_from<T>(val: T) -> Self
+    where
+        T: TryInto<Prefix>,
+        T::Error: Debug,
+    {
+        val.try_into().expect("Invalid prefix")
+    }
 }
+
 impl From<(IpAddr, u8)> for Prefix {
     fn from(tuple: (IpAddr, u8)) -> Self {
         match tuple.0 {
@@ -154,12 +164,44 @@ impl From<Ipv6Prefix> for Prefix {
     }
 }
 
-/// Only for testing. Will panic with badly formed address strings
-#[cfg(any(test, feature = "testing"))]
-impl From<(&str, u8)> for Prefix {
-    fn from(tuple: (&str, u8)) -> Self {
-        let a = IpAddr::from_str(tuple.0).expect("Bad address");
-        Prefix::from((a, tuple.1))
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct PrefixString<'a>(pub &'a str);
+
+impl<'a> TryFrom<PrefixString<'a>> for Prefix {
+    type Error = PrefixError;
+
+    fn try_from(value: PrefixString<'a>) -> Result<Self, Self::Error> {
+        let mut parts = value.0.split('/');
+        let addr_str = parts
+            .next()
+            .ok_or_else(|| PrefixError::Invalid("No address part found".to_string()))?;
+
+        let mask_str = parts
+            .next()
+            .ok_or_else(|| PrefixError::Invalid("No mask part found".to_string()))?;
+        let mask =
+            u8::from_str(mask_str).map_err(|_| PrefixError::Invalid("Invalid mask".to_string()))?;
+
+        Self::try_from((addr_str, mask))
+    }
+}
+
+impl TryFrom<(&str, u8)> for Prefix {
+    type Error = PrefixError;
+
+    fn try_from((addr_str, mask_len): (&str, u8)) -> Result<Self, Self::Error> {
+        let addr = IpAddr::from_str(addr_str)
+            .map_err(|_| PrefixError::Invalid("Invalid address format".to_string()))?;
+
+        let max_len = match addr {
+            IpAddr::V4(_) => Ipv4Prefix::MAX_LEN,
+            IpAddr::V6(_) => Ipv6Prefix::MAX_LEN,
+        };
+        if mask_len > max_len {
+            return Err(PrefixError::InvalidLength(mask_len));
+        }
+        Ok(Prefix::from((addr, mask_len)))
     }
 }
 /// Only for testing. Will panic with non-IPv4 prefixes
@@ -179,19 +221,6 @@ impl<'a> From<&'a Prefix> for &'a Ipv6Prefix {
         match value {
             Prefix::IPV4(_) => panic!("Not an IPv6 prefix!"),
             Prefix::IPV6(p) => p,
-        }
-    }
-}
-/// Only for testing. Will panic with badly formatted prefix strings
-#[cfg(any(test, feature = "testing"))]
-impl From<&str> for Prefix {
-    fn from(s: &str) -> Self {
-        if let Ok(p) = Ipv4Net::from_str(s) {
-            Prefix::IPV4(Ipv4Prefix::from(p))
-        } else if let Ok(p) = Ipv6Net::from_str(s) {
-            Prefix::IPV6(Ipv6Prefix::from(p))
-        } else {
-            panic!("Not a valid IP prefix")
         }
     }
 }
@@ -318,13 +347,13 @@ mod tests {
     }
 
     #[test]
-    fn test_prefix_from() {
-        let prefix_v4_1 = Prefix::from("1.2.3.0/24");
-        let prefix_v4_2: Prefix = "1.2.3.0/24".into();
+    fn test_prefix_try_from() {
+        let prefix_v4_1 = Prefix::expect_from(("1.2.3.0", 24));
+        let prefix_v4_2: Prefix = Prefix::expect_from(PrefixString("1.2.3.0/24"));
         let prefix_v4_3: Prefix = Ipv4Prefix::from_str("1.2.3.0/24")
             .expect("Invalid IPv4 prefix")
             .into();
-        let prefix_v4_4 = Prefix::from(("1.2.3.0", 24));
+        let prefix_v4_4 = Prefix::expect_from(("1.2.3.0", 24));
         let prefix_v4_5: Prefix = Ipv4Net::from_str("1.2.3.0/24")
             .expect("Invalid IPv4 prefix")
             .into();
@@ -333,12 +362,12 @@ mod tests {
         assert_eq!(prefix_v4_1, prefix_v4_4);
         assert_eq!(prefix_v4_1, prefix_v4_5);
 
-        let prefix_v6_1 = Prefix::from("2001:a:b:c::/64");
-        let prefix_v6_2: Prefix = "2001:a:b:c::/64".into();
+        let prefix_v6_1 = Prefix::expect_from(("2001:a:b:c::", 64));
+        let prefix_v6_2: Prefix = Prefix::expect_from(PrefixString("2001:a:b:c::/64"));
         let prefix_v6_3: Prefix = Ipv6Prefix::from_str("2001:a:b:c::/64")
             .expect("Invalid IPv6 prefix")
             .into();
-        let prefix_v6_4 = Prefix::from(("2001:a:b:c::", 64));
+        let prefix_v6_4 = Prefix::expect_from(("2001:a:b:c::", 64));
         let prefix_v6_5: Prefix = Ipv6Net::from_str("2001:a:b:c::/64")
             .expect("Invalid IPv6 prefix")
             .into();
@@ -346,6 +375,22 @@ mod tests {
         assert_eq!(prefix_v6_1, prefix_v6_3);
         assert_eq!(prefix_v6_1, prefix_v6_4);
         assert_eq!(prefix_v6_1, prefix_v6_5);
+    }
+
+    #[test]
+    fn test_prefix_try_from_addr_fail() {
+        let prefix_v4 = Prefix::try_from(("1.2.3.X", 24));
+        let prefix_v6 = Prefix::try_from(("2001:a:b:c::X", 60));
+        assert!(prefix_v4.is_err());
+        assert!(prefix_v6.is_err());
+    }
+
+    #[test]
+    fn test_prefix_try_from_mask_fail() {
+        let prefix_v4 = Prefix::try_from(("1.2.3.0", 33));
+        let prefix_v6 = Prefix::try_from(("2001:a:b:c::0", 129));
+        assert!(prefix_v4.is_err());
+        assert!(prefix_v6.is_err());
     }
 
     #[test]

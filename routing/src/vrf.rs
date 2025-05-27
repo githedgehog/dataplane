@@ -432,7 +432,7 @@ pub mod tests {
             let nh1 = build_test_nhop(Some("10.0.0.1"), Some(1), 0, None);
             let nh2 = build_test_nhop(Some("10.0.0.2"), Some(2), 0, None);
             let route = build_test_route(RouteType::Ospf, 110, 20);
-            let prefix = Prefix::from((format!("7.0.0.{i}").as_str(), 32));
+            let prefix = Prefix::expect_from((format!("7.0.0.{i}").as_str(), 32));
             vrf.add_route(&prefix, route.clone() /* only test */, &[nh1, nh2]);
 
             /* since route is /32, it should resolve to itself */
@@ -451,7 +451,7 @@ pub mod tests {
 
         for i in 1..=num_routes {
             /* delete v4 routes one at a time */
-            let prefix = Prefix::from((format!("7.0.0.{i}").as_str(), 32));
+            let prefix = Prefix::expect_from((format!("7.0.0.{i}").as_str(), 32));
             vrf.del_route(&prefix);
 
             /* each route prefix should resolve only to default */

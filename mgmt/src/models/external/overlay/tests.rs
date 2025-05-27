@@ -21,20 +21,20 @@ pub mod test {
     fn build_manifest_vpc1() -> VpcManifest {
         let mut m1 = VpcManifest::new("VPC-1");
         let expose = VpcExpose::empty()
-            .ip(Prefix::from(("10.0.0.0", 25)))
-            .ip(Prefix::from(("10.0.2.128", 25)))
-            .not(Prefix::from(("10.0.1.13", 32)))
-            .not(Prefix::from(("10.0.2.130", 32)))
-            .as_range(Prefix::from(("100.64.1.0", 24)))
-            .not_as(Prefix::from(("100.64.1.13", 32)));
+            .ip(Prefix::expect_from(("10.0.0.0", 25)))
+            .ip(Prefix::expect_from(("10.0.2.128", 25)))
+            .not(Prefix::expect_from(("10.0.1.13", 32)))
+            .not(Prefix::expect_from(("10.0.2.130", 32)))
+            .as_range(Prefix::expect_from(("100.64.1.0", 24)))
+            .not_as(Prefix::expect_from(("100.64.1.13", 32)));
         m1.add_expose(expose).expect("Should succeed");
         m1
     }
     fn build_manifest_vpc2() -> VpcManifest {
         let mut m2 = VpcManifest::new("VPC-2");
         let expose = VpcExpose::empty()
-            .ip(Prefix::from(("10.0.0.0", 24)))
-            .as_range(Prefix::from(("100.64.2.0", 24)));
+            .ip(Prefix::expect_from(("10.0.0.0", 24)))
+            .as_range(Prefix::expect_from(("100.64.2.0", 24)));
 
         m2.add_expose(expose).expect("Should succeed");
         m2
@@ -178,65 +178,65 @@ pub mod test {
         fn man_vpc1_with_vpc2() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-1");
             let expose = VpcExpose::empty()
-                .ip(Prefix::from(("192.168.50.0", 24)))
-                .not(Prefix::from(("192.168.50.13", 32)));
+                .ip(Prefix::expect_from(("192.168.50.0", 24)))
+                .not(Prefix::expect_from(("192.168.50.13", 32)));
             m1.add_expose(expose).expect("Should succeed");
 
             let expose = VpcExpose::empty()
-                .ip(Prefix::from(("192.168.111.0", 24)))
-                .not(Prefix::from(("192.168.111.2", 32)))
-                .not(Prefix::from(("192.168.111.254", 32)))
-                .as_range(Prefix::from(("100.64.200.0", 24)))
-                .not_as(Prefix::from(("100.64.200.13", 32)));
+                .ip(Prefix::expect_from(("192.168.111.0", 24)))
+                .not(Prefix::expect_from(("192.168.111.2", 32)))
+                .not(Prefix::expect_from(("192.168.111.254", 32)))
+                .as_range(Prefix::expect_from(("100.64.200.0", 24)))
+                .not_as(Prefix::expect_from(("100.64.200.13", 32)));
             m1.add_expose(expose).expect("Should succeed");
             m1
         }
         fn man_vpc1_with_vpc3() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-1");
-            let expose = VpcExpose::empty().ip(Prefix::from(("192.168.60.0", 24)));
+            let expose = VpcExpose::empty().ip(Prefix::expect_from(("192.168.60.0", 24)));
             m1.add_expose(expose).expect("Should succeed");
             m1
         }
         fn man_vpc1_with_vpc4() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-1");
-            let expose = VpcExpose::empty().ip(Prefix::from(("192.168.60.0", 24)));
+            let expose = VpcExpose::empty().ip(Prefix::expect_from(("192.168.60.0", 24)));
             m1.add_expose(expose).expect("Should succeed");
             m1
         }
         fn man_vpc2() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-2");
-            let expose = VpcExpose::empty().ip(Prefix::from(("192.168.80.0", 24)));
+            let expose = VpcExpose::empty().ip(Prefix::expect_from(("192.168.80.0", 24)));
             m1.add_expose(expose).expect("Should succeed");
             m1
         }
         fn man_vpc2_with_vpc3() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-2");
-            let expose = VpcExpose::empty().ip(Prefix::from(("192.168.80.0", 24)));
+            let expose = VpcExpose::empty().ip(Prefix::expect_from(("192.168.80.0", 24)));
             m1.add_expose(expose).expect("Should succeed");
             m1
         }
         fn man_vpc3() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-3");
-            let expose = VpcExpose::empty().ip(Prefix::from(("192.168.128.0", 27)));
+            let expose = VpcExpose::empty().ip(Prefix::expect_from(("192.168.128.0", 27)));
             m1.add_expose(expose).expect("Should succeed");
             m1
         }
         fn man_vpc4() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-4");
             let expose = VpcExpose::empty()
-                .ip(Prefix::from(("192.168.201.1", 32)))
-                .ip(Prefix::from(("192.168.202.2", 32)))
-                .ip(Prefix::from(("192.168.203.3", 32)));
+                .ip(Prefix::expect_from(("192.168.201.1", 32)))
+                .ip(Prefix::expect_from(("192.168.202.2", 32)))
+                .ip(Prefix::expect_from(("192.168.203.3", 32)));
             m1.add_expose(expose).expect("Should succeed");
 
             let expose = VpcExpose::empty()
-                .ip(Prefix::from(("192.168.204.4", 32)))
-                .as_range(Prefix::from(("100.64.204.4", 32)));
+                .ip(Prefix::expect_from(("192.168.204.4", 32)))
+                .as_range(Prefix::expect_from(("100.64.204.4", 32)));
             m1.add_expose(expose).expect("Should succeed");
 
             let expose = VpcExpose::empty()
-                .ip(Prefix::from(("192.168.210.0", 29)))
-                .not(Prefix::from(("192.168.210.1", 32)));
+                .ip(Prefix::expect_from(("192.168.210.0", 29)))
+                .not(Prefix::expect_from(("192.168.210.1", 32)));
             m1.add_expose(expose).expect("Should succeed");
 
             m1
