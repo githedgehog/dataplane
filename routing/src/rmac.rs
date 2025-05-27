@@ -7,7 +7,6 @@ use net::eth::mac::Mac;
 use net::vxlan::Vni;
 use std::collections::{HashMap, hash_map::Entry};
 use std::net::IpAddr;
-
 #[derive(Debug, Eq, Hash, PartialEq)]
 pub struct RmacEntry {
     pub address: IpAddr,
@@ -77,6 +76,7 @@ impl RmacStore {
     }
 
     /// number of rmac entries
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.0.len()
     }
