@@ -14,15 +14,12 @@ use crate::cpi_process::process_rx_data;
 use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
 use crate::interfaces::iftablerw::IfTableWriter;
+use crate::evpn::Vtep;
 use crate::routingdb::RoutingDb;
 
-use cli::cliproto::CliRequest;
-use cli::cliproto::CliSerialize;
+use cli::cliproto::{CliRequest, CliSerialize};
 use dplane_rpc::log::Level;
 use dplane_rpc::socks::RpcCachedSock;
-
-use net::eth::mac::Mac;
-use std::net::IpAddr;
 
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
@@ -31,14 +28,23 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
 use std::str::FromStr;
-use std::sync::mpsc::{Sender, TryRecvError, channel};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use tracing::{debug, error, info};
+use tokio::sync::mpsc::error::TryRecvError;
+use tokio::sync::mpsc::{Sender, channel};
+use tracing::{debug, error, info, warn};
+
+// A channel sender to the cpi/router
+#[allow(unused)]
+pub struct RouterCtlSender(tokio::sync::mpsc::Sender<CpiCtlMsg>);
+
+// capacity of cpi control channel. This should have very little impact on performance.
+const CTL_CHANNEL_CAPACITY: usize = 100;
 
 #[allow(unused)]
 pub enum CpiCtlMsg {
     Finish,
+    SetVtep(Vtep),
 }
 
 pub struct CpiHandle {
@@ -54,7 +60,7 @@ impl CpiHandle {
     pub fn finish(&mut self) -> Result<(), RouterError> {
         debug!("Requesting CPI to stop..");
         self.ctl
-            .send(CpiCtlMsg::Finish)
+            .try_send(CpiCtlMsg::Finish)
             .map_err(|_| RouterError::CpiFailure)?;
 
         let handle = self.handle.take();
@@ -66,6 +72,9 @@ impl CpiHandle {
         } else {
             Err(RouterError::Internal("No handle"))
         }
+    }
+    pub fn get_ctl_tx(&self) -> RouterCtlSender {
+        RouterCtlSender(self.ctl.clone())
     }
 }
 
@@ -88,6 +97,25 @@ fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
     Ok(sock)
 }
 
+fn set_vtep(db: &mut RoutingDb, vtep_data: &Vtep) {
+    if let Ok(mut vtep) = db.vtep.write() {
+        if let Some(ip) = vtep_data.get_ip() {
+            vtep.set_ip(ip);
+            info!("VTEP ip address set to {ip}");
+        } else {
+            warn!("VTEP no longer has ip address");
+            vtep.unset_ip();
+        }
+        if let Some(mac) = vtep_data.get_mac() {
+            vtep.set_mac(mac);
+            info!("VTEP mac address set to {mac}");
+        } else {
+            warn!("VTEP no longer has mac address");
+            vtep.unset_mac();
+        }
+    }
+}
+
 #[allow(unused)]
 #[allow(clippy::too_many_lines)]
 #[allow(clippy::missing_errors_doc)]
@@ -103,12 +131,7 @@ pub fn start_cpi(
         |level| Level::from_str(level).unwrap_or(Level::DEBUG),
     );
 
-    /* set loglevel for RPC */
-    //    let mut cfg = LogConfig::new(loglevel);
-    //    cfg.display_thread_names = true;
-    //    init_dplane_rpc_log(&cfg);
-
-    info!("Launching CPI, loglevel is {:?}....", loglevel);
+    info!("Launching CPI, loglevel is {loglevel:?}...");
 
     /* path to bind to for routing function */
     let cp_sock_path = conf.cpi_sock_path.as_ref().map_or_else(
@@ -129,7 +152,7 @@ pub fn start_cpi(
     let clisock = open_unix_sock(&cli_sock_path)?;
 
     /* internal ctl channel */
-    let (tx, mut rx) = channel::<CpiCtlMsg>();
+    let (tx, mut rx) = channel::<CpiCtlMsg>(CTL_CHANNEL_CAPACITY);
 
     /* Routing socket */
     const CPSOCK: Token = Token(0);
@@ -164,15 +187,8 @@ pub fn start_cpi(
         let mut buf = vec![0; 1024];
         let mut run = true;
 
-        /* TODO: create default VRF upfront ? */
-
-        /* create routing database */
+        /* create routing database: this is fully owned by the CPI */
         let mut db = RoutingDb::new(Some(fibtw), iftw, atabler);
-
-        if let Ok(mut vtep) = db.vtep.write() {
-            vtep.set_ip(IpAddr::from_str("7.0.0.1").unwrap());
-            vtep.set_mac(Mac::from([0x02, 0, 0, 0, 0, 0xab]));
-        }
 
         while run {
             if let Err(e) = poller.poll(&mut events, Some(Duration::from_secs(1))) {
@@ -186,6 +202,7 @@ pub fn start_cpi(
                     info!("Got request to shutdown. Au revoir ...");
                     run = false;
                 }
+                Ok(CpiCtlMsg::SetVtep(vtep_data)) => set_vtep(&mut db, &vtep_data),
                 Err(TryRecvError::Empty) => {}
                 Err(e) => {
                     error!("Error receiving from ctl channel {e:?}");

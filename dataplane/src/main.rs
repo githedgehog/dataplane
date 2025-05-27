@@ -68,6 +68,8 @@ fn main() {
             panic!("Management service configuration error. Aborting...");
         }
     };
+
+    /* start management */
     if let Err(e) = start_mgmt(grpc_addr) {
         error!("Failed to start gRPC server: {e}");
         panic!("Failed to start gRPC server: {e}");

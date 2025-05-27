@@ -890,6 +890,7 @@ dependencies = [
  "serde",
  "serde_yml",
  "thiserror 2.0.12",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

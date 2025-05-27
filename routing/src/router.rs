@@ -8,7 +8,7 @@ use tracing::{debug, error};
 
 use crate::atable::atablerw::AtableReader;
 use crate::atable::resolver::AtResolver;
-use crate::cpi::{CpiConf, CpiHandle, start_cpi};
+use crate::cpi::{CpiConf, CpiHandle, RouterCtlSender, start_cpi};
 use crate::fib::fibtable::{FibTableReader, FibTableWriter};
 use crate::interfaces::iftablerw::{IfTableReader, IfTableWriter};
 use dplane_rpc::log::{Level, LogConfig, init_dplane_rpc_log};
@@ -95,5 +95,8 @@ impl Router {
     }
     pub fn get_fibtr(&self) -> FibTableReader {
         self.fibtr.clone()
+    }
+    pub fn get_ctl_tx(&self) -> RouterCtlSender {
+        self.cpi.get_ctl_tx()
     }
 }
