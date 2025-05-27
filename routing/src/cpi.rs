@@ -26,10 +26,18 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
 use std::str::FromStr;
-use std::sync::mpsc::{Sender, TryRecvError, channel};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use tokio::sync::mpsc::error::TryRecvError;
+use tokio::sync::mpsc::{Sender, channel};
 use tracing::{debug, error, info, warn};
+
+// A channel sender to the cpi/router
+#[allow(unused)]
+pub struct RouterCtlSender(tokio::sync::mpsc::Sender<CpiCtlMsg>);
+
+// capacity of cpi control channel. This should have very little impact on performance.
+const CTL_CHANNEL_CAPACITY: usize = 100;
 
 #[allow(unused)]
 pub enum CpiCtlMsg {
@@ -50,7 +58,7 @@ impl CpiHandle {
     pub fn finish(&mut self) -> Result<(), RouterError> {
         debug!("Requesting CPI to stop..");
         self.ctl
-            .send(CpiCtlMsg::Finish)
+            .try_send(CpiCtlMsg::Finish)
             .map_err(|_| RouterError::CpiFailure)?;
 
         let handle = self.handle.take();
@@ -65,9 +73,6 @@ impl CpiHandle {
     }
     pub fn get_ctl_tx(&self) -> RouterCtlSender {
         RouterCtlSender(self.ctl.clone())
-    }
-    pub fn get_ctl_tx(&self) -> std::sync::mpsc::Sender<CpiCtlMsg> {
-        self.ctl.clone()
     }
 }
 
@@ -143,7 +148,7 @@ pub fn start_cpi(
     let clisock = open_unix_sock(&cli_sock_path)?;
 
     /* internal ctl channel */
-    let (tx, mut rx) = channel::<CpiCtlMsg>();
+    let (tx, mut rx) = channel::<CpiCtlMsg>(CTL_CHANNEL_CAPACITY);
 
     /* Routing socket */
     const CPSOCK: Token = Token(0);

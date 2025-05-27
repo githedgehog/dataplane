@@ -73,8 +73,9 @@ fn main() {
     };
 
     /* start router and create routing pipeline */
-    let (_router, pipeline) = start_router("demo-router");
+    let (router, pipeline) = start_router("demo-router");
     let builder = move || pipeline;
+    let _router_ctl = router.get_ctl_tx();
 
     /* start management */
     if let Err(e) = start_mgmt(grpc_addr) {
