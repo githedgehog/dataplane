@@ -157,7 +157,7 @@ impl DriverKernel {
     /// Starts the kernel driver
     pub fn start(
         args: impl IntoIterator<Item = impl AsRef<str> + Clone>,
-        setup_pipeline: &(impl Sync + Fn() -> DynPipeline<TestBuffer>),
+        setup_pipeline: impl FnOnce() -> DynPipeline<TestBuffer>,
     ) {
         let mut pipeline = setup_pipeline();
 
@@ -182,6 +182,11 @@ impl DriverKernel {
                             if let Some(outgoing) = kiftable.get_mut_by_index(oif.get_id()) {
                                 match pkt.serialize() {
                                     Ok(out) => {
+                                        debug!(
+                                            "Sending frame of length {} octets over interface {}",
+                                            out.as_ref().len(),
+                                            &outgoing.name
+                                        );
                                         outgoing.sock.write_all(out.as_ref());
                                     }
                                     Err(e) => {
