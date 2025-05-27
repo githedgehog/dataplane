@@ -42,7 +42,7 @@ dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys" }
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpdk-sysroot-helper" }
 dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", version = "1.0.0" }
 errno = { path = "./errno", package = "dataplane-errno" }
-gateway_config = { git = "https://github.com/githedgehog/gateway-proto", version = "0.2.0" }
+gateway_config = { git = "https://github.com/githedgehog/gateway-proto", version = "0.2.2" }
 id = { path = "./id", package = "dataplane-id" }
 interface-manager = { path = "./interface-manager", package = "dataplane-interface-manager" }
 mgmt = { path = "./mgmt", package = "dataplane-mgmt"}
