@@ -4,6 +4,7 @@
 //! A library to implement routing functions.
 
 #![deny(clippy::all)]
+#![allow(clippy::similar_names)]
 
 pub mod atable;
 pub mod cli;

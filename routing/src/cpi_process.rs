@@ -3,6 +3,8 @@
 
 //! Main processing functions of the CPI
 
+#![allow(clippy::wildcard_imports)]
+
 #[cfg(feature = "auto-learn")]
 use crate::interfaces::iftablerw::IfTableWriter;
 #[cfg(feature = "auto-learn")]
