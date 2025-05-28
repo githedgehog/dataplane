@@ -359,6 +359,10 @@ impl BgpNeighbor {
         self.update_source = Some(BgpUpdateSource::Interface(ifname.to_owned()));
         self
     }
+    pub fn set_update_source(mut self, update_source: Option<BgpUpdateSource>) -> Self {
+        self.update_source = update_source;
+        self
+    }
     pub fn set_weight(mut self, weight: u16) -> Self {
         self.weight = Some(weight);
         self
