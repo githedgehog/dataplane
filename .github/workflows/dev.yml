@@ -66,6 +66,12 @@ jobs:
   build:
     needs: [ check_changes ]
     if: "${{ needs.check_changes.outputs.devfiles == 'true' }}"
+    permissions:
+      checks: "write"
+      pull-requests: "write"
+      contents: "read"
+      packages: "write"
+      id-token: "write"
     strategy:
       fail-fast: false
       matrix:
@@ -87,7 +93,8 @@ jobs:
         debug_justfile:
           - "${{ inputs.debug_justfile || false }}"
     outputs:
-      result: "${{ matrix.rust.optional || (steps.gnu_dev_test.conclusion == 'success' && steps.gnu_release_test.conclusion == 'success' && steps.clippy.conclusion == 'success') }}"
+      result: |
+        ${{ matrix.rust.optional || (steps.debug_test.conclusion == 'success' && steps.release_test.conclusion == 'success' && steps.clippy.conclusion == 'success') }}
     name: "Developer build"
     runs-on: "lab"
     timeout-minutes: 45
@@ -123,7 +130,8 @@ jobs:
         run: |
           sleep ${{matrix.rust.sleep}}
           cargo binstall --no-confirm cargo-nextest
-      - name: refresh-compile-env
+          mkdir -p target/nextest
+      - name: "refresh-compile-env"
         run: |
           just --yes debug_justfile="${{matrix.debug_justfile}}" refresh-compile-env
       - run: |
@@ -131,21 +139,68 @@ jobs:
       - run: |
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
 
-      - id: "gnu_dev_test"
-        name: "test gnu dev"
+      - id: "debug_test"
+        name: "test debug"
         run: |
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-gnu \
-            cargo nextest run
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=dev target=x86_64-unknown-linux-gnu \
-            cargo doc
+          set -euo pipefail
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            rust=${{matrix.rust.version}} \
+            profile=debug \
+            target=x86_64-unknown-linux-gnu \
+            cargo nextest run --status-level=none --final-status-level=skip --message-format=libtest-json-plus > ./target/nextest/debug.json
+          mv ./target/nextest/default/junit.xml ./target/nextest/default/debug.junit.xml
+          jq \
+            --raw-output \
+            --slurp '.[] | select(.type == "test" and (.name | test(".*#\\d+"))) | ( .name | split("#") ) | 
+                     [.[0], (.[1] | tonumber)] | @csv
+          ' ./target/nextest/debug.json > ./target/nextest/debug.flakes.csv
+          if [ -s ./target/nextest/debug.flakes.csv ]; then
+            cargo binstall --no-confirm csview
+            { 
+              echo "FLAKY_TESTS_DEBUG<<EOF"
+              echo -e "### :warning: Flaky tests (debug run, ${{ matrix.rust.version }})\n";
+              echo "| test | retries |"
+              echo "|------|---------|"
+              csview --style=markdown --no-headers --body-align=left ./target/nextest/debug.flakes.csv;
+              echo "EOF"
+            } >> "${GITHUB_ENV}"
+          fi
 
-      - id: "gnu_release_test"
-        name: "test gnu release"
+      - id: "release_test"
+        name: "test release"
         run: |
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-gnu \
-            cargo nextest run
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} profile=release target=x86_64-unknown-linux-gnu \
-            cargo doc
+          set -euo pipefail
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            rust=${{matrix.rust.version}} \
+            profile=debug \
+            target=x86_64-unknown-linux-gnu \
+            cargo nextest run --status-level=none --final-status-level=skip --message-format=libtest-json-plus > ./target/nextest/release.json
+          mv ./target/nextest/default/junit.xml ./target/nextest/default/release.junit.xml
+          jq \
+            --raw-output \
+            --slurp '.[] | select(.type == "test" and (.name | test(".*#\\d+"))) | ( .name | split("#") ) | 
+                     [.[0], (.[1] | tonumber)] | @csv
+          ' ./target/nextest/release.json > ./target/nextest/release.flakes.csv
+          if [ -s ./target/nextest/release.flakes.csv ]; then
+            cargo binstall --no-confirm csview
+            { 
+              echo "FLAKY_TESTS_RELEASE<<EOF"
+              echo -e "\n### :warning: Flaky tests (release run, ${{ matrix.rust.version }})\n";
+              echo "| test | retries |"
+              echo "|------|---------|"
+              csview --style=markdown --no-headers --body-align=left ./target/nextest/release.flakes.csv;
+              echo "EOF"
+            } >> "${GITHUB_ENV}"
+          fi
+
+      - uses: "marocchino/sticky-pull-request-comment@v2"
+        with:
+          header: "flakes_${{matrix.rust.version}}"
+          ignore_empty: 'true'
+          message: |
+            ${{ env.FLAKY_TESTS_DEBUG }}${{ env.FLAKY_TESTS_RELEASE }}
 
       - id: "clippy"
         name: "run clippy"
