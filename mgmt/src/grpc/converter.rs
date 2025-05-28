@@ -5,6 +5,7 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::must_use_candidate)] // Do not want to remove pub methods yet
 
+use net::eth::mac::Mac;
 use net::vlan::Vid;
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
@@ -282,9 +283,15 @@ pub fn convert_interface_to_interface_config(
     let grpc_if_type = gateway_config::config::IfType::try_from(iface.r#type)
         .map_err(|_| format!("Invalid interface type: {}", iface.r#type))?;
     let iftype = match grpc_if_type {
-        gateway_config::config::IfType::Ethernet => {
-            InterfaceType::Ethernet(IfEthConfig { mac: None })
-        }
+        gateway_config::config::IfType::Ethernet => InterfaceType::Ethernet(IfEthConfig {
+            mac: match &iface.macaddr {
+                Some(mac) => Some(
+                    Mac::try_from(mac.as_str())
+                        .map_err(|_| format!("Invalid MAC address: {mac}"))?,
+                ),
+                None => None,
+            },
+        }),
         gateway_config::config::IfType::Vlan => {
             // Safely handle the VLAN ID conversion
             let vlan_id = iface
@@ -456,16 +463,16 @@ pub fn convert_bgp_neighbor(neighbor: &gateway_config::BgpNeighbor) -> Result<Bg
 /// Convert a gRPC VPC to internal Vpc
 pub fn convert_vpc_from_grpc(vpc_grpc: &gateway_config::Vpc) -> Result<Vpc, String> {
     // Create a new VPC with name and VNI
-    let vpc = Vpc::new(&vpc_grpc.name, &vpc_grpc.id, vpc_grpc.vni)
+    let mut vpc = Vpc::new(&vpc_grpc.name, &vpc_grpc.id, vpc_grpc.vni)
         .map_err(|e| format!("Failed to create VPC: {e}"))?;
 
     // Convert and add interfaces if any
     // SMATOV: TODO: We will add this handling later. TBD
     if !vpc_grpc.interfaces.is_empty() {
         // For each interface from gRPC
-        for _iface in &vpc_grpc.interfaces {
-            // let interface = convert_interface_from_grpc(iface)?;
-            // SMATOV: TODO vpc.add_interface_config(interface)
+        for iface in &vpc_grpc.interfaces {
+            let interface = convert_interface_to_interface_config(iface)?;
+            vpc.add_interface_config(interface);
         }
     }
 
@@ -903,11 +910,11 @@ pub fn convert_underlay_to_grpc(underlay: &Underlay) -> Result<gateway_config::U
 }
 
 // Helper to convert VPC interfaces
-pub fn convert_vpc_interfaces_to_grpc(
-    _vpc: &Vpc,
-) -> Result<Vec<gateway_config::Interface>, String> {
-    // TODO: We currently don't support VPC interfaces in gRPC
-    Ok(Vec::new())
+pub fn convert_vpc_interfaces_to_grpc(vpc: &Vpc) -> Result<Vec<gateway_config::Interface>, String> {
+    vpc.interfaces
+        .values()
+        .map(convert_interface_to_grpc)
+        .collect()
 }
 
 /// Convert VPC to gRPC
