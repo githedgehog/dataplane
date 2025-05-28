@@ -8,6 +8,7 @@ use tracing::{debug, error, info};
 
 use crate::models::external::gwconfig::{ExternalConfig, GenId, GwConfig};
 use crate::models::external::{ConfigError, ConfigResult};
+
 #[derive(Default)]
 #[allow(unused)]
 /// Configuration database, keeps a set of [`GwConfig`]s keyed by generation id [`GenId`]
@@ -20,7 +21,11 @@ impl GwConfigDatabase {
     pub fn new() -> Self {
         debug!("Building config database...");
         let mut configdb = Self::default();
-        configdb.add(GwConfig::blank());
+        let mut blank = GwConfig::blank();
+        if let Err(e) = blank.build_internal_config() {
+            unreachable!("Failed to build internal config for blank config: {e}");
+        }
+        configdb.add(blank);
         configdb
     }
     pub fn add(&mut self, config: GwConfig) {
@@ -43,11 +48,11 @@ impl GwConfigDatabase {
     pub fn get_mut(&mut self, generation: GenId) -> Option<&mut GwConfig> {
         self.configs.get_mut(&generation)
     }
-    pub fn unmark_current(&mut self, value: bool) {
+    pub fn unmark_current(&mut self) {
         #[allow(clippy::collapsible_if)]
         if let Some(genid) = &self.current {
             if let Some(config) = self.configs.get_mut(genid) {
-                config.set_applied(value);
+                config.set_applied(false);
                 debug!("Marked config with genid {genid} as inactive");
             }
         }

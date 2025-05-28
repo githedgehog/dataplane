@@ -5,9 +5,9 @@
 //! The external config contains the intended configuration externally received (e.g. via gRPC)
 
 use derive_builder::Builder;
-use std::sync::Arc;
+
 use std::time::SystemTime;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::models::external::ConfigResult;
 use crate::models::internal::InternalConfig;
@@ -15,13 +15,10 @@ use crate::models::internal::device::DeviceConfig;
 use crate::models::internal::routing::vrf::VrfConfig;
 use crate::models::{external::overlay::Overlay, internal::device::settings::DeviceSettings};
 
-use crate::frr::frrmi::FrrMi;
 use crate::processor::confbuild::build_internal_config;
-use routing::cpi::RouterCtlSender;
 
 /// Alias for a config generation number
 pub type GenId = i64;
-use crate::processor::proc::apply_gw_config;
 
 #[derive(Clone, Default, Debug)]
 pub struct Underlay {
@@ -139,26 +136,6 @@ impl GwConfig {
     pub fn build_internal_config(&mut self) -> ConfigResult {
         /* build and set internal config */
         self.internal = Some(build_internal_config(self)?);
-        Ok(())
-    }
-
-    /// Apply a [`GwConfig`].
-    pub async fn apply(
-        &mut self,
-        frrmi: &mut FrrMi,
-        netlink: Arc<rtnetlink::Handle>,
-        router_ctl: &mut RouterCtlSender,
-    ) -> ConfigResult {
-        info!("Applying config with genid {}...", self.genid());
-        if self.internal.is_none() {
-            debug!("Config has no internal config...");
-            self.build_internal_config()?;
-        }
-
-        /* Apply this gw config */
-        apply_gw_config(self, frrmi, netlink, router_ctl).await?;
-        self.meta.applied = Some(SystemTime::now());
-        self.meta.is_applied = true;
         Ok(())
     }
 }
