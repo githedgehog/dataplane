@@ -20,6 +20,9 @@ use crate::vpc_manager::{RequiredInformationBase, VpcManager};
 use rekon::{Observe, Reconcile};
 use tracing::{debug, error, info, warn};
 
+use routing::cpi::RouterCtlSender;
+use routing::evpn::Vtep;
+
 /// A request type to the [`ConfigProcessor`]
 #[derive(Debug)]
 pub enum ConfigRequest {
@@ -60,13 +63,17 @@ pub(crate) struct ConfigProcessor {
     rx: mpsc::Receiver<ConfigChannelRequest>,
     frrmi: FrrMi,
     netlink: Arc<rtnetlink::Handle>,
+    router_ctl: RouterCtlSender,
 }
 
 impl ConfigProcessor {
-    const CHANNEL_SIZE: usize = 1; // process one at a time
+    const CHANNEL_SIZE: usize = 1; // This should not be changed
 
     /// Create a [`ConfigProcessor`]
-    pub(crate) fn new(frrmi: FrrMi) -> (Self, Sender<ConfigChannelRequest>) {
+    pub(crate) fn new(
+        frrmi: FrrMi,
+        router_ctl: RouterCtlSender,
+    ) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
         let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
 
@@ -81,6 +88,7 @@ impl ConfigProcessor {
             rx,
             frrmi,
             netlink,
+            router_ctl,
         };
         (processor, tx)
     }
@@ -112,7 +120,12 @@ impl ConfigProcessor {
 
         /* apply the configuration just stored */
         self.config_db
-            .apply(genid, &mut self.frrmi, self.netlink.clone())
+            .apply(
+                genid,
+                &mut self.frrmi,
+                self.netlink.clone(),
+                &mut self.router_ctl,
+            )
             .await?;
 
         Ok(())
@@ -125,6 +138,7 @@ impl ConfigProcessor {
                 ExternalConfig::BLANK_GENID,
                 &mut self.frrmi,
                 self.netlink.clone(),
+                &mut self.router_ctl,
             )
             .await
     }
@@ -249,6 +263,7 @@ pub async fn apply_gw_config(
     config: &mut GwConfig,
     frrmi: &mut FrrMi,
     netlink: Arc<rtnetlink::Handle>,
+    router_ctl: &mut RouterCtlSender,
 ) -> ConfigResult {
     let genid = config.genid();
 
@@ -270,6 +285,10 @@ pub async fn apply_gw_config(
     /* apply config with frrmi to frr-agent */
     apply_config_frr(frrmi, config, internal).await?;
 
+    if let Some(vconfig) = internal.get_vtep() {
+        let vtep = Vtep::with_ip_and_mac(vconfig.address.into(), vconfig.mac.into());
+        router_ctl.set_vtep(vtep).await;
+    }
     info!("Successfully applied config for genid {genid}");
     Ok(())
 }
