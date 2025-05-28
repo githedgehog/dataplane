@@ -130,7 +130,6 @@ impl Prefix {
         }
     }
 
-
     #[cfg(any(test, feature = "testing"))]
     pub fn expect_from<T>(val: T) -> Self
     where

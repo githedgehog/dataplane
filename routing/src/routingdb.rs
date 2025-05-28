@@ -109,7 +109,7 @@ impl VrfTable {
             } else {
                 error!("Hit poisoned RWlock!");
                 arc_vrf.clear_poison();
-                return Err(RouterError::Internal);
+                return Err(RouterError::Internal("Hit poisoned lock"));
             }
         } else {
             return Err(RouterError::NoSuchVrf);

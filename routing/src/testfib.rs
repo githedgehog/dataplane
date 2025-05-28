@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+// !Vanilla fib used for testing
+
 use crate::route_processor::FibGroup;
 use std::collections::BTreeSet;
 use std::sync::Arc;

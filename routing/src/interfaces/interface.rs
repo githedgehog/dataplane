@@ -209,14 +209,14 @@ impl Interface {
                     "Failed to attach interface {} to VRF {}: can't get fib id",
                     self.name, vrf.name
                 );
-                Err(RouterError::Internal)
+                Err(RouterError::Internal("Failed to get fib Id"))
             }
         } else {
             error!(
                 "Can't attach interface {} to vrf {} since it has no FIB",
                 self.name, vrf.name
             );
-            Err(RouterError::Internal)
+            Err(RouterError::Internal("Failed to access FIB"))
         }
     }
 

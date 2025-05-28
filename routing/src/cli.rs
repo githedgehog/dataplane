@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
+//! Cli handling sumodule
+
+#![allow(clippy::unnecessary_wraps)]
+
 use crate::display::IfTableAddress;
 use crate::display::{FibViewV4, FibViewV6};
 use crate::display::{VrfV4Nexthops, VrfV6Nexthops, VrfViewV4, VrfViewV6};

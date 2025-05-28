@@ -102,11 +102,11 @@ impl IfTableWriter {
                     let fibr = fibw.as_fibreader();
                     Ok(fibr.clone())
                 } else {
-                    Err(RouterError::Internal)
+                    Err(RouterError::Internal("No fib writer"))
                 }
             } else {
                 vrf.clear_poison();
-                Err(RouterError::Internal)
+                Err(RouterError::Internal("RWlock read failed"))
             }
         } else {
             Err(RouterError::NoSuchVrf)
@@ -126,7 +126,7 @@ impl IfTableWriter {
                 Self::get_vrf_fibr(vrftable, vrfid)
             }
         } else {
-            Err(RouterError::Internal)
+            Err(RouterError::Internal("IfTable writer failed"))
         }
     }
     pub fn attach_interface_to_vrf(
@@ -159,4 +159,5 @@ impl IfTableReader {
     }
 }
 
+#[allow(unsafe_code)]
 unsafe impl Send for IfTableWriter {}
