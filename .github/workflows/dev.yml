@@ -172,7 +172,7 @@ jobs:
     runs-on: "ubuntu-latest"
     needs:
       - build
-    if: ${{ always() && needs.build.result != 'skipped' }}
+    if: ${{ needs.build.result != 'skipped' }}
     steps:
       - name: "Flag any build matrix failures"
         if: ${{ needs.build.outputs.result != 'true' }}
