@@ -136,3 +136,11 @@ store-failure-output = true
 [[profile.default.overrides]]
 filter = 'test(reconcile_fuzz)'
 retries = 3
+
+[[profile.default.overrides]]
+filter = "test(im_a_flake)"
+retries = 50
+
+[[profile.default.overrides]]
+filter = "test(im_also_a_flake)"
+retries = 50
