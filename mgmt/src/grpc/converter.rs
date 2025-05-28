@@ -136,19 +136,21 @@ pub fn convert_from_grpc_config(grpc_config: &GatewayConfig) -> Result<ExternalC
 /// Convert `gateway_config::Device` to `DeviceConfig`
 pub fn convert_device_from_grpc(device: &gateway_config::Device) -> Result<DeviceConfig, String> {
     // Convert driver enum
-    let driver = match device.driver {
-        0 => PacketDriver::Kernel(KernelPacketConfig {}),
-        1 => PacketDriver::DPDK(DpdkPortConfig {}),
-        _ => return Err(format!("Invalid driver value: {}", device.driver)),
+    let driver = match gateway_config::config::PacketDriver::try_from(device.driver) {
+        Ok(gateway_config::config::PacketDriver::Kernel) => {
+            PacketDriver::Kernel(KernelPacketConfig {})
+        }
+        Ok(gateway_config::config::PacketDriver::Dpdk) => PacketDriver::DPDK(DpdkPortConfig {}),
+        Err(_) => return Err(format!("Invalid driver value: {}", device.driver)),
     };
     // Convert log level enum
-    let loglevel = match device.loglevel {
-        0 => Level::ERROR,
-        1 => Level::WARN,
-        2 => Level::INFO,
-        3 => Level::DEBUG,
-        4 => Level::TRACE,
-        _ => return Err(format!("Invalid log level value: {}", device.loglevel)),
+    let loglevel = match gateway_config::config::LogLevel::try_from(device.loglevel) {
+        Ok(gateway_config::config::LogLevel::Error) => Level::ERROR,
+        Ok(gateway_config::config::LogLevel::Warning) => Level::WARN,
+        Ok(gateway_config::config::LogLevel::Info) => Level::INFO,
+        Ok(gateway_config::config::LogLevel::Debug) => Level::DEBUG,
+        Ok(gateway_config::config::LogLevel::Trace) => Level::TRACE,
+        Err(_) => return Err(format!("Invalid log level value: {}", device.loglevel)),
     };
 
     // Create device settings
@@ -176,7 +178,7 @@ pub fn convert_underlay_from_grpc(underlay: &gateway_config::Underlay) -> Result
         .vrfs
         .iter()
         .find(|vrf| vrf.name == "default")
-        .unwrap_or(&underlay.vrfs[0]);
+        .unwrap_or(&underlay.vrfs[0]); // FIXME(manish): This should be an error, preserving the original behavior for now
 
     // Convert VRF to VrfConfig
     let vrf_config = convert_vrf_to_vrf_config(default_vrf)?;
@@ -258,12 +260,14 @@ pub fn convert_ospf_interface_from_grpc(
 
     // Set network type if present
     if let Some(network_type) = &ospf_interface.network_type {
-        let network = match network_type {
-            0 => OspfNetwork::Broadcast,
-            1 => OspfNetwork::NonBroadcast,
-            2 => OspfNetwork::Point2Point,
-            3 => OspfNetwork::Point2Multipoint,
-            _ => return Err(format!("Invalid OSPF network type: {network_type}")),
+        let network = match gateway_config::config::OspfNetworkType::try_from(*network_type) {
+            Ok(gateway_config::config::OspfNetworkType::Broadcast) => OspfNetwork::Broadcast,
+            Ok(gateway_config::config::OspfNetworkType::NonBroadcast) => OspfNetwork::NonBroadcast,
+            Ok(gateway_config::config::OspfNetworkType::PointToPoint) => OspfNetwork::Point2Point,
+            Ok(gateway_config::config::OspfNetworkType::PointToMultipoint) => {
+                OspfNetwork::Point2Multipoint
+            }
+            Err(_) => return Err(format!("Invalid OSPF network type: {network_type}")),
         };
         ospf_iface = ospf_iface.set_network(network);
     }
@@ -416,11 +420,11 @@ pub fn convert_bgp_neighbor(neighbor: &gateway_config::BgpNeighbor) -> Result<Bg
     let mut l2vpn_evpn = false;
 
     for af in &neighbor.af_activate {
-        match *af {
-            0 => ipv4_unicast = true,
-            1 => ipv6_unicast = true,
-            2 => l2vpn_evpn = true,
-            _ => return Err(format!("Unknown BGP address family: {af}")),
+        match gateway_config::config::BgpAf::try_from(*af) {
+            Ok(gateway_config::config::BgpAf::Ipv4Unicast) => ipv4_unicast = true,
+            Ok(gateway_config::config::BgpAf::Ipv6Unicast) => ipv6_unicast = true,
+            Ok(gateway_config::config::BgpAf::L2vpnEvpn) => l2vpn_evpn = true,
+            Err(_) => return Err(format!("Unknown BGP address family: {af}")),
         }
     }
 
@@ -621,25 +625,25 @@ pub fn convert_overlay_from_grpc(overlay: &gateway_config::Overlay) -> Result<Ov
 /// Convert `DeviceConfig` to gRPC `Device`
 pub fn convert_device_to_grpc(dev: &DeviceConfig) -> Result<gateway_config::Device, String> {
     let driver = match dev.settings.driver {
-        PacketDriver::Kernel(_) => 0,
-        PacketDriver::DPDK(_) => 1,
+        PacketDriver::Kernel(_) => gateway_config::config::PacketDriver::Kernel,
+        PacketDriver::DPDK(_) => gateway_config::config::PacketDriver::Dpdk,
     };
 
     let loglevel = match dev.settings.loglevel {
-        Level::ERROR => 0,
-        Level::WARN => 1,
-        Level::INFO => 2,
-        Level::DEBUG => 3,
-        Level::TRACE => 4,
+        Level::ERROR => gateway_config::config::LogLevel::Error,
+        Level::WARN => gateway_config::config::LogLevel::Warning,
+        Level::INFO => gateway_config::config::LogLevel::Info,
+        Level::DEBUG => gateway_config::config::LogLevel::Debug,
+        Level::TRACE => gateway_config::config::LogLevel::Trace,
     };
 
     // Convert ports if available
     let ports = Vec::new(); // TODO: Implement port conversion when needed
 
     Ok(gateway_config::Device {
-        driver,
+        driver: driver.into(),
         hostname: dev.settings.hostname.clone(),
-        loglevel,
+        loglevel: loglevel.into(),
         eal: None, // TODO: Handle EAL configuration when needed
         ports,
     })
@@ -649,15 +653,17 @@ pub fn convert_ospf_interface_to_grpc(
     ospf_interface: &OspfInterface,
 ) -> gateway_config::config::OspfInterface {
     // Convert network type if present
-    let network_type = ospf_interface
-        .network
-        .as_ref()
-        .map(|network| match network {
-            OspfNetwork::Broadcast => 0,
-            OspfNetwork::NonBroadcast => 1,
-            OspfNetwork::Point2Point => 2,
-            OspfNetwork::Point2Multipoint => 3,
-        });
+    let network_type = ospf_interface.network.as_ref().map(|network| {
+        (match network {
+            OspfNetwork::Broadcast => gateway_config::config::OspfNetworkType::Broadcast,
+            OspfNetwork::NonBroadcast => gateway_config::config::OspfNetworkType::NonBroadcast,
+            OspfNetwork::Point2Point => gateway_config::config::OspfNetworkType::PointToPoint,
+            OspfNetwork::Point2Multipoint => {
+                gateway_config::config::OspfNetworkType::PointToMultipoint
+            }
+        })
+        .into()
+    });
 
     gateway_config::config::OspfInterface {
         passive: ospf_interface.passive,
@@ -676,10 +682,10 @@ pub fn convert_interface_to_grpc(
 
     // Convert interface type
     let if_type = match &interface.iftype {
-        InterfaceType::Ethernet(_) => 0,
-        InterfaceType::Vlan(_) => 1,
-        InterfaceType::Loopback => 2,
-        InterfaceType::Vtep(_) => 3,
+        InterfaceType::Ethernet(_) => gateway_config::config::IfType::Ethernet,
+        InterfaceType::Vlan(_) => gateway_config::config::IfType::Vlan,
+        InterfaceType::Loopback => gateway_config::config::IfType::Loopback,
+        InterfaceType::Vtep(_) => gateway_config::config::IfType::Vtep,
         _ => {
             return Err(format!(
                 "Unsupported interface type: {:?}",
@@ -709,11 +715,11 @@ pub fn convert_interface_to_grpc(
     Ok(gateway_config::Interface {
         name: interface.name.clone(),
         ipaddrs: interface_addresses,
-        r#type: if_type,
+        r#type: if_type.into(),
         vlan,
         macaddr,
         system_name: None, // TODO: Implement when needed
-        role: 0,           // Default to Fabric
+        role: gateway_config::config::IfRole::Fabric.into(), // Default to Fabric
         ospf,
     })
 }
@@ -782,13 +788,13 @@ pub fn convert_bgp_neighbor_to_grpc(
     // Build address family activation list
     let mut af_activate = Vec::new();
     if neighbor.ipv4_unicast {
-        af_activate.push(0); // IPV4_UNICAST
+        af_activate.push(gateway_config::config::BgpAf::Ipv4Unicast.into());
     }
     if neighbor.ipv6_unicast {
-        af_activate.push(1); // IPV6_UNICAST
+        af_activate.push(gateway_config::config::BgpAf::Ipv6Unicast.into());
     }
     if neighbor.l2vpn_evpn {
-        af_activate.push(2); // L2VPN_EVPN
+        af_activate.push(gateway_config::config::BgpAf::L2vpnEvpn.into());
     }
 
     let networks = neighbor
