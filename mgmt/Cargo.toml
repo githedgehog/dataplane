@@ -47,6 +47,7 @@ fixin = { workspace = true }
 id = { workspace = true, features = ["bolero"] }
 interface-manager = { workspace = true, features = ["bolero"] }
 net = { workspace = true, features = ["arbitrary"] }
+pretty_assertions = { workspace = true }
 routing = { workspace = true, features = ["testing"] }
 test-utils = { workspace = true }
 
