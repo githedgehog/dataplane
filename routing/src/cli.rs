@@ -30,7 +30,6 @@ impl From<&RouteProtocol> for RouteOrigin {
     }
 }
 
-#[inline]
 fn show_vrf_ipv4_routes(vrf: &Vrf, filter: &RouteV4Filter) -> String {
     /* This builds a view of the vrf, with only IPv4 routes
       and maybe not all of them, depending on the filter.
@@ -41,13 +40,12 @@ fn show_vrf_ipv4_routes(vrf: &Vrf, filter: &RouteV4Filter) -> String {
     */
 
     let view = VrfViewV4 { vrf, filter };
-    format!("{}", &view)
+    format!("{view}")
 }
 
-#[inline]
 fn show_vrf_ipv6_routes(vrf: &Vrf, filter: &RouteV6Filter) -> String {
     let view = VrfViewV6 { vrf, filter };
-    format!("{}", &view)
+    format!("{view}")
 }
 
 fn show_ipv4_routes_single_vrf(
@@ -64,7 +62,7 @@ fn show_ipv4_routes_single_vrf(
             return Err(CliError::InternalError);
         }
     } else {
-        return Err(CliError::NotFound(format!("No VRF with id {vrfid} exists")));
+        return Err(CliError::NotFound(format!("VRF with id {vrfid}")));
     }
     Ok(CliResponse::from_request_ok(request, out))
 }
@@ -99,7 +97,7 @@ fn show_ipv6_routes_single_vrf(
             return Err(CliError::InternalError);
         }
     } else {
-        return Err(CliError::NotFound(format!("No VRF with id {vrfid} exists")));
+        return Err(CliError::NotFound(format!("VRF with id {vrfid}")));
     }
     Ok(CliResponse::from_request_ok(request, out))
 }
@@ -162,7 +160,6 @@ fn show_vrf_routes(
     }
 }
 
-#[inline]
 fn show_vrf_nexthops_single(
     request: CliRequest,
     vrftable: &VrfTable,
@@ -181,12 +178,11 @@ fn show_vrf_nexthops_single(
             return Err(CliError::InternalError);
         }
     } else {
-        return Err(CliError::NotFound(format!("No VRF with id {vrfid} exists")));
+        return Err(CliError::NotFound(format!("with id {vrfid}")));
     }
     Ok(CliResponse::from_request_ok(request, out))
 }
 
-#[inline]
 fn show_vrf_nexthops_multi(
     request: CliRequest,
     vrftable: &VrfTable,
@@ -243,12 +239,10 @@ fn show_vrfs(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliErro
     }
 }
 
-#[inline]
 fn show_fibgroups_ipv4(vrf: &Vrf, filter: &FibGroupV4Filter) -> String {
     let view = FibViewV4 { vrf, filter };
     format!("{view}")
 }
-#[inline]
 fn show_fibgroups_ipv6(vrf: &Vrf, filter: &FibGroupV6Filter) -> String {
     let view = FibViewV6 { vrf, filter };
     format!("{view}")
@@ -279,7 +273,7 @@ fn show_single_fib_v4(
             return Err(CliError::InternalError);
         }
     } else {
-        return Err(CliError::NotFound(format!("No VRF with id {vrfid} exists")));
+        return Err(CliError::NotFound(format!("VRF with id {vrfid}")));
     }
     Ok(CliResponse::from_request_ok(request, out))
 }
@@ -298,7 +292,7 @@ fn show_single_fib_v6(
             return Err(CliError::InternalError);
         }
     } else {
-        return Err(CliError::NotFound(format!("No VRF with id {vrfid} exists")));
+        return Err(CliError::NotFound(format!("VRF with id {vrfid}")));
     }
     Ok(CliResponse::from_request_ok(request, out))
 }
