@@ -37,6 +37,13 @@ use tracing::{debug, error, info, warn};
 // A channel sender to the cpi/router
 #[allow(unused)]
 pub struct RouterCtlSender(tokio::sync::mpsc::Sender<CpiCtlMsg>);
+impl RouterCtlSender {
+    pub async fn set_vtep(&mut self, vtep: Vtep) {
+        if let Err(e) = self.0.send(CpiCtlMsg::SetVtep(vtep)).await {
+            error!("Failed to send vtep data: {e} !");
+        }
+    }
+}
 
 // capacity of cpi control channel. This should have very little impact on performance.
 const CTL_CHANNEL_CAPACITY: usize = 100;
