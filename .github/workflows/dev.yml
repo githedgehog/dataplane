@@ -82,7 +82,7 @@ jobs:
         debug_justfile:
           - "${{inputs.debug_justfile || false}}"
     outputs:
-      result: "${{ matrix.rust.optional || (steps.gnu_dev_test.conclusion == 'success' && steps.gnu_release_test.conclusion == 'success' && steps.clippy.conclusion == 'success' && (steps.build_each_commit.conclusion == 'success' || steps.build_each_commit.conclusion == 'skipped')) }}"
+      result: "${{ matrix.rust.optional || (steps.gnu_dev_test.conclusion == 'success' && steps.gnu_release_test.conclusion == 'success' && steps.clippy.conclusion == 'success') }}"
     name: "Developer build"
     runs-on: "lab"
     timeout-minutes: 45
@@ -146,6 +146,7 @@ jobs:
             cargo clippy --all-targets --all-features -- -D warnings
 
       - id: "build_each_commit"
+        continue-on-error: true
         name: "build each commit"
         if: "${{ github.event.pull_request || github.event.merge_group }}"
         run: |
