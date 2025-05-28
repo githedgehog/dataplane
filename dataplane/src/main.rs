@@ -75,10 +75,10 @@ fn main() {
     /* start router and create routing pipeline */
     let (router, pipeline) = start_router("demo-router");
     let builder = move || pipeline;
-    let _router_ctl = router.get_ctl_tx();
+    let router_ctl = router.get_ctl_tx();
 
     /* start management */
-    if let Err(e) = start_mgmt(grpc_addr) {
+    if let Err(e) = start_mgmt(grpc_addr, router_ctl) {
         error!("Failed to start gRPC server: {e}");
         panic!("Failed to start gRPC server: {e}");
     }
