@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
+//! Cli handling sumodule
+
+#![allow(clippy::unnecessary_wraps)]
+
 use crate::display::IfTableAddress;
 use crate::display::{FibViewV4, FibViewV6};
 use crate::display::{VrfV4Nexthops, VrfV6Nexthops, VrfViewV4, VrfViewV6};
@@ -239,12 +246,12 @@ fn show_vrfs(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliErro
 #[inline]
 fn show_fibgroups_ipv4(vrf: &Vrf, filter: &FibGroupV4Filter) -> String {
     let view = FibViewV4 { vrf, filter };
-    format!("{}", &view)
+    format!("{view}")
 }
 #[inline]
 fn show_fibgroups_ipv6(vrf: &Vrf, filter: &FibGroupV6Filter) -> String {
     let view = FibViewV6 { vrf, filter };
-    format!("{}", &view)
+    format!("{view}")
 }
 
 fn fibgroup_filter_v4(_request: &CliRequest) -> FibGroupV4Filter {

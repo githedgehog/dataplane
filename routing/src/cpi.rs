@@ -45,6 +45,10 @@ pub struct CpiHandle {
 }
 #[allow(unused)]
 impl CpiHandle {
+    /// Terminate the CPI
+    ///
+    /// # Errors
+    /// Fails if the channel has been dropped or the thread cannot be joined
     pub fn finish(&mut self) -> Result<(), RouterError> {
         debug!("Requesting CPI to stop..");
         self.ctl
@@ -58,7 +62,7 @@ impl CpiHandle {
             debug!("CPI ended successfully");
             Ok(())
         } else {
-            Err(RouterError::Internal)
+            Err(RouterError::Internal("No handle"))
         }
     }
 }
@@ -78,7 +82,7 @@ fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
     perms.set_mode(0o777);
     fs::set_permissions(path, perms).map_err(|_| RouterError::PermError)?;
     sock.set_nonblocking(true)
-        .map_err(|_| RouterError::Internal)?;
+        .map_err(|_| RouterError::Internal("Failure setting non-blocking socket"))?;
     Ok(sock)
 }
 
@@ -92,7 +96,7 @@ pub fn start_cpi(
     /* get desired loglevel and set it */
     let loglevel = conf.rpc_loglevel.as_ref().map_or_else(
         || Level::DEBUG,
-        |level| Level::from_str(level).expect("Wrong log level"),
+        |level| Level::from_str(level).unwrap_or(Level::DEBUG),
     );
 
     /* set loglevel for RPC */
@@ -137,15 +141,15 @@ pub fn start_cpi(
     let mut ev_clisock = SourceFd(&clisock_fd);
 
     /* create poller and register cp_sock and cli_sock */
-    let mut poller = Poll::new().expect("Failed to create poller");
+    let mut poller = Poll::new().map_err(|_| RouterError::Internal("Poll creation failed"))?;
     poller
         .registry()
         .register(&mut ev_cpsock, CPSOCK, Interest::READABLE)
-        .expect("Failed to register CPI sock");
+        .map_err(|_| RouterError::Internal("Failed to register CPI sock"))?;
     poller
         .registry()
         .register(&mut ev_clisock, CLISOCK, Interest::READABLE)
-        .expect("Failed to register CLI sock");
+        .map_err(|_| RouterError::Internal("Failed to register CLI sock"))?;
 
     /* CPI & CLI loop */
     let cpi_loop = move || {
@@ -167,9 +171,10 @@ pub fn start_cpi(
         }
 
         while run {
-            poller
-                .poll(&mut events, Some(Duration::from_secs(1)))
-                .expect("Poll error");
+            if let Err(e) = poller.poll(&mut events, Some(Duration::from_secs(1))) {
+                error!("Poller error!: {e}");
+                continue;
+            }
 
             /* control channel */
             match rx.try_recv() {
@@ -246,6 +251,7 @@ mod tests {
     use crate::rmac::RmacStore;
     use crate::routingdb::{RoutingDb, VrfTable};
     use crate::vrf::Vrf;
+    use std::fs::remove_file;
     use std::sync::Arc;
     use std::sync::RwLock;
     use std::thread;
@@ -253,10 +259,13 @@ mod tests {
 
     #[test]
     fn test_cpi_ctl() {
+        let cpi_bind_addr = "/tmp/hh_dataplane.sock".to_string();
+        let _ = std::fs::remove_file(&cpi_bind_addr);
+
         /* Build cpi configuration */
         let conf = CpiConf {
             rpc_loglevel: Some("debug".to_string()),
-            cpi_sock_path: Some("/tmp/hh_dataplane.sock".to_string()),
+            cpi_sock_path: Some(cpi_bind_addr),
             cli_sock_path: None,
         };
 

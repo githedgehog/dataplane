@@ -128,4 +128,5 @@ impl FibTableReader {
     }
 }
 
+#[allow(unsafe_code)]
 unsafe impl Send for FibTableWriter {}
