@@ -78,9 +78,9 @@ impl CliSerialize for CliResponse {}
 pub enum CliError {
     #[error("Internal error")]
     InternalError,
-    #[error("Could not find {0}")]
+    #[error("Could not find: {0}")]
     NotFound(String),
-    #[error("Not supported")]
+    #[error("Not supported: {0}")]
     NotSupported(String),
 }
 
