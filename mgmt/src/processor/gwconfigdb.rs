@@ -3,16 +3,11 @@
 
 //! Configuration database: entity able to store multiple gateway configurations
 
-use crate::frr::frrmi::FrrMi;
-use routing::cpi::RouterCtlSender;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use tracing::{debug, error, info};
 
 use crate::models::external::gwconfig::{ExternalConfig, GenId, GwConfig};
 use crate::models::external::{ConfigError, ConfigResult};
-use crate::processor::display::GwConfigDatabaseSummary;
-
 #[derive(Default)]
 #[allow(unused)]
 /// Configuration database, keeps a set of [`GwConfig`]s keyed by generation id [`GenId`]
@@ -65,90 +60,23 @@ impl GwConfigDatabase {
         debug!("Removing config '{genid}' from config db...");
         if let Some(config) = &self.configs.get(&genid) {
             if config.meta.is_applied {
-                error!("Can't remove config {}: in use", genid);
+                error!("Can't remove config {genid}: in use");
                 Err(ConfigError::Forbidden("In use"))
             } else {
-                debug!("Successfully removed config '{}'", genid);
+                debug!("Successfully removed config '{genid}'");
                 self.configs.remove(&genid);
                 Ok(())
             }
         } else {
-            error!("Can't remove config {}: not found", genid);
+            error!("Can't remove config {genid}: not found");
             Err(ConfigError::NoSuchConfig(genid))
         }
     }
 
-    pub async fn apply(
-        &mut self,
-        genid: GenId,
-        frrmi: &mut FrrMi,
-        netlink: Arc<rtnetlink::Handle>,
-        router_ctl: &mut RouterCtlSender,
-    ) -> ConfigResult {
-        debug!("Applying config with genid '{}'...", genid);
-
-        /* get the generation (id) of the currently applied config, if any */
-        let last = self.current;
-
-        /* Abort if the requested config is already applied */
-        if let Some(last) = last {
-            if last == genid {
-                info!("Config {} is already applied", last);
-                return Ok(());
-            }
-            debug!("The current config is {last}");
-        } else {
-            debug!("There is no config applied");
-        }
-
-        if self.contains(genid) {
-            /* mark the current config, if any, as not applied anymore. It is unfortunate
-            to do this here, hence the check, since otherwise the borrow checker complains
-            of double mutable borrow */
-            self.unmark_current(false);
-        }
-
-        /* look up the config to apply: this should always succeed */
-        let Some(config) = self.get_mut(genid) else {
-            error!("Can't apply config {}: not found", genid);
-            return Err(ConfigError::NoSuchConfig(genid));
-        };
-
-        /* attempt to apply the configuration found */
-        let res = config.apply(frrmi, netlink.clone(), router_ctl).await;
-        if res.is_ok() {
-            info!("Config with genid '{}' is now the current", genid);
-            self.current = Some(genid);
-        } else {
-            /* delete the config we wanted to apply */
-            debug!("Deleting config with id {genid}..");
-            let _ = self.remove(genid);
-
-            /* roll-back to a previous config (if there) or the blank config (to wipe out),
-            except if the failed config is the blank itself.
-
-            Question: if a config fails because frr-agent did not respond, rolling back to
-            that config will not help, since we will fail to re-apply the FRR config
-            which was previously successful. On the other hand,  since the frr-agent will test
-            before applying a config, we can confident that a failed config needs not be re-applied
-            because, hopefully, frr-reload will not break it ? */
-            if genid != ExternalConfig::BLANK_GENID {
-                let previous = last.unwrap_or(ExternalConfig::BLANK_GENID);
-                info!("Rolling back to config '{}'...", previous);
-                let mut config = self.get_mut(previous);
-                #[allow(clippy::collapsible_if)]
-                if let Some(config) = &mut config {
-                    if let Err(e) = config.apply(frrmi, netlink, router_ctl).await {
-                        error!("Fatal: could not roll-back to previous config: {e}");
-                    }
-                }
-            }
-        }
-        debug!(
-            "The current config database looks as follows:\n{}",
-            GwConfigDatabaseSummary(self)
-        );
-        res
+    /// Set the current generation id
+    pub fn set_current_gen(&mut self, genid: GenId) {
+        info!("Config with genid '{genid}' is now the current");
+        self.current = Some(genid);
     }
 
     /// Get the generation Id of the currently applied config, if any.
