@@ -487,6 +487,37 @@ mod tests {
                     "L2VPN EVPN should be None"
                 );
             }
+            // Check neighbors
+            assert_eq!(
+                converted_router.neighbors.len(),
+                original_router.neighbors.len(),
+                "BGP neighbor count mismatch"
+            );
+
+            // Check neighbors
+            for (i, original_neighbor) in original_router.neighbors.iter().enumerate() {
+                let converted_neighbor = &converted_router.neighbors[i];
+                assert_eq!(
+                    converted_neighbor.address, original_neighbor.address,
+                    "BGP neighbor address mismatch"
+                );
+                assert_eq!(
+                    converted_neighbor.remote_asn, original_neighbor.remote_asn,
+                    "BGP neighbor remote ASN mismatch"
+                );
+                assert_eq!(
+                    converted_neighbor.af_activate, original_neighbor.af_activate,
+                    "BGP neighbor address family activation mismatch"
+                );
+                assert_eq!(
+                    converted_neighbor.networks, original_neighbor.networks,
+                    "BGP neighbor networks mismatch"
+                );
+                assert_eq!(
+                    converted_neighbor.update_source, original_neighbor.update_source,
+                    "BGP neighbor update source mismatch"
+                );
+            }
         }
 
         // --- OVERLAY CONFIGURATION TESTS ---
