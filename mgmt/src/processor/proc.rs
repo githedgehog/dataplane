@@ -13,6 +13,7 @@ use crate::models::external::{ConfigError, ConfigResult, stringify};
 use crate::models::internal::InternalConfig;
 
 use crate::frr::frrmi::FrrMi;
+use crate::processor::display::GwConfigDatabaseSummary;
 use crate::processor::gwconfigdb::GwConfigDatabase;
 use crate::{frr::renderer::builder::Render, models::external::gwconfig::GenId};
 
@@ -93,13 +94,8 @@ impl ConfigProcessor {
         (processor, tx)
     }
 
-    /// Main entry point for new configurations. When invoked, this method:
-    ///   * forbids the addition of a config if a config with same id exists
-    ///   * validates the incoming config
-    ///   * builds an internal config for it
-    ///   * stores the config in the config database
-    ///   * applies the config
-    pub(crate) async fn process_incoming_config(&mut self, mut config: GwConfig) -> ConfigResult {
+    /// Main entry point for new configurations
+    async fn process_incoming_config(&mut self, mut config: GwConfig) -> ConfigResult {
         /* get id of incoming config */
         let genid = config.genid();
 
@@ -119,28 +115,85 @@ impl ConfigProcessor {
         self.config_db.add(config);
 
         /* apply the configuration just stored */
-        self.config_db
-            .apply(
-                genid,
-                &mut self.frrmi,
-                self.netlink.clone(),
-                &mut self.router_ctl,
-            )
-            .await?;
+        self.apply(genid).await?;
 
         Ok(())
     }
 
     /// Method to apply a blank configuration
     async fn apply_blank_config(&mut self) -> ConfigResult {
-        self.config_db
-            .apply(
-                ExternalConfig::BLANK_GENID,
-                &mut self.frrmi,
-                self.netlink.clone(),
-                &mut self.router_ctl,
-            )
-            .await
+        self.apply(ExternalConfig::BLANK_GENID).await
+    }
+
+    /// Apply the configuration with the given id
+    pub async fn apply(&mut self, genid: GenId) -> ConfigResult {
+        debug!("Applying config with genid '{genid}'...");
+
+        // get the generation (id) of the currently applied config, if any
+        // and abort if the requested config is already applied
+        let last = self.config_db.get_current_gen();
+        if let Some(last) = last {
+            if last == genid {
+                info!("Config {last} is already applied");
+                return Ok(());
+            }
+            debug!("The current config is {last}");
+        } else {
+            debug!("There is no config applied");
+        }
+
+        if self.config_db.contains(genid) {
+            /* mark the current config, if any, as not applied anymore. It is unfortunate
+            to do this here, hence the check, since otherwise the borrow checker complains
+            of double mutable borrow */
+            self.config_db.unmark_current(false);
+        }
+
+        /* look up the config to apply: this should always succeed */
+        let Some(config) = self.config_db.get_mut(genid) else {
+            error!("Can't apply config {genid}: not found");
+            return Err(ConfigError::NoSuchConfig(genid));
+        };
+
+        /* attempt to apply the configuration found */
+        let res = config
+            .apply(&mut self.frrmi, self.netlink.clone(), &mut self.router_ctl)
+            .await;
+        if res.is_ok() {
+            self.config_db.set_current_gen(genid);
+        } else {
+            /* delete the config we wanted to apply */
+            debug!("Deleting config with id {genid}..");
+            let _ = self.config_db.remove(genid);
+
+            /* roll-back to a previous config (if there) or the blank config (to wipe out),
+            except if the failed config is the blank itself.
+
+            Question: if a config fails because frr-agent did not respond, rolling back to
+            that config will not help, since we will fail to re-apply the FRR config
+            which was previously successful. On the other hand,  since the frr-agent will test
+            before applying a config, we can confident that a failed config needs not be re-applied
+            because, hopefully, frr-reload will not break it ? */
+            if genid != ExternalConfig::BLANK_GENID {
+                let previous = last.unwrap_or(ExternalConfig::BLANK_GENID);
+                info!("Rolling back to config '{previous}'...",);
+                let mut config = self.config_db.get_mut(previous);
+                #[allow(clippy::collapsible_if)]
+                if let Some(config) = &mut config {
+                    if let Err(e) = config
+                        .apply(&mut self.frrmi, self.netlink.clone(), &mut self.router_ctl)
+                        .await
+                    {
+                        error!("Fatal: could not roll-back to previous config: {e}");
+                    }
+                }
+            }
+        }
+        debug!(
+            "The current config database looks as follows:\n{}",
+            GwConfigDatabaseSummary(&self.config_db)
+        );
+        res
     }
 
     /// RPC handler to apply a config
@@ -180,7 +233,7 @@ impl ConfigProcessor {
         }
 
         loop {
-            // receive config requests over channel
+            // receive config requests over channel from gRPC server
             match self.rx.recv().await {
                 Some(req) => {
                     let response = match req.request {
