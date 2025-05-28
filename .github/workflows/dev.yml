@@ -73,12 +73,15 @@ jobs:
           - # failures on stable block release
             version: "stable"
             optional: false
+            sleep: "0.0"
           - # failures on beta block release
             version: "beta"
             optional: false
+            sleep: "0.2"
           - # failures on the nightly channel are a clear "yellow" flag
             version: "nightly"
             optional: true
+            sleep: "0.4"
         debug_justfile:
           - "${{ inputs.debug_justfile || false }}"
     outputs:
@@ -108,12 +111,15 @@ jobs:
           fetch-depth: "0"
       - name: "install just"
         run: |
+          sleep ${{matrix.rust.sleep}}
           cargo binstall --no-confirm just
       - name: "install cargo-deny"
         run: |
+          sleep ${{matrix.rust.sleep}}
           cargo binstall --no-confirm cargo-deny
       - name: "install cargo-nextest"
         run: |
+          sleep ${{matrix.rust.sleep}}
           cargo binstall --no-confirm cargo-nextest
       - name: refresh-compile-env
         run: |
