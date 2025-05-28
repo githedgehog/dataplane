@@ -80,7 +80,7 @@ jobs:
             version: "nightly"
             optional: true
         debug_justfile:
-          - "${{inputs.debug_justfile || false}}"
+          - "${{ inputs.debug_justfile || false }}"
     outputs:
       result: "${{ matrix.rust.optional || (steps.gnu_dev_test.conclusion == 'success' && steps.gnu_release_test.conclusion == 'success' && steps.clippy.conclusion == 'success') }}"
     name: "Developer build"
