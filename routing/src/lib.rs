@@ -18,7 +18,7 @@ pub mod interfaces;
 mod nexthop;
 pub mod prefix;
 pub mod pretty_utils;
-mod rmac;
+pub mod rmac;
 pub mod route_processor;
 pub mod router;
 pub mod routingdb;

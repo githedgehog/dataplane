@@ -4,6 +4,7 @@
 //! Configuration database: entity able to store multiple gateway configurations
 
 use crate::frr::frrmi::FrrMi;
+use routing::cpi::RouterCtlSender;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tracing::{debug, error, info};
@@ -82,6 +83,7 @@ impl GwConfigDatabase {
         genid: GenId,
         frrmi: &mut FrrMi,
         netlink: Arc<rtnetlink::Handle>,
+        router_ctl: &mut RouterCtlSender,
     ) -> ConfigResult {
         debug!("Applying config with genid '{}'...", genid);
 
@@ -113,7 +115,7 @@ impl GwConfigDatabase {
         };
 
         /* attempt to apply the configuration found */
-        let res = config.apply(frrmi, netlink.clone()).await;
+        let res = config.apply(frrmi, netlink.clone(), router_ctl).await;
         if res.is_ok() {
             info!("Config with genid '{}' is now the current", genid);
             self.current = Some(genid);
@@ -136,7 +138,7 @@ impl GwConfigDatabase {
                 let mut config = self.get_mut(previous);
                 #[allow(clippy::collapsible_if)]
                 if let Some(config) = &mut config {
-                    if let Err(e) = config.apply(frrmi, netlink).await {
+                    if let Err(e) = config.apply(frrmi, netlink, router_ctl).await {
                         error!("Fatal: could not roll-back to previous config: {e}");
                     }
                 }

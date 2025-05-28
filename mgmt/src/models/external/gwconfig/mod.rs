@@ -17,6 +17,7 @@ use crate::models::{external::overlay::Overlay, internal::device::settings::Devi
 
 use crate::frr::frrmi::FrrMi;
 use crate::processor::confbuild::build_internal_config;
+use routing::cpi::RouterCtlSender;
 
 /// Alias for a config generation number
 pub type GenId = i64;
@@ -146,6 +147,7 @@ impl GwConfig {
         &mut self,
         frrmi: &mut FrrMi,
         netlink: Arc<rtnetlink::Handle>,
+        router_ctl: &mut RouterCtlSender,
     ) -> ConfigResult {
         info!("Applying config with genid {}...", self.genid());
         if self.internal.is_none() {
@@ -154,7 +156,7 @@ impl GwConfig {
         }
 
         /* Apply this gw config */
-        apply_gw_config(self, frrmi, netlink).await?;
+        apply_gw_config(self, frrmi, netlink, router_ctl).await?;
         self.meta.applied = Some(SystemTime::now());
         self.meta.is_applied = true;
         Ok(())
