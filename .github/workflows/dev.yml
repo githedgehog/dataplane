@@ -93,8 +93,7 @@ jobs:
         debug_justfile:
           - "${{ inputs.debug_justfile || false }}"
     outputs:
-      result: |
-        ${{ matrix.rust.optional || (steps.debug_test.conclusion == 'success' && steps.release_test.conclusion == 'success' && steps.clippy.conclusion == 'success') }}
+      result: "${{ matrix.rust.optional || (steps.debug_test.conclusion == 'success' && steps.release_test.conclusion == 'success' && steps.docs.conclusion == 'success' && steps.clippy.conclusion == 'success') }}"
     name: "Developer build"
     runs-on: "lab"
     timeout-minutes: 45
@@ -207,6 +206,22 @@ jobs:
         run: |
           just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} \
             cargo clippy --all-targets --all-features -- -D warnings
+
+      - id: "docs"
+        name: "run rustdoc"
+        run: |
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            rust=${{matrix.rust.version}} \
+            profile=debug \
+            target=x86_64-unknown-linux-gnu \
+            cargo doc
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            rust=${{matrix.rust.version}} \
+            profile=release \
+            target=x86_64-unknown-linux-gnu \
+            cargo doc
 
       - id: "build_each_commit"
         continue-on-error: true
