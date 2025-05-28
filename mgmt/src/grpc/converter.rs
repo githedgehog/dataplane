@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![deny(clippy::all, clippy::pedantic)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::must_use_candidate)] // Do not want to remove pub methods yet
+
 use net::vlan::Vid;
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
+use std::string::ToString;
 use tracing::{Level, error, warn};
 
 use crate::models::external::gwconfig::{
@@ -82,7 +87,7 @@ pub fn make_prefix_string_from_addr_netmask(addr: &str, netmask: u8) -> Result<S
     Ok(format!("{ip}/{netmask}"))
 }
 
-/// Create a new GwConfig from ExternalConfig
+/// Create a new `GwConfig` from `ExternalConfig`
 pub fn create_gw_config(external_config: ExternalConfig) -> GwConfig {
     GwConfig::new(external_config)
 }
@@ -90,7 +95,7 @@ pub fn create_gw_config(external_config: ExternalConfig) -> GwConfig {
 // gRPC to Internal Conversions
 //--------------------------------------------------------------------------------
 
-/// Convert from GatewayConfig (gRPC) to ExternalConfig
+/// Convert from `GatewayConfig` (gRPC) to `ExternalConfig`
 pub fn convert_from_grpc_config(grpc_config: &GatewayConfig) -> Result<ExternalConfig, String> {
     // convert device if present or provide a default
     let device_config = if let Some(device) = &grpc_config.device {
@@ -128,7 +133,7 @@ pub fn convert_from_grpc_config(grpc_config: &GatewayConfig) -> Result<ExternalC
     Ok(external_config)
 }
 
-/// Convert gRPC Device to internal DeviceConfig
+/// Convert `gateway_config::Device` to `DeviceConfig`
 pub fn convert_device_from_grpc(device: &gateway_config::Device) -> Result<DeviceConfig, String> {
     // Convert driver enum
     let driver = match device.driver {
@@ -180,7 +185,7 @@ pub fn convert_underlay_from_grpc(underlay: &gateway_config::Underlay) -> Result
     Ok(Underlay { vrf: vrf_config })
 }
 
-/// Convert gRPC VRF to internal VrfConfig
+/// Convert gRPC VRF to internal `VrfConfig`
 pub fn convert_vrf_to_vrf_config(vrf: &gateway_config::Vrf) -> Result<VrfConfig, String> {
     // Create VRF config
     let mut vrf_config = VrfConfig::new(&vrf.name, None, true /* default vrf */);
@@ -206,7 +211,7 @@ pub fn convert_vrf_to_vrf_config(vrf: &gateway_config::Vrf) -> Result<VrfConfig,
     Ok(vrf_config)
 }
 
-/// Convert gRPC OspfConfig to internal Ospf
+/// Convert gRPC `OspfConfig` to internal `Ospf`
 pub fn convert_ospf_config_from_grpc(
     ospf_config: &gateway_config::config::OspfConfig,
 ) -> Result<Ospf, String> {
@@ -230,7 +235,7 @@ pub fn convert_ospf_config_from_grpc(
     Ok(ospf)
 }
 
-/// Convert gRPC OspfInterface to internal OspfInterface
+/// Convert gRPC `OspfInterface` to internal `OspfInterface`
 pub fn convert_ospf_interface_from_grpc(
     ospf_interface: &gateway_config::config::OspfInterface,
 ) -> Result<OspfInterface, String> {
@@ -266,7 +271,7 @@ pub fn convert_ospf_interface_from_grpc(
     Ok(ospf_iface)
 }
 
-/// Convert a gRPC Interface to internal InterfaceConfig
+/// Convert a gRPC `Interface` to internal `InterfaceConfig`
 pub fn convert_interface_to_interface_config(
     iface: &gateway_config::Interface,
 ) -> Result<InterfaceConfig, String> {
@@ -342,7 +347,7 @@ pub fn convert_interface_to_interface_config(
     Ok(interface_config)
 }
 
-/// Convert gRPC RouterConfig to internal BgpConfig
+/// Convert gRPC `RouterConfig` to internal `BgpConfig`
 pub fn convert_router_config_to_bgp_config(
     router: &gateway_config::RouterConfig,
 ) -> Result<BgpConfig, String> {
@@ -393,7 +398,7 @@ pub fn convert_router_config_to_bgp_config(
     Ok(bgpconfig)
 }
 
-/// Convert gRPC BgpNeighbor to internal BgpNeighbor
+/// Convert gRPC `BgpNeighbor` to internal `BgpNeighbor`
 pub fn convert_bgp_neighbor(neighbor: &gateway_config::BgpNeighbor) -> Result<BgpNeighbor, String> {
     // Parse remote ASN
     let remote_as = neighbor
@@ -468,7 +473,7 @@ pub fn convert_vpc_from_grpc(vpc_grpc: &gateway_config::Vpc) -> Result<Vpc, Stri
     Ok(vpc)
 }
 
-/// Convert a gRPC VpcPeering to internal VpcPeering
+/// Convert a gRPC `VpcPeering` to internal `VpcPeering`
 pub fn convert_peering_from_grpc(
     peering_grpc: &gateway_config::VpcPeering,
 ) -> Result<VpcPeering, String> {
@@ -492,7 +497,7 @@ pub fn convert_peering_from_grpc(
     ))
 }
 
-/// Convert gRPC PeeringEntryFor to VpcManifest
+/// Convert gRPC `PeeringEntryFor` to `VpcManifest`
 pub fn convert_vpc_manifest_from_grpc(
     entry: &gateway_config::PeeringEntryFor,
 ) -> Result<VpcManifest, String> {
@@ -513,7 +518,7 @@ pub fn convert_vpc_manifest_from_grpc(
     Ok(manifest)
 }
 
-/// Convert gRPC Expose to VpcExpose
+/// Convert gRPC `Expose` to `VpcExpose`
 pub fn convert_expose_from_grpc(expose: &gateway_config::Expose) -> Result<VpcExpose, String> {
     // Start with an empty expose
     let mut vpc_expose = VpcExpose::empty();
@@ -613,7 +618,7 @@ pub fn convert_overlay_from_grpc(overlay: &gateway_config::Overlay) -> Result<Ov
 // Internal to gRPC Conversions
 //--------------------------------------------------------------------------------
 
-/// Convert DeviceConfig to gRPC Device
+/// Convert `DeviceConfig` to gRPC `Device`
 pub fn convert_device_to_grpc(dev: &DeviceConfig) -> Result<gateway_config::Device, String> {
     let driver = match dev.settings.driver {
         PacketDriver::Kernel(_) => 0,
@@ -685,15 +690,15 @@ pub fn convert_interface_to_grpc(
 
     // Get VLAN ID if available
     let vlan = match &interface.iftype {
-        InterfaceType::Vlan(if_vlan_config) => Some(if_vlan_config.vlan_id.as_u16() as u32),
+        InterfaceType::Vlan(if_vlan_config) => Some(u32::from(if_vlan_config.vlan_id.as_u16())),
         _ => None,
     };
 
     // Get MAC address if available
     let macaddr = match &interface.iftype {
-        InterfaceType::Ethernet(eth_config) => eth_config.mac.as_ref().map(|m| m.to_string()),
-        InterfaceType::Vlan(vlan_config) => vlan_config.mac.as_ref().map(|m| m.to_string()),
-        InterfaceType::Vtep(vtep_config) => vtep_config.mac.as_ref().map(|m| m.to_string()),
+        InterfaceType::Ethernet(eth_config) => eth_config.mac.as_ref().map(ToString::to_string),
+        InterfaceType::Vlan(vlan_config) => vlan_config.mac.as_ref().map(ToString::to_string),
+        InterfaceType::Vtep(vtep_config) => vtep_config.mac.as_ref().map(ToString::to_string),
         _ => None,
     };
 
@@ -789,7 +794,7 @@ pub fn convert_bgp_neighbor_to_grpc(
     let networks = neighbor
         .networks
         .iter()
-        .map(|n| n.to_string())
+        .map(ToString::to_string)
         .collect::<Vec<String>>();
 
     let update_source = convert_bgp_update_source_to_grpc(&neighbor.update_source)?;
@@ -816,7 +821,7 @@ pub fn convert_bgp_config_to_grpc(bgp: &BgpConfig) -> Result<gateway_config::Rou
     let router_id = bgp
         .router_id
         .as_ref()
-        .map_or(String::new(), |id| id.to_string());
+        .map_or(String::new(), ToString::to_string);
 
     // Create IPv4 unicast config if enabled
     let ipv4_unicast = bgp.af_ipv4unicast.as_ref().map(|_| {
@@ -856,7 +861,7 @@ pub fn convert_bgp_config_to_grpc(bgp: &BgpConfig) -> Result<gateway_config::Rou
     })
 }
 
-/// Convert gRPC OSPF to internal Ospf
+/// Convert internal `Ospf` to gRPC `OspfConfig`
 pub fn convert_ospf_to_grpc(ospf: &Ospf) -> gateway_config::config::OspfConfig {
     gateway_config::config::OspfConfig {
         router_id: ospf.router_id.to_string(),
@@ -864,7 +869,7 @@ pub fn convert_ospf_to_grpc(ospf: &Ospf) -> gateway_config::config::OspfConfig {
     }
 }
 
-/// Convert gRPC VRF to internal VrfConfig
+/// Convert internal `VrfConfig` to gRPC `Vrf`
 pub fn convert_vrf_config_to_grpc(vrf: &VrfConfig) -> Result<gateway_config::Vrf, String> {
     // Convert interfaces
     let interfaces = convert_interfaces_to_grpc(&vrf.interfaces)?;
@@ -923,25 +928,25 @@ pub fn convert_vpc_expose_to_grpc(expose: &VpcExpose) -> Result<gateway_config::
     let mut as_rules = Vec::new();
 
     // Convert IP inclusion rules
-    for prefix in expose.ips.iter() {
+    for prefix in &expose.ips {
         let rule = gateway_config::config::peering_i_ps::Rule::Cidr(prefix.to_string());
         ips.push(gateway_config::PeeringIPs { rule: Some(rule) });
     }
 
     // Convert IP exclusion rules
-    for prefix in expose.nots.iter() {
+    for prefix in &expose.nots {
         let rule = gateway_config::config::peering_i_ps::Rule::Not(prefix.to_string());
         ips.push(gateway_config::PeeringIPs { rule: Some(rule) });
     }
 
     // Convert AS inclusion rules
-    for prefix in expose.as_range.iter() {
+    for prefix in &expose.as_range {
         let rule = gateway_config::config::peering_as::Rule::Cidr(prefix.to_string());
         as_rules.push(gateway_config::PeeringAs { rule: Some(rule) });
     }
 
     // Convert AS exclusion rules
-    for prefix in expose.not_as.iter() {
+    for prefix in &expose.not_as {
         let rule = gateway_config::config::peering_as::Rule::Not(prefix.to_string());
         as_rules.push(gateway_config::PeeringAs { rule: Some(rule) });
     }
@@ -1004,7 +1009,7 @@ pub fn convert_overlay_to_grpc(overlay: &Overlay) -> Result<gateway_config::Over
     Ok(gateway_config::Overlay { vpcs, peerings })
 }
 
-/// Convert from ExternalConfig to GatewayConfig (gRPC)
+/// Convert from `ExternalConfig` to `GatewayConfig` (gRPC)
 pub fn convert_to_grpc_config(external_config: &ExternalConfig) -> Result<GatewayConfig, String> {
     // Convert device config
     let device = convert_device_to_grpc(&external_config.device)?;
@@ -1081,8 +1086,8 @@ impl TryFrom<&BgpNeighbor> for gateway_config::BgpNeighbor {
 use gateway_config::config::BgpNeighborUpdateSource;
 use gateway_config::config::bgp_neighbor_update_source::Source;
 
-/// Ad-hoc type just to ease the conversion from autogenerated BgpNeighborUpdateSource,
-/// which embeds an Option.
+/// Ad-hoc type just to ease the conversion from autogenerated `BgpNeighborUpdateSource`,
+/// which embeds an `Option`.
 #[repr(transparent)]
 pub struct OptBgpUpdateSource(Option<BgpUpdateSource>);
 impl OptBgpUpdateSource {
