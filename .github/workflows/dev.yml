@@ -201,6 +201,33 @@ jobs:
           message: |
             ${{ env.FLAKY_TESTS_DEBUG }}${{ env.FLAKY_TESTS_RELEASE }}
 
+      - name: "publish dev/release test report"
+        uses: "mikepenz/action-junit-report@v5"
+        if: "${{ always() }}"
+        with:
+          annotate_notice: 'false'
+          annotate_only: 'false'
+          check_annotations: 'true'
+          check_retries: 'false'
+          comment: 'false'
+          detailed_summary: 'true'
+          fail_on_failure: 'false'
+          fail_on_parse_error: 'true'
+          flaky_summary: 'true'
+          include_empty_in_summary: 'true'
+          include_passed: 'true'
+          include_time_in_summary: 'true'
+          report_paths: 'target/nextest/default/*junit.xml'
+          require_passed_tests: 'true'
+          require_tests: 'true'
+          simplified_summary: 'true'
+          truncate_stack_traces: 'false'
+          group_reports: 'true'
+          check_name: 'test-report-${{matrix.rust.version}}'
+          skip_success_summary: 'false'
+          job_summary: 'true'
+          verbose_summary: 'false'
+
       - id: "clippy"
         name: "run clippy"
         run: |
