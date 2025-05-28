@@ -63,16 +63,15 @@ pub fn interface_prefixes_to_strings(interface: &InterfaceConfig) -> Vec<String>
 /// Parse a CIDR string into IP and netmask
 pub fn parse_cidr(cidr: &str) -> Result<(String, u8), String> {
     let parts: Vec<&str> = cidr.split('/').collect();
-    if parts.len() != 2 {
-        return Err(format!("Invalid CIDR format: {cidr}"));
+    match parts.as_slice() {
+        [ip, mask] => {
+            let netmask = mask
+                .parse::<u8>()
+                .map_err(|_| format!("Invalid netmask in CIDR {cidr}: {mask}"))?;
+            Ok(((*ip).to_string(), netmask))
+        }
+        _ => Err(format!("Invalid CIDR format: {cidr}")),
     }
-
-    let ip = parts[0].to_string();
-    let netmask = parts[1]
-        .parse::<u8>()
-        .map_err(|_| format!("Invalid netmask in CIDR {cidr}: {}", parts[1]))?;
-
-    Ok((ip, netmask))
 }
 
 pub fn make_prefix_string_from_addr_netmask(addr: &str, netmask: u8) -> Result<String, String> {
@@ -307,16 +306,12 @@ pub fn convert_interface_to_interface_config(
         }
         gateway_config::config::IfType::Loopback => InterfaceType::Loopback,
         gateway_config::config::IfType::Vtep => {
-            if iface.ipaddrs.is_empty() {
-                return Err("VTEP interface requires an IP address".to_string());
-            }
-
-            if iface.ipaddrs.len() > 1 {
-                return Err("VTEP interface requires exactly one IP address".to_string());
-            }
-
-            let local = IpAddr::from_str(&iface.ipaddrs[0])
-                .map_err(|_| format!("Invalid local IP address for VTEP: {}", iface.ipaddrs[0]))?;
+            let local = match iface.ipaddrs.as_slice() {
+                [] => Err("VTEP interface requires an IP address".to_string()),
+                [addr] => IpAddr::from_str(addr)
+                    .map_err(|_| format!("Invalid local IP address for VTEP: {addr}")),
+                _ => Err("VTEP interface requires exactly one IP address".to_string()),
+            }?;
 
             InterfaceType::Vtep(IfVtepConfig {
                 mac: None,
@@ -481,17 +476,17 @@ pub fn convert_vpc_from_grpc(vpc_grpc: &gateway_config::Vpc) -> Result<Vpc, Stri
 pub fn convert_peering_from_grpc(
     peering_grpc: &gateway_config::VpcPeering,
 ) -> Result<VpcPeering, String> {
-    // Need exactly two VPCs for a peering
-    if peering_grpc.r#for.len() != 2 {
-        return Err(format!(
+    let (vpc1_manifest, vpc2_manifest) = match peering_grpc.r#for.as_slice() {
+        [vpc1, vpc2] => {
+            let vpc1_manifest = convert_vpc_manifest_from_grpc(vpc1)?;
+            let vpc2_manifest = convert_vpc_manifest_from_grpc(vpc2)?;
+            Ok((vpc1_manifest, vpc2_manifest))
+        }
+        _ => Err(format!(
             "VPC peering {} must have exactly two VPCs",
             peering_grpc.name
-        ));
-    }
-
-    // Get the two VPC manifests
-    let vpc1_manifest = convert_vpc_manifest_from_grpc(&peering_grpc.r#for[0])?;
-    let vpc2_manifest = convert_vpc_manifest_from_grpc(&peering_grpc.r#for[1])?;
+        )),
+    }?;
 
     // Create the peering using the constructor
     Ok(VpcPeering::new(
