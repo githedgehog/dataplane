@@ -45,14 +45,17 @@ impl FibTable {
     }
 
     /// Get the [`FibReader`] for the fib with the given [`FibId`]
+    #[must_use]
     pub fn get_fib(&self, id: &FibId) -> Option<&Arc<FibReader>> {
         self.0.get(id)
     }
     /// Number of [`FibReader`]s in the fib table
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
     /// Tell if fib table is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -72,20 +75,21 @@ enum FibTableChange {
 impl Absorb<FibTableChange> for FibTable {
     fn absorb_first(&mut self, change: &mut FibTableChange, _: &Self) {
         match change {
-            FibTableChange::Add((id, fibr)) => self.add_fib(id.clone(), fibr.clone()),
+            FibTableChange::Add((id, fibr)) => self.add_fib(*id, fibr.clone()),
             FibTableChange::Del(id) => self.del_fib(id),
             FibTableChange::RegisterByVni((id, vni)) => self.register_by_vni(id, vni),
             FibTableChange::UnRegisterVni(vni) => self.unregister_vni(vni),
-        };
+        }
     }
     fn drop_first(self: Box<Self>) {}
     fn sync_with(&mut self, first: &Self) {
-        *self = first.clone()
+        *self = first.clone();
     }
 }
 
 pub struct FibTableWriter(WriteHandle<FibTable, FibTableChange>);
 impl FibTableWriter {
+    #[must_use]
     pub fn new() -> (FibTableWriter, FibTableReader) {
         let (write, read) = left_right::new::<FibTable, FibTableChange>();
         (FibTableWriter(write), FibTableReader(read))
@@ -93,10 +97,9 @@ impl FibTableWriter {
     #[allow(clippy::arc_with_non_send_sync)]
     #[must_use]
     pub fn add_fib(&mut self, id: FibId, vni: Option<Vni>) -> (FibWriter, Arc<FibReader>) {
-        let (fibw, fibr) = FibWriter::new(id.clone());
+        let (fibw, fibr) = FibWriter::new(id);
         let fibr_arc = Arc::new(fibr);
-        self.0
-            .append(FibTableChange::Add((id.clone(), fibr_arc.clone())));
+        self.0.append(FibTableChange::Add((id, fibr_arc.clone())));
         if let Some(vni) = vni {
             self.0.append(FibTableChange::RegisterByVni((id, vni)));
         }
@@ -108,7 +111,7 @@ impl FibTableWriter {
         self.0.publish();
     }
     pub fn del_fib(&mut self, id: &FibId, vni: Option<Vni>) {
-        self.0.append(FibTableChange::Del(id.clone()));
+        self.0.append(FibTableChange::Del(*id));
         if let Some(vni) = vni {
             self.0.append(FibTableChange::UnRegisterVni(vni));
         }
@@ -128,4 +131,5 @@ impl FibTableReader {
     }
 }
 
+#[allow(unsafe_code)]
 unsafe impl Send for FibTableWriter {}

@@ -56,7 +56,7 @@ impl RmacStore {
     }
 
     /// Identical to[`add_rmac`], but getting the entry as param
-    pub fn del_rmac_entry(&mut self, entry: RmacEntry) {
+    pub fn del_rmac_entry(&mut self, entry: &RmacEntry) {
         let key = (entry.address, entry.vni);
         #[allow(clippy::collapsible_if)]
         if let Entry::Occupied(o) = self.0.entry(key) {

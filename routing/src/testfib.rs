@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+//! Vanilla fib used for testing
+
 use crate::route_processor::FibGroup;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -10,12 +12,15 @@ use std::sync::Arc;
 pub struct TestFib(BTreeSet<Arc<FibGroup>>);
 
 impl TestFib {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

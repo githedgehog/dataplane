@@ -14,7 +14,7 @@ use crate::vrf::RouteOrigin;
 
 #[allow(dead_code)]
 #[derive(Debug, Default, Clone, Ord, PartialOrd, Eq, PartialEq)]
-/// An EgressObject indicates the interface over which a packet
+/// An `EgressObject` indicates the interface over which a packet
 /// has to be sent and, optionally, a next-hop ip address. If
 /// no address is provided, ND/ARP is required.
 pub struct EgressObject {
@@ -24,21 +24,26 @@ pub struct EgressObject {
 
 #[allow(dead_code)]
 impl EgressObject {
+    #[must_use]
     fn new(ifindex: Option<IfIndex>, address: Option<IpAddr>) -> Self {
         Self { ifindex, address }
     }
+    #[must_use]
     fn with_ifindex(ifindex: IfIndex, address: Option<IpAddr>) -> Self {
         Self {
             ifindex: Some(ifindex),
             address,
         }
     }
+    #[must_use]
     fn empty() -> Self {
         Self::new(None, None)
     }
+    #[must_use]
     pub fn ifindex(&self) -> &Option<IfIndex> {
         &self.ifindex
     }
+    #[must_use]
     pub fn address(&self) -> &Option<IpAddr> {
         &self.address
     }
@@ -47,11 +52,11 @@ impl EgressObject {
 /* ============================== FIbEntry Group ========================================= */
 #[allow(dead_code)]
 #[derive(Debug, Default, Clone, Ord, PartialOrd, Eq, PartialEq)]
-/// A `FibEntryGroup` is a set of [`FibEntries`] that may be used to forward an IP packet.
+/// A `FibGroup` is a set of [`FibEntry`]s that may be used to forward an IP packet.
 /// A single entry may be used for each packet. In spite of this being a set, we implement it with a
 /// vector for the following reasons:
-///   * a FibGroup may contain typically a small number of FibEntries
-///   * a vector allows us to mutably iterate over the elements easily as compared to BtreeSet or HashSet.
+///   * a `FibGroup` may contain typically a small number of `FibEntry`s
+///   * a vector allows us to mutably iterate over the elements easily as compared to `BtreeSet` or a `HashSet`.
 ///   * we do not merge duplicates. This does not pose any functional issue and may be exploited
 ///     to weigh paths on the forwarding path.
 pub struct FibGroup {
@@ -60,11 +65,13 @@ pub struct FibGroup {
 
 #[allow(dead_code)]
 impl FibGroup {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
         }
     }
+    #[must_use]
     pub fn with_entry(entry: FibEntry) -> Self {
         Self {
             entries: vec![entry],
@@ -82,9 +89,11 @@ impl FibGroup {
     pub fn extend(&mut self, other: &Self) {
         self.entries.extend_from_slice(&other.entries);
     }
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -92,6 +101,7 @@ impl FibGroup {
     pub fn append(&mut self, other: &mut Self) {
         self.entries.append(&mut other.entries);
     }
+    #[must_use]
     pub fn entries(&self) -> &Vec<FibEntry> {
         &self.entries
     }
@@ -108,11 +118,13 @@ pub struct FibEntry {
 
 #[allow(dead_code)]
 impl FibEntry {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             instructions: Vec::new(),
         }
     }
+    #[must_use]
     pub fn with_inst(instruction: PktInstruction) -> Self {
         Self {
             instructions: vec![instruction],
@@ -124,9 +136,11 @@ impl FibEntry {
     pub fn extend_from_slice(&mut self, instructions: &[PktInstruction]) {
         self.instructions.extend_from_slice(instructions);
     }
+    #[must_use]
     pub fn len(&self) -> usize {
         self.instructions.len()
     }
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.instructions.is_empty()
     }

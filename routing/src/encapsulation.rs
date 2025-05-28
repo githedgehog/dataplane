@@ -22,6 +22,7 @@ pub struct VxlanEncapsulation {
 
 #[allow(dead_code)]
 impl VxlanEncapsulation {
+    #[must_use]
     pub fn new(vni: Vni, remote: IpAddr) -> Self {
         Self {
             vni,

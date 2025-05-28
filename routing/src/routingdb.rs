@@ -97,7 +97,7 @@ impl VrfTable {
 
     ///////////////////////////////////////////////////////////////////////////////////
     /// Remove the vni from a VRF. This clears the vni field in a VRF if found and
-    /// removes it from the by_vni map.
+    /// removes it from the `by_vni` map.
     ///////////////////////////////////////////////////////////////////////////////////
     pub fn vrf_remove_vni(&mut self, vrfid: VrfId) -> Result<(), RouterError> {
         let mut old_vni: Option<Vni> = None;
@@ -109,7 +109,7 @@ impl VrfTable {
             } else {
                 error!("Hit poisoned RWlock!");
                 arc_vrf.clear_poison();
-                return Err(RouterError::Internal);
+                return Err(RouterError::Internal("Hit poisoned lock"));
             }
         } else {
             return Err(RouterError::NoSuchVrf);
@@ -161,7 +161,7 @@ impl VrfTable {
     //////////////////////////////////////////////////////////////////
     /// Remove the vrf with the given id
     //////////////////////////////////////////////////////////////////
-    pub fn remove_vrf(&mut self, vrfid: VrfId, iftable: &IfTable) -> Result<(), RouterError> {
+    pub fn remove_vrf(&mut self, vrfid: VrfId, iftable: &mut IfTable) -> Result<(), RouterError> {
         if let Some(vrf) = self.by_id.remove(&vrfid) {
             if let Some(fibtablew) = &mut self.fibtable {
                 if let Ok(vrf) = vrf.read() {
@@ -280,7 +280,7 @@ mod tests {
     fn vrf_table() {
         let (fibtw, _fibtr) = FibTableWriter::new();
         let mut vrftable = VrfTable::new(Some(fibtw));
-        let iftable = build_test_iftable();
+        let mut iftable = build_test_iftable();
 
         /* add VRFs */
         let vrf0 = vrftable.add_vrf("default", 0, None).unwrap();
@@ -314,83 +314,59 @@ mod tests {
 
         /* get interfaces from iftable and attach them */
         {
-            let mut eth0 = iftable
-                .get_interface(2)
-                .expect("Should be there")
-                .borrow_mut();
+            let eth0 = iftable.get_interface_mut(2).expect("Should be there");
+
             eth0.attach(&vrf0.read().unwrap()).expect("Should succeed");
-            assert!(eth0.is_attached_to_fib(&FibId::Id(0)));
+            assert!(eth0.is_attached_to_fib(FibId::Id(0)));
 
-            let mut eth1 = iftable
-                .get_interface(3)
-                .expect("Should be there")
-                .borrow_mut();
+            let eth1 = iftable.get_interface_mut(3).expect("Should be there");
+
             eth1.attach(&vrf0.read().unwrap()).expect("Should succeed");
-            assert!(eth1.is_attached_to_fib(&FibId::Id(0)));
+            assert!(eth1.is_attached_to_fib(FibId::Id(0)));
 
-            let mut vlan100 = iftable
-                .get_interface(4)
-                .expect("Should be there")
-                .borrow_mut();
+            let vlan100 = iftable.get_interface_mut(4).expect("Should be there");
+
             vlan100
                 .attach(&vrf1.read().unwrap())
                 .expect("Should succeed");
-            assert!(vlan100.is_attached_to_fib(&FibId::Id(1)));
+            assert!(vlan100.is_attached_to_fib(FibId::Id(1)));
 
-            let mut vlan200 = iftable
-                .get_interface(5)
-                .expect("Should be there")
-                .borrow_mut();
+            let vlan200 = iftable.get_interface_mut(5).expect("Should be there");
+
             vlan200
                 .attach(&vrf1.read().unwrap())
                 .expect("Should succeed");
-            assert!(vlan200.is_attached_to_fib(&FibId::Id(1)));
+            assert!(vlan200.is_attached_to_fib(FibId::Id(1)));
         }
 
         /* remove VRFs 0 - interfaces should be automatically detached */
         {
-            let _ = vrftable.remove_vrf(0, &iftable);
+            let _ = vrftable.remove_vrf(0, &mut iftable);
             assert!(
                 vrftable
                     .get_vrf(0)
                     .is_err_and(|e| e == RouterError::NoSuchVrf)
             );
 
-            let eth0 = iftable
-                .get_interface(2)
-                .expect("Should be there")
-                .borrow_mut();
+            let eth0 = iftable.get_interface(2).expect("Should be there");
+            assert!(!eth0.is_attached_to_fib(FibId::Id(0)));
 
-            assert!(!eth0.is_attached_to_fib(&FibId::Id(0)));
-
-            let eth1 = iftable
-                .get_interface(3)
-                .expect("Should be there")
-                .borrow_mut();
-
-            assert!(!eth1.is_attached_to_fib(&FibId::Id(0)));
+            let eth1 = iftable.get_interface(3).expect("Should be there");
+            assert!(!eth1.is_attached_to_fib(FibId::Id(0)));
         }
 
         /* remove VRFs 1 - interfaces should be automatically detached */
-        let _ = vrftable.remove_vrf(1, &iftable);
+        let _ = vrftable.remove_vrf(1, &mut iftable);
         assert!(
             vrftable
                 .get_vrf(1)
                 .is_err_and(|e| e == RouterError::NoSuchVrf)
         );
-        let vlan100 = iftable
-            .get_interface(4)
-            .expect("Should be there")
-            .borrow_mut();
+        let vlan100 = iftable.get_interface(4).expect("Should be there");
+        assert!(!vlan100.is_attached_to_fib(FibId::Id(1)));
 
-        assert!(!vlan100.is_attached_to_fib(&FibId::Id(1)));
-
-        let vlan200 = iftable
-            .get_interface(5)
-            .expect("Should be there")
-            .borrow_mut();
-
-        assert!(!vlan200.is_attached_to_fib(&FibId::Id(1)));
+        let vlan200 = iftable.get_interface(5).expect("Should be there");
+        assert!(!vlan200.is_attached_to_fib(FibId::Id(1)));
 
         /* Should be gone from by_vni map */
         assert!(

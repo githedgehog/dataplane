@@ -24,7 +24,7 @@ pub enum PrefixError {
 /// Type to represent both IPv4 and IPv6 prefixes to expose an IP version-independent API.
 /// Since we will not store prefixes, putting Ipv6 on the same basket as IPv4 will not penalize the
 /// memory requirements of Ipv4
-#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub enum Prefix {
     IPV4(Ipv4Prefix),
     IPV6(Ipv6Prefix),
@@ -36,68 +36,84 @@ impl Prefix {
     const MAX_LEN_IPV6: u8 = 128;
 
     /// Build 224.0.0.0/4 - Ideally this would be const
+    #[must_use]
     pub fn ipv4_link_local_mcast_prefix() -> Prefix {
-        Prefix::IPV4(Ipv4Prefix::new(Ipv4Addr::new(224, 0, 0, 0), 8).expect("Bad prefix"))
+        Prefix::IPV4(Ipv4Prefix::new(Ipv4Addr::new(224, 0, 0, 0), 8).expect("Bad prefix")) // FIXME(fredi)
     }
-    /// Build 0.0.0.0/0. "Default" is a very overloaded term. Calling this root_v4 instead of default_v4.
+    /// Build 0.0.0.0/0. "Default" is a very overloaded term. Calling this `root_v4`.
+    #[must_use]
     pub fn root_v4() -> Prefix {
         Prefix::IPV4(Ipv4Prefix::default())
     }
-    /// Build ::/0.
+    /// Build `::/0`.
+    #[must_use]
     pub fn root_v6() -> Prefix {
         Prefix::IPV6(Ipv6Prefix::default())
     }
     /// Tell if a prefix is a root prefix
+    #[must_use]
     pub fn is_root(&self) -> bool {
         match self {
             Prefix::IPV4(_) => *self == Prefix::root_v4(),
             Prefix::IPV6(_) => *self == Prefix::root_v6(),
         }
     }
-    /// Get the inner Ipv4Prefix from a Prefix
+    /// Get the inner `Ipv4Prefix` from a Prefix
     pub(crate) fn get_v4(&self) -> &Ipv4Prefix {
         match self {
             Prefix::IPV4(p) => p,
             Prefix::IPV6(_) => panic!("Not an IPv4 prefix!"),
         }
     }
-    /// Get the inner Ipv6Prefix from a Prefix
+    /// Get the inner `Ipv6Prefix` from a Prefix
     pub(crate) fn get_v6(&self) -> &Ipv6Prefix {
         match self {
             Prefix::IPV4(_) => panic!("Not an IPv6 prefix!"),
             Prefix::IPV6(p) => p,
         }
     }
+
     /// Check whether the prefix is IPv4
+    #[must_use]
     pub fn is_ipv4(&self) -> bool {
         matches!(self, Prefix::IPV4(_))
     }
+
     /// Check whether the prefix is IPv6
+    #[must_use]
     pub fn is_ipv6(&self) -> bool {
         matches!(self, Prefix::IPV6(_))
     }
-    /// Build an IpAddr from a prefix
+
+    /// Build an `IpAddr` from a prefix
+    #[must_use]
     pub fn as_address(&self) -> IpAddr {
         match *self {
             Prefix::IPV4(p) => p.network().into(),
             Prefix::IPV6(p) => p.network().into(),
         }
     }
+
     /// Get prefix length
+    #[must_use]
     pub fn length(&self) -> u8 {
         match *self {
             Prefix::IPV4(p) => p.len(),
             Prefix::IPV6(p) => p.len(),
         }
     }
+
     /// Get number of covered IP addresses
+    #[must_use]
     pub fn size(&self) -> u128 {
         match *self {
-            Prefix::IPV4(p) => 2u128.pow(32 - p.len() as u32),
-            Prefix::IPV6(p) => 2u128.pow(128 - p.len() as u32),
+            Prefix::IPV4(p) => 2u128.pow(32 - u32::from(p.len())),
+            Prefix::IPV6(p) => 2u128.pow(128 - u32::from(p.len())),
         }
     }
+
     /// Check whether prefix covers a given address
+    #[must_use]
     pub fn covers_addr(&self, addr: &IpAddr) -> bool {
         match (self, addr) {
             (Prefix::IPV4(p), IpAddr::V4(a)) => p.covers(a),
@@ -105,7 +121,9 @@ impl Prefix {
             _ => false,
         }
     }
+
     /// Check whether prefix covers another prefix
+    #[must_use]
     pub fn covers(&self, other: &Prefix) -> bool {
         match (self, other) {
             (Prefix::IPV4(p1), Prefix::IPV4(p2)) => p1.covers(p2),
@@ -116,7 +134,7 @@ impl Prefix {
 
     /// Build a [`Prefix`] from (&str, u8)
     /// For a mysterious reason the compiler complains about a conflicting implementation in
-    /// crate core when implementing this as TryFrom<(&str, u8)> for Prefix.
+    /// crate core when implementing this as `TryFrom`<(&str, u8)> for Prefix.
     pub fn try_from_tuple(tuple: (&str, u8)) -> Result<Self, PrefixError> {
         let a = IpAddr::from_str(tuple.0).map_err(|e| PrefixError::Invalid(e.to_string()))?;
         let max_len = match a {
@@ -130,7 +148,6 @@ impl Prefix {
         }
     }
 
-
     #[cfg(any(test, feature = "testing"))]
     pub fn expect_from<T>(val: T) -> Self
     where
@@ -139,7 +156,9 @@ impl Prefix {
     {
         val.try_into().expect("Invalid prefix")
     }
+
     /// Tell if prefix is a host
+    #[must_use]
     pub fn is_host(&self) -> bool {
         match self {
             Prefix::IPV4(_) => self.length() == 32,

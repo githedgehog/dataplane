@@ -32,34 +32,36 @@ impl Absorb<IfTableChange> for IfTable {
             }
             IfTableChange::Del(ifindex) => self.del_interface(*ifindex),
             IfTableChange::Attach((ifindex, fibr)) => {
-                self.attach_interface_to_vrf(*ifindex, fibr.clone())
+                self.attach_interface_to_vrf(*ifindex, fibr.clone());
             }
             IfTableChange::Detach(ifindex) => self.detach_interface_from_vrf(*ifindex),
-            IfTableChange::DetachFromVrf(fibid) => self.detach_interfaces_from_vrf(fibid.clone()),
+            IfTableChange::DetachFromVrf(fibid) => self.detach_interfaces_from_vrf(*fibid),
             IfTableChange::AddIpAddress((ifindex, ifaddr)) => {
                 let _ = self.add_ifaddr(*ifindex, ifaddr);
             }
             IfTableChange::DelIpAddress((ifindex, ifaddr)) => self.del_ifaddr(*ifindex, ifaddr),
             IfTableChange::UpdateOpState((ifindex, state)) => {
-                self.set_iface_oper_state(*ifindex, state.clone())
+                self.set_iface_oper_state(*ifindex, state.clone());
             }
             IfTableChange::UpdateAdmState((ifindex, state)) => {
-                self.set_iface_admin_state(*ifindex, state.clone())
+                self.set_iface_admin_state(*ifindex, state.clone());
             }
-        };
+        }
     }
     fn drop_first(self: Box<Self>) {}
     fn sync_with(&mut self, first: &Self) {
-        *self = first.clone()
+        *self = first.clone();
     }
 }
 
 pub struct IfTableWriter(WriteHandle<IfTable, IfTableChange>);
 impl IfTableWriter {
+    #[must_use]
     pub fn new() -> (IfTableWriter, IfTableReader) {
         let (w, r) = left_right::new_from_empty::<IfTable, IfTableChange>(IfTable::new());
         (IfTableWriter(w), IfTableReader(r))
     }
+    #[must_use]
     pub fn as_iftable_reader(&self) -> IfTableReader {
         IfTableReader::new(self.0.clone())
     }
@@ -102,11 +104,11 @@ impl IfTableWriter {
                     let fibr = fibw.as_fibreader();
                     Ok(fibr.clone())
                 } else {
-                    Err(RouterError::Internal)
+                    Err(RouterError::Internal("No fib writer"))
                 }
             } else {
                 vrf.clear_poison();
-                Err(RouterError::Internal)
+                Err(RouterError::Internal("RWlock read failed"))
             }
         } else {
             Err(RouterError::NoSuchVrf)
@@ -126,7 +128,7 @@ impl IfTableWriter {
                 Self::get_vrf_fibr(vrftable, vrfid)
             }
         } else {
-            Err(RouterError::Internal)
+            Err(RouterError::Internal("IfTable writer failed"))
         }
     }
     pub fn attach_interface_to_vrf(
@@ -151,12 +153,15 @@ impl IfTableWriter {
 #[derive(Clone, Debug)]
 pub struct IfTableReader(ReadHandle<IfTable>);
 impl IfTableReader {
+    #[must_use]
     pub fn new(rhandle: ReadHandle<IfTable>) -> Self {
         IfTableReader(rhandle)
     }
+    #[must_use]
     pub fn enter(&self) -> Option<ReadGuard<'_, IfTable>> {
         self.0.enter()
     }
 }
 
+#[allow(unsafe_code)]
 unsafe impl Send for IfTableWriter {}

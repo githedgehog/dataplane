@@ -3,23 +3,20 @@
 
 //! A table of interfaces
 
-use ahash::RandomState;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
-use tracing::{debug, error};
-
-use super::interface::IfMapping;
 use crate::errors::RouterError;
 use crate::fib::fibtype::{FibId, FibReader};
 use crate::interfaces::interface::{IfAddress, IfIndex, IfState, Interface};
 use crate::vrf::Vrf;
+use ahash::RandomState;
+use std::collections::HashMap;
+
+#[allow(unused)]
+use tracing::{debug, error};
 
 #[derive(Clone)]
 /// A table of network interface objects, keyed by some ifindex (u32)
 pub struct IfTable {
-    by_index: HashMap<u32, Rc<RefCell<Interface>>, RandomState>,
-    by_mapping: HashMap<IfMapping, Rc<RefCell<Interface>>, RandomState>,
+    by_index: HashMap<u32, Interface, RandomState>,
 }
 
 #[allow(dead_code)]
@@ -28,73 +25,39 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     /// Create an interface table. All interfaces should live here.
     //////////////////////////////////////////////////////////////////
+    #[must_use]
     pub fn new() -> Self {
         Self {
             by_index: HashMap::with_hasher(RandomState::with_seed(0)),
-            by_mapping: HashMap::with_hasher(RandomState::with_seed(0)),
         }
     }
+    #[must_use]
     pub fn len(&self) -> usize {
         self.by_index.len()
     }
-    pub fn len_by_mapping(&self) -> usize {
-        self.by_mapping.len()
-    }
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.by_index.is_empty()
     }
-    pub fn iter(&self) -> impl Iterator<Item = (&IfIndex, &Rc<RefCell<Interface>>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&IfIndex, &Interface)> {
         self.by_index.iter()
     }
-    pub fn values(&self) -> impl Iterator<Item = &Rc<RefCell<Interface>>> {
+    pub fn values(&self) -> impl Iterator<Item = &Interface> {
         self.by_index.values()
-    }
-    pub fn iter_by_mapping(&self) -> impl Iterator<Item = (&IfMapping, &Rc<RefCell<Interface>>)> {
-        self.by_mapping.iter()
     }
 
     //////////////////////////////////////////////////////////////////
     /// Add an interface to the table. Interfaces are univocally
     /// identified by an [`IfIndex`], which acts as the master hash key.
-    /// A separate index is kept for interfaces that require an [`IfMapping`].
-    /// This function is idempotent and will unconditionally add the
-    /// provided interface, replacing any previous with the same ifindex,
-    /// provided that the interface mapping does not collide with any other.
+    /// provided interface, replacing any previous with the same ifindex.
     //////////////////////////////////////////////////////////////////
     pub fn add_interface(&mut self, iface: Interface) -> Result<(), RouterError> {
-        /* ensure we don't overwrite any interface mapping */
-        if let Some(inc_map) = iface.mapping() {
-            if let Some(exist) = self.by_mapping.get(&inc_map) {
-                let eref = exist.borrow();
-                if eref.ifindex != iface.ifindex {
-                    let e = format!(
-                        "Can't add interface {} (ifindex {}): existing interface {} (ifindex {}) has the same mapping {}",
-                        iface.name, iface.ifindex, eref.name, eref.ifindex, inc_map
-                    );
-                    error!("{}", &e);
-                    return Err(RouterError::Rejected(e));
-                }
-            }
-        }
-
         /* add interface to iftable */
         let ifindex = iface.ifindex;
-        let mapping = iface.mapping();
-        let rc_if = Rc::new(RefCell::new(iface));
-        if let Some(prior) = self.by_index.insert(ifindex, rc_if.clone()) {
-            /* if there existed an interface and it had mapping, remove it */
-            if let Some(exist_mapping) = prior.borrow().mapping() {
-                debug!("Unregistering mapping {}...", exist_mapping);
-                self.by_mapping.remove(&exist_mapping);
-            }
-        }
-        if let Some(mapping) = mapping {
-            debug!(
-                "Registering mapping {} for '{}'",
-                mapping,
-                rc_if.borrow().name
-            );
-            self.by_mapping.insert(mapping, rc_if);
+        if let Some(_prior) = self.by_index.insert(ifindex, iface) {
+            debug!("Updated interface with ifindex {ifindex}");
+        } else {
+            debug!("Registered new interface with ifindex {ifindex}");
         }
         Ok(())
     }
@@ -105,37 +68,29 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     pub fn del_interface(&mut self, ifindex: u32) {
         // remove interface given its ifindex
-        if let Some(iface) = self.by_index.remove(&ifindex) {
-            let ifr = iface.borrow();
-            if let Some(mapping) = ifr.mapping() {
-                if self.by_mapping.remove(&mapping).is_some() {
-                    debug!("Deleted mapping {:?}", mapping);
-                }
-            }
-            debug!("Deleted interface '{}'", ifr.name);
+        if let Some(_iface) = self.by_index.remove(&ifindex) {
+            //   debug!("Deleted interface '{}'", ifr.name);
         }
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Get interface entry from IfTable by ifindex
+    /// Get interface entry from `IfTable` by ifindex
     //////////////////////////////////////////////////////////////////
-    pub fn get_interface(&self, ifindex: u32) -> Option<&Rc<RefCell<Interface>>> {
+    #[must_use]
+    pub fn get_interface(&self, ifindex: u32) -> Option<&Interface> {
         self.by_index.get(&ifindex)
     }
 
-    //////////////////////////////////////////////////////////////////
-    /// Get interface entry from IfTable by a mapping
-    //////////////////////////////////////////////////////////////////
-    pub fn get_interface_by_mapping(&self, ifmap: &IfMapping) -> Option<&Rc<RefCell<Interface>>> {
-        self.by_mapping.get(ifmap)
+    pub fn get_interface_mut(&mut self, ifindex: u32) -> Option<&mut Interface> {
+        self.by_index.get_mut(&ifindex)
     }
 
     //////////////////////////////////////////////////////////////////
     /// Assign an Ip address to an interface
     //////////////////////////////////////////////////////////////////
-    pub fn add_ifaddr(&self, ifindex: IfIndex, ifaddr: &IfAddress) -> Result<(), RouterError> {
-        if let Some(iface) = self.by_index.get(&ifindex) {
-            iface.borrow_mut().add_ifaddr(ifaddr);
+    pub fn add_ifaddr(&mut self, ifindex: IfIndex, ifaddr: &IfAddress) -> Result<(), RouterError> {
+        if let Some(iface) = self.by_index.get_mut(&ifindex) {
+            iface.add_ifaddr(ifaddr);
             Ok(())
         } else {
             Err(RouterError::NoSuchInterface(ifindex))
@@ -145,9 +100,9 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     /// Un-assign an Ip address from an interface.
     //////////////////////////////////////////////////////////////////
-    pub fn del_ifaddr(&self, ifindex: IfIndex, ifaddr: &IfAddress) {
-        if let Some(iface) = self.by_index.get(&ifindex) {
-            iface.borrow_mut().del_ifaddr(&(ifaddr.0, ifaddr.1));
+    pub fn del_ifaddr(&mut self, ifindex: IfIndex, ifaddr: &IfAddress) {
+        if let Some(iface) = self.by_index.get_mut(&ifindex) {
+            iface.del_ifaddr(&(ifaddr.0, ifaddr.1));
         }
         // if interface does not exist or the address was not configured,
         // we'll do nothing
@@ -156,25 +111,25 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     /// Detach all interfaces attached to some VRF
     //////////////////////////////////////////////////////////////////
-    pub fn detach_vrf_interfaces(&self, vrf: &Vrf) {
+    pub fn detach_vrf_interfaces(&mut self, vrf: &Vrf) {
         if let Some(fibid) = vrf.get_vrf_fibid() {
-            for iface in self.by_index.values() {
-                iface.borrow_mut().detach_from_fib(&fibid);
+            for iface in self.by_index.values_mut() {
+                iface.detach_from_fib(fibid);
             }
         }
     }
 
-    /// Detach all interfaces attached to the Vrf whose fib has id FibId
-    pub fn detach_interfaces_from_vrf(&self, fibid: FibId) {
-        for iface in self.by_index.values() {
-            iface.borrow_mut().detach_from_fib(&fibid);
+    /// Detach all interfaces attached to the Vrf whose fib has id `FibId`
+    pub fn detach_interfaces_from_vrf(&mut self, fibid: FibId) {
+        for iface in self.by_index.values_mut() {
+            iface.detach_from_fib(fibid);
         }
     }
 
     /// Attach interface with ifindex to the provided Fib reader
-    pub fn attach_interface_to_vrf(&self, ifindex: IfIndex, fibr: FibReader) {
-        if let Some(iface) = self.get_interface(ifindex) {
-            iface.borrow_mut().attach_vrf(fibr);
+    pub fn attach_interface_to_vrf(&mut self, ifindex: IfIndex, fibr: FibReader) {
+        if let Some(iface) = self.get_interface_mut(ifindex) {
+            iface.attach_vrf(fibr);
         } else {
             error!(
                 "Unable to attach interface with ifindex {}: not found",
@@ -184,9 +139,9 @@ impl IfTable {
     }
 
     /// Detach interface from wherever it is attached
-    pub fn detach_interface_from_vrf(&self, ifindex: IfIndex) {
-        if let Some(iface) = self.get_interface(ifindex) {
-            iface.borrow_mut().detach();
+    pub fn detach_interface_from_vrf(&mut self, ifindex: IfIndex) {
+        if let Some(iface) = self.get_interface_mut(ifindex) {
+            iface.detach();
         } else {
             error!(
                 "Unable to detach interface with ifindex {}: not found",
@@ -196,16 +151,16 @@ impl IfTable {
     }
 
     /// Set the operational state of an interface
-    pub fn set_iface_oper_state(&self, ifindex: IfIndex, state: IfState) {
-        if let Some(ifr) = self.get_interface(ifindex) {
-            ifr.borrow_mut().set_oper_state(state)
+    pub fn set_iface_oper_state(&mut self, ifindex: IfIndex, state: IfState) {
+        if let Some(ifr) = self.get_interface_mut(ifindex) {
+            ifr.set_oper_state(state);
         }
     }
 
     /// Set the admin state of an interface
-    pub fn set_iface_admin_state(&self, ifindex: IfIndex, state: IfState) {
-        if let Some(ifr) = self.get_interface(ifindex) {
-            ifr.borrow_mut().set_admin_state(state)
+    pub fn set_iface_admin_state(&mut self, ifindex: IfIndex, state: IfState) {
+        if let Some(ifr) = self.get_interface_mut(ifindex) {
+            ifr.set_admin_state(state);
         }
     }
 }

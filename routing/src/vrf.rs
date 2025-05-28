@@ -120,7 +120,7 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     /// Create a new VRF with the given name and vrfId
     /// Initial capacities are 0. We may want to have some default sizes.
-    /// Else, we can always call Self::with_capacities().
+    /// Else, we can always call `Self::with_capacities()`.
     /////////////////////////////////////////////////////////////////////////
     pub fn new(name: &str, vrfid: VrfId, fibw: Option<FibWriter>) -> Self {
         Self::with_capacities(name, vrfid, 0, 0, fibw)
@@ -188,7 +188,7 @@ impl Vrf {
     }
 
     ////////////////////////////////////////////////////////////////////////
-    /// Get the FibId of the Fib associated to this VRF
+    /// Get the `FibId` of the Fib associated to this VRF
     /////////////////////////////////////////////////////////////////////////
     pub fn get_vrf_fibid(&self) -> Option<FibId> {
         self.get_vrf_fibr()?.get_id()
@@ -219,10 +219,10 @@ impl Vrf {
     fn register_shared_nhops(&mut self, route: &mut Route, nhops: &[RouteNhop]) {
         for nhop in nhops {
             let shared = self.register_shared_nhop(nhop);
-            let ext_vrf = if nhop.vrfid != self.vrfid {
-                Some(nhop.vrfid)
-            } else {
+            let ext_vrf = if nhop.vrfid == self.vrfid {
                 None
+            } else {
+                Some(nhop.vrfid)
             };
             /* create shim next-hop */
             let shim = ShimNhop::new(ext_vrf, shared.clone());
@@ -312,13 +312,13 @@ impl Vrf {
         if let Some(fibw) = &mut self.fibw {
             // build a fib group from the fib groups of all next-hops for this route
             let mut fibgroup = FibGroup::new();
-            for nhop in route.s_nhops.iter() {
+            for nhop in &route.s_nhops {
                 let nhfibg = &*nhop.rc.fibgroup.read().unwrap();
                 fibgroup.extend(nhfibg);
             }
 
             // add to fib
-            fibw.add_fibgroup(prefix.clone(), fibgroup);
+            fibw.add_fibgroup(*prefix, fibgroup);
         }
     }
 
@@ -370,7 +370,7 @@ impl Vrf {
             Prefix::IPV6(p) => self.del_route_v6(p),
         }
         if let Some(fibw) = &mut self.fibw {
-            fibw.del_fibgroup(prefix.clone());
+            fibw.del_fibgroup(*prefix);
         }
     }
 

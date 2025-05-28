@@ -11,9 +11,6 @@ pub enum RouterError {
     #[error("No such interface (ifindex {0})")]
     NoSuchInterface(u32),
 
-    #[error("Rejected: {0}")]
-    Rejected(String),
-
     #[error("No such VRF")]
     NoSuchVrf,
 
@@ -35,8 +32,8 @@ pub enum RouterError {
     #[error("Invalid socket path")]
     InvalidSockPath,
 
-    #[error("Internal error")]
-    Internal,
+    #[error("Internal error: {0}")]
+    Internal(&'static str),
 
     #[error("Permission errors")]
     PermError,

@@ -19,19 +19,22 @@ use crate::route_processor::{FibEntry, FibGroup, PktInstruction};
 use crate::vrf::VrfId;
 use tracing::debug;
 
-#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 /// An id we use to idenfify a FIB
 pub enum FibId {
     Id(VrfId),
     Vni(Vni),
 }
 impl FibId {
+    #[must_use]
     pub fn from_vrfid(vrfid: VrfId) -> Self {
         FibId::Id(vrfid)
     }
+    #[must_use]
     pub fn from_vni(vni: Vni) -> Self {
         FibId::Vni(vni)
     }
+    #[must_use]
     pub fn as_u32(&self) -> u32 {
         match self {
             FibId::Id(value) => *value,
@@ -54,9 +57,11 @@ pub type FibGroupV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &Arc<FibGroup>)) -> bool>;
 
 impl Fib {
     /// the default fibgroup for default routes
+    #[must_use]
     pub fn drop_fibgroup() -> FibGroup {
         FibGroup::with_entry(FibEntry::with_inst(PktInstruction::Drop))
     }
+    #[must_use]
     pub fn new(id: FibId) -> Self {
         let mut fib = Self {
             id,
@@ -70,8 +75,9 @@ impl Fib {
         fib.add_fibgroup(Prefix::root_v6(), group);
         fib
     }
-    pub fn get_id(&self) -> &FibId {
-        &self.id
+    #[must_use]
+    pub fn get_id(&self) -> FibId {
+        self.id
     }
     pub fn add_fibgroup(&mut self, prefix: Prefix, group: FibGroup) {
         let gr_arc = self.store_group(group);
@@ -100,14 +106,14 @@ impl Fib {
                     }
                 }
             }
-        };
+        }
     }
 
     /// Add a new group, without creating it if an identical group exists.
     /// This method returns a reference that must be used.
     #[must_use]
     pub fn store_group(&mut self, group: FibGroup) -> Arc<FibGroup> {
-        let arc_gr = Arc::new(group.clone());
+        let arc_gr = Arc::new(group);
         if let Some(e) = self.groups.get(&arc_gr) {
             Arc::clone(e)
         } else {
@@ -120,7 +126,7 @@ impl Fib {
         self.groups.remove(group);
     }
 
-    /// FibGroups are refcounted, owned by the Fib and shared by prefixes.
+    /// `FibGroups` are refcounted, owned by the Fib and shared by prefixes.
     /// Since they don't have an explicit Id, when no prefix refers to them
     /// they will get a refcount of 1. This method allows removing those unused
     /// fibgroups. This method is not currently used and should NOT be needed.
@@ -128,12 +134,15 @@ impl Fib {
         self.groups.retain(|group| Arc::strong_count(group) > 1);
     }
 
+    #[must_use]
     pub fn len_v4(&self) -> usize {
         self.routesv4.len().get()
     }
+    #[must_use]
     pub fn len_v6(&self) -> usize {
         self.routesv6.len().get()
     }
+    #[must_use]
     pub fn version(&self) -> u64 {
         self.version
     }
@@ -143,13 +152,17 @@ impl Fib {
     pub fn iter_v6(&self) -> impl Iterator<Item = (&Ipv6Prefix, &Arc<FibGroup>)> {
         self.routesv6.iter()
     }
+    #[must_use]
     pub fn get_v4_trie(&self) -> &RTrieMap<Ipv4Prefix, Arc<FibGroup>> {
         &self.routesv4
     }
+    #[must_use]
     pub fn get_v6_trie(&self) -> &RTrieMap<Ipv6Prefix, Arc<FibGroup>> {
         &self.routesv6
     }
-    /// Do lpm lookup with the given IpAddr
+
+    /// Do lpm lookup with the given `IpAddr`
+    #[must_use]
     pub fn lpm_with_prefix(&self, target: &IpAddr) -> (Prefix, &FibGroup) {
         match target {
             IpAddr::V4(a) => {
@@ -162,7 +175,8 @@ impl Fib {
             }
         }
     }
-    /// Identical to lpm_with_prefix, but without reporting the prefix hit
+    /// Identical to `lpm_with_prefix`, but without reporting the prefix hit
+    #[must_use]
     pub fn lpm(&self, target: &IpAddr) -> &FibGroup {
         match target {
             IpAddr::V4(a) => {
@@ -179,6 +193,8 @@ impl Fib {
     /// Given a [`Packet`], uses [`Self::lpm()`] to retrieve the [`FibGroup`] to forward a packet.
     /// However, instead of returning the entire [`FibGroup`], returns a single [`FibEntry`] selected
     /// by computing a hash on the invariant header fields of the IP and L4 headers.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn lpm_entry<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> &FibEntry {
         if let Some(destination) = packet.ip_destination() {
             let group = self.lpm(&destination);
@@ -197,7 +213,8 @@ impl Fib {
         }
     }
 
-    /// Same as lpm_entry but reporting prefix
+    /// Same as `lpm_entry` but reporting prefix
+    #[allow(clippy::cast_possible_truncation)]
     pub fn lpm_entry_prefix<Buf: PacketBufferMut>(
         &self,
         packet: &Packet<Buf>,
@@ -231,29 +248,31 @@ impl Absorb<FibGroupChange> for Fib {
         self.version += 1; // FIXME: only update if s/t changed
         match change {
             FibGroupChange::AddFibGroup((prefix, group)) => {
-                self.add_fibgroup(prefix.clone(), group.clone())
+                self.add_fibgroup(*prefix, group.clone());
             }
-            FibGroupChange::DelFibGroup(prefix) => self.del_fibgroup(prefix.clone()),
-        };
+            FibGroupChange::DelFibGroup(prefix) => self.del_fibgroup(*prefix),
+        }
     }
     fn drop_first(self: Box<Self>) {}
     fn sync_with(&mut self, first: &Self) {
-        *self = first.clone()
+        *self = first.clone();
     }
 }
 
 pub struct FibWriter(WriteHandle<Fib, FibGroupChange>);
 impl FibWriter {
     /// create a fib, providing a writer and a reader
+    #[must_use]
     pub fn new(id: FibId) -> (FibWriter, FibReader) {
-        let (w, r) = left_right::new_from_empty::<Fib, FibGroupChange>(Fib::new(id.clone()));
+        let (w, r) = left_right::new_from_empty::<Fib, FibGroupChange>(Fib::new(id));
         (FibWriter(w), FibReader(r))
     }
     pub fn enter(&self) -> Option<ReadGuard<'_, Fib>> {
         self.0.enter()
     }
+    #[must_use]
     pub fn get_id(&self) -> Option<FibId> {
-        self.0.enter().map(|fib| fib.get_id().clone())
+        self.0.enter().map(|fib| fib.get_id())
     }
     pub fn add_fibgroup(&mut self, prefix: Prefix, group: FibGroup) {
         self.0.append(FibGroupChange::AddFibGroup((prefix, group)));
@@ -263,6 +282,7 @@ impl FibWriter {
         self.0.append(FibGroupChange::DelFibGroup(prefix));
         self.0.publish();
     }
+    #[must_use]
     pub fn as_fibreader(&self) -> FibReader {
         FibReader::new(self.0.clone())
     }
@@ -271,6 +291,7 @@ impl FibWriter {
 #[derive(Clone, Debug)]
 pub struct FibReader(ReadHandle<Fib>);
 impl FibReader {
+    #[must_use]
     pub fn new(rhandle: ReadHandle<Fib>) -> Self {
         FibReader(rhandle)
     }
@@ -278,6 +299,6 @@ impl FibReader {
         self.0.enter()
     }
     pub fn get_id(&self) -> Option<FibId> {
-        self.0.enter().map(|fib| fib.get_id().clone())
+        self.0.enter().map(|fib| fib.get_id())
     }
 }

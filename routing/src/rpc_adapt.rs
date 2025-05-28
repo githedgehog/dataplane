@@ -83,7 +83,7 @@ impl RouteNhop {
             if let Some(address) = nh.address {
                 vxlan.remote = address;
             }
-            ifindex = None
+            ifindex = None;
         }
         RouteNhop {
             key: NhopKey::new(

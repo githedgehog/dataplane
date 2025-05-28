@@ -37,38 +37,6 @@ pub struct IfDataDot1q {
     pub vlanid: Vid,
 }
 
-#[allow(dead_code)]
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
-/// An [`IfMapping`] is an object that allows determining what physical or logical
-/// interface a packet arrived on with a hash lookup operation. The need for an
-/// [`IfMapping`] stems from the fact that a [`Mac`] may not suffice for that purpose
-/// in case we have sub-interfaces (e.g. 802.1q).
-pub struct IfMapping {
-    pub vlan: Option<Vid>, /* we don't support QinQ yet */
-    pub mac: Mac,
-}
-
-/// Trait for interfaces requiring an [`IfMapping`]
-trait HasIfMapping {
-    fn mapping(&self) -> IfMapping;
-}
-impl HasIfMapping for IfDataEthernet {
-    fn mapping(&self) -> IfMapping {
-        IfMapping {
-            vlan: None,
-            mac: self.mac,
-        }
-    }
-}
-impl HasIfMapping for IfDataDot1q {
-    fn mapping(&self) -> IfMapping {
-        IfMapping {
-            vlan: Some(self.vlanid),
-            mac: self.mac,
-        }
-    }
-}
-
 /// Trait that interfaces having a [`Mac`] should implement.
 #[allow(dead_code)]
 trait HasMac {
@@ -133,6 +101,7 @@ impl Interface {
     /// Create a new interface object.
     /// This simply creates in-memory state to represent the interface
     //////////////////////////////////////////////////////////////////
+    #[must_use]
     pub fn new(name: &str, ifindex: u32) -> Self {
         Self {
             name: name.to_owned(),
@@ -188,14 +157,14 @@ impl Interface {
 
     //////////////////////////////////////////////////////////////////
     /// Attach an interface to a VRF. The interface is attached to a
-    /// FibReader so that IP packets received on that interface can
+    /// `FibReader` so that IP packets received on that interface can
     /// be readily forwarded performing an LPM operation on the
     /// corresponding FIB.
     //////////////////////////////////////////////////////////////////
     pub fn attach(&mut self, vrf: &Vrf) -> Result<(), RouterError> {
         if let Some(fibr) = vrf.get_vrf_fibr() {
             if let Some(id) = fibr.get_id() {
-                if self.is_attached_to_fib(&id) {
+                if self.is_attached_to_fib(id) {
                     Ok(())
                 } else if self.attachment.is_some() {
                     Err(RouterError::AlreadyAttached)
@@ -209,14 +178,14 @@ impl Interface {
                     "Failed to attach interface {} to VRF {}: can't get fib id",
                     self.name, vrf.name
                 );
-                Err(RouterError::Internal)
+                Err(RouterError::Internal("Failed to get fib Id"))
             }
         } else {
             error!(
                 "Can't attach interface {} to vrf {} since it has no FIB",
                 self.name, vrf.name
             );
-            Err(RouterError::Internal)
+            Err(RouterError::Internal("Failed to access FIB"))
         }
     }
 
@@ -234,9 +203,9 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Tell if an interface is attached to a Fib with the given Id
     //////////////////////////////////////////////////////////////////
-    pub fn is_attached_to_fib(&self, fibid: &FibId) -> bool {
+    pub fn is_attached_to_fib(&self, fibid: FibId) -> bool {
         if let Some(Attachment::VRF(fibr)) = &self.attachment {
-            fibr.get_id() == Some(fibid.clone())
+            fibr.get_id() == Some(fibid)
         } else {
             false
         }
@@ -245,10 +214,10 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Detach interface from VRF if the associated fib has the given id
     //////////////////////////////////////////////////////////////////
-    pub fn detach_from_fib(&mut self, fibid: &FibId) {
+    pub fn detach_from_fib(&mut self, fibid: FibId) {
         self.attachment.take_if(|attachment| {
             if let Attachment::VRF(fibr) = &attachment {
-                fibr.get_id() == Some(fibid.clone())
+                fibr.get_id() == Some(fibid)
             } else {
                 false
             }
@@ -289,17 +258,6 @@ impl Interface {
         match &self.iftype {
             IfType::Ethernet(inner) => Some(*inner.get_mac()),
             IfType::Dot1q(inner) => Some(*inner.get_mac()),
-            _ => None,
-        }
-    }
-
-    //////////////////////////////////////////////////////////////////
-    /// Tell what the mapping should be for an interface, if any
-    //////////////////////////////////////////////////////////////////
-    pub fn mapping(&self) -> Option<IfMapping> {
-        match &self.iftype {
-            IfType::Ethernet(inner) => Some(inner.mapping()),
-            IfType::Dot1q(inner) => Some(inner.mapping()),
             _ => None,
         }
     }
