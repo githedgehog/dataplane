@@ -3,6 +3,7 @@
 
 //! Mac address type and logic.
 
+use arrayvec::ArrayVec;
 use std::fmt::Display;
 
 /// A [MAC Address] type.
@@ -39,6 +40,44 @@ impl AsRef<[u8; 6]> for Mac {
 impl AsMut<[u8; 6]> for Mac {
     fn as_mut(&mut self) -> &mut [u8; 6] {
         &mut self.0
+    }
+}
+
+/// Errors which can occur while converting a string to a [`Mac`]
+#[derive(Debug, thiserror::Error)]
+pub enum MacFromStringError {
+    /// Invalid string representation of mac address
+    #[error("invalid string representation of mac address: {0}")]
+    Invalid(String),
+}
+
+impl TryFrom<&str> for Mac {
+    type Error = MacFromStringError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        const MAX_OCTETS: usize = 6;
+        let mut octets_strs = value.split(':');
+        let octets_parsed =
+            octets_strs.try_fold(ArrayVec::<_, MAX_OCTETS>::new(), |mut acc, octet_str| {
+                if octet_str.len() != 2 {
+                    return Err(MacFromStringError::Invalid(value.to_string()));
+                }
+                if octet_str.chars().any(|c| !c.is_ascii_hexdigit()) {
+                    return Err(MacFromStringError::Invalid(value.to_string()));
+                }
+                let parsed = u8::from_str_radix(octet_str, 16)
+                    .map_err(|_| MacFromStringError::Invalid(value.to_string()))?;
+                acc.try_push(parsed)
+                    .map_err(|_| MacFromStringError::Invalid(value.to_string()))?;
+                Ok(acc)
+            })?;
+
+        let octets = match octets_parsed.as_slice() {
+            [o0, o1, o2, o3, o4, o5] => [*o0, *o1, *o2, *o3, *o4, *o5],
+            _ => return Err(MacFromStringError::Invalid(value.to_string())),
+        };
+
+        Ok(Mac(octets))
     }
 }
 
@@ -314,8 +353,8 @@ impl TryFrom<&Vec<u8>> for SourceMac {
 #[cfg(any(test, feature = "arbitrary"))]
 mod contract {
     use crate::eth::mac::{DestinationMac, Mac, SourceMac};
-    use bolero::{Driver, TypeGenerator};
-
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
+    use std::ops::Bound;
     impl TypeGenerator for SourceMac {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
             let mut mac: Mac = u.produce()?;
@@ -335,5 +374,105 @@ mod contract {
             }
             Some(DestinationMac::new(mac).unwrap_or_else(|e| unreachable!("{e:?}", e = e)))
         }
+    }
+
+    /// Generate valid MAC address strings in format XX:XX:XX:XX:XX:XX
+    pub struct MacTestStringGenerator;
+    impl ValueGenerator for MacTestStringGenerator {
+        type Output = String;
+
+        fn generate<D: Driver>(&self, u: &mut D) -> Option<Self::Output> {
+            let hexchars = "0123456789abcdefABCDEF";
+            let s: Option<String> = (0..6)
+                .map(|_| {
+                    let segment: Option<String> = (0..2)
+                        .map(|_| {
+                            hexchars.chars().nth(
+                                u.gen_usize(Bound::Included(&0), Bound::Excluded(&hexchars.len()))?,
+                            )
+                        })
+                        .collect();
+                    segment
+                })
+                .collect::<Option<Vec<String>>>()
+                .map(|v| v.join(":"));
+            s
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::Mac;
+    use crate::eth::mac::contract::MacTestStringGenerator;
+    use bolero::{Driver, ValueGenerator};
+    use std::ops::Bound;
+
+    struct InvalidMacStringGenerator;
+    impl ValueGenerator for InvalidMacStringGenerator {
+        type Output = String;
+
+        fn generate<D: Driver>(&self, u: &mut D) -> Option<Self::Output> {
+            let mut valid_mac = MacTestStringGenerator.generate(u)?;
+            let fuzz_u8: u8 = u.produce()?;
+            let fuzz_char = char::from(fuzz_u8);
+            if fuzz_char.is_ascii_hexdigit() || fuzz_char == ':' {
+                // If fuzz_char is a valid hex digit, overwrite a random character
+                let pos = u.gen_usize(Bound::Included(&0), Bound::Excluded(&valid_mac.len()))?;
+                valid_mac.insert(pos, fuzz_char);
+            } else {
+                // If fuzz_char is not a valid hex digit, insert it at a random position
+                let pos = u.gen_usize(Bound::Included(&0), Bound::Excluded(&valid_mac.len()))?;
+                valid_mac.replace_range(pos..=pos, &fuzz_char.to_string());
+            }
+            Some(valid_mac)
+        }
+    }
+
+    #[test]
+    fn test_mac_from_valid_string() {
+        bolero::check!()
+            .with_generator(MacTestStringGenerator)
+            .for_each(|input: &String| {
+                let result = Mac::try_from(input.as_str());
+                assert_eq!(
+                    input.to_lowercase(),
+                    result.unwrap().to_string().to_lowercase()
+                );
+            });
+    }
+
+    #[test]
+    fn test_mac_from_invalid_string() {
+        bolero::check!()
+            .with_generator(InvalidMacStringGenerator)
+            .for_each(|input: &String| {
+                let result = Mac::try_from(input.as_str());
+                assert!(result.is_err());
+            });
+    }
+
+    #[test]
+    fn mac_from_string_too_many_octets() {
+        let result = Mac::try_from("00:00:00:00:00:00:00");
+        assert!(result.is_err());
+
+        let result = Mac::try_from("00:00:00:00:00:00:00:00");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn mac_from_string_too_few_octets() {
+        let result = Mac::try_from("00:00:00:00:00");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn mac_from_string_invalid_octet() {
+        let result = Mac::try_from("00:00:00:00:00:000");
+        assert!(result.is_err());
+
+        let result = Mac::try_from("00:00:00:00:+00:00");
+        assert!(result.is_err());
     }
 }
