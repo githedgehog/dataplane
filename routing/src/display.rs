@@ -12,9 +12,10 @@ use crate::interfaces::interface::Attachment;
 use crate::interfaces::interface::{IfDataDot1q, IfDataEthernet};
 use crate::interfaces::interface::{IfState, IfType, Interface};
 
+use crate::evpn::{RmacEntry, RmacStore, Vtep};
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::pretty_utils::{Heading, line};
-use crate::rmac::{RmacEntry, RmacStore, Vtep};
+
 use crate::route_processor::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::routingdb::VrfTable;
 use crate::testfib::TestFib;

@@ -12,11 +12,11 @@ use tracing::debug;
 #[cfg(test)]
 use crate::pretty_utils::Frame;
 
+use crate::evpn::{RmacStore, Vtep};
 use crate::fib::fibtype::{FibId, FibReader, FibWriter};
 use crate::interfaces::interface::IfIndex;
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::prefix::Prefix;
-use crate::rmac::{RmacStore, Vtep};
 use crate::route_processor::FibGroup;
 use iptrie::map::RTrieMap;
 use iptrie::{Ipv4Prefix, Ipv6Prefix};

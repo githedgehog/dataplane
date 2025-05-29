@@ -10,9 +10,9 @@
 //! provide the expected results. Hence the use of the From trait is overloaded for convenience.
 
 use crate::encapsulation::{Encapsulation, VxlanEncapsulation};
+use crate::evpn::{RmacEntry, RmacStore, Vtep};
 use crate::nexthop::{FwAction, NhopKey};
 use crate::prefix::Prefix;
-use crate::rmac::{RmacEntry, RmacStore, Vtep};
 use crate::vrf::{Route, RouteNhop, RouteOrigin, Vrf};
 use dplane_rpc::msg::{ForwardAction, IpRoute, NextHop, NextHopEncap, Rmac, RouteType, VxlanEncap};
 use net::eth::mac::Mac;
