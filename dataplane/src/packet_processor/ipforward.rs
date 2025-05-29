@@ -227,6 +227,7 @@ impl IpForwarder {
 
     /// Execute an encapsulation instruction on a packet as indicated by [`Encapsulation`]
     fn packet_exec_instruction_encap<Buf: PacketBufferMut>(
+        #[allow(clippy::unused_self)] // Reserve the right to use self in the future
         &self,
         packet: &mut Packet<Buf>,
         encap: &Encapsulation,
@@ -239,6 +240,7 @@ impl IpForwarder {
 
     /// Execute an egress instruction given by the [`EgressObject`] by setting the required metadata
     /// to send the packet (at an egress stage).
+    #[allow(clippy::unused_self)] // Reserve the right to use self in the future
     fn packet_exec_instruction_egress<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
@@ -254,6 +256,7 @@ impl IpForwarder {
     }
 
     /// Execute a drop instruction: mark the packet as to drop
+    #[allow(clippy::unused_self)] // Reserve the right to use self in the future
     fn packet_exec_instruction_drop<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
         packet.done(DoneReason::RouteDrop);
     }
