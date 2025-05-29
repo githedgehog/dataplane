@@ -25,14 +25,17 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     /// Create an interface table. All interfaces should live here.
     //////////////////////////////////////////////////////////////////
+    #[must_use]
     pub fn new() -> Self {
         Self {
             by_index: HashMap::with_hasher(RandomState::with_seed(0)),
         }
     }
+    #[must_use]
     pub fn len(&self) -> usize {
         self.by_index.len()
     }
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.by_index.is_empty()
     }
@@ -71,8 +74,9 @@ impl IfTable {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Get interface entry from IfTable by ifindex
+    /// Get interface entry from `IfTable` by ifindex
     //////////////////////////////////////////////////////////////////
+    #[must_use]
     pub fn get_interface(&self, ifindex: u32) -> Option<&Interface> {
         self.by_index.get(&ifindex)
     }
@@ -110,15 +114,15 @@ impl IfTable {
     pub fn detach_vrf_interfaces(&mut self, vrf: &Vrf) {
         if let Some(fibid) = vrf.get_vrf_fibid() {
             for iface in self.by_index.values_mut() {
-                iface.detach_from_fib(&fibid);
+                iface.detach_from_fib(fibid);
             }
         }
     }
 
-    /// Detach all interfaces attached to the Vrf whose fib has id FibId
+    /// Detach all interfaces attached to the Vrf whose fib has id `FibId`
     pub fn detach_interfaces_from_vrf(&mut self, fibid: FibId) {
         for iface in self.by_index.values_mut() {
-            iface.detach_from_fib(&fibid);
+            iface.detach_from_fib(fibid);
         }
     }
 
@@ -149,14 +153,14 @@ impl IfTable {
     /// Set the operational state of an interface
     pub fn set_iface_oper_state(&mut self, ifindex: IfIndex, state: IfState) {
         if let Some(ifr) = self.get_interface_mut(ifindex) {
-            ifr.set_oper_state(state)
+            ifr.set_oper_state(state);
         }
     }
 
     /// Set the admin state of an interface
     pub fn set_iface_admin_state(&mut self, ifindex: IfIndex, state: IfState) {
         if let Some(ifr) = self.get_interface_mut(ifindex) {
-            ifr.set_admin_state(state)
+            ifr.set_admin_state(state);
         }
     }
 }

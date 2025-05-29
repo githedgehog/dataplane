@@ -95,7 +95,7 @@ fn auto_learn_vrf(route: &IpRoute, db: &mut VrfTable) {
         let mut vni = None;
         if let Ok(vrf) = vrf.read() {
             if vrf.vni.is_none() {
-                for nh in route.nhops.iter() {
+                for nh in &route.nhops {
                     if let Some(NextHopEncap::VXLAN(vxlan)) = &nh.encap {
                         if nh.vrfid == route.vrfid {
                             vni = Some(vxlan.vni);
@@ -110,7 +110,7 @@ fn auto_learn_vrf(route: &IpRoute, db: &mut VrfTable) {
         }
     } else {
         let mut vni = None;
-        for nh in route.nhops.iter() {
+        for nh in &route.nhops {
             if let Some(NextHopEncap::VXLAN(vxlan)) = &nh.encap {
                 if nh.vrfid == route.vrfid {
                     vni = Some(vxlan.vni);
@@ -210,7 +210,7 @@ impl RpcOperation for Rmac {
     fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         if let Ok(mut rmac_store) = db.rmac_store.write() {
             let rmac = RmacEntry::from(self);
-            rmac_store.del_rmac_entry(rmac);
+            rmac_store.del_rmac_entry(&rmac);
             RpcResultCode::Ok
         } else {
             poison_warn(&db.rmac_store)

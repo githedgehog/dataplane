@@ -12,12 +12,15 @@ use std::sync::Arc;
 pub struct TestFib(BTreeSet<Arc<FibGroup>>);
 
 impl TestFib {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
