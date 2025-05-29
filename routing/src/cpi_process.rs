@@ -22,7 +22,7 @@ use net::eth::mac::Mac;
 #[cfg(feature = "auto-learn")]
 use net::vxlan::Vni;
 
-use crate::rmac::RmacEntry;
+use crate::evpn::RmacEntry;
 use crate::routingdb::{RoutingDb, VrfTable};
 use crate::rpc_adapt::is_evpn_route;
 use crate::vrf::Vrf;

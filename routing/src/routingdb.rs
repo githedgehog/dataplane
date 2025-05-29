@@ -7,11 +7,11 @@
 
 use crate::atable::atablerw::AtableReader;
 use crate::errors::RouterError;
+use crate::evpn::{RmacStore, Vtep};
 use crate::fib::fibtable::FibTableWriter;
 use crate::fib::fibtype::FibId;
 use crate::interfaces::iftable::IfTable;
 use crate::interfaces::iftablerw::IfTableWriter;
-use crate::rmac::{RmacStore, Vtep};
 use crate::vrf::{Vrf, VrfId};
 use net::vxlan::Vni;
 use std::collections::HashMap;
@@ -270,7 +270,7 @@ mod tests {
     use crate::fib::fibtype::FibId;
     use crate::interfaces::tests::build_test_iftable;
 
-    use crate::rmac::tests::{build_sample_rmac_store, build_sample_vtep};
+    use crate::evpn::rmac::tests::{build_sample_rmac_store, build_sample_vtep};
     use crate::route_processor::FibGroup;
     use crate::testfib::TestFib;
     use crate::vrf::tests::build_test_vrf_nhops_partially_resolved;

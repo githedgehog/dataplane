@@ -3,10 +3,14 @@
 
 //! Submodule to implement a table of EVPN router macs.
 
+#![allow(clippy::collapsible_if)]
+
+use ahash::RandomState;
 use net::eth::mac::Mac;
 use net::vxlan::Vni;
 use std::collections::{HashMap, hash_map::Entry};
 use std::net::IpAddr;
+use tracing::debug;
 
 #[derive(Debug, Eq, Hash, PartialEq)]
 pub struct RmacEntry {
@@ -22,32 +26,37 @@ impl RmacEntry {
 
 #[derive(Debug)]
 /// Type that represents a collection of EVPN Rmac - IP mappings, per Vni
-pub struct RmacStore(HashMap<(IpAddr, Vni), RmacEntry>);
+pub struct RmacStore(HashMap<(IpAddr, Vni), RmacEntry, RandomState>);
 
 #[allow(dead_code)]
 #[allow(clippy::new_without_default)]
 impl RmacStore {
+    #[must_use]
     pub fn new() -> Self {
-        Self(HashMap::new())
-        // Todo: find a quicker hasher than the default
-        // and initialize with a certain capacity upfront.
+        Self(HashMap::with_hasher(RandomState::with_seed(0)))
     }
 
-    /// Add an rmac entry. Returns an rmac entry if some was before
+    /// Add an rmac entry. Returns an [`RmacEntry`] if some was before
     pub fn add_rmac(&mut self, vni: Vni, address: IpAddr, mac: Mac) -> Option<RmacEntry> {
         let rmac = RmacEntry::new(vni, address, mac);
         self.0.insert((address, vni), rmac)
     }
 
     /// Identical to [`add_rmac`], but getting the entry as param
-    pub fn add_rmac_entry(&mut self, entry: RmacEntry) -> Option<RmacEntry> {
-        self.0.insert((entry.address, entry.vni), entry)
+    pub fn add_rmac_entry(&mut self, entry: RmacEntry) {
+        let vni = entry.vni;
+        let mac = entry.mac;
+        let address = entry.address;
+        if self.0.insert((entry.address, entry.vni), entry).is_some() {
+            debug!("Updated router-mac for vni: {vni} ip: {address} to {mac}");
+        } else {
+            debug!("Registered router-mac for vni: {vni} ip: {address} with mac {mac}");
+        }
     }
 
-    /// Delete an rmac entry. The mac address must match (sanity)
+    /// Delete an [`RmacEntry`]. The mac address must match (sanity)
     pub fn del_rmac(&mut self, vni: Vni, address: IpAddr, mac: Mac) {
         let key = (address, vni);
-        #[allow(clippy::collapsible_if)]
         if let Entry::Occupied(o) = self.0.entry(key) {
             if o.get().mac == mac {
                 self.0.remove_entry(&key);
@@ -55,18 +64,22 @@ impl RmacStore {
         }
     }
 
-    /// Identical to[`add_rmac`], but getting the entry as param
+    /// Identical to `del_rmac`, but getting the entry as param
     pub fn del_rmac_entry(&mut self, entry: &RmacEntry) {
         let key = (entry.address, entry.vni);
-        #[allow(clippy::collapsible_if)]
         if let Entry::Occupied(o) = self.0.entry(key) {
             if o.get().mac == entry.mac {
                 self.0.remove_entry(&key);
+                debug!(
+                    "Removed router-mac entry for vni: {} ip: {} mac: {}",
+                    entry.vni, entry.address, entry.mac
+                );
             }
         }
     }
 
-    /// Get an rmac entry
+    /// Get an [`RmacEntry`]
+    #[must_use]
     pub fn get_rmac(&self, vni: Vni, address: IpAddr) -> Option<&RmacEntry> {
         self.0.get(&(address, vni))
     }
@@ -77,68 +90,18 @@ impl RmacStore {
     }
 
     /// number of rmac entries
+    #[allow(clippy::len_without_is_empty)]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
-    }
-}
-
-/// Type that represents a VTEP
-#[derive(Default)]
-pub struct Vtep {
-    ip: Option<IpAddr>,
-    mac: Option<Mac>,
-}
-
-#[allow(dead_code)]
-impl Vtep {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn with_ip(ip: IpAddr) -> Self {
-        Self {
-            ip: Some(ip),
-            mac: None,
-        }
-    }
-    pub fn with_mac(mac: Mac) -> Self {
-        Self {
-            ip: None,
-            mac: Some(mac),
-        }
-    }
-    pub fn with_ip_and_mac(ip: IpAddr, mac: Mac) -> Self {
-        Self {
-            ip: Some(ip),
-            mac: Some(mac),
-        }
-    }
-    pub fn get_ip(&self) -> Option<IpAddr> {
-        self.ip
-    }
-    pub fn get_mac(&self) -> Option<Mac> {
-        self.mac
-    }
-    pub fn set_ip(&mut self, ip: IpAddr) {
-        self.ip = Some(ip);
-    }
-    pub fn set_mac(&mut self, mac: Mac) {
-        self.mac = Some(mac);
-    }
-    pub fn is_set_up(&self) -> bool {
-        self.ip.is_some() && self.mac.is_some()
-    }
-    pub fn unset_ip(&mut self) {
-        self.ip.take();
-    }
-    pub fn unset_mac(&mut self) {
-        self.mac.take();
     }
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) mod tests {
-    use super::{RmacStore, Vtep};
+    use super::RmacStore;
+    use crate::evpn::vtep::Vtep;
     use crate::vrf::tests::mk_addr;
     use net::eth::mac::Mac;
     use net::vxlan::Vni;

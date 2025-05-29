@@ -248,11 +248,11 @@ mod tests {
     use crate::atable::atablerw::AtableWriter;
     use crate::cpi::{CpiConf, start_cpi};
     use crate::errors::RouterError;
+    use crate::evpn::RmacStore;
     use crate::fib::fibtable::FibTableWriter;
     use crate::interfaces::iftable::IfTable;
     use crate::interfaces::iftablerw::IfTableWriter;
     use crate::interfaces::interface::Interface;
-    use crate::rmac::RmacStore;
     use crate::routingdb::{RoutingDb, VrfTable};
     use crate::vrf::Vrf;
     use std::fs::remove_file;
