@@ -243,6 +243,7 @@ pub struct RoutingDb {
 #[allow(clippy::new_without_default)]
 impl RoutingDb {
     #[allow(dead_code)]
+    #[must_use]
     pub fn new(
         fibtable: Option<FibTableWriter>,
         iftw: IfTableWriter,
