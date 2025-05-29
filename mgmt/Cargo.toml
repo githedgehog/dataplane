@@ -19,6 +19,7 @@ bolero = ["dep:bolero", "interface-manager/bolero", "id/bolero", "net/arbitrary"
 gateway_config = { workspace = true }
 id = { workspace = true }
 interface-manager = { workspace = true }
+iptrie = { workspace = true }
 net = { workspace = true }
 rekon = { workspace = true }
 routing = { workspace = true }
@@ -55,4 +56,3 @@ test-utils = { workspace = true }
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
 tracing-test = { workspace = true, features = [] }
 caps = { workspace = true }
-
