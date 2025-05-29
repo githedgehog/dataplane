@@ -4,6 +4,7 @@
 //! Routing database keeps most of the routing information in memory
 
 #![allow(clippy::collapsible_if)]
+#![allow(clippy::uninlined_format_args)]
 
 use crate::atable::atablerw::AtableReader;
 use crate::errors::RouterError;
@@ -243,6 +244,7 @@ pub struct RoutingDb {
 #[allow(clippy::new_without_default)]
 impl RoutingDb {
     #[allow(dead_code)]
+    #[must_use]
     pub fn new(
         fibtable: Option<FibTableWriter>,
         iftw: IfTableWriter,

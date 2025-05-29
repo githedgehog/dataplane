@@ -206,7 +206,9 @@ impl RpcOperation for Rmac {
     type ObjectStore = RoutingDb;
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         if let Ok(mut rmac_store) = db.rmac_store.write() {
-            let rmac = RmacEntry::from(self);
+            let Ok(rmac) = RmacEntry::try_from(self) else {
+                return RpcResultCode::Failure;
+            };
             rmac_store.add_rmac_entry(rmac);
             RpcResultCode::Ok
         } else {
@@ -215,7 +217,9 @@ impl RpcOperation for Rmac {
     }
     fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         if let Ok(mut rmac_store) = db.rmac_store.write() {
-            let rmac = RmacEntry::from(self);
+            let Ok(rmac) = RmacEntry::try_from(self) else {
+                return RpcResultCode::Failure;
+            };
             rmac_store.del_rmac_entry(&rmac);
             RpcResultCode::Ok
         } else {
