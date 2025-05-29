@@ -101,6 +101,7 @@ impl Interface {
     /// Create a new interface object.
     /// This simply creates in-memory state to represent the interface
     //////////////////////////////////////////////////////////////////
+    #[must_use]
     pub fn new(name: &str, ifindex: u32) -> Self {
         Self {
             name: name.to_owned(),
@@ -156,14 +157,14 @@ impl Interface {
 
     //////////////////////////////////////////////////////////////////
     /// Attach an interface to a VRF. The interface is attached to a
-    /// FibReader so that IP packets received on that interface can
+    /// `FibReader` so that IP packets received on that interface can
     /// be readily forwarded performing an LPM operation on the
     /// corresponding FIB.
     //////////////////////////////////////////////////////////////////
     pub fn attach(&mut self, vrf: &Vrf) -> Result<(), RouterError> {
         if let Some(fibr) = vrf.get_vrf_fibr() {
             if let Some(id) = fibr.get_id() {
-                if self.is_attached_to_fib(&id) {
+                if self.is_attached_to_fib(id) {
                     Ok(())
                 } else if self.attachment.is_some() {
                     Err(RouterError::AlreadyAttached)
@@ -202,9 +203,9 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Tell if an interface is attached to a Fib with the given Id
     //////////////////////////////////////////////////////////////////
-    pub fn is_attached_to_fib(&self, fibid: &FibId) -> bool {
+    pub fn is_attached_to_fib(&self, fibid: FibId) -> bool {
         if let Some(Attachment::VRF(fibr)) = &self.attachment {
-            fibr.get_id() == Some(fibid.clone())
+            fibr.get_id() == Some(fibid)
         } else {
             false
         }
@@ -213,10 +214,10 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Detach interface from VRF if the associated fib has the given id
     //////////////////////////////////////////////////////////////////
-    pub fn detach_from_fib(&mut self, fibid: &FibId) {
+    pub fn detach_from_fib(&mut self, fibid: FibId) {
         self.attachment.take_if(|attachment| {
             if let Attachment::VRF(fibr) = &attachment {
-                fibr.get_id() == Some(fibid.clone())
+                fibr.get_id() == Some(fibid)
             } else {
                 false
             }

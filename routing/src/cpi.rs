@@ -3,6 +3,8 @@
 
 //! Control-plane interface (CPI)
 
+#![allow(clippy::items_after_statements)]
+
 const DEFAULT_DP_UX_PATH: &str = "/var/run/frr/hh_dataplane.sock";
 const DEFAULT_DP_UX_PATH_CLI: &str = "/tmp/dataplane_ctl.sock";
 
@@ -87,6 +89,8 @@ fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
 }
 
 #[allow(unused)]
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::missing_errors_doc)]
 pub fn start_cpi(
     conf: &CpiConf,
     fibtw: FibTableWriter,
@@ -107,16 +111,16 @@ pub fn start_cpi(
     info!("Launching CPI, loglevel is {:?}....", loglevel);
 
     /* path to bind to for routing function */
-    let cp_sock_path = conf
-        .cpi_sock_path
-        .as_ref()
-        .map_or_else(|| DEFAULT_DP_UX_PATH.to_owned(), |path| path.to_owned());
+    let cp_sock_path = conf.cpi_sock_path.as_ref().map_or_else(
+        || DEFAULT_DP_UX_PATH.to_owned(),
+        std::borrow::ToOwned::to_owned,
+    );
 
     /* path to bind to for cli */
-    let cli_sock_path = conf
-        .cli_sock_path
-        .as_ref()
-        .map_or_else(|| DEFAULT_DP_UX_PATH_CLI.to_owned(), |path| path.to_owned());
+    let cli_sock_path = conf.cli_sock_path.as_ref().map_or_else(
+        || DEFAULT_DP_UX_PATH_CLI.to_owned(),
+        std::borrow::ToOwned::to_owned,
+    );
 
     /* create unix sock for routing function and bind it */
     let cpsock = open_unix_sock(&cp_sock_path)?;

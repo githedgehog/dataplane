@@ -22,6 +22,7 @@ use crate::vrf::{Route, ShimNhop, Vrf};
 
 use iptrie::map::RTrieMap;
 use iptrie::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
+use net::vxlan::Vni;
 use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -258,7 +259,7 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Route)) -> bool> Display for VrfViewV6<'_,
             "\n ━━━━━━━━━\n Vrf: '{}' (id: {})",
             self.vrf.name, self.vrf.vrfid
         )?;
-        Heading(format!("Ipv6 routes ({})", total_routes)).fmt(f)?;
+        Heading(format!("Ipv6 routes ({total_routes})")).fmt(f)?;
         for (prefix, route) in rt_iter {
             write!(f, "  {prefix:?} {route}")?;
             displayed += 1;
@@ -332,7 +333,7 @@ fn fmt_vrf_summary(f: &mut std::fmt::Formatter<'_>, vrf: &Arc<RwLock<Vrf>>) -> s
                 VRF_TBL_FMT!(),
                 vrf.name,
                 vrf.vrfid,
-                vrf.vni.map_or_else(|| 0, |vni| vni.as_u32()),
+                vrf.vni.map_or_else(|| 0, Vni::as_u32),
                 vrf.routesv4.len(),
                 vrf.routesv6.len()
             )
@@ -482,7 +483,7 @@ fn fmt_interface_addresses(f: &mut std::fmt::Formatter<'_>, iface: &Interface) -
         "{}",
         format_args!(INTERFACE_ADDR_FMT!(), iface.name, iface.oper_state, "")
     )?;
-    for (addr, mask_len) in iface.addresses.iter() {
+    for (addr, mask_len) in &iface.addresses {
         write!(f, " {addr}/{mask_len}")?;
     }
     writeln!(f)
@@ -574,7 +575,7 @@ impl Display for AdjacencyTable {
         Heading(format!("Adjacency table ({})", self.len())).fmt(f)?;
         fmt_adjacency_heading(f)?;
         for a in self.values() {
-            writeln!(f, "{a}")?
+            writeln!(f, "{a}")?;
         }
         Ok(())
     }
@@ -641,7 +642,7 @@ impl Display for FibId {
 
 fn fmt_fib_trie<P: IpPrefix, F: Fn(&(&P, &Arc<FibGroup>)) -> bool>(
     f: &mut std::fmt::Formatter<'_>,
-    fibid: &FibId,
+    fibid: FibId,
     show_string: &str,
     trie: &RTrieMap<P, Arc<FibGroup>>,
     group_filter: F,
@@ -696,17 +697,16 @@ impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Arc<FibGroup>)) -> bool> Display for FibVi
                     "\n ━━━━━━━━━\n Vrf: '{}' (id: {})",
                     self.vrf.name, self.vrf.vrfid
                 )?;
-                Heading(format!("Ipv4 FIB ({} groups)", total_entries)).fmt(f)?;
+                Heading(format!("Ipv4 FIB ({total_entries} groups)")).fmt(f)?;
                 for (prefix, group) in rt_iter {
-                    write!(f, "  {:?} {}", prefix, group)?;
+                    write!(f, "  {prefix:?} {group}")?;
                     displayed += 1;
                 }
 
                 if displayed != total_entries {
                     writeln!(
                         f,
-                        "\n  (Displayed {} groups out of {})",
-                        displayed, total_entries
+                        "\n  (Displayed {displayed} groups out of {total_entries})",
                     )?;
                 }
             }
@@ -737,17 +737,16 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Arc<FibGroup>)) -> bool> Display for FibVi
                     "\n ━━━━━━━━━\n Vrf: '{}' (id: {})",
                     self.vrf.name, self.vrf.vrfid
                 )?;
-                Heading(format!("Ipv6 FIB ({} groups)", total_entries)).fmt(f)?;
+                Heading(format!("Ipv6 FIB ({total_entries} groups)")).fmt(f)?;
                 for (prefix, group) in rt_iter {
-                    write!(f, "  {:?} {}", prefix, group)?;
+                    write!(f, "  {prefix:?} {group}")?;
                     displayed += 1;
                 }
 
                 if displayed != total_entries {
                     writeln!(
                         f,
-                        "\n  (Displayed {} groups out of {})",
-                        displayed, total_entries
+                        "\n  (Displayed {displayed} groups out of {total_entries})",
                     )?;
                 }
             }

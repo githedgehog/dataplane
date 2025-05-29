@@ -183,7 +183,7 @@ impl Nhop {
                 resolvers.clear();
                 let (prefix, route) = vrf.lpm(&a);
                 trace!("matched route is for {}", prefix);
-                for nh in route.s_nhops.iter() {
+                for nh in &route.s_nhops {
                     if *nh.rc == *self {
                         error!(
                             "Warning next-hop resolution loop!: {} resolves with route to {} via {}",
@@ -204,7 +204,7 @@ impl Nhop {
         }
     }
 
-    /// Auxiliary recursive method used by Nhop::quick_resolve().
+    /// Auxiliary recursive method used by `Nhop::quick_resolve()`.
     fn quick_resolve_rec(&self, result: &mut BTreeSet<NhopKey>) {
         if let Ok(resolvers_of_this) = self.resolvers.write() {
             if resolvers_of_this.is_empty() {
@@ -216,7 +216,7 @@ impl Nhop {
                     // a default route (with legitimate next-hops or a default one with action drop).
                     // So all next-hops should resolve, at the very least, to the default route.
                     // If we get here, we probably failed to update the resolution dependencies.
-                    panic!("Unable to resolve next-hop {:#?}", &self.key);
+                    error!("Unable to resolve next-hop {:#?} !!", &self.key);
                 }
             } else {
                 /* check resolvers */
@@ -257,6 +257,7 @@ impl NhopStore {
     //////////////////////////////////////////////////////////////////
     /// Create a next-hop map object.
     //////////////////////////////////////////////////////////////////
+    #[must_use]
     pub(crate) fn new() -> Self {
         Self(BTreeSet::new())
     }
@@ -264,6 +265,7 @@ impl NhopStore {
     //////////////////////////////////////////////////////////////////
     /// Get the number of next-hops in the store
     //////////////////////////////////////////////////////////////////
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -287,6 +289,7 @@ impl NhopStore {
     //////////////////////////////////////////////////////////////////
     /// Tell if there exists a next-hop with a given key.
     //////////////////////////////////////////////////////////////////
+    #[must_use]
     pub(crate) fn contains(&self, key: &NhopKey) -> bool {
         let nh = Nhop::new_from_key(key);
         self.0.contains(&nh)
@@ -294,7 +297,7 @@ impl NhopStore {
 
     //////////////////////////////////////////////////////////////////
     /// Get a reference to the next-hop with a given key, if it exists.
-    /// Unlike add_nhop(), this returns a `&Rc<Nhop>` and not `Rc<Nhop>`,
+    /// Unlike `add_nhop()`, this returns a `&Rc<Nhop>` and not `Rc<Nhop>`,
     /// thereby not increasing the reference count of the next-hop.
     //////////////////////////////////////////////////////////////////
     #[must_use]
@@ -315,7 +318,7 @@ impl NhopStore {
     //////////////////////////////////////////////////////////////////
     /// Declare that a next-hop is no longer of our interest. The nhop may be removed or
     /// not, depending on whether there are other references to it. This function could
-    /// just be self.map.remove(). However, that would just remove an Rc<Nhop> from the
+    /// just be `self.map.remove()`. However, that would just remove an Rc<Nhop> from the
     /// collection while other elements might have living references to it. We want the
     /// store to be and exhaustive, in that it should contain only living nexthops and
     /// all of them. I.e., no next-hop object should be alive outside of this collection.
@@ -358,7 +361,7 @@ impl NhopStore {
     //////////////////////////////////////////////////////////////////
     /// Resolve a next-hop by address. If no next-hop exists for that
     /// address, returns None. Otherwise, it returns the result of
-    /// quick_resolve() on the next-hop found.
+    /// `quick_resolve()` on the next-hop found.
     /// This function is probably only useful for testing.
     //////////////////////////////////////////////////////////////////
     #[cfg(test)]
