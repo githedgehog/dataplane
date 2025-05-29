@@ -11,9 +11,6 @@ pub enum RouterError {
     #[error("No such interface (ifindex {0})")]
     NoSuchInterface(u32),
 
-    #[error("Rejected: {0}")]
-    Rejected(String),
-
     #[error("No such VRF")]
     NoSuchVrf,
 

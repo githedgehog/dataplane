@@ -10,7 +10,7 @@ use crate::fib::fibtype::{Fib, FibId};
 use crate::interfaces::iftable::IfTable;
 use crate::interfaces::interface::Attachment;
 use crate::interfaces::interface::{IfDataDot1q, IfDataEthernet};
-use crate::interfaces::interface::{IfMapping, IfState, IfType, Interface};
+use crate::interfaces::interface::{IfState, IfType, Interface};
 
 use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::pretty_utils::{Heading, line};
@@ -455,7 +455,7 @@ impl Display for IfTable {
         Heading(format!("interfaces ({})", self.len())).fmt(f)?;
         fmt_interface_heading(f)?;
         for iface in self.values() {
-            writeln!(f, "{}", iface.borrow())?;
+            writeln!(f, "{iface}")?;
         }
         Ok(())
     }
@@ -492,54 +492,7 @@ impl Display for IfTableAddress<'_> {
         Heading("interface addresses".to_string()).fmt(f)?;
         fmt_interface_addr_heading(f)?;
         for iface in self.0.values() {
-            fmt_interface_addresses(f, &iface.borrow())?;
-        }
-        Ok(())
-    }
-}
-
-//========================= Interface mappings ================================//
-impl Display for IfMapping {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "mac: {:<17}", self.mac)?;
-        if let Some(vlan) = &self.vlan {
-            write!(f, " vlan: {:<6}", format!("{}", vlan))
-        } else {
-            write!(f, " vlan: {:<6}", format!("{}", "none"))
-        }
-    }
-}
-macro_rules! INTERFACE_MAPPING_FMT {
-    () => {
-        " {:35} {:16} {:}"
-    };
-}
-fn fmt_interface_mapping_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    writeln!(
-        f,
-        "{}",
-        format_args!(INTERFACE_MAPPING_FMT!(), "mapping", "interface", "ifindex")
-    )
-}
-fn fmt_interface_mapping(
-    f: &mut std::fmt::Formatter<'_>,
-    mapping: &IfMapping,
-    iface: &Interface,
-) -> std::fmt::Result {
-    writeln!(
-        f,
-        "{}",
-        format_args!(INTERFACE_MAPPING_FMT!(), mapping, iface.name, iface.ifindex)
-    )
-}
-#[repr(transparent)]
-pub struct IfTableMapping<'a>(pub &'a IfTable);
-impl Display for IfTableMapping<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Heading("interface map".to_string()).fmt(f)?;
-        fmt_interface_mapping_heading(f)?;
-        for (mapping, iface) in self.0.iter_by_mapping() {
-            fmt_interface_mapping(f, mapping, &iface.borrow())?;
+            fmt_interface_addresses(f, iface)?;
         }
         Ok(())
     }

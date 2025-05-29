@@ -37,38 +37,6 @@ pub struct IfDataDot1q {
     pub vlanid: Vid,
 }
 
-#[allow(dead_code)]
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
-/// An [`IfMapping`] is an object that allows determining what physical or logical
-/// interface a packet arrived on with a hash lookup operation. The need for an
-/// [`IfMapping`] stems from the fact that a [`Mac`] may not suffice for that purpose
-/// in case we have sub-interfaces (e.g. 802.1q).
-pub struct IfMapping {
-    pub vlan: Option<Vid>, /* we don't support QinQ yet */
-    pub mac: Mac,
-}
-
-/// Trait for interfaces requiring an [`IfMapping`]
-trait HasIfMapping {
-    fn mapping(&self) -> IfMapping;
-}
-impl HasIfMapping for IfDataEthernet {
-    fn mapping(&self) -> IfMapping {
-        IfMapping {
-            vlan: None,
-            mac: self.mac,
-        }
-    }
-}
-impl HasIfMapping for IfDataDot1q {
-    fn mapping(&self) -> IfMapping {
-        IfMapping {
-            vlan: Some(self.vlanid),
-            mac: self.mac,
-        }
-    }
-}
-
 /// Trait that interfaces having a [`Mac`] should implement.
 #[allow(dead_code)]
 trait HasMac {
@@ -289,17 +257,6 @@ impl Interface {
         match &self.iftype {
             IfType::Ethernet(inner) => Some(*inner.get_mac()),
             IfType::Dot1q(inner) => Some(*inner.get_mac()),
-            _ => None,
-        }
-    }
-
-    //////////////////////////////////////////////////////////////////
-    /// Tell what the mapping should be for an interface, if any
-    //////////////////////////////////////////////////////////////////
-    pub fn mapping(&self) -> Option<IfMapping> {
-        match &self.iftype {
-            IfType::Ethernet(inner) => Some(inner.mapping()),
-            IfType::Dot1q(inner) => Some(inner.mapping()),
             _ => None,
         }
     }
