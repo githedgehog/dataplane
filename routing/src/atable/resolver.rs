@@ -140,7 +140,10 @@ pub mod tests {
     fn watch_resolver_output(atabler: &AtableReader, times: i32) {
         let mut count = 1;
         while count <= times {
-            atabler.enter().map(|atable| println!("{}", *atable));
+            atabler
+                .enter()
+                .iter()
+                .for_each(|atable| println!("{}", **atable));
             thread::sleep(Duration::from_secs(1));
             count += 1;
         }
@@ -151,13 +154,13 @@ pub mod tests {
         let (mut resolver, atabler) = AtResolver::new(true);
         resolver.start(1);
         watch_resolver_output(&atabler, 3);
-        let _ = resolver.stop();
+        resolver.stop();
 
         println!("Stopped resolver");
         thread::sleep(Duration::from_secs(2));
 
         resolver.start(1);
         watch_resolver_output(&atabler, 3);
-        let _ = resolver.stop();
+        resolver.stop();
     }
 }
