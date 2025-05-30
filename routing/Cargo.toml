@@ -11,6 +11,7 @@ testing = []
 
 [dependencies]
 ahash = { workspace = true }
+derive_builder = { workspace = true, features = ["default", "std"] }
 ipnet = { workspace = true }
 iptrie = { workspace = true }
 left-right = { workspace = true }

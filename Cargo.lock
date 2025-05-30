@@ -879,6 +879,7 @@ dependencies = [
  "bytes",
  "dataplane-cli",
  "dataplane-net",
+ "derive_builder 0.20.2",
  "dplane-rpc",
  "ipnet",
  "iptrie",

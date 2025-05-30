@@ -5,9 +5,6 @@
 
 #![allow(clippy::items_after_statements)]
 
-const DEFAULT_DP_UX_PATH: &str = "/var/run/frr/hh_dataplane.sock";
-const DEFAULT_DP_UX_PATH_CLI: &str = "/tmp/dataplane_ctl.sock";
-
 use crate::atable::atablerw::AtableReader;
 use crate::cli::handle_cli_request;
 use crate::cpi_process::process_rx_data;
@@ -18,7 +15,6 @@ use crate::interfaces::iftablerw::IfTableWriter;
 use crate::routingdb::RoutingDb;
 
 use cli::cliproto::{CliRequest, CliSerialize};
-use dplane_rpc::log::Level;
 use dplane_rpc::socks::RpcCachedSock;
 
 use mio::unix::SourceFd;
@@ -27,7 +23,6 @@ use std::fs;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
-use std::str::FromStr;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tokio::sync::mpsc::error::TryRecvError;
@@ -85,10 +80,21 @@ impl CpiHandle {
     }
 }
 
+pub const DEFAULT_DP_UX_PATH: &str = "/var/run/frr/hh/dataplane.sock";
+pub const DEFAULT_DP_UX_PATH_CLI: &str = "/tmp/dataplane_ctl.sock";
+pub const DEFAULT_FRR_AGENT_PATH: &str = "/var/run/frr/frr-agent.sock";
+
 pub struct CpiConf {
-    pub rpc_loglevel: Option<String>,
     pub cpi_sock_path: Option<String>,
     pub cli_sock_path: Option<String>,
+}
+impl Default for CpiConf {
+    fn default() -> Self {
+        Self {
+            cpi_sock_path: Some(DEFAULT_DP_UX_PATH.to_string()),
+            cli_sock_path: Some(DEFAULT_DP_UX_PATH_CLI.to_string()),
+        }
+    }
 }
 
 fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
@@ -132,14 +138,6 @@ pub fn start_cpi(
     iftw: IfTableWriter,
     atabler: AtableReader,
 ) -> Result<CpiHandle, RouterError> {
-    /* get desired loglevel and set it */
-    let loglevel = conf.rpc_loglevel.as_ref().map_or_else(
-        || Level::DEBUG,
-        |level| Level::from_str(level).unwrap_or(Level::DEBUG),
-    );
-
-    info!("Launching CPI, loglevel is {loglevel:?}...");
-
     /* path to bind to for routing function */
     let cp_sock_path = conf.cpi_sock_path.as_ref().map_or_else(
         || DEFAULT_DP_UX_PATH.to_owned(),
@@ -189,7 +187,6 @@ pub fn start_cpi(
     let cpi_loop = move || {
         info!("CPI Listening at {}.", cp_sock_path);
         info!("CLI Listening at {}.", cli_sock_path);
-        info!("Entering main IO loop....");
         let mut events = Events::with_capacity(64);
         let mut buf = vec![0; 1024];
         let mut run = true;
@@ -197,6 +194,7 @@ pub fn start_cpi(
         /* create routing database: this is fully owned by the CPI */
         let mut db = RoutingDb::new(Some(fibtw), iftw, atabler);
 
+        info!("Entering CPI IO loop....");
         while run {
             if let Err(e) = poller.poll(&mut events, Some(Duration::from_secs(1))) {
                 error!("Poller error!: {e}");
@@ -269,6 +267,8 @@ pub fn start_cpi(
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
+    use tracing::Level;
+
     use crate::atable::atablerw::AtableWriter;
     use crate::cpi::{CpiConf, start_cpi};
     use crate::errors::RouterError;
@@ -292,7 +292,6 @@ mod tests {
 
         /* Build cpi configuration */
         let conf = CpiConf {
-            rpc_loglevel: Some("debug".to_string()),
             cpi_sock_path: Some(cpi_bind_addr),
             cli_sock_path: None,
         };
@@ -315,7 +314,6 @@ mod tests {
     fn test_cpi_failure_bad_path() {
         /* Build cpi configuration with bad path for unix sock */
         let conf = CpiConf {
-            rpc_loglevel: Some("debug".to_string()),
             cpi_sock_path: Some("/nonexistent/hh_dataplane.sock".to_string()),
             cli_sock_path: None,
         };

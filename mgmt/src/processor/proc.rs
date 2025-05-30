@@ -99,7 +99,7 @@ impl ConfigProcessor {
     }
 
     /// Main entry point for new configurations
-    async fn process_incoming_config(&mut self, mut config: GwConfig) -> ConfigResult {
+    pub(crate) async fn process_incoming_config(&mut self, mut config: GwConfig) -> ConfigResult {
         let genid = config.genid();
 
         /* reject config if it uses id of existing one */
@@ -294,7 +294,6 @@ async fn apply_config_frr(
     debug!("Generating FRR config for genid {genid}...");
 
     let rendered = internal.render(config);
-    debug!("FRR configuration is:\n{}", rendered.to_string());
 
     frrmi
         .apply_config(config.genid(), &rendered)

@@ -23,6 +23,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::packet_processor::start_router;
 use mgmt::processor::launch::start_mgmt;
+use routing::RouterConfigBuilder;
 
 fn init_logging() {
     tracing_subscriber::fmt()
@@ -72,13 +73,23 @@ fn main() {
         }
     };
 
+    /* router configuration */
+    let Ok(config) = RouterConfigBuilder::default().build() else {
+        error!("Bad router configuration");
+        panic!("Bad router configuration");
+    };
+
     /* start router and create routing pipeline */
-    let (router, pipeline) = start_router("demo-router");
+    let Ok((router, pipeline)) = start_router(config) else {
+        error!("Failed to start router");
+        panic!("Failed to start router");
+    };
     let builder = move || pipeline;
     let router_ctl = router.get_ctl_tx();
+    let frr_agent_path = router.get_frr_agent_path().to_str().unwrap();
 
     /* start management */
-    if let Err(e) = start_mgmt(grpc_addr, router_ctl) {
+    if let Err(e) = start_mgmt(grpc_addr, router_ctl, frr_agent_path) {
         error!("Failed to start gRPC server: {e}");
         panic!("Failed to start gRPC server: {e}");
     }

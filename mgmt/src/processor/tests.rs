@@ -42,6 +42,12 @@ pub mod test {
         VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
     };
 
+    use crate::frr::frrmi::FrrMi;
+    use crate::frr::frrmi::tests::fake_frr_agent;
+    use crate::processor::proc::ConfigProcessor;
+    use routing::{Router, RouterConfigBuilder};
+    use tracing::debug;
+
     /* OVERLAY config sample builders */
     fn sample_vpc_table() -> VpcTable {
         let mut vpc_table = VpcTable::new();
@@ -279,29 +285,47 @@ pub mod test {
         //let vtep = VtepConfig::new(loopback, Mac::from([0x2, 0x0, 0x0, 0x0, 0xaa, 0xbb]));
     }
 
-    use crate::frr::frrmi::FrrMi;
-    use crate::frr::frrmi::tests::fake_frr_agent;
-    use crate::processor::proc::ConfigProcessor;
-
     #[traced_test]
     #[tokio::test]
     #[fixin::wrap(with_caps([CAP_NET_ADMIN]))]
     async fn test_sample_config() {
-        /* start faked frr-agent */
-        let frr_agent = fake_frr_agent("/tmp/frr-agent.sock").await;
-
-        /* open frrmi and connect to the faked frr-agent */
-        let frrmi = FrrMi::new("/tmp/frr-agent.sock").await.unwrap();
-
         /* build sample external config */
         let external = sample_external_config();
 
         /* build a gw config from a sample external config */
         let config = GwConfig::new(external);
 
-        /* build config processor (N.B. we don't use the channels). The config processor
-        embedds a config database and we equip it with the frrmi */
-        let (mut processor, _sender) = ConfigProcessor::new(frrmi);
+        /* build router config */
+        let router_config = RouterConfigBuilder::default()
+            .cpi_sock_path("/tmp/cpi.sock")
+            .cli_sock_path("/tmp/cli.sock")
+            .frr_agent_path("/tmp/frr-agent.sock")
+            .build()
+            .expect("Should succeed due to defaults");
+
+        /* start router */
+        let router = Router::new(router_config);
+        if let Err(e) = &router {
+            error!("New router failed: {e}");
+            panic!();
+        }
+        let mut router = router.unwrap();
+
+        /* router control */
+        let ctl = router.get_ctl_tx();
+
+        /* router frr-agent path */
+        let frr_agent_path = router.get_frr_agent_path().to_str().expect("Bad path");
+
+        /* start fake frr-agent listening at the configured frr-agent path */
+        let frr_agent = fake_frr_agent(frr_agent_path).await;
+
+        /* open frrmi and connect to the faked frr-agent */
+        let frrmi = FrrMi::new(frr_agent_path).await;
+
+        /* build config processor to test the processing of a config. The processor embeds the config database
+        and has the frrmi. In this test, we don't use any channel to communicate the config. */
+        let (mut processor, _sender) = ConfigProcessor::new(frrmi, ctl);
 
         /* let the processor process the config */
         match processor.process_incoming_config(config).await {
@@ -312,7 +336,12 @@ pub mod test {
             }
         }
 
-        /* stop the faked frr-agent */
+        /* stop the fake frr-agent */
+        debug!("Stopping frr-agent...");
         frr_agent.abort();
+
+        /* stop the router */
+        debug!("Stopping the router...");
+        router.stop();
     }
 }

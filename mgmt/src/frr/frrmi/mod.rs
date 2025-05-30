@@ -165,7 +165,7 @@ impl FrrMi {
     const FRRMI_TIMEOUT: u64 = 10;
 
     /// Create an frrmi to talk to an frr-agent.
-    pub async fn new(remote_addr: &str) -> Result<FrrMi, FrrErr> {
+    pub async fn new(remote_addr: &str) -> Self {
         let mut frrmi = Self {
             sock: None,
             remote: remote_addr.to_string(),
@@ -183,7 +183,7 @@ impl FrrMi {
             &frrmi.remote,
             frrmi.is_connected(),
         );
-        Ok(frrmi)
+        frrmi
     }
     pub async fn connect(&mut self) -> Result<(), FrrErr> {
         let timeout = Duration::from_secs(Self::FRRMI_TIMEOUT);
@@ -324,7 +324,7 @@ pub mod tests {
         let frr_agent = fake_frr_agent("/tmp/frrmi-test/frr-agent.sock").await;
 
         /* open frrmi */
-        let mut frrmi = FrrMi::new("/tmp/frrmi-test/frr-agent.sock").await.unwrap();
+        let mut frrmi = FrrMi::new("/tmp/frrmi-test/frr-agent.sock").await;
 
         /* apply config over frrmi */
         if let Err(e) = frrmi.apply_config(config.genid(), &rendered).await {
