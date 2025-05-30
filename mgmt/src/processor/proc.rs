@@ -294,7 +294,6 @@ async fn apply_config_frr(
     debug!("Generating FRR config for genid {genid}...");
 
     let rendered = internal.render(config);
-    debug!("FRR configuration is:\n{}", rendered.to_string());
 
     frrmi
         .apply_config(config.genid(), &rendered)

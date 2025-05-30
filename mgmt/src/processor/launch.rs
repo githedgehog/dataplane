@@ -141,13 +141,9 @@ async fn start_grpc_server_unix(
     Ok(())
 }
 
-async fn start_frrmi() -> Result<FrrMi, Error> {
-    /* create frrmi to talk to frr-agent: Fixme(fredi): hardcoded */
-    let Ok(frrmi) = FrrMi::new("/var/run/frr/frr-agent.sock").await else {
-        error!("Failed to start frrmi");
-        return Err(Error::other("Failed to start frrmi"));
-    };
-    Ok(frrmi)
+/* create frrmi to talk to frr-agent */
+async fn start_frrmi(frr_agent_path: &str) -> FrrMi {
+    FrrMi::new(frr_agent_path).await
 }
 
 /// Enum for the different types of server addresses
@@ -176,6 +172,7 @@ pub enum GrpcAddress {
 pub fn start_mgmt(
     grpc_addr: GrpcAddress,
     router_ctl: RouterCtlSender,
+    frr_agent_path: &str,
 ) -> Result<std::thread::JoinHandle<()>, Error> {
     /* build server address from provided grpc address */
     let server_address = match grpc_addr {
@@ -183,6 +180,7 @@ pub fn start_mgmt(
         GrpcAddress::UnixSocket(path) => ServerAddress::Unix(path.to_path_buf()),
     };
     debug!("Will start gRPC listening on {server_address}");
+    let frr_agent_path = frr_agent_path.to_owned();
 
     std::thread::Builder::new()
         .name("mgmt".to_string())
@@ -198,7 +196,7 @@ pub fn start_mgmt(
 
             /* block thread to run gRPC and configuration processor */
             rt.block_on(async {
-                let frrmi = start_frrmi().await.unwrap();
+                let frrmi = start_frrmi(&frr_agent_path).await;
                 let (processor, tx) = ConfigProcessor::new(frrmi, router_ctl);
                 spawn(async { processor.run().await });
 

@@ -291,7 +291,7 @@ pub mod test {
         let frr_agent = fake_frr_agent("/tmp/frr-agent.sock").await;
 
         /* open frrmi and connect to the faked frr-agent */
-        let frrmi = FrrMi::new("/tmp/frr-agent.sock").await.unwrap();
+        let frrmi = FrrMi::new("/tmp/frr-agent.sock").await;
 
         /* build sample external config */
         let external = sample_external_config();
