@@ -9,6 +9,9 @@ set dotenv-required := true
 set dotenv-path := "."
 set dotenv-filename := "./scripts/rust.env"
 
+# set cargo binary. Just will just fail ;-) if the compile-env does not exist. That's actually good
+cargo_binary := "compile-env/bin/cargo"
+
 # enable to debug just recipes
 
 debug_justfile := "false"
@@ -142,7 +145,7 @@ cargo *args:
       esac
     done
     [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
-    cargo "${extra_args[@]}"
+    {{cargo_binary}} "${extra_args[@]}"
 
 # Run the (very minimal) compile environment
 [script]
@@ -410,7 +413,8 @@ push-container: build-container
 
 # Run Clippy like you're in CI
 [script]
-clippy *args: (cargo "clippy" "--all-targets" "--all-features" args "--" "-D" "warnings")
+clippy *args:
+    ({{cargo_binary}} "clippy" "--all-targets" "--all-features" args "--" "-D" "warnings")
 
 # Serve rustdoc output locally (using port 8000)
 [script]
