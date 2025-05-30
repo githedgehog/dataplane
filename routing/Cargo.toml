@@ -10,16 +10,28 @@ auto-learn = []
 testing = []
 
 [dependencies]
+ahash = { workspace = true }
+derive_builder = { workspace = true, features = ["default", "std"] }
 ipnet = { workspace = true }
 iptrie = { workspace = true }
+left-right = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
+mac_address= {version = "1.1.7"}
 net = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dplane-rpc = { workspace = true }
 bytes = { workspace = true, features = ["serde"] }
+cli = { workspace = true }
+
+# arp resolver
+procfs = { workspace = true }
+netdev = { workspace = true }
 
 [dev-dependencies]
 serde_yml = { workspace = true }
+
+

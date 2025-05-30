@@ -56,6 +56,9 @@ impl InternalConfig {
     pub fn set_vtep(&mut self, vtep: VtepConfig) {
         self.vtep = Some(vtep);
     }
+    pub fn get_vtep(&self) -> &Option<VtepConfig> {
+        &self.vtep
+    }
     pub fn add_vrf_config(&mut self, vrf_cfg: VrfConfig) -> ConfigResult {
         self.vrfs.add_vrf_config(vrf_cfg)
     }

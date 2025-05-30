@@ -31,7 +31,7 @@ use crate::models::internal::routing::vrf::VrfConfig;
 /// Build a drop route
 #[must_use]
 fn build_drop_route(prefix: &Prefix) -> StaticRoute {
-    StaticRoute::new(prefix.clone()).nhop_reject()
+    StaticRoute::new(*prefix).nhop_reject()
 }
 
 /// Populate a prefix list from a remote manifest
@@ -45,7 +45,7 @@ fn populate_prefix_list(plist: &mut PrefixList, rmanifest: &VpcManifest) -> Vec<
                 let entry = PrefixListEntry::new(
                     seq,
                     PrefixListAction::Permit,
-                    PrefixListPrefix::Prefix(prefix.clone()),
+                    PrefixListPrefix::Prefix(*prefix),
                     None,
                 );
                 plist.add_entry(entry);
@@ -58,7 +58,7 @@ fn populate_prefix_list(plist: &mut PrefixList, rmanifest: &VpcManifest) -> Vec<
                 let entry = PrefixListEntry::new(
                     seq,
                     PrefixListAction::Permit,
-                    PrefixListPrefix::Prefix(prefix.clone()),
+                    PrefixListPrefix::Prefix(*prefix),
                     None,
                 );
                 plist.add_entry(entry);
@@ -248,10 +248,11 @@ fn build_vtep_config(external: &ExternalConfig, internal: &mut InternalConfig) -
     let vtep_mac = SourceMac::new(Mac([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x01]))
         .unwrap_or_else(|e| unreachable!("{}", e));
 
-    internal.vtep = Some(VtepConfig {
+    let vtep = VtepConfig {
         address: vtep_ip.into(),
         mac: vtep_mac,
-    });
+    };
+    internal.set_vtep(vtep);
     Ok(())
 }
 

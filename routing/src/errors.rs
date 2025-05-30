@@ -20,10 +20,10 @@ pub enum RouterError {
     #[error("A VRF with Vni {0} already exists")]
     VniInUse(u32),
 
-    #[error("Invalid VNI value {0} ")]
+    #[error("Invalid VNI value {0}")]
     VniInvalid(u32),
 
-    #[error("The interface is already attached to a distinct VRF")]
+    #[error("The interface is already attached to a distinct entity")]
     AlreadyAttached,
 
     #[error("Some internal error ocurred")]
@@ -31,6 +31,9 @@ pub enum RouterError {
 
     #[error("Invalid socket path")]
     InvalidSockPath,
+
+    #[error("Internal error: {0}")]
+    Internal(&'static str),
 
     #[error("Permission errors")]
     PermError,

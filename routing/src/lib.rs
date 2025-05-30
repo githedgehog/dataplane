@@ -4,18 +4,28 @@
 //! A library to implement routing functions.
 
 #![deny(clippy::all)]
+#![allow(clippy::similar_names)]
 
-mod adjacency;
-mod cpi;
+pub mod atable;
+pub mod cli;
+pub mod cpi;
 mod cpi_process;
 mod display;
-mod encapsulation;
+pub mod encapsulation;
 mod errors;
-pub mod interface;
+pub mod evpn;
+pub mod fib;
+pub mod interfaces;
 mod nexthop;
 pub mod prefix;
 pub mod pretty_utils;
-mod rmac;
-mod routingdb;
+pub mod route_processor;
+mod router;
+pub mod routingdb;
 mod rpc_adapt;
+pub mod testfib;
 pub mod vrf;
+
+// re-exports
+pub use errors::RouterError;
+pub use router::{Router, RouterConfig, RouterConfigBuilder};

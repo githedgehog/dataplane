@@ -5,9 +5,11 @@
 //! refer to other objects like Encapsulation.
 
 use crate::encapsulation::Encapsulation;
+use crate::route_processor::{FibGroup, PktInstruction};
+use crate::vrf::{RouteOrigin, Vrf};
+
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
-pub use std::collections::BTreeSet;
-use std::collections::btree_set;
+use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::net::IpAddr;
@@ -15,6 +17,7 @@ use std::option::Option;
 #[cfg(test)]
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
+use tracing::{error, trace};
 
 #[derive(Debug)]
 /// A collection of unique next-hops. Next-hops are identified by a next-hop key
@@ -27,6 +30,8 @@ pub(crate) struct NhopStore(BTreeSet<Arc<Nhop>>);
 pub struct Nhop {
     pub(crate) key: NhopKey,
     pub(crate) resolvers: RwLock<Vec<Arc<Nhop>>>,
+    pub(crate) instructions: RwLock<Vec<PktInstruction>>,
+    pub fibgroup: RwLock<FibGroup>, // Adding RWlock to allow int mut. Will replace by rc & Refcell
 }
 
 #[derive(Debug, Default, Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
@@ -41,6 +46,7 @@ pub enum FwAction {
 /// as return value in next-hop resolution routines.
 #[derive(Debug, Default, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct NhopKey {
+    pub origin: RouteOrigin,
     pub address: Option<IpAddr>,
     pub ifindex: Option<u32>,
     pub encap: Option<Encapsulation>,
@@ -53,12 +59,14 @@ impl NhopKey {
     /// Build a next-hop key
     //////////////////////////////////////////////////////////////////
     pub fn new(
+        origin: RouteOrigin,
         address: Option<IpAddr>,
         ifindex: Option<u32>,
         encap: Option<Encapsulation>,
         fwaction: FwAction,
     ) -> Self {
         Self {
+            origin,
             address,
             ifindex,
             encap,
@@ -67,6 +75,7 @@ impl NhopKey {
     }
     pub fn with_drop() -> Self {
         Self {
+            origin: RouteOrigin::default(),
             address: None,
             ifindex: None,
             encap: None,
@@ -141,6 +150,8 @@ impl Nhop {
         Self {
             key: *key,
             resolvers: RwLock::new(Vec::new()),
+            instructions: RwLock::new(Vec::with_capacity(2)),
+            fibgroup: RwLock::new(FibGroup::new()),
         }
     }
 
@@ -153,13 +164,47 @@ impl Nhop {
     ///     the 'routing resolution' semantic is implicitly assumed in the functions that allow resolving
     ///     nexthops from such references. In other words, the "resolution" in this module will be as (in)
     ///     correct as those with explicit recursion, as long as the references are kept up to date.
+    ///   * **WARNING**: This method takes a lock for writing on the resolvers
     //////////////////////////////////////////////////////////////////////////////////////////////////////
     pub fn add_resolver(&self, resolver: Arc<Nhop>) -> &Self {
         self.resolvers.write().expect("poisoned").push(resolver);
         self
     }
 
-    /// Auxiliary recursive method used by Nhop::quick_resolve().
+    /// Resolve a next-hop with a VRF, non-recursively, assuming that its resolvers are resolved already
+    /// **WARNING**: This method takes a lock for writing on the resolvers
+    pub fn lazy_resolve(&self, vrf: &Vrf) {
+        if self.key.ifindex.is_some() || self.key.fwaction == FwAction::Drop {
+            return;
+        }
+        if let Some(a) = self.key.address {
+            trace!("Resolving {} with vrf '{}' (Id {})", a, vrf.name, vrf.vrfid);
+            if let Ok(mut resolvers) = self.resolvers.write() {
+                resolvers.clear();
+                let (prefix, route) = vrf.lpm(&a);
+                trace!("matched route is for {}", prefix);
+                for nh in &route.s_nhops {
+                    if *nh.rc == *self {
+                        error!(
+                            "Warning next-hop resolution loop!: {} resolves with route to {} via {}",
+                            a, prefix, nh.rc
+                        );
+                        continue;
+                    }
+                    trace!("Adding resolver {nh}");
+                    // N.B. here we don't call self.add_resolver() since that takes a write lock
+                    // and we have already taken it here. Better to take it here and not per resolver.
+                    resolvers.push(nh.rc.clone());
+                }
+            } else {
+                panic!("Poisoned");
+            }
+        } else {
+            // nothing to do
+        }
+    }
+
+    /// Auxiliary recursive method used by `Nhop::quick_resolve()`.
     fn quick_resolve_rec(&self, result: &mut BTreeSet<NhopKey>) {
         if let Ok(resolvers_of_this) = self.resolvers.write() {
             if resolvers_of_this.is_empty() {
@@ -171,7 +216,7 @@ impl Nhop {
                     // a default route (with legitimate next-hops or a default one with action drop).
                     // So all next-hops should resolve, at the very least, to the default route.
                     // If we get here, we probably failed to update the resolution dependencies.
-                    panic!("Unable to resolve next-hop {:#?}", &self.key);
+                    error!("Unable to resolve next-hop {:#?} !!", &self.key);
                 }
             } else {
                 /* check resolvers */
@@ -181,6 +226,7 @@ impl Nhop {
                         they include an address AND an ifindex */
                         let address = r.key.address.map_or(self.key.address, |_| r.key.address);
                         result.insert(NhopKey::new(
+                            r.key.origin,
                             address,
                             Some(i),
                             self.key.encap,
@@ -211,6 +257,7 @@ impl NhopStore {
     //////////////////////////////////////////////////////////////////
     /// Create a next-hop map object.
     //////////////////////////////////////////////////////////////////
+    #[must_use]
     pub(crate) fn new() -> Self {
         Self(BTreeSet::new())
     }
@@ -218,6 +265,7 @@ impl NhopStore {
     //////////////////////////////////////////////////////////////////
     /// Get the number of next-hops in the store
     //////////////////////////////////////////////////////////////////
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -233,15 +281,15 @@ impl NhopStore {
         if let Some(e) = self.0.get(&nh) {
             Arc::clone(e)
         } else {
-            let out = Arc::clone(&nh);
-            self.0.insert(nh);
-            out
+            self.0.insert(nh.clone());
+            nh
         }
     }
 
     //////////////////////////////////////////////////////////////////
     /// Tell if there exists a next-hop with a given key.
     //////////////////////////////////////////////////////////////////
+    #[must_use]
     pub(crate) fn contains(&self, key: &NhopKey) -> bool {
         let nh = Nhop::new_from_key(key);
         self.0.contains(&nh)
@@ -249,7 +297,7 @@ impl NhopStore {
 
     //////////////////////////////////////////////////////////////////
     /// Get a reference to the next-hop with a given key, if it exists.
-    /// Unlike add_nhop(), this returns a `&Rc<Nhop>` and not `Rc<Nhop>`,
+    /// Unlike `add_nhop()`, this returns a `&Rc<Nhop>` and not `Rc<Nhop>`,
     /// thereby not increasing the reference count of the next-hop.
     //////////////////////////////////////////////////////////////////
     #[must_use]
@@ -270,7 +318,7 @@ impl NhopStore {
     //////////////////////////////////////////////////////////////////
     /// Declare that a next-hop is no longer of our interest. The nhop may be removed or
     /// not, depending on whether there are other references to it. This function could
-    /// just be self.map.remove(). However, that would just remove an Rc<Nhop> from the
+    /// just be `self.map.remove()`. However, that would just remove an Rc<Nhop> from the
     /// collection while other elements might have living references to it. We want the
     /// store to be and exhaustive, in that it should contain only living nexthops and
     /// all of them. I.e., no next-hop object should be alive outside of this collection.
@@ -313,7 +361,7 @@ impl NhopStore {
     //////////////////////////////////////////////////////////////////
     /// Resolve a next-hop by address. If no next-hop exists for that
     /// address, returns None. Otherwise, it returns the result of
-    /// quick_resolve() on the next-hop found.
+    /// `quick_resolve()` on the next-hop found.
     /// This function is probably only useful for testing.
     //////////////////////////////////////////////////////////////////
     #[cfg(test)]
@@ -325,7 +373,7 @@ impl NhopStore {
     //////////////////////////////////////////////////////////////////
     /// Iterate over all next-hops in the next-hop store
     //////////////////////////////////////////////////////////////////
-    pub(crate) fn iter(&self) -> btree_set::Iter<'_, Arc<Nhop>> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Arc<Nhop>> {
         self.0.iter()
     }
 

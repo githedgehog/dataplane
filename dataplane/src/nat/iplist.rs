@@ -128,8 +128,8 @@ impl IpList {
             }
             if prefix_from_current.covers_addr(current_ip) {
                 return Some((
-                    IpList::new(prefix_from_current.clone(), None),
-                    IpList::new(prefix_from_target.clone(), None),
+                    IpList::new(*prefix_from_current, None),
+                    IpList::new(*prefix_from_target, None),
                 ));
             }
         }

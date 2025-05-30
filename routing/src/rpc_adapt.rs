@@ -9,28 +9,66 @@
 //! of these methods incur information loss in that they are not reversible and into() would not
 //! provide the expected results. Hence the use of the From trait is overloaded for convenience.
 
-use crate::encapsulation::{Encapsulation, VxlanEncapsulation};
+use crate::evpn::{RmacEntry, RmacStore, Vtep};
 use crate::nexthop::{FwAction, NhopKey};
 use crate::prefix::Prefix;
-use crate::rmac::RmacEntry;
-use crate::vrf::{Route, RouteNhop, Vrf};
-use dplane_rpc::msg::{ForwardAction, IpRoute, NextHop, NextHopEncap, Rmac, VxlanEncap};
+use crate::vrf::{Route, RouteNhop, RouteOrigin, Vrf};
+use crate::{
+    encapsulation::{Encapsulation, VxlanEncapsulation},
+    errors::RouterError,
+};
+use dplane_rpc::msg::{ForwardAction, IpRoute, NextHop, NextHopEncap, Rmac, RouteType, VxlanEncap};
 use net::eth::mac::Mac;
 use net::vxlan::Vni;
 use std::net::{IpAddr, Ipv4Addr};
+use tracing::error;
 
-impl From<&VxlanEncap> for VxlanEncapsulation {
-    fn from(vxlan: &VxlanEncap) -> Self {
-        VxlanEncapsulation {
-            vni: Vni::new_checked(vxlan.vni).expect("Invalid Vni"),
-            remote: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+impl From<RouteType> for RouteOrigin {
+    fn from(value: RouteType) -> Self {
+        match value {
+            RouteType::Local => RouteOrigin::Local,
+            RouteType::Connected => RouteOrigin::Connected,
+            RouteType::Static => RouteOrigin::Static,
+            RouteType::Ospf => RouteOrigin::Ospf,
+            RouteType::Isis => RouteOrigin::Isis,
+            RouteType::Bgp => RouteOrigin::Bgp,
+            RouteType::Other => RouteOrigin::Other,
         }
     }
 }
-impl From<&NextHopEncap> for Encapsulation {
-    fn from(value: &NextHopEncap) -> Self {
+impl TryFrom<&VxlanEncap> for VxlanEncapsulation {
+    type Error = RouterError;
+
+    fn try_from(vxlan: &VxlanEncap) -> Result<Self, Self::Error> {
+        Ok(VxlanEncapsulation {
+            vni: Vni::new_checked(vxlan.vni).map_err(|_| {
+                error!(
+                    "Received VxLAN encapsulation with invalid vni {}",
+                    vxlan.vni
+                );
+                RouterError::VniInvalid(vxlan.vni)
+            })?,
+            remote: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            // Note: local, smac and dmac are never set in nhops, because they may not
+            // be known when the next-hop is added (local may) and the encapsulation
+            // is part of the next-hop key which should be immutable for keying purposes.
+            // We ALWAYS set them to None when learning about next-hops via the CPI.
+            // This happens because we want to reuse the VxlanEncapsulation type for other
+            // purposes outside the Nhops. An alternative is to define yet another type.
+            local: None,
+            smac: None,
+            dmac: None,
+        })
+    }
+}
+impl TryFrom<&NextHopEncap> for Encapsulation {
+    type Error = RouterError;
+
+    fn try_from(value: &NextHopEncap) -> Result<Self, Self::Error> {
         match value {
-            NextHopEncap::VXLAN(vxlan) => Encapsulation::Vxlan(VxlanEncapsulation::from(vxlan)),
+            NextHopEncap::VXLAN(vxlan) => {
+                Ok(Encapsulation::Vxlan(VxlanEncapsulation::try_from(vxlan)?))
+            }
         }
     }
 }
@@ -42,30 +80,60 @@ impl From<ForwardAction> for FwAction {
         }
     }
 }
-impl From<&NextHop> for RouteNhop {
-    fn from(nh: &NextHop) -> Self {
-        let mut encap = nh.encap.as_ref().map(Encapsulation::from);
-        #[allow(clippy::collapsible_if)]
-        if let Some(Encapsulation::Vxlan(vxlan)) = &mut encap {
-            if let Some(address) = nh.address {
-                vxlan.remote = address;
+impl TryFrom<&Rmac> for RmacEntry {
+    type Error = RouterError;
+
+    fn try_from(value: &Rmac) -> Result<Self, Self::Error> {
+        Ok(Self {
+            address: value.address,
+            mac: Mac::from(value.mac.bytes()),
+            vni: Vni::new_checked(value.vni).map_err(|_| {
+                error!("Received router mac with invalid vni {}", value.vni);
+                RouterError::VniInvalid(value.vni)
+            })?,
+        })
+    }
+}
+
+impl RouteNhop {
+    fn from_rpc_nhop(nh: &NextHop, origin: RouteOrigin) -> Result<Self, RouterError> {
+        let mut ifindex = nh.ifindex;
+        let encap = match &nh.encap {
+            Some(e) => {
+                let mut enc = Encapsulation::try_from(e)?;
+                if let Encapsulation::Vxlan(vxlan) = &mut enc {
+                    if let Some(address) = nh.address {
+                        vxlan.remote = address;
+                    }
+                    ifindex = None;
+                }
+                Some(enc)
             }
-        }
-        RouteNhop {
+            None => None,
+        };
+
+        Ok(RouteNhop {
             key: NhopKey::new(
+                origin,
                 nh.address,
-                nh.ifindex,
-                encap, /* fixme */
+                ifindex,
+                encap,
                 FwAction::from(nh.fwaction),
             ),
             vrfid: nh.vrfid,
-        }
+        })
     }
 }
-impl From<&IpRoute> for Route {
-    fn from(r: &IpRoute) -> Self {
+impl Route {
+    fn from_iproute(prefix: &Prefix, r: &IpRoute) -> Self {
+        let origin = if r.rtype == RouteType::Connected && prefix.is_host() {
+            RouteOrigin::Local
+        } else {
+            RouteOrigin::from(r.rtype)
+        };
+
         Route {
-            rtype: r.rtype,
+            origin,
             distance: r.distance,
             metric: r.metric,
             s_nhops: Vec::with_capacity(1),
@@ -74,23 +142,37 @@ impl From<&IpRoute> for Route {
     }
 }
 
-impl From<&Rmac> for RmacEntry {
-    fn from(value: &Rmac) -> Self {
-        Self {
-            address: value.address,
-            mac: Mac::from(value.mac.bytes()),
-            vni: Vni::new_checked(value.vni).expect("Invalid Vni"),
-        }
+#[allow(unused)]
+/// Util to tell if a route is EVPN - heuristic
+pub fn is_evpn_route(iproute: &IpRoute) -> bool {
+    if iproute.rtype != RouteType::Bgp || iproute.nhops.is_empty() {
+        false
+    } else {
+        matches!(iproute.nhops[0].encap, Some(NextHopEncap::VXLAN(_)))
     }
 }
 
 #[allow(unused)]
 impl Vrf {
-    pub fn add_route_rpc(&mut self, iproute: &IpRoute) {
+    pub fn add_route_rpc(
+        &mut self,
+        iproute: &IpRoute,
+        vrf0: Option<&Vrf>,
+        rstore: &RmacStore,
+        vtep: &Vtep,
+    ) {
         let prefix = Prefix::from((iproute.prefix, iproute.prefix_len));
-        let route = Route::from(iproute);
-        let nhops: Vec<RouteNhop> = iproute.nhops.iter().map(RouteNhop::from).collect();
-        self.add_route(&prefix, route, &nhops);
+        let route = Route::from_iproute(&prefix, iproute);
+
+        // next-hops
+        let mut nhops = Vec::with_capacity(iproute.nhops.len());
+        for nhop in &iproute.nhops {
+            match RouteNhop::from_rpc_nhop(nhop, route.origin) {
+                Ok(nh) => nhops.push(nh),
+                Err(e) => error!("Omitting next-hop in route to {prefix}: {e}"),
+            }
+        }
+        self.add_route_complete(&prefix, route, &nhops, vrf0, rstore, vtep);
     }
     pub fn del_route_rpc(&mut self, route: &IpRoute) {
         let prefix = Prefix::from((route.prefix, route.prefix_len));
