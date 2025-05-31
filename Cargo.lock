@@ -544,7 +544,7 @@ version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fde0e0ec90c9dfb3b4b1a0891a7dcd0e2bffde2f7efed5fe7c9bb00e5bfb915e"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1085,7 +1085,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cea14ef9355e3beab063703aa9dab15afd25f0667c341310c1e5274bb1d0da18"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1656,20 +1656,19 @@ dependencies = [
 
 [[package]]
 name = "multi_index_map"
-version = "0.13.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b2610a01115f157d7b7e34a9bb33f8694220dbf6150545d767c40812eefc85d"
+checksum = "bb2921dd3396771d28d081e93dbb62dc62e14ee4fe63978c6528e177ad0c6bfe"
 dependencies = [
  "multi_index_map_derive",
- "rustc-hash",
  "slab",
 ]
 
 [[package]]
 name = "multi_index_map_derive"
-version = "0.13.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3273791af5ac200e3a9aea9c7bf6d3f49cb99c6337f54b3b3a35e583c4092122"
+checksum = "eaa5e48a85384b125f486e729dbec5bd5e4a255318dd5fe1db772e2224b1234c"
 dependencies = [
  "convert_case",
  "proc-macro-error2",
@@ -2250,7 +2249,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2522,7 +2521,7 @@ dependencies = [
  "getrandom 0.3.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
