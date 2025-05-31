@@ -74,7 +74,7 @@ fixin = { git = "https://github.com/githedgehog/fixin", branch = "main" }
 futures = { version = "0.3.31", default-features = false, features = [] }
 ipnet = { version = "2.11.0", default-features = false, features = [] }
 iptrie = { version = "0.10.3", default-features = false, features = [] }
-mio = { version = "1.0.3", default-features = false, features = [] }
+mio = { version = "1.0.4", default-features = false, features = [] }
 multi_index_map = { version = "0.13.0", default-features = false, features = [] }
 netdev = { version = "0.34.0", default-features = false, features = [] }
 nix = { version = "0.30.1", default-features = false, features = ["socket"] }
