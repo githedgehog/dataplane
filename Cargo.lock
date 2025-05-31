@@ -263,7 +263,7 @@ dependencies = [
  "bitflags 2.9.1",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools",
  "proc-macro2",
  "quote",
  "regex",
@@ -1235,10 +1235,11 @@ dependencies = [
 
 [[package]]
 name = "gateway_config"
-version = "0.2.2"
-source = "git+https://github.com/githedgehog/gateway-proto#aa8a6e50eab0b18f2ba5cacc564d90067d94db68"
+version = "0.2.3"
+source = "git+https://github.com/githedgehog/gateway-proto#7859015d1326cee10719ddac75b62b4a3602b1e1"
 dependencies = [
  "async-trait",
+ "bolero",
  "futures",
  "prost",
  "serde",
@@ -1505,15 +1506,6 @@ name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
-dependencies = [
- "either",
-]
-
-[[package]]
-name = "itertools"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
 dependencies = [
  "either",
 ]
@@ -2151,7 +2143,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools",
  "proc-macro2",
  "quote",
  "syn 2.0.101",
