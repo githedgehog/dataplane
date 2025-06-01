@@ -34,21 +34,25 @@ pub struct Peering {
 /// Type for a fixed-sized VPC unique id
 pub struct VpcId(pub(crate) [char; 5]);
 impl VpcId {
-    pub fn new(a: char, b: char, c: char, d: char, e: char) -> Self {
-        Self([a, b, c, d, e])
+    pub fn new(chars: [char; 5]) -> Self {
+        Self(chars)
     }
 }
 impl TryFrom<&str> for VpcId {
     type Error = ConfigError;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        if value.len() != 5 {
+        const ID_LEN: usize = 5;
+        if value.len() != ID_LEN {
             return Err(ConfigError::BadVpcId(value.to_owned()));
         }
         if !value.chars().all(|c| c.is_ascii_alphanumeric()) {
             return Err(ConfigError::BadVpcId(value.to_owned()));
         }
-        let chars: Vec<char> = value.chars().collect();
-        Ok(VpcId::new(chars[0], chars[1], chars[2], chars[3], chars[4]))
+        let mut chars = value.chars().take(ID_LEN);
+        // unwrap cannot fail here because we checked the length earlier
+        Ok(VpcId::new(
+            [(); 5].map(|i| chars.next().unwrap_or_else(|| unreachable!())),
+        ))
     }
 }
 
