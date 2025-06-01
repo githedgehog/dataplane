@@ -11,7 +11,7 @@ use std::net::{IpAddr, Ipv4Addr};
 
 // FRR defaults {datacenter | traditional}
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Protocol {
     #[default]
     Connected,
