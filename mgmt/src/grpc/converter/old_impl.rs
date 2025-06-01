@@ -306,8 +306,17 @@ pub fn convert_interface_to_interface_config(
         gateway_config::config::IfType::Vtep => {
             let local = match iface.ipaddrs.as_slice() {
                 [] => Err("VTEP interface requires an IP address".to_string()),
-                [addr] => IpAddr::from_str(addr)
-                    .map_err(|_| format!("Invalid local IP address for VTEP: {addr}")),
+                [addr] => {
+                    let addr_mask = Prefix::try_from(PrefixString(addr)).map_err(|e| {
+                        format!("Invalid interface address \"{addr}\" for VTEP interface: {e}",)
+                    })?;
+                    if addr_mask.length() == 32 {
+                        Ok(addr_mask.as_address())
+                    } else {
+                        Err("VTEP interface requires a /32 IP address".to_string())
+                    }?;
+                    Ok(addr_mask.as_address())
+                }
                 _ => Err("VTEP interface requires exactly one IP address".to_string()),
             }?;
 
