@@ -30,8 +30,8 @@ use crate::models::internal::interfaces::interface::{
 use crate::models::internal::routing::vrf::VrfConfig;
 
 use crate::models::internal::routing::bgp::{
-    AfIpv4Ucast, AfL2vpnEvpn, BgpConfig, BgpNeighCapabilities, BgpNeighType, BgpNeighbor,
-    BgpOptions, BgpUpdateSource, NeighSendCommunities,
+    AfIpv4Ucast, AfIpv6Ucast, AfL2vpnEvpn, BgpConfig, BgpNeighCapabilities, BgpNeighType,
+    BgpNeighbor, BgpOptions, BgpUpdateSource, NeighSendCommunities, Protocol, Redistribute,
 };
 
 // Import proto-generated types
@@ -349,6 +349,46 @@ pub fn convert_interface_to_interface_config(
     Ok(interface_config)
 }
 
+fn calculate_redistribute_v4(
+    router: &gateway_config::RouterConfig,
+) -> Option<Vec<crate::models::internal::routing::bgp::Redistribute>> {
+    let mut redistributes = Vec::new();
+
+    match router.ipv4_unicast {
+        Some(policy) => {
+            if policy.redistribute_static {
+                redistributes.push(Redistribute::new(Protocol::Static, None, None));
+            }
+
+            if policy.redistribute_connected {
+                redistributes.push(Redistribute::new(Protocol::Connected, None, None));
+            }
+            Some(redistributes)
+        }
+        None => None,
+    }
+}
+
+fn calculate_redistribute_v6(
+    router: &gateway_config::RouterConfig,
+) -> Option<Vec<crate::models::internal::routing::bgp::Redistribute>> {
+    let mut redistributes = Vec::new();
+
+    match router.ipv6_unicast {
+        Some(policy) => {
+            if policy.redistribute_static {
+                redistributes.push(Redistribute::new(Protocol::Static, None, None));
+            }
+
+            if policy.redistribute_connected {
+                redistributes.push(Redistribute::new(Protocol::Connected, None, None));
+            }
+            Some(redistributes)
+        }
+        None => None,
+    }
+}
+
 /// Convert gRPC `RouterConfig` to internal `BgpConfig`
 pub fn convert_router_config_to_bgp_config(
     router: &gateway_config::RouterConfig,
@@ -375,7 +415,19 @@ pub fn convert_router_config_to_bgp_config(
     }
 
     // Convert IPv4 Unicast address family if present
-    let af_ipv4unicast = AfIpv4Ucast::new();
+    let mut af_ipv4unicast = AfIpv4Ucast::new();
+    if let Some(redistributes) = calculate_redistribute_v4(router) {
+        for redistribute in redistributes {
+            af_ipv4unicast.redistribute(redistribute);
+        }
+    }
+
+    let mut af_ipv6unicast = AfIpv6Ucast::new();
+    if let Some(redistributes) = calculate_redistribute_v6(router) {
+        for redistribute in redistributes {
+            af_ipv6unicast.redistribute(redistribute);
+        }
+    }
 
     let af_l2vpnevpn = AfL2vpnEvpn::new()
         .set_adv_all_vni(true)
@@ -390,6 +442,7 @@ pub fn convert_router_config_to_bgp_config(
     bgpconfig.set_router_id(router_id);
     bgpconfig.set_bgp_options(options);
     bgpconfig.set_af_ipv4unicast(af_ipv4unicast);
+    bgpconfig.set_af_ipv6unicast(af_ipv6unicast);
     bgpconfig.set_af_l2vpn_evpn(af_l2vpnevpn);
 
     // Add each neighbor to the BGP config
@@ -761,6 +814,10 @@ pub fn convert_bgp_update_source_to_grpc(
     }
 }
 
+fn has_redistribute(redistribute: &[Redistribute], protocol: &Protocol) -> bool {
+    redistribute.iter().any(|r| r.protocol == *protocol)
+}
+
 // Improved BGP conversion with better handling of address families
 pub fn convert_bgp_neighbor_to_grpc(
     neighbor: &BgpNeighbor,
@@ -828,20 +885,22 @@ pub fn convert_bgp_config_to_grpc(bgp: &BgpConfig) -> Result<gateway_config::Rou
         .map_or(String::new(), ToString::to_string);
 
     // Create IPv4 unicast config if enabled
-    let ipv4_unicast = bgp.af_ipv4unicast.as_ref().map(|_| {
-        gateway_config::BgpAddressFamilyIPv4 {
-            redistribute_connected: true, // Default to true
-            redistribute_static: false,   // Default to false
-        }
-    });
+    let ipv4_unicast = bgp
+        .af_ipv4unicast
+        .as_ref()
+        .map(|c| gateway_config::BgpAddressFamilyIPv4 {
+            redistribute_connected: has_redistribute(&c.redistribute, &Protocol::Connected),
+            redistribute_static: has_redistribute(&c.redistribute, &Protocol::Static),
+        });
 
     // Create IPv6 unicast config if enabled
-    let ipv6_unicast = bgp.af_ipv6unicast.as_ref().map(|_| {
-        gateway_config::BgpAddressFamilyIPv6 {
-            redistribute_connected: true, // Default to true
-            redistribute_static: false,   // Default to false
-        }
-    });
+    let ipv6_unicast = bgp
+        .af_ipv6unicast
+        .as_ref()
+        .map(|c| gateway_config::BgpAddressFamilyIPv6 {
+            redistribute_connected: has_redistribute(&c.redistribute, &Protocol::Connected),
+            redistribute_static: has_redistribute(&c.redistribute, &Protocol::Static),
+        });
 
     // Create L2VPN EVPN config if enabled
     let l2vpn_evpn =
