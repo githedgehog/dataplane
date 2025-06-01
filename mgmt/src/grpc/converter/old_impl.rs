@@ -278,16 +278,14 @@ pub fn convert_interface_to_interface_config(
     // Convert interface type
     let grpc_if_type = gateway_config::config::IfType::try_from(iface.r#type)
         .map_err(|_| format!("Invalid interface type: {}", iface.r#type))?;
+    let mac = match &iface.macaddr {
+        Some(mac) => {
+            Some(Mac::try_from(mac.as_str()).map_err(|_| format!("Invalid MAC address: {mac}"))?)
+        }
+        None => None,
+    };
     let iftype = match grpc_if_type {
-        gateway_config::config::IfType::Ethernet => InterfaceType::Ethernet(IfEthConfig {
-            mac: match &iface.macaddr {
-                Some(mac) => Some(
-                    Mac::try_from(mac.as_str())
-                        .map_err(|_| format!("Invalid MAC address: {mac}"))?,
-                ),
-                None => None,
-            },
-        }),
+        gateway_config::config::IfType::Ethernet => InterfaceType::Ethernet(IfEthConfig { mac }),
         gateway_config::config::IfType::Vlan => {
             // Safely handle the VLAN ID conversion
             let vlan_id = iface
@@ -302,10 +300,7 @@ pub fn convert_interface_to_interface_config(
             let vid =
                 Vid::new(vlan_u16).map_err(|_| format!("Invalid VLAN ID value: {vlan_u16}"))?;
 
-            InterfaceType::Vlan(IfVlanConfig {
-                mac: None,
-                vlan_id: vid,
-            })
+            InterfaceType::Vlan(IfVlanConfig { mac, vlan_id: vid })
         }
         gateway_config::config::IfType::Loopback => InterfaceType::Loopback,
         gateway_config::config::IfType::Vtep => {
@@ -441,9 +436,15 @@ pub fn convert_router_config_to_bgp_config(
     let mut bgpconfig = BgpConfig::new(asn);
     bgpconfig.set_router_id(router_id);
     bgpconfig.set_bgp_options(options);
-    bgpconfig.set_af_ipv4unicast(af_ipv4unicast);
-    bgpconfig.set_af_ipv6unicast(af_ipv6unicast);
-    bgpconfig.set_af_l2vpn_evpn(af_l2vpnevpn);
+    if router.ipv4_unicast.is_some() {
+        bgpconfig.set_af_ipv4unicast(af_ipv4unicast);
+    }
+    if router.ipv6_unicast.is_some() {
+        bgpconfig.set_af_ipv6unicast(af_ipv6unicast);
+    }
+    if router.l2vpn_evpn.is_some() {
+        bgpconfig.set_af_l2vpn_evpn(af_l2vpnevpn);
+    }
 
     // Add each neighbor to the BGP config
     for neighbor in &router.neighbors {
