@@ -730,7 +730,13 @@ pub fn convert_interface_to_grpc(
 ) -> Result<gateway_config::Interface, String> {
     // Get IP address safely
     //let ipaddr = get_primary_address(interface)?;
-    let interface_addresses = interface_prefixes_to_strings(interface);
+    let interface_addresses = match &interface.iftype {
+        InterfaceType::Ethernet(_) | InterfaceType::Vlan(_) | InterfaceType::Loopback => {
+            interface_prefixes_to_strings(interface)
+        }
+        InterfaceType::Vtep(vtep) => vec![format!("{}/32", vtep.local.to_string())],
+        _ => vec![],
+    };
 
     // Convert interface type
     let if_type = match &interface.iftype {
