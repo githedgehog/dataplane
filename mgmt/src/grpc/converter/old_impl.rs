@@ -430,7 +430,7 @@ pub fn convert_router_config_to_bgp_config(
     }
 
     let af_l2vpnevpn = AfL2vpnEvpn::new()
-        .set_adv_all_vni(true)
+        .set_adv_all_vni(router.l2vpn_evpn.is_none_or(|evpn| evpn.advertise_all_vni))
         .set_adv_default_gw(true)
         .set_adv_svi_ip(true)
         .set_adv_ipv4_unicast(true)
