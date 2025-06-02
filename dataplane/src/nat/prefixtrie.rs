@@ -108,10 +108,22 @@ impl PrefixTrie {
     /// Looks up for the value associated with the given IP address.
     #[tracing::instrument(level = "trace")]
     pub fn find_ip(&self, ip: &IpAddr) -> Option<String> {
-        match ip {
-            IpAddr::V4(_) => self.find(&Prefix::from((*ip, 32))),
-            IpAddr::V6(_) => self.find(&Prefix::from((*ip, 128))),
+        //        match ip {
+        //            IpAddr::V4(_) => self.find(&Prefix::try_from((*ip, 32)).ok()?),
+        //            IpAddr::V6(_) => self.find(&Prefix::try_from((*ip, 128)).ok()?),
+        //        }
+
+        // Fredi was here 🙈: the old Prefix::from could panic and I replaced it with try_from().
+        // We could use the code above to map the error to None. However, that could silently
+        // hide errors for bad prefixes. I believe the good solution is making this function fallible
+        // and letting callers deal with it. I'm not doing that in order not to create conflicts
+        // with the NAT code that comes.
+        let prefix = match ip {
+            IpAddr::V4(_) => Prefix::try_from((*ip, 32)),
+            IpAddr::V6(_) => Prefix::try_from((*ip, 128)),
         }
+        .expect("Failed to build prefix");
+        self.find(&prefix)
     }
 }
 

@@ -4,6 +4,8 @@
 //! Main processing functions of the CPI
 
 #![allow(clippy::wildcard_imports)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)] // Temporary until auto-learn removed
 
 #[cfg(feature = "auto-learn")]
 use crate::interfaces::iftablerw::IfTableWriter;
@@ -23,9 +25,10 @@ use net::eth::mac::Mac;
 use net::vxlan::Vni;
 
 use crate::evpn::RmacEntry;
-use crate::routingdb::{RoutingDb, VrfTable};
+use crate::rib::vrf::Vrf;
+use crate::rib::vrftable::VrfTable;
+use crate::routingdb::RoutingDb;
 use crate::rpc_adapt::is_evpn_route;
-use crate::vrf::Vrf;
 use bytes::Bytes;
 use dplane_rpc::msg::*;
 use dplane_rpc::socks::RpcCachedSock;

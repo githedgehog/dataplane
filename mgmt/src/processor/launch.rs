@@ -15,7 +15,7 @@ use tokio::net::UnixListener;
 use tokio::sync::mpsc::Sender;
 use tokio::{io, spawn};
 
-use routing::cpi::RouterCtlSender;
+use routing::ctl::RouterCtlSender;
 use tokio_stream::Stream;
 
 use crate::grpc::server::create_config_service;

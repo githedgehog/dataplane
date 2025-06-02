@@ -4,22 +4,23 @@
 //! Module that implements Display for routing objects
 
 use crate::atable::adjacency::{Adjacency, AdjacencyTable};
-use crate::encapsulation::{Encapsulation, VxlanEncapsulation};
+use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::fib::fibtable::FibTable;
 use crate::fib::fibtype::{Fib, FibId};
+
+use crate::rib::VrfTable;
+use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
+use crate::rib::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
+use crate::rib::vrf::{Route, ShimNhop, Vrf};
+
 use crate::interfaces::iftable::IfTable;
 use crate::interfaces::interface::Attachment;
 use crate::interfaces::interface::{IfDataDot1q, IfDataEthernet};
 use crate::interfaces::interface::{IfState, IfType, Interface};
 
 use crate::evpn::{RmacEntry, RmacStore, Vtep};
-use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::pretty_utils::{Heading, line};
-
-use crate::route_processor::{EgressObject, FibEntry, FibGroup, PktInstruction};
-use crate::routingdb::VrfTable;
 use crate::testfib::TestFib;
-use crate::vrf::{Route, ShimNhop, Vrf};
 
 use iptrie::map::RTrieMap;
 use iptrie::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
@@ -27,6 +28,8 @@ use net::vxlan::Vni;
 use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::RwLock;
+
+use tracing::error;
 
 //================================= Common ==========================//
 fn fmt_opt_value<T: Display>(
@@ -91,31 +94,36 @@ impl Display for Nhop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "{}", self.key)?;
         fmt_nhop_resolvers(f, self, 1)
-        //fmt_nhop_instruction(f, self)
     }
 }
 
 fn fmt_nhop_resolvers(f: &mut std::fmt::Formatter<'_>, rc: &Nhop, depth: u8) -> std::fmt::Result {
-    let resolvers = rc.resolvers.read().expect("poisoned");
-    let tab = 6 * depth as usize;
-    let indent = String::from_utf8(vec![b' '; tab]).unwrap(); // FIXME
-    if !resolvers.is_empty() {
-        for r in resolvers.iter() {
-            writeln!(f, "{} {}", indent, r.key)?;
-            fmt_nhop_resolvers(f, r, depth + 1)?;
+    if let Ok(resolvers) = rc.resolvers.read() {
+        let tab = 6 * depth as usize;
+        let indent = " ".repeat(tab);
+        if !resolvers.is_empty() {
+            for r in resolvers.iter() {
+                writeln!(f, "{} {}", indent, r.key)?;
+                fmt_nhop_resolvers(f, r, depth + 1)?;
+            }
         }
+    } else {
+        error!("Poisoned lock!");
     }
     Ok(())
 }
 
 fn fmt_nhop_instruction(f: &mut std::fmt::Formatter<'_>, rc: &Nhop) -> std::fmt::Result {
-    let instructions = rc.instructions.read().expect("poisoned");
-    if instructions.is_empty() {
-        return Ok(());
-    }
-    writeln!(f, "  Fib Instructions:")?;
-    for (i, inst) in instructions.iter().enumerate() {
-        writeln!(f, "   [{i}] {inst}")?;
+    if let Ok(instructions) = &rc.instructions.read() {
+        if instructions.is_empty() {
+            return Ok(());
+        }
+        writeln!(f, "  Fib Instructions:")?;
+        for (i, inst) in instructions.iter().enumerate() {
+            writeln!(f, "   [{i}] {inst}")?;
+        }
+    } else {
+        error!("Poisoned lock!");
     }
     Ok(())
 }
@@ -124,7 +132,7 @@ fn fmt_nhop_instruction(f: &mut std::fmt::Formatter<'_>, rc: &Nhop) -> std::fmt:
 // Does not use Nhop::fmt().
 fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Arc<Nhop>, depth: u8) -> std::fmt::Result {
     let tab = 8 * depth as usize;
-    let indent = String::from_utf8(vec![b' '; tab]).unwrap();
+    let indent = " ".repeat(tab);
 
     let sym = if depth == 0 { "NH" } else { "ref" };
     writeln!(
@@ -136,8 +144,13 @@ fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Arc<Nhop>, depth: u8) -> s
         rc.key
     )?;
     //    fmt_nhop_instruction(f, rc)?;
-    for r in rc.resolvers.read().expect("poisoned").iter() {
-        fmt_nhop_rec(f, r, depth + 1)?;
+
+    if let Ok(resolvers) = rc.resolvers.read() {
+        for r in resolvers.iter() {
+            fmt_nhop_rec(f, r, depth + 1)?;
+        }
+    } else {
+        error!("Poisoned lock!");
     }
 
     //    if let Ok(fg) = rc.as_ref().fibgroup.read() {
@@ -538,8 +551,8 @@ impl Display for RmacStore {
 impl Display for Vtep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "\n ───────── Local VTEP ─────────")?;
-        fmt_opt_value(f, "ip address", self.get_ip(), true)?;
-        fmt_opt_value(f, "Mac address", self.get_mac(), true)
+        fmt_opt_value(f, " ip address", self.get_ip(), true)?;
+        fmt_opt_value(f, " Mac address", self.get_mac(), true)
     }
 }
 

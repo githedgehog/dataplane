@@ -4,9 +4,9 @@
 //! Object definitions for (shared) routing next-hops. These
 //! refer to other objects like Encapsulation.
 
-use crate::encapsulation::Encapsulation;
-use crate::route_processor::{FibGroup, PktInstruction};
-use crate::vrf::{RouteOrigin, Vrf};
+use super::encapsulation::Encapsulation;
+use super::vrf::{RouteOrigin, Vrf};
+use crate::fib::fibobjects::{FibGroup, PktInstruction};
 
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 use std::collections::BTreeSet;
@@ -14,6 +14,7 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::net::IpAddr;
 use std::option::Option;
+
 #[cfg(test)]
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -58,6 +59,7 @@ impl NhopKey {
     //////////////////////////////////////////////////////////////////
     /// Build a next-hop key
     //////////////////////////////////////////////////////////////////
+    #[must_use]
     pub fn new(
         origin: RouteOrigin,
         address: Option<IpAddr>,
@@ -73,6 +75,7 @@ impl NhopKey {
             fwaction,
         }
     }
+    #[must_use]
     pub fn with_drop() -> Self {
         Self {
             origin: RouteOrigin::default(),
@@ -83,12 +86,13 @@ impl NhopKey {
         }
     }
     #[cfg(test)]
-    pub fn from_str(address: &str) -> Self {
+    pub fn expect_from(address: &str) -> Self {
         Self {
             address: Some(IpAddr::from_str(address).expect("Bad address")),
             ..Default::default()
         }
     }
+    #[must_use]
     pub fn with_addr_ifindex(address: &IpAddr, ifindex: u32) -> Self {
         Self {
             address: Some(*address),
@@ -96,12 +100,14 @@ impl NhopKey {
             ..Default::default()
         }
     }
+    #[must_use]
     pub fn with_address(address: &IpAddr) -> Self {
         Self {
             address: Some(*address),
             ..Default::default()
         }
     }
+    #[must_use]
     pub fn with_ifindex(ifindex: u32) -> Self {
         Self {
             ifindex: Some(ifindex),
@@ -387,13 +393,13 @@ impl NhopStore {
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
-    use crate::nexthop::*;
+    use crate::rib::nexthop::*;
     use std::sync::Arc;
 
     #[test]
     fn test_nhop_store_minimal() {
         let mut store = NhopStore::new();
-        let nh_key = NhopKey::from_str("10.0.1.1");
+        let nh_key = NhopKey::expect_from("10.0.1.1");
 
         /* add a nhop. We're not keeping the returned reference. Therefore, its refcount will remain at 1 */
         let _ = store.add_nhop(&nh_key);
@@ -417,9 +423,9 @@ mod tests {
         let mut store = NhopStore::new();
 
         /* Create KEYS for some next-hop */
-        let n1_k = NhopKey::from_str("10.0.1.1");
-        let n2_k = NhopKey::from_str("10.0.2.1");
-        let n3_k = NhopKey::from_str("10.0.3.1");
+        let n1_k = NhopKey::expect_from("10.0.1.1");
+        let n2_k = NhopKey::expect_from("10.0.2.1");
+        let n3_k = NhopKey::expect_from("10.0.3.1");
 
         let i1_k = NhopKey::with_ifindex(1);
         let i2_k = NhopKey::with_ifindex(2);
@@ -467,9 +473,9 @@ mod tests {
 
         let i1_k = NhopKey::with_ifindex(1);
 
-        let n1_k = NhopKey::from_str("11.0.0.1");
-        let n2_k = NhopKey::from_str("11.0.0.2");
-        let n3_k = NhopKey::from_str("11.0.0.3");
+        let n1_k = NhopKey::expect_from("11.0.0.1");
+        let n2_k = NhopKey::expect_from("11.0.0.2");
+        let n3_k = NhopKey::expect_from("11.0.0.3");
 
         /* create 3 next-hops all resolving to the same one */
         let i1 = store.add_nhop(&i1_k);
@@ -493,16 +499,16 @@ mod tests {
         let i3 = store.add_nhop(&NhopKey::with_ifindex(3));
 
         // add "adjacent" nexthops
-        let a1 = store.add_nhop(&NhopKey::from_str("10.0.0.1"));
-        let a2 = store.add_nhop(&NhopKey::from_str("10.0.0.5"));
-        let a3 = store.add_nhop(&NhopKey::from_str("10.0.0.9"));
+        let a1 = store.add_nhop(&NhopKey::expect_from("10.0.0.1"));
+        let a2 = store.add_nhop(&NhopKey::expect_from("10.0.0.5"));
+        let a3 = store.add_nhop(&NhopKey::expect_from("10.0.0.9"));
 
         // add "non-adjacent" nexthops
-        let b1 = store.add_nhop(&NhopKey::from_str("172.16.0.1"));
-        let b2 = store.add_nhop(&NhopKey::from_str("172.16.0.2"));
+        let b1 = store.add_nhop(&NhopKey::expect_from("172.16.0.1"));
+        let b2 = store.add_nhop(&NhopKey::expect_from("172.16.0.2"));
 
         // add even further next-hop
-        let n = store.add_nhop(&NhopKey::from_str("7.0.0.1"));
+        let n = store.add_nhop(&NhopKey::expect_from("7.0.0.1"));
 
         /* Add resolvers */
         a1.add_resolver(i1);
@@ -541,11 +547,11 @@ mod tests {
         ));
 
         // add "non-adjacent" nexthops
-        let b1 = store.add_nhop(&NhopKey::from_str("172.16.0.1"));
-        let b2 = store.add_nhop(&NhopKey::from_str("172.16.0.2"));
+        let b1 = store.add_nhop(&NhopKey::expect_from("172.16.0.1"));
+        let b2 = store.add_nhop(&NhopKey::expect_from("172.16.0.2"));
 
         // add even further next-hop
-        let n = store.add_nhop(&NhopKey::from_str("7.0.0.1"));
+        let n = store.add_nhop(&NhopKey::expect_from("7.0.0.1"));
 
         /* Add resolutions */
         b1.add_resolver(a1);
@@ -569,20 +575,20 @@ mod tests {
 
         /* direct resolution to drop */
         store
-            .add_nhop(&NhopKey::from_str("172.16.0.1"))
+            .add_nhop(&NhopKey::expect_from("172.16.0.1"))
             .add_resolver(nh_drop.clone());
 
         /* indirect resolution to drop */
-        let intermediate = store.add_nhop(&NhopKey::from_str("10.0.0.1"));
+        let intermediate = store.add_nhop(&NhopKey::expect_from("10.0.0.1"));
         intermediate.add_resolver(nh_drop);
 
         /* nh that resolves to intermediate */
         store
-            .add_nhop(&NhopKey::from_str("7.0.0.1"))
+            .add_nhop(&NhopKey::expect_from("7.0.0.1"))
             .add_resolver(intermediate);
 
         /* add next-hop that does not resolve to anything */
-        let _ = store.add_nhop(&NhopKey::from_str("8.0.0.1"));
+        let _ = store.add_nhop(&NhopKey::expect_from("8.0.0.1"));
 
         store
     }
@@ -594,7 +600,7 @@ mod tests {
         store.dump();
 
         /* get the next-hop 7.0.0.1 */
-        let key = NhopKey::from_str("7.0.0.1");
+        let key = NhopKey::expect_from("7.0.0.1");
 
         /* It has no extra reference */
         assert_eq!(store.get_nhop_rc_count(&key), 1);
@@ -615,7 +621,7 @@ mod tests {
         store.dump();
 
         /* get next-hop 7.0.0.1 */
-        let key = NhopKey::from_str("7.0.0.1");
+        let key = NhopKey::expect_from("7.0.0.1");
         let n = store.get_nhop(&key).expect("Should be there");
 
         let res = n.quick_resolve();
@@ -634,7 +640,7 @@ mod tests {
         store.dump();
 
         /* get next-hop 7.0.0.1 */
-        let key = NhopKey::from_str("7.0.0.1");
+        let key = NhopKey::expect_from("7.0.0.1");
         let n = store.get_nhop(&key).unwrap();
 
         let res = n.quick_resolve();
@@ -651,7 +657,7 @@ mod tests {
         store.dump();
 
         {
-            let key = NhopKey::from_str("172.16.0.1");
+            let key = NhopKey::expect_from("172.16.0.1");
             let n = store.get_nhop(&key).expect("Next-hop should be there");
             let mut res = n.quick_resolve();
             assert_eq!(res.len(), 1, "Should get just one nhop key");
@@ -662,7 +668,7 @@ mod tests {
             );
         }
         {
-            let key = NhopKey::from_str("7.0.0.1");
+            let key = NhopKey::expect_from("7.0.0.1");
             let n = store.get_nhop(&key).expect("Next-hop should be there");
             let mut res = n.quick_resolve();
             assert_eq!(res.len(), 1, "Should get just one nhop key");

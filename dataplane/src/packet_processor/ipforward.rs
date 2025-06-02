@@ -12,13 +12,13 @@ use net::headers::{TryIpv4Mut, TryIpv6Mut};
 use net::packet::{DoneReason, InterfaceId, Packet};
 use pipeline::NetworkFunction;
 
-use routing::encapsulation::Encapsulation;
-use routing::encapsulation::VxlanEncapsulation;
+use routing::fib::fibobjects::{EgressObject, FibEntry, PktInstruction};
 use routing::fib::fibtable::FibTableReader;
 use routing::fib::fibtype::FibId;
+
 use routing::interfaces::interface::IfIndex;
-use routing::route_processor::{EgressObject, FibEntry, PktInstruction};
-use routing::vrf::VrfId;
+use routing::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
+use routing::rib::vrf::VrfId;
 
 use net::headers::Headers;
 use net::headers::Net;

@@ -59,16 +59,20 @@ impl Prefix {
         }
     }
     /// Get the inner `Ipv4Prefix` from a Prefix
+    /// # Panics
+    /// This method panics if the Prefix does not contain an IPv4 prefix
     pub(crate) fn get_v4(&self) -> &Ipv4Prefix {
         match self {
             Prefix::IPV4(p) => p,
-            Prefix::IPV6(_) => panic!("Not an IPv4 prefix!"),
+            Prefix::IPV6(_) => unreachable!("Not an IPv4 prefix!"),
         }
     }
     /// Get the inner `Ipv6Prefix` from a Prefix
+    /// # Panics
+    /// This method panics if the Prefix does not contain an IPv6 prefix
     pub(crate) fn get_v6(&self) -> &Ipv6Prefix {
         match self {
-            Prefix::IPV4(_) => panic!("Not an IPv6 prefix!"),
+            Prefix::IPV4(_) => unreachable!("Not an IPv6 prefix!"),
             Prefix::IPV6(p) => p,
         }
     }
@@ -135,6 +139,9 @@ impl Prefix {
     /// Build a [`Prefix`] from (&str, u8)
     /// For a mysterious reason the compiler complains about a conflicting implementation in
     /// crate core when implementing this as `TryFrom`<(&str, u8)> for Prefix.
+    ///
+    /// # Errors
+    /// Fails if the address bits are invalid or the prefix exceeds the maximum allowed.
     pub fn try_from_tuple(tuple: (&str, u8)) -> Result<Self, PrefixError> {
         let a = IpAddr::from_str(tuple.0).map_err(|e| PrefixError::Invalid(e.to_string()))?;
         let max_len = match a {
@@ -144,7 +151,7 @@ impl Prefix {
         if tuple.1 > max_len {
             Err(PrefixError::InvalidLength(tuple.1))
         } else {
-            Ok(Prefix::from((a, tuple.1)))
+            Prefix::try_from((a, tuple.1))
         }
     }
 
@@ -167,11 +174,17 @@ impl Prefix {
     }
 }
 
-impl From<(IpAddr, u8)> for Prefix {
-    fn from(tuple: (IpAddr, u8)) -> Self {
+impl TryFrom<(IpAddr, u8)> for Prefix {
+    type Error = PrefixError;
+
+    fn try_from(tuple: (IpAddr, u8)) -> Result<Self, Self::Error> {
         match tuple.0 {
-            IpAddr::V4(a) => Prefix::IPV4(Ipv4Prefix::new(a, tuple.1).unwrap()),
-            IpAddr::V6(a) => Prefix::IPV6(Ipv6Prefix::new(a, tuple.1).unwrap()),
+            IpAddr::V4(a) => Ok(Prefix::IPV4(
+                Ipv4Prefix::new(a, tuple.1).map_err(|e| PrefixError::Invalid(e.to_string()))?,
+            )),
+            IpAddr::V6(a) => Ok(Prefix::IPV6(
+                Ipv6Prefix::new(a, tuple.1).map_err(|e| PrefixError::Invalid(e.to_string()))?,
+            )),
         }
     }
 }
@@ -229,7 +242,7 @@ impl TryFrom<(&str, u8)> for Prefix {
         if mask_len > max_len {
             return Err(PrefixError::InvalidLength(mask_len));
         }
-        Ok(Prefix::from((addr, mask_len)))
+        Prefix::try_from((addr, mask_len))
     }
 }
 /// Only for testing. Will panic with non-IPv4 prefixes

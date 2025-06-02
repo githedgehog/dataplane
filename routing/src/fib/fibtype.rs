@@ -3,6 +3,8 @@
 
 //! Fib implementation for IP packet lookups
 
+#![allow(clippy::collapsible_if)]
+
 use iptrie::map::RTrieMap;
 use iptrie::{Ipv4Prefix, Ipv6Prefix};
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
@@ -14,9 +16,9 @@ use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use net::vxlan::Vni;
 
+use crate::fib::fibobjects::{FibEntry, FibGroup, PktInstruction};
 use crate::prefix::Prefix;
-use crate::route_processor::{FibEntry, FibGroup, PktInstruction};
-use crate::vrf::VrfId;
+use crate::rib::vrf::VrfId;
 use tracing::debug;
 
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]

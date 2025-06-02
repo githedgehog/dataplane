@@ -73,8 +73,6 @@ impl Render for PrefixListTable {
 mod tests {
     use super::*;
     use routing::prefix::Prefix;
-    use std::net::IpAddr;
-    use std::str::FromStr;
 
     #[test]
     fn test_ip_prefix_list_render() {
@@ -92,17 +90,14 @@ mod tests {
         plist.add_entry(PrefixListEntry::new(
             2,
             PrefixListAction::Deny,
-            PrefixListPrefix::Prefix(Prefix::from((IpAddr::from_str("8.8.8.8").unwrap(), 32))),
+            PrefixListPrefix::Prefix(Prefix::expect_from(("8.8.8.8", 32))),
             None,
         ));
 
         plist.add_entry(PrefixListEntry::new(
             3,
             PrefixListAction::Permit,
-            PrefixListPrefix::Prefix(Prefix::from((
-                IpAddr::from_str("192.168.90.0").unwrap(),
-                24,
-            ))),
+            PrefixListPrefix::Prefix(Prefix::expect_from(("192.168.90.0", 24))),
             None,
         ));
 

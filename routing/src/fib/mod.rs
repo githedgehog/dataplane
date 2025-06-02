@@ -3,5 +3,6 @@
 
 //! The Fib module
 
+pub mod fibobjects;
 pub mod fibtable;
 pub mod fibtype;

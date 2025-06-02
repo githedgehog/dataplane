@@ -9,14 +9,13 @@
 //! of these methods incur information loss in that they are not reversible and into() would not
 //! provide the expected results. Hence the use of the From trait is overloaded for convenience.
 
+use crate::errors::RouterError;
 use crate::evpn::{RmacEntry, RmacStore, Vtep};
-use crate::nexthop::{FwAction, NhopKey};
 use crate::prefix::Prefix;
-use crate::vrf::{Route, RouteNhop, RouteOrigin, Vrf};
-use crate::{
-    encapsulation::{Encapsulation, VxlanEncapsulation},
-    errors::RouterError,
-};
+use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
+use crate::rib::nexthop::{FwAction, NhopKey};
+use crate::rib::vrf::{Route, RouteNhop, RouteOrigin, Vrf};
+
 use dplane_rpc::msg::{ForwardAction, IpRoute, NextHop, NextHopEncap, Rmac, RouteType, VxlanEncap};
 use net::eth::mac::Mac;
 use net::vxlan::Vni;
@@ -161,7 +160,14 @@ impl Vrf {
         rstore: &RmacStore,
         vtep: &Vtep,
     ) {
-        let prefix = Prefix::from((iproute.prefix, iproute.prefix_len));
+        let Ok(prefix) = Prefix::try_from((iproute.prefix, iproute.prefix_len)) else {
+            error!(
+                "Failed to add route from RPC!: bad prefix p={} len={}",
+                iproute.prefix, iproute.prefix_len
+            );
+            return;
+        };
+
         let route = Route::from_iproute(&prefix, iproute);
 
         // next-hops
@@ -174,8 +180,14 @@ impl Vrf {
         }
         self.add_route_complete(&prefix, route, &nhops, vrf0, rstore, vtep);
     }
-    pub fn del_route_rpc(&mut self, route: &IpRoute) {
-        let prefix = Prefix::from((route.prefix, route.prefix_len));
-        self.del_route(&prefix);
+    pub fn del_route_rpc(&mut self, iproute: &IpRoute) {
+        let Ok(prefix) = Prefix::try_from((iproute.prefix, iproute.prefix_len)) else {
+            error!(
+                "Failed to remove route from RPC!: bad prefix p={} len={}",
+                iproute.prefix, iproute.prefix_len
+            );
+            return;
+        };
+        self.del_route(prefix);
     }
 }

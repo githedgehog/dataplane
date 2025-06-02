@@ -9,7 +9,8 @@ use tracing::{debug, error};
 
 use crate::atable::atablerw::AtableReader;
 use crate::atable::resolver::AtResolver;
-use crate::cpi::{CpiConf, CpiHandle, RouterCtlSender, start_cpi};
+use crate::cpi::{CpiConf, CpiHandle, start_cpi};
+use crate::ctl::RouterCtlSender;
 use crate::errors::RouterError;
 use crate::fib::fibtable::{FibTableReader, FibTableWriter};
 use crate::interfaces::iftablerw::{IfTableReader, IfTableWriter};
@@ -51,14 +52,14 @@ fn init_router(config: &RouterConfig) -> Result<CpiConf, RouterError> {
             config
                 .cpi_sock_path
                 .to_str()
-                .ok_or(RouterError::InvalidSockPath)?
+                .ok_or(RouterError::InvalidPath("(cpi path)".to_string()))?
                 .to_owned(),
         ),
         cli_sock_path: Some(
             config
                 .cli_sock_path
                 .to_str()
-                .ok_or(RouterError::InvalidSockPath)?
+                .ok_or(RouterError::InvalidPath("(cli path)".to_string()))?
                 .to_owned(),
         ),
     })

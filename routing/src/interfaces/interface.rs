@@ -13,7 +13,7 @@ use net::vlan::Vid;
 
 use crate::errors::RouterError;
 use crate::fib::fibtype::{FibId, FibReader};
-use crate::vrf::Vrf;
+use crate::rib::vrf::Vrf;
 use tracing::{error, info};
 
 /// A type to uniquely identify a network interface
@@ -160,6 +160,11 @@ impl Interface {
     /// `FibReader` so that IP packets received on that interface can
     /// be readily forwarded performing an LPM operation on the
     /// corresponding FIB.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the interface is attached to another vrf or if the
+    /// fib corresponding to the vrf is not accessible
     //////////////////////////////////////////////////////////////////
     pub fn attach(&mut self, vrf: &Vrf) -> Result<(), RouterError> {
         if let Some(fibr) = vrf.get_vrf_fibr() {

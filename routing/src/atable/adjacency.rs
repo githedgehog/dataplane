@@ -48,6 +48,7 @@ impl Adjacency {
     }
 }
 
+/// A table of [`Adjacency`]ies
 #[derive(Default, Clone)]
 pub struct AdjacencyTable(HashMap<(IfIndex, IpAddr), Adjacency>);
 
@@ -93,7 +94,7 @@ impl AdjacencyTable {
 #[rustfmt::skip]
 pub mod tests {
     use super::*;
-    use crate::vrf::tests::mk_addr;
+    use crate::rib::vrf::tests::mk_addr;
 
     pub fn build_test_atable() -> AdjacencyTable {
         let mut atable = AdjacencyTable::new();

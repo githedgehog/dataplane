@@ -3,7 +3,9 @@
 
 //! Vanilla fib used for testing
 
-use crate::route_processor::FibGroup;
+#![allow(missing_docs)]
+
+use crate::fib::fibobjects::FibGroup;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 

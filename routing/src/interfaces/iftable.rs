@@ -6,7 +6,7 @@
 use crate::errors::RouterError;
 use crate::fib::fibtype::{FibId, FibReader};
 use crate::interfaces::interface::{IfAddress, IfIndex, IfState, Interface};
-use crate::vrf::Vrf;
+use crate::rib::vrf::Vrf;
 use ahash::RandomState;
 use std::collections::HashMap;
 
@@ -51,7 +51,7 @@ impl IfTable {
     /// identified by an [`IfIndex`], which acts as the master hash key.
     /// provided interface, replacing any previous with the same ifindex.
     //////////////////////////////////////////////////////////////////
-    pub fn add_interface(&mut self, iface: Interface) -> Result<(), RouterError> {
+    pub fn add_interface(&mut self, iface: Interface) {
         /* add interface to iftable */
         let ifindex = iface.ifindex;
         if let Some(_prior) = self.by_index.insert(ifindex, iface) {
@@ -59,7 +59,6 @@ impl IfTable {
         } else {
             debug!("Registered new interface with ifindex {ifindex}");
         }
-        Ok(())
     }
 
     //////////////////////////////////////////////////////////////////
@@ -87,6 +86,10 @@ impl IfTable {
 
     //////////////////////////////////////////////////////////////////
     /// Assign an Ip address to an interface
+    ///
+    /// # Errors
+    ///
+    /// Fails if the interface is not found
     //////////////////////////////////////////////////////////////////
     pub fn add_ifaddr(&mut self, ifindex: IfIndex, ifaddr: &IfAddress) -> Result<(), RouterError> {
         if let Some(iface) = self.by_index.get_mut(&ifindex) {

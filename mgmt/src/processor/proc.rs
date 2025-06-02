@@ -25,10 +25,10 @@ use crate::vpc_manager::{RequiredInformationBase, VpcManager};
 use rekon::{Observe, Reconcile};
 use tracing::{debug, error, info, warn};
 
-use routing::cpi::RouterCtlSender;
+use routing::ctl::RouterCtlSender;
 use routing::evpn::Vtep;
 
-/// A request type to the [`ConfigProcessor`]
+/// A request type to the `ConfigProcessor`
 #[derive(Debug)]
 pub enum ConfigRequest {
     ApplyConfig(Box<GwConfig>),
@@ -36,7 +36,7 @@ pub enum ConfigRequest {
     GetGeneration,
 }
 
-/// A response from the [`ConfigProcessor`]
+/// A response from the `ConfigProcessor`
 #[derive(Debug)]
 pub enum ConfigResponse {
     ApplyConfig(ConfigResult),
@@ -45,7 +45,7 @@ pub enum ConfigResponse {
 }
 type ConfigResponseChannel = oneshot::Sender<ConfigResponse>;
 
-/// A type that includes a request to the [`ConfigProcessor`] and a channel to
+/// A type that includes a request to the `ConfigProcessor` and a channel to
 /// issue the response back
 pub struct ConfigChannelRequest {
     request: ConfigRequest,          /* a request to the mgmt processor */

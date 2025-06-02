@@ -31,30 +31,39 @@ pub struct RmacStore(HashMap<(IpAddr, Vni), RmacEntry, RandomState>);
 #[allow(dead_code)]
 #[allow(clippy::new_without_default)]
 impl RmacStore {
+    //////////////////////////////////////////////////////////////////
+    /// Create rmac table
+    //////////////////////////////////////////////////////////////////
     #[must_use]
     pub fn new() -> Self {
         Self(HashMap::with_hasher(RandomState::with_seed(0)))
     }
 
+    //////////////////////////////////////////////////////////////////
     /// Add an rmac entry. Returns an [`RmacEntry`] if some was before
+    //////////////////////////////////////////////////////////////////
     pub fn add_rmac(&mut self, vni: Vni, address: IpAddr, mac: Mac) -> Option<RmacEntry> {
         let rmac = RmacEntry::new(vni, address, mac);
         self.0.insert((address, vni), rmac)
     }
 
-    /// Identical to [`add_rmac`], but getting the entry as param
+    //////////////////////////////////////////////////////////////////
+    /// Identical to `add_rmac`, but getting the entry as param
+    //////////////////////////////////////////////////////////////////
     pub fn add_rmac_entry(&mut self, entry: RmacEntry) {
         let vni = entry.vni;
         let mac = entry.mac;
         let address = entry.address;
         if self.0.insert((entry.address, entry.vni), entry).is_some() {
-            debug!("Updated router-mac for vni: {vni} ip: {address} to {mac}");
+            debug!("Updated rmac for vni={vni} ip={address} to {mac}");
         } else {
-            debug!("Registered router-mac for vni: {vni} ip: {address} with mac {mac}");
+            debug!("Registered rmac, vni={vni} ip={address} mac={mac}");
         }
     }
 
+    //////////////////////////////////////////////////////////////////
     /// Delete an [`RmacEntry`]. The mac address must match (sanity)
+    //////////////////////////////////////////////////////////////////
     pub fn del_rmac(&mut self, vni: Vni, address: IpAddr, mac: Mac) {
         let key = (address, vni);
         if let Entry::Occupied(o) = self.0.entry(key) {
@@ -64,7 +73,9 @@ impl RmacStore {
         }
     }
 
+    //////////////////////////////////////////////////////////////////
     /// Identical to `del_rmac`, but getting the entry as param
+    //////////////////////////////////////////////////////////////////
     pub fn del_rmac_entry(&mut self, entry: &RmacEntry) {
         let key = (entry.address, entry.vni);
         if let Entry::Occupied(o) = self.0.entry(key) {
@@ -78,18 +89,24 @@ impl RmacStore {
         }
     }
 
+    //////////////////////////////////////////////////////////////////
     /// Get an [`RmacEntry`]
+    //////////////////////////////////////////////////////////////////
     #[must_use]
     pub fn get_rmac(&self, vni: Vni, address: IpAddr) -> Option<&RmacEntry> {
         self.0.get(&(address, vni))
     }
 
-    /// iterator
+    //////////////////////////////////////////////////////////////////
+    /// Immutable iterator over all [`RmacEntry`]ies
+    //////////////////////////////////////////////////////////////////
     pub fn values(&self) -> impl Iterator<Item = &RmacEntry> {
         self.0.values()
     }
 
+    //////////////////////////////////////////////////////////////////
     /// number of rmac entries
+    //////////////////////////////////////////////////////////////////
     #[allow(clippy::len_without_is_empty)]
     #[must_use]
     pub fn len(&self) -> usize {
@@ -102,7 +119,7 @@ impl RmacStore {
 pub(crate) mod tests {
     use super::RmacStore;
     use crate::evpn::vtep::Vtep;
-    use crate::vrf::tests::mk_addr;
+    use crate::rib::vrf::tests::mk_addr;
     use net::eth::mac::Mac;
     use net::vxlan::Vni;
 

@@ -8,7 +8,7 @@ use thiserror::Error;
 #[allow(dead_code)]
 #[derive(Error, Debug, PartialEq)]
 pub enum RouterError {
-    #[error("No such interface (ifindex {0})")]
+    #[error("No interface with ifindex {0}")]
     NoSuchInterface(u32),
 
     #[error("No such VRF")]
@@ -20,17 +20,14 @@ pub enum RouterError {
     #[error("A VRF with Vni {0} already exists")]
     VniInUse(u32),
 
-    #[error("Invalid VNI value {0}")]
+    #[error("Invalid VNI value: {0}")]
     VniInvalid(u32),
 
     #[error("The interface is already attached to a distinct entity")]
     AlreadyAttached,
 
-    #[error("Some internal error ocurred")]
-    CpiFailure,
-
-    #[error("Invalid socket path")]
-    InvalidSockPath,
+    #[error("Invalid socket path '{0}'")]
+    InvalidPath(String),
 
     #[error("Internal error: {0}")]
     Internal(&'static str),

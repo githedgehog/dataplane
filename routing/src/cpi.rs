@@ -8,8 +8,10 @@
 use crate::atable::atablerw::AtableReader;
 use crate::cli::handle_cli_request;
 use crate::cpi_process::process_rx_data;
+use crate::ctl::handle_ctl_msg;
+
+use crate::ctl::{CpiCtlMsg, RouterCtlSender};
 use crate::errors::RouterError;
-use crate::evpn::Vtep;
 use crate::fib::fibtable::FibTableWriter;
 use crate::interfaces::iftablerw::IfTableWriter;
 use crate::routingdb::RoutingDb;
@@ -25,35 +27,16 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{Sender, channel};
-use tracing::{debug, error, info, warn};
-
-// A channel sender to the cpi/router
-#[allow(unused)]
-pub struct RouterCtlSender(tokio::sync::mpsc::Sender<CpiCtlMsg>);
-impl RouterCtlSender {
-    pub async fn set_vtep(&mut self, vtep: Vtep) {
-        if let Err(e) = self.0.send(CpiCtlMsg::SetVtep(vtep)).await {
-            error!("Failed to send vtep data: {e} !");
-        }
-    }
-}
+use tracing::{debug, error, info};
 
 // capacity of cpi control channel. This should have very little impact on performance.
 const CTL_CHANNEL_CAPACITY: usize = 100;
-
-#[allow(unused)]
-pub enum CpiCtlMsg {
-    Finish,
-    SetVtep(Vtep),
-}
 
 pub struct CpiHandle {
     pub ctl: Sender<CpiCtlMsg>,
     pub handle: Option<JoinHandle<()>>,
 }
-#[allow(unused)]
 impl CpiHandle {
     /// Terminate the CPI
     ///
@@ -63,20 +46,23 @@ impl CpiHandle {
         debug!("Requesting CPI to stop..");
         self.ctl
             .try_send(CpiCtlMsg::Finish)
-            .map_err(|_| RouterError::CpiFailure)?;
+            .map_err(|_| RouterError::Internal("Error sending over ctl channel"))?;
 
         let handle = self.handle.take();
         if let Some(handle) = handle {
             debug!("Waiting for CPI to terminate..");
-            handle.join().map_err(|_| RouterError::CpiFailure)?;
+            handle
+                .join()
+                .map_err(|_| RouterError::Internal("Error joining thread"))?;
             debug!("CPI ended successfully");
             Ok(())
         } else {
             Err(RouterError::Internal("No handle"))
         }
     }
+    #[must_use]
     pub fn get_ctl_tx(&self) -> RouterCtlSender {
-        RouterCtlSender(self.ctl.clone())
+        RouterCtlSender::new(self.ctl.clone())
     }
 }
 
@@ -99,34 +85,15 @@ impl Default for CpiConf {
 
 fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
     let _ = std::fs::remove_file(path);
-    let sock = UnixDatagram::bind(path).map_err(|_| RouterError::InvalidSockPath)?;
+    let sock = UnixDatagram::bind(path).map_err(|_| RouterError::InvalidPath(path.to_owned()))?;
     let mut perms = fs::metadata(path)
-        .map_err(|_| RouterError::InvalidSockPath)?
+        .map_err(|_| RouterError::Internal("Failure retrieving socket metadata"))?
         .permissions();
     perms.set_mode(0o777);
     fs::set_permissions(path, perms).map_err(|_| RouterError::PermError)?;
     sock.set_nonblocking(true)
         .map_err(|_| RouterError::Internal("Failure setting non-blocking socket"))?;
     Ok(sock)
-}
-
-fn set_vtep(db: &mut RoutingDb, vtep_data: &Vtep) {
-    if let Ok(mut vtep) = db.vtep.write() {
-        if let Some(ip) = vtep_data.get_ip() {
-            vtep.set_ip(ip);
-            info!("VTEP ip address set to {ip}");
-        } else {
-            warn!("VTEP no longer has ip address");
-            vtep.unset_ip();
-        }
-        if let Some(mac) = vtep_data.get_mac() {
-            vtep.set_mac(mac);
-            info!("VTEP mac address set to {mac}");
-        } else {
-            warn!("VTEP no longer has mac address");
-            vtep.unset_mac();
-        }
-    }
 }
 
 #[allow(unused)]
@@ -201,19 +168,6 @@ pub fn start_cpi(
                 continue;
             }
 
-            /* control channel */
-            match rx.try_recv() {
-                Ok(CpiCtlMsg::Finish) => {
-                    info!("Got request to shutdown. Au revoir ...");
-                    run = false;
-                }
-                Ok(CpiCtlMsg::SetVtep(vtep_data)) => set_vtep(&mut db, &vtep_data),
-                Err(TryRecvError::Empty) => {}
-                Err(e) => {
-                    error!("Error receiving from ctl channel {e:?}");
-                }
-            }
-
             /* events on unix sockets */
             for event in &events {
                 match event.token() {
@@ -250,12 +204,15 @@ pub fn start_cpi(
                     _ => {}
                 }
             }
+
+            /* handle control channel messages */
+            handle_ctl_msg(&mut rx, &mut run, &mut db);
         }
     };
     let handle = thread::Builder::new()
         .name("CPI".to_string())
         .spawn(cpi_loop)
-        .map_err(|_| RouterError::CpiFailure)?;
+        .map_err(|_| RouterError::Internal("Failure spawning thread"))?;
 
     Ok(CpiHandle {
         ctl: tx,
@@ -277,8 +234,9 @@ mod tests {
     use crate::interfaces::iftable::IfTable;
     use crate::interfaces::iftablerw::IfTableWriter;
     use crate::interfaces::interface::Interface;
-    use crate::routingdb::{RoutingDb, VrfTable};
-    use crate::vrf::Vrf;
+    use crate::rib::vrf::Vrf;
+    use crate::rib::vrftable::VrfTable;
+    use crate::routingdb::RoutingDb;
     use std::fs::remove_file;
     use std::sync::Arc;
     use std::sync::RwLock;
@@ -329,6 +287,6 @@ mod tests {
 
         /* start CPI */
         let cpi = start_cpi(&conf, fibtw, iftw, atabler);
-        assert!(cpi.is_err_and(|e| e == RouterError::InvalidSockPath));
+        assert!(cpi.is_err_and(|e| matches!(e, RouterError::InvalidPath(_))));
     }
 }

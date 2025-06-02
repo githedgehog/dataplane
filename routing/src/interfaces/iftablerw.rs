@@ -6,8 +6,8 @@
 use crate::errors::RouterError;
 use crate::fib::fibtype::FibId;
 use crate::fib::fibtype::FibReader;
-use crate::routingdb::VrfTable;
-use crate::vrf::VrfId;
+use crate::rib::vrf::VrfId;
+use crate::rib::vrftable::VrfTable;
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
 
 use crate::interfaces::iftable::IfTable;
@@ -28,7 +28,7 @@ impl Absorb<IfTableChange> for IfTable {
     fn absorb_first(&mut self, change: &mut IfTableChange, _: &Self) {
         match change {
             IfTableChange::Add(interface) => {
-                let _ = self.add_interface(interface.clone()); /* fixme errors */
+                self.add_interface(interface.clone());
             }
             IfTableChange::Del(ifindex) => self.del_interface(*ifindex),
             IfTableChange::Attach((ifindex, fibr)) => {
@@ -131,6 +131,11 @@ impl IfTableWriter {
             Err(RouterError::Internal("IfTable writer failed"))
         }
     }
+    /// Attach an interface to a vrf
+    ///
+    /// # Errors
+    ///
+    /// Fails if the interface is not found
     pub fn attach_interface_to_vrf(
         &mut self,
         ifindex: IfIndex,

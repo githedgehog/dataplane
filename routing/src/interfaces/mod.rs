@@ -15,7 +15,7 @@ pub mod tests {
     use crate::interfaces::interface::{
         Attachment, IfDataDot1q, IfDataEthernet, IfState, IfType, Interface,
     };
-    use crate::vrf::Vrf;
+    use crate::rib::vrf::Vrf;
     use net::eth::mac::Mac;
     use net::vlan::Vid;
     use std::net::IpAddr;
@@ -80,12 +80,12 @@ pub mod tests {
         }));
 
         /* Add the interfaces to the iftable */
-        iftable.add_interface(lo).expect("Should succeed");
-        iftable.add_interface(eth0).expect("Should succeed");
-        iftable.add_interface(eth1).expect("Should succeed");
-        iftable.add_interface(eth2).expect("Should succeed");
-        iftable.add_interface(vlan100).expect("Should succeed");
-        iftable.add_interface(vlan200).expect("Should succeed");
+        iftable.add_interface(lo);
+        iftable.add_interface(eth0);
+        iftable.add_interface(eth1);
+        iftable.add_interface(eth2);
+        iftable.add_interface(vlan100);
+        iftable.add_interface(vlan200);
 
         assert_eq!(iftable.len(), 6);
 
@@ -167,7 +167,7 @@ pub mod tests {
         );
 
         /* add to interface table */
-        iftable.add_interface(eth0).expect("Should succeed");
+        iftable.add_interface(eth0);
         assert_eq!(iftable.len(), 1, "Eth0 should be there");
 
         /* Add interface again -- idempotence */
@@ -175,7 +175,7 @@ pub mod tests {
         eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
         }));
-        iftable.add_interface(eth0).expect("Should succeed");
+        iftable.add_interface(eth0);
         assert_eq!(iftable.len(), 1, "Only eth0 should be there");
 
         /* Delete eth0 by index */
@@ -191,7 +191,7 @@ pub mod tests {
         iface.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
         }));
-        iftable.add_interface(iface).expect("Should succeed");
+        iftable.add_interface(iface);
 
         /* add some vlan interfaces */
         for n in 1..10 {
@@ -200,7 +200,7 @@ pub mod tests {
                 mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
                 vlanid: Vid::new(n.try_into().unwrap()).unwrap(),
             }));
-            iftable.add_interface(iface).expect("Should succeed");
+            iftable.add_interface(iface);
         }
         println!("{}", &iftable);
         println!("{}", IfTableAddress(&iftable));

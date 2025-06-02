@@ -12,12 +12,12 @@ use tracing::debug;
 #[cfg(test)]
 use crate::pretty_utils::Frame;
 
+use super::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::evpn::{RmacStore, Vtep};
+use crate::fib::fibobjects::FibGroup;
 use crate::fib::fibtype::{FibId, FibReader, FibWriter};
 use crate::interfaces::interface::IfIndex;
-use crate::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::prefix::Prefix;
-use crate::route_processor::FibGroup;
 use iptrie::map::RTrieMap;
 use iptrie::{Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
@@ -183,6 +183,7 @@ impl Vrf {
     ////////////////////////////////////////////////////////////////////////
     /// Get a fibreader for the fib associated to this VRF
     /////////////////////////////////////////////////////////////////////////
+    #[allow(clippy::redundant_closure_for_method_calls)]
     pub fn get_vrf_fibr(&self) -> Option<FibReader> {
         self.fibw.as_ref().map(|fibw| fibw.as_fibreader())
     }
@@ -327,50 +328,50 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
 
     #[inline(always)]
-    fn del_route_v4(&mut self, prefix: &Ipv4Prefix) {
+    fn del_route_v4(&mut self, prefix: Ipv4Prefix) {
         // iptrie forbids removing the default route (at root).
         // So, we have to replace it with a dummy route with action Drop, to actually represent a lack of route.
-        if prefix == &Ipv4Prefix::default() {
+        if prefix == Ipv4Prefix::default() {
             // This is a bit of a hack
-            if let Some(mut prior) = self.routesv4.insert(*prefix, Route::default()) {
+            if let Some(mut prior) = self.routesv4.insert(prefix, Route::default()) {
                 self.deregister_shared_nexthops(&mut prior);
             }
             self.add_route(
-                &Prefix::from(*prefix),
+                &Prefix::from(prefix),
                 Route::default(),
                 &[RouteNhop::default()],
                 None,
             );
-        } else if let Some(found) = &mut self.routesv4.remove(prefix) {
+        } else if let Some(found) = &mut self.routesv4.remove(&prefix) {
             self.deregister_shared_nexthops(found);
         }
     }
     #[inline(always)]
-    fn del_route_v6(&mut self, prefix: &Ipv6Prefix) {
+    fn del_route_v6(&mut self, prefix: Ipv6Prefix) {
         // iptrie forbids removing the default route (at root).
         // So, we have to replace it with a dummy route with action Drop, to actually represent a lack of route.
-        if prefix == &Ipv6Prefix::default() {
+        if prefix == Ipv6Prefix::default() {
             // This is a bit of a hack
-            if let Some(mut prior) = self.routesv6.insert(*prefix, Route::default()) {
+            if let Some(mut prior) = self.routesv6.insert(prefix, Route::default()) {
                 self.deregister_shared_nexthops(&mut prior);
             }
             self.add_route(
-                &Prefix::from(*prefix),
+                &Prefix::from(prefix),
                 Route::default(),
                 &[RouteNhop::default()],
                 None,
             );
-        } else if let Some(found) = &mut self.routesv6.remove(prefix) {
+        } else if let Some(found) = &mut self.routesv6.remove(&prefix) {
             self.deregister_shared_nexthops(found);
         }
     }
-    pub fn del_route(&mut self, prefix: &Prefix) {
+    pub fn del_route(&mut self, prefix: Prefix) {
         match prefix {
             Prefix::IPV4(p) => self.del_route_v4(p),
             Prefix::IPV6(p) => self.del_route_v6(p),
         }
         if let Some(fibw) = &mut self.fibw {
-            fibw.del_fibgroup(*prefix);
+            fibw.del_fibgroup(prefix);
         }
     }
 
@@ -493,9 +494,9 @@ pub mod tests {
     use super::*;
     use std::str::FromStr;
     use crate::interfaces::interface::IfIndex;
-    use crate::vrf::VrfId;
-    use crate::nexthop::{FwAction, NhopKey};
-    use crate::encapsulation::{Encapsulation, VxlanEncapsulation};
+    use crate::rib::vrf::VrfId;
+    use crate::rib::nexthop::{FwAction, NhopKey};
+    use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 
     #[test]
     fn test_vrf_build() {
@@ -538,8 +539,8 @@ pub mod tests {
         check_default_drop_v6(&vrf);
 
         /* default-Drop routes cannot be deleted */
-        vrf.del_route(&pref_v4);
-        vrf.del_route(&pref_v6);
+        vrf.del_route(pref_v4);
+        vrf.del_route(pref_v6);
         check_default_drop_v4(&vrf);
         check_default_drop_v6(&vrf);
 
@@ -595,7 +596,7 @@ pub mod tests {
         vrf.dump(Some("With static IPv4 default non-drop route"));
 
         /* delete the static default. This should put back again a default route with action DROP */
-        vrf.del_route(&prefix);
+        vrf.del_route(prefix);
         check_default_drop_v4(&vrf);
 
         vrf.dump(Some("After removing the IPv4 static default"));
@@ -616,7 +617,7 @@ pub mod tests {
         vrf.dump(Some("With static IPv6 default non-drop route"));
 
         /* delete the static default. This should put back again a default route with action DROP */
-        vrf.del_route(&prefix);
+        vrf.del_route(prefix);
         check_default_drop_v6(&vrf);
 
         vrf.dump(Some("After removing the IPv6 static default"));
@@ -653,7 +654,7 @@ pub mod tests {
         for i in 1..=num_routes {
             /* delete v4 routes one at a time */
             let prefix = Prefix::expect_from((format!("7.0.0.{i}").as_str(), 32));
-            vrf.del_route(&prefix);
+            vrf.del_route(prefix);
 
             /* each route prefix should resolve only to default */
             let target = prefix.as_address();

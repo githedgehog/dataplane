@@ -3,6 +3,8 @@
 
 //! Some utility helpers to implement Display
 
+#![allow(clippy::missing_errors_doc)]
+
 use std::fmt::Display;
 
 const LINE_WIDTH: usize = 81;

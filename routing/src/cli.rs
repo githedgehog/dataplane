@@ -9,9 +9,11 @@ use crate::display::IfTableAddress;
 use crate::display::{FibViewV4, FibViewV6};
 use crate::display::{VrfV4Nexthops, VrfV6Nexthops, VrfViewV4, VrfViewV6};
 use crate::fib::fibtype::{FibGroupV4Filter, FibGroupV6Filter};
-use crate::routingdb::{RoutingDb, VrfTable};
-use crate::vrf::{Route, RouteOrigin, Vrf, VrfId};
-use crate::vrf::{RouteV4Filter, RouteV6Filter};
+use crate::rib::vrf::{Route, RouteOrigin, Vrf, VrfId};
+use crate::rib::vrf::{RouteV4Filter, RouteV6Filter};
+use crate::rib::vrftable::VrfTable;
+use crate::routingdb::RoutingDb;
+
 use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, CliSerialize, RouteProtocol};
 use iptrie::{Ipv4Prefix, Ipv6Prefix};
 use std::os::unix::net::{SocketAddr, UnixDatagram};
