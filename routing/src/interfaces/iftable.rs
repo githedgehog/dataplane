@@ -115,6 +115,7 @@ impl IfTable {
     /// Detach all interfaces attached to some VRF
     //////////////////////////////////////////////////////////////////
     pub fn detach_vrf_interfaces(&mut self, vrf: &Vrf) {
+        debug!("Detaching interfaces from vrf {}", vrf.name);
         if let Some(fibid) = vrf.get_vrf_fibid() {
             for iface in self.by_index.values_mut() {
                 iface.detach_from_fib(fibid);

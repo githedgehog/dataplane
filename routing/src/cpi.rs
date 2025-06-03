@@ -220,26 +220,13 @@ pub fn start_cpi(
     })
 }
 
-#[allow(unused)]
 #[cfg(test)]
-#[allow(dead_code)]
 mod tests {
-    use tracing::Level;
-
     use crate::atable::atablerw::AtableWriter;
     use crate::cpi::{CpiConf, start_cpi};
     use crate::errors::RouterError;
-    use crate::evpn::RmacStore;
     use crate::fib::fibtable::FibTableWriter;
-    use crate::interfaces::iftable::IfTable;
     use crate::interfaces::iftablerw::IfTableWriter;
-    use crate::interfaces::interface::Interface;
-    use crate::rib::vrf::Vrf;
-    use crate::rib::vrftable::VrfTable;
-    use crate::routingdb::RoutingDb;
-    use std::fs::remove_file;
-    use std::sync::Arc;
-    use std::sync::RwLock;
     use std::thread;
     use std::time::Duration;
 
@@ -255,13 +242,13 @@ mod tests {
         };
 
         /* create interface table */
-        let (mut iftw, iftr) = IfTableWriter::new();
+        let (iftw, _iftr) = IfTableWriter::new();
 
         /* create fib table */
-        let (mut fibtw, fibtr) = FibTableWriter::new();
+        let (fibtw, _fibtr) = FibTableWriter::new();
 
         /* create atable */
-        let (mut atablew, atabler) = AtableWriter::new();
+        let (_atablew, atabler) = AtableWriter::new();
 
         /* start CPI */
         let mut cpi = start_cpi(&conf, fibtw, iftw, atabler).expect("Should succeed");
@@ -277,13 +264,13 @@ mod tests {
         };
 
         /* create interface table */
-        let (mut iftw, iftr) = IfTableWriter::new();
+        let (iftw, _iftr) = IfTableWriter::new();
 
         /* create fib table */
-        let (mut fibtw, fibtr) = FibTableWriter::new();
+        let (fibtw, _fibtr) = FibTableWriter::new();
 
         /* create atable */
-        let (mut atablew, atabler) = AtableWriter::new();
+        let (_atablew, atabler) = AtableWriter::new();
 
         /* start CPI */
         let cpi = start_cpi(&conf, fibtw, iftw, atabler);

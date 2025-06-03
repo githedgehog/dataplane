@@ -27,7 +27,6 @@ use iptrie::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
 use std::fmt::Display;
 use std::sync::Arc;
-use std::sync::RwLock;
 
 use tracing::error;
 
@@ -338,22 +337,19 @@ fn fmt_vrf_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result 
         )
     )
 }
-fn fmt_vrf_summary(f: &mut std::fmt::Formatter<'_>, vrf: &Arc<RwLock<Vrf>>) -> std::fmt::Result {
-    if let Ok(vrf) = vrf.read() {
-        writeln!(
-            f,
-            "{}",
-            format_args!(
-                VRF_TBL_FMT!(),
-                vrf.name,
-                vrf.vrfid,
-                vrf.vni.map_or_else(|| 0, Vni::as_u32),
-                vrf.routesv4.len(),
-                vrf.routesv6.len()
-            )
-        )?;
-    }
-    Ok(())
+fn fmt_vrf_summary(f: &mut std::fmt::Formatter<'_>, vrf: &Vrf) -> std::fmt::Result {
+    writeln!(
+        f,
+        "{}",
+        format_args!(
+            VRF_TBL_FMT!(),
+            vrf.name,
+            vrf.vrfid,
+            vrf.vni.map_or_else(|| 0, Vni::as_u32),
+            vrf.routesv4.len(),
+            vrf.routesv6.len()
+        )
+    )
 }
 
 impl Display for VrfTable {

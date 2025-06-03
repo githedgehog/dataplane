@@ -18,6 +18,8 @@ use crate::interfaces::interface::IfType;
 #[cfg(feature = "auto-learn")]
 use crate::interfaces::interface::Interface;
 #[cfg(feature = "auto-learn")]
+use crate::rib::vrftable::VrfTable;
+#[cfg(feature = "auto-learn")]
 use mac_address::mac_address_by_name;
 #[cfg(feature = "auto-learn")]
 use net::eth::mac::Mac;
@@ -25,23 +27,18 @@ use net::eth::mac::Mac;
 use net::vxlan::Vni;
 
 use crate::evpn::RmacEntry;
-use crate::rib::vrf::Vrf;
-use crate::rib::vrftable::VrfTable;
 use crate::routingdb::RoutingDb;
 use crate::rpc_adapt::is_evpn_route;
 use bytes::Bytes;
 use dplane_rpc::msg::*;
 use dplane_rpc::socks::RpcCachedSock;
 use dplane_rpc::wire::*;
-use std::any::Any;
 use std::os::unix::net::SocketAddr;
 
 use std::path::Path;
-use std::sync::{Arc, RwLock};
 use tracing::{debug, error, trace, warn};
 
 /* convenience trait */
-#[allow(unused)]
 trait RpcOperation {
     type ObjectStore;
     fn connect(&self) -> RpcResultCode
@@ -50,13 +47,13 @@ trait RpcOperation {
     {
         RpcResultCode::InvalidRequest
     }
-    fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode
+    fn add(&self, _db: &mut Self::ObjectStore) -> RpcResultCode
     where
         Self: Sized,
     {
         RpcResultCode::InvalidRequest
     }
-    fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode
+    fn del(&self, _db: &mut Self::ObjectStore) -> RpcResultCode
     where
         Self: Sized,
     {
@@ -77,33 +74,16 @@ impl RpcOperation for ConnectInfo {
     }
 }
 
-trait TypeName: Any {
-    fn type_name(&self) -> &'static str;
-}
-impl<T: Any> TypeName for T {
-    fn type_name(&self) -> &'static str {
-        std::any::type_name::<T>()
-    }
-}
-
-fn poison_warn<T: 'static>(object: &RwLock<T>) -> RpcResultCode {
-    error!("Poisoned lock on {} !!", object.type_name());
-    object.clear_poison();
-    RpcResultCode::Failure
-}
-
 #[cfg(feature = "auto-learn")]
 fn auto_learn_vrf(route: &IpRoute, db: &mut VrfTable) {
     if let Ok(vrf) = db.get_vrf(route.vrfid) {
         let mut vni = None;
-        if let Ok(vrf) = vrf.read() {
-            if vrf.vni.is_none() {
-                for nh in &route.nhops {
-                    if let Some(NextHopEncap::VXLAN(vxlan)) = &nh.encap {
-                        if nh.vrfid == route.vrfid {
-                            vni = Some(vxlan.vni);
-                            break;
-                        }
+        if vrf.vni.is_none() {
+            for nh in &route.nhops {
+                if let Some(NextHopEncap::VXLAN(vxlan)) = &nh.encap {
+                    if nh.vrfid == route.vrfid {
+                        vni = Some(vxlan.vni);
+                        break;
                     }
                 }
             }
@@ -132,21 +112,9 @@ fn auto_learn_vrf(route: &IpRoute, db: &mut VrfTable) {
         } else {
             "unknown"
         };
-        let _ = db.add_vrf(name, route.vrfid, vni);
-    }
-}
-
-fn get_vrf0<'a>(iproute: &IpRoute, vrftable: &'a VrfTable) -> Option<&'a Arc<RwLock<Vrf>>> {
-    if is_evpn_route(iproute) && iproute.vrfid != 0 {
-        match vrftable.get_vrf(0) {
-            Ok(vrfg) => Some(vrfg),
-            Err(e) => {
-                error!("Unable to access default vrf!: {e}");
-                None
-            }
+        if let Err(e) = db.add_vrf(name, route.vrfid, vni) {
+            error!("Error adding vrf with id {}: {e}", route.vrfid);
         }
-    } else {
-        None
     }
 }
 
@@ -154,41 +122,33 @@ impl RpcOperation for IpRoute {
     type ObjectStore = RoutingDb;
     #[allow(unused_mut)]
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
-        let rmac_store_g = &db.rmac_store;
-        let vtep_g = &db.vtep;
+        let rmac_store = &db.rmac_store;
+        let vtep = &db.vtep;
         let vrftable = &mut db.vrftable;
 
         #[cfg(feature = "auto-learn")]
         auto_learn_vrf(self, vrftable);
 
-        let vrfg = get_vrf0(self, &vrftable);
-
-        if let Ok(vrf) = vrftable.get_vrf(self.vrfid) {
-            if let Ok(mut vrf) = vrf.write() {
-                if let Some(vrf0) = vrfg {
-                    vrf.add_route_rpc(self, vrf0.read().ok().as_deref(), &rmac_store_g, &vtep_g);
-                } else {
-                    vrf.add_route_rpc(self, None, &rmac_store_g, &vtep_g);
-                }
-                RpcResultCode::Ok
-            } else {
-                poison_warn(vrf)
-            }
+        if is_evpn_route(self) && self.vrfid != 0 {
+            let Ok((vrf, vrf0)) = vrftable.get_with_default_mut(self.vrfid) else {
+                error!("Unable to get vrf with id {}", self.vrfid);
+                return RpcResultCode::Failure;
+            };
+            vrf.add_route_rpc(self, Some(vrf0), &rmac_store, &vtep);
         } else {
-            error!("Unable to find VRF with id {}", self.vrfid);
-            RpcResultCode::Failure
+            let Ok(vrf) = vrftable.get_vrf_mut(self.vrfid) else {
+                error!("Unable to find VRF with id {}", self.vrfid);
+                return RpcResultCode::Failure;
+            };
+            vrf.add_route_rpc(self, None, &rmac_store, &vtep);
         }
+        RpcResultCode::Ok
     }
     fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         let vrftable = &mut db.vrftable;
-
-        if let Ok(vrf) = vrftable.get_vrf(self.vrfid) {
-            if let Ok(mut vrf) = vrf.write() {
-                vrf.del_route_rpc(self);
-                RpcResultCode::Ok
-            } else {
-                poison_warn(vrf)
-            }
+        if let Ok(vrf) = vrftable.get_vrf_mut(self.vrfid) {
+            vrf.del_route_rpc(self);
+            RpcResultCode::Ok
         } else {
             error!("Unable to find VRF with id {}", self.vrfid);
             RpcResultCode::Failure
@@ -200,6 +160,7 @@ impl RpcOperation for Rmac {
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         let rmac_store = &mut db.rmac_store;
         let Ok(rmac) = RmacEntry::try_from(self) else {
+            error!("Failed to store rmac entry {self}");
             return RpcResultCode::Failure;
         };
         rmac_store.add_rmac_entry(rmac);

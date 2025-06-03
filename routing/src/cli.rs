@@ -58,11 +58,7 @@ fn show_ipv4_routes_single_vrf(
 ) -> Result<CliResponse, CliError> {
     let out;
     if let Ok(vrf) = vrftable.get_vrf(vrfid) {
-        if let Ok(vrf) = vrf.read() {
-            out = show_vrf_ipv4_routes(&vrf, filter);
-        } else {
-            return Err(CliError::InternalError);
-        }
+        out = show_vrf_ipv4_routes(&vrf, filter);
     } else {
         return Err(CliError::NotFound(format!("VRF with id {vrfid}")));
     }
@@ -76,11 +72,7 @@ fn show_ipv4_routes_multi(
 ) -> Result<CliResponse, CliError> {
     let mut out = String::new();
     for vrf in vrftable.values() {
-        if let Ok(vrf) = vrf.read() {
-            out += show_vrf_ipv4_routes(&vrf, filter).as_str();
-        } else {
-            out += "There was a problem retrieving routes";
-        }
+        out += show_vrf_ipv4_routes(&vrf, filter).as_str();
     }
     Ok(CliResponse::from_request_ok(request, out))
 }
@@ -93,11 +85,7 @@ fn show_ipv6_routes_single_vrf(
 ) -> Result<CliResponse, CliError> {
     let out;
     if let Ok(vrf) = vrftable.get_vrf(vrfid) {
-        if let Ok(vrf) = vrf.read() {
-            out = show_vrf_ipv6_routes(&vrf, filter);
-        } else {
-            return Err(CliError::InternalError);
-        }
+        out = show_vrf_ipv6_routes(&vrf, filter);
     } else {
         return Err(CliError::NotFound(format!("VRF with id {vrfid}")));
     }
@@ -111,11 +99,7 @@ fn show_ipv6_routes_multi(
 ) -> Result<CliResponse, CliError> {
     let mut out = String::new();
     for vrf in vrftable.values() {
-        if let Ok(vrf) = vrf.read() {
-            out += show_vrf_ipv6_routes(&vrf, filter).as_str();
-        } else {
-            out += "There was a problem retrieving routes";
-        }
+        out += show_vrf_ipv6_routes(&vrf, filter).as_str();
     }
     Ok(CliResponse::from_request_ok(request, out))
 }
@@ -170,14 +154,10 @@ fn show_vrf_nexthops_single(
 ) -> Result<CliResponse, CliError> {
     let out: String;
     if let Ok(vrf) = vrftable.get_vrf(vrfid) {
-        if let Ok(vrf) = vrf.read() {
-            if ipv4 {
-                out = format!("{}", VrfV4Nexthops(&vrf));
-            } else {
-                out = format!("{}", VrfV6Nexthops(&vrf));
-            }
+        if ipv4 {
+            out = format!("{}", VrfV4Nexthops(&vrf));
         } else {
-            return Err(CliError::InternalError);
+            out = format!("{}", VrfV6Nexthops(&vrf));
         }
     } else {
         return Err(CliError::NotFound(format!("with id {vrfid}")));
@@ -192,12 +172,10 @@ fn show_vrf_nexthops_multi(
 ) -> Result<CliResponse, CliError> {
     let mut out = String::new();
     for vrf in vrftable.values() {
-        if let Ok(vrf) = vrf.read() {
-            if ipv4 {
-                out += format!("{}", VrfV4Nexthops(&vrf)).as_ref();
-            } else {
-                out += format!("{}", VrfV6Nexthops(&vrf)).as_ref();
-            }
+        if ipv4 {
+            out += format!("{}", VrfV4Nexthops(&vrf)).as_ref();
+        } else {
+            out += format!("{}", VrfV6Nexthops(&vrf)).as_ref();
         }
     }
     Ok(CliResponse::from_request_ok(request, out))
@@ -221,11 +199,7 @@ fn show_vrfs(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliErro
     let vrftable = &db.vrftable;
     if let Some(vni) = request.args.vni {
         if let Ok(vrf) = vrftable.get_vrf_by_vni(vni) {
-            if let Ok(vrf) = vrf.read() {
-                Ok(CliResponse::from_request_ok(request, format!("\n{vrf}")))
-            } else {
-                Err(CliError::InternalError)
-            }
+            Ok(CliResponse::from_request_ok(request, format!("\n{vrf}")))
         } else {
             Err(CliError::NotFound(format!("VRF with vni {vni}")))
         }
@@ -265,11 +239,7 @@ fn show_single_fib_v4(
 ) -> Result<CliResponse, CliError> {
     let out;
     if let Ok(vrf) = vrftable.get_vrf(vrfid) {
-        if let Ok(vrf) = vrf.read() {
-            out = show_fibgroups_ipv4(&vrf, filter);
-        } else {
-            return Err(CliError::InternalError);
-        }
+        out = show_fibgroups_ipv4(&vrf, filter);
     } else {
         return Err(CliError::NotFound(format!("VRF with id {vrfid}")));
     }
@@ -284,11 +254,7 @@ fn show_single_fib_v6(
 ) -> Result<CliResponse, CliError> {
     let out;
     if let Ok(vrf) = vrftable.get_vrf(vrfid) {
-        if let Ok(vrf) = vrf.read() {
-            out = show_fibgroups_ipv6(&vrf, filter);
-        } else {
-            return Err(CliError::InternalError);
-        }
+        out = show_fibgroups_ipv6(&vrf, filter);
     } else {
         return Err(CliError::NotFound(format!("VRF with id {vrfid}")));
     }
@@ -302,11 +268,7 @@ fn show_multi_fib_v4(
 ) -> Result<CliResponse, CliError> {
     let mut out = String::new();
     for vrf in vrftable.values() {
-        if let Ok(vrf) = vrf.read() {
-            out += show_fibgroups_ipv4(&vrf, filter).as_str();
-        } else {
-            out += "There was a problem retrieving fib information";
-        }
+        out += show_fibgroups_ipv4(&vrf, filter).as_str();
     }
     Ok(CliResponse::from_request_ok(request, out))
 }
@@ -317,11 +279,7 @@ fn show_multi_fib_v6(
 ) -> Result<CliResponse, CliError> {
     let mut out = String::new();
     for vrf in vrftable.values() {
-        if let Ok(vrf) = vrf.read() {
-            out += show_fibgroups_ipv6(&vrf, filter).as_str();
-        } else {
-            out += "There was a problem retrieving fib information";
-        }
+        out += show_fibgroups_ipv6(&vrf, filter).as_str();
     }
     Ok(CliResponse::from_request_ok(request, out))
 }

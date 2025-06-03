@@ -200,12 +200,7 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     pub fn set_vni(&mut self, vni: Vni) {
         self.vni = Some(vni);
-        debug!(
-            "Vrf '{}'(Id {}) is now associated to vni {}",
-            self.name,
-            self.vrfid,
-            vni.as_u32()
-        );
+        debug!("Vrf '{}'(Id {}) has now vni {vni}", self.name, self.vrfid,);
     }
 
     #[inline(always)]
@@ -380,14 +375,14 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
 
     #[inline(always)]
-    fn get_route_v4(&self, prefix: &Ipv4Prefix) -> Option<&Route> {
-        self.routesv4.get(prefix)
+    fn get_route_v4(&self, prefix: Ipv4Prefix) -> Option<&Route> {
+        self.routesv4.get(&prefix)
     }
     #[inline(always)]
-    fn get_route_v6(&self, prefix: &Ipv6Prefix) -> Option<&Route> {
-        self.routesv6.get(prefix)
+    fn get_route_v6(&self, prefix: Ipv6Prefix) -> Option<&Route> {
+        self.routesv6.get(&prefix)
     }
-    pub fn get_route(&self, prefix: &Prefix) -> Option<&Route> {
+    pub fn get_route(&self, prefix: Prefix) -> Option<&Route> {
         match prefix {
             Prefix::IPV4(p) => self.get_route_v4(p),
             Prefix::IPV6(p) => self.get_route_v6(p),
@@ -400,14 +395,14 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
 
     #[inline(always)]
-    fn get_route_v4_mut(&mut self, prefix: &Ipv4Prefix) -> Option<&mut Route> {
-        self.routesv4.get_mut(prefix)
+    fn get_route_v4_mut(&mut self, prefix: Ipv4Prefix) -> Option<&mut Route> {
+        self.routesv4.get_mut(&prefix)
     }
     #[inline(always)]
-    fn get_route_v6_mut(&mut self, prefix: &Ipv6Prefix) -> Option<&mut Route> {
-        self.routesv6.get_mut(prefix)
+    fn get_route_v6_mut(&mut self, prefix: Ipv6Prefix) -> Option<&mut Route> {
+        self.routesv6.get_mut(&prefix)
     }
-    pub fn get_route_mut(&mut self, prefix: &Prefix) -> Option<&mut Route> {
+    pub fn get_route_mut(&mut self, prefix: Prefix) -> Option<&mut Route> {
         match prefix {
             Prefix::IPV4(p) => self.get_route_v4_mut(p),
             Prefix::IPV6(p) => self.get_route_v6_mut(p),
@@ -509,13 +504,13 @@ pub mod tests {
 
     fn check_default_drop_v4(vrf: &Vrf) {
         let prefix: Prefix = Prefix::root_v4();
-        let recovered = vrf.get_route_v4(prefix.get_v4()).expect("There must be a default route");
+        let recovered = vrf.get_route_v4(*prefix.get_v4()).expect("There must be a default route");
         assert_eq!(recovered.s_nhops.len(), 1);
         assert_eq!(recovered.s_nhops[0].rc.key.fwaction, FwAction::Drop);
     }
     fn check_default_drop_v6(vrf: &Vrf) {
         let prefix: Prefix = Prefix::root_v6();
-        let recovered = vrf.get_route_v6(prefix.get_v6()).expect("There must be a default route");
+        let recovered = vrf.get_route_v6(*prefix.get_v6()).expect("There must be a default route");
         assert_eq!(recovered.s_nhops.len(), 1);
         assert_eq!(recovered.s_nhops[0].rc.key.fwaction, FwAction::Drop);
     }

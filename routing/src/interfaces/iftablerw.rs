@@ -99,16 +99,11 @@ impl IfTableWriter {
 
     fn get_vrf_fibr(vrftable: &VrfTable, vrfid: VrfId) -> Result<FibReader, RouterError> {
         if let Ok(vrf) = vrftable.get_vrf(vrfid) {
-            if let Ok(vrf) = vrf.read() {
-                if let Some(fibw) = &vrf.fibw {
-                    let fibr = fibw.as_fibreader();
-                    Ok(fibr.clone())
-                } else {
-                    Err(RouterError::Internal("No fib writer"))
-                }
+            if let Some(fibw) = &vrf.fibw {
+                let fibr = fibw.as_fibreader();
+                Ok(fibr.clone())
             } else {
-                vrf.clear_poison();
-                Err(RouterError::Internal("RWlock read failed"))
+                Err(RouterError::Internal("No fib writer"))
             }
         } else {
             Err(RouterError::NoSuchVrf)

@@ -33,5 +33,5 @@ netdev = { workspace = true }
 
 [dev-dependencies]
 serde_yml = { workspace = true }
-
+tracing-test = { workspace = true, features = [] }
 
