@@ -31,21 +31,21 @@ impl RouterCtlSender {
 
 /// Handle a control request to set the VTEP ip address and MAC
 fn set_vtep(db: &mut RoutingDb, vtep_data: &Vtep) {
-    if let Ok(mut vtep) = db.vtep.write() {
-        if let Some(ip) = vtep_data.get_ip() {
-            vtep.set_ip(ip);
-            info!("VTEP ip address set to {ip}");
-        } else {
-            warn!("VTEP no longer has ip address");
-            vtep.unset_ip();
-        }
-        if let Some(mac) = vtep_data.get_mac() {
-            vtep.set_mac(mac);
-            info!("VTEP mac address set to {mac}");
-        } else {
-            warn!("VTEP no longer has mac address");
-            vtep.unset_mac();
-        }
+    let vtep = &mut db.vtep;
+
+    if let Some(ip) = vtep_data.get_ip() {
+        vtep.set_ip(ip);
+        info!("VTEP ip address set to {ip}");
+    } else {
+        warn!("VTEP no longer has ip address");
+        vtep.unset_ip();
+    }
+    if let Some(mac) = vtep_data.get_mac() {
+        vtep.set_mac(mac);
+        info!("VTEP mac address set to {mac}");
+    } else {
+        warn!("VTEP no longer has mac address");
+        vtep.unset_mac();
     }
 }
 

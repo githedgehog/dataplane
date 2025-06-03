@@ -377,7 +377,7 @@ fn do_handle_cli_request(request: CliRequest, db: &RoutingDb) -> Result<CliRespo
             CliResponse::from_request_ok(request, format!("\n{rmac_store}"))
         }
         CliAction::ShowRouterEvpnVtep => {
-            let vtep = db.vtep.read().map_err(|_| CliError::InternalError)?;
+            let vtep = &db.vtep;
             CliResponse::from_request_ok(request, format!("{vtep}"))
         }
         CliAction::ShowAdjacencies => {

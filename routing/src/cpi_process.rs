@@ -155,7 +155,7 @@ impl RpcOperation for IpRoute {
     #[allow(unused_mut)]
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         let rmac_store_g = db.rmac_store.read().unwrap();
-        let vtep_g = db.vtep.read().unwrap();
+        let vtep_g = &db.vtep;
 
         if let Ok(mut vrftable) = db.vrftable.write() {
             #[cfg(feature = "auto-learn")]

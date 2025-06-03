@@ -16,7 +16,7 @@ use std::sync::RwLock;
 pub struct RoutingDb {
     pub vrftable: RwLock<VrfTable>,
     pub rmac_store: RwLock<RmacStore>,
-    pub vtep: RwLock<Vtep>,
+    pub vtep: Vtep,
     pub atabler: AtableReader,
     pub iftw: IfTableWriter,
 }
@@ -33,7 +33,7 @@ impl RoutingDb {
         Self {
             vrftable: RwLock::new(VrfTable::new(fibtable)),
             rmac_store: RwLock::new(RmacStore::new()),
-            vtep: RwLock::new(Vtep::new()),
+            vtep: Vtep::new(),
             atabler,
             iftw,
         }
