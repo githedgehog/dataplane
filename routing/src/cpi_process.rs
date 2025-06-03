@@ -154,7 +154,7 @@ impl RpcOperation for IpRoute {
     type ObjectStore = RoutingDb;
     #[allow(unused_mut)]
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
-        let rmac_store_g = db.rmac_store.read().unwrap();
+        let rmac_store_g = &db.rmac_store;
         let vtep_g = &db.vtep;
 
         if let Ok(mut vrftable) = db.vrftable.write() {
@@ -208,26 +208,20 @@ impl RpcOperation for IpRoute {
 impl RpcOperation for Rmac {
     type ObjectStore = RoutingDb;
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
-        if let Ok(mut rmac_store) = db.rmac_store.write() {
-            let Ok(rmac) = RmacEntry::try_from(self) else {
-                return RpcResultCode::Failure;
-            };
-            rmac_store.add_rmac_entry(rmac);
-            RpcResultCode::Ok
-        } else {
-            RpcResultCode::Failure
-        }
+        let rmac_store = &mut db.rmac_store;
+        let Ok(rmac) = RmacEntry::try_from(self) else {
+            return RpcResultCode::Failure;
+        };
+        rmac_store.add_rmac_entry(rmac);
+        RpcResultCode::Ok
     }
     fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
-        if let Ok(mut rmac_store) = db.rmac_store.write() {
-            let Ok(rmac) = RmacEntry::try_from(self) else {
-                return RpcResultCode::Failure;
-            };
-            rmac_store.del_rmac_entry(&rmac);
-            RpcResultCode::Ok
-        } else {
-            poison_warn(&db.rmac_store)
-        }
+        let rmac_store = &mut db.rmac_store;
+        let Ok(rmac) = RmacEntry::try_from(self) else {
+            return RpcResultCode::Failure;
+        };
+        rmac_store.del_rmac_entry(&rmac);
+        RpcResultCode::Ok
     }
 }
 
