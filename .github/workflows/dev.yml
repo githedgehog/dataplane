@@ -76,16 +76,6 @@ jobs:
       fail-fast: false
       matrix:
         rust:
-          - # failures on stable block release
-            version: "stable"
-            optional: false
-            # HACK: we sleep for a different time in each job to avoid provoking DDoS mitigations in cargo binstall
-            #       resulting from launching multiple binstall tasks at (very nearly) the same time.
-            sleep: "0.0"
-          - # failures on beta block release
-            version: "beta"
-            optional: false
-            sleep: "0.2"
           - # failures on the nightly channel are a clear "yellow" flag
             version: "nightly"
             optional: true
