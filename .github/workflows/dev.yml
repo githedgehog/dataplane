@@ -231,6 +231,7 @@ jobs:
       - id: "clippy"
         name: "run clippy"
         run: |
+          git show --oneline -n 1
           just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} \
             cargo clippy --all-targets --all-features -- -D warnings
 
