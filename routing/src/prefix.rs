@@ -15,7 +15,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum PrefixError {
-    #[error("Invalid: {0}")]
+    #[error("Invalid Prefix: {0}")]
     Invalid(String),
     #[error("Mask length {0} is invalid")]
     InvalidLength(u8),
@@ -172,18 +172,14 @@ impl<'a> TryFrom<PrefixString<'a>> for Prefix {
     type Error = PrefixError;
 
     fn try_from(value: PrefixString<'a>) -> Result<Self, Self::Error> {
-        let mut parts = value.0.split('/');
-        let addr_str = parts
-            .next()
-            .ok_or_else(|| PrefixError::Invalid("No address part found".to_string()))?;
-
-        let mask_str = parts
-            .next()
-            .ok_or_else(|| PrefixError::Invalid("No mask part found".to_string()))?;
-        let mask =
-            u8::from_str(mask_str).map_err(|_| PrefixError::Invalid("Invalid mask".to_string()))?;
-
-        Self::try_from((addr_str, mask))
+        let PrefixString(s) = value;
+        if let Ok(p) = Ipv4Net::from_str(s) {
+            Ok(Prefix::IPV4(Ipv4Prefix::from(p)))
+        } else if let Ok(p) = Ipv6Net::from_str(s) {
+            Ok(Prefix::IPV6(Ipv6Prefix::from(p)))
+        } else {
+            Err(PrefixError::Invalid(s.to_string()))
+        }
     }
 }
 
@@ -228,13 +224,7 @@ impl<'a> From<&'a Prefix> for &'a Ipv6Prefix {
 #[cfg(any(test, feature = "testing"))]
 impl From<&str> for Prefix {
     fn from(s: &str) -> Self {
-        if let Ok(p) = Ipv4Net::from_str(s) {
-            Prefix::IPV4(Ipv4Prefix::from(p))
-        } else if let Ok(p) = Ipv6Net::from_str(s) {
-            Prefix::IPV6(Ipv6Prefix::from(p))
-        } else {
-            panic!("Not a valid IP prefix")
-        }
+        Prefix::try_from(PrefixString(s)).unwrap()
     }
 }
 
