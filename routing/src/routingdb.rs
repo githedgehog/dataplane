@@ -10,20 +10,18 @@ use crate::evpn::{RmacStore, Vtep};
 use crate::fib::fibtable::FibTableWriter;
 use crate::interfaces::iftablerw::IfTableWriter;
 use crate::rib::vrftable::VrfTable;
-use std::sync::RwLock;
 
 /// Routing database
 pub struct RoutingDb {
-    pub vrftable: RwLock<VrfTable>,
+    pub vrftable: VrfTable,
     pub rmac_store: RmacStore,
     pub vtep: Vtep,
     pub atabler: AtableReader,
     pub iftw: IfTableWriter,
 }
-#[allow(unused)]
+
 #[allow(clippy::new_without_default)]
 impl RoutingDb {
-    #[allow(dead_code)]
     #[must_use]
     pub fn new(
         fibtable: Option<FibTableWriter>,
@@ -31,7 +29,7 @@ impl RoutingDb {
         atabler: AtableReader,
     ) -> Self {
         Self {
-            vrftable: RwLock::new(VrfTable::new(fibtable)),
+            vrftable: VrfTable::new(fibtable),
             rmac_store: RmacStore::new(),
             vtep: Vtep::new(),
             atabler,

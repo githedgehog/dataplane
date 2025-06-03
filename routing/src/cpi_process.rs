@@ -156,52 +156,42 @@ impl RpcOperation for IpRoute {
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         let rmac_store_g = &db.rmac_store;
         let vtep_g = &db.vtep;
+        let vrftable = &mut db.vrftable;
 
-        if let Ok(mut vrftable) = db.vrftable.write() {
-            #[cfg(feature = "auto-learn")]
-            auto_learn_vrf(self, &mut vrftable);
+        #[cfg(feature = "auto-learn")]
+        auto_learn_vrf(self, vrftable);
 
-            let vrfg = get_vrf0(self, &vrftable);
+        let vrfg = get_vrf0(self, &vrftable);
 
-            if let Ok(vrf) = vrftable.get_vrf(self.vrfid) {
-                if let Ok(mut vrf) = vrf.write() {
-                    if let Some(vrf0) = vrfg {
-                        vrf.add_route_rpc(
-                            self,
-                            vrf0.read().ok().as_deref(),
-                            &rmac_store_g,
-                            &vtep_g,
-                        );
-                    } else {
-                        vrf.add_route_rpc(self, None, &rmac_store_g, &vtep_g);
-                    }
-                    RpcResultCode::Ok
+        if let Ok(vrf) = vrftable.get_vrf(self.vrfid) {
+            if let Ok(mut vrf) = vrf.write() {
+                if let Some(vrf0) = vrfg {
+                    vrf.add_route_rpc(self, vrf0.read().ok().as_deref(), &rmac_store_g, &vtep_g);
                 } else {
-                    poison_warn(vrf)
+                    vrf.add_route_rpc(self, None, &rmac_store_g, &vtep_g);
                 }
+                RpcResultCode::Ok
             } else {
-                error!("Unable to find VRF with id {}", self.vrfid);
-                RpcResultCode::Failure
+                poison_warn(vrf)
             }
         } else {
-            poison_warn(&db.vrftable)
+            error!("Unable to find VRF with id {}", self.vrfid);
+            RpcResultCode::Failure
         }
     }
     fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
-        if let Ok(vrftable) = db.vrftable.write() {
-            if let Ok(vrf) = vrftable.get_vrf(self.vrfid) {
-                if let Ok(mut vrf) = vrf.write() {
-                    vrf.del_route_rpc(self);
-                    RpcResultCode::Ok
-                } else {
-                    poison_warn(vrf)
-                }
+        let vrftable = &mut db.vrftable;
+
+        if let Ok(vrf) = vrftable.get_vrf(self.vrfid) {
+            if let Ok(mut vrf) = vrf.write() {
+                vrf.del_route_rpc(self);
+                RpcResultCode::Ok
             } else {
-                error!("Unable to find VRF with id {}", self.vrfid);
-                RpcResultCode::Failure
+                poison_warn(vrf)
             }
         } else {
-            poison_warn(&db.vrftable)
+            error!("Unable to find VRF with id {}", self.vrfid);
+            RpcResultCode::Failure
         }
     }
 }
@@ -227,7 +217,7 @@ impl RpcOperation for Rmac {
 
 #[cfg(feature = "auto-learn")]
 #[allow(clippy::collapsible_match)]
-fn auto_learn_interface(a: &IfAddress, iftw: &mut IfTableWriter, vrftable: &RwLock<VrfTable>) {
+fn auto_learn_interface(a: &IfAddress, iftw: &mut IfTableWriter, vrftable: &VrfTable) {
     let mut create = false;
     if let Some(iftable) = iftw.enter() {
         if iftable.get_interface(a.ifindex).is_none() {
@@ -259,10 +249,9 @@ fn auto_learn_interface(a: &IfAddress, iftw: &mut IfTableWriter, vrftable: &RwLo
         iftw.add_interface(iface);
 
         /* attach to default vrf */
-        if let Ok(vrftable) = vrftable.read() {
-            debug!("Attaching {} to default VRF", a.ifname.as_str());
-            let _ = iftw.attach_interface_to_vrf(a.ifindex, 0, &vrftable);
-        }
+
+        debug!("Attaching {} to default VRF", a.ifname.as_str());
+        let _ = iftw.attach_interface_to_vrf(a.ifindex, 0, &vrftable);
     }
 }
 impl RpcOperation for IfAddress {

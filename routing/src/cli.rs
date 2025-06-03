@@ -143,21 +143,21 @@ fn show_vrf_routes(
     db: &RoutingDb,
     ipv4: bool,
 ) -> Result<CliResponse, CliError> {
-    let vrftable = db.vrftable.read().map_err(|_| CliError::InternalError)?;
+    let vrftable = &db.vrftable;
 
     if ipv4 {
         let filter = route_filter_v4(&request);
         if let Some(vrfid) = request.args.vrfid {
-            show_ipv4_routes_single_vrf(request, &vrftable, vrfid, &filter)
+            show_ipv4_routes_single_vrf(request, vrftable, vrfid, &filter)
         } else {
-            show_ipv4_routes_multi(request, &vrftable, &filter)
+            show_ipv4_routes_multi(request, vrftable, &filter)
         }
     } else {
         let filter = route_filter_v6(&request);
         if let Some(vrfid) = request.args.vrfid {
-            show_ipv6_routes_single_vrf(request, &vrftable, vrfid, &filter)
+            show_ipv6_routes_single_vrf(request, vrftable, vrfid, &filter)
         } else {
-            show_ipv6_routes_multi(request, &vrftable, &filter)
+            show_ipv6_routes_multi(request, vrftable, &filter)
         }
     }
 }
@@ -208,32 +208,28 @@ fn show_vrf_nexthops(
     db: &RoutingDb,
     ipv4: bool,
 ) -> Result<CliResponse, CliError> {
-    let vrftable = db.vrftable.read().map_err(|_| CliError::InternalError)?;
+    let vrftable = &db.vrftable;
 
     if let Some(vrfid) = request.args.vrfid {
-        show_vrf_nexthops_single(request, &vrftable, vrfid, ipv4)
+        show_vrf_nexthops_single(request, vrftable, vrfid, ipv4)
     } else {
-        show_vrf_nexthops_multi(request, &vrftable, ipv4)
+        show_vrf_nexthops_multi(request, vrftable, ipv4)
     }
 }
 
 fn show_vrfs(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
+    let vrftable = &db.vrftable;
     if let Some(vni) = request.args.vni {
-        if let Ok(vrftable) = db.vrftable.read() {
-            if let Ok(vrf) = vrftable.get_vrf_by_vni(vni) {
-                if let Ok(vrf) = vrf.read() {
-                    Ok(CliResponse::from_request_ok(request, format!("\n{vrf}")))
-                } else {
-                    Err(CliError::InternalError)
-                }
+        if let Ok(vrf) = vrftable.get_vrf_by_vni(vni) {
+            if let Ok(vrf) = vrf.read() {
+                Ok(CliResponse::from_request_ok(request, format!("\n{vrf}")))
             } else {
-                Err(CliError::NotFound(format!("VRF with vni {vni}")))
+                Err(CliError::InternalError)
             }
         } else {
-            Err(CliError::InternalError)
+            Err(CliError::NotFound(format!("VRF with vni {vni}")))
         }
     } else {
-        let vrftable = db.vrftable.read().map_err(|_| CliError::InternalError)?;
         Ok(CliResponse::from_request_ok(
             request,
             format!("\n{vrftable}"),
@@ -335,21 +331,20 @@ fn show_fib_groups(
     db: &RoutingDb,
     ipv4: bool,
 ) -> Result<CliResponse, CliError> {
-    let vrftable = db.vrftable.read().map_err(|_| CliError::InternalError)?;
-
+    let vrftable = &db.vrftable;
     if ipv4 {
         let filter = fibgroup_filter_v4(&request);
         if let Some(vrfid) = request.args.vrfid {
-            show_single_fib_v4(request, &vrftable, vrfid, &filter)
+            show_single_fib_v4(request, vrftable, vrfid, &filter)
         } else {
-            show_multi_fib_v4(request, &vrftable, &filter)
+            show_multi_fib_v4(request, vrftable, &filter)
         }
     } else {
         let filter = fibgroup_filter_v6(&request);
         if let Some(vrfid) = request.args.vrfid {
-            show_single_fib_v6(request, &vrftable, vrfid, &filter)
+            show_single_fib_v6(request, vrftable, vrfid, &filter)
         } else {
-            show_multi_fib_v6(request, &vrftable, &filter)
+            show_multi_fib_v6(request, vrftable, &filter)
         }
     }
 }
