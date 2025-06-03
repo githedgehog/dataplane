@@ -376,6 +376,7 @@ mod contract {
         }
     }
 
+    #[allow(dead_code)] // rustc not able to infer we construct this through .with_generator()
     /// Generate valid MAC address strings in format XX:XX:XX:XX:XX:XX
     pub struct MacTestStringGenerator;
     impl ValueGenerator for MacTestStringGenerator {

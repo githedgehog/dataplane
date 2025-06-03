@@ -1135,6 +1135,7 @@ mod contract {
         }
     }
 
+    #[allow(dead_code)] // rustc not able to infer we construct this through .with_generator()
     #[repr(transparent)]
     pub struct CommonHeaders;
 
