@@ -32,6 +32,7 @@
 //!   be equal to the total number of publicly exposed addresses in this object.
 
 mod iplist;
+mod stateful;
 mod stateless;
 
 use crate::nat::iplist::IpList;
@@ -87,7 +88,7 @@ impl Nat {
 
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
     /// function that we pass to [`Nat::process`] to iterate over packets.
-    fn process_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
+    fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
         // ----------------------------------------------------
         // TODO: Get VNI
         // Currently hardcoded as required to have the tests pass, for demonstration purposes
@@ -99,7 +100,7 @@ impl Nat {
 
         match self.mode {
             NatMode::Stateless => self.stateless_nat(net, vni),
-            NatMode::Stateful => todo!(),
+            NatMode::Stateful => self.stateful_nat(net, vni),
         }
     }
 }

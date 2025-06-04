@@ -47,7 +47,7 @@ impl Nat {
     }
 
     /// Applies network address translation to a packet, knowing the current and target ranges.
-    fn translate(&self, net: &mut Net, ranges: &TrieValue) -> Option<()> {
+    fn stateless_translate(&self, net: &mut Net, ranges: &TrieValue) -> Option<()> {
         let target_ip = match self.direction {
             NatDirection::SrcNat => {
                 let current_ip = net.src_addr();
@@ -86,6 +86,6 @@ impl Nat {
         let Some(ranges) = self.find_nat_ranges(net, vni) else {
             return;
         };
-        self.translate(net, ranges);
+        self.stateless_translate(net, ranges);
     }
 }
