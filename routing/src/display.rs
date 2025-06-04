@@ -26,6 +26,7 @@ use iptrie::map::RTrieMap;
 use iptrie::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
 use std::fmt::Display;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use tracing::{error, warn};
@@ -91,8 +92,8 @@ impl Display for NhopKey {
 }
 impl Display for Nhop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{}", self.key)?;
-        fmt_nhop_resolvers(f, self, 1)
+        write!(f, "{}", self.key)?;
+        fmt_nhop_resolvers(f, self, 2)
     }
 }
 
@@ -101,11 +102,11 @@ fn fmt_nhop_resolvers(f: &mut std::fmt::Formatter<'_>, rc: &Nhop, depth: u8) -> 
         warn!("Try-borrow on nhop resolvers failed!");
         return Ok(());
     };
-    let tab = 6 * depth as usize;
+    let tab = 5 * depth as usize;
     let indent = " ".repeat(tab);
     if !resolvers.is_empty() {
         for r in resolvers.iter() {
-            writeln!(f, "{indent} {}", r.key)?;
+            write!(f, "\n{indent} {}", r.key)?;
             fmt_nhop_resolvers(f, r, depth + 1)?;
         }
     }
@@ -129,7 +130,7 @@ fn fmt_nhop_instruction(f: &mut std::fmt::Formatter<'_>, rc: &Nhop) -> std::fmt:
 
 // formats nhop using the display of the key, recoursing over resolvers
 // Does not use Nhop::fmt().
-fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Arc<Nhop>, depth: u8) -> std::fmt::Result {
+fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Rc<Nhop>, depth: u8) -> std::fmt::Result {
     let tab = 8 * depth as usize;
     let indent = " ".repeat(tab);
 
@@ -138,7 +139,7 @@ fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Arc<Nhop>, depth: u8) -> s
         f,
         "{} ({}) {} = {}",
         indent,
-        Arc::strong_count(rc),
+        Rc::strong_count(rc),
         sym,
         rc.key
     )?;

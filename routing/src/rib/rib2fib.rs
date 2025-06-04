@@ -8,7 +8,7 @@ use tracing::warn;
 use crate::evpn::RmacStore;
 use crate::evpn::Vtep;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
-use crate::rib::nexthop::{FwAction, Nhop, NhopStore};
+use crate::rib::nexthop::{FwAction, Nhop};
 use crate::rib::vrf::RouteOrigin;
 
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
@@ -17,9 +17,11 @@ use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use std::net::IpAddr;
 
 impl Nhop {
+    //////////////////////////////////////////////////////////////////////
     /// Build the vector of packet instructions for a next-hop.
-    /// This process is independent of the resolvers for a next-hop. Hence it does not
-    /// depend on the routing table.
+    /// This process is independent of the resolvers for a next-hop.
+    /// Hence it does not depend on the routing table.
+    //////////////////////////////////////////////////////////////////////
     fn build_pkt_instructions(&self) -> Vec<PktInstruction> {
         let mut instructions = Vec::with_capacity(2);
         if self.key.origin == RouteOrigin::Local {
@@ -44,20 +46,28 @@ impl Nhop {
         instructions
     }
 
+    //////////////////////////////////////////////////////////////////////
     /// Given a next-hop, build its packet instructions and resolve them
     /// In this implementation, the next-hop owns the packet instructions
     /// So, they are not shared and have to be resolved per next-hop.
-    fn resolve_instructions(&self, rstore: &RmacStore, vtep: &Vtep) {
-        //let instructions = self.instructions.borrow_mut();
-        // build the instruction vector. This drops any prior vector
-        self.instructions.replace(self.build_pkt_instructions());
-        // resolve each PktInstruction
-        for inst in self.instructions.borrow_mut().iter_mut() {
+    //////////////////////////////////////////////////////////////////////
+    pub(crate) fn resolve_instructions(&self, rstore: &RmacStore, vtep: &Vtep) {
+        // build new instruction vector for the next-hop
+        let mut new_instructions = self.build_pkt_instructions();
+
+        // resolve each instruction. Currently only encap needs resolution since
+        // we no longer resolve egress here as another stage (egress) takes care.
+        for inst in new_instructions.iter_mut() {
             inst.resolve(rstore, vtep);
         }
+
+        // replace instruction vector
+        self.instructions.replace(new_instructions);
     }
 
+    //////////////////////////////////////////////////////////////////////
     /// Recursive helper to build [`FibGroup`] for a next-hop
+    //////////////////////////////////////////////////////////////////////
     fn _as_fib_entry_group_lazy(&self, fibgroup: &mut FibGroup, mut entry: FibEntry) {
         // add the instructions for a next-hop (already completed) to the entry
         let instructions = self.instructions.borrow().clone();
@@ -84,19 +94,13 @@ impl Nhop {
         out
     }
 
-    // resolve
-    pub(crate) fn refresh_fibgroup(&self, rstore: &RmacStore, vtep: &Vtep) {
+    //////////////////////////////////////////////////////////////////////
+    /// Determine instructions for a next-hop and build its fibgroup
+    //////////////////////////////////////////////////////////////////////
+    pub(crate) fn set_fibgroup(&self, rstore: &RmacStore, vtep: &Vtep) {
         self.resolve_instructions(rstore, vtep);
-        self.fibgroup.replace(self.as_fib_entry_group_lazy());
-    }
-}
-
-#[allow(dead_code)]
-impl NhopStore {
-    pub fn resolve_nhop_instructions(&self, rstore: &RmacStore, vtep: &Vtep) {
-        for nhop in self.iter() {
-            nhop.resolve_instructions(rstore, vtep);
-        }
+        let fibgroup = self.as_fib_entry_group_lazy();
+        self.fibgroup.replace(fibgroup);
     }
 }
 

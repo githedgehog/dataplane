@@ -8,6 +8,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)] // Temporary until auto-learn removed
 
 #[cfg(feature = "auto-learn")]
+use crate::RouterError;
+#[cfg(feature = "auto-learn")]
 use crate::interfaces::iftablerw::IfTableWriter;
 #[cfg(feature = "auto-learn")]
 use crate::interfaces::interface::IfDataEthernet;
@@ -36,7 +38,8 @@ use dplane_rpc::wire::*;
 use std::os::unix::net::SocketAddr;
 
 use std::path::Path;
-use tracing::{debug, error, trace, warn};
+#[allow(unused)]
+use tracing::{debug, error, info, trace, warn};
 
 /* convenience trait */
 trait RpcOperation {
@@ -75,8 +78,8 @@ impl RpcOperation for ConnectInfo {
 }
 
 #[cfg(feature = "auto-learn")]
-fn auto_learn_vrf(route: &IpRoute, db: &mut VrfTable) {
-    if let Ok(vrf) = db.get_vrf(route.vrfid) {
+fn auto_learn_vrf(route: &IpRoute, vrftable: &mut VrfTable, iftablew: &mut IfTableWriter) {
+    if let Ok(vrf) = vrftable.get_vrf(route.vrfid) {
         let mut vni = None;
         if vrf.vni.is_none() {
             for nh in &route.nhops {
@@ -90,7 +93,7 @@ fn auto_learn_vrf(route: &IpRoute, db: &mut VrfTable) {
         }
         if let Some(vni) = vni {
             if let Ok(vni) = Vni::new_checked(vni) {
-                if let Err(e) = db.set_vni(route.vrfid, vni) {
+                if let Err(e) = vrftable.set_vni(route.vrfid, vni) {
                     error!("Fatal: could not associate vni {vni} to vrf: {e}");
                 }
             } else {
@@ -112,8 +115,31 @@ fn auto_learn_vrf(route: &IpRoute, db: &mut VrfTable) {
         } else {
             "unknown"
         };
-        if let Err(e) = db.add_vrf(name, route.vrfid, vni) {
+
+        // add the vrf
+        if let Err(e) = vrftable.add_vrf(name, route.vrfid, vni) {
             error!("Error adding vrf with id {}: {e}", route.vrfid);
+
+            // HACK: heal by removing the existing vrf with that vni so that
+            // we can re-add a vrf with the same VNI but distinct ifindex. This
+            // is to allow re-applying configs while there is the disconnect between
+            // routing and mgmt.
+            if let Some(duped_vni) = vni {
+                if matches!(e, RouterError::VniInUse(_)) {
+                    if let Ok(other_vrfid) = vrftable.get_vrfid_by_vni(duped_vni) {
+                        let _ = vrftable.remove_vrf_good(other_vrfid, iftablew);
+                        // add the new one
+                        if let Err(e) = vrftable.add_vrf(name, route.vrfid, vni) {
+                            error!(
+                                "Failed to add vrf with id {} on second attempt: {e}",
+                                route.vrfid
+                            );
+                        } else {
+                            info!("Added VRF with id {}", route.vrfid);
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -127,20 +153,23 @@ impl RpcOperation for IpRoute {
         let vrftable = &mut db.vrftable;
 
         #[cfg(feature = "auto-learn")]
-        auto_learn_vrf(self, vrftable);
+        let iftablew = &mut db.iftw;
+
+        #[cfg(feature = "auto-learn")]
+        auto_learn_vrf(self, vrftable, iftablew);
 
         if is_evpn_route(self) && self.vrfid != 0 {
             let Ok((vrf, vrf0)) = vrftable.get_with_default_mut(self.vrfid) else {
                 error!("Unable to get vrf with id {}", self.vrfid);
                 return RpcResultCode::Failure;
             };
-            vrf.add_route_rpc(self, Some(vrf0), &rmac_store, &vtep);
+            vrf.add_route_rpc(self, Some(vrf0), rmac_store, vtep);
         } else {
             let Ok(vrf) = vrftable.get_vrf_mut(self.vrfid) else {
                 error!("Unable to find VRF with id {}", self.vrfid);
                 return RpcResultCode::Failure;
             };
-            vrf.add_route_rpc(self, None, &rmac_store, &vtep);
+            vrf.add_route_rpc(self, None, rmac_store, vtep);
         }
         RpcResultCode::Ok
     }
@@ -212,7 +241,7 @@ fn auto_learn_interface(a: &IfAddress, iftw: &mut IfTableWriter, vrftable: &VrfT
         /* attach to default vrf */
 
         debug!("Attaching {} to default VRF", a.ifname.as_str());
-        let _ = iftw.attach_interface_to_vrf(a.ifindex, 0, &vrftable);
+        let _ = iftw.attach_interface_to_vrf(a.ifindex, 0, vrftable);
     }
 }
 impl RpcOperation for IfAddress {

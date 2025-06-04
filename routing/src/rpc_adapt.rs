@@ -135,8 +135,7 @@ impl Route {
             origin,
             distance: r.distance,
             metric: r.metric,
-            s_nhops: Vec::with_capacity(1),
-            // N.B. we don't populate yet the shim nhops here
+            s_nhops: Vec::with_capacity(1), /* shim nhops are empty here */
         }
     }
 }
@@ -160,15 +159,13 @@ impl Vrf {
     ) {
         let Ok(prefix) = Prefix::try_from((iproute.prefix, iproute.prefix_len)) else {
             error!(
-                "Failed to add route from RPC!: bad prefix p={} len={}",
+                "Failed to add route from RPC!: bad prefix={} len={}",
                 iproute.prefix, iproute.prefix_len
             );
             return;
         };
-
         let route = Route::from_iproute(&prefix, iproute);
 
-        // next-hops
         let mut nhops = Vec::with_capacity(iproute.nhops.len());
         for nhop in &iproute.nhops {
             match RouteNhop::from_rpc_nhop(nhop, route.origin) {
@@ -176,12 +173,13 @@ impl Vrf {
                 Err(e) => error!("Omitting next-hop in route to {prefix}: {e}"),
             }
         }
+        // N.B. route and next-hops are passed separately
         self.add_route_complete(&prefix, route, &nhops, vrf0, rstore, vtep);
     }
     pub fn del_route_rpc(&mut self, iproute: &IpRoute) {
         let Ok(prefix) = Prefix::try_from((iproute.prefix, iproute.prefix_len)) else {
             error!(
-                "Failed to remove route from RPC!: bad prefix p={} len={}",
+                "Failed to remove route from RPC!: bad prefix={} len={}",
                 iproute.prefix, iproute.prefix_len
             );
             return;

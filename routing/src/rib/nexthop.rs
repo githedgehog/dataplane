@@ -6,6 +6,7 @@
 
 use super::encapsulation::Encapsulation;
 use super::vrf::{RouteOrigin, Vrf};
+use crate::evpn::{RmacStore, Vtep};
 use crate::fib::fibobjects::{FibGroup, PktInstruction};
 
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
@@ -16,22 +17,22 @@ use std::net::IpAddr;
 use std::option::Option;
 
 use std::cell::RefCell;
+use std::rc::Rc;
 #[cfg(test)]
 use std::str::FromStr;
-use std::sync::Arc;
-use tracing::{error, trace};
+use tracing::{debug, error};
 
 #[derive(Debug)]
 /// A collection of unique next-hops. Next-hops are identified by a next-hop key
 /// that can contain an address, ifindex and encapsulation.
-pub(crate) struct NhopStore(BTreeSet<Arc<Nhop>>);
+pub(crate) struct NhopStore(BTreeSet<Rc<Nhop>>);
 
 #[derive(Debug)]
 /// A next-hop object that can be shared by multiple routes and that can have
 /// references to other next-hops in this (or other) table.
 pub struct Nhop {
     pub(crate) key: NhopKey,
-    pub(crate) resolvers: RefCell<Vec<Arc<Nhop>>>,
+    pub(crate) resolvers: RefCell<Vec<Rc<Nhop>>>,
     pub(crate) instructions: RefCell<Vec<PktInstruction>>,
     pub(crate) fibgroup: RefCell<FibGroup>,
 }
@@ -92,6 +93,7 @@ impl NhopKey {
             ..Default::default()
         }
     }
+    #[cfg(test)]
     #[must_use]
     pub fn with_addr_ifindex(address: &IpAddr, ifindex: u32) -> Self {
         Self {
@@ -100,6 +102,7 @@ impl NhopKey {
             ..Default::default()
         }
     }
+    #[cfg(test)]
     #[must_use]
     pub fn with_address(address: &IpAddr) -> Self {
         Self {
@@ -107,6 +110,7 @@ impl NhopKey {
             ..Default::default()
         }
     }
+    #[cfg(test)]
     #[must_use]
     pub fn with_ifindex(ifindex: u32) -> Self {
         Self {
@@ -171,42 +175,48 @@ impl Nhop {
     ///     nexthops from such references. In other words, the "resolution" in this module will be as (in)
     ///     correct as those with explicit recursion, as long as the references are kept up to date.
     //////////////////////////////////////////////////////////////////////////////////////////////////////
-    pub fn add_resolver(&self, resolver: Arc<Nhop>) -> &Self {
+    #[cfg(test)]
+    pub fn add_resolver(&self, resolver: Rc<Nhop>) -> &Self {
         if let Ok(mut resolvers) = self.resolvers.try_borrow_mut() {
             resolvers.push(resolver);
-        };
-        error!("Failed to add resolver: try-borrow-mut failed!");
+        } else {
+            error!("Failed to add resolver: try-borrow-mut failed!. Nhop={self:#?}");
+        }
         self
     }
 
     /// Resolve a next-hop with a VRF, non-recursively, assuming that its resolvers are resolved already
     pub fn lazy_resolve(&self, vrf: &Vrf) {
         if self.key.ifindex.is_some() || self.key.fwaction == FwAction::Drop {
-            return;
+            return; /* done */
         }
-        if let Some(a) = self.key.address {
-            trace!("Resolving {a} with vrf '{}' (Id {})", vrf.name, vrf.vrfid);
-            let mut resolvers = Vec::new();
-            let (prefix, route) = vrf.lpm(&a);
-            trace!("matched route is for {prefix}");
-            for nh in &route.s_nhops {
-                if *nh.rc == *self {
-                    error!(
-                        "Warning nhop resolution loop!: {a} resolves with route to {prefix} via {}",
-                        nh.rc
-                    );
-                    continue;
-                }
-                trace!("Adding resolver {nh}");
+        let Some(a) = self.key.address else {
+            return; /* done */
+        };
+        let mut resolvers = Vec::new();
+        debug!("Resolving {a} with vrf '{}'({})", vrf.name, vrf.vrfid);
+        let (prefix, route) = vrf.lpm(a);
+        debug!("Address {a} resolves with route to {prefix}");
+        for nh in &route.s_nhops {
+            if *nh.rc == *self {
+                error!(
+                    "Resolution loop!: {a} resolves with route to {prefix} via {}",
+                    nh.rc
+                );
+            } else {
                 resolvers.push(nh.rc.clone());
             }
-            self.resolvers.replace(resolvers);
-        } else {
-            // nothing to do
         }
+        debug!("Address {a} resolves to");
+        for resolver in &resolvers {
+            debug!(" -> {resolver}");
+        }
+        // update resolvers
+        self.resolvers.replace(resolvers);
     }
 
     /// Auxiliary recursive method used by `Nhop::quick_resolve()`.
+    #[cfg(test)]
     fn quick_resolve_rec(&self, result: &mut BTreeSet<NhopKey>) {
         if let Ok(resolvers_of_this) = self.resolvers.try_borrow_mut() {
             if resolvers_of_this.is_empty() {
@@ -249,6 +259,7 @@ impl Nhop {
     /// a next-hop can be resolved by those. This allows us to replace an expensive LPM recursion (multiple LPMs)
     /// by a small recursion in the next-hop store, which is stateful and persists the results (to be done).
     //////////////////////////////////////////////////////////////////////////////////////////////////////
+    #[cfg(test)]
     pub fn quick_resolve(&self) -> BTreeSet<NhopKey> {
         let mut out: BTreeSet<NhopKey> = BTreeSet::new();
         self.quick_resolve_rec(&mut out);
@@ -278,49 +289,39 @@ impl NhopStore {
     /// and return a shared reference to it.
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub(crate) fn add_nhop(&mut self, key: &NhopKey) -> Arc<Nhop> {
-        #[allow(clippy::arc_with_non_send_sync)]
-        let nh = Arc::new(Nhop::new_from_key(key));
+    pub(crate) fn add_nhop(&mut self, key: &NhopKey) -> Rc<Nhop> {
+        let nh = Rc::new(Nhop::new_from_key(key));
         if let Some(e) = self.0.get(&nh) {
-            Arc::clone(e)
+            Rc::clone(e)
         } else {
-            self.0.insert(nh.clone());
+            self.0.insert(Rc::clone(&nh));
+            debug!("Registered new next-hop {nh}");
             nh
         }
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Tell if there exists a next-hop with a given key.
+    /// Get the Rc count of the next-hop with some key.
     //////////////////////////////////////////////////////////////////
-    #[allow(unused)]
     #[must_use]
-    pub(crate) fn contains(&self, key: &NhopKey) -> bool {
-        let nh = Nhop::new_from_key(key);
-        self.0.contains(&nh)
+    #[allow(unused)]
+    pub(crate) fn get_nhop_rc_count(&self, key: &NhopKey) -> usize {
+        self.get_nhop(key).map_or(0, Rc::strong_count)
     }
 
     //////////////////////////////////////////////////////////////////
     /// Get a reference to the next-hop with a given key, if it exists.
     /// Unlike `add_nhop()`, this returns a `&Rc<Nhop>` and not `Rc<Nhop>`,
-    /// thereby not increasing the reference count of the next-hop.
+    /// thereby not increasing the refcount of the next-hop.
     //////////////////////////////////////////////////////////////////
     #[must_use]
     #[allow(unused)]
-    pub(crate) fn get_nhop(&self, key: &NhopKey) -> Option<&Arc<Nhop>> {
+    pub(crate) fn get_nhop(&self, key: &NhopKey) -> Option<&Rc<Nhop>> {
         let nh = Nhop::new_from_key(key);
         self.0.get(&nh)
     }
 
-    //////////////////////////////////////////////////////////////////
-    /// Get the Rc count of the next-hop with the given key.
-    /// This method may only used for testing.
-    //////////////////////////////////////////////////////////////////
-    #[cfg(test)]
-    pub fn get_nhop_rc_count(&self, key: &NhopKey) -> usize {
-        self.get_nhop(key).map_or(0, Arc::strong_count)
-    }
-
-    //////////////////////////////////////////////////////////////////
+    /////////////////////////////////////////////////////////////////////////////////////
     /// Declare that a next-hop is no longer of our interest. The nhop may be removed or
     /// not, depending on whether there are other references to it. This function could
     /// just be `self.map.remove()`. However, that would just remove an Rc<Nhop> from the
@@ -329,12 +330,13 @@ impl NhopStore {
     /// all of them. I.e., no next-hop object should be alive outside of this collection.
     /// So, we'll remove elements from this collection iff no one refers to them.
     /// This should guarantee the uniqueness of next-hops and their referrals.
+    /////////////////////////////////////////////////////////////////////////////////////
     pub(crate) fn del_nhop(&mut self, key: &NhopKey) {
         let target = Nhop::new_from_key(key);
         let mut remove: bool = false;
         #[allow(clippy::collapsible_if)]
         if let Some(existing) = self.0.get(&target) {
-            if Arc::strong_count(existing) == 1 {
+            if Rc::strong_count(existing) == 1 {
                 remove = true;
             }
         }
@@ -366,36 +368,78 @@ impl NhopStore {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Resolve a next-hop by address. If no next-hop exists for that
-    /// address, returns None. Otherwise, it returns the result of
-    /// `quick_resolve()` on the next-hop found.
+    /// Iterate over all next-hops in the next-hop store
+    //////////////////////////////////////////////////////////////////
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Rc<Nhop>> {
+        self.0.iter()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn flush_resolvers(&self) {
+        for nhop in self.iter() {
+            nhop.resolvers.borrow_mut().clear();
+            nhop.instructions.borrow_mut().clear();
+            nhop.fibgroup.take();
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn resolve_nhop_instructions(&self, rstore: &RmacStore, vtep: &Vtep) {
+        for nhop in self.iter() {
+            nhop.resolve_instructions(rstore, vtep);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn lazy_resolve_all(&self, vrf: &Vrf) {
+        for nhop in self.iter() {
+            nhop.lazy_resolve(vrf);
+        }
+    }
+    #[allow(dead_code)]
+    pub fn set_fibgroup(&self, rstore: &RmacStore, vtep: &Vtep) {
+        for nhop in self.iter() {
+            nhop.set_fibgroup(rstore, vtep);
+        }
+    }
+}
+
+#[cfg(test)]
+impl NhopStore {
+    //////////////////////////////////////////////////////////////////
+    /// (**test-only**): Tell if there exists a next-hop with a given key.
+    //////////////////////////////////////////////////////////////////
+    #[must_use]
+    pub(crate) fn contains(&self, key: &NhopKey) -> bool {
+        let nh = Nhop::new_from_key(key);
+        self.0.contains(&nh)
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// (**test-only**): Resolve a next-hop by address. If no next-hop
+    /// exists for that address, returns None. Otherwise, it returns the
+    /// result of `quick_resolve()` on the next-hop found.
     /// This function is probably only useful for testing.
     //////////////////////////////////////////////////////////////////
-    #[cfg(test)]
     pub(crate) fn resolve_by_addr(&self, address: &IpAddr) -> Option<BTreeSet<NhopKey>> {
         let key = NhopKey::with_address(address);
         self.get_nhop(&key).map(|nh| nh.quick_resolve())
     }
 
-    //////////////////////////////////////////////////////////////////
-    /// Iterate over all next-hops in the next-hop store
-    //////////////////////////////////////////////////////////////////
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &Arc<Nhop>> {
-        self.0.iter()
-    }
-
     /// Dump the contents of the next-hop map
-    #[cfg(test)]
     pub(crate) fn dump(&self) {
-        print!("{self:#?}");
+        print!("{self}");
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::rib::nexthop::*;
-    use std::sync::Arc;
+    use tracing_test::traced_test;
 
+    use crate::rib::nexthop::*;
+    use std::rc::Rc;
+
+    #[traced_test]
     #[test]
     fn test_nhop_store_minimal() {
         let mut store = NhopStore::new();
@@ -408,16 +452,49 @@ mod tests {
         assert!(store.contains(&nh_key));
 
         /* get it */
-        let nh = store.get_nhop(&nh_key).unwrap();
-        assert_eq!(Arc::strong_count(nh), 1);
+        let nh = store.get_nhop(&nh_key).expect("Should find it");
+        assert_eq!(Rc::strong_count(nh), 1, "Must be 1");
 
         /* check refcount */
         let num_refs = store.get_nhop_rc_count(&nh_key);
         assert_eq!(num_refs, 1);
-
         store.dump();
     }
 
+    #[traced_test]
+    #[test]
+    fn test_nhop_reuse() {
+        let mut store = NhopStore::new();
+        let nh_key = NhopKey::expect_from("10.0.1.1");
+
+        /* add a nhop and keep a reference to it */
+        let r1 = store.add_nhop(&nh_key);
+        assert_eq!(Rc::strong_count(&r1), 2);
+
+        /* check it's there */
+        assert!(store.contains(&nh_key));
+
+        /* add it again. No new next-hop should be added */
+        let r2 = store.add_nhop(&nh_key);
+
+        assert_eq!(store.len(), 1);
+
+        /* get it */
+        let nh = store.get_nhop(&nh_key).unwrap();
+        assert_eq!(Rc::strong_count(nh), 3);
+
+        /* check refcount */
+        let num_refs = store.get_nhop_rc_count(&nh_key);
+        assert_eq!(num_refs, 3);
+
+        /* drop references */
+        drop(r1);
+        drop(r2);
+        assert_eq!(Rc::strong_count(nh), 1);
+        store.dump();
+    }
+
+    #[traced_test]
     #[test]
     fn test_nhop_store_basic() {
         let mut store = NhopStore::new();
@@ -467,6 +544,7 @@ mod tests {
         store.dump();
     }
 
+    #[traced_test]
     #[test]
     fn test_nhop_store_shared_resolvers() {
         let mut store = NhopStore::new();
@@ -476,38 +554,85 @@ mod tests {
         let n1_k = NhopKey::expect_from("11.0.0.1");
         let n2_k = NhopKey::expect_from("11.0.0.2");
         let n3_k = NhopKey::expect_from("11.0.0.3");
+        let n4_k = NhopKey::expect_from("11.0.0.4");
+        let n5_k = NhopKey::expect_from("11.0.0.5");
 
-        /* create 3 next-hops all resolving to the same one */
+        /* create 5 next-hops all resolving to the same one */
         let i1 = store.add_nhop(&i1_k);
         store.add_nhop(&n1_k).add_resolver(i1.clone());
         store.add_nhop(&n2_k).add_resolver(i1.clone());
-        store.add_nhop(&n3_k).add_resolver(i1);
+        store.add_nhop(&n3_k).add_resolver(i1.clone());
+        store.add_nhop(&n4_k).add_resolver(i1.clone());
+        store.add_nhop(&n5_k).add_resolver(i1.clone());
         store.dump();
 
-        assert_eq!(store.len(), 4);
-        assert_eq!(store.get_nhop_rc_count(&i1_k), 4);
+        assert_eq!(store.len(), 6);
+        assert_eq!(store.get_nhop_rc_count(&i1_k), 7);
+
+        /* remove one next-hop */
+        store.del_nhop(&n5_k);
+        assert_eq!(store.len(), 5);
+        assert_eq!(store.get_nhop_rc_count(&i1_k), 6);
+        store.dump();
+
+        /* remove rest of next-hops */
+        store.del_nhop(&n4_k);
+        store.del_nhop(&n3_k);
+        store.del_nhop(&n2_k);
+        store.del_nhop(&n1_k);
+        drop(i1);
+        store.dump();
+
+        store.flush_resolvers();
+        store.dump();
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_nhop_store_flush_resolvers() {
+        let mut store = NhopStore::new();
+
+        let i1_k = NhopKey::with_ifindex(1);
+
+        let n1_k = NhopKey::expect_from("11.0.0.1");
+        let n2_k = NhopKey::expect_from("11.0.0.2");
+        let n3_k = NhopKey::expect_from("11.0.0.3");
+        let n4_k = NhopKey::expect_from("11.0.0.4");
+        let n5_k = NhopKey::expect_from("11.0.0.5");
+
+        /* create 5 next-hops all resolving to the same one */
+        let i1 = store.add_nhop(&i1_k);
+        store.add_nhop(&n1_k).add_resolver(i1.clone());
+        store.add_nhop(&n2_k).add_resolver(i1.clone());
+        store.add_nhop(&n3_k).add_resolver(i1.clone());
+        store.add_nhop(&n4_k).add_resolver(i1.clone());
+        store.add_nhop(&n5_k).add_resolver(i1.clone());
+        drop(i1);
+        store.dump();
+        store.flush_resolvers();
+        store.dump();
     }
 
     /// Create a nhop store with next-hops and dependencies.
     fn build_test_nhop_store() -> NhopStore {
-        // create store
+        /* create store */
         let mut store = NhopStore::new();
 
-        // add "interface" next-hops
+        /* add "interface" next-hops */
         let i1 = store.add_nhop(&NhopKey::with_ifindex(1));
         let i2 = store.add_nhop(&NhopKey::with_ifindex(2));
         let i3 = store.add_nhop(&NhopKey::with_ifindex(3));
 
-        // add "adjacent" nexthops
+        /* add "adjacent" nexthops */
         let a1 = store.add_nhop(&NhopKey::expect_from("10.0.0.1"));
         let a2 = store.add_nhop(&NhopKey::expect_from("10.0.0.5"));
         let a3 = store.add_nhop(&NhopKey::expect_from("10.0.0.9"));
 
-        // add "non-adjacent" nexthops
+        /* add "non-adjacent" nexthops */
         let b1 = store.add_nhop(&NhopKey::expect_from("172.16.0.1"));
         let b2 = store.add_nhop(&NhopKey::expect_from("172.16.0.2"));
 
-        // add even further next-hop
+        /* add even farther next-hop */
         let n = store.add_nhop(&NhopKey::expect_from("7.0.0.1"));
 
         /* Add resolvers */
@@ -529,10 +654,10 @@ mod tests {
 
     /// Create a populated nhop store with inter-nexthop dependencies where some next-hops are partially resolved already
     fn build_test_nhop_store_partially_resolved() -> NhopStore {
-        // create store
+        /* create store */
         let mut store = NhopStore::new();
 
-        // add "adjacent" nexthops with interface resolved
+        /* add "adjacent" nexthops with interface resolved */
         let a1 = store.add_nhop(&NhopKey::with_addr_ifindex(
             &("10.0.0.1".parse().unwrap()),
             1,
@@ -593,6 +718,7 @@ mod tests {
         store
     }
 
+    #[traced_test]
     #[test]
     fn test_nhop_store_consistency() {
         /* create store */
@@ -604,6 +730,7 @@ mod tests {
 
         /* It has no extra reference */
         assert_eq!(store.get_nhop_rc_count(&key), 1);
+        store.dump();
 
         /* Delete nexthop. Since it has no extra reference it should be gone */
         store.del_nhop(&key);

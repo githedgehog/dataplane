@@ -144,9 +144,11 @@ impl IfTableWriter {
     }
     pub fn detach_interface(&mut self, ifindex: IfIndex) {
         self.0.append(IfTableChange::Detach(ifindex));
+        self.0.publish();
     }
     pub fn detach_interfaces_from_vrf(&mut self, fibid: FibId) {
         self.0.append(IfTableChange::DetachFromVrf(fibid));
+        self.0.publish();
     }
 }
 

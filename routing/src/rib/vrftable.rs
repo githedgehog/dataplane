@@ -11,6 +11,7 @@ use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
 use crate::fib::fibtype::FibId;
 use crate::interfaces::iftable::IfTable;
+use crate::interfaces::iftablerw::IfTableWriter;
 use net::vxlan::Vni;
 use std::collections::HashMap;
 
@@ -59,7 +60,7 @@ impl VrfTable {
 
         /* Forbid VRF addition if one exists with same id */
         if self.by_id.contains_key(&vrfid) {
-            error!("Failed to add VRF with id {vrfid}: a VRF with that id already exists");
+            error!("Can't add VRF with id {vrfid}: a VRF with that id already exists");
             return Err(RouterError::VrfExists(vrfid));
         }
 
@@ -69,9 +70,10 @@ impl VrfTable {
         /* Forbid addition of a vrf if one exists with same vni */
         if let Some(vni) = vni_checked {
             if self.by_vni.contains_key(&vni) {
-                error!("Failed to add VRF with Vni {vni}: Vni is already in use");
+                error!("Can't add VRF (id {vrfid}) with Vni {vni}: Vni is already in use");
                 return Err(RouterError::VniInUse(vni.as_u32()));
             }
+
             /* set vni */
             vrf.set_vni(vni);
         }
@@ -141,33 +143,69 @@ impl VrfTable {
     //////////////////////////////////////////////////////////////////
     pub fn remove_vrf(&mut self, vrfid: VrfId, iftable: &mut IfTable) -> Result<(), RouterError> {
         debug!("Removing VRF with vrfid {vrfid}...");
-        if let Some(vrf) = self.by_id.remove(&vrfid) {
-            if let Some(fibtablew) = &mut self.fibtable {
-                if vrf.fibw.is_some() {
-                    let fib_id = FibId::Id(vrfid);
-                    debug!("Deleting fib with id {fib_id}...");
-                    fibtablew.del_fib(&fib_id, vrf.vni);
-                }
-            }
-            iftable.detach_vrf_interfaces(&vrf);
-            if let Some(vni) = vrf.vni {
-                debug!("Unregistering vni {vni}");
-                self.by_vni.remove(&vni);
-            }
-            Ok(())
-        } else {
+        let Some(vrf) = self.by_id.remove(&vrfid) else {
             error!("No vrf with id {vrfid} exists");
-            Err(RouterError::NoSuchVrf)
+            return Err(RouterError::NoSuchVrf);
+        };
+        // Vrf was there. Delete the corresponding fib
+        if let Some(fibtablew) = &mut self.fibtable {
+            if vrf.fibw.is_some() {
+                let fib_id = FibId::Id(vrfid);
+                debug!("Deleting fib with id {fib_id}...");
+                fibtablew.del_fib(&fib_id, vrf.vni);
+            }
         }
+        // detach the interfaces
+        iftable.detach_vrf_interfaces(&vrf);
+
+        // if the VRF had a vni assigned, unregister it
+        if let Some(vni) = vrf.vni {
+            debug!("Unregistering vni {vni}");
+            self.by_vni.remove(&vni);
+        }
+        Ok(())
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Access a VRF, for read or write, from its id.
+    /// Remove the vrf with the given id using an Iftable writer
+    //////////////////////////////////////////////////////////////////
+    pub fn remove_vrf_good(
+        &mut self,
+        vrfid: VrfId,
+        iftablewr: &mut IfTableWriter,
+    ) -> Result<(), RouterError> {
+        debug!("Removing VRF with vrfid {vrfid}...");
+        let Some(vrf) = self.by_id.remove(&vrfid) else {
+            error!("No vrf with id {vrfid} exists");
+            return Err(RouterError::NoSuchVrf);
+        };
+        // Vrf was there. Delete the corresponding fib
+        if let Some(fibtablew) = &mut self.fibtable {
+            if vrf.fibw.is_some() {
+                let fib_id = FibId::Id(vrfid);
+                debug!("Deleting fib with id {fib_id}...");
+                fibtablew.del_fib(&fib_id, vrf.vni);
+                iftablewr.detach_interfaces_from_vrf(fib_id);
+            }
+        }
+        // if the VRF had a vni assigned, unregister it
+        if let Some(vni) = vrf.vni {
+            debug!("Unregistering vni {vni}");
+            self.by_vni.remove(&vni);
+        }
+        Ok(())
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Immutably access a VRF from its id.
     //////////////////////////////////////////////////////////////////
     pub fn get_vrf(&self, vrfid: VrfId) -> Result<&Vrf, RouterError> {
         self.by_id.get(&vrfid).ok_or(RouterError::NoSuchVrf)
     }
 
+    //////////////////////////////////////////////////////////////////
+    /// Mutably access a VRF from its id.
+    //////////////////////////////////////////////////////////////////
     pub fn get_vrf_mut(&mut self, vrfid: VrfId) -> Result<&mut Vrf, RouterError> {
         self.by_id.get_mut(&vrfid).ok_or(RouterError::NoSuchVrf)
     }
@@ -179,6 +217,14 @@ impl VrfTable {
         let vni = Vni::new_checked(vni).map_err(|_| RouterError::VniInvalid(vni))?;
         let vrfid = self.by_vni.get(&vni).ok_or(RouterError::NoSuchVrf)?;
         self.get_vrf(*vrfid)
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Lookup the vrf id of the vrf that has a certain vni
+    //////////////////////////////////////////////////////////////////
+    pub fn get_vrfid_by_vni(&self, vni: u32) -> Result<VrfId, RouterError> {
+        let vni = Vni::new_checked(vni).map_err(|_| RouterError::VniInvalid(vni))?;
+        self.by_vni.get(&vni).ok_or(RouterError::NoSuchVrf).copied()
     }
 
     //////////////////////////////////////////////////////////////////
@@ -368,7 +414,7 @@ mod tests {
 
         {
             // do lpm just to get access to a next-hop object
-            let (_prefix, route) = vrf.lpm(&mk_addr("192.168.0.1"));
+            let (_prefix, route) = vrf.lpm(mk_addr("192.168.0.1"));
             let nhop = &route.s_nhops[0].rc;
             println!("{nhop}");
 
@@ -382,7 +428,7 @@ mod tests {
 
         {
             // do lpm just to get access several next-hop objects
-            let (_prefix, route) = vrf.lpm(&mk_addr("8.0.0.1"));
+            let (_prefix, route) = vrf.lpm(mk_addr("8.0.0.1"));
 
             // we have to collect all fib entries
             let mut fibgroup = FibGroup::new();
@@ -396,7 +442,7 @@ mod tests {
 
         {
             // do lpm just to get access several next-hop objects
-            let (_prefix, route) = vrf.lpm(&mk_addr("7.0.0.1"));
+            let (_prefix, route) = vrf.lpm(mk_addr("7.0.0.1"));
 
             // we have to collect all fib entries
             let mut fibgroup = FibGroup::new();
@@ -421,7 +467,7 @@ mod tests {
         let mut fib = TestFib::new();
 
         {
-            let (_prefix, route) = vrf.lpm(&mk_addr("192.168.0.1"));
+            let (_prefix, route) = vrf.lpm(mk_addr("192.168.0.1"));
 
             // build the fib groups for all next-hops (only one here)
             // and merge them together in the same fib group
@@ -443,7 +489,7 @@ mod tests {
         }
 
         {
-            let (_prefix, route) = vrf.lpm(&mk_addr("192.168.1.1"));
+            let (_prefix, route) = vrf.lpm(mk_addr("192.168.1.1"));
 
             // build the fib groups for all next-hops (only one here)
             // and merge them together in the same fib group
@@ -467,7 +513,7 @@ mod tests {
 
         {
             // do lpm just to get access several next-hop objects
-            let (_prefix, route) = vrf.lpm(&mk_addr("7.0.0.1"));
+            let (_prefix, route) = vrf.lpm(mk_addr("7.0.0.1"));
 
             // we have to collect all fib entries
             let mut fibgroup = FibGroup::new();

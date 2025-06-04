@@ -204,9 +204,9 @@ impl Fib {
             match group.len() {
                 0 => {
                     warn!("Cannot forward packet: no fibgroups for route. This is a bug");
-                    return None;
+                    None
                 }
-                1 => Some(&group.entries()[0 as usize]),
+                1 => Some(&group.entries()[0_usize]),
                 k => {
                     debug!("Hashing pkt to choose one FibEntry out of {k}");
                     let entry_index = packet.packet_hash_ecmp(0, (k - 1) as u8);
@@ -231,7 +231,7 @@ impl Fib {
                     warn!("Can't forward packet: no groups for route to {prefix}. This is a bug");
                     (prefix, None)
                 }
-                1 => (prefix, Some(&group.entries()[0 as usize])),
+                1 => (prefix, Some(&group.entries()[0_usize])),
                 k => {
                     debug!("Hashing pkt to choose one FibEntry out of {k}");
                     let entry_index = packet.packet_hash_ecmp(0, (k - 1) as u8);

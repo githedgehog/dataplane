@@ -6,7 +6,7 @@
 use std::hash::Hash;
 use std::iter::Filter;
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::rc::Rc;
 use tracing::debug;
 
 #[cfg(test)]
@@ -92,10 +92,10 @@ impl Default for Route {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShimNhop {
     pub ext_vrf: Option<VrfId>,
-    pub rc: Arc<Nhop>,
+    pub rc: Rc<Nhop>,
 }
 impl ShimNhop {
-    fn new(ext_vrf: Option<VrfId>, rc: Arc<Nhop>) -> Self {
+    fn new(ext_vrf: Option<VrfId>, rc: Rc<Nhop>) -> Self {
         Self { ext_vrf, rc }
     }
 }
@@ -201,9 +201,12 @@ impl Vrf {
         debug!("Vrf '{}'(Id {}) has now vni {vni}", self.name, self.vrfid,);
     }
 
-    #[inline(always)]
+    #[inline]
     #[must_use]
-    fn register_shared_nhop(&mut self, nhop: &RouteNhop) -> Arc<Nhop> {
+    /////////////////////////////////////////////////////////////////////////
+    /// Add next-hop if it does not exist and get a refcounted reference to it.
+    /////////////////////////////////////////////////////////////////////////
+    fn register_shared_nhop(&mut self, nhop: &RouteNhop) -> Rc<Nhop> {
         self.nhstore.add_nhop(&nhop.key)
     }
 
@@ -219,19 +222,24 @@ impl Vrf {
                 Some(nhop.vrfid)
             };
             /* create shim next-hop */
-            let shim = ShimNhop::new(ext_vrf, shared.clone());
+            let shim = ShimNhop::new(ext_vrf, shared);
 
             /* add to route */
             route.s_nhops.push(shim);
         }
     }
 
-    #[inline(always)]
+    #[inline]
+    /////////////////////////////////////////////////////////////////////////
+    /// Declare next-hop is no longer needed. Nhop will be deleted if no one
+    /// needs it.
+    /////////////////////////////////////////////////////////////////////////
     fn deregister_shared_nhop(&mut self, shim: ShimNhop) {
         let key = shim.rc.key;
         drop(shim);
         self.nhstore.del_nhop(&key);
     }
+
     /////////////////////////////////////////////////////////////////////////
     /// De-register a shared next-hop for the route
     /////////////////////////////////////////////////////////////////////////
@@ -251,23 +259,20 @@ impl Vrf {
         nhops: &[RouteNhop],
         vrf0: Option<&Vrf>,
     ) {
+        // register next-hops. This mutates the route adding refernces to the stored next-hops
         self.register_shared_nhops(&mut route, nhops);
 
+        // resolve next-hops
+        let rvrf = vrf0.unwrap_or(self);
+        for shim in &route.s_nhops {
+            shim.rc.lazy_resolve(rvrf);
+        }
+
+        // store route
         match prefix {
             Prefix::IPV4(p) => self.routesv4.insert(*p, route.clone()),
             Prefix::IPV6(p) => self.routesv6.insert(*p, route.clone()),
         };
-        // NB. above, we inserted a clone of the route, which points to the same next-hops
-        // as the route we still own at this point. This clone is cheap and convenient
-        // so that here we have access to the next-hops and can modify them.
-        for shim in &route.s_nhops {
-            // unconditionally resolve all of the next-hops for the route
-            if let Some(vrf0) = vrf0 {
-                shim.rc.lazy_resolve(vrf0);
-            } else {
-                shim.rc.lazy_resolve(self);
-            }
-        }
     }
 
     pub fn add_route_complete(
@@ -279,26 +284,18 @@ impl Vrf {
         rstore: &RmacStore,
         vtep: &Vtep,
     ) {
+        // register next-hops. This mutates the route adding references to the stored next-hops
         self.register_shared_nhops(&mut route, nhops);
 
-        match prefix {
-            Prefix::IPV4(p) => self.routesv4.insert(*p, route.clone()),
-            Prefix::IPV6(p) => self.routesv6.insert(*p, route.clone()),
-        };
-        // NB. above, we inserted a clone of the route, which points to the same next-hops
-        // as the route we still own at this point. This clone is cheap and convenient
-        // so that here we have access to the next-hops and can modify them.
+        // resolve next-hops
+        let rvrf = vrf0.unwrap_or(self);
+
+        // resolve the next-hops of the received route
         for shim in &route.s_nhops {
-            // FIXME: we don't need to resolve next-hops all the time. That's precisely
-            // the purpose of the current design. Todo: determine when a next-hop has to be
-            // resolved (e.g. based on (Arc::strong_count(&shim.rc)).
-            if true {
-                if let Some(vrf0) = vrf0 {
-                    shim.rc.lazy_resolve(vrf0);
-                } else {
-                    shim.rc.lazy_resolve(self);
-                }
-                shim.rc.as_ref().refresh_fibgroup(rstore, vtep);
+            let refc = self.nhstore.get_nhop_rc_count(&shim.rc.key);
+            if refc == 2 {
+                shim.rc.lazy_resolve(rvrf);
+                shim.rc.as_ref().set_fibgroup(rstore, vtep);
             }
         }
 
@@ -314,18 +311,27 @@ impl Vrf {
             // add to fib
             fibw.add_fibgroup(*prefix, fibgroup);
         }
+
+        // store the route
+        match prefix {
+            Prefix::IPV4(p) => self.routesv4.insert(*p, route),
+            Prefix::IPV6(p) => self.routesv6.insert(*p, route),
+        };
+
+        // FIXME(fredi): we still lack the re-resolution of overlay next-hops in case
+        // underlay routing changes. Such changes will be addressed in subsequent PRs
+        // as they entail larger changes.
     }
 
     /////////////////////////////////////////////////////////////////////////
     // Route removal
     /////////////////////////////////////////////////////////////////////////
 
-    #[inline(always)]
+    #[inline]
     fn del_route_v4(&mut self, prefix: Ipv4Prefix) {
         // iptrie forbids removing the default route (at root).
         // So, we have to replace it with a dummy route with action Drop, to actually represent a lack of route.
         if prefix == Ipv4Prefix::default() {
-            // This is a bit of a hack
             if let Some(mut prior) = self.routesv4.insert(prefix, Route::default()) {
                 self.deregister_shared_nexthops(&mut prior);
             }
@@ -339,12 +345,11 @@ impl Vrf {
             self.deregister_shared_nexthops(found);
         }
     }
-    #[inline(always)]
+    #[inline]
     fn del_route_v6(&mut self, prefix: Ipv6Prefix) {
         // iptrie forbids removing the default route (at root).
         // So, we have to replace it with a dummy route with action Drop, to actually represent a lack of route.
         if prefix == Ipv6Prefix::default() {
-            // This is a bit of a hack
             if let Some(mut prior) = self.routesv6.insert(prefix, Route::default()) {
                 self.deregister_shared_nexthops(&mut prior);
             }
@@ -372,11 +377,11 @@ impl Vrf {
     // Route retrieval
     /////////////////////////////////////////////////////////////////////////
 
-    #[inline(always)]
+    #[inline]
     fn get_route_v4(&self, prefix: Ipv4Prefix) -> Option<&Route> {
         self.routesv4.get(&prefix)
     }
-    #[inline(always)]
+    #[inline]
     fn get_route_v6(&self, prefix: Ipv6Prefix) -> Option<&Route> {
         self.routesv6.get(&prefix)
     }
@@ -392,11 +397,11 @@ impl Vrf {
     // care should be taken modifying route internals
     /////////////////////////////////////////////////////////////////////////
 
-    #[inline(always)]
+    #[inline]
     fn get_route_v4_mut(&mut self, prefix: Ipv4Prefix) -> Option<&mut Route> {
         self.routesv4.get_mut(&prefix)
     }
-    #[inline(always)]
+    #[inline]
     fn get_route_v6_mut(&mut self, prefix: Ipv6Prefix) -> Option<&mut Route> {
         self.routesv6.get_mut(&prefix)
     }
@@ -439,22 +444,22 @@ impl Vrf {
     // LPM, single call
     /////////////////////////////////////////////////////////////////////////
 
-    #[inline(always)]
-    fn lpm_v4(&self, target: &Ipv4Prefix) -> (&Ipv4Prefix, &Route) {
-        self.routesv4.lookup(target)
+    #[inline]
+    fn lpm_v4(&self, target: Ipv4Prefix) -> (&Ipv4Prefix, &Route) {
+        self.routesv4.lookup(&target)
     }
-    #[inline(always)]
-    fn lpm_v6(&self, target: &Ipv6Prefix) -> (&Ipv6Prefix, &Route) {
-        self.routesv6.lookup(target)
+    #[inline]
+    fn lpm_v6(&self, target: Ipv6Prefix) -> (&Ipv6Prefix, &Route) {
+        self.routesv6.lookup(&target)
     }
-    pub fn lpm(&self, target: &IpAddr) -> (Prefix, &Route) {
-        match *target {
+    pub fn lpm(&self, target: IpAddr) -> (Prefix, &Route) {
+        match target {
             IpAddr::V4(a) => {
-                let (p, r) = self.lpm_v4(&a.into());
+                let (p, r) = self.lpm_v4(a.into());
                 (Prefix::IPV4(*p), r)
             }
             IpAddr::V6(a) => {
-                let (p, r) = self.lpm_v6(&a.into());
+                let (p, r) = self.lpm_v6(a.into());
                 (Prefix::IPV6(*p), r)
             }
         }
@@ -631,7 +636,7 @@ pub mod tests {
 
             /* since route is /32, it should resolve to itself */
             let target = prefix.as_address();
-            let (longest, best) = vrf.lpm(&target);
+            let (longest, best) = vrf.lpm(target);
             assert_eq!(longest, prefix);
             assert_eq!(best.distance, route.distance);
             assert_eq!(best.metric, route.metric);
@@ -650,7 +655,7 @@ pub mod tests {
 
             /* each route prefix should resolve only to default */
             let target = prefix.as_address();
-            let (longest, best) = vrf.lpm(&target);
+            let (longest, best) = vrf.lpm(target);
 
             assert_eq!(longest, Prefix::root_v4(), "Must resolve via default");
             assert_eq!(best.s_nhops.len(), 1);
