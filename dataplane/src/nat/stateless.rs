@@ -3,8 +3,6 @@
 
 use super::Nat;
 use super::TrieValue;
-use super::get_dst_addr;
-use super::get_src_addr;
 use crate::nat::IpList;
 use crate::nat::NatDirection;
 use net::headers::Net;
@@ -30,14 +28,14 @@ fn map_ip_dst_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
 impl Nat {
     fn find_src_nat_ranges(&self, net: &Net, vni: Vni) -> Option<&TrieValue> {
         let table = self.context.tables.get(&vni.as_u32())?;
-        let src_ip = &get_src_addr(net);
-        table.lookup_src_prefixes(src_ip)
+        let src_ip = net.src_addr();
+        table.lookup_src_prefixes(&src_ip)
     }
 
     fn find_dst_nat_ranges(&self, net: &Net, vni: Vni) -> Option<&TrieValue> {
         let table = self.context.tables.get(&vni.as_u32())?;
-        let dst_ip = &get_dst_addr(net);
-        table.lookup_dst_prefixes(dst_ip)
+        let dst_ip = net.dst_addr();
+        table.lookup_dst_prefixes(&dst_ip)
     }
 
     fn find_nat_ranges(&self, net: &mut Net, vni_opt: Option<Vni>) -> Option<&TrieValue> {
@@ -52,11 +50,11 @@ impl Nat {
     fn translate(&self, net: &mut Net, ranges: &TrieValue) -> Option<()> {
         let target_ip = match self.direction {
             NatDirection::SrcNat => {
-                let current_ip = get_src_addr(net);
+                let current_ip = net.src_addr();
                 map_ip_src_nat(ranges, &current_ip)
             }
             NatDirection::DstNat => {
-                let current_ip = get_dst_addr(net);
+                let current_ip = net.dst_addr();
                 map_ip_dst_nat(ranges, &current_ip)
             }
         };
