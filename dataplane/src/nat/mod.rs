@@ -88,7 +88,7 @@ impl Nat {
 
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
     /// function that we pass to [`Nat::process`] to iterate over packets.
-    fn process_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
+    fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
         // ----------------------------------------------------
         // TODO: Get VNI
         // Currently hardcoded as required to have the tests pass, for demonstration purposes
