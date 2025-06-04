@@ -307,7 +307,7 @@ impl Vrf {
             // build a fib group from the fib groups of all next-hops for this route
             let mut fibgroup = FibGroup::new();
             for nhop in &route.s_nhops {
-                let nhfibg = &*nhop.rc.fibgroup.read().unwrap();
+                let nhfibg = &*nhop.rc.fibgroup.borrow();
                 fibgroup.extend(nhfibg);
             }
 

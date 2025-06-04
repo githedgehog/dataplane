@@ -89,11 +89,7 @@ impl Nhop {
     // resolve
     pub(crate) fn refresh_fibgroup(&self, rstore: &RmacStore, vtep: &Vtep) {
         self.resolve_instructions(rstore, vtep);
-        if let Ok(mut fibgroup) = self.fibgroup.write() {
-            *fibgroup = self.as_fib_entry_group_lazy();
-        } else {
-            panic!("poisoned");
-        }
+        self.fibgroup.replace(self.as_fib_entry_group_lazy());
     }
 }
 

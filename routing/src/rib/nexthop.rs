@@ -33,7 +33,7 @@ pub struct Nhop {
     pub(crate) key: NhopKey,
     pub(crate) resolvers: RwLock<Vec<Arc<Nhop>>>,
     pub(crate) instructions: RefCell<Vec<PktInstruction>>,
-    pub fibgroup: RwLock<FibGroup>, // Adding RWlock to allow int mut. Will replace by rc & Refcell
+    pub(crate) fibgroup: RefCell<FibGroup>,
 }
 
 #[derive(Debug, Default, Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
@@ -117,9 +117,10 @@ impl NhopKey {
 }
 
 /* Implement some traits needed to use Nhop as set element of BtreeSet. Since a Nhop can
-   be internally mutated, we have to implement these manually to leave the resolvers out.
+   be internally mutated, we have to implement these manually to leave the resolvers,
+   instructions and fibgroup out, as those may change.
    The implementations leverage the derived trait implementations for the `NhopKey`
-   (contained in the Nhop).
+   contained in the Nhop.
 */
 impl Eq for Nhop {}
 
@@ -156,7 +157,7 @@ impl Nhop {
             key: *key,
             resolvers: RwLock::new(Vec::new()),
             instructions: RefCell::new(Vec::with_capacity(2)),
-            fibgroup: RwLock::new(FibGroup::new()),
+            fibgroup: RefCell::new(FibGroup::new()),
         }
     }
 
@@ -183,16 +184,16 @@ impl Nhop {
             return;
         }
         if let Some(a) = self.key.address {
-            trace!("Resolving {} with vrf '{}' (Id {})", a, vrf.name, vrf.vrfid);
+            trace!("Resolving {a} with vrf '{}' (Id {})", vrf.name, vrf.vrfid);
             if let Ok(mut resolvers) = self.resolvers.write() {
                 resolvers.clear();
                 let (prefix, route) = vrf.lpm(&a);
-                trace!("matched route is for {}", prefix);
+                trace!("matched route is for {prefix}");
                 for nh in &route.s_nhops {
                     if *nh.rc == *self {
                         error!(
-                            "Warning next-hop resolution loop!: {} resolves with route to {} via {}",
-                            a, prefix, nh.rc
+                            "Warning next-hop resolution loop!: {a} resolves with route to {prefix} via {}",
+                            nh.rc
                         );
                         continue;
                     }
