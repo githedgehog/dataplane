@@ -97,17 +97,17 @@ impl Display for Nhop {
 }
 
 fn fmt_nhop_resolvers(f: &mut std::fmt::Formatter<'_>, rc: &Nhop, depth: u8) -> std::fmt::Result {
-    if let Ok(resolvers) = rc.resolvers.read() {
-        let tab = 6 * depth as usize;
-        let indent = " ".repeat(tab);
-        if !resolvers.is_empty() {
-            for r in resolvers.iter() {
-                writeln!(f, "{} {}", indent, r.key)?;
-                fmt_nhop_resolvers(f, r, depth + 1)?;
-            }
+    let Ok(resolvers) = rc.resolvers.try_borrow() else {
+        warn!("Try-borrow on nhop resolvers failed!");
+        return Ok(());
+    };
+    let tab = 6 * depth as usize;
+    let indent = " ".repeat(tab);
+    if !resolvers.is_empty() {
+        for r in resolvers.iter() {
+            writeln!(f, "{indent} {}", r.key)?;
+            fmt_nhop_resolvers(f, r, depth + 1)?;
         }
-    } else {
-        error!("Poisoned lock!");
     }
     Ok(())
 }
@@ -144,14 +144,13 @@ fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Arc<Nhop>, depth: u8) -> s
     )?;
     //    fmt_nhop_instruction(f, rc)?;
 
-    if let Ok(resolvers) = rc.resolvers.read() {
-        for r in resolvers.iter() {
-            fmt_nhop_rec(f, r, depth + 1)?;
-        }
-    } else {
-        error!("Poisoned lock!");
+    let Ok(resolvers) = rc.resolvers.try_borrow() else {
+        error!("Try-borrow on next-hop resolvers failed!");
+        return Ok(());
+    };
+    for r in resolvers.iter() {
+        fmt_nhop_rec(f, r, depth + 1)?;
     }
-
     //    if let Ok(fg) = rc.as_ref().fibgroup.read() {
     //        writeln!(f, "FibG {}", fg)?;
     //    }

@@ -18,7 +18,7 @@ use std::option::Option;
 use std::cell::RefCell;
 #[cfg(test)]
 use std::str::FromStr;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tracing::{error, trace};
 
 #[derive(Debug)]
@@ -28,10 +28,10 @@ pub(crate) struct NhopStore(BTreeSet<Arc<Nhop>>);
 
 #[derive(Debug)]
 /// A next-hop object that can be shared by multiple routes and that can have
-/// references to other next-hops in this (or other?) table.
+/// references to other next-hops in this (or other) table.
 pub struct Nhop {
     pub(crate) key: NhopKey,
-    pub(crate) resolvers: RwLock<Vec<Arc<Nhop>>>,
+    pub(crate) resolvers: RefCell<Vec<Arc<Nhop>>>,
     pub(crate) instructions: RefCell<Vec<PktInstruction>>,
     pub(crate) fibgroup: RefCell<FibGroup>,
 }
@@ -155,7 +155,7 @@ impl Nhop {
     fn new_from_key(key: &NhopKey) -> Self {
         Self {
             key: *key,
-            resolvers: RwLock::new(Vec::new()),
+            resolvers: RefCell::new(Vec::new()),
             instructions: RefCell::new(Vec::with_capacity(2)),
             fibgroup: RefCell::new(FibGroup::new()),
         }
@@ -170,41 +170,37 @@ impl Nhop {
     ///     the 'routing resolution' semantic is implicitly assumed in the functions that allow resolving
     ///     nexthops from such references. In other words, the "resolution" in this module will be as (in)
     ///     correct as those with explicit recursion, as long as the references are kept up to date.
-    ///   * **WARNING**: This method takes a lock for writing on the resolvers
     //////////////////////////////////////////////////////////////////////////////////////////////////////
     pub fn add_resolver(&self, resolver: Arc<Nhop>) -> &Self {
-        self.resolvers.write().expect("poisoned").push(resolver);
+        if let Ok(mut resolvers) = self.resolvers.try_borrow_mut() {
+            resolvers.push(resolver);
+        };
+        error!("Failed to add resolver: try-borrow-mut failed!");
         self
     }
 
     /// Resolve a next-hop with a VRF, non-recursively, assuming that its resolvers are resolved already
-    /// **WARNING**: This method takes a lock for writing on the resolvers
     pub fn lazy_resolve(&self, vrf: &Vrf) {
         if self.key.ifindex.is_some() || self.key.fwaction == FwAction::Drop {
             return;
         }
         if let Some(a) = self.key.address {
             trace!("Resolving {a} with vrf '{}' (Id {})", vrf.name, vrf.vrfid);
-            if let Ok(mut resolvers) = self.resolvers.write() {
-                resolvers.clear();
-                let (prefix, route) = vrf.lpm(&a);
-                trace!("matched route is for {prefix}");
-                for nh in &route.s_nhops {
-                    if *nh.rc == *self {
-                        error!(
-                            "Warning next-hop resolution loop!: {a} resolves with route to {prefix} via {}",
-                            nh.rc
-                        );
-                        continue;
-                    }
-                    trace!("Adding resolver {nh}");
-                    // N.B. here we don't call self.add_resolver() since that takes a write lock
-                    // and we have already taken it here. Better to take it here and not per resolver.
-                    resolvers.push(nh.rc.clone());
+            let mut resolvers = Vec::new();
+            let (prefix, route) = vrf.lpm(&a);
+            trace!("matched route is for {prefix}");
+            for nh in &route.s_nhops {
+                if *nh.rc == *self {
+                    error!(
+                        "Warning nhop resolution loop!: {a} resolves with route to {prefix} via {}",
+                        nh.rc
+                    );
+                    continue;
                 }
-            } else {
-                panic!("Poisoned");
+                trace!("Adding resolver {nh}");
+                resolvers.push(nh.rc.clone());
             }
+            self.resolvers.replace(resolvers);
         } else {
             // nothing to do
         }
@@ -212,7 +208,7 @@ impl Nhop {
 
     /// Auxiliary recursive method used by `Nhop::quick_resolve()`.
     fn quick_resolve_rec(&self, result: &mut BTreeSet<NhopKey>) {
-        if let Ok(resolvers_of_this) = self.resolvers.write() {
+        if let Ok(resolvers_of_this) = self.resolvers.try_borrow_mut() {
             if resolvers_of_this.is_empty() {
                 /* next-hop has no resolvers */
                 if self.key.ifindex.is_some() || self.key.fwaction == FwAction::Drop {
@@ -243,6 +239,8 @@ impl Nhop {
                     }
                 }
             }
+        } else {
+            error!("Try-borrow-mut failed on resolvers!");
         }
     }
 
@@ -354,12 +352,14 @@ impl NhopStore {
                 /* N.B. this mutable borrow should be "safe" in spite of the recursion because
                 the only case where it wouldn't would be if borrow_xx() was called for the same
                 nhop, but that should happen if its refcount is 1 and we don't keep other refs around */
-                if let Ok(mut resolvers) = existing.resolvers.write() {
+                if let Ok(mut resolvers) = existing.resolvers.try_borrow_mut() {
                     while let Some(r) = resolvers.pop() {
                         let key = r.key; /* copy the key since we'll */
                         drop(r); /* ....drop the Rc */
                         self.del_nhop(&key);
                     }
+                } else {
+                    error!("Try-borrow-mut failed on resolvers while deleting next-hop!");
                 }
             }
         }

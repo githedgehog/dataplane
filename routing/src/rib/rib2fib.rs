@@ -64,19 +64,17 @@ impl Nhop {
         entry.extend_from_slice(&instructions);
 
         // check the instructions of the resolving next-hops
-        if let Ok(resolvers) = self.resolvers.read() {
+        if let Ok(resolvers) = self.resolvers.try_borrow() {
             if resolvers.is_empty() {
-                // squash entry before committing it to the group
-                entry.squash();
-                // add fib entry to group
-                fibgroup.add(entry);
+                entry.squash(); /* squash entry before committing it to the group */
+                fibgroup.add(entry); /* add fib entry to group */
             } else {
                 for resolver in resolvers.iter() {
                     resolver._as_fib_entry_group_lazy(fibgroup, entry.clone());
                 }
             }
         } else {
-            panic!("Poisoned");
+            warn!("Warning, try-borrow failed!!!");
         }
     }
 
@@ -186,7 +184,7 @@ impl Nhop {
         if let Some(inst) = self.as_pkt_instruction(prev) {
             entry.add(inst);
         }
-        if let Ok(resolvers) = self.resolvers.read() {
+        if let Ok(resolvers) = self.resolvers.try_borrow() {
             if resolvers.is_empty() {
                 fibgroup.add(entry);
             } else {
@@ -195,7 +193,7 @@ impl Nhop {
                 }
             }
         } else {
-            panic!("Poisoned");
+            warn!("Try-borrow failed on resolvers!")
         }
     }
 
