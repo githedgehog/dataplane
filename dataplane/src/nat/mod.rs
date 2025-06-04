@@ -24,7 +24,6 @@
 //!
 //! The module is subject to the following limitations:
 //!
-//! - Only stateless NAT is supported (no stateful NAT)
 //! - Only NAT44 is supported (no NAT46, NAT64, or NAT66)
 //! - Either source or destination NAT is supported, only one at a time, by a given [`Nat`] object.
 //!   To perform NAT for different address fields, instantiate multiple [`Nat`] objects.
@@ -77,7 +76,6 @@ pub enum NatDirection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NatMode {
     Stateless,
-    #[allow(dead_code)]
     Stateful,
 }
 
@@ -106,16 +104,6 @@ impl Nat {
     /// Updates the VNI tables in the NAT processor.
     pub fn update_tables(&mut self, tables: NatTables) {
         self.context = tables;
-    }
-
-    fn nat_supported(&self) -> bool {
-        // We only support stateless NAT for now
-        match self.mode {
-            NatMode::Stateless => (),
-            NatMode::Stateful => return false,
-        }
-
-        true
     }
 
     fn find_src_nat_ranges(&self, net: &Net, vni: Vni) -> Option<&TrieValue> {
@@ -188,13 +176,16 @@ impl Nat {
         Some(())
     }
 
+    fn stateless_nat(&self, net: &mut Net, vni: Option<Vni>) {
+        let Some(ranges) = self.find_nat_ranges(net, vni) else {
+            return;
+        };
+        self.translate(net, ranges);
+    }
+
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
     /// function that we pass to [`Nat::process`] to iterate over packets.
     fn process_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
-        if !self.nat_supported() {
-            return;
-        }
-
         // ----------------------------------------------------
         // TODO: Get VNI
         // Currently hardcoded as required to have the tests pass, for demonstration purposes
@@ -204,10 +195,10 @@ impl Nat {
             return;
         };
 
-        let Some(ranges) = self.find_nat_ranges(net, vni) else {
-            return;
-        };
-        self.translate(net, ranges);
+        match self.mode {
+            NatMode::Stateless => self.stateless_nat(net, vni),
+            NatMode::Stateful => todo!(),
+        }
     }
 }
 
