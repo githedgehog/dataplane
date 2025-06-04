@@ -28,7 +28,7 @@ use net::vxlan::Vni;
 use std::fmt::Display;
 use std::sync::Arc;
 
-use tracing::error;
+use tracing::{error, warn};
 
 //================================= Common ==========================//
 fn fmt_opt_value<T: Display>(
@@ -113,16 +113,16 @@ fn fmt_nhop_resolvers(f: &mut std::fmt::Formatter<'_>, rc: &Nhop, depth: u8) -> 
 }
 
 fn fmt_nhop_instruction(f: &mut std::fmt::Formatter<'_>, rc: &Nhop) -> std::fmt::Result {
-    if let Ok(instructions) = &rc.instructions.read() {
-        if instructions.is_empty() {
-            return Ok(());
-        }
-        writeln!(f, "  Fib Instructions:")?;
-        for (i, inst) in instructions.iter().enumerate() {
-            writeln!(f, "   [{i}] {inst}")?;
-        }
-    } else {
-        error!("Poisoned lock!");
+    let Ok(instructions) = &rc.instructions.try_borrow() else {
+        warn!("Try-borrow failed on nhop instruction!");
+        return Ok(());
+    };
+    if instructions.is_empty() {
+        return Ok(());
+    }
+    writeln!(f, "  Fib Instructions:")?;
+    for (i, inst) in instructions.iter().enumerate() {
+        writeln!(f, "   [{i}] {inst}")?;
     }
     Ok(())
 }

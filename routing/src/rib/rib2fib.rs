@@ -48,29 +48,19 @@ impl Nhop {
     /// In this implementation, the next-hop owns the packet instructions
     /// So, they are not shared and have to be resolved per next-hop.
     fn resolve_instructions(&self, rstore: &RmacStore, vtep: &Vtep) {
-        if let Ok(mut instructions) = self.instructions.write() {
-            // build the instruction vector. This drops any prior vector
-            *instructions = self.build_pkt_instructions();
-            // resolve each PktInstruction
-            for inst in instructions.iter_mut() {
-                inst.resolve(rstore, vtep);
-            }
-        }
-    }
-
-    /// N.B. provides clone: TODO: remove this when RWlock is removed
-    fn get_packet_instructions(&self) -> Vec<PktInstruction> {
-        if let Ok(instructions) = self.instructions.read() {
-            instructions.clone()
-        } else {
-            panic!("poisoned") // changing this because we'll remove the locking
+        //let instructions = self.instructions.borrow_mut();
+        // build the instruction vector. This drops any prior vector
+        self.instructions.replace(self.build_pkt_instructions());
+        // resolve each PktInstruction
+        for inst in self.instructions.borrow_mut().iter_mut() {
+            inst.resolve(rstore, vtep);
         }
     }
 
     /// Recursive helper to build [`FibGroup`] for a next-hop
     fn _as_fib_entry_group_lazy(&self, fibgroup: &mut FibGroup, mut entry: FibEntry) {
         // add the instructions for a next-hop (already completed) to the entry
-        let instructions = self.get_packet_instructions();
+        let instructions = self.instructions.borrow().clone();
         entry.extend_from_slice(&instructions);
 
         // check the instructions of the resolving next-hops

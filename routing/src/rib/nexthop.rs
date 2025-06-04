@@ -15,6 +15,7 @@ use std::hash::Hash;
 use std::net::IpAddr;
 use std::option::Option;
 
+use std::cell::RefCell;
 #[cfg(test)]
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -31,7 +32,7 @@ pub(crate) struct NhopStore(BTreeSet<Arc<Nhop>>);
 pub struct Nhop {
     pub(crate) key: NhopKey,
     pub(crate) resolvers: RwLock<Vec<Arc<Nhop>>>,
-    pub(crate) instructions: RwLock<Vec<PktInstruction>>,
+    pub(crate) instructions: RefCell<Vec<PktInstruction>>,
     pub fibgroup: RwLock<FibGroup>, // Adding RWlock to allow int mut. Will replace by rc & Refcell
 }
 
@@ -154,7 +155,7 @@ impl Nhop {
         Self {
             key: *key,
             resolvers: RwLock::new(Vec::new()),
-            instructions: RwLock::new(Vec::with_capacity(2)),
+            instructions: RefCell::new(Vec::with_capacity(2)),
             fibgroup: RwLock::new(FibGroup::new()),
         }
     }
