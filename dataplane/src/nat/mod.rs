@@ -32,6 +32,7 @@
 //!   be equal to the total number of publicly exposed addresses in this object.
 
 mod iplist;
+mod stateful;
 mod stateless;
 
 use crate::nat::iplist::IpList;
@@ -99,7 +100,7 @@ impl Nat {
 
         match self.mode {
             NatMode::Stateless => self.stateless_nat(net, vni),
-            NatMode::Stateful => todo!(),
+            NatMode::Stateful => self.stateful_nat(net, vni),
         }
     }
 }
