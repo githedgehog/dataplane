@@ -37,30 +37,10 @@ mod stateless;
 use crate::nat::iplist::IpList;
 use mgmt::models::internal::nat::tables::{NatTables, TrieValue};
 use net::buffer::PacketBufferMut;
-use net::headers::Net;
 use net::headers::{TryHeadersMut, TryIpMut};
 use net::packet::Packet;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
-use std::net::IpAddr;
-
-/// A helper to retrieve the source IP address from a [`Net`] object, independently of the IP
-/// version.
-fn get_src_addr(net: &Net) -> IpAddr {
-    match net {
-        Net::Ipv4(hdr) => IpAddr::V4(hdr.source().inner()),
-        Net::Ipv6(hdr) => IpAddr::V6(hdr.source().inner()),
-    }
-}
-
-/// A helper to retrieve the destination IP address from a [`Net`] object, independently of the IP
-/// version.
-fn get_dst_addr(net: &Net) -> IpAddr {
-    match net {
-        Net::Ipv4(hdr) => IpAddr::V4(hdr.destination()),
-        Net::Ipv6(hdr) => IpAddr::V6(hdr.destination()),
-    }
-}
 
 /// Indicates whether a [`Nat`] processor should perform source NAT or destination NAT.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,7 +125,7 @@ mod tests {
     use mgmt::models::internal::nat::tables::{NatTables, PerVniTable};
     use net::headers::TryIpv4;
     use net::packet::test_utils::build_test_ipv4_packet;
-    use std::net::Ipv4Addr;
+    use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
 
     fn addr_v4(s: &str) -> IpAddr {

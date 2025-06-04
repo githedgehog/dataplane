@@ -22,6 +22,7 @@ use crate::vxlan::Vxlan;
 use arrayvec::ArrayVec;
 use core::fmt::Debug;
 use derive_builder::Builder;
+use std::net::IpAddr;
 use std::num::NonZero;
 use tracing::debug;
 
@@ -44,6 +45,22 @@ pub struct Headers {
 pub enum Net {
     Ipv4(Ipv4),
     Ipv6(Ipv6),
+}
+
+impl Net {
+    pub fn dst_addr(&self) -> IpAddr {
+        match self {
+            Net::Ipv4(ip) => IpAddr::V4(ip.destination()),
+            Net::Ipv6(ip) => IpAddr::V6(ip.destination()),
+        }
+    }
+
+    pub fn src_addr(&self) -> IpAddr {
+        match self {
+            Net::Ipv4(ip) => IpAddr::V4(ip.source().inner()),
+            Net::Ipv6(ip) => IpAddr::V6(ip.source().inner()),
+        }
+    }
 }
 
 impl DeParse for Net {
