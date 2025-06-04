@@ -4,13 +4,13 @@
 //! State objects to keep adjacency information
 
 use crate::interfaces::interface::IfIndex;
+use ahash::RandomState;
 use dplane_rpc::msg::Ifindex;
 use net::eth::mac::Mac;
 use std::collections::HashMap;
 use std::net::IpAddr;
 
 #[derive(Clone)]
-#[allow(dead_code)]
 /// Object that represents an adjacency or ARP/ND entry
 pub struct Adjacency {
     address: IpAddr,
@@ -18,7 +18,6 @@ pub struct Adjacency {
     mac: Mac,
 }
 
-#[allow(dead_code)]
 impl Adjacency {
     /// Create an [`Adjacency`] object
     #[must_use]
@@ -50,14 +49,12 @@ impl Adjacency {
 
 /// A table of [`Adjacency`]ies
 #[derive(Default, Clone)]
-pub struct AdjacencyTable(HashMap<(IfIndex, IpAddr), Adjacency>);
+pub struct AdjacencyTable(HashMap<(IfIndex, IpAddr), Adjacency, RandomState>);
 
-#[allow(dead_code)]
 impl AdjacencyTable {
     #[must_use]
     pub fn new() -> Self {
-        Self(HashMap::new())
-        // Todo: use a fast hasher
+        Self(HashMap::with_hasher(RandomState::with_seed(0)))
     }
     #[must_use]
     pub fn len(&self) -> usize {
@@ -90,7 +87,6 @@ impl AdjacencyTable {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 #[rustfmt::skip]
 pub mod tests {
     use super::*;

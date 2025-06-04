@@ -165,7 +165,6 @@ impl PktInstruction {
 }
 
 #[cfg(test)] /* Only testing */
-#[allow(dead_code)]
 impl Nhop {
     /// Internal: build a single [`PktInstruction`] for a given next-hop
     /// This is old. This is when we collect first all the instructions and then
@@ -226,7 +225,6 @@ impl Nhop {
 }
 
 #[cfg(test)] /* Only testing */
-#[allow(dead_code)]
 impl FibEntry {
     pub fn resolve(&mut self, rstore: &RmacStore, vtep: &Vtep) {
         for inst in self.instructions.iter_mut() {
@@ -236,7 +234,6 @@ impl FibEntry {
 }
 
 #[cfg(test)] /* Only testing */
-#[allow(dead_code)]
 impl FibGroup {
     pub fn resolve(&mut self, rstore: &RmacStore, vtep: &Vtep) {
         for entry in self.entries.iter_mut() {

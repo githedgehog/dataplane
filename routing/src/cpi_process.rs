@@ -334,7 +334,6 @@ fn handle_rpc_msg(csock: &mut RpcCachedSock, peer: &SocketAddr, msg: &RpcMsg, db
 }
 
 /* process rx data from UX sock */
-#[allow(unused)]
 pub fn process_rx_data(
     csock: &mut RpcCachedSock,
     peer: &SocketAddr,

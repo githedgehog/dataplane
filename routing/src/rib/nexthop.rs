@@ -54,7 +54,6 @@ pub struct NhopKey {
     pub fwaction: FwAction,
 }
 
-#[allow(dead_code)]
 impl NhopKey {
     //////////////////////////////////////////////////////////////////
     /// Build a next-hop key
@@ -146,7 +145,6 @@ impl Hash for Nhop {
     }
 }
 
-#[allow(dead_code)]
 #[allow(clippy::mutable_key_type)]
 impl Nhop {
     //////////////////////////////////////////////////////////////////
@@ -258,7 +256,6 @@ impl Nhop {
     }
 }
 
-#[allow(dead_code)]
 impl NhopStore {
     //////////////////////////////////////////////////////////////////
     /// Create a next-hop map object.
@@ -295,6 +292,7 @@ impl NhopStore {
     //////////////////////////////////////////////////////////////////
     /// Tell if there exists a next-hop with a given key.
     //////////////////////////////////////////////////////////////////
+    #[allow(unused)]
     #[must_use]
     pub(crate) fn contains(&self, key: &NhopKey) -> bool {
         let nh = Nhop::new_from_key(key);
@@ -307,6 +305,7 @@ impl NhopStore {
     /// thereby not increasing the reference count of the next-hop.
     //////////////////////////////////////////////////////////////////
     #[must_use]
+    #[allow(unused)]
     pub(crate) fn get_nhop(&self, key: &NhopKey) -> Option<&Arc<Nhop>> {
         let nh = Nhop::new_from_key(key);
         self.0.get(&nh)
@@ -391,7 +390,6 @@ impl NhopStore {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 mod tests {
     use crate::rib::nexthop::*;
     use std::sync::Arc;

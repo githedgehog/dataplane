@@ -7,7 +7,6 @@ use crate::interfaces::interface::IfIndex;
 use crate::rib::encapsulation::Encapsulation;
 use std::net::IpAddr;
 
-#[allow(dead_code)]
 #[derive(Debug, Default, Clone, Ord, PartialOrd, Eq, PartialEq)]
 /// An `EgressObject` indicates the interface over which a packet
 /// has to be sent and, optionally, a next-hop ip address. If
@@ -49,8 +48,6 @@ impl EgressObject {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Default, Clone, Ord, PartialOrd, Eq, PartialEq)]
 /// A `FibGroup` is a set of [`FibEntry`]s that may be used to forward an IP packet.
 /// A single entry may be used for each packet. In spite of this being a set, we implement it with a
 /// vector for the following reasons:
@@ -58,11 +55,11 @@ impl EgressObject {
 ///   * a vector allows us to mutably iterate over the elements easily as compared to `BtreeSet` or a `HashSet`.
 ///   * we do not merge duplicates. This does not pose any functional issue and may be exploited
 ///     to weigh paths on the forwarding path.
+#[derive(Debug, Default, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct FibGroup {
     pub(crate) entries: Vec<FibEntry>,
 }
 
-#[allow(dead_code)]
 impl FibGroup {
     #[must_use]
     pub fn new() -> Self {
@@ -113,7 +110,6 @@ pub struct FibEntry {
     pub(crate) instructions: Vec<PktInstruction>,
 }
 
-#[allow(dead_code)]
 impl FibEntry {
     #[must_use]
     pub fn new() -> Self {

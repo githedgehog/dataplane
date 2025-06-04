@@ -102,7 +102,6 @@ impl ShimNhop {
 
 #[allow(unused)]
 pub struct Vrf {
-    #[allow(unused)]
     pub name: String,
     pub vrfid: VrfId,
     pub(crate) routesv4: RTrieMap<Ipv4Prefix, Route>,
@@ -115,7 +114,6 @@ pub struct Vrf {
 pub type RouteV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &Route)) -> bool>;
 pub type RouteV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &Route)) -> bool>;
 
-#[allow(dead_code)]
 impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     /// Create a new VRF with the given name and vrfId
@@ -483,7 +481,6 @@ impl Vrf {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 #[rustfmt::skip]
 pub mod tests {
     use super::*;

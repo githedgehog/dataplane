@@ -16,7 +16,6 @@ pub enum CpiCtlMsg {
 }
 
 // An object to send control messages to the cpi/router
-#[allow(unused)]
 pub struct RouterCtlSender(tokio::sync::mpsc::Sender<CpiCtlMsg>);
 impl RouterCtlSender {
     pub(crate) fn new(tx: Sender<CpiCtlMsg>) -> Self {

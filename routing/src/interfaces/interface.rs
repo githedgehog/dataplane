@@ -22,14 +22,12 @@ pub type IfIndex = u32;
 /// An Ipv4 or Ipv6 address and mask configured on an interface
 pub type IfAddress = (IpAddr, u8);
 
-#[allow(dead_code)]
 #[derive(Clone)]
 /// Specific data for ethernet interfaces
 pub struct IfDataEthernet {
     pub mac: Mac,
 }
 
-#[allow(dead_code)]
 #[derive(Clone)]
 /// Specific data for vlan (sub)interfaces
 pub struct IfDataDot1q {
@@ -38,7 +36,6 @@ pub struct IfDataDot1q {
 }
 
 /// Trait that interfaces having a [`Mac`] should implement.
-#[allow(dead_code)]
 trait HasMac {
     fn get_mac(&self) -> &Mac;
 }
@@ -56,7 +53,6 @@ impl HasMac for IfDataDot1q {
 
 /// Type that contains data specific to the type of interface
 #[derive(Clone)]
-#[allow(dead_code)]
 pub enum IfType {
     Unknown,
     Ethernet(IfDataEthernet),
@@ -65,7 +61,6 @@ pub enum IfType {
     Vxlan, /* It is not clear if we'll model it like this */
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Default, Eq, PartialEq)]
 pub enum IfState {
     #[default]
@@ -74,7 +69,6 @@ pub enum IfState {
     Up = 2,
 }
 
-#[allow(unused)]
 #[derive(Clone)]
 pub enum Attachment {
     VRF(FibReader),
@@ -82,7 +76,6 @@ pub enum Attachment {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 /// An object representing a network interface and its state
 pub struct Interface {
     pub name: String,
@@ -95,7 +88,6 @@ pub struct Interface {
     pub attachment: Option<Attachment>,
 }
 
-#[allow(dead_code)]
 impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Create a new interface object.

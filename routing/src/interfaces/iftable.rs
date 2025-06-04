@@ -19,7 +19,6 @@ pub struct IfTable {
     by_index: HashMap<u32, Interface, RandomState>,
 }
 
-#[allow(dead_code)]
 #[allow(clippy::new_without_default)]
 impl IfTable {
     //////////////////////////////////////////////////////////////////

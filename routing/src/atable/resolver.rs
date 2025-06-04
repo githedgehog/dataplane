@@ -40,7 +40,6 @@ pub struct AtResolver {
     atabler: AtableReader,
 }
 
-#[allow(unused)]
 impl AtResolver {
     /// Create an ARP table resolver. Returns an [`AtResolver`] object
     /// and an adjacency table reader [`AtableReader`]

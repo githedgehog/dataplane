@@ -141,7 +141,6 @@ impl Route {
     }
 }
 
-#[allow(unused)]
 /// Util to tell if a route is EVPN - heuristic
 pub fn is_evpn_route(iproute: &IpRoute) -> bool {
     if iproute.rtype != RouteType::Bgp || iproute.nhops.is_empty() {
@@ -151,7 +150,6 @@ pub fn is_evpn_route(iproute: &IpRoute) -> bool {
     }
 }
 
-#[allow(unused)]
 impl Vrf {
     pub fn add_route_rpc(
         &mut self,

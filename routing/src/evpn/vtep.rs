@@ -13,25 +13,10 @@ pub struct Vtep {
     mac: Option<Mac>,
 }
 
-#[allow(dead_code)]
 impl Vtep {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-    #[must_use]
-    pub fn with_ip(ip: IpAddr) -> Self {
-        Self {
-            ip: Some(ip),
-            mac: None,
-        }
-    }
-    #[must_use]
-    pub fn with_mac(mac: Mac) -> Self {
-        Self {
-            ip: None,
-            mac: Some(mac),
-        }
     }
     #[must_use]
     pub fn with_ip_and_mac(ip: IpAddr, mac: Mac) -> Self {

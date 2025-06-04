@@ -20,7 +20,6 @@ pub struct VxlanEncapsulation {
     pub dmac: Option<Mac>,
 }
 
-#[allow(dead_code)]
 impl VxlanEncapsulation {
     #[must_use]
     pub fn new(vni: Vni, remote: IpAddr) -> Self {
@@ -34,7 +33,6 @@ impl VxlanEncapsulation {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Eq, PartialEq, Clone, Copy, Hash, PartialOrd, Ord)]
 pub enum Encapsulation {
     Vxlan(VxlanEncapsulation),

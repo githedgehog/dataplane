@@ -5,7 +5,6 @@
 
 use thiserror::Error;
 
-#[allow(dead_code)]
 #[derive(Error, Debug, PartialEq)]
 pub enum RouterError {
     #[error("No interface with ifindex {0}")]

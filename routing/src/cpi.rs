@@ -96,7 +96,6 @@ fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
     Ok(sock)
 }
 
-#[allow(unused)]
 #[allow(clippy::too_many_lines)]
 #[allow(clippy::missing_errors_doc)]
 pub fn start_cpi(
@@ -182,11 +181,13 @@ pub fn start_cpi(
                         if event.is_writable() {
                             cached_sock.flush_out_fast();
                             if !cached_sock.interests().is_writable() {
-                                poller.registry().reregister(
+                                if let Err(e) = poller.registry().reregister(
                                     &mut SourceFd(&cached_sock.get_raw_fd()),
                                     CPSOCK,
                                     cached_sock.interests(),
-                                );
+                                ) {
+                                    error!("Too bad: poller registry failed: {e}");
+                                }
                             }
                         }
                     }

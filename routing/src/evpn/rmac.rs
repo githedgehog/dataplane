@@ -28,7 +28,6 @@ impl RmacEntry {
 /// Type that represents a collection of EVPN Rmac - IP mappings, per Vni
 pub struct RmacStore(HashMap<(IpAddr, Vni), RmacEntry, RandomState>);
 
-#[allow(dead_code)]
 #[allow(clippy::new_without_default)]
 impl RmacStore {
     //////////////////////////////////////////////////////////////////
@@ -115,7 +114,6 @@ impl RmacStore {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 pub(crate) mod tests {
     use super::RmacStore;
     use crate::evpn::vtep::Vtep;

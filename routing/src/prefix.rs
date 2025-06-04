@@ -30,7 +30,6 @@ pub enum Prefix {
     IPV6(Ipv6Prefix),
 }
 
-#[allow(dead_code)]
 impl Prefix {
     const MAX_LEN_IPV4: u8 = 32;
     const MAX_LEN_IPV6: u8 = 128;
@@ -61,6 +60,7 @@ impl Prefix {
     /// Get the inner `Ipv4Prefix` from a Prefix
     /// # Panics
     /// This method panics if the Prefix does not contain an IPv4 prefix
+    #[allow(unused)]
     pub(crate) fn get_v4(&self) -> &Ipv4Prefix {
         match self {
             Prefix::IPV4(p) => p,
@@ -70,6 +70,7 @@ impl Prefix {
     /// Get the inner `Ipv6Prefix` from a Prefix
     /// # Panics
     /// This method panics if the Prefix does not contain an IPv6 prefix
+    #[allow(unused)]
     pub(crate) fn get_v6(&self) -> &Ipv6Prefix {
         match self {
             Prefix::IPV4(_) => unreachable!("Not an IPv6 prefix!"),
@@ -340,7 +341,6 @@ impl<'de> Deserialize<'de> for Prefix {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 mod tests {
     use crate::prefix::*;
     use serde_yml;
