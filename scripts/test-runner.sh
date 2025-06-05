@@ -95,10 +95,6 @@ fi
 declare -r test_exe
 check_if_reasonable "${test_exe}"
 
-# Note: do not add =e or =i to this setcap command!  We don't want privileged execution by default.
-# Note: if you adjust this list, then you also need to adjust the symmetric list given to the docker run command.
-"${SUDO}" setcap 'cap_net_raw,cap_sys_admin,cap_net_admin,cap_sys_rawio=p' "${test_exe}"
-
 # Pull the current version of the sysroot from the env.
 # This lets us pick the correct libc container.
 source "${script_dir}/dpdk-sys.env"
@@ -123,6 +119,10 @@ declare -ri SHOULD_WRAP
 if [ "${SHOULD_WRAP}" -eq 0 ]; then
   exec "${@}"
 fi
+
+# Note: do not add =e or =i to this setcap command!  We don't want privileged execution by default.
+# Note: if you adjust this list, then you also need to adjust the symmetric list given to the docker run command.
+"${SUDO}" setcap 'cap_net_raw,cap_sys_admin,cap_net_admin,cap_sys_rawio=p' "${test_exe}"
 
 # Now we can run the docker container
 #
