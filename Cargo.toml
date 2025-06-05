@@ -102,15 +102,16 @@ uuid = { version = "1.17.0", default-features = false, features = [] }
 panic = "unwind"
 
 [profile.release]
-panic = "unwind"
-
-[profile.fuzz]
-inherits = "release"
 opt-level = 3
 panic = "unwind"
 debug = "full"
-lto = "off"
-debug-assertions = true
-overflow-checks = true
+lto = "thin"
+debug-assertions = false
+overflow-checks = false
 codegen-units = 1
 rpath = true
+
+[profile.fuzz]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true
