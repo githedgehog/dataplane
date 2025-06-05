@@ -134,6 +134,7 @@ cargo *args:
           ;;
         --profile=fuzz|--cargo-profile=fuzz)
           declare -rx RUSTFLAGS="${RUSTFLAGS_FUZZ}"
+          export RUSTC_BOOTSTRAP=1
           extra_args+=("$arg")
           ;;
         *)
