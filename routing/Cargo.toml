@@ -16,7 +16,7 @@ ipnet = { workspace = true }
 iptrie = { workspace = true }
 left-right = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
-mac_address= {version = "1.1.7"}
+mac_address= { workspace = true }
 net = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
