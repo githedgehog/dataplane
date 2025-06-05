@@ -125,14 +125,14 @@ cargo *args:
     declare -a extra_args=()
     for arg in "${args[@]}"; do
       case "$arg" in
-        --debug|--profile=debug)
+        --debug|--profile=debug|--cargo-profile=debug)
           [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
           ;;
-        --release|--profile=release|--profile=bench)
+        --release|--profile=release|--cargo-profile=release)
           [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_RELEASE}"
           extra_args+=("$arg")
           ;;
-        --profile=fuzz)
+        --profile=fuzz|--cargo-profile=fuzz)
           [ -z "${RUSTFLAGS:-}" ] && declare -rx RUSTFLAGS="${RUSTFLAGS_FUZZ}"
           extra_args+=("$arg")
           ;;
