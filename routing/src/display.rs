@@ -77,8 +77,11 @@ impl Display for NhopKey {
         if let Some(address) = self.address {
             write!(f, " via {address}")?;
         }
+        if let Some(ifname) = &self.ifname {
+            write!(f, " interface {ifname}")?;
+        }
         if let Some(ifindex) = self.ifindex {
-            write!(f, " interface {ifindex}")?;
+            write!(f, " (idx {ifindex})")?;
         }
         if let Some(encap) = self.encap {
             write!(f, " encap {encap}")?;

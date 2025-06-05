@@ -11,6 +11,7 @@
 
 use crate::errors::RouterError;
 use crate::evpn::{RmacEntry, RmacStore, Vtep};
+use crate::interfaces::iftablerw::IfTableReader;
 use crate::prefix::Prefix;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::{FwAction, NhopKey};
@@ -95,7 +96,11 @@ impl TryFrom<&Rmac> for RmacEntry {
 }
 
 impl RouteNhop {
-    fn from_rpc_nhop(nh: &NextHop, origin: RouteOrigin) -> Result<Self, RouterError> {
+    fn from_rpc_nhop(
+        nh: &NextHop,
+        origin: RouteOrigin,
+        iftabler: &IfTableReader,
+    ) -> Result<Self, RouterError> {
         let mut ifindex = nh.ifindex;
         let encap = match &nh.encap {
             Some(e) => {
@@ -111,6 +116,16 @@ impl RouteNhop {
             None => None,
         };
 
+        // lookup interface name
+        let ifname = match ifindex {
+            None => None,
+            Some(0) => None,
+            Some(k) => iftabler
+                .enter()
+                .map(|iftable| iftable.get_interface(k).map(|iface| iface.name.to_owned()))
+                .flatten(),
+        };
+
         Ok(RouteNhop {
             key: NhopKey::new(
                 origin,
@@ -118,6 +133,7 @@ impl RouteNhop {
                 ifindex,
                 encap,
                 FwAction::from(nh.fwaction),
+                ifname,
             ),
             vrfid: nh.vrfid,
         })
@@ -156,6 +172,7 @@ impl Vrf {
         vrf0: Option<&Vrf>,
         rstore: &RmacStore,
         vtep: &Vtep,
+        iftabler: &IfTableReader,
     ) {
         let Ok(prefix) = Prefix::try_from((iproute.prefix, iproute.prefix_len)) else {
             error!(
@@ -168,7 +185,7 @@ impl Vrf {
 
         let mut nhops = Vec::with_capacity(iproute.nhops.len());
         for nhop in &iproute.nhops {
-            match RouteNhop::from_rpc_nhop(nhop, route.origin) {
+            match RouteNhop::from_rpc_nhop(nhop, route.origin, iftabler) {
                 Ok(nh) => nhops.push(nh),
                 Err(e) => error!("Omitting next-hop in route to {prefix}: {e}"),
             }

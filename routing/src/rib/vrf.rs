@@ -35,7 +35,7 @@ impl RouteNhop {
     fn from_nhkey(key: &NhopKey) -> RouteNhop {
         Self {
             vrfid: 0,
-            key: *key,
+            key: key.clone(),
         }
     }
 }
@@ -235,7 +235,7 @@ impl Vrf {
     /// needs it.
     /////////////////////////////////////////////////////////////////////////
     fn deregister_shared_nhop(&mut self, shim: ShimNhop) {
-        let key = shim.rc.key;
+        let key = shim.rc.key.clone();
         drop(shim);
         self.nhstore.del_nhop(&key);
     }
@@ -479,6 +479,7 @@ impl Vrf {
             Some(ifindex),
             None,
             FwAction::default(),
+            None,
         );
         self.add_route(
             &Prefix::ipv4_link_local_mcast_prefix(),
@@ -566,7 +567,7 @@ pub mod tests {
         let key = NhopKey::new(
             RouteOrigin::default(),
             address.map(mk_addr),
-            ifindex, encap,FwAction::Forward);
+            ifindex, encap,FwAction::Forward, None);
 
         RouteNhop {
             vrfid,
@@ -839,6 +840,7 @@ pub mod tests {
                 IpAddr::from_str("7.0.0.1").unwrap(),
             ))),
             fwaction: FwAction::default(),
+            ifname: None,
         };
 
         /* check how the next-hop has been resolved */

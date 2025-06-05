@@ -151,6 +151,7 @@ impl RpcOperation for IpRoute {
         let rmac_store = &db.rmac_store;
         let vtep = &db.vtep;
         let vrftable = &mut db.vrftable;
+        let iftabler = &db.iftw.as_iftable_reader();
 
         #[cfg(feature = "auto-learn")]
         let iftablew = &mut db.iftw;
@@ -163,13 +164,13 @@ impl RpcOperation for IpRoute {
                 error!("Unable to get vrf with id {}", self.vrfid);
                 return RpcResultCode::Failure;
             };
-            vrf.add_route_rpc(self, Some(vrf0), rmac_store, vtep);
+            vrf.add_route_rpc(self, Some(vrf0), rmac_store, vtep, iftabler);
         } else {
             let Ok(vrf) = vrftable.get_vrf_mut(self.vrfid) else {
                 error!("Unable to find VRF with id {}", self.vrfid);
                 return RpcResultCode::Failure;
             };
-            vrf.add_route_rpc(self, None, rmac_store, vtep);
+            vrf.add_route_rpc(self, None, rmac_store, vtep, iftabler);
         }
         RpcResultCode::Ok
     }

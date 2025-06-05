@@ -47,13 +47,14 @@ pub enum FwAction {
 /// A struct acting as a key to next-hop objects. This should include the properties that
 /// make a shared next-hop unique and distinguishable from the rest. This type is also used
 /// as return value in next-hop resolution routines.
-#[derive(Debug, Default, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Debug, Default, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct NhopKey {
     pub origin: RouteOrigin,
     pub address: Option<IpAddr>,
     pub ifindex: Option<u32>,
     pub encap: Option<Encapsulation>,
     pub fwaction: FwAction,
+    pub ifname: Option<String>,
 }
 
 impl NhopKey {
@@ -67,6 +68,7 @@ impl NhopKey {
         ifindex: Option<u32>,
         encap: Option<Encapsulation>,
         fwaction: FwAction,
+        ifname: Option<String>,
     ) -> Self {
         Self {
             origin,
@@ -74,6 +76,7 @@ impl NhopKey {
             ifindex,
             encap,
             fwaction,
+            ifname,
         }
     }
     #[must_use]
@@ -84,6 +87,7 @@ impl NhopKey {
             ifindex: None,
             encap: None,
             fwaction: FwAction::Drop,
+            ifname: None,
         }
     }
     #[cfg(test)]
@@ -158,7 +162,7 @@ impl Nhop {
     //////////////////////////////////////////////////////////////////
     fn new_from_key(key: &NhopKey) -> Self {
         Self {
-            key: *key,
+            key: key.clone(),
             resolvers: RefCell::new(Vec::new()),
             instructions: RefCell::new(Vec::with_capacity(2)),
             fibgroup: RefCell::new(FibGroup::new()),
@@ -222,7 +226,7 @@ impl Nhop {
             if resolvers_of_this.is_empty() {
                 /* next-hop has no resolvers */
                 if self.key.ifindex.is_some() || self.key.fwaction == FwAction::Drop {
-                    result.insert(self.key);
+                    result.insert(self.key.clone());
                 } else {
                     // This should not happen. The vrf will be such that there's always
                     // a default route (with legitimate next-hops or a default one with action drop).
@@ -243,6 +247,7 @@ impl Nhop {
                             Some(i),
                             self.key.encap,
                             self.key.fwaction,
+                            self.key.ifname.clone(),
                         ));
                     } else {
                         r.quick_resolve_rec(result);
@@ -356,7 +361,7 @@ impl NhopStore {
                 nhop, but that should happen if its refcount is 1 and we don't keep other refs around */
                 if let Ok(mut resolvers) = existing.resolvers.try_borrow_mut() {
                     while let Some(r) = resolvers.pop() {
-                        let key = r.key; /* copy the key since we'll */
+                        let key = r.key.clone(); /* copy the key since we'll */
                         drop(r); /* ....drop the Rc */
                         self.del_nhop(&key);
                     }
