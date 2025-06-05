@@ -6,7 +6,7 @@ license = "Apache-2.0"
 publish = false
 
 [dependencies]
-caps = { version = "0.5.5", default-features = false, features = [] }
+caps = { workspace = true, default-features = false, features = [] }
 nix = { workspace = true, default-features = false, features = ["sched", "fs"] }
 rtnetlink = { workspace = true, default-features = false, features = ["tokio_socket"] }
 tokio = { workspace = true, default-features = false, features = ["rt", "net", "time"] }
