@@ -145,6 +145,7 @@ cargo *args:
     if [ -z "${RUSTFLAGS:-}" ]; then
       declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
     fi
+    export RUSTDOCFLAGS="${RUSTFLAGS}"
     cargo "${extra_args[@]}"
 
 # Run the (very minimal) compile environment
