@@ -78,7 +78,10 @@ pub use contract::*;
 ///
 /// Further, consider this method.
 ///
-/// ```compile_fail
+/// ```rust,compile_fail
+/// # use dataplane_id::Id;
+/// # struct User; // stub, for example
+/// # struct Order; // stub, for example
 /// fn simple_example(mut user_id: Id<User>, order_id: Id<Order>) {
 ///     user_id = order_id; // <- this won't compile, and that's a good thing
 /// }
