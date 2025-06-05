@@ -137,9 +137,13 @@ Because this repository uses a custom sysroot with custom libraries and binaries
 To do this, add the following to your `.vscode/settings.json` file:
 
 ```json
-"rust-analyzer.server.extraEnv": {
-  "RUSTC": "<absolute path to dataplane directory>/compile-env/bin/rustc",
-  "CARGO": "<absolute path to dataplane directory>/compile-env/bin/cargo"
+{
+	"rust-analyzer.server.path": "./compile-env/bin/rust-analyzer",
+	"rust-analyzer.cargo.sysroot": "./compile-env",
+  "rust-analyzer.server.extraEnv": {
+    "RUSTC": "<absolute path to dataplane directory>/compile-env/bin/rustc",
+    "CARGO": "<absolute path to dataplane directory>/compile-env/bin/cargo"
+  }
 }
 ```
 
