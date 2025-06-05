@@ -163,15 +163,9 @@ jobs:
         run: |
           cargo binstall --no-confirm just
 
-      - name: "install cargo deny"
-        run: |
-          cargo binstall --no-confirm cargo-deny
-
       - name: "Checkout"
         uses: "actions/checkout@v4"
 
-      - run: |
-          just debug_justfile="${{matrix.debug_just}}" cargo deny check
       - run: |
           just debug_justfile="${{matrix.debug_just}}" rust="${{matrix.rust}}" profile=debug target=x86_64-unknown-linux-gnu \
             push-container

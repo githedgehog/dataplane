@@ -122,6 +122,7 @@ cargo *args:
     # unfortunately passing RUSTFLAGS based on profile (rather than target or cfg)
     # is currently unstable (nightly builds only).
     {{ _just_debuggable_ }}
+    export PATH="$(pwd)/compile-env/bin:${PATH}"
     declare -a args=({{ args }})
     PROFILE="{{ profile }}"
     declare -a extra_args=()

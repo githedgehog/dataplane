@@ -76,20 +76,8 @@ jobs:
       fail-fast: false
       matrix:
         rust:
-          - # failures on stable block release
-            version: "stable"
+          - version: "stable"
             optional: false
-            # HACK: we sleep for a different time in each job to avoid provoking DDoS mitigations in cargo binstall
-            #       resulting from launching multiple binstall tasks at (very nearly) the same time.
-            sleep: "0.0"
-          - # failures on beta block release
-            version: "beta"
-            optional: false
-            sleep: "0.2"
-          - # failures on the nightly channel are a clear "yellow" flag
-            version: "nightly"
-            optional: true
-            sleep: "0.4"
         debug_justfile:
           - "${{ inputs.debug_justfile || false }}"
     outputs:
@@ -119,24 +107,21 @@ jobs:
           fetch-depth: "0"
       - name: "install just"
         run: |
-          sleep ${{matrix.rust.sleep}}
           cargo binstall --no-confirm just
       - name: "install cargo-deny"
         run: |
-          sleep ${{matrix.rust.sleep}}
           cargo binstall --no-confirm cargo-deny
       - name: "install cargo-nextest"
         run: |
-          sleep ${{matrix.rust.sleep}}
           cargo binstall --no-confirm cargo-nextest
           mkdir -p target/nextest
       - name: "refresh-compile-env"
         run: |
           just --yes debug_justfile="${{matrix.debug_justfile}}" refresh-compile-env
       - run: |
-          just debug_justfile="${{matrix.debug_justfile}}" cargo deny check
-      - run: |
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
+      - run: |
+          just debug_justfile="${{matrix.debug_justfile}}" cargo deny check
 
       - id: "debug_test"
         name: "test debug"

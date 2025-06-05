@@ -5,6 +5,7 @@ LIBCLANG_PATH = { value = "compile-env/lib", relative = true, force = true }
 
 [build]
 target = "x86_64-unknown-linux-gnu"
+rustc = "compile-env/bin/rustc"
 
 [target.x86_64-unknown-linux-gnu]
 runner = ["scripts/test-runner.sh"]
