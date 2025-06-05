@@ -146,7 +146,7 @@ cargo *args:
       declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
     fi
     export RUSTDOCFLAGS="${RUSTFLAGS}"
-    cargo "${extra_args[@]}"
+    ./compile-env/bin/cargo "${extra_args[@]}"
 
 # Run the (very minimal) compile environment
 [script]
