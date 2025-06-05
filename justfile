@@ -38,6 +38,8 @@ _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
 [private]
 _dpdk_sys_container_tag := dpdk_sys_commit
 [private]
+_libc_container := _dpdk_sys_container_repo + "/libc-env:" + _dpdk_sys_container_tag
+[private]
 _doc_env_container := _dpdk_sys_container_repo + "/doc-env:" + _dpdk_sys_container_tag
 [private]
 _compile_env_image_name := _dpdk_sys_container_repo + "/compile-env"
@@ -377,6 +379,7 @@ build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile
       --label "build.time_epoch=${build_time_epoch}" \
       --tag "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")" \
       --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/dataplane" \
+      --build-arg BASE="{{ _libc_container }}" \
       .
 
     sudo -E docker tag \
