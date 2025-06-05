@@ -158,7 +158,7 @@ jobs:
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
             rust=${{matrix.rust.version}} \
-            profile=debug \
+            profile=release \
             target=x86_64-unknown-linux-gnu \
             cargo nextest run --status-level=none --final-status-level=skip --message-format=libtest-json-plus > ./target/nextest/release.json
           mv ./target/nextest/default/junit.xml ./target/nextest/default/release.junit.xml
