@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-#![deny(clippy::all, clippy::pedantic)]
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::must_use_candidate)] // Do not want to remove pub methods yet
-
 use net::eth::mac::Mac;
 use net::vlan::Vid;
 use std::net::{IpAddr, Ipv4Addr};
