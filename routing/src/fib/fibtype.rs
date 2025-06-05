@@ -19,7 +19,8 @@ use net::vxlan::Vni;
 use crate::fib::fibobjects::{FibEntry, FibGroup, PktInstruction};
 use crate::prefix::Prefix;
 use crate::rib::vrf::VrfId;
-use tracing::debug;
+
+use tracing::{debug, warn};
 
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 /// An id we use to idenfify a FIB
@@ -197,19 +198,21 @@ impl Fib {
     /// by computing a hash on the invariant header fields of the IP and L4 headers.
     #[must_use]
     #[allow(clippy::cast_possible_truncation)]
-    pub fn lpm_entry<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> &FibEntry {
+    pub fn lpm_entry<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> Option<&FibEntry> {
         if let Some(destination) = packet.ip_destination() {
             let group = self.lpm(&destination);
-            let entry_index = if group.len() == 1 {
-                0
-            } else {
-                debug!(
-                    "Hashing packet to determine one FibEntry out of {}",
-                    group.len()
-                );
-                packet.packet_hash_ecmp(0, (group.len() - 1) as u8)
-            };
-            &group.entries()[entry_index as usize]
+            match group.len() {
+                0 => {
+                    warn!("Cannot forward packet: no fibgroups for route. This is a bug");
+                    return None;
+                }
+                1 => Some(&group.entries()[0 as usize]),
+                k => {
+                    debug!("Hashing pkt to choose one FibEntry out of {k}");
+                    let entry_index = packet.packet_hash_ecmp(0, (k - 1) as u8);
+                    Some(&group.entries()[entry_index as usize])
+                }
+            }
         } else {
             unreachable!()
         }
@@ -220,19 +223,21 @@ impl Fib {
     pub fn lpm_entry_prefix<Buf: PacketBufferMut>(
         &self,
         packet: &Packet<Buf>,
-    ) -> (Prefix, &FibEntry) {
+    ) -> (Prefix, Option<&FibEntry>) {
         if let Some(destination) = packet.ip_destination() {
             let (prefix, group) = self.lpm_with_prefix(&destination);
-            let entry_index = if group.len() == 1 {
-                0
-            } else {
-                debug!(
-                    "Hashing packet to determine one FibEntry out of {}",
-                    group.len()
-                );
-                packet.packet_hash_ecmp(0, (group.len() - 1) as u8)
-            };
-            (prefix, &group.entries()[entry_index as usize])
+            match group.len() {
+                0 => {
+                    warn!("Can't forward packet: no groups for route to {prefix}. This is a bug");
+                    (prefix, None)
+                }
+                1 => (prefix, Some(&group.entries()[0 as usize])),
+                k => {
+                    debug!("Hashing pkt to choose one FibEntry out of {k}");
+                    let entry_index = packet.packet_hash_ecmp(0, (k - 1) as u8);
+                    (prefix, Some(&group.entries()[entry_index as usize]))
+                }
+            }
         } else {
             unreachable!()
         }

@@ -124,7 +124,6 @@ impl VxlanEncapsulation {
             );
         }
     }
-
     /// Resolve a Vxlan encapsulation object
     fn resolve(&mut self, rstore: &RmacStore, vtep: &Vtep) {
         self.resolve_with_vtep(vtep);

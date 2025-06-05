@@ -81,12 +81,17 @@ impl IpForwarder {
             };
             if let Some(fib) = fibr.enter() {
                 let (prefix, fibentry) = fib.lpm_entry_prefix(packet);
-                debug!(
-                    "{nfi}:Packet hit prefix {prefix} in vrf|fib {}, fib entry:\n{}",
-                    fib.get_id().as_u32(),
-                    &fibentry
-                );
-                self.packet_exec_instructions(packet, fibentry);
+                if let Some(fibentry) = &fibentry {
+                    debug!(
+                        "{nfi}: Packet hit prefix {prefix} in vrf|fib {}, fib entry:\n{}",
+                        fib.get_id().as_u32(),
+                        &fibentry
+                    );
+                    self.packet_exec_instructions(packet, fibentry);
+                } else {
+                    error!("Could not get fib group for {prefix}. Will drop packet...");
+                    packet.done(DoneReason::InternalFailure);
+                }
             } else {
                 error!("{nfi}: Unable to read fib for vrf {vrfid}");
                 packet.done(DoneReason::InternalFailure);
