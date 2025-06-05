@@ -5,7 +5,10 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::must_use_candidate)] // Do not want to remove pub methods yet
 
+mod bgp;
 mod old_impl;
+
+pub use bgp::*;
 pub use old_impl::*;
 
 #[cfg(test)]

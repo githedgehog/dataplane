@@ -27,12 +27,8 @@ use crate::models::internal::interfaces::interface::{
     IfEthConfig, IfVlanConfig, IfVtepConfig, InterfaceConfig, InterfaceConfigTable, InterfaceType,
 };
 
+use crate::models::internal::routing::bgp::BgpConfig;
 use crate::models::internal::routing::vrf::VrfConfig;
-
-use crate::models::internal::routing::bgp::{
-    AfIpv4Ucast, AfIpv6Ucast, AfL2vpnEvpn, BgpConfig, BgpNeighCapabilities, BgpNeighType,
-    BgpNeighbor, BgpOptions, BgpUpdateSource, NeighSendCommunities, Protocol, Redistribute,
-};
 
 // Import proto-generated types
 use gateway_config::GatewayConfig;
@@ -190,7 +186,7 @@ pub fn convert_vrf_to_vrf_config(vrf: &gateway_config::Vrf) -> Result<VrfConfig,
 
     // Convert BGP config if present and add it to VRF
     if let Some(router) = &vrf.router {
-        let bgp = convert_router_config_to_bgp_config(router)?;
+        let bgp = BgpConfig::try_from(router)?;
         vrf_config.set_bgp(bgp);
     }
 
@@ -351,172 +347,6 @@ pub fn convert_interface_to_interface_config(
     }
 
     Ok(interface_config)
-}
-
-fn calculate_redistribute_v4(
-    router: &gateway_config::RouterConfig,
-) -> Option<Vec<crate::models::internal::routing::bgp::Redistribute>> {
-    let mut redistributes = Vec::new();
-
-    match router.ipv4_unicast {
-        Some(policy) => {
-            if policy.redistribute_static {
-                redistributes.push(Redistribute::new(Protocol::Static, None, None));
-            }
-
-            if policy.redistribute_connected {
-                redistributes.push(Redistribute::new(Protocol::Connected, None, None));
-            }
-            Some(redistributes)
-        }
-        None => None,
-    }
-}
-
-fn calculate_redistribute_v6(
-    router: &gateway_config::RouterConfig,
-) -> Option<Vec<crate::models::internal::routing::bgp::Redistribute>> {
-    let mut redistributes = Vec::new();
-
-    match router.ipv6_unicast {
-        Some(policy) => {
-            if policy.redistribute_static {
-                redistributes.push(Redistribute::new(Protocol::Static, None, None));
-            }
-
-            if policy.redistribute_connected {
-                redistributes.push(Redistribute::new(Protocol::Connected, None, None));
-            }
-            Some(redistributes)
-        }
-        None => None,
-    }
-}
-
-/// Convert gRPC `RouterConfig` to internal `BgpConfig`
-pub fn convert_router_config_to_bgp_config(
-    router: &gateway_config::RouterConfig,
-) -> Result<BgpConfig, String> {
-    // Parse ASN from string to u32
-    let asn = router
-        .asn
-        .parse::<u32>()
-        .map_err(|_| format!("Invalid ASN format: {}", router.asn))?;
-
-    // Parse router_id from string to Ipv4Addr
-    let router_id = router
-        .router_id
-        .parse::<Ipv4Addr>()
-        .map_err(|_| format!("Invalid router ID format: {}", router.router_id))?;
-
-    // Use default options
-    let options = BgpOptions::default();
-
-    // Convert neighbors
-    let mut neighbors = Vec::new();
-    for neighbor in &router.neighbors {
-        neighbors.push(convert_bgp_neighbor(neighbor)?);
-    }
-
-    // Convert IPv4 Unicast address family if present
-    let mut af_ipv4unicast = AfIpv4Ucast::new();
-    if let Some(redistributes) = calculate_redistribute_v4(router) {
-        for redistribute in redistributes {
-            af_ipv4unicast.redistribute(redistribute);
-        }
-    }
-
-    let mut af_ipv6unicast = AfIpv6Ucast::new();
-    if let Some(redistributes) = calculate_redistribute_v6(router) {
-        for redistribute in redistributes {
-            af_ipv6unicast.redistribute(redistribute);
-        }
-    }
-
-    let af_l2vpnevpn = AfL2vpnEvpn::new()
-        .set_adv_all_vni(router.l2vpn_evpn.is_none_or(|evpn| evpn.advertise_all_vni))
-        .set_adv_default_gw(true)
-        .set_adv_svi_ip(true)
-        .set_adv_ipv4_unicast(true)
-        .set_adv_ipv6_unicast(false)
-        .set_default_originate_ipv4(false)
-        .set_default_originate_ipv6(false);
-
-    let mut bgpconfig = BgpConfig::new(asn);
-    bgpconfig.set_router_id(router_id);
-    bgpconfig.set_bgp_options(options);
-    if router.ipv4_unicast.is_some() {
-        bgpconfig.set_af_ipv4unicast(af_ipv4unicast);
-    }
-    if router.ipv6_unicast.is_some() {
-        bgpconfig.set_af_ipv6unicast(af_ipv6unicast);
-    }
-    if router.l2vpn_evpn.is_some() {
-        bgpconfig.set_af_l2vpn_evpn(af_l2vpnevpn);
-    }
-
-    // Add each neighbor to the BGP config
-    for neighbor in &router.neighbors {
-        bgpconfig.add_neighbor(convert_bgp_neighbor(neighbor)?);
-    }
-
-    Ok(bgpconfig)
-}
-
-/// Convert gRPC `BgpNeighbor` to internal `BgpNeighbor`
-pub fn convert_bgp_neighbor(neighbor: &gateway_config::BgpNeighbor) -> Result<BgpNeighbor, String> {
-    // Parse remote ASN
-    let remote_as = neighbor
-        .remote_asn
-        .parse::<u32>()
-        .map_err(|_| format!("Invalid remote ASN format: {}", neighbor.remote_asn))?;
-
-    // Create neighbor address for ntype
-    let neighbor_addr = IpAddr::from_str(&neighbor.address)
-        .map_err(|_| format!("Invalid neighbor address: {}", neighbor.address))?;
-
-    // Determine which address families are activated
-    let mut ipv4_unicast = false;
-    let mut ipv6_unicast = false;
-    let mut l2vpn_evpn = false;
-
-    for af in &neighbor.af_activate {
-        match gateway_config::config::BgpAf::try_from(*af) {
-            Ok(gateway_config::config::BgpAf::Ipv4Unicast) => ipv4_unicast = true,
-            Ok(gateway_config::config::BgpAf::Ipv6Unicast) => ipv6_unicast = true,
-            Ok(gateway_config::config::BgpAf::L2vpnEvpn) => l2vpn_evpn = true,
-            Err(_) => return Err(format!("Unknown BGP address family: {af}")),
-        }
-    }
-
-    let networks = neighbor
-        .networks
-        .iter()
-        .map(|n| {
-            // Parse each network into a Prefix
-            Prefix::try_from(PrefixString(n))
-                .map_err(|e| format!("Invalid network prefix {n}: {e}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    // Create the neighbor config
-    let mut neigh = BgpNeighbor::new_host(neighbor_addr)
-        .set_remote_as(remote_as)
-        .set_capabilities(BgpNeighCapabilities::default())
-        .set_send_community(NeighSendCommunities::Both)
-        .ipv4_unicast_activate(ipv4_unicast)
-        .ipv6_unicast_activate(ipv6_unicast)
-        .l2vpn_evpn_activate(l2vpn_evpn)
-        .set_networks(networks);
-
-    // set update source
-    if let Some(update_source) = &neighbor.update_source {
-        let upd_source = OptBgpUpdateSource::try_from(update_source)
-            .map_err(|e| format!("Bad update source: {e}"))?;
-        neigh = neigh.set_update_source(upd_source.into_inner());
-    }
-
-    Ok(neigh)
 }
 
 /// Convert a gRPC VPC to internal Vpc
@@ -804,142 +634,6 @@ pub fn convert_interfaces_to_grpc(
     Ok(grpc_interfaces)
 }
 
-pub fn convert_bgp_update_source_to_grpc(
-    update_source: &Option<BgpUpdateSource>,
-) -> Result<Option<gateway_config::config::BgpNeighborUpdateSource>, String> {
-    match update_source {
-        Some(BgpUpdateSource::Address(addr)) => {
-            Ok(Some(gateway_config::config::BgpNeighborUpdateSource {
-                source: Some(
-                    gateway_config::config::bgp_neighbor_update_source::Source::Address(
-                        addr.to_string(),
-                    ),
-                ),
-            }))
-        }
-        Some(BgpUpdateSource::Interface(iface)) => {
-            Ok(Some(gateway_config::config::BgpNeighborUpdateSource {
-                source: Some(
-                    gateway_config::config::bgp_neighbor_update_source::Source::Interface(
-                        iface.to_string(),
-                    ),
-                ),
-            }))
-        }
-        None => Ok(None),
-    }
-}
-
-fn has_redistribute(redistribute: &[Redistribute], protocol: &Protocol) -> bool {
-    redistribute.iter().any(|r| r.protocol == *protocol)
-}
-
-// Improved BGP conversion with better handling of address families
-pub fn convert_bgp_neighbor_to_grpc(
-    neighbor: &BgpNeighbor,
-) -> Result<gateway_config::BgpNeighbor, String> {
-    // Get neighbor address safely
-    let address = match &neighbor.ntype {
-        BgpNeighType::Host(addr) => addr.to_string(),
-        BgpNeighType::PeerGroup(name) => {
-            return Err(format!("Peer group type not supported in gRPC: {name}"));
-        }
-        BgpNeighType::Unset => {
-            return Err("Unset BGP neighbor type not supported in gRPC".to_string());
-        }
-    };
-
-    // Get remote ASN safely
-    let remote_asn = neighbor
-        .remote_as
-        .as_ref()
-        .ok_or_else(|| "Missing remote ASN for BGP neighbor".to_string())?
-        .to_string();
-
-    // Build address family activation list
-    let mut af_activate = Vec::new();
-    if neighbor.ipv4_unicast {
-        af_activate.push(gateway_config::config::BgpAf::Ipv4Unicast.into());
-    }
-    if neighbor.ipv6_unicast {
-        af_activate.push(gateway_config::config::BgpAf::Ipv6Unicast.into());
-    }
-    if neighbor.l2vpn_evpn {
-        af_activate.push(gateway_config::config::BgpAf::L2vpnEvpn.into());
-    }
-
-    let networks = neighbor
-        .networks
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<String>>();
-
-    let update_source = convert_bgp_update_source_to_grpc(&neighbor.update_source)?;
-
-    Ok(gateway_config::BgpNeighbor {
-        address,
-        remote_asn,
-        af_activate,
-        networks,
-        update_source,
-    })
-}
-
-// Improved router config conversion
-pub fn convert_bgp_config_to_grpc(bgp: &BgpConfig) -> Result<gateway_config::RouterConfig, String> {
-    // Convert BGP neighbors
-    let mut neighbors = Vec::with_capacity(bgp.neighbors.len());
-    for neighbor in &bgp.neighbors {
-        let grpc_neighbor = convert_bgp_neighbor_to_grpc(neighbor)?;
-        neighbors.push(grpc_neighbor);
-    }
-
-    // Get router ID safely
-    let router_id = bgp
-        .router_id
-        .as_ref()
-        .map_or(String::new(), ToString::to_string);
-
-    // Create IPv4 unicast config if enabled
-    let ipv4_unicast = bgp
-        .af_ipv4unicast
-        .as_ref()
-        .map(|c| gateway_config::BgpAddressFamilyIPv4 {
-            redistribute_connected: has_redistribute(&c.redistribute, &Protocol::Connected),
-            redistribute_static: has_redistribute(&c.redistribute, &Protocol::Static),
-        });
-
-    // Create IPv6 unicast config if enabled
-    let ipv6_unicast = bgp
-        .af_ipv6unicast
-        .as_ref()
-        .map(|c| gateway_config::BgpAddressFamilyIPv6 {
-            redistribute_connected: has_redistribute(&c.redistribute, &Protocol::Connected),
-            redistribute_static: has_redistribute(&c.redistribute, &Protocol::Static),
-        });
-
-    // Create L2VPN EVPN config if enabled
-    let l2vpn_evpn =
-        bgp.af_l2vpnevpn
-            .as_ref()
-            .map(|config| gateway_config::BgpAddressFamilyL2vpnEvpn {
-                advertise_all_vni: config.adv_all_vni,
-            });
-
-    // Create route maps (empty for now)
-    let route_maps = Vec::new(); // TODO: Implement route map conversion
-
-    Ok(gateway_config::RouterConfig {
-        asn: bgp.asn.to_string(),
-        router_id,
-        neighbors,
-        ipv4_unicast,
-        ipv6_unicast,
-        l2vpn_evpn,
-        route_maps,
-    })
-}
-
 /// Convert internal `Ospf` to gRPC `OspfConfig`
 pub fn convert_ospf_to_grpc(ospf: &Ospf) -> gateway_config::config::OspfConfig {
     gateway_config::config::OspfConfig {
@@ -955,7 +649,7 @@ pub fn convert_vrf_config_to_grpc(vrf: &VrfConfig) -> Result<gateway_config::Vrf
 
     // Convert router config if BGP is configured
     let router = match &vrf.bgp {
-        Some(bgp) => Some(convert_bgp_config_to_grpc(bgp)?),
+        Some(bgp) => Some(gateway_config::config::RouterConfig::try_from(bgp)?),
         None => None,
     };
 
@@ -1144,73 +838,6 @@ impl TryFrom<&InterfaceConfig> for gateway_config::Interface {
 }
 
 // Add more TryFrom implementations as needed for other types
-
-// BgpNeighbor conversions
-impl TryFrom<&gateway_config::BgpNeighbor> for BgpNeighbor {
-    type Error = String;
-
-    fn try_from(neighbor: &gateway_config::BgpNeighbor) -> Result<Self, Self::Error> {
-        convert_bgp_neighbor(neighbor)
-    }
-}
-
-impl TryFrom<&BgpNeighbor> for gateway_config::BgpNeighbor {
-    type Error = String;
-
-    fn try_from(neighbor: &BgpNeighbor) -> Result<Self, Self::Error> {
-        convert_bgp_neighbor_to_grpc(neighbor)
-    }
-}
-
-use gateway_config::config::BgpNeighborUpdateSource;
-use gateway_config::config::bgp_neighbor_update_source::Source;
-
-/// Ad-hoc type just to ease the conversion from autogenerated `BgpNeighborUpdateSource`,
-/// which embeds an `Option`.
-#[repr(transparent)]
-pub struct OptBgpUpdateSource(Option<BgpUpdateSource>);
-impl OptBgpUpdateSource {
-    #[allow(unused)]
-    fn into_inner(self) -> Option<BgpUpdateSource> {
-        self.0
-    }
-}
-impl TryFrom<&BgpNeighborUpdateSource> for OptBgpUpdateSource {
-    type Error = String;
-
-    fn try_from(neighbor: &BgpNeighborUpdateSource) -> Result<Self, Self::Error> {
-        match &neighbor.source {
-            Some(Source::Address(address)) => {
-                Ok(OptBgpUpdateSource(Some(BgpUpdateSource::Address(
-                    address
-                        .parse()
-                        .map_err(|e| format!("Bad update source address {e}"))?,
-                ))))
-            }
-            Some(Source::Interface(ifname)) => Ok(OptBgpUpdateSource(Some(
-                BgpUpdateSource::Interface(ifname.to_owned()),
-            ))),
-            None => Ok(OptBgpUpdateSource(None)),
-        }
-    }
-}
-
-// BgpConfig conversions
-impl TryFrom<&gateway_config::RouterConfig> for BgpConfig {
-    type Error = String;
-
-    fn try_from(router: &gateway_config::RouterConfig) -> Result<Self, Self::Error> {
-        convert_router_config_to_bgp_config(router)
-    }
-}
-
-impl TryFrom<&BgpConfig> for gateway_config::RouterConfig {
-    type Error = String;
-
-    fn try_from(bgp: &BgpConfig) -> Result<Self, Self::Error> {
-        convert_bgp_config_to_grpc(bgp)
-    }
-}
 
 // OSPF conversions
 impl TryFrom<&gateway_config::config::OspfConfig> for Ospf {
