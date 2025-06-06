@@ -255,7 +255,7 @@ impl DeParse for Ipv6 {
     }
 }
 
-pub(crate) enum Ipv6Next {
+pub enum Ipv6Next {
     Tcp(Tcp),
     Udp(Udp),
     Icmp6(Icmp6),
@@ -349,7 +349,7 @@ impl ParseWith for Ipv6Ext {
     }
 }
 
-pub(crate) enum Ipv6ExtNext {
+pub enum Ipv6ExtNext {
     Tcp(Tcp),
     Udp(Udp),
     Icmp6(Icmp6),

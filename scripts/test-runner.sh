@@ -117,7 +117,8 @@ done
 declare -ri SHOULD_WRAP
 
 if [ "${SHOULD_WRAP}" -eq 0 ]; then
-  exec "${@}"
+  "${@}"
+  exit 0
 fi
 
 # Note: do not add =e or =i to this setcap command!  We don't want privileged execution by default.
@@ -139,19 +140,23 @@ fi
 "${SUDO}" --preserve-env docker run \
   --rm \
   --mount "type=bind,source=${1},target=${1},readonly=true,bind-propagation=rprivate" \
-  --mount "type=bind,source=${project_dir},target=${project_dir},readonly=true,bind-propagation=rprivate" \
+  --mount "type=bind,source=${project_dir},target=${project_dir},readonly=false,bind-propagation=rprivate" \
+  --mount "type=bind,source=${HOME},target=${HOME},readonly=false,bind-propagation=rprivate" \
   --mount "type=bind,source=$(get_docker_sock),target=$(get_docker_sock),readonly=false,bind-propagation=rprivate" \
+  --mount "type=bind,source=/tmp,target=/tmp,readonly=false,bind-propagation=rprivate" \
   --tmpfs "/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
   --tmpfs "/var/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
-  --tmpfs "/tmp:nodev,noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
   --user="$(id -u):$(id -g)" \
   --group-add="$(getent group docker | cut -d: -f3)" \
+  --env LLVM_PROFILE_FILE="${LLVM_PROFILE_FILE}" \
+  --env CARGO_LLVM_COV=1 \
+  --env CARGO_LLVM_COV_SHOW_ENV=1 \
+  --env CARGO_LLVM_COV_TARGET_DIR=/home/dnoland/storage/dnoland/git/hedgehog/dataplane/target \
   --workdir="${project_dir}" \
   --env DOCKER_HOST="unix://$(get_docker_sock)" \
   --net=none \
-  --ipc=host \
   --pid=host \
-  --cap-drop ALL \
+  --cap-add ALL \
   --cap-add NET_ADMIN \
   --cap-add NET_RAW \
   --cap-add SYS_ADMIN \

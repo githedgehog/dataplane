@@ -11,7 +11,6 @@ pub type VrfId = u32;
 
 #[derive(Debug, Default, Copy, Clone)]
 pub struct InterfaceId(u32);
-#[allow(unused)]
 impl InterfaceId {
     #[must_use]
     pub fn new(val: u32) -> Self {
@@ -25,7 +24,6 @@ impl InterfaceId {
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct BridgeDomain(u32);
-#[allow(unused)]
 impl BridgeDomain {
     #[must_use]
     pub fn get_id(&self) -> u32 {
@@ -37,7 +35,6 @@ impl BridgeDomain {
     }
 }
 
-#[allow(unused)]
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub enum DoneReason {
     InternalFailure,      /* catch-all for internal issues */
@@ -63,7 +60,6 @@ pub enum DoneReason {
     Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
 }
 
-#[allow(unused)]
 #[derive(Debug, Default)]
 pub struct PacketMeta {
     pub iif: InterfaceId,             /* incoming interface - set early */
@@ -84,7 +80,6 @@ pub struct PacketMeta {
 }
 
 #[derive(Default, Debug)]
-#[allow(unused)]
 pub struct PacketDropStats {
     pub name: String,
     reasons: HashMap<DoneReason, u64>,

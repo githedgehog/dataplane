@@ -58,9 +58,6 @@ impl Vni {
     pub const MIN: u32 = 1;
     /// The maximum legal [`Vni`] value (2<sup>24</sup> - 1).
     pub const MAX: u32 = 0x00_FF_FF_FF;
-    /// First value which is too large to be a legal [`Vni`]
-    #[allow(unused)] // used in test suite
-    const TOO_LARGE: u32 = Vni::MAX + 1;
 
     /// Create a new [`Vni`] from a `u32`.
     ///

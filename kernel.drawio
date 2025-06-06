@@ -1,0 +1,37 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/27.0.9 Chrome/134.0.6998.205 Electron/35.5.1 Safari/537.36" version="27.0.9">
+  <diagram name="Page-1" id="t1eqp0cpJ61dEECF5D6b">
+    <mxGraphModel dx="679" dy="616" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="350" pageHeight="70" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="BEba4OpDu1-zwmOeZV-D-5" value="vrf" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="100" y="-150" width="150" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="BEba4OpDu1-zwmOeZV-D-2" value="bridge" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="110" y="-121" width="130" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="BEba4OpDu1-zwmOeZV-D-1" value="vtep" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="115" y="-96" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="BEba4OpDu1-zwmOeZV-D-3" value="p1" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="45" y="60" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="BEba4OpDu1-zwmOeZV-D-4" value="p2" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="185" y="60" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="BEba4OpDu1-zwmOeZV-D-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="170" y="-35.000000000000114" as="sourcePoint" />
+            <mxPoint x="170" y="-35.000000000000114" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="BEba4OpDu1-zwmOeZV-D-7" value="p1-tap" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="45" y="-15" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="BEba4OpDu1-zwmOeZV-D-8" value="p2-tap" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="185" y="-15" width="120" height="60" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

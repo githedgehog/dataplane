@@ -249,12 +249,11 @@ impl DeParse for Headers {
                 cursor.write(eth)?;
             }
         }
-        for vlan in self.vlan.iter().rev() {
+        for vlan in self.vlan.iter() {
             cursor.write(vlan)?;
         }
         match self.net {
             None => {
-                debug_assert!(self.transport.is_none());
                 #[allow(clippy::cast_possible_truncation)] // length bounded on cursor creation
                 return Ok(
                     NonZero::new((cursor.inner.len() - cursor.remaining as usize) as u16)
@@ -1089,6 +1088,7 @@ mod contract {
     use crate::parse::{DeParse, Parse};
     use crate::tcp::Tcp;
     use crate::udp::Udp;
+    use crate::vxlan::Vxlan;
     use bolero::{Driver, TypeGenerator, ValueGenerator};
 
     impl TypeGenerator for Headers {
@@ -1208,13 +1208,21 @@ mod contract {
                         }
                         ipv6::CommonNextHeader::Udp => {
                             let udp: Udp = driver.produce()?;
+                            let udp_encap = if (udp.destination() == Vxlan::PORT)
+                                && udp.length().get()
+                                    >= Udp::MIN_LENGTH.get() + Vxlan::MIN_LENGTH.get()
+                            {
+                                driver.produce()
+                            } else {
+                                None
+                            };
                             let headers = Headers {
                                 eth: Some(eth),
                                 vlan: Default::default(),
                                 net: Some(Net::Ipv6(ipv6)),
                                 net_ext: Default::default(),
                                 transport: Some(Transport::Udp(udp)),
-                                udp_encap: None,
+                                udp_encap,
                             };
                             Some(headers)
                         }
@@ -1242,6 +1250,7 @@ mod test {
     use crate::headers::Headers;
     use crate::headers::contract::CommonHeaders;
     use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, Parse, ParseError};
+    use std::time::Duration;
 
     fn parse_back_test(headers: &Headers) {
         let mut buffer = [0_u8; 1024];
@@ -1274,6 +1283,7 @@ mod test {
     fn parse_back_common() {
         bolero::check!()
             .with_generator(CommonHeaders)
+            .with_test_time(Duration::from_secs(5))
             .for_each(parse_back_test)
     }
 }

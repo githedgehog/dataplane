@@ -7,6 +7,7 @@
 #[allow(unused_imports)] // just re-exporting conditionally included feature
 pub use contract::*;
 use etherparse::EtherType;
+use std::fmt::{Display, Formatter};
 
 /// The ethernet header's ethertype field.
 ///
@@ -18,9 +19,44 @@ use etherparse::EtherType;
 ///    to allow us to property test the rest of our code.
 #[repr(transparent)]
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(from = "u16", into = "u16")]
+#[serde(try_from = "u16", into = "u16")]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EthType(pub(crate) EtherType);
+
+#[derive(Debug, thiserror::Error)]
+pub enum EthTypeError {
+    #[error("EthType smaller than 0x5dc (1500) are historical and are not supported: received {0}")]
+    EthernetIIUnsupported(u16),
+    #[error(
+        "EthType values between 1501 (0x05dd) and 1536 (0x600) (inclusive) have ambiguous meaning.  Received {0}"
+    )]
+    Ambiguous(u16),
+}
+
+impl Display for EthType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#06x}", self.0.0)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum EthTypeParseError {
+    #[error("Invalid EthType syntax: {0}")]
+    SyntaxInvalid(String),
+    #[error(transparent)]
+    SemanticsInvalid(EthTypeError),
+}
+
+// impl FromStr for EthType {
+//     type Err = EthTypeParseError;
+//
+//     fn from_str(s: &str) -> Result<Self, EthTypeParseError> {
+//         match u16::from_str_radix(s.trim_start_matches("0x"), 16) {
+//             Ok(val) => {}
+//             Err(_) => {}
+//         }
+//     }
+// }
 
 impl EthType {
     /// Ethernet type for [address resolution protocol](https://en.wikipedia.org/wiki/Address_Resolution_Protocol)
@@ -37,33 +73,51 @@ impl EthType {
     pub const VLAN_QINQ: EthType = EthType(EtherType::PROVIDER_BRIDGING);
 
     /// Map a raw (native-endian) u16 into an [`EthType`]
-    #[must_use]
-    pub const fn new(raw: u16) -> EthType {
-        EthType(EtherType(raw))
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EthTypeError`] if raw is a legacy or ambiguously defined ethertype.
+    ///
+    /// Values between 0 and 1500 (inclusive) have only historical meaning, while values between
+    /// 1501 and 1536 have no clear meaning in modern ethernet networks.
+    pub const fn new(raw: u16) -> Result<EthType, EthTypeError> {
+        match raw {
+            0..=1500 => Err(EthTypeError::EthernetIIUnsupported(raw)),
+            1501..=0x600 => Err(EthTypeError::Ambiguous(raw)),
+            _ => Ok(EthType(EtherType(raw))),
+        }
     }
 
     /// Map a raw (big-endian) u16 into an [`EthType`]
-    #[must_use]
-    pub const fn new_from_be_bytes(raw: [u8; 2]) -> EthType {
-        EthType(EtherType(u16::from_be_bytes(raw)))
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EthTypeError`] if raw is a legacy or ambiguously defined ethertype.
+    ///
+    /// Values between 0 and 1500 (inclusive) have only historical meaning, while values between
+    /// 1501 and 1536 have no clear meaning in modern ethernet networks.
+    pub const fn new_from_be_bytes(raw: [u8; 2]) -> Result<EthType, EthTypeError> {
+        EthType::new(u16::from_be_bytes(raw))
     }
 
     /// get the raw `u16` value (native-endian)
     #[must_use]
-    pub const fn as_u16(self) -> u16 {
+    pub const fn to_u16(self) -> u16 {
         self.0.0
     }
 }
 
-impl From<u16> for EthType {
-    fn from(value: u16) -> Self {
+impl TryFrom<u16> for EthType {
+    type Error = EthTypeError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
         EthType::new(value)
     }
 }
 
 impl From<EthType> for u16 {
     fn from(value: EthType) -> Self {
-        value.as_u16()
+        value.to_u16()
     }
 }
 
@@ -74,7 +128,11 @@ mod contract {
 
     impl TypeGenerator for EthType {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
-            Some(EthType::new(u.produce()?))
+            let raw = match u.produce::<u16>()? {
+                0..=1536 => 0x800,
+                other => other,
+            };
+            Some(EthType::new(raw).unwrap_or_else(|_| unreachable!()))
         }
     }
 
@@ -99,3 +157,6 @@ mod contract {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {}

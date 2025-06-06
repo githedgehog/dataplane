@@ -41,7 +41,6 @@ pub struct Packet<Buf: PacketBufferMut> {
 /// Errors which may occur when failing to produce a [`Packet`]
 #[derive(Debug, thiserror::Error)]
 pub struct InvalidPacket<Buf: PacketBufferMut> {
-    #[allow(unused)]
     mbuf: Buf,
     #[source]
     error: ParseError<EthError>,

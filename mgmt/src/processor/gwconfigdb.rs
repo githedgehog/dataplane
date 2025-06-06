@@ -23,7 +23,7 @@ impl GwConfigDatabase {
         let mut configdb = Self::default();
         let mut blank = GwConfig::blank();
         if let Err(e) = blank.build_internal_config() {
-            unreachable!("Failed to build internal config for blank config: {e}");
+            unreachable!("Failed to build internal config for blank config: {}", e);
         }
         configdb.add(blank);
         configdb

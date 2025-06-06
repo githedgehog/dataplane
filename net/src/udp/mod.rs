@@ -15,6 +15,10 @@ use etherparse::UdpHeader;
 use std::num::NonZero;
 use tracing::debug;
 
+#[allow(unused_imports)]
+#[cfg(any(test, feature = "arbitrary"))]
+pub use contract::*;
+
 /// A UDP header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Udp(UdpHeader);
@@ -23,6 +27,7 @@ pub struct Udp(UdpHeader);
 ///
 /// At this point we only support VXLAN, but Geneve and others can be added as needed.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(bolero::TypeGenerator))]
 pub enum UdpEncap {
     /// A VXLAN header in a UDP packet
     Vxlan(Vxlan),

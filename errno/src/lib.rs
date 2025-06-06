@@ -9,8 +9,8 @@
 //! do not seem to.
 
 #![cfg_attr(not(test), no_std)]
-#![deny(clippy::all, clippy::pedantic)]
 #![forbid(
+    clippy::all,
     clippy::expect_used,
     clippy::missing_errors_doc,
     clippy::panic,
@@ -18,6 +18,7 @@
     missing_docs,
     unsafe_code
 )]
+#![deny(clippy::pedantic)]
 
 /// No error, operation succeeded
 pub const SUCCESS: i32 = 0;

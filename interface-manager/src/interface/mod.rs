@@ -125,7 +125,7 @@ impl Create for Manager<Interface> {
                 LinkBridge::new(requirement.name.as_ref())
                     .set_info_data(InfoData::Bridge(vec![
                         InfoBridge::VlanFiltering(properties.vlan_filtering),
-                        InfoBridge::VlanProtocol(properties.vlan_protocol.as_u16()),
+                        InfoBridge::VlanProtocol(properties.vlan_protocol.to_u16()),
                     ]))
                     .build()
             }
@@ -291,7 +291,7 @@ impl Update for Manager<InterfaceProperties> {
                     .set_port(
                         LinkUnspec::new_with_index(observation.index.to_u32())
                             .set_info_data(InfoData::Bridge(vec![
-                                InfoBridge::VlanProtocol(req.vlan_protocol.as_u16()),
+                                InfoBridge::VlanProtocol(req.vlan_protocol.to_u16()),
                                 InfoBridge::VlanFiltering(req.vlan_filtering),
                             ]))
                             .build(),
@@ -608,9 +608,14 @@ fn extract_bridge_info(builder: &mut BridgePropertiesBuilder, info: &LinkInfo) -
                 InfoBridge::VlanFiltering(f) => {
                     builder.vlan_filtering(*f);
                 }
-                InfoBridge::VlanProtocol(p) => {
-                    builder.vlan_protocol(EthType::from(*p));
-                }
+                InfoBridge::VlanProtocol(p) => match EthType::try_from(*p) {
+                    Ok(eth_type) => {
+                        builder.vlan_protocol(eth_type);
+                    }
+                    Err(e) => {
+                        error!("{e}");
+                    }
+                },
                 _ => {}
             }
         }

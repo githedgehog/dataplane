@@ -17,6 +17,3 @@ uuid = { workspace = true, features = ["v4", "v5"] }
 
 [dev-dependencies]
 bolero = { workspace = true, features = ["std"] }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
