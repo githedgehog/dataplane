@@ -8,7 +8,6 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use tracing::debug;
 
-use crate::grpc::converter::convert_to_grpc_config;
 use crate::models::external::gwconfig::GwConfig;
 use crate::processor::proc::{ConfigRequest, ConfigResponse};
 use crate::{grpc::converter, models::external::gwconfig::GenId};
@@ -118,7 +117,7 @@ impl ConfigManager for BasicConfigManager {
         match response {
             ConfigResponse::GetCurrentConfig(opt_config) => {
                 if let Some(config) = *opt_config {
-                    convert_to_grpc_config(&config.external)
+                    gateway_config::GatewayConfig::try_from(&config.external)
                 } else {
                     Err("No config is currently applied".to_string())
                 }
@@ -151,7 +150,8 @@ impl ConfigManager for BasicConfigManager {
         debug!("Received request to apply new config");
 
         // Convert config from gRPC to native external model
-        let external_config = converter::convert_from_grpc_config(&grpc_config)?;
+        let external_config =
+            converter::convert_gateway_config_from_grpc_with_defaults(&grpc_config)?;
 
         // Create a new GwConfig with this ExternalConfig
         let gw_config = Box::new(GwConfig::new(external_config));

@@ -8,8 +8,8 @@
 mod bgp;
 mod device;
 mod expose;
+mod gateway_config;
 mod interface;
-mod old_impl;
 mod overlay;
 mod peering;
 mod underlay;
@@ -21,9 +21,9 @@ pub use bgp::*;
 pub use device::*;
 #[allow(unused)] // Remove if we do anything but implement traits
 pub use expose::*;
+pub use gateway_config::*;
 #[allow(unused)] // Remove if we do anything but implement traits
 pub use interface::*;
-pub use old_impl::*;
 #[allow(unused)] // Remove if we do anything but implement traits
 pub use overlay::*;
 #[allow(unused)] // Remove if we do anything but implement traits
@@ -40,7 +40,7 @@ mod test {
     use gateway_config::GatewayConfig;
     use pretty_assertions::assert_eq;
 
-    use crate::grpc::converter::{convert_from_grpc_config, convert_to_grpc_config};
+    use crate::grpc::converter::convert_gateway_config_from_grpc_with_defaults;
 
     fn normalize_order(config: &GatewayConfig) -> GatewayConfig {
         let mut config = config.clone();
@@ -88,8 +88,8 @@ mod test {
         bolero::check!()
             .with_type::<GatewayConfig>()
             .for_each(|config| {
-                let external = convert_from_grpc_config(config).unwrap();
-                let reserialized = convert_to_grpc_config(&external).unwrap();
+                let external = convert_gateway_config_from_grpc_with_defaults(config).unwrap();
+                let reserialized = gateway_config::GatewayConfig::try_from(&external).unwrap();
                 assert_eq!(normalize_order(config), normalize_order(&reserialized));
             });
     }

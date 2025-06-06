@@ -203,7 +203,7 @@ mod tests {
         let grpc_config = create_test_gateway_config();
         // Call the conversion function (gRPC -> ExternalConfig)
         // Using standalone function instead of manager method
-        let result = converter::convert_from_grpc_config(&grpc_config);
+        let result = converter::convert_gateway_config_from_grpc_with_defaults(&grpc_config);
 
         // Verify result
         assert!(
@@ -215,7 +215,7 @@ mod tests {
 
         // Call the conversion function (ExternalConfig -> gRPC)
         // Using standalone function instead of manager method
-        let result = converter::convert_to_grpc_config(&external_config);
+        let result = gateway_config::GatewayConfig::try_from(&external_config);
 
         // Verify result
         assert!(
