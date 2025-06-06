@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::net::{IpAddr, Ipv4Addr};
-use std::str::FromStr;
+use std::net::Ipv4Addr;
 use std::string::ToString;
 use tracing::{Level, error, warn};
 
@@ -32,15 +31,6 @@ use gateway_config::GatewayConfig;
 // Helper Functions
 //--------------------------------------------------------------------------------
 
-/// Helper method to safely get the first address from interface
-pub fn get_primary_address(interface: &InterfaceConfig) -> Result<String, String> {
-    if let Some(addr) = interface.addresses.iter().next() {
-        Ok(format!("{}/{}", addr.address, addr.mask_len))
-    } else {
-        Ok(String::new()) // Return empty string if no address is found
-    }
-}
-
 /// Parse a CIDR string into IP and netmask
 pub fn parse_cidr(cidr: &str) -> Result<(String, u8), String> {
     let parts: Vec<&str> = cidr.split('/').collect();
@@ -53,18 +43,6 @@ pub fn parse_cidr(cidr: &str) -> Result<(String, u8), String> {
         }
         _ => Err(format!("Invalid CIDR format: {cidr}")),
     }
-}
-
-pub fn make_prefix_string_from_addr_netmask(addr: &str, netmask: u8) -> Result<String, String> {
-    let ip = IpAddr::from_str(addr).map_err(|e| format!("Invalid IP address {addr}: {e}"))?;
-
-    // Validate netmask range based on IP type
-    let max_mask = if ip.is_ipv4() { 32 } else { 128 };
-    if netmask > max_mask {
-        return Err(format!("Invalid netmask {netmask}: must be <= {max_mask}"));
-    }
-
-    Ok(format!("{ip}/{netmask}"))
 }
 
 /// Create a new `GwConfig` from `ExternalConfig`
@@ -217,25 +195,6 @@ pub fn convert_ospf_config_from_grpc(
     Ok(ospf)
 }
 
-/// Convert a gRPC VPC to internal Vpc
-pub fn convert_vpc_from_grpc(vpc_grpc: &gateway_config::Vpc) -> Result<Vpc, String> {
-    // Create a new VPC with name and VNI
-    let mut vpc = Vpc::new(&vpc_grpc.name, &vpc_grpc.id, vpc_grpc.vni)
-        .map_err(|e| format!("Failed to create VPC: {e}"))?;
-
-    // Convert and add interfaces if any
-    // SMATOV: TODO: We will add this handling later. TBD
-    if !vpc_grpc.interfaces.is_empty() {
-        // For each interface from gRPC
-        for iface in &vpc_grpc.interfaces {
-            let interface = InterfaceConfig::try_from(iface)?;
-            vpc.add_interface_config(interface);
-        }
-    }
-
-    Ok(vpc)
-}
-
 /// Convert a gRPC `VpcPeering` to internal `VpcPeering`
 pub fn convert_peering_from_grpc(
     peering_grpc: &gateway_config::VpcPeering,
@@ -351,7 +310,7 @@ pub fn convert_overlay_from_grpc(overlay: &gateway_config::Overlay) -> Result<Ov
     // Add VPCs
     for vpc_grpc in &overlay.vpcs {
         // Convert VPC
-        let vpc = convert_vpc_from_grpc(vpc_grpc)?;
+        let vpc = Vpc::try_from(vpc_grpc)?;
 
         vpc_table.add(vpc).map_err(|e| {
             let msg = format!("Failed to add VPC {}: {e}", vpc_grpc.name);
@@ -448,27 +407,6 @@ pub fn convert_underlay_to_grpc(underlay: &Underlay) -> Result<gateway_config::U
     })
 }
 
-// Helper to convert VPC interfaces
-pub fn convert_vpc_interfaces_to_grpc(vpc: &Vpc) -> Result<Vec<gateway_config::Interface>, String> {
-    vpc.interfaces
-        .values()
-        .map(gateway_config::config::Interface::try_from)
-        .collect()
-}
-
-/// Convert VPC to gRPC
-pub fn convert_vpc_to_grpc(vpc: &Vpc) -> Result<gateway_config::Vpc, String> {
-    // Convert VPC interfaces
-    let interfaces = convert_vpc_interfaces_to_grpc(vpc)?;
-
-    Ok(gateway_config::Vpc {
-        name: vpc.name.clone(),
-        id: vpc.id.to_string(),
-        vni: vpc.vni.as_u32(),
-        interfaces,
-    })
-}
-
 /// Convert VPC expose rules to gRPC
 pub fn convert_vpc_expose_to_grpc(expose: &VpcExpose) -> Result<gateway_config::Expose, String> {
     let mut ips = Vec::new();
@@ -543,7 +481,7 @@ pub fn convert_overlay_to_grpc(overlay: &Overlay) -> Result<gateway_config::Over
 
     // Convert VPCs
     for vpc in overlay.vpc_table.values() {
-        let grpc_vpc = convert_vpc_to_grpc(vpc)?;
+        let grpc_vpc = gateway_config::Vpc::try_from(vpc)?;
         vpcs.push(grpc_vpc);
     }
 
@@ -643,23 +581,6 @@ impl TryFrom<&Underlay> for gateway_config::Underlay {
 
     fn try_from(underlay: &Underlay) -> Result<Self, Self::Error> {
         convert_underlay_to_grpc(underlay)
-    }
-}
-
-// VPC conversions
-impl TryFrom<&gateway_config::Vpc> for Vpc {
-    type Error = String;
-
-    fn try_from(vpc: &gateway_config::Vpc) -> Result<Self, Self::Error> {
-        convert_vpc_from_grpc(vpc)
-    }
-}
-
-impl TryFrom<&Vpc> for gateway_config::Vpc {
-    type Error = String;
-
-    fn try_from(vpc: &Vpc) -> Result<Self, Self::Error> {
-        convert_vpc_to_grpc(vpc)
     }
 }
 
