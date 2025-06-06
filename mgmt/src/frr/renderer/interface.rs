@@ -18,14 +18,18 @@ fn ip_address_type_str(address: &IpAddr) -> &'static str {
         IpAddr::V6(_) => "ipv6",
     }
 }
-impl Display for InterfaceAddress {
+
+#[repr(transparent)]
+pub struct RenderInterfaceAddress<'a>(pub &'a InterfaceAddress);
+
+impl<'a> Display for RenderInterfaceAddress<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             " {} address {}/{}",
-            ip_address_type_str(&self.address),
-            &self.address,
-            self.mask_len
+            ip_address_type_str(&self.0.address),
+            &self.0.address,
+            self.0.mask_len
         )
     }
 }
@@ -39,7 +43,9 @@ impl Render for InterfaceConfig {
         if let Some(description) = &self.description {
             config += format!(" description {description}");
         }
-        self.addresses.iter().for_each(|a| config += a.to_string());
+        self.addresses
+            .iter()
+            .for_each(|a| config += RenderInterfaceAddress(a).to_string());
         if let Some(ospf) = &self.ospf {
             config += ospf.render(&());
         }

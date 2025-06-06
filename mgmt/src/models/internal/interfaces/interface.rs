@@ -11,7 +11,10 @@ use net::vlan::Vid;
 use net::vxlan::Vni;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::fmt::Display;
 use std::net::IpAddr;
+use std::str::FromStr;
+use thiserror::Error;
 
 use crate::models::external::ConfigError;
 use crate::models::external::ConfigResult;
@@ -84,6 +87,46 @@ pub struct InterfaceConfigTable(BTreeMap<String, InterfaceConfig>);
 impl InterfaceAddress {
     pub fn new(address: IpAddr, mask_len: u8) -> Self {
         Self { address, mask_len }
+    }
+}
+
+#[derive(Clone, Debug, Error)]
+pub enum InterfaceAddressParseError {
+    #[error("Invalid interface address format: {0}")]
+    InvalidFormat(String),
+    #[error("Invalid IP address interface address: {0}")]
+    InvalidIpAddress(String),
+    #[error("Invalid mask length in interface address: {0}")]
+    InvalidMaskLength(String),
+}
+
+impl FromStr for InterfaceAddress {
+    type Err = InterfaceAddressParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut parts = s.split('/');
+        let address_str = parts
+            .next()
+            .ok_or(InterfaceAddressParseError::InvalidFormat(s.to_string()))?;
+        let mask_len_str = parts
+            .next()
+            .ok_or(InterfaceAddressParseError::InvalidFormat(s.to_string()))?;
+        if parts.next().is_some() {
+            return Err(InterfaceAddressParseError::InvalidFormat(s.to_string()));
+        }
+        let address = address_str
+            .parse::<IpAddr>()
+            .map_err(|e| InterfaceAddressParseError::InvalidIpAddress(e.to_string()))?;
+        let mask_len = mask_len_str
+            .parse::<u8>()
+            .map_err(|e| InterfaceAddressParseError::InvalidMaskLength(e.to_string()))?;
+        Ok(Self::new(address, mask_len))
+    }
+}
+
+impl Display for InterfaceAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}/{}", self.address, self.mask_len)
     }
 }
 
