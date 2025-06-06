@@ -6,12 +6,15 @@
 #![allow(clippy::must_use_candidate)] // Do not want to remove pub methods yet
 
 mod bgp;
+mod expose;
 mod interface;
 mod old_impl;
 mod vpc;
 mod vrf;
 
 pub use bgp::*;
+#[allow(unused)] // Remove if we do anything but implement traits
+pub use expose::*;
 #[allow(unused)] // Remove if we do anything but implement traits
 pub use interface::*;
 pub use old_impl::*;

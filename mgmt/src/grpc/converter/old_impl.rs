@@ -9,10 +9,9 @@ use crate::models::external::gwconfig::{
 };
 use crate::models::external::overlay::Overlay;
 use crate::models::external::overlay::vpc::{Vpc, VpcTable};
-use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
+use crate::models::external::overlay::vpcpeering::VpcExpose;
+use crate::models::external::overlay::vpcpeering::VpcManifest;
 use crate::models::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
-
-use routing::prefix::Prefix;
 
 use crate::models::internal::device::{
     DeviceConfig,
@@ -173,7 +172,7 @@ pub fn convert_vpc_manifest_from_grpc(
 
     // Process each expose rule
     for expose_grpc in &entry.expose {
-        let expose = convert_expose_from_grpc(expose_grpc)?;
+        let expose = VpcExpose::try_from(expose_grpc)?;
         manifest.add_expose(expose).map_err(|e| {
             format!(
                 "Failed to add expose to manifest for VPC {}: {e}",
@@ -183,68 +182,6 @@ pub fn convert_vpc_manifest_from_grpc(
     }
 
     Ok(manifest)
-}
-
-/// Convert gRPC `Expose` to `VpcExpose`
-pub fn convert_expose_from_grpc(expose: &gateway_config::Expose) -> Result<VpcExpose, String> {
-    // Start with an empty expose
-    let mut vpc_expose = VpcExpose::empty();
-
-    // Process PeeringIP rules
-    for ip in &expose.ips {
-        if let Some(rule) = &ip.rule {
-            match rule {
-                gateway_config::config::peering_i_ps::Rule::Cidr(cidr) => {
-                    // Parse CIDR into IP and netmask
-                    let (ip_str, netmask) = parse_cidr(cidr)?;
-                    // Add as an include rule
-                    vpc_expose = vpc_expose.ip(Prefix::try_from_tuple((ip_str.as_str(), netmask))
-                        .map_err(|e| e.to_string())?);
-                }
-                gateway_config::config::peering_i_ps::Rule::Not(not) => {
-                    // Parse CIDR into IP and netmask for exclude rule
-                    let (ip_str, netmask) = parse_cidr(not)?;
-                    // Add as an exclude rule
-                    vpc_expose = vpc_expose.not(
-                        Prefix::try_from_tuple((ip_str.as_str(), netmask))
-                            .map_err(|e| e.to_string())?,
-                    );
-                }
-            }
-        } else {
-            return Err("PeeringIPs must have either 'cidr' or 'not' field set".to_string());
-        }
-    }
-
-    // Process PeeringAs rules
-    for as_rule in &expose.r#as {
-        if let Some(rule) = &as_rule.rule {
-            match rule {
-                gateway_config::config::peering_as::Rule::Cidr(cidr) => {
-                    // Parse CIDR into IP and netmask
-                    let (ip_str, netmask) = parse_cidr(cidr)?;
-                    // Add as an include rule for AS
-                    vpc_expose = vpc_expose.as_range(
-                        Prefix::try_from_tuple((ip_str.as_str(), netmask))
-                            .map_err(|e| e.to_string())?,
-                    );
-                }
-                gateway_config::config::peering_as::Rule::Not(ip_exclude) => {
-                    // Parse CIDR into IP and netmask for exclude rule
-                    let (ip_str, netmask) = parse_cidr(ip_exclude)?;
-                    // Add as an exclude rule for AS
-                    vpc_expose = vpc_expose.not_as(
-                        Prefix::try_from_tuple((ip_str.as_str(), netmask))
-                            .map_err(|e| e.to_string())?,
-                    );
-                }
-            }
-        } else {
-            return Err("PeeringAs must have either 'cidr' or 'not' field set".to_string());
-        }
-    }
-
-    Ok(vpc_expose)
 }
 
 /// Convert Overlay from gRPC
@@ -322,41 +259,6 @@ pub fn convert_underlay_to_grpc(underlay: &Underlay) -> Result<gateway_config::U
     })
 }
 
-/// Convert VPC expose rules to gRPC
-pub fn convert_vpc_expose_to_grpc(expose: &VpcExpose) -> Result<gateway_config::Expose, String> {
-    let mut ips = Vec::new();
-    let mut as_rules = Vec::new();
-
-    // Convert IP inclusion rules
-    for prefix in &expose.ips {
-        let rule = gateway_config::config::peering_i_ps::Rule::Cidr(prefix.to_string());
-        ips.push(gateway_config::PeeringIPs { rule: Some(rule) });
-    }
-
-    // Convert IP exclusion rules
-    for prefix in &expose.nots {
-        let rule = gateway_config::config::peering_i_ps::Rule::Not(prefix.to_string());
-        ips.push(gateway_config::PeeringIPs { rule: Some(rule) });
-    }
-
-    // Convert AS inclusion rules
-    for prefix in &expose.as_range {
-        let rule = gateway_config::config::peering_as::Rule::Cidr(prefix.to_string());
-        as_rules.push(gateway_config::PeeringAs { rule: Some(rule) });
-    }
-
-    // Convert AS exclusion rules
-    for prefix in &expose.not_as {
-        let rule = gateway_config::config::peering_as::Rule::Not(prefix.to_string());
-        as_rules.push(gateway_config::PeeringAs { rule: Some(rule) });
-    }
-
-    Ok(gateway_config::Expose {
-        ips,
-        r#as: as_rules,
-    })
-}
-
 /// Convert VPC manifest to gRPC
 pub fn convert_vpc_manifest_to_grpc(
     manifest: &VpcManifest,
@@ -365,7 +267,7 @@ pub fn convert_vpc_manifest_to_grpc(
 
     // Convert each expose rule
     for expose in &manifest.exposes {
-        let grpc_expose = convert_vpc_expose_to_grpc(expose)?;
+        let grpc_expose = gateway_config::Expose::try_from(expose)?;
         expose_rules.push(grpc_expose);
     }
 
@@ -462,23 +364,6 @@ impl TryFrom<&Underlay> for gateway_config::Underlay {
 
     fn try_from(underlay: &Underlay) -> Result<Self, Self::Error> {
         convert_underlay_to_grpc(underlay)
-    }
-}
-
-// VPC Expose conversions
-impl TryFrom<&gateway_config::Expose> for VpcExpose {
-    type Error = String;
-
-    fn try_from(expose: &gateway_config::Expose) -> Result<Self, Self::Error> {
-        convert_expose_from_grpc(expose)
-    }
-}
-
-impl TryFrom<&VpcExpose> for gateway_config::Expose {
-    type Error = String;
-
-    fn try_from(expose: &VpcExpose) -> Result<Self, Self::Error> {
-        convert_vpc_expose_to_grpc(expose)
     }
 }
 
