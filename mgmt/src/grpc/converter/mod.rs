@@ -9,6 +9,7 @@ mod bgp;
 mod expose;
 mod interface;
 mod old_impl;
+mod peering;
 mod vpc;
 mod vrf;
 
@@ -18,6 +19,8 @@ pub use expose::*;
 #[allow(unused)] // Remove if we do anything but implement traits
 pub use interface::*;
 pub use old_impl::*;
+#[allow(unused)] // Remove if we do anything but implement traits
+pub use peering::*;
 #[allow(unused)] // Remove if we do anything but implement traits
 pub use vpc::*;
 #[allow(unused)] // Remove if we do anything but implement traits

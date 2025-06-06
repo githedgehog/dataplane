@@ -9,8 +9,6 @@ use crate::models::external::gwconfig::{
 };
 use crate::models::external::overlay::Overlay;
 use crate::models::external::overlay::vpc::{Vpc, VpcTable};
-use crate::models::external::overlay::vpcpeering::VpcExpose;
-use crate::models::external::overlay::vpcpeering::VpcManifest;
 use crate::models::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
 
 use crate::models::internal::device::{
@@ -139,51 +137,6 @@ pub fn convert_underlay_from_grpc(underlay: &gateway_config::Underlay) -> Result
     Ok(Underlay { vrf: vrf_config })
 }
 
-/// Convert a gRPC `VpcPeering` to internal `VpcPeering`
-pub fn convert_peering_from_grpc(
-    peering_grpc: &gateway_config::VpcPeering,
-) -> Result<VpcPeering, String> {
-    let (vpc1_manifest, vpc2_manifest) = match peering_grpc.r#for.as_slice() {
-        [vpc1, vpc2] => {
-            let vpc1_manifest = convert_vpc_manifest_from_grpc(vpc1)?;
-            let vpc2_manifest = convert_vpc_manifest_from_grpc(vpc2)?;
-            Ok((vpc1_manifest, vpc2_manifest))
-        }
-        _ => Err(format!(
-            "VPC peering {} must have exactly two VPCs",
-            peering_grpc.name
-        )),
-    }?;
-
-    // Create the peering using the constructor
-    Ok(VpcPeering::new(
-        &peering_grpc.name,
-        vpc1_manifest,
-        vpc2_manifest,
-    ))
-}
-
-/// Convert gRPC `PeeringEntryFor` to `VpcManifest`
-pub fn convert_vpc_manifest_from_grpc(
-    entry: &gateway_config::PeeringEntryFor,
-) -> Result<VpcManifest, String> {
-    // Create a new VPC manifest with the VPC name
-    let mut manifest = VpcManifest::new(&entry.vpc);
-
-    // Process each expose rule
-    for expose_grpc in &entry.expose {
-        let expose = VpcExpose::try_from(expose_grpc)?;
-        manifest.add_expose(expose).map_err(|e| {
-            format!(
-                "Failed to add expose to manifest for VPC {}: {e}",
-                entry.vpc
-            )
-        })?;
-    }
-
-    Ok(manifest)
-}
-
 /// Convert Overlay from gRPC
 pub fn convert_overlay_from_grpc(overlay: &gateway_config::Overlay) -> Result<Overlay, String> {
     // Create VPC table
@@ -207,7 +160,7 @@ pub fn convert_overlay_from_grpc(overlay: &gateway_config::Overlay) -> Result<Ov
     // Add peerings
     for peering_grpc in &overlay.peerings {
         // Convert peering
-        let peering = convert_peering_from_grpc(peering_grpc)?;
+        let peering = VpcPeering::try_from(peering_grpc)?;
 
         // Add to table
         peering_table
@@ -259,38 +212,6 @@ pub fn convert_underlay_to_grpc(underlay: &Underlay) -> Result<gateway_config::U
     })
 }
 
-/// Convert VPC manifest to gRPC
-pub fn convert_vpc_manifest_to_grpc(
-    manifest: &VpcManifest,
-) -> Result<gateway_config::PeeringEntryFor, String> {
-    let mut expose_rules = Vec::new();
-
-    // Convert each expose rule
-    for expose in &manifest.exposes {
-        let grpc_expose = gateway_config::Expose::try_from(expose)?;
-        expose_rules.push(grpc_expose);
-    }
-
-    Ok(gateway_config::PeeringEntryFor {
-        vpc: manifest.name.clone(),
-        expose: expose_rules,
-    })
-}
-
-/// Convert VPC peering to gRPC
-pub fn convert_vpc_peering_to_grpc(
-    peering: &VpcPeering,
-) -> Result<gateway_config::VpcPeering, String> {
-    // Convert the left and right VPC manifests
-    let left_for = convert_vpc_manifest_to_grpc(&peering.left)?;
-    let right_for = convert_vpc_manifest_to_grpc(&peering.right)?;
-
-    Ok(gateway_config::VpcPeering {
-        name: peering.name.clone(),
-        r#for: vec![left_for, right_for],
-    })
-}
-
 /// Convert Overlay to gRPC
 pub fn convert_overlay_to_grpc(overlay: &Overlay) -> Result<gateway_config::Overlay, String> {
     let mut vpcs = Vec::new();
@@ -304,7 +225,7 @@ pub fn convert_overlay_to_grpc(overlay: &Overlay) -> Result<gateway_config::Over
 
     // Convert peerings
     for peering in overlay.peering_table.values() {
-        let grpc_peering = convert_vpc_peering_to_grpc(peering)?;
+        let grpc_peering = gateway_config::VpcPeering::try_from(peering)?;
         peerings.push(grpc_peering);
     }
 
@@ -364,40 +285,6 @@ impl TryFrom<&Underlay> for gateway_config::Underlay {
 
     fn try_from(underlay: &Underlay) -> Result<Self, Self::Error> {
         convert_underlay_to_grpc(underlay)
-    }
-}
-
-// VPC Manifest conversions
-impl TryFrom<&gateway_config::PeeringEntryFor> for VpcManifest {
-    type Error = String;
-
-    fn try_from(entry: &gateway_config::PeeringEntryFor) -> Result<Self, Self::Error> {
-        convert_vpc_manifest_from_grpc(entry)
-    }
-}
-
-impl TryFrom<&VpcManifest> for gateway_config::PeeringEntryFor {
-    type Error = String;
-
-    fn try_from(manifest: &VpcManifest) -> Result<Self, Self::Error> {
-        convert_vpc_manifest_to_grpc(manifest)
-    }
-}
-
-// VPC Peering conversions
-impl TryFrom<&gateway_config::VpcPeering> for VpcPeering {
-    type Error = String;
-
-    fn try_from(peering: &gateway_config::VpcPeering) -> Result<Self, Self::Error> {
-        convert_peering_from_grpc(peering)
-    }
-}
-
-impl TryFrom<&VpcPeering> for gateway_config::VpcPeering {
-    type Error = String;
-
-    fn try_from(peering: &VpcPeering) -> Result<Self, Self::Error> {
-        convert_vpc_peering_to_grpc(peering)
     }
 }
 
