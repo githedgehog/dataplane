@@ -148,15 +148,15 @@ fi
   --tmpfs "/var/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
   --user="$(id -u):$(id -g)" \
   --group-add="$(getent group docker | cut -d: -f3)" \
-  --env LLVM_PROFILE_FILE="${LLVM_PROFILE_FILE}" \
+  --env LLVM_PROFILE_FILE="${LLVM_PROFILE_FILE:-""}" \
   --env CARGO_LLVM_COV=1 \
   --env CARGO_LLVM_COV_SHOW_ENV=1 \
-  --env CARGO_LLVM_COV_TARGET_DIR=/home/dnoland/storage/dnoland/git/hedgehog/dataplane/target \
+  --env CARGO_LLVM_COV_TARGET_DIR="${project_dir}/target" \
   --workdir="${project_dir}" \
   --env DOCKER_HOST="unix://$(get_docker_sock)" \
   --net=none \
   --pid=host \
-  --cap-add ALL \
+  --cap-drop ALL \
   --cap-add NET_ADMIN \
   --cap-add NET_RAW \
   --cap-add SYS_ADMIN \
