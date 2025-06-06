@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::net::Ipv4Addr;
 use std::string::ToString;
 use tracing::{Level, error, warn};
 
@@ -12,7 +11,6 @@ use crate::models::external::overlay::Overlay;
 use crate::models::external::overlay::vpc::{Vpc, VpcTable};
 use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
 use crate::models::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
-use crate::models::internal::routing::ospf::Ospf;
 
 use routing::prefix::Prefix;
 
@@ -20,9 +18,6 @@ use crate::models::internal::device::{
     DeviceConfig,
     settings::{DeviceSettings, DpdkPortConfig, KernelPacketConfig, PacketDriver},
 };
-use crate::models::internal::interfaces::interface::InterfaceConfig;
-
-use crate::models::internal::routing::bgp::BgpConfig;
 use crate::models::internal::routing::vrf::VrfConfig;
 
 // Import proto-generated types
@@ -139,60 +134,10 @@ pub fn convert_underlay_from_grpc(underlay: &gateway_config::Underlay) -> Result
         .unwrap_or(&underlay.vrfs[0]); // FIXME(manish): This should be an error, preserving the original behavior for now
 
     // Convert VRF to VrfConfig
-    let vrf_config = convert_vrf_to_vrf_config(default_vrf)?;
+    let vrf_config = VrfConfig::try_from(default_vrf)?;
 
     // Create Underlay with the VRF config
     Ok(Underlay { vrf: vrf_config })
-}
-
-/// Convert gRPC VRF to internal `VrfConfig`
-pub fn convert_vrf_to_vrf_config(vrf: &gateway_config::Vrf) -> Result<VrfConfig, String> {
-    // Create VRF config
-    let mut vrf_config = VrfConfig::new(&vrf.name, None, true /* default vrf */);
-
-    // Convert BGP config if present and add it to VRF
-    if let Some(router) = &vrf.router {
-        let bgp = BgpConfig::try_from(router)?;
-        vrf_config.set_bgp(bgp);
-    }
-
-    // convert each interface
-    for iface in &vrf.interfaces {
-        let iface_config = InterfaceConfig::try_from(iface)?;
-        vrf_config.add_interface_config(iface_config);
-    }
-
-    // Convert ospf config if present
-    if let Some(ospf_config) = &vrf.ospf {
-        let ospf = convert_ospf_config_from_grpc(ospf_config)?;
-        vrf_config.set_ospf(ospf);
-    }
-
-    Ok(vrf_config)
-}
-
-/// Convert gRPC `OspfConfig` to internal `Ospf`
-pub fn convert_ospf_config_from_grpc(
-    ospf_config: &gateway_config::config::OspfConfig,
-) -> Result<Ospf, String> {
-    // Parse router_id from string to Ipv4Addr
-    let router_id = ospf_config
-        .router_id
-        .parse::<Ipv4Addr>()
-        .map_err(|_| format!("Invalid OSPF router ID format: {}", ospf_config.router_id))?;
-
-    // Create a new Ospf instance
-    let mut ospf = Ospf::new(router_id);
-
-    // Set VRF name if present
-    #[allow(clippy::collapsible_if)]
-    if let Some(vrf_name) = &ospf_config.vrf {
-        if !vrf_name.is_empty() {
-            ospf.set_vrf_name(vrf_name.clone());
-        }
-    }
-
-    Ok(ospf)
 }
 
 /// Convert a gRPC `VpcPeering` to internal `VpcPeering`
@@ -367,40 +312,10 @@ pub fn convert_device_to_grpc(dev: &DeviceConfig) -> Result<gateway_config::Devi
     })
 }
 
-/// Convert internal `Ospf` to gRPC `OspfConfig`
-pub fn convert_ospf_to_grpc(ospf: &Ospf) -> gateway_config::config::OspfConfig {
-    gateway_config::config::OspfConfig {
-        router_id: ospf.router_id.to_string(),
-        vrf: ospf.vrf.clone(),
-    }
-}
-
-/// Convert internal `VrfConfig` to gRPC `Vrf`
-pub fn convert_vrf_config_to_grpc(vrf: &VrfConfig) -> Result<gateway_config::Vrf, String> {
-    // Convert interfaces
-    let interfaces = Vec::<gateway_config::config::Interface>::try_from(&vrf.interfaces)?;
-
-    // Convert router config if BGP is configured
-    let router = match &vrf.bgp {
-        Some(bgp) => Some(gateway_config::config::RouterConfig::try_from(bgp)?),
-        None => None,
-    };
-
-    // Convert OSPF config if present
-    let ospf = vrf.ospf.as_ref().map(convert_ospf_to_grpc);
-
-    Ok(gateway_config::Vrf {
-        name: vrf.name.clone(),
-        interfaces,
-        router,
-        ospf,
-    })
-}
-
 // Improved underlay conversion
 pub fn convert_underlay_to_grpc(underlay: &Underlay) -> Result<gateway_config::Underlay, String> {
     // Convert the VRF
-    let vrf_grpc = convert_vrf_config_to_grpc(&underlay.vrf)?;
+    let vrf_grpc = gateway_config::Vrf::try_from(&underlay.vrf)?;
 
     Ok(gateway_config::Underlay {
         vrfs: vec![vrf_grpc],
@@ -530,40 +445,6 @@ impl TryFrom<&DeviceConfig> for gateway_config::Device {
 
     fn try_from(device: &DeviceConfig) -> Result<Self, Self::Error> {
         convert_device_to_grpc(device)
-    }
-}
-
-// Add more TryFrom implementations as needed for other types
-
-// OSPF conversions
-impl TryFrom<&gateway_config::config::OspfConfig> for Ospf {
-    type Error = String;
-
-    fn try_from(ospf_config: &gateway_config::config::OspfConfig) -> Result<Self, Self::Error> {
-        convert_ospf_config_from_grpc(ospf_config)
-    }
-}
-
-impl From<&Ospf> for gateway_config::config::OspfConfig {
-    fn from(ospf: &Ospf) -> Self {
-        convert_ospf_to_grpc(ospf)
-    }
-}
-
-// VRF conversions
-impl TryFrom<&gateway_config::Vrf> for VrfConfig {
-    type Error = String;
-
-    fn try_from(vrf: &gateway_config::Vrf) -> Result<Self, Self::Error> {
-        convert_vrf_to_vrf_config(vrf)
-    }
-}
-
-impl TryFrom<&VrfConfig> for gateway_config::Vrf {
-    type Error = String;
-
-    fn try_from(vrf: &VrfConfig) -> Result<Self, Self::Error> {
-        convert_vrf_config_to_grpc(vrf)
     }
 }
 

@@ -9,6 +9,7 @@ mod bgp;
 mod interface;
 mod old_impl;
 mod vpc;
+mod vrf;
 
 pub use bgp::*;
 #[allow(unused)] // Remove if we do anything but implement traits
@@ -16,6 +17,8 @@ pub use interface::*;
 pub use old_impl::*;
 #[allow(unused)] // Remove if we do anything but implement traits
 pub use vpc::*;
+#[allow(unused)] // Remove if we do anything but implement traits
+pub use vrf::*;
 
 #[cfg(test)]
 mod test {
