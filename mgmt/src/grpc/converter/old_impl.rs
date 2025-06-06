@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use net::eth::mac::Mac;
-use net::vlan::Vid;
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 use std::string::ToString;
@@ -15,17 +13,15 @@ use crate::models::external::overlay::Overlay;
 use crate::models::external::overlay::vpc::{Vpc, VpcTable};
 use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
 use crate::models::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
-use crate::models::internal::routing::ospf::{Ospf, OspfInterface, OspfNetwork};
+use crate::models::internal::routing::ospf::Ospf;
 
-use routing::prefix::{Prefix, PrefixString};
+use routing::prefix::Prefix;
 
 use crate::models::internal::device::{
     DeviceConfig,
     settings::{DeviceSettings, DpdkPortConfig, KernelPacketConfig, PacketDriver},
 };
-use crate::models::internal::interfaces::interface::{
-    IfEthConfig, IfVlanConfig, IfVtepConfig, InterfaceConfig, InterfaceConfigTable, InterfaceType,
-};
+use crate::models::internal::interfaces::interface::InterfaceConfig;
 
 use crate::models::internal::routing::bgp::BgpConfig;
 use crate::models::internal::routing::vrf::VrfConfig;
@@ -43,14 +39,6 @@ pub fn get_primary_address(interface: &InterfaceConfig) -> Result<String, String
     } else {
         Ok(String::new()) // Return empty string if no address is found
     }
-}
-
-pub fn interface_prefixes_to_strings(interface: &InterfaceConfig) -> Vec<String> {
-    interface
-        .addresses
-        .iter()
-        .map(|addr| format!("{}/{}", addr.address, addr.mask_len))
-        .collect()
 }
 
 /// Parse a CIDR string into IP and netmask
@@ -192,7 +180,7 @@ pub fn convert_vrf_to_vrf_config(vrf: &gateway_config::Vrf) -> Result<VrfConfig,
 
     // convert each interface
     for iface in &vrf.interfaces {
-        let iface_config = convert_interface_to_interface_config(iface)?;
+        let iface_config = InterfaceConfig::try_from(iface)?;
         vrf_config.add_interface_config(iface_config);
     }
 
@@ -229,126 +217,6 @@ pub fn convert_ospf_config_from_grpc(
     Ok(ospf)
 }
 
-/// Convert gRPC `OspfInterface` to internal `OspfInterface`
-pub fn convert_ospf_interface_from_grpc(
-    ospf_interface: &gateway_config::config::OspfInterface,
-) -> Result<OspfInterface, String> {
-    // Parse area from string to Ipv4Addr
-    let area = ospf_interface
-        .area
-        .parse::<Ipv4Addr>()
-        .map_err(|_| format!("Invalid OSPF area format: {}", ospf_interface.area))?;
-
-    // Create a new OspfInterface instance
-    let mut ospf_iface = OspfInterface::new(area);
-
-    // Set passive state
-    ospf_iface = ospf_iface.set_passive(ospf_interface.passive);
-
-    // Set cost if present
-    if let Some(cost) = ospf_interface.cost {
-        ospf_iface = ospf_iface.set_cost(cost);
-    }
-
-    // Set network type if present
-    if let Some(network_type) = &ospf_interface.network_type {
-        let network = match gateway_config::config::OspfNetworkType::try_from(*network_type) {
-            Ok(gateway_config::config::OspfNetworkType::Broadcast) => OspfNetwork::Broadcast,
-            Ok(gateway_config::config::OspfNetworkType::NonBroadcast) => OspfNetwork::NonBroadcast,
-            Ok(gateway_config::config::OspfNetworkType::PointToPoint) => OspfNetwork::Point2Point,
-            Ok(gateway_config::config::OspfNetworkType::PointToMultipoint) => {
-                OspfNetwork::Point2Multipoint
-            }
-            Err(_) => return Err(format!("Invalid OSPF network type: {network_type}")),
-        };
-        ospf_iface = ospf_iface.set_network(network);
-    }
-
-    Ok(ospf_iface)
-}
-
-/// Convert a gRPC `Interface` to internal `InterfaceConfig`
-pub fn convert_interface_to_interface_config(
-    iface: &gateway_config::Interface,
-) -> Result<InterfaceConfig, String> {
-    // Convert interface type
-    let grpc_if_type = gateway_config::config::IfType::try_from(iface.r#type)
-        .map_err(|_| format!("Invalid interface type: {}", iface.r#type))?;
-    let mac = match &iface.macaddr {
-        Some(mac) => {
-            Some(Mac::try_from(mac.as_str()).map_err(|_| format!("Invalid MAC address: {mac}"))?)
-        }
-        None => None,
-    };
-    let iftype = match grpc_if_type {
-        gateway_config::config::IfType::Ethernet => InterfaceType::Ethernet(IfEthConfig { mac }),
-        gateway_config::config::IfType::Vlan => {
-            // Safely handle the VLAN ID conversion
-            let vlan_id = iface
-                .vlan
-                .ok_or_else(|| "VLAN interface requires vlan ID".to_string())?;
-
-            // Try to convert to u16
-            let vlan_u16 =
-                u16::try_from(vlan_id).map_err(|_| format!("Invalid VLAN ID: {vlan_id}"))?;
-
-            // Create a safe Vid
-            let vid =
-                Vid::new(vlan_u16).map_err(|_| format!("Invalid VLAN ID value: {vlan_u16}"))?;
-
-            InterfaceType::Vlan(IfVlanConfig { mac, vlan_id: vid })
-        }
-        gateway_config::config::IfType::Loopback => InterfaceType::Loopback,
-        gateway_config::config::IfType::Vtep => {
-            let local = match iface.ipaddrs.as_slice() {
-                [] => Err("VTEP interface requires an IP address".to_string()),
-                [addr] => {
-                    let addr_mask = Prefix::try_from(PrefixString(addr)).map_err(|e| {
-                        format!("Invalid interface address \"{addr}\" for VTEP interface: {e}",)
-                    })?;
-                    if addr_mask.length() == 32 {
-                        Ok(addr_mask.as_address())
-                    } else {
-                        Err("VTEP interface requires a /32 IP address".to_string())
-                    }?;
-                    Ok(addr_mask.as_address())
-                }
-                _ => Err("VTEP interface requires exactly one IP address".to_string()),
-            }?;
-
-            InterfaceType::Vtep(IfVtepConfig {
-                mac: None,
-                vni: None,
-                ttl: None,
-                local,
-            })
-        }
-    };
-
-    // Create new InterfaceConfig
-    let mut interface_config: InterfaceConfig = InterfaceConfig::new(&iface.name, iftype, false);
-
-    // Add the address from gRPC if present,
-    // But not for VTEP interfaces because we abuse the field to mean local IP
-    // See https://github.com/githedgehog/gateway-proto/issues/24
-    if grpc_if_type != gateway_config::config::IfType::Vtep && !iface.ipaddrs.is_empty() {
-        for ips in &iface.ipaddrs {
-            let (ip_str, netmask) = parse_cidr(ips)?;
-            let new_addr =
-                IpAddr::from_str(&ip_str).map_err(|_| format!("Invalid IP address: {ip_str}"))?;
-            interface_config = interface_config.add_address(new_addr, netmask);
-        }
-    }
-
-    // Add OSPF interface configuration if present
-    if let Some(ospf_iface) = &iface.ospf {
-        let ospf_interface = convert_ospf_interface_from_grpc(ospf_iface)?;
-        interface_config = interface_config.set_ospf(ospf_interface);
-    }
-
-    Ok(interface_config)
-}
-
 /// Convert a gRPC VPC to internal Vpc
 pub fn convert_vpc_from_grpc(vpc_grpc: &gateway_config::Vpc) -> Result<Vpc, String> {
     // Create a new VPC with name and VNI
@@ -360,7 +228,7 @@ pub fn convert_vpc_from_grpc(vpc_grpc: &gateway_config::Vpc) -> Result<Vpc, Stri
     if !vpc_grpc.interfaces.is_empty() {
         // For each interface from gRPC
         for iface in &vpc_grpc.interfaces {
-            let interface = convert_interface_to_interface_config(iface)?;
+            let interface = InterfaceConfig::try_from(iface)?;
             vpc.add_interface_config(interface);
         }
     }
@@ -540,100 +408,6 @@ pub fn convert_device_to_grpc(dev: &DeviceConfig) -> Result<gateway_config::Devi
     })
 }
 
-pub fn convert_ospf_interface_to_grpc(
-    ospf_interface: &OspfInterface,
-) -> gateway_config::config::OspfInterface {
-    // Convert network type if present
-    let network_type = ospf_interface.network.as_ref().map(|network| {
-        (match network {
-            OspfNetwork::Broadcast => gateway_config::config::OspfNetworkType::Broadcast,
-            OspfNetwork::NonBroadcast => gateway_config::config::OspfNetworkType::NonBroadcast,
-            OspfNetwork::Point2Point => gateway_config::config::OspfNetworkType::PointToPoint,
-            OspfNetwork::Point2Multipoint => {
-                gateway_config::config::OspfNetworkType::PointToMultipoint
-            }
-        })
-        .into()
-    });
-
-    gateway_config::config::OspfInterface {
-        passive: ospf_interface.passive,
-        area: ospf_interface.area.to_string(),
-        cost: ospf_interface.cost,
-        network_type,
-    }
-}
-
-pub fn convert_interface_to_grpc(
-    interface: &InterfaceConfig,
-) -> Result<gateway_config::Interface, String> {
-    // Get IP address safely
-    //let ipaddr = get_primary_address(interface)?;
-    let interface_addresses = match &interface.iftype {
-        InterfaceType::Ethernet(_) | InterfaceType::Vlan(_) | InterfaceType::Loopback => {
-            interface_prefixes_to_strings(interface)
-        }
-        InterfaceType::Vtep(vtep) => vec![format!("{}/32", vtep.local.to_string())],
-        _ => vec![],
-    };
-
-    // Convert interface type
-    let if_type = match &interface.iftype {
-        InterfaceType::Ethernet(_) => gateway_config::config::IfType::Ethernet,
-        InterfaceType::Vlan(_) => gateway_config::config::IfType::Vlan,
-        InterfaceType::Loopback => gateway_config::config::IfType::Loopback,
-        InterfaceType::Vtep(_) => gateway_config::config::IfType::Vtep,
-        _ => {
-            return Err(format!(
-                "Unsupported interface type: {:?}",
-                interface.iftype
-            ));
-        }
-    };
-
-    // Get VLAN ID if available
-    let vlan = match &interface.iftype {
-        InterfaceType::Vlan(if_vlan_config) => Some(u32::from(if_vlan_config.vlan_id.as_u16())),
-        _ => None,
-    };
-
-    // Get MAC address if available
-    let macaddr = match &interface.iftype {
-        InterfaceType::Ethernet(eth_config) => eth_config.mac.as_ref().map(ToString::to_string),
-        InterfaceType::Vlan(vlan_config) => vlan_config.mac.as_ref().map(ToString::to_string),
-        InterfaceType::Vtep(vtep_config) => vtep_config.mac.as_ref().map(ToString::to_string),
-        _ => None,
-    };
-
-    // Convert OSPF interface if present
-    let ospf = interface.ospf.as_ref().map(convert_ospf_interface_to_grpc);
-
-    // Create the gRPC interface
-    Ok(gateway_config::Interface {
-        name: interface.name.clone(),
-        ipaddrs: interface_addresses,
-        r#type: if_type.into(),
-        vlan,
-        macaddr,
-        system_name: None, // TODO: Implement when needed
-        role: gateway_config::config::IfRole::Fabric.into(), // Default to Fabric
-        ospf,
-    })
-}
-
-pub fn convert_interfaces_to_grpc(
-    interfaces: &InterfaceConfigTable,
-) -> Result<Vec<gateway_config::Interface>, String> {
-    let mut grpc_interfaces = Vec::new();
-
-    for interface in interfaces.values() {
-        let grpc_iface = convert_interface_to_grpc(interface)?;
-        grpc_interfaces.push(grpc_iface);
-    }
-
-    Ok(grpc_interfaces)
-}
-
 /// Convert internal `Ospf` to gRPC `OspfConfig`
 pub fn convert_ospf_to_grpc(ospf: &Ospf) -> gateway_config::config::OspfConfig {
     gateway_config::config::OspfConfig {
@@ -645,7 +419,7 @@ pub fn convert_ospf_to_grpc(ospf: &Ospf) -> gateway_config::config::OspfConfig {
 /// Convert internal `VrfConfig` to gRPC `Vrf`
 pub fn convert_vrf_config_to_grpc(vrf: &VrfConfig) -> Result<gateway_config::Vrf, String> {
     // Convert interfaces
-    let interfaces = convert_interfaces_to_grpc(&vrf.interfaces)?;
+    let interfaces = Vec::<gateway_config::config::Interface>::try_from(&vrf.interfaces)?;
 
     // Convert router config if BGP is configured
     let router = match &vrf.bgp {
@@ -678,7 +452,7 @@ pub fn convert_underlay_to_grpc(underlay: &Underlay) -> Result<gateway_config::U
 pub fn convert_vpc_interfaces_to_grpc(vpc: &Vpc) -> Result<Vec<gateway_config::Interface>, String> {
     vpc.interfaces
         .values()
-        .map(convert_interface_to_grpc)
+        .map(gateway_config::config::Interface::try_from)
         .collect()
 }
 
@@ -821,22 +595,6 @@ impl TryFrom<&DeviceConfig> for gateway_config::Device {
     }
 }
 
-impl TryFrom<&gateway_config::Interface> for InterfaceConfig {
-    type Error = String;
-
-    fn try_from(interface: &gateway_config::Interface) -> Result<Self, Self::Error> {
-        convert_interface_to_interface_config(interface)
-    }
-}
-
-impl TryFrom<&InterfaceConfig> for gateway_config::Interface {
-    type Error = String;
-
-    fn try_from(interface: &InterfaceConfig) -> Result<Self, Self::Error> {
-        convert_interface_to_grpc(interface)
-    }
-}
-
 // Add more TryFrom implementations as needed for other types
 
 // OSPF conversions
@@ -851,23 +609,6 @@ impl TryFrom<&gateway_config::config::OspfConfig> for Ospf {
 impl From<&Ospf> for gateway_config::config::OspfConfig {
     fn from(ospf: &Ospf) -> Self {
         convert_ospf_to_grpc(ospf)
-    }
-}
-
-// OSPF Interface conversions
-impl TryFrom<&gateway_config::config::OspfInterface> for OspfInterface {
-    type Error = String;
-
-    fn try_from(
-        ospf_interface: &gateway_config::config::OspfInterface,
-    ) -> Result<Self, Self::Error> {
-        convert_ospf_interface_from_grpc(ospf_interface)
-    }
-}
-
-impl From<&OspfInterface> for gateway_config::config::OspfInterface {
-    fn from(ospf_interface: &OspfInterface) -> Self {
-        convert_ospf_interface_to_grpc(ospf_interface)
     }
 }
 
