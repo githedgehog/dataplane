@@ -6,4 +6,3 @@
 
 pub mod converter;
 pub mod server;
-pub mod test;
