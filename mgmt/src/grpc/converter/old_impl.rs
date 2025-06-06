@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::string::ToString;
 use tracing::{error, warn};
 
 use crate::models::external::gwconfig::{
@@ -12,7 +11,6 @@ use crate::models::external::overlay::vpc::{Vpc, VpcTable};
 use crate::models::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
 
 use crate::models::internal::device::{DeviceConfig, settings::DeviceSettings};
-use crate::models::internal::routing::vrf::VrfConfig;
 
 // Import proto-generated types
 use gateway_config::GatewayConfig;
@@ -40,7 +38,7 @@ pub fn convert_from_grpc_config(grpc_config: &GatewayConfig) -> Result<ExternalC
 
     // convert underlay or provide a default (empty)
     let underlay_config = if let Some(underlay) = &grpc_config.underlay {
-        convert_underlay_from_grpc(underlay)?
+        Underlay::try_from(underlay)?
     } else {
         warn!("Missing underlay configuration!");
         Underlay::default()
@@ -64,27 +62,6 @@ pub fn convert_from_grpc_config(grpc_config: &GatewayConfig) -> Result<ExternalC
         .map_err(|e| format!("Failed to build ExternalConfig: {e}"))?;
 
     Ok(external_config)
-}
-
-/// Convert gRPC Underlay to internal Underlay
-pub fn convert_underlay_from_grpc(underlay: &gateway_config::Underlay) -> Result<Underlay, String> {
-    // Find the default VRF or first VRF if default not found
-    if underlay.vrfs.is_empty() {
-        return Err("Underlay must contain at least one VRF".to_string());
-    }
-
-    // Look for the default VRF or use the first one
-    let default_vrf = underlay
-        .vrfs
-        .iter()
-        .find(|vrf| vrf.name == "default")
-        .unwrap_or(&underlay.vrfs[0]); // FIXME(manish): This should be an error, preserving the original behavior for now
-
-    // Convert VRF to VrfConfig
-    let vrf_config = VrfConfig::try_from(default_vrf)?;
-
-    // Create Underlay with the VRF config
-    Ok(Underlay { vrf: vrf_config })
 }
 
 /// Convert Overlay from gRPC
@@ -125,16 +102,6 @@ pub fn convert_overlay_from_grpc(overlay: &gateway_config::Overlay) -> Result<Ov
 // Internal to gRPC Conversions
 //--------------------------------------------------------------------------------
 
-// Improved underlay conversion
-pub fn convert_underlay_to_grpc(underlay: &Underlay) -> Result<gateway_config::Underlay, String> {
-    // Convert the VRF
-    let vrf_grpc = gateway_config::Vrf::try_from(&underlay.vrf)?;
-
-    Ok(gateway_config::Underlay {
-        vrfs: vec![vrf_grpc],
-    })
-}
-
 /// Convert Overlay to gRPC
 pub fn convert_overlay_to_grpc(overlay: &Overlay) -> Result<gateway_config::Overlay, String> {
     let mut vpcs = Vec::new();
@@ -161,7 +128,7 @@ pub fn convert_to_grpc_config(external_config: &ExternalConfig) -> Result<Gatewa
     let device = gateway_config::Device::try_from(&external_config.device)?;
 
     // Convert underlay config
-    let underlay = convert_underlay_to_grpc(&external_config.underlay)?;
+    let underlay = gateway_config::Underlay::try_from(&external_config.underlay)?;
 
     // Convert overlay config
     let overlay = convert_overlay_to_grpc(&external_config.overlay)?;
@@ -177,23 +144,6 @@ pub fn convert_to_grpc_config(external_config: &ExternalConfig) -> Result<Gatewa
 
 // TryFrom implementations for automatic conversions
 //--------------------------------------------------------------------------------
-
-// Underlay conversions
-impl TryFrom<&gateway_config::Underlay> for Underlay {
-    type Error = String;
-
-    fn try_from(underlay: &gateway_config::Underlay) -> Result<Self, Self::Error> {
-        convert_underlay_from_grpc(underlay)
-    }
-}
-
-impl TryFrom<&Underlay> for gateway_config::Underlay {
-    type Error = String;
-
-    fn try_from(underlay: &Underlay) -> Result<Self, Self::Error> {
-        convert_underlay_to_grpc(underlay)
-    }
-}
 
 // Overlay conversions
 impl TryFrom<&gateway_config::Overlay> for Overlay {

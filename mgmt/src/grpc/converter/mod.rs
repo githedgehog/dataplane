@@ -11,6 +11,7 @@ mod expose;
 mod interface;
 mod old_impl;
 mod peering;
+mod underlay;
 mod vpc;
 mod vrf;
 
@@ -24,6 +25,8 @@ pub use interface::*;
 pub use old_impl::*;
 #[allow(unused)] // Remove if we do anything but implement traits
 pub use peering::*;
+#[allow(unused)] // Remove if we do anything but implement traits
+pub use underlay::*;
 #[allow(unused)] // Remove if we do anything but implement traits
 pub use vpc::*;
 #[allow(unused)] // Remove if we do anything but implement traits
