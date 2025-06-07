@@ -436,3 +436,12 @@ build-sweep start="main" command="{ git log --oneline --no-decorate -n 1 && just
         exit 1
     fi
     git rebase --keep-base "{{ start }}" --no-autosquash --exec "{{ command }}"
+
+# Run tests with code coverage.  Args will be forwarded to nextest
+[script]
+coverage *args: \
+  (cargo "llvm-cov" "clean" "--workspace") \
+  (cargo "llvm-cov" "--no-report" "--branch" "--remap-path-prefix" "nextest" "--cargo-profile=fuzz" args) \
+  (cargo "llvm-cov" "report" "--html" "--output-dir=./target/nextest/coverage" "--profile=fuzz") \
+  (cargo "llvm-cov" "report" "--json" "--output-path=./target/nextest/coverage/report.json" "--profile=fuzz") \
+  (cargo "llvm-cov" "report" "--codecov" "--output-path=./target/nextest/coverage/codecov.json" "--profile=fuzz")
