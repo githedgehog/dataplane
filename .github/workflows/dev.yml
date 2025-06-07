@@ -135,6 +135,7 @@ jobs:
           fail_ci_if_error: true
           files: ./target/nextest/coverage/codecov.json
           disable_search: 'true'
+          base_sha: "7c2987488ea20e08c3581f3c107f028a5e3ee2c0"
           use_oidc: 'true'
           verbose: true
 
