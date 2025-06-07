@@ -56,7 +56,6 @@ test-utils = { path = "./test-utils", package = "dataplane-test-utils" }
 # External
 afpacket = { version = "0.2.3", default-features = false, features = [] }
 ahash = { git = "https://github.com/tkaitchuck/aHash", rev = "5587f60d8ed16fb503267fed185156ed0f680918", default-features = false, features = ["no-rng"] }
-arbitrary = { version = "1.4.1", default-features = false, features = [] }
 arc-swap = { version = "1.7.1", default-features = false, features = [] }
 arrayvec = { version = "0.7.6", default-features = false, features = [] }
 async-trait = { version = "0.1.88", default-features = false, features = [] }
