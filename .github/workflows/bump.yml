@@ -82,9 +82,14 @@ jobs:
       - name: "install upgrade tools"
         run: |
           cargo binstall -y cargo-edit # required to make `cargo upgrade` edit the Cargo.toml file
+          cargo binstall -y just
           cargo binstall -y cargo-deny
       - name: "Checkout"
         uses: "actions/checkout@v4"
+      - name: "refresh compile-env"
+        run: |
+          just --yes refresh-compile-env
+          just --yes fake-nix
       - name: "deny check (pre)"
         # Confirm that upstream licenses have not changed in some way that prevents us from using them.
         # We want to do this both before and after we run cargo upgrade to make it easier to decide if
@@ -95,7 +100,7 @@ jobs:
         # We run our "pre" check with `continue-on-error` set to true because it is equally possible that the upgrade
         # _resolves_ the license / security issue we have had / would have had without the upgrade.
         run: |
-          cargo deny check
+          just cargo deny check
         continue-on-error: true
       - name: "cargo upgrade"
         id: upgrade
@@ -105,7 +110,7 @@ jobs:
           BASE="$(git rev-parse HEAD)"
 
           # Run "cargo update"
-          cargo update
+          just cargo update
           if ! git diff --quiet; then
               git add Cargo.lock
               git commit -sm "bump(cargo)!: bump dependencies (cargo update)"
@@ -113,7 +118,7 @@ jobs:
 
           # Check updates available with "cargo upgrade",
           # then bump each package individually through separate commits
-          cargo upgrade --incompatible=allow --dry-run > upgrade_output.txt
+          just cargo upgrade --incompatible=allow --dry-run > upgrade_output.txt
           sed '/^====/d; /^name .* new req$/d; s/ .*//' upgrade_output.txt > list_packages.txt
           nb_upgrades=$(wc -l < list_packages.txt)
 
@@ -123,7 +128,7 @@ jobs:
           while read -r package; do
               echo "bump(cargo)!: bump $package (cargo upgrade)" | tee commit_msg.txt
               echo '' | tee -a commit_msg.txt
-              cargo upgrade --incompatible=allow --package "$package" | tee -a commit_msg.txt
+              just cargo upgrade --incompatible=allow --package "$package" | tee -a commit_msg.txt
               git add Cargo.lock Cargo.toml cli/Cargo.toml
               git commit -sF commit_msg.txt
           done < list_packages.txt
@@ -158,7 +163,7 @@ jobs:
           rm -f -- upgrade.log upgrade_output.txt list_packages.txt commit_msg.txt
       - name: "deny check (post)"
         run: |
-          cargo deny check
+          just cargo deny check
       - name: "Create Pull Request"
         uses: "peter-evans/create-pull-request@v7"
         with:
