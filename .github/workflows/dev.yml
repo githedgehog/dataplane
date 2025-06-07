@@ -127,7 +127,7 @@ jobs:
         name: "code coverage"
         run: |
           set -euo pipefail
-          just cargo binstall --no-confirm llvm-cov
+          just cargo binstall --no-confirm cargo-llvm-cov
           just debug_justfile="${{matrix.debug_justfile}}" coverage
 
       - uses: "codecov/codecov-action@v5"
