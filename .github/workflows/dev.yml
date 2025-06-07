@@ -151,6 +151,18 @@ jobs:
             } >> "${GITHUB_ENV}"
           fi
 
+      - name: "upload debug test results to codecov"
+        if: ${{ always() }}
+        uses: "codecov/codecov-action@v5"
+        with:
+          fail_ci_if_error: true
+          files: ./target/nextest/default/debug.junit.xml
+          report_type: "test_results"
+          disable_search: 'true'
+          use_oidc: 'true'
+          verbose: true
+          flags: "profile_debug"
+
       - id: "release_test"
         name: "test release"
         run: |
@@ -179,12 +191,17 @@ jobs:
             } >> "${GITHUB_ENV}"
           fi
 
-      - uses: "marocchino/sticky-pull-request-comment@v2"
+      - name: "upload release test results to codecov"
+        if: ${{ always() }}
+        uses: "codecov/codecov-action@v5"
         with:
-          header: "flakes_${{matrix.rust.version}}"
-          ignore_empty: 'true'
-          message: |
-            ${{ env.FLAKY_TESTS_DEBUG }}${{ env.FLAKY_TESTS_RELEASE }}
+          fail_ci_if_error: true
+          files: ./target/nextest/default/release.junit.xml
+          report_type: "test_results"
+          disable_search: 'true'
+          use_oidc: 'true'
+          verbose: true
+          flags: "profile_release"
 
       - id: "code_coverage"
         name: "code coverage"
@@ -215,23 +232,37 @@ jobs:
             } >> "${GITHUB_ENV}"
           fi
 
-      - uses: "codecov/codecov-action@v5"
+      - name: "upload coverage test results to codecov"
+        if: ${{ always() }}
+        uses: "codecov/codecov-action@v5"
         with:
           fail_ci_if_error: true
-          files: ./target/nextest/coverage/codecov.json
-          disable_search: 'true'
-          use_oidc: 'true'
-          verbose: true
-
-      - uses: "codecov/codecov-action@v5"
-        with:
-          fail_ci_if_error: true
-          files: ./target/nextest/default/junit.xml
+          files: ./target/nextest/default/coverage.junit.xml
           report_type: "test_results"
           disable_search: 'true'
           use_oidc: 'true'
           verbose: true
-          flags: "coverage"
+          flags: "profile_coverage"
+
+      - name: "upload codecov analysis"
+        if: ${{ always() }}
+        uses: "codecov/codecov-action@v5"
+        with:
+          fail_ci_if_error: true
+          files: ./target/nextest/coverage/codecov.json
+          report_type: "coverage"
+          disable_search: 'true'
+          use_oidc: 'true'
+          verbose: true
+          flags: "profile_coverage"
+
+      - uses: "marocchino/sticky-pull-request-comment@v2"
+        if: ${{ always() }}
+        with:
+          header: "flakes_${{matrix.rust.version}}"
+          ignore_empty: 'true'
+          message: |
+            ${{ env.FLAKY_TESTS_DEBUG }}${{ env.FLAKY_TESTS_RELEASE }}${{ env.FLAKY_TESTS_COVERAGE }}
 
       - name: "publish dev/release/coverage test report"
         uses: "mikepenz/action-junit-report@v5"
