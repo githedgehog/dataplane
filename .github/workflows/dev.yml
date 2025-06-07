@@ -123,32 +123,6 @@ jobs:
       - run: |
           just debug_justfile="${{matrix.debug_justfile}}" cargo deny check
 
-      - id: "code_coverage"
-        name: "code coverage"
-        run: |
-          set -euo pipefail
-          just cargo binstall --no-confirm cargo-llvm-cov
-          just debug_justfile="${{matrix.debug_justfile}}" coverage
-
-      - uses: "codecov/codecov-action@v5"
-        with:
-          fail_ci_if_error: true
-          files: ./target/nextest/coverage/codecov.json
-          disable_search: 'true'
-          base_sha: "7c2987488ea20e08c3581f3c107f028a5e3ee2c0"
-          use_oidc: 'true'
-          verbose: true
-
-      - uses: "codecov/codecov-action@v5"
-        with:
-          fail_ci_if_error: true
-          files: ./target/nextest/default/junit.xml
-          report_type: "test_results"
-          disable_search: 'true'
-          use_oidc: 'true'
-          verbose: true
-          flags: "coverage"
-
       - id: "debug_test"
         name: "test debug"
         run: |
@@ -212,7 +186,54 @@ jobs:
           message: |
             ${{ env.FLAKY_TESTS_DEBUG }}${{ env.FLAKY_TESTS_RELEASE }}
 
-      - name: "publish dev/release test report"
+      - id: "code_coverage"
+        name: "code coverage"
+        run: |
+          set -euo pipefail
+          just cargo binstall --no-confirm cargo-llvm-cov
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            rust=${{matrix.rust.version}} \
+            profile=fuzz \
+            target=x86_64-unknown-linux-gnu \
+            coverage --status-level=none --final-status-level=skip --message-format=libtest-json-plus > ./target/nextest/coverage.json
+          mv ./target/nextest/default/junit.xml ./target/nextest/default/coverage.junit.xml
+          jq \
+            --raw-output \
+            --slurp '.[] | select(.type == "test" and (.name | test(".*#\\d+"))) | ( .name | split("#") ) | 
+                     [.[0], (.[1] | tonumber)] | @csv
+          ' ./target/nextest/coverage.json > ./target/nextest/coverage.flakes.csv
+          if [ -s ./target/nextest/coverage.flakes.csv ]; then
+            cargo binstall --no-confirm csview
+            { 
+              echo "FLAKY_TESTS_COVERAGE<<EOF"
+              echo -e "### :warning: Flaky tests (coverage run, ${{ matrix.rust.version }})\n";
+              echo "| test | retries |"
+              echo "|------|---------|"
+              csview --style=markdown --no-headers --body-align=left ./target/nextest/coverage.flakes.csv;
+              echo "EOF"
+            } >> "${GITHUB_ENV}"
+          fi
+
+      - uses: "codecov/codecov-action@v5"
+        with:
+          fail_ci_if_error: true
+          files: ./target/nextest/coverage/codecov.json
+          disable_search: 'true'
+          use_oidc: 'true'
+          verbose: true
+
+      - uses: "codecov/codecov-action@v5"
+        with:
+          fail_ci_if_error: true
+          files: ./target/nextest/default/junit.xml
+          report_type: "test_results"
+          disable_search: 'true'
+          use_oidc: 'true'
+          verbose: true
+          flags: "coverage"
+
+      - name: "publish dev/release/coverage test report"
         uses: "mikepenz/action-junit-report@v5"
         if: "${{ always() }}"
         with:
