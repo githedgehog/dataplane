@@ -123,6 +123,30 @@ jobs:
       - run: |
           just debug_justfile="${{matrix.debug_justfile}}" cargo deny check
 
+      - id: "code_coverage"
+        name: "code coverage"
+        run: |
+          set -euo pipefail
+          just debug_justfile="${{matrix.debug_justfile}}" coverage
+
+      - uses: "codecov/codecov-action@v5"
+        with:
+          fail_ci_if_error: true
+          files: ./target/nextest/coverage/codecov.json
+          disable_search: 'true'
+          use_oidc: 'true'
+          verbose: true
+
+      - uses: "codecov/codecov-action@v5"
+        with:
+          fail_ci_if_error: true
+          files: ./target/nextest/default/junit.xml
+          report_type: "test_results"
+          disable_search: 'true'
+          use_oidc: 'true'
+          verbose: true
+          flags: "coverage"
+
       - id: "debug_test"
         name: "test debug"
         run: |
