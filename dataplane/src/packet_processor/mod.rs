@@ -5,7 +5,6 @@ mod egress;
 mod ingress;
 mod ipforward;
 
-#[allow(unused)]
 use super::packet_processor::egress::Egress;
 use super::packet_processor::ingress::Ingress;
 use super::packet_processor::ipforward::IpForwarder;

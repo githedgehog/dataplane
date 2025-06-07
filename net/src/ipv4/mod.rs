@@ -371,7 +371,7 @@ impl DeParse for Ipv4 {
     }
 }
 
-pub(crate) enum Ipv4Next {
+pub enum Ipv4Next {
     Tcp(Tcp),
     Udp(Udp),
     Icmp4(Icmp4),

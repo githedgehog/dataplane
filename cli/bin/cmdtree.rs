@@ -13,7 +13,6 @@ pub struct NodeArg {
     pub choices: Vec<String>,
 }
 
-#[allow(unused)]
 impl NodeArg {
     pub fn new(name: &str) -> Self {
         Self {
@@ -40,7 +39,6 @@ pub struct Node {
     pub(crate) args: Vec<NodeArg>,
     pub(crate) hidden: bool,
 }
-#[allow(unused)]
 impl Node {
     pub fn new(name: &str) -> Self {
         Self {

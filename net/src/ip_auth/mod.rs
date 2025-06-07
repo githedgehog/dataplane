@@ -42,7 +42,8 @@ impl Parse for IpAuth {
     }
 }
 
-pub(crate) enum IpAuthNext {
+#[allow(missing_docs)]
+pub enum IpAuthNext {
     Tcp(Tcp),
     Udp(Udp),
     Icmp4(Icmp4),

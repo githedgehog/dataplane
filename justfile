@@ -309,7 +309,7 @@ remove-compile-env:
 
 # refresh the compile-env (clear and restore)
 [script]
-refresh-compile-env: pull remove-compile-env create-compile-env
+refresh-compile-env: remove-compile-env create-compile-env
 
 # clean up (delete) old compile-env images from system
 [script]
@@ -436,3 +436,17 @@ build-sweep start="main" command="{ git log --oneline --no-decorate -n 1 && just
         exit 1
     fi
     git rebase --keep-base "{{ start }}" --no-autosquash --exec "{{ command }}"
+
+
+[script]
+coverage *args: (\
+  cargo "llvm-cov" "clean" "--workspace" \
+) (\
+  cargo "llvm-cov" "--no-report" "--branch" "nextest" "--cargo-profile=fuzz" args \
+) (\
+   cargo "llvm-cov" "report" "--html" "--output-dir=./target/nextest/coverage" "--profile=fuzz" \
+) (\
+  cargo "llvm-cov" "report" "--json" "--output-path=./target/nextest/coverage/report.json" "--profile=fuzz" \
+) (\
+  cargo "llvm-cov" "report" "--codecov" "--output-path=./target/nextest/coverage/codecov.json" "--profile=fuzz" \
+)

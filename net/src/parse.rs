@@ -48,15 +48,39 @@ pub trait ParseWith {
         Self: Sized;
 }
 
-pub(crate) trait ParsePayload {
+impl<T: Parse> ParseWith for T {
+    type Error = <T as Parse>::Error;
+    type Param = ();
+
+    fn parse_with(
+        _param: Self::Param,
+        raw: &[u8],
+    ) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>>
+    where
+        Self: Sized,
+    {
+        T::parse(raw)
+    }
+}
+
+pub trait ParsePayload {
     type Next;
     fn parse_payload(&self, cursor: &mut Reader) -> Option<Self::Next>;
 }
 
-pub(crate) trait ParsePayloadWith {
+pub trait ParsePayloadWith {
     type Param;
     type Next;
     fn parse_payload_with(&self, param: &Self::Param, cursor: &mut Reader) -> Option<Self::Next>;
+}
+
+impl<T: ParsePayload> ParsePayloadWith for T {
+    type Param = ();
+    type Next = <T as ParsePayload>::Next;
+
+    fn parse_payload_with(&self, _param: &(), cursor: &mut Reader) -> Option<Self::Next> {
+        self.parse_payload(cursor)
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -71,13 +95,13 @@ pub struct LengthError {
 }
 
 #[derive(Debug)]
-pub(crate) struct Reader<'buf> {
+pub struct Reader<'buf> {
     pub(crate) inner: &'buf [u8],
     pub(crate) remaining: u16,
 }
 
 #[derive(Debug)]
-pub(crate) struct Writer<'buf> {
+pub struct Writer<'buf> {
     pub(crate) inner: &'buf mut [u8],
     pub(crate) remaining: u16,
 }

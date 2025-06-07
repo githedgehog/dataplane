@@ -13,6 +13,7 @@
     clippy::panic
 )]
 #![allow(clippy::should_panic_without_expect)] // we panic in contract checks with simple unwrap()
+#![allow(missing_docs)] // TEMP
 
 pub mod buffer;
 pub mod eth;
