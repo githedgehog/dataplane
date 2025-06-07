@@ -479,35 +479,6 @@ impl TrimFromEnd for Mbuf {
 impl Mbuf {
     /// Create a new mbuf from an existing rte_mbuf pointer.
     ///
-    /// # Note:
-    ///
-    /// This function assumes ownership of the data pointed to it.
-    ///
-    /// # Safety
-    ///
-    /// This function is unsound if passed an invalid pointer.
-    ///
-    /// The only defense made against invalid pointers is to check that the pointer is non-null.
-    #[must_use]
-    #[tracing::instrument(level = "trace", ret)]
-    pub(crate) fn new_from_raw(raw: *mut dpdk_sys::rte_mbuf) -> Option<Mbuf> {
-        let raw = match NonNull::new(raw) {
-            None => {
-                debug_assert!(false, "Attempted to create Mbuf from null pointer");
-                error!("Attempted to create Mbuf from null pointer");
-                return None;
-            }
-            Some(raw) => raw,
-        };
-
-        Some(Mbuf {
-            raw,
-            marker: PhantomData,
-        })
-    }
-
-    /// Create a new mbuf from an existing rte_mbuf pointer.
-    ///
     /// # Note
     ///
     /// This function assumes ownership of the data pointed to it.
