@@ -153,6 +153,7 @@ impl RxQueue {
     /// Stop the receive queue.
     #[cold]
     #[tracing::instrument(level = "info")]
+    #[allow(unused)]
     pub(crate) fn stop(&mut self) -> Result<(), RxQueueStopError> {
         let ret = unsafe {
             dpdk_sys::rte_eth_dev_rx_queue_stop(self.dev.as_u16(), self.config.queue_index.as_u16())
