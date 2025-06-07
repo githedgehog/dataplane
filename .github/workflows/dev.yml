@@ -151,6 +151,18 @@ jobs:
             } >> "${GITHUB_ENV}"
           fi
 
+      - name: "upload debug test results to codecov"
+        if: ${{ always() }}
+        uses: "codecov/codecov-action@v5"
+        with:
+          fail_ci_if_error: true
+          files: ./target/nextest/default/debug.junit.xml
+          report_type: "test_results"
+          disable_search: 'true'
+          use_oidc: 'true'
+          verbose: true
+          flags: "profile_debug"
+
       - id: "release_test"
         name: "test release"
         run: |
@@ -179,14 +191,84 @@ jobs:
             } >> "${GITHUB_ENV}"
           fi
 
+      - name: "upload release test results to codecov"
+        if: ${{ always() }}
+        uses: "codecov/codecov-action@v5"
+        with:
+          fail_ci_if_error: true
+          files: ./target/nextest/default/release.junit.xml
+          report_type: "test_results"
+          disable_search: 'true'
+          use_oidc: 'true'
+          verbose: true
+          flags: "profile_release"
+
+      - id: "code_coverage"
+        name: "code coverage"
+        run: |
+          set -euo pipefail
+          just cargo binstall --no-confirm cargo-llvm-cov
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            rust=${{matrix.rust.version}} \
+            profile=fuzz \
+            target=x86_64-unknown-linux-gnu \
+            coverage --status-level=none --final-status-level=skip --message-format=libtest-json-plus > ./target/nextest/coverage.json
+          mv ./target/nextest/default/junit.xml ./target/nextest/default/coverage.junit.xml
+          jq \
+            --raw-output \
+            --slurp '.[] | select(.type == "test" and (.name | test(".*#\\d+"))) | ( .name | split("#") ) | 
+                     [.[0], (.[1] | tonumber)] | @csv
+          ' ./target/nextest/coverage.json > ./target/nextest/coverage.flakes.csv
+          if [ -s ./target/nextest/coverage.flakes.csv ]; then
+            cargo binstall --no-confirm csview
+            { 
+              echo "FLAKY_TESTS_COVERAGE<<EOF"
+              echo -e "### :warning: Flaky tests (coverage run, ${{ matrix.rust.version }})\n";
+              echo "| test | retries |"
+              echo "|------|---------|"
+              csview --style=markdown --no-headers --body-align=left ./target/nextest/coverage.flakes.csv;
+              echo "EOF"
+            } >> "${GITHUB_ENV}"
+          fi
+
+      - name: "upload coverage test results to codecov"
+        if: ${{ always() }}
+        uses: "codecov/codecov-action@v5"
+        with:
+          fail_ci_if_error: true
+          files: ./target/nextest/default/coverage.junit.xml
+          report_type: "test_results"
+          disable_search: 'true'
+          use_oidc: 'true'
+          verbose: true
+          flags: "profile_coverage"
+
+      - name: "upload codecov analysis"
+        if: ${{ always() }}
+        uses: "codecov/codecov-action@v5"
+        with:
+          fail_ci_if_error: true
+          files: ./target/nextest/coverage/codecov.json
+          report_type: "coverage"
+          disable_search: 'true'
+          use_oidc: 'true'
+          verbose: true
+          flags: "profile_coverage"
+
+      - name: "clean up coverage data"
+        run: |
+          rm -f codecov codecov.SHA256SUM codecov.SHA256SUM.sig
+
       - uses: "marocchino/sticky-pull-request-comment@v2"
+        if: ${{ always() }}
         with:
           header: "flakes_${{matrix.rust.version}}"
           ignore_empty: 'true'
           message: |
-            ${{ env.FLAKY_TESTS_DEBUG }}${{ env.FLAKY_TESTS_RELEASE }}
+            ${{ env.FLAKY_TESTS_DEBUG }}${{ env.FLAKY_TESTS_RELEASE }}${{ env.FLAKY_TESTS_COVERAGE }}
 
-      - name: "publish dev/release test report"
+      - name: "publish dev/release/coverage test report"
         uses: "mikepenz/action-junit-report@v5"
         if: "${{ always() }}"
         with:
