@@ -24,7 +24,6 @@
 //!
 //! The module is subject to the following limitations:
 //!
-//! - Only stateless NAT is supported (no stateful NAT)
 //! - Only NAT44 is supported (no NAT46, NAT64, or NAT66)
 //! - Either source or destination NAT is supported, only one at a time, by a given [`Nat`] object.
 //!   To perform NAT for different address fields, instantiate multiple [`Nat`] objects.
@@ -33,36 +32,16 @@
 //!   be equal to the total number of publicly exposed addresses in this object.
 
 mod iplist;
+mod stateful;
+mod stateless;
 
 use crate::nat::iplist::IpList;
 use mgmt::models::internal::nat::tables::{NatTables, TrieValue};
 use net::buffer::PacketBufferMut;
-use net::headers::Net;
 use net::headers::{TryHeadersMut, TryIpMut};
-use net::ipv4::UnicastIpv4Addr;
-use net::ipv6::UnicastIpv6Addr;
 use net::packet::Packet;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
-use std::net::IpAddr;
-
-/// A helper to retrieve the source IP address from a [`Net`] object, independently of the IP
-/// version.
-fn get_src_addr(net: &Net) -> IpAddr {
-    match net {
-        Net::Ipv4(hdr) => IpAddr::V4(hdr.source().inner()),
-        Net::Ipv6(hdr) => IpAddr::V6(hdr.source().inner()),
-    }
-}
-
-/// A helper to retrieve the destination IP address from a [`Net`] object, independently of the IP
-/// version.
-fn get_dst_addr(net: &Net) -> IpAddr {
-    match net {
-        Net::Ipv4(hdr) => IpAddr::V4(hdr.destination()),
-        Net::Ipv6(hdr) => IpAddr::V6(hdr.destination()),
-    }
-}
 
 /// Indicates whether a [`Nat`] processor should perform source NAT or destination NAT.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,7 +56,6 @@ pub enum NatDirection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NatMode {
     Stateless,
-    #[allow(dead_code)]
     Stateful,
 }
 
@@ -108,93 +86,9 @@ impl Nat {
         self.context = tables;
     }
 
-    fn nat_supported(&self) -> bool {
-        // We only support stateless NAT for now
-        match self.mode {
-            NatMode::Stateless => (),
-            NatMode::Stateful => return false,
-        }
-
-        true
-    }
-
-    fn find_src_nat_ranges(&self, net: &Net, vni: Vni) -> Option<&TrieValue> {
-        let table = self.context.tables.get(&vni.as_u32())?;
-        let src_ip = &get_src_addr(net);
-        table.lookup_src_prefixes(src_ip)
-    }
-
-    fn find_dst_nat_ranges(&self, net: &Net, vni: Vni) -> Option<&TrieValue> {
-        let table = self.context.tables.get(&vni.as_u32())?;
-        let dst_ip = &get_dst_addr(net);
-        table.lookup_dst_prefixes(dst_ip)
-    }
-
-    fn find_nat_ranges(&self, net: &mut Net, vni_opt: Option<Vni>) -> Option<&TrieValue> {
-        let vni = vni_opt?;
-        match self.direction {
-            NatDirection::SrcNat => self.find_src_nat_ranges(net, vni),
-            NatDirection::DstNat => self.find_dst_nat_ranges(net, vni),
-        }
-    }
-
-    fn map_ip_src_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
-        let current_range = IpList::new(ranges.orig_prefixes(), ranges.orig_excludes());
-        let target_range = IpList::new(ranges.target_prefixes(), ranges.target_excludes());
-        let offset = current_range.addr_offset_in_prefix(current_ip);
-        target_range.addr_from_prefix_offset(&offset)
-    }
-
-    fn map_ip_dst_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
-        let current_range = IpList::new(ranges.target_prefixes(), ranges.target_excludes());
-        let target_range = IpList::new(ranges.orig_prefixes(), ranges.orig_excludes());
-        let offset = current_range.addr_offset_in_prefix(current_ip);
-        target_range.addr_from_prefix_offset(&offset)
-    }
-
-    /// Applies network address translation to a packet, knowing the current and target ranges.
-    fn translate(&self, net: &mut Net, ranges: &TrieValue) -> Option<()> {
-        let target_ip = match self.direction {
-            NatDirection::SrcNat => {
-                let current_ip = get_src_addr(net);
-                Self::map_ip_src_nat(ranges, &current_ip)
-            }
-            NatDirection::DstNat => {
-                let current_ip = get_dst_addr(net);
-                Self::map_ip_dst_nat(ranges, &current_ip)
-            }
-        };
-
-        match self.direction {
-            NatDirection::SrcNat => match (net, target_ip) {
-                (Net::Ipv4(hdr), IpAddr::V4(ip)) => {
-                    hdr.set_source(UnicastIpv4Addr::new(ip).ok()?);
-                }
-                (Net::Ipv6(hdr), IpAddr::V6(ip)) => {
-                    hdr.set_source(UnicastIpv6Addr::new(ip).ok()?);
-                }
-                (_, _) => return None,
-            },
-            NatDirection::DstNat => match (net, target_ip) {
-                (Net::Ipv4(hdr), IpAddr::V4(ip)) => {
-                    hdr.set_destination(ip);
-                }
-                (Net::Ipv6(hdr), IpAddr::V6(ip)) => {
-                    hdr.set_destination(ip);
-                }
-                (_, _) => return None,
-            },
-        }
-        Some(())
-    }
-
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
     /// function that we pass to [`Nat::process`] to iterate over packets.
-    fn process_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
-        if !self.nat_supported() {
-            return;
-        }
-
+    fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
         // ----------------------------------------------------
         // TODO: Get VNI
         // Currently hardcoded as required to have the tests pass, for demonstration purposes
@@ -204,10 +98,10 @@ impl Nat {
             return;
         };
 
-        let Some(ranges) = self.find_nat_ranges(net, vni) else {
-            return;
-        };
-        self.translate(net, ranges);
+        match self.mode {
+            NatMode::Stateless => self.stateless_nat(net, vni),
+            NatMode::Stateful => self.stateful_nat(net, vni),
+        }
     }
 }
 
@@ -232,7 +126,7 @@ mod tests {
     use mgmt::models::internal::nat::tables::{NatTables, PerVniTable};
     use net::headers::TryIpv4;
     use net::packet::test_utils::build_test_ipv4_packet;
-    use std::net::Ipv4Addr;
+    use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
 
     fn addr_v4(s: &str) -> IpAddr {
