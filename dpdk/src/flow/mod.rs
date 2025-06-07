@@ -572,11 +572,6 @@ pub struct VlanHeader {
 }
 
 #[tracing::instrument(level = "trace")]
-fn htonl<T: Debug + Into<u32>>(x: T) -> u32 {
-    u32::to_be(x.into())
-}
-
-#[tracing::instrument(level = "trace")]
 fn hton_16<T: Debug + Into<u16>>(x: T) -> u16 {
     u16::to_be(x.into())
 }
