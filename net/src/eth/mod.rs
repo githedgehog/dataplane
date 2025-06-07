@@ -198,10 +198,29 @@ pub(crate) fn parse_from_ethertype(ether_type: EtherType, cursor: &mut Reader) -
     }
 }
 
-pub(crate) enum EthNext {
+#[allow(missing_docs)]
+pub enum EthNext {
     Vlan(Vlan),
     Ipv4(Ipv4),
     Ipv6(Ipv6),
+}
+
+impl From<Vlan> for EthNext {
+    fn from(value: Vlan) -> Self {
+        EthNext::Vlan(value)
+    }
+}
+
+impl From<Ipv4> for EthNext {
+    fn from(value: Ipv4) -> Self {
+        EthNext::Ipv4(value)
+    }
+}
+
+impl From<Ipv6> for EthNext {
+    fn from(value: Ipv6) -> Self {
+        EthNext::Ipv6(value)
+    }
 }
 
 impl ParsePayload for Eth {

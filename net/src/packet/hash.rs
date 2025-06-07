@@ -10,7 +10,6 @@ use ahash::AHasher;
 use std::hash::{Hash, Hasher};
 
 impl<Buf: PacketBufferMut> Packet<Buf> {
-    #[allow(unused)]
     /// Computes a hash over a `Packet` object if it contains an ipv4 or ipv6 packet,
     /// using invariant fields of the ip header and common transport headers,
     /// if present, using the specified Hasher.
@@ -60,7 +59,6 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         self.hash_ip(state);
     }
 
-    #[allow(unused)]
     /// Uses the ip hash `Packet` method to provide a value in the range [first, last].
     pub fn packet_hash_ecmp(&self, first: u8, last: u8) -> u64 {
         let mut hasher = AHasher::default();
@@ -68,7 +66,6 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         hasher.finish() % u64::from(last - first + 1) + u64::from(first)
     }
 
-    #[allow(unused)]
     /// Uses the `hash_l2_frame` `Packet` method to provide a hash in the range [49152,65535] suitable
     /// as UDP source port for vxlan-encapsulated packets, as recommended by RFC7348.
     #[allow(clippy::cast_possible_truncation)]
