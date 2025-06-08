@@ -64,11 +64,17 @@ fn cmd_show_ip() -> Node {
         .action(CliAction::ShowRouterIpv4NextHops as u16)
         .arg("address");
 
-    root += Node::new("fib")
+    let mut fib = Node::new("fib")
         .desc("Display IPv4 forwarding entries")
         .action(CliAction::ShowRouterIpv4FibEntries as u16)
         .arg("prefix")
         .arg("vrfid");
+
+    fib += Node::new("group")
+        .desc("Display IPv4 FIB groups")
+        .action(CliAction::ShowRouterIpv4FibGroups as u16);
+
+    root += fib;
 
     root
 }
@@ -90,11 +96,17 @@ fn cmd_show_ipv6() -> Node {
         .action(CliAction::ShowRouterIpv6NextHops as u16)
         .arg("address");
 
-    root += Node::new("fib")
+    let mut fib = Node::new("fib")
         .desc("Display IPv6 forwarding entries")
         .action(CliAction::ShowRouterIpv6FibEntries as u16)
         .arg("prefix")
         .arg("vrfid");
+
+    fib += Node::new("group")
+        .desc("Display IPv6 FIB groups")
+        .action(CliAction::ShowRouterIpv6FibGroups as u16);
+
+    root += fib;
 
     root
 }

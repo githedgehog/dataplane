@@ -155,6 +155,8 @@ pub enum CliAction {
     ShowAdjacencies,
     ShowRouterIpv4FibEntries,
     ShowRouterIpv6FibEntries,
+    ShowRouterIpv4FibGroups,
+    ShowRouterIpv6FibGroups,
 
     // DPDK
     ShowDpdkPort,

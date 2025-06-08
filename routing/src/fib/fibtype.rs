@@ -146,6 +146,10 @@ impl Fib {
         self.routesv6.len().get()
     }
     #[must_use]
+    pub fn len_groups(&self) -> usize {
+        self.groups.len()
+    }
+    #[must_use]
     pub fn version(&self) -> u64 {
         self.version
     }
@@ -155,6 +159,10 @@ impl Fib {
     pub fn iter_v6(&self) -> impl Iterator<Item = (&Ipv6Prefix, &Rc<FibGroup>)> {
         self.routesv6.iter()
     }
+    pub fn group_iter(&self) -> impl Iterator<Item = &Rc<FibGroup>> {
+        self.groups.iter()
+    }
+
     #[must_use]
     pub fn get_v4_trie(&self) -> &RTrieMap<Ipv4Prefix, Rc<FibGroup>> {
         &self.routesv4

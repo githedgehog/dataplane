@@ -706,7 +706,7 @@ impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Rc<FibGroup>)) -> bool> Display for FibVie
                     "\n ━━━━━━━━━\n Vrf: '{}' (id: {})",
                     self.vrf.name, self.vrf.vrfid
                 )?;
-                Heading(format!("Ipv4 FIB ({total_entries} groups)")).fmt(f)?;
+                Heading(format!("Ipv4 FIB ({total_entries} destinations)")).fmt(f)?;
                 for (prefix, group) in rt_iter {
                     write!(f, "  {prefix:?} {group}")?;
                     displayed += 1;
@@ -715,7 +715,7 @@ impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Rc<FibGroup>)) -> bool> Display for FibVie
                 if displayed != total_entries {
                     writeln!(
                         f,
-                        "\n  (Displayed {displayed} groups out of {total_entries})",
+                        "\n  (Displayed {displayed} destinations out of {total_entries})",
                     )?;
                 }
             }
@@ -746,7 +746,7 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Rc<FibGroup>)) -> bool> Display for FibVie
                     "\n ━━━━━━━━━\n Vrf: '{}' (id: {})",
                     self.vrf.name, self.vrf.vrfid
                 )?;
-                Heading(format!("Ipv6 FIB ({total_entries} groups)")).fmt(f)?;
+                Heading(format!("Ipv6 FIB ({total_entries} destinations)")).fmt(f)?;
                 for (prefix, group) in rt_iter {
                     write!(f, "  {prefix:?} {group}")?;
                     displayed += 1;
@@ -755,12 +755,42 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Rc<FibGroup>)) -> bool> Display for FibVie
                 if displayed != total_entries {
                     writeln!(
                         f,
-                        "\n  (Displayed {displayed} groups out of {total_entries})",
+                        "\n  (Displayed {displayed} destinations out of {total_entries})",
                     )?;
                 }
             }
         } else {
             writeln!(f, "No fib")?;
+        }
+        Ok(())
+    }
+}
+
+// We show the same fib groups for Ipv4 and Ipv6 for the time being, since filtering
+// them according to ip version is not yet possible.
+pub struct FibGroups<'a>(pub &'a Vrf);
+
+impl<'a> Display for FibGroups<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Some(ref fibw) = self.0.fibw else {
+            writeln!(f, "No fib")?;
+            return Ok(());
+        };
+        let Some(ref fibr) = fibw.enter() else {
+            writeln!(f, "No fib")?;
+            return Ok(());
+        };
+        let num_groups = fibr.len_groups();
+        let vrf_name = &self.0.name;
+        let vrfid = self.0.vrfid;
+        let fibid = fibr.get_id();
+        Heading(format!("FIB groups")).fmt(f)?;
+        writeln!(f, " vrf: {vrf_name}, Id: {vrfid}")?;
+        writeln!(f, " fib: {fibid}")?;
+        writeln!(f, " groups: {num_groups}\n")?;
+
+        for group in fibr.group_iter() {
+            write!(f, " ({}) {group}", Rc::strong_count(group))?;
         }
         Ok(())
     }
