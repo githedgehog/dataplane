@@ -10,7 +10,7 @@ use iptrie::{Ipv4Prefix, Ipv6Prefix};
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
 use std::collections::BTreeSet;
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::rc::Rc;
 
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
@@ -50,13 +50,13 @@ impl FibId {
 pub struct Fib {
     id: FibId,
     version: u64,
-    routesv4: RTrieMap<Ipv4Prefix, Arc<FibGroup>>,
-    routesv6: RTrieMap<Ipv6Prefix, Arc<FibGroup>>,
-    groups: BTreeSet<Arc<FibGroup>>, /* shared fib groups */
+    routesv4: RTrieMap<Ipv4Prefix, Rc<FibGroup>>,
+    routesv6: RTrieMap<Ipv6Prefix, Rc<FibGroup>>,
+    groups: BTreeSet<Rc<FibGroup>>, /* shared fib groups */
 }
 
-pub type FibGroupV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &Arc<FibGroup>)) -> bool>;
-pub type FibGroupV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &Arc<FibGroup>)) -> bool>;
+pub type FibGroupV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &Rc<FibGroup>)) -> bool>;
+pub type FibGroupV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &Rc<FibGroup>)) -> bool>;
 
 impl Fib {
     /// the default fibgroup for default routes
@@ -83,10 +83,10 @@ impl Fib {
         self.id
     }
     pub fn add_fibgroup(&mut self, prefix: Prefix, group: FibGroup) {
-        let gr_arc = self.store_group(group);
+        let rc_group = self.store_group(group);
         match prefix {
-            Prefix::IPV4(p) => self.routesv4.insert(p, gr_arc.clone()),
-            Prefix::IPV6(p) => self.routesv6.insert(p, gr_arc),
+            Prefix::IPV4(p) => self.routesv4.insert(p, rc_group.clone()),
+            Prefix::IPV6(p) => self.routesv6.insert(p, rc_group),
         };
     }
     pub fn del_fibgroup(&mut self, prefix: Prefix) {
@@ -95,7 +95,7 @@ impl Fib {
                 if p4 == Ipv4Prefix::default() {
                     self.add_fibgroup(Prefix::root_v4(), Self::drop_fibgroup());
                 } else if let Some(group) = self.routesv4.remove(&p4) {
-                    if Arc::strong_count(&group) == 1 {
+                    if Rc::strong_count(&group) == 1 {
                         self.unstore_group(&group);
                     }
                 }
@@ -104,7 +104,7 @@ impl Fib {
                 if p6 == Ipv6Prefix::default() {
                     self.add_fibgroup(Prefix::root_v6(), Self::drop_fibgroup());
                 } else if let Some(group) = self.routesv6.remove(&p6) {
-                    if Arc::strong_count(&group) == 1 {
+                    if Rc::strong_count(&group) == 1 {
                         self.unstore_group(&group);
                     }
                 }
@@ -115,13 +115,13 @@ impl Fib {
     /// Add a new group, without creating it if an identical group exists.
     /// This method returns a reference that must be used.
     #[must_use]
-    pub fn store_group(&mut self, group: FibGroup) -> Arc<FibGroup> {
-        let arc_gr = Arc::new(group);
-        if let Some(e) = self.groups.get(&arc_gr) {
-            Arc::clone(e)
+    pub fn store_group(&mut self, group: FibGroup) -> Rc<FibGroup> {
+        let rc_gr = Rc::new(group);
+        if let Some(e) = self.groups.get(&rc_gr) {
+            Rc::clone(e)
         } else {
-            self.groups.insert(arc_gr.clone());
-            arc_gr
+            self.groups.insert(rc_gr.clone());
+            rc_gr
         }
     }
     /// Remove a group from the shared groups
@@ -134,7 +134,7 @@ impl Fib {
     /// they will get a refcount of 1. This method allows removing those unused
     /// fibgroups. This method is not currently used and should NOT be needed.
     pub fn purge(&mut self) {
-        self.groups.retain(|group| Arc::strong_count(group) > 1);
+        self.groups.retain(|group| Rc::strong_count(group) > 1);
     }
 
     #[must_use]
@@ -149,18 +149,18 @@ impl Fib {
     pub fn version(&self) -> u64 {
         self.version
     }
-    pub fn iter_v4(&self) -> impl Iterator<Item = (&Ipv4Prefix, &Arc<FibGroup>)> {
+    pub fn iter_v4(&self) -> impl Iterator<Item = (&Ipv4Prefix, &Rc<FibGroup>)> {
         self.routesv4.iter()
     }
-    pub fn iter_v6(&self) -> impl Iterator<Item = (&Ipv6Prefix, &Arc<FibGroup>)> {
+    pub fn iter_v6(&self) -> impl Iterator<Item = (&Ipv6Prefix, &Rc<FibGroup>)> {
         self.routesv6.iter()
     }
     #[must_use]
-    pub fn get_v4_trie(&self) -> &RTrieMap<Ipv4Prefix, Arc<FibGroup>> {
+    pub fn get_v4_trie(&self) -> &RTrieMap<Ipv4Prefix, Rc<FibGroup>> {
         &self.routesv4
     }
     #[must_use]
-    pub fn get_v6_trie(&self) -> &RTrieMap<Ipv6Prefix, Arc<FibGroup>> {
+    pub fn get_v6_trie(&self) -> &RTrieMap<Ipv6Prefix, Rc<FibGroup>> {
         &self.routesv6
     }
 

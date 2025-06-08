@@ -27,7 +27,6 @@ use iptrie::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
 use std::fmt::Display;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use tracing::{error, warn};
 
@@ -650,11 +649,11 @@ impl Display for FibId {
     }
 }
 
-fn fmt_fib_trie<P: IpPrefix, F: Fn(&(&P, &Arc<FibGroup>)) -> bool>(
+fn fmt_fib_trie<P: IpPrefix, F: Fn(&(&P, &Rc<FibGroup>)) -> bool>(
     f: &mut std::fmt::Formatter<'_>,
     fibid: FibId,
     show_string: &str,
-    trie: &RTrieMap<P, Arc<FibGroup>>,
+    trie: &RTrieMap<P, Rc<FibGroup>>,
     group_filter: F,
 ) -> std::fmt::Result {
     Heading(format!(
@@ -689,12 +688,12 @@ impl Display for FibTable {
 
 pub struct FibViewV4<'a, F>
 where
-    F: Fn(&(&Ipv4Prefix, &Arc<FibGroup>)) -> bool,
+    F: Fn(&(&Ipv4Prefix, &Rc<FibGroup>)) -> bool,
 {
     pub vrf: &'a Vrf,
     pub filter: &'a F,
 }
-impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Arc<FibGroup>)) -> bool> Display for FibViewV4<'_, F> {
+impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Rc<FibGroup>)) -> bool> Display for FibViewV4<'_, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(fibw) = &self.vrf.fibw {
             if let Some(fibr) = fibw.enter() {
@@ -729,12 +728,12 @@ impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Arc<FibGroup>)) -> bool> Display for FibVi
 
 pub struct FibViewV6<'a, F>
 where
-    F: Fn(&(&Ipv6Prefix, &Arc<FibGroup>)) -> bool,
+    F: Fn(&(&Ipv6Prefix, &Rc<FibGroup>)) -> bool,
 {
     pub vrf: &'a Vrf,
     pub filter: &'a F,
 }
-impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Arc<FibGroup>)) -> bool> Display for FibViewV6<'_, F> {
+impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Rc<FibGroup>)) -> bool> Display for FibViewV6<'_, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(fibw) = &self.vrf.fibw {
             if let Some(fibr) = fibw.enter() {
