@@ -39,33 +39,7 @@ permissions:
   id-token: "write"
 
 jobs:
-  check_changes:
-    name: "Deduce required tests from code changes"
-    permissions:
-      contents: "read"
-      pull-requests: "read"
-    runs-on: "ubuntu-latest"
-    outputs:
-      devfiles: "${{ steps.changes.outputs.devfiles }}"
-    steps:
-      - name: "Checkout"
-        if: "${{ !github.event.pull_request }}"
-        uses: "actions/checkout@v4"
-        with:
-          persist-credentials: "false"
-          fetch-depth: "0"
-      - name: "Check code changes"
-        uses: "dorny/paths-filter@v3"
-        id: "changes"
-        with:
-          filters: |
-            devfiles:
-              - '!(README.md|LICENSE|.gitignore|.github/**)'
-              - '.github/workflows/dev.yml'
-
-  build:
-    needs: [ check_changes ]
-    if: "${{ needs.check_changes.outputs.devfiles == 'true' }}"
+  check:
     permissions:
       checks: "write"
       pull-requests: "write"
@@ -80,8 +54,6 @@ jobs:
             optional: false
         debug_justfile:
           - "${{ inputs.debug_justfile || false }}"
-    outputs:
-      result: "${{ matrix.rust.optional || (steps.debug_test.conclusion == 'success' && steps.release_test.conclusion == 'success' && steps.docs.conclusion == 'success' && steps.clippy.conclusion == 'success') }}"
     name: "Developer build"
     runs-on: "lab"
     timeout-minutes: 45
@@ -332,11 +304,7 @@ jobs:
     name: "Summary"
     runs-on: "ubuntu-latest"
     needs:
-      - build
-    if: ${{ always() && needs.build.result != 'skipped' }}
+      - check
     steps:
-      - name: "Flag any build matrix failures"
-        if: ${{ needs.build.outputs.result != 'true' }}
-        run: |
-          >&2 echo "A critical step failed!"
-          exit 1
+      - run: |
+          exit 0
