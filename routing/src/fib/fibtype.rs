@@ -82,31 +82,33 @@ impl Fib {
     pub fn get_id(&self) -> FibId {
         self.id
     }
-    pub fn add_fibgroup(&mut self, prefix: Prefix, group: FibGroup) {
+    pub fn add_fibgroup(&mut self, prefix: Prefix, group: FibGroup) -> Option<Rc<FibGroup>> {
         let rc_group = self.store_group(group);
         match prefix {
-            Prefix::IPV4(p) => self.routesv4.insert(p, rc_group.clone()),
+            Prefix::IPV4(p) => self.routesv4.insert(p, rc_group),
             Prefix::IPV6(p) => self.routesv6.insert(p, rc_group),
-        };
+        }
     }
     pub fn del_fibgroup(&mut self, prefix: Prefix) {
         match prefix {
             Prefix::IPV4(p4) => {
                 if p4 == Ipv4Prefix::default() {
-                    self.add_fibgroup(Prefix::root_v4(), Self::drop_fibgroup());
-                } else if let Some(group) = self.routesv4.remove(&p4) {
-                    if Rc::strong_count(&group) == 1 {
-                        self.unstore_group(&group);
+                    if let Some(prior) = self.add_fibgroup(Prefix::root_v4(), Self::drop_fibgroup())
+                    {
+                        self.unstore_group(&prior);
                     }
+                } else if let Some(group) = self.routesv4.remove(&p4) {
+                    self.unstore_group(&group);
                 }
             }
             Prefix::IPV6(p6) => {
                 if p6 == Ipv6Prefix::default() {
-                    self.add_fibgroup(Prefix::root_v6(), Self::drop_fibgroup());
-                } else if let Some(group) = self.routesv6.remove(&p6) {
-                    if Rc::strong_count(&group) == 1 {
-                        self.unstore_group(&group);
+                    if let Some(prior) = self.add_fibgroup(Prefix::root_v6(), Self::drop_fibgroup())
+                    {
+                        self.unstore_group(&prior);
                     }
+                } else if let Some(group) = self.routesv6.remove(&p6) {
+                    self.unstore_group(&group);
                 }
             }
         }
@@ -120,7 +122,7 @@ impl Fib {
         if let Some(e) = self.groups.get(&rc_gr) {
             Rc::clone(e)
         } else {
-            self.groups.insert(rc_gr.clone());
+            self.groups.insert(Rc::clone(&rc_gr));
             rc_gr
         }
     }
@@ -263,7 +265,9 @@ impl Absorb<FibGroupChange> for Fib {
         self.version += 1; // FIXME: only update if s/t changed
         match change {
             FibGroupChange::AddFibGroup((prefix, group)) => {
-                self.add_fibgroup(*prefix, group.clone());
+                if let Some(group) = self.add_fibgroup(*prefix, group.clone()) {
+                    self.unstore_group(&group);
+                }
             }
             FibGroupChange::DelFibGroup(prefix) => self.del_fibgroup(*prefix),
         }

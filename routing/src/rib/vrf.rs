@@ -313,10 +313,14 @@ impl Vrf {
         }
 
         // store the route
-        match prefix {
+        let prior = match prefix {
             Prefix::IPV4(p) => self.routesv4.insert(*p, route),
             Prefix::IPV6(p) => self.routesv6.insert(*p, route),
         };
+        // if we happen to replace a route, unregister its next-hops
+        if let Some(mut prior) = prior {
+            self.deregister_shared_nexthops(&mut prior);
+        }
 
         // FIXME(fredi): we still lack the re-resolution of overlay next-hops in case
         // underlay routing changes. Such changes will be addressed in subsequent PRs
