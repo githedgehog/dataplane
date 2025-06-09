@@ -75,9 +75,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        profile:
+          - name: "debug"
+            sterile: ""
+          - name: "debug"
+            sterile: "sterile"
+          - name: "release"
+            sterile: "sterile"
+          - name: "fuzz"
+            sterile: "sterile"
+          #- name: "release"
+          #  sterile: ""
+          #- name: "fuzz"
+          #  sterile: ""
         debug_justfile:
           - "${{ inputs.debug_justfile || false }}"
-    name: "Developer build"
+    name: "${{matrix.profile.name}} ${{matrix.profile.sterile}}"
     runs-on: "lab"
     timeout-minutes: 45
     steps:
@@ -115,128 +128,74 @@ jobs:
 
       - name: "cargo deny check"
         run: |
-          just debug_justfile="${{matrix.debug_justfile}}" cargo deny check
+          just debug_justfile="${{matrix.debug_justfile}}" ${{matrix.profile.sterile}} cargo deny check
 
-      - id: "debug_test"
-        name: "test debug"
+      - name: "push container"
+        if: ${{ matrix.profile.sterile == 'sterile' && (matrix.profile.name == 'release' || matrix.profile.name == 'debug') }}
         run: |
-          set -euo pipefail
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
-            profile=debug \
+            profile=${{matrix.profile.name}} \
             target=x86_64-unknown-linux-gnu \
-            cargo nextest run --status-level=none --final-status-level=skip --message-format=libtest-json-plus > ./target/nextest/debug.json
-          mv ./target/nextest/default/junit.xml ./target/nextest/default/debug.junit.xml
+            push-container
+
+      - id: "test"
+        name: "test"
+        run: |
+          set -euo pipefail
+          mkdir --parent ./target/nextest
+          if [ ${{ matrix.profile.name }} = "fuzz" ]; then
+            just \
+              debug_justfile="${{matrix.debug_justfile}}" \
+              profile=${{matrix.profile.name}} \
+              target=x86_64-unknown-linux-gnu \
+              ${{matrix.profile.sterile}} coverage \
+                --status-level=none \
+                --final-status-level=skip \
+                --message-format=libtest-json-plus > ./results.json
+          else
+            just \
+              debug_justfile="${{matrix.debug_justfile}}" \
+              profile=${{matrix.profile.name}} \
+              target=x86_64-unknown-linux-gnu \
+              ${{matrix.profile.sterile}} cargo nextest run \
+                --cargo-profile=${{matrix.profile.name}} \
+                --status-level=none \
+                --final-status-level=skip \
+                --message-format=libtest-json-plus > ./results.json
+          fi
+          # look for any flakes (flakes have a #\\d+ match in their name field)
           jq \
             --raw-output \
             --slurp '.[] | select(.type == "test" and (.name | test(".*#\\d+"))) | ( .name | split("#") ) | 
                      [.[0], (.[1] | tonumber)] | @csv
-          ' ./target/nextest/debug.json > ./target/nextest/debug.flakes.csv
-          if [ -s ./target/nextest/debug.flakes.csv ]; then
-            cargo binstall --no-confirm csview
+          ' ./results.json > ./target/nextest/flakes.csv
+          if [ -s ./target/nextest/flakes.csv ]; then
             { 
-              echo "FLAKY_TESTS_DEBUG<<EOF"
-              echo -e "### :warning: Flaky tests (debug run)\n";
+              echo "FLAKY_TESTS<<EOF"
+              echo -e "### :warning: Flaky tests (${{matrix.profile.name}} - ${{matrix.profile.sterile}})\n";
               echo "| test | retries |"
               echo "|------|---------|"
-              csview --style=markdown --no-headers --body-align=left ./target/nextest/debug.flakes.csv;
+              just cargo csview --style=markdown --no-headers --body-align=left ./target/nextest/flakes.csv;
               echo "EOF"
             } >> "${GITHUB_ENV}"
           fi
+          rm results.json
 
-      - name: "upload debug test results to codecov"
+      - name: "upload test results to codecov"
         if: ${{ always() }}
         uses: "codecov/codecov-action@v5"
         with:
           fail_ci_if_error: true
-          files: ./target/nextest/default/debug.junit.xml
+          files: ./target/nextest/default/junit.xml
           report_type: "test_results"
           disable_search: 'true'
           use_oidc: 'true'
           verbose: true
-          flags: "profile_debug"
-
-      - id: "release_test"
-        name: "test release"
-        run: |
-          set -euo pipefail
-          just \
-            debug_justfile="${{matrix.debug_justfile}}" \
-            profile=release \
-            target=x86_64-unknown-linux-gnu \
-            cargo nextest run --status-level=none --final-status-level=skip --message-format=libtest-json-plus > ./target/nextest/release.json
-          mv ./target/nextest/default/junit.xml ./target/nextest/default/release.junit.xml
-          jq \
-            --raw-output \
-            --slurp '.[] | select(.type == "test" and (.name | test(".*#\\d+"))) | ( .name | split("#") ) | 
-                     [.[0], (.[1] | tonumber)] | @csv
-          ' ./target/nextest/release.json > ./target/nextest/release.flakes.csv
-          if [ -s ./target/nextest/release.flakes.csv ]; then
-            cargo binstall --no-confirm csview
-            { 
-              echo "FLAKY_TESTS_RELEASE<<EOF"
-              echo -e "\n### :warning: Flaky tests (release run)\n";
-              echo "| test | retries |"
-              echo "|------|---------|"
-              csview --style=markdown --no-headers --body-align=left ./target/nextest/release.flakes.csv;
-              echo "EOF"
-            } >> "${GITHUB_ENV}"
-          fi
-
-      - name: "upload release test results to codecov"
-        if: ${{ always() }}
-        uses: "codecov/codecov-action@v5"
-        with:
-          fail_ci_if_error: true
-          files: ./target/nextest/default/release.junit.xml
-          report_type: "test_results"
-          disable_search: 'true'
-          use_oidc: 'true'
-          verbose: true
-          flags: "profile_release"
-
-      - id: "code_coverage"
-        name: "code coverage"
-        run: |
-          set -euo pipefail
-          just cargo binstall --no-confirm cargo-llvm-cov
-          just \
-            debug_justfile="${{matrix.debug_justfile}}" \
-            profile=fuzz \
-            target=x86_64-unknown-linux-gnu \
-            coverage --status-level=none --final-status-level=skip --message-format=libtest-json-plus > ./target/nextest/coverage.json
-          mv ./target/nextest/default/junit.xml ./target/nextest/default/coverage.junit.xml
-          jq \
-            --raw-output \
-            --slurp '.[] | select(.type == "test" and (.name | test(".*#\\d+"))) | ( .name | split("#") ) | 
-                     [.[0], (.[1] | tonumber)] | @csv
-          ' ./target/nextest/coverage.json > ./target/nextest/coverage.flakes.csv
-          if [ -s ./target/nextest/coverage.flakes.csv ]; then
-            cargo binstall --no-confirm csview
-            { 
-              echo "FLAKY_TESTS_COVERAGE<<EOF"
-              echo -e "### :warning: Flaky tests (coverage run)\n";
-              echo "| test | retries |"
-              echo "|------|---------|"
-              csview --style=markdown --no-headers --body-align=left ./target/nextest/coverage.flakes.csv;
-              echo "EOF"
-            } >> "${GITHUB_ENV}"
-          fi
-
-      - name: "upload coverage test results to codecov"
-        if: ${{ always() }}
-        uses: "codecov/codecov-action@v5"
-        with:
-          fail_ci_if_error: true
-          files: ./target/nextest/default/coverage.junit.xml
-          report_type: "test_results"
-          disable_search: 'true'
-          use_oidc: 'true'
-          verbose: true
-          flags: "profile_coverage"
+          flags: "${{matrix.profile.name}}-${{ matrix.profile.sterile || 'developer' }}"
 
       - name: "upload codecov analysis"
-        if: ${{ always() }}
+        if: ${{ matrix.profile.name == 'fuzz' }}
         uses: "codecov/codecov-action@v5"
         with:
           fail_ci_if_error: true
@@ -245,7 +204,7 @@ jobs:
           disable_search: 'true'
           use_oidc: 'true'
           verbose: true
-          flags: "profile_coverage"
+          flags: "${{matrix.profile.name}}-${{ matrix.profile.sterile || 'developer' }}"
 
       - name: "clean up coverage data"
         run: |
@@ -254,12 +213,12 @@ jobs:
       - uses: "marocchino/sticky-pull-request-comment@v2"
         if: ${{ always() }}
         with:
-          header: "flakes"
+          header: "flakes_${{matrix.profile.name}}_${{matrix.profile.sterile}}"
           ignore_empty: 'true'
           message: |
-            ${{ env.FLAKY_TESTS_DEBUG }}${{ env.FLAKY_TESTS_RELEASE }}${{ env.FLAKY_TESTS_COVERAGE }}
+            ${{ env.FLAKY_TESTS }}
 
-      - name: "publish dev/release/coverage test report"
+      - name: "publish test report"
         uses: "mikepenz/action-junit-report@v5"
         if: "${{ always() }}"
         with:
@@ -281,7 +240,7 @@ jobs:
           simplified_summary: 'true'
           truncate_stack_traces: 'false'
           group_reports: 'true'
-          check_name: 'test-report'
+          check_name: "test-report-${{matrix.profile.name}}-sterile:${{matrix.profile.sterile == 'sterile'}}"
           skip_success_summary: 'false'
           job_summary: 'true'
           verbose_summary: 'false'
@@ -289,22 +248,17 @@ jobs:
       - id: "clippy"
         name: "run clippy"
         run: |
-          just debug_justfile="${{matrix.debug_justfile}}" \
-            cargo clippy --all-targets --all-features -- -D warnings
+          just debug_justfile="${{matrix.debug_justfile}}" profile=${{matrix.profile.name}} \
+            ${{matrix.profile.sterile}} cargo clippy --all-targets --all-features -- -D warnings
 
       - id: "docs"
         name: "run rustdoc"
         run: |
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
-            profile=debug \
+            profile=${{matrix.profile.name}} \
             target=x86_64-unknown-linux-gnu \
-            cargo doc
-          just \
-            debug_justfile="${{matrix.debug_justfile}}" \
-            profile=release \
-            target=x86_64-unknown-linux-gnu \
-            cargo doc
+            ${{matrix.profile.sterile}} cargo doc
 
       - id: "build_each_commit"
         continue-on-error: true
