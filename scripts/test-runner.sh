@@ -116,13 +116,46 @@ for test_suite in "${WRAPPED_TEST_SUITES[@]}"; do
 done
 declare -ri SHOULD_WRAP
 
-if [ "${SHOULD_WRAP}" -eq 0 ]; then
+# This is the list of capabilities to add to the test binary.
+# Note: do not add =e or =i to this setcap command!  We don't want privileged execution by default.
+# Note: if you adjust this list, then you also need to adjust the symmetric list given to the docker run command.
+declare -r CAPS='cap_net_raw,cap_sys_admin,cap_net_admin,cap_sys_rawio=p'
+
+if [ "${TEST_TYPE:-""}" = "FUZZ" ]; then
+  # In this branch we are running full fuzz tests.
+  # These tests are only run from a just command which has already wrapped this script in a docker container.
+
+  # In the case of the full fuzz tests, libstdc++.so.6 will be linked into the test binary because libfuzzer is an LLVM
+  # project (LLVM is a C++ codebase).
+  # Unfortunately, the combination of bolero's RUSTFLAGS and the nix fenix rust overlay _do not_ set the rpath for
+  # libstdc++.so.6.
+  # As a result, a naive attempt to execute the test binary in the compile-env will result in a file not found error
+  # when the dynamic linker is unable to find libstdc++.so.6.
+  # Fortunately, this is relatively easy to fix; we need to patch the test binary to make sure it resolves to the
+  # exact libstdc++.so.6 file which it was liked against.
+  # If the compile-env is correct, then `/lib/libstdc++.so.6` will always be a symlink to the `/nix` store which
+  # contains the correct dynamic library.
+  patchelf --replace-needed libstdc++.so.6 "$(readlink -e /lib/libstdc++.so.6)" "${test_exe}"
+  # note: we don't need ${SUDO} here (i.e., we can resolve sudo via the $PATH) because this branch only ever happens
+  # when this script is being executed in the compile-env; the compile-env is the only place environment able to execute
+  # the full fuzz tests.
+  sudo setcap "${CAPS}" "${test_exe}"
+  exec "${@}"
+elif [ "${SHOULD_WRAP}" -eq 0 ]; then
+  # In this branch
+  # 1. we are not doing a full fuzz test run,
+  # 2. and we are not running a test which requires a container wrapper.
+  # As a consequence, we should never need to call setcap on the test binary.
+  # We can just run it directly and be done.
   exec "${@}"
 fi
 
-# Note: do not add =e or =i to this setcap command!  We don't want privileged execution by default.
-# Note: if you adjust this list, then you also need to adjust the symmetric list given to the docker run command.
-"${SUDO}" setcap 'cap_net_raw,cap_sys_admin,cap_net_admin,cap_sys_rawio=p' "${test_exe}"
+
+# If we reached this point then we aren't using the full fuzz test setup.
+# Instead, we are trying to run semi-privileged tests in a libc-container.
+# We still need to add capabilities to the test binary, but in this case we need to make sure we are using the
+# host system's sudo binary.
+"${SUDO}" setcap "${CAPS}" "${test_exe}"
 
 # Now we can run the docker container
 #
@@ -135,9 +168,10 @@ fi
 #   This allows those capabilities into our ambient+inheritable set, letting us elevate to them as needed.
 #   Critically, it _does not_ give us these capabilities by default (i.e., they aren't in our effective set) because
 #   the above setcap command has enumerated exactly what our defaults should be.
-# * If you adjust the list of --cap-add arguments, then you need to adjust the above setcap command as well.
+# * If you adjust the list of --cap-add arguments, then you need to adjust the CAPS env var as well.
 "${SUDO}" --preserve-env docker run \
   --rm \
+  --interactive \
   --mount "type=bind,source=${1},target=${1},readonly=true,bind-propagation=rprivate" \
   --mount "type=bind,source=${project_dir},target=${project_dir},readonly=true,bind-propagation=rprivate" \
   --mount "type=bind,source=${project_dir}/target,target=${project_dir}/target,readonly=false,bind-propagation=rprivate" \

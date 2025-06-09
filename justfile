@@ -17,6 +17,13 @@ dpdk_sys_commit := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT
 [private]
 _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 
+# Set to FUZZ to run the full fuzzer in the fuzz recipe
+_test_type := "DEFAULT"
+
+# comma delimited list of sanitizers to use with bolero
+
+sanitizers := "address,leak"
+
 # the tripple to compile for
 
 target := "x86_64-unknown-linux-gnu"
@@ -174,12 +181,12 @@ compile-env *args:
     mkdir -p "${CARGO_TARGET_DIR}"
     sudo -E docker run \
       --rm \
-      --name dataplane-compile-env \
+      --interactive \
       --network="{{ _network }}" \
       --env DOCKER_HOST="${DOCKER_HOST}" \
       --env CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" \
       --env DOCKER_HOST="${DOCKER_HOST:-unix:///var/run/docker.sock}" \
-      --env TMPDIR="${TMPDIR}" \
+      --env TEST_TYPE="{{ _test_type }}" \
       --tmpfs "/tmp:uid=$(id -u),gid=$(id -g),nodev,noexec,nosuid" \
       --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=1777" \
       --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate" \
@@ -336,6 +343,17 @@ fake-nix refake="":
 
 # Run a "sterile" command
 sterile *args: (cargo "clean") (compile-env "just" ("debug_justfile=" + debug_justfile) ("rust=" + rust) ("target=" + target) ("profile=" + profile) ("_test_type=" + _test_type) ("sanitizers=" + sanitizers) args)
+
+# Run the full fuzzer / property-checker on a bolero test. Args are forwarded to bolero
+[script]
+list-fuzz-tests *args: (cargo "bolero" "list" ("--sanitizer=" + sanitizers) "--build-std" "--profile=fuzz" args)
+
+# Run the full fuzzer / property-checker on a bolero test. Args are forwarded to bolero
+fuzz test timeout="-T 60sec" *args="--engine=libfuzzer --engine-args='-max_len=65536'": (compile-env "just" "_test_type=FUZZ" "cargo" "bolero" "test" test "--build-std" "--profile=fuzz" ("--sanitizer=" + sanitizers) timeout args)
+
+# Run the full fuzzer / property-checker on a bolero test with the AFL fuzzer
+[script]
+fuzz-afl test: (fuzz test "" "--engine=afl" "--engine-args=-mnone")
 
 [script]
 sh *args:

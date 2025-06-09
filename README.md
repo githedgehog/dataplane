@@ -131,6 +131,8 @@ just cargo test --profile=release
 > After that it simply calls `cargo build`.
 > Normally we would include those kinds of setting in `Cargo.toml` but `cargo` can not currently express all the `RUSTFLAGS` we are using (thus the `just` wrapper).
 
+This covers basic testing and building of dataplane, but [there is more to testing dataplane](./testing.md).
+
 ## VSCode Setup
 
 Because this repository uses a custom sysroot with custom libraries and binaries, you need to make sure rust-analyzer is aware of the sysroot and runs the correct cargo binary.
