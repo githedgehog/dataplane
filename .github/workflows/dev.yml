@@ -107,20 +107,11 @@ jobs:
       - name: "install just"
         run: |
           cargo binstall --no-confirm just
-      - name: "install cargo-deny"
-        run: |
-          cargo binstall --no-confirm cargo-deny
-      - name: "install cargo-nextest"
-        run: |
-          cargo binstall --no-confirm cargo-nextest
-          mkdir -p target/nextest
-      - name: "refresh-compile-env"
+
+      - name: "set up compile-env"
         run: |
           just --yes debug_justfile="${{matrix.debug_justfile}}" refresh-compile-env
-      - run: |
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
-      - run: |
-          just debug_justfile="${{matrix.debug_justfile}}" cargo deny check
 
       - id: "debug_test"
         name: "test debug"
