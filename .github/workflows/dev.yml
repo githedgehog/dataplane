@@ -285,14 +285,6 @@ jobs:
             target=x86_64-unknown-linux-gnu \
             cargo doc
 
-      - id: "build_each_commit"
-        continue-on-error: true
-        name: "build each commit"
-        if: "${{ github.event.pull_request || github.event.merge_group }}"
-        run: |
-          BASE="${{ github.event.pull_request.base.sha || github.event.merge_group.base.sha }}"
-          just build-sweep "${BASE}"
-
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
         uses: "mxschmitt/action-tmate@v3"
