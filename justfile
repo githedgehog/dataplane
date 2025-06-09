@@ -171,8 +171,6 @@ compile-env *args:
     mkdir -p "$(pwd)/sterile"
     declare CARGO_TARGET_DIR
     CARGO_TARGET_DIR="$(pwd)/target"
-    declare -r CARGO_TARGET_DIR
-    rm -fr "${CARGO_TARGET_DIR}"
     mkdir -p "${CARGO_TARGET_DIR}"
     sudo -E docker run \
       --rm \
@@ -337,7 +335,7 @@ fake-nix refake="":
     sudo ln -rs ./compile-env/nix /nix
 
 # Run a "sterile" command
-sterile *args: (compile-env "just" ("debug_justfile=" + debug_justfile) ("rust=" + rust) ("target=" + target) ("profile=" + profile) args)
+sterile *args: (cargo "clean") (compile-env "just" ("debug_justfile=" + debug_justfile) ("rust=" + rust) ("target=" + target) ("profile=" + profile) ("_test_type=" + _test_type) ("sanitizers=" + sanitizers) args)
 
 [script]
 sh *args:
