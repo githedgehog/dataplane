@@ -90,19 +90,23 @@ jobs:
           registry: "ghcr.io"
           username: "${{ github.actor }}"
           password: "${{ secrets.GITHUB_TOKEN }}"
+
       - name: "install rust"
         uses: "dtolnay/rust-toolchain@master"
         with:
           toolchain: "${{ matrix.rust.version }}"
           targets: "x86_64-unknown-linux-gnu"
           components: "rustfmt,clippy"
+
       - name: "install cargo binstall"
         uses: "cargo-bins/cargo-binstall@v1.12.7"
+
       - name: "Checkout"
         uses: "actions/checkout@v4"
         with:
           persist-credentials: "false"
           fetch-depth: "0"
+
       - name: "install just"
         run: |
           cargo binstall --no-confirm just
