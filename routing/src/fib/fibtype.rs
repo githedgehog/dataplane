@@ -78,10 +78,14 @@ impl Fib {
         fib.add_fibgroup(Prefix::root_v6(), group);
         fib
     }
+
     #[must_use]
+    /// Get the [`FibId`] for this [`Fib`]
     pub fn get_id(&self) -> FibId {
         self.id
     }
+
+    /// Add a [`FibGroup`] to a prefix
     pub fn add_fibgroup(&mut self, prefix: Prefix, group: FibGroup) -> Option<Rc<FibGroup>> {
         let rc_group = self.store_group(group);
         match prefix {
@@ -89,6 +93,8 @@ impl Fib {
             Prefix::IPV6(p) => self.routesv6.insert(p, rc_group),
         }
     }
+
+    /// Remove a [`FibGroup`] from a prefix
     pub fn del_fibgroup(&mut self, prefix: Prefix) {
         match prefix {
             Prefix::IPV4(p4) => {
@@ -114,8 +120,7 @@ impl Fib {
         }
     }
 
-    /// Add a new group, without creating it if an identical group exists.
-    /// This method returns a reference that must be used.
+    /// Store a new [`FibGroup`], without creating it if an identical group exists.
     #[must_use]
     pub fn store_group(&mut self, group: FibGroup) -> Rc<FibGroup> {
         let rc_gr = Rc::new(group);
@@ -126,27 +131,25 @@ impl Fib {
             rc_gr
         }
     }
-    /// Remove a group from the shared groups
+
+    /// Remove a [`FibGroup`] from the shared groups
     pub fn unstore_group(&mut self, group: &FibGroup) {
         self.groups.remove(group);
     }
 
-    /// `FibGroups` are refcounted, owned by the Fib and shared by prefixes.
-    /// Since they don't have an explicit Id, when no prefix refers to them
-    /// they will get a refcount of 1. This method allows removing those unused
-    /// fibgroups. This method is not currently used and should NOT be needed.
-    pub fn purge(&mut self) {
-        self.groups.retain(|group| Rc::strong_count(group) > 1);
-    }
-
+    /// Tell the number of IPv4 routes in this [`Fib`]
     #[must_use]
     pub fn len_v4(&self) -> usize {
         self.routesv4.len().get()
     }
+
+    /// Tell the number of IPv6 routes in this [`Fib`]
     #[must_use]
     pub fn len_v6(&self) -> usize {
         self.routesv6.len().get()
     }
+
+    /// Tell the number of [`FibGroup`] routes in this [`Fib`]
     #[must_use]
     pub fn len_groups(&self) -> usize {
         self.groups.len()
@@ -155,21 +158,30 @@ impl Fib {
     pub fn version(&self) -> u64 {
         self.version
     }
+
+    /// Iterate over IPv4 routes/entries
     pub fn iter_v4(&self) -> impl Iterator<Item = (&Ipv4Prefix, &Rc<FibGroup>)> {
         self.routesv4.iter()
     }
+
+    /// Iterate over IPv6 routes/entries
     pub fn iter_v6(&self) -> impl Iterator<Item = (&Ipv6Prefix, &Rc<FibGroup>)> {
         self.routesv6.iter()
     }
+
+    /// Iterate over [`FibGroup`]s
     pub fn group_iter(&self) -> impl Iterator<Item = &Rc<FibGroup>> {
         self.groups.iter()
     }
 
     #[must_use]
+    /// Get a reference to the inner IPv4 trie
     pub fn get_v4_trie(&self) -> &RTrieMap<Ipv4Prefix, Rc<FibGroup>> {
         &self.routesv4
     }
+
     #[must_use]
+    /// Get a reference to the inner IPv6 trie
     pub fn get_v6_trie(&self) -> &RTrieMap<Ipv6Prefix, Rc<FibGroup>> {
         &self.routesv6
     }

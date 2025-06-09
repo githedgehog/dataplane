@@ -16,26 +16,23 @@ pub struct FibTable(BTreeMap<FibId, Arc<FibReader>>);
 impl FibTable {
     /// Add a new Fib ([`FibReader`])
     pub fn add_fib(&mut self, id: FibId, fibr: Arc<FibReader>) {
-        debug!("Creating FIB with id {}", id);
+        debug!("Creating FIB with id {id}");
         self.0.insert(id, fibr);
     }
     /// Del a Fib ([`FibReader`])
     pub fn del_fib(&mut self, id: &FibId) {
-        debug!("Deleting FIB with id {}", id);
+        debug!("Deleting FIB with id {id}");
         self.0.remove(id);
     }
     /// Register a Fib ([`FibReader`]) with a given [`Vni`]
     /// This allows finding the Fib from the [`Vni`]
     pub fn register_by_vni(&mut self, id: &FibId, vni: &Vni) {
+        let vniu32 = vni.as_u32();
         if let Some(fibr) = self.get_fib(id) {
             self.0.insert(FibId::Vni(*vni), fibr.clone());
-            debug!("Registered Fib {} with vni {}", id, vni.as_u32());
+            debug!("Registered Fib {id} with vni {vniu32}");
         } else {
-            error!(
-                "Failed to register Fib {} with vni {}: no fib",
-                id,
-                vni.as_u32()
-            );
+            error!("Failed to register Fib {id} with vni {vniu32}: no fib");
         }
     }
 
