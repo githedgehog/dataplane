@@ -75,9 +75,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rust:
-          - version: "stable"
-            optional: false
         debug_justfile:
           - "${{ inputs.debug_justfile || false }}"
     name: "Developer build"
@@ -94,7 +91,7 @@ jobs:
       - name: "install rust"
         uses: "dtolnay/rust-toolchain@master"
         with:
-          toolchain: "${{ matrix.rust.version }}"
+          toolchain: "stable"
           targets: "x86_64-unknown-linux-gnu"
           components: "rustfmt,clippy"
 
@@ -131,7 +128,6 @@ jobs:
           set -euo pipefail
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
-            rust=${{matrix.rust.version}} \
             profile=debug \
             target=x86_64-unknown-linux-gnu \
             cargo nextest run --status-level=none --final-status-level=skip --message-format=libtest-json-plus > ./target/nextest/debug.json
@@ -145,7 +141,7 @@ jobs:
             cargo binstall --no-confirm csview
             { 
               echo "FLAKY_TESTS_DEBUG<<EOF"
-              echo -e "### :warning: Flaky tests (debug run, ${{ matrix.rust.version }})\n";
+              echo -e "### :warning: Flaky tests (debug run)\n";
               echo "| test | retries |"
               echo "|------|---------|"
               csview --style=markdown --no-headers --body-align=left ./target/nextest/debug.flakes.csv;
@@ -171,7 +167,6 @@ jobs:
           set -euo pipefail
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
-            rust=${{matrix.rust.version}} \
             profile=release \
             target=x86_64-unknown-linux-gnu \
             cargo nextest run --status-level=none --final-status-level=skip --message-format=libtest-json-plus > ./target/nextest/release.json
@@ -185,7 +180,7 @@ jobs:
             cargo binstall --no-confirm csview
             { 
               echo "FLAKY_TESTS_RELEASE<<EOF"
-              echo -e "\n### :warning: Flaky tests (release run, ${{ matrix.rust.version }})\n";
+              echo -e "\n### :warning: Flaky tests (release run)\n";
               echo "| test | retries |"
               echo "|------|---------|"
               csview --style=markdown --no-headers --body-align=left ./target/nextest/release.flakes.csv;
@@ -212,7 +207,6 @@ jobs:
           just cargo binstall --no-confirm cargo-llvm-cov
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
-            rust=${{matrix.rust.version}} \
             profile=fuzz \
             target=x86_64-unknown-linux-gnu \
             coverage --status-level=none --final-status-level=skip --message-format=libtest-json-plus > ./target/nextest/coverage.json
@@ -226,7 +220,7 @@ jobs:
             cargo binstall --no-confirm csview
             { 
               echo "FLAKY_TESTS_COVERAGE<<EOF"
-              echo -e "### :warning: Flaky tests (coverage run, ${{ matrix.rust.version }})\n";
+              echo -e "### :warning: Flaky tests (coverage run)\n";
               echo "| test | retries |"
               echo "|------|---------|"
               csview --style=markdown --no-headers --body-align=left ./target/nextest/coverage.flakes.csv;
@@ -265,7 +259,7 @@ jobs:
       - uses: "marocchino/sticky-pull-request-comment@v2"
         if: ${{ always() }}
         with:
-          header: "flakes_${{matrix.rust.version}}"
+          header: "flakes"
           ignore_empty: 'true'
           message: |
             ${{ env.FLAKY_TESTS_DEBUG }}${{ env.FLAKY_TESTS_RELEASE }}${{ env.FLAKY_TESTS_COVERAGE }}
@@ -292,7 +286,7 @@ jobs:
           simplified_summary: 'true'
           truncate_stack_traces: 'false'
           group_reports: 'true'
-          check_name: 'test-report-${{matrix.rust.version}}'
+          check_name: 'test-report'
           skip_success_summary: 'false'
           job_summary: 'true'
           verbose_summary: 'false'
@@ -300,7 +294,7 @@ jobs:
       - id: "clippy"
         name: "run clippy"
         run: |
-          just debug_justfile="${{matrix.debug_justfile}}" rust=${{matrix.rust.version}} \
+          just debug_justfile="${{matrix.debug_justfile}}" \
             cargo clippy --all-targets --all-features -- -D warnings
 
       - id: "docs"
@@ -308,13 +302,11 @@ jobs:
         run: |
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
-            rust=${{matrix.rust.version}} \
             profile=debug \
             target=x86_64-unknown-linux-gnu \
             cargo doc
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
-            rust=${{matrix.rust.version}} \
             profile=release \
             target=x86_64-unknown-linux-gnu \
             cargo doc
@@ -325,7 +317,7 @@ jobs:
         if: "${{ github.event.pull_request || github.event.merge_group }}"
         run: |
           BASE="${{ github.event.pull_request.base.sha || github.event.merge_group.base.sha }}"
-          just debug_justfile="${{matrix.debug_justfile}}" rust="${{matrix.rust.version}}" \
+          just debug_justfile="${{matrix.debug_justfile}}" \
             build-sweep ${BASE}
           printf "::notice::HEAD back to %s\n" "$(git log --oneline --no-decorate -n 1)"
 
