@@ -169,24 +169,11 @@ compile-env *args:
     envsubst < dev-env-template/etc.template/group.template > dev-env-template/etc/group
     envsubst < dev-env-template/etc.template/passwd.template > dev-env-template/etc/passwd
     mkdir -p "$(pwd)/sterile"
-    declare tmp_link
-    tmp_link="$(mktemp -p "$(pwd)/sterile" -d --suffix=.compile-env.link)"
-    declare -r tmp_link
-    cleanup() {
-      rm -fr "${tmp_link}"
-    }
-    trap cleanup EXIT
     declare CARGO_TARGET_DIR
     CARGO_TARGET_DIR="$(pwd)/target"
     declare -r CARGO_TARGET_DIR
     rm -fr "${CARGO_TARGET_DIR}"
     mkdir -p "${CARGO_TARGET_DIR}"
-    TMPDIR="${tmp_link}/tmp"
-    mkdir "${TMPDIR}"
-    ln -s /bin "${tmp_link}/bin"
-    ln -s /lib "${tmp_link}/lib"
-    ln -s /sysroot "${tmp_link}/sysroot"
-    ln -s /nix "${tmp_link}/nix"
     sudo -E docker run \
       --rm \
       --name dataplane-compile-env \
@@ -198,7 +185,6 @@ compile-env *args:
       --tmpfs "/tmp:uid=$(id -u),gid=$(id -g),nodev,noexec,nosuid" \
       --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=1777" \
       --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate" \
-      --mount "type=bind,source=${tmp_link},destination=$(pwd)/compile-env,bind-propagation=rprivate" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly" \
       --mount "type=bind,source=${CARGO_TARGET_DIR},destination=${CARGO_TARGET_DIR}" \
