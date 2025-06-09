@@ -113,6 +113,10 @@ jobs:
           just --yes debug_justfile="${{matrix.debug_justfile}}" refresh-compile-env
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
 
+      - name: "cargo deny check"
+        run: |
+          just debug_justfile="${{matrix.debug_justfile}}" cargo deny check
+
       - id: "debug_test"
         name: "test debug"
         run: |
