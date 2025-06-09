@@ -28,6 +28,9 @@ use net::eth::mac::Mac;
 #[cfg(feature = "auto-learn")]
 use net::vxlan::Vni;
 
+#[cfg(feature = "auto-learn")]
+use crate::evpn::Vtep;
+
 use crate::evpn::RmacEntry;
 use crate::routingdb::RoutingDb;
 use crate::rpc_adapt::is_evpn_route;
@@ -78,7 +81,12 @@ impl RpcOperation for ConnectInfo {
 }
 
 #[cfg(feature = "auto-learn")]
-fn auto_learn_vrf(route: &IpRoute, vrftable: &mut VrfTable, iftablew: &mut IfTableWriter) {
+fn auto_learn_vrf(
+    route: &IpRoute,
+    vrftable: &mut VrfTable,
+    iftablew: &mut IfTableWriter,
+    vtep: &Vtep,
+) {
     if let Ok(vrf) = vrftable.get_vrf(route.vrfid) {
         let mut vni = None;
         if vrf.vni.is_none() {
@@ -142,6 +150,10 @@ fn auto_learn_vrf(route: &IpRoute, vrftable: &mut VrfTable, iftablew: &mut IfTab
             }
         }
     }
+    /* set the vtep */
+    if let Ok(vrf) = vrftable.get_vrf_mut(route.vrfid) {
+        vrf.set_vtep(vtep);
+    }
 }
 
 impl RpcOperation for IpRoute {
@@ -149,28 +161,30 @@ impl RpcOperation for IpRoute {
     #[allow(unused_mut)]
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         let rmac_store = &db.rmac_store;
-        let vtep = &db.vtep;
         let vrftable = &mut db.vrftable;
         let iftabler = &db.iftw.as_iftable_reader();
+
+        #[cfg(feature = "auto-learn")]
+        let vtep = &db.vtep;
 
         #[cfg(feature = "auto-learn")]
         let iftablew = &mut db.iftw;
 
         #[cfg(feature = "auto-learn")]
-        auto_learn_vrf(self, vrftable, iftablew);
+        auto_learn_vrf(self, vrftable, iftablew, vtep);
 
         if is_evpn_route(self) && self.vrfid != 0 {
             let Ok((vrf, vrf0)) = vrftable.get_with_default_mut(self.vrfid) else {
                 error!("Unable to get vrf with id {}", self.vrfid);
                 return RpcResultCode::Failure;
             };
-            vrf.add_route_rpc(self, Some(vrf0), rmac_store, vtep, iftabler);
+            vrf.add_route_rpc(self, Some(vrf0), rmac_store, iftabler);
         } else {
             let Ok(vrf) = vrftable.get_vrf_mut(self.vrfid) else {
                 error!("Unable to find VRF with id {}", self.vrfid);
                 return RpcResultCode::Failure;
             };
-            vrf.add_route_rpc(self, None, rmac_store, vtep, iftabler);
+            vrf.add_route_rpc(self, None, rmac_store, iftabler);
         }
         RpcResultCode::Ok
     }

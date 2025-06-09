@@ -46,6 +46,11 @@ fn set_vtep(db: &mut RoutingDb, vtep_data: &Vtep) {
         warn!("VTEP no longer has mac address");
         vtep.unset_mac();
     }
+    // update the vtep for the Vxlan VRFs
+    db.vrftable
+        .values_mut()
+        .filter(|vrf| vrf.vni.is_some())
+        .for_each(|vrf| vrf.set_vtep(vtep));
 }
 
 /// Handle a request from the control channel

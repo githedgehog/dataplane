@@ -53,8 +53,6 @@ impl Display for VxlanEncapsulation {
             self.vni.as_u32(),
             self.remote
         )?;
-        fmt_opt_value(f, " local", self.local, false)?;
-        fmt_opt_value(f, " smac", self.smac, false)?;
         fmt_opt_value(f, " dmac", self.dmac, false)
     }
 }

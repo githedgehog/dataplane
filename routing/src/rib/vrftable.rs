@@ -259,6 +259,13 @@ impl VrfTable {
     }
 
     //////////////////////////////////////////////////////////////////
+    /// Iterate mutably over all VRFs
+    //////////////////////////////////////////////////////////////////
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Vrf> {
+        self.by_id.values_mut()
+    }
+
+    //////////////////////////////////////////////////////////////////
     /// Get the number of VRFs in the vrf table
     //////////////////////////////////////////////////////////////////
     pub fn len(&self) -> usize {
@@ -276,7 +283,7 @@ impl VrfTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evpn::rmac::tests::{build_sample_rmac_store, build_sample_vtep};
+    use crate::evpn::rmac::tests::build_sample_rmac_store;
     use crate::fib::fibobjects::FibGroup;
     use crate::fib::fibtype::FibId;
     use crate::interfaces::tests::build_test_iftable;
@@ -409,7 +416,6 @@ mod tests {
     fn test_vrf_fibgroup() {
         let vrf = build_test_vrf();
         let rmac_store = build_sample_rmac_store();
-        let vtep = build_sample_vtep();
         let _iftable = build_test_iftable();
 
         {
@@ -422,7 +428,7 @@ mod tests {
             let mut fibgroup = nhop.as_fib_entry_group();
             println!("{fibgroup}");
 
-            fibgroup.resolve(&rmac_store, &vtep);
+            fibgroup.resolve(&rmac_store);
             println!("{fibgroup}");
         }
 
@@ -436,7 +442,7 @@ mod tests {
                 fibgroup.append(&mut nhop.rc.as_fib_entry_group());
             }
 
-            fibgroup.resolve(&rmac_store, &vtep);
+            fibgroup.resolve(&rmac_store);
             println!("{fibgroup}");
         }
 
@@ -450,18 +456,17 @@ mod tests {
                 fibgroup.append(&mut nhop.rc.as_fib_entry_group());
             }
 
-            fibgroup.resolve(&rmac_store, &vtep);
+            fibgroup.resolve(&rmac_store);
             println!("{fibgroup}");
         }
     }
 
     fn do_test_vrf_fibgroup_lazy(vrf: Vrf) {
         let rmac_store = build_sample_rmac_store();
-        let vtep = build_sample_vtep();
         let _iftable = build_test_iftable();
 
         // resolve beforehand, offline, and once
-        vrf.nhstore.resolve_nhop_instructions(&rmac_store, &vtep);
+        vrf.nhstore.resolve_nhop_instructions(&rmac_store);
 
         // create FIB
         let mut fib = TestFib::new();

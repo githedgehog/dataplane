@@ -145,6 +145,7 @@ pub(crate) mod tests {
         );
         store
     }
+    #[allow(unused)] // fixme: add test
     pub fn build_sample_vtep() -> Vtep {
         let address = mk_addr("7.0.0.100");
         let mac = Mac::from([0x02, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);

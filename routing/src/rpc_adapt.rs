@@ -10,7 +10,7 @@
 //! provide the expected results. Hence the use of the From trait is overloaded for convenience.
 
 use crate::errors::RouterError;
-use crate::evpn::{RmacEntry, RmacStore, Vtep};
+use crate::evpn::{RmacEntry, RmacStore};
 use crate::interfaces::iftablerw::IfTableReader;
 use crate::prefix::Prefix;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
@@ -49,14 +49,12 @@ impl TryFrom<&VxlanEncap> for VxlanEncapsulation {
                 RouterError::VniInvalid(vxlan.vni)
             })?,
             remote: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            // Note: local, smac and dmac are never set in nhops, because they may not
-            // be known when the next-hop is added (local may) and the encapsulation
-            // is part of the next-hop key which should be immutable for keying purposes.
-            // We ALWAYS set them to None when learning about next-hops via the CPI.
+            // Note: dmac is not set in nhops, because it may not be known when the
+            // next-hop is added and the encapsulation is part of the next-hop key
+            // which should be immutable for keying purposes.
+            // We ALWAYS set it to None when learning about next-hops via the CPI.
             // This happens because we want to reuse the VxlanEncapsulation type for other
             // purposes outside the Nhops. An alternative is to define yet another type.
-            local: None,
-            smac: None,
             dmac: None,
         })
     }
@@ -171,7 +169,6 @@ impl Vrf {
         iproute: &IpRoute,
         vrf0: Option<&Vrf>,
         rstore: &RmacStore,
-        vtep: &Vtep,
         iftabler: &IfTableReader,
     ) {
         let Ok(prefix) = Prefix::try_from((iproute.prefix, iproute.prefix_len)) else {
@@ -191,7 +188,7 @@ impl Vrf {
             }
         }
         // N.B. route and next-hops are passed separately
-        self.add_route_complete(&prefix, route, &nhops, vrf0, rstore, vtep);
+        self.add_route_complete(&prefix, route, &nhops, vrf0, rstore);
     }
     pub fn del_route_rpc(&mut self, iproute: &IpRoute) {
         let Ok(prefix) = Prefix::try_from((iproute.prefix, iproute.prefix_len)) else {

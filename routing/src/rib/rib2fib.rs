@@ -6,7 +6,6 @@
 use tracing::warn;
 
 use crate::evpn::RmacStore;
-use crate::evpn::Vtep;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::{FwAction, Nhop};
 use crate::rib::vrf::RouteOrigin;
@@ -51,14 +50,14 @@ impl Nhop {
     /// In this implementation, the next-hop owns the packet instructions
     /// So, they are not shared and have to be resolved per next-hop.
     //////////////////////////////////////////////////////////////////////
-    pub(crate) fn resolve_instructions(&self, rstore: &RmacStore, vtep: &Vtep) {
+    pub(crate) fn resolve_instructions(&self, rstore: &RmacStore) {
         // build new instruction vector for the next-hop
         let mut new_instructions = self.build_pkt_instructions();
 
         // resolve each instruction. Currently only encap needs resolution since
         // we no longer resolve egress here as another stage (egress) takes care.
         for inst in new_instructions.iter_mut() {
-            inst.resolve(rstore, vtep);
+            inst.resolve(rstore);
         }
 
         // replace instruction vector
@@ -97,28 +96,17 @@ impl Nhop {
     //////////////////////////////////////////////////////////////////////
     /// Determine instructions for a next-hop and build its fibgroup
     //////////////////////////////////////////////////////////////////////
-    pub(crate) fn set_fibgroup(&self, rstore: &RmacStore, vtep: &Vtep) {
-        self.resolve_instructions(rstore, vtep);
+    pub(crate) fn set_fibgroup(&self, rstore: &RmacStore) {
+        self.resolve_instructions(rstore);
         let fibgroup = self.as_fib_entry_group_lazy();
         self.fibgroup.replace(fibgroup);
     }
 }
 
 impl VxlanEncapsulation {
-    /// Resolve a Vxlan encapsulation object with the local vtep config
-    fn resolve_with_vtep(&mut self, vtep: &Vtep) {
-        self.local = vtep.get_ip();
-        self.smac = vtep.get_mac();
-        if self.local.is_none() {
-            warn!("Warning, VTEP local ip address is not set");
-        }
-        if self.smac.is_none() {
-            warn!("Warning, VTEP local mac address is not set");
-        }
-    }
-    /// Resolve the dst inner mac of a Vxlan encapsulation object from a
-    /// router-mac entry from the [`RmacStore`].
-    fn resolve_with_rmac(&mut self, rstore: &RmacStore) {
+    /// Resolve a Vxlan encapsulation object. The local vtep information is not used
+    /// in this process. We only resolve the destination mac.
+    fn resolve(&mut self, rstore: &RmacStore) {
         self.dmac = rstore.get_rmac(self.vni, self.remote).map(|e| e.mac);
         if self.dmac.is_none() {
             warn!(
@@ -128,23 +116,18 @@ impl VxlanEncapsulation {
             );
         }
     }
-    /// Resolve a Vxlan encapsulation object
-    fn resolve(&mut self, rstore: &RmacStore, vtep: &Vtep) {
-        self.resolve_with_vtep(vtep);
-        self.resolve_with_rmac(rstore);
-    }
 }
 
 impl PktInstruction {
     /// Resolve a packet instruction, depending on its type
-    fn resolve(&mut self, rstore: &RmacStore, vtep: &Vtep) {
+    fn resolve(&mut self, rstore: &RmacStore) {
         match self {
             PktInstruction::Drop
             | PktInstruction::Local(_)
             | PktInstruction::Egress(_)
             | PktInstruction::Nat => {}
             PktInstruction::Encap(encapsulation) => match encapsulation {
-                Encapsulation::Vxlan(vxlan) => vxlan.resolve(rstore, vtep),
+                Encapsulation::Vxlan(vxlan) => vxlan.resolve(rstore),
                 Encapsulation::Mpls(_label) => {}
             },
         }
@@ -213,18 +196,18 @@ impl Nhop {
 
 #[cfg(test)] /* Only testing */
 impl FibEntry {
-    pub fn resolve(&mut self, rstore: &RmacStore, vtep: &Vtep) {
+    pub fn resolve(&mut self, rstore: &RmacStore) {
         for inst in self.instructions.iter_mut() {
-            inst.resolve(rstore, vtep);
+            inst.resolve(rstore);
         }
     }
 }
 
 #[cfg(test)] /* Only testing */
 impl FibGroup {
-    pub fn resolve(&mut self, rstore: &RmacStore, vtep: &Vtep) {
+    pub fn resolve(&mut self, rstore: &RmacStore) {
         for entry in self.entries.iter_mut() {
-            entry.resolve(rstore, vtep);
+            entry.resolve(rstore);
         }
     }
 }

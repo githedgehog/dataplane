@@ -15,8 +15,6 @@ pub type MplsLabel = u32;
 pub struct VxlanEncapsulation {
     pub vni: Vni,
     pub remote: IpAddr,
-    pub local: Option<IpAddr>,
-    pub smac: Option<Mac>,
     pub dmac: Option<Mac>,
 }
 
@@ -26,8 +24,6 @@ impl VxlanEncapsulation {
         Self {
             vni,
             remote,
-            local: None,
-            smac: None,
             dmac: None,
         }
     }

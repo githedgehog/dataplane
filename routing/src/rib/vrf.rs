@@ -201,6 +201,17 @@ impl Vrf {
         debug!("Vrf '{}'(Id {}) has now vni {vni}", self.name, self.vrfid,);
     }
 
+    /////////////////////////////////////////////////////////////////////////
+    /// Set the VTEP for a Vrf. This should be set on vrf creation or anytime
+    /// the config causes the vtep ip or mac to change.
+    /////////////////////////////////////////////////////////////////////////
+    pub fn set_vtep(&mut self, vtep: &Vtep) {
+        debug!("Setting VTEP for VRF {}...", self.name);
+        if let Some(ref mut fibw) = self.fibw {
+            fibw.set_vtep(vtep.clone());
+        }
+    }
+
     #[inline]
     #[must_use]
     /////////////////////////////////////////////////////////////////////////
@@ -282,7 +293,6 @@ impl Vrf {
         nhops: &[RouteNhop],
         vrf0: Option<&Vrf>,
         rstore: &RmacStore,
-        vtep: &Vtep,
     ) {
         // register next-hops. This mutates the route adding references to the stored next-hops
         self.register_shared_nhops(&mut route, nhops);
@@ -295,7 +305,7 @@ impl Vrf {
             let refc = self.nhstore.get_nhop_rc_count(&shim.rc.key);
             if refc == 2 {
                 shim.rc.lazy_resolve(rvrf);
-                shim.rc.as_ref().set_fibgroup(rstore, vtep);
+                shim.rc.as_ref().set_fibgroup(rstore);
             }
         }
 

@@ -6,7 +6,7 @@
 
 use super::encapsulation::Encapsulation;
 use super::vrf::{RouteOrigin, Vrf};
-use crate::evpn::{RmacStore, Vtep};
+use crate::evpn::RmacStore;
 use crate::fib::fibobjects::{FibGroup, PktInstruction};
 
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
@@ -389,9 +389,9 @@ impl NhopStore {
     }
 
     #[allow(dead_code)]
-    pub fn resolve_nhop_instructions(&self, rstore: &RmacStore, vtep: &Vtep) {
+    pub fn resolve_nhop_instructions(&self, rstore: &RmacStore) {
         for nhop in self.iter() {
-            nhop.resolve_instructions(rstore, vtep);
+            nhop.resolve_instructions(rstore);
         }
     }
 
@@ -402,9 +402,9 @@ impl NhopStore {
         }
     }
     #[allow(dead_code)]
-    pub fn set_fibgroup(&self, rstore: &RmacStore, vtep: &Vtep) {
+    pub fn set_fibgroup(&self, rstore: &RmacStore) {
         for nhop in self.iter() {
-            nhop.set_fibgroup(rstore, vtep);
+            nhop.set_fibgroup(rstore);
         }
     }
 }
