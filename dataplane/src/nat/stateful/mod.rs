@@ -30,7 +30,7 @@ struct NatTuple {
 }
 
 impl NatState {
-    fn new(net: &Net, pool: &allocator::NatPool) -> Self {
+    fn new(net: &Net, pool: &dyn allocator::NatPool) -> Self {
         Self {}
     }
 }
@@ -53,7 +53,7 @@ impl Nat {
         todo!()
     }
 
-    fn find_nat_pool(&self, net: &Net, vrf_id: VrfId) -> Option<&allocator::NatPool> {
+    fn find_nat_pool(&self, net: &Net, vrf_id: VrfId) -> Option<&dyn allocator::NatPool> {
         todo!()
     }
 
