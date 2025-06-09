@@ -16,6 +16,7 @@ use routing::fib::fibobjects::{EgressObject, FibEntry, PktInstruction};
 use routing::fib::fibtable::FibTableReader;
 use routing::fib::fibtype::FibId;
 
+use routing::evpn::Vtep;
 use routing::interfaces::interface::IfIndex;
 use routing::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use routing::rib::vrf::VrfId;
@@ -87,7 +88,7 @@ impl IpForwarder {
                         fib.get_id().as_u32(),
                         &fibentry
                     );
-                    self.packet_exec_instructions(packet, fibentry);
+                    self.packet_exec_instructions(packet, fibentry, fib.get_vtep());
                 } else {
                     error!("Could not get fib group for {prefix}. Will drop packet...");
                     packet.done(DoneReason::InternalFailure);
@@ -140,16 +141,19 @@ impl IpForwarder {
     }
 
     /// Build the vxlan headers needed to encapsulate the packet in vxlan
-    fn build_vxlan_headers(vxlan: &VxlanEncapsulation) -> Result<VxlanEncap, ()> {
-        let Some(src_ip) = &vxlan.local else {
-            error!("Failed to build vxlan headers: unknown vxlan local ip");
+    fn build_vxlan_headers(vxlan: &VxlanEncapsulation, vtep: &Vtep) -> Result<VxlanEncap, ()> {
+        let Some(src_ip) = &vtep.get_ip() else {
+            error!("Failed to build vxlan headers: VTEP has no Ip address");
             return Err(());
         };
 
         // IPv4 or IPv6
         let net = match (&src_ip, &vxlan.remote) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
-                let src_ip = UnicastIpv4Addr::new(*src_ip).expect("Non-unicast src ip");
+                let Ok(src_ip) = UnicastIpv4Addr::new(*src_ip) else {
+                    error!("Invalid source IPv4 address '{src_ip}' for Vxlan encapsulation!");
+                    return Err(());
+                };
                 let mut ip = Ipv4::default();
                 ip.set_source(src_ip).set_destination(*dst_ip).set_ttl(64);
                 unsafe {
@@ -158,7 +162,10 @@ impl IpForwarder {
                 Net::Ipv4(ip)
             }
             (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
-                let src_ip = UnicastIpv6Addr::new(*src_ip).expect("Non-unicast src ipv6");
+                let Ok(src_ip) = UnicastIpv6Addr::new(*src_ip) else {
+                    error!("Invalid source IPv6 address '{src_ip}' for Vxlan encapsulation!");
+                    return Err(());
+                };
                 let mut ip = Ipv6::default();
                 ip.set_source(src_ip)
                     .set_destination(*dst_ip)
@@ -189,10 +196,12 @@ impl IpForwarder {
         &self,
         packet: &mut Packet<Buf>,
         vxlan: &VxlanEncapsulation,
+        vtep: &Vtep,
     ) {
         let nfi = &self.name;
 
-        let Some(src_mac) = &vxlan.smac else {
+        let Some(src_mac) = &vtep.get_mac() else {
+            error!("Can't set source mac: VTEP has no mac associated!");
             packet.done(DoneReason::InternalFailure);
             return;
         };
@@ -216,7 +225,7 @@ impl IpForwarder {
         }
 
         // build vxlan headers for encapsulation
-        let Ok(vxlan_headers) = Self::build_vxlan_headers(vxlan) else {
+        let Ok(vxlan_headers) = Self::build_vxlan_headers(vxlan, vtep) else {
             error!("{nfi}: Failed to build VxLAN headers !");
             packet.done(DoneReason::InternalFailure);
             return;
@@ -236,10 +245,11 @@ impl IpForwarder {
         &self,
         packet: &mut Packet<Buf>,
         encap: &Encapsulation,
+        vtep: &Vtep,
     ) {
         match encap {
             Encapsulation::Mpls(_label) => todo!(),
-            Encapsulation::Vxlan(vxlan) => self.vxlan_encap(packet, vxlan),
+            Encapsulation::Vxlan(vxlan) => self.vxlan_encap(packet, vxlan, vtep),
         }
     }
 
@@ -266,16 +276,18 @@ impl IpForwarder {
         packet.done(DoneReason::RouteDrop);
     }
 
+    #[inline]
     /// Execute a [`PktInstruction`] on the packet
     fn packet_exec_instruction<Buf: PacketBufferMut>(
         &self,
+        vtep: &Vtep,
         packet: &mut Packet<Buf>,
         instruction: &PktInstruction,
     ) {
         match instruction {
             PktInstruction::Drop => self.packet_exec_instruction_drop(packet),
             PktInstruction::Local(ifindex) => self.packet_exec_instruction_local(packet, *ifindex),
-            PktInstruction::Encap(encap) => self.packet_exec_instruction_encap(packet, encap),
+            PktInstruction::Encap(encap) => self.packet_exec_instruction_encap(packet, encap, vtep),
             PktInstruction::Egress(egress) => self.packet_exec_instruction_egress(packet, egress),
             PktInstruction::Nat => {}
         }
@@ -286,9 +298,10 @@ impl IpForwarder {
         &self,
         packet: &mut Packet<Buf>,
         fibentry: &FibEntry,
+        vtep: &Vtep,
     ) {
         for inst in fibentry.iter() {
-            self.packet_exec_instruction(packet, inst);
+            self.packet_exec_instruction(vtep, packet, inst);
         }
     }
 

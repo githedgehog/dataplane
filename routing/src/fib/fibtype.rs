@@ -143,7 +143,7 @@ impl Fib {
     }
 
     /// Set the [`Vtep`] for this [`Fib`]
-    fn set_vtep(&mut self, vtep: &Vtep) {
+    pub fn set_vtep(&mut self, vtep: &Vtep) {
         self.vtep = vtep.clone();
         let id = self.get_id();
         let ip = self
