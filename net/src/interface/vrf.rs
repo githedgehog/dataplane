@@ -27,7 +27,7 @@ pub struct VrfProperties {
     pub route_table_id: RouteTableId,
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contracts {
     use crate::interface::vrf::VrfProperties;
     use crate::route::RouteTableId;

@@ -42,7 +42,7 @@ impl FragOffset {
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::ipv4::frag_offset::FragOffset;
     use bolero::{Driver, TypeGenerator};

@@ -23,7 +23,7 @@ use tracing::{debug, trace};
 pub mod addr;
 pub mod flow_label;
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
 /// An IPv6 header
@@ -449,7 +449,7 @@ impl From<Ipv6ExtNext> for Header {
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::ip::NextHeader;
     use crate::ipv6::Ipv6;

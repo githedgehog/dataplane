@@ -40,7 +40,7 @@ pub struct VtepProperties {
     pub ttl: Option<u8>,
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contracts {
     use crate::interface::VtepProperties;
     use bolero::{Driver, TypeGenerator};

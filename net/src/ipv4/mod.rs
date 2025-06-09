@@ -28,7 +28,7 @@ pub mod ecn;
 
 pub mod frag_offset;
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
 /// An IPv4 header
@@ -430,7 +430,7 @@ impl From<Ipv4Next> for Header {
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::ip::NextHeader;
     use crate::ipv4::Ipv4;

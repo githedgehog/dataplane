@@ -10,7 +10,7 @@ use core::fmt::{Display, Formatter};
 /// [checksum]: https://en.wikipedia.org/wiki/Transmission_Control_Protocol#Checksum_computation
 #[repr(transparent)]
 #[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(any(test, feature = "arbitrary"), derive(bolero::TypeGenerator))]
+#[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug, Hash)]
 pub struct TcpChecksum(pub(crate) u16);
 

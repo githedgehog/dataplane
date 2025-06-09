@@ -8,7 +8,7 @@ license = "Apache-2.0"
 [features]
 default = []
 
-arbitrary = ["dep:bolero"]
+bolero = ["dep:bolero"]
 test_buffer = []
 
 [dependencies]

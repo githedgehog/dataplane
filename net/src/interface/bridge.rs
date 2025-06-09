@@ -6,7 +6,7 @@ use derive_builder::Builder;
 use multi_index_map::MultiIndexMap;
 use serde::{Deserialize, Serialize};
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 #[allow(unused_imports)] // re-export
 pub use contracts::*;
 
@@ -34,7 +34,7 @@ pub struct BridgeProperties {
     pub vlan_protocol: EthType,
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contracts {
     use crate::eth::ethtype::EthType;
     use crate::interface::BridgeProperties;

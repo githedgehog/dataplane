@@ -62,7 +62,7 @@ impl NextHeader {
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
 )]
-#[cfg_attr(any(test, feature = "arbitrary"), derive(bolero::TypeGenerator))]
+#[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 pub enum UnicastIpAddr {
     /// A unicast Ipv4 address
     V4(UnicastIpv4Addr),
@@ -133,7 +133,7 @@ impl TryFrom<Ipv6Addr> for UnicastIpAddr {
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::ip::NextHeader;
     use bolero::{Driver, TypeGenerator};

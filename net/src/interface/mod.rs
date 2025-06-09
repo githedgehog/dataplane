@@ -27,7 +27,7 @@ pub use vrf::*;
 #[allow(unused_imports)] // re-export
 pub use vtep::*;
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
 /// A network interface id (also known as ifindex in linux).
@@ -257,7 +257,7 @@ pub enum InterfaceProperties {
     Other,
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::interface::{
         AdminState, Interface, InterfaceIndex, InterfaceName, InterfaceProperties, OperationalState,

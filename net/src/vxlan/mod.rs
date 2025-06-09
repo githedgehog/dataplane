@@ -22,7 +22,7 @@ pub use vni::{InvalidVni, Vni};
 /// [VXLAN]: https://en.wikipedia.org/wiki/Virtual_Extensible_LAN
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
-#[cfg_attr(any(test, feature = "arbitrary"), derive(bolero::TypeGenerator))]
+#[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 #[allow(clippy::unsafe_derive_deserialize)] // all uses of unsafe are compile time and trivial
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]

@@ -6,7 +6,8 @@ license = "Apache-2.0"
 publish = false
 
 [features]
-bolero = ["dep:bolero", "net/arbitrary"]
+default = ["bolero"]
+bolero = ["dep:bolero", "net/bolero"]
 
 [dependencies]
 # internal
@@ -25,7 +26,7 @@ tracing = { workspace = true, features = ["attributes"] }
 
 [dev-dependencies]
 # internal
-net = { workspace = true, features = ["arbitrary"] }
+net = { workspace = true, features = ["bolero"] }
 
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }

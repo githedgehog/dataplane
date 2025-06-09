@@ -4,7 +4,7 @@
 use std::num::NonZero;
 
 #[repr(transparent)]
-#[cfg_attr(any(test, feature = "arbitrary"), derive(bolero::TypeGenerator))]
+#[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 #[allow(clippy::unsafe_derive_deserialize)] // both try_from and into u16 are safe for this type
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "u16", into = "u16")]

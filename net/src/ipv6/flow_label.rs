@@ -68,7 +68,7 @@ impl TryFrom<u32> for FlowLabel {
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::ipv6::flow_label::FlowLabel;
     use bolero::{Driver, TypeGenerator};

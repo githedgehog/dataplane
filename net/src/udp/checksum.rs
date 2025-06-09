@@ -11,7 +11,7 @@ use core::fmt::{Display, Formatter};
 /// [`Udp`]: crate::udp::Udp
 #[repr(transparent)]
 #[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(any(test, feature = "arbitrary"), derive(bolero::TypeGenerator))]
+#[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug, Hash)]
 pub struct UdpChecksum(pub(crate) u16);
 

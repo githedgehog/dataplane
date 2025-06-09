@@ -1077,7 +1077,7 @@ where
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::eth::ethtype::CommonEthType;
     use crate::eth::{Eth, GenWithEthType};
