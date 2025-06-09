@@ -16,11 +16,14 @@ use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use net::vxlan::Vni;
 
-use crate::fib::fibobjects::{FibEntry, FibGroup, PktInstruction};
 use crate::prefix::Prefix;
 use crate::rib::vrf::VrfId;
+use crate::{
+    evpn::Vtep,
+    fib::fibobjects::{FibEntry, FibGroup, PktInstruction},
+};
 
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 /// An id we use to idenfify a FIB
@@ -53,6 +56,7 @@ pub struct Fib {
     routesv4: RTrieMap<Ipv4Prefix, Rc<FibGroup>>,
     routesv6: RTrieMap<Ipv6Prefix, Rc<FibGroup>>,
     groups: BTreeSet<Rc<FibGroup>>, /* shared fib groups */
+    vtep: Vtep,
 }
 
 pub type FibGroupV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &Rc<FibGroup>)) -> bool>;
@@ -72,6 +76,7 @@ impl Fib {
             routesv4: RTrieMap::new(),
             routesv6: RTrieMap::new(),
             groups: BTreeSet::new(),
+            vtep: Vtep::new(),
         };
         let group = Self::drop_fibgroup();
         fib.add_fibgroup(Prefix::root_v4(), group.clone());
@@ -137,6 +142,28 @@ impl Fib {
         self.groups.remove(group);
     }
 
+    /// Set the [`Vtep`] for this [`Fib`]
+    fn set_vtep(&mut self, vtep: &Vtep) {
+        self.vtep = vtep.clone();
+        let id = self.get_id();
+        let ip = self
+            .vtep
+            .get_ip()
+            .map(|a| a.to_string())
+            .unwrap_or("none".to_owned());
+        let mac = self
+            .vtep
+            .get_mac()
+            .map(|a| a.to_string())
+            .unwrap_or("none".to_owned());
+        info!("VTEP for fib {id} set to ip:{ip} mac:{mac}");
+    }
+
+    /// Get the [`Vtep`] for this [`Fib`]
+    pub fn get_vtep(&self) -> &Vtep {
+        &self.vtep
+    }
+
     /// Tell the number of IPv4 routes in this [`Fib`]
     #[must_use]
     pub fn len_v4(&self) -> usize {
@@ -154,6 +181,7 @@ impl Fib {
     pub fn len_groups(&self) -> usize {
         self.groups.len()
     }
+
     #[must_use]
     pub fn version(&self) -> u64 {
         self.version
@@ -267,21 +295,23 @@ impl Fib {
 }
 
 #[derive(Debug)]
-pub enum FibGroupChange {
+pub enum FibChange {
     AddFibGroup((Prefix, FibGroup)),
     DelFibGroup(Prefix),
+    SetVtep(Vtep),
 }
 
-impl Absorb<FibGroupChange> for Fib {
-    fn absorb_first(&mut self, change: &mut FibGroupChange, _: &Self) {
+impl Absorb<FibChange> for Fib {
+    fn absorb_first(&mut self, change: &mut FibChange, _: &Self) {
         self.version += 1; // FIXME: only update if s/t changed
         match change {
-            FibGroupChange::AddFibGroup((prefix, group)) => {
+            FibChange::AddFibGroup((prefix, group)) => {
                 if let Some(group) = self.add_fibgroup(*prefix, group.clone()) {
                     self.unstore_group(&group);
                 }
             }
-            FibGroupChange::DelFibGroup(prefix) => self.del_fibgroup(*prefix),
+            FibChange::DelFibGroup(prefix) => self.del_fibgroup(*prefix),
+            FibChange::SetVtep(vtep) => self.set_vtep(vtep),
         }
     }
     fn drop_first(self: Box<Self>) {}
@@ -290,12 +320,12 @@ impl Absorb<FibGroupChange> for Fib {
     }
 }
 
-pub struct FibWriter(WriteHandle<Fib, FibGroupChange>);
+pub struct FibWriter(WriteHandle<Fib, FibChange>);
 impl FibWriter {
     /// create a fib, providing a writer and a reader
     #[must_use]
     pub fn new(id: FibId) -> (FibWriter, FibReader) {
-        let (w, r) = left_right::new_from_empty::<Fib, FibGroupChange>(Fib::new(id));
+        let (w, r) = left_right::new_from_empty::<Fib, FibChange>(Fib::new(id));
         (FibWriter(w), FibReader(r))
     }
     pub fn enter(&self) -> Option<ReadGuard<'_, Fib>> {
@@ -306,11 +336,15 @@ impl FibWriter {
         self.0.enter().map(|fib| fib.get_id())
     }
     pub fn add_fibgroup(&mut self, prefix: Prefix, group: FibGroup) {
-        self.0.append(FibGroupChange::AddFibGroup((prefix, group)));
+        self.0.append(FibChange::AddFibGroup((prefix, group)));
         self.0.publish();
     }
     pub fn del_fibgroup(&mut self, prefix: Prefix) {
-        self.0.append(FibGroupChange::DelFibGroup(prefix));
+        self.0.append(FibChange::DelFibGroup(prefix));
+        self.0.publish();
+    }
+    pub fn set_vtep(&mut self, vtep: Vtep) {
+        self.0.append(FibChange::SetVtep(vtep));
         self.0.publish();
     }
     #[must_use]

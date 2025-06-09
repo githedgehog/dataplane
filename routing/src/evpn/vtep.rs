@@ -7,7 +7,7 @@ use net::eth::mac::Mac;
 use std::net::IpAddr;
 
 /// Type that represents a VTEP
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Vtep {
     ip: Option<IpAddr>,
     mac: Option<Mac>,
