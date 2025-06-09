@@ -68,7 +68,8 @@ fn reconcile_fuzz() {
                     manager
                         .reconcile(&mut rib, &manager.observe().await.unwrap())
                         .await
-                )
+                );
+                panic!("bad things");
             });
         });
 }
