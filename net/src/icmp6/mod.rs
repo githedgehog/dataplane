@@ -9,7 +9,7 @@ use crate::parse::{
 use etherparse::Icmpv6Header;
 use std::num::NonZero;
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
 /// An `ICMPv6` header.
@@ -73,7 +73,7 @@ impl DeParse for Icmp6 {
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::icmp6::Icmp6;
     use crate::parse::Parse;

@@ -3,7 +3,7 @@
 
 //! Ethernet type related fields and parsing
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 #[allow(unused_imports)] // just re-exporting conditionally included feature
 pub use contract::*;
 use etherparse::EtherType;
@@ -67,7 +67,7 @@ impl From<EthType> for u16 {
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use super::EthType;
     use bolero::{Driver, TypeGenerator};

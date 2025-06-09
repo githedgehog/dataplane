@@ -11,7 +11,7 @@ use etherparse::{Icmpv4Header, Icmpv4Type};
 use std::num::NonZero;
 
 #[allow(unused_imports)] // re-export
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
 /// An `ICMPv4` header.
@@ -88,7 +88,7 @@ impl ParsePayload for Icmp4 {
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::icmp4::Icmp4;
     use crate::parse::{Parse, ParseError};

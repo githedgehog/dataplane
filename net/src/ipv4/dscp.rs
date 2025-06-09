@@ -42,7 +42,7 @@ impl Dscp {
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::ipv4::dscp::Dscp;
     use bolero::{Driver, TypeGenerator};

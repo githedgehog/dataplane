@@ -16,7 +16,7 @@ use std::num::NonZero;
 
 use crate::tcp::checksum::TcpChecksum;
 #[allow(unused_imports)] // re-export
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
 /// A TCP header.
@@ -365,7 +365,7 @@ impl ParsePayload for Tcp {
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::tcp::Tcp;
     use bolero::{Driver, TypeGenerator};

@@ -20,7 +20,7 @@ use std::num::NonZero;
 use tracing::{debug, trace};
 
 #[allow(unused_imports)] // re-export
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
 /// An [ethernet header]
@@ -221,7 +221,7 @@ impl From<EthNext> for Header {
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::eth::Eth;
     use crate::eth::ethtype::EthType;

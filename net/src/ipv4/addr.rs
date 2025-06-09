@@ -60,7 +60,7 @@ impl From<UnicastIpv4Addr> for Ipv4Addr {
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::ipv4::addr::UnicastIpv4Addr;
     use bolero::{Driver, TypeGenerator};

@@ -4,7 +4,7 @@
 //! VLAN validation and manipulation.
 
 #[allow(unused_imports)] // conditional re-export
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 use core::fmt::{Debug, Display, Formatter};
 
@@ -373,7 +373,7 @@ impl ParsePayload for Vlan {
 }
 
 /// Contracts for Vlan types
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::eth::ethtype::{CommonEthType, EthType};
     use crate::vlan::{InvalidPcp, InvalidVid, Pcp, Vid, Vlan};

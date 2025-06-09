@@ -4,7 +4,7 @@
 //! IPv6 address subclasses
 
 #[allow(unused_imports)] // deliberate re-export
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 use std::net::Ipv6Addr;
 
@@ -39,7 +39,7 @@ impl UnicastIpv6Addr {
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::ipv6::addr::UnicastIpv6Addr;
     use bolero::{Driver, TypeGenerator};

@@ -6,7 +6,7 @@ use std::fmt::Formatter;
 use std::num::NonZero;
 
 #[allow(unused_imports)] // re-export
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
 /// A [VXLAN][RFC7348] Network Identifier.
@@ -127,7 +127,7 @@ impl TryFrom<u32> for Vni {
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::vxlan::Vni;
     use bolero::{Driver, TypeGenerator};

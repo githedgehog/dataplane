@@ -215,7 +215,7 @@ impl ParsePayload for Udp {
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::udp::Udp;
     use bolero::{Driver, TypeGenerator};

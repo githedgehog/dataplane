@@ -13,7 +13,7 @@ use std::fmt::Display;
 ///
 /// [MAC Address]: https://en.wikipedia.org/wiki/MAC_address
 #[repr(transparent)]
-#[cfg_attr(any(test, feature = "arbitrary"), derive(bolero::TypeGenerator))]
+#[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -350,7 +350,7 @@ impl TryFrom<&Vec<u8>> for SourceMac {
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::eth::mac::{DestinationMac, Mac, SourceMac};
     use bolero::{Driver, TypeGenerator, ValueGenerator};
