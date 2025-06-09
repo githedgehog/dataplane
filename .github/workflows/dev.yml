@@ -49,9 +49,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        profile:
+          - name: "debug"
+            sterile: ""
+          - name: "debug"
+            sterile: "sterile"
+          - name: "release"
+            sterile: "sterile"
+          - name: "fuzz"
+            sterile: "sterile"
+          #- name: "release"
+          #  sterile: ""
+          #- name: "fuzz"
+          #  sterile: ""
         debug_justfile:
           - "${{ inputs.debug_justfile || false }}"
-    name: "Developer build"
+    name: "${{matrix.profile.name}} ${{matrix.profile.sterile}}"
     runs-on: "lab"
     timeout-minutes: 45
     steps:
