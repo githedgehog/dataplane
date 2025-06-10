@@ -31,10 +31,6 @@ profile := "debug"
 [private]
 _container_repo := "ghcr.io/githedgehog/dataplane"
 
-# the rust channel to use (choose stable, beta, or nightly)
-
-rust := "stable"
-
 # Docker images
 [private]
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
@@ -342,7 +338,6 @@ sterile *args: \
   (cargo "clean") \
   (compile-env "just" \
     ("debug_justfile=" + debug_justfile) \
-    ("rust=" + rust)
     ("target=" + target) \
     ("profile=" + profile) \
     ("_test_type=" + _test_type) \
@@ -396,7 +391,6 @@ build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile
       --label "git.commit={{ _commit }}" \
       --label "git.branch={{ _branch }}" \
       --label "git.tree-state={{ _clean }}" \
-      --label "version.rust={{ rust }}" \
       --label "build.date=${build_date}" \
       --label "build.timestamp={{ _build_time }}" \
       --label "build.time_epoch=${build_time_epoch}" \
@@ -461,7 +455,7 @@ build-sweep start="main":
     # Get all commits since {{ start }}, in chronological order
     while read -r commit; do
       git -c advice.detachedHead=false checkout "${commit}" || exit 1
-      { just debug_justfile={{ debug_justfile }} cargo +{{ rust }} build --locked --profile=dev --target=x86_64-unknown-linux-gnu; } || exit 1
+      { just debug_justfile={{ debug_justfile }} cargo build --locked --profile=dev --target=x86_64-unknown-linux-gnu; } || exit 1
     done < <(git rev-list --reverse "{{ start }}".."$(git rev-parse HEAD)")
     # Return to the initial branch if any (exit "detached HEAD" state)
     git checkout "${INIT_HEAD}"
