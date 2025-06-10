@@ -21,15 +21,12 @@ _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 _test_type := "DEFAULT"
 
 # comma delimited list of sanitizers to use with bolero
-
 sanitizers := "address,leak"
 
 # the tripple to compile for
-
 target := "x86_64-unknown-linux-gnu"
 
 # cargo build profile to use
-
 profile := "debug"
 [private]
 _container_repo := "ghcr.io/githedgehog/dataplane"
@@ -39,7 +36,6 @@ _container_repo := "ghcr.io/githedgehog/dataplane"
 rust := "stable"
 
 # Docker images
-
 [private]
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
 [private]
@@ -342,14 +338,37 @@ fake-nix refake="":
     sudo ln -rs ./compile-env/nix /nix
 
 # Run a "sterile" command
-sterile *args: (cargo "clean") (compile-env "just" ("debug_justfile=" + debug_justfile) ("rust=" + rust) ("target=" + target) ("profile=" + profile) ("_test_type=" + _test_type) ("sanitizers=" + sanitizers) args)
+sterile *args: \
+  (cargo "clean") \
+  (compile-env "just" \
+    ("debug_justfile=" + debug_justfile) \
+    ("rust=" + rust)
+    ("target=" + target) \
+    ("profile=" + profile) \
+    ("_test_type=" + _test_type) \
+    ("sanitizers=" + sanitizers) \
+    args \
+  )
 
 # Run the full fuzzer / property-checker on a bolero test. Args are forwarded to bolero
 [script]
 list-fuzz-tests *args: (cargo "bolero" "list" ("--sanitizer=" + sanitizers) "--build-std" "--profile=fuzz" args)
 
 # Run the full fuzzer / property-checker on a bolero test. Args are forwarded to bolero
-fuzz test timeout="-T 60sec" *args="--engine=libfuzzer --engine-args='-max_len=65536'": (compile-env "just" "_test_type=FUZZ" "cargo" "bolero" "test" test "--build-std" "--profile=fuzz" ("--sanitizer=" + sanitizers) timeout args)
+fuzz test timeout="-T 60sec" *args="--engine=libfuzzer --engine-args=-max_len=65536": ( \
+  compile-env \
+    "just" \
+    "_test_type=FUZZ" \
+    "cargo" \
+    "bolero" \
+    "test" \
+    test \
+    "--build-std" \
+    "--profile=fuzz" \
+    ("--sanitizer=" + sanitizers) \
+    timeout \
+    args \
+  )
 
 # Run the full fuzzer / property-checker on a bolero test with the AFL fuzzer
 [script]
@@ -372,6 +391,7 @@ build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile
     declare build_time_epoch
     build_time_epoch="$(date --utc '+%s' --date="{{ _build_time }}")"
     declare -r build_time_epoch
+    declare -r TAG="{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")"
     sudo -E docker build \
       --label "git.commit={{ _commit }}" \
       --label "git.branch={{ _branch }}" \
@@ -380,25 +400,25 @@ build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile
       --label "build.date=${build_date}" \
       --label "build.timestamp={{ _build_time }}" \
       --label "build.time_epoch=${build_time_epoch}" \
-      --tag "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")" \
+      --tag "${TAG}" \
       --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/dataplane" \
       --build-arg BASE="{{ _libc_container }}" \
       .
 
     sudo -E docker tag \
-      "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")" \
+      "${TAG}" \
       "{{ _container_repo }}:$(truncate128 "{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")"
     sudo -E docker tag \
-      "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")" \
+      "${TAG}" \
       "{{ _container_repo }}:$(truncate128 "{{ _slug }}.{{ target }}.{{ profile }}")"
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ]; then
       sudo -E docker tag \
-        "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")" \
+        "${TAG}" \
         "{{ _container_repo }}:$(truncate128 "{{ _slug }}.{{ profile }}")"
     fi
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ] && [ "{{ profile }}" = "release" ]; then
       sudo -E docker tag \
-        "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")" \
+        "${TAG}" \
         "{{ _container_repo }}:$(truncate128 "{{ _slug }}")"
     fi
 
