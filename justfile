@@ -443,3 +443,12 @@ build-sweep start="main":
     done < <(git rev-list --reverse "{{ start }}".."$(git rev-parse HEAD)")
     # Return to the initial branch if any (exit "detached HEAD" state)
     git checkout "${INIT_HEAD}"
+
+# Run tests with code coverage.  Args will be forwarded to nextest
+[script]
+coverage *args: \
+  (cargo "llvm-cov" "clean" "--workspace") \
+  (cargo "llvm-cov" "--no-report" "--branch" "--remap-path-prefix" "nextest" "--cargo-profile=fuzz" args) \
+  (cargo "llvm-cov" "report" "--html" "--output-dir=./target/nextest/coverage" "--profile=fuzz") \
+  (cargo "llvm-cov" "report" "--json" "--output-path=./target/nextest/coverage/report.json" "--profile=fuzz") \
+  (cargo "llvm-cov" "report" "--codecov" "--output-path=./target/nextest/coverage/codecov.json" "--profile=fuzz")

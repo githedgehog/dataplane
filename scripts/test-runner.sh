@@ -140,12 +140,16 @@ fi
   --rm \
   --mount "type=bind,source=${1},target=${1},readonly=true,bind-propagation=rprivate" \
   --mount "type=bind,source=${project_dir},target=${project_dir},readonly=true,bind-propagation=rprivate" \
+  --mount "type=bind,source=${project_dir}/target,target=${project_dir}/target,readonly=false,bind-propagation=rprivate" \
   --mount "type=bind,source=$(get_docker_sock),target=$(get_docker_sock),readonly=false,bind-propagation=rprivate" \
   --tmpfs "/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
   --tmpfs "/var/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
   --tmpfs "/tmp:nodev,noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
   --user="$(id -u):$(id -g)" \
   --group-add="$(getent group docker | cut -d: -f3)" \
+  --env LLVM_PROFILE_FILE="${LLVM_PROFILE_FILE:-""}" \
+  --env CARGO_LLVM_COV="${CARGO_LLVM_COV:-0}" \
+  --env CARGO_LLVM_COV_TARGET_DIR="${project_dir}/target" \
   --workdir="${project_dir}" \
   --env DOCKER_HOST="unix://$(get_docker_sock)" \
   --net=none \

@@ -99,6 +99,10 @@ uuid = { version = "1.17.0", default-features = false, features = [] }
 
 [profile.dev]
 panic = "unwind"
+debug-assertions = true
+overflow-checks = true
+debug = "full"
+rpath = true
 
 [profile.release]
 opt-level = 3
