@@ -42,6 +42,7 @@ use net::headers::{TryHeadersMut, TryIpMut};
 use net::packet::Packet;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
+use std::net::Ipv4Addr;
 
 /// Indicates whether a [`Nat`] processor should perform source NAT or destination NAT.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,7 +101,8 @@ impl Nat {
 
         match self.mode {
             NatMode::Stateless => self.stateless_nat(net, vni),
-            NatMode::Stateful => self.stateful_nat(net, vni),
+            // TODO: Add support for other IP versions
+            NatMode::Stateful => self.stateful_nat::<Ipv4Addr, Ipv4Addr>(net, vni),
         }
     }
 }

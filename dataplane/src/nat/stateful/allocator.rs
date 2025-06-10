@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use super::NatIp;
 use std::collections::HashSet;
-use std::net::IpAddr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum AllocatorError {
@@ -29,18 +29,18 @@ impl NatPort {
     }
 }
 
-pub trait NatPool {
-    fn allocate(&self) -> Result<(IpAddr, NatPort), AllocatorError>;
+pub trait NatPool<I: NatIp> {
+    fn allocate(&self) -> Result<(I, NatPort), AllocatorError>;
 }
 
 #[derive(Debug, Clone)]
-pub struct NatDefaultPool {
-    ips: HashSet<IpAddr>,
+pub struct NatDefaultPool<I: NatIp> {
+    ips: HashSet<I>,
     allocated: NatAllocations,
 }
 
-impl NatPool for NatDefaultPool {
-    fn allocate(&self) -> Result<(IpAddr, NatPort), AllocatorError> {
+impl<I: NatIp> NatPool<I> for NatDefaultPool<I> {
+    fn allocate(&self) -> Result<(I, NatPort), AllocatorError> {
         todo!()
     }
 }

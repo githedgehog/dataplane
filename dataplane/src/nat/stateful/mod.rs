@@ -10,7 +10,7 @@ use super::Nat;
 use net::headers::Net;
 use net::vxlan::Vni;
 use routing::rib::vrf::VrfId;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[derive(thiserror::Error, Debug)]
 pub enum StatefulNatError {
@@ -18,19 +18,44 @@ pub enum StatefulNatError {
     Other,
 }
 
+mod private {
+    pub trait Sealed {}
+}
+pub trait NatIp: private::Sealed {
+    fn to_ip_addr(&self) -> IpAddr;
+}
+impl private::Sealed for IpAddr {}
+impl private::Sealed for Ipv4Addr {}
+impl private::Sealed for Ipv6Addr {}
+impl NatIp for IpAddr {
+    fn to_ip_addr(&self) -> IpAddr {
+        *self
+    }
+}
+impl NatIp for Ipv4Addr {
+    fn to_ip_addr(&self) -> IpAddr {
+        IpAddr::V4(*self)
+    }
+}
+impl NatIp for Ipv6Addr {
+    fn to_ip_addr(&self) -> IpAddr {
+        IpAddr::V6(*self)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct NatState {}
 
 #[derive(Debug, Clone)]
-struct NatTuple {
-    src_ip: IpAddr,
-    dst_ip: IpAddr,
+struct NatTuple<I: NatIp> {
+    src_ip: I,
+    dst_ip: I,
     next_header: u8,
     vrf_id: VrfId,
 }
 
 impl NatState {
-    fn new(net: &Net, pool: &dyn allocator::NatPool) -> Self {
+    fn new<I: NatIp>(net: &Net, pool: &dyn allocator::NatPool<I>) -> Self {
         Self {}
     }
 }
@@ -40,20 +65,28 @@ impl Nat {
         todo!()
     }
 
-    fn extract_tuple(net: &Net, vrf_id: VrfId) -> NatTuple {
+    fn extract_tuple<I: NatIp>(net: &Net, vrf_id: VrfId) -> NatTuple<I> {
         todo!()
     }
 
-    fn lookup_state(&self, tuple: &NatTuple) -> Option<&NatState> {
+    fn lookup_state<I: NatIp>(&self, tuple: &NatTuple<I>) -> Option<&NatState> {
         todo!()
     }
 
     #[allow(clippy::needless_pass_by_value)]
-    fn update_state(&mut self, tuple: &NatTuple, state: NatState) -> Result<(), StatefulNatError> {
+    fn update_state<I: NatIp>(
+        &mut self,
+        tuple: &NatTuple<I>,
+        state: NatState,
+    ) -> Result<(), StatefulNatError> {
         todo!()
     }
 
-    fn find_nat_pool(&self, net: &Net, vrf_id: VrfId) -> Option<&dyn allocator::NatPool> {
+    fn find_nat_pool<I: NatIp>(
+        &self,
+        net: &Net,
+        vrf_id: VrfId,
+    ) -> Option<&dyn allocator::NatPool<I>> {
         todo!()
     }
 
@@ -61,7 +94,7 @@ impl Nat {
         todo!();
     }
 
-    pub(crate) fn stateful_nat(&mut self, net: &mut Net, vni_opt: Option<Vni>) {
+    pub(crate) fn stateful_nat<I: NatIp, J: NatIp>(&mut self, net: &mut Net, vni_opt: Option<Vni>) {
         // TODO: What if no VNI
         let Some(vni) = vni_opt else {
             return;
@@ -71,7 +104,7 @@ impl Nat {
         // TODO: Check whether we need protocol-aware processing
 
         let vrf_id = Self::get_vrf_id(net, vni);
-        let tuple = Self::extract_tuple(net, vrf_id);
+        let tuple = Self::extract_tuple::<I>(net, vrf_id);
 
         // Hot path: if we have a session, directly translate the address already
         if let Some(state) = self.lookup_state(&tuple) {
@@ -80,7 +113,7 @@ impl Nat {
         }
 
         // Else, if we need NAT for this packet, create a new session and translate the address
-        if let Some(pool) = self.find_nat_pool(net, vrf_id) {
+        if let Some(pool) = self.find_nat_pool::<J>(net, vrf_id) {
             let state = NatState::new(net, pool);
             if self.update_state(&tuple, state.clone()).is_ok() {
                 self.stateful_translate(net, &state);
