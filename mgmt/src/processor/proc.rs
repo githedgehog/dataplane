@@ -25,6 +25,8 @@ use crate::vpc_manager::{RequiredInformationBase, VpcManager};
 use rekon::{Observe, Reconcile};
 use tracing::{debug, error, info, warn};
 
+use net::interface::Interface;
+use net::interface::display::MultiIndexInterfaceMapView;
 use routing::ctl::RouterCtlSender;
 use routing::evpn::Vtep;
 
@@ -67,8 +69,8 @@ pub(crate) struct ConfigProcessor {
     config_db: GwConfigDatabase,
     rx: mpsc::Receiver<ConfigChannelRequest>,
     frrmi: FrrMi,
-    netlink: Arc<rtnetlink::Handle>,
     router_ctl: RouterCtlSender,
+    vpc_mgr: VpcManager<RequiredInformationBase>,
 }
 
 impl ConfigProcessor {
@@ -86,14 +88,16 @@ impl ConfigProcessor {
             panic!("failed to create connection");
         };
         spawn(connection);
+
         let netlink = Arc::new(netlink);
+        let vpc_mgr = VpcManager::<RequiredInformationBase>::new(netlink);
 
         let processor = Self {
             config_db: GwConfigDatabase::new(),
             rx,
             frrmi,
-            netlink,
             router_ctl,
+            vpc_mgr,
         };
         (processor, tx)
     }
@@ -122,13 +126,7 @@ impl ConfigProcessor {
     /// Apply the configuration with the given id
     async fn do_apply_config(&mut self, genid: GenId) -> ConfigResult {
         if let Some(config) = self.config_db.get_mut(genid) {
-            apply_gw_config(
-                config,
-                &mut self.frrmi,
-                self.netlink.clone(),
-                &mut self.router_ctl,
-            )
-            .await?;
+            apply_gw_config(&self.vpc_mgr, config, &mut self.frrmi, &mut self.router_ctl).await?;
             config.meta.applied = Some(SystemTime::now());
             config.meta.is_applied = true;
             Ok(())
@@ -249,38 +247,53 @@ impl ConfigProcessor {
     }
 }
 
-/// Apply config using VPC manager
-async fn apply_config_vpc_manager(
-    netlink: Arc<rtnetlink::Handle>,
-    internal: &InternalConfig,
-    genid: GenId,
-) -> ConfigResult {
-    let mut rib: RequiredInformationBase = match internal.try_into() {
-        Ok(rib) => rib,
-        Err(err) => {
-            let msg = format!("Couldn't build required information base: {err}");
-            error!("{msg}");
-            return Err(ConfigError::FailureApply(msg));
-        }
-    };
+impl VpcManager<RequiredInformationBase> {
+    /// Apply the provided [`InternalConfig`]
+    async fn apply_config(&self, internal: &InternalConfig, genid: GenId) -> ConfigResult {
+        /* build required information base from internal config */
+        let mut rib: RequiredInformationBase = match internal.try_into() {
+            Ok(rib) => rib,
+            Err(err) => {
+                let msg = format!("Couldn't build required information base: {err}");
+                error!("{msg}");
+                return Err(ConfigError::FailureApply(msg));
+            }
+        };
 
-    debug!("Required information base for genid {genid} is:\n{rib:?}");
+        debug!("Required information base for genid {genid} is:\n{rib:?}");
 
-    let manager = VpcManager::<RequiredInformationBase>::new(netlink);
-    let mut required_passes = 0;
-    while !manager
-        .reconcile(&mut rib, &manager.observe().await.unwrap())
-        .await
-    {
-        required_passes += 1;
-        if required_passes >= 300 {
-            let msg = "Interface reconciliation not achieved after 300 passes".to_string();
-            error!("{msg}");
-            return Err(ConfigError::FailureApply(msg));
+        let mut required_passes = 0;
+        while !self
+            .reconcile(&mut rib, &self.observe().await.unwrap())
+            .await
+        {
+            required_passes += 1;
+            if required_passes >= 300 {
+                let msg = "Interface reconciliation not achieved after 300 passes".to_string();
+                error!("{msg}");
+                return Err(ConfigError::FailureApply(msg));
+            }
         }
+        debug!("VPC-manager successfully applied config for genid {genid}");
+
+        let obs_rib = self
+            .observe()
+            .await
+            .map_err(|_| ConfigError::InternalFailure("Failed to observe interface state".to_string()))?;
+
+        debug!(
+            "The current kernel interfaces are:\n{}",
+            &obs_rib.interfaces
+        );
+
+        let vrfs = MultiIndexInterfaceMapView {
+            map: &obs_rib.interfaces,
+            filter: &|iface: &Interface| iface.is_vrf(),
+        };
+        debug!("The current VRF interfaces are:\n{vrfs}");
+
+        Ok(())
     }
-    debug!("VPC-manager successfully applied config for genid {genid}");
-    Ok(())
 }
 
 /// Apply config over frrmi with frr-agent
@@ -306,9 +319,9 @@ async fn apply_config_frr(
 
 /// Main function to apply a config
 async fn apply_gw_config(
+    vpc_mgr: &VpcManager<RequiredInformationBase>,
     config: &mut GwConfig,
     frrmi: &mut FrrMi,
-    netlink: Arc<rtnetlink::Handle>,
     router_ctl: &mut RouterCtlSender,
 ) -> ConfigResult {
     let genid = config.genid();
@@ -328,7 +341,7 @@ async fn apply_gw_config(
     };
 
     /* apply config with VPC manager */
-    apply_config_vpc_manager(netlink, internal, genid).await?;
+    vpc_mgr.apply_config(internal, genid).await?;
 
     /* apply config with frrmi to frr-agent */
     apply_config_frr(frrmi, config, internal).await?;
