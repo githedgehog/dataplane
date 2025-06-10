@@ -18,7 +18,7 @@ use std::fmt::{Debug, Display, Formatter};
 use tracing::error;
 
 mod bridge;
-mod display;
+pub mod display;
 mod vrf;
 mod vtep;
 
