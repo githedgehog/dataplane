@@ -299,7 +299,7 @@ impl Vpc {
 impl TryFrom<&InternalConfig> for RequiredInformationBase {
     type Error = RequiredInformationBaseBuilderError;
 
-    #[tracing::instrument(level = "debug", ret)]
+    #[tracing::instrument(level = "trace", ret)]
     fn try_from(internal: &InternalConfig) -> Result<Self, Self::Error> {
         let mut rib = RequiredInformationBaseBuilder::default();
         let mut interfaces = MultiIndexInterfaceSpecMap::default();
