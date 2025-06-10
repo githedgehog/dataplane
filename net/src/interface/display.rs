@@ -132,3 +132,22 @@ impl Display for MultiIndexInterfaceMap {
         Ok(())
     }
 }
+
+pub struct MultiIndexInterfaceMapView<'a, F>
+where
+    F: Fn(&Interface) -> bool,
+{
+    pub map: &'a MultiIndexInterfaceMap,
+    pub filter: &'a F,
+}
+
+impl<F: for<'a> Fn(&'a Interface) -> bool> Display for MultiIndexInterfaceMapView<'_, F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt_kernel_interface_heading(f)?;
+        let interfaces = self.map.iter().filter(|(_, iface)| (self.filter)(iface));
+        for (_, iface) in interfaces {
+            iface.fmt(f)?;
+        }
+        Ok(())
+    }
+}
