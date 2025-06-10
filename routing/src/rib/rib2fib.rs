@@ -33,12 +33,14 @@ impl Nhop {
         }
         if let Some(encap) = self.key.encap {
             instructions.push(PktInstruction::Encap(encap));
-            let egress = EgressObject::new(self.key.ifindex, self.key.address);
+            let egress =
+                EgressObject::new(self.key.ifindex, self.key.address, self.key.ifname.clone());
             instructions.push(PktInstruction::Egress(egress));
             return instructions;
         }
         if self.key.ifindex.is_some() {
-            let egress = EgressObject::new(self.key.ifindex, self.key.address);
+            let egress =
+                EgressObject::new(self.key.ifindex, self.key.address, self.key.ifname.clone());
             instructions.push(PktInstruction::Egress(egress));
             return instructions;
         }
@@ -146,9 +148,9 @@ impl Nhop {
         }
         if let Some(ifindex) = self.key.ifindex {
             let egress = if self.key.address.is_some() {
-                EgressObject::new(Some(ifindex), self.key.address)
+                EgressObject::new(Some(ifindex), self.key.address, self.key.ifname.clone())
             } else {
-                EgressObject::new(Some(ifindex), prev)
+                EgressObject::new(Some(ifindex), prev, self.key.ifname.clone())
             };
             return Some(PktInstruction::Egress(egress));
         }

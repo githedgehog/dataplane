@@ -34,7 +34,7 @@ use tracing::{error, warn};
 fn fmt_opt_value<T: Display>(
     f: &mut std::fmt::Formatter<'_>,
     name: &str,
-    value: Option<T>,
+    value: &Option<T>,
     nl: bool,
 ) -> Result<(), std::fmt::Error> {
     match value {
@@ -53,7 +53,7 @@ impl Display for VxlanEncapsulation {
             self.vni.as_u32(),
             self.remote
         )?;
-        fmt_opt_value(f, " dmac", self.dmac, false)
+        fmt_opt_value(f, " dmac", &self.dmac, false)
     }
 }
 impl Display for Encapsulation {
@@ -547,8 +547,8 @@ impl Display for RmacStore {
 impl Display for Vtep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "\n ───────── Local VTEP ─────────")?;
-        fmt_opt_value(f, " ip address", self.get_ip(), true)?;
-        fmt_opt_value(f, " Mac address", self.get_mac(), true)
+        fmt_opt_value(f, " ip address", &self.get_ip(), true)?;
+        fmt_opt_value(f, " Mac address", &self.get_mac(), true)
     }
 }
 
@@ -606,8 +606,9 @@ impl Display for TestFib {
 
 impl Display for EgressObject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        fmt_opt_value(f, "if", self.ifindex, false)?;
-        fmt_opt_value(f, " addr", self.address, false)
+        fmt_opt_value(f, " interface", &self.ifname, false)?;
+        fmt_opt_value(f, " idx", &self.ifindex, false)?;
+        fmt_opt_value(f, " addr", &self.address, false)
     }
 }
 impl Display for PktInstruction {

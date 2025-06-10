@@ -14,12 +14,17 @@ use std::net::IpAddr;
 pub struct EgressObject {
     pub(crate) ifindex: Option<IfIndex>,
     pub(crate) address: Option<IpAddr>,
+    pub(crate) ifname: Option<String>,
 }
 
 impl EgressObject {
     #[must_use]
-    pub fn new(ifindex: Option<IfIndex>, address: Option<IpAddr>) -> Self {
-        Self { ifindex, address }
+    pub fn new(ifindex: Option<IfIndex>, address: Option<IpAddr>, ifname: Option<String>) -> Self {
+        Self {
+            ifindex,
+            address,
+            ifname,
+        }
     }
     #[must_use]
     pub fn ifindex(&self) -> &Option<IfIndex> {
@@ -29,6 +34,10 @@ impl EgressObject {
     pub fn address(&self) -> &Option<IpAddr> {
         &self.address
     }
+    #[must_use]
+    pub fn ifname(&self) -> &Option<String> {
+        &self.ifname
+    }
     /// merge two egress objects appearing in a next-hop or a Fib entry. This is used as part
     /// of the resolution to ensure correctness
     pub fn merge(&mut self, other: &Self) {
@@ -37,6 +46,9 @@ impl EgressObject {
         }
         if other.address.is_some() {
             self.address = other.address;
+        }
+        if self.ifname.is_none() && other.ifname.is_some() {
+            self.ifname = other.ifname.clone();
         }
     }
 }
