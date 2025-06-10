@@ -21,13 +21,6 @@ impl EgressObject {
     pub fn new(ifindex: Option<IfIndex>, address: Option<IpAddr>) -> Self {
         Self { ifindex, address }
     }
-    #[cfg(test)]
-    pub fn with_ifindex(ifindex: IfIndex, address: Option<IpAddr>) -> Self {
-        Self {
-            ifindex: Some(ifindex),
-            address,
-        }
-    }
     #[must_use]
     pub fn ifindex(&self) -> &Option<IfIndex> {
         &self.ifindex
@@ -73,30 +66,39 @@ impl FibGroup {
             entries: vec![entry],
         }
     }
+    /// Add a [`FibEntry`] to a [`FibGroup`]
     pub fn add(&mut self, entry: FibEntry) {
         self.entries.push(entry);
     }
+    /// Iterate over the [`FibEntry`]ies within a [`FibGroup`]
     pub fn iter(&self) -> impl Iterator<Item = &FibEntry> {
         self.entries.iter()
     }
+    /// Mutably iterate over the [`FibEntry`]ies within a [`FibGroup`]
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut FibEntry> {
         self.entries.iter_mut()
     }
+    /// Extend a [`FibGroup`] with the  [`FibEntry`]ies of another one
+    /// N.B. extend() uses extend_from_slice creating a copy. This is usually
+    /// the required behavior. For consuming (moving) the entries in other
+    /// we'd use append.
     pub fn extend(&mut self, other: &Self) {
         self.entries.extend_from_slice(&other.entries);
     }
+
+    /// Tell how many entries a [`FibGroup`] has
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    /// Tell if a [`FibGroup`] is empty
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
-    /// merge multiple fib entry groups
-    pub fn append(&mut self, other: &mut Self) {
-        self.entries.append(&mut other.entries);
-    }
+
+    /// Provide a reference to the vector of [`FibEntry`]ies in a [`FibGroup`]
     #[must_use]
     pub fn entries(&self) -> &Vec<FibEntry> {
         &self.entries

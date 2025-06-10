@@ -146,9 +146,9 @@ impl Nhop {
         }
         if let Some(ifindex) = self.key.ifindex {
             let egress = if self.key.address.is_some() {
-                EgressObject::with_ifindex(ifindex, self.key.address)
+                EgressObject::new(Some(ifindex), self.key.address)
             } else {
-                EgressObject::with_ifindex(ifindex, prev)
+                EgressObject::new(Some(ifindex), prev)
             };
             return Some(PktInstruction::Egress(egress));
         }

@@ -439,7 +439,7 @@ mod tests {
             // we have to collect all fib entries
             let mut fibgroup = FibGroup::new();
             for nhop in route.s_nhops.iter() {
-                fibgroup.append(&mut nhop.rc.as_fib_entry_group());
+                fibgroup.extend(&mut nhop.rc.as_fib_entry_group());
             }
 
             fibgroup.resolve(&rmac_store);
@@ -453,7 +453,7 @@ mod tests {
             // we have to collect all fib entries
             let mut fibgroup = FibGroup::new();
             for nhop in route.s_nhops.iter() {
-                fibgroup.append(&mut nhop.rc.as_fib_entry_group());
+                fibgroup.extend(&mut nhop.rc.as_fib_entry_group());
             }
 
             fibgroup.resolve(&rmac_store);
@@ -501,7 +501,7 @@ mod tests {
             let mut fibgroup = FibGroup::new();
             for nhop in route.s_nhops.iter() {
                 println!("next-hop is:\n {nhop}");
-                fibgroup.append(&mut nhop.rc.as_fib_entry_group_lazy());
+                fibgroup.extend(&mut nhop.rc.as_fib_entry_group_lazy());
             }
             println!("Fib group is:\n {fibgroup}");
 
@@ -523,7 +523,7 @@ mod tests {
             // we have to collect all fib entries
             let mut fibgroup = FibGroup::new();
             for nhop in route.s_nhops.iter() {
-                fibgroup.append(&mut nhop.rc.as_fib_entry_group_lazy());
+                fibgroup.extend(&mut nhop.rc.as_fib_entry_group_lazy());
             }
         }
         fib.purge();
