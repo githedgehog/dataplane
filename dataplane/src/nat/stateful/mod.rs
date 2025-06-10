@@ -10,6 +10,7 @@ use super::Nat;
 use net::headers::Net;
 use net::vxlan::Vni;
 use routing::rib::vrf::VrfId;
+use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[derive(thiserror::Error, Debug)]
@@ -21,7 +22,7 @@ pub enum StatefulNatError {
 mod private {
     pub trait Sealed {}
 }
-pub trait NatIp: private::Sealed {
+pub trait NatIp: private::Sealed + Eq + Hash {
     fn to_ip_addr(&self) -> IpAddr;
 }
 impl private::Sealed for IpAddr {}
@@ -46,7 +47,7 @@ impl NatIp for Ipv6Addr {
 #[derive(Debug, Clone)]
 struct NatState {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct NatTuple<I: NatIp> {
     src_ip: I,
     dst_ip: I,
