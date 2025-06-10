@@ -299,6 +299,24 @@ pub struct Interface {
     pub properties: InterfaceProperties,
 }
 
+impl Interface {
+    /// Tell if [`Interface`] is a VRF
+    #[must_use]
+    pub fn is_vrf(&self) -> bool {
+        matches!(self.properties, InterfaceProperties::Vrf(_))
+    }
+    /// Tell if [`Interface`] is a vxlan interface
+    #[must_use]
+    pub fn is_vtep(&self) -> bool {
+        matches!(self.properties, InterfaceProperties::Vtep(_))
+    }
+    /// Tell if [`Interface`] is a bridge interface
+    #[must_use]
+    pub fn is_bridge(&self) -> bool {
+        matches!(self.properties, InterfaceProperties::Bridge(_))
+    }
+}
+
 /// Interface-specific properties.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub enum InterfaceProperties {
