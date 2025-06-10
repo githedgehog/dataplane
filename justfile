@@ -20,6 +20,9 @@ _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 # Set to FUZZ to run the full fuzzer in the fuzz recipe
 _test_type := "DEFAULT"
 
+# if true, then the generated contaienr images and test-runner.sh script will use the debug-env rather than libc-env
+tools := "false"
+
 # comma delimited list of sanitizers to use with bolero
 sanitizers := "address,leak"
 
@@ -39,11 +42,16 @@ _dpdk_sys_container_tag := dpdk_sys_commit
 [private]
 _libc_container := _dpdk_sys_container_repo + "/libc-env:" + _dpdk_sys_container_tag
 [private]
+_debug_container := _dpdk_sys_container_repo + "/debug-env:" + _dpdk_sys_container_tag
+[private]
 _doc_env_container := _dpdk_sys_container_repo + "/doc-env:" + _dpdk_sys_container_tag
 [private]
 _compile_env_image_name := _dpdk_sys_container_repo + "/compile-env"
 [private]
 _compile_env_container := _compile_env_image_name + ":" + _dpdk_sys_container_tag
+
+[private]
+_base_container := if tools == "true" { _debug_container } else { _libc_container }
 
 # Warn if the compile-env image is deprecated (or missing)
 
@@ -94,10 +102,11 @@ _clean := ```
   ) || echo dirty
 ```
 
-# The slug is the branch name (sanitized) with a marker if the tree is dirty
+_tools_slug := (if tools == "true" { "tools." } else { "" })
 
+# The slug is the branch name (sanitized) with a marker if the tree is dirty and if tools are enabled
 [private]
-_slug := (if _clean == "clean" { "" } else { "dirty." }) + _branch
+_slug := (if _clean == "clean" { _tools_slug } else { "dirty." + _tools_slug }) + _branch
 
 # Define a function to truncate long lines to the limit for containers tags
 
@@ -336,6 +345,7 @@ fake-nix refake="":
 sterile *args: \
   (cargo "clean") \
   (compile-env "just" \
+    ("tools=" + tools) \
     ("debug_justfile=" + debug_justfile) \
     ("target=" + target) \
     ("profile=" + profile) \
@@ -390,12 +400,13 @@ build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile
       --label "git.commit={{ _commit }}" \
       --label "git.branch={{ _branch }}" \
       --label "git.tree-state={{ _clean }}" \
+      --label "build.tools={{ tools }}" \
       --label "build.date=${build_date}" \
       --label "build.timestamp={{ _build_time }}" \
       --label "build.time_epoch=${build_time_epoch}" \
       --tag "${TAG}" \
       --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/dataplane" \
-      --build-arg BASE="{{ _libc_container }}" \
+      --build-arg BASE="{{ _base_container }}" \
       .
 
     sudo -E docker tag \
