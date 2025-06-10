@@ -4,6 +4,7 @@
 //! Module that implements a router instance
 
 use derive_builder::Builder;
+use std::fmt::Display;
 use std::path::PathBuf;
 use tracing::{debug, error};
 
@@ -33,6 +34,16 @@ pub struct RouterConfig {
 
     #[builder(setter(into), default = DEFAULT_FRR_AGENT_PATH.to_string().into())]
     pub frr_agent_path: PathBuf,
+}
+
+impl Display for RouterConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        writeln!(f, "Router config")?;
+        writeln!(f, "  name     : {}", self.name)?;
+        writeln!(f, "  CPI path : {}", self.cpi_sock_path.display())?;
+        writeln!(f, "  CLI path : {}", self.cli_sock_path.display())?;
+        writeln!(f, "  FRR-agent: {}", self.frr_agent_path.display())
+    }
 }
 
 /// Top-most object representing a router
@@ -87,7 +98,7 @@ impl Router {
         debug!("{name}: Starting CPI...");
         let cpi = start_cpi(&cpiconf, fibtw, iftw, atabler)?;
 
-        debug!("{name}: Successfully started. Config is:\n{config:#?}");
+        debug!("{name}: Successfully started. Config is:\n{config}");
         let router = Router {
             name: name.to_owned(),
             config,
