@@ -123,7 +123,6 @@ cargo *args:
     {{ _just_debuggable_ }}
     export PATH="$(pwd)/compile-env/bin:${PATH}"
     declare -a args=({{ args }})
-    PROFILE="{{ profile }}"
     declare -a extra_args=()
     for arg in "${args[@]}"; do
       case "$arg" in
