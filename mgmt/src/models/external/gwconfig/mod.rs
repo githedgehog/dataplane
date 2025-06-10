@@ -61,17 +61,19 @@ impl Underlay {
 #[derive(Clone, Debug)]
 /// Configuration metadata. Every config object stored by the dataplane has metadata
 pub struct GwConfigMeta {
-    pub created: SystemTime,           /* time when config was built (received) */
-    pub applied: Option<SystemTime>,   /* last time when config was applied successfully */
-    pub unapplied: Option<SystemTime>, /* time when config was un-applied */
-    pub is_applied: bool,              /* True if the config is currently applied */
+    pub create_t: SystemTime,        /* time when config was built (received) */
+    pub apply_t: Option<SystemTime>, /* last time when config was applied successfully */
+    pub replace_t: Option<SystemTime>, /* time when config was un-applied */
+    pub replacement: Option<GenId>,  /* Id of config that replaced this one */
+    pub is_applied: bool,            /* True if the config is currently applied */
 }
 impl GwConfigMeta {
     fn new() -> Self {
         Self {
-            created: SystemTime::now(),
-            applied: None,
-            unapplied: None,
+            create_t: SystemTime::now(),
+            apply_t: None,
+            replace_t: None,
+            replacement: None,
             is_applied: false,
         }
     }
@@ -141,12 +143,16 @@ impl GwConfig {
     }
 
     /// Mark/unmark config as applied
-    pub fn set_applied(&mut self, value: bool) {
+    pub fn set_state(&mut self, value: bool, replacement: Option<GenId>) {
         if value {
-            self.meta.applied = Some(SystemTime::now());
-            self.meta.unapplied.take();
+            self.meta.apply_t = Some(SystemTime::now());
+            self.meta.replace_t.take();
+            self.meta.replacement.take();
+            debug!("Config {} has been marked as active", self.genid());
         } else {
-            self.meta.unapplied = Some(SystemTime::now());
+            self.meta.replace_t = Some(SystemTime::now());
+            self.meta.replacement = replacement;
+            debug!("Config {} has been marked as inactive", self.genid());
         }
         self.meta.is_applied = value;
     }

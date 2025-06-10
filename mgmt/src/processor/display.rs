@@ -15,7 +15,7 @@ use crate::processor::gwconfigdb::GwConfigDatabase;
 
 macro_rules! CONFIGDB_TBL_FMT {
     () => {
-        " {:>6} {:<25} {:<25} {:<25} {:<10}"
+        " {:>6} {:<25} {:<25} {:<25} {:>6} {:<10}"
     };
 }
 fn fmt_configdb_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -24,7 +24,7 @@ fn fmt_configdb_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Re
         "{}",
         format_args!(
             CONFIGDB_TBL_FMT!(),
-            "GenId", "created", "applied", "replaced", "active"
+            "GenId", "created", "applied", "replaced", "by", "active"
         )
     )
 }
@@ -33,14 +33,14 @@ fn fmt_gwconfig_summary(
     genid: GenId,
     f: &mut std::fmt::Formatter<'_>,
 ) -> std::fmt::Result {
-    let created = DateTime::<Utc>::from(meta.created).format("%H:%M:%S on %Y/%m/%d");
-    let apply_time = if let Some(time) = meta.applied {
+    let created = DateTime::<Utc>::from(meta.create_t).format("%H:%M:%S on %Y/%m/%d");
+    let apply_time = if let Some(time) = meta.apply_t {
         let time = DateTime::<Utc>::from(time).format("%H:%M:%S on %Y/%m/%d");
         format!("{time}")
     } else {
         "--".to_string()
     };
-    let unapply_time = if let Some(time) = meta.unapplied {
+    let replace_time = if let Some(time) = meta.replace_t {
         let time = DateTime::<Utc>::from(time).format("%H:%M:%S on %Y/%m/%d");
         format!("{time}")
     } else {
@@ -48,12 +48,16 @@ fn fmt_gwconfig_summary(
     };
 
     let applied = if meta.is_applied { "yes" } else { "no" };
+    let replacement = meta
+        .replacement
+        .map(|genid| genid.to_string())
+        .unwrap_or("--".to_string());
     writeln!(
         f,
         "{}",
         format_args!(
             CONFIGDB_TBL_FMT!(),
-            genid, created, apply_time, unapply_time, applied
+            genid, created, apply_time, replace_time, replacement, applied
         )
     )
 }

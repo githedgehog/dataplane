@@ -29,7 +29,7 @@ impl GwConfigDatabase {
         configdb
     }
     pub fn add(&mut self, config: GwConfig) {
-        debug!("Adding config '{}' to config db...", config.genid());
+        debug!("Storing config '{}' in config db...", config.genid());
         self.configs.insert(config.external.genid, config);
     }
     #[allow(clippy::len_without_is_empty)]
@@ -47,15 +47,6 @@ impl GwConfigDatabase {
     }
     pub fn get_mut(&mut self, generation: GenId) -> Option<&mut GwConfig> {
         self.configs.get_mut(&generation)
-    }
-    pub fn unmark_current(&mut self) {
-        #[allow(clippy::collapsible_if)]
-        if let Some(genid) = &self.current {
-            if let Some(config) = self.configs.get_mut(genid) {
-                config.set_applied(false);
-                debug!("Marked config with genid {genid} as inactive");
-            }
-        }
     }
     pub fn remove(&mut self, genid: GenId) -> ConfigResult {
         if genid == ExternalConfig::BLANK_GENID {
@@ -90,10 +81,11 @@ impl GwConfigDatabase {
     }
     /// Get a reference to the config currently applied, if any.
     pub fn get_current_config(&self) -> Option<&GwConfig> {
-        if let Some(genid) = self.current {
-            self.get(genid)
-        } else {
-            None
-        }
+        self.current.and_then(|genid| self.get(genid))
+    }
+
+    /// Get a mutable reference to the config currently applied, if any.
+    pub fn get_current_config_mut(&mut self) -> Option<&mut GwConfig> {
+        self.current.and_then(|genid| self.get_mut(genid))
     }
 }

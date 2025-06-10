@@ -4,7 +4,6 @@
 // !Configuration processor
 
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use tokio::spawn;
 use tokio::sync::mpsc;
@@ -105,87 +104,78 @@ impl ConfigProcessor {
     /// Main entry point for new configurations
     pub(crate) async fn process_incoming_config(&mut self, mut config: GwConfig) -> ConfigResult {
         let genid = config.genid();
-
-        /* reject config if it uses id of existing one */
+        /* reject config if it uses the id of an existing one */
         if genid != ExternalConfig::BLANK_GENID && self.config_db.contains(genid) {
             error!("Rejecting config request: a config with id {genid} exists");
             return Err(ConfigError::ConfigAlreadyExists(genid));
         }
         config.validate()?;
         config.build_internal_config()?;
-        self.config_db.add(config);
-        self.apply(genid).await?;
+        let e = match self.apply(config).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.rollback().await;
+                Err(e)
+            }
+        };
+
+        let summary = GwConfigDatabaseSummary(&self.config_db);
+        debug!("The config DB is:\n{summary}");
+        e
+    }
+
+    /// Apply a blank configuration
+    async fn apply_blank_config(&mut self) -> ConfigResult {
+        let mut blank = GwConfig::blank();
+        let _ = blank.build_internal_config();
+        self.apply(blank).await
+    }
+
+    /// Apply the provided configuration. On success, store it and update its meta-data.
+    async fn apply(&mut self, mut config: GwConfig) -> ConfigResult {
+        let genid = config.genid();
+        debug!("Applying config with genid '{genid}'...");
+
+        let current = self.config_db.get_current_config_mut();
+        if let Some(current) = &current {
+            debug!("The current config is {}", current.genid());
+        }
+
+        apply_gw_config(
+            &self.vpc_mgr,
+            &mut config,
+            current.as_deref(),
+            &mut self.frrmi,
+            &mut self.router_ctl,
+        )
+        .await?;
+
+        if let Some(current) = current {
+            current.set_state(false, Some(genid));
+        }
+        config.set_state(true, None);
+        self.config_db.set_current_gen(genid);
+        if !self.config_db.contains(genid) {
+            self.config_db.add(config);
+        }
         Ok(())
     }
 
-    /// Apply blank configuration
-    async fn apply_blank_config(&mut self) -> ConfigResult {
-        self.apply(ExternalConfig::BLANK_GENID).await
-    }
-
-    /// Apply the configuration with the given id
-    async fn do_apply_config(&mut self, genid: GenId) -> ConfigResult {
-        if let Some(config) = self.config_db.get_mut(genid) {
-            apply_gw_config(&self.vpc_mgr, config, &mut self.frrmi, &mut self.router_ctl).await?;
-            config.meta.applied = Some(SystemTime::now());
-            config.meta.is_applied = true;
-            Ok(())
-        } else {
-            error!("Can't apply config {genid}: not found");
-            Err(ConfigError::NoSuchConfig(genid))
+    /// Attempt to apply the previously applied config
+    async fn rollback(&mut self) {
+        let current = self.config_db.get_current_gen();
+        let rollback_cfg = current.unwrap_or(ExternalConfig::BLANK_GENID);
+        info!("Rolling back to config '{rollback_cfg}'...");
+        if let Some(prior) = self.config_db.get_mut(rollback_cfg) {
+            let _ = apply_gw_config(
+                &self.vpc_mgr,
+                prior,
+                None,
+                &mut self.frrmi,
+                &mut self.router_ctl,
+            )
+            .await;
         }
-    }
-
-    /// Apply the configuration with the given id provided that it is not already applied
-    /// and roll-back to the previously applied config in case of failure.
-    async fn apply(&mut self, genid: GenId) -> ConfigResult {
-        debug!("Applying config with genid '{genid}'...");
-
-        // get the generation (id) of the currently applied config, if any
-        // and abort if the requested config is already applied
-        let last = self.config_db.get_current_gen();
-        if let Some(last) = last {
-            if last == genid {
-                info!("Config {last} is already applied");
-                return Ok(());
-            }
-            debug!("The current config is {last}");
-        } else {
-            debug!("There is no config applied");
-        }
-
-        /* Apply this gw config */
-        let res = self.do_apply_config(genid).await;
-        match res {
-            Ok(()) => {
-                self.config_db.unmark_current();
-                self.config_db.set_current_gen(genid);
-            }
-            Err(ref _e) => {
-                // delete the config we wanted to apply (blank can't be deleted)
-                debug!("Deleting config with id {genid}..");
-                let _ = self.config_db.remove(genid);
-
-                // roll-back to a previous config (if there) or the blank config (to wipe out),
-                // except if the failed config is the blank itself or the failure.
-                // TODO: FIXME(fredi) if we fail to apply a config because we can't reach the frr-agent, we
-                // may only need to roll-back the kernel state. However, rollback will fail too
-                // if frr-agent can't be reached. This will leave us with an inconsitent kernel-frr
-                // config.
-                if genid != ExternalConfig::BLANK_GENID {
-                    let previous = last.unwrap_or(ExternalConfig::BLANK_GENID);
-                    info!("Rolling back to config '{previous}'...",);
-                    if let Err(e) = self.do_apply_config(previous).await {
-                        error!("Fatal: could not roll-back to previous config: {e}");
-                    }
-                }
-            }
-        }
-        debug!(
-            "The current config DB is:\n{}",
-            GwConfigDatabaseSummary(&self.config_db)
-        );
-        res
     }
 
     /// RPC handler: store and apply the provided config
@@ -313,7 +303,6 @@ async fn apply_config_frr(
         .await
         .map_err(|e| ConfigError::FailureApply(format!("Error applying FRR config: {e}")))?;
 
-    debug!("FRR config for genid {genid} successfully applied");
     Ok(())
 }
 
@@ -321,6 +310,7 @@ async fn apply_config_frr(
 async fn apply_gw_config(
     vpc_mgr: &VpcManager<RequiredInformationBase>,
     config: &mut GwConfig,
+    _current: Option<&GwConfig>,
     frrmi: &mut FrrMi,
     router_ctl: &mut RouterCtlSender,
 ) -> ConfigResult {
