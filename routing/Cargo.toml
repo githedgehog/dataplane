@@ -20,7 +20,7 @@ mac_address= { workspace = true }
 net = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["rt", "sync"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dplane-rpc = { workspace = true }
