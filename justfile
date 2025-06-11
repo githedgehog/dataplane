@@ -448,6 +448,7 @@ build-sweep start="main":
     set -euo pipefail
     if [ {{ _clean }} != "clean" ]; then
       >&2 echo "can not build-sweep with dirty branch (would risk data loss)"
+      >&2 git status
       exit 1
     fi
     INIT_HEAD=$(git rev-parse --abbrev-ref HEAD)
