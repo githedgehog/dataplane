@@ -289,17 +289,15 @@ impl VpcManager<RequiredInformationBase> {
 /// Apply config over frrmi with frr-agent
 async fn apply_config_frr(
     frrmi: &mut FrrMi,
-    config: &GwConfig,
+    genid: GenId,
     internal: &InternalConfig,
 ) -> ConfigResult {
-    let genid = config.genid();
-
     debug!("Generating FRR config for genid {genid}...");
 
-    let rendered = internal.render(config);
+    let rendered = internal.render(&genid);
 
     frrmi
-        .apply_config(config.genid(), &rendered)
+        .apply_config(genid, &rendered)
         .await
         .map_err(|e| ConfigError::FailureApply(format!("Error applying FRR config: {e}")))?;
 
@@ -341,7 +339,7 @@ async fn apply_gw_config(
     vpc_mgr.apply_config(internal, genid).await?;
 
     /* apply config with frrmi to frr-agent */
-    apply_config_frr(frrmi, config, internal).await?;
+    apply_config_frr(frrmi, genid, internal).await?;
 
     /* tell router about vtep as it won't learn it from frr */
     if let Some(vconfig) = internal.get_vtep() {

@@ -318,7 +318,7 @@ pub mod tests {
         let mut config = GwConfig::new(external);
         config.validate().expect("Validation should succeed");
         config.build_internal_config().expect("Should succeed");
-        let rendered = config.internal.as_ref().unwrap().render(&config);
+        let rendered = config.internal.as_ref().unwrap().render(&config.genid());
 
         /* start faked frr-agent */
         let frr_agent = fake_frr_agent("/tmp/frrmi-test/frr-agent.sock").await;

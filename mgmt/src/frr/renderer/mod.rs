@@ -14,15 +14,15 @@ pub mod statics;
 pub mod vrf;
 
 use crate::frr::renderer::builder::{ConfigBuilder, Render};
-use crate::models::external::gwconfig::GwConfig;
+use crate::models::external::gwconfig::GenId;
 use crate::models::internal::InternalConfig;
 
-fn render_metadata(config: &GwConfig) -> String {
-    format!("! config for gen {}", config.external.genid)
+fn render_metadata(genid: &GenId) -> String {
+    format!("! config for gen {}", genid)
 }
 
 impl Render for InternalConfig {
-    type Context = GwConfig;
+    type Context = GenId;
     type Output = ConfigBuilder;
     fn render(&self, config: &Self::Context) -> Self::Output {
         let mut cfg = ConfigBuilder::new();
