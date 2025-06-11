@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use futures::TryFutureExt;
 use tokio::spawn;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
@@ -266,10 +267,9 @@ impl VpcManager<RequiredInformationBase> {
         }
         debug!("VPC-manager successfully applied config for genid {genid}");
 
-        let obs_rib = self
-            .observe()
-            .await
-            .map_err(|_| ConfigError::InternalFailure("Failed to observe interface state".to_string()))?;
+        let obs_rib = self.observe().await.map_err(|_| {
+            ConfigError::InternalFailure("Failed to observe interface state".to_string())
+        })?;
 
         debug!(
             "The current kernel interfaces are:\n{}",
@@ -329,6 +329,13 @@ async fn apply_gw_config(
             "No internal config was built".to_string(),
         ));
     };
+
+    /* lock the CPI to prevent updates on the routing db. No explicit unlocking is
+    required. The CPI will be automatically unlocked when this guard goes out of scope */
+    let _guard = router_ctl
+        .lock()
+        .map_err(|_| ConfigError::InternalFailure("Could not lock the CPI".to_string()))
+        .await?;
 
     /* apply config with VPC manager */
     vpc_mgr.apply_config(internal, genid).await?;
