@@ -22,7 +22,7 @@ pub enum StatefulNatError {
 mod private {
     pub trait Sealed {}
 }
-pub trait NatIp: private::Sealed + Eq + Hash {
+pub trait NatIp: private::Sealed + Clone + Eq + Hash {
     fn to_ip_addr(&self) -> IpAddr;
 }
 impl private::Sealed for IpAddr {}
