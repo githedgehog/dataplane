@@ -240,7 +240,7 @@ jobs:
         name: "run clippy"
         run: |
           just debug_justfile="${{matrix.debug_justfile}}" profile=${{matrix.profile.name}} \
-            compile-env cargo clippy --all-targets --all-features -- -D warnings
+            cargo clippy --all-targets --all-features -- -D warnings
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
