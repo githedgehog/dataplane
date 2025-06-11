@@ -325,7 +325,7 @@ jobs:
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=release \
             target=x86_64-unknown-linux-gnu \
-            cargo doc
+            compile-env cargo doc
 
   summary:
     name: "Summary"
