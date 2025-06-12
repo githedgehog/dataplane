@@ -14,7 +14,7 @@ use net::vlan::Vid;
 use crate::errors::RouterError;
 use crate::fib::fibtype::{FibId, FibReader};
 use crate::rib::vrf::Vrf;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 /// A type to uniquely identify a network interface
 pub type IfIndex = u32;
@@ -22,13 +22,13 @@ pub type IfIndex = u32;
 /// An Ipv4 or Ipv6 address and mask configured on an interface
 pub type IfAddress = (IpAddr, u8);
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 /// Specific data for ethernet interfaces
 pub struct IfDataEthernet {
     pub mac: Mac,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 /// Specific data for vlan (sub)interfaces
 pub struct IfDataDot1q {
     pub mac: Mac,
@@ -52,7 +52,7 @@ impl HasMac for IfDataDot1q {
 }
 
 /// Type that contains data specific to the type of interface
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum IfType {
     Unknown,
     Ethernet(IfDataEthernet),
@@ -61,7 +61,7 @@ pub enum IfType {
     Vxlan, /* It is not clear if we'll model it like this */
 }
 
-#[derive(Clone, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Default, Eq, PartialEq)]
 pub enum IfState {
     #[default]
     Unknown = 0,
@@ -90,11 +90,11 @@ pub struct Interface {
 
 impl Interface {
     //////////////////////////////////////////////////////////////////
-    /// Create a new interface object.
+    /// Create a new [`Interface`] object.
     /// This simply creates in-memory state to represent the interface
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn new(name: &str, ifindex: u32) -> Self {
+    pub fn new(name: &str, ifindex: IfIndex) -> Self {
         Self {
             name: name.to_owned(),
             description: None,
@@ -115,14 +115,14 @@ impl Interface {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Set the description of an interface
+    /// Set the description of an [`Interface`]
     //////////////////////////////////////////////////////////////////
     pub fn set_description<T: AsRef<str>>(&mut self, description: T) {
         self.description = Some(description.as_ref().to_string());
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Set the operational state of an interface
+    /// Set the operational state of an [`Interface`]
     //////////////////////////////////////////////////////////////////
     pub fn set_oper_state(&mut self, state: IfState) {
         if self.oper_state != state {
@@ -135,7 +135,7 @@ impl Interface {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Set the administrative state of an interface
+    /// Set the administrative state of an [`Interface`]
     //////////////////////////////////////////////////////////////////
     pub fn set_admin_state(&mut self, state: IfState) {
         if self.admin_state != state {
@@ -148,10 +148,9 @@ impl Interface {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Attach an interface to a VRF. The interface is attached to a
-    /// `FibReader` so that IP packets received on that interface can
-    /// be readily forwarded performing an LPM operation on the
-    /// corresponding FIB.
+    /// Attach an [`Interface`] to a VRF. The [`Interface`] is attached
+    /// to a `FibReader` so that IP packets received on that interface can
+    /// be readily forwarded performing an LPM operation on the corresponding FIB.
     ///
     /// # Errors
     ///
@@ -187,19 +186,27 @@ impl Interface {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Detach an interface from its VRF, unconditionally
+    /// Detach an [`Interface`], unconditionally
     //////////////////////////////////////////////////////////////////
     pub fn detach(&mut self) {
-        self.attachment.take();
+        if self.attachment.is_some() {
+            if let Some(attachment) = self.attachment.take() {
+                debug!("Detached interface {} from {attachment}", self.name);
+            }
+        }
     }
 
+    //////////////////////////////////////////////////////////////////
+    /// Attach an [`Interface`] to the fib corresponding to a [`Vrf`]
+    //////////////////////////////////////////////////////////////////
     pub fn attach_vrf(&mut self, fibr: FibReader) {
         self.attachment = Some(Attachment::VRF(fibr));
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Tell if an interface is attached to a Fib with the given Id
+    /// Tell if an [`Interface`] is attached to a Fib with the given Id
     //////////////////////////////////////////////////////////////////
+    #[must_use]
     pub fn is_attached_to_fib(&self, fibid: FibId) -> bool {
         if let Some(Attachment::VRF(fibr)) = &self.attachment {
             fibr.get_id() == Some(fibid)
@@ -209,12 +216,17 @@ impl Interface {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Detach interface from VRF if the associated fib has the given id
+    /// Detach an [`Interface`] from VRF if the associated fib has the given id
     //////////////////////////////////////////////////////////////////
     pub fn detach_from_fib(&mut self, fibid: FibId) {
         self.attachment.take_if(|attachment| {
             if let Attachment::VRF(fibr) = &attachment {
-                fibr.get_id() == Some(fibid)
+                if fibr.get_id() == Some(fibid) {
+                    debug!("Detaching interface {} from fib {fibid}", self.name);
+                    true
+                } else {
+                    false
+                }
             } else {
                 false
             }
@@ -222,23 +234,24 @@ impl Interface {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Add (assign) an IP address to an interface
+    /// Add (assign) an IP address to an [`Interface`]
     //////////////////////////////////////////////////////////////////
     pub fn add_ifaddr(&mut self, ifaddr: &IfAddress) {
         self.addresses.insert(*ifaddr);
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Del (unassign) an IP address from an interface
+    /// Del (unassign) an IP address from an [`Interface`]
     //////////////////////////////////////////////////////////////////
     pub fn del_ifaddr(&mut self, ifaddr: &IfAddress) {
         self.addresses.remove(ifaddr);
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Tell if an interface has a certain IP address assigned
+    /// Tell if an [`Interface`] has a certain IP address assigned
     /// (regardless of the mask)
     //////////////////////////////////////////////////////////////////
+    #[must_use]
     pub fn has_address(&self, address: &IpAddr) -> bool {
         for (addr, _) in &self.addresses {
             if addr == address {
@@ -249,8 +262,9 @@ impl Interface {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Get mac address of interface, if any
+    /// Get the [`Mac`] address of an [`Interface`], if any
     //////////////////////////////////////////////////////////////////
+    #[must_use]
     pub fn get_mac(&self) -> Option<Mac> {
         match &self.iftype {
             IfType::Ethernet(inner) => Some(*inner.get_mac()),

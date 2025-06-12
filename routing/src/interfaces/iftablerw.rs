@@ -61,6 +61,11 @@ impl IfTableWriter {
         let (w, r) = left_right::new_from_empty::<IfTable, IfTableChange>(IfTable::new());
         (IfTableWriter(w), IfTableReader(r))
     }
+    #[cfg(test)]
+    pub fn new_with_data(iftable: IfTable) -> (IfTableWriter, IfTableReader) {
+        let (w, r) = left_right::new_from_empty::<IfTable, IfTableChange>(iftable);
+        (IfTableWriter(w), IfTableReader(r))
+    }
     #[must_use]
     pub fn as_iftable_reader(&self) -> IfTableReader {
         IfTableReader::new(self.0.clone())

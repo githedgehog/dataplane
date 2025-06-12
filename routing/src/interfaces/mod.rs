@@ -12,6 +12,8 @@ pub mod tests {
     use crate::display::IfTableAddress;
     use crate::fib::fibtype::{FibId, FibWriter};
     use crate::interfaces::iftable::IfTable;
+    use crate::interfaces::iftablerw::IfTableReader;
+    use crate::interfaces::iftablerw::IfTableWriter;
     use crate::interfaces::interface::{
         Attachment, IfDataDot1q, IfDataEthernet, IfState, IfType, Interface,
     };
@@ -97,6 +99,12 @@ pub mod tests {
         let iftable = populate_test_iftable();
         println!("{}", &iftable);
         iftable
+    }
+
+    // Build a left-right iftable for the test iftable built above
+    pub fn build_test_iftable_left_right() -> (IfTableWriter, IfTableReader) {
+        let iftable = build_test_iftable();
+        IfTableWriter::new_with_data(iftable)
     }
 
     #[test]

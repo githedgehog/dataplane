@@ -6,7 +6,6 @@
 use crate::errors::RouterError;
 use crate::fib::fibtype::{FibId, FibReader};
 use crate::interfaces::interface::{IfAddress, IfIndex, IfState, Interface};
-use crate::rib::vrf::Vrf;
 use ahash::RandomState;
 use std::collections::HashMap;
 
@@ -16,7 +15,7 @@ use tracing::{debug, error};
 #[derive(Clone)]
 /// A table of network interface objects, keyed by some ifindex (u32)
 pub struct IfTable {
-    by_index: HashMap<u32, Interface, RandomState>,
+    by_index: HashMap<IfIndex, Interface, RandomState>,
 }
 
 #[allow(clippy::new_without_default)]
@@ -38,17 +37,17 @@ impl IfTable {
     pub fn is_empty(&self) -> bool {
         self.by_index.is_empty()
     }
-    pub fn iter(&self) -> impl Iterator<Item = (&IfIndex, &Interface)> {
-        self.by_index.iter()
+    #[must_use]
+    pub fn contains(&self, ifindex: IfIndex) -> bool {
+        self.by_index.contains_key(&ifindex)
     }
     pub fn values(&self) -> impl Iterator<Item = &Interface> {
         self.by_index.values()
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Add an interface to the table. Interfaces are univocally
+    /// Add an [`Interface`] to the table. Interfaces are univocally
     /// identified by an [`IfIndex`], which acts as the master hash key.
-    /// provided interface, replacing any previous with the same ifindex.
     //////////////////////////////////////////////////////////////////
     pub fn add_interface(&mut self, iface: Interface) {
         /* add interface to iftable */
@@ -61,30 +60,32 @@ impl IfTable {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Remove an interface from the table. If the interface has a MAC
-    /// the mac is unregistered too.
+    /// Remove an interface from the table
     //////////////////////////////////////////////////////////////////
-    pub fn del_interface(&mut self, ifindex: u32) {
-        // remove interface given its ifindex
-        if let Some(_iface) = self.by_index.remove(&ifindex) {
-            //   debug!("Deleted interface '{}'", ifr.name);
+    pub fn del_interface(&mut self, ifindex: IfIndex) {
+        if let Some(iface) = self.by_index.remove(&ifindex) {
+            debug!("Deleted interface '{}'", iface.name);
         }
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Get interface entry from `IfTable` by ifindex
+    /// Get an immutable reference to an [`Interface`]
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn get_interface(&self, ifindex: u32) -> Option<&Interface> {
+    pub fn get_interface(&self, ifindex: IfIndex) -> Option<&Interface> {
         self.by_index.get(&ifindex)
     }
 
-    pub fn get_interface_mut(&mut self, ifindex: u32) -> Option<&mut Interface> {
+    //////////////////////////////////////////////////////////////////
+    /// Get a mutable reference to an [`Interface`]
+    //////////////////////////////////////////////////////////////////
+    #[must_use]
+    pub fn get_interface_mut(&mut self, ifindex: IfIndex) -> Option<&mut Interface> {
         self.by_index.get_mut(&ifindex)
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Assign an Ip address to an interface
+    /// Assign an Ip address to an [`Interface`]
     ///
     /// # Errors
     ///
@@ -110,58 +111,49 @@ impl IfTable {
         // we'll do nothing
     }
 
-    //////////////////////////////////////////////////////////////////
-    /// Detach all interfaces attached to some VRF
-    //////////////////////////////////////////////////////////////////
-    pub fn detach_vrf_interfaces(&mut self, vrf: &Vrf) {
-        debug!("Detaching interfaces from vrf {}", vrf.name);
-        if let Some(fibid) = vrf.get_vrf_fibid() {
-            for iface in self.by_index.values_mut() {
-                iface.detach_from_fib(fibid);
-            }
-        }
-    }
-
+    //////////////////////////////////////////////////////////////////////
     /// Detach all interfaces attached to the Vrf whose fib has id `FibId`
+    //////////////////////////////////////////////////////////////////////
     pub fn detach_interfaces_from_vrf(&mut self, fibid: FibId) {
         for iface in self.by_index.values_mut() {
-            debug!("Detaching interface {} from fib {fibid}", iface.name);
             iface.detach_from_fib(fibid);
         }
     }
 
-    /// Attach interface with ifindex to the provided Fib reader
+    //////////////////////////////////////////////////////////////////////
+    /// Attach [`Interface`] to the provided [`FibReader`]
+    //////////////////////////////////////////////////////////////////////
     pub fn attach_interface_to_vrf(&mut self, ifindex: IfIndex, fibr: FibReader) {
         if let Some(iface) = self.get_interface_mut(ifindex) {
             iface.attach_vrf(fibr);
         } else {
-            error!(
-                "Unable to attach interface with ifindex {}: not found",
-                ifindex
-            );
+            error!("Failed to attach interface with ifindex {ifindex}: not found",);
         }
     }
 
-    /// Detach interface from wherever it is attached
+    //////////////////////////////////////////////////////////////////////
+    /// Detach [`Interface`] from wherever it is attached
+    //////////////////////////////////////////////////////////////////////
     pub fn detach_interface_from_vrf(&mut self, ifindex: IfIndex) {
         if let Some(iface) = self.get_interface_mut(ifindex) {
             iface.detach();
         } else {
-            error!(
-                "Unable to detach interface with ifindex {}: not found",
-                ifindex
-            );
+            error!("Failed to detach interface with ifindex {ifindex}: not found",);
         }
     }
 
-    /// Set the operational state of an interface
+    //////////////////////////////////////////////////////////////////////
+    /// Set the operational state of an [`Interface`]
+    //////////////////////////////////////////////////////////////////////
     pub fn set_iface_oper_state(&mut self, ifindex: IfIndex, state: IfState) {
         if let Some(ifr) = self.get_interface_mut(ifindex) {
             ifr.set_oper_state(state);
         }
     }
 
-    /// Set the admin state of an interface
+    //////////////////////////////////////////////////////////////////////
+    /// Set the admin state of an [`Interface`]
+    //////////////////////////////////////////////////////////////////////
     pub fn set_iface_admin_state(&mut self, ifindex: IfIndex, state: IfState) {
         if let Some(ifr) = self.get_interface_mut(ifindex) {
             ifr.set_admin_state(state);

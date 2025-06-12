@@ -262,6 +262,7 @@ mod tests {
     use crate::fib::fibobjects::FibGroup;
     use crate::fib::fibtype::FibId;
     use crate::interfaces::tests::build_test_iftable;
+    use crate::interfaces::tests::build_test_iftable_left_right;
     use crate::rib::vrf::tests::build_test_vrf_nhops_partially_resolved;
     use crate::rib::vrf::tests::{build_test_vrf, mk_addr};
     use crate::testfib::TestFib;
@@ -445,7 +446,7 @@ mod tests {
     fn vrf_table_deletions() {
         debug!("━━━━Test: Create vrf table");
         let (fibtw, fibtr) = FibTableWriter::new();
-        let (mut iftw, _iftr) = IfTableWriter::new();
+        let (mut iftw, iftr) = build_test_iftable_left_right();
         let mut vrftable = VrfTable::new(fibtw);
 
         let vrfid = 999;
@@ -459,16 +460,32 @@ mod tests {
         assert_eq!(vrftable.len(), 2); // default is always there
         debug!("\n{vrftable}");
 
-        debug!("━━━━Test: deleting removed VRFs. Nothing should be removed");
+        debug!("━━━━Test: deleting removed VRFs: nothing should be removed");
         vrftable.remove_deleted_vrfs(&mut iftw);
         assert_eq!(vrftable.len(), 2); // default is always there
+
+        debug!("━━━━Test: Get interface from iftable");
+        if let Some(iftable) = iftr.enter() {
+            let iface = iftable.get_interface(2).expect("Should be there");
+            assert_eq!(iface.name, "eth0");
+            debug!("\n{}", *iftable);
+        }
+
+        debug!("━━━━Test: Attach interface to vrf");
+        iftw.attach_interface_to_vrf(2, vrfid, &vrftable)
+            .expect("Should succeed");
+        if let Some(iftable) = iftr.enter() {
+            let iface = iftable.get_interface(2).expect("Should be there");
+            assert!(iface.attachment.is_some());
+            debug!("\n{}", *iftable);
+        }
 
         debug!("━━━━Test: Get vrf and mark as deleted");
         let vrf = vrftable.get_vrf_mut(vrfid).expect("Should be there");
         vrf.set_status(VrfStatus::Deleted);
         debug!("\n{vrftable}");
 
-        debug!("━━━━Test: remove deleted vrfs again - VPC-1 vrf should be gone");
+        debug!("━━━━Test: remove vrfs marked as deleted again - VPC-1 vrf should be gone");
         vrftable.remove_deleted_vrfs(&mut iftw);
         assert_eq!(vrftable.len(), 1, "should be gone");
 
@@ -479,6 +496,10 @@ mod tests {
             let fib = fibtable.get_fib(&FibId::from_vni(vni));
             assert!(fib.is_none());
             assert_eq!(fibtable.len(), 1);
+        }
+        if let Some(iftable) = iftr.enter() {
+            let iface = iftable.get_interface(2).expect("Should be there");
+            assert!(iface.attachment.is_none(), "Should have been detached");
         }
 
         debug!("\n{vrftable}");
