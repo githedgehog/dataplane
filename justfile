@@ -373,9 +373,8 @@ fuzz-afl test: (fuzz test "" "--engine=afl" "--engine-args=-mnone")
 sh *args:
     /bin/sh -i -c "{{ args }}"
 
-# Build containers in a sterile environment
 [script]
-build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target) "--package=dataplane")
+_build_container:
     {{ _just_debuggable_ }}
     {{ _define_truncate128 }}
     mkdir -p "artifact/{{ target }}/{{ profile }}"
@@ -415,6 +414,14 @@ build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile
         "${TAG}" \
         "{{ _container_repo }}:$(truncate128 "{{ _slug }}")"
     fi
+
+# Build containers in a sterile environment
+[script]
+build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target) "--package=dataplane") (_build_container)
+
+# Build containers in a non-sterile environment
+[script]
+build-container-quick: (compile-env "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target) "--package=dataplane") (_build_container)
 
 # Build and push containers
 [script]
