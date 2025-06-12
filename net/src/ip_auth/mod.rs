@@ -6,7 +6,9 @@
 use crate::headers::Header;
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
-use crate::parse::{Parse, ParseError, ParsePayload, Reader};
+use crate::parse::{
+    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
+};
 use crate::tcp::Tcp;
 use crate::udp::Udp;
 use etherparse::{IpAuthHeader, IpNumber};
@@ -110,5 +112,30 @@ impl From<IpAuthNext> for Header {
             IpAuthNext::Icmp6(x) => Header::Icmp6(x),
             IpAuthNext::IpAuth(x) => Header::IpAuth(x),
         }
+    }
+}
+
+impl DeParse for IpAuth {
+    type Error = ();
+
+    fn size(&self) -> NonZero<u16> {
+        // ip auth headers have a safe upper bound on length
+        #[allow(clippy::cast_possible_truncation)]
+        NonZero::new(self.0.header_len() as u16).unwrap_or_else(|| unreachable!())
+    }
+
+    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
+        if buf.len() > u16::MAX as usize {
+            return Err(DeParseError::BufferTooLong(buf.len()));
+        }
+        let len = buf.len();
+        if len < self.size().into_non_zero_usize().get() {
+            return Err(DeParseError::Length(LengthError {
+                expected: self.size().into_non_zero_usize(),
+                actual: len,
+            }));
+        }
+        buf[..(self.size().get() as usize)].copy_from_slice(&self.0.to_bytes());
+        Ok(self.size())
     }
 }
