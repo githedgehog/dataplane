@@ -274,7 +274,7 @@ impl DeParse for Headers {
                 cursor.write(eth)?;
             }
         }
-        for vlan in self.vlan.iter().rev() {
+        for vlan in self.vlan.iter() {
             cursor.write(vlan)?;
         }
         match self.net {
