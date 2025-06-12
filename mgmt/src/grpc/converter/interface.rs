@@ -109,7 +109,7 @@ impl TryFrom<&gateway_config::Interface> for InterfaceConfig {
                 }?;
 
                 InterfaceType::Vtep(IfVtepConfig {
-                    mac: None,
+                    mac: mac.map(|mac| mac.inner()),
                     vni: None,
                     ttl: None,
                     local,
