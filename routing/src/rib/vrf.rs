@@ -100,10 +100,19 @@ impl ShimNhop {
     }
 }
 
+#[derive(Copy, Clone, PartialEq)]
+#[allow(unused)]
+pub enum VrfStatus {
+    Active,
+    Deleting,
+    Deleted,
+}
+
 #[allow(unused)]
 pub struct Vrf {
     pub name: String,
     pub vrfid: VrfId,
+    pub(crate) status: VrfStatus,
     pub(crate) routesv4: RTrieMap<Ipv4Prefix, Route>,
     pub(crate) routesv6: RTrieMap<Ipv6Prefix, Route>,
     pub(crate) nhstore: NhopStore,
@@ -148,6 +157,7 @@ impl Vrf {
         let mut vrf = Self {
             name: name.to_owned(),
             vrfid,
+            status: VrfStatus::Active,
             routesv4: RTrieMap::with_capacity(capa_v4),
             routesv6: RTrieMap::with_capacity(capa_v6),
             nhstore: NhopStore::new(),
@@ -199,6 +209,16 @@ impl Vrf {
     pub fn set_vni(&mut self, vni: Vni) {
         self.vni = Some(vni);
         debug!("Associated vni {vni} to Vrf '{}'", self.name);
+    }
+
+    /////////////////////////////////////////////////////////////////////////
+    /// Set the status of a Vrf
+    /////////////////////////////////////////////////////////////////////////
+    pub fn set_status(&mut self, status: VrfStatus) {
+        if self.status != status {
+            self.status = status;
+            debug!("Vrf {} status changed to {status}", self.name);
+        }
     }
 
     /////////////////////////////////////////////////////////////////////////

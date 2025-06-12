@@ -4,7 +4,7 @@
 //! Vrf table module that stores multiple vrfs. Every vrf is uniquely identified by a vrfid
 //! and optionally identified by a Vni. A vrf table always has a default vrf.
 
-use super::vrf::{Vrf, VrfId};
+use super::vrf::{Vrf, VrfId, VrfStatus};
 use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
 use crate::fib::fibtype::FibId;
@@ -131,7 +131,7 @@ impl VrfTable {
     pub fn remove_vrf(
         &mut self,
         vrfid: VrfId,
-        iftablewr: &mut IfTableWriter,
+        iftablew: &mut IfTableWriter,
     ) -> Result<(), RouterError> {
         debug!("Removing VRF with vrfid {vrfid}...");
         let Some(vrf) = self.by_id.remove(&vrfid) else {
@@ -143,7 +143,7 @@ impl VrfTable {
             let fib_id = FibId::Id(vrfid);
             debug!("Deleting fib with id {fib_id}...");
             self.fibtablew.del_fib(&fib_id, vrf.vni);
-            iftablewr.detach_interfaces_from_vrf(fib_id);
+            iftablew.detach_interfaces_from_vrf(fib_id);
         }
 
         // if the VRF had a vni assigned, unregister it
@@ -152,6 +152,25 @@ impl VrfTable {
             self.by_vni.remove(&vni);
         }
         Ok(())
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Remove the vrf with the given [`VrfId`]
+    //////////////////////////////////////////////////////////////////
+    pub fn remove_deleted_vrfs(&mut self, iftablew: &mut IfTableWriter) {
+        // collect the ids of the vrfs with status deleted
+        let to_delete: Vec<VrfId> = self
+            .by_id
+            .values()
+            .filter_map(|vrf| (vrf.status == VrfStatus::Deleted).then_some(vrf.vrfid))
+            .collect();
+
+        // delete them
+        for vrfid in &to_delete {
+            if let Err(e) = self.remove_vrf(*vrfid, iftablew) {
+                error!("Failed to delete vrf with id {vrfid}: {e}");
+            }
+        }
     }
 
     //////////////////////////////////////////////////////////////////
@@ -419,6 +438,50 @@ mod tests {
             let fib = fibtable.get_fib(&FibId::from_vni(vni));
             assert!(fib.is_none());
         }
+    }
+
+    #[traced_test]
+    #[test]
+    fn vrf_table_deletions() {
+        debug!("━━━━Test: Create vrf table");
+        let (fibtw, fibtr) = FibTableWriter::new();
+        let (mut iftw, _iftr) = IfTableWriter::new();
+        let mut vrftable = VrfTable::new(fibtw);
+
+        let vrfid = 999;
+        let vni = mk_vni(3000);
+
+        debug!("━━━━Test: create VRF and associate VNI {vni}");
+        vrftable
+            .add_vrf("VPC-1", vrfid, None)
+            .expect("Should be created");
+        vrftable.set_vni(vrfid, vni).expect("Should succeed");
+        assert_eq!(vrftable.len(), 2); // default is always there
+        debug!("\n{vrftable}");
+
+        debug!("━━━━Test: deleting removed VRFs. Nothing should be removed");
+        vrftable.remove_deleted_vrfs(&mut iftw);
+        assert_eq!(vrftable.len(), 2); // default is always there
+
+        debug!("━━━━Test: Get vrf and mark as deleted");
+        let vrf = vrftable.get_vrf_mut(vrfid).expect("Should be there");
+        vrf.set_status(VrfStatus::Deleted);
+        debug!("\n{vrftable}");
+
+        debug!("━━━━Test: remove deleted vrfs again - VPC-1 vrf should be gone");
+        vrftable.remove_deleted_vrfs(&mut iftw);
+        assert_eq!(vrftable.len(), 1, "should be gone");
+
+        // check fib table
+        if let Some(fibtable) = fibtr.enter() {
+            let fib = fibtable.get_fib(&FibId::from_vrfid(vrfid));
+            assert!(fib.is_none());
+            let fib = fibtable.get_fib(&FibId::from_vni(vni));
+            assert!(fib.is_none());
+            assert_eq!(fibtable.len(), 1);
+        }
+
+        debug!("\n{vrftable}");
     }
 
     #[test]

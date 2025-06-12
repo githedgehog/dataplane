@@ -11,7 +11,7 @@ use crate::fib::fibtype::{Fib, FibId};
 use crate::rib::VrfTable;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
-use crate::rib::vrf::{Route, ShimNhop, Vrf};
+use crate::rib::vrf::{Route, ShimNhop, Vrf, VrfStatus};
 
 use crate::interfaces::iftable::IfTable;
 use crate::interfaces::interface::Attachment;
@@ -200,9 +200,23 @@ fn fmt_vrf_trie<P: IpPrefix, F: Fn(&(&P, &Route)) -> bool>(
     Ok(())
 }
 
+impl Display for VrfStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VrfStatus::Active => write!(f, "active"),
+            VrfStatus::Deleting => write!(f, "deleting"),
+            VrfStatus::Deleted => write!(f, "deleted"),
+        }
+    }
+}
+
 impl Display for Vrf {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, " Vrf: '{}' (id: {})", self.name, self.vrfid)?;
+        writeln!(
+            f,
+            " Vrf: '{}' id: {} status: {}",
+            self.name, self.vrfid, self.status
+        )?;
         fmt_vrf_trie(f, "Ipv4", &self.routesv4, |_| true)?;
         fmt_vrf_trie(f, "Ipv6", &self.routesv6, |_| true)?;
         self.nhstore.fmt(f)
@@ -324,7 +338,7 @@ impl Display for VrfV6Nexthops<'_> {
 
 macro_rules! VRF_TBL_FMT {
     () => {
-        "{:>16} {:>8} {:>8} {:>12} {:>12}"
+        "{:>16} {:>8} {:>8} {:>12} {:>12} {:>8}"
     };
 }
 fn fmt_vrf_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -333,7 +347,7 @@ fn fmt_vrf_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result 
         "{}",
         format_args!(
             VRF_TBL_FMT!(),
-            "name", "id", "vni", "Ipv4-routes", "Ipv6-routes"
+            "name", "id", "vni", "Ipv4-routes", "Ipv6-routes", "status"
         )
     )
 }
@@ -347,7 +361,8 @@ fn fmt_vrf_summary(f: &mut std::fmt::Formatter<'_>, vrf: &Vrf) -> std::fmt::Resu
             vrf.vrfid,
             vrf.vni.map_or_else(|| 0, Vni::as_u32),
             vrf.routesv4.len(),
-            vrf.routesv6.len()
+            vrf.routesv6.len(),
+            vrf.status.to_string(),
         )
     )
 }
