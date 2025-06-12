@@ -158,7 +158,7 @@ pub fn start_cpi(
         let mut run = true;
 
         /* create routing database: this is fully owned by the CPI */
-        let mut db = RoutingDb::new(Some(fibtw), iftw, atabler);
+        let mut db = RoutingDb::new(fibtw, iftw, atabler);
 
         info!("Entering CPI IO loop....");
         while run {

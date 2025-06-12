@@ -16,6 +16,7 @@ use crate::routingdb::RoutingDb;
 
 use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, CliSerialize, RouteProtocol};
 use iptrie::{Ipv4Prefix, Ipv6Prefix};
+use net::vxlan::Vni;
 use std::os::unix::net::{SocketAddr, UnixDatagram};
 use tracing::{error, trace};
 
@@ -198,10 +199,13 @@ fn show_vrf_nexthops(
 fn show_vrfs(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
     let vrftable = &db.vrftable;
     if let Some(vni) = request.args.vni {
-        if let Ok(vrf) = vrftable.get_vrf_by_vni(vni) {
+        let Ok(checked_vni) = Vni::try_from(vni) else {
+            return Err(CliError::NotFound(format!("Invalid vni value: {vni}")));
+        };
+        if let Ok(vrf) = vrftable.get_vrf_by_vni(checked_vni) {
             Ok(CliResponse::from_request_ok(request, format!("\n{vrf}")))
         } else {
-            Err(CliError::NotFound(format!("VRF with vni {vni}")))
+            Err(CliError::NotFound(format!("VRF with vni {checked_vni}")))
         }
     } else {
         Ok(CliResponse::from_request_ok(

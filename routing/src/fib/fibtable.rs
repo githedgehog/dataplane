@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use tracing::{debug, error};
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct FibTable(BTreeMap<FibId, Arc<FibReader>>);
 
 impl FibTable {
@@ -27,12 +27,11 @@ impl FibTable {
     /// Register a Fib ([`FibReader`]) with a given [`Vni`]
     /// This allows finding the Fib from the [`Vni`]
     pub fn register_by_vni(&mut self, id: &FibId, vni: &Vni) {
-        let vniu32 = vni.as_u32();
         if let Some(fibr) = self.get_fib(id) {
             self.0.insert(FibId::Vni(*vni), fibr.clone());
-            debug!("Registered Fib {id} with vni {vniu32}");
+            debug!("Registered Fib {id} with vni {vni}");
         } else {
-            error!("Failed to register Fib {id} with vni {vniu32}: no fib");
+            error!("Failed to register Fib {id} with vni {vni}: no fib");
         }
     }
 
@@ -91,6 +90,9 @@ impl FibTableWriter {
         let (write, read) = left_right::new::<FibTable, FibTableChange>();
         (FibTableWriter(write), FibTableReader(read))
     }
+    pub fn enter(&self) -> Option<ReadGuard<'_, FibTable>> {
+        self.0.enter()
+    }
     #[allow(clippy::arc_with_non_send_sync)]
     #[must_use]
     pub fn add_fib(&mut self, id: FibId, vni: Option<Vni>) -> (FibWriter, Arc<FibReader>) {
@@ -105,6 +107,10 @@ impl FibTableWriter {
     }
     pub fn register_fib_by_vni(&mut self, id: FibId, vni: Vni) {
         self.0.append(FibTableChange::RegisterByVni((id, vni)));
+        self.0.publish();
+    }
+    pub fn unregister_vni(&mut self, vni: Vni) {
+        self.0.append(FibTableChange::UnRegisterVni(vni));
         self.0.publish();
     }
     pub fn del_fib(&mut self, id: &FibId, vni: Option<Vni>) {

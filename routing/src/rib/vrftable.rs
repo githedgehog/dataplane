@@ -4,13 +4,10 @@
 //! Vrf table module that stores multiple vrfs. Every vrf is uniquely identified by a vrfid
 //! and optionally identified by a Vni. A vrf table always has a default vrf.
 
-#![allow(clippy::collapsible_if)]
-
 use super::vrf::{Vrf, VrfId};
 use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
 use crate::fib::fibtype::FibId;
-use crate::interfaces::iftable::IfTable;
 use crate::interfaces::iftablerw::IfTableWriter;
 use net::vxlan::Vni;
 use std::collections::HashMap;
@@ -21,7 +18,7 @@ use tracing::{debug, error};
 pub struct VrfTable {
     by_id: HashMap<VrfId, Vrf>,
     by_vni: HashMap<Vni, VrfId>,
-    fibtable: Option<FibTableWriter>,
+    fibtablew: FibTableWriter,
 }
 
 #[allow(clippy::new_without_default)]
@@ -31,33 +28,26 @@ impl VrfTable {
     /// Create a [`VrfTable`]
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn new(fibtable: Option<FibTableWriter>) -> Self {
+    pub fn new(fibtablew: FibTableWriter) -> Self {
         let mut vrftable = Self {
             by_id: HashMap::new(),
             by_vni: HashMap::new(),
-            fibtable,
+            fibtablew,
         };
         /* create default vrf: this can't fail */
         let _ = vrftable.add_vrf("default", 0, None);
         vrftable
     }
 
-    //////////////////////////////////////////////////////////////////
-    /// Create a new [`Vrf`] with some name and Id, and optional Vni.
-    //////////////////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////////////////////////
+    /// Create a new [`Vrf`] with some name, [`VrfId`], and optional [`Vni`].
+    //////////////////////////////////////////////////////////////////////////
     pub fn add_vrf(
         &mut self,
         name: &str,
         vrfid: VrfId,
-        vni: Option<u32>,
+        vni: Option<Vni>,
     ) -> Result<(), RouterError> {
-        /* Check Vni if provided */
-        let vni_checked = if let Some(vni) = vni {
-            Some(Vni::new_checked(vni).map_err(|_| RouterError::VniInvalid(vni))?)
-        } else {
-            None
-        };
-
         /* Forbid VRF addition if one exists with same id */
         if self.by_id.contains_key(&vrfid) {
             error!("Can't add VRF with id {vrfid}: a VRF with that id already exists");
@@ -68,43 +58,25 @@ impl VrfTable {
         let mut vrf = Vrf::new(name, vrfid, None);
 
         /* Forbid addition of a vrf if one exists with same vni */
-        if let Some(vni) = vni_checked {
+        if let Some(vni) = vni {
             if self.by_vni.contains_key(&vni) {
                 error!("Can't add VRF (id {vrfid}) with Vni {vni}: Vni is already in use");
                 return Err(RouterError::VniInUse(vni.as_u32()));
             }
-
             /* set vni */
             vrf.set_vni(vni);
         }
 
-        /* create fib if we have a fibtablewriter */
-        if let Some(fibtw) = self.fibtable.as_mut() {
-            let (fibw, _) = fibtw.add_fib(FibId::Id(vrf.vrfid), vrf.vni);
-            vrf.set_fibw(fibw);
-        }
+        /* create fib */
+        let (fibw, _) = self.fibtablew.add_fib(FibId::Id(vrf.vrfid), vrf.vni);
+        vrf.set_fibw(fibw);
 
         /* store */
         self.by_id.entry(vrfid).or_insert(vrf);
-        if let Some(vni) = vni_checked {
+        if let Some(vni) = vni {
             self.by_vni.entry(vni).insert_entry(vrfid);
         }
         debug!("Successfully added VRF {name}, id {vrfid}");
-        Ok(())
-    }
-
-    ///////////////////////////////////////////////////////////////////////////////////
-    /// Remove the vni from a VRF. This clears the vni field in a VRF if found and
-    /// removes it from the `by_vni` map.
-    ///////////////////////////////////////////////////////////////////////////////////
-    pub fn vrf_remove_vni(&mut self, vrfid: VrfId) -> Result<(), RouterError> {
-        debug!("Removing vni from vrf {vrfid}...");
-        let vrf = self.get_vrf_mut(vrfid)?;
-        if let Some(old_vni) = vrf.vni {
-            vrf.vni.take();
-            self.by_vni.remove(&old_vni);
-        }
-        debug!("Vrf with Id {vrfid} no longer has a VNI associated");
         Ok(())
     }
 
@@ -112,7 +84,7 @@ impl VrfTable {
     /// set the vni for a certain VRF that is already in the vrf table
     //////////////////////////////////////////////////////////////////
     pub fn set_vni(&mut self, vrfid: VrfId, vni: Vni) -> Result<(), RouterError> {
-        if let Ok(vrf) = self.get_vrf_by_vni(vni.as_u32()) {
+        if let Ok(vrf) = self.get_vrf_by_vni(vni) {
             if vrf.vrfid != vrfid {
                 return Err(RouterError::VniInUse(vni.as_u32()));
             }
@@ -121,8 +93,8 @@ impl VrfTable {
         // No vrf has the requested vni, including the vrf with id vrfId.
         // However the vrf with id VrfId may have another vni associated,
 
-        /* remove vni from vrf  */
-        self.vrf_remove_vni(vrfid)?;
+        /* remove vni from vrf if it has one */
+        self.unset_vni(vrfid)?;
 
         /* set the vni to the vrf */
         let vrf = self.get_vrf_mut(vrfid)?;
@@ -132,44 +104,31 @@ impl VrfTable {
         self.by_vni.insert(vni, vrfid);
 
         /* register fib */
-        if let Some(fibtw) = &mut self.fibtable {
-            fibtw.register_fib_by_vni(FibId::from_vrfid(vrfid), vni);
-        }
+        self.fibtablew
+            .register_fib_by_vni(FibId::from_vrfid(vrfid), vni);
         Ok(())
     }
 
-    //////////////////////////////////////////////////////////////////
-    /// Remove the vrf with the given id
-    //////////////////////////////////////////////////////////////////
-    pub fn remove_vrf(&mut self, vrfid: VrfId, iftable: &mut IfTable) -> Result<(), RouterError> {
-        debug!("Removing VRF with vrfid {vrfid}...");
-        let Some(vrf) = self.by_id.remove(&vrfid) else {
-            error!("No vrf with id {vrfid} exists");
-            return Err(RouterError::NoSuchVrf);
-        };
-        // Vrf was there. Delete the corresponding fib
-        if let Some(fibtablew) = &mut self.fibtable {
-            if vrf.fibw.is_some() {
-                let fib_id = FibId::Id(vrfid);
-                debug!("Deleting fib with id {fib_id}...");
-                fibtablew.del_fib(&fib_id, vrf.vni);
-            }
-        }
-        // detach the interfaces
-        iftable.detach_vrf_interfaces(&vrf);
-
-        // if the VRF had a vni assigned, unregister it
+    ///////////////////////////////////////////////////////////////////////////////////
+    /// Remove the vni from a VRF. This clears the vni field in a VRF if found and
+    /// removes it from the `by_vni` map. It also unindexes the vrf's FIB by the vni.
+    ///////////////////////////////////////////////////////////////////////////////////
+    pub fn unset_vni(&mut self, vrfid: VrfId) -> Result<(), RouterError> {
+        let vrf = self.get_vrf_mut(vrfid)?;
         if let Some(vni) = vrf.vni {
-            debug!("Unregistering vni {vni}");
+            debug!("Removing vni {vni} from vrf {vrfid}...");
+            vrf.vni.take();
             self.by_vni.remove(&vni);
+            self.fibtablew.unregister_vni(vni);
+            debug!("Vrf with Id {vrfid} no longer has a VNI associated");
         }
         Ok(())
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Remove the vrf with the given id using an Iftable writer
+    /// Remove the vrf with the given [`VrfId`]
     //////////////////////////////////////////////////////////////////
-    pub fn remove_vrf_good(
+    pub fn remove_vrf(
         &mut self,
         vrfid: VrfId,
         iftablewr: &mut IfTableWriter,
@@ -179,15 +138,14 @@ impl VrfTable {
             error!("No vrf with id {vrfid} exists");
             return Err(RouterError::NoSuchVrf);
         };
-        // Vrf was there. Delete the corresponding fib
-        if let Some(fibtablew) = &mut self.fibtable {
-            if vrf.fibw.is_some() {
-                let fib_id = FibId::Id(vrfid);
-                debug!("Deleting fib with id {fib_id}...");
-                fibtablew.del_fib(&fib_id, vrf.vni);
-                iftablewr.detach_interfaces_from_vrf(fib_id);
-            }
+        // delete the corresponding fib
+        if vrf.fibw.is_some() {
+            let fib_id = FibId::Id(vrfid);
+            debug!("Deleting fib with id {fib_id}...");
+            self.fibtablew.del_fib(&fib_id, vrf.vni);
+            iftablewr.detach_interfaces_from_vrf(fib_id);
         }
+
         // if the VRF had a vni assigned, unregister it
         if let Some(vni) = vrf.vni {
             debug!("Unregistering vni {vni}");
@@ -213,8 +171,7 @@ impl VrfTable {
     //////////////////////////////////////////////////////////////////
     /// Access a VRF from its vni.
     //////////////////////////////////////////////////////////////////
-    pub fn get_vrf_by_vni(&self, vni: u32) -> Result<&Vrf, RouterError> {
-        let vni = Vni::new_checked(vni).map_err(|_| RouterError::VniInvalid(vni))?;
+    pub fn get_vrf_by_vni(&self, vni: Vni) -> Result<&Vrf, RouterError> {
         let vrfid = self.by_vni.get(&vni).ok_or(RouterError::NoSuchVrf)?;
         self.get_vrf(*vrfid)
     }
@@ -222,8 +179,7 @@ impl VrfTable {
     //////////////////////////////////////////////////////////////////
     /// Lookup the vrf id of the vrf that has a certain vni
     //////////////////////////////////////////////////////////////////
-    pub fn get_vrfid_by_vni(&self, vni: u32) -> Result<VrfId, RouterError> {
-        let vni = Vni::new_checked(vni).map_err(|_| RouterError::VniInvalid(vni))?;
+    pub fn get_vrfid_by_vni(&self, vni: Vni) -> Result<VrfId, RouterError> {
         self.by_vni.get(&vni).ok_or(RouterError::NoSuchVrf).copied()
     }
 
@@ -293,22 +249,30 @@ mod tests {
     use std::sync::Arc;
     use tracing_test::traced_test;
 
+    fn mk_vni(vni: u32) -> Vni {
+        vni.try_into().expect("Bad vni")
+    }
+
     #[traced_test]
     #[test]
     fn vrf_table() {
         /* create fib table */
         let (fibtw, _fibtr) = FibTableWriter::new();
 
-        /* create vrf table */
-        let mut vrftable = VrfTable::new(Some(fibtw));
-
-        /* create sample iftable */
+        /* create iftable */
         let mut iftable = build_test_iftable();
+        let (mut iftw, _iftr) = IfTableWriter::new();
+        for interface in iftable.values() {
+            iftw.add_interface(interface.clone());
+        }
+
+        /* create vrf table */
+        let mut vrftable = VrfTable::new(fibtw);
 
         /* add VRFs (default VRF is always there) */
-        vrftable.add_vrf("VPC-1", 1, Some(3000)).unwrap();
-        vrftable.add_vrf("VPC-2", 2, Some(4000)).unwrap();
-        vrftable.add_vrf("VPC-3", 3, Some(5000)).unwrap();
+        vrftable.add_vrf("VPC-1", 1, Some(mk_vni(3000))).unwrap();
+        vrftable.add_vrf("VPC-2", 2, Some(mk_vni(4000))).unwrap();
+        vrftable.add_vrf("VPC-3", 3, Some(mk_vni(5000))).unwrap();
 
         /* add VRF with already used id */
         assert!(
@@ -319,14 +283,8 @@ mod tests {
         /* add VRF with unused id but used vni */
         assert!(
             vrftable
-                .add_vrf("duped-vni", 999, Some(3000))
+                .add_vrf("duped-vni", 999, Some(mk_vni(3000)))
                 .is_err_and(|e| e == RouterError::VniInUse(3000))
-        );
-        /* add VRF with invalid vni */
-        assert!(
-            vrftable
-                .add_vrf("duped-vni", 999, Some(0))
-                .is_err_and(|e| e == RouterError::VniInvalid(0))
         );
 
         /* get VRF by vrfid - success case */
@@ -338,15 +296,13 @@ mod tests {
         assert!(vrf.is_err_and(|e| e == RouterError::NoSuchVrf));
 
         /* get VRF by vni - success */
-        let vrf3 = vrftable.get_vrf_by_vni(5000).expect("Should be there");
+        let vrf3 = vrftable
+            .get_vrf_by_vni(mk_vni(5000))
+            .expect("Should be there");
         assert_eq!(vrf3.name, "VPC-3");
 
-        /* get VRF by vni - bad vni */
-        let vrf = vrftable.get_vrf_by_vni(16777216);
-        assert!(vrf.is_err_and(|e| e == RouterError::VniInvalid(16777216)));
-
-        /* get VRF by vni - bad vni */
-        let vrf = vrftable.get_vrf_by_vni(1234);
+        /* get VRF by vni - nonexistent vrf */
+        let vrf = vrftable.get_vrf_by_vni(mk_vni(1234));
         assert!(vrf.is_err_and(|e| e == RouterError::NoSuchVrf));
 
         /* check default vrf exists */
@@ -374,11 +330,11 @@ mod tests {
         println!("{iftable}");
 
         /* remove non-existent vrf */
-        let vrf = vrftable.remove_vrf(987, &mut iftable);
+        let vrf = vrftable.remove_vrf(987, &mut iftw);
         assert!(vrf.is_err_and(|e| e == RouterError::NoSuchVrf));
 
         /* remove VRFs 0 - interfaces should be automatically detached */
-        let _ = vrftable.remove_vrf(0, &mut iftable);
+        let _ = vrftable.remove_vrf(0, &mut iftw);
         assert!(
             vrftable
                 .get_vrf(0)
@@ -390,9 +346,7 @@ mod tests {
         assert!(!eth1.is_attached_to_fib(FibId::Id(0)));
 
         /* remove VRFs 1 - interfaces should be automatically detached */
-        vrftable
-            .remove_vrf(1, &mut iftable)
-            .expect("Should succeed");
+        vrftable.remove_vrf(1, &mut iftw).expect("Should succeed");
         assert!(
             vrftable
                 .get_vrf(1)
@@ -406,10 +360,65 @@ mod tests {
         /* Should be gone from by_vni map */
         assert!(
             vrftable
-                .get_vrf_by_vni(3000)
+                .get_vrf_by_vni(mk_vni(3000))
                 .is_err_and(|e| e == RouterError::NoSuchVrf),
         );
         println!("{iftable}");
+    }
+
+    #[traced_test]
+    #[test]
+    fn vrf_table_vnis() {
+        debug!("━━━━Test: Create vrf table");
+        let (fibtw, fibtr) = FibTableWriter::new();
+        let (_iftw, _iftr) = IfTableWriter::new();
+        let mut vrftable = VrfTable::new(fibtw);
+
+        let vrfid = 999;
+        let vni = mk_vni(3000);
+
+        debug!("━━━━Test: create VRF without VNI");
+        vrftable
+            .add_vrf("VPC-1", vrfid, None)
+            .expect("Should be created");
+        let vrf = vrftable.get_vrf(vrfid).expect("Should be there");
+        assert_eq!(vrf.name, "VPC-1");
+        assert_eq!(vrf.vni, None);
+
+        debug!("━━━━Test: set vni {vni} to the vrf");
+        vrftable.set_vni(vrfid, vni).expect("Should succeed");
+        let vrf = vrftable.get_vrf(vrfid).expect("Should still be found");
+        assert_eq!(vrf.vni, Some(vni));
+        vrftable
+            .get_vrf_by_vni(vni)
+            .expect("Should be found by vni");
+        let id = vrftable
+            .get_vrfid_by_vni(vni)
+            .expect("Should find vrfid by vni");
+        assert_eq!(id, vrfid);
+        debug!("\n{vrftable}");
+        if let Some(fibtable) = fibtr.enter() {
+            let fib = fibtable.get_fib(&FibId::from_vrfid(vrfid));
+            assert!(fib.is_some());
+            let fib = fibtable.get_fib(&FibId::from_vni(vni));
+            assert!(fib.is_some());
+        }
+
+        debug!("━━━━Test: Unset vni {vni} from the vrf");
+        vrftable.unset_vni(vrfid).expect("Should succeed");
+        let vrf = vrftable.get_vrf_by_vni(vni);
+        assert!((vrf.is_err_and(|e| e == RouterError::NoSuchVrf)));
+        let vrf = vrftable.get_vrf(vrfid).expect("Should still be found");
+        assert_eq!(vrf.vni, None);
+        let id = vrftable.get_vrfid_by_vni(vni);
+        assert!((id.is_err_and(|e| e == RouterError::NoSuchVrf)));
+        debug!("\n{vrftable}");
+        if let Some(fibtable) = fibtr.enter() {
+            let fib = fibtable.get_fib(&FibId::from_vrfid(vrfid));
+            assert!(fib.is_some());
+            let fib = fibtable.get_fib(&FibId::from_vni(vni));
+            assert!(fib.is_none());
+        }
     }
 
     #[test]

@@ -113,7 +113,7 @@ fn auto_learn_vrf(
         for nh in &route.nhops {
             if let Some(NextHopEncap::VXLAN(vxlan)) = &nh.encap {
                 if nh.vrfid == route.vrfid {
-                    vni = Some(vxlan.vni);
+                    vni = Some(vxlan.vni.try_into().expect("Bad vni"));
                     break;
                 }
             }
@@ -135,7 +135,7 @@ fn auto_learn_vrf(
             if let Some(duped_vni) = vni {
                 if matches!(e, RouterError::VniInUse(_)) {
                     if let Ok(other_vrfid) = vrftable.get_vrfid_by_vni(duped_vni) {
-                        let _ = vrftable.remove_vrf_good(other_vrfid, iftablew);
+                        let _ = vrftable.remove_vrf(other_vrfid, iftablew);
                         // add the new one
                         if let Err(e) = vrftable.add_vrf(name, route.vrfid, vni) {
                             error!(

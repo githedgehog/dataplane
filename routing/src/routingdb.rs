@@ -23,11 +23,7 @@ pub struct RoutingDb {
 #[allow(clippy::new_without_default)]
 impl RoutingDb {
     #[must_use]
-    pub fn new(
-        fibtable: Option<FibTableWriter>,
-        iftw: IfTableWriter,
-        atabler: AtableReader,
-    ) -> Self {
+    pub fn new(fibtable: FibTableWriter, iftw: IfTableWriter, atabler: AtableReader) -> Self {
         Self {
             vrftable: VrfTable::new(fibtable),
             rmac_store: RmacStore::new(),
