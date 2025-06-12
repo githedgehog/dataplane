@@ -9,7 +9,7 @@ use crate::models::internal::interfaces::interface::{
     InterfaceConfigTable, InterfaceType,
 };
 use crate::models::internal::routing::ospf::{OspfInterface, OspfNetwork};
-use net::eth::mac::Mac;
+use net::eth::mac::{Mac, SourceMac};
 use net::vlan::Vid;
 
 fn interface_addresses_to_strings(interface: &InterfaceConfig) -> Vec<String> {
@@ -68,12 +68,23 @@ impl TryFrom<&gateway_config::Interface> for InterfaceConfig {
             .map_err(|_| format!("Invalid interface type: {}", iface.r#type))?;
         let mac = match &iface.macaddr {
             Some(mac) => Some(
-                Mac::try_from(mac.as_str()).map_err(|_| format!("Invalid MAC address: {mac}"))?,
+                SourceMac::try_from(
+                    Mac::try_from(mac.as_str())
+                        .map_err(|_| format!("String is not a valid MAC address: {mac}"))?,
+                )
+                .map_err(|e| {
+                    format!(
+                        "Interface {} mac address ({mac}) must be a source mac address: {e}",
+                        iface.name
+                    )
+                })?,
             ),
             None => None,
         };
         let iftype = match grpc_if_type {
-            gateway_config::IfType::Ethernet => InterfaceType::Ethernet(IfEthConfig { mac }),
+            gateway_config::IfType::Ethernet => InterfaceType::Ethernet(IfEthConfig {
+                mac: mac.map(SourceMac::inner),
+            }),
             gateway_config::IfType::Vlan => {
                 // Safely handle the VLAN ID conversion
                 let vlan_id = iface
@@ -88,7 +99,10 @@ impl TryFrom<&gateway_config::Interface> for InterfaceConfig {
                 let vid =
                     Vid::new(vlan_u16).map_err(|_| format!("Invalid VLAN ID value: {vlan_u16}"))?;
 
-                InterfaceType::Vlan(IfVlanConfig { mac, vlan_id: vid })
+                InterfaceType::Vlan(IfVlanConfig {
+                    mac: mac.map(SourceMac::inner),
+                    vlan_id: vid,
+                })
             }
             gateway_config::IfType::Loopback => InterfaceType::Loopback,
             gateway_config::IfType::Vtep => {
@@ -109,7 +123,7 @@ impl TryFrom<&gateway_config::Interface> for InterfaceConfig {
                 }?;
 
                 InterfaceType::Vtep(IfVtepConfig {
-                    mac: mac.map(|mac| mac.inner()),
+                    mac: mac.map(SourceMac::inner),
                     vni: None,
                     ttl: None,
                     local,
