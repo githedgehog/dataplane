@@ -20,6 +20,8 @@ _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 # Set to FUZZ to run the full fuzzer in the fuzz recipe
 _test_type := "DEFAULT"
 
+fuzz_jobs := "1"
+
 # comma delimited list of sanitizers to use with bolero
 sanitizers := "address,leak"
 
@@ -349,18 +351,17 @@ sterile *args: \
 list-fuzz-tests *args: (cargo "bolero" "list" ("--sanitizer=" + sanitizers) "--build-std" "--profile=fuzz" args)
 
 # Run the full fuzzer / property-checker on a bolero test. Args are forwarded to bolero
-fuzz test timeout="-T 60sec" *args="--engine=libfuzzer --engine-args=-max_len=65536": ( \
+fuzz cmd test *args="-T60sec --engine=libfuzzer --engine-args=-max_len=65536": ( \
   compile-env \
     "just" \
     "_test_type=FUZZ" \
     "cargo" \
     "bolero" \
-    "test" \
+    cmd \
     test \
     "--build-std" \
     "--profile=fuzz" \
     ("--sanitizer=" + sanitizers) \
-    timeout \
     args \
   )
 
@@ -372,9 +373,8 @@ fuzz-afl test: (fuzz test "" "--engine=afl" "--engine-args=-mnone")
 sh *args:
     /bin/sh -i -c "{{ args }}"
 
-# Build containers in a sterile environment
 [script]
-build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target) "--package=dataplane")
+_build_container:
     {{ _just_debuggable_ }}
     {{ _define_truncate128 }}
     mkdir -p "artifact/{{ target }}/{{ profile }}"
@@ -414,6 +414,14 @@ build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile
         "${TAG}" \
         "{{ _container_repo }}:$(truncate128 "{{ _slug }}")"
     fi
+
+# Build containers in a sterile environment
+[script]
+build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target) "--package=dataplane") (_build_container)
+
+# Build containers in a non-sterile environment
+[script]
+build-container-quick: (compile-env "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target) "--package=dataplane") (_build_container)
 
 # Build and push containers
 [script]

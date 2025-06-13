@@ -95,6 +95,40 @@ pub enum Transport {
     Icmp6(Icmp6),
 }
 
+impl Net {
+    pub(crate) fn update_checksum(&mut self) {
+        match self {
+            Net::Ipv4(ip) => {
+                ip.update_checksum();
+            }
+            Net::Ipv6(_) => {}
+        }
+    }
+}
+
+impl Transport {
+    pub(crate) fn update_checksum(&mut self, net: &Net, payload: impl AsRef<[u8]>) {
+        match (net, self) {
+            (net, Transport::Tcp(tcp)) => tcp.update_checksum(net, payload),
+            (net, Transport::Udp(udp)) => udp.update_checksum(net, payload),
+            (Net::Ipv4(_), Transport::Icmp4(icmp4)) => icmp4.0.update_checksum(payload.as_ref()),
+            (Net::Ipv6(ip), Transport::Icmp6(icmpv6)) => {
+                #[allow(clippy::expect_used)] // dpdk precludes payloads longer than 2^16 bytes
+                icmpv6
+                    .0
+                    .update_checksum(
+                        ip.source().inner().octets(),
+                        ip.destination().octets(),
+                        payload.as_ref(),
+                    )
+                    .expect("unreasonable header size")
+            }
+            (Net::Ipv6(_), Transport::Icmp4(_)) => unreachable!("illegal: icmpv4 in ipv6"),
+            (Net::Ipv4(_), Transport::Icmp6(_)) => unreachable!("illegal: icmpv6 in ipv4"),
+        }
+    }
+}
+
 impl DeParse for Transport {
     type Error = ();
 
@@ -238,6 +272,14 @@ impl DeParse for Headers {
             }
             Some(ref n) => n.size().get(),
         };
+        let ext = self
+            .net_ext
+            .iter()
+            .map(|e| match e {
+                NetExt::IpAuth(e) => e.size().get(),
+                NetExt::Ipv6Ext(_) => 0, // TODO
+            })
+            .sum::<u16>();
         let transport = match self.transport {
             None => 0,
             Some(ref t) => t.size().get(),
@@ -246,7 +288,7 @@ impl DeParse for Headers {
             None => 0,
             Some(UdpEncap::Vxlan(vxlan)) => vxlan.size().get(),
         };
-        NonZero::new(eth + vlan + net + transport + encap).unwrap_or_else(|| unreachable!())
+        NonZero::new(eth + vlan + net + ext + transport + encap).unwrap_or_else(|| unreachable!())
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
@@ -266,7 +308,7 @@ impl DeParse for Headers {
                 cursor.write(eth)?;
             }
         }
-        for vlan in self.vlan.iter().rev() {
+        for vlan in self.vlan.iter() {
             cursor.write(vlan)?;
         }
         match self.net {
@@ -280,6 +322,17 @@ impl DeParse for Headers {
             }
             Some(ref net) => {
                 cursor.write(net)?;
+            }
+        }
+
+        for ext in &self.net_ext {
+            match ext {
+                NetExt::IpAuth(auth) => {
+                    cursor.write(auth)?;
+                }
+                NetExt::Ipv6Ext(_) => {
+                    // TODO
+                }
             }
         }
 
