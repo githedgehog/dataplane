@@ -9,9 +9,10 @@ use derive_builder::Builder;
 use std::time::SystemTime;
 use tracing::debug;
 
-use crate::models::external::ConfigResult;
+use crate::models::external::{ConfigError, ConfigResult};
 use crate::models::internal::InternalConfig;
 use crate::models::internal::device::DeviceConfig;
+use crate::models::internal::interfaces::interface::InterfaceType;
 use crate::models::internal::routing::vrf::VrfConfig;
 use crate::models::{external::overlay::Overlay, internal::device::settings::DeviceSettings};
 
@@ -36,6 +37,22 @@ impl Underlay {
             .interfaces
             .values()
             .try_for_each(|iface| iface.validate())?;
+
+        let num_vteps = self
+            .vrf
+            .interfaces
+            .values()
+            .filter(|config| matches!(config.iftype, InterfaceType::Vtep(_)))
+            .count();
+
+        // Exactly 1 VTEP interface is required
+        match num_vteps {
+            0 => Err(ConfigError::MissingParameter(
+                "Vtep interface configuration",
+            )),
+            1 => Ok(()),
+            _ => Err(ConfigError::TooManyInstances("Vtep interfaces", 1)),
+        }?;
 
         Ok(())
     }

@@ -6,7 +6,7 @@
 #![allow(unused)]
 
 use net::eth::ethtype::EthType;
-use net::eth::mac::Mac;
+use net::eth::mac::{Mac, SourceMac};
 use net::vlan::Vid;
 use net::vxlan::Vni;
 use std::collections::BTreeMap;
@@ -169,12 +169,29 @@ impl InterfaceConfig {
         if self.name.is_empty() {
             return Err(ConfigError::MissingIdentifier("interface name"));
         }
-        // Ip address is mandatory on VTEP
-        if matches!(self.iftype, InterfaceType::Vtep(_)) && self.addresses.is_empty() {
-            return Err(ConfigError::MissingParameter("Ip address"));
-        }
 
-        Ok(())
+        match &self.iftype {
+            InterfaceType::Vtep(vtep) => {
+                if vtep.local.is_multicast() {
+                    Err(ConfigError::BadVtepLocalAddress(
+                        vtep.local.into(),
+                        "address is not unicast",
+                    ))
+                } else {
+                    match &vtep.mac {
+                        Some(mac) => match SourceMac::new(*mac) {
+                            Err(_) => Err(ConfigError::BadVtepMacAddress(
+                                *mac,
+                                "mac address is not a valid source mac address",
+                            )),
+                            _ => Ok(()),
+                        },
+                        None => Err(ConfigError::MissingParameter("VTEP MAC address")),
+                    }
+                }
+            }
+            _ => Ok(()),
+        }
     }
 }
 
