@@ -29,6 +29,9 @@ on:
         required: false
         default: false
 
+env:
+  BRANCH_NAME: ${{ (github.event.merge_group && 'merge-queue') || (github.head_ref || github.ref_name) }}
+
 concurrency:
   group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.event.after || github.event.merge_group && github.run_id }}"
   cancel-in-progress: true
@@ -190,6 +193,7 @@ jobs:
           files: ./target/nextest/default/junit.xml
           report_type: "test_results"
           disable_search: 'true'
+          override_branch: ${{ env.BRANCH_NAME }}
           use_oidc: 'true'
           verbose: true
           flags: "${{matrix.profile.name}}-${{ matrix.profile.sterile || 'developer' }}"
@@ -202,6 +206,7 @@ jobs:
           files: ./target/nextest/coverage/codecov.json
           report_type: "coverage"
           disable_search: 'true'
+          override_branch: ${{ env.BRANCH_NAME }}
           use_oidc: 'true'
           verbose: true
           flags: "${{matrix.profile.name}}-${{ matrix.profile.sterile || 'developer' }}"

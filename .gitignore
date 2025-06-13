@@ -9,3 +9,6 @@
 /dpdk-sys/.macro_eval.c
 **/__fuzz__/**
 **.profraw
+codecov
+codecov.SHA256SUM
+codecov.SHA256SUM.sig
