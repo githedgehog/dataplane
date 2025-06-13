@@ -38,7 +38,6 @@ mod stateless;
 use crate::nat::iplist::IpList;
 use mgmt::models::internal::nat::tables::{NatTables, TrieValue};
 use net::buffer::PacketBufferMut;
-use net::headers::{TryHeadersMut, TryIpMut};
 use net::packet::Packet;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
@@ -95,14 +94,15 @@ impl Nat {
         // Currently hardcoded as required to have the tests pass, for demonstration purposes
         let vni = Vni::new_checked(100).ok();
         // ----------------------------------------------------
-        let Some(net) = packet.headers_mut().try_ip_mut() else {
-            return;
-        };
 
         match self.mode {
-            NatMode::Stateless => self.stateless_nat(net, vni),
+            NatMode::Stateless => {
+                self.stateless_nat::<Buf>(packet, vni);
+            }
             // TODO: Add support for other IP versions
-            NatMode::Stateful => self.stateful_nat::<Ipv4Addr, Ipv4Addr>(net, vni),
+            NatMode::Stateful => {
+                self.stateful_nat::<Buf, Ipv4Addr, Ipv4Addr>(packet, vni);
+            }
         }
     }
 }

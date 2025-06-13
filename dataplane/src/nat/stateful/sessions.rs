@@ -78,7 +78,7 @@ impl<I: NatIp, J: NatIp> NatSessionManager<I, J> for NatDefaultSessionManager<I,
 pub struct NatSession<I: NatIp> {
     // Translation IP address and port
     target_ip: I,
-    target_port: NatPort,
+    target_port: Option<NatPort>,
     // Flags for session management
     flags: u64,
     // Timestamps for garbage-collector
@@ -93,7 +93,7 @@ pub struct NatSession<I: NatIp> {
 }
 
 impl<I: NatIp> NatSession<I> {
-    fn new(target_ip: I, target_port: NatPort) -> Self {
+    pub fn new(target_ip: I, target_port: Option<NatPort>) -> Self {
         Self {
             target_ip,
             target_port,
@@ -105,25 +105,25 @@ impl<I: NatIp> NatSession<I> {
             originator: 0,
         }
     }
-    fn get_nat(&self) -> (I, NatPort) {
+    pub fn get_nat(&self) -> (I, Option<NatPort>) {
         (self.target_ip.clone(), self.target_port)
     }
-    fn update_last_used(&mut self) {
+    pub fn update_last_used(&mut self) {
         self.last_used = Instant::now();
     }
-    fn set_closed_at(&mut self, closed_at: Instant) {
+    pub fn set_closed_at(&mut self, closed_at: Instant) {
         self.closed_at = Some(closed_at);
     }
-    fn get_packets(&self) -> u64 {
+    pub fn get_packets(&self) -> u64 {
         self.packets
     }
-    fn get_bytes(&self) -> u64 {
+    pub fn get_bytes(&self) -> u64 {
         self.bytes
     }
-    fn increment_packets(&mut self) {
-        self.packets += 1;
+    pub fn increment_packets(&mut self, packets: u64) {
+        self.packets += packets;
     }
-    fn increment_bytes(&mut self, bytes: u64) {
+    pub fn increment_bytes(&mut self, bytes: u64) {
         self.bytes += bytes;
     }
 }

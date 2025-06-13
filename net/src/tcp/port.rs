@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+//! TCP port type and parsing logic.
+
 use std::num::NonZero;
 
+/// Transparent wrapper type for TCP ports.
+///
+/// Zero overhead beyond that imposed by `NonZero<u16>`, i.e., only the non-zero check, which is
+/// required anyway.
 #[repr(transparent)]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 #[allow(clippy::unsafe_derive_deserialize)] // both try_from and into u16 are safe for this type
@@ -11,6 +17,7 @@ use std::num::NonZero;
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
 pub struct TcpPort(NonZero<u16>);
 
+/// Errors which may occur in the creation or parsing of a [`TcpPort`].
 #[repr(transparent)]
 #[derive(
     Copy,
@@ -26,19 +33,21 @@ pub struct TcpPort(NonZero<u16>);
     serde::Deserialize,
 )]
 pub enum TcpPortError {
+    /// The spec reserves zero to mean "any port."  It isn't valid in the context of a packet parser.
     #[error("port must be non-zero")]
     Zero,
 }
 
 impl TcpPort {
     /// Create a [`TcpPort`].
+    #[must_use]
     pub const fn new(port: NonZero<u16>) -> TcpPort {
         TcpPort(port)
     }
 
     /// Create a [`TcpPort`].
     ///
-    /// # Error
+    /// # Errors
     ///
     /// Will return an error if the submitted raw port number is zero.
     pub const fn new_checked(port: u16) -> Result<TcpPort, TcpPortError> {
@@ -54,6 +63,7 @@ impl TcpPort {
     ///
     /// It is the caller's responsibility to ensure that the port is non-zero.
     /// Submitting a zero value as port is undefined behavior.
+    #[must_use]
     #[allow(unsafe_code)]
     pub const unsafe fn new_unchecked(port: u16) -> TcpPort {
         TcpPort(unsafe { NonZero::new_unchecked(port) })

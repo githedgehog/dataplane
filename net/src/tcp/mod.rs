@@ -4,7 +4,7 @@
 //! TCP header type and logic.
 
 mod checksum;
-mod port;
+pub mod port;
 
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,

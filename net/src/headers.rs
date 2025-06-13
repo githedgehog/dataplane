@@ -8,6 +8,7 @@ use crate::eth::ethtype::EthType;
 use crate::eth::{Eth, EthError};
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
+use crate::ip::NextHeader;
 use crate::ip_auth::IpAuth;
 use crate::ipv4::Ipv4;
 use crate::ipv6::{Ipv6, Ipv6Ext};
@@ -59,6 +60,13 @@ impl Net {
         match self {
             Net::Ipv4(ip) => IpAddr::V4(ip.source().inner()),
             Net::Ipv6(ip) => IpAddr::V6(ip.source().inner()),
+        }
+    }
+
+    pub fn next_header(&self) -> NextHeader {
+        match self {
+            Net::Ipv4(ip) => ip.protocol().into(),
+            Net::Ipv6(ip) => ip.next_header(),
         }
     }
 }

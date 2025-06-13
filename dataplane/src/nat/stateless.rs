@@ -5,9 +5,11 @@ use super::Nat;
 use super::TrieValue;
 use crate::nat::IpList;
 use crate::nat::NatDirection;
-use net::headers::Net;
+use net::buffer::PacketBufferMut;
+use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ipv4::UnicastIpv4Addr;
 use net::ipv6::UnicastIpv6Addr;
+use net::packet::Packet;
 use net::vxlan::Vni;
 use std::net::IpAddr;
 
@@ -82,10 +84,19 @@ impl Nat {
         Some(())
     }
 
-    pub(crate) fn stateless_nat(&self, net: &mut Net, vni: Option<Vni>) {
+    pub(crate) fn stateless_nat<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+        vni: Option<Vni>,
+    ) {
+        let Some(net) = packet.headers_mut().try_ip_mut() else {
+            return;
+        };
+
         let Some(ranges) = self.find_nat_ranges(net, vni) else {
             return;
         };
+
         self.stateless_translate(net, ranges);
     }
 }
