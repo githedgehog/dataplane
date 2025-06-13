@@ -45,7 +45,7 @@ pub enum ConfigError {
     #[error("Frr agent is unreachable")]
     FrrAgentUnreachable,
     #[error("Internal error: {0}")]
-    InternalFailure(&'static str),
+    InternalFailure(String),
 
     // Peering and VpcExpose validation
     #[error("All prefixes are excluded in VpcExpose: {0}")]

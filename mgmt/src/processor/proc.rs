@@ -322,7 +322,9 @@ async fn apply_gw_config(
 
     let Some(internal) = &config.internal else {
         error!("Config for genid {genid} does not have internal config");
-        return Err(ConfigError::InternalFailure("No internal config was built"));
+        return Err(ConfigError::InternalFailure(
+            "No internal config was built".to_string(),
+        ));
     };
 
     /* apply config with VPC manager */

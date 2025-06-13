@@ -119,7 +119,7 @@ impl VrfConfigTable {
             let msg = format!("Failed to add vrf {name}: {e}");
             error!("{msg}");
             Err(ConfigError::InternalFailure(
-                "Duplicate VRF fields when building internal config. This is a bug.",
+                "Duplicate VRF fields when building internal config. This is a bug.".to_string(),
             ))
         } else {
             Ok(())
