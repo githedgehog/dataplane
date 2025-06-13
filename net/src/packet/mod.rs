@@ -183,6 +183,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         //compute room required
         let needed = self.headers.size().get();
         let buf = self.payload.prepend(needed)?;
+        // TODO: need to finalize packet here (or move this to a method on finalized packet)
         self.headers
             .deparse(buf)
             .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
@@ -225,6 +226,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             Some(Net::Ipv4(ipv4)) => {
                 ipv4.set_payload_len(udp_len.get())
                     .unwrap_or_else(|e| unreachable!("{:?}", e));
+                // TODO: this needs to be an optional step to allow hardware offloads to be useful
                 ipv4.update_checksum();
             }
         }
