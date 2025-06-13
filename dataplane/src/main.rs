@@ -57,6 +57,7 @@ fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
 fn main() {
     init_logging();
     info!("Starting gateway process...");
+    info!("test change");
 
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
     ctrlc::set_handler(move || stop_tx.send(()).expect("Error sending SIGINT signal"))
