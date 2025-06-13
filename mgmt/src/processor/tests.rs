@@ -4,9 +4,10 @@
 #[cfg(test)]
 #[allow(dead_code)]
 pub mod test {
+    use net::eth::mac::Mac;
     use routing::prefix::Prefix;
     use tracing_test::traced_test;
-    //    use net::eth::mac::Mac;
+
     use crate::models::internal::device::settings::DeviceSettings;
     use crate::models::internal::device::settings::KernelPacketConfig;
     use crate::models::internal::device::settings::PacketDriver;
@@ -186,6 +187,22 @@ pub mod test {
             .add_address(loopback, 32)
             .set_ospf(ospf);
         vrf_cfg.add_interface_config(lo);
+
+        let vtep_addr = match loopback {
+            IpAddr::V4(addr) => addr,
+            IpAddr::V6(_) => panic!("Bad Vtep address from loopback, address must be IPv4"),
+        };
+        let vtep = InterfaceConfig::new(
+            "vtep",
+            InterfaceType::Vtep(IfVtepConfig {
+                mac: Some(Mac::from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x01])),
+                local: vtep_addr,
+                ttl: None,
+                vni: None,
+            }),
+            false,
+        );
+        vrf_cfg.add_interface_config(vtep);
 
         /* configure eth0 interface */
         let ospf = OspfInterface::new(Ipv4Addr::from_str("0.0.0.0").expect("Bad area"))

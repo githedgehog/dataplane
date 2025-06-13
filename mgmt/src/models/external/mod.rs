@@ -4,10 +4,13 @@
 pub mod gwconfig;
 pub mod overlay;
 
+use std::net::IpAddr;
+
 use crate::models::external::gwconfig::GenId;
 use crate::models::external::overlay::vpc::VpcId;
 use crate::models::external::overlay::vpcpeering::VpcExpose;
 
+use net::eth::mac::Mac;
 use routing::prefix::Prefix;
 use thiserror::Error;
 
@@ -38,10 +41,16 @@ pub enum ConfigError {
     Forbidden(&'static str),
     #[error("Bad VPC Id")]
     BadVpcId(String),
+    #[error("Bad VTEP local address {0}: {1}")]
+    BadVtepLocalAddress(IpAddr, &'static str),
+    #[error("Bad VTEP mac address {0}: {1}")]
+    BadVtepMacAddress(Mac, &'static str),
     #[error("Missing identifier: {0}")]
     MissingIdentifier(&'static str),
     #[error("Missing mandatory parameter: {0}")]
     MissingParameter(&'static str),
+    #[error("Multiple instances of {0} found, expected {1}")]
+    TooManyInstances(&'static str, usize),
     #[error("Frr agent is unreachable")]
     FrrAgentUnreachable,
     #[error("Internal error: {0}")]

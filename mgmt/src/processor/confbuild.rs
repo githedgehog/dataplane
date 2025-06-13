@@ -7,15 +7,15 @@ use tracing::{debug, error, warn};
 use crate::models::external::overlay::vpcpeering::VpcManifest;
 use crate::models::external::{ConfigError, overlay::Overlay};
 use crate::models::external::{ConfigResult, overlay::vpc::Vpc};
-use net::eth::mac::{Mac, SourceMac};
+use net::eth::mac::SourceMac;
 use net::ipv4::UnicastIpv4Addr;
 use net::route::RouteTableId;
 use routing::prefix::Prefix;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 
 use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
 use crate::models::internal::InternalConfig;
-use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceType};
+use crate::models::internal::interfaces::interface::InterfaceType;
 use crate::models::internal::nat::table_extend::add_peering;
 use crate::models::internal::nat::tables::{NatTables, PerVniTable};
 use crate::models::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
@@ -204,55 +204,62 @@ fn build_vpc_internal_config(
     Ok(())
 }
 
-/// Get the config for the (a) loopback interface
-fn get_loopback_interface_config(
-    external: &ExternalConfig,
-) -> Result<&InterfaceConfig, ConfigError> {
-    external
+struct VtepInfo {
+    ip: UnicastIpv4Addr,
+    mac: SourceMac,
+}
+
+fn get_vtep_info(external: &ExternalConfig) -> Result<VtepInfo, ConfigError> {
+    let intf = match external
         .underlay
         .vrf
         .interfaces
         .values()
-        .find(|config| matches!(config.iftype, InterfaceType::Loopback))
-        .ok_or(ConfigError::MissingParameter(
-            "loopback interface configuration",
-        ))
-}
+        .find(|config| matches!(config.iftype, InterfaceType::Vtep(_)))
+    {
+        Some(intf) => intf,
+        None => {
+            return Err(ConfigError::InternalFailure(
+                "No VTEP configured".to_string(),
+            ));
+        }
+    };
 
-/// Get address (one of them) from loopback interface
-fn get_loopback_address(external: &ExternalConfig) -> Result<UnicastIpv4Addr, ConfigError> {
-    let lo = get_loopback_interface_config(external)?;
-    lo.addresses
-        .iter()
-        .find_map(|assignment| match assignment.address {
-            IpAddr::V4(ip) => {
-                if assignment.mask_len != 32
-                    || ip.is_loopback()
-                    || ip.is_broadcast()
-                    || ip.is_unspecified()
-                {
-                    return None;
+    match &intf.iftype {
+        InterfaceType::Vtep(vtep) => {
+            let mac = match vtep.mac {
+                Some(mac) => SourceMac::new(mac).map_err(|_| {
+                    ConfigError::BadVtepMacAddress(
+                        mac,
+                        "mac address is not a valid source mac address",
+                    )
+                }),
+                None => {
+                    return Err(ConfigError::InternalFailure(format!(
+                        "Missing VTEP MAC address on {}",
+                        intf.name
+                    )));
                 }
-                UnicastIpv4Addr::new(ip).ok()
-            }
-            IpAddr::V6(_) => None,
-        })
-        .ok_or(ConfigError::MissingParameter("loopback interface address"))
+            }?;
+
+            let ip = UnicastIpv4Addr::new(vtep.local).map_err(|_| {
+                ConfigError::InternalFailure(format!(
+                    "VTEP local address is not a valid unicast address {}",
+                    vtep.local
+                ))
+            })?;
+            Ok(VtepInfo { ip, mac })
+        }
+        _ => unreachable!(),
+    }
 }
 
-/// Build the Vtep config
 fn build_vtep_config(external: &ExternalConfig, internal: &mut InternalConfig) -> ConfigResult {
-    // TODO: The vtep configuration should come from the external config, but I am deriving it from
-    // assumptions about our config until the API can pass it in.
-    let vtep_ip = get_loopback_address(external)?;
-
-    // TODO: This should be configurable, but I'm making an arbitrary choice for the stub.
-    let vtep_mac = SourceMac::new(Mac([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x01]))
-        .unwrap_or_else(|e| unreachable!("{}", e));
+    let vtep_info = get_vtep_info(external)?;
 
     let vtep = VtepConfig {
-        address: vtep_ip.into(),
-        mac: vtep_mac,
+        address: vtep_info.ip.into(),
+        mac: vtep_info.mac,
     };
     internal.set_vtep(vtep);
     Ok(())
