@@ -20,7 +20,7 @@ use rtnetlink::sys::AsyncSocket;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;
-use test_utils::{in_scoped_netns, with_caps};
+use test_utils::with_caps;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -76,7 +76,6 @@ fn reconcile_fuzz() {
 #[allow(clippy::too_many_lines)] // this is an integration test and is expected to be long
 #[tokio::test]
 #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
-#[wrap(in_scoped_netns("reconcile_demo"))]
 #[traced_test]
 async fn reconcile_demo() {
     let mut required_interface_map = MultiIndexInterfaceSpecMap::default();
