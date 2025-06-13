@@ -12,7 +12,7 @@ use net::vxlan::Vni;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt::Display;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -48,7 +48,7 @@ pub struct IfVtepConfig {
     pub mac: Option<Mac>,
     pub vni: Option<Vni>,
     pub ttl: Option<u8>,
-    pub local: IpAddr,
+    pub local: Ipv4Addr,
 }
 
 #[derive(Clone, Debug, PartialEq)]

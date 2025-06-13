@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use gateway_config::config as gateway_config;
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 
 use crate::models::internal::interfaces::interface::{
     IfEthConfig, IfVlanConfig, IfVtepConfig, InterfaceAddress, InterfaceConfig,
@@ -112,14 +112,19 @@ impl TryFrom<&gateway_config::Interface> for InterfaceConfig {
                         let addr_mask = addr.parse::<InterfaceAddress>().map_err(|e| {
                             format!("Invalid interface address \"{addr}\" for VTEP interface: {e}",)
                         })?;
-                        if !addr_mask.address.is_ipv4() {
-                            Err("VTEP interface requires an IPv4 address".to_string())
-                        } else if addr_mask.mask_len == 32 {
-                            Ok(addr_mask.address)
+                        // Purposefully skip unicast check here because fuzzer generates multicast addresses
+                        // Unicast is checked when we build the vtep interface later
+                        let ipv4 = match addr_mask.address {
+                            IpAddr::V4(ipv4) => ipv4,
+                            IpAddr::V6(_) => {
+                                return Err("VTEP interface requires an IPv4 address".to_string());
+                            }
+                        };
+                        if addr_mask.mask_len == 32 {
+                            Ok(ipv4)
                         } else {
                             Err("VTEP interface requires a /32 IP address".to_string())
-                        }?;
-                        Ok(addr_mask.address)
+                        }
                     }
                     _ => Err("VTEP interface requires exactly one IP address".to_string()),
                 }?;
