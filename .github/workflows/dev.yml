@@ -183,7 +183,7 @@ jobs:
           rm results.json
 
       - name: "upload test results to codecov"
-        if: ${{ always() }}
+        if: ${{ !github.event.merge_group || failure() }}
         uses: "codecov/codecov-action@v5"
         with:
           fail_ci_if_error: true
@@ -195,7 +195,7 @@ jobs:
           flags: "${{matrix.profile.name}}-${{ matrix.profile.sterile || 'developer' }}"
 
       - name: "upload codecov analysis"
-        if: ${{ matrix.profile.name == 'fuzz' }}
+        if: ${{ matrix.profile.name == 'fuzz' && (!github.event.merge_group || failure()) }}
         uses: "codecov/codecov-action@v5"
         with:
           fail_ci_if_error: true
