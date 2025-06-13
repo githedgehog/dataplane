@@ -48,6 +48,8 @@ impl VrfTable {
         vrfid: VrfId,
         vni: Option<Vni>,
     ) -> Result<(), RouterError> {
+        debug!("Creating new VRF name:{name} id: {vrfid}");
+
         /* Forbid VRF addition if one exists with same id */
         if self.by_id.contains_key(&vrfid) {
             error!("Can't add VRF with id {vrfid}: a VRF with that id already exists");
@@ -404,6 +406,12 @@ mod tests {
         let vrf = vrftable.get_vrf(vrfid).expect("Should be there");
         assert_eq!(vrf.name, "VPC-1");
         assert_eq!(vrf.vni, None);
+
+        {
+            let vrf = vrftable.get_vrf_mut(vrfid).expect("Should be there");
+            vrf.set_tableid(1234.try_into().expect("Should succeed"));
+            vrf.set_description("This is the vrf for VPC-1 ACME");
+        }
 
         debug!("━━━━Test: set vni {vni} to the vrf");
         vrftable.set_vni(vrfid, vni).expect("Should succeed");

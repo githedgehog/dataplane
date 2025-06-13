@@ -114,6 +114,7 @@ pub struct Vrf {
     pub name: String,
     pub vrfid: VrfId,
     pub tableid: Option<RouteTableId>,
+    pub description: Option<String>,
     pub(crate) status: VrfStatus,
     pub(crate) routesv4: RTrieMap<Ipv4Prefix, Route>,
     pub(crate) routesv6: RTrieMap<Ipv6Prefix, Route>,
@@ -160,6 +161,7 @@ impl Vrf {
             name: name.to_owned(),
             vrfid,
             tableid: None,
+            description: None,
             status: VrfStatus::Active,
             routesv4: RTrieMap::with_capacity(capa_v4),
             routesv6: RTrieMap::with_capacity(capa_v6),
@@ -189,6 +191,13 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     pub fn set_tableid(&mut self, tableid: RouteTableId) {
         self.tableid = Some(tableid);
+    }
+
+    ////////////////////////////////////////////////////////////////////////
+    /// Set a description for a [`Vrf`]
+    /////////////////////////////////////////////////////////////////////////
+    pub fn set_description(&mut self, description: &str) {
+        self.description = Some(description.to_owned());
     }
 
     ////////////////////////////////////////////////////////////////////////

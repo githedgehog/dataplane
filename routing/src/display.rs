@@ -338,7 +338,7 @@ impl Display for VrfV6Nexthops<'_> {
 
 macro_rules! VRF_TBL_FMT {
     () => {
-        "{:>16} {:>8} {:>8} {:>12} {:>12} {:>8} {:>8}"
+        "{:>16} {:>8} {:>8} {:>12} {:>12} {:>8} {:>8} {:<}"
     };
 }
 fn fmt_vrf_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -347,7 +347,7 @@ fn fmt_vrf_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result 
         "{}",
         format_args!(
             VRF_TBL_FMT!(),
-            "name", "id", "vni", "Ipv4-routes", "Ipv6-routes", "status", "table-id"
+            "name", "id", "vni", "Ipv4-routes", "Ipv6-routes", "status", "table-id", "description"
         )
     )
 }
@@ -364,7 +364,8 @@ fn fmt_vrf_summary(f: &mut std::fmt::Formatter<'_>, vrf: &Vrf) -> std::fmt::Resu
             vrf.routesv6.len(),
             vrf.status.to_string(),
             vrf.tableid
-                .map_or_else(|| "--".to_owned(), |t| t.to_string())
+                .map_or_else(|| "--".to_owned(), |t| t.to_string()),
+            &vrf.description.as_ref().map_or_else(|| "", |t| t.as_str())
         )
     )
 }
