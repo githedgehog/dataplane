@@ -20,6 +20,7 @@ use crate::interfaces::interface::IfIndex;
 use crate::prefix::Prefix;
 use iptrie::map::RTrieMap;
 use iptrie::{Ipv4Prefix, Ipv6Prefix};
+use net::route::RouteTableId;
 use net::vxlan::Vni;
 
 /// Every VRF is univocally identified with a numerical VRF id
@@ -112,6 +113,7 @@ pub enum VrfStatus {
 pub struct Vrf {
     pub name: String,
     pub vrfid: VrfId,
+    pub tableid: Option<RouteTableId>,
     pub(crate) status: VrfStatus,
     pub(crate) routesv4: RTrieMap<Ipv4Prefix, Route>,
     pub(crate) routesv6: RTrieMap<Ipv6Prefix, Route>,
@@ -157,6 +159,7 @@ impl Vrf {
         let mut vrf = Self {
             name: name.to_owned(),
             vrfid,
+            tableid: None,
             status: VrfStatus::Active,
             routesv4: RTrieMap::with_capacity(capa_v4),
             routesv6: RTrieMap::with_capacity(capa_v6),
@@ -182,14 +185,21 @@ impl Vrf {
     }
 
     ////////////////////////////////////////////////////////////////////////
-    /// Set the fibw for a given VRF
+    /// Set the table id for a [`Vrf`]
+    /////////////////////////////////////////////////////////////////////////
+    pub fn set_tableid(&mut self, tableid: RouteTableId) {
+        self.tableid = Some(tableid);
+    }
+
+    ////////////////////////////////////////////////////////////////////////
+    /// Set the fibw for a [`Vrf`]
     /////////////////////////////////////////////////////////////////////////
     pub fn set_fibw(&mut self, fibw: FibWriter) {
         self.fibw = Some(fibw);
     }
 
     ////////////////////////////////////////////////////////////////////////
-    /// Get a fibreader for the fib associated to this VRF
+    /// Get a fibreader for the fib associated to this [`Vrf`]
     /////////////////////////////////////////////////////////////////////////
     #[allow(clippy::redundant_closure_for_method_calls)]
     pub fn get_vrf_fibr(&self) -> Option<FibReader> {
@@ -197,14 +207,14 @@ impl Vrf {
     }
 
     ////////////////////////////////////////////////////////////////////////
-    /// Get the `FibId` of the Fib associated to this VRF
+    /// Get the `FibId` of the Fib associated to this [`Vrf`]
     /////////////////////////////////////////////////////////////////////////
     pub fn get_vrf_fibid(&self) -> Option<FibId> {
         self.get_vrf_fibr()?.get_id()
     }
 
     /////////////////////////////////////////////////////////////////////////
-    /// Set the VNI for a Vrf
+    /// Set the [`Vni`] for a [`Vrf`]
     /////////////////////////////////////////////////////////////////////////
     pub fn set_vni(&mut self, vni: Vni) {
         self.vni = Some(vni);
@@ -212,7 +222,7 @@ impl Vrf {
     }
 
     /////////////////////////////////////////////////////////////////////////
-    /// Set the status of a Vrf
+    /// Set the status of a [`Vrf`]
     /////////////////////////////////////////////////////////////////////////
     pub fn set_status(&mut self, status: VrfStatus) {
         if self.status != status {
@@ -222,7 +232,7 @@ impl Vrf {
     }
 
     /////////////////////////////////////////////////////////////////////////
-    /// Set the VTEP for a Vrf. This should be set on vrf creation or anytime
+    /// Set the VTEP for a [`Vrf`]. This should be set on vrf creation or anytime
     /// the config causes the vtep ip or mac to change.
     /////////////////////////////////////////////////////////////////////////
     pub fn set_vtep(&mut self, vtep: &Vtep) {
