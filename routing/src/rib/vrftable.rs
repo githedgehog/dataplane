@@ -255,6 +255,13 @@ impl VrfTable {
     pub fn len_with_vni(&self) -> usize {
         self.by_vni.len()
     }
+
+    //////////////////////////////////////////////////////////////////
+    /// Tell if the [`VrfTable`] contains a [`Vrf`] with some [`VrfId`]
+    //////////////////////////////////////////////////////////////////
+    pub fn contains(&self, vrfid: VrfId) -> bool {
+        self.by_id.contains_key(&vrfid)
+    }
 }
 
 #[cfg(test)]
