@@ -410,7 +410,7 @@ fn fmt_interface_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         "{}",
         format_args!(
             INTERFACE_TBL_FMT!(),
-            "name", "id", "OpStatus", "AdmStatus", "attachment", "type"
+            "name", "id", "AdmStatus", "OpStatus", "attachment", "type"
         )
     )
 }
