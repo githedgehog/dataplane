@@ -7,14 +7,14 @@
 
 use std::collections::HashSet;
 use std::net::IpAddr;
+use tracing::{debug, error, info};
 
 use net::eth::mac::Mac;
 use net::vlan::Vid;
 
 use crate::errors::RouterError;
 use crate::fib::fibtype::{FibId, FibReader};
-use crate::rib::vrf::Vrf;
-use tracing::{debug, error, info};
+use crate::rib::vrf::{Vrf, VrfId};
 
 /// A type to uniquely identify a network interface
 pub type IfIndex = u32;
@@ -22,13 +22,13 @@ pub type IfIndex = u32;
 /// An Ipv4 or Ipv6 address and mask configured on an interface
 pub type IfAddress = (IpAddr, u8);
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 /// Specific data for ethernet interfaces
 pub struct IfDataEthernet {
     pub mac: Mac,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 /// Specific data for vlan (sub)interfaces
 pub struct IfDataDot1q {
     pub mac: Mac,
@@ -52,7 +52,7 @@ impl HasMac for IfDataDot1q {
 }
 
 /// Type that contains data specific to the type of interface
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum IfType {
     Unknown,
     Ethernet(IfDataEthernet),
@@ -61,7 +61,7 @@ pub enum IfType {
     Vxlan, /* It is not clear if we'll model it like this */
 }
 
-#[derive(Copy, Clone, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub enum IfState {
     #[default]
     Unknown = 0,
@@ -75,6 +75,44 @@ pub enum Attachment {
     BD,
 }
 
+#[derive(Clone, PartialEq)]
+pub enum AttachmentType {
+    VRF(VrfId),
+    BD,
+}
+
+/// An object representing the configuration for an [`Interface`]
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RouterInterfaceConfig {
+    pub ifindex: IfIndex,            /* ifindex of kernel interface (key) */
+    pub name: String,                /* name of interface */
+    pub description: Option<String>, /* description - informational */
+    pub iftype: IfType,              /* type of interface */
+    pub admin_state: IfState,        /* admin state */
+                                     // FIXME: pub attachment: Option<AttachmentType>
+}
+impl RouterInterfaceConfig {
+    pub fn new(name: &str, ifindex: IfIndex) -> Self {
+        Self {
+            ifindex,
+            name: name.to_owned(),
+            description: None,
+            iftype: IfType::Unknown,
+            admin_state: IfState::Up,
+        }
+    }
+    pub fn set_description(&mut self, description: &str) {
+        self.description = Some(description.to_owned());
+    }
+    pub fn set_iftype(&mut self, iftype: IfType) {
+        self.iftype = iftype;
+    }
+    pub fn set_admin_state(&mut self, state: IfState) {
+        self.admin_state = state;
+    }
+}
+
 #[derive(Clone)]
 /// An object representing a network interface and its state
 pub struct Interface {
@@ -83,6 +121,7 @@ pub struct Interface {
     pub ifindex: IfIndex,
     pub iftype: IfType,
     pub admin_state: IfState,
+    /* -- state -- */
     pub oper_state: IfState,
     pub addresses: HashSet<IfAddress>,
     pub attachment: Option<Attachment>,
@@ -90,28 +129,20 @@ pub struct Interface {
 
 impl Interface {
     //////////////////////////////////////////////////////////////////
-    /// Create a new [`Interface`] object.
-    /// This simply creates in-memory state to represent the interface
+    /// Create an [`Interface`] object from [`RouterInterfaceConfig`]
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn new(name: &str, ifindex: IfIndex) -> Self {
-        Self {
-            name: name.to_owned(),
-            description: None,
-            ifindex,
-            iftype: IfType::Unknown,
-            admin_state: IfState::Unknown,
+    pub fn new(config: &RouterInterfaceConfig) -> Self {
+        Interface {
+            name: config.name.to_string(),
+            ifindex: config.ifindex,
+            description: config.description.clone(),
+            iftype: config.iftype.clone(),
+            admin_state: config.admin_state,
             oper_state: IfState::Unknown,
             addresses: HashSet::new(),
             attachment: None,
         }
-    }
-
-    //////////////////////////////////////////////////////////////////
-    /// Set Iftype - this should be a one-time kind of thing
-    //////////////////////////////////////////////////////////////////
-    pub fn set_iftype(&mut self, iftype: IfType) {
-        self.iftype = iftype;
     }
 
     //////////////////////////////////////////////////////////////////

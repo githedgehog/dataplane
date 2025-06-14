@@ -11,10 +11,10 @@ use crate::rib::vrftable::VrfTable;
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
 
 use crate::interfaces::iftable::IfTable;
-use crate::interfaces::interface::{IfAddress, IfIndex, IfState, Interface};
+use crate::interfaces::interface::{IfAddress, IfIndex, IfState, RouterInterfaceConfig};
 
 enum IfTableChange {
-    Add(Interface),
+    Add(RouterInterfaceConfig),
     Del(IfIndex),
     Attach((IfIndex, FibReader)),
     Detach(IfIndex),
@@ -27,8 +27,8 @@ enum IfTableChange {
 impl Absorb<IfTableChange> for IfTable {
     fn absorb_first(&mut self, change: &mut IfTableChange, _: &Self) {
         match change {
-            IfTableChange::Add(interface) => {
-                self.add_interface(interface.clone());
+            IfTableChange::Add(ifconfig) => {
+                self.add_interface(&ifconfig);
             }
             IfTableChange::Del(ifindex) => self.del_interface(*ifindex),
             IfTableChange::Attach((ifindex, fibr)) => {
@@ -73,8 +73,8 @@ impl IfTableWriter {
     pub fn enter(&self) -> Option<ReadGuard<'_, IfTable>> {
         self.0.enter()
     }
-    pub fn add_interface(&mut self, iface: Interface) {
-        self.0.append(IfTableChange::Add(iface));
+    pub fn add_interface(&mut self, ifconfig: RouterInterfaceConfig) {
+        self.0.append(IfTableChange::Add(ifconfig));
         self.0.publish();
     }
     pub fn del_interface(&mut self, ifindex: IfIndex) {

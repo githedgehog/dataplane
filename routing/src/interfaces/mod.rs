@@ -12,10 +12,9 @@ pub mod tests {
     use crate::display::IfTableAddress;
     use crate::fib::fibtype::{FibId, FibWriter};
     use crate::interfaces::iftable::IfTable;
-    use crate::interfaces::iftablerw::IfTableReader;
-    use crate::interfaces::iftablerw::IfTableWriter;
+    use crate::interfaces::iftablerw::{IfTableReader, IfTableWriter};
     use crate::interfaces::interface::{
-        Attachment, IfDataDot1q, IfDataEthernet, IfState, IfType, Interface,
+        Attachment, IfDataDot1q, IfDataEthernet, IfState, IfType, RouterInterfaceConfig,
     };
     use crate::rib::vrf::Vrf;
     use net::eth::mac::Mac;
@@ -28,43 +27,38 @@ pub mod tests {
         let mut iftable = IfTable::new();
 
         /* create loopback */
-        let mut lo = Interface::new("Loopback", 1);
+        let mut lo = RouterInterfaceConfig::new("Loopback", 1);
         lo.set_admin_state(IfState::Up);
-        lo.set_oper_state(IfState::Up);
         lo.set_description("Main loopback interface");
         lo.set_iftype(IfType::Loopback);
 
         /* create Eth0 */
-        let mut eth0 = Interface::new("eth0", 2);
+        let mut eth0 = RouterInterfaceConfig::new("eth0", 2);
         eth0.set_admin_state(IfState::Up);
-        eth0.set_oper_state(IfState::Up);
         eth0.set_description("Uplink to the Moon");
         eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
         }));
 
         /* create Eth1 */
-        let mut eth1 = Interface::new("eth1", 3);
+        let mut eth1 = RouterInterfaceConfig::new("eth1", 3);
         eth1.set_admin_state(IfState::Up);
-        eth1.set_oper_state(IfState::Up);
         eth1.set_description("Downlink from Mars");
         eth1.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: Mac::from([0x0, 0xbb, 0x0, 0x0, 0x0, 0x2]),
         }));
 
         /* create Eth2 */
-        let mut eth2 = Interface::new("eth2", 4);
+        let mut eth2 = RouterInterfaceConfig::new("eth2", 4);
         eth2.set_admin_state(IfState::Up);
-        eth2.set_oper_state(IfState::Up);
         eth2.set_description("Downlink from Sun");
         eth2.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: Mac::from([0x0, 0xbb, 0x0, 0x0, 0x0, 0x3]),
         }));
 
         /* create vlan.100 */
-        let mut vlan100 = Interface::new("eth1.100", 5);
+        let mut vlan100 = RouterInterfaceConfig::new("eth1.100", 5);
         vlan100.set_admin_state(IfState::Up);
-        vlan100.set_oper_state(IfState::Up);
         vlan100.set_description("External customer 1");
         vlan100.set_iftype(IfType::Dot1q(IfDataDot1q {
             mac: Mac::from([0x0, 0xbb, 0x0, 0x0, 0x0, 0x2]),
@@ -72,9 +66,8 @@ pub mod tests {
         }));
 
         /* create vlan.200 */
-        let mut vlan200 = Interface::new("eth1.200", 6);
+        let mut vlan200 = RouterInterfaceConfig::new("eth1.200", 6);
         vlan200.set_admin_state(IfState::Up);
-        vlan200.set_oper_state(IfState::Up);
         vlan200.set_description("External customer 2");
         vlan200.set_iftype(IfType::Dot1q(IfDataDot1q {
             mac: Mac::from([0x0, 0xbb, 0x0, 0x0, 0x0, 0x2]),
@@ -82,12 +75,12 @@ pub mod tests {
         }));
 
         /* Add the interfaces to the iftable */
-        iftable.add_interface(lo);
-        iftable.add_interface(eth0);
-        iftable.add_interface(eth1);
-        iftable.add_interface(eth2);
-        iftable.add_interface(vlan100);
-        iftable.add_interface(vlan200);
+        iftable.add_interface(&lo);
+        iftable.add_interface(&eth0);
+        iftable.add_interface(&eth1);
+        iftable.add_interface(&eth2);
+        iftable.add_interface(&vlan100);
+        iftable.add_interface(&vlan200);
 
         assert_eq!(iftable.len(), 6);
 
@@ -163,27 +156,28 @@ pub mod tests {
         let mut iftable = IfTable::new();
 
         /* create Eth0 */
-        let mut eth0 = Interface::new("eth0", 2);
+        let mut eth0 = RouterInterfaceConfig::new("eth0", 2);
         eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
         }));
-
-        /* test get_mac */
-        assert_eq!(
-            Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
-            eth0.get_mac().unwrap()
-        );
 
         /* add to interface table */
-        iftable.add_interface(eth0);
+        iftable.add_interface(&eth0);
         assert_eq!(iftable.len(), 1, "Eth0 should be there");
 
+        /* test get_mac */
+        let iface = iftable.get_interface(2).expect("Should be there");
+        assert_eq!(
+            Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
+            iface.get_mac().unwrap()
+        );
+
         /* Add interface again -- idempotence */
-        let mut eth0 = Interface::new("eth0", 2);
+        let mut eth0 = RouterInterfaceConfig::new("eth0", 2);
         eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
         }));
-        iftable.add_interface(eth0);
+        iftable.add_interface(&eth0);
         assert_eq!(iftable.len(), 1, "Only eth0 should be there");
 
         /* Delete eth0 by index */
@@ -195,20 +189,20 @@ pub mod tests {
     fn test_iftable_map() {
         let mut iftable = IfTable::new();
 
-        let mut iface = Interface::new("eth0", 2);
-        iface.set_iftype(IfType::Ethernet(IfDataEthernet {
+        let mut ifconfig = RouterInterfaceConfig::new("eth0", 2);
+        ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
         }));
-        iftable.add_interface(iface);
+        iftable.add_interface(&ifconfig);
 
         /* add some vlan interfaces */
         for n in 1..10 {
-            let mut iface = Interface::new(format!("eth0.{n}").as_str(), 2 + n);
-            iface.set_iftype(IfType::Dot1q(IfDataDot1q {
+            let mut ifconfig = RouterInterfaceConfig::new(format!("eth0.{n}").as_str(), 2 + n);
+            ifconfig.set_iftype(IfType::Dot1q(IfDataDot1q {
                 mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
                 vlanid: Vid::new(n.try_into().unwrap()).unwrap(),
             }));
-            iftable.add_interface(iface);
+            iftable.add_interface(&ifconfig);
         }
         println!("{}", &iftable);
         println!("{}", IfTableAddress(&iftable));

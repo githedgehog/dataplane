@@ -290,10 +290,7 @@ mod tests {
 
         /* create iftable */
         let mut iftable = build_test_iftable();
-        let (mut iftw, _iftr) = IfTableWriter::new();
-        for interface in iftable.values() {
-            iftw.add_interface(interface.clone());
-        }
+        let (mut iftw, _iftr) = build_test_iftable_left_right();
 
         /* create vrf table */
         let mut vrftable = VrfTable::new(fibtw);

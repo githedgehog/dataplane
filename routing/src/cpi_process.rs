@@ -14,11 +14,9 @@ use crate::interfaces::iftablerw::IfTableWriter;
 #[cfg(feature = "auto-learn")]
 use crate::interfaces::interface::IfDataEthernet;
 #[cfg(feature = "auto-learn")]
-use crate::interfaces::interface::IfState;
-#[cfg(feature = "auto-learn")]
 use crate::interfaces::interface::IfType;
 #[cfg(feature = "auto-learn")]
-use crate::interfaces::interface::Interface;
+use crate::interfaces::interface::RouterInterfaceConfig;
 #[cfg(feature = "auto-learn")]
 use crate::rib::vrftable::VrfTable;
 #[cfg(feature = "auto-learn")]
@@ -236,22 +234,20 @@ fn auto_learn_interface(a: &IfAddress, iftw: &mut IfTableWriter, vrftable: &VrfT
             a.ifindex
         );
 
-        /* create interface */
-        let mut iface = Interface::new(a.ifname.as_str(), a.ifindex);
-        iface.set_admin_state(IfState::Up);
-        iface.set_oper_state(IfState::Up);
+        /* create interface config */
+        let mut ifconfig = RouterInterfaceConfig::new(a.ifname.as_str(), a.ifindex);
         if a.ifindex == 1 {
-            iface.set_iftype(IfType::Loopback);
+            ifconfig.set_iftype(IfType::Loopback);
         } else if let Ok(res) = mac_address_by_name(a.ifname.as_str()) {
             if let Some(mac) = &res {
-                iface.set_iftype(IfType::Ethernet(IfDataEthernet {
+                ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
                     mac: Mac::from(mac.bytes()),
                 }));
             }
         }
 
         /* add to interface table */
-        iftw.add_interface(iface);
+        iftw.add_interface(ifconfig);
 
         /* attach to default vrf */
 

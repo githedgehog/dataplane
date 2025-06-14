@@ -5,7 +5,7 @@
 
 use crate::errors::RouterError;
 use crate::fib::fibtype::{FibId, FibReader};
-use crate::interfaces::interface::{IfAddress, IfIndex, IfState, Interface};
+use crate::interfaces::interface::{IfAddress, IfIndex, IfState, Interface, RouterInterfaceConfig};
 use ahash::RandomState;
 use std::collections::HashMap;
 
@@ -49,7 +49,9 @@ impl IfTable {
     /// Add an [`Interface`] to the table. Interfaces are univocally
     /// identified by an [`IfIndex`], which acts as the master hash key.
     //////////////////////////////////////////////////////////////////
-    pub fn add_interface(&mut self, iface: Interface) {
+    pub fn add_interface(&mut self, config: &RouterInterfaceConfig) {
+        let iface = Interface::new(&config);
+
         /* add interface to iftable */
         let ifindex = iface.ifindex;
         if let Some(_prior) = self.by_index.insert(ifindex, iface) {

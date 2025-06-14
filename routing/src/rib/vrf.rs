@@ -132,6 +132,7 @@ impl Vrf {
     /// Initial capacities are 0. We may want to have some default sizes.
     /// Else, we can always call `Self::with_capacities()`.
     /////////////////////////////////////////////////////////////////////////
+    #[must_use]
     pub fn new(name: &str, vrfid: VrfId, fibw: Option<FibWriter>) -> Self {
         Self::with_capacities(name, vrfid, 0, 0, fibw)
     }
@@ -150,6 +151,7 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     /// Create VRF with some initial capacities
     /////////////////////////////////////////////////////////////////////////
+    #[must_use]
     pub fn with_capacities(
         name: &str,
         vrfid: VrfId,
