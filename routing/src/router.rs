@@ -22,7 +22,7 @@ use crate::cpi::DEFAULT_FRR_AGENT_PATH;
 /// Struct to configure router object. N.B we derive a builder type `RouterConfig`
 /// and provide defaults for each field.
 #[derive(Builder, Debug)]
-pub struct RouterConfig {
+pub struct RouterParams {
     #[builder(setter(into), default = "router".to_string())]
     name: String,
 
@@ -36,7 +36,7 @@ pub struct RouterConfig {
     pub frr_agent_path: PathBuf,
 }
 
-impl Display for RouterConfig {
+impl Display for RouterParams {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         writeln!(f, "Router config")?;
         writeln!(f, "  name     : {}", self.name)?;
@@ -49,7 +49,7 @@ impl Display for RouterConfig {
 /// Top-most object representing a router
 pub struct Router {
     name: String,
-    config: RouterConfig,
+    params: RouterParams,
     resolver: AtResolver,
     cpi: CpiHandle,
     iftr: IfTableReader,
@@ -57,17 +57,17 @@ pub struct Router {
 }
 
 // Build cpi configuration from the router configuration
-fn init_router(config: &RouterConfig) -> Result<CpiConf, RouterError> {
+fn init_router(params: &RouterParams) -> Result<CpiConf, RouterError> {
     Ok(CpiConf {
         cpi_sock_path: Some(
-            config
+            params
                 .cpi_sock_path
                 .to_str()
                 .ok_or(RouterError::InvalidPath("(cpi path)".to_string()))?
                 .to_owned(),
         ),
         cli_sock_path: Some(
-            config
+            params
                 .cli_sock_path
                 .to_str()
                 .ok_or(RouterError::InvalidPath("(cli path)".to_string()))?
@@ -79,11 +79,11 @@ fn init_router(config: &RouterConfig) -> Result<CpiConf, RouterError> {
 #[allow(clippy::new_without_default)]
 impl Router {
     /// Start a router object
-    pub fn new(config: RouterConfig) -> Result<Router, RouterError> {
-        let name = &config.name;
+    pub fn new(params: RouterParams) -> Result<Router, RouterError> {
+        let name = &params.name;
 
         debug!("{name}: Initializing...");
-        let cpiconf = init_router(&config)?;
+        let cpiconf = init_router(&params)?;
 
         debug!("{name}: Creating interface table...");
         let (iftw, iftr) = IfTableWriter::new();
@@ -98,10 +98,10 @@ impl Router {
         debug!("{name}: Starting CPI...");
         let cpi = start_cpi(&cpiconf, fibtw, iftw, atabler)?;
 
-        debug!("{name}: Successfully started. Config is:\n{config}");
+        debug!("{name}: Successfully started with parameters:\n{params}");
         let router = Router {
             name: name.to_owned(),
-            config,
+            params,
             resolver,
             cpi,
             iftr,
@@ -140,14 +140,14 @@ impl Router {
     }
     #[must_use]
     pub fn get_cpi_sock_path(&self) -> &PathBuf {
-        &self.config.cpi_sock_path
+        &self.params.cpi_sock_path
     }
     #[must_use]
     pub fn get_cli_sock_path(&self) -> &PathBuf {
-        &self.config.cli_sock_path
+        &self.params.cli_sock_path
     }
     #[must_use]
     pub fn get_frr_agent_path(&self) -> &PathBuf {
-        &self.config.frr_agent_path
+        &self.params.frr_agent_path
     }
 }

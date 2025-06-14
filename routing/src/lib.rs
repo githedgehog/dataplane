@@ -28,4 +28,4 @@ pub mod testfib;
 
 // re-exports
 pub use errors::RouterError;
-pub use router::{Router, RouterConfig, RouterConfigBuilder};
+pub use router::{Router, RouterParams, RouterParamsBuilder};

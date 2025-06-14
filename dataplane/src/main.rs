@@ -23,7 +23,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::packet_processor::start_router;
 use mgmt::processor::launch::start_mgmt;
-use routing::RouterConfigBuilder;
+use routing::RouterParamsBuilder;
 
 fn init_logging() {
     tracing_subscriber::fmt()
@@ -74,7 +74,7 @@ fn main() {
     };
 
     /* router configuration */
-    let Ok(config) = RouterConfigBuilder::default()
+    let Ok(config) = RouterParamsBuilder::default()
         .cli_sock_path(args.cli_sock_path())
         .cpi_sock_path(args.cpi_sock_path())
         .frr_agent_path(args.frr_agent_path())

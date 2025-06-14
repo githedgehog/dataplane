@@ -47,7 +47,7 @@ pub mod test {
     use crate::frr::frrmi::FrrMi;
     use crate::frr::frrmi::tests::fake_frr_agent;
     use crate::processor::proc::ConfigProcessor;
-    use routing::{Router, RouterConfigBuilder};
+    use routing::{Router, RouterParamsBuilder};
     use tracing::debug;
 
     /* OVERLAY config sample builders */
@@ -315,7 +315,7 @@ pub mod test {
         let config = GwConfig::new(external);
 
         /* build router config */
-        let router_config = RouterConfigBuilder::default()
+        let router_config = RouterParamsBuilder::default()
             .cpi_sock_path("/tmp/cpi.sock")
             .cli_sock_path("/tmp/cli.sock")
             .frr_agent_path("/tmp/frr-agent.sock")

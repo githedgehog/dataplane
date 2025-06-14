@@ -17,7 +17,7 @@ use pipeline::sample_nfs::PacketDumper;
 use routing::atable::atablerw::AtableReader;
 use routing::fib::fibtable::FibTableReader;
 use routing::interfaces::iftablerw::IfTableReader;
-use routing::{Router, RouterConfig, RouterError};
+use routing::{Router, RouterError, RouterParams};
 
 /// Build the pipeline for a router. The composition of the pipeline (in stages)
 /// is currently hard-coded.
@@ -45,9 +45,9 @@ fn setup_routing_pipeline<Buf: PacketBufferMut>(
 /// Start a router and provide the associated pipeline
 #[allow(unused)]
 pub fn start_router<Buf: PacketBufferMut>(
-    config: RouterConfig,
+    params: RouterParams,
 ) -> Result<(Router, DynPipeline<Buf>), RouterError> {
-    let router = Router::new(config)?;
+    let router = Router::new(params)?;
     let pipeline = setup_routing_pipeline(
         router.get_iftabler(),
         router.get_fibtr(),
