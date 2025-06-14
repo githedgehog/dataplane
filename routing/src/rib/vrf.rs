@@ -109,6 +109,9 @@ pub enum VrfStatus {
     Deleted,
 }
 
+//////////////////////////////////////////////////////////////////////////////////
+/// A [`Vrf`] is the main object to represent a VRF
+//////////////////////////////////////////////////////////////////////////////////
 #[allow(unused)]
 pub struct Vrf {
     pub name: String,
@@ -123,53 +126,69 @@ pub struct Vrf {
     pub(crate) fibw: Option<FibWriter>,
 }
 
+//////////////////////////////////////////////////////////////////////////////////
+/// A [`RouterVrfConfig`] contains the configuration to create a [`Vrf`]
+//////////////////////////////////////////////////////////////////////////////////
+#[derive(Clone, Debug, PartialEq)]
+pub struct RouterVrfConfig {
+    pub vrfid: VrfId,                  /* Id of VRF - may equate to ifindex */
+    pub name: String,                  /* name of kernel interface */
+    pub description: Option<String>,   /* VRF description - may get from cfg or add ourselves */
+    pub tableid: Option<RouteTableId>, /* kernel table-id */
+    pub vni: Option<Vni>,              /* vni */
+}
+impl RouterVrfConfig {
+    pub fn new(vrfid: VrfId, name: &str) -> Self {
+        Self {
+            vrfid,
+            name: name.to_owned(),
+            description: None,
+            tableid: None,
+            vni: None,
+        }
+    }
+    pub fn set_description(mut self, description: &str) -> Self {
+        self.description = Some(description.to_owned());
+        self
+    }
+    pub fn set_tableid(mut self, tableid: RouteTableId) -> Self {
+        self.tableid = Some(tableid);
+        self
+    }
+    #[cfg(test)]
+    pub fn set_vni(mut self, vni: Vni) -> Self {
+        self.vni = Some(vni);
+        self
+    }
+    #[cfg(not(test))]
+    pub fn set_vni(&mut self, vni: Vni) {
+        self.vni = Some(vni);
+    }
+}
+
 pub type RouteV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &Route)) -> bool>;
 pub type RouteV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &Route)) -> bool>;
 
 impl Vrf {
-    /////////////////////////////////////////////////////////////////////////
-    /// Create a new VRF with the given name and vrfId
-    /// Initial capacities are 0. We may want to have some default sizes.
-    /// Else, we can always call `Self::with_capacities()`.
-    /////////////////////////////////////////////////////////////////////////
-    #[must_use]
-    pub fn new(name: &str, vrfid: VrfId, fibw: Option<FibWriter>) -> Self {
-        Self::with_capacities(name, vrfid, 0, 0, fibw)
-    }
+    const DEFAULT_IPV4_CAPACITY: usize = 0;
+    const DEFAULT_IPV6_CAPACITY: usize = 0;
 
     /////////////////////////////////////////////////////////////////////////
-    /// Dump the contents of a Vrf, preceded by some optional heading
-    /////////////////////////////////////////////////////////////////////////
-    #[cfg(test)]
-    pub fn dump(&self, heading: Option<&str>) {
-        if let Some(heading) = heading {
-            print!("{}", Frame(heading.to_owned()));
-        }
-        print!("{self}");
-    }
-
-    /////////////////////////////////////////////////////////////////////////
-    /// Create VRF with some initial capacities
+    /// Create a new [`Vrf`]
     /////////////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn with_capacities(
-        name: &str,
-        vrfid: VrfId,
-        capa_v4: usize,
-        capa_v6: usize,
-        fibw: Option<FibWriter>,
-    ) -> Self {
+    pub fn new(config: &RouterVrfConfig) -> Self {
         let mut vrf = Self {
-            name: name.to_owned(),
-            vrfid,
-            tableid: None,
-            description: None,
+            name: config.name.to_owned(),
+            vrfid: config.vrfid,
+            tableid: config.tableid,
+            description: config.description.to_owned(),
+            vni: config.vni,
             status: VrfStatus::Active,
-            routesv4: RTrieMap::with_capacity(capa_v4),
-            routesv6: RTrieMap::with_capacity(capa_v6),
+            routesv4: RTrieMap::with_capacity(Vrf::DEFAULT_IPV4_CAPACITY),
+            routesv6: RTrieMap::with_capacity(Vrf::DEFAULT_IPV6_CAPACITY),
             nhstore: NhopStore::new(),
-            vni: None, /* not set yet */
-            fibw,
+            fibw: None,
         };
 
         /* add default routes with default next-hop with action DROP */
@@ -186,6 +205,17 @@ impl Vrf {
             None,
         );
         vrf
+    }
+
+    /////////////////////////////////////////////////////////////////////////
+    /// Dump the contents of a Vrf, preceded by some optional heading
+    /////////////////////////////////////////////////////////////////////////
+    #[cfg(test)]
+    pub fn dump(&self, heading: Option<&str>) {
+        if let Some(heading) = heading {
+            print!("{}", Frame(heading.to_owned()));
+        }
+        print!("{self}");
     }
 
     ////////////////////////////////////////////////////////////////////////
@@ -553,7 +583,8 @@ pub mod tests {
 
     #[test]
     fn test_vrf_build() {
-        let vrf = Vrf::new("Default", 0, None);
+        let vrf_cfg = RouterVrfConfig::new(0, "default");
+        let vrf = Vrf::new(&vrf_cfg);
         assert_eq!(vrf.len_v4(), 1, "An Ipv4 default route must exist.");
         assert_eq!(vrf.len_v6(), 1, "An Ipv6 default route must exist.");
         assert_eq!(vrf.nhstore.len(), 1, "A single 'drop' nexthop must be there.");
@@ -582,7 +613,8 @@ pub mod tests {
 
     #[test]
     fn test_default_idempotence() {
-        let mut vrf = Vrf::new("Default", 0, None);
+        let vrf_cfg = RouterVrfConfig::new(0, "default");
+        let mut vrf = Vrf::new(&vrf_cfg);
 
         let pref_v4: Prefix = Prefix::root_v4();
         let pref_v6: Prefix = Prefix::root_v6();
@@ -636,7 +668,8 @@ pub mod tests {
 
     #[test]
     fn test_default_replace_v4() {
-        let mut vrf = Vrf::new("Default", 0, None);
+        let vrf_cfg = RouterVrfConfig::new(0, "default");
+        let mut vrf = Vrf::new(&vrf_cfg);
         vrf.dump(Some("Initial (clean)"));
 
         /* Add static default via 10.0.0.1 */
@@ -657,7 +690,9 @@ pub mod tests {
 
     #[test]
     fn test_default_replace_v6() {
-        let mut vrf = Vrf::new("Default", 0, None);
+        let vrf_cfg = RouterVrfConfig::new(0, "default");
+        let mut vrf = Vrf::new(&vrf_cfg);
+
         vrf.dump(Some("Initial (clean)"));
 
         /* Add static default via 2001::1 */
@@ -679,7 +714,8 @@ pub mod tests {
     #[test]
     fn test_vrf_basic() {
         let num_routes = 10;
-        let mut vrf = Vrf::new("Default", 0, None);
+        let vrf_cfg = RouterVrfConfig::new(0, "default");
+        let mut vrf = Vrf::new(&vrf_cfg);
 
         /* Add 'num_routes' routes */
         for i in 1..=num_routes {
@@ -732,7 +768,8 @@ pub mod tests {
 
     #[test]
     fn test_route_filtering() {
-        let mut vrf = Vrf::new("Default", 0, None);
+        let vrf_cfg = RouterVrfConfig::new(0, "default");
+        let mut vrf = Vrf::new(&vrf_cfg);
 
         /* connected */
         let nh = build_test_nhop(None, Some(1), 0, None);
@@ -790,7 +827,8 @@ pub mod tests {
 
     // build a sample VRF used for testing
     pub fn build_test_vrf() -> Vrf {
-        let mut vrf = Vrf::new("Default", 0, None);
+        let vrf_cfg = RouterVrfConfig::new(0, "default");
+        let mut vrf = Vrf::new(&vrf_cfg);
 
         {
             let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
@@ -845,7 +883,8 @@ pub mod tests {
 
     // build a sample VRF used for testing
     pub fn build_test_vrf_nhops_partially_resolved() -> Vrf {
-        let mut vrf = Vrf::new("Default", 0, None);
+        let vrf_cfg = RouterVrfConfig::new(0, "default");
+        let mut vrf = Vrf::new(&vrf_cfg);
 
         {
             let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);

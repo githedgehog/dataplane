@@ -85,6 +85,8 @@ fn auto_learn_vrf(
     iftablew: &mut IfTableWriter,
     vtep: &Vtep,
 ) {
+    use crate::rib::vrf::RouterVrfConfig;
+
     if let Ok(vrf) = vrftable.get_vrf(route.vrfid) {
         let mut vni = None;
         if vrf.vni.is_none() {
@@ -122,8 +124,13 @@ fn auto_learn_vrf(
             "unknown"
         };
 
+        let mut vrf_cfg = RouterVrfConfig::new(route.vrfid, name);
+        if let Some(vni) = vni {
+            vrf_cfg.set_vni(vni);
+        }
+
         // add the vrf
-        if let Err(e) = vrftable.add_vrf(name, route.vrfid, vni) {
+        if let Err(e) = vrftable.add_vrf(&vrf_cfg) {
             error!("Error adding vrf with id {}: {e}", route.vrfid);
 
             // HACK: heal by removing the existing vrf with that vni so that
@@ -135,7 +142,7 @@ fn auto_learn_vrf(
                     if let Ok(other_vrfid) = vrftable.get_vrfid_by_vni(duped_vni) {
                         let _ = vrftable.remove_vrf(other_vrfid, iftablew);
                         // add the new one
-                        if let Err(e) = vrftable.add_vrf(name, route.vrfid, vni) {
+                        if let Err(e) = vrftable.add_vrf(&vrf_cfg) {
                             error!(
                                 "Failed to add vrf with id {} on second attempt: {e}",
                                 route.vrfid

@@ -5,10 +5,10 @@
 //! and optionally identified by a Vni. A vrf table always has a default vrf.
 
 use super::vrf::{Vrf, VrfId, VrfStatus};
-use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
 use crate::fib::fibtype::FibId;
 use crate::interfaces::iftablerw::IfTableWriter;
+use crate::{errors::RouterError, rib::vrf::RouterVrfConfig};
 use net::vxlan::Vni;
 use std::collections::HashMap;
 
@@ -35,34 +35,31 @@ impl VrfTable {
             fibtablew,
         };
         /* create default vrf: this can't fail */
-        let _ = vrftable.add_vrf("default", 0, None);
+        let _ = vrftable.add_vrf(&RouterVrfConfig::new(0, "default"));
         vrftable
     }
 
     //////////////////////////////////////////////////////////////////////////
     /// Create a new [`Vrf`] with some name, [`VrfId`], and optional [`Vni`].
     //////////////////////////////////////////////////////////////////////////
-    pub fn add_vrf(
-        &mut self,
-        name: &str,
-        vrfid: VrfId,
-        vni: Option<Vni>,
-    ) -> Result<(), RouterError> {
+    pub fn add_vrf(&mut self, config: &RouterVrfConfig) -> Result<(), RouterError> {
+        let vrfid = config.vrfid;
+        let name = &config.name;
         debug!("Creating new VRF name:{name} id: {vrfid}");
 
         /* Forbid VRF addition if one exists with same id */
         if self.by_id.contains_key(&vrfid) {
-            error!("Can't add VRF with id {vrfid}: a VRF with that id already exists");
+            error!("Can't add VRF with id {vrfid}: one with that id exists");
             return Err(RouterError::VrfExists(vrfid));
         }
 
         /* Build new VRF object */
-        let mut vrf = Vrf::new(name, vrfid, None);
+        let mut vrf = Vrf::new(&config);
 
         /* Forbid addition of a vrf if one exists with same vni */
-        if let Some(vni) = vni {
+        if let Some(vni) = config.vni {
             if self.by_vni.contains_key(&vni) {
-                error!("Can't add VRF (id {vrfid}) with Vni {vni}: Vni is already in use");
+                error!("Can't add VRF (id {vrfid}) with Vni {vni}: Vni is in use");
                 return Err(RouterError::VniInUse(vni.as_u32()));
             }
             /* set vni */
@@ -75,7 +72,7 @@ impl VrfTable {
 
         /* store */
         self.by_id.entry(vrfid).or_insert(vrf);
-        if let Some(vni) = vni {
+        if let Some(vni) = config.vni {
             self.by_vni.entry(vni).insert_entry(vrfid);
         }
         debug!("Successfully added VRF {name}, id {vrfid}");
@@ -296,20 +293,28 @@ mod tests {
         let mut vrftable = VrfTable::new(fibtw);
 
         /* add VRFs (default VRF is always there) */
-        vrftable.add_vrf("VPC-1", 1, Some(mk_vni(3000))).unwrap();
-        vrftable.add_vrf("VPC-2", 2, Some(mk_vni(4000))).unwrap();
-        vrftable.add_vrf("VPC-3", 3, Some(mk_vni(5000))).unwrap();
+        let cfg = RouterVrfConfig::new(1, "VPC-1").set_vni(mk_vni(3000));
+        vrftable.add_vrf(&cfg).expect("Should succeed");
+
+        let cfg = RouterVrfConfig::new(2, "VPC-2").set_vni(mk_vni(4000));
+        vrftable.add_vrf(&cfg).expect("Should succeed");
+
+        let cfg = RouterVrfConfig::new(3, "VPC-3").set_vni(mk_vni(5000));
+        vrftable.add_vrf(&cfg).expect("Should succeed");
 
         /* add VRF with already used id */
+        let cfg = RouterVrfConfig::new(1, "duped-id");
         assert!(
             vrftable
-                .add_vrf("duped-id", 1, None)
+                .add_vrf(&cfg)
                 .is_err_and(|e| e == RouterError::VrfExists(1))
         );
+
         /* add VRF with unused id but used vni */
+        let cfg = RouterVrfConfig::new(999, "duped-vni").set_vni(mk_vni(3000));
         assert!(
             vrftable
-                .add_vrf("duped-vni", 999, Some(mk_vni(3000)))
+                .add_vrf(&cfg)
                 .is_err_and(|e| e == RouterError::VniInUse(3000))
         );
 
@@ -403,10 +408,10 @@ mod tests {
         let vrfid = 999;
         let vni = mk_vni(3000);
 
-        debug!("━━━━Test: create VRF without VNI");
-        vrftable
-            .add_vrf("VPC-1", vrfid, None)
-            .expect("Should be created");
+        debug!("━━━━Test: Add a VRF without VNI");
+        let vrf_cfg = RouterVrfConfig::new(vrfid, "VPC-1");
+        vrftable.add_vrf(&vrf_cfg).expect("Should be created");
+
         let vrf = vrftable.get_vrf(vrfid).expect("Should be there");
         assert_eq!(vrf.name, "VPC-1");
         assert_eq!(vrf.vni, None);
@@ -464,10 +469,11 @@ mod tests {
         let vrfid = 999;
         let vni = mk_vni(3000);
 
-        debug!("━━━━Test: create VRF and associate VNI {vni}");
-        vrftable
-            .add_vrf("VPC-1", vrfid, None)
-            .expect("Should be created");
+        debug!("━━━━Test: Add a VRF without Vni");
+        let vrf_cfg = RouterVrfConfig::new(vrfid, "VPC-1");
+        vrftable.add_vrf(&vrf_cfg).expect("Should be created");
+
+        debug!("━━━━Test: Associate VNI {vni}");
         vrftable.set_vni(vrfid, vni).expect("Should succeed");
         assert_eq!(vrftable.len(), 2); // default is always there
         debug!("\n{vrftable}");

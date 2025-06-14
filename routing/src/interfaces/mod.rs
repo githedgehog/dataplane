@@ -16,7 +16,7 @@ pub mod tests {
     use crate::interfaces::interface::{
         Attachment, IfDataDot1q, IfDataEthernet, IfState, IfType, RouterInterfaceConfig,
     };
-    use crate::rib::vrf::Vrf;
+    use crate::rib::vrf::{RouterVrfConfig, Vrf};
     use net::eth::mac::Mac;
     use net::vlan::Vid;
     use std::net::IpAddr;
@@ -109,8 +109,9 @@ pub mod tests {
         let (fibw, fibr) = FibWriter::new(FibId::Id(0));
 
         /* Create a VRF for that fib */
-        #[allow(clippy::arc_with_non_send_sync)]
-        let vrf = Vrf::new("default-vrf", 0, Some(fibw));
+        let vrf_cfg = RouterVrfConfig::new(0, "default");
+        let mut vrf = Vrf::new(&vrf_cfg);
+        vrf.set_fibw(fibw);
 
         /* lookup interface with non-existent index */
         let iface = iftable.get_interface(100);
