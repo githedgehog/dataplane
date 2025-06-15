@@ -6,9 +6,13 @@
 pub mod checksum;
 pub mod port;
 
+use crate::headers::Net;
+use crate::ipv4::Ipv4;
+use crate::ipv6::Ipv6;
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
 };
+use crate::udp::checksum::UdpChecksum;
 use crate::udp::port::UdpPort;
 use crate::vxlan::Vxlan;
 use etherparse::UdpHeader;
@@ -127,6 +131,33 @@ impl Udp {
         );
         self.0.length = length.get();
         self
+    }
+
+    fn compute_checksum_ipv4(&self, net: &Ipv4, payload: impl AsRef<[u8]>) -> UdpChecksum {
+        #[allow(clippy::expect_used)] // payload greater than 2^16 bytes should be excluded by DPDK
+        self.0
+            .calc_checksum_ipv4(&net.0, payload.as_ref())
+            .expect("unreasonable payload")
+            .into()
+    }
+
+    fn compute_checksum_ipv6(&self, net: &Ipv6, payload: impl AsRef<[u8]>) -> UdpChecksum {
+        #[allow(clippy::expect_used)] // payload greater than 2^16 bytes should be excluded by DPDK
+        self.0
+            .calc_checksum_ipv6(&net.0, payload.as_ref())
+            .expect("unreasonable payload")
+            .into()
+    }
+
+    fn compute_checksum(&self, net: &Net, payload: impl AsRef<[u8]>) -> UdpChecksum {
+        match net {
+            Net::Ipv4(ip) => self.compute_checksum_ipv4(ip, payload.as_ref()),
+            Net::Ipv6(ip) => self.compute_checksum_ipv6(ip, payload.as_ref()),
+        }
+    }
+
+    pub(crate) fn update_checksum(&mut self, net: &Net, payload: impl AsRef<[u8]>) {
+        self.set_checksum(self.compute_checksum(net, payload).into());
     }
 }
 
