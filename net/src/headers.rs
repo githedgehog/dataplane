@@ -24,7 +24,7 @@ use core::fmt::Debug;
 use derive_builder::Builder;
 use std::net::IpAddr;
 use std::num::NonZero;
-use tracing::debug;
+use tracing::{debug, trace};
 
 const MAX_VLANS: usize = 4;
 const MAX_NET_EXTENSIONS: usize = 2;
@@ -93,6 +93,42 @@ pub enum Transport {
     Udp(Udp),
     Icmp4(Icmp4),
     Icmp6(Icmp6),
+}
+
+impl Net {
+    pub(crate) fn update_checksum(&mut self) {
+        match self {
+            Net::Ipv4(ip) => {
+                ip.update_checksum();
+            }
+            Net::Ipv6(_) => {}
+        }
+    }
+}
+
+impl Transport {
+    pub(crate) fn update_checksum(&mut self, net: &Net, payload: impl AsRef<[u8]>) {
+        match (net, self) {
+            (net, Transport::Tcp(tcp)) => tcp.update_checksum(net, payload),
+            (net, Transport::Udp(udp)) => udp.update_checksum(net, payload),
+            (Net::Ipv4(_), Transport::Icmp4(icmp4)) => icmp4.0.update_checksum(payload.as_ref()),
+            (Net::Ipv6(ip), Transport::Icmp6(icmpv6)) => {
+                // TODO: factor logic into discrete function
+                #[allow(clippy::expect_used)] // dpdk precludes payloads longer than 2^16 bytes
+                icmpv6
+                    .0
+                    .update_checksum(
+                        ip.source().inner().octets(),
+                        ip.destination().octets(),
+                        payload.as_ref(),
+                    )
+                    .expect("unreasonable header size")
+            }
+            // TODO: statically ensure that this is unreachable
+            (Net::Ipv6(_), Transport::Icmp4(_)) => debug!("illegal: icmpv4 in ipv6"),
+            (Net::Ipv4(_), Transport::Icmp6(_)) => debug!("illegal: icmpv6 in ipv4"),
+        }
+    }
 }
 
 impl DeParse for Transport {
@@ -406,6 +442,25 @@ impl Headers {
                     Ok(Some(vlan))
                 }
             },
+        }
+    }
+
+    pub(crate) fn update_checksum(&mut self, payload: impl AsRef<[u8]>) {
+        match &mut self.net {
+            None => {
+                trace!("no network header: can't update checksum")
+            }
+            Some(net) => {
+                net.update_checksum();
+                match &mut self.transport {
+                    None => {
+                        trace!("no transport header: can't update checksum")
+                    }
+                    Some(transport) => {
+                        transport.update_checksum(net, payload.as_ref());
+                    }
+                }
+            }
         }
     }
 }

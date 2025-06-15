@@ -14,7 +14,7 @@ pub use contract::*;
 
 /// An `ICMPv6` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Icmp6(Icmpv6Header);
+pub struct Icmp6(pub(crate) Icmpv6Header);
 
 impl Parse for Icmp6 {
     type Error = LengthError;
