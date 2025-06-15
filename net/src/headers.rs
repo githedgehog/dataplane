@@ -24,7 +24,7 @@ use core::fmt::Debug;
 use derive_builder::Builder;
 use std::net::IpAddr;
 use std::num::NonZero;
-use tracing::debug;
+use tracing::{debug, trace};
 
 const MAX_VLANS: usize = 4;
 const MAX_NET_EXTENSIONS: usize = 2;

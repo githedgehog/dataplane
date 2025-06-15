@@ -28,7 +28,7 @@ pub use contract::*;
 
 /// An IPv6 header
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Ipv6(Ipv6Header);
+pub struct Ipv6(pub(crate) Ipv6Header);
 
 impl Ipv6 {
     /// The minimum length (in bytes) of an [`Ipv6`] header.
