@@ -5,6 +5,9 @@
 
 pub(crate) use clap::Parser;
 use mgmt::processor::launch::GrpcAddress;
+use routing::cpi::DEFAULT_DP_UX_PATH;
+use routing::cpi::DEFAULT_DP_UX_PATH_CLI;
+use routing::cpi::DEFAULT_FRR_AGENT_PATH;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing::{debug, error};
@@ -35,12 +38,38 @@ pub(crate) struct CmdArgs {
     interface: Vec<String>,
 
     /// gRPC server address (IP:PORT for TCP or path for UNIX socket)
-    #[arg(long, value_name = "ADDRESS", default_value = "[::1]:50051")]
+    #[arg(
+        long,
+        value_name = "ADDRESS",
+        default_value = "[::1]:50051",
+        help = "IP Address and port or UNIX socket path to listen for managment connections"
+    )]
     grpc_address: String,
 
     /// Treat grpc-address as a UNIX socket path
-    #[arg(long, help = "Use UNIX socket instead of TCP")]
+    #[arg(long, help = "Use a unix socket to listen for management connections")]
     grpc_unix_socket: bool,
+
+    #[arg(
+        long,
+        value_name = "Unix socket for FRR to send messages to the dataplane control plane interface",
+        default_value = DEFAULT_DP_UX_PATH
+    )]
+    cpi_sock_path: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "Unix socket to listen for dataplane cli connections",
+        default_value = DEFAULT_DP_UX_PATH_CLI
+    )]
+    cli_sock_path: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "Unix socket to connect to FRR agent that controls FRR configuration reload",
+        default_value = DEFAULT_FRR_AGENT_PATH
+    )]
+    frr_agent_path: Option<String>,
 }
 
 impl CmdArgs {
@@ -130,5 +159,21 @@ impl CmdArgs {
                 self.grpc_address
             )),
         }
+    }
+
+    pub fn cpi_sock_path(&self) -> String {
+        self.cpi_sock_path
+            .clone()
+            .unwrap_or(DEFAULT_DP_UX_PATH.to_string())
+    }
+    pub fn cli_sock_path(&self) -> String {
+        self.cli_sock_path
+            .clone()
+            .unwrap_or(DEFAULT_DP_UX_PATH_CLI.to_string())
+    }
+    pub fn frr_agent_path(&self) -> String {
+        self.frr_agent_path
+            .clone()
+            .unwrap_or(DEFAULT_FRR_AGENT_PATH.to_string())
     }
 }
