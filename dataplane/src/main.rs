@@ -54,6 +54,11 @@ fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
     }
 }
 
+// remove this
+use routing::cpi::DEFAULT_DP_UX_PATH;
+use routing::cpi::DEFAULT_DP_UX_PATH_CLI;
+use routing::cpi::DEFAULT_FRR_AGENT_PATH;
+
 fn main() {
     init_logging();
     info!("Starting gateway process...");
@@ -74,7 +79,11 @@ fn main() {
     };
 
     /* router configuration */
-    let Ok(config) = RouterConfigBuilder::default().build() else {
+    let Ok(config) = RouterConfigBuilder::default()
+        .cli_sock_path(args.get_cpi_path().unwrap_or_else(|| DEFAULT_DP_UX_PATH.to_string()))
+        .cpi_sock_path(args.cli_sock_path().unwrap_or_else(|| DEFAULT_DP_UX_PATH_CLI.to_string()))
+        .frr_agent_path(args.frr_agent_path().unwrap_or_else(|| DEFAULT_FRR_AGENT_PATH.to_string()))
+    .build() else {
         error!("Bad router configuration");
         panic!("Bad router configuration");
     };
@@ -84,6 +93,7 @@ fn main() {
         error!("Failed to start router");
         panic!("Failed to start router");
     };
+
     let builder = move || pipeline;
     let router_ctl = router.get_ctl_tx();
     let frr_agent_path = router.get_frr_agent_path().to_str().unwrap();
