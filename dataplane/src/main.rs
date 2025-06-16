@@ -80,8 +80,8 @@ fn main() {
 
     /* router configuration */
     let Ok(config) = RouterConfigBuilder::default()
-        .cli_sock_path(args.get_cpi_path().unwrap_or_else(|| DEFAULT_DP_UX_PATH.to_string()))
-        .cpi_sock_path(args.cli_sock_path().unwrap_or_else(|| DEFAULT_DP_UX_PATH_CLI.to_string()))
+        .cpi_sock_path(args.get_cpi_path().unwrap_or_else(|| DEFAULT_DP_UX_PATH.to_string()))
+        .cli_sock_path(args.cli_sock_path().unwrap_or_else(|| DEFAULT_DP_UX_PATH_CLI.to_string()))
         .frr_agent_path(args.frr_agent_path().unwrap_or_else(|| DEFAULT_FRR_AGENT_PATH.to_string()))
     .build() else {
         error!("Bad router configuration");
