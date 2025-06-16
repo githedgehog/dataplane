@@ -79,13 +79,26 @@ fn main() {
     };
 
     /* router configuration */
-    let Ok(config) = RouterConfigBuilder::default()
-        .cpi_sock_path(args.get_cpi_path().unwrap_or_else(|| DEFAULT_DP_UX_PATH.to_string()))
-        .cli_sock_path(args.cli_sock_path().unwrap_or_else(|| DEFAULT_DP_UX_PATH_CLI.to_string()))
-        .frr_agent_path(args.frr_agent_path().unwrap_or_else(|| DEFAULT_FRR_AGENT_PATH.to_string()))
-    .build() else {
-        error!("Bad router configuration");
-        panic!("Bad router configuration");
+    let config = match RouterConfigBuilder::default()
+        .cpi_sock_path(
+            args.get_cpi_path()
+                .unwrap_or_else(|| DEFAULT_DP_UX_PATH.to_string()),
+        )
+        .cli_sock_path(
+            args.cli_sock_path()
+                .unwrap_or_else(|| DEFAULT_DP_UX_PATH_CLI.to_string()),
+        )
+        .frr_agent_path(
+            args.frr_agent_path()
+                .unwrap_or_else(|| DEFAULT_FRR_AGENT_PATH.to_string()),
+        )
+        .build()
+    {
+        Ok(config) => config,
+        Err(e) => {
+            error!("Failed to build router configuration: {e}");
+            panic!("Failed to build router configuration: {e}");
+        }
     };
 
     /* start router and create routing pipeline */
