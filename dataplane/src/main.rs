@@ -89,17 +89,23 @@ fn main() {
     };
 
     /* start router and create routing pipeline */
-    let Ok((router, pipeline)) = start_router(config) else {
-        error!("Failed to start router");
-        panic!("Failed to start router");
-    };
-
-    let builder = move || pipeline;
-    let router_ctl = router.get_ctl_tx();
-    let frr_agent_path = router.get_frr_agent_path().to_str().unwrap();
+    let builder;
+    let router_ctl;
+    let frr_agent_path;
+    match start_router(config) {
+        Ok((router, pipeline)) => {
+            builder = move || pipeline;
+            router_ctl = router.get_ctl_tx();
+            frr_agent_path = router.get_frr_agent_path().to_str().unwrap().to_string();
+        }
+        Err(e) => {
+            error!("Failed to start router: {e}");
+            panic!("Failed to start router: {e}");
+        }
+    }
 
     /* start management */
-    if let Err(e) = start_mgmt(grpc_addr, router_ctl, frr_agent_path) {
+    if let Err(e) = start_mgmt(grpc_addr, router_ctl, frr_agent_path.as_str()) {
         error!("Failed to start gRPC server: {e}");
         panic!("Failed to start gRPC server: {e}");
     }
