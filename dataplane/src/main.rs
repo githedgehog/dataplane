@@ -80,11 +80,13 @@ fn main() {
     };
 
     /* start router and create routing pipeline */
-    let Ok((router, pipeline)) = start_router(config) else {
-        error!("Failed to start router");
-        panic!("Failed to start router");
+    let (builder, router) = match start_router(config) {
+        Ok((router, pipeline)) => (move || pipeline, router),
+        Err(e) => {
+            error!("Failed to start router: {e}");
+            panic!("Failed to start router: {e}");
+        }
     };
-    let builder = move || pipeline;
     let router_ctl = router.get_ctl_tx();
     let frr_agent_path = router.get_frr_agent_path().to_str().unwrap();
 
