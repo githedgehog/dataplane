@@ -124,6 +124,48 @@ impl VrfTable {
         Ok(())
     }
 
+    ///////////////////////////////////////////////////////////////////////////////////
+    /// Check the correctness of a vni configuration for the vrf with the given [`VrfId`].
+    /// This method returns an error if the indicated vrf does not exist, does not have
+    /// a [`Vni`] configured or it does but the internal state is not the expected.
+    ///////////////////////////////////////////////////////////////////////////////////
+    pub fn check_vni(&self, vrfid: VrfId) -> Result<(), RouterError> {
+        let vrf = self.get_vrf(vrfid)?;
+        let Some(vni) = &vrf.vni else {
+            return Err(RouterError::Internal("No vni found"));
+        };
+        let found = self.get_vrfid_by_vni(*vni)?;
+        if found != vrfid {
+            error!("Vni {vni} refers to vrfid {found} and not {vrfid}");
+            return Err(RouterError::Internal("Inconsistent vni mapping"));
+        }
+        // look up fib -- from fibtable
+        let fibtable = self
+            .fibtablew
+            .enter()
+            .ok_or(RouterError::Internal("Failed to access fib table"))?;
+        let fib = fibtable
+            .get_fib(&FibId::Vni(*vni))
+            .ok_or(RouterError::Internal("No fib for vni found"))?;
+        let fib = fib
+            .enter()
+            .ok_or(RouterError::Internal("Unable to read fib"))?;
+        let found_fibid = fib.get_id();
+
+        // look up fib - direct (TODO: make fib mandatory for VRF)
+        if let Some(fibw) = &vrf.fibw {
+            let fib = fibw
+                .enter()
+                .ok_or(RouterError::Internal("Unable to access Fib for vrf"))?;
+            let fibid = fib.get_id();
+            if fibid != found_fibid {
+                error!("Expected: {found_fibid} found: {fibid}");
+                return Err(RouterError::Internal("Inconsistent fib id found!"));
+            }
+        }
+        Ok(())
+    }
+
     //////////////////////////////////////////////////////////////////
     /// Remove the vrf with the given [`VrfId`]
     //////////////////////////////////////////////////////////////////
