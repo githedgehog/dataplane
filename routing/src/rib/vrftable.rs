@@ -9,6 +9,7 @@ use crate::fib::fibtable::FibTableWriter;
 use crate::fib::fibtype::FibId;
 use crate::interfaces::iftablerw::IfTableWriter;
 use crate::{errors::RouterError, rib::vrf::RouterVrfConfig};
+use ahash::RandomState;
 use net::vxlan::Vni;
 use std::collections::HashMap;
 
@@ -16,8 +17,8 @@ use std::collections::HashMap;
 use tracing::{debug, error};
 
 pub struct VrfTable {
-    by_id: HashMap<VrfId, Vrf>,
-    by_vni: HashMap<Vni, VrfId>,
+    by_id: HashMap<VrfId, Vrf, RandomState>,
+    by_vni: HashMap<Vni, VrfId, RandomState>,
     fibtablew: FibTableWriter,
 }
 
@@ -30,8 +31,8 @@ impl VrfTable {
     #[must_use]
     pub fn new(fibtablew: FibTableWriter) -> Self {
         let mut vrftable = Self {
-            by_id: HashMap::new(),
-            by_vni: HashMap::new(),
+            by_id: HashMap::with_hasher(RandomState::with_seed(0)),
+            by_vni: HashMap::with_hasher(RandomState::with_seed(0)),
             fibtablew,
         };
         /* create default vrf: this can't fail */
