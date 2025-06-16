@@ -147,6 +147,9 @@ impl RouterVrfConfig {
             vni: None,
         }
     }
+    pub fn set_name(&mut self, name: &str) {
+        self.name = name.to_owned();
+    }
     pub fn set_description(mut self, description: &str) -> Self {
         self.description = Some(description.to_owned());
         self
@@ -160,9 +163,8 @@ impl RouterVrfConfig {
         self.vni = Some(vni);
         self
     }
-    #[cfg(not(test))]
-    pub fn set_vni(&mut self, vni: Vni) {
-        self.vni = Some(vni);
+    pub fn reset_vni(&mut self, vni: Option<Vni>) {
+        self.vni = vni;
     }
 }
 

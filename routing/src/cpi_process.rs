@@ -125,8 +125,8 @@ fn auto_learn_vrf(
         };
 
         let mut vrf_cfg = RouterVrfConfig::new(route.vrfid, name);
-        if let Some(vni) = vni {
-            vrf_cfg.set_vni(vni);
+        if vni.is_some() {
+            vrf_cfg.reset_vni(vni);
         }
 
         // add the vrf
