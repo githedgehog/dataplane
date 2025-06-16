@@ -5,16 +5,14 @@
 
 #![allow(clippy::collapsible_if)]
 
-use std::collections::HashSet;
-use std::net::IpAddr;
-use tracing::{debug, error, info};
-
+use crate::fib::fibtype::{FibId, FibReader};
+use crate::rib::vrf::VrfId;
 use net::eth::mac::Mac;
 use net::vlan::Vid;
-
-use crate::errors::RouterError;
-use crate::fib::fibtype::{FibId, FibReader};
-use crate::rib::vrf::{Vrf, VrfId};
+use std::collections::HashSet;
+use std::net::IpAddr;
+#[allow(unused)]
+use tracing::{debug, error, info};
 
 /// A type to uniquely identify a network interface
 pub type IfIndex = u32;
@@ -75,22 +73,21 @@ pub enum Attachment {
     BD,
 }
 
-#[derive(Clone, PartialEq)]
-pub enum AttachmentType {
+#[derive(Clone, Debug, PartialEq)]
+pub enum AttachConfig {
     VRF(VrfId),
     BD,
 }
 
 /// An object representing the configuration for an [`Interface`]
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct RouterInterfaceConfig {
-    pub ifindex: IfIndex,            /* ifindex of kernel interface (key) */
-    pub name: String,                /* name of interface */
-    pub description: Option<String>, /* description - informational */
-    pub iftype: IfType,              /* type of interface */
-    pub admin_state: IfState,        /* admin state */
-                                     // FIXME: pub attachment: Option<AttachmentType>
+    pub ifindex: IfIndex,                 /* ifindex of kernel interface (key) */
+    pub name: String,                     /* name of interface */
+    pub description: Option<String>,      /* description - informational */
+    pub iftype: IfType,                   /* type of interface */
+    pub admin_state: IfState,             /* admin state */
+    pub attach_cfg: Option<AttachConfig>, /* attach config */
 }
 impl RouterInterfaceConfig {
     pub fn new(name: &str, ifindex: IfIndex) -> Self {
@@ -100,7 +97,11 @@ impl RouterInterfaceConfig {
             description: None,
             iftype: IfType::Unknown,
             admin_state: IfState::Up,
+            attach_cfg: None,
         }
+    }
+    pub fn set_name(&mut self, name: &str) {
+        self.name = name.to_owned();
     }
     pub fn set_description(&mut self, description: &str) {
         self.description = Some(description.to_owned());
@@ -110,6 +111,9 @@ impl RouterInterfaceConfig {
     }
     pub fn set_admin_state(&mut self, state: IfState) {
         self.admin_state = state;
+    }
+    pub fn set_attach_cfg(&mut self, attach_cfg: Option<AttachConfig>) {
+        self.attach_cfg = attach_cfg;
     }
 }
 
@@ -177,45 +181,6 @@ impl Interface {
             self.admin_state = state;
         }
     }
-
-    //////////////////////////////////////////////////////////////////
-    /// Attach an [`Interface`] to a VRF. The [`Interface`] is attached
-    /// to a `FibReader` so that IP packets received on that interface can
-    /// be readily forwarded performing an LPM operation on the corresponding FIB.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the interface is attached to another vrf or if the
-    /// fib corresponding to the vrf is not accessible
-    //////////////////////////////////////////////////////////////////
-    pub fn attach(&mut self, vrf: &Vrf) -> Result<(), RouterError> {
-        if let Some(fibr) = vrf.get_vrf_fibr() {
-            if let Some(id) = fibr.get_id() {
-                if self.is_attached_to_fib(id) {
-                    Ok(())
-                } else if self.attachment.is_some() {
-                    Err(RouterError::AlreadyAttached)
-                } else {
-                    // create attachment object with a Fibreader
-                    self.attachment = Some(Attachment::VRF(fibr));
-                    Ok(())
-                }
-            } else {
-                error!(
-                    "Failed to attach interface {} to VRF {}: can't get fib id",
-                    self.name, vrf.name
-                );
-                Err(RouterError::Internal("Failed to get fib Id"))
-            }
-        } else {
-            error!(
-                "Can't attach interface {} to vrf {} since it has no FIB",
-                self.name, vrf.name
-            );
-            Err(RouterError::Internal("Failed to access FIB"))
-        }
-    }
-
     //////////////////////////////////////////////////////////////////
     /// Detach an [`Interface`], unconditionally
     //////////////////////////////////////////////////////////////////
@@ -253,7 +218,7 @@ impl Interface {
         self.attachment.take_if(|attachment| {
             if let Attachment::VRF(fibr) = &attachment {
                 if fibr.get_id() == Some(fibid) {
-                    debug!("Detaching interface {} from fib {fibid}", self.name);
+                    debug!("Will detach interface {} from fib {fibid}", self.name);
                     true
                 } else {
                     false

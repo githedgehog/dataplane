@@ -9,12 +9,12 @@ pub mod interface;
 
 #[cfg(test)]
 pub mod tests {
-    use crate::display::IfTableAddress;
+    use crate::RouterError;
     use crate::fib::fibtype::{FibId, FibWriter};
     use crate::interfaces::iftable::IfTable;
     use crate::interfaces::iftablerw::{IfTableReader, IfTableWriter};
     use crate::interfaces::interface::{
-        Attachment, IfDataDot1q, IfDataEthernet, IfState, IfType, RouterInterfaceConfig,
+        IfDataDot1q, IfDataEthernet, IfState, IfType, RouterInterfaceConfig,
     };
     use crate::rib::vrf::{RouterVrfConfig, Vrf};
     use net::eth::mac::Mac;
@@ -75,12 +75,12 @@ pub mod tests {
         }));
 
         /* Add the interfaces to the iftable */
-        iftable.add_interface(&lo);
-        iftable.add_interface(&eth0);
-        iftable.add_interface(&eth1);
-        iftable.add_interface(&eth2);
-        iftable.add_interface(&vlan100);
-        iftable.add_interface(&vlan200);
+        iftable.add_interface(&lo).expect("Should not fail");
+        iftable.add_interface(&eth0).expect("Should not fail");
+        iftable.add_interface(&eth1).expect("Should not fail");
+        iftable.add_interface(&eth2).expect("Should not fail");
+        iftable.add_interface(&vlan100).expect("Should not fail");
+        iftable.add_interface(&vlan200).expect("Should not fail");
 
         assert_eq!(iftable.len(), 6);
 
@@ -106,7 +106,7 @@ pub mod tests {
         let mut iftable = build_test_iftable();
 
         /* Create a fib for the vrf created next */
-        let (fibw, fibr) = FibWriter::new(FibId::Id(0));
+        let (fibw, _fibr) = FibWriter::new(FibId::Id(0));
 
         /* Create a VRF for that fib */
         let vrf_cfg = RouterVrfConfig::new(0, "default");
@@ -117,38 +117,17 @@ pub mod tests {
         let iface = iftable.get_interface(100);
         assert!(iface.is_none());
 
-        {
-            /* Lookup interface by ifindex 2 */
-            let iface = iftable.get_interface_mut(2);
-            assert!(iface.is_some());
-            let eth0 = iface.unwrap();
-            assert_eq!(eth0.name, "eth0", "We should get eth0");
-            assert_eq!(eth0.ifindex, 2, "eth0 has ifindex 2");
+        /* Lookup interface by ifindex 2 */
+        let iface = iftable.get_interface_mut(2);
+        assert!(iface.is_some());
+        let eth0 = iface.unwrap();
+        assert_eq!(eth0.name, "eth0", "We should get eth0");
+        assert_eq!(eth0.ifindex, 2, "eth0 has ifindex 2");
 
-            /* Add an ip address (the interface is in the iftable) */
-            let address = IpAddr::from_str("10.0.0.1").expect("Bad address");
-            eth0.add_ifaddr(&(address, 24));
-            assert!(eth0.has_address(&address));
-
-            /* Attach eth0 to the VRF */
-            let e = eth0.attach(&vrf);
-            assert_eq!(e, Ok(()));
-            assert!(matches!(eth0.attachment, Some(Attachment::VRF(_))));
-            if let Some(Attachment::VRF(r)) = &eth0.attachment {
-                assert_eq!(r.get_id(), fibr.get_id());
-            } else {
-                unreachable!()
-            }
-        }
-        // Need a separate scope. Display for interfaces borrows interfaces
-        // hence, we can't have a mutable reference to them.
-        println!("{}", &iftable);
-
-        /* Detach */
-        let eth0 = iftable.get_interface_mut(2).expect("Should find it");
-
-        eth0.detach();
-        assert!(eth0.attachment.is_none());
+        /* Add an ip address (the interface is in the iftable) */
+        let address = IpAddr::from_str("10.0.0.1").expect("Bad address");
+        eth0.add_ifaddr(&(address, 24));
+        assert!(eth0.has_address(&address));
     }
 
     #[test]
@@ -163,7 +142,7 @@ pub mod tests {
         }));
 
         /* add to interface table */
-        iftable.add_interface(&eth0);
+        iftable.add_interface(&eth0).expect("Should succeed");
         assert_eq!(iftable.len(), 1, "Eth0 should be there");
 
         /* test get_mac */
@@ -178,40 +157,12 @@ pub mod tests {
         eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
         }));
-        iftable.add_interface(&eth0);
+        let iface = iftable.add_interface(&eth0);
+        assert!(iface.is_err_and(|e| matches!(e, RouterError::InterfaceExists(_))));
         assert_eq!(iftable.len(), 1, "Only eth0 should be there");
 
         /* Delete eth0 by index */
         iftable.del_interface(2);
         assert_eq!(iftable.len(), 0, "No interface should be there");
-    }
-
-    #[test]
-    fn test_iftable_map() {
-        let mut iftable = IfTable::new();
-
-        let mut ifconfig = RouterInterfaceConfig::new("eth0", 2);
-        ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
-            mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
-        }));
-        iftable.add_interface(&ifconfig);
-
-        /* add some vlan interfaces */
-        for n in 1..10 {
-            let mut ifconfig = RouterInterfaceConfig::new(format!("eth0.{n}").as_str(), 2 + n);
-            ifconfig.set_iftype(IfType::Dot1q(IfDataDot1q {
-                mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
-                vlanid: Vid::new(n.try_into().unwrap()).unwrap(),
-            }));
-            iftable.add_interface(&ifconfig);
-        }
-        println!("{}", &iftable);
-        println!("{}", IfTableAddress(&iftable));
-
-        /* delete the vlan interfaces */
-        for n in 1..10 {
-            iftable.del_interface(2 + n);
-        }
-        assert_eq!(iftable.len(), 1);
     }
 }

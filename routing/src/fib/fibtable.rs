@@ -21,7 +21,7 @@ impl FibTable {
     }
     /// Del a Fib ([`FibReader`])
     pub fn del_fib(&mut self, id: &FibId) {
-        debug!("Deleting FIB with id {id}");
+        debug!("Deleting FIB reference with id {id}");
         self.0.remove(id);
     }
     /// Register a Fib ([`FibReader`]) with a given [`Vni`]
@@ -37,7 +37,9 @@ impl FibTable {
 
     /// Remove any entry referring to the given Vni
     pub fn unregister_vni(&mut self, vni: &Vni) {
-        self.0.remove(&FibId::Vni(*vni));
+        let id = FibId::Vni(*vni);
+        debug!("Deleting FIB reference with id {id}");
+        self.0.remove(&id);
     }
 
     /// Get the [`FibReader`] for the fib with the given [`FibId`]

@@ -15,6 +15,7 @@ use crate::interfaces::interface::{IfAddress, IfIndex, IfState, RouterInterfaceC
 
 enum IfTableChange {
     Add(RouterInterfaceConfig),
+    Mod(RouterInterfaceConfig),
     Del(IfIndex),
     Attach((IfIndex, FibReader)),
     Detach(IfIndex),
@@ -28,7 +29,10 @@ impl Absorb<IfTableChange> for IfTable {
     fn absorb_first(&mut self, change: &mut IfTableChange, _: &Self) {
         match change {
             IfTableChange::Add(ifconfig) => {
-                self.add_interface(&ifconfig);
+                let _ = self.add_interface(&ifconfig);
+            }
+            IfTableChange::Mod(ifconfig) => {
+                let _ = self.mod_interface(&ifconfig);
             }
             IfTableChange::Del(ifindex) => self.del_interface(*ifindex),
             IfTableChange::Attach((ifindex, fibr)) => {
@@ -73,9 +77,27 @@ impl IfTableWriter {
     pub fn enter(&self) -> Option<ReadGuard<'_, IfTable>> {
         self.0.enter()
     }
-    pub fn add_interface(&mut self, ifconfig: RouterInterfaceConfig) {
+    pub fn add_interface(&mut self, ifconfig: RouterInterfaceConfig) -> Result<(), RouterError> {
+        let iftr = self.as_iftable_reader();
+        if let Some(iftable) = iftr.enter() {
+            if iftable.contains(ifconfig.ifindex) {
+                return Err(RouterError::InterfaceExists(ifconfig.ifindex));
+            }
+        }
         self.0.append(IfTableChange::Add(ifconfig));
         self.0.publish();
+        Ok(())
+    }
+    pub fn mod_interface(&mut self, ifconfig: RouterInterfaceConfig) -> Result<(), RouterError> {
+        let iftr = self.as_iftable_reader();
+        if let Some(iftable) = iftr.enter() {
+            if !iftable.contains(ifconfig.ifindex) {
+                return Err(RouterError::NoSuchInterface(ifconfig.ifindex));
+            }
+        }
+        self.0.append(IfTableChange::Mod(ifconfig));
+        self.0.publish();
+        Ok(())
     }
     pub fn del_interface(&mut self, ifindex: IfIndex) {
         self.0.append(IfTableChange::Del(ifindex));
@@ -103,16 +125,11 @@ impl IfTableWriter {
     }
 
     fn get_vrf_fibr(vrftable: &VrfTable, vrfid: VrfId) -> Result<FibReader, RouterError> {
-        if let Ok(vrf) = vrftable.get_vrf(vrfid) {
-            if let Some(fibw) = &vrf.fibw {
-                let fibr = fibw.as_fibreader();
-                Ok(fibr.clone())
-            } else {
-                Err(RouterError::Internal("No fib writer"))
-            }
-        } else {
-            Err(RouterError::NoSuchVrf)
-        }
+        let Ok(vrf) = vrftable.get_vrf(vrfid) else {
+            return Err(RouterError::NoSuchVrf);
+        };
+        vrf.get_vrf_fibr()
+            .ok_or(RouterError::Internal("No fib writer"))
     }
 
     fn interface_attach_check(
@@ -121,14 +138,13 @@ impl IfTableWriter {
         vrfid: VrfId,
         vrftable: &VrfTable,
     ) -> Result<FibReader, RouterError> {
-        if let Some(iftr) = self.0.enter() {
-            if iftr.get_interface(ifindex).is_none() {
-                Err(RouterError::NoSuchInterface(ifindex))
-            } else {
-                Self::get_vrf_fibr(vrftable, vrfid)
-            }
+        let Some(iftr) = self.0.enter() else {
+            return Err(RouterError::Internal("Fail to read iftable"));
+        };
+        if iftr.get_interface(ifindex).is_none() {
+            Err(RouterError::NoSuchInterface(ifindex))
         } else {
-            Err(RouterError::Internal("IfTable writer failed"))
+            Self::get_vrf_fibr(vrftable, vrfid)
         }
     }
     /// Attach an interface to a vrf

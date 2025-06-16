@@ -254,10 +254,11 @@ fn auto_learn_interface(a: &IfAddress, iftw: &mut IfTableWriter, vrftable: &VrfT
         }
 
         /* add to interface table */
-        iftw.add_interface(ifconfig);
+        if let Err(e) = iftw.add_interface(ifconfig.clone()) {
+            error!("Failed to add interface {}: {e}", ifconfig.name);
+        }
 
         /* attach to default vrf */
-
         debug!("Attaching {} to default VRF", a.ifname.as_str());
         let _ = iftw.attach_interface_to_vrf(a.ifindex, 0, vrftable);
     }

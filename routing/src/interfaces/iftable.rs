@@ -46,19 +46,48 @@ impl IfTable {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Add an [`Interface`] to the table. Interfaces are univocally
-    /// identified by an [`IfIndex`], which acts as the master hash key.
+    /// Add an [`Interface`] to the table
     //////////////////////////////////////////////////////////////////
-    pub fn add_interface(&mut self, config: &RouterInterfaceConfig) {
-        let iface = Interface::new(&config);
-
-        /* add interface to iftable */
-        let ifindex = iface.ifindex;
-        if let Some(_prior) = self.by_index.insert(ifindex, iface) {
-            debug!("Updated interface with ifindex {ifindex}");
-        } else {
-            debug!("Registered new interface with ifindex {ifindex}");
+    #[must_use]
+    pub fn add_interface(&mut self, config: &RouterInterfaceConfig) -> Result<(), RouterError> {
+        let ifindex = config.ifindex;
+        if self.contains(ifindex) {
+            error!("Failed to add interface with ifindex {ifindex}: already exists!");
+            return Err(RouterError::InterfaceExists(ifindex));
         }
+        let ifindex = config.ifindex;
+        self.by_index.insert(ifindex, Interface::new(&config));
+        debug!(
+            "Added new interface {} with ifindex {ifindex} to the interface table",
+            &config.name
+        );
+        Ok(())
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Modify an [`Interface`] with the provided config
+    //////////////////////////////////////////////////////////////////
+    #[must_use]
+    pub fn mod_interface(&mut self, config: &RouterInterfaceConfig) -> Result<(), RouterError> {
+        let ifindex = config.ifindex;
+        let Some(iface) = self.by_index.get_mut(&ifindex) else {
+            error!("Failed to modify interface with ifindex {ifindex}: not found");
+            return Err(RouterError::NoSuchInterface(ifindex));
+        };
+        if iface.name != config.name {
+            iface.name = config.name.clone();
+        }
+        if iface.description != config.description {
+            iface.description = config.description.clone();
+        }
+        if iface.iftype != config.iftype {
+            iface.iftype = config.iftype.clone();
+        }
+        if iface.admin_state != config.admin_state {
+            iface.admin_state = config.admin_state.clone();
+        }
+        debug!("Modified interface with ifindex {ifindex}");
+        Ok(())
     }
 
     //////////////////////////////////////////////////////////////////
@@ -129,7 +158,7 @@ impl IfTable {
         if let Some(iface) = self.get_interface_mut(ifindex) {
             iface.attach_vrf(fibr);
         } else {
-            error!("Failed to attach interface with ifindex {ifindex}: not found",);
+            error!("Failed to attach interface with ifindex {ifindex}: not found");
         }
     }
 
@@ -140,7 +169,7 @@ impl IfTable {
         if let Some(iface) = self.get_interface_mut(ifindex) {
             iface.detach();
         } else {
-            error!("Failed to detach interface with ifindex {ifindex}: not found",);
+            error!("Failed to detach interface with ifindex {ifindex}: not found");
         }
     }
 

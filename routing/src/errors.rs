@@ -22,8 +22,8 @@ pub enum RouterError {
     #[error("Invalid VNI value: {0}")]
     VniInvalid(u32),
 
-    #[error("The interface is already attached to a distinct entity")]
-    AlreadyAttached,
+    #[error("An interface with ifindex {0} already exists")]
+    InterfaceExists(u32),
 
     #[error("Invalid socket path '{0}'")]
     InvalidPath(String),
