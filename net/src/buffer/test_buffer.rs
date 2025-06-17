@@ -5,6 +5,9 @@
 //!
 //! [`PacketBuffer`]: crate::buffer::PacketBuffer
 
+#[cfg(any(test, feature = "bolero"))]
+pub use contract::*;
+
 use crate::buffer::{
     Append, Headroom, MemoryBufferNotLongEnough, NotEnoughHeadRoom, NotEnoughTailRoom, Prepend,
     Tailroom, TrimFromEnd, TrimFromStart,
@@ -21,7 +24,7 @@ use crate::buffer::PacketBuffer;
 ///
 /// The core function of this structure is to facilitate testing by "faking" many useful properties
 /// of a real DPDK mbuf (without the need to spin up a full EAL).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TestBuffer {
     buffer: Vec<u8>,
     headroom: u16,
@@ -155,5 +158,154 @@ impl TrimFromEnd for TestBuffer {
         }
         self.tailroom += len;
         Ok(self.as_mut())
+    }
+}
+
+#[cfg(any(test, feature = "bolero"))]
+mod contract {
+    use crate::buffer::TestBuffer;
+    use crate::eth::Eth;
+    use crate::headers::Headers;
+    use crate::parse::DeParse;
+    use bolero::generator::bolero_generator::bounded::BoundedValue;
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
+    use std::num::NonZero;
+    use std::ops::Bound;
+
+    /// The minimum length of a generated [`TestBuffer`].
+    pub const MIN_LEN: u16 = Eth::HEADER_LEN.get();
+
+    /// [`ValueGenerator`] which produces [`TestBuffer`]s of a specified length.
+    #[repr(transparent)]
+    pub struct GenerateTestBufferOfLength(NonZero<u16>);
+
+    impl GenerateTestBufferOfLength {
+        /// Create a new `GenerateTestBufferOfLength` to generate test buffers of length `len`.
+        ///
+        /// If `len` is less than [`MIN_LEN`], it will be set to [`MIN_LEN`].
+        /// If `len` is greater than [`TestBuffer::CAPACITY`], it will be set to [`TestBuffer::CAPACITY`].
+        #[must_use]
+        pub fn new(len: u16) -> Self {
+            #[allow(unsafe_code)] // sound by construction
+            let len = unsafe {
+                NonZero::new_unchecked(match len {
+                    0..MIN_LEN => MIN_LEN,
+                    MIN_LEN..=TestBuffer::CAPACITY => len,
+                    _ => TestBuffer::CAPACITY,
+                })
+            };
+            Self(len)
+        }
+    }
+
+    impl ValueGenerator for GenerateTestBufferOfLength {
+        type Output = TestBuffer;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let mut data = Vec::<u8>::with_capacity(self.0.get() as usize);
+            for _ in 0..self.0.get() {
+                data.push(driver.produce()?);
+            }
+            Some(TestBuffer::from_raw_data(&data))
+        }
+    }
+
+    impl TypeGenerator for TestBuffer {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            GenerateTestBufferOfLength::new(driver.produce()?).generate(driver)
+        }
+    }
+
+    /// [`ValueGenerator`] generator which produces [`TestBuffer`]s between a specified and [`TestBuffer::CAPACITY`].
+    #[repr(transparent)]
+    pub struct GenerateTestBufferOfMinimumLength(NonZero<u16>);
+
+    impl GenerateTestBufferOfMinimumLength {
+        /// Create a new `GenerateTestBufferOfMinimumLength` to generate test buffers of length `min_len` to [`TestBuffer::CAPACITY`].
+        ///
+        /// If `min_len` is less than [`MIN_LEN`], it will be set to [`MIN_LEN`].
+        /// If `min_len` is greater than [`TestBuffer::CAPACITY`], it will be set to [`TestBuffer::CAPACITY`].
+        #[must_use]
+        pub fn new(min_len: u16) -> Self {
+            Self(
+                match min_len {
+                    0..MIN_LEN => NonZero::new(MIN_LEN),
+                    MIN_LEN..=TestBuffer::CAPACITY => NonZero::new(min_len),
+                    _ => NonZero::new(TestBuffer::CAPACITY),
+                }
+                .unwrap_or_else(|| unreachable!()),
+            )
+        }
+    }
+
+    /// [`ValueGenerator`] generator which produces [`TestBuffer`]s between a specified and [`TestBuffer::CAPACITY`].
+    #[repr(transparent)]
+    pub struct GenerateTestBufferOfMaximumLength(NonZero<u16>);
+
+    impl ValueGenerator for GenerateTestBufferOfMinimumLength {
+        type Output = TestBuffer;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            GenerateTestBufferOfLength::new(u16::gen_bounded(
+                driver,
+                Bound::Included(&self.0.get()),
+                Bound::Included(&TestBuffer::CAPACITY),
+            )?)
+            .generate(driver)
+        }
+    }
+
+    impl GenerateTestBufferOfMaximumLength {
+        /// Create a new `GenerateTestBufferOfMinimumLength` to generate test buffers of length `min_len` to [`TestBuffer::CAPACITY`].
+        ///
+        /// If `min_len` is less than [`MIN_LEN`], it will be set to [`MIN_LEN`].
+        /// If `min_len` is greater than [`TestBuffer::CAPACITY`], it will be set to [`TestBuffer::CAPACITY`].
+        #[must_use]
+        pub fn new(max_len: u16) -> Self {
+            Self(
+                NonZero::new(match max_len {
+                    0..MIN_LEN => MIN_LEN,
+                    MIN_LEN..TestBuffer::CAPACITY => max_len,
+                    _ => TestBuffer::CAPACITY,
+                })
+                .unwrap_or_else(|| unreachable!()),
+            )
+        }
+    }
+
+    impl ValueGenerator for GenerateTestBufferOfMaximumLength {
+        type Output = TestBuffer;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            GenerateTestBufferOfLength::new(u16::gen_bounded(
+                driver,
+                Bound::Included(&MIN_LEN),
+                Bound::Included(&self.0.get()),
+            )?)
+            .generate(driver)
+        }
+    }
+
+    /// [`ValueGenerator`] generator which produces [`TestBuffer`]s which contain specified [`Headers`].
+    #[repr(transparent)]
+    pub struct GenerateTestBufferForHeaders(Headers);
+
+    impl GenerateTestBufferForHeaders {
+        /// Create a new `GenerateTestBufferForHeaders` to generate test buffers which contain the specified [`Headers`].
+        #[must_use]
+        pub fn new(headers: Headers) -> Self {
+            Self(headers)
+        }
+    }
+
+    impl ValueGenerator for GenerateTestBufferForHeaders {
+        type Output = TestBuffer;
+
+        fn generate<D: Driver>(&self, _driver: &mut D) -> Option<Self::Output> {
+            let mut data = vec![0; self.0.size().get() as usize];
+            #[allow(clippy::unwrap_used)] // TEMPORARY
+            self.0.deparse(data.as_mut()).unwrap();
+            Some(TestBuffer::from_raw_data(&data))
+        }
     }
 }
