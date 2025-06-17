@@ -6,6 +6,8 @@
 mod checksum;
 mod port;
 
+pub use checksum::*;
+
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
 };
@@ -14,7 +16,8 @@ use etherparse::TcpHeader;
 use etherparse::err::tcp::{HeaderError, HeaderSliceError};
 use std::num::NonZero;
 
-use crate::tcp::checksum::TcpChecksum;
+use crate::ipv4::Ipv4;
+use crate::ipv6::Ipv6;
 #[allow(unused_imports)] // re-export
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
@@ -29,6 +32,22 @@ impl Tcp {
     pub const MIN_LENGTH: NonZero<u16> = NonZero::new(20).unwrap();
     /// The maximum length of a [`Tcp`]
     pub const MAX_LENGTH: usize = 60;
+
+    fn compute_checksum_ipv4(&self, net: &Ipv4, payload: impl AsRef<[u8]>) -> TcpChecksum {
+        #[allow(clippy::expect_used)] // DPDK should exclude payload greater than 2^16 bytes
+        self.0
+            .calc_checksum_ipv4(&net.0, payload.as_ref())
+            .expect("unreasonable payload")
+            .into()
+    }
+
+    fn compute_checksum_ipv6(&self, net: &Ipv6, payload: impl AsRef<[u8]>) -> TcpChecksum {
+        #[allow(clippy::expect_used)] // DPDK should exclude payload greater than 2^16 bytes
+        self.0
+            .calc_checksum_ipv6(&net.0, payload.as_ref())
+            .expect("unreasonable payload")
+            .into()
+    }
 
     /// Get the source port
     #[must_use]
