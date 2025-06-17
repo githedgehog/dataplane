@@ -65,7 +65,7 @@ pub enum DoneReason {
 }
 
 #[allow(unused)]
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct PacketMeta {
     pub iif: InterfaceId,             /* incoming interface - set early */
     pub oif: Option<InterfaceId>,     /* outgoing interface - set late */

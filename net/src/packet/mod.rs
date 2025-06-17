@@ -7,6 +7,9 @@ mod display;
 mod hash;
 mod meta;
 
+#[cfg(any(test, feature = "bolero"))]
+pub use contract::*;
+
 #[cfg(any(doc, test, feature = "test_buffer"))]
 pub mod test_utils;
 
@@ -18,8 +21,9 @@ use crate::headers::{
     TryIpMut, TryVxlan,
 };
 use crate::parse::{DeParse, Parse, ParseError};
-use crate::udp::Udp;
+use crate::udp::{Udp, UdpChecksum};
 
+use crate::checksum::Checksum;
 use crate::vxlan::{Vxlan, VxlanEncap};
 #[allow(unused_imports)] // re-export
 pub use hash::*;
@@ -30,7 +34,7 @@ use std::num::NonZero;
 mod utils;
 
 /// A parsed (see [`Parse`]) ethernet packet.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Packet<Buf: PacketBufferMut> {
     headers: Headers,
     payload: Buf,
@@ -202,8 +206,6 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
 
         // build UDP header for Vxlan, setting ports, length and checksum.
         let mut udp = Udp::new(udp_src_port, Vxlan::PORT);
-        udp.set_checksum(0); /* optional in ipv4 (must be zero if unused) */
-
         #[allow(clippy::cast_possible_truncation)] // checked
         let udp_len = NonZero::new(len as u16).unwrap_or_else(|| unreachable!());
         #[allow(unsafe_code)] // sound usage due to length check
@@ -211,25 +213,31 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             udp.set_length(udp_len);
         }
 
+        // the VXLAN spec says that the checksum SHOULD be zero
+        udp.set_checksum(UdpChecksum::ZERO);
+
         let mut headers = params.headers().clone();
         headers.transport = Some(Transport::Udp(udp));
         match headers.try_ip_mut() {
             None => unreachable!(),
             Some(Net::Ipv6(ipv6)) => {
                 // TODO: include net_ext headers in length if included
-                #[allow(unsafe_code)] // sound usage by construction
-                unsafe {
-                    ipv6.set_payload_length(udp_len.get());
-                }
+                ipv6.set_payload_length(udp_len.get());
             }
             Some(Net::Ipv4(ipv4)) => {
                 ipv4.set_payload_len(udp_len.get())
                     .unwrap_or_else(|e| unreachable!("{:?}", e));
-                ipv4.update_checksum();
+                ipv4.update_checksum(&());
             }
         }
         self.headers = headers;
         Ok(())
+    }
+
+    /// Update the network and transport checksums based on the current headers.
+    pub fn update_checksums(&mut self) -> &mut Self {
+        self.headers.update_checksums(&self.payload);
+        self
     }
 
     /// Update the packet's buffer based on any changes to the packets [`Headers`].
@@ -239,6 +247,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Returns a [`Prepend::Error`] error if the packet does not have enough headroom to
     /// serialize.
     pub fn serialize(mut self) -> Result<Buf, <Buf as Prepend>::Error> {
+        self.update_checksums();
         let needed = self.headers.size().get();
         let buf = self.payload.prepend(needed)?;
         self.headers
@@ -341,6 +350,47 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         match self.get_done() {
             Some(DoneReason::Delivered) | None => Some(self),
             Some(_) => None,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "bolero"))]
+mod contract {
+    use crate::buffer::{GenerateTestBufferForHeaders, TestBuffer};
+    use crate::headers::{CommonHeaders, Headers, Net};
+    use crate::packet::Packet;
+    use crate::parse::DeParse;
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
+
+    impl TypeGenerator for Packet<TestBuffer> {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let headers: Headers = driver.produce()?;
+            let test_buffer = GenerateTestBufferForHeaders::new(headers).generate(driver)?;
+            Packet::new(test_buffer).ok()
+        }
+    }
+
+    /// Common packet generator
+    pub struct CommonPacket;
+
+    impl ValueGenerator for CommonPacket {
+        type Output = Packet<TestBuffer>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let common_headers = CommonHeaders;
+            let headers = common_headers.generate(driver)?;
+            let mut net = headers.net.clone();
+            #[allow(unsafe_code)]
+            match &mut net {
+                None => {}
+                Some(Net::Ipv4(ip)) => ip.set_payload_len(headers.size().get()).ok()?,
+                Some(Net::Ipv6(ip)) => {
+                    ip.set_payload_length(headers.size().get());
+                }
+            }
+            let test_buffer = GenerateTestBufferForHeaders::new(headers).generate(driver)?;
+
+            Packet::new(test_buffer).ok()
         }
     }
 }

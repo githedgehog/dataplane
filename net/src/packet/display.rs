@@ -13,6 +13,7 @@ use crate::tcp::Tcp;
 use crate::udp::{Udp, UdpEncap};
 
 use crate::buffer::PacketBufferMut;
+use crate::checksum::Checksum;
 use crate::packet::{BridgeDomain, DoneReason, InterfaceId, InvalidPacket, Packet, PacketMeta};
 use std::fmt::{Display, Formatter};
 

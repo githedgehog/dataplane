@@ -4,10 +4,11 @@
 //! Definition of [`Headers`] and related methods and types.
 #![allow(missing_docs, clippy::pedantic)] // temporary
 
+use crate::checksum::Checksum;
 use crate::eth::ethtype::EthType;
 use crate::eth::{Eth, EthError};
 use crate::icmp4::Icmp4;
-use crate::icmp6::Icmp6;
+use crate::icmp6::{Icmp6, Icmp6ChecksumPayload};
 use crate::ip_auth::IpAuth;
 use crate::ipv4::Ipv4;
 use crate::ipv6::{Ipv6, Ipv6Ext};
@@ -15,8 +16,8 @@ use crate::parse::{
     DeParse, DeParseError, IllegalBufferLength, IntoNonZeroUSize, LengthError, Parse, ParseError,
     ParsePayload, ParsePayloadWith, Reader, Writer,
 };
-use crate::tcp::Tcp;
-use crate::udp::{Udp, UdpEncap};
+use crate::tcp::{Tcp, TcpChecksumPayload};
+use crate::udp::{Udp, UdpChecksumPayload, UdpEncap};
 use crate::vlan::{Pcp, Vid, Vlan};
 use crate::vxlan::Vxlan;
 use arrayvec::ArrayVec;
@@ -24,7 +25,10 @@ use core::fmt::Debug;
 use derive_builder::Builder;
 use std::net::IpAddr;
 use std::num::NonZero;
-use tracing::debug;
+use tracing::{debug, error, trace};
+
+#[cfg(any(test, feature = "bolero"))]
+pub use contract::*;
 
 const MAX_VLANS: usize = 4;
 const MAX_NET_EXTENSIONS: usize = 2;
@@ -93,6 +97,43 @@ pub enum Transport {
     Udp(Udp),
     Icmp4(Icmp4),
     Icmp6(Icmp6),
+}
+
+impl Net {
+    pub(crate) fn update_checksum(&mut self) {
+        match self {
+            Net::Ipv4(ip) => {
+                ip.update_checksum(&());
+            }
+            Net::Ipv6(_) => {}
+        }
+    }
+}
+
+impl Transport {
+    pub(crate) fn update_checksum(&mut self, net: &Net, payload: impl AsRef<[u8]>) {
+        match (net, self) {
+            (net, Transport::Tcp(tcp)) => {
+                tcp.update_checksum(&TcpChecksumPayload::new(net, payload.as_ref()));
+            }
+            (net, Transport::Udp(udp)) => {
+                udp.update_checksum(&UdpChecksumPayload::new(net, payload.as_ref()));
+            }
+            (Net::Ipv4(_), Transport::Icmp4(icmp4)) => {
+                icmp4.update_checksum(payload.as_ref());
+            }
+            (Net::Ipv6(ip), Transport::Icmp6(icmpv6)) => {
+                icmpv6.update_checksum(&Icmp6ChecksumPayload::new(
+                    ip.source().inner(),
+                    ip.destination(),
+                    payload.as_ref(),
+                ));
+            }
+            // TODO: statically ensure that this is unreachable
+            (Net::Ipv6(_), Transport::Icmp4(_)) => debug!("illegal: icmpv4 in ipv6"),
+            (Net::Ipv4(_), Transport::Icmp6(_)) => debug!("illegal: icmpv6 in ipv4"),
+        }
+    }
 }
 
 impl DeParse for Transport {
@@ -406,6 +447,26 @@ impl Headers {
                     Ok(Some(vlan))
                 }
             },
+        }
+    }
+
+    /// update the checksums of the headers
+    pub(crate) fn update_checksums(&mut self, payload: impl AsRef<[u8]>) {
+        match &mut self.net {
+            None => {
+                trace!("no network header: can't update checksum")
+            }
+            Some(net) => {
+                net.update_checksum();
+                match &mut self.transport {
+                    None => {
+                        trace!("no transport header: can't update checksum")
+                    }
+                    Some(transport) => {
+                        transport.update_checksum(net, payload.as_ref());
+                    }
+                }
+            }
         }
     }
 }
@@ -1105,7 +1166,9 @@ mod contract {
     use crate::ipv6;
     use crate::parse::{DeParse, Parse};
     use crate::tcp::Tcp;
-    use crate::udp::Udp;
+    use crate::udp::{Udp, UdpEncap};
+    use crate::vxlan::Vxlan;
+    use arrayvec::ArrayVec;
     use bolero::{Driver, TypeGenerator, ValueGenerator};
 
     impl TypeGenerator for Headers {
@@ -1181,14 +1244,20 @@ mod contract {
                             Some(headers)
                         }
                         ipv4::CommonNextHeader::Udp => {
-                            let udp: Udp = driver.produce()?;
+                            let mut udp: Udp = driver.produce()?;
+                            let udp_encap = if driver.produce::<bool>()? {
+                                udp.set_destination(Vxlan::PORT);
+                                Some(UdpEncap::Vxlan(driver.produce()?))
+                            } else {
+                                None
+                            };
                             let headers = Headers {
                                 eth: Some(eth),
                                 vlan: Default::default(),
                                 net: Some(Net::Ipv4(ipv4)),
                                 net_ext: Default::default(),
                                 transport: Some(Transport::Udp(udp)),
-                                udp_encap: None,
+                                udp_encap,
                             };
                             Some(headers)
                         }
@@ -1196,7 +1265,7 @@ mod contract {
                             let icmp: Icmp4 = driver.produce()?;
                             let headers = Headers {
                                 eth: Some(eth),
-                                vlan: Default::default(),
+                                vlan: ArrayVec::default(),
                                 net: Some(Net::Ipv4(ipv4)),
                                 net_ext: Default::default(),
                                 transport: Some(Transport::Icmp4(icmp)),
@@ -1224,14 +1293,20 @@ mod contract {
                             Some(headers)
                         }
                         ipv6::CommonNextHeader::Udp => {
-                            let udp: Udp = driver.produce()?;
+                            let mut udp: Udp = driver.produce()?;
+                            let udp_encap = if driver.produce::<bool>()? {
+                                udp.set_destination(Vxlan::PORT);
+                                Some(UdpEncap::Vxlan(driver.produce()?))
+                            } else {
+                                None
+                            };
                             let headers = Headers {
                                 eth: Some(eth),
                                 vlan: Default::default(),
                                 net: Some(Net::Ipv6(ipv6)),
                                 net_ext: Default::default(),
                                 transport: Some(Transport::Udp(udp)),
-                                udp_encap: None,
+                                udp_encap,
                             };
                             Some(headers)
                         }
@@ -1259,6 +1334,7 @@ mod test {
     use crate::headers::Headers;
     use crate::headers::contract::CommonHeaders;
     use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, Parse, ParseError};
+    use bolero::ValueGenerator;
 
     fn parse_back_test(headers: &Headers) {
         let mut buffer = [0_u8; 1024];
