@@ -16,7 +16,7 @@ pub use contract::*;
 
 /// An `ICMPv4` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Icmp4(Icmpv4Header);
+pub struct Icmp4(pub(crate) Icmpv4Header);
 
 impl Icmp4 {
     /// Get the icmp type (reference) field value
