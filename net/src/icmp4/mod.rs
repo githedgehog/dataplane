@@ -8,6 +8,10 @@ use crate::parse::{
 };
 use etherparse::{Icmpv4Header, Icmpv4Type};
 
+mod checksum;
+
+pub use checksum::*;
+
 use std::num::NonZero;
 
 #[allow(unused_imports)] // re-export
@@ -23,11 +27,6 @@ impl Icmp4 {
     #[must_use]
     pub fn icmp_type(&self) -> &Icmpv4Type {
         &self.0.icmp_type
-    }
-    /// Get the icmp type checksum
-    #[must_use]
-    pub fn checksum(&self) -> u16 {
-        self.0.checksum
     }
 }
 
