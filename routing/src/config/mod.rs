@@ -7,6 +7,7 @@
 
 mod interface;
 mod vrf;
+mod vtep;
 
 use net::vxlan::Vni;
 use std::{
@@ -16,6 +17,7 @@ use std::{
 use tracing::{debug, error};
 
 use crate::RouterError;
+use crate::evpn::Vtep;
 use crate::interfaces::iftable::IfTable;
 use crate::interfaces::interface::IfIndex;
 use crate::interfaces::interface::RouterInterfaceConfig;
@@ -34,6 +36,7 @@ pub struct RouterConfig {
     genid: i64, /* not using mgmt GenId to avoid circ dependencies */
     vrfs: BTreeMap<VrfId, RouterVrfConfig>,
     interfaces: BTreeMap<IfIndex, RouterInterfaceConfig>,
+    vtep: Option<Vtep>,
 }
 
 /// Builder methods
@@ -43,6 +46,7 @@ impl RouterConfig {
             genid,
             vrfs: BTreeMap::new(),
             interfaces: BTreeMap::new(),
+            vtep: None,
         }
     }
     pub fn add_vrf(&mut self, vrfconfig: RouterVrfConfig) {
@@ -51,7 +55,11 @@ impl RouterConfig {
     pub fn add_interface(&mut self, ifconfig: RouterInterfaceConfig) {
         self.interfaces.insert(ifconfig.ifindex, ifconfig);
     }
+    pub fn set_vtep(&mut self, vtep: Vtep) {
+        self.vtep = Some(vtep);
+    }
     pub fn validate(&self) -> Result<(), RouterError> {
+        // check for duplicate vnis
         let mut num_vnis = 0;
         let vnis = self
             .vrfs()
@@ -64,6 +72,12 @@ impl RouterConfig {
             .collect::<BTreeSet<Vni>>();
         if vnis.len() != num_vnis {
             return Err(RouterError::InvalidConfig("Duplicated vnis"));
+        }
+        // Check vtep if there
+        if let Some(vtep) = &self.vtep {
+            if !vtep.is_set_up() {
+                return Err(RouterError::InvalidConfig("Vtep is not set up"));
+            }
         }
         Ok(())
     }
@@ -130,6 +144,9 @@ impl RouterConfig {
         let reconfig_ifaces = ReconfigInterfacePlan::generate(self, &iftabler);
         drop(iftabler);
         reconfig_ifaces.apply(&mut db.iftw, &mut db.vrftable)?;
+        if let Some(vtep) = &self.vtep {
+            vtep.apply(db);
+        }
         debug!("Successfully applied router config for generation {genid}");
         self.verify(&db)?;
         Ok(())
@@ -201,11 +218,13 @@ impl RouterConfig {
 #[cfg(test)]
 #[rustfmt::skip]
 mod tests {
+    use std::net::IpAddr;
+    use std::str::FromStr;
     use tracing_test::traced_test;
     use tracing::debug;
     use net::{route::RouteTableId, vxlan::Vni};
     use net::eth::mac::Mac;
-    use crate::{config::RouterConfig, interfaces::interface::{AttachConfig, RouterInterfaceConfig}, rib::vrf::RouterVrfConfig};
+    use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::{AttachConfig, RouterInterfaceConfig}, rib::vrf::RouterVrfConfig};
     use crate::interfaces::interface::IfState;
     use crate::interfaces::interface::IfType;
     use crate::interfaces::interface::IfDataEthernet;
@@ -274,10 +293,15 @@ mod tests {
         config.add_interface(ifconfig);
 
     }
+    fn add_router_vtep_config(config: &mut RouterConfig) {
+        let vtep = Vtep::with_ip_and_mac(IpAddr::from_str("7.0.0.100").unwrap(), Mac::from([0x00,0xca,0xfe,0xbe,0xff,0x44]));
+        config.set_vtep(vtep);
+    }
     fn build_router_config() -> RouterConfig {
         let mut config = RouterConfig::new(1);
         add_router_vrf_configs(&mut config);
         add_router_interface_configs(&mut config);
+        add_router_vtep_config(&mut config);
         config
     }
     fn create_routing_database() -> RoutingDb {

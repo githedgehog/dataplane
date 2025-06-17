@@ -347,6 +347,10 @@ impl FibWriter {
         self.0.append(FibChange::SetVtep(vtep));
         self.0.publish();
     }
+    pub fn get_vtep(&self) -> Vtep {
+        let fib = self.enter().unwrap_or_else(|| unreachable!());
+        fib.vtep.clone()
+    }
     #[must_use]
     pub fn as_fibreader(&self) -> FibReader {
         FibReader::new(self.0.clone())
