@@ -118,7 +118,11 @@ impl IpForwarder {
                     let vni = vxlan.vni();
                     debug!("{nfi}: Packet is for vni {vni}");
                     if let Some(fib) = fibtable.get_fib(&FibId::from_vni(vni)) {
-                        let next_vrf = fib.get_id().unwrap().as_u32();
+                        let Some(next_vrf) = fib.get_id().map(|id| id.as_u32()) else {
+                            error!("{nfi}: Failed to read fib!");
+                            packet.done(DoneReason::InternalFailure);
+                            return;
+                        };
                         debug!("Next fib/vrf is {next_vrf}");
                         packet.get_meta_mut().vrf = Some(next_vrf);
                     } else {
@@ -140,19 +144,18 @@ impl IpForwarder {
         }
     }
 
-    /// Build the vxlan headers needed to encapsulate the packet in vxlan
-    fn build_vxlan_headers(vxlan: &VxlanEncapsulation, vtep: &Vtep) -> Result<VxlanEncap, ()> {
+    /// Build the vxlan headers needed to encapsulate the packet in vxlan. This function returns
+    /// an error as a string since there's nothing we can do other than logging if this fails.
+    fn build_vxlan_headers(vxlan: &VxlanEncapsulation, vtep: &Vtep) -> Result<VxlanEncap, String> {
         let Some(src_ip) = &vtep.get_ip() else {
-            error!("Failed to build vxlan headers: VTEP has no Ip address");
-            return Err(());
+            return Err("VTEP has no Ip address".to_string());
         };
 
         // IPv4 or IPv6
         let net = match (&src_ip, &vxlan.remote) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
                 let Ok(src_ip) = UnicastIpv4Addr::new(*src_ip) else {
-                    error!("Invalid source IPv4 address '{src_ip}' for Vxlan encapsulation!");
-                    return Err(());
+                    return Err(format!("Invalid source IPv4 address '{src_ip}'"));
                 };
                 let mut ip = Ipv4::default();
                 ip.set_source(src_ip).set_destination(*dst_ip).set_ttl(64);
@@ -163,8 +166,7 @@ impl IpForwarder {
             }
             (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
                 let Ok(src_ip) = UnicastIpv6Addr::new(*src_ip) else {
-                    error!("Invalid source IPv6 address '{src_ip}' for Vxlan encapsulation!");
-                    return Err(());
+                    return Err(format!("Invalid source IPv4 address '{src_ip}'"));
                 };
                 let mut ip = Ipv6::default();
                 ip.set_source(src_ip)
@@ -173,7 +175,7 @@ impl IpForwarder {
                     .set_next_header(NextHeader::UDP);
                 Net::Ipv6(ip)
             }
-            _ => return Err(()),
+            _ => return Err("Invalid src/dst address IP versions".to_string()),
         };
 
         // Encapsulation pseudo header
@@ -188,7 +190,7 @@ impl IpForwarder {
             transport: None, /* should be UDP, but it is automatically done */
             udp_encap: Some(udp_encap),
         };
-        Ok(VxlanEncap::new(headers).unwrap())
+        VxlanEncap::new(headers).map_err(|e| format!("{e}"))
     }
 
     /// Encapsulate a packet in Vxlan with the provided [`VxlanEncapsulation`] params
@@ -212,30 +214,31 @@ impl IpForwarder {
 
         // set current packet src mac (inner)
         if let Err(e) = packet.set_eth_source(*src_mac) {
-            error!("{nfi}: Failed to set src mac: {e} mac: {src_mac}");
+            error!("{nfi}: Failed to set src mac '{src_mac}': {e}");
             packet.done(DoneReason::InternalFailure);
             return;
         }
 
         // set current packet dst mac (inner)
         if let Err(e) = packet.set_eth_destination(*dst_mac) {
-            error!("{nfi}: Failed to set dst mac: {e} mac: {dst_mac}");
+            error!("{nfi}: Failed to set dst mac '{dst_mac}': {e}");
             packet.done(DoneReason::InternalFailure);
             return;
         }
 
         // build vxlan headers for encapsulation
-        let Ok(vxlan_headers) = Self::build_vxlan_headers(vxlan, vtep) else {
-            error!("{nfi}: Failed to build VxLAN headers !");
-            packet.done(DoneReason::InternalFailure);
-            return;
-        };
-        match packet.vxlan_encap(&vxlan_headers) {
-            Ok(()) => debug!("{nfi}: ENCAPSULATED packet with VxLAN:\n {packet}"),
+        match Self::build_vxlan_headers(vxlan, vtep) {
             Err(e) => {
-                error!("{nfi}: Failed to ENCAPSULATE packet with VxLAN: {e}");
+                error!("{nfi}: Failed to build VxLAN headers: {e}");
                 packet.done(DoneReason::InternalFailure);
             }
+            Ok(vxlan_headers) => match packet.vxlan_encap(&vxlan_headers) {
+                Ok(()) => debug!("{nfi}: ENCAPSULATED packet with VxLAN:\n {packet}"),
+                Err(e) => {
+                    error!("{nfi}: Failed to ENCAPSULATE packet with VxLAN: {e}");
+                    packet.done(DoneReason::InternalFailure);
+                }
+            },
         }
     }
 
