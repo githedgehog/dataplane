@@ -82,6 +82,20 @@ impl RouterCtlSender {
         reply?;
         Ok(())
     }
+    pub async fn configure(&mut self, config: RouterConfig) -> Result<(), RouterError> {
+        debug!("Requesting router to apply configuration...");
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let msg = CpiCtlMsg::Configure(config, reply_tx);
+        self.0
+            .send(msg)
+            .await
+            .map_err(|_| RouterError::Internal("Failed to send configure request"))?;
+        let reply = reply_rx
+            .await
+            .map_err(|_| RouterError::Internal("Failed to receive configure reply"))?;
+        reply?;
+        Ok(())
+    }
 }
 
 /// Handle a lock request for the indicated CPI
