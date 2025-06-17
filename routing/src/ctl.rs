@@ -12,10 +12,10 @@ use tokio::task;
 #[allow(unused)]
 use tracing::{debug, error, info, warn};
 
-use crate::RouterError;
 use crate::cpi::{CPSOCK, Cpi};
 use crate::evpn::Vtep;
 use crate::routingdb::RoutingDb;
+use crate::{RouterError, config::RouterConfig};
 use mio::unix::SourceFd;
 
 type CpiCtlReplyTx = AsyncSender<Result<(), RouterError>>;
@@ -41,6 +41,7 @@ pub enum CpiCtlMsg {
     Lock(CpiCtlReplyTx),
     Unlock(CpiCtlReplyTx),
     GuardedUnlock,
+    Configure(RouterConfig, CpiCtlReplyTx),
 }
 
 // An object to send control messages to the cpi/router
@@ -148,6 +149,16 @@ fn handle_lock(cpi: &mut Cpi, lock: bool, reply_to: Option<CpiCtlReplyTx>) {
     }
 }
 
+/// Handle a configure request and reply with the result
+fn handle_configure(config: RouterConfig, db: &mut RoutingDb, reply_to: CpiCtlReplyTx) {
+    let result = config.apply(db);
+    if let Err(e) = reply_to.send(result) {
+        error!("Fatal: could not reply to configure request: {e:?}");
+    } else {
+        debug!("Replied to configure request");
+    }
+}
+
 /// Handle a request from the control channel
 pub(crate) fn handle_ctl_msg(cpi: &mut Cpi, db: &mut RoutingDb) {
     match cpi.ctl_rx.try_recv() {
@@ -159,6 +170,7 @@ pub(crate) fn handle_ctl_msg(cpi: &mut Cpi, db: &mut RoutingDb) {
         Ok(CpiCtlMsg::Lock(reply_to)) => handle_lock(cpi, true, Some(reply_to)),
         Ok(CpiCtlMsg::Unlock(reply_to)) => handle_lock(cpi, false, Some(reply_to)),
         Ok(CpiCtlMsg::GuardedUnlock) => handle_lock(cpi, false, None),
+        Ok(CpiCtlMsg::Configure(config, reply_to)) => handle_configure(config, db, reply_to),
         Err(TryRecvError::Empty) => {}
         Err(e) => {
             error!("Error receiving from ctl channel {e:?}");
