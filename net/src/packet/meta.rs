@@ -73,11 +73,8 @@ pub struct PacketMeta {
     pub is_iplocal: bool,             /* frame contains an ip packet for local delivery */
     pub vrf: Option<VrfId>,           /* for IP packet, the VRF to use to route it */
     pub bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
-    pub done: Option<DoneReason>,     /* if Some, the reason why a packet was marked as done.
-                                      This includes the delivery of the packet by the NF */
+    pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
 
-    #[cfg(test)]
-    pub descr: &'static str, /* packet annotation (we may enable for testing only) */
     #[cfg(test)]
     /* Keep the Packet in spite of calling packet.enforce(). This is for testing */
     pub keep: bool,
