@@ -204,7 +204,6 @@ impl Ipv4 {
             return Err(TtlAlreadyZero);
         }
         self.0.time_to_live -= 1;
-        self.update_checksum();
         Ok(())
     }
 
