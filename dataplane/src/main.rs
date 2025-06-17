@@ -75,8 +75,8 @@ fn main() {
 
     /* router configuration */
     let Ok(config) = RouterConfigBuilder::default()
-        .cli_sock_path(args.cpi_sock_path())
-        .cpi_sock_path(args.cli_sock_path())
+        .cli_sock_path(args.cli_sock_path())
+        .cpi_sock_path(args.cpi_sock_path())
         .frr_agent_path(args.frr_agent_path())
         .build()
     else {
