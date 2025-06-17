@@ -160,9 +160,7 @@ impl IpForwarder {
                 };
                 let mut ip = Ipv4::default();
                 ip.set_source(src_ip).set_destination(*dst_ip).set_ttl(64);
-                unsafe {
-                    ip.set_next_header(NextHeader::UDP);
-                }
+                ip.set_next_header(NextHeader::UDP);
                 Net::Ipv4(ip)
             }
             (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {

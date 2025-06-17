@@ -81,9 +81,7 @@ pub fn build_test_udp_ipv4_frame(
     ipv4.set_source(UnicastIpv4Addr::new(addr_v4(src_ip)).expect("Bad unicast IPv4"));
     ipv4.set_destination(addr_v4(dst_ip));
     ipv4.set_ttl(255);
-    unsafe {
-        ipv4.set_next_header(NextHeader::UDP);
-    }
+    ipv4.set_next_header(NextHeader::UDP);
     headers.net(Some(Net::Ipv4(ipv4)));
 
     let mut udp = Udp::empty();

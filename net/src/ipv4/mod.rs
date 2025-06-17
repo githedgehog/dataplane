@@ -265,8 +265,7 @@ impl Ipv4 {
     ///
     /// This function does not (and can-not)
     /// check if the assigned [`IpNumber`] is valid for this packet.
-    #[allow(unsafe_code)]
-    pub unsafe fn set_next_header(&mut self, next_header: NextHeader) -> &mut Self {
+    pub fn set_next_header(&mut self, next_header: NextHeader) -> &mut Self {
         self.0.protocol = next_header.0;
         self
     }
@@ -456,13 +455,7 @@ mod contract {
             let mut header = Ipv4(Ipv4Header::default());
             header.set_source(u.produce()?);
             header.set_destination(Ipv4Addr::from(u.produce::<u32>()?));
-
-            // safe in so far as the whole point of this method is to generate a header with
-            // the specified `NextHeader`.
-            #[allow(unsafe_code)]
-            unsafe {
-                header.set_next_header(self.0);
-            }
+            header.set_next_header(self.0);
             header
                 .set_ttl(u.produce()?)
                 .set_dscp(u.produce()?)
