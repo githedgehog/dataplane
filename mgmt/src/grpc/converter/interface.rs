@@ -9,6 +9,7 @@ use crate::models::internal::interfaces::interface::{
     InterfaceConfigTable, InterfaceType,
 };
 use crate::models::internal::routing::ospf::{OspfInterface, OspfNetwork};
+use linux_raw_sys::if_ether;
 use net::eth::mac::{Mac, SourceMac};
 use net::vlan::Vid;
 
@@ -160,6 +161,16 @@ impl TryFrom<&gateway_config::Interface> for InterfaceConfig {
             interface_config = interface_config.set_ospf(ospf_interface);
         }
 
+        if let Some(mtu) = iface.mtu {
+            if mtu < if_ether::ETH_MIN_MTU {
+                return Err(format!("MTU too small on interface {}: {mtu}", iface.name));
+            }
+            if mtu > if_ether::ETH_MAX_MTU {
+                return Err(format!("MTU too large on interface {}: {mtu}", iface.name));
+            }
+            interface_config = interface_config.set_mtu(mtu);
+        }
+
         Ok(interface_config)
     }
 }
@@ -238,6 +249,8 @@ impl TryFrom<&InterfaceConfig> for gateway_config::Interface {
             .transpose()
             .map_err(|e| format!("Failed to convert OSPF interface: {e}"))?;
 
+        let mtu = interface.mtu;
+
         // Create the gRPC interface
         Ok(gateway_config::Interface {
             name: interface.name.clone(),
@@ -248,6 +261,7 @@ impl TryFrom<&InterfaceConfig> for gateway_config::Interface {
             system_name: None, // TODO: Implement when needed
             role: gateway_config::IfRole::Fabric.into(), // Default to Fabric
             ospf,
+            mtu,
         })
     }
 }
