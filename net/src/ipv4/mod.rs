@@ -26,7 +26,10 @@ pub mod dscp;
 
 pub mod ecn;
 
+mod checksum;
 pub mod frag_offset;
+
+pub use checksum::*;
 
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
@@ -266,24 +269,6 @@ impl Ipv4 {
     #[allow(unsafe_code)]
     pub unsafe fn set_next_header(&mut self, next_header: NextHeader) -> &mut Self {
         self.0.protocol = next_header.0;
-        self
-    }
-
-    /// get the header checksum
-    #[must_use]
-    pub fn checksum(&self) -> u16 {
-        self.0.header_checksum
-    }
-
-    /// set the header checksum
-    pub fn set_checksum(&mut self, checksum: u16) -> &mut Self {
-        self.0.header_checksum = checksum;
-        self
-    }
-
-    /// update the header checksum
-    pub fn update_checksum(&mut self) -> &mut Self {
-        self.set_checksum(self.0.calc_header_checksum());
         self
     }
 
