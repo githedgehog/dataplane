@@ -237,6 +237,7 @@ impl Display for PacketMeta {
             "    bcast: {} iplocal: {}",
             self.is_l2bcast, self.is_iplocal
         )?;
+        fmt_opt(f, "    src-vni", self.src_vni, true)?;
         fmt_opt(f, "    vrf", self.vrf, false)?;
         fmt_opt(f, "    bd", self.bridge, true)?;
         fmt_opt(f, "    next-hop", self.nh_addr, true)?;

@@ -124,6 +124,7 @@ impl IpForwarder {
                             return;
                         };
                         debug!("Next fib/vrf is {next_vrf}");
+                        packet.get_meta_mut().src_vni = Some(vni);
                         packet.get_meta_mut().vrf = Some(next_vrf);
                     } else {
                         error!("{nfi}: Unable to read fib for vni {vni}");
