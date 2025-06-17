@@ -9,6 +9,7 @@
 
 pub mod atable;
 pub mod cli;
+pub mod config;
 pub mod cpi;
 mod cpi_process;
 pub mod ctl;

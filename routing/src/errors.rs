@@ -31,6 +31,12 @@ pub enum RouterError {
     #[error("Internal error: {0}")]
     Internal(&'static str),
 
+    #[error("Verify failure for {0}")]
+    VerifyFailure(String),
+
     #[error("Permission errors")]
     PermError,
+
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(&'static str),
 }
