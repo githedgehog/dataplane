@@ -3,6 +3,7 @@
 
 #![allow(missing_docs)] // TODO
 
+use crate::vxlan::Vni;
 use std::collections::HashMap;
 use std::net::IpAddr;
 
@@ -74,6 +75,7 @@ pub struct PacketMeta {
     pub vrf: Option<VrfId>,           /* for IP packet, the VRF to use to route it */
     pub bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
     pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
+    pub src_vni: Option<Vni>, /* the vni value of a received vxlan encap packet, if destined to gateway */
 
     #[cfg(test)]
     /* Keep the Packet in spite of calling packet.enforce(). This is for testing */
