@@ -172,7 +172,7 @@ fi
 "${SUDO}" --preserve-env docker run \
   --rm \
   --interactive \
-  --mount "type=bind,source=${1},target=${1},readonly=true,bind-propagation=rprivate" \
+  --mount "type=bind,source=$(readlink -e "${1}"),target=$(readlink -e "${1}"),readonly=true,bind-propagation=rprivate" \
   --mount "type=bind,source=${project_dir},target=${project_dir},readonly=true,bind-propagation=rprivate" \
   --mount "type=bind,source=${project_dir}/target,target=${project_dir}/target,readonly=false,bind-propagation=rprivate" \
   --mount "type=bind,source=$(get_docker_sock),target=$(get_docker_sock),readonly=false,bind-propagation=rprivate" \
