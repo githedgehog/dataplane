@@ -3,9 +3,13 @@
 
 //! UDP header type and logic.
 
-pub mod checksum;
+mod checksum;
 pub mod port;
 
+pub use checksum::*;
+
+use crate::ipv4::Ipv4;
+use crate::ipv6::Ipv6;
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
 };
@@ -89,12 +93,6 @@ impl Udp {
         }
     }
 
-    /// Get the header's checksum.  No attempt is made to ensure that the checksum is correct.
-    #[must_use]
-    pub fn checksum(&self) -> u16 {
-        self.0.checksum
-    }
-
     /// Set the source port.
     pub fn set_source(&mut self, port: UdpPort) -> &mut Self {
         self.0.source_port = port.into();
@@ -104,12 +102,6 @@ impl Udp {
     /// Set the destination port.
     pub fn set_destination(&mut self, port: UdpPort) -> &mut Self {
         self.0.destination_port = port.into();
-        self
-    }
-
-    /// Set the udp checksum.  No attempt is made to ensure the checksum is correct.
-    pub fn set_checksum(&mut self, checksum: u16) -> &mut Self {
-        self.0.checksum = checksum;
         self
     }
 
@@ -127,6 +119,22 @@ impl Udp {
         );
         self.0.length = length.get();
         self
+    }
+
+    fn compute_checksum_ipv4(&self, net: &Ipv4, payload: impl AsRef<[u8]>) -> UdpChecksum {
+        #[allow(clippy::expect_used)] // payload greater than 2^16 bytes should be excluded by DPDK
+        self.0
+            .calc_checksum_ipv4(&net.0, payload.as_ref())
+            .expect("unreasonable payload")
+            .into()
+    }
+
+    fn compute_checksum_ipv6(&self, net: &Ipv6, payload: impl AsRef<[u8]>) -> UdpChecksum {
+        #[allow(clippy::expect_used)] // payload greater than 2^16 bytes should be excluded by DPDK
+        self.0
+            .calc_checksum_ipv6(&net.0, payload.as_ref())
+            .expect("unreasonable payload")
+            .into()
     }
 }
 
@@ -217,6 +225,7 @@ impl ParsePayload for Udp {
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
+    use crate::checksum::Checksum;
     use crate::udp::Udp;
     use bolero::{Driver, TypeGenerator};
     use etherparse::UdpHeader;
@@ -249,6 +258,7 @@ mod contract {
 
 #[cfg(test)]
 mod test {
+    use crate::checksum::Checksum;
     use crate::parse::IntoNonZeroUSize;
     use crate::parse::Parse;
     use crate::parse::{DeParse, ParseError};
