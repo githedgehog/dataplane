@@ -7,11 +7,11 @@ mod checksum;
 mod port;
 
 pub use checksum::*;
+pub use port::*;
 
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
 };
-use crate::tcp::port::TcpPort;
 use etherparse::TcpHeader;
 use etherparse::err::tcp::{HeaderError, HeaderSliceError};
 use std::num::NonZero;
@@ -23,7 +23,7 @@ use crate::ipv6::Ipv6;
 pub use contract::*;
 
 /// A TCP header.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Tcp(TcpHeader);
 
 impl Tcp {

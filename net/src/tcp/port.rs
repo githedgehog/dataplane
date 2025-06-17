@@ -3,6 +3,7 @@
 
 use std::num::NonZero;
 
+/// A TCP port number.
 #[repr(transparent)]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 #[allow(clippy::unsafe_derive_deserialize)] // both try_from and into u16 are safe for this type
@@ -25,20 +26,24 @@ pub struct TcpPort(NonZero<u16>);
     serde::Serialize,
     serde::Deserialize,
 )]
+
+/// An invalid tcp port error
 pub enum TcpPortError {
+    /// port must be non-zero
     #[error("port must be non-zero")]
     Zero,
 }
 
 impl TcpPort {
     /// Create a [`TcpPort`].
+    #[must_use]
     pub const fn new(port: NonZero<u16>) -> TcpPort {
         TcpPort(port)
     }
 
     /// Create a [`TcpPort`].
     ///
-    /// # Error
+    /// # Errors
     ///
     /// Will return an error if the submitted raw port number is zero.
     pub const fn new_checked(port: u16) -> Result<TcpPort, TcpPortError> {
@@ -54,12 +59,13 @@ impl TcpPort {
     ///
     /// It is the caller's responsibility to ensure that the port is non-zero.
     /// Submitting a zero value as port is undefined behavior.
-    #[allow(unsafe_code)]
+    #[must_use]
+    #[allow(unsafe_code)] // safety-requirements documented
     pub const unsafe fn new_unchecked(port: u16) -> TcpPort {
         TcpPort(unsafe { NonZero::new_unchecked(port) })
     }
 
-    /// Get the value of a [`TcpPort`] as a u16
+    /// Get the value of a [`TcpPort`] as a `u16`
     #[must_use]
     pub fn as_u16(self) -> u16 {
         self.0.get()
