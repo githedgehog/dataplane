@@ -41,6 +41,15 @@ pub(crate) struct CmdArgs {
     /// Treat grpc-address as a UNIX socket path
     #[arg(long, help = "Use UNIX socket instead of TCP")]
     grpc_unix_socket: bool,
+
+    #[arg(long, value_name = "Unix sock for cpi")]
+    cpi_sock_path: Option<String>,
+
+    #[arg(long, value_name = "Unix sock for cli")]
+    cli_sock_path: Option<String>,
+
+    #[arg(long, value_name = "Frr-agent path")]
+    frr_agent_path: Option<String>,
 }
 
 impl CmdArgs {
@@ -130,5 +139,15 @@ impl CmdArgs {
                 self.grpc_address
             )),
         }
+    }
+
+    pub fn get_cpi_path(&self) -> Option<String> {
+        self.cpi_sock_path.clone()
+    }
+    pub fn cli_sock_path(&self) -> Option<String> {
+        self.cli_sock_path.clone()
+    }
+    pub fn frr_agent_path(&self) -> Option<String> {
+        self.frr_agent_path.clone()
     }
 }

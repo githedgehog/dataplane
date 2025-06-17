@@ -54,6 +54,11 @@ fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
     }
 }
 
+// remove this
+use routing::cpi::DEFAULT_DP_UX_PATH;
+use routing::cpi::DEFAULT_DP_UX_PATH_CLI;
+use routing::cpi::DEFAULT_FRR_AGENT_PATH;
+
 fn main() {
     init_logging();
     info!("Starting gateway process...");
@@ -74,22 +79,46 @@ fn main() {
     };
 
     /* router configuration */
-    let Ok(config) = RouterConfigBuilder::default().build() else {
-        error!("Bad router configuration");
-        panic!("Bad router configuration");
+    let config = match RouterConfigBuilder::default()
+        .cpi_sock_path(
+            args.get_cpi_path()
+                .unwrap_or_else(|| DEFAULT_DP_UX_PATH.to_string()),
+        )
+        .cli_sock_path(
+            args.cli_sock_path()
+                .unwrap_or_else(|| DEFAULT_DP_UX_PATH_CLI.to_string()),
+        )
+        .frr_agent_path(
+            args.frr_agent_path()
+                .unwrap_or_else(|| DEFAULT_FRR_AGENT_PATH.to_string()),
+        )
+        .build()
+    {
+        Ok(config) => config,
+        Err(e) => {
+            error!("Failed to build router configuration: {e}");
+            panic!("Failed to build router configuration: {e}");
+        }
     };
 
     /* start router and create routing pipeline */
-    let Ok((router, pipeline)) = start_router(config) else {
-        error!("Failed to start router");
-        panic!("Failed to start router");
-    };
-    let builder = move || pipeline;
-    let router_ctl = router.get_ctl_tx();
-    let frr_agent_path = router.get_frr_agent_path().to_str().unwrap();
+    let builder;
+    let router_ctl;
+    let frr_agent_path;
+    match start_router(config) {
+        Ok((router, pipeline)) => {
+            builder = move || pipeline;
+            router_ctl = router.get_ctl_tx();
+            frr_agent_path = router.get_frr_agent_path().to_str().unwrap().to_string();
+        }
+        Err(e) => {
+            error!("Failed to start router: {e}");
+            panic!("Failed to start router: {e}");
+        }
+    }
 
     /* start management */
-    if let Err(e) = start_mgmt(grpc_addr, router_ctl, frr_agent_path) {
+    if let Err(e) = start_mgmt(grpc_addr, router_ctl, frr_agent_path.as_str()) {
         error!("Failed to start gRPC server: {e}");
         panic!("Failed to start gRPC server: {e}");
     }

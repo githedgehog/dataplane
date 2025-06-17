@@ -26,13 +26,13 @@ pub struct RouterConfig {
     name: String,
 
     #[builder(setter(into), default = DEFAULT_DP_UX_PATH.to_string().into())]
-    cpi_sock_path: PathBuf,
+    pub cpi_sock_path: PathBuf,
 
     #[builder(setter(into), default = DEFAULT_DP_UX_PATH_CLI.to_string().into())]
-    cli_sock_path: PathBuf,
+    pub cli_sock_path: PathBuf,
 
     #[builder(setter(into), default = DEFAULT_FRR_AGENT_PATH.to_string().into())]
-    frr_agent_path: PathBuf,
+    pub frr_agent_path: PathBuf,
 }
 
 /// Top-most object representing a router
