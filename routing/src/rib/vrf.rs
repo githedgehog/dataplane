@@ -163,6 +163,10 @@ impl RouterVrfConfig {
         self.vni = Some(vni);
         self
     }
+    pub fn set_vni_opt(mut self, vni: Option<Vni>) -> Self {
+        self.vni = vni;
+        self
+    }
     pub fn reset_vni(&mut self, vni: Option<Vni>) {
         self.vni = vni;
     }
@@ -279,10 +283,17 @@ impl Vrf {
     /// the config causes the vtep ip or mac to change.
     /////////////////////////////////////////////////////////////////////////
     pub fn set_vtep(&mut self, vtep: &Vtep) {
-        debug!("Setting VTEP for VRF {}...", self.name);
         if let Some(ref mut fibw) = self.fibw {
+            debug!("Updating VTEP for VRF {}...", self.name);
             fibw.set_vtep(vtep.clone());
         }
+    }
+
+    //////////////////////////////////////////////////////////////////////////////////////
+    /// Get the VTEP for a [`Vrf`]. N.B: this gets the value currently visible by readers
+    //////////////////////////////////////////////////////////////////////////////////////
+    pub fn get_vtep(&self) -> Option<Vtep> {
+        self.fibw.as_ref().map(|fibw| fibw.get_vtep().clone())
     }
 
     #[inline]
