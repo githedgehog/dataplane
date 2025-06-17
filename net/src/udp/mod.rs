@@ -20,7 +20,7 @@ use std::num::NonZero;
 use tracing::debug;
 
 /// A UDP header.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Udp(UdpHeader);
 
 /// A UDP encapsulation.

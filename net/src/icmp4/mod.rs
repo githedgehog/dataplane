@@ -25,8 +25,24 @@ pub struct Icmp4(pub(crate) Icmpv4Header);
 impl Icmp4 {
     /// Get the icmp type (reference) field value
     #[must_use]
-    pub fn icmp_type(&self) -> &Icmpv4Type {
+    pub const fn icmp_type(&self) -> &Icmpv4Type {
         &self.0.icmp_type
+    }
+
+    /// Return a mutable reference to the icmp type field value
+    #[must_use]
+    pub const fn icmp_type_mut(&mut self) -> &mut Icmpv4Type {
+        &mut self.0.icmp_type
+    }
+
+    /// Create a new `Icmp4` with the given icmp type.
+    /// The checksum will be set to 0.
+    #[must_use]
+    pub const fn with_type(icmp_type: Icmpv4Type) -> Self {
+        Icmp4(Icmpv4Header {
+            icmp_type,
+            checksum: 0,
+        })
     }
 }
 

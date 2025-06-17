@@ -10,7 +10,7 @@ pub use checksum::*;
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
 };
-use etherparse::Icmpv6Header;
+use etherparse::{Icmpv6Header, Icmpv6Type};
 use std::num::NonZero;
 
 #[cfg(any(test, feature = "bolero"))]
@@ -19,6 +19,31 @@ pub use contract::*;
 /// An `ICMPv6` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Icmp6(pub(crate) Icmpv6Header);
+
+impl Icmp6 {
+    /// Returns the type of the `ICMPv6` message.
+    #[must_use]
+    pub const fn icmp_type(&self) -> Icmpv6Type {
+        self.0.icmp_type
+    }
+
+    /// Returns a mutable reference to the type of the `Icmp6` message.
+    #[must_use]
+    pub const fn icmp_type_mut(&mut self) -> &mut Icmpv6Type {
+        &mut self.0.icmp_type
+    }
+
+    /// Creates a new `Icmp6` with the given type.
+    ///
+    /// The checksum will be set to zero.
+    #[must_use]
+    pub const fn with_type(icmp_type: Icmpv6Type) -> Self {
+        Self(Icmpv6Header {
+            icmp_type,
+            checksum: 0,
+        })
+    }
+}
 
 impl Parse for Icmp6 {
     type Error = LengthError;
