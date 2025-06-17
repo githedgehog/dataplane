@@ -1330,11 +1330,18 @@ mod contract {
 }
 
 #[cfg(any(test, kani))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // fine to unwarp in tests
 mod test {
     use crate::headers::Headers;
     use crate::headers::contract::CommonHeaders;
+    use crate::icmp4::Icmp4Checksum;
     use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, Parse, ParseError};
-    use bolero::ValueGenerator;
+
+    use super::*;
+    use crate::icmp6::{Icmp6Checksum, Icmp6ChecksumPayload};
+    use crate::ipv4::Ipv4Checksum;
+    use crate::tcp::{TcpChecksum, TcpChecksumPayload};
+    use crate::udp::{UdpChecksum, UdpChecksumPayload};
 
     fn parse_back_test(headers: &Headers) {
         let mut buffer = [0_u8; 1024];
@@ -1368,5 +1375,568 @@ mod test {
         bolero::check!()
             .with_generator(CommonHeaders)
             .for_each(parse_back_test)
+    }
+
+    mod sample {
+        use crate::checksum::Checksum;
+        use crate::eth::Eth;
+        use crate::eth::ethtype::EthType;
+        use crate::eth::mac::{DestinationMac, Mac, SourceMac};
+        use crate::headers::{Headers, HeadersBuilder, Net, Transport};
+        use crate::icmp4::Icmp4;
+        use crate::icmp6::Icmp6;
+        use crate::ip::NextHeader;
+        use crate::ipv4::dscp::Dscp;
+        use crate::ipv4::ecn::Ecn;
+        use crate::ipv4::{Ipv4, UnicastIpv4Addr};
+        use crate::ipv6::{Ipv6, UnicastIpv6Addr};
+        use crate::parse::DeParse;
+        use crate::tcp::Tcp;
+        use crate::udp::Udp;
+        use etherparse::{IcmpEchoHeader, Icmpv4Type, Icmpv6Type};
+        use std::net::{Ipv4Addr, Ipv6Addr};
+
+        pub(super) fn eth(ethertype: EthType) -> Eth {
+            Eth::new(
+                SourceMac::new(Mac::from([2, 1, 2, 3, 4, 5])).unwrap(),
+                DestinationMac::new(Mac::BROADCAST).unwrap(),
+                ethertype,
+            )
+        }
+
+        pub(super) fn ipv4(next_header: NextHeader) -> Ipv4 {
+            let mut ipv4 = Ipv4::default();
+            ipv4.set_checksum(0x1234.into())
+                .set_ecn(Ecn::new(0b11).unwrap())
+                .set_dscp(Dscp::MAX)
+                .set_source(UnicastIpv4Addr::new(Ipv4Addr::new(192, 168, 1, 1)).unwrap())
+                .set_destination(Ipv4Addr::new(192, 168, 1, 2))
+                .set_dont_fragment(true)
+                .set_next_header(next_header)
+                .set_ttl(64);
+            ipv4
+        }
+
+        pub(super) fn ipv6(next_header: NextHeader) -> Ipv6 {
+            let mut ipv6 = Ipv6::default();
+            ipv6.set_source(
+                UnicastIpv6Addr::new(Ipv6Addr::new(0xfe, 0x80, 0, 0, 0, 0, 0, 1)).unwrap(),
+            )
+            .set_destination(Ipv6Addr::new(0xfe, 0x80, 0, 0, 0, 0, 0, 2))
+            .set_hop_limit(64)
+            .set_next_header(next_header);
+            ipv6
+        }
+
+        pub(super) fn tcp() -> Tcp {
+            let mut tcp = Tcp::default();
+            tcp.set_source(123.try_into().unwrap())
+                .set_destination(456.try_into().unwrap())
+                .set_syn(true)
+                .set_sequence_number(1)
+                .set_checksum(1234.into());
+            tcp
+        }
+
+        pub(super) fn udp() -> Udp {
+            let mut udp = Udp::default();
+            udp.set_source(123.try_into().unwrap())
+                .set_destination(456.try_into().unwrap())
+                .set_checksum(1234.into());
+            udp
+        }
+
+        pub(super) fn icmp4() -> Icmp4 {
+            let mut icmp4 =
+                Icmp4::with_type(Icmpv4Type::EchoRequest(IcmpEchoHeader { id: 18, seq: 2 }));
+            icmp4.set_checksum(1234.into());
+            icmp4
+        }
+
+        pub(super) fn icmp6() -> Icmp6 {
+            let mut icmp6 =
+                Icmp6::with_type(Icmpv6Type::EchoRequest(IcmpEchoHeader { id: 18, seq: 2 }));
+            icmp6.set_checksum(1234.into());
+            icmp6
+        }
+
+        pub(super) fn ipv4_tcp() -> Headers {
+            let mut headers = HeadersBuilder::default();
+            let mut ipv4 = ipv4(NextHeader::TCP);
+            let tcp = tcp();
+            ipv4.set_payload_len(tcp.size().get()).unwrap();
+            headers
+                .eth(Some(eth(EthType::IPV4)))
+                .net(Some(Net::Ipv4(ipv4)))
+                .transport(Some(Transport::Tcp(tcp)))
+                .build()
+                .unwrap()
+        }
+
+        pub(super) fn ipv4_icmp() -> Headers {
+            let mut headers = HeadersBuilder::default();
+            headers
+                .eth(Some(eth(EthType::IPV4)))
+                .net(Some(Net::Ipv4(ipv4(NextHeader::ICMP))))
+                .transport(Some(Transport::Icmp4(icmp4())))
+                .build()
+                .unwrap()
+        }
+
+        pub(super) fn ipv4_udp() -> Headers {
+            let mut headers = HeadersBuilder::default();
+            let mut ipv4 = ipv4(NextHeader::UDP);
+            let udp = udp();
+            ipv4.set_payload_len(udp.size().get()).unwrap();
+            headers
+                .eth(Some(eth(EthType::IPV4)))
+                .net(Some(Net::Ipv4(ipv4)))
+                .transport(Some(Transport::Udp(udp)))
+                .build()
+                .unwrap()
+        }
+
+        pub(super) fn ipv6_tcp() -> Headers {
+            let mut headers = HeadersBuilder::default();
+            let tcp = tcp();
+            let mut ipv6 = ipv6(NextHeader::TCP);
+            ipv6.set_payload_length(tcp.size().get());
+            headers
+                .eth(Some(eth(EthType::IPV6)))
+                .net(Some(Net::Ipv6(ipv6)))
+                .transport(Some(Transport::Tcp(tcp)))
+                .build()
+                .unwrap()
+        }
+
+        pub(super) fn ipv6_udp() -> Headers {
+            let mut headers = HeadersBuilder::default();
+            let udp = udp();
+            let mut ipv6 = ipv6(NextHeader::UDP);
+            ipv6.set_payload_length(udp.size().get());
+            headers
+                .eth(Some(eth(EthType::IPV6)))
+                .net(Some(Net::Ipv6(ipv6)))
+                .transport(Some(Transport::Udp(udp)))
+                .build()
+                .unwrap()
+        }
+
+        pub(super) fn ipv6_icmp() -> Headers {
+            let mut headers = HeadersBuilder::default();
+            let icmp = icmp6();
+            let mut ipv6 = ipv6(NextHeader::ICMP6);
+            ipv6.set_payload_length(icmp.size().get());
+            headers
+                .eth(Some(eth(EthType::IPV6)))
+                .net(Some(Net::Ipv6(ipv6)))
+                .transport(Some(Transport::Icmp6(icmp)))
+                .build()
+                .unwrap()
+        }
+    }
+
+    fn test_checksum(mut headers: Headers) {
+        match &headers.transport {
+            None => {}
+            Some(Transport::Udp(transport)) => {
+                let net = headers.net.clone().unwrap();
+                transport
+                    .validate_checksum(&UdpChecksumPayload::new(&net, &[]))
+                    .expect_err("expected invalid checksum");
+            }
+            Some(Transport::Tcp(transport)) => {
+                let net = headers.net.clone().unwrap();
+                transport
+                    .validate_checksum(&TcpChecksumPayload::new(&net, &[]))
+                    .expect_err("expected invalid checksum");
+            }
+            Some(Transport::Icmp4(transport)) => {
+                transport
+                    .validate_checksum(&[])
+                    .expect_err("expected invalid checksum");
+            }
+            Some(Transport::Icmp6(transport)) => {
+                let net = headers.net.clone().unwrap();
+                let (src, dst) = match net {
+                    Net::Ipv4(_) => panic!("unexpected ipv4"),
+                    Net::Ipv6(ipv6) => (ipv6.source(), ipv6.destination()),
+                };
+                transport
+                    .validate_checksum(&Icmp6ChecksumPayload::new(src.inner(), dst, &[]))
+                    .expect_err("expected invalid checksum");
+            }
+        }
+
+        headers.update_checksums([]);
+
+        match &headers.transport {
+            None => {}
+            Some(Transport::Udp(transport)) => {
+                let net = headers.net.clone().unwrap();
+                transport
+                    .validate_checksum(&UdpChecksumPayload::new(&net, &[]))
+                    .expect("expected valid checksum");
+            }
+            Some(Transport::Tcp(transport)) => {
+                let net = headers.net.clone().unwrap();
+                transport
+                    .validate_checksum(&TcpChecksumPayload::new(&net, &[]))
+                    .expect("expected valid checksum");
+            }
+            Some(Transport::Icmp4(transport)) => {
+                transport
+                    .validate_checksum(&[])
+                    .expect("expected valid checksum");
+            }
+            Some(Transport::Icmp6(transport)) => {
+                let net = headers.net.clone().unwrap();
+                let (src, dst) = match net {
+                    Net::Ipv4(_) => panic!("unexpected ipv4"),
+                    Net::Ipv6(ipv6) => (ipv6.source(), ipv6.destination()),
+                };
+                transport
+                    .validate_checksum(&Icmp6ChecksumPayload::new(src.inner(), dst, &[]))
+                    .expect("expected valid checksum");
+            }
+        }
+
+        match &headers.transport {
+            None => {}
+            Some(Transport::Udp(transport)) => {
+                let net = headers.net.clone().unwrap();
+                transport
+                    .validate_checksum(&UdpChecksumPayload::new(&net, &[1]))
+                    .expect_err("expected invalid checksum");
+            }
+            Some(Transport::Tcp(transport)) => {
+                let net = headers.net.clone().unwrap();
+                transport
+                    .validate_checksum(&TcpChecksumPayload::new(&net, &[1]))
+                    .expect_err("expected invalid checksum");
+            }
+            Some(Transport::Icmp4(transport)) => {
+                transport
+                    .validate_checksum(&[1])
+                    .expect_err("expected invalid checksum");
+            }
+            Some(Transport::Icmp6(transport)) => {
+                let net = headers.net.clone().unwrap();
+                let (src, dst) = match net {
+                    Net::Ipv4(_) => panic!("unexpected ipv4"),
+                    Net::Ipv6(ipv6) => (ipv6.source(), ipv6.destination()),
+                };
+                transport
+                    .validate_checksum(&Icmp6ChecksumPayload::new(src.inner(), dst, &[1]))
+                    .expect_err("expected invalid checksum");
+            }
+        }
+    }
+
+    #[test]
+    fn test_ipv4_tcp() {
+        test_checksum(sample::ipv4_tcp());
+    }
+
+    #[test]
+    fn test_ipv4_udp() {
+        test_checksum(sample::ipv4_udp());
+    }
+
+    #[test]
+    fn test_ipv4_icmp() {
+        test_checksum(sample::ipv4_icmp());
+    }
+
+    #[test]
+    fn test_ipv6_tcp() {
+        test_checksum(sample::ipv6_tcp());
+    }
+
+    #[test]
+    fn test_ipv6_udp() {
+        test_checksum(sample::ipv6_udp());
+    }
+
+    #[test]
+    fn test_ipv6_icmp() {
+        test_checksum(sample::ipv6_icmp());
+    }
+
+    #[test]
+    fn compare_with_good_ipv4_tcp() {
+        struct Comparison<'a> {
+            pub good_ipv4: Ipv4Checksum,
+            pub good_tcp: TcpChecksum,
+            pub payload: &'a [u8],
+        }
+        let comparisons = [
+            Comparison {
+                good_ipv4: Ipv4Checksum::new(46717),
+                good_tcp: TcpChecksum::new(10827),
+                payload: &[],
+            },
+            Comparison {
+                good_ipv4: Ipv4Checksum::new(46717),
+                good_tcp: TcpChecksum::new(10570),
+                payload: &[1],
+            },
+            Comparison {
+                good_ipv4: Ipv4Checksum::new(46717),
+                good_tcp: TcpChecksum::new(10567),
+                payload: &[1, 2],
+            },
+            Comparison {
+                good_ipv4: Ipv4Checksum::new(46717),
+                good_tcp: TcpChecksum::new(59890),
+                payload: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            },
+        ];
+        for comparison in comparisons {
+            let mut headers = sample::ipv4_tcp();
+            headers.update_checksums(comparison.payload);
+            match &headers.net {
+                Some(net) => match net {
+                    Net::Ipv4(ipv4) => {
+                        assert_eq!(ipv4.checksum(), comparison.good_ipv4);
+                        ipv4.validate_checksum(&()).unwrap();
+                        match &headers.transport {
+                            Some(Transport::Tcp(tcp)) => {
+                                assert_eq!(tcp.checksum(), comparison.good_tcp);
+                                let payload = TcpChecksumPayload::new(net, comparison.payload);
+                                tcp.validate_checksum(&payload).unwrap();
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    _ => unreachable!(),
+                },
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn compare_with_good_ipv4_udp() {
+        struct Comparison<'a> {
+            pub good_ipv4: Ipv4Checksum,
+            pub good_udp: UdpChecksum,
+            pub payload: &'a [u8],
+        }
+        let comparisons = [
+            Comparison {
+                good_ipv4: Ipv4Checksum::new(46718),
+                good_udp: UdpChecksum::new(31319),
+                payload: &[],
+            },
+            Comparison {
+                good_ipv4: Ipv4Checksum::new(46718),
+                good_udp: UdpChecksum::new(31063),
+                payload: &[1],
+            },
+            Comparison {
+                good_ipv4: Ipv4Checksum::new(46718),
+                good_udp: UdpChecksum::new(31061),
+                payload: &[1, 2],
+            },
+            Comparison {
+                good_ipv4: Ipv4Checksum::new(46718),
+                good_udp: UdpChecksum::new(14863),
+                payload: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            },
+        ];
+        for comparison in comparisons {
+            let mut headers = sample::ipv4_udp();
+            headers.update_checksums(comparison.payload);
+            match &headers.net {
+                Some(net) => match net {
+                    Net::Ipv4(ipv4) => {
+                        assert_eq!(ipv4.checksum(), comparison.good_ipv4);
+                        ipv4.validate_checksum(&()).unwrap();
+                        match &headers.transport {
+                            Some(Transport::Udp(udp)) => {
+                                assert_eq!(udp.checksum(), comparison.good_udp);
+                                let payload = UdpChecksumPayload::new(net, comparison.payload);
+                                udp.validate_checksum(&payload).unwrap();
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    _ => unreachable!(),
+                },
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn compare_with_good_ipv4_icmp() {
+        struct Comparison<'a> {
+            pub good_ipv4: Ipv4Checksum,
+            pub good_icmp: Icmp4Checksum,
+            pub payload: &'a [u8],
+        }
+        let comparisons = [
+            Comparison {
+                good_ipv4: Ipv4Checksum::new(46762),
+                good_icmp: Icmp4Checksum::new(63467),
+                payload: &[],
+            },
+            Comparison {
+                good_ipv4: Ipv4Checksum::new(46762),
+                good_icmp: Icmp4Checksum::new(63211),
+                payload: &[1],
+            },
+            Comparison {
+                good_ipv4: Ipv4Checksum::new(46762),
+                good_icmp: Icmp4Checksum::new(63209),
+                payload: &[1, 2],
+            },
+            Comparison {
+                good_ipv4: Ipv4Checksum::new(46762),
+                good_icmp: Icmp4Checksum::new(47011),
+                payload: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            },
+        ];
+        for comparison in comparisons {
+            let mut headers = sample::ipv4_icmp();
+            headers.update_checksums(comparison.payload);
+            match &headers.net {
+                Some(net) => {
+                    if let Net::Ipv4(ipv4) = net {
+                        assert_eq!(ipv4.checksum(), comparison.good_ipv4);
+                        ipv4.validate_checksum(&()).unwrap();
+                        match &headers.transport {
+                            Some(Transport::Icmp4(icmp)) => {
+                                assert_eq!(icmp.checksum(), comparison.good_icmp);
+                                icmp.validate_checksum(comparison.payload).unwrap();
+                            }
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        unreachable!()
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn compare_with_good_ipv6_tcp() {
+        struct Comparison<'a> {
+            pub good_tcp: TcpChecksum,
+            pub payload: &'a [u8],
+        }
+        let comparisons = [
+            Comparison {
+                good_tcp: TcpChecksum::new(43680),
+                payload: &[],
+            },
+            Comparison {
+                good_tcp: TcpChecksum::new(43423),
+                payload: &[1],
+            },
+            Comparison {
+                good_tcp: TcpChecksum::new(43420),
+                payload: &[1, 2],
+            },
+            Comparison {
+                good_tcp: TcpChecksum::new(27204),
+                payload: &[1, 2, 3, 6, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 15, 16],
+            },
+        ];
+        for comparison in comparisons {
+            let mut headers = sample::ipv6_tcp();
+            headers.update_checksums(comparison.payload);
+            match (headers.net, headers.transport) {
+                (Some(net), Some(Transport::Tcp(tcp))) => {
+                    assert_eq!(tcp.checksum(), comparison.good_tcp);
+                    let payload = TcpChecksumPayload::new(&net, comparison.payload);
+                    tcp.validate_checksum(&payload).unwrap();
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn compare_with_good_ipv6_udp() {
+        struct Comparison<'a> {
+            pub good_udp: UdpChecksum,
+            pub payload: &'a [u8],
+        }
+        let comparisons = [
+            Comparison {
+                good_udp: UdpChecksum::new(64172),
+                payload: &[],
+            },
+            Comparison {
+                good_udp: UdpChecksum::new(63916),
+                payload: &[1],
+            },
+            Comparison {
+                good_udp: UdpChecksum::new(63914),
+                payload: &[1, 2],
+            },
+            Comparison {
+                good_udp: UdpChecksum::new(47712),
+                payload: &[1, 2, 3, 6, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 15, 16],
+            },
+        ];
+        for comparison in comparisons {
+            let mut headers = sample::ipv6_udp();
+            headers.update_checksums(comparison.payload);
+            match (headers.net, headers.transport) {
+                (Some(net), Some(Transport::Udp(udp))) => {
+                    assert_eq!(udp.checksum(), comparison.good_udp);
+                    let payload = UdpChecksumPayload::new(&net, comparison.payload);
+                    udp.validate_checksum(&payload).unwrap();
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn compare_with_good_ipv6_icmp() {
+        struct Comparison<'a> {
+            pub good_icmp: Icmp6Checksum,
+            pub payload: &'a [u8],
+        }
+        let comparisons = [
+            Comparison {
+                good_icmp: Icmp6Checksum::new(31914),
+                payload: &[],
+            },
+            Comparison {
+                good_icmp: Icmp6Checksum::new(31657),
+                payload: &[1],
+            },
+            Comparison {
+                good_icmp: Icmp6Checksum::new(31654),
+                payload: &[1, 2],
+            },
+            Comparison {
+                good_icmp: Icmp6Checksum::new(15438),
+                payload: &[1, 2, 3, 6, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 15, 16],
+            },
+        ];
+        for comparison in comparisons {
+            let mut headers = sample::ipv6_icmp();
+            headers.update_checksums(comparison.payload);
+            match (headers.net, headers.transport) {
+                (Some(Net::Ipv6(ipv6)), Some(Transport::Icmp6(icmp))) => {
+                    assert_eq!(icmp.checksum(), comparison.good_icmp);
+                    let payload = Icmp6ChecksumPayload::new(
+                        ipv6.source().inner(),
+                        ipv6.destination(),
+                        comparison.payload,
+                    );
+                    icmp.validate_checksum(&payload).unwrap();
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 }
