@@ -40,7 +40,6 @@ use mgmt::models::internal::nat::tables::{NatTables, TrieValue};
 use net::buffer::PacketBufferMut;
 use net::headers::{TryHeadersMut, TryIpMut};
 use net::packet::Packet;
-use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use std::net::Ipv4Addr;
 
@@ -90,11 +89,8 @@ impl Nat {
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
     /// function that we pass to [`Nat::process`] to iterate over packets.
     fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
-        // ----------------------------------------------------
-        // TODO: Get VNI
-        // Currently hardcoded as required to have the tests pass, for demonstration purposes
-        let vni = Vni::new_checked(100).ok();
-        // ----------------------------------------------------
+        let vni = packet.get_meta().src_vni;
+
         let Some(net) = packet.headers_mut().try_ip_mut() else {
             return;
         };
@@ -128,11 +124,16 @@ mod tests {
     use mgmt::models::internal::nat::tables::{NatTables, PerVniTable};
     use net::headers::TryIpv4;
     use net::packet::test_utils::build_test_ipv4_packet;
+    use net::vxlan::Vni;
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
 
     fn addr_v4(s: &str) -> IpAddr {
         IpAddr::V4(Ipv4Addr::from_str(s).expect("Invalid IPv4 address"))
+    }
+
+    fn vni_100() -> Vni {
+        Vni::new_checked(100).expect("Failed to create VNI")
     }
 
     fn build_context() -> NatTables {
@@ -230,7 +231,7 @@ mod tests {
         let mut vni_table = PerVniTable::new();
         table_extend::add_peering(&mut vni_table, &peering).expect("Failed to build NAT tables");
 
-        let vni = Vni::new_checked(100).expect("Failed to create VNI");
+        let vni = vni_100();
         let mut nat_table = NatTables::new();
         nat_table.add_table(vni, vni_table);
 
@@ -243,7 +244,13 @@ mod tests {
         let mut nat = Nat::new(NatDirection::DstNat, NatMode::Stateless);
         nat.update_tables(nat_tables);
 
-        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
+        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()]
+            .into_iter()
+            .map(|mut packet| {
+                packet.get_meta_mut().src_vni = Some(vni_100());
+                packet
+            });
+
         let packets_out: Vec<_> = nat.process(packets).collect();
 
         assert_eq!(packets_out.len(), 1);
@@ -261,7 +268,13 @@ mod tests {
         let mut nat = Nat::new(NatDirection::SrcNat, NatMode::Stateless);
         nat.update_tables(nat_tables);
 
-        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
+        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()]
+            .into_iter()
+            .map(|mut packet| {
+                packet.get_meta_mut().src_vni = Some(vni_100());
+                packet
+            });
+
         let packets_out: Vec<_> = nat.process(packets).collect();
 
         assert_eq!(packets_out.len(), 1);
