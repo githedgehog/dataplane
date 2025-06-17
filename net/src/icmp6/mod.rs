@@ -3,6 +3,10 @@
 
 //! `ICMPv6` header type and logic.
 
+mod checksum;
+
+pub use checksum::*;
+
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
 };
