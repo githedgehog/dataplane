@@ -114,8 +114,7 @@ impl Ipv6 {
     ///
     /// This method does not (and cannot) check that the length is correct in the context of the
     /// packet as a whole.
-    #[allow(unsafe_code)] // requirements documented
-    pub unsafe fn set_payload_length(&mut self, length: u16) -> &mut Self {
+    pub fn set_payload_length(&mut self, length: u16) -> &mut Self {
         self.0
             .set_payload_length(length as usize)
             .unwrap_or_else(|_| unreachable!());
@@ -490,6 +489,8 @@ mod contract {
                 .set_source(u.produce()?)
                 .set_destination(Ipv6Addr::from(u.produce::<u128>()?))
                 .set_next_header(self.0)
+                .set_payload_length(u.produce()?)
+                .set_hop_limit(u.produce()?)
                 .set_flow_label(u.produce()?)
                 .set_traffic_class(u.produce()?)
                 .set_hop_limit(u.produce()?);
