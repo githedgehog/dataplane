@@ -419,8 +419,10 @@ impl From<Ipv4Next> for Header {
 mod contract {
     use crate::ip::NextHeader;
     use crate::ipv4::Ipv4;
+    use bolero::generator::bolero_generator::bounded::BoundedValue;
     use bolero::{Driver, TypeGenerator, ValueGenerator};
     use etherparse::Ipv4Header;
+    use std::collections::Bound;
     use std::net::Ipv4Addr;
 
     /// A [`bolero::TypeGenerator`] for common (and supported) [`NextHeader`] values
@@ -470,6 +472,13 @@ mod contract {
                 .set_more_fragments(u.produce()?)
                 .set_identification(u.produce()?)
                 .set_fragment_offset(u.produce()?);
+            header
+                .set_payload_len(u16::gen_bounded(
+                    u,
+                    Bound::Included(&Ipv4::MIN_LEN.get()),
+                    Bound::Included(&Ipv4::MAX_LEN.get()),
+                )?)
+                .ok();
             Some(header)
         }
     }
