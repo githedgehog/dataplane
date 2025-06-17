@@ -290,6 +290,12 @@ impl Render for AfIpv4Ucast {
             .iter()
             .for_each(|redist| cfg += redist.render(&()));
 
+        /* networks */
+        bgp.networks
+            .iter()
+            .filter(|prefix| prefix.is_ipv4())
+            .for_each(|prefix| cfg += format!(" network {prefix}"));
+
         /* VRF imports */
         self.imports
             .as_ref()
@@ -319,6 +325,12 @@ impl Render for AfIpv6Ucast {
         self.redistribute
             .iter()
             .for_each(|redist| cfg += redist.render(&()));
+
+        /* networks */
+        bgp.networks
+            .iter()
+            .filter(|prefix| prefix.is_ipv6())
+            .for_each(|prefix| cfg += format!(" network {prefix}"));
 
         /* VRF imports */
         self.imports
@@ -566,6 +578,11 @@ pub mod tests {
             .ipv4_unicast_activate(true)
             .ipv6_unicast_activate(true)
             .l2vpn_evpn_activate(true);
+
+        /* add some networks */
+        bgp.networks.push(Prefix::expect_from("13.13.13.13/32"));
+        bgp.networks.push(Prefix::expect_from("19.19.19.19/32"));
+        bgp.networks.push(Prefix::expect_from("300:a:b::1/80"));
 
         /* add neighs */
         bgp.add_neighbor(n1);
