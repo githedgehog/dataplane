@@ -13,7 +13,6 @@ use tokio::task;
 use tracing::{debug, error, info, warn};
 
 use crate::cpi::{CPSOCK, Cpi};
-use crate::evpn::Vtep;
 use crate::routingdb::RoutingDb;
 use crate::{RouterError, config::RouterConfig};
 use mio::unix::SourceFd;
@@ -37,7 +36,6 @@ impl Drop for LockGuard {
 
 pub enum CpiCtlMsg {
     Finish,
-    SetVtep(Vtep),
     Lock(CpiCtlReplyTx),
     Unlock(CpiCtlReplyTx),
     GuardedUnlock,
@@ -52,11 +50,6 @@ impl RouterCtlSender {
     }
     pub(crate) fn as_lock_guard(&self) -> LockGuard {
         LockGuard(Some(self.0.clone()))
-    }
-    pub async fn set_vtep(&mut self, vtep: Vtep) {
-        if let Err(e) = self.0.send(CpiCtlMsg::SetVtep(vtep)).await {
-            error!("Failed to send vtep data: {e} !");
-        }
     }
     #[must_use]
     pub async fn lock(&mut self) -> Result<LockGuard, RouterError> {
@@ -89,31 +82,6 @@ impl RouterCtlSender {
         reply?;
         Ok(())
     }
-}
-
-/// Handle a control request to set the VTEP ip address and MAC
-fn handle_set_vtep(db: &mut RoutingDb, vtep_data: &Vtep) {
-    let vtep = &mut db.vtep;
-
-    if let Some(ip) = vtep_data.get_ip() {
-        vtep.set_ip(ip);
-        info!("VTEP ip address set to {ip}");
-    } else {
-        warn!("VTEP no longer has ip address");
-        vtep.unset_ip();
-    }
-    if let Some(mac) = vtep_data.get_mac() {
-        vtep.set_mac(mac);
-        info!("VTEP mac address set to {mac}");
-    } else {
-        warn!("VTEP no longer has mac address");
-        vtep.unset_mac();
-    }
-    // update the vtep for the Vxlan VRFs
-    db.vrftable
-        .values_mut()
-        .filter(|vrf| vrf.vni.is_some())
-        .for_each(|vrf| vrf.set_vtep(vtep));
 }
 
 /// Handle a lock request for the indicated CPI
@@ -166,7 +134,6 @@ pub(crate) fn handle_ctl_msg(cpi: &mut Cpi, db: &mut RoutingDb) {
             info!("Got request to shutdown. Au revoir ...");
             cpi.run = false;
         }
-        Ok(CpiCtlMsg::SetVtep(vtep_data)) => handle_set_vtep(db, &vtep_data),
         Ok(CpiCtlMsg::Lock(reply_to)) => handle_lock(cpi, true, Some(reply_to)),
         Ok(CpiCtlMsg::Unlock(reply_to)) => handle_lock(cpi, false, Some(reply_to)),
         Ok(CpiCtlMsg::GuardedUnlock) => handle_lock(cpi, false, None),

@@ -28,7 +28,6 @@ use tracing::{debug, error, info, warn};
 use net::interface::Interface;
 use net::interface::display::MultiIndexInterfaceMapView;
 use routing::ctl::RouterCtlSender;
-use routing::evpn::Vtep;
 
 /// A request type to the `ConfigProcessor`
 #[derive(Debug)]
@@ -341,11 +340,6 @@ async fn apply_gw_config(
     /* apply config with frrmi to frr-agent */
     apply_config_frr(frrmi, genid, internal).await?;
 
-    /* tell router about vtep as it won't learn it from frr */
-    if let Some(vconfig) = internal.get_vtep() {
-        let vtep = Vtep::with_ip_and_mac(vconfig.address.into(), vconfig.mac.into());
-        router_ctl.set_vtep(vtep).await;
-    }
     info!("Successfully applied config for genid {genid}");
     Ok(())
 }
