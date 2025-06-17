@@ -5,6 +5,7 @@
 
 #![allow(unused)]
 
+use linux_raw_sys::if_ether;
 use net::eth::ethtype::EthType;
 use net::eth::mac::{Mac, SourceMac};
 use net::vlan::Vid;
@@ -170,28 +171,34 @@ impl InterfaceConfig {
             return Err(ConfigError::MissingIdentifier("interface name"));
         }
 
-        match &self.iftype {
-            InterfaceType::Vtep(vtep) => {
-                if vtep.local.is_multicast() {
-                    Err(ConfigError::BadVtepLocalAddress(
-                        vtep.local.into(),
-                        "address is not unicast",
-                    ))
-                } else {
-                    match &vtep.mac {
-                        Some(mac) => match SourceMac::new(*mac) {
-                            Err(_) => Err(ConfigError::BadVtepMacAddress(
+        if let InterfaceType::Vtep(vtep) = &self.iftype {
+            if vtep.local.is_multicast() {
+                return Err(ConfigError::BadVtepLocalAddress(
+                    vtep.local.into(),
+                    "address is not unicast",
+                ));
+            } else {
+                match &vtep.mac {
+                    Some(mac) => {
+                        if SourceMac::new(*mac).is_err() {
+                            return Err(ConfigError::BadVtepMacAddress(
                                 *mac,
                                 "mac address is not a valid source mac address",
-                            )),
-                            _ => Ok(()),
-                        },
-                        None => Err(ConfigError::MissingParameter("VTEP MAC address")),
+                            ));
+                        };
                     }
+                    None => return Err(ConfigError::MissingParameter("VTEP MAC address")),
                 }
             }
-            _ => Ok(()),
-        }
+        };
+
+        if let Some(mtu) = self.mtu {
+            if !(if_ether::ETH_MIN_MTU..=if_ether::ETH_MAX_MTU).contains(&mtu) {
+                return Err(ConfigError::BadMtu(mtu));
+            }
+        };
+
+        Ok(())
     }
 }
 

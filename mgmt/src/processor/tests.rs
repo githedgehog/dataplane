@@ -225,7 +225,8 @@ pub mod test {
             false,
         )
         .set_description("Link to external device ext-1")
-        .add_address(IpAddr::from_str("172.16.0.1").expect("Bad address"), 24);
+        .add_address(IpAddr::from_str("172.16.0.1").expect("Bad address"), 24)
+        .set_mtu(1500);
         vrf_cfg.add_interface_config(eth1);
 
         /* configure eth2 interface */

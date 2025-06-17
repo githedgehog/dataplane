@@ -55,6 +55,8 @@ pub enum ConfigError {
     FrrAgentUnreachable,
     #[error("Internal error: {0}")]
     InternalFailure(String),
+    #[error("MTU out of range [68, 65535]: {0}")]
+    BadMtu(u32),
 
     // Peering and VpcExpose validation
     #[error("All prefixes are excluded in VpcExpose: {0}")]
