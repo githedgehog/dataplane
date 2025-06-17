@@ -75,7 +75,7 @@ pub struct InterfaceConfig {
     pub description: Option<String>,
     pub vrf: Option<String>,
     pub addresses: BTreeSet<InterfaceAddress>,
-    pub mtu: Option<u16>,
+    pub mtu: Option<u32>,
     pub internal: bool, /* true if automatically created */
     pub ospf: Option<OspfInterface>,
 }
@@ -147,7 +147,7 @@ impl InterfaceConfig {
         self.description = Some(description.to_owned());
         self
     }
-    pub fn set_mtu(mut self, mtu: u16) -> Self {
+    pub fn set_mtu(mut self, mtu: u32) -> Self {
         self.mtu = Some(mtu);
         self
     }
