@@ -42,7 +42,7 @@ pub(crate) struct CmdArgs {
         long,
         value_name = "ADDRESS",
         default_value = "[::1]:50051",
-        help = "IP Address and port or UNIX socket path to listen for managment connections"
+        help = "IP Address and port or UNIX socket path to listen for management connections"
     )]
     grpc_address: String,
 
@@ -55,21 +55,21 @@ pub(crate) struct CmdArgs {
         value_name = "Unix socket for FRR to send messages to the dataplane control plane interface",
         default_value = DEFAULT_DP_UX_PATH
     )]
-    cpi_sock_path: Option<String>,
+    cpi_sock_path: String,
 
     #[arg(
         long,
         value_name = "Unix socket to listen for dataplane cli connections",
         default_value = DEFAULT_DP_UX_PATH_CLI
     )]
-    cli_sock_path: Option<String>,
+    cli_sock_path: String,
 
     #[arg(
         long,
         value_name = "Unix socket to connect to FRR agent that controls FRR configuration reload",
         default_value = DEFAULT_FRR_AGENT_PATH
     )]
-    frr_agent_path: Option<String>,
+    frr_agent_path: String,
 }
 
 impl CmdArgs {
@@ -162,18 +162,12 @@ impl CmdArgs {
     }
 
     pub fn cpi_sock_path(&self) -> String {
-        self.cpi_sock_path
-            .clone()
-            .unwrap_or(DEFAULT_DP_UX_PATH.to_string())
+        self.cpi_sock_path.clone()
     }
     pub fn cli_sock_path(&self) -> String {
-        self.cli_sock_path
-            .clone()
-            .unwrap_or(DEFAULT_DP_UX_PATH_CLI.to_string())
+        self.cli_sock_path.clone()
     }
     pub fn frr_agent_path(&self) -> String {
-        self.frr_agent_path
-            .clone()
-            .unwrap_or(DEFAULT_FRR_AGENT_PATH.to_string())
+        self.frr_agent_path.clone()
     }
 }
