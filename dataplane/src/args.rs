@@ -52,21 +52,24 @@ pub(crate) struct CmdArgs {
 
     #[arg(
         long,
-        value_name = "Unix socket for FRR to send messages to the dataplane control plane interface",
+        value_name = "CPI Unix socket path",
+        help = "Unix socket for FRR to send route update messages to the dataplane",
         default_value = DEFAULT_DP_UX_PATH
     )]
     cpi_sock_path: String,
 
     #[arg(
         long,
-        value_name = "Unix socket to listen for dataplane cli connections",
+        value_name = "CLI Unix socket path",
+        help = "Unix socket to listen for dataplane cli connections",
         default_value = DEFAULT_DP_UX_PATH_CLI
     )]
     cli_sock_path: String,
 
     #[arg(
         long,
-        value_name = "Unix socket to connect to FRR agent that controls FRR configuration reload",
+        value_name = "FRR Agent Unix socket path",
+        help = "Unix socket to connect to FRR agent that controls FRR configuration reload",
         default_value = DEFAULT_FRR_AGENT_PATH
     )]
     frr_agent_path: String,
