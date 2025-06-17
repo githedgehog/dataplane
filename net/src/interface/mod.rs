@@ -316,6 +316,15 @@ impl Interface {
     pub fn is_bridge(&self) -> bool {
         matches!(self.properties, InterfaceProperties::Bridge(_))
     }
+    /// Provide a reference to [`VrfProperties`] if the interface has
+    /// such a property
+    #[must_use]
+    pub fn get_vrf_properties(&self) -> Option<&VrfProperties> {
+        match &self.properties {
+            InterfaceProperties::Vrf(properties) => Some(properties),
+            _ => None,
+        }
+    }
 }
 
 /// Interface-specific properties.
