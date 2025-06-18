@@ -8,8 +8,6 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)] // Temporary until auto-learn removed
 
 #[cfg(feature = "auto-learn")]
-use crate::RouterError;
-#[cfg(feature = "auto-learn")]
 use crate::interfaces::iftablerw::IfTableWriter;
 #[cfg(feature = "auto-learn")]
 use crate::interfaces::interface::IfDataEthernet;
@@ -23,11 +21,6 @@ use crate::rib::vrftable::VrfTable;
 use mac_address::mac_address_by_name;
 #[cfg(feature = "auto-learn")]
 use net::eth::mac::Mac;
-#[cfg(feature = "auto-learn")]
-use net::vxlan::Vni;
-
-#[cfg(feature = "auto-learn")]
-use crate::evpn::Vtep;
 
 use crate::evpn::RmacEntry;
 use crate::routingdb::RoutingDb;
@@ -78,89 +71,6 @@ impl RpcOperation for ConnectInfo {
     }
 }
 
-#[cfg(feature = "auto-learn")]
-fn auto_learn_vrf(
-    route: &IpRoute,
-    vrftable: &mut VrfTable,
-    iftablew: &mut IfTableWriter,
-    vtep: &Vtep,
-) {
-    use crate::rib::vrf::RouterVrfConfig;
-
-    if let Ok(vrf) = vrftable.get_vrf(route.vrfid) {
-        let mut vni = None;
-        if vrf.vni.is_none() {
-            for nh in &route.nhops {
-                if let Some(NextHopEncap::VXLAN(vxlan)) = &nh.encap {
-                    if nh.vrfid == route.vrfid {
-                        vni = Some(vxlan.vni);
-                        break;
-                    }
-                }
-            }
-        }
-        if let Some(vni) = vni {
-            if let Ok(vni) = Vni::new_checked(vni) {
-                if let Err(e) = vrftable.set_vni(route.vrfid, vni) {
-                    error!("Fatal: could not associate vni {vni} to vrf: {e}");
-                }
-            } else {
-                error!("Fatal: could not associate vni to vrf: bad vni {vni}");
-            }
-        }
-    } else {
-        let mut vni = None;
-        for nh in &route.nhops {
-            if let Some(NextHopEncap::VXLAN(vxlan)) = &nh.encap {
-                if nh.vrfid == route.vrfid {
-                    vni = Some(vxlan.vni.try_into().expect("Bad vni"));
-                    break;
-                }
-            }
-        }
-        let name = if route.vrfid == 0 {
-            "default"
-        } else {
-            "unknown"
-        };
-
-        let mut vrf_cfg = RouterVrfConfig::new(route.vrfid, name);
-        if vni.is_some() {
-            vrf_cfg.reset_vni(vni);
-        }
-
-        // add the vrf
-        if let Err(e) = vrftable.add_vrf(&vrf_cfg) {
-            error!("Error adding vrf with id {}: {e}", route.vrfid);
-
-            // HACK: heal by removing the existing vrf with that vni so that
-            // we can re-add a vrf with the same VNI but distinct ifindex. This
-            // is to allow re-applying configs while there is the disconnect between
-            // routing and mgmt.
-            if let Some(duped_vni) = vni {
-                if matches!(e, RouterError::VniInUse(_)) {
-                    if let Ok(other_vrfid) = vrftable.get_vrfid_by_vni(duped_vni) {
-                        let _ = vrftable.remove_vrf(other_vrfid, iftablew);
-                        // add the new one
-                        if let Err(e) = vrftable.add_vrf(&vrf_cfg) {
-                            error!(
-                                "Failed to add vrf with id {} on second attempt: {e}",
-                                route.vrfid
-                            );
-                        } else {
-                            info!("Added VRF with id {}", route.vrfid);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    /* set the vtep */
-    if let Ok(vrf) = vrftable.get_vrf_mut(route.vrfid) {
-        vrf.set_vtep(vtep);
-    }
-}
-
 impl RpcOperation for IpRoute {
     type ObjectStore = RoutingDb;
     #[allow(unused_mut)]
@@ -168,15 +78,6 @@ impl RpcOperation for IpRoute {
         let rmac_store = &db.rmac_store;
         let vrftable = &mut db.vrftable;
         let iftabler = &db.iftw.as_iftable_reader();
-
-        #[cfg(feature = "auto-learn")]
-        let vtep = &db.vtep;
-
-        #[cfg(feature = "auto-learn")]
-        let iftablew = &mut db.iftw;
-
-        #[cfg(feature = "auto-learn")]
-        auto_learn_vrf(self, vrftable, iftablew, vtep);
 
         if is_evpn_route(self) && self.vrfid != 0 {
             let Ok((vrf, vrf0)) = vrftable.get_with_default_mut(self.vrfid) else {
