@@ -9,10 +9,10 @@ use tracing::debug;
 
 use net::vxlan::Vni;
 
-use crate::RouterError;
 use crate::config::RouterConfig;
 use crate::rib::vrf::{RouterVrfConfig, VrfId, VrfStatus};
 use crate::rib::{Vrf, VrfTable};
+use crate::{RouterError, interfaces::iftablerw::IfTableWriter};
 
 /////////////////////////////////////////////////////////////////////////////////////////
 /// An operation to set / unset a  [`Vni`] to / from a [`Vrf`]
@@ -135,13 +135,22 @@ impl ReconfigVrfPlan {
     }
 
     #[must_use]
-    fn enforce_deletions(&self, vrftable: &mut VrfTable) -> Result<(), RouterError> {
+    fn enforce_deletions(
+        &self,
+        vrftable: &mut VrfTable,
+        iftw: &mut IfTableWriter,
+    ) -> Result<(), RouterError> {
         for vrfid in &self.to_delete {
             let vrf = vrftable.get_vrf_mut(*vrfid)?;
             if vrf.status != VrfStatus::Deleted {
                 vrf.set_status(VrfStatus::Deleting);
+                vrf.check_deletion();
+                if vrf.can_be_deleted() {
+                    vrftable.remove_vrf(*vrfid, iftw);
+                } else {
+                    vrftable.unset_vni(*vrfid)?;
+                }
             }
-            vrftable.unset_vni(*vrfid)?;
         }
         Ok(())
     }
@@ -227,8 +236,12 @@ impl ReconfigVrfPlan {
     }
 
     #[must_use]
-    pub(crate) fn apply(&self, vrftable: &mut VrfTable) -> Result<(), RouterError> {
-        self.enforce_deletions(vrftable)?;
+    pub(crate) fn apply(
+        &self,
+        vrftable: &mut VrfTable,
+        iftw: &mut IfTableWriter,
+    ) -> Result<(), RouterError> {
+        self.enforce_deletions(vrftable, iftw)?;
         self.enforce_keeps(vrftable)?;
         self.enforce_changes(vrftable)?;
         self.enforce_additions(vrftable)?;

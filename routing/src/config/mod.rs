@@ -139,7 +139,7 @@ impl RouterConfig {
     pub(crate) fn apply(&self, db: &mut RoutingDb) -> Result<(), RouterError> {
         let genid = self.genid;
         self.validate()?; /* validate the config */
-        ReconfigVrfPlan::generate(self, &mut db.vrftable).apply(&mut db.vrftable)?;
+        ReconfigVrfPlan::generate(self, &mut db.vrftable).apply(&mut db.vrftable, &mut db.iftw)?;
         let iftabler = db.iftw.enter().unwrap_or_else(|| unreachable!());
         let reconfig_ifaces = ReconfigInterfacePlan::generate(self, &iftabler);
         drop(iftabler);
