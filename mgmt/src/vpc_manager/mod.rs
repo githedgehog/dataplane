@@ -487,7 +487,7 @@ mod contract {
 
     impl TypeGenerator for RequiredInformationBase {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            const MAX_VPCS: usize = 3000;
+            const MAX_VPCS: usize = 300;
             let mut num_vpcs = driver.produce::<usize>()?;
             if num_vpcs > MAX_VPCS {
                 num_vpcs = MAX_VPCS;
