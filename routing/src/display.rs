@@ -210,6 +210,16 @@ impl Display for VrfStatus {
     }
 }
 
+fn fmt_vrf_oneline(vrf: &Vrf, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let description = vrf.description.clone().unwrap_or_else(|| "--".to_string());
+    writeln!(
+        f,
+        "\n ━━━━━━━━━\n Vrf: '{}' (id: {}) description: {description}",
+        vrf.name, vrf.vrfid
+    )?;
+    Ok(())
+}
+
 impl Display for Vrf {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
@@ -241,12 +251,7 @@ impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Route)) -> bool> Display for VrfViewV4<'_,
         // displayed routes
         let mut displayed = 0;
 
-        // display !
-        writeln!(
-            f,
-            "\n ━━━━━━━━━\n Vrf: '{}' (id: {})",
-            self.vrf.name, self.vrf.vrfid
-        )?;
+        fmt_vrf_oneline(&self.vrf, f)?;
         Heading(format!("Ipv4 routes ({total_routes})")).fmt(f)?;
         for (prefix, route) in rt_iter {
             write!(f, "  {prefix:?} {route}")?;
@@ -280,12 +285,7 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Route)) -> bool> Display for VrfViewV6<'_,
         // displayed routes
         let mut displayed = 0;
 
-        // display !
-        writeln!(
-            f,
-            "\n ━━━━━━━━━\n Vrf: '{}' (id: {})",
-            self.vrf.name, self.vrf.vrfid
-        )?;
+        fmt_vrf_oneline(&self.vrf, f)?;
         Heading(format!("Ipv6 routes ({total_routes})")).fmt(f)?;
         for (prefix, route) in rt_iter {
             write!(f, "  {prefix:?} {route}")?;
@@ -306,7 +306,7 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Route)) -> bool> Display for VrfViewV6<'_,
 pub struct VrfV4Nexthops<'a>(pub &'a Vrf);
 impl Display for VrfV4Nexthops<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, " Vrf: '{}' (id: {})", self.0.name, self.0.vrfid)?;
+        fmt_vrf_oneline(&self.0, f)?;
         Heading("Ipv4 Next-hops".to_string()).fmt(f)?;
         let iter =
             self.0.nhstore.iter().filter(|nh| {
@@ -322,7 +322,7 @@ impl Display for VrfV4Nexthops<'_> {
 pub struct VrfV6Nexthops<'a>(pub &'a Vrf);
 impl Display for VrfV6Nexthops<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, " Vrf: '{}' (id: {})", self.0.name, self.0.vrfid)?;
+        fmt_vrf_oneline(&self.0, f)?;
         Heading("Ipv6 Next-hops".to_string()).fmt(f)?;
         let iter =
             self.0.nhstore.iter().filter(|nh| {
@@ -721,11 +721,7 @@ impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Rc<FibGroup>)) -> bool> Display for FibVie
                 let total_entries = fibr.len_v4();
                 let mut displayed = 0;
 
-                writeln!(
-                    f,
-                    "\n ━━━━━━━━━\n Vrf: '{}' (id: {})",
-                    self.vrf.name, self.vrf.vrfid
-                )?;
+                fmt_vrf_oneline(&self.vrf, f)?;
                 Heading(format!("Ipv4 FIB ({total_entries} destinations)")).fmt(f)?;
                 for (prefix, group) in rt_iter {
                     write!(f, "  {prefix:?} {group}")?;
@@ -761,11 +757,7 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Rc<FibGroup>)) -> bool> Display for FibVie
                 let total_entries = fibr.len_v6();
                 let mut displayed = 0;
 
-                writeln!(
-                    f,
-                    "\n ━━━━━━━━━\n Vrf: '{}' (id: {})",
-                    self.vrf.name, self.vrf.vrfid
-                )?;
+                fmt_vrf_oneline(&self.vrf, f)?;
                 Heading(format!("Ipv6 FIB ({total_entries} destinations)")).fmt(f)?;
                 for (prefix, group) in rt_iter {
                     write!(f, "  {prefix:?} {group}")?;
