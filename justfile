@@ -29,11 +29,11 @@ target := "x86_64-unknown-linux-gnu"
 # cargo build profile to use
 profile := "debug"
 [private]
-_container_repo := "ghcr.io/githedgehog/dataplane"
+_container_repo := "${REGISTRY_URL:-ghcr.io/githedgehog/dataplane}"
 
 # Docker images
 [private]
-_dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
+_dpdk_sys_container_repo := "${REGISTRY_URL:-ghcr.io/githedgehog/dpdk-sys}"
 [private]
 _dpdk_sys_container_tag := dpdk_sys_commit
 [private]

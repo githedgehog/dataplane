@@ -123,16 +123,19 @@ jobs:
 
       - name: "set up compile-env"
         run: |
+          export REGISTRY_URL
           just --yes debug_justfile="${{matrix.debug_justfile}}" refresh-compile-env
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
 
       - name: "cargo deny check"
         run: |
+          export REGISTRY_URL
           just debug_justfile="${{matrix.debug_justfile}}" ${{matrix.profile.sterile}} cargo deny check
 
       - name: "push container"
         if: ${{ matrix.profile.sterile == 'sterile' && (matrix.profile.name == 'release' || matrix.profile.name == 'debug') }}
         run: |
+          unset REGISTRY_URL
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
@@ -143,6 +146,7 @@ jobs:
         name: "test"
         run: |
           set -euo pipefail
+          export REGISTRY_URL
           mkdir --parent ./target/nextest
           if [ ${{ matrix.profile.name }} = "fuzz" ]; then
             just \
