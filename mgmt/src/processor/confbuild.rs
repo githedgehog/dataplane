@@ -210,21 +210,11 @@ struct VtepInfo {
 }
 
 fn get_vtep_info(external: &ExternalConfig) -> Result<VtepInfo, ConfigError> {
-    let intf = match external
-        .underlay
-        .vrf
-        .interfaces
-        .values()
-        .find(|config| matches!(config.iftype, InterfaceType::Vtep(_)))
-    {
-        Some(intf) => intf,
-        None => {
-            return Err(ConfigError::InternalFailure(
-                "No VTEP configured".to_string(),
-            ));
-        }
+    let Some(intf) = external.underlay.get_vtep_interface()? else {
+        return Err(ConfigError::InternalFailure(
+            "No VTEP configured".to_string(),
+        ));
     };
-
     match &intf.iftype {
         InterfaceType::Vtep(vtep) => {
             let mac = match vtep.mac {

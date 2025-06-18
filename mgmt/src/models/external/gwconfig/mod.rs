@@ -12,7 +12,7 @@ use tracing::debug;
 use crate::models::external::{ConfigError, ConfigResult};
 use crate::models::internal::InternalConfig;
 use crate::models::internal::device::DeviceConfig;
-use crate::models::internal::interfaces::interface::InterfaceType;
+use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceType};
 use crate::models::internal::routing::vrf::VrfConfig;
 use crate::models::{external::overlay::Overlay, internal::device::settings::DeviceSettings};
 
@@ -29,6 +29,22 @@ impl Underlay {
     pub fn new() -> Self {
         Self::default()
     }
+    pub fn get_vtep_interface(&self) -> Result<Option<&InterfaceConfig>, ConfigError> {
+        let vteps: Vec<&InterfaceConfig> = self
+            .vrf
+            .interfaces
+            .values()
+            .filter(|config| matches!(config.iftype, InterfaceType::Vtep(_)))
+            .collect();
+        match vteps.len() {
+            0 => Ok(None),
+            1 => Ok(Some(vteps[0])),
+            _ => Err(ConfigError::TooManyInstances(
+                "Vtep interfaces",
+                vteps.len(),
+            )),
+        }
+    }
     pub fn validate(&self) -> ConfigResult {
         debug!("Validating underlay configuration...");
 
@@ -37,22 +53,6 @@ impl Underlay {
             .interfaces
             .values()
             .try_for_each(|iface| iface.validate())?;
-
-        let num_vteps = self
-            .vrf
-            .interfaces
-            .values()
-            .filter(|config| matches!(config.iftype, InterfaceType::Vtep(_)))
-            .count();
-
-        // Exactly 1 VTEP interface is required
-        match num_vteps {
-            0 => Err(ConfigError::MissingParameter(
-                "Vtep interface configuration",
-            )),
-            1 => Ok(()),
-            _ => Err(ConfigError::TooManyInstances("Vtep interfaces", 1)),
-        }?;
 
         Ok(())
     }
@@ -101,6 +101,14 @@ impl ExternalConfig {
         self.device.validate()?;
         self.underlay.validate()?;
         self.overlay.validate()?;
+
+        // one vtep at the most -- but none is fine if have no VPCs
+        let vtep = self.underlay.get_vtep_interface()?;
+        if !self.overlay.vpc_table.is_empty() && vtep.is_none() {
+            return Err(ConfigError::MissingParameter(
+                "Vtep interface configuration",
+            ));
+        }
         Ok(())
     }
 }
