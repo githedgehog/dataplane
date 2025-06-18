@@ -4,7 +4,9 @@
 //! Vrf table module that stores multiple vrfs. Every vrf is uniquely identified by a vrfid
 //! and optionally identified by a Vni. A vrf table always has a default vrf.
 
-use super::vrf::{Vrf, VrfId, VrfStatus};
+#[cfg(test)]
+use super::vrf::VrfStatus;
+use super::vrf::{Vrf, VrfId};
 use crate::fib::fibtable::FibTableWriter;
 use crate::fib::fibtype::FibId;
 use crate::interfaces::iftablerw::IfTableWriter;
@@ -197,8 +199,9 @@ impl VrfTable {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Remove the vrf with the given [`VrfId`]
+    /// Remove all of the VRFs with status `Deleted``
     //////////////////////////////////////////////////////////////////
+    #[cfg(test)]
     pub fn remove_deleted_vrfs(&mut self, iftablew: &mut IfTableWriter) {
         // collect the ids of the vrfs with status deleted
         let to_delete: Vec<VrfId> = self

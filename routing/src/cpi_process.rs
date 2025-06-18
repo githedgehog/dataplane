@@ -197,6 +197,11 @@ impl RpcOperation for IpRoute {
         let vrftable = &mut db.vrftable;
         if let Ok(vrf) = vrftable.get_vrf_mut(self.vrfid) {
             vrf.del_route_rpc(self);
+            if vrf.can_be_deleted() {
+                if let Err(e) = vrftable.remove_vrf(self.vrfid, &mut db.iftw) {
+                    warn!("Failed to delete vrf {}: {e}", self.vrfid);
+                }
+            }
             RpcResultCode::Ok
         } else {
             error!("Unable to find VRF with id {}", self.vrfid);

@@ -6,6 +6,7 @@
 use std::hash::Hash;
 use std::iter::Filter;
 use std::net::IpAddr;
+use std::num::NonZeroUsize;
 use std::rc::Rc;
 use tracing::debug;
 
@@ -280,6 +281,42 @@ impl Vrf {
     }
 
     /////////////////////////////////////////////////////////////////////////
+    /// Check if a [`Vrf`] needs to be deleted and mark it as such. Only
+    /// [`Vrfs`] in state `Deleting` can be deleted and the default VRF never
+    /// gets to that status.
+    /////////////////////////////////////////////////////////////////////////
+    pub fn check_deletion(&mut self) {
+        if self.status == VrfStatus::Deleting {
+            let one = NonZeroUsize::new(1).unwrap_or_else(|| unreachable!());
+            if self.routesv4.len() == one && self.routesv6.len() == one {
+                let r1 = self
+                    .get_route(Prefix::root_v4())
+                    .unwrap_or_else(|| unreachable!());
+                let r2 = self
+                    .get_route(Prefix::root_v6())
+                    .unwrap_or_else(|| unreachable!());
+                // make sure the only route present for 0.0.0.0/ or ::0/0 is the
+                // route set by us
+                if (r1.origin == RouteOrigin::Other && r2.origin == RouteOrigin::Other)
+                    && r1.s_nhops.len() == 1
+                    && r2.s_nhops.len() == 1
+                    && r1.s_nhops[0].rc.key.fwaction == FwAction::Drop
+                    && r2.s_nhops[0].rc.key.fwaction == FwAction::Drop
+                {
+                    self.set_status(VrfStatus::Deleted);
+                }
+            }
+        }
+    }
+
+    /////////////////////////////////////////////////////////////////////////
+    /// Tell if a vrf can be deleted
+    /////////////////////////////////////////////////////////////////////////
+    pub fn can_be_deleted(&self) -> bool {
+        self.status == VrfStatus::Deleted
+    }
+
+    /////////////////////////////////////////////////////////////////////////
     /// Set the VTEP for a [`Vrf`]. This should be set on vrf creation or anytime
     /// the config causes the vtep ip or mac to change.
     /////////////////////////////////////////////////////////////////////////
@@ -470,6 +507,7 @@ impl Vrf {
         if let Some(fibw) = &mut self.fibw {
             fibw.del_fibgroup(prefix);
         }
+        self.check_deletion();
     }
 
     /////////////////////////////////////////////////////////////////////////
