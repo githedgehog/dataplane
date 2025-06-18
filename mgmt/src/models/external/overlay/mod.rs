@@ -70,7 +70,6 @@ impl Overlay {
 
         /* empty collections used for validation */
         self.vpc_table.clear_vnis();
-        self.vpc_table.clear_ids();
 
         Ok(())
     }

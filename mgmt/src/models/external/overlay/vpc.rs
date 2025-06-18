@@ -116,7 +116,7 @@ impl Vpc {
 pub struct VpcTable {
     vpcs: BTreeMap<String, Vpc>,
     vnis: BTreeSet<Vni>,
-    ids: BTreeSet<VpcId>,
+    ids: BTreeMap<VpcId, String>, // name of vpc
 }
 impl VpcTable {
     /// Create new vpc table
@@ -137,14 +137,14 @@ impl VpcTable {
         if self.vnis.contains(&vpc.vni) {
             return Err(ConfigError::DuplicateVpcVni(vpc.vni.as_u32()));
         }
-        if self.ids.contains(&vpc.id) {
+        if self.ids.contains_key(&vpc.id) {
             return Err(ConfigError::DuplicateVpcId(vpc.id));
         }
         if self.vpcs.contains_key(&vpc.name) {
             return Err(ConfigError::DuplicateVpcName(vpc.name.clone()));
         }
         self.vnis.insert(vpc.vni);
-        self.ids.insert(vpc.id.clone());
+        self.ids.insert(vpc.id.clone(), vpc.name.clone());
         self.vpcs.insert(vpc.name.to_owned(), vpc);
         Ok(())
     }
@@ -152,6 +152,14 @@ impl VpcTable {
     pub fn get_vpc(&self, vpc_name: &str) -> Option<&Vpc> {
         self.vpcs.get(vpc_name)
     }
+    /// Get a [`Vpc`] by [`VpcId`]
+    pub fn get_vpc_by_vpcid(&self, vpcid: VpcId) -> Option<&Vpc> {
+        match self.ids.get(&vpcid) {
+            Some(name) => self.vpcs.get(name),
+            None => None,
+        }
+    }
+
     /// Iterate over [`Vpc`]s in a [`VpcTable`]
     pub fn values(&self) -> impl Iterator<Item = &Vpc> {
         self.vpcs.values()
@@ -169,10 +177,6 @@ impl VpcTable {
     /// Clear set of vnis
     pub fn clear_vnis(&mut self) {
         self.vnis.clear();
-    }
-    /// Clear set of ids
-    pub fn clear_ids(&mut self) {
-        self.ids.clear();
     }
     /// Validate the [`VpcTable`]
     pub fn validate(&self) -> ConfigResult {
