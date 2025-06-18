@@ -17,6 +17,7 @@ arrayvec = { workspace = true }
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional = true }
 derive_builder = { workspace = true, features = ["alloc"] }
 etherparse = { workspace = true, features = ["std"] }
+linux-raw-sys = { workspace = true, features = ["std", "if_ether"] }
 multi_index_map = { workspace = true, default-features = false, features = ["serde"] }
 ordermap = { workspace = true, features = ["std"] }
 serde = { workspace = true, features = ["derive", "std"] }
