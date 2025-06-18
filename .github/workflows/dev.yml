@@ -105,6 +105,7 @@ jobs:
         run: |
           export REGISTRY_URL
           sudo -E docker login "${REGISTRY_URL}" --username "${REGISTRY_USERNAME}" --password-stdin <<<"${REGISTRY_PASSWORD}"
+          docker login "${REGISTRY_URL}" --username "${REGISTRY_USERNAME}" --password-stdin <<<"${REGISTRY_PASSWORD}"
 
       - name: "install rust"
         uses: "dtolnay/rust-toolchain@master"
