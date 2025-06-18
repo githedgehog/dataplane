@@ -112,7 +112,11 @@ impl ReconfigInterfacePlan {
         iftw: &mut IfTableWriter,
         vrftable: &VrfTable,
     ) -> Result<(), RouterError> {
-        self.enforce_deletions(iftw)?;
+        if false {
+            // disabled because we still auto-learn interfaces. If we'd do this
+            // we'd delete auto-learnt interfaces which is not what we want
+            self.enforce_deletions(iftw)?;
+        }
         self.enforce_changes(iftw, vrftable)?;
         self.enforce_additions(iftw, vrftable)?;
         debug!("Successfully applied Interface configurations");
