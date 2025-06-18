@@ -21,7 +21,7 @@ use dplane_rpc::msg::{ForwardAction, IpRoute, NextHop, NextHopEncap, Rmac, Route
 use net::eth::mac::Mac;
 use net::vxlan::Vni;
 use std::net::{IpAddr, Ipv4Addr};
-use tracing::error;
+use tracing::{error, warn};
 
 impl From<RouteType> for RouteOrigin {
     fn from(value: RouteType) -> Self {
@@ -178,8 +178,14 @@ impl Vrf {
             );
             return;
         };
-        let route = Route::from_iproute(&prefix, iproute);
 
+        if let Some(tableid) = self.tableid {
+            if iproute.tableid != tableid.into() {
+                warn!("Table id mismatch for {iproute}; vrf tableid is {tableid}");
+            }
+        }
+
+        let route = Route::from_iproute(&prefix, iproute);
         let mut nhops = Vec::with_capacity(iproute.nhops.len());
         for nhop in &iproute.nhops {
             match RouteNhop::from_rpc_nhop(nhop, route.origin, iftabler) {
