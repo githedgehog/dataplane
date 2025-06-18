@@ -200,7 +200,7 @@ compile-env *args:
 [script]
 pull:
     {{ _just_debuggable_ }}
-    sudo -E docker pull "{{ _compile_env_container }}"
+    docker pull "{{ _compile_env_container }}"
 
 # Allocate 2M hugepages (if needed)
 [private]
