@@ -104,7 +104,7 @@ jobs:
       - name: "login go pull-through cache"
         run: |
           export REGISTRY_URL
-          echo "${REGISTRY_PASSWORD}" | sudo -E docker login "${REGISTRY_URL}" --username "${REGISTRY_USERNAME}" --password-stdin
+          sudo -E docker login "${REGISTRY_URL}" --username "${REGISTRY_USERNAME}" --password-stdin <<<"${REGISTRY_PASSWORD}"
 
       - name: "install rust"
         uses: "dtolnay/rust-toolchain@master"
