@@ -27,8 +27,8 @@ use net::eth::ethtype::EthType;
 use net::eth::mac::SourceMac;
 use net::interface::{
     AdminState, BridgePropertiesBuilder, Interface, InterfaceBuilder, InterfaceBuilderError,
-    InterfaceIndex, InterfaceName, InterfaceProperties, OperationalState, VrfPropertiesBuilder,
-    VtepPropertiesBuilder,
+    InterfaceIndex, InterfaceName, InterfaceProperties, Mtu, OperationalState,
+    VrfPropertiesBuilder, VtepPropertiesBuilder,
 };
 use net::ipv4::addr::UnicastIpv4Addr;
 use net::route::RouteTableId;
@@ -69,6 +69,10 @@ pub struct InterfaceSpec {
     /// system will pick for you.
     #[builder(default)]
     pub mac: Option<SourceMac>,
+    /// The MTU to be assigned to the interface.  If set to `None `, then the operating
+    /// system will pick for you.
+    #[builder(default)]
+    pub mtu: Option<Mtu>,
     /// The intended administrative state of the network interface.
     ///
     /// Note that it is never possible to specify the operational state of a network interface.
@@ -100,6 +104,7 @@ impl AsRequirement<InterfaceSpec> for Interface {
         Some(InterfaceSpec {
             name: self.name.clone(),
             mac: self.mac,
+            mtu: self.mtu,
             admin_state: self.admin_state,
             controller: self.controller,
             properties: self.properties.as_requirement()?,
@@ -373,6 +378,40 @@ impl Update for Manager<SourceMac> {
     }
 }
 
+impl Update for Manager<Mtu> {
+    type Requirement<'a>
+        = Mtu
+    where
+        Self: 'a;
+    type Observation<'a>
+        = &'a Interface
+    where
+        Self: 'a;
+    type Outcome<'a>
+        = Result<(), rtnetlink::Error>
+    where
+        Self: 'a;
+
+    async fn update<'a>(
+        &self,
+        requirement: Mtu,
+        observation: &Interface,
+    ) -> Result<(), rtnetlink::Error>
+    where
+        Self: 'a,
+    {
+        self.handle
+            .link()
+            .set(
+                LinkUnspec::new_with_index(observation.index.to_u32())
+                    .mtu(requirement.inner())
+                    .build(),
+            )
+            .execute()
+            .await
+    }
+}
+
 impl Update for Manager<AdminState> {
     type Requirement<'a>
         = AdminState
@@ -460,6 +499,15 @@ impl Update for Manager<Interface> {
                 }
             }
         }
+        if required.mtu != observed.mtu {
+            match required.mtu {
+                None => { /* no mtu specified */ }
+                Some(mtu) => {
+                    manager_of::<Mtu>(self).update(mtu, observed).await?;
+                    return Ok(());
+                }
+            }
+        }
         if required.controller != observed.controller {
             manager_of::<InterfaceAssociation>(self)
                 .update(required.controller, observed)
@@ -481,14 +529,13 @@ impl PartialEq<Interface> for InterfaceSpec {
         match other.as_requirement() {
             None => false,
             Some(mut other) => {
-                *self == other || {
-                    if self.mac.is_none() {
-                        other.mac = None;
-                        *self == other
-                    } else {
-                        false
-                    }
+                if self.mac.is_none() {
+                    other.mac = None;
                 }
+                if self.mtu.is_none() {
+                    other.mtu = None;
+                }
+                *self == other
             }
         }
     }
@@ -635,11 +682,15 @@ impl TryFromLinkMessage for Interface {
         });
         builder.controller(None);
         builder.mac(None);
+        builder.mtu(None);
 
         for attr in &message.attributes {
             match attr {
                 LinkAttribute::Address(addr) => {
                     builder.mac(SourceMac::try_from(addr).ok());
+                }
+                LinkAttribute::Mtu(mtu) => {
+                    builder.mtu(Mtu::try_from(*mtu).ok());
                 }
                 LinkAttribute::LinkInfo(infos) => {
                     for info in infos {

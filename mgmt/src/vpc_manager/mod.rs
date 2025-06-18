@@ -197,7 +197,7 @@ impl Reconcile for VpcManager<RequiredInformationBase> {
         for (_, association) in requirement.associations.iter() {
             requirement
                 .interfaces
-                .update_by_name(&association.name, |_, _, controller, _| {
+                .update_by_name(&association.name, |_, _, _, controller, _| {
                     *controller =
                         association
                             .controller_name
