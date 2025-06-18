@@ -272,7 +272,8 @@ impl Vrf {
     /// Set the status of a [`Vrf`]
     /////////////////////////////////////////////////////////////////////////
     pub fn set_status(&mut self, status: VrfStatus) {
-        if self.status != status {
+        // the default vrf (vrfid = 0) can't be deleted and it's always active
+        if self.status != status && self.vrfid != 0 {
             self.status = status;
             debug!("Vrf {} status changed to {status}", self.name);
         }
