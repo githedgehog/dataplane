@@ -5,9 +5,9 @@
 
 #![allow(unused)]
 
-use linux_raw_sys::if_ether;
 use net::eth::ethtype::EthType;
 use net::eth::mac::{Mac, SourceMac};
+use net::interface::Mtu;
 use net::vlan::Vid;
 use net::vxlan::Vni;
 use std::collections::BTreeMap;
@@ -76,7 +76,7 @@ pub struct InterfaceConfig {
     pub description: Option<String>,
     pub vrf: Option<String>,
     pub addresses: BTreeSet<InterfaceAddress>,
-    pub mtu: Option<u32>,
+    pub mtu: Option<Mtu>,
     pub internal: bool, /* true if automatically created */
     pub ospf: Option<OspfInterface>,
 }
@@ -148,7 +148,7 @@ impl InterfaceConfig {
         self.description = Some(description.to_owned());
         self
     }
-    pub fn set_mtu(mut self, mtu: u32) -> Self {
+    pub fn set_mtu(mut self, mtu: Mtu) -> Self {
         self.mtu = Some(mtu);
         self
     }
@@ -189,12 +189,6 @@ impl InterfaceConfig {
                     }
                     None => return Err(ConfigError::MissingParameter("VTEP MAC address")),
                 }
-            }
-        };
-
-        if let Some(mtu) = self.mtu {
-            if !(if_ether::ETH_MIN_MTU..=if_ether::ETH_MAX_MTU).contains(&mtu) {
-                return Err(ConfigError::BadMtu(mtu));
             }
         };
 

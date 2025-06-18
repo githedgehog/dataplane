@@ -5,6 +5,7 @@
 #[allow(dead_code)]
 pub mod test {
     use net::eth::mac::Mac;
+    use net::interface::Mtu;
     use routing::prefix::Prefix;
     use tracing_test::traced_test;
 
@@ -226,7 +227,7 @@ pub mod test {
         )
         .set_description("Link to external device ext-1")
         .add_address(IpAddr::from_str("172.16.0.1").expect("Bad address"), 24)
-        .set_mtu(1500);
+        .set_mtu(Mtu::try_from(1500).expect("Bad MTU"));
         vrf_cfg.add_interface_config(eth1);
 
         /* configure eth2 interface */

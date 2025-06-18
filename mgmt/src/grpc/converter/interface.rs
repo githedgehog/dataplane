@@ -9,8 +9,8 @@ use crate::models::internal::interfaces::interface::{
     InterfaceConfigTable, InterfaceType,
 };
 use crate::models::internal::routing::ospf::{OspfInterface, OspfNetwork};
-use linux_raw_sys::if_ether;
 use net::eth::mac::{Mac, SourceMac};
+use net::interface::Mtu;
 use net::vlan::Vid;
 
 fn interface_addresses_to_strings(interface: &InterfaceConfig) -> Vec<String> {
@@ -161,13 +161,8 @@ impl TryFrom<&gateway_config::Interface> for InterfaceConfig {
             interface_config = interface_config.set_ospf(ospf_interface);
         }
 
-        if let Some(mtu) = iface.mtu {
-            if mtu < if_ether::ETH_MIN_MTU {
-                return Err(format!("MTU too small on interface {}: {mtu}", iface.name));
-            }
-            if mtu > if_ether::ETH_MAX_MTU {
-                return Err(format!("MTU too large on interface {}: {mtu}", iface.name));
-            }
+        if let Some(iface_mtu) = iface.mtu {
+            let mtu = Mtu::try_from(iface_mtu).map_err(|e| format!("Invalid MTU: {e}"))?;
             interface_config = interface_config.set_mtu(mtu);
         }
 
@@ -249,7 +244,7 @@ impl TryFrom<&InterfaceConfig> for gateway_config::Interface {
             .transpose()
             .map_err(|e| format!("Failed to convert OSPF interface: {e}"))?;
 
-        let mtu = interface.mtu;
+        let mtu = interface.mtu.map(|mtu| mtu.inner());
 
         // Create the gRPC interface
         Ok(gateway_config::Interface {

@@ -73,6 +73,7 @@ pub mod tests {
     use super::*;
     use crate::models::internal::interfaces::interface::IfEthConfig;
     use crate::models::internal::interfaces::interface::InterfaceType;
+    use net::interface::Mtu;
     use std::net::IpAddr;
     use std::str::FromStr;
 
@@ -87,7 +88,7 @@ pub mod tests {
             false,
         )
         .set_description("Intf to spine 2")
-        .set_mtu(9000)
+        .set_mtu(Mtu::try_from(9000).expect("Bad MTU"))
         .add_address(IpAddr::from_str("10.0.1.1").expect("Bad address"), 24)
         .add_address(IpAddr::from_str("2001:1:2:3::6").expect("Bad address"), 96)
         .set_vrf("default");
@@ -97,7 +98,7 @@ pub mod tests {
         /* lo: Loopback */
         let interface = InterfaceConfig::new("lo", InterfaceType::Loopback, false)
             .set_description("Main loopback interface")
-            .set_mtu(9000)
+            .set_mtu(Mtu::try_from(9000).expect("Bad MTU"))
             .add_address(IpAddr::from_str("7.0.0.10").expect("Bad address"), 32)
             .set_vrf("default");
         iface_table.add_interface_config(interface);
