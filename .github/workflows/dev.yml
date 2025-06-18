@@ -104,8 +104,8 @@ jobs:
       - name: "login to pull-through cache"
         uses: "docker/login-action@v3"
         with:
-          registry: "${{ env.REGISTRY_URL }}"
-          username: "${{ env.REGISTRY_USERNAME }}"
+          registry: "${{ secrets.REGISTRY_URL }}"
+          username: "${{ secrets.REGISTRY_USERNAME }}"
           password: "${{ secrets.REGISTRY_PASSWORD }}"
 
       - name: "install rust"
