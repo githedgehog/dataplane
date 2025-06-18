@@ -132,6 +132,7 @@ jobs:
           export REGISTRY_URL
           sudo -E docker login "${REGISTRY_URL}" --username "${REGISTRY_USERNAME}" --password-stdin <<<"${REGISTRY_PASSWORD}"
           docker login "${REGISTRY_URL}" --username "${REGISTRY_USERNAME}" --password-stdin <<<"${REGISTRY_PASSWORD}"
+          exit 1
           just --yes debug_justfile="${{matrix.debug_justfile}}" refresh-compile-env
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
 
