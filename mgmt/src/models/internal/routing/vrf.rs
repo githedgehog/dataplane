@@ -31,6 +31,7 @@ pub struct VrfConfig {
     pub ospf: Option<Ospf>,
     #[multi_index(ordered_unique)]
     pub vpc_id: Option<VpcId>,
+    pub description: Option<String>, /* informational */
 }
 
 impl Default for VrfConfig {
@@ -46,6 +47,7 @@ impl Default for VrfConfig {
             interfaces: InterfaceConfigTable::new(),
             vpc_id: None,
             ospf: None,
+            description: None,
         }
     }
 }
@@ -65,6 +67,10 @@ impl VrfConfig {
             panic!("Can't set vpc_id for default vrf");
         }
         self.vpc_id = Some(vpc_id);
+        self
+    }
+    pub fn set_description(mut self, description: &str) -> Self {
+        self.description = Some(description.to_owned());
         self
     }
     pub fn set_table_id(mut self, tableid: RouteTableId) -> Self {
