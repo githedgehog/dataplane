@@ -101,11 +101,12 @@ jobs:
           username: "${{ github.actor }}"
           password: "${{ secrets.GITHUB_TOKEN }}"
 
-      - name: "login go pull-through cache"
-        run: |
-          export REGISTRY_URL
-          sudo -E docker login "${REGISTRY_URL}" --username "${REGISTRY_USERNAME}" --password-stdin <<<"${REGISTRY_PASSWORD}"
-          docker login "${REGISTRY_URL}" --username "${REGISTRY_USERNAME}" --password-stdin <<<"${REGISTRY_PASSWORD}"
+      - name: "login to pull-through cache"
+        uses: "docker/login-action@v3"
+        with:
+          registry: "${{ env.REGISTRY_URL }}"
+          username: "${{ env.REGISTRY_USERNAME }}"
+          password: "${{ secrets.REGISTRY_PASSWORD }}"
 
       - name: "install rust"
         uses: "dtolnay/rust-toolchain@master"
@@ -130,9 +131,6 @@ jobs:
       - name: "set up compile-env"
         run: |
           export REGISTRY_URL
-          sudo -E docker login "${REGISTRY_URL}" --username "${REGISTRY_USERNAME}" --password-stdin <<<"${REGISTRY_PASSWORD}"
-          docker login "${REGISTRY_URL}" --username "${REGISTRY_USERNAME}" --password-stdin <<<"${REGISTRY_PASSWORD}"
-          exit 1
           just --yes debug_justfile="${{matrix.debug_justfile}}" refresh-compile-env
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
 
