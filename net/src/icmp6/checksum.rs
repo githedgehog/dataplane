@@ -10,7 +10,7 @@ use etherparse::Icmpv6Header;
 use std::fmt::Debug;
 use std::net::Ipv6Addr;
 
-/// A [`Icmp`] [checksum]
+/// An icmp6 [checksum]
 ///
 /// [checksum]: https://en.wikipedia.org/wiki/Internet_Control_Message_Protocol#Header
 #[repr(transparent)]

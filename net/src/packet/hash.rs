@@ -69,7 +69,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     }
 
     #[allow(unused)]
-    /// Uses the `hash_l2_frame` `Packet` method to provide a hash in the range [49152,65535] suitable
+    /// Uses the `hash_l2_frame` `Packet` method to provide a hash in the range \[49152,65535\] suitable
     /// as UDP source port for vxlan-encapsulated packets, as recommended by RFC7348.
     #[allow(clippy::cast_possible_truncation)]
     pub fn packet_hash_vxlan(&self) -> u16 {

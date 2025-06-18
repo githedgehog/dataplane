@@ -2,8 +2,6 @@
 // Copyright Open Network Fabric Authors
 
 //! Toy implementation of [`PacketBuffer`] which is useful for testing.
-//!
-//! [`PacketBuffer`]: crate::buffer::PacketBuffer
 
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
@@ -38,9 +36,16 @@ impl Drop for TestBuffer {
 }
 
 impl TestBuffer {
-    const CAPACITY: u16 = 2048;
-    const HEADROOM: u16 = 96;
-    const TAILROOM: u16 = 96;
+    /// The maximum capacity of a `TestBuffer`.
+    ///
+    /// This is the maximum number of octets that can be stored in a `TestBuffer`.
+    ///
+    /// This is set to 2048 octets to match the default capacity of a DPDK mbuf.
+    pub const CAPACITY: u16 = 2048;
+    /// The reserved headroom of a `TestBuffer`.
+    pub const HEADROOM: u16 = 96;
+    /// The reserved tailroom of a `TestBuffer`.
+    pub const TAILROOM: u16 = 96;
 
     /// Create a new (defaulted) `TestBuffer`.
     #[must_use]
@@ -48,7 +53,8 @@ impl TestBuffer {
         let mut buffer = Vec::with_capacity(TestBuffer::CAPACITY as usize);
         let headroom = TestBuffer::HEADROOM;
         let tailroom = TestBuffer::TAILROOM;
-        // fill buffer with simple pattern of bytes to help debug any memory access errors
+        // fill the test buffer with a simple pattern of bytes to help debug any memory access
+        // errors
         for i in 0..buffer.capacity() {
             #[allow(clippy::cast_possible_truncation)] // sound due to bitwise and
             buffer.push((i & u8::MAX as usize) as u8);
@@ -286,7 +292,7 @@ mod contract {
         }
     }
 
-    /// [`ValueGenerator`] generator which produces [`TestBuffer`]s which contain specified [`Headers`].
+    /// [`ValueGenerator`] generator which produces [`TestBuffer`]s, which contain specified [`Headers`].
     #[repr(transparent)]
     pub struct GenerateTestBufferForHeaders(Headers);
 

@@ -8,7 +8,7 @@ use crate::icmp4::Icmp4;
 use core::fmt::{Display, Formatter};
 use std::fmt::Debug;
 
-/// A [`Icmp`] [checksum]
+/// A icmp [checksum]
 ///
 /// [checksum]: https://en.wikipedia.org/wiki/Internet_Control_Message_Protocol#Header
 #[repr(transparent)]

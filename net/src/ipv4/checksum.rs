@@ -5,7 +5,7 @@ use crate::checksum::Checksum;
 use crate::ipv4::Ipv4;
 use std::fmt::{Display, Formatter};
 
-/// A [`Ipv4`] [checksum]
+/// A [`Ipv4`] checksum
 #[repr(transparent)]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
