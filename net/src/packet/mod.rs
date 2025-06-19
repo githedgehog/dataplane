@@ -103,6 +103,12 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         self.headers.size()
     }
 
+    /// Get total packet length.
+    #[must_use]
+    pub fn total_len(&self) -> u16 {
+        self.payload_len() + self.header_len().get()
+    }
+
     /// If the [`Packet`] is [`Vxlan`], then this method
     ///
     /// 1. strips the outer headers
