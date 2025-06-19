@@ -7,20 +7,16 @@ mod allocator;
 mod sessions;
 
 use super::Nat;
-use crate::nat::stateful::sessions::NatState;
+use crate::nat::NatDirection;
+use crate::nat::stateful::sessions::{NatDefaultSession, NatSession, NatState};
 use net::buffer::PacketBufferMut;
-use net::headers::{Net, TryHeadersMut, TryIpMut};
+use net::headers::{Net, Transport, TryHeadersMut, TryIp, TryIpMut, TryTransportMut};
 use net::ip::NextHeader;
+use net::ipv4::UnicastIpv4Addr;
 use net::packet::Packet;
 use net::vxlan::Vni;
 use routing::rib::vrf::VrfId;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-
-#[derive(thiserror::Error, Debug)]
-pub enum StatefulNatError {
-    #[error("other error")]
-    Other,
-}
 
 mod private {
     pub trait Sealed {}
@@ -71,42 +67,125 @@ impl Nat {
         todo!()
     }
 
-    fn extract_tuple<I: NatIp>(net: &Net, vrf_id: VrfId) -> NatTuple<I> {
+    fn extract_tuple<I: NatIp>(net: &Net, vrf_id: VrfId) -> Option<NatTuple<I>> {
         todo!()
     }
 
-    fn lookup_state<I: NatIp>(&self, tuple: &NatTuple<I>) -> Option<&NatState> {
+    fn lookup_session_v4_mut(
+        &self,
+        tuple: &NatTuple<Ipv4Addr>,
+    ) -> Option<NatDefaultSession> {
         todo!()
     }
 
     #[allow(clippy::needless_pass_by_value)]
-    fn update_state<I: NatIp>(
+    fn create_session_v4(
         &mut self,
-        tuple: &NatTuple<I>,
+        tuple: &NatTuple<Ipv4Addr>,
         state: NatState,
-    ) -> Result<(), StatefulNatError> {
+    ) -> Result<(), sessions::SessionError> {
         todo!()
     }
 
     fn find_nat_pool<I: NatIp>(
         &self,
-        net: &Net,
+        tuple: &NatTuple<I>,
         vrf_id: VrfId,
     ) -> Option<&dyn allocator::NatPool<I>> {
         todo!()
     }
 
-    fn stateful_translate(&self, net: &mut Net, state: &NatState) {
+    fn set_source_port(
+        transport: &mut Transport,
+        next_header: NextHeader,
+        target_port: Option<allocator::NatPort>,
+    ) {
+        todo!()
+    }
+
+    fn set_destination_port(
+        transport: &mut Transport,
+        next_header: NextHeader,
+        target_port: Option<allocator::NatPort>,
+    ) {
         todo!();
     }
 
-    pub(crate) fn stateful_nat<Buf: PacketBufferMut, I: NatIp, J: NatIp>(
+    fn stateful_translate<Buf: PacketBufferMut>(
+        direction: &NatDirection,
+        packet: &mut Packet<Buf>,
+        state: &NatState,
+        next_header: NextHeader,
+    ) -> Option<()> {
+        let headers = packet.headers_mut();
+        let net = headers.try_ip_mut()?;
+        let (target_ip, target_port) = state.get_nat();
+
+        match direction {
+            NatDirection::SrcNat => match (net, target_ip) {
+                (Net::Ipv4(ip_hdr), IpAddr::V4(ip)) => {
+                    ip_hdr.set_source(UnicastIpv4Addr::new(ip).ok()?);
+                    let transport = headers.try_transport_mut()?;
+                    Self::set_source_port(transport, next_header, target_port);
+                }
+                (Net::Ipv6(ip_hdr), IpAddr::V6(ip)) => {
+                    todo!()
+                }
+                (_, _) => return None,
+            },
+            NatDirection::DstNat => match (net, target_ip) {
+                (Net::Ipv4(ip_hdr), IpAddr::V4(ip)) => {
+                    ip_hdr.set_destination(ip);
+                    let transport = headers.try_transport_mut()?;
+                    Self::set_destination_port(transport, next_header, target_port);
+                }
+                (Net::Ipv6(ip_hdr), IpAddr::V6(ip)) => {
+                    todo!()
+                }
+                (_, _) => return None,
+            },
+        }
+        Some(())
+    }
+
+    fn translate_packet_v4<Buf: PacketBufferMut>(
+        &mut self,
+        packet: &mut Packet<Buf>,
+        tuple: &NatTuple<Ipv4Addr>,
+        direction: &NatDirection,
+        total_bytes: u16,
+    ) -> Option<()> {
+        // Hot path: if we have a session, directly translate the address already
+        if let Some(mut session) = self.lookup_session_v4_mut(tuple) {
+            Self::stateful_translate::<Buf>(
+                direction,
+                packet,
+                session.get_state_mut()?,
+                tuple.next_header,
+            );
+            return Some(());
+        }
+
+        // Else, if we need NAT for this packet, create a new session and translate the address
+        if let Some(pool) = self.find_nat_pool::<Ipv4Addr>(tuple, tuple.vrf_id) {
+            let (target_ip, target_port) = pool.allocate().ok()?;
+            let new_state = NatState::new(target_ip.to_ip_addr(), Some(target_port));
+            self.create_session_v4(tuple, new_state.clone()).ok()?;
+            Self::stateful_translate::<Buf>(direction, packet, &new_state, tuple.next_header);
+            return Some(());
+        }
+
+        // Else, just leave the packet unchanged
+        None
+    }
+
+    pub(crate) fn stateful_nat<Buf: PacketBufferMut>(
         &mut self,
         packet: &mut Packet<Buf>,
         vni_opt: Option<Vni>,
     ) -> Option<()> {
-        let net = packet.headers_mut().try_ip_mut()?;
-
+        let total_bytes = packet.total_len();
+        let net = packet.get_headers().try_ip()?;
         // TODO: What if no VNI
         let vni = vni_opt?;
 
@@ -114,29 +193,17 @@ impl Nat {
         // TODO: Check whether we need protocol-aware processing
 
         let vrf_id = Self::get_vrf_id(net, vni);
-        let tuple = Self::extract_tuple::<I>(net, vrf_id);
 
-        // Hot path: if we have a session, directly translate the address already
-        if let Some(state) = self.lookup_state(&tuple) {
-            self.stateful_translate(net, state);
-            return Some(());
-        }
+        let direction = self.direction.clone();
 
-        // Else, if we need NAT for this packet, create a new session and translate the address
-        if let Some(pool) = self.find_nat_pool::<J>(net, vrf_id) {
-            // This will change in a subsequent commit
-            let session = pool.allocate().ok()?;
-            let state = NatState::new(
-                session.0.to_ip_addr(),
-                Some(session.1),
-            );
-            if self.update_state(&tuple, state.clone()).is_ok() {
-                self.stateful_translate(net, &state);
+        match net {
+            Net::Ipv4(_) => {
+                let tuple = Self::extract_tuple(net, vrf_id)?;
+                self.translate_packet_v4::<Buf>(packet, &tuple, &direction, total_bytes)
             }
-            // Drop otherwise??
+            Net::Ipv6(_) => {
+                todo!()
+            }
         }
-
-        // Else, just leave the packet unchanged
-        None
     }
 }
