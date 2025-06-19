@@ -5,9 +5,12 @@ use super::allocator::NatPort;
 use std::net::IpAddr;
 use std::time::Instant;
 
-trait NatSessionManager {
-    fn lookup(&self, addr: &IpAddr) -> Option<&NatSession>;
-    fn create_session(&mut self, addr: IpAddr) -> Result<NatSession, ()>;
+pub trait NatSessionManager<T>
+where
+    T: NatSession,
+{
+    fn lookup(&self, addr: &IpAddr) -> Option<T>;
+    fn create_session(&mut self, addr: IpAddr) -> Result<T, ()>;
     fn remove_session(&mut self, addr: &IpAddr);
 }
 
@@ -20,11 +23,11 @@ impl NatDefaultSessionManager {
     }
 }
 
-impl NatSessionManager for NatDefaultSessionManager {
-    fn lookup(&self, addr: &IpAddr) -> Option<&NatSession> {
+impl NatSessionManager<NatDefaultSession> for NatDefaultSessionManager {
+    fn lookup(&self, addr: &IpAddr) -> Option<NatDefaultSession> {
         todo!()
     }
-    fn create_session(&mut self, addr: IpAddr) -> Result<NatSession, ()> {
+    fn create_session(&mut self, addr: IpAddr) -> Result<NatDefaultSession, ()> {
         todo!()
     }
     fn remove_session(&mut self, addr: &IpAddr) {
@@ -86,5 +89,15 @@ impl NatState {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct NatSession {}
+pub trait NatSession {
+    fn get_state_mut(&mut self) -> Option<&mut NatState>;
+}
+
+#[derive(Debug)]
+pub struct NatDefaultSession {}
+
+impl NatSession for NatDefaultSession {
+    fn get_state_mut(&mut self) -> Option<&mut NatState> {
+        todo!()
+    }
+}
