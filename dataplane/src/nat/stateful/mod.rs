@@ -14,6 +14,8 @@ use net::headers::{Net, Transport, TryHeadersMut, TryIp, TryIpMut, TryTransportM
 use net::ip::NextHeader;
 use net::ipv4::UnicastIpv4Addr;
 use net::packet::Packet;
+use net::tcp::port::TcpPort;
+use net::udp::port::UdpPort;
 use net::vxlan::Vni;
 use routing::rib::vrf::VrfId;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -129,7 +131,18 @@ impl Nat {
         next_header: NextHeader,
         target_port: Option<allocator::NatPort>,
     ) {
-        todo!()
+        let Some(port) = target_port else {
+            return;
+        };
+        match (transport, next_header) {
+            (Transport::Tcp(tcp), NextHeader::TCP) => {
+                tcp.set_source(TcpPort::try_from(port).unwrap());
+            }
+            (Transport::Udp(udp), NextHeader::UDP) => {
+                udp.set_source(UdpPort::try_from(port).unwrap());
+            }
+            _ => {}
+        }
     }
 
     fn set_destination_port(
@@ -137,7 +150,18 @@ impl Nat {
         next_header: NextHeader,
         target_port: Option<allocator::NatPort>,
     ) {
-        todo!();
+        let Some(port) = target_port else {
+            return;
+        };
+        match (transport, next_header) {
+            (Transport::Tcp(tcp), NextHeader::TCP) => {
+                tcp.set_destination(TcpPort::try_from(port).unwrap());
+            }
+            (Transport::Udp(udp), NextHeader::UDP) => {
+                udp.set_destination(UdpPort::try_from(port).unwrap());
+            }
+            _ => {}
+        }
     }
 
     fn stateful_translate<Buf: PacketBufferMut>(
@@ -204,7 +228,7 @@ impl Nat {
         // Else, if we need NAT for this packet, create a new session and translate the address
         if let Some(pool) = self.find_nat_pool::<Ipv4Addr>(tuple, tuple.vrf_id) {
             let (target_ip, target_port) = pool.allocate().ok()?;
-            let mut new_state = NatState::new(target_ip.to_ip_addr(), Some(target_port));
+            let mut new_state = NatState::new(target_ip.to_ip_addr(), target_port);
             Self::update_stats(&mut new_state, total_bytes);
             self.create_session_v4(tuple, new_state.clone()).ok()?;
             Self::stateful_translate::<Buf>(direction, packet, &new_state, tuple.next_header);

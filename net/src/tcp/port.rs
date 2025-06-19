@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+//! TCP port type and parsing logic.
+
 use std::num::NonZero;
 
 /// A TCP port number.
@@ -12,6 +14,7 @@ use std::num::NonZero;
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
 pub struct TcpPort(NonZero<u16>);
 
+/// Errors which may occur in the creation or parsing of a [`TcpPort`].
 #[repr(transparent)]
 #[derive(
     Copy,
