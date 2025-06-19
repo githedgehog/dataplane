@@ -4,7 +4,7 @@
 //! TCP header type and logic.
 
 mod checksum;
-mod port;
+pub mod port;
 
 pub use checksum::*;
 pub use port::*;
