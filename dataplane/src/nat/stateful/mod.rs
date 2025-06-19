@@ -7,7 +7,9 @@ mod allocator;
 mod sessions;
 
 use super::Nat;
-use net::headers::Net;
+use net::buffer::PacketBufferMut;
+use net::headers::{Net, TryHeadersMut, TryIpMut};
+use net::packet::Packet;
 use net::vxlan::Vni;
 use routing::rib::vrf::VrfId;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -94,11 +96,15 @@ impl Nat {
         todo!();
     }
 
-    pub(crate) fn stateful_nat<I: NatIp, J: NatIp>(&mut self, net: &mut Net, vni_opt: Option<Vni>) {
+    pub(crate) fn stateful_nat<Buf: PacketBufferMut, I: NatIp, J: NatIp>(
+        &mut self,
+        packet: &mut Packet<Buf>,
+        vni_opt: Option<Vni>,
+    ) -> Option<()> {
+        let net = packet.headers_mut().try_ip_mut()?;
+
         // TODO: What if no VNI
-        let Some(vni) = vni_opt else {
-            return;
-        };
+        let vni = vni_opt?;
 
         // TODO: Check whether the packet is fragmented
         // TODO: Check whether we need protocol-aware processing
@@ -109,7 +115,7 @@ impl Nat {
         // Hot path: if we have a session, directly translate the address already
         if let Some(state) = self.lookup_state(&tuple) {
             self.stateful_translate(net, state);
-            return;
+            return Some(());
         }
 
         // Else, if we need NAT for this packet, create a new session and translate the address
@@ -122,5 +128,6 @@ impl Nat {
         }
 
         // Else, just leave the packet unchanged
+        None
     }
 }
