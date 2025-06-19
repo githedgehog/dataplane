@@ -12,12 +12,18 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 ///
 /// This exists to allow us to implement `TypeGenerator` without violating rust's orphan rules.
 #[repr(transparent)]
-#[derive(PartialEq, Eq, Clone, Copy, Hash, Ord, PartialOrd)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, Ord, PartialOrd)]
 pub struct NextHeader(pub(crate) IpNumber);
 
 impl From<NextHeader> for IpNumber {
     fn from(value: NextHeader) -> Self {
         value.0
+    }
+}
+
+impl From<IpNumber> for NextHeader {
+    fn from(value: IpNumber) -> Self {
+        Self(value)
     }
 }
 
