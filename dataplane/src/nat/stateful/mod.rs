@@ -18,12 +18,13 @@ use net::tcp::port::TcpPort;
 use net::udp::port::UdpPort;
 use net::vxlan::Vni;
 use routing::rib::vrf::VrfId;
+use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 mod private {
     pub trait Sealed {}
 }
-pub trait NatIp: private::Sealed + Sized {
+pub trait NatIp: private::Sealed + Clone + Eq + Hash {
     fn to_ip_addr(&self) -> IpAddr;
     fn from_src_addr(net: &Net) -> Option<Self>;
     fn from_dst_addr(net: &Net) -> Option<Self>;
@@ -103,7 +104,7 @@ impl Nat {
     fn lookup_session_v4_mut(
         &self,
         tuple: &NatTuple<Ipv4Addr>,
-    ) -> Option<NatDefaultSession> {
+    ) -> Option<NatDefaultSession<'_, Ipv4Addr>> {
         self.sessions.lookup_v4_mut(tuple)
     }
 
