@@ -38,7 +38,6 @@ mod stateless;
 use crate::nat::iplist::IpList;
 use mgmt::models::internal::nat::tables::{NatTables, TrieValue};
 use net::buffer::PacketBufferMut;
-use net::headers::{TryHeadersMut, TryIpMut};
 use net::packet::Packet;
 use pipeline::NetworkFunction;
 use std::net::Ipv4Addr;
@@ -91,14 +90,14 @@ impl Nat {
     fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
         let vni = packet.get_meta().src_vni;
 
-        let Some(net) = packet.headers_mut().try_ip_mut() else {
-            return;
-        };
-
         match self.mode {
-            NatMode::Stateless => self.stateless_nat(net, vni),
+            NatMode::Stateless => {
+                let _ = self.stateless_nat::<Buf>(packet, vni);
+            }
             // TODO: Add support for other IP versions
-            NatMode::Stateful => self.stateful_nat::<Ipv4Addr, Ipv4Addr>(net, vni),
+            NatMode::Stateful => {
+                let _ = self.stateful_nat::<Buf, Ipv4Addr, Ipv4Addr>(packet, vni);
+            }
         }
     }
 }
