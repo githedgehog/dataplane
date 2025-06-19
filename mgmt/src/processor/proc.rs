@@ -341,7 +341,7 @@ fn generate_router_vrf_config(
             .map(|p| p.route_table_id)
             .unwrap_or_else(|| unreachable!());
         let vrfconfig = RouterVrfConfig::new(kvrf.index.into(), kvrf.name.as_ref())
-            .set_vni_opt(vrf.vni)
+            .set_vni(vrf.vni)
             .set_description(&vrf.description.clone().unwrap_or_else(|| "--".to_string()))
             .set_tableid(tableid);
         router_config.add_vrf(vrfconfig);

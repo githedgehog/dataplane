@@ -250,21 +250,21 @@ mod tests {
         let vrf = RouterVrfConfig::new(100, "AAAAA-vrf")
             .set_description("VRF for VPC-1")
             .set_tableid(mk_tableid(1000))
-            .set_vni(mk_vni(3000));
+            .set_vni(Some(mk_vni(3000)));
         config.add_vrf(vrf);
 
         // VRF for VPC-2
         let vrf = RouterVrfConfig::new(101, "BBBBB-vrf")
             .set_description("VRF for VPC-2")
             .set_tableid(mk_tableid(1001))
-            .set_vni(mk_vni(4000));
+            .set_vni(Some(mk_vni(4000)));
         config.add_vrf(vrf);
 
         // VRF for VPC-2
         let vrf = RouterVrfConfig::new(102, "CCCCC-vrf")
             .set_description("VRF for VPC-3")
             .set_tableid(mk_tableid(1002))
-            .set_vni(mk_vni(6000));
+            .set_vni(Some(mk_vni(6000)));
         config.add_vrf(vrf);
 
     }

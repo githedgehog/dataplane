@@ -344,13 +344,13 @@ mod tests {
 
         /* add VRFs (default VRF is always there) */
         debug!("━━━━━━━━ Test: Add VRFs");
-        let cfg = RouterVrfConfig::new(1, "VPC-1").set_vni(mk_vni(3000));
+        let cfg = RouterVrfConfig::new(1, "VPC-1").set_vni(Some(mk_vni(3000)));
         vrftable.add_vrf(&cfg).expect("Should succeed");
 
-        let cfg = RouterVrfConfig::new(2, "VPC-2").set_vni(mk_vni(4000));
+        let cfg = RouterVrfConfig::new(2, "VPC-2").set_vni(Some(mk_vni(4000)));
         vrftable.add_vrf(&cfg).expect("Should succeed");
 
-        let cfg = RouterVrfConfig::new(3, "VPC-3").set_vni(mk_vni(5000));
+        let cfg = RouterVrfConfig::new(3, "VPC-3").set_vni(Some(mk_vni(5000)));
         vrftable.add_vrf(&cfg).expect("Should succeed");
 
         /* add VRF with already used id */
@@ -364,7 +364,7 @@ mod tests {
 
         /* add VRF with unused id but used vni */
         debug!("━━━━━━━━ Test: Add VRF with duplicated vni 3000");
-        let cfg = RouterVrfConfig::new(999, "duped-vni").set_vni(mk_vni(3000));
+        let cfg = RouterVrfConfig::new(999, "duped-vni").set_vni(Some(mk_vni(3000)));
         assert!(
             vrftable
                 .add_vrf(&cfg)

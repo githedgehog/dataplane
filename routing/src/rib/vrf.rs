@@ -159,12 +159,7 @@ impl RouterVrfConfig {
         self.tableid = Some(tableid);
         self
     }
-    #[cfg(test)]
-    pub fn set_vni(mut self, vni: Vni) -> Self {
-        self.vni = Some(vni);
-        self
-    }
-    pub fn set_vni_opt(mut self, vni: Option<Vni>) -> Self {
+    pub fn set_vni(mut self, vni: Option<Vni>) -> Self {
         self.vni = vni;
         self
     }
