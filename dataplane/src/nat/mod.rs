@@ -40,7 +40,6 @@ use mgmt::models::internal::nat::tables::{NatTables, TrieValue};
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use pipeline::NetworkFunction;
-use std::net::Ipv4Addr;
 
 /// Indicates whether a [`Nat`] processor should perform source NAT or destination NAT.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,9 +93,8 @@ impl Nat {
             NatMode::Stateless => {
                 let _ = self.stateless_nat::<Buf>(packet, vni);
             }
-            // TODO: Add support for other IP versions
             NatMode::Stateful => {
-                let _ = self.stateful_nat::<Buf, Ipv4Addr, Ipv4Addr>(packet, vni);
+                let _ = self.stateful_nat::<Buf>(packet, vni);
             }
         }
     }
