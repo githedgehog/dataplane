@@ -268,3 +268,79 @@ impl Nat {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::allocator::NatPort;
+    use super::*;
+    use net::packet::test_utils::build_test_ipv4_packet;
+    use net::tcp::Tcp;
+    use net::udp::Udp;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_tuple_extraction() {
+        let packet = build_test_ipv4_packet(u8::MAX).expect("Failed to build packet");
+        let net = packet
+            .get_headers()
+            .try_ip()
+            .expect("Failed to get IPv4 header");
+        let ref_tuple = NatTuple::new(
+            Ipv4Addr::from_str("1.2.3.4").unwrap(),
+            Ipv4Addr::from_str("1.2.3.4").unwrap(),
+            NextHeader::new(255),
+            VrfId::from_str("1").unwrap(),
+        );
+        let tuple = Nat::extract_tuple(net, VrfId::from_str("1").unwrap()).unwrap();
+
+        assert_eq!(tuple, ref_tuple);
+    }
+
+    #[test]
+    fn test_set_tcp_ports() {
+        let mut transport = Transport::Tcp(
+            Tcp::default()
+                .set_source(TcpPort::try_from(80).expect("Invalid port"))
+                .set_destination(TcpPort::try_from(443).expect("Invalid port"))
+                .clone(),
+        );
+        let next_header = NextHeader::TCP;
+        let target_port = Some(NatPort::new_checked(1234).expect("Invalid port"));
+
+        Nat::set_source_port(&mut transport, next_header, target_port);
+        let Transport::Tcp(ref mut tcp) = transport else {
+            unreachable!()
+        };
+        assert_eq!(tcp.source(), TcpPort::try_from(1234).unwrap());
+
+        Nat::set_destination_port(&mut transport, next_header, target_port);
+        let Transport::Tcp(ref mut tcp) = transport else {
+            unreachable!()
+        };
+        assert_eq!(tcp.destination(), TcpPort::try_from(1234).unwrap());
+    }
+
+    #[test]
+    fn test_set_udp_port() {
+        let mut transport = Transport::Udp(
+            Udp::default()
+                .set_source(UdpPort::try_from(80).expect("Invalid port"))
+                .set_destination(UdpPort::try_from(443).expect("Invalid port"))
+                .clone(),
+        );
+        let next_header = NextHeader::UDP;
+        let target_port = Some(NatPort::new_checked(1234).expect("Invalid port"));
+
+        Nat::set_source_port(&mut transport, next_header, target_port);
+        let Transport::Udp(ref mut udp) = transport else {
+            unreachable!()
+        };
+        assert_eq!(udp.source(), UdpPort::try_from(1234).unwrap());
+
+        Nat::set_destination_port(&mut transport, next_header, target_port);
+        let Transport::Udp(ref mut udp) = transport else {
+            unreachable!()
+        };
+        assert_eq!(udp.destination(), UdpPort::try_from(1234).unwrap());
+    }
+}
