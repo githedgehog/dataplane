@@ -10,6 +10,7 @@ use super::Nat;
 use crate::nat::stateful::sessions::NatState;
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryHeadersMut, TryIpMut};
+use net::ip::NextHeader;
 use net::packet::Packet;
 use net::vxlan::Vni;
 use routing::rib::vrf::VrfId;
@@ -46,12 +47,23 @@ impl NatIp for Ipv6Addr {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct NatTuple<I: NatIp> {
     src_ip: I,
     dst_ip: I,
-    next_header: u8,
+    next_header: NextHeader,
     vrf_id: VrfId,
+}
+
+impl<I: NatIp> NatTuple<I> {
+    fn new(src_ip: I, dst_ip: I, next_header: NextHeader, vrf_id: VrfId) -> Self {
+        Self {
+            src_ip,
+            dst_ip,
+            next_header,
+            vrf_id,
+        }
+    }
 }
 
 impl Nat {
