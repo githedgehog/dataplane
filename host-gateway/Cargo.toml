@@ -1,16 +1,17 @@
 [package]
-name = "dataplane-interface-manager"
-version = "0.0.1"
+name = "dataplane-host-gateway"
+version = "0.1.0"
 edition = "2024"
-license = "Apache-2.0"
 publish = false
+license = "Apache-2.0"
 
 [features]
 default = []
-bolero = ["dep:bolero", "net/bolero"]
+bolero = ["dep:bolero", "interface-manager/bolero", "net/bolero"]
 
 [dependencies]
 # internal
+interface-manager = { workspace = true }
 net = { workspace = true }
 rekon = { workspace = true }
 
@@ -18,18 +19,19 @@ rekon = { workspace = true }
 bolero = { workspace = true, optional = true, default-features = false, features = ["alloc"] }
 derive_builder = { workspace = true, default-features = false, features = ["default"] }
 multi_index_map = { workspace = true, features = ["serde"] }
-nix = { workspace = true, features = ["sched"] }
+netlink-packet-route = { workspace = true, features = ["rich_nlas"] }
 rtnetlink = { workspace = true, features = ["default", "tokio"] }
-serde = { workspace = true, features = ["std"] }
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true, default-features = false, features = ["std"] }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing = { workspace = true, features = ["attributes"] }
-futures = { workspace = true, features = ["default"] }
 
 [dev-dependencies]
 # internal
+fixin = { workspace = true }
+interface-manager = { workspace = true, features = ["bolero"] }
 net = { workspace = true, features = ["bolero"] }
+test-utils = { workspace = true }
 
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time", "test-util"] }
-

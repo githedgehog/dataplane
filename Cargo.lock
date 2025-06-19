@@ -781,6 +781,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-host-gateway"
+version = "0.1.0"
+dependencies = [
+ "bolero",
+ "dataplane-interface-manager",
+ "dataplane-net",
+ "dataplane-rekon",
+ "dataplane-test-utils",
+ "derive_builder 0.20.2",
+ "fixin",
+ "multi_index_map",
+ "netlink-packet-route 0.24.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rtnetlink",
+ "serde",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "dataplane-id"
 version = "0.1.0"
 dependencies = [
@@ -797,6 +817,7 @@ dependencies = [
  "dataplane-net",
  "dataplane-rekon",
  "derive_builder 0.20.2",
+ "futures",
  "multi_index_map",
  "nix 0.30.1",
  "rtnetlink",
@@ -1092,12 +1113,12 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "errno"
-version = "0.3.12"
+version = "0.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cea14ef9355e3beab063703aa9dab15afd25f0667c341310c1e5274bb1d0da18"
+checksum = "778e2ac28f6c47af28e4907f13ffd1e1ddbd400980a9abd7c8df189bf578a5ad"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1784,6 +1805,19 @@ dependencies = [
 [[package]]
 name = "netlink-packet-route"
 version = "0.24.0"
+dependencies = [
+ "anyhow",
+ "bitflags 2.9.1",
+ "byteorder",
+ "libc",
+ "log",
+ "netlink-packet-core",
+ "netlink-packet-utils",
+]
+
+[[package]]
+name = "netlink-packet-route"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56d83370a96813d7c977f8b63054f1162df6e5784f1c598d689236564fb5a6f2"
 dependencies = [
@@ -2310,8 +2344,6 @@ checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 [[package]]
 name = "rtnetlink"
 version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbe0a03f6b9b483c67d4b328fc5d66c8db0b6aa274e0fa2def71b5e442a69acf"
 dependencies = [
  "futures",
  "log",
@@ -3257,6 +3289,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.60.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2f500e4d28234f72040990ec9d39e3a6b950f9f22d3dba18416c35882612bcb"
+dependencies = [
+ "windows-targets 0.53.2",
 ]
 
 [[package]]

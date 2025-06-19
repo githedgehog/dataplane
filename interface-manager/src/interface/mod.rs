@@ -6,6 +6,7 @@
 mod association;
 mod bridge;
 mod properties;
+pub mod tc;
 mod vrf;
 mod vtep;
 
@@ -441,7 +442,7 @@ impl Update for Manager<Interface> {
     ) -> Result<(), rtnetlink::Error> {
         if required.properties != observed.properties {
             // If properties are drifting, then we need to just kill and fill the thing.
-            // Many properties are not possible to update in a reliable way.
+            // Many properties are not possible to update reliably.
             // We might not even be dealing with an aligned interface type.
             manager_of::<Interface>(self).remove(observed).await?;
             return Ok(());

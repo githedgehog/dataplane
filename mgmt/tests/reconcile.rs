@@ -5,6 +5,12 @@ use dataplane_mgmt as mgmt;
 
 use caps::Capability;
 use fixin::wrap;
+use futures::TryStreamExt;
+use interface_manager::Manager;
+use interface_manager::interface::tc::action::Action;
+use interface_manager::interface::tc::qdisc::{
+    BlockIndex, ClsAct, EgressBlock, IngressBlock, Qdisc,
+};
 use interface_manager::interface::{
     BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpecBuilder,
     MultiIndexBridgePropertiesSpecMap, MultiIndexInterfaceAssociationSpecMap,
@@ -13,9 +19,18 @@ use interface_manager::interface::{
 };
 use mgmt::vpc_manager::{RequiredInformationBase, RequiredInformationBaseBuilder, VpcManager};
 use net::eth::ethtype::EthType;
-use net::interface::AdminState;
+use net::interface::{AdminState, InterfaceIndex};
 use net::vxlan::Vxlan;
+use rekon::Create;
 use rekon::{Observe, Reconcile};
+use rtnetlink::packet_route::tc::TcFilterFlowerOption::EthDst;
+use rtnetlink::packet_route::tc::TcFilterFlowerOption::{
+    Actions, EncKeyId, EncKeyIpv4Dst, EncKeyIpv4Src, EncKeyUdpDstPort,
+};
+use rtnetlink::packet_route::tc::{
+    TcAction, TcActionAttribute, TcActionGeneric, TcActionMirrorOption, TcActionOption,
+    TcActionTunnelKeyOption, TcActionType, TcMirror, TcMirrorActionType, TcTunnelKey,
+};
 use rtnetlink::sys::AsyncSocket;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -315,4 +330,342 @@ async fn reconcile_demo() {
         vpcs.reconcile(&mut required, &observed).await;
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+#[allow(clippy::too_many_lines)] // this is an integration test and is expected to be long
+#[tokio::test]
+#[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
+// #[wrap(run_in_netns("biscuit"))]
+#[traced_test]
+async fn tc_actions_demo() {
+    let Ok((mut connection, handle, _recv)) = rtnetlink::new_connection() else {
+        panic!("failed to create connection");
+    };
+    connection
+        .socket_mut()
+        .socket_mut()
+        .set_rx_buf_sz(812_992)
+        .unwrap();
+    tokio::spawn(connection);
+    let handle = Arc::new(handle);
+
+    let manager = Manager::<Action>::new(handle.clone());
+    manager.create(()).await;
+
+    let tunnel_key_params = TcTunnelKey {
+        t_action: 1, // tunnel key set
+        ..Default::default()
+    };
+    let mut tunnel_key_set = TcAction::default();
+    tunnel_key_set.tab = 1;
+    tunnel_key_set.attributes = vec![
+        TcActionAttribute::Kind("tunnel_key".into()),
+        TcActionAttribute::Options(vec![
+            TcActionOption::TunnelKey(TcActionTunnelKeyOption::EncDstPort(4789)),
+            TcActionOption::TunnelKey(TcActionTunnelKeyOption::NoCsum(true)),
+            TcActionOption::TunnelKey(TcActionTunnelKeyOption::EncTtl(64)),
+            TcActionOption::TunnelKey(TcActionTunnelKeyOption::EncIpv4Dst(Ipv4Addr::new(
+                169, 254, 32, 55,
+            ))),
+            TcActionOption::TunnelKey(TcActionTunnelKeyOption::EncKeyId(2)),
+            TcActionOption::TunnelKey(TcActionTunnelKeyOption::EncIpv4Src(Ipv4Addr::new(
+                172, 18, 10, 1,
+            ))),
+            TcActionOption::TunnelKey(TcActionTunnelKeyOption::Parms(tunnel_key_params)),
+        ]),
+    ];
+    let mirror = {
+        let mut mirror = TcAction::default();
+        mirror.tab = 2;
+        mirror
+            .attributes
+            .push(TcActionAttribute::Kind("mirred".into()));
+        mirror
+            .attributes
+            .push(TcActionAttribute::Options(vec![TcActionOption::Mirror(
+                TcActionMirrorOption::Parms({
+                    let mut params = TcMirror::default();
+                    params.generic.index = 5;
+                    params.eaction = TcMirrorActionType::EgressRedir;
+                    params.ifindex = 70;
+                    params.generic.action = TcActionType::Stolen;
+                    params
+                }),
+            )]));
+        mirror
+    };
+    // handle
+    //     .traffic_filter(95)
+    //     .replace()
+    //     .index(95)
+    //     .ingress()
+    //     .priority(9005)
+    //     .protocol(0x0003u16.to_be())
+    //     .flower(&[
+    //         EthDst([0, 1, 2, 3, 4, 5]),
+    //         Actions(vec![tunnel_key_set, mirror]),
+    //     ])
+    //     .unwrap()
+    //     .execute()
+    //     .await
+    //     .unwrap();
+    let mut resp = handle.traffic_action().get().kind("tunnel_key").execute();
+    // while let Ok(Some(x)) = resp.try_next().await {
+    //     println!("{:#?}", x);
+    // }
+    let mut resp = handle.traffic_filter(96).get().ingress().execute();
+    while let Ok(Some(x)) = resp.try_next().await {
+        println!("{:#?}", x);
+    }
+}
+
+#[allow(clippy::too_many_lines)] // this is an integration test and is expected to be long
+#[tokio::test]
+#[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
+// #[wrap(run_in_netns("biscuit"))]
+#[traced_test]
+async fn tc_actions_demo2() {
+    let Ok((mut connection, handle, _recv)) = rtnetlink::new_connection() else {
+        panic!("failed to create connection");
+    };
+    connection
+        .socket_mut()
+        .socket_mut()
+        .set_rx_buf_sz(812_992)
+        .unwrap();
+    tokio::spawn(connection);
+    let handle = Arc::new(handle);
+
+    handle
+        .traffic_filter(70)
+        .replace()
+        .ingress()
+        .priority(9009)
+        .protocol(0x0003u16.to_be())
+        .flower(&[
+            EncKeyId(2),
+            EncKeyIpv4Dst(Ipv4Addr::new(172, 18, 10, 1)),
+            EncKeyUdpDstPort(4789),
+            Actions(vec![
+                {
+                    let mut unset = TcAction::default();
+                    unset.tab = 1;
+                    unset
+                        .attributes
+                        .push(TcActionAttribute::Kind("tunnel_key".into()));
+                    unset.attributes.push(TcActionAttribute::Options(vec![
+                        TcActionOption::TunnelKey(TcActionTunnelKeyOption::Parms(TcTunnelKey {
+                            t_action: 2, // tunnel key unset
+                            ..Default::default()
+                        })),
+                    ]));
+                    unset
+                },
+                {
+                    let mut mirror = TcAction::default();
+                    mirror.tab = 2;
+                    mirror
+                        .attributes
+                        .push(TcActionAttribute::Kind("mirred".into()));
+                    mirror.attributes.push(TcActionAttribute::Options(vec![
+                        TcActionOption::Mirror(TcActionMirrorOption::Parms({
+                            let mut params = TcMirror::default();
+                            params.generic.index = 0;
+                            params.eaction = TcMirrorActionType::EgressRedir;
+                            params.ifindex = 95;
+                            params.generic.action = TcActionType::Stolen;
+                            params
+                        })),
+                    ]));
+                    mirror
+                },
+            ]),
+        ])
+        .unwrap()
+        .execute()
+        .await
+        .unwrap();
+}
+
+#[allow(clippy::too_many_lines)] // this is an integration test and is expected to be long
+#[tokio::test]
+#[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
+// #[wrap(run_in_netns("biscuit"))]
+#[traced_test]
+async fn tc_actions_demo3() {
+    let Ok((mut connection, handle, _recv)) = rtnetlink::new_connection() else {
+        panic!("failed to create connection");
+    };
+    connection
+        .socket_mut()
+        .socket_mut()
+        .set_rx_buf_sz(812_992)
+        .unwrap();
+    tokio::spawn(connection);
+    let handle = Arc::new(handle);
+
+    handle
+        .traffic_filter(70)
+        .replace()
+        .ingress()
+        .priority(9989)
+        .protocol(0x0003u16.to_be())
+        .flower(&[
+            EncKeyId(2),
+            EncKeyIpv4Dst(Ipv4Addr::new(172, 18, 10, 1)),
+            EncKeyUdpDstPort(4789),
+            Actions(vec![
+                {
+                    let mut unset = TcAction::default();
+                    unset.tab = 1;
+                    unset.attributes.push(TcActionAttribute::Index(56));
+                    unset
+                        .attributes
+                        .push(TcActionAttribute::Kind("tunnel_key".into()));
+                    unset.attributes.push(TcActionAttribute::Options(vec![
+                        TcActionOption::TunnelKey(TcActionTunnelKeyOption::Parms(TcTunnelKey {
+                            t_action: 2, // tunnel key unset
+                            generic: {
+                                let mut generic = TcActionGeneric::default();
+                                generic.index = 558;
+                                generic
+                            },
+                        })),
+                    ]));
+                    unset
+                },
+                {
+                    let mut mirror = TcAction::default();
+                    mirror.tab = 2;
+                    mirror
+                        .attributes
+                        .push(TcActionAttribute::Kind("mirred".into()));
+                    mirror.attributes.push(TcActionAttribute::Options(vec![
+                        TcActionOption::Mirror(TcActionMirrorOption::Parms({
+                            let mut params = TcMirror::default();
+                            params.generic.index = 6;
+                            params.eaction = TcMirrorActionType::EgressRedir;
+                            params.ifindex = 95;
+                            params.generic.action = TcActionType::Stolen;
+                            params
+                        })),
+                    ]));
+                    mirror
+                },
+            ]),
+        ])
+        .unwrap()
+        .execute()
+        .await
+        .unwrap();
+}
+
+#[allow(clippy::too_many_lines)] // this is an integration test and is expected to be long
+#[tokio::test]
+#[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
+// #[wrap(run_in_netns("biscuit"))]
+#[traced_test]
+async fn tc_actions_demo4() {
+    let Ok((mut connection, handle, _recv)) = rtnetlink::new_connection() else {
+        panic!("failed to create connection");
+    };
+    connection
+        .socket_mut()
+        .socket_mut()
+        .set_rx_buf_sz(812_992)
+        .unwrap();
+    tokio::spawn(connection);
+    let handle = Arc::new(handle);
+
+    let manager = Manager::<ClsAct>::new(handle.clone());
+
+    let mut clsact = ClsAct::new(InterfaceIndex::new(93));
+    clsact
+        .ingress_block(IngressBlock::new(BlockIndex::new(19)))
+        .egress_block(EgressBlock::new(BlockIndex::new(20)));
+
+    manager.create(&clsact).await.unwrap();
+}
+
+#[allow(clippy::too_many_lines)] // this is an integration test and is expected to be long
+#[tokio::test]
+#[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
+// #[wrap(run_in_netns("biscuit"))]
+#[traced_test]
+async fn tc_actions_demo5() {
+    let Ok((mut connection, handle, _recv)) = rtnetlink::new_connection() else {
+        panic!("failed to create connection");
+    };
+    connection
+        .socket_mut()
+        .socket_mut()
+        .set_rx_buf_sz(812_992)
+        .unwrap();
+    tokio::spawn(connection);
+    let handle = Arc::new(handle);
+
+    let manager = Manager::<ClsAct>::new(handle.clone());
+
+    let mut clsact = ClsAct::new(InterfaceIndex::new(70));
+    clsact
+        .ingress_block(IngressBlock::new(BlockIndex::new(99)))
+        .egress_block(EgressBlock::new(BlockIndex::new(100)));
+
+    manager.create(&clsact).await.unwrap();
+
+    handle
+        .traffic_filter(0)
+        .replace()
+        .ingress()
+        .priority(9989)
+        .protocol(0x0003u16.to_be())
+        .block(99)
+        .flower(&[
+            EncKeyId(2),
+            EncKeyIpv4Dst(Ipv4Addr::new(172, 18, 10, 1)),
+            EncKeyUdpDstPort(4789),
+            Actions(vec![
+                {
+                    let mut unset = TcAction::default();
+                    unset.tab = 1;
+                    unset.attributes.push(TcActionAttribute::Index(56));
+                    unset
+                        .attributes
+                        .push(TcActionAttribute::Kind("tunnel_key".into()));
+                    unset.attributes.push(TcActionAttribute::Options(vec![
+                        TcActionOption::TunnelKey(TcActionTunnelKeyOption::Parms(TcTunnelKey {
+                            t_action: 2, // tunnel key unset
+                            generic: {
+                                let mut generic = TcActionGeneric::default();
+                                generic.index = 558;
+                                generic
+                            },
+                        })),
+                    ]));
+                    unset
+                },
+                {
+                    let mut mirror = TcAction::default();
+                    mirror.tab = 2;
+                    mirror
+                        .attributes
+                        .push(TcActionAttribute::Kind("mirred".into()));
+                    mirror.attributes.push(TcActionAttribute::Options(vec![
+                        TcActionOption::Mirror(TcActionMirrorOption::Parms({
+                            let mut params = TcMirror::default();
+                            params.generic.index = 6;
+                            params.eaction = TcMirrorActionType::EgressRedir;
+                            params.ifindex = 95;
+                            params.generic.action = TcActionType::Stolen;
+                            params
+                        })),
+                    ]));
+                    mirror
+                },
+            ]),
+        ])
+        .unwrap()
+        .execute()
+        .await
+        .unwrap();
 }
