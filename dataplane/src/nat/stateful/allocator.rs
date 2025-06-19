@@ -18,7 +18,7 @@ pub struct NatPort(u16);
 impl NatPort {
     const MIN: u16 = 1024 + 1;
 
-    fn new_checked(port: u16) -> Result<NatPort, AllocatorError> {
+    pub fn new_checked(port: u16) -> Result<NatPort, AllocatorError> {
         if port < Self::MIN {
             return Err(AllocatorError::ReservedPort(port));
         }
