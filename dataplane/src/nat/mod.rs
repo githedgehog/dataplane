@@ -40,6 +40,7 @@ use mgmt::models::internal::nat::tables::{NatTables, TrieValue};
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use pipeline::NetworkFunction;
+use stateful::allocator::{NatAllocator, NatDefaultAllocator};
 use stateful::sessions::{NatDefaultSessionManager, NatSessionManager};
 
 /// Indicates whether a [`Nat`] processor should perform source NAT or destination NAT.
@@ -64,6 +65,7 @@ pub enum NatMode {
 pub struct Nat {
     context: NatTables,
     sessions: NatDefaultSessionManager,
+    allocator: NatDefaultAllocator,
     mode: NatMode,
     direction: NatDirection,
 }
@@ -77,6 +79,7 @@ impl Nat {
         Self {
             context,
             sessions: NatDefaultSessionManager::new(),
+            allocator: NatDefaultAllocator::new(),
             mode,
             direction,
         }
