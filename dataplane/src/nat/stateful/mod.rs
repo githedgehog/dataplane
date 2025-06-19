@@ -4,11 +4,11 @@
 #![allow(unused_variables)]
 
 mod allocator;
-mod sessions;
+pub mod sessions;
 
 use super::Nat;
 use crate::nat::NatDirection;
-use crate::nat::stateful::sessions::{NatDefaultSession, NatSession, NatState};
+use crate::nat::stateful::sessions::{NatDefaultSession, NatSession, NatSessionManager, NatState};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, Transport, TryHeadersMut, TryIp, TryIpMut, TryTransportMut};
 use net::ip::NextHeader;
@@ -68,7 +68,7 @@ impl NatIp for Ipv6Addr {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct NatTuple<I: NatIp> {
+pub struct NatTuple<I: NatIp> {
     src_ip: I,
     dst_ip: I,
     next_header: NextHeader,
@@ -102,7 +102,7 @@ impl Nat {
         &self,
         tuple: &NatTuple<Ipv4Addr>,
     ) -> Option<NatDefaultSession> {
-        todo!()
+        self.sessions.lookup_v4_mut(tuple)
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -111,7 +111,9 @@ impl Nat {
         tuple: &NatTuple<Ipv4Addr>,
         state: NatState,
     ) -> Result<(), sessions::SessionError> {
-        todo!()
+        self.sessions.insert_session_v4(tuple.clone(), state)
+
+        // TODO: Reverse session
     }
 
     fn find_nat_pool<I: NatIp>(
