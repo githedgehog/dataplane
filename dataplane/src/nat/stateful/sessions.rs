@@ -176,3 +176,71 @@ impl<I: NatIp> NatSession for NatDefaultSession<'_, I> {
         self.dashmap_ref.as_mut().map(RefMut::value_mut)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use net::ip::NextHeader;
+    use net::packet::VrfId;
+    use std::net::IpAddr;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_session_insert_remove() {
+        let mut sessions = NatDefaultSessionManager::new();
+        let tuple = NatTuple::new(
+            Ipv4Addr::from_str("1.2.3.4").unwrap(),
+            Ipv4Addr::from_str("5.6.7.8").unwrap(),
+            NextHeader::UDP,
+            VrfId::from_str("1").unwrap(),
+        );
+        let state = NatState::new(IpAddr::V4(Ipv4Addr::from_str("10.0.0.1").unwrap()), None);
+        sessions
+            .insert_session_v4(tuple.clone(), state.clone())
+            .unwrap();
+
+        assert_eq!(sessions.table_v4.len(), 1);
+
+        let sessions_clone = sessions.clone();
+        let session = sessions_clone
+            .table_v4
+            .get(&tuple)
+            .expect("Session not found");
+        assert_eq!(
+            session.value().target_ip,
+            IpAddr::V4(Ipv4Addr::from_str("10.0.0.1").unwrap())
+        );
+
+        // Try inserting a duplicate entry in the table
+        assert!(sessions.insert_session_v4(tuple.clone(), state).is_err());
+
+        sessions.remove_session_v4(&tuple);
+        assert_eq!(sessions.table_v4.len(), 0);
+    }
+
+    #[test]
+    fn test_session_lookup() {
+        let mut sessions = NatDefaultSessionManager::new();
+        let tuple = NatTuple::new(
+            Ipv4Addr::from_str("1.2.3.4").unwrap(),
+            Ipv4Addr::from_str("5.6.7.8").unwrap(),
+            NextHeader::UDP,
+            VrfId::from_str("1").unwrap(),
+        );
+        let state = NatState::new(IpAddr::V4(Ipv4Addr::from_str("10.0.0.1").unwrap()), None);
+        sessions
+            .insert_session_v4(tuple.clone(), state.clone())
+            .unwrap();
+
+        assert_eq!(sessions.table_v4.len(), 1);
+
+        let mut session = sessions.lookup_v4_mut(&tuple).unwrap();
+        assert_eq!(
+            session
+                .get_state_mut()
+                .expect("Session not found")
+                .target_ip,
+            IpAddr::V4(Ipv4Addr::from_str("10.0.0.1").unwrap())
+        );
+    }
+}
