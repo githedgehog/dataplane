@@ -1,36 +1,65 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use super::NatTuple;
 use super::allocator::NatPort;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::Instant;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum SessionError {
+    #[error("duplicate session key")]
+    DuplicateTuple,
+}
 
 pub trait NatSessionManager<T>
 where
     T: NatSession,
 {
-    fn lookup(&self, addr: &IpAddr) -> Option<T>;
-    fn create_session(&mut self, addr: IpAddr) -> Result<T, ()>;
-    fn remove_session(&mut self, addr: &IpAddr);
+    fn new() -> Self;
+
+    fn lookup_v4_mut(&self, tuple: &NatTuple<Ipv4Addr>) -> Option<T>;
+    fn insert_session_v4(
+        &mut self,
+        tuple: NatTuple<Ipv4Addr>,
+        state: NatState,
+    ) -> Result<(), SessionError>;
+    fn remove_session_v4(&mut self, tuple: &NatTuple<Ipv4Addr>);
+
+    fn start_gc(&self) -> Result<(), SessionError>;
 }
 
 #[derive(Debug, Clone)]
 pub struct NatDefaultSessionManager {}
 
 impl NatDefaultSessionManager {
-    fn new() -> Self {
-        Self {}
-    }
 }
 
 impl NatSessionManager<NatDefaultSession> for NatDefaultSessionManager {
-    fn lookup(&self, addr: &IpAddr) -> Option<NatDefaultSession> {
+    fn new() -> Self {
+        Self {}
+    }
+
+    fn lookup_v4_mut(
+        &self,
+        tuple: &NatTuple<Ipv4Addr>,
+    ) -> Option<NatDefaultSession> {
         todo!()
     }
-    fn create_session(&mut self, addr: IpAddr) -> Result<NatDefaultSession, ()> {
+
+    fn insert_session_v4(
+        &mut self,
+        tuple: NatTuple<Ipv4Addr>,
+        state: NatState,
+    ) -> Result<(), SessionError> {
         todo!()
     }
-    fn remove_session(&mut self, addr: &IpAddr) {
+
+    fn remove_session_v4(&mut self, tuple: &NatTuple<Ipv4Addr>) {
+        todo!()
+    }
+
+    fn start_gc(&self) -> Result<(), SessionError> {
         todo!()
     }
 }
