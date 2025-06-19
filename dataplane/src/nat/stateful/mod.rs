@@ -7,6 +7,7 @@ mod allocator;
 mod sessions;
 
 use super::Nat;
+use crate::nat::stateful::sessions::NatState;
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::packet::Packet;
@@ -46,20 +47,11 @@ impl NatIp for Ipv6Addr {
 }
 
 #[derive(Debug, Clone)]
-struct NatState {}
-
-#[derive(Debug, Clone)]
 struct NatTuple<I: NatIp> {
     src_ip: I,
     dst_ip: I,
     next_header: u8,
     vrf_id: VrfId,
-}
-
-impl NatState {
-    fn new<I: NatIp>(net: &Net, pool: &dyn allocator::NatPool<I>) -> Self {
-        Self {}
-    }
 }
 
 impl Nat {
@@ -120,7 +112,12 @@ impl Nat {
 
         // Else, if we need NAT for this packet, create a new session and translate the address
         if let Some(pool) = self.find_nat_pool::<J>(net, vrf_id) {
-            let state = NatState::new(net, pool);
+            // This will change in a subsequent commit
+            let session = pool.allocate().ok()?;
+            let state = NatState::new(
+                session.0.to_ip_addr(),
+                Some(session.1),
+            );
             if self.update_state(&tuple, state.clone()).is_ok() {
                 self.stateful_translate(net, &state);
             }
