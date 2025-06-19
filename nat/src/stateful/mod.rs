@@ -4,11 +4,12 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
-mod allocator;
+pub mod allocator;
 mod port;
 pub mod sessions;
 
 use crate::NatDirection;
+use crate::stateful::allocator::{NatAllocator, NatDefaultAllocator};
 use crate::stateful::sessions::{
     NatDefaultSession, NatDefaultSessionManager, NatSession, NatSessionManager, NatState,
 };
@@ -22,13 +23,14 @@ use net::udp::port::UdpPort;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use routing::rib::vrf::VrfId;
+use std::fmt::Debug;
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 mod private {
     pub trait Sealed {}
 }
-pub trait NatIp: private::Sealed + Clone + Eq + Hash {
+pub trait NatIp: private::Sealed + Debug + Clone + Eq + Hash {
     fn to_ip_addr(&self) -> IpAddr;
     fn from_src_addr(net: &Net) -> Option<Self>;
     fn from_dst_addr(net: &Net) -> Option<Self>;
@@ -98,6 +100,7 @@ impl<I: NatIp> NatTuple<I> {
 #[derive(Debug)]
 pub struct StatefulNat {
     sessions: NatDefaultSessionManager,
+    allocator: NatDefaultAllocator,
     direction: NatDirection,
 }
 
@@ -108,6 +111,7 @@ impl StatefulNat {
     pub fn new(direction: NatDirection) -> Self {
         Self {
             sessions: NatDefaultSessionManager::new(),
+            allocator: NatDefaultAllocator::new(),
             direction,
         }
     }
@@ -139,14 +143,6 @@ impl StatefulNat {
         self.sessions.insert_session_v4(tuple.clone(), state)
 
         // TODO: Reverse session
-    }
-
-    fn find_nat_pool<I: NatIp>(
-        &self,
-        tuple: &NatTuple<I>,
-        vrf_id: VrfId,
-    ) -> Option<&dyn allocator::NatPool<I>> {
-        todo!()
     }
 
     fn set_source_port(
@@ -249,8 +245,7 @@ impl StatefulNat {
         }
 
         // Else, if we need NAT for this packet, create a new session and translate the address
-        if let Some(pool) = self.find_nat_pool::<Ipv4Addr>(tuple, tuple.vrf_id) {
-            let (target_ip, target_port) = pool.allocate().ok()?;
+        if let Some((target_ip, target_port)) = self.allocator.allocate(tuple) {
             let mut new_state = NatState::new(target_ip.to_ip_addr(), target_port);
             Self::update_stats(&mut new_state, total_bytes);
             self.create_session_v4(tuple, new_state.clone()).ok()?;
