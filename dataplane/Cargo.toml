@@ -10,6 +10,7 @@ afpacket = { workspace = true }
 arrayvec = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "usage"] }
 ctrlc = { workspace = true, features = ["termination"] }
+dashmap = { workspace = true }
 dpdk = { workspace = true }
 dyn-iter = { workspace = true }
 id = { workspace = true }
