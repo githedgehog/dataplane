@@ -39,12 +39,14 @@ pub struct VrfImports {
 pub struct AfIpv4Ucast {
     pub redistribute: Vec<Redistribute>,
     pub imports: Option<VrfImports>,
+    pub networks: Vec<Prefix>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct AfIpv6Ucast {
     pub redistribute: Vec<Redistribute>,
     pub imports: Option<VrfImports>,
+    pub networks: Vec<Prefix>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -191,7 +193,6 @@ pub struct BgpConfig {
     pub af_ipv4unicast: Option<AfIpv4Ucast>,
     pub af_ipv6unicast: Option<AfIpv6Ucast>,
     pub af_l2vpnevpn: Option<AfL2vpnEvpn>,
-    pub networks: Vec<Prefix>,
 }
 
 /* ===== impls: Builders ===== */
@@ -221,6 +222,7 @@ impl AfIpv4Ucast {
         Self {
             redistribute: vec![],
             imports: None,
+            networks: vec![],
         }
     }
     pub fn set_vrf_imports(&mut self, imports: VrfImports) {
@@ -230,12 +232,17 @@ impl AfIpv4Ucast {
     pub fn redistribute(&mut self, redistribute: Redistribute) {
         self.redistribute.push(redistribute);
     }
+    pub fn set_networks(mut self, networks: Vec<Prefix>) -> Self {
+        self.networks = networks;
+        self
+    }
 }
 impl AfIpv6Ucast {
     pub fn new() -> Self {
         Self {
             redistribute: vec![],
             imports: None,
+            networks: vec![],
         }
     }
     pub fn set_vrf_imports(&mut self, imports: VrfImports) {
@@ -243,6 +250,10 @@ impl AfIpv6Ucast {
     }
     pub fn redistribute(&mut self, redistribute: Redistribute) {
         self.redistribute.push(redistribute);
+    }
+    pub fn set_networks(mut self, networks: Vec<Prefix>) -> Self {
+        self.networks = networks;
+        self
     }
 }
 impl AfL2vpnEvpn {
@@ -457,15 +468,6 @@ impl BgpNeighbor {
     }
     pub fn l2vpn_evpn_activate(mut self, value: bool) -> Self {
         self.l2vpn_evpn = value;
-        self
-    }
-    /* Networks to advertise */
-    pub fn add_network(mut self, network: Prefix) -> Self {
-        self.networks.push(network);
-        self
-    }
-    pub fn set_networks(mut self, networks: Vec<Prefix>) -> Self {
-        self.networks = networks;
         self
     }
 }

@@ -291,7 +291,7 @@ impl Render for AfIpv4Ucast {
             .for_each(|redist| cfg += redist.render(&()));
 
         /* networks */
-        bgp.networks
+        self.networks
             .iter()
             .filter(|prefix| prefix.is_ipv4())
             .for_each(|prefix| cfg += format!(" network {prefix}"));
@@ -327,7 +327,7 @@ impl Render for AfIpv6Ucast {
             .for_each(|redist| cfg += redist.render(&()));
 
         /* networks */
-        bgp.networks
+        self.networks
             .iter()
             .filter(|prefix| prefix.is_ipv6())
             .for_each(|prefix| cfg += format!(" network {prefix}"));
@@ -579,11 +579,6 @@ pub mod tests {
             .ipv6_unicast_activate(true)
             .l2vpn_evpn_activate(true);
 
-        /* add some networks */
-        bgp.networks.push(Prefix::expect_from("13.13.13.13/32"));
-        bgp.networks.push(Prefix::expect_from("19.19.19.19/32"));
-        bgp.networks.push(Prefix::expect_from("300:a:b::1/80"));
-
         /* add neighs */
         bgp.add_neighbor(n1);
         bgp.add_neighbor(n2);
@@ -605,6 +600,10 @@ pub mod tests {
 
         /* AF ipv4 unicast */
         let mut af_ipv4 = AfIpv4Ucast::new();
+
+        /* add some networks */
+        af_ipv4.networks.push(Prefix::expect_from("13.13.13.13/32"));
+        af_ipv4.networks.push(Prefix::expect_from("19.19.19.19/32"));
 
         /* configure ipv4 vrf imports */
         let mut imports = VrfImports::new().set_routemap("Import-into-vrf-1");
