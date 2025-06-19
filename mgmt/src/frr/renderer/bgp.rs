@@ -199,7 +199,7 @@ fn bgp_neigh_bool_switches(neigh: &BgpNeighbor, prefix: &str) -> ConfigBuilder {
 
     /* extended link bw */
     if neigh.extended_link_bandwidth {
-        cfg += format!(" {} allowas-in", &prefix);
+        cfg += format!(" {} extended-link-bandwidth", &prefix);
     }
 
     /* extended link bw */
