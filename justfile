@@ -374,11 +374,12 @@ sh *args:
 
 # Build containers in a sterile environment
 [script]
-build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target) "--package=dataplane")
+build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target) "--package=dataplane" "--package=dataplane-cli")
     {{ _just_debuggable_ }}
     {{ _define_truncate128 }}
     mkdir -p "artifact/{{ target }}/{{ profile }}"
     cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/dataplane" "artifact/{{ target }}/{{ profile }}/dataplane"
+    cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/cli" "artifact/{{ target }}/{{ profile }}/dataplane-cli"
     declare build_date
     build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
     declare -r build_date
@@ -395,6 +396,7 @@ build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile
       --label "build.time_epoch=${build_time_epoch}" \
       --tag "${TAG}" \
       --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/dataplane" \
+      --build-arg ARTIFACT_CLI="artifact/{{ target }}/{{ profile }}/dataplane-cli" \
       --build-arg BASE="{{ _libc_container }}" \
       .
 
