@@ -24,14 +24,8 @@ mod private {
 pub trait NatIp: private::Sealed {
     fn to_ip_addr(&self) -> IpAddr;
 }
-impl private::Sealed for IpAddr {}
 impl private::Sealed for Ipv4Addr {}
 impl private::Sealed for Ipv6Addr {}
-impl NatIp for IpAddr {
-    fn to_ip_addr(&self) -> IpAddr {
-        *self
-    }
-}
 impl NatIp for Ipv4Addr {
     fn to_ip_addr(&self) -> IpAddr {
         IpAddr::V4(*self)
