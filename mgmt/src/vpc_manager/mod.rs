@@ -9,14 +9,14 @@ use interface_manager::Manager;
 use interface_manager::interface::{
     BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpecBuilder,
     MultiIndexInterfaceAssociationSpecMap, MultiIndexInterfaceSpecMap,
-    MultiIndexVrfPropertiesSpecMap, MultiIndexVtepPropertiesSpecMap, TryFromLinkMessage,
-    VrfPropertiesSpec, VtepPropertiesSpec,
+    MultiIndexVethPropertiesSpecMap, MultiIndexVrfPropertiesSpecMap,
+    MultiIndexVtepPropertiesSpecMap, TryFromLinkMessage, VrfPropertiesSpec, VtepPropertiesSpec,
 };
 use multi_index_map::MultiIndexMap;
 use net::eth::ethtype::EthType;
 use net::interface::{
-    AdminState, Interface, InterfaceProperties, MultiIndexInterfaceMap, MultiIndexVrfPropertiesMap,
-    MultiIndexVtepPropertiesMap,
+    AdminState, Interface, InterfaceProperties, MultiIndexInterfaceMap,
+    MultiIndexVethPropertiesMap, MultiIndexVrfPropertiesMap, MultiIndexVtepPropertiesMap,
 };
 use net::ip::UnicastIpAddr;
 use net::route::RouteTableId;
@@ -84,6 +84,7 @@ impl From<Vni> for VpcDiscriminant {
 #[derive(Clone, Debug, Deserialize, Serialize, Default, Builder)]
 pub struct RequiredInformationBase {
     pub interfaces: MultiIndexInterfaceSpecMap,
+    pub veths: MultiIndexVethPropertiesSpecMap,
     pub vrfs: MultiIndexVrfPropertiesSpecMap,
     pub vteps: MultiIndexVtepPropertiesSpecMap,
     pub associations: MultiIndexInterfaceAssociationSpecMap,
@@ -94,6 +95,7 @@ pub struct ObservedInformationBase {
     pub interfaces: MultiIndexInterfaceMap,
     pub vrfs: MultiIndexVrfPropertiesMap,
     pub vteps: MultiIndexVtepPropertiesMap,
+    pub veths: MultiIndexVethPropertiesMap,
 }
 
 impl Observe for VpcManager<RequiredInformationBase> {
@@ -124,6 +126,7 @@ impl Observe for VpcManager<RequiredInformationBase> {
         }
         let mut vtep_properties = MultiIndexVtepPropertiesMap::default();
         let mut vrf_properties = MultiIndexVrfPropertiesMap::default();
+        let mut veth_properties = MultiIndexVethPropertiesMap::default();
         let mut indexes_to_remove = vec![];
         for (_, observation) in observations.iter() {
             match &observation.properties {
@@ -148,6 +151,15 @@ impl Observe for VpcManager<RequiredInformationBase> {
                 InterfaceProperties::Other | InterfaceProperties::Bridge(_) => {
                     /* nothing to index */
                 }
+                InterfaceProperties::Veth(properties) => {
+                    match veth_properties.try_insert(properties.clone()) {
+                        Ok(_) => {}
+                        Err(err) => {
+                            error!("{err:?}");
+                            indexes_to_remove.push(observation.index);
+                        }
+                    }
+                }
             }
         }
         for sliced in indexes_to_remove {
@@ -157,6 +169,7 @@ impl Observe for VpcManager<RequiredInformationBase> {
             .interfaces(observations)
             .vteps(vtep_properties)
             .vrfs(vrf_properties)
+            .veths(veth_properties)
             .build()
         {
             Ok(ob) => Ok(ob),
@@ -303,6 +316,7 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
     fn try_from(internal: &InternalConfig) -> Result<Self, Self::Error> {
         let mut rib = RequiredInformationBaseBuilder::default();
         let mut interfaces = MultiIndexInterfaceSpecMap::default();
+        let veths = MultiIndexVethPropertiesSpecMap::default();
         let mut vrfs = MultiIndexVrfPropertiesSpecMap::default();
         let mut vteps = MultiIndexVtepPropertiesSpecMap::default();
         let mut associations = MultiIndexInterfaceAssociationSpecMap::default();
@@ -451,10 +465,13 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
                 }
             }
         }
+
+        // TODO: setup veths
         rib.interfaces(interfaces);
         rib.vteps(vteps);
         rib.vrfs(vrfs);
         rib.associations(associations);
+        rib.veths(veths);
         rib.build()
     }
 }
@@ -496,6 +513,7 @@ mod contract {
             let mut bridges = vec![];
             let mut vrfs = vec![];
             let mut vteps = vec![];
+            let mut veths = vec![];
 
             for _ in 0..num_vpcs {
                 let mut interface: InterfaceSpec = driver.produce()?;
@@ -531,6 +549,22 @@ mod contract {
                         {
                             let Err(_) = requirements.vrfs.try_insert(props.clone()) else {
                                 vrfs.push(interface.clone());
+                                continue;
+                            };
+                            requirements
+                                .interfaces
+                                .remove_by_name(&interface.name)
+                                .unwrap();
+                        }
+                    }
+                    InterfacePropertiesSpec::Veth(props) => {
+                        if requirements
+                            .interfaces
+                            .try_insert(interface.clone())
+                            .is_ok()
+                        {
+                            let Err(_) = requirements.veths.try_insert(props.clone()) else {
+                                veths.push(interface.clone());
                                 continue;
                             };
                             requirements

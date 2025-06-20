@@ -3,11 +3,11 @@
 
 //! Display trait implementations
 
-use crate::interface::MultiIndexInterfaceMap;
 use crate::interface::{AdminState, OperationalState};
 use crate::interface::{
     BridgeProperties, Interface, InterfaceProperties, VrfProperties, VtepProperties,
 };
+use crate::interface::{MultiIndexInterfaceMap, VethProperties};
 use std::fmt::Display;
 use std::string::ToString;
 
@@ -77,12 +77,18 @@ impl Display for VrfProperties {
         write!(f, "table-id: {}", self.route_table_id)
     }
 }
+impl Display for VethProperties {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "peer: {} peer-ns: {:?}", self.peer, self.peer_ns)
+    }
+}
 impl Display for InterfaceProperties {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InterfaceProperties::Bridge(bridge) => bridge.fmt(f),
             InterfaceProperties::Vrf(vrf) => vrf.fmt(f),
             InterfaceProperties::Vtep(vtep) => vtep.fmt(f),
+            InterfaceProperties::Veth(veth) => veth.fmt(f),
             InterfaceProperties::Other => write!(f, "other"),
         }
     }
@@ -93,6 +99,7 @@ fn ifproperty_to_str(properties: &InterfaceProperties) -> &'static str {
         InterfaceProperties::Bridge(_) => "bridge",
         InterfaceProperties::Vrf(_) => "vrf",
         InterfaceProperties::Vtep(_) => "vtep",
+        InterfaceProperties::Veth(_) => "veth",
         InterfaceProperties::Other => "other",
     }
 }

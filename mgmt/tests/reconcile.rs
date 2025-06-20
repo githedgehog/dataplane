@@ -8,8 +8,8 @@ use fixin::wrap;
 use interface_manager::interface::{
     BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpecBuilder,
     MultiIndexBridgePropertiesSpecMap, MultiIndexInterfaceAssociationSpecMap,
-    MultiIndexInterfaceSpecMap, MultiIndexVrfPropertiesSpecMap, MultiIndexVtepPropertiesSpecMap,
-    VrfPropertiesSpec, VtepPropertiesSpec,
+    MultiIndexInterfaceSpecMap, MultiIndexVethPropertiesSpecMap, MultiIndexVrfPropertiesSpecMap,
+    MultiIndexVtepPropertiesSpecMap, VethPropertiesSpec, VrfPropertiesSpec, VtepPropertiesSpec,
 };
 use mgmt::vpc_manager::{RequiredInformationBase, RequiredInformationBaseBuilder, VpcManager};
 use net::eth::ethtype::EthType;
@@ -144,6 +144,15 @@ async fn reconcile_demo() {
             }))
             .build()
             .unwrap(),
+        InterfaceSpecBuilder::default()
+            .name("veth1".try_into().unwrap())
+            .admin_state(AdminState::Up)
+            .properties(InterfacePropertiesSpec::Veth(VethPropertiesSpec {
+                peer: "veth1-peer".try_into().unwrap(),
+                peer_ns: None, // not impl
+            }))
+            .build()
+            .unwrap(),
     ];
 
     for interface in interfaces {
@@ -153,6 +162,7 @@ async fn reconcile_demo() {
     let mut vtep_props = MultiIndexVtepPropertiesSpecMap::default();
     let mut bridge_props = MultiIndexBridgePropertiesSpecMap::default();
     let mut vrf_props = MultiIndexVrfPropertiesSpecMap::default();
+    let mut veth_props = MultiIndexVethPropertiesSpecMap::default();
 
     for (_, interface) in required_interface_map.iter() {
         match &interface.properties {
@@ -164,6 +174,9 @@ async fn reconcile_demo() {
             }
             InterfacePropertiesSpec::Vrf(prop) => {
                 vrf_props.try_insert(prop.clone()).unwrap();
+            }
+            InterfacePropertiesSpec::Veth(prop) => {
+                veth_props.try_insert(prop.clone()).unwrap();
             }
         }
     }
@@ -199,6 +212,7 @@ async fn reconcile_demo() {
         .vteps(vtep_props)
         .vrfs(vrf_props)
         .associations(associations)
+        .veths(veth_props)
         .build()
         .unwrap();
 
@@ -249,6 +263,16 @@ async fn reconcile_demo() {
                 }))
                 .build()
                 .unwrap(),
+            InterfaceSpecBuilder::default()
+                .name("veth2".try_into().unwrap())
+                .admin_state(AdminState::Up)
+                .controller(None)
+                .properties(InterfacePropertiesSpec::Veth(VethPropertiesSpec {
+                    peer: "veth2-peer".try_into().unwrap(),
+                    peer_ns: None,
+                }))
+                .build()
+                .unwrap(),
         ];
         for interface in interfaces {
             match &interface.properties {
@@ -258,6 +282,9 @@ async fn reconcile_demo() {
                 }
                 InterfacePropertiesSpec::Vrf(props) => {
                     req.vrfs.try_insert(props.clone()).unwrap();
+                }
+                InterfacePropertiesSpec::Veth(props) => {
+                    req.veths.try_insert(props.clone()).unwrap();
                 }
             }
             req.interfaces.try_insert(interface).unwrap();
@@ -292,27 +319,33 @@ async fn reconcile_demo() {
         req.associations
             .remove_by_name(&"vtep1".to_string().try_into().unwrap())
             .unwrap();
+        req.interfaces
+            .remove_by_name(&"veth2".to_string().try_into().unwrap())
+            .unwrap();
     };
 
     let vpcs = VpcManager::<RequiredInformationBase>::new(Arc::new(handle));
 
-    for _ in 0..10 {
+    for k in 0..10 {
         let observed = vpcs.observe().await.unwrap();
         vpcs.reconcile(&mut required, &observed).await;
+        println!("k:{k}\n{}", observed.interfaces);
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     info!("injecting new requirements");
     inject_new_requirements(&mut required);
-    for _ in 0..20 {
+    for n in 0..20 {
         let observed = vpcs.observe().await.unwrap();
         vpcs.reconcile(&mut required, &observed).await;
+        println!("n:{n}\n{}", observed.interfaces);
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     info!("removing some requirements");
     remove_some_requirement(&mut required);
-    for _ in 0..20 {
+    for r in 0..20 {
         let observed = vpcs.observe().await.unwrap();
         vpcs.reconcile(&mut required, &observed).await;
+        println!("r:{r}\n{}", observed.interfaces);
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }

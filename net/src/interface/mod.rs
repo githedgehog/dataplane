@@ -19,11 +19,14 @@ use tracing::error;
 
 mod bridge;
 pub mod display;
+mod veth;
 mod vrf;
 mod vtep;
 
 #[allow(unused_imports)] // re-export
 pub use bridge::*;
+#[allow(unused_imports)] // re-export
+pub use veth::*;
 #[allow(unused_imports)] // re-export
 pub use vrf::*;
 #[allow(unused_imports)] // re-export
@@ -336,6 +339,8 @@ pub enum InterfaceProperties {
     Vtep(VtepProperties),
     /// Properties of VRFs
     Vrf(VrfProperties),
+    /// Properties of veths
+    Veth(VethProperties),
     /// Properties of something we don't currently support manipulating
     Other,
 }
