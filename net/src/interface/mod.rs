@@ -18,11 +18,15 @@ use std::fmt::{Debug, Display, Formatter};
 use tracing::error;
 
 mod bridge;
+pub mod display;
+mod veth;
 mod vrf;
 mod vtep;
 
 #[allow(unused_imports)] // re-export
 pub use bridge::*;
+#[allow(unused_imports)] // re-export
+pub use veth::*;
 #[allow(unused_imports)] // re-export
 pub use vrf::*;
 #[allow(unused_imports)] // re-export
@@ -299,6 +303,33 @@ pub struct Interface {
     pub properties: InterfaceProperties,
 }
 
+impl Interface {
+    /// Tell if [`Interface`] is a VRF
+    #[must_use]
+    pub fn is_vrf(&self) -> bool {
+        matches!(self.properties, InterfaceProperties::Vrf(_))
+    }
+    /// Tell if [`Interface`] is a vxlan interface
+    #[must_use]
+    pub fn is_vtep(&self) -> bool {
+        matches!(self.properties, InterfaceProperties::Vtep(_))
+    }
+    /// Tell if [`Interface`] is a bridge interface
+    #[must_use]
+    pub fn is_bridge(&self) -> bool {
+        matches!(self.properties, InterfaceProperties::Bridge(_))
+    }
+    /// Provide a reference to [`VrfProperties`] if the interface has
+    /// such a property
+    #[must_use]
+    pub fn get_vrf_properties(&self) -> Option<&VrfProperties> {
+        match &self.properties {
+            InterfaceProperties::Vrf(properties) => Some(properties),
+            _ => None,
+        }
+    }
+}
+
 /// Interface-specific properties.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub enum InterfaceProperties {
@@ -308,6 +339,8 @@ pub enum InterfaceProperties {
     Vtep(VtepProperties),
     /// Properties of VRFs
     Vrf(VrfProperties),
+    /// Properties of veths
+    Veth(VethProperties),
     /// Properties of something we don't currently support manipulating
     Other,
 }

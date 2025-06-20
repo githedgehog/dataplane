@@ -6,6 +6,7 @@
 mod association;
 mod bridge;
 mod properties;
+mod veth;
 mod vrf;
 mod vtep;
 
@@ -15,6 +16,8 @@ pub use association::*;
 pub use bridge::*;
 #[allow(unused_imports)] // re-export
 pub use properties::*;
+#[allow(unused_imports)] // re-export
+pub use veth::*;
 #[allow(unused_imports)] // re-export
 pub use vrf::*;
 #[allow(unused_imports)] // re-export
@@ -35,10 +38,10 @@ use net::route::RouteTableId;
 use net::vxlan::InvalidVni;
 use rekon::{AsRequirement, Create, Op, Reconcile, Remove, Update};
 use rtnetlink::packet_route::link::{
-    InfoBridge, InfoData, InfoVrf, InfoVxlan, LinkAttribute, LinkFlags, LinkInfo, LinkMessage,
-    State,
+    InfoBridge, InfoData, InfoVeth, InfoVrf, InfoVxlan, LinkAttribute, LinkFlags, LinkInfo,
+    LinkMessage, State,
 };
-use rtnetlink::{LinkBridge, LinkUnspec, LinkVrf, LinkVxlan};
+use rtnetlink::{LinkBridge, LinkUnspec, LinkVeth, LinkVrf, LinkVxlan};
 use serde::{Deserialize, Serialize};
 use tracing::{error, warn};
 
@@ -146,6 +149,9 @@ impl Create for Manager<Interface> {
             }
             InterfacePropertiesSpec::Vrf(properties) => {
                 LinkVrf::new(requirement.name.as_ref(), properties.route_table_id.into()).build()
+            }
+            InterfacePropertiesSpec::Veth(properties) => {
+                LinkVeth::new(requirement.name.as_ref(), properties.peer.as_ref()).build()
             }
         };
         if let Some(mac) = requirement.mac {
@@ -327,6 +333,21 @@ impl Update for Manager<InterfaceProperties> {
                                 InfoVxlan::Ttl(req.ttl),
                                 InfoVxlan::Local(req.local.inner()),
                             ]))
+                            .build(),
+                    )
+                    .execute()
+                    .await
+            }
+            (InterfacePropertiesSpec::Veth(req), InterfaceProperties::Veth(_)) => {
+                // FIXME: how to set header in msg and what attributes
+                let mut msg = LinkMessage::default();
+                msg.attributes
+                    .push(LinkAttribute::IfName(req.peer.to_string()));
+                self.handle
+                    .link()
+                    .set_port(
+                        LinkUnspec::new_with_index(observation.index.to_u32())
+                            .set_info_data(InfoData::Veth(InfoVeth::Peer(msg)))
                             .build(),
                     )
                     .execute()
