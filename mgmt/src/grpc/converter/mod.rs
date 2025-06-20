@@ -139,7 +139,6 @@ mod test {
             address: "192.168.1.2".to_string(),
             remote_asn: "65002".to_string(),
             af_activate: vec![0, 2], // IPv4 Unicast and L2VPN EVPN
-            networks: Vec::new(),
             update_source: Some(gateway_config::config::BgpNeighborUpdateSource {
                 source: Some(
                     gateway_config::config::bgp_neighbor_update_source::Source::Address(
@@ -157,6 +156,7 @@ mod test {
             ipv4_unicast: Some(gateway_config::BgpAddressFamilyIPv4 {
                 redistribute_connected: true,
                 redistribute_static: false,
+                networks: vec!["192.168.1.0/24".to_string()],
             }),
             ipv6_unicast: None,
             l2vpn_evpn: Some(gateway_config::BgpAddressFamilyL2vpnEvpn {

@@ -24,43 +24,73 @@ fn has_redistribute(redistribute: &[Redistribute], protocol: &Protocol) -> bool 
     redistribute.iter().any(|r| r.protocol == *protocol)
 }
 
-fn calculate_redistribute_v4(
-    router: &gateway_config::RouterConfig,
-) -> Option<Vec<crate::models::internal::routing::bgp::Redistribute>> {
-    let mut redistributes = Vec::new();
+impl TryFrom<&gateway_config::BgpAddressFamilyIPv4> for AfIpv4Ucast {
+    type Error = String;
 
-    match router.ipv4_unicast {
-        Some(policy) => {
-            if policy.redistribute_static {
-                redistributes.push(Redistribute::new(Protocol::Static, None, None));
-            }
+    fn try_from(ipv4: &gateway_config::BgpAddressFamilyIPv4) -> Result<Self, Self::Error> {
+        let mut afipv4 = AfIpv4Ucast::new();
 
-            if policy.redistribute_connected {
-                redistributes.push(Redistribute::new(Protocol::Connected, None, None));
-            }
-            Some(redistributes)
+        if ipv4.redistribute_static {
+            afipv4.redistribute(Redistribute::new(Protocol::Static, None, None));
         }
-        None => None,
+
+        if ipv4.redistribute_connected {
+            afipv4.redistribute(Redistribute::new(Protocol::Connected, None, None));
+        }
+
+        let networks = ipv4
+            .networks
+            .iter()
+            .map(|n| {
+                let prefix = Prefix::try_from(PrefixString(n))
+                    .map_err(|e| format!("Invalid network prefix {n}: {e}"))?;
+                if !prefix.is_ipv4() {
+                    return Err(format!("Invalid network prefix {n}: not an IPv4 prefix"));
+                }
+                Ok(prefix)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        afipv4.add_networks(networks);
+
+        Ok(afipv4)
     }
 }
 
-fn calculate_redistribute_v6(
-    router: &gateway_config::RouterConfig,
-) -> Option<Vec<crate::models::internal::routing::bgp::Redistribute>> {
-    let mut redistributes = Vec::new();
+impl TryFrom<&gateway_config::BgpAddressFamilyIPv6> for AfIpv6Ucast {
+    type Error = String;
 
-    match router.ipv6_unicast {
-        Some(policy) => {
-            if policy.redistribute_static {
-                redistributes.push(Redistribute::new(Protocol::Static, None, None));
-            }
+    fn try_from(ipv6: &gateway_config::BgpAddressFamilyIPv6) -> Result<Self, Self::Error> {
+        let mut afipv6 = AfIpv6Ucast::new();
 
-            if policy.redistribute_connected {
-                redistributes.push(Redistribute::new(Protocol::Connected, None, None));
-            }
-            Some(redistributes)
+        if ipv6.redistribute_static {
+            afipv6
+                .redistribute
+                .push(Redistribute::new(Protocol::Static, None, None));
         }
-        None => None,
+
+        if ipv6.redistribute_connected {
+            afipv6
+                .redistribute
+                .push(Redistribute::new(Protocol::Connected, None, None));
+        }
+
+        let networks = ipv6
+            .networks
+            .iter()
+            .map(|n| {
+                let prefix = Prefix::try_from(PrefixString(n))
+                    .map_err(|e| format!("Invalid network prefix {n}: {e}"))?;
+                if !prefix.is_ipv6() {
+                    return Err(format!("Invalid network prefix {n}: not an IPv6 prefix"));
+                }
+                Ok(prefix)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        afipv6.add_networks(networks);
+
+        Ok(afipv6)
     }
 }
 
@@ -92,16 +122,6 @@ impl TryFrom<&gateway_config::BgpNeighbor> for BgpNeighbor {
             }
         }
 
-        let networks = neighbor
-            .networks
-            .iter()
-            .map(|n| {
-                // Parse each network into a Prefix
-                Prefix::try_from(PrefixString(n))
-                    .map_err(|e| format!("Invalid network prefix {n}: {e}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
         // Create the neighbor config
         let mut neigh = BgpNeighbor::new_host(neighbor_addr)
             .set_remote_as(remote_as)
@@ -109,8 +129,7 @@ impl TryFrom<&gateway_config::BgpNeighbor> for BgpNeighbor {
             .set_send_community(NeighSendCommunities::Both)
             .ipv4_unicast_activate(ipv4_unicast)
             .ipv6_unicast_activate(ipv6_unicast)
-            .l2vpn_evpn_activate(l2vpn_evpn)
-            .set_networks(networks);
+            .l2vpn_evpn_activate(l2vpn_evpn);
 
         // set update source
         if let Some(update_source) = &neighbor.update_source {
@@ -157,12 +176,6 @@ impl TryFrom<&BgpNeighbor> for gateway_config::BgpNeighbor {
             af_activate.push(gateway_config::BgpAf::L2vpnEvpn.into());
         }
 
-        let networks = neighbor
-            .networks
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<String>>();
-
         let update_source = OptGRPCBgpNeighborUpdateSource::try_from(&neighbor.update_source)
             .map_err(|e| format!("Bad update source: {e}"))?
             .0;
@@ -171,7 +184,6 @@ impl TryFrom<&BgpNeighbor> for gateway_config::BgpNeighbor {
             address,
             remote_asn,
             af_activate,
-            networks,
             update_source,
         })
     }
@@ -251,19 +263,14 @@ impl TryFrom<&gateway_config::RouterConfig> for BgpConfig {
         }
 
         // Convert IPv4 Unicast address family if present
-        let mut af_ipv4unicast = AfIpv4Ucast::new();
-        if let Some(redistributes) = calculate_redistribute_v4(router) {
-            for redistribute in redistributes {
-                af_ipv4unicast.redistribute(redistribute);
-            }
-        }
-
-        let mut af_ipv6unicast = AfIpv6Ucast::new();
-        if let Some(redistributes) = calculate_redistribute_v6(router) {
-            for redistribute in redistributes {
-                af_ipv6unicast.redistribute(redistribute);
-            }
-        }
+        let af_ipv4unicast = match &router.ipv4_unicast {
+            Some(ipv4) => AfIpv4Ucast::try_from(ipv4)?,
+            None => AfIpv4Ucast::new(),
+        };
+        let af_ipv6unicast = match &router.ipv6_unicast {
+            Some(ipv6) => AfIpv6Ucast::try_from(ipv6)?,
+            None => AfIpv6Ucast::new(),
+        };
 
         let af_l2vpnevpn = AfL2vpnEvpn::new()
             .set_adv_all_vni(router.l2vpn_evpn.is_none_or(|evpn| evpn.advertise_all_vni))
@@ -320,6 +327,7 @@ impl TryFrom<&BgpConfig> for gateway_config::RouterConfig {
                 .map(|c| gateway_config::BgpAddressFamilyIPv4 {
                     redistribute_connected: has_redistribute(&c.redistribute, &Protocol::Connected),
                     redistribute_static: has_redistribute(&c.redistribute, &Protocol::Static),
+                    networks: c.networks.iter().map(ToString::to_string).collect(),
                 });
 
         // Create IPv6 unicast config if enabled
@@ -329,6 +337,7 @@ impl TryFrom<&BgpConfig> for gateway_config::RouterConfig {
                 .map(|c| gateway_config::BgpAddressFamilyIPv6 {
                     redistribute_connected: has_redistribute(&c.redistribute, &Protocol::Connected),
                     redistribute_static: has_redistribute(&c.redistribute, &Protocol::Static),
+                    networks: c.networks.iter().map(ToString::to_string).collect(),
                 });
 
         // Create L2VPN EVPN config if enabled

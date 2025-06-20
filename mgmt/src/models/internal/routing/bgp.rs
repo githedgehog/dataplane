@@ -39,12 +39,16 @@ pub struct VrfImports {
 pub struct AfIpv4Ucast {
     pub redistribute: Vec<Redistribute>,
     pub imports: Option<VrfImports>,
+    /// Networks to advertise
+    pub networks: Vec<Prefix>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct AfIpv6Ucast {
     pub redistribute: Vec<Redistribute>,
     pub imports: Option<VrfImports>,
+    /// Networks to advertise
+    pub networks: Vec<Prefix>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -130,9 +134,6 @@ pub struct BgpNeighbor {
     pub ipv4_unicast: bool,
     pub ipv6_unicast: bool,
     pub l2vpn_evpn: bool,
-
-    /* Networks to advertise */
-    pub networks: Vec<Prefix>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -221,6 +222,7 @@ impl AfIpv4Ucast {
         Self {
             redistribute: vec![],
             imports: None,
+            networks: vec![],
         }
     }
     pub fn set_vrf_imports(&mut self, imports: VrfImports) {
@@ -230,12 +232,19 @@ impl AfIpv4Ucast {
     pub fn redistribute(&mut self, redistribute: Redistribute) {
         self.redistribute.push(redistribute);
     }
+    pub fn add_network(&mut self, network: Prefix) {
+        self.networks.push(network);
+    }
+    pub fn add_networks(&mut self, networks: impl IntoIterator<Item = Prefix>) {
+        self.networks.extend(networks);
+    }
 }
 impl AfIpv6Ucast {
     pub fn new() -> Self {
         Self {
             redistribute: vec![],
             imports: None,
+            networks: vec![],
         }
     }
     pub fn set_vrf_imports(&mut self, imports: VrfImports) {
@@ -243,6 +252,12 @@ impl AfIpv6Ucast {
     }
     pub fn redistribute(&mut self, redistribute: Redistribute) {
         self.redistribute.push(redistribute);
+    }
+    pub fn add_network(&mut self, network: Prefix) {
+        self.networks.push(network);
+    }
+    pub fn add_networks(&mut self, networks: impl IntoIterator<Item = Prefix>) {
+        self.networks.extend(networks);
     }
 }
 impl AfL2vpnEvpn {
@@ -459,16 +474,8 @@ impl BgpNeighbor {
         self.l2vpn_evpn = value;
         self
     }
-    /* Networks to advertise */
-    pub fn add_network(mut self, network: Prefix) -> Self {
-        self.networks.push(network);
-        self
-    }
-    pub fn set_networks(mut self, networks: Vec<Prefix>) -> Self {
-        self.networks = networks;
-        self
-    }
 }
+
 impl BgpOptions {
     pub fn new() -> Self {
         Self::default()
