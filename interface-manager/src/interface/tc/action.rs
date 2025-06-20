@@ -95,11 +95,11 @@ impl Create for Manager<Action> {
     where
         Self: 'a;
 
-    async fn create<'a>(&self, requirement: Self::Requirement<'a>)
+    async fn create<'a>(&self, _requirement: Self::Requirement<'a>)
     where
         Self: 'a,
     {
-        let mut add = self.handle.traffic_action().add();
+        let add = self.handle.traffic_action().add();
         let mut act = TcAction::default();
         act.tab = 1;
         act.attributes

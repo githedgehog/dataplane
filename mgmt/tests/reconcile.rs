@@ -8,9 +8,7 @@ use fixin::wrap;
 use futures::TryStreamExt;
 use interface_manager::Manager;
 use interface_manager::interface::tc::action::Action;
-use interface_manager::interface::tc::qdisc::{
-    BlockIndex, ClsAct, EgressBlock, IngressBlock, Qdisc,
-};
+use interface_manager::interface::tc::qdisc::{BlockIndex, ClsAct, EgressBlock, IngressBlock};
 use interface_manager::interface::{
     BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpecBuilder,
     MultiIndexBridgePropertiesSpecMap, MultiIndexInterfaceAssociationSpecMap,
@@ -23,9 +21,8 @@ use net::interface::{AdminState, InterfaceIndex};
 use net::vxlan::Vxlan;
 use rekon::Create;
 use rekon::{Observe, Reconcile};
-use rtnetlink::packet_route::tc::TcFilterFlowerOption::EthDst;
 use rtnetlink::packet_route::tc::TcFilterFlowerOption::{
-    Actions, EncKeyId, EncKeyIpv4Dst, EncKeyIpv4Src, EncKeyUdpDstPort,
+    Actions, EncKeyId, EncKeyIpv4Dst, EncKeyUdpDstPort,
 };
 use rtnetlink::packet_route::tc::{
     TcAction, TcActionAttribute, TcActionGeneric, TcActionMirrorOption, TcActionOption,
@@ -387,7 +384,7 @@ async fn tc_actions_demo() {
                     let mut params = TcMirror::default();
                     params.generic.index = 5;
                     params.eaction = TcMirrorActionType::EgressRedir;
-                    params.ifindex = 70;
+                    params.ifindex = 117;
                     params.generic.action = TcActionType::Stolen;
                     params
                 }),
@@ -395,9 +392,9 @@ async fn tc_actions_demo() {
         mirror
     };
     // handle
-    //     .traffic_filter(95)
+    //     .traffic_filter(107)
     //     .replace()
-    //     .index(95)
+    //     .index(107)
     //     .ingress()
     //     .priority(9005)
     //     .protocol(0x0003u16.to_be())
@@ -437,7 +434,7 @@ async fn tc_actions_demo2() {
     let handle = Arc::new(handle);
 
     handle
-        .traffic_filter(70)
+        .traffic_filter(117)
         .replace()
         .ingress()
         .priority(9009)
@@ -472,7 +469,7 @@ async fn tc_actions_demo2() {
                             let mut params = TcMirror::default();
                             params.generic.index = 0;
                             params.eaction = TcMirrorActionType::EgressRedir;
-                            params.ifindex = 95;
+                            params.ifindex = 107;
                             params.generic.action = TcActionType::Stolen;
                             params
                         })),
@@ -505,7 +502,7 @@ async fn tc_actions_demo3() {
     let handle = Arc::new(handle);
 
     handle
-        .traffic_filter(70)
+        .traffic_filter(117)
         .replace()
         .ingress()
         .priority(9989)
@@ -545,7 +542,7 @@ async fn tc_actions_demo3() {
                             let mut params = TcMirror::default();
                             params.generic.index = 6;
                             params.eaction = TcMirrorActionType::EgressRedir;
-                            params.ifindex = 95;
+                            params.ifindex = 107;
                             params.generic.action = TcActionType::Stolen;
                             params
                         })),
@@ -579,7 +576,7 @@ async fn tc_actions_demo4() {
 
     let manager = Manager::<ClsAct>::new(handle.clone());
 
-    let mut clsact = ClsAct::new(InterfaceIndex::new(93));
+    let mut clsact = ClsAct::new(InterfaceIndex::new(107));
     clsact
         .ingress_block(IngressBlock::new(BlockIndex::new(19)))
         .egress_block(EgressBlock::new(BlockIndex::new(20)));
@@ -606,7 +603,7 @@ async fn tc_actions_demo5() {
 
     let manager = Manager::<ClsAct>::new(handle.clone());
 
-    let mut clsact = ClsAct::new(InterfaceIndex::new(70));
+    let mut clsact = ClsAct::new(InterfaceIndex::new(117));
     clsact
         .ingress_block(IngressBlock::new(BlockIndex::new(99)))
         .egress_block(EgressBlock::new(BlockIndex::new(100)));
@@ -646,7 +643,7 @@ async fn tc_actions_demo5() {
                 },
                 {
                     let mut mirror = TcAction::default();
-                    mirror.tab = 2;
+                    mirror.tab = 3;
                     mirror
                         .attributes
                         .push(TcActionAttribute::Kind("mirred".into()));
@@ -655,7 +652,7 @@ async fn tc_actions_demo5() {
                             let mut params = TcMirror::default();
                             params.generic.index = 6;
                             params.eaction = TcMirrorActionType::EgressRedir;
-                            params.ifindex = 95;
+                            params.ifindex = 107;
                             params.generic.action = TcActionType::Stolen;
                             params
                         })),
@@ -668,4 +665,24 @@ async fn tc_actions_demo5() {
         .execute()
         .await
         .unwrap();
+}
+
+#[allow(clippy::too_many_lines)] // this is an integration test and is expected to be long
+#[tokio::test]
+#[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
+#[traced_test]
+async fn tc_actions_demo6() {
+    let Ok((mut connection, handle, _recv)) = rtnetlink::new_connection() else {
+        panic!("failed to create connection");
+    };
+    connection
+        .socket_mut()
+        .socket_mut()
+        .set_rx_buf_sz(812_992)
+        .unwrap();
+    tokio::spawn(connection);
+    let mut resp = handle.neighbours().get().fdb().execute();
+    while let Ok(Some(x)) = resp.try_next().await {
+        println!("{x:#?}");
+    }
 }

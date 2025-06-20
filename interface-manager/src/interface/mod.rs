@@ -4,7 +4,7 @@
 //! Reconcile the intended state of the linux interfaces with its observed state.
 
 mod association;
-mod bridge;
+pub mod bridge;
 mod properties;
 pub mod tc;
 mod vrf;

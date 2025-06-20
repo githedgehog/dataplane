@@ -3,7 +3,7 @@
 
 use crate::Manager;
 use net::interface::InterfaceIndex;
-use rekon::{Create, Update};
+use rekon::Create;
 
 #[repr(transparent)]
 pub struct BlockIndex(u32);
@@ -37,12 +37,6 @@ pub enum Qdisc {
 }
 
 pub struct ClsAct {
-    interface_index: InterfaceIndex,
-    ingress_block: Option<IngressBlock>,
-    egress_block: Option<EgressBlock>,
-}
-
-pub struct ClsActObservation {
     interface_index: InterfaceIndex,
     ingress_block: Option<IngressBlock>,
     egress_block: Option<EgressBlock>,
