@@ -4,6 +4,7 @@
 #![allow(unused_variables)]
 
 mod allocator;
+mod port;
 pub mod sessions;
 
 use super::Nat;
@@ -130,7 +131,7 @@ impl Nat {
     fn set_source_port(
         transport: &mut Transport,
         next_header: NextHeader,
-        target_port: Option<allocator::NatPort>,
+        target_port: Option<port::NatPort>,
     ) {
         let Some(port) = target_port else {
             return;
@@ -149,7 +150,7 @@ impl Nat {
     fn set_destination_port(
         transport: &mut Transport,
         next_header: NextHeader,
-        target_port: Option<allocator::NatPort>,
+        target_port: Option<port::NatPort>,
     ) {
         let Some(port) = target_port else {
             return;
@@ -271,7 +272,7 @@ impl Nat {
 
 #[cfg(test)]
 mod tests {
-    use super::allocator::NatPort;
+    use super::port::NatPort;
     use super::*;
     use net::packet::test_utils::build_test_ipv4_packet;
     use net::tcp::Tcp;
