@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use super::NatTuple;
-use super::allocator::NatPort;
+use super::port::NatPort;
 use crate::stateful::NatIp;
 use dashmap::DashMap;
 use dashmap::mapref::one::RefMut;
