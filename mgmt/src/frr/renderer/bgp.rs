@@ -291,7 +291,7 @@ impl Render for AfIpv4Ucast {
             .for_each(|redist| cfg += redist.render(&()));
 
         /* networks */
-        bgp.networks
+        self.networks
             .iter()
             .filter(|prefix| prefix.is_ipv4())
             .for_each(|prefix| cfg += format!(" network {prefix}"));
@@ -327,7 +327,7 @@ impl Render for AfIpv6Ucast {
             .for_each(|redist| cfg += redist.render(&()));
 
         /* networks */
-        bgp.networks
+        self.networks
             .iter()
             .filter(|prefix| prefix.is_ipv6())
             .for_each(|prefix| cfg += format!(" network {prefix}"));
@@ -579,11 +579,6 @@ pub mod tests {
             .ipv6_unicast_activate(true)
             .l2vpn_evpn_activate(true);
 
-        /* add some networks */
-        bgp.networks.push(Prefix::expect_from("13.13.13.13/32"));
-        bgp.networks.push(Prefix::expect_from("19.19.19.19/32"));
-        bgp.networks.push(Prefix::expect_from("300:a:b::1/80"));
-
         /* add neighs */
         bgp.add_neighbor(n1);
         bgp.add_neighbor(n2);
@@ -621,6 +616,10 @@ pub mod tests {
             Some("RM-redist-static".to_owned()),
         ));
 
+        /* add some networks */
+        af_ipv4.add_network(Prefix::expect_from("13.13.13.13/32"));
+        af_ipv4.add_network(Prefix::expect_from("19.19.19.19/32"));
+
         /* set the IPv4 unicast config */
         bgp.set_af_ipv4unicast(af_ipv4);
 
@@ -635,6 +634,9 @@ pub mod tests {
 
         /* set the imports for Ipv6 */
         af_ipv6.set_vrf_imports(imports);
+
+        /* add some network */
+        af_ipv6.add_network(Prefix::expect_from("3001:a:b::/80"));
 
         /* set the IPv6 unicast config */
         bgp.set_af_ipv6unicast(af_ipv6);

@@ -192,7 +192,6 @@ pub struct BgpConfig {
     pub af_ipv4unicast: Option<AfIpv4Ucast>,
     pub af_ipv6unicast: Option<AfIpv6Ucast>,
     pub af_l2vpnevpn: Option<AfL2vpnEvpn>,
-    pub networks: Vec<Prefix>,
 }
 
 /* ===== impls: Builders ===== */
