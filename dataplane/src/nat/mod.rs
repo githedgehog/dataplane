@@ -38,10 +38,9 @@ mod stateless;
 use crate::nat::iplist::IpList;
 use mgmt::models::internal::nat::tables::{NatTables, TrieValue};
 use net::buffer::PacketBufferMut;
-use net::headers::{TryHeadersMut, TryIpMut};
 use net::packet::Packet;
 use pipeline::NetworkFunction;
-use std::net::Ipv4Addr;
+use stateful::sessions::{NatDefaultSessionManager, NatSessionManager};
 
 /// Indicates whether a [`Nat`] processor should perform source NAT or destination NAT.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +63,7 @@ pub enum NatMode {
 #[derive(Debug)]
 pub struct Nat {
     context: NatTables,
+    sessions: NatDefaultSessionManager,
     mode: NatMode,
     direction: NatDirection,
 }
@@ -76,6 +76,7 @@ impl Nat {
         let context = NatTables::new();
         Self {
             context,
+            sessions: NatDefaultSessionManager::new(),
             mode,
             direction,
         }
@@ -91,14 +92,13 @@ impl Nat {
     fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
         let vni = packet.get_meta().src_vni;
 
-        let Some(net) = packet.headers_mut().try_ip_mut() else {
-            return;
-        };
-
         match self.mode {
-            NatMode::Stateless => self.stateless_nat(net, vni),
-            // TODO: Add support for other IP versions
-            NatMode::Stateful => self.stateful_nat::<Ipv4Addr, Ipv4Addr>(net, vni),
+            NatMode::Stateless => {
+                let _ = self.stateless_nat::<Buf>(packet, vni);
+            }
+            NatMode::Stateful => {
+                let _ = self.stateful_nat::<Buf>(packet, vni);
+            }
         }
     }
 }
