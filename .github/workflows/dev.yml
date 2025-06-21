@@ -94,6 +94,13 @@ jobs:
     runs-on: "lab"
     timeout-minutes: 45
     steps:
+      - name: "login to pull-through cache"
+        uses: "docker/login-action@v3"
+        with:
+          registry: "run.h.hhdev.io:30000"
+          username: "${{ secrets.LAB_REGISTRY_USERNAME }}"
+          password: "${{ secrets.LAB_REGISTRY_TOKEN }}"
+
       - name: "login to ghcr.io"
         uses: "docker/login-action@v3"
         with:
@@ -123,16 +130,20 @@ jobs:
 
       - name: "set up compile-env"
         run: |
+          export REGISTRY_URL
+          exit 1
           just --yes debug_justfile="${{matrix.debug_justfile}}" refresh-compile-env
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
 
       - name: "cargo deny check"
         run: |
+          export REGISTRY_URL
           just debug_justfile="${{matrix.debug_justfile}}" ${{matrix.profile.sterile}} cargo deny check
 
       - name: "push container"
         if: ${{ matrix.profile.sterile == 'sterile' && (matrix.profile.name == 'release' || matrix.profile.name == 'debug') }}
         run: |
+          unset REGISTRY_URL
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
@@ -258,7 +269,8 @@ jobs:
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
             target=x86_64-unknown-linux-gnu \
-            ${{matrix.profile.sterile}} cargo doc
+            ${{matrix.profile.sterile}} \
+            cargo doc
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
