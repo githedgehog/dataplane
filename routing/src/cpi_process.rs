@@ -71,6 +71,17 @@ impl RpcOperation for ConnectInfo {
     }
 }
 
+fn nonlocal_nhop(iproute: &IpRoute) -> bool {
+    let vrfid = iproute.vrfid;
+    for nhop in &iproute.nhops {
+        // NB: for simplicity we assume all nhops for a route belong to same vrf
+        if nhop.vrfid != vrfid {
+            return true;
+        }
+    }
+    false
+}
+
 impl RpcOperation for IpRoute {
     type ObjectStore = RoutingDb;
     #[allow(unused_mut)]
@@ -79,7 +90,7 @@ impl RpcOperation for IpRoute {
         let vrftable = &mut db.vrftable;
         let iftabler = &db.iftw.as_iftable_reader();
 
-        if is_evpn_route(self) && self.vrfid != 0 {
+        if self.vrfid != 0 && (is_evpn_route(self) || nonlocal_nhop(self)) {
             let Ok((vrf, vrf0)) = vrftable.get_with_default_mut(self.vrfid) else {
                 error!("Unable to get vrf with id {}", self.vrfid);
                 return RpcResultCode::Failure;
