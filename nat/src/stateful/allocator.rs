@@ -5,7 +5,7 @@ use super::NatIp;
 use super::NatTuple;
 use super::port::NatPort;
 use routing::rib::vrf::VrfId;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Debug;
 use std::net::Ipv4Addr;
 
@@ -41,14 +41,31 @@ impl NatDefaultAllocator {
 #[derive(Debug)]
 pub struct NatPool<I: NatIp> {
     ips: HashSet<I>,
-    allocated: NatAllocations,
+    current_block: Vec<I>,
+    allocated: NatAllocations<I>,
 }
 
 impl NatPool<Ipv4Addr> {
+    pub fn new() -> Self {
+        Self {
+            ips: HashSet::new(),
+            current_block: Vec::new(),
+            allocated: NatAllocations::<Ipv4Addr> {
+                allocations: BTreeMap::new(),
+            },
+        }
+    }
+
     fn allocate(&self, tuple: &NatTuple<Ipv4Addr>) -> Option<(Ipv4Addr, Option<NatPort>)> {
+        todo!()
+    }
+
+    fn grab_new_block(&mut self) {
         todo!()
     }
 }
 
 #[derive(Debug, Clone)]
-struct NatAllocations {}
+struct NatAllocations<I: NatIp> {
+    allocations: BTreeMap<I, BTreeSet<NatPort>>,
+}
