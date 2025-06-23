@@ -7,9 +7,9 @@ use arrayvec::ArrayVec;
 use std::net::IpAddr;
 use tracing::{debug, error, trace, warn};
 
-use net::buffer::PacketBufferMut;
-use net::headers::{TryIpv4Mut, TryIpv6Mut};
+use net::headers::{TryHeadersMut, TryIpv4Mut, TryIpv6Mut};
 use net::packet::{DoneReason, InterfaceId, Packet};
+use net::{buffer::PacketBufferMut, checksum::Checksum};
 use pipeline::NetworkFunction;
 
 use routing::fib::fibobjects::{EgressObject, FibEntry, PktInstruction};
@@ -223,6 +223,12 @@ impl IpForwarder {
             error!("{nfi}: Failed to set dst mac '{dst_mac}': {e}");
             packet.done(DoneReason::InternalFailure);
             return;
+        }
+
+        // make sure ipv4 checksum is updated. This is needed because we decremented the TTL of the
+        // inner packet.
+        if let Some(ipv4) = packet.headers_mut().try_ipv4_mut() {
+            ipv4.update_checksum(&());
         }
 
         // build vxlan headers for encapsulation
