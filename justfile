@@ -33,17 +33,19 @@ _container_repo := "ghcr.io/githedgehog/dataplane"
 
 # Docker images
 [private]
+_image_profile := if profile == "release" { "release" } else { "debug" }
+[private]
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
 [private]
 _dpdk_sys_container_tag := dpdk_sys_commit
 [private]
-_libc_container := _dpdk_sys_container_repo + "/libc-env:" + _dpdk_sys_container_tag
+_libc_container := _dpdk_sys_container_repo + "/libc-env:" + _dpdk_sys_container_tag + "." + _image_profile
 [private]
 _doc_env_container := _dpdk_sys_container_repo + "/doc-env:" + _dpdk_sys_container_tag
 [private]
 _compile_env_image_name := _dpdk_sys_container_repo + "/compile-env"
 [private]
-_compile_env_container := _compile_env_image_name + ":" + _dpdk_sys_container_tag
+_compile_env_container := _compile_env_image_name + ":" + _dpdk_sys_container_tag + "." + _image_profile
 
 # Warn if the compile-env image is deprecated (or missing)
 
@@ -131,6 +133,7 @@ cargo *args:
           ;;
         --release|--profile=release|--cargo-profile=release)
           declare -rx RUSTFLAGS="${RUSTFLAGS_RELEASE}"
+          declare -rx LIBC_ENV_PROFILE="release"
           extra_args+=("$arg")
           ;;
         --profile=fuzz|--cargo-profile=fuzz)

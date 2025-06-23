@@ -195,5 +195,5 @@ fi
   --cap-add SYS_ADMIN \
   --cap-add SYS_RAWIO \
   --read-only \
-  "ghcr.io/githedgehog/dpdk-sys/libc-env:${DPDK_SYS_COMMIT}" \
+  "ghcr.io/githedgehog/dpdk-sys/libc-env:${DPDK_SYS_COMMIT}.${LIBC_ENV_PROFILE:-debug}" \
   "${@}"

@@ -123,7 +123,10 @@ jobs:
 
       - name: "set up compile-env"
         run: |
-          just --yes debug_justfile="${{matrix.debug_justfile}}" refresh-compile-env
+          just --yes \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            refresh-compile-env
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
 
       - name: "cargo deny check"
