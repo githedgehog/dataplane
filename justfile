@@ -41,8 +41,6 @@ _dpdk_sys_container_tag := dpdk_sys_commit
 [private]
 _libc_container := _dpdk_sys_container_repo + "/libc-env:" + _dpdk_sys_container_tag + "." + _image_profile
 [private]
-_doc_env_container := _dpdk_sys_container_repo + "/doc-env:" + _dpdk_sys_container_tag
-[private]
 _compile_env_image_name := _dpdk_sys_container_repo + "/compile-env"
 [private]
 _compile_env_container := _compile_env_image_name + ":" + _dpdk_sys_container_tag + "." + _image_profile
