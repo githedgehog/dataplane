@@ -564,7 +564,7 @@ impl Display for RmacStore {
 //========================= Rmac Store ================================//
 impl Display for Vtep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "\n ───────── Local VTEP ─────────")?;
+        writeln!(f, "\n ───────── Local VTEP configuration ─────────")?;
         fmt_opt_value(f, " ip address", &self.get_ip(), true)?;
         fmt_opt_value(f, " Mac address", &self.get_mac(), true)
     }
@@ -715,29 +715,30 @@ where
 }
 impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Rc<FibGroup>)) -> bool> Display for FibViewV4<'_, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(fibw) = &self.vrf.fibw {
-            if let Some(fibr) = fibw.enter() {
-                let rt_iter = fibr.iter_v4().filter(&self.filter);
-                let total_entries = fibr.len_v4();
-                let mut displayed = 0;
+        let Some(fibw) = &self.vrf.fibw else {
+            return writeln!(f, "No fib");
+        };
+        let Some(fibr) = fibw.enter() else {
+            return writeln!(f, "Unable to read fib!");
+        };
 
-                fmt_vrf_oneline(&self.vrf, f)?;
-                Heading(format!("Ipv4 FIB ({total_entries} destinations)")).fmt(f)?;
-                for (prefix, group) in rt_iter {
-                    write!(f, "  {prefix:?} {group}")?;
-                    displayed += 1;
-                }
+        let rt_iter = fibr.iter_v4().filter(&self.filter);
+        let total_entries = fibr.len_v4();
+        let mut displayed = 0;
 
-                if displayed != total_entries {
-                    writeln!(
-                        f,
-                        "\n  (Displayed {displayed} destinations out of {total_entries})",
-                    )?;
-                }
-            }
-        } else {
-            writeln!(f, "No fib")?;
+        fmt_vrf_oneline(&self.vrf, f)?;
+        Heading(format!("Ipv4 FIB ({total_entries} destinations)")).fmt(f)?;
+        for (prefix, group) in rt_iter {
+            write!(f, "  {prefix:?} {group}")?;
+            displayed += 1;
         }
+        if displayed != total_entries {
+            writeln!(
+                f,
+                "\n  (Displayed {displayed} destinations out of {total_entries})",
+            )?;
+        }
+
         Ok(())
     }
 }
@@ -751,29 +752,31 @@ where
 }
 impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Rc<FibGroup>)) -> bool> Display for FibViewV6<'_, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(fibw) = &self.vrf.fibw {
-            if let Some(fibr) = fibw.enter() {
-                let rt_iter = fibr.iter_v6().filter(&self.filter);
-                let total_entries = fibr.len_v6();
-                let mut displayed = 0;
+        let Some(fibw) = &self.vrf.fibw else {
+            return writeln!(f, "No fib");
+        };
+        let Some(fibr) = fibw.enter() else {
+            return writeln!(f, "Unable to read fib!");
+        };
 
-                fmt_vrf_oneline(&self.vrf, f)?;
-                Heading(format!("Ipv6 FIB ({total_entries} destinations)")).fmt(f)?;
-                for (prefix, group) in rt_iter {
-                    write!(f, "  {prefix:?} {group}")?;
-                    displayed += 1;
-                }
+        let rt_iter = fibr.iter_v6().filter(&self.filter);
+        let total_entries = fibr.len_v6();
+        let mut displayed = 0;
 
-                if displayed != total_entries {
-                    writeln!(
-                        f,
-                        "\n  (Displayed {displayed} destinations out of {total_entries})",
-                    )?;
-                }
-            }
-        } else {
-            writeln!(f, "No fib")?;
+        fmt_vrf_oneline(&self.vrf, f)?;
+        Heading(format!("Ipv6 FIB ({total_entries} destinations)")).fmt(f)?;
+        for (prefix, group) in rt_iter {
+            write!(f, "  {prefix:?} {group}")?;
+            displayed += 1;
         }
+
+        if displayed != total_entries {
+            writeln!(
+                f,
+                "\n  (Displayed {displayed} destinations out of {total_entries})",
+            )?;
+        }
+
         Ok(())
     }
 }
