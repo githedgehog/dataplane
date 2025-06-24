@@ -48,7 +48,7 @@ _compile_env_container := _compile_env_image_name + ":" + _dpdk_sys_container_ta
 # Warn if the compile-env image is deprecated (or missing)
 
 [private]
-_compile_env_check := if shell('docker image list --format "{{.Repository}}:{{.Tag}}" | grep -x "' + _compile_env_image_name + ':' + _dpdk_sys_container_tag + '" || true') == '' { shell('printf "\n/!\\ Latest compile-env not found, try \"just refresh-compile-env\"\n\n" >&2') } else { '' }
+_compile_env_check := if shell('docker image list --format "{{.Repository}}:{{.Tag}}" | grep -x "' + _compile_env_container + '" || true') == '' { shell('printf "\n/!\\ Latest compile-env not found, try \"just refresh-compile-env\"\n\n" >&2') } else { '' }
 
 # Docker settings
 
