@@ -255,6 +255,14 @@ fn handle_request(
         return handle_get_request(csock, peer, req);
     }
 
+    // ignore additions if have no config. Connects are allowed, so are deletions to wipe out old state
+    if !db.have_config() && op == RpcOp::Add {
+        debug!("Ignoring message: no config is available");
+        let resp_msg = build_response_msg(req, RpcResultCode::Failure, None);
+        csock.send_msg(resp_msg, peer);
+        return;
+    }
+
     let res_code = match object {
         None => {
             error!("Received {:?} request without object!", op);
