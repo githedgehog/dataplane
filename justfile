@@ -41,9 +41,15 @@ _dpdk_sys_container_tag := dpdk_sys_commit
 [private]
 _libc_container := _dpdk_sys_container_repo + "/libc-env:" + _dpdk_sys_container_tag + "." + _image_profile
 [private]
+_debug_env_container := _dpdk_sys_container_repo + "/debug-env:" + _dpdk_sys_container_tag + "." + _image_profile
+[private]
 _compile_env_image_name := _dpdk_sys_container_repo + "/compile-env"
 [private]
 _compile_env_container := _compile_env_image_name + ":" + _dpdk_sys_container_tag + "." + _image_profile
+
+# Base container for the dataplane build
+[private]
+_dataplane_base_container := if _image_profile == "release" { _libc_container } else { _debug_env_container }
 
 # Warn if the compile-env image is deprecated (or missing)
 
@@ -398,7 +404,7 @@ build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile
       --tag "${TAG}" \
       --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/dataplane" \
       --build-arg ARTIFACT_CLI="artifact/{{ target }}/{{ profile }}/dataplane-cli" \
-      --build-arg BASE="{{ _libc_container }}" \
+      --build-arg BASE="{{ _dataplane_base_container }}" \
       .
 
     sudo -E docker tag \
