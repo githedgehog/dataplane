@@ -3,13 +3,13 @@
 
 //! Routing database keeps most of the routing information in memory
 
-#![allow(clippy::collapsible_if)]
-
 use crate::atable::atablerw::AtableReader;
+use crate::config::RouterConfig;
 use crate::evpn::{RmacStore, Vtep};
 use crate::fib::fibtable::FibTableWriter;
 use crate::interfaces::iftablerw::IfTableWriter;
 use crate::rib::vrftable::VrfTable;
+use tracing::debug;
 
 /// Routing database
 pub struct RoutingDb {
@@ -18,6 +18,7 @@ pub struct RoutingDb {
     pub vtep: Vtep,
     pub atabler: AtableReader,
     pub iftw: IfTableWriter,
+    pub config: Option<RouterConfig>,
 }
 
 #[allow(clippy::new_without_default)]
@@ -30,6 +31,11 @@ impl RoutingDb {
             vtep: Vtep::new(),
             atabler,
             iftw,
+            config: None,
         }
+    }
+    pub fn set_config(&mut self, config: RouterConfig) {
+        debug!("Storing router config for gen {}", config.genid());
+        self.config = Some(config);
     }
 }

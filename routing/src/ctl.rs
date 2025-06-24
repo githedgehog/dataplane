@@ -138,6 +138,7 @@ fn handle_configure(config: RouterConfig, db: &mut RoutingDb, reply_to: CpiCtlRe
         error!("Fatal: could not reply to configure request: {e:?}");
     } else {
         debug!("Replied to configure request");
+        db.set_config(config);
     }
 }
 

@@ -49,6 +49,9 @@ impl RouterConfig {
             vtep: None,
         }
     }
+    pub fn genid(&self) -> i64 {
+        self.genid
+    }
     pub fn add_vrf(&mut self, vrfconfig: RouterVrfConfig) {
         self.vrfs.insert(vrfconfig.vrfid, vrfconfig);
     }
