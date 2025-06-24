@@ -33,7 +33,7 @@ _container_repo := "ghcr.io/githedgehog/dataplane"
 
 # Docker images
 [private]
-_image_profile := if profile == "release" { "release" } else { "debug" }
+_image_profile := if profile == "debug" { "debug" } else { "release" }
 [private]
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
 [private]
@@ -128,10 +128,10 @@ cargo *args:
       case "$arg" in
         --debug|--profile=debug|--cargo-profile=debug)
           declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
+          declare -rx LIBC_ENV_PROFILE="debug"
           ;;
         --release|--profile=release|--cargo-profile=release)
           declare -rx RUSTFLAGS="${RUSTFLAGS_RELEASE}"
-          declare -rx LIBC_ENV_PROFILE="release"
           extra_args+=("$arg")
           ;;
         --profile=fuzz|--cargo-profile=fuzz)
