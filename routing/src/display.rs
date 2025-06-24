@@ -555,7 +555,7 @@ impl Display for RmacStore {
         Heading(format!("Rmac store ({})", self.len())).fmt(f)?;
         fmt_rmac_heading(f)?;
         for rmac in self.values() {
-            writeln!(f, " {rmac}")?;
+            writeln!(f, "{rmac}")?;
         }
         Ok(())
     }
