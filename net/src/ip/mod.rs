@@ -6,6 +6,7 @@
 use crate::ipv4::UnicastIpv4Addr;
 use crate::ipv6::UnicastIpv6Addr;
 use etherparse::IpNumber;
+use std::fmt::{Debug, Display, Formatter};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// Thin wrapper around [`IpNumber`]
@@ -66,7 +67,7 @@ impl NextHeader {
 /// A union type for IPv4 and IPv6 unicast addresses
 ///
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
+    Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
 )]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 pub enum UnicastIpAddr {
@@ -83,6 +84,21 @@ impl UnicastIpAddr {
         match self {
             UnicastIpAddr::V4(ip) => IpAddr::V4(ip.inner()),
             UnicastIpAddr::V6(ip) => IpAddr::V6(ip.inner()),
+        }
+    }
+}
+
+impl Debug for UnicastIpAddr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self}")
+    }
+}
+
+impl Display for UnicastIpAddr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UnicastIpAddr::V4(ip) => Display::fmt(&ip, f),
+            UnicastIpAddr::V6(ip) => Display::fmt(&ip, f),
         }
     }
 }
