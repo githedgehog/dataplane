@@ -103,18 +103,38 @@ pub type VrfConfigTable = MultiIndexVrfConfigMap;
 
 use tracing::{debug, error};
 impl VrfConfigTable {
+    //////////////////////////////////////////////////////////
+    /// Create an empty `VrfConfigTable`
+    //////////////////////////////////////////////////////////
     pub fn new() -> Self {
         VrfConfigTable::default()
     }
-
+    //////////////////////////////////////////////////////////
+    /// Get a reference to the default vrf config
+    //////////////////////////////////////////////////////////
     pub fn default_vrf_config(&self) -> Option<&VrfConfig> {
         self.iter_by_name().find(|vrf| vrf.default)
     }
 
+    //////////////////////////////////////////////////////////
+    /// Build iterator for all VRFs that have a `Vni`; i.e. that
+    /// correspond to VPCs (currently)
+    //////////////////////////////////////////////////////////
     pub fn vpc_vrfs(&self) -> impl Iterator<Item = &VrfConfig> {
         self.iter_by_name().filter(|vrf| vrf.vni.is_some())
     }
 
+    //////////////////////////////////////////////////////////
+    /// Build iterator to iterate over all the `VrfConfig`s in
+    /// this `VrfConfigTable`
+    //////////////////////////////////////////////////////////
+    pub fn all_vrfs(&self) -> impl Iterator<Item = &VrfConfig> {
+        self.iter_by_name()
+    }
+
+    //////////////////////////////////////////////////////////
+    /// Store a `VrfConfig` object in this `VrfConfigTable`
+    //////////////////////////////////////////////////////////
     pub fn add_vrf_config(&mut self, vrf_cfg: VrfConfig) -> ConfigResult {
         let name = vrf_cfg.name.clone();
         debug!(
