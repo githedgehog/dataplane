@@ -9,6 +9,8 @@ mod properties;
 mod vrf;
 mod vtep;
 
+use std::num::NonZero;
+
 #[allow(unused_imports)] // re-export
 pub use association::*;
 #[allow(unused_imports)] // re-export
@@ -670,7 +672,12 @@ impl TryFromLinkMessage for Interface {
 
     fn try_from_link_message(message: &LinkMessage) -> Result<Self, Self::Error> {
         let mut builder = InterfaceBuilder::default();
-        builder.index(message.header.index.into());
+        match InterfaceIndex::try_new(message.header.index) {
+            Ok(index) => builder.index(index),
+            Err(err) => {
+                return Err(InterfaceBuilderError::ValidationError(format!("{err}")));
+            }
+        };
         let mut vtep_builder = VtepPropertiesBuilder::default();
         let mut vrf_builder = VrfPropertiesBuilder::default();
         let mut bridge_builder = BridgePropertiesBuilder::default();
@@ -707,9 +714,15 @@ impl TryFromLinkMessage for Interface {
                         error!("{illegal_name:?}");
                     }
                 },
-                LinkAttribute::Controller(c) => {
-                    builder.controller(Some(InterfaceIndex::new(*c)));
-                }
+                LinkAttribute::Controller(c) => match NonZero::new(*c) {
+                    None => {
+                        warn!("zero is not a legal controller index");
+                        builder.controller(None);
+                    }
+                    Some(c) => {
+                        builder.controller(Some(InterfaceIndex::new(c)));
+                    }
+                },
                 LinkAttribute::OperState(state) => match state {
                     State::Up => {
                         builder.operational_state(OperationalState::Up);
