@@ -13,6 +13,7 @@ dashmap = { workspace = true }
 iptrie = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
+rand = { workspace = true }
 routing = { workspace = true }
 thiserror = { workspace = true }
 

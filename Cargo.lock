@@ -861,6 +861,7 @@ dependencies = [
  "dataplane-pipeline",
  "dataplane-routing",
  "iptrie",
+ "rand",
  "thiserror 2.0.12",
 ]
 

@@ -8,6 +8,8 @@ use net::udp::port::{UdpPort, UdpPortError};
 pub enum NatPortError {
     #[error("reserved port ({0})")]
     ReservedPort(u16),
+    #[error("no free port available (base: {0})")]
+    NoPortsAvailable(u8),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
