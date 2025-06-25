@@ -3,7 +3,7 @@
 
 //! IPv4 address types
 
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::net::Ipv4Addr;
 
 /// Thin wrapper around [`Ipv4Addr`]
@@ -14,10 +14,16 @@ use std::net::Ipv4Addr;
 #[non_exhaustive]
 #[repr(transparent)]
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+    Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 #[serde(transparent)]
 pub struct UnicastIpv4Addr(Ipv4Addr);
+
+impl Debug for UnicastIpv4Addr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
 
 impl UnicastIpv4Addr {
     /// Map an unqualified [`Ipv4Addr`] to a [`UnicastIpv4Addr`].
@@ -42,7 +48,7 @@ impl UnicastIpv4Addr {
 
 impl Display for UnicastIpv4Addr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        std::fmt::Display::fmt(&self.0, f)
     }
 }
 
