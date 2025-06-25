@@ -39,12 +39,6 @@ pub struct IfEthConfig {
     pub mac: Option<Mac>,
 }
 #[derive(Clone, Debug, PartialEq)]
-pub struct IfBridgeConfig {
-    pub vlan_filtering: bool,
-    pub vlan_protocol: EthType,
-    pub mac: Option<Mac>,
-}
-#[derive(Clone, Debug, PartialEq)]
 pub struct IfVtepConfig {
     pub mac: Option<Mac>,
     pub vni: Option<Vni>,
@@ -53,18 +47,11 @@ pub struct IfVtepConfig {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct IfVrfConfig {
-    pub table_id: u32, // FIXME: interface manager has specific type
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub enum InterfaceType {
     Loopback,
     Ethernet(IfEthConfig),
     Vlan(IfVlanConfig),
-    Bridge(IfBridgeConfig),
     Vtep(IfVtepConfig),
-    Vrf(IfVrfConfig),
 }
 
 #[derive(Clone, Debug, PartialEq)]

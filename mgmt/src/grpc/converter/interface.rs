@@ -205,7 +205,6 @@ impl TryFrom<&InterfaceConfig> for gateway_config::Interface {
                 interface_addresses_to_strings(interface)
             }
             InterfaceType::Vtep(vtep) => vec![format!("{}/32", vtep.local.to_string())],
-            _ => vec![],
         };
 
         // Convert interface type
@@ -214,12 +213,6 @@ impl TryFrom<&InterfaceConfig> for gateway_config::Interface {
             InterfaceType::Vlan(_) => gateway_config::IfType::Vlan,
             InterfaceType::Loopback => gateway_config::IfType::Loopback,
             InterfaceType::Vtep(_) => gateway_config::IfType::Vtep,
-            _ => {
-                return Err(format!(
-                    "Unsupported interface type: {:?}",
-                    interface.iftype
-                ));
-            }
         };
 
         // Get VLAN ID if available
@@ -233,7 +226,7 @@ impl TryFrom<&InterfaceConfig> for gateway_config::Interface {
             InterfaceType::Ethernet(eth_config) => eth_config.mac.as_ref().map(ToString::to_string),
             InterfaceType::Vlan(vlan_config) => vlan_config.mac.as_ref().map(ToString::to_string),
             InterfaceType::Vtep(vtep_config) => vtep_config.mac.as_ref().map(ToString::to_string),
-            _ => None,
+            InterfaceType::Loopback => None,
         };
 
         // Convert OSPF interface if present
