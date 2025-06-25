@@ -841,6 +841,7 @@ dependencies = [
  "gateway_config",
  "iptrie",
  "multi_index_map",
+ "netdev",
  "pretty_assertions",
  "rtnetlink",
  "serde",

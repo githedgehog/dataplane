@@ -152,6 +152,9 @@ impl InterfaceConfig {
         self.ospf = Some(ospf);
         self
     }
+    pub fn is_vtep(&self) -> bool {
+        matches!(self.iftype, InterfaceType::Vtep(_))
+    }
     pub fn validate(&self) -> ConfigResult {
         // name is mandatory
         if self.name.is_empty() {
