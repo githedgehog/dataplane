@@ -401,7 +401,7 @@ impl Display for Attachment {
 
 macro_rules! INTERFACE_TBL_FMT {
     () => {
-        " {:<16} {:>4} {:9} {:9} {:<20} {}"
+        " {:<16} {:>4} {:>6} {:9} {:9} {:<20} {}"
     };
 }
 fn fmt_interface_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -410,7 +410,7 @@ fn fmt_interface_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         "{}",
         format_args!(
             INTERFACE_TBL_FMT!(),
-            "name", "id", "AdmStatus", "OpStatus", "attachment", "type"
+            "name", "id", "mtu", "AdmStatus", "OpStatus", "attachment", "type"
         )
     )
 }
@@ -462,6 +462,10 @@ impl Display for Interface {
         } else {
             "---".to_string()
         };
+        let mtu = self
+            .mtu
+            .map(|m| m.to_string())
+            .unwrap_or_else(|| "--".to_string());
         write!(
             f,
             "{}",
@@ -469,6 +473,7 @@ impl Display for Interface {
                 INTERFACE_TBL_FMT!(),
                 self.name,
                 format!("{:>4}", self.ifindex),
+                mtu,
                 self.admin_state,
                 self.oper_state,
                 attachment,

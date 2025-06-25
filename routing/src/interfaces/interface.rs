@@ -8,9 +8,12 @@
 use crate::fib::fibtype::{FibId, FibReader};
 use crate::rib::vrf::VrfId;
 use net::eth::mac::Mac;
+use net::interface::Mtu;
 use net::vlan::Vid;
-use std::collections::HashSet;
 use std::net::IpAddr;
+
+use std::collections::HashSet;
+
 #[allow(unused)]
 use tracing::{debug, error, info};
 
@@ -88,6 +91,7 @@ pub struct RouterInterfaceConfig {
     pub iftype: IfType,                   /* type of interface */
     pub admin_state: IfState,             /* admin state */
     pub attach_cfg: Option<AttachConfig>, /* attach config */
+    pub mtu: Option<Mtu>,
 }
 impl RouterInterfaceConfig {
     pub fn new(name: &str, ifindex: IfIndex) -> Self {
@@ -98,6 +102,7 @@ impl RouterInterfaceConfig {
             iftype: IfType::Unknown,
             admin_state: IfState::Up,
             attach_cfg: None,
+            mtu: None,
         }
     }
     pub fn set_name(&mut self, name: &str) {
@@ -115,6 +120,9 @@ impl RouterInterfaceConfig {
     pub fn set_attach_cfg(&mut self, attach_cfg: Option<AttachConfig>) {
         self.attach_cfg = attach_cfg;
     }
+    pub fn set_mtu(&mut self, mtu: Option<Mtu>) {
+        self.mtu = mtu;
+    }
 }
 
 #[derive(Clone)]
@@ -125,6 +133,7 @@ pub struct Interface {
     pub ifindex: IfIndex,
     pub iftype: IfType,
     pub admin_state: IfState,
+    pub mtu: Option<Mtu>,
     /* -- state -- */
     pub oper_state: IfState,
     pub addresses: HashSet<IfAddress>,
@@ -143,6 +152,7 @@ impl Interface {
             description: config.description.clone(),
             iftype: config.iftype.clone(),
             admin_state: config.admin_state,
+            mtu: config.mtu,
             oper_state: IfState::Unknown,
             addresses: HashSet::new(),
             attachment: None,

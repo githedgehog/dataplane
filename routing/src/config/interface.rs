@@ -137,6 +137,7 @@ impl Interface {
             description: self.description.to_owned(),
             iftype: self.iftype.clone(),
             admin_state: self.admin_state,
+            mtu: self.mtu,
             attach_cfg: self
                 .attachment
                 .as_ref()

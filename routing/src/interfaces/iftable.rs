@@ -86,6 +86,9 @@ impl IfTable {
         if iface.admin_state != config.admin_state {
             iface.admin_state = config.admin_state.clone();
         }
+        if iface.mtu != config.mtu {
+            iface.mtu = config.mtu;
+        }
         debug!("Modified interface with ifindex {ifindex}");
         Ok(())
     }
