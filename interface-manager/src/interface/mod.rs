@@ -406,7 +406,7 @@ impl Update for Manager<Mtu> {
             .link()
             .set(
                 LinkUnspec::new_with_index(observation.index.to_u32())
-                    .mtu(requirement.inner())
+                    .mtu(requirement.to_u32())
                     .build(),
             )
             .execute()
