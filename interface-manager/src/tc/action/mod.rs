@@ -7,6 +7,7 @@ use std::marker::PhantomData;
 use std::num::NonZero;
 
 pub mod gact;
+pub mod mirred;
 
 pub trait ActionKind {
     const KIND: &'static str;
