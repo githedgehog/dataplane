@@ -13,7 +13,7 @@ test_buffer = []
 
 [dependencies]
 ahash = { workspace = true }
-arrayvec = { workspace = true }
+arrayvec = { workspace = true, features = ["serde", "std"] }
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional = true }
 derive_builder = { workspace = true, features = ["alloc"] }
 etherparse = { workspace = true, features = ["std"] }
@@ -25,7 +25,6 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-arbitrary = { workspace = true, features = ["derive"] }
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"] }
 etherparse = { workspace = true, default-features = false, features = ["std"] }
 ordermap = { workspace = true }

@@ -6,16 +6,29 @@
 #[allow(unused_imports)] // deliberate re-export
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
+use std::fmt::{Debug, Display, Formatter};
 use std::net::Ipv6Addr;
 
 /// A type representing the set of unicast ipv6 addresses.
 #[non_exhaustive]
 #[repr(transparent)]
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+    Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 #[serde(transparent)]
 pub struct UnicastIpv6Addr(Ipv6Addr);
+
+impl Debug for UnicastIpv6Addr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Display for UnicastIpv6Addr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 impl UnicastIpv6Addr {
     /// Returns the supplied [`Ipv6Addr`] as a [`UnicastIpv6Addr`]

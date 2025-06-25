@@ -244,7 +244,7 @@ impl TryFrom<&InterfaceConfig> for gateway_config::Interface {
             .transpose()
             .map_err(|e| format!("Failed to convert OSPF interface: {e}"))?;
 
-        let mtu = interface.mtu.map(|mtu| mtu.inner());
+        let mtu = interface.mtu.map(|mtu| mtu.to_u32());
 
         // Create the gRPC interface
         Ok(gateway_config::Interface {

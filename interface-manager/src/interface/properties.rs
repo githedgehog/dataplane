@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use crate::interface::bridge::BridgePropertiesSpec;
-use crate::interface::{VrfPropertiesSpec, VtepPropertiesSpec};
+use crate::interface::{PciNetdevPropertiesSpec, VrfPropertiesSpec, VtepPropertiesSpec};
 use net::interface::InterfaceProperties;
 use rekon::AsRequirement;
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,8 @@ pub enum InterfacePropertiesSpec {
     Vtep(VtepPropertiesSpec),
     /// The planned properties of a vrf
     Vrf(VrfPropertiesSpec),
+    /// The expected properties of a pci netdev.
+    Pci(PciNetdevPropertiesSpec),
 }
 
 impl AsRequirement<InterfacePropertiesSpec> for InterfaceProperties {
@@ -34,6 +36,7 @@ impl AsRequirement<InterfacePropertiesSpec> for InterfaceProperties {
                 InterfacePropertiesSpec::Vtep(props.as_requirement()?)
             }
             InterfaceProperties::Vrf(props) => InterfacePropertiesSpec::Vrf(props.as_requirement()),
+            InterfaceProperties::Pci(rep) => InterfacePropertiesSpec::Pci(rep.as_requirement()),
             InterfaceProperties::Other => return None,
         })
     }

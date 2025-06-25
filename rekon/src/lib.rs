@@ -4,7 +4,7 @@
 /// `Observe` is a trait that can be implemented for whatever struct is intended to collect or
 /// measure data present in an external system.
 ///
-/// The motivation use case here is to observe the state of a virtual network.
+/// The motivating use case here is to observe the state of a virtual network.
 /// That said, observations from discs or sensors or whatever apply here.
 pub trait Observe {
     /// The returned data type of the observation.

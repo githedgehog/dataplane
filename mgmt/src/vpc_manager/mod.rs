@@ -9,14 +9,14 @@ use interface_manager::Manager;
 use interface_manager::interface::{
     BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpecBuilder,
     MultiIndexInterfaceAssociationSpecMap, MultiIndexInterfaceSpecMap,
-    MultiIndexVrfPropertiesSpecMap, MultiIndexVtepPropertiesSpecMap, TryFromLinkMessage,
-    VrfPropertiesSpec, VtepPropertiesSpec,
+    MultiIndexPciNetdevPropertiesSpecMap, MultiIndexVrfPropertiesSpecMap,
+    MultiIndexVtepPropertiesSpecMap, TryFromLinkMessage, VrfPropertiesSpec, VtepPropertiesSpec,
 };
 use multi_index_map::MultiIndexMap;
 use net::eth::ethtype::EthType;
 use net::interface::{
-    AdminState, Interface, InterfaceProperties, MultiIndexInterfaceMap, MultiIndexVrfPropertiesMap,
-    MultiIndexVtepPropertiesMap,
+    AdminState, Interface, InterfaceProperties, MultiIndexInterfaceMap,
+    MultiIndexPciNetdevPropertiesMap, MultiIndexVrfPropertiesMap, MultiIndexVtepPropertiesMap,
 };
 use net::ip::UnicastIpAddr;
 use net::route::RouteTableId;
@@ -84,6 +84,7 @@ impl From<Vni> for VpcDiscriminant {
 #[derive(Clone, Debug, Deserialize, Serialize, Default, Builder)]
 pub struct RequiredInformationBase {
     pub interfaces: MultiIndexInterfaceSpecMap,
+    pub pci_netdevs: MultiIndexPciNetdevPropertiesSpecMap,
     pub vrfs: MultiIndexVrfPropertiesSpecMap,
     pub vteps: MultiIndexVtepPropertiesSpecMap,
     pub associations: MultiIndexInterfaceAssociationSpecMap,
@@ -92,6 +93,7 @@ pub struct RequiredInformationBase {
 #[derive(Clone, Debug, Deserialize, Serialize, Default, Builder)]
 pub struct ObservedInformationBase {
     pub interfaces: MultiIndexInterfaceMap,
+    pub pci_netdevs: MultiIndexPciNetdevPropertiesMap,
     pub vrfs: MultiIndexVrfPropertiesMap,
     pub vteps: MultiIndexVtepPropertiesMap,
 }
@@ -124,6 +126,7 @@ impl Observe for VpcManager<RequiredInformationBase> {
         }
         let mut vtep_properties = MultiIndexVtepPropertiesMap::default();
         let mut vrf_properties = MultiIndexVrfPropertiesMap::default();
+        let mut pci_netdev_properties = MultiIndexPciNetdevPropertiesMap::default();
         let mut indexes_to_remove = vec![];
         for (_, observation) in observations.iter() {
             match &observation.properties {
@@ -145,6 +148,15 @@ impl Observe for VpcManager<RequiredInformationBase> {
                         }
                     }
                 }
+                InterfaceProperties::Pci(rep) => {
+                    match pci_netdev_properties.try_insert(rep.clone()) {
+                        Ok(_) => {}
+                        Err(err) => {
+                            error!("{err:?}");
+                            indexes_to_remove.push(observation.index);
+                        }
+                    }
+                }
                 InterfaceProperties::Other | InterfaceProperties::Bridge(_) => {
                     /* nothing to index */
                 }
@@ -157,6 +169,7 @@ impl Observe for VpcManager<RequiredInformationBase> {
             .interfaces(observations)
             .vteps(vtep_properties)
             .vrfs(vrf_properties)
+            .pci_netdevs(pci_netdev_properties)
             .build()
         {
             Ok(ob) => Ok(ob),
@@ -301,7 +314,7 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
 
     #[tracing::instrument(level = "trace", ret)]
     fn try_from(internal: &InternalConfig) -> Result<Self, Self::Error> {
-        let mut rib = RequiredInformationBaseBuilder::default();
+        let mut rb_builder = RequiredInformationBaseBuilder::default();
         let mut interfaces = MultiIndexInterfaceSpecMap::default();
         let mut vrfs = MultiIndexVrfPropertiesSpecMap::default();
         let mut vteps = MultiIndexVtepPropertiesSpecMap::default();
@@ -451,11 +464,11 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
                 }
             }
         }
-        rib.interfaces(interfaces);
-        rib.vteps(vteps);
-        rib.vrfs(vrfs);
-        rib.associations(associations);
-        rib.build()
+        rb_builder.interfaces(interfaces);
+        rb_builder.vteps(vteps);
+        rb_builder.vrfs(vrfs);
+        rb_builder.associations(associations);
+        rb_builder.build()
     }
 }
 
@@ -494,6 +507,7 @@ mod contract {
             }
             let mut requirements = RequiredInformationBase::default();
             let mut bridges = vec![];
+            let mut pci_netdevs = vec![];
             let mut vrfs = vec![];
             let mut vteps = vec![];
 
@@ -537,6 +551,11 @@ mod contract {
                                 .interfaces
                                 .remove_by_name(&interface.name)
                                 .unwrap();
+                        }
+                    }
+                    InterfacePropertiesSpec::Pci(_) => {
+                        if let Ok(rep) = requirements.interfaces.try_insert(interface) {
+                            pci_netdevs.push(rep.clone());
                         }
                     }
                 }

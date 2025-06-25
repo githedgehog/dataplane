@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use core::fmt::Display;
-use std::fmt::Formatter;
+use std::fmt::{Debug, Formatter};
 use std::num::NonZero;
 
 #[allow(unused_imports)] // re-export
@@ -41,7 +41,7 @@ pub use contract::*;
 /// [overlay network]: https://en.wikipedia.org/wiki/Overlay_network
 /// [transparent]: https://doc.rust-lang.org/reference/type-layout.html#the-transparent-representation
 #[derive(
-    Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Deserialize, serde::Serialize,
+    Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Deserialize, serde::Serialize,
 )]
 #[serde(try_from = "u32", into = "u32")]
 #[repr(transparent)]
@@ -50,6 +50,12 @@ pub struct Vni(NonZero<u32>);
 impl Display for Vni {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.0.get())
+    }
+}
+
+impl Debug for Vni {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self}")
     }
 }
 

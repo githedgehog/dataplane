@@ -10,20 +10,26 @@
 
 use crate::eth::mac::SourceMac;
 use derive_builder::Builder;
-use linux_raw_sys::if_ether;
 use multi_index_map::MultiIndexMap;
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 use std::fmt::{Debug, Display, Formatter};
+use std::num::NonZero;
 use tracing::error;
 
 mod bridge;
 pub mod display;
+mod mtu;
+mod pci;
 mod vrf;
 mod vtep;
 
 #[allow(unused_imports)] // re-export
 pub use bridge::*;
+#[allow(unused_imports)] // re-export
+pub use mtu::*;
+#[allow(unused_imports)] // re-export
+pub use pci::*;
 #[allow(unused_imports)] // re-export
 pub use vrf::*;
 #[allow(unused_imports)] // re-export
@@ -41,7 +47,7 @@ pub use contract::*;
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "u32", into = "u32")]
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct InterfaceIndex(u32);
+pub struct InterfaceIndex(NonZero<u32>);
 
 impl Debug for InterfaceIndex {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -55,23 +61,44 @@ impl Display for InterfaceIndex {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum InterfaceIndexError {
+    /// The provided value was zero.
+    #[error("interface index must not be zero")]
+    Zero,
+}
+
 impl InterfaceIndex {
-    /// Treat the provided `u32` as an [`InterfaceIndex`].
+    /// Treat the provided `NonZero<u32>` as an [`InterfaceIndex`].
     #[must_use]
-    pub fn new(raw: u32) -> InterfaceIndex {
+    pub fn new(raw: NonZero<u32>) -> InterfaceIndex {
         InterfaceIndex(raw)
+    }
+
+    /// Treat the provided `u32` as an [`InterfaceIndex`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provided value is zero.
+    pub fn try_new(raw: u32) -> Result<Self, InterfaceIndexError> {
+        raw.try_into()
     }
 
     /// Treat this [`InterfaceIndex`] as a `u32`.
     #[must_use]
     pub fn to_u32(self) -> u32 {
-        self.0
+        self.0.get()
     }
 }
 
-impl From<u32> for InterfaceIndex {
-    fn from(value: u32) -> InterfaceIndex {
-        InterfaceIndex::new(value)
+impl TryFrom<u32> for InterfaceIndex {
+    type Error = InterfaceIndexError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match NonZero::new(value) {
+            Some(raw) => Ok(InterfaceIndex::new(raw)),
+            None => Err(InterfaceIndexError::Zero),
+        }
     }
 }
 
@@ -182,58 +209,6 @@ impl AsRef<str> for InterfaceName {
     }
 }
 
-/// The MTU of a network interface.
-#[repr(transparent)]
-#[derive(Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "u32", into = "u32")]
-pub struct Mtu(u32);
-
-impl Mtu {
-    pub const MIN: u32 = 1280; // 1280 IPv6 minimum MTU
-    pub const MAX: u32 = if_ether::ETH_MAX_MTU;
-    #[must_use]
-    pub fn inner(&self) -> u32 {
-        self.0
-    }
-}
-
-impl Default for Mtu {
-    fn default() -> Self {
-        #[allow(clippy::expect_used)] // 1500 is a valid mtu
-        Self::try_from(1500).expect("1500 is a valid mtu")
-    }
-}
-
-impl TryFrom<u32> for Mtu {
-    type Error = MtuError;
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        if !(Self::MIN..=Self::MAX).contains(&value) {
-            return Err(MtuError::InvalidMtu(value));
-        }
-        Ok(Mtu(value))
-    }
-}
-
-impl From<Mtu> for u32 {
-    fn from(value: Mtu) -> Self {
-        value.0
-    }
-}
-
-impl Display for Mtu {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, thiserror::Error)]
-pub enum MtuError {
-    /// The MTU is not within the valid range.
-    #[error("mtu {0} is not within the valid range of 68 to 65535")]
-    InvalidMtu(u32),
-}
-
 /// The administrative state of a network interface.
 ///
 /// Basically, this describes the intended state of a network interface. (as opposed to its
@@ -336,6 +311,8 @@ pub enum InterfaceProperties {
     Vtep(VtepProperties),
     /// Properties of VRFs
     Vrf(VrfProperties),
+    /// Physical pci netdev properties
+    Pci(PciNetdevProperties),
     /// Properties of something we don't currently support manipulating
     Other,
 }
@@ -343,24 +320,13 @@ pub enum InterfaceProperties {
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::interface::{
-        AdminState, Interface, InterfaceIndex, InterfaceName, InterfaceProperties, Mtu,
-        OperationalState,
+        AdminState, Interface, InterfaceIndex, InterfaceName, InterfaceProperties, OperationalState,
     };
     use bolero::{Driver, TypeGenerator};
 
     impl TypeGenerator for InterfaceIndex {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
             Some(Self(driver.produce()?))
-        }
-    }
-
-    impl TypeGenerator for Mtu {
-        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            let mtu = driver.gen_u32(
-                std::ops::Bound::Included(&Mtu::MIN),
-                std::ops::Bound::Included(&Mtu::MAX),
-            )?;
-            Some(Self(mtu))
         }
     }
 
@@ -506,29 +472,5 @@ pub mod test {
                 _ => unreachable!(),
             }
         });
-    }
-
-    #[test]
-    fn mtu_is_constrained() {
-        bolero::check!().with_type().for_each(|x: &Mtu| {
-            assert!(
-                x.inner() >= Mtu::MIN,
-                "mtu {} is less than minimum {}",
-                x.inner(),
-                Mtu::MIN
-            );
-            assert!(
-                x.inner() <= Mtu::MAX,
-                "mtu {} is greater than maximum {}",
-                x.inner(),
-                Mtu::MAX
-            );
-        });
-    }
-
-    #[test]
-    fn mtu_oob_rejects() {
-        assert!(Mtu::try_from(Mtu::MIN - 1).is_err());
-        assert!(Mtu::try_from(Mtu::MAX + 1).is_err());
     }
 }
