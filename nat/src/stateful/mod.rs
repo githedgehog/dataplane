@@ -6,9 +6,10 @@
 mod allocator;
 pub mod sessions;
 
-use super::Nat;
 use crate::NatDirection;
-use crate::stateful::sessions::{NatDefaultSession, NatSession, NatSessionManager, NatState};
+use crate::stateful::sessions::{
+    NatDefaultSession, NatDefaultSessionManager, NatSession, NatSessionManager, NatState,
+};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, Transport, TryHeadersMut, TryIp, TryIpMut, TryTransportMut};
 use net::ip::NextHeader;
@@ -17,6 +18,7 @@ use net::packet::Packet;
 use net::tcp::port::TcpPort;
 use net::udp::port::UdpPort;
 use net::vxlan::Vni;
+use pipeline::NetworkFunction;
 use routing::rib::vrf::VrfId;
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -89,7 +91,24 @@ impl<I: NatIp> NatTuple<I> {
     }
 }
 
-impl Nat {
+/// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`StatefulNat`] processes
+/// packets to run source or destination Network Address Translation (NAT) on their IP addresses.
+#[derive(Debug)]
+pub struct StatefulNat {
+    sessions: NatDefaultSessionManager,
+    direction: NatDirection,
+}
+
+impl StatefulNat {
+    /// Creates a new [`StatefulNat`] processor. The `direction` indicates whether this processor should
+    /// perform source or destination NAT.
+    pub fn new(direction: NatDirection) -> Self {
+        Self {
+            sessions: NatDefaultSessionManager::new(),
+            direction,
+        }
+    }
+
     fn get_vrf_id(net: &Net, vni: Vni) -> VrfId {
         todo!()
     }
@@ -240,15 +259,17 @@ impl Nat {
         None
     }
 
-    pub(crate) fn stateful_nat<Buf: PacketBufferMut>(
-        &mut self,
-        packet: &mut Packet<Buf>,
-        vni_opt: Option<Vni>,
-    ) -> Option<()> {
-        let total_bytes = packet.total_len();
-        let net = packet.get_headers().try_ip()?;
+    /// Processes one packet. This is the main entry point for processing a packet. This is also the
+    /// function that we pass to [`StatefulNat::process`] to iterate over packets.
+    fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
         // TODO: What if no VNI
-        let vni = vni_opt?;
+        let Some(vni) = packet.get_meta().src_vni else {
+            return;
+        };
+        let Some(net) = packet.get_headers().try_ip() else {
+            return;
+        };
+        let total_bytes = packet.total_len();
 
         // TODO: Check whether the packet is fragmented
         // TODO: Check whether we need protocol-aware processing
@@ -259,13 +280,27 @@ impl Nat {
 
         match net {
             Net::Ipv4(_) => {
-                let tuple = Self::extract_tuple(net, vrf_id)?;
-                self.translate_packet_v4::<Buf>(packet, &tuple, &direction, total_bytes)
+                let Some(tuple) = Self::extract_tuple(net, vrf_id) else {
+                    return;
+                };
+                self.translate_packet_v4::<Buf>(packet, &tuple, &direction, total_bytes);
             }
             Net::Ipv6(_) => {
                 todo!()
             }
         }
+    }
+}
+
+impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatefulNat {
+    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
+        &'a mut self,
+        input: Input,
+    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
+        input.map(|mut packet| {
+            self.process_packet(&mut packet);
+            packet
+        })
     }
 }
 
@@ -291,7 +326,7 @@ mod tests {
             NextHeader::new(255),
             VrfId::from_str("1").unwrap(),
         );
-        let tuple = Nat::extract_tuple(net, VrfId::from_str("1").unwrap()).unwrap();
+        let tuple = StatefulNat::extract_tuple(net, VrfId::from_str("1").unwrap()).unwrap();
 
         assert_eq!(tuple, ref_tuple);
     }
@@ -307,13 +342,13 @@ mod tests {
         let next_header = NextHeader::TCP;
         let target_port = Some(NatPort::new_checked(1234).expect("Invalid port"));
 
-        Nat::set_source_port(&mut transport, next_header, target_port);
+        StatefulNat::set_source_port(&mut transport, next_header, target_port);
         let Transport::Tcp(ref mut tcp) = transport else {
             unreachable!()
         };
         assert_eq!(tcp.source(), TcpPort::try_from(1234).unwrap());
 
-        Nat::set_destination_port(&mut transport, next_header, target_port);
+        StatefulNat::set_destination_port(&mut transport, next_header, target_port);
         let Transport::Tcp(ref mut tcp) = transport else {
             unreachable!()
         };
@@ -331,13 +366,13 @@ mod tests {
         let next_header = NextHeader::UDP;
         let target_port = Some(NatPort::new_checked(1234).expect("Invalid port"));
 
-        Nat::set_source_port(&mut transport, next_header, target_port);
+        StatefulNat::set_source_port(&mut transport, next_header, target_port);
         let Transport::Udp(ref mut udp) = transport else {
             unreachable!()
         };
         assert_eq!(udp.source(), UdpPort::try_from(1234).unwrap());
 
-        Nat::set_destination_port(&mut transport, next_header, target_port);
+        StatefulNat::set_destination_port(&mut transport, next_header, target_port);
         let Transport::Udp(ref mut udp) = transport else {
             unreachable!()
         };
