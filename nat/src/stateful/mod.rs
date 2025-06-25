@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![allow(dead_code)]
 #![allow(unused_variables)]
 
 mod allocator;
@@ -102,6 +103,7 @@ pub struct StatefulNat {
 impl StatefulNat {
     /// Creates a new [`StatefulNat`] processor. The `direction` indicates whether this processor should
     /// perform source or destination NAT.
+    #[must_use]
     pub fn new(direction: NatDirection) -> Self {
         Self {
             sessions: NatDefaultSessionManager::new(),

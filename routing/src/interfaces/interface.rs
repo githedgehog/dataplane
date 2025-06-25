@@ -193,7 +193,7 @@ impl Interface {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Attach an [`Interface`] to the fib corresponding to a [`Vrf`]
+    /// Attach an [`Interface`] to the fib corresponding to a [`crate::rib::vrf::Vrf`]
     //////////////////////////////////////////////////////////////////
     pub fn attach_vrf(&mut self, fibr: FibReader) {
         self.attachment = Some(Attachment::VRF(fibr));

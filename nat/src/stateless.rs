@@ -38,6 +38,7 @@ pub struct StatelessNat {
 impl StatelessNat {
     /// Creates a new [`StatelessNat`] processor. The `direction` indicates whether this processor
     /// should perform source or destination NAT.
+    #[must_use]
     pub fn new(direction: NatDirection) -> Self {
         let context = NatTables::new();
         Self { context, direction }

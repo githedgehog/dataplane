@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
-#![allow(dead_code)]
-#![allow(rustdoc::private_doc_tests)]
+
+#![deny(clippy::all, clippy::pedantic)]
+#![deny(rustdoc::all)]
 
 //! Network Address Translation (NAT) for the dataplane
 //!
-//! This package implements a [`NetworkFunction`] that provides Network Address Translation (NAT)
-//! functionality, either source or destination.
+//! This package implements a [`pipeline::NetworkFunction`] that provides Network Address
+//! Translation (NAT) functionality, either source or destination.
 //!
 //! # Example
 //!

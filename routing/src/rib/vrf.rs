@@ -277,7 +277,7 @@ impl Vrf {
 
     /////////////////////////////////////////////////////////////////////////
     /// Check if a [`Vrf`] needs to be deleted and mark it as such. Only
-    /// [`Vrfs`] in state `Deleting` can be deleted and the default VRF never
+    /// [`Vrf`]s in state `Deleting` can be deleted and the default VRF never
     /// gets to that status.
     /////////////////////////////////////////////////////////////////////////
     pub fn check_deletion(&mut self) {
