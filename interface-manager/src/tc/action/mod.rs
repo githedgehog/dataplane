@@ -6,6 +6,8 @@ use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::num::NonZero;
 
+pub mod gact;
+
 pub trait ActionKind {
     const KIND: &'static str;
 }
