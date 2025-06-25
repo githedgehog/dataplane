@@ -8,6 +8,8 @@ use net::interface::BridgeProperties;
 use rekon::AsRequirement;
 use serde::{Deserialize, Serialize};
 
+pub mod fdb;
+
 /// The "planned" properties for a bridge.
 #[derive(
     Builder,
