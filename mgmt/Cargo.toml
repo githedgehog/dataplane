@@ -11,7 +11,7 @@ path = "tests/reconcile.rs"
 required-features = ["bolero"]
 
 [features]
-default = ["bolero"]
+default = []
 bolero = ["dep:bolero", "interface-manager/bolero", "id/bolero", "net/bolero"]
 
 [dependencies]
