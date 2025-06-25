@@ -16,6 +16,7 @@ pub mod vrf;
 use crate::frr::renderer::builder::{ConfigBuilder, Render};
 use crate::models::external::gwconfig::GenId;
 use crate::models::internal::InternalConfig;
+use tracing::debug;
 
 fn render_metadata(genid: &GenId) -> String {
     format!("! config for gen {}", genid)
@@ -25,6 +26,7 @@ impl Render for InternalConfig {
     type Context = GenId;
     type Output = ConfigBuilder;
     fn render(&self, config: &Self::Context) -> Self::Output {
+        debug!("Generating FRR config for genid {config}...");
         let mut cfg = ConfigBuilder::new();
 
         /* Metadata: TODO */

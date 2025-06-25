@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+//! Methods to build internal configurations
+
 #[allow(unused)]
 use tracing::{debug, error, warn};
 

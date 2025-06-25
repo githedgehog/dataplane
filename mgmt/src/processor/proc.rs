@@ -18,6 +18,7 @@ use crate::models::external::{ConfigError, ConfigResult, stringify};
 use crate::models::internal::InternalConfig;
 
 use crate::frr::frrmi::FrrMi;
+use crate::processor::confbuild::router::generate_router_config;
 use crate::processor::display::GwConfigDatabaseSummary;
 use crate::processor::gwconfigdb::GwConfigDatabase;
 use crate::{frr::renderer::builder::Render, models::external::gwconfig::GenId};
@@ -28,10 +29,7 @@ use tracing::{debug, error, info, warn};
 
 use net::interface::display::MultiIndexInterfaceMapView;
 use net::interface::{Interface, InterfaceName};
-use routing::config::RouterConfig;
 use routing::ctl::RouterCtlSender;
-use routing::evpn::Vtep;
-use routing::rib::vrf::RouterVrfConfig;
 
 /// A request type to the `ConfigProcessor`
 #[derive(Debug)]
@@ -306,14 +304,12 @@ impl VpcManager<RequiredInformationBase> {
     }
 }
 
-/// Apply config over frrmi with frr-agent
+/// Build FRR config and apply it with the frr-agent over the frrmi
 async fn apply_config_frr(
     frrmi: &mut FrrMi,
     genid: GenId,
     internal: &InternalConfig,
 ) -> ConfigResult {
-    debug!("Generating FRR config for genid {genid}...");
-
     let rendered = internal.render(&genid);
 
     frrmi
@@ -324,66 +320,13 @@ async fn apply_config_frr(
     Ok(())
 }
 
-/// Apply config in router
-fn generate_router_vrf_config(
-    internal: &InternalConfig,
-    kernel_vrfs: &HashMap<InterfaceName, Interface>,
-    router_config: &mut RouterConfig,
-) {
-    /* access VRFs from internal config and build the vrf configs using the ifindex from kernel */
-    for vrf in internal.vrfs.vpc_vrfs() {
-        let vpcid = vrf.vpc_id.as_ref().unwrap_or_else(|| unreachable!());
-        let kvrf = kernel_vrfs
-            .get(&vpcid.vrf_name())
-            .unwrap_or_else(|| unreachable!());
-        let tableid = kvrf
-            .get_vrf_properties()
-            .map(|p| p.route_table_id)
-            .unwrap_or_else(|| unreachable!());
-        let vrfconfig = RouterVrfConfig::new(kvrf.index.into(), kvrf.name.as_ref())
-            .set_vni(vrf.vni)
-            .set_description(&vrf.description.clone().unwrap_or_else(|| "--".to_string()))
-            .set_tableid(tableid);
-        router_config.add_vrf(vrfconfig);
-    }
-}
-fn generate_router_vtep_config(internal: &InternalConfig, router_config: &mut RouterConfig) {
-    if let Some(vconfig) = internal.get_vtep() {
-        let vtep = Vtep::with_ip_and_mac(vconfig.address.into(), vconfig.mac.into());
-        router_config.set_vtep(vtep);
-    }
-}
-fn generate_router_interface_config(_internal: &InternalConfig, _router_config: &mut RouterConfig) {
-    // TODO(fredi): need the internal wiring for this
-}
-async fn generate_router_config(
-    vpc_mgr: &VpcManager<RequiredInformationBase>,
-    config: &GwConfig,
-) -> Result<RouterConfig, ConfigError> {
-    let genid = config.genid();
-    debug!("Generating router config for genid {genid}...");
-
-    /* get internal config -- should not fail by construction */
-    let internal = config.internal.as_ref().unwrap_or_else(|| unreachable!());
-
-    /* create a new, empty RouterConfig */
-    let mut router_config = RouterConfig::new(genid);
-
-    /* lookup vrf interfaces from kernel */
-    let kernel_vrfs = vpc_mgr.get_kernel_vrfs().await?;
-
-    /* populate vrf config */
-    generate_router_vrf_config(internal, &kernel_vrfs, &mut router_config);
-    generate_router_vtep_config(internal, &mut router_config);
-    generate_router_interface_config(internal, &mut router_config);
-    Ok(router_config)
-}
+/// Build router config and apply it over the router control channel
 async fn apply_router_config(
-    vpc_mgr: &VpcManager<RequiredInformationBase>,
+    kernel_vrfs: &HashMap<InterfaceName, Interface>,
     config: &GwConfig,
     router_ctl: &mut RouterCtlSender,
 ) -> ConfigResult {
-    let router_config = generate_router_config(vpc_mgr, config).await?;
+    let router_config = generate_router_config(kernel_vrfs, config)?;
     router_ctl
         .configure(router_config)
         .map_err(|e| ConfigError::InternalFailure(format!("Router config error: {e}")))
@@ -425,10 +368,13 @@ async fn apply_gw_config(
     /* apply config with VPC manager */
     vpc_mgr.apply_config(internal, genid).await?;
 
-    /* apply config in router */
-    apply_router_config(vpc_mgr, config, router_ctl).await?;
+    /* get vrf interfaces from kernel and build a hashmap keyed by name */
+    let kernel_vrfs = vpc_mgr.get_kernel_vrfs().await?;
 
-    /* apply config with frrmi to frr-agent */
+    /* apply config in router */
+    apply_router_config(&kernel_vrfs, config, router_ctl).await?;
+
+    /* apply config in frr via the frrmi and frr-agent */
     apply_config_frr(frrmi, genid, internal).await?;
 
     info!("Successfully applied config for genid {genid}");

@@ -16,7 +16,7 @@ use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceT
 use crate::models::internal::routing::vrf::VrfConfig;
 use crate::models::{external::overlay::Overlay, internal::device::settings::DeviceSettings};
 
-use crate::processor::confbuild::build_internal_config;
+use crate::processor::confbuild::internal::build_internal_config;
 
 /// Alias for a config generation number
 pub type GenId = i64;
