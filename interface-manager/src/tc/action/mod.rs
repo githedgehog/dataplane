@@ -8,6 +8,7 @@ use std::num::NonZero;
 
 pub mod gact;
 pub mod mirred;
+pub mod tunnel_key;
 
 pub trait ActionKind {
     const KIND: &'static str;
