@@ -3,7 +3,7 @@
 
 use super::NatTuple;
 use super::allocator::NatPort;
-use crate::nat::stateful::NatIp;
+use crate::stateful::NatIp;
 use dashmap::DashMap;
 use dashmap::mapref::one::RefMut;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};

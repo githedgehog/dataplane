@@ -7,7 +7,6 @@
 
 mod args;
 mod drivers;
-mod nat;
 mod packet_processor;
 
 use crate::args::{CmdArgs, Parser};

@@ -730,7 +730,6 @@ dependencies = [
  "arrayvec",
  "clap",
  "ctrlc",
- "dashmap",
  "dataplane-dpdk",
  "dataplane-id",
  "dataplane-mgmt",
@@ -738,13 +737,11 @@ dependencies = [
  "dataplane-pipeline",
  "dataplane-routing",
  "dyn-iter",
- "iptrie",
  "mio",
  "netdev",
  "ordermap",
  "serde",
  "serde_yml",
- "thiserror 2.0.12",
  "tracing",
  "tracing-subscriber",
 ]
@@ -850,6 +847,18 @@ dependencies = [
  "tonic",
  "tracing",
  "tracing-test",
+]
+
+[[package]]
+name = "dataplane-nat"
+version = "0.1.0"
+dependencies = [
+ "dashmap",
+ "dataplane-mgmt",
+ "dataplane-net",
+ "dataplane-pipeline",
+ "dataplane-routing",
+ "thiserror 2.0.12",
 ]
 
 [[package]]

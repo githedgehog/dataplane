@@ -1,0 +1,20 @@
+[package]
+name = "dataplane-nat"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[dependencies]
+dashmap = { workspace = true }
+mgmt = { workspace = true }
+net = { workspace = true }
+pipeline = { workspace = true }
+routing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+routing = { workspace = true, features = ["testing"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(none)'] }

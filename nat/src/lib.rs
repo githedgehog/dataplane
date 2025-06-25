@@ -5,8 +5,8 @@
 
 //! Network Address Translation (NAT) for the dataplane
 //!
-//! This module implements a [`NetworkFunction`] that provides Network Address
-//! Translation (NAT) functionality, either source or destination.
+//! This package implements a [`NetworkFunction`] that provides Network Address Translation (NAT)
+//! functionality, either source or destination.
 //!
 //! # Example
 //!
@@ -22,7 +22,7 @@
 //!
 //! # Limitations
 //!
-//! The module is subject to the following limitations:
+//! The package is subject to the following limitations:
 //!
 //! - Only NAT44 is supported (no NAT46, NAT64, or NAT66)
 //! - Either source or destination NAT is supported, only one at a time, by a given [`Nat`] object.
@@ -35,7 +35,7 @@ mod iplist;
 mod stateful;
 mod stateless;
 
-use crate::nat::iplist::IpList;
+use crate::iplist::IpList;
 use mgmt::models::internal::nat::tables::{NatTables, TrieValue};
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;

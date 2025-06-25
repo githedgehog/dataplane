@@ -10,6 +10,7 @@ members = [
 	"id",
 	"interface-manager",
 	"mgmt",
+	"nat",
 	"net",
 	"pipeline",
 	"rekon",
@@ -32,6 +33,7 @@ gateway_config = { git = "https://github.com/githedgehog/gateway-proto", tag="v0
 id = { path = "./id", package = "dataplane-id" }
 interface-manager = { path = "./interface-manager", package = "dataplane-interface-manager" }
 mgmt = { path = "./mgmt", package = "dataplane-mgmt" }
+nat = { path = "./nat", package = "dataplane-nat" }
 net = { path = "./net", package = "dataplane-net", features = ["test_buffer"] }
 pipeline = { path = "./pipeline", package = "dataplane-pipeline" }
 rekon = { path = "./rekon", package = "dataplane-rekon" }

@@ -10,11 +10,9 @@ afpacket = { workspace = true }
 arrayvec = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "usage"] }
 ctrlc = { workspace = true, features = ["termination"] }
-dashmap = { workspace = true }
 dpdk = { workspace = true }
 dyn-iter = { workspace = true }
 id = { workspace = true }
-iptrie = { workspace = true }
 mgmt = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
 net = { workspace = true, features = ["test_buffer"] }
@@ -24,7 +22,6 @@ pipeline = { workspace = true }
 routing = { workspace = true, features = ["auto-learn"] }
 serde = { workspace = true, features = ["derive"] }
 serde_yml = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["default"] }
 

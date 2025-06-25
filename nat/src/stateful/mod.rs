@@ -7,8 +7,8 @@ mod allocator;
 pub mod sessions;
 
 use super::Nat;
-use crate::nat::NatDirection;
-use crate::nat::stateful::sessions::{NatDefaultSession, NatSession, NatSessionManager, NatState};
+use crate::NatDirection;
+use crate::stateful::sessions::{NatDefaultSession, NatSession, NatSessionManager, NatState};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, Transport, TryHeadersMut, TryIp, TryIpMut, TryTransportMut};
 use net::ip::NextHeader;

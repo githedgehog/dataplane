@@ -3,8 +3,8 @@
 
 use super::Nat;
 use super::TrieValue;
-use crate::nat::IpList;
-use crate::nat::NatDirection;
+use crate::IpList;
+use crate::NatDirection;
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ipv4::UnicastIpv4Addr;
