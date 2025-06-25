@@ -175,6 +175,9 @@ impl FibEntry {
         }
         self.instructions = out;
     }
+    pub fn is_iplocal(&self) -> bool {
+        self.instructions.len() == 1 && matches!(self.instructions[0], PktInstruction::Local(_))
+    }
 }
 
 #[derive(Clone, Default, Debug, Ord, PartialOrd, Eq, PartialEq)]

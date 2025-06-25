@@ -62,13 +62,6 @@ impl IpForwarder {
         };
         debug!("{nfi}: processing packet to {dst} with vrf {vrfid}");
 
-        /* decrement packet TTL -- packet may be done if TTL is exceeded */
-        Self::decrement_ttl(packet, dst);
-        if packet.is_done() {
-            warn!("TTL/Hop-count limit exceeded!");
-            return;
-        }
-
         /* Get the fib to use: this lookup could be avoided since
            we know the interface the packet came from and it has to be
            attached to a certain fib if the vrf metadata value was set.
@@ -88,6 +81,15 @@ impl IpForwarder {
                         fib.get_id().as_u32(),
                         &fibentry
                     );
+
+                    /* decrement packet TTL, unless the packet is for us */
+                    if !fibentry.is_iplocal() {
+                        Self::decrement_ttl(packet, dst);
+                        if packet.is_done() {
+                            warn!("TTL/Hop-count limit exceeded!");
+                            return;
+                        }
+                    }
                     self.packet_exec_instructions(packet, fibentry, fib.get_vtep());
                 } else {
                     error!("Could not get fib group for {prefix}. Will drop packet...");
