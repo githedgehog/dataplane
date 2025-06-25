@@ -17,6 +17,7 @@ rekon = { workspace = true }
 # external
 bolero = { workspace = true, optional = true, default-features = false, features = ["alloc"] }
 derive_builder = { workspace = true, default-features = false, features = ["default"] }
+futures = { workspace = true, features = ["default"] }
 multi_index_map = { workspace = true, features = ["serde"] }
 rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["std"] }

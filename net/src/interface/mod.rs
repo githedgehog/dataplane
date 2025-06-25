@@ -20,6 +20,7 @@ use tracing::error;
 mod bridge;
 pub mod display;
 mod mtu;
+mod pci;
 mod vrf;
 mod vtep;
 
@@ -27,6 +28,8 @@ mod vtep;
 pub use bridge::*;
 #[allow(unused_imports)] // re-export
 pub use mtu::*;
+#[allow(unused_imports)] // re-export
+pub use pci::*;
 #[allow(unused_imports)] // re-export
 pub use vrf::*;
 #[allow(unused_imports)] // re-export
@@ -308,6 +311,8 @@ pub enum InterfaceProperties {
     Vtep(VtepProperties),
     /// Properties of VRFs
     Vrf(VrfProperties),
+    /// Physical pci netdev properties
+    Pci(PciNetdevProperties),
     /// Properties of something we don't currently support manipulating
     Other,
 }

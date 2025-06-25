@@ -5,6 +5,7 @@
 
 mod association;
 mod bridge;
+mod pci;
 mod properties;
 mod vrf;
 mod vtep;
@@ -15,6 +16,8 @@ use std::num::NonZero;
 pub use association::*;
 #[allow(unused_imports)] // re-export
 pub use bridge::*;
+#[allow(unused_imports)] // re-export
+pub use pci::*;
 #[allow(unused_imports)] // re-export
 pub use properties::*;
 #[allow(unused_imports)] // re-export
@@ -27,10 +30,11 @@ use derive_builder::Builder;
 use multi_index_map::MultiIndexMap;
 use net::eth::ethtype::EthType;
 use net::eth::mac::SourceMac;
+use net::interface::switch::SwitchId;
 use net::interface::{
     AdminState, BridgePropertiesBuilder, Interface, InterfaceBuilder, InterfaceBuilderError,
     InterfaceIndex, InterfaceName, InterfaceProperties, Mtu, OperationalState,
-    VrfPropertiesBuilder, VtepPropertiesBuilder,
+    PciNetdevPropertiesBuilder, VrfPropertiesBuilder, VtepPropertiesBuilder,
 };
 use net::ipv4::addr::UnicastIpv4Addr;
 use net::route::RouteTableId;
@@ -148,6 +152,10 @@ impl Create for Manager<Interface> {
             }
             InterfacePropertiesSpec::Vrf(properties) => {
                 LinkVrf::new(requirement.name.as_ref(), properties.route_table_id.into()).build()
+            }
+            InterfacePropertiesSpec::Pci(_) => {
+                warn!("expected pci device missing: {requirement:#?}");
+                return Err(rtnetlink::Error::RequestFailed);
             }
         };
         if let Some(mac) = requirement.mac {
@@ -481,11 +489,15 @@ impl Update for Manager<Interface> {
         observed: &Interface,
     ) -> Result<(), rtnetlink::Error> {
         if required.properties != observed.properties {
-            // If properties are drifting, then we need to just kill and fill the thing.
-            // Many properties are not possible to update in a reliable way.
-            // We might not even be dealing with an aligned interface type.
-            manager_of::<Interface>(self).remove(observed).await?;
-            return Ok(());
+            if let InterfacePropertiesSpec::Pci(_) = required.properties {
+                // you can't change any properties of the pci device, let alone remove it
+            } else {
+                // If properties are drifting, then we need to just kill and fill the thing.
+                // Many properties are not possible to update reliably.
+                // We might not even be dealing with an aligned interface type.
+                manager_of::<Interface>(self).remove(observed).await?;
+                return Ok(());
+            }
         }
         if required.name != observed.name {
             manager_of::<InterfaceName>(self)
@@ -670,6 +682,7 @@ fn extract_bridge_info(builder: &mut BridgePropertiesBuilder, info: &LinkInfo) -
 impl TryFromLinkMessage for Interface {
     type Error = InterfaceBuilderError;
 
+    #[allow(clippy::too_many_lines)] // TEMPORARY: break up function
     fn try_from_link_message(message: &LinkMessage) -> Result<Self, Self::Error> {
         let mut builder = InterfaceBuilder::default();
         match InterfaceIndex::try_new(message.header.index) {
@@ -681,6 +694,7 @@ impl TryFromLinkMessage for Interface {
         let mut vtep_builder = VtepPropertiesBuilder::default();
         let mut vrf_builder = VrfPropertiesBuilder::default();
         let mut bridge_builder = BridgePropertiesBuilder::default();
+        let mut pci_netdev_builder = PciNetdevPropertiesBuilder::default();
         let mut is_bridge = false;
         builder.admin_state(if message.header.flags.contains(LinkFlags::Up) {
             AdminState::Up
@@ -737,18 +751,46 @@ impl TryFromLinkMessage for Interface {
                         builder.operational_state(OperationalState::Complex);
                     }
                 },
+                LinkAttribute::PhysSwitchId(phys_link) => {
+                    if phys_link.len > SwitchId::MAX_LEN {
+                        warn!(
+                            "Malformed netlink message: phys switch id is too long: {phys_link:?}"
+                        );
+                        pci_netdev_builder.switch_id(None);
+                    }
+                    match SwitchId::new(&phys_link.id[0..phys_link.len]) {
+                        Ok(id) => {
+                            pci_netdev_builder.switch_id(Some(id));
+                        }
+                        Err(err) => {
+                            warn!("{err}");
+                            pci_netdev_builder.switch_id(None);
+                        }
+                    }
+                }
+                LinkAttribute::PhysPortName(phys_name) => {
+                    pci_netdev_builder.port_name(Some(phys_name.clone()));
+                }
+                // TODO: missing parent dev in upstream library for the moment!
                 _ => {}
             }
         }
 
-        match (vrf_builder.build(), vtep_builder.build()) {
-            (Ok(vrf), Err(_)) => {
+        match (
+            vrf_builder.build(),
+            vtep_builder.build(),
+            pci_netdev_builder.build(),
+        ) {
+            (Ok(vrf), Err(_), Err(_)) => {
                 builder.properties(InterfaceProperties::Vrf(vrf));
             }
-            (Err(_), Ok(vtep)) => {
+            (Err(_), Ok(vtep), Err(_)) => {
                 builder.properties(InterfaceProperties::Vtep(vtep));
             }
-            (Err(_), Err(_)) => {
+            (Err(_), Err(_), Ok(rep)) => {
+                builder.properties(InterfaceProperties::Pci(rep));
+            }
+            (Err(_), Err(_), Err(_)) => {
                 if is_bridge {
                     match bridge_builder.build() {
                         Ok(bridge) => {
@@ -760,8 +802,17 @@ impl TryFromLinkMessage for Interface {
                     }
                 }
             }
-            (Ok(vrf), Ok(vtep)) => {
+            (Ok(vrf), Ok(vtep), Ok(rep)) => {
+                error!("multiple link types satisfied at once: {vrf:?}, {vtep:?}, {rep:?}");
+            }
+            (Ok(vrf), Ok(vtep), Err(_)) => {
                 error!("multiple link types satisfied at once: {vrf:?}, {vtep:?}");
+            }
+            (Ok(vrf), Err(_), Ok(rep)) => {
+                error!("multiple link types satisfied at once: {vrf:?}, {rep:?}");
+            }
+            (Err(_), Ok(vtep), Ok(rep)) => {
+                error!("multiple link types satisfied at once: {vtep:?}, {rep:?}");
             }
         }
         builder.build()
