@@ -15,6 +15,7 @@ use multi_index_map::MultiIndexMap;
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 use std::fmt::{Debug, Display, Formatter};
+use std::num::NonZero;
 use tracing::error;
 
 mod bridge;
@@ -41,7 +42,7 @@ pub use contract::*;
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "u32", into = "u32")]
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct InterfaceIndex(u32);
+pub struct InterfaceIndex(NonZero<u32>);
 
 impl Debug for InterfaceIndex {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -55,23 +56,44 @@ impl Display for InterfaceIndex {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum InterfaceIndexError {
+    /// The provided value was zero.
+    #[error("interface index must not be zero")]
+    Zero,
+}
+
 impl InterfaceIndex {
-    /// Treat the provided `u32` as an [`InterfaceIndex`].
+    /// Treat the provided `NonZero<u32>` as an [`InterfaceIndex`].
     #[must_use]
-    pub fn new(raw: u32) -> InterfaceIndex {
+    pub fn new(raw: NonZero<u32>) -> InterfaceIndex {
         InterfaceIndex(raw)
+    }
+
+    /// Treat the provided `u32` as an [`InterfaceIndex`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provided value is zero.
+    pub fn try_new(raw: u32) -> Result<Self, InterfaceIndexError> {
+        raw.try_into()
     }
 
     /// Treat this [`InterfaceIndex`] as a `u32`.
     #[must_use]
     pub fn to_u32(self) -> u32 {
-        self.0
+        self.0.get()
     }
 }
 
-impl From<u32> for InterfaceIndex {
-    fn from(value: u32) -> InterfaceIndex {
-        InterfaceIndex::new(value)
+impl TryFrom<u32> for InterfaceIndex {
+    type Error = InterfaceIndexError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match NonZero::new(value) {
+            Some(raw) => Ok(InterfaceIndex::new(raw)),
+            None => Err(InterfaceIndexError::Zero),
+        }
     }
 }
 
