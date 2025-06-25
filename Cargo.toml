@@ -72,7 +72,7 @@ nix = { version = "0.30.1", default-features = false, features = ["socket"] }
 ordermap = { version = "0.5.8", default-features = false, features = [] }
 pretty_assertions = { version = "1.4.1", default-features = false, features = ["std"] }
 procfs = { version = "0.17.0", default-features = false, features = [] }
-rtnetlink = { version = "0.17.0", default-features = false, features = [] }
+rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions", default-features = false, features = [] }
 rustyline = { version = "16.0.0", default-features = false, features = [] }
 serde = { version = "1.0.219", default-features = false, features = [] }
 serde_yml = { version = "0.0.12", default-features = false, features = [] }

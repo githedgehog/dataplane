@@ -1789,7 +1789,7 @@ checksum = "72724faf704479d67b388da142b186f916188505e7e0b26719019c525882eda4"
 dependencies = [
  "anyhow",
  "byteorder",
- "netlink-packet-utils",
+ "netlink-packet-utils 0.5.2",
 ]
 
 [[package]]
@@ -1804,14 +1804,13 @@ dependencies = [
  "libc",
  "log",
  "netlink-packet-core",
- "netlink-packet-utils",
+ "netlink-packet-utils 0.5.2",
 ]
 
 [[package]]
 name = "netlink-packet-route"
 version = "0.24.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56d83370a96813d7c977f8b63054f1162df6e5784f1c598d689236564fb5a6f2"
+source = "git+https://github.com/githedgehog/netlink-packet-route.git?branch=pr%2Fdaniel-noland%2Fswing2#4b086369d3f926a9aca408ea1fd5aa8a738807de"
 dependencies = [
  "anyhow",
  "bitflags 2.9.1",
@@ -1819,7 +1818,7 @@ dependencies = [
  "libc",
  "log",
  "netlink-packet-core",
- "netlink-packet-utils",
+ "netlink-packet-utils 0.5.2",
 ]
 
 [[package]]
@@ -1832,6 +1831,17 @@ dependencies = [
  "byteorder",
  "paste",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "netlink-packet-utils"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3176f18d11a1ae46053e59ec89d46ba318ae1343615bd3f8c908bfc84edae35c"
+dependencies = [
+ "byteorder",
+ "pastey",
+ "thiserror 2.0.12",
 ]
 
 [[package]]
@@ -2031,6 +2041,12 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "pastey"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3a8cb46bdc156b1c90460339ae6bfd45ba0394e5effbaa640badb4987fdc261"
 
 [[package]]
 name = "percent-encoding"
@@ -2336,18 +2352,17 @@ checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 [[package]]
 name = "rtnetlink"
 version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbe0a03f6b9b483c67d4b328fc5d66c8db0b6aa274e0fa2def71b5e442a69acf"
+source = "git+https://github.com/githedgehog/rtnetlink.git?branch=hh%2Ftc-actions#e1ad2df46cbdf994147f4d1cf80e55d5fbca5c78"
 dependencies = [
  "futures",
  "log",
  "netlink-packet-core",
  "netlink-packet-route 0.24.0",
- "netlink-packet-utils",
+ "netlink-packet-utils 0.6.0",
  "netlink-proto",
  "netlink-sys",
- "nix 0.29.0",
- "thiserror 1.0.69",
+ "nix 0.30.1",
+ "thiserror 2.0.12",
  "tokio",
 ]
 
