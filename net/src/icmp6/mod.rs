@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! `ICMPv6` header type and logic.
+//! `Icmp6` header type and logic.
 
 mod checksum;
 
@@ -16,12 +16,12 @@ use std::num::NonZero;
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
-/// An `ICMPv6` header.
+/// An `Icmp6` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Icmp6(pub(crate) Icmpv6Header);
 
 impl Icmp6 {
-    /// Returns the type of the `ICMPv6` message.
+    /// Returns the type of the `Icmp6` message.
     #[must_use]
     pub const fn icmp_type(&self) -> Icmpv6Type {
         self.0.icmp_type
@@ -75,7 +75,7 @@ impl Parse for Icmp6 {
 impl ParsePayload for Icmp6 {
     type Next = ();
 
-    /// We don't currently support parsing below the Icmp6 layer
+    /// We don't currently support parsing below the `Icmp6` layer
     fn parse_payload(&self, _cursor: &mut Reader) -> Option<Self::Next> {
         None
     }
