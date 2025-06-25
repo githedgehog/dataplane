@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(doc)]
 use net::interface::Interface;
 
-/// An "observed" association (or lack of same) from one network interface with another.
+/// An "observed" association (or lack of same) of one network interface with another.
 ///
 /// For example, putting a VTEP in a bridge, or a bridge in a VRF.
 ///
