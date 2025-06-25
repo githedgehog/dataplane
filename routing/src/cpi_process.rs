@@ -3,25 +3,6 @@
 
 //! Main processing functions of the CPI
 
-#![allow(clippy::wildcard_imports)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)] // Temporary until auto-learn removed
-
-#[cfg(feature = "auto-learn")]
-use crate::interfaces::iftablerw::IfTableWriter;
-#[cfg(feature = "auto-learn")]
-use crate::interfaces::interface::IfDataEthernet;
-#[cfg(feature = "auto-learn")]
-use crate::interfaces::interface::IfType;
-#[cfg(feature = "auto-learn")]
-use crate::interfaces::interface::RouterInterfaceConfig;
-#[cfg(feature = "auto-learn")]
-use crate::rib::vrftable::VrfTable;
-#[cfg(feature = "auto-learn")]
-use mac_address::mac_address_by_name;
-#[cfg(feature = "auto-learn")]
-use net::eth::mac::Mac;
-
 use crate::evpn::RmacEntry;
 use crate::routingdb::RoutingDb;
 use crate::rpc_adapt::is_evpn_route;
@@ -142,49 +123,9 @@ impl RpcOperation for Rmac {
     }
 }
 
-#[cfg(feature = "auto-learn")]
-#[allow(clippy::collapsible_match)]
-fn auto_learn_interface(a: &IfAddress, iftw: &mut IfTableWriter, vrftable: &VrfTable) {
-    let mut create = false;
-    if let Some(iftable) = iftw.enter() {
-        if iftable.get_interface(a.ifindex).is_none() {
-            create = true;
-        }
-    }
-    if create {
-        debug!(
-            "Creating interface {}, ifindex {}",
-            a.ifname.as_str(),
-            a.ifindex
-        );
-
-        /* create interface config */
-        let mut ifconfig = RouterInterfaceConfig::new(a.ifname.as_str(), a.ifindex);
-        if a.ifindex == 1 {
-            ifconfig.set_iftype(IfType::Loopback);
-        } else if let Ok(res) = mac_address_by_name(a.ifname.as_str()) {
-            if let Some(mac) = &res {
-                ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
-                    mac: Mac::from(mac.bytes()),
-                }));
-            }
-        }
-
-        /* add to interface table */
-        if let Err(e) = iftw.add_interface(ifconfig.clone()) {
-            error!("Failed to add interface {}: {e}", ifconfig.name);
-        }
-
-        /* attach to default vrf */
-        debug!("Attaching {} to default VRF", a.ifname.as_str());
-        let _ = iftw.attach_interface_to_vrf(a.ifindex, 0, vrftable);
-    }
-}
 impl RpcOperation for IfAddress {
     type ObjectStore = RoutingDb;
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
-        #[cfg(feature = "auto-learn")]
-        auto_learn_interface(self, &mut db.iftw, &db.vrftable);
         db.iftw
             .add_ip_address(self.ifindex, (self.address, self.mask_len));
         RpcResultCode::Ok
