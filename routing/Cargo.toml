@@ -11,21 +11,20 @@ testing = []
 
 [dependencies]
 ahash = { workspace = true }
+bytes = { workspace = true, features = ["serde"] }
+cli = { workspace = true }
 derive_builder = { workspace = true, features = ["default", "std"] }
+dplane-rpc = { workspace = true }
 ipnet = { workspace = true }
 iptrie = { workspace = true }
 left-right = { workspace = true }
-mio = { workspace = true, features = ["os-ext", "net"] }
 mac_address= { workspace = true }
+mio = { workspace = true, features = ["os-ext", "net"] }
 net = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync"] }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-dplane-rpc = { workspace = true }
-bytes = { workspace = true, features = ["serde"] }
-cli = { workspace = true }
 
 # arp resolver
 procfs = { workspace = true }

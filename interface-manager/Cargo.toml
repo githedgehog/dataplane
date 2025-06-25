@@ -6,7 +6,7 @@ license = "Apache-2.0"
 publish = false
 
 [features]
-default = ["bolero"]
+default = []
 bolero = ["dep:bolero", "net/bolero"]
 
 [dependencies]
@@ -18,10 +18,9 @@ rekon = { workspace = true }
 bolero = { workspace = true, optional = true, default-features = false, features = ["alloc"] }
 derive_builder = { workspace = true, default-features = false, features = ["default"] }
 multi_index_map = { workspace = true, features = ["serde"] }
-nix = { workspace = true, features = ["sched"] }
 rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["std"] }
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+thiserror = { workspace = true, features = ["std"] }
 tracing = { workspace = true, features = ["attributes"] }
 
 [dev-dependencies]
@@ -30,5 +29,4 @@ net = { workspace = true, features = ["bolero"] }
 
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time", "test-util"] }
 

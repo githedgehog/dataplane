@@ -132,9 +132,6 @@ name = "arbitrary"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dde20b3d026af13f561bdd0f15edf01fc734f0dafcedbaf42bba506a9517f223"
-dependencies = [
- "derive_arbitrary",
-]
 
 [[package]]
 name = "arc-swap"
@@ -813,10 +810,9 @@ dependencies = [
  "dataplane-rekon",
  "derive_builder 0.20.2",
  "multi_index_map",
- "nix 0.30.1",
  "rtnetlink",
  "serde",
- "tokio",
+ "thiserror 2.0.12",
  "tracing",
 ]
 
@@ -857,7 +853,6 @@ name = "dataplane-net"
 version = "0.0.1"
 dependencies = [
  "ahash",
- "arbitrary",
  "arrayvec",
  "bolero",
  "derive_builder 0.20.2",
@@ -881,7 +876,6 @@ dependencies = [
  "ordermap",
  "thiserror 2.0.12",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -910,7 +904,6 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "tracing-test",
 ]
 
@@ -942,17 +935,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c9e6a11ca8224451684bc0d7d5a7adbf8f2fd6887261a1cfc3c0432f9d4068e"
 dependencies = [
  "powerfmt",
-]
-
-[[package]]
-name = "derive_arbitrary"
-version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30542c1ad912e0e3d22a1935c290e12e8a29d704a420177a31faad4a601a0800"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.104",
 ]
 
 [[package]]
