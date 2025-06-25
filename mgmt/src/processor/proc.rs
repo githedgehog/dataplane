@@ -326,11 +326,19 @@ async fn apply_router_config(
     config: &GwConfig,
     router_ctl: &mut RouterCtlSender,
 ) -> ConfigResult {
+    // build the router config
     let router_config = generate_router_config(kernel_vrfs, config)?;
+
+    // request router to apply it
     router_ctl
         .configure(router_config)
         .map_err(|e| ConfigError::InternalFailure(format!("Router config error: {e}")))
         .await?;
+
+    info!(
+        "Router config for gen {} was successfully applied",
+        config.genid()
+    );
     Ok(())
 }
 
@@ -344,13 +352,13 @@ async fn apply_gw_config(
 ) -> ConfigResult {
     let genid = config.genid();
 
-    /* probe the FRR agent. If unreachable, there's no point in trying to apply
-    a configuration, either in interface manager or frr */
+    /* probe the FRR agent. If unreachable, there's no point in trying to apply a config */
     frrmi
         .probe()
         .await
         .map_err(|_| ConfigError::FrrAgentUnreachable)?;
 
+    /* make sure we built internal config */
     let Some(internal) = &config.internal else {
         error!("Config for genid {genid} does not have internal config");
         return Err(ConfigError::InternalFailure(

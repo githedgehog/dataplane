@@ -315,7 +315,7 @@ pub mod test {
         let config = GwConfig::new(external);
 
         /* build router config */
-        let router_config = RouterParamsBuilder::default()
+        let router_params = RouterParamsBuilder::default()
             .cpi_sock_path("/tmp/cpi.sock")
             .cli_sock_path("/tmp/cli.sock")
             .frr_agent_path("/tmp/frr-agent.sock")
@@ -323,7 +323,7 @@ pub mod test {
             .expect("Should succeed due to defaults");
 
         /* start router */
-        let router = Router::new(router_config);
+        let router = Router::new(router_params);
         if let Err(e) = &router {
             error!("New router failed: {e}");
             panic!();
