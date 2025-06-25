@@ -24,7 +24,7 @@ use crate::models::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
 use crate::models::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
 use crate::models::internal::routing::evpn::VtepConfig;
 use crate::models::internal::routing::prefixlist::{
-    PrefixList, PrefixListAction, PrefixListEntry, PrefixListPrefix,
+    PrefixList, PrefixListAction, PrefixListEntry, PrefixListMatchLen, PrefixListPrefix,
 };
 use crate::models::internal::routing::routemap::{
     MatchingPolicy, RouteMap, RouteMapEntry, RouteMapMatch,
@@ -50,7 +50,7 @@ fn populate_prefix_list(plist: &mut PrefixList, rmanifest: &VpcManifest) -> Vec<
                     seq,
                     PrefixListAction::Permit,
                     PrefixListPrefix::Prefix(*prefix),
-                    None,
+                    Some(PrefixListMatchLen::Ge(prefix.length())),
                 );
                 plist.add_entry(entry);
                 seq += 1;
