@@ -19,6 +19,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 pub mod interface;
+pub mod tc;
 
 use rtnetlink::Handle;
 

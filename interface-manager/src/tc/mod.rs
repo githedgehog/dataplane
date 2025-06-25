@@ -2,4 +2,5 @@
 // Copyright Open Network Fabric Authors
 
 pub mod block;
+pub mod chain;
 pub mod qdisc;
