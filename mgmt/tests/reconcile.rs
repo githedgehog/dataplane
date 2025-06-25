@@ -153,6 +153,7 @@ async fn reconcile_demo() {
     let mut vtep_props = MultiIndexVtepPropertiesSpecMap::default();
     let mut bridge_props = MultiIndexBridgePropertiesSpecMap::default();
     let mut vrf_props = MultiIndexVrfPropertiesSpecMap::default();
+    let mut pci_props = MultiIndexPciNetdevPropertiesSpecMap::default();
 
     for (_, interface) in required_interface_map.iter() {
         match &interface.properties {
@@ -164,6 +165,9 @@ async fn reconcile_demo() {
             }
             InterfacePropertiesSpec::Vrf(prop) => {
                 vrf_props.try_insert(prop.clone()).unwrap();
+            }
+            InterfacePropertiesSpec::Pci(prop) => {
+                pci_props.try_insert(prop.clone()).unwrap();
             }
         }
     }
@@ -198,6 +202,7 @@ async fn reconcile_demo() {
         .interfaces(required_interface_map)
         .vteps(vtep_props)
         .vrfs(vrf_props)
+        .pci_netdevs(pci_props)
         .associations(associations)
         .build()
         .unwrap();
@@ -258,6 +263,9 @@ async fn reconcile_demo() {
                 }
                 InterfacePropertiesSpec::Vrf(props) => {
                     req.vrfs.try_insert(props.clone()).unwrap();
+                }
+                InterfacePropertiesSpec::Pci(props) => {
+                    req.pci_netdevs.try_insert(props.clone()).unwrap();
                 }
             }
             req.interfaces.try_insert(interface).unwrap();

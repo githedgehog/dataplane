@@ -3,11 +3,11 @@
 
 //! Display trait implementations
 
-use crate::interface::MultiIndexInterfaceMap;
 use crate::interface::{AdminState, OperationalState};
 use crate::interface::{
     BridgeProperties, Interface, InterfaceProperties, VrfProperties, VtepProperties,
 };
+use crate::interface::{MultiIndexInterfaceMap, PciNetdevProperties};
 use std::fmt::{Display, Formatter};
 use std::string::ToString;
 
@@ -80,12 +80,32 @@ impl Display for VrfProperties {
         write!(f, "table-id: {}", self.route_table_id)
     }
 }
+
+impl Display for PciNetdevProperties {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match &self.switch_id {
+            None => {}
+            Some(switch_id) => {
+                write!(f, "switch-id: {switch_id}")?;
+            }
+        }
+        match &self.port_name {
+            None => {}
+            Some(port_name) => {
+                write!(f, "port-name: {port_name}")?;
+            }
+        }
+        write!(f, "parent-dev: {}", self.parent_dev)
+    }
+}
+
 impl Display for InterfaceProperties {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             InterfaceProperties::Bridge(bridge) => bridge.fmt(f),
             InterfaceProperties::Vrf(vrf) => vrf.fmt(f),
             InterfaceProperties::Vtep(vtep) => vtep.fmt(f),
+            InterfaceProperties::Pci(rep) => rep.fmt(f),
             InterfaceProperties::Other => write!(f, "other"),
         }
     }
@@ -96,6 +116,7 @@ fn ifproperty_to_str(properties: &InterfaceProperties) -> &'static str {
         InterfaceProperties::Bridge(_) => "bridge",
         InterfaceProperties::Vrf(_) => "vrf",
         InterfaceProperties::Vtep(_) => "vtep",
+        InterfaceProperties::Pci(_) => "pci",
         InterfaceProperties::Other => "other",
     }
 }
