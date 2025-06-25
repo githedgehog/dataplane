@@ -911,6 +911,7 @@ dependencies = [
  "dataplane-routing",
  "iptrie",
  "left-right",
+ "rand",
  "thiserror 2.0.12",
  "tracing",
  "tracing-test",
