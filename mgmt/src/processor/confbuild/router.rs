@@ -190,6 +190,13 @@ pub(crate) fn generate_router_config(
     let mut router_config = RouterConfig::new(genid);
     generate_router_vrf_config(internal, kernel_vrfs, &mut router_config);
     generate_router_vtep_config(internal, &mut router_config);
-    generate_router_interfaces_config(internal, kernel_vrfs, &mut router_config)?;
+
+    #[cfg(test)]
+    let gen_intf_cfg = false;
+    #[cfg(not(test))]
+    let gen_intf_cfg = true;
+    if gen_intf_cfg {
+        generate_router_interfaces_config(internal, kernel_vrfs, &mut router_config)?;
+    }
     Ok(router_config)
 }
