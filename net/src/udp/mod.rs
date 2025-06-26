@@ -14,7 +14,7 @@ use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
 };
 use crate::udp::port::UdpPort;
-use crate::vxlan::Vxlan;
+use crate::vxlan::{Vni, Vxlan};
 use etherparse::UdpHeader;
 use std::num::NonZero;
 use tracing::debug;
@@ -30,6 +30,18 @@ pub struct Udp(UdpHeader);
 pub enum UdpEncap {
     /// A VXLAN header in a UDP packet
     Vxlan(Vxlan),
+}
+
+impl UdpEncap {
+    /// Get the `Vni` of an encapsulation if it is `Vxlan`
+    #[must_use]
+    pub fn vxlan_vni(&self) -> Option<Vni> {
+        #[allow(unreachable_patterns)]
+        match self {
+            UdpEncap::Vxlan(vxlan) => Some(vxlan.vni()),
+            _ => None,
+        }
+    }
 }
 
 impl Udp {
