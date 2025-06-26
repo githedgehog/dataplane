@@ -110,6 +110,14 @@ impl Vpc {
     pub fn num_peerings(&self) -> usize {
         self.peerings.len()
     }
+    /// Tell if the peerings of this VPC have host routes
+    pub fn has_peers_with_host_prefixes(&self) -> bool {
+        self.peerings
+            .iter()
+            .filter(|peering| peering.remote.has_host_prefixes())
+            .count()
+            > 0
+    }
 }
 
 #[derive(Clone, Debug, Default)]

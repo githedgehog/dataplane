@@ -37,6 +37,10 @@ impl VpcExpose {
         self.not_as.insert(prefix);
         self
     }
+    pub fn has_host_prefixes(&self) -> bool {
+        self.ips.iter().filter(|p| p.is_host()).count() > 0
+    }
+
     /// Validate the [`VpcExpose`]:
     ///
     /// 1. Make sure that all prefixes and exclusion prefixes for this [`VpcExpose`] are of the same
@@ -140,6 +144,13 @@ impl VpcManifest {
             name: vpc_name.to_owned(),
             ..Default::default()
         }
+    }
+    pub fn has_host_prefixes(&self) -> bool {
+        self.exposes
+            .iter()
+            .filter(|expose| expose.has_host_prefixes())
+            .count()
+            > 0
     }
     fn validate_expose_collisions(&self) -> ConfigResult {
         // Check that prefixes in each expose don't overlap with prefixes in other exposes

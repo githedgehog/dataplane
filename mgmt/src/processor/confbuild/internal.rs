@@ -125,12 +125,19 @@ fn vpc_bgp_af_ipv4(vpc: &Vpc) -> AfIpv4Ucast {
 }
 
 /// Build AF l2vpn EVPN config for a VPC VRF
-fn vpc_bgp_af_l2vpn_evpn(_vpc: &Vpc) -> AfL2vpnEvpn {
-    AfL2vpnEvpn::new()
+fn vpc_bgp_af_l2vpn_evpn(vpc: &Vpc) -> AfL2vpnEvpn {
+    let af_l2vpn_evpn = AfL2vpnEvpn::new()
         .set_adv_all_vni(false)
         .set_adv_default_gw(false)
         .set_adv_svi_ip(false)
-        .set_adv_ipv4_unicast(true)
+        .set_adv_ipv4_unicast(true);
+
+    if !vpc.has_peers_with_host_prefixes() {
+        debug!("Vpc {} has no peerings with host routes", vpc.name);
+        af_l2vpn_evpn.set_adv_ipv4_unicast_rmap("NO-IPV4-HOST-ROUTES".to_string())
+    } else {
+        af_l2vpn_evpn
+    }
 }
 
 /// Build BGP options for a VPC VRF
@@ -272,6 +279,63 @@ fn build_nat_internal_config(overlay: &Overlay, internal: &mut InternalConfig) -
     Ok(())
 }
 
+fn build_no_ipv4_host_prefix_list(internal: &mut InternalConfig) {
+    let mut plist = PrefixList::new(
+        "NO-IPV4-HOST-ROUTES",
+        Some("Filter out ipv4 host routes".to_string()),
+    );
+    let entry = PrefixListEntry::new(
+        1,
+        PrefixListAction::Permit,
+        PrefixListPrefix::Prefix(Prefix::root_v4()),
+        Some(PrefixListMatchLen::Le(31)),
+    );
+    plist.add_entry(entry);
+    internal.plist_table.add_prefix_list(plist);
+}
+fn build_no_ipv4_host_route_map(internal: &mut InternalConfig) {
+    let mut rmap = RouteMap::new("NO-IPV4-HOST-ROUTES");
+    let entry = RouteMapEntry::new(1, MatchingPolicy::Permit).add_match(
+        RouteMapMatch::Ipv4AddressPrefixList("NO-IPV4-HOST-ROUTES".to_string()),
+    );
+    rmap.add_entry(entry);
+
+    let entry = RouteMapEntry::new(5, MatchingPolicy::Deny);
+    rmap.add_entry(entry);
+    internal.rmap_table.add_route_map(rmap);
+}
+fn build_no_ipv6_host_prefix_list(internal: &mut InternalConfig) {
+    let mut plist = PrefixList::new(
+        "NO-IPV6-HOST-ROUTES",
+        Some("Filter out ipv6 host routes".to_string()),
+    );
+    let entry = PrefixListEntry::new(
+        1,
+        PrefixListAction::Permit,
+        PrefixListPrefix::Prefix(Prefix::root_v6()),
+        Some(PrefixListMatchLen::Le(127)),
+    );
+    plist.add_entry(entry);
+    internal.plist_table.add_prefix_list(plist);
+}
+fn build_no_ipv6_host_route_map(internal: &mut InternalConfig) {
+    let mut rmap = RouteMap::new("NO-IPV6-HOST-ROUTES");
+    let entry = RouteMapEntry::new(1, MatchingPolicy::Permit).add_match(
+        RouteMapMatch::Ipv6AddressPrefixList("NO-IPV6-HOST-ROUTES".to_string()),
+    );
+    rmap.add_entry(entry);
+
+    let entry = RouteMapEntry::new(5, MatchingPolicy::Deny);
+    rmap.add_entry(entry);
+    internal.rmap_table.add_route_map(rmap);
+}
+fn build_host_route_filtering(internal: &mut InternalConfig) {
+    build_no_ipv4_host_prefix_list(internal);
+    build_no_ipv4_host_route_map(internal);
+    build_no_ipv6_host_prefix_list(internal);
+    build_no_ipv6_host_route_map(internal);
+}
+
 fn build_internal_overlay_config(
     overlay: &Overlay,
     asn: u32,
@@ -279,6 +343,7 @@ fn build_internal_overlay_config(
     internal: &mut InternalConfig,
 ) -> ConfigResult {
     debug!("Building overlay config...");
+    build_host_route_filtering(internal);
     for vpc in overlay.vpc_table.values() {
         build_vpc_internal_config(vpc, asn, router_id, internal)?;
     }
