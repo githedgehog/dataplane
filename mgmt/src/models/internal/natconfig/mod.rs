@@ -9,6 +9,5 @@
 #![deny(clippy::all, clippy::pedantic)]
 #![deny(rustdoc::all)]
 
-mod prefixtrie;
 pub mod table_extend;
-pub mod tables;
+mod test;

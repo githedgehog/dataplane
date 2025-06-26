@@ -5,8 +5,8 @@
 
 use crate::models::external::overlay::vpc::Peering;
 use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
-use crate::models::internal::nat::prefixtrie::{PrefixTrie, TrieError};
-use crate::models::internal::nat::tables::{NatPrefixRuleTable, PerVniTable, TrieValue};
+use nat::stateless::config::prefixtrie::{PrefixTrie, TrieError};
+use nat::stateless::config::tables::{NatPrefixRuleTable, PerVniTable, TrieValue};
 use routing::prefix::Prefix;
 use std::collections::BTreeSet;
 use std::fmt::Debug;
@@ -184,8 +184,8 @@ fn optimize_peering(peering: &Peering) -> Peering {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::internal::nat::tables::NatTables;
     use iptrie::{Ipv4Prefix, Ipv6Prefix};
+    use nat::stateless::config::tables::NatTables;
     use net::vxlan::Vni;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::str::FromStr;

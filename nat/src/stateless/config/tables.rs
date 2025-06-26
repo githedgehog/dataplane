@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::models::internal::nat::prefixtrie::{PrefixTrie, TrieError};
+use crate::stateless::config::prefixtrie::{PrefixTrie, TrieError};
+
 use net::vxlan::Vni;
 use routing::prefix::Prefix;
 use std::collections::{BTreeSet, HashMap};
@@ -40,9 +41,9 @@ impl Default for NatTables {
 /// given source VNI.
 #[derive(Debug, Clone)]
 pub struct PerVniTable {
-    pub(crate) dst_nat: NatPrefixRuleTable,
-    pub(crate) src_nat_peers: NatPeerRuleTable,
-    pub(crate) src_nat_prefixes: Vec<NatPrefixRuleTable>,
+    pub dst_nat: NatPrefixRuleTable,
+    pub src_nat_peers: NatPeerRuleTable,
+    pub src_nat_prefixes: Vec<NatPrefixRuleTable>,
 }
 
 impl PerVniTable {

@@ -7,7 +7,7 @@ license = "Apache-2.0"
 
 [dependencies]
 dashmap = { workspace = true }
-mgmt = { workspace = true }
+iptrie = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
 routing = { workspace = true }

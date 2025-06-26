@@ -18,8 +18,7 @@ use std::net::Ipv4Addr;
 use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
 use crate::models::internal::InternalConfig;
 use crate::models::internal::interfaces::interface::InterfaceType;
-use crate::models::internal::nat::table_extend::add_peering;
-use crate::models::internal::nat::tables::{NatTables, PerVniTable};
+use crate::models::internal::natconfig::table_extend::add_peering;
 use crate::models::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
 use crate::models::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
 use crate::models::internal::routing::evpn::VtepConfig;
@@ -31,6 +30,7 @@ use crate::models::internal::routing::routemap::{
 };
 use crate::models::internal::routing::statics::StaticRoute;
 use crate::models::internal::routing::vrf::VrfConfig;
+use nat::stateless::config::tables::{NatTables, PerVniTable};
 
 /// Build a drop route
 #[must_use]

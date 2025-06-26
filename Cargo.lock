@@ -828,7 +828,9 @@ dependencies = [
  "chrono",
  "dataplane-id",
  "dataplane-interface-manager",
+ "dataplane-nat",
  "dataplane-net",
+ "dataplane-pipeline",
  "dataplane-rekon",
  "dataplane-routing",
  "dataplane-test-utils",
@@ -855,10 +857,10 @@ name = "dataplane-nat"
 version = "0.1.0"
 dependencies = [
  "dashmap",
- "dataplane-mgmt",
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-routing",
+ "iptrie",
  "thiserror 2.0.12",
 ]
 

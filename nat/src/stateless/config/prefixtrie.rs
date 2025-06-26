@@ -4,6 +4,8 @@
 //! This submodule provides an IP version-independent trie data structure, to associate values to IP
 //! prefixes.
 
+#![allow(clippy::missing_errors_doc)]
+
 use iptrie::map::RTrieMap;
 use iptrie::{Ipv4Prefix, Ipv6Prefix};
 use routing::prefix::Prefix;
@@ -34,6 +36,7 @@ where
     T: Default + Debug,
 {
     /// Creates a new [`PrefixTrie`].
+    #[must_use]
     pub fn new() -> Self {
         Self {
             trie_ipv4: RTrieMap::new(),
@@ -95,6 +98,7 @@ where
     ///
     /// This function returns the value associated with the given address if it is present in the
     /// trie. If the address is not present, it will return `None`.
+    #[must_use]
     pub fn lookup(&self, addr: &IpAddr) -> Option<(Prefix, &T)> {
         match addr {
             IpAddr::V4(ip) => {
