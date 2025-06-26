@@ -24,7 +24,6 @@ pub struct VrfConfig {
     pub tableid: Option<RouteTableId>,
     #[multi_index(ordered_unique)]
     pub vni: Option<Vni>,
-    pub subnets: BTreeSet<Prefix>,
     pub static_routes: BTreeSet<StaticRoute>,
     pub bgp: Option<BgpConfig>,
     pub interfaces: InterfaceConfigTable,
@@ -41,7 +40,6 @@ impl Default for VrfConfig {
             default: true,
             tableid: None,
             vni: None,
-            subnets: BTreeSet::new(),
             static_routes: BTreeSet::new(),
             bgp: None,
             interfaces: InterfaceConfigTable::new(),
@@ -87,9 +85,6 @@ impl VrfConfig {
     pub fn set_ospf(&mut self, mut ospf: Ospf) -> &Self {
         self.ospf = Some(ospf);
         self
-    }
-    pub fn add_subnet(&mut self, subnet: Prefix) {
-        self.subnets.insert(subnet);
     }
     pub fn add_static_route(&mut self, static_route: StaticRoute) {
         self.static_routes.insert(static_route);
