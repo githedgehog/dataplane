@@ -8,15 +8,8 @@ mod tests {
     use crate::models::external::overlay::vpc::Peering;
     use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use crate::models::internal::natconfig::table_extend;
-
-    use pipeline::NetworkFunction;
-
-    use nat::NatDirection;
-    use nat::StatelessNat;
     use nat::stateless::config::tables::{NatTables, PerVniTable};
-
-    use net::headers::TryIpv4;
-    use net::packet::test_utils::build_test_ipv4_packet;
+    use nat::stateless::test::build_reference_nat_tables;
     use net::vxlan::Vni;
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
@@ -132,50 +125,8 @@ mod tests {
     }
 
     #[test]
-    fn test_dst_nat_stateless_44() {
+    fn test_config() {
         let nat_tables = build_context();
-        let mut nat = StatelessNat::new(NatDirection::DstNat);
-        nat.update_tables(nat_tables);
-
-        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()]
-            .into_iter()
-            .map(|mut packet| {
-                packet.get_meta_mut().src_vni = Some(vni_100());
-                packet
-            });
-
-        let packets_out: Vec<_> = nat.process(packets).collect();
-
-        assert_eq!(packets_out.len(), 1);
-
-        let hdr0_out = &packets_out[0]
-            .try_ipv4()
-            .expect("Failed to get IPv4 header");
-        println!("L3 header: {hdr0_out:?}");
-        assert_eq!(hdr0_out.destination(), addr_v4("10.0.132.4"));
-    }
-
-    #[test]
-    fn test_src_nat_stateless_44() {
-        let nat_tables = build_context();
-        let mut nat = StatelessNat::new(NatDirection::SrcNat);
-        nat.update_tables(nat_tables);
-
-        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()]
-            .into_iter()
-            .map(|mut packet| {
-                packet.get_meta_mut().src_vni = Some(vni_100());
-                packet
-            });
-
-        let packets_out: Vec<_> = nat.process(packets).collect();
-
-        assert_eq!(packets_out.len(), 1);
-
-        let hdr0_out = &packets_out[0]
-            .try_ipv4()
-            .expect("Failed to get IPv4 header");
-        println!("L3 header: {hdr0_out:?}");
-        assert_eq!(hdr0_out.source().inner(), addr_v4("2.2.0.4"));
+        assert_eq!(nat_tables, build_reference_nat_tables());
     }
 }
