@@ -238,7 +238,16 @@ impl IpForwarder {
                 packet.done(DoneReason::InternalFailure);
             }
             Ok(vxlan_headers) => match packet.vxlan_encap(&vxlan_headers) {
-                Ok(()) => debug!("{nfi}: ENCAPSULATED packet with VxLAN:\n {packet}"),
+                Ok(()) => {
+                    debug!("{nfi}: ENCAPSULATED packet with VxLAN:\n {packet}");
+                    let vni = vxlan_headers
+                        .headers()
+                        .udp_encap
+                        .as_ref()
+                        .unwrap_or_else(|| unreachable!())
+                        .vxlan_vni();
+                    packet.get_meta_mut().dst_vni = vni;
+                }
                 Err(e) => {
                     error!("{nfi}: Failed to ENCAPSULATE packet with VxLAN: {e}");
                     packet.done(DoneReason::InternalFailure);
