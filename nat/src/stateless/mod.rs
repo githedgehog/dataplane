@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+//! Stateless NAT implementation
+
+mod iplist;
+
 use crate::NatDirection;
-use crate::iplist::IpList;
+use iplist::IpList;
 use mgmt::models::internal::nat::tables::{NatTables, TrieValue};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryHeadersMut, TryIpMut};
