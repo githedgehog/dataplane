@@ -76,6 +76,7 @@ pub struct PacketMeta {
     pub bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
     pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
     pub src_vni: Option<Vni>, /* the vni value of a received vxlan encap packet, if destined to gateway */
+    pub dst_vni: Option<Vni>, /* the vni value of a vxlan packet re-encapsulated by the gateway */
 
     #[cfg(test)]
     /* Keep the Packet in spite of calling packet.enforce(). This is for testing */
