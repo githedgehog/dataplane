@@ -139,6 +139,28 @@ where
     }
 }
 
+impl<T> PartialEq for PrefixTrie<T>
+where
+    T: PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.trie_ipv4.len() == other.trie_ipv4.len()
+            && self.trie_ipv6.len() == other.trie_ipv6.len()
+            && self
+                .trie_ipv4
+                .iter()
+                .zip(other.trie_ipv4.iter())
+                .all(|(a, b)| a == b)
+            && self
+                .trie_ipv6
+                .iter()
+                .zip(other.trie_ipv6.iter())
+                .all(|(a, b)| a == b)
+    }
+}
+
+impl<T> Eq for PrefixTrie<T> where T: Eq {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -11,7 +11,7 @@ use std::net::IpAddr;
 /// An object containing the rules for the NAT pipeline stage, not in terms of states for the
 /// different connections established, but instead holding the base rules for stateful or static
 /// NAT.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatTables {
     pub tables: HashMap<u32, PerVniTable>,
 }
@@ -39,7 +39,7 @@ impl Default for NatTables {
 
 /// A table containing all rules for both source and destination static NAT, for packets with a
 /// given source VNI.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PerVniTable {
     pub dst_nat: NatPrefixRuleTable,
     pub src_nat_peers: NatPeerRuleTable,
@@ -97,14 +97,14 @@ impl Default for PerVniTable {
 }
 
 /// From a current address prefix, find the target address prefix.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatPrefixRuleTable {
     pub rules: PrefixTrie<Option<TrieValue>>,
 }
 
 /// From a current address prefix, find the relevant [`NatPrefixRuleTable`] for the target prefix
 /// lookup.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatPeerRuleTable {
     pub rules: PrefixTrie<usize>,
 }
@@ -192,7 +192,7 @@ impl Default for NatPeerRuleTable {
 
 /// A value associated with a prefix in the trie, and that encapsulates all information required to
 /// perform the address mapping for static NAT.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrieValue {
     orig: BTreeSet<Prefix>,
     orig_excludes: BTreeSet<Prefix>,
