@@ -3,6 +3,7 @@
 
 use crate::stateless::config::prefixtrie::{PrefixTrie, TrieError};
 
+use ahash::RandomState;
 use net::vxlan::Vni;
 use routing::prefix::Prefix;
 use std::collections::{BTreeSet, HashMap};
@@ -13,7 +14,7 @@ use std::net::IpAddr;
 /// NAT.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatTables {
-    pub tables: HashMap<u32, PerVniTable>,
+    pub tables: HashMap<u32, PerVniTable, RandomState>,
 }
 
 impl NatTables {
@@ -21,7 +22,7 @@ impl NatTables {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            tables: HashMap::new(),
+            tables: HashMap::with_hasher(RandomState::with_seed(0)),
         }
     }
 
