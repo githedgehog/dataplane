@@ -37,8 +37,8 @@ fn init_logging() {
 
 fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
     let pipeline = DynPipeline::new();
-    if false {
-        /* replace false by true to try filters and write your own */
+    #[cfg(not(feature = "packet-dumper"))]
+    {
         let custom_filter = |_packet: &Packet<Buf>| -> bool {
             /* your own filter here */
             true
@@ -48,7 +48,10 @@ fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
             true,
             Some(Box::new(custom_filter)),
         ))
-    } else {
+    }
+
+    #[cfg(feature = "packet-dumper")]
+    {
         pipeline.add_stage(PacketDumper::new("default", true, None))
     }
 }

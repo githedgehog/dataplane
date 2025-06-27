@@ -39,7 +39,7 @@ pub struct Action {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActionDetailsSpec {
-    Redirect(MirredSpec),
+    Mirred(MirredSpec),
     Generic(GenericActionSpec),
     TunnelKey(TunnelKeySpec),
 }
@@ -52,10 +52,28 @@ pub enum ActionDetails {
 }
 
 #[derive(Builder, Clone, Debug, Default)]
-pub struct ActionsBase {
+pub struct ActionBase {
     pub gact: MultiIndexGenericActionMap,
     pub mirred: MultiIndexMirredMap,
     pub tunnel_key: MultiIndexTunnelKeyMap,
+}
+
+impl ActionBase {
+    // NOTE: I would normally just implement Iterator here, but the type returned by this method
+    // is quite complex and impl Trait in associated types is not yet stable.
+    /// Iterate over all actions in the [`ActionBase`].
+    pub fn iter(&self) -> impl Iterator<Item = Action> {
+        self.gact
+            .iter()
+            .map(|(_, y)| ActionDetails::Generic(*y))
+            .chain(self.mirred.iter().map(|(_, y)| ActionDetails::Mirred(*y)))
+            .chain(
+                self.tunnel_key
+                    .iter()
+                    .map(|(_, y)| ActionDetails::TunnelKey(*y)),
+            )
+            .map(|details| Action { details })
+    }
 }
 
 #[derive(Builder, Clone, Debug, Default)]
@@ -65,7 +83,29 @@ pub struct ActionBaseSpec {
     pub tunnel_key: MultiIndexTunnelKeySpecMap,
 }
 
-impl AsRequirement<ActionBaseSpec> for ActionsBase {
+impl ActionBaseSpec {
+    // NOTE: I would normally just implement Iterator here, but the type returned by this method
+    // is quite complex and impl Trait in associated types is not yet stable.
+    /// Iterate over all action specifications in the [`ActionBaseSpec`].
+    pub fn iter(&self) -> impl Iterator<Item = ActionSpec> {
+        self.gact
+            .iter()
+            .map(|(_, y)| ActionDetailsSpec::Generic(*y))
+            .chain(
+                self.mirred
+                    .iter()
+                    .map(|(_, y)| ActionDetailsSpec::Mirred(*y)),
+            )
+            .chain(
+                self.tunnel_key
+                    .iter()
+                    .map(|(_, y)| ActionDetailsSpec::TunnelKey(*y)),
+            )
+            .map(|details| ActionSpec { details })
+    }
+}
+
+impl AsRequirement<ActionBaseSpec> for ActionBase {
     type Requirement<'a>
         = ActionBaseSpec
     where
@@ -176,7 +216,7 @@ impl AsRequirement<ActionSpec> for Action {
         ActionSpec {
             details: match self.details {
                 ActionDetails::Mirred(details) => {
-                    ActionDetailsSpec::Redirect(details.as_requirement())
+                    ActionDetailsSpec::Mirred(details.as_requirement())
                 }
                 ActionDetails::Generic(details) => {
                     ActionDetailsSpec::Generic(details.as_requirement())
@@ -193,7 +233,7 @@ impl<'a> From<&'a ActionSpec> for TcAction {
     fn from(value: &'a ActionSpec) -> Self {
         match value.details {
             ActionDetailsSpec::Generic(details) => TcAction::from(&details),
-            ActionDetailsSpec::Redirect(details) => TcAction::from(details),
+            ActionDetailsSpec::Mirred(details) => TcAction::from(details),
             ActionDetailsSpec::TunnelKey(details) => TcAction::from(details),
         }
     }
@@ -216,7 +256,7 @@ impl Create for Manager<Action> {
                     .create(&action)
                     .await
             }
-            ActionDetailsSpec::Redirect(action) => {
+            ActionDetailsSpec::Mirred(action) => {
                 Manager::<Mirred>::new(self.handle.clone())
                     .create(&action)
                     .await
@@ -325,7 +365,7 @@ impl Reconcile for Manager<Action> {
 
 impl Observe for Manager<Action> {
     type Observation<'a>
-        = Result<ActionsBase, ()>
+        = Result<ActionBase, ()>
     where
         Self: 'a;
 
@@ -340,12 +380,12 @@ impl Observe for Manager<Action> {
             mirred: Manager::<Mirred>::new(self.handle.clone()),
             tunnel_key: Manager::<TunnelKey>::new(self.handle.clone()),
         };
-        let mut actions = ActionsBase::default();
+        let mut actions = ActionBase::default();
         for action in managers.gact.observe().await {
             match actions.gact.try_insert(action) {
                 Ok(_) => {}
                 Err(err) => {
-                    trace!("failed to insert action: {err:?}");
+                    trace!("failed to insert action: {err:#?}");
                 }
             }
         }
@@ -353,7 +393,7 @@ impl Observe for Manager<Action> {
             match actions.mirred.try_insert(action) {
                 Ok(_) => {}
                 Err(err) => {
-                    trace!("failed to insert action: {err:?}");
+                    trace!("failed to insert action: {err:#?}");
                 }
             }
         }
@@ -361,7 +401,7 @@ impl Observe for Manager<Action> {
             match actions.tunnel_key.try_insert(action) {
                 Ok(_) => {}
                 Err(err) => {
-                    trace!("failed to insert action: {err:?}");
+                    trace!("failed to insert action: {err:#?}");
                 }
             }
         }

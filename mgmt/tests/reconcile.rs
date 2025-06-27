@@ -1636,14 +1636,14 @@ async fn observe_actions() {
     let handle = Arc::new(handle);
 
     let manager = Manager::<Action>::new(handle.clone());
-    let base = manager.observe().await.unwrap();
-    for (_, action) in base.gact.iter() {
+    let ab = manager.observe().await.unwrap();
+    for (_, action) in ab.gact.iter() {
         println!("{action:#?}");
     }
-    for (_, action) in base.mirred.iter() {
+    for (_, action) in ab.mirred.iter() {
         println!("{action:#?}");
     }
-    for (_, action) in base.tunnel_key.iter() {
+    for (_, action) in ab.tunnel_key.iter() {
         println!("{action:#?}");
     }
 }
