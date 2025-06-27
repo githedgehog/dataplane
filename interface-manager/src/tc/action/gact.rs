@@ -15,13 +15,28 @@ use tracing::{debug, warn};
 
 #[derive(Builder, Clone, Copy, Debug, PartialEq, Eq, MultiIndexMap)]
 #[builder(derive(Debug, PartialEq, Eq, Copy))]
+#[multi_index_derive(Clone, Debug)]
 pub struct GenericAction {
+    #[multi_index(ordered_unique)]
     pub index: ActionIndex<GenericAction>,
     pub action_type: TcActionType,
 }
 
+impl PartialOrd for GenericAction {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for GenericAction {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.index.cmp(&other.index)
+    }
+}
+
 #[derive(Builder, Clone, Copy, Debug, PartialEq, Eq, MultiIndexMap)]
 #[builder(derive(Debug, PartialEq, Eq, Copy))]
+#[multi_index_derive(Clone, Debug)]
 pub struct GenericActionSpec {
     pub index: ActionIndex<GenericAction>,
     pub action_type: TcActionType,

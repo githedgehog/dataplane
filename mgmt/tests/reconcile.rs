@@ -2,30 +2,20 @@
 // Copyright Open Network Fabric Authors
 
 use dataplane_mgmt as mgmt;
-use std::collections::HashSet;
 
 use caps::Capability;
 use fixin::wrap;
-use futures::TryStreamExt;
 use interface_manager::Manager;
-use interface_manager::interface::fdb::{FdbAction, FdbEntryBuilder, MultiIndexFdbMap};
 use interface_manager::interface::{
     BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpecBuilder,
     MultiIndexBridgePropertiesSpecMap, MultiIndexInterfaceAssociationSpecMap,
     MultiIndexInterfaceSpecMap, MultiIndexPciNetdevPropertiesSpecMap,
-    MultiIndexVrfPropertiesSpecMap, MultiIndexVtepPropertiesSpecMap, PciNetdevPropertiesSpec,
-    VrfPropertiesSpec, VtepPropertiesSpec,
+    MultiIndexVrfPropertiesSpecMap, MultiIndexVtepPropertiesSpecMap, VrfPropertiesSpec,
+    VtepPropertiesSpec,
 };
-use interface_manager::tc::action::gact::{GenericAction, GenericActionSpec};
-use interface_manager::tc::action::mirred::{Mirred, MirredSpec};
-use interface_manager::tc::action::tunnel_key::{
-    TunnelChecksum, TunnelKey, TunnelKeyDetails, TunnelKeySetBuilder, TunnelKeySpecBuilder,
-};
-use interface_manager::tc::action::{
-    Action, ActionDetailsSpec, ActionIndex, ActionKind, ActionSpec,
-};
+use interface_manager::tc::action::Action;
 use interface_manager::tc::block::BlockIndex;
-use interface_manager::tc::filter::{Filter, FilterIndex, FilterSpecBuilder};
+use interface_manager::tc::chain::{Chain, ChainId, ChainSpecBuilder};
 use interface_manager::tc::qdisc::{Qdisc, QdiscProperties, QdiscSpec};
 use mgmt::vpc_manager::{RequiredInformationBase, RequiredInformationBaseBuilder, VpcManager};
 use net::eth::ethtype::EthType;
@@ -37,6 +27,7 @@ use net::vxlan::{Vni, Vxlan};
 use rekon::{Create, Remove};
 use rekon::{Observe, Reconcile};
 use rtnetlink::packet_route::neighbour::{NeighbourAddress, NeighbourAttribute, NeighbourFlags};
+use rtnetlink::packet_route::tc::TcActionType::GotoChain;
 use rtnetlink::packet_route::tc::TcFilterFlowerOption::{
     Actions, EncKeyId, EncKeyIpv4Dst, EncKeyUdpDstPort, Flags,
 };
@@ -1584,4 +1575,75 @@ async fn testing() {
     let manager = VpcManager::<RequiredInformationBase>::new(handle);
     let x = manager.observe().await;
     println!("{x:#?}");
+}
+
+#[allow(clippy::too_many_lines)] // this is an integration test and is expected to be long
+#[tokio::test]
+#[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
+// #[wrap(run_in_netns("biscuit"))]
+#[traced_test]
+async fn chain_in_block_with_template() {
+    let (mut connection, handle, _recv) = rtnetlink::new_connection().unwrap();
+    connection
+        .socket_mut()
+        .socket_mut()
+        .set_rx_buf_sz(812_992)
+        .unwrap();
+    tokio::spawn(connection);
+    let handle = Arc::new(handle);
+
+    let manager = Manager::<Qdisc>::new(handle.clone());
+
+    let mut clsact = QdiscSpec::new(
+        InterfaceIndex::try_new(69).unwrap(),
+        QdiscProperties::ClsAct,
+    );
+    let ingress_block = BlockIndex::try_from(19).unwrap();
+    clsact
+        .ingress_block(ingress_block)
+        .egress_block(BlockIndex::try_from(20).unwrap());
+
+    manager.create(&clsact).await.unwrap();
+
+    let chain_id = ChainId::new(ingress_block, 0);
+
+    let chain_manager = Manager::<Chain>::new(handle.clone());
+    let chain_spec = ChainSpecBuilder::default().id(chain_id).build().unwrap();
+    chain_manager.create(&chain_spec).await.unwrap();
+
+    let chain_spec = ChainSpecBuilder::default()
+        .id(ChainId::new(ingress_block, 1))
+        .template(Some(
+            [TcFilterFlowerOption::EthDst([0, 0, 0, 0, 0, 0])].into(),
+        ))
+        .build()
+        .unwrap();
+    chain_manager.create(&chain_spec).await.unwrap();
+}
+
+#[allow(clippy::too_many_lines)] // this is an integration test and is expected to be long
+#[tokio::test]
+// #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
+#[traced_test]
+async fn observe_actions() {
+    let (mut connection, handle, _recv) = rtnetlink::new_connection().unwrap();
+    connection
+        .socket_mut()
+        .socket_mut()
+        .set_rx_buf_sz(812_992)
+        .unwrap();
+    tokio::spawn(connection);
+    let handle = Arc::new(handle);
+
+    let manager = Manager::<Action>::new(handle.clone());
+    let base = manager.observe().await.unwrap();
+    for (_, action) in base.gact.iter() {
+        println!("{action:#?}");
+    }
+    for (_, action) in base.mirred.iter() {
+        println!("{action:#?}");
+    }
+    for (_, action) in base.tunnel_key.iter() {
+        println!("{action:#?}");
+    }
 }

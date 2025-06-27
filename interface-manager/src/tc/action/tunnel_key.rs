@@ -6,6 +6,7 @@ use crate::tc::action::Vxlan;
 use crate::tc::action::{ActionIndex, ActionKind};
 use derive_builder::Builder;
 use futures::TryStreamExt;
+use multi_index_map::MultiIndexMap;
 use net::ipv4::UnicastIpv4Addr;
 use net::udp::port::UdpPort;
 use net::vxlan::Vni;
@@ -18,10 +19,24 @@ use std::fmt::{Debug, Display, Formatter};
 use tracing::{trace, warn};
 
 /// An observed `tunnel_key` action.
-#[derive(Debug, PartialEq, Eq, Hash, Copy, Clone, Builder)]
+#[derive(Debug, PartialEq, Eq, Hash, Copy, Clone, Builder, MultiIndexMap)]
+#[multi_index_derive(Clone, Debug)]
 pub struct TunnelKey {
+    #[multi_index(ordered_unique)]
     pub index: ActionIndex<TunnelKey>,
     pub details: TunnelKeyDetails,
+}
+
+impl PartialOrd for TunnelKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TunnelKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.index.cmp(&other.index)
+    }
 }
 
 impl ActionKind for TunnelKey {
@@ -29,7 +44,9 @@ impl ActionKind for TunnelKey {
 }
 
 /// The specification for a `tunnel_key` action.
-#[derive(Debug, PartialEq, Eq, Hash, Copy, Clone, Builder)]
+#[derive(Debug, PartialEq, Eq, Hash, Copy, Clone, Builder, MultiIndexMap)]
+#[builder(derive(Debug, PartialEq, Eq, Hash, Copy))]
+#[multi_index_derive(Clone, Debug)]
 pub struct TunnelKeySpec {
     pub index: ActionIndex<TunnelKey>,
     pub details: TunnelKeyDetails,
@@ -269,6 +286,21 @@ impl AsRequirement<TunnelKeySpec> for TunnelKey {
             index: self.index,
             details: self.details,
         }
+    }
+}
+
+impl AsRequirement<MultiIndexTunnelKeySpecMap> for MultiIndexTunnelKeyMap {
+    type Requirement<'a>
+        = MultiIndexTunnelKeySpecMap
+    where
+        Self: 'a;
+
+    fn as_requirement<'a>(&self) -> Self::Requirement<'a> {
+        let mut ret = MultiIndexTunnelKeySpecMap::default();
+        for (_, spec) in self.iter() {
+            ret.insert(spec.as_requirement());
+        }
+        ret
     }
 }
 

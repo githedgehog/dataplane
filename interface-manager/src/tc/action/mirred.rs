@@ -30,6 +30,7 @@ use tracing::warn;
     Serialize,
 )]
 #[builder(derive(Debug, PartialEq, Eq, Hash, Ord, PartialOrd, Copy))]
+#[multi_index_derive(Clone, Debug)]
 pub struct MirredSpec {
     #[multi_index(hashed_unique)]
     pub index: ActionIndex<Mirred>,
@@ -52,6 +53,7 @@ pub struct MirredSpec {
     Serialize,
 )]
 #[builder(derive(Debug, PartialEq, Eq, Hash, Ord, PartialOrd, Copy))]
+#[multi_index_derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Mirred {
     #[multi_index(hashed_unique)]
     index: ActionIndex<Mirred>,
@@ -74,6 +76,21 @@ impl AsRequirement<MirredSpec> for Mirred {
             index: self.index,
             to: self.to,
         }
+    }
+}
+
+impl AsRequirement<MultiIndexMirredSpecMap> for MultiIndexMirredMap {
+    type Requirement<'a>
+        = MultiIndexMirredSpecMap
+    where
+        Self: 'a;
+
+    fn as_requirement<'a>(&self) -> Self::Requirement<'a> {
+        let mut x = MultiIndexMirredSpecMap::default();
+        for (_, mirred) in self.iter() {
+            x.insert(mirred.as_requirement());
+        }
+        x
     }
 }
 

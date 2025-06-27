@@ -6,16 +6,22 @@ pub mod mirred;
 pub mod tunnel_key;
 
 use crate::Manager;
-use crate::tc::action::gact::{GenericAction, GenericActionSpec};
-use crate::tc::action::mirred::{Mirred, MirredSpec};
-use crate::tc::action::tunnel_key::{TunnelKey, TunnelKeySpec};
+use crate::tc::action::gact::{
+    GenericAction, GenericActionSpec, MultiIndexGenericActionMap, MultiIndexGenericActionSpecMap,
+};
+use crate::tc::action::mirred::{Mirred, MirredSpec, MultiIndexMirredMap, MultiIndexMirredSpecMap};
+use crate::tc::action::tunnel_key::{
+    MultiIndexTunnelKeyMap, MultiIndexTunnelKeySpecMap, TunnelKey, TunnelKeySpec,
+};
+use derive_builder::Builder;
 use net::vxlan::Vxlan;
-use rekon::{AsRequirement, Create, Remove};
+use rekon::{AsRequirement, Create, Observe, Reconcile, Remove, Update};
 use rtnetlink::packet_route::tc::TcAction;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::num::NonZero;
+use tracing::trace;
 
 pub trait ActionKind {
     const KIND: &'static str;
@@ -45,7 +51,58 @@ pub enum ActionDetails {
     TunnelKey(TunnelKey),
 }
 
+#[derive(Builder, Clone, Debug, Default)]
+pub struct ActionsBase {
+    pub gact: MultiIndexGenericActionMap,
+    pub mirred: MultiIndexMirredMap,
+    pub tunnel_key: MultiIndexTunnelKeyMap,
+}
+
+#[derive(Builder, Clone, Debug, Default)]
+pub struct ActionBaseSpec {
+    pub gact: MultiIndexGenericActionSpecMap,
+    pub mirred: MultiIndexMirredSpecMap,
+    pub tunnel_key: MultiIndexTunnelKeySpecMap,
+}
+
+impl AsRequirement<ActionBaseSpec> for ActionsBase {
+    type Requirement<'a>
+        = ActionBaseSpec
+    where
+        Self: 'a;
+
+    fn as_requirement<'a>(&self) -> Self::Requirement<'a>
+    where
+        Self: 'a,
+    {
+        ActionBaseSpec {
+            gact: self.gact.as_requirement(),
+            mirred: self.mirred.as_requirement(),
+            tunnel_key: self.tunnel_key.as_requirement(),
+        }
+    }
+}
+
+impl AsRequirement<MultiIndexGenericActionSpecMap> for MultiIndexGenericActionMap {
+    type Requirement<'a>
+        = MultiIndexGenericActionSpecMap
+    where
+        Self: 'a;
+
+    fn as_requirement<'a>(&self) -> Self::Requirement<'a>
+    where
+        Self: 'a,
+    {
+        let mut map = MultiIndexGenericActionSpecMap::default();
+        for (_, action) in self.iter() {
+            map.insert(action.as_requirement());
+        }
+        map
+    }
+}
+
 #[derive(Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[serde(transparent)]
 pub struct ActionIndex<T: ?Sized>(NonZero<u32>, PhantomData<T>);
 
 impl<T: ActionKind> Display for ActionIndex<T> {
@@ -201,5 +258,113 @@ impl Remove for Manager<Action> {
                     .await
             }
         }
+    }
+}
+
+impl Update for Manager<Action> {
+    type Requirement<'a>
+        = &'a ActionSpec
+    where
+        Self: 'a;
+    type Observation<'a>
+        = &'a Action
+    where
+        Self: 'a;
+    type Outcome<'a>
+        = Result<(), rtnetlink::Error>
+    where
+        Self: 'a;
+
+    async fn update<'a>(
+        &self,
+        requirement: Self::Requirement<'a>,
+        observation: Self::Observation<'a>,
+    ) -> Self::Outcome<'a>
+    where
+        Self: 'a,
+    {
+        // TODO: update action in place
+        self.remove(observation).await?;
+        self.create(requirement).await
+    }
+}
+
+impl Reconcile for Manager<Action> {
+    type Requirement<'a>
+        = Option<&'a ActionSpec>
+    where
+        Self: 'a;
+    type Observation<'a>
+        = Option<&'a Action>
+    where
+        Self: 'a;
+    type Outcome<'a>
+        = Result<(), rtnetlink::Error>
+    where
+        Self: 'a;
+
+    async fn reconcile<'a>(
+        &self,
+        requirement: Self::Requirement<'a>,
+        observation: Self::Observation<'a>,
+    ) -> Self::Outcome<'a> {
+        match (requirement, observation) {
+            (Some(requirement), Some(observation)) => {
+                if *requirement == observation.as_requirement() {
+                    trace!("already reconciled: {requirement:#?} with {observation:#?}");
+                    return Ok(());
+                }
+                self.update(requirement, observation).await
+            }
+            (Some(requirement), None) => self.create(requirement).await,
+            (None, Some(observation)) => self.remove(observation).await,
+            (None, None) => Ok(()),
+        }
+    }
+}
+
+impl Observe for Manager<Action> {
+    type Observation<'a>
+        = Result<ActionsBase, ()>
+    where
+        Self: 'a;
+
+    async fn observe<'a>(&self) -> Self::Observation<'a> {
+        struct Managers {
+            pub gact: Manager<GenericAction>,
+            pub mirred: Manager<Mirred>,
+            pub tunnel_key: Manager<TunnelKey>,
+        }
+        let managers = Managers {
+            gact: Manager::<GenericAction>::new(self.handle.clone()),
+            mirred: Manager::<Mirred>::new(self.handle.clone()),
+            tunnel_key: Manager::<TunnelKey>::new(self.handle.clone()),
+        };
+        let mut actions = ActionsBase::default();
+        for action in managers.gact.observe().await {
+            match actions.gact.try_insert(action) {
+                Ok(_) => {}
+                Err(err) => {
+                    trace!("failed to insert action: {err:?}");
+                }
+            }
+        }
+        for action in managers.mirred.observe().await {
+            match actions.mirred.try_insert(action) {
+                Ok(_) => {}
+                Err(err) => {
+                    trace!("failed to insert action: {err:?}");
+                }
+            }
+        }
+        for action in managers.tunnel_key.observe().await {
+            match actions.tunnel_key.try_insert(action) {
+                Ok(_) => {}
+                Err(err) => {
+                    trace!("failed to insert action: {err:?}");
+                }
+            }
+        }
+        Ok(actions)
     }
 }

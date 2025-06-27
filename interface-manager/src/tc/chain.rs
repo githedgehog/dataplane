@@ -78,6 +78,7 @@ pub struct Chain {
 pub struct ChainSpec {
     #[multi_index(ordered_unique)]
     id: ChainId,
+    #[builder(default)]
     template: Option<Vec<TcFilterFlowerOption>>,
 }
 
