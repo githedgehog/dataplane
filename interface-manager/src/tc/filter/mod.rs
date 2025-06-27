@@ -4,7 +4,7 @@
 use crate::Manager;
 use crate::tc::action::{Action, ActionSpec};
 use crate::tc::block::BlockIndex;
-use crate::tc::chain::ChainIndex;
+use crate::tc::chain::{ChainId, ChainIndex};
 use derive_builder::Builder;
 use rekon::{AsRequirement, Create};
 use rtnetlink::packet_route::tc::TcFilterFlowerOption;
@@ -49,11 +49,11 @@ impl From<FilterIndex> for u32 {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Builder)]
 pub struct Filter {
     handle: FilterIndex,
     priority: u16,
-    block: BlockIndex,
-    chain: ChainIndex,
+    chain: ChainId,
     criteria: Vec<TcFilterFlowerOption>,
     actions: Vec<Action>, // stats go here
 }
@@ -62,8 +62,7 @@ pub struct Filter {
 pub struct FilterSpec {
     handle: FilterIndex,
     priority: u16,
-    block: BlockIndex,
-    chain: ChainIndex,
+    chain: ChainId,
     pub criteria: Vec<TcFilterFlowerOption>,
     pub actions: Vec<ActionSpec>,
 }
@@ -78,8 +77,7 @@ impl AsRequirement<FilterSpec> for Filter {
         FilterSpec {
             handle: self.handle,
             priority: self.priority,
-            block: self.block,
-            chain: self.chain,
+            chain: self.chain.clone(),
             criteria: self.criteria.clone(),
             actions: self.actions.iter().map(Action::as_requirement).collect(),
         }
@@ -106,12 +104,13 @@ impl Create for Manager<Filter> {
             }
         }
         self.handle
+            // a value of zero in the ifindex tell the kernel "no interface, this is for a block"
             .traffic_filter(0) // TODO: support non block filters
             .add()
-            .block(requirement.block.into())
-            .chain(requirement.chain)
+            .chain(requirement.chain.chain().into())
+            .block(requirement.chain.block().into())
             .handle(requirement.handle.into())
-            .protocol(protocol) // TODO: update if mathing on ethtype
+            .protocol(protocol) // TODO: update if matching on ethtype
             // .parent()  // TODO: tolerate multiple qdiscs
             .priority(requirement.priority)
             .flower(requirement.criteria.as_slice())?

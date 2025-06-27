@@ -1565,3 +1565,23 @@ async fn reconcile_demo() {
 //     let x = manager.observe().await;
 //     println!("{x:#?}");
 // }
+
+#[allow(clippy::too_many_lines)] // this is an integration test and is expected to be long
+#[tokio::test]
+#[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
+// #[wrap(run_in_netns("biscuit"))]
+#[traced_test]
+async fn testing() {
+    let (mut connection, handle, _recv) = rtnetlink::new_connection().unwrap();
+    connection
+        .socket_mut()
+        .socket_mut()
+        .set_rx_buf_sz(812_992)
+        .unwrap();
+    tokio::spawn(connection);
+    let handle = Arc::new(handle);
+
+    let manager = VpcManager::<RequiredInformationBase>::new(handle);
+    let x = manager.observe().await;
+    println!("{x:#?}");
+}

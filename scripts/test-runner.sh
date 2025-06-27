@@ -157,43 +157,45 @@ fi
 # host system's sudo binary.
 "${SUDO}" setcap "${CAPS}" "${test_exe}"
 
-# Now we can run the docker container
-#
-# Notes about this command:
-# * Note that we mount everything we can as read-only
-# * --ipc=host and --pid=host are to allow debuggers to connect to the tests more easily.
-# * We mount $1 in case it is an IDE's helper runner.
-#   If not, then no harm has been done as $1 will be mounted by the project_dir mount anyway.
-# * We drop all caps and then add back just the caps we know we need.
-#   This allows those capabilities into our ambient+inheritable set, letting us elevate to them as needed.
-#   Critically, it _does not_ give us these capabilities by default (i.e., they aren't in our effective set) because
-#   the above setcap command has enumerated exactly what our defaults should be.
-# * If you adjust the list of --cap-add arguments, then you need to adjust the CAPS env var as well.
-"${SUDO}" --preserve-env docker run \
-  --rm \
-  --interactive \
-  --mount "type=bind,source=$(readlink -e "${1}"),target=$(readlink -e "${1}"),readonly=true,bind-propagation=rprivate" \
-  --mount "type=bind,source=${project_dir},target=${project_dir},readonly=true,bind-propagation=rprivate" \
-  --mount "type=bind,source=${project_dir}/target,target=${project_dir}/target,readonly=false,bind-propagation=rprivate" \
-  --mount "type=bind,source=$(get_docker_sock),target=$(get_docker_sock),readonly=false,bind-propagation=rprivate" \
-  --tmpfs "/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
-  --tmpfs "/var/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
-  --tmpfs "/tmp:nodev,noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
-  --user="$(id -u):$(id -g)" \
-  --group-add="$(getent group docker | cut -d: -f3)" \
-  --env LLVM_PROFILE_FILE="${LLVM_PROFILE_FILE:-""}" \
-  --env CARGO_LLVM_COV="${CARGO_LLVM_COV:-0}" \
-  --env CARGO_LLVM_COV_TARGET_DIR="${project_dir}/target" \
-  --workdir="${project_dir}" \
-  --env DOCKER_HOST="unix://$(get_docker_sock)" \
-  --net=none \
-  --ipc=host \
-  --pid=host \
-  --cap-drop ALL \
-  --cap-add NET_ADMIN \
-  --cap-add NET_RAW \
-  --cap-add SYS_ADMIN \
-  --cap-add SYS_RAWIO \
-  --read-only \
-  "ghcr.io/githedgehog/dpdk-sys/libc-env:${DPDK_SYS_COMMIT}.${LIBC_ENV_PROFILE:-release}" \
-  "${@}"
+exec "${@}"
+
+## Now we can run the docker container
+##
+## Notes about this command:
+## * Note that we mount everything we can as read-only
+## * --ipc=host and --pid=host are to allow debuggers to connect to the tests more easily.
+## * We mount $1 in case it is an IDE's helper runner.
+##   If not, then no harm has been done as $1 will be mounted by the project_dir mount anyway.
+## * We drop all caps and then add back just the caps we know we need.
+##   This allows those capabilities into our ambient+inheritable set, letting us elevate to them as needed.
+##   Critically, it _does not_ give us these capabilities by default (i.e., they aren't in our effective set) because
+##   the above setcap command has enumerated exactly what our defaults should be.
+## * If you adjust the list of --cap-add arguments, then you need to adjust the CAPS env var as well.
+#"${SUDO}" --preserve-env docker run \
+#  --rm \
+#  --interactive \
+#  --mount "type=bind,source=$(readlink -e "${1}"),target=$(readlink -e "${1}"),readonly=true,bind-propagation=rprivate" \
+#  --mount "type=bind,source=${project_dir},target=${project_dir},readonly=true,bind-propagation=rprivate" \
+#  --mount "type=bind,source=${project_dir}/target,target=${project_dir}/target,readonly=false,bind-propagation=rprivate" \
+#  --mount "type=bind,source=$(get_docker_sock),target=$(get_docker_sock),readonly=false,bind-propagation=rprivate" \
+#  --tmpfs "/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
+#  --tmpfs "/var/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
+#  --tmpfs "/tmp:nodev,noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
+#  --user="$(id -u):$(id -g)" \
+#  --group-add="$(getent group docker | cut -d: -f3)" \
+#  --env LLVM_PROFILE_FILE="${LLVM_PROFILE_FILE:-""}" \
+#  --env CARGO_LLVM_COV="${CARGO_LLVM_COV:-0}" \
+#  --env CARGO_LLVM_COV_TARGET_DIR="${project_dir}/target" \
+#  --workdir="${project_dir}" \
+#  --env DOCKER_HOST="unix://$(get_docker_sock)" \
+#  --net=none \
+#  --ipc=host \
+#  --pid=host \
+#  --cap-drop ALL \
+#  --cap-add NET_ADMIN \
+#  --cap-add NET_RAW \
+#  --cap-add SYS_ADMIN \
+#  --cap-add SYS_RAWIO \
+#  --read-only \
+#  "ghcr.io/githedgehog/dpdk-sys/libc-env:${DPDK_SYS_COMMIT}.${LIBC_ENV_PROFILE:-release}" \
+#  "${@}"

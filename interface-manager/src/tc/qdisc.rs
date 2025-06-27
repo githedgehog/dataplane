@@ -13,20 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZero;
 use tracing::warn;
 
-#[derive(
-    Builder,
-    Clone,
-    Debug,
-    Deserialize,
-    Eq,
-    Hash,
-    MultiIndexMap,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-)]
-#[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Builder, Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 pub struct QdiscHandle {
     pub major: u16,
