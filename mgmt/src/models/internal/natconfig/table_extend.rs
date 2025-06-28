@@ -69,7 +69,7 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Tri
         // private prefix
         let peering_index = table.src_nat_prefixes.len() - 1;
         expose
-            .ips
+            .as_range
             .iter()
             .try_for_each(|prefix| table.src_nat_peers.rules.insert(prefix, peering_index))
     })?;

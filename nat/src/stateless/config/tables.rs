@@ -64,13 +64,13 @@ impl PerVniTable {
     /// Returns the value associated with the given address if it is present in the trie. If the
     /// address is not present, it returns `None`.
     #[must_use]
-    pub fn lookup_src_prefixes(&self, addr: &IpAddr) -> Option<&TrieValue> {
+    pub fn lookup_src_prefixes(&self, saddr: &IpAddr, daddr: &IpAddr) -> Option<&TrieValue> {
         // Find relevant prefix table for involved peer
-        let peer_index = self.src_nat_peers.lookup(addr)?;
+        let peer_index = self.src_nat_peers.lookup(daddr)?;
 
         // Look up for the NAT prefix in that table
         let prefix_table = self.src_nat_prefixes.get(peer_index)?;
-        let (_, value) = prefix_table.lookup(addr)?;
+        let (_, value) = prefix_table.lookup(saddr)?;
 
         value.as_ref()
     }

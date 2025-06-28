@@ -60,7 +60,7 @@ impl StatelessNat {
         let vni = vni_opt?;
         let table = self.context.tables.get(&vni.as_u32())?;
 
-        let src_nat_ranges = table.lookup_src_prefixes(&net.src_addr());
+        let src_nat_ranges = table.lookup_src_prefixes(&net.src_addr(), &net.dst_addr());
         let dst_nat_ranges = table.lookup_dst_prefixes(&net.dst_addr());
 
         Some((src_nat_ranges, dst_nat_ranges))
