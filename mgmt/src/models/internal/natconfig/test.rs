@@ -8,7 +8,6 @@ mod tests {
     use crate::models::external::overlay::vpc::Peering;
     use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use crate::models::internal::natconfig::table_extend;
-    use nat::NatDirection;
     use nat::StatelessNat;
     use nat::stateless::config::tables::{NatTables, PerVniTable};
     use net::buffer::PacketBufferMut;
@@ -163,7 +162,7 @@ mod tests {
         const TARGET_DST_IP: Ipv4Addr = Ipv4Addr::new(10, 0, 136, 8);
 
         let nat_tables = build_context();
-        let mut nat = StatelessNat::new(NatDirection::DstNat);
+        let mut nat = StatelessNat::new();
         nat.update_tables(nat_tables);
 
         let mut packet = build_test_ipv4_packet(u8::MAX).unwrap();

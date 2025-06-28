@@ -6,7 +6,6 @@
 pub mod config;
 mod iplist;
 
-use crate::NatDirection;
 use config::tables::{NatTables, TrieValue};
 use iplist::IpList;
 use net::buffer::PacketBufferMut;
@@ -37,16 +36,15 @@ fn map_ip_dst_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
 #[derive(Debug)]
 pub struct StatelessNat {
     context: NatTables,
-    direction: NatDirection,
 }
 
+#[allow(clippy::new_without_default)]
 impl StatelessNat {
-    /// Creates a new [`StatelessNat`] processor. The `direction` indicates whether this processor
-    /// should perform source or destination NAT.
+    /// Creates a new [`StatelessNat`] processor.
     #[must_use]
-    pub fn new(direction: NatDirection) -> Self {
+    pub fn new() -> Self {
         let context = NatTables::new();
-        Self { context, direction }
+        Self { context }
     }
 
     /// Updates the VNI tables in the NAT processor.
@@ -54,58 +52,59 @@ impl StatelessNat {
         self.context = tables;
     }
 
-    fn find_src_nat_ranges(&self, net: &Net, vni: Vni) -> Option<&TrieValue> {
-        let table = self.context.tables.get(&vni.as_u32())?;
-        let src_ip = net.src_addr();
-        table.lookup_src_prefixes(&src_ip)
-    }
-
-    fn find_dst_nat_ranges(&self, net: &Net, vni: Vni) -> Option<&TrieValue> {
-        let table = self.context.tables.get(&vni.as_u32())?;
-        let dst_ip = net.dst_addr();
-        table.lookup_dst_prefixes(&dst_ip)
-    }
-
-    fn find_nat_ranges(&self, net: &mut Net, vni_opt: Option<Vni>) -> Option<&TrieValue> {
+    fn find_nat_ranges(
+        &self,
+        net: &mut Net,
+        vni_opt: Option<Vni>,
+    ) -> Option<(Option<&TrieValue>, Option<&TrieValue>)> {
         let vni = vni_opt?;
-        match self.direction {
-            NatDirection::SrcNat => self.find_src_nat_ranges(net, vni),
-            NatDirection::DstNat => self.find_dst_nat_ranges(net, vni),
+        let table = self.context.tables.get(&vni.as_u32())?;
+
+        let src_nat_ranges = table.lookup_src_prefixes(&net.src_addr());
+        let dst_nat_ranges = table.lookup_dst_prefixes(&net.dst_addr());
+
+        Some((src_nat_ranges, dst_nat_ranges))
+    }
+
+    fn translate_src(net: &mut Net, ranges_src_nat: &TrieValue) -> Option<()> {
+        let target_src_ip = map_ip_src_nat(ranges_src_nat, &net.src_addr());
+        match (net, target_src_ip) {
+            (Net::Ipv4(hdr), IpAddr::V4(src_ip)) => {
+                hdr.set_source(UnicastIpv4Addr::new(src_ip).ok()?);
+            }
+            (Net::Ipv6(hdr), IpAddr::V6(src_ip)) => {
+                hdr.set_source(UnicastIpv6Addr::new(src_ip).ok()?);
+            }
+            _ => return None,
         }
+        Some(())
+    }
+
+    fn translate_dst(net: &mut Net, ranges_dst_nat: &TrieValue) -> Option<()> {
+        let target_dst_ip = map_ip_dst_nat(ranges_dst_nat, &net.dst_addr());
+        match (net, target_dst_ip) {
+            (Net::Ipv4(hdr), IpAddr::V4(dst_ip)) => {
+                hdr.set_destination(dst_ip);
+            }
+            (Net::Ipv6(hdr), IpAddr::V6(dst_ip)) => {
+                hdr.set_destination(dst_ip);
+            }
+            _ => return None,
+        }
+        Some(())
     }
 
     /// Applies network address translation to a packet, knowing the current and target ranges.
-    fn translate(&self, net: &mut Net, ranges: &TrieValue) -> Option<()> {
-        let target_ip = match self.direction {
-            NatDirection::SrcNat => {
-                let current_ip = net.src_addr();
-                map_ip_src_nat(ranges, &current_ip)
-            }
-            NatDirection::DstNat => {
-                let current_ip = net.dst_addr();
-                map_ip_dst_nat(ranges, &current_ip)
-            }
-        };
-
-        match self.direction {
-            NatDirection::SrcNat => match (net, target_ip) {
-                (Net::Ipv4(hdr), IpAddr::V4(ip)) => {
-                    hdr.set_source(UnicastIpv4Addr::new(ip).ok()?);
-                }
-                (Net::Ipv6(hdr), IpAddr::V6(ip)) => {
-                    hdr.set_source(UnicastIpv6Addr::new(ip).ok()?);
-                }
-                (_, _) => return None,
-            },
-            NatDirection::DstNat => match (net, target_ip) {
-                (Net::Ipv4(hdr), IpAddr::V4(ip)) => {
-                    hdr.set_destination(ip);
-                }
-                (Net::Ipv6(hdr), IpAddr::V6(ip)) => {
-                    hdr.set_destination(ip);
-                }
-                (_, _) => return None,
-            },
+    fn translate(
+        net: &mut Net,
+        ranges_src_nat: Option<&TrieValue>,
+        ranges_dst_nat: Option<&TrieValue>,
+    ) -> Option<()> {
+        if let Some(ranges_src) = ranges_src_nat {
+            Self::translate_src(net, ranges_src)?;
+        }
+        if let Some(ranges_dst) = ranges_dst_nat {
+            Self::translate_dst(net, ranges_dst)?;
         }
         Some(())
     }
@@ -117,11 +116,11 @@ impl StatelessNat {
         let Some(net) = packet.headers_mut().try_ip_mut() else {
             return;
         };
-        let Some(ranges) = self.find_nat_ranges(net, vni) else {
+        let Some((ranges_src_nat, ranges_dst_nat)) = self.find_nat_ranges(net, vni) else {
             return;
         };
 
-        self.translate(net, ranges);
+        Self::translate(net, ranges_src_nat, ranges_dst_nat);
     }
 }
 

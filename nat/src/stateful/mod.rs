@@ -3,11 +3,11 @@
 
 #![allow(dead_code)]
 #![allow(unused_variables)]
+#![allow(unused_imports)]
 
 mod allocator;
 pub mod sessions;
 
-use crate::NatDirection;
 use crate::stateful::sessions::{
     NatDefaultSession, NatDefaultSessionManager, NatSession, NatSessionManager, NatState,
 };
@@ -97,17 +97,15 @@ impl<I: NatIp> NatTuple<I> {
 #[derive(Debug)]
 pub struct StatefulNat {
     sessions: NatDefaultSessionManager,
-    direction: NatDirection,
 }
 
+#[allow(clippy::new_without_default)]
 impl StatefulNat {
-    /// Creates a new [`StatefulNat`] processor. The `direction` indicates whether this processor should
-    /// perform source or destination NAT.
+    /// Creates a new [`StatefulNat`] processor.
     #[must_use]
-    pub fn new(direction: NatDirection) -> Self {
+    pub fn new() -> Self {
         Self {
             sessions: NatDefaultSessionManager::new(),
-            direction,
         }
     }
 
@@ -186,12 +184,14 @@ impl StatefulNat {
         }
     }
 
+    #[allow(clippy::unnecessary_wraps)]
+    // TODO: Fix regarding directions
     fn stateful_translate<Buf: PacketBufferMut>(
-        direction: &NatDirection,
         packet: &mut Packet<Buf>,
         state: &NatState,
         next_header: NextHeader,
     ) -> Option<()> {
+        /*
         let headers = packet.headers_mut();
         let net = headers.try_ip_mut()?;
         let (target_ip, target_port) = state.get_nat();
@@ -220,6 +220,7 @@ impl StatefulNat {
                 (_, _) => return None,
             },
         }
+        */
         Some(())
     }
 
@@ -232,17 +233,11 @@ impl StatefulNat {
         &mut self,
         packet: &mut Packet<Buf>,
         tuple: &NatTuple<Ipv4Addr>,
-        direction: &NatDirection,
         total_bytes: u16,
     ) -> Option<()> {
         // Hot path: if we have a session, directly translate the address already
         if let Some(mut session) = self.lookup_session_v4_mut(tuple) {
-            Self::stateful_translate::<Buf>(
-                direction,
-                packet,
-                session.get_state_mut()?,
-                tuple.next_header,
-            );
+            Self::stateful_translate::<Buf>(packet, session.get_state_mut()?, tuple.next_header);
             Self::update_stats(session.get_state_mut()?, total_bytes);
             return Some(());
         }
@@ -253,7 +248,7 @@ impl StatefulNat {
             let mut new_state = NatState::new(target_ip.to_ip_addr(), target_port);
             Self::update_stats(&mut new_state, total_bytes);
             self.create_session_v4(tuple, new_state.clone()).ok()?;
-            Self::stateful_translate::<Buf>(direction, packet, &new_state, tuple.next_header);
+            Self::stateful_translate::<Buf>(packet, &new_state, tuple.next_header);
             return Some(());
         }
 
@@ -278,14 +273,12 @@ impl StatefulNat {
 
         let vrf_id = Self::get_vrf_id(net, vni);
 
-        let direction = self.direction.clone();
-
         match net {
             Net::Ipv4(_) => {
                 let Some(tuple) = Self::extract_tuple(net, vrf_id) else {
                     return;
                 };
-                self.translate_packet_v4::<Buf>(packet, &tuple, &direction, total_bytes);
+                self.translate_packet_v4::<Buf>(packet, &tuple, total_bytes);
             }
             Net::Ipv6(_) => {
                 todo!()
