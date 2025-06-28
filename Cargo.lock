@@ -848,6 +848,7 @@ dependencies = [
  "dataplane-routing",
  "dataplane-test-utils",
  "derive_builder 0.20.2",
+ "either",
  "fixin",
  "futures",
  "gateway_config",

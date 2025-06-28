@@ -61,3 +61,4 @@ gateway_config = { workspace = true, features = ["bolero"] }
 pretty_assertions = { workspace = true }
 tracing-test = { workspace = true, features = [] }
 caps = { workspace = true }
+either = { version = "1.15.0", features = ["serde"] }

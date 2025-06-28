@@ -4,7 +4,6 @@
 use crate::Manager;
 use crate::tc::block::BlockIndex;
 use derive_builder::Builder;
-use either::Either;
 use multi_index_map::MultiIndexMap;
 use net::interface::InterfaceIndex;
 use rekon::{Create, Observe, Remove, Update};
@@ -17,17 +16,24 @@ use serde::{Deserialize, Serialize};
 #[repr(transparent)]
 pub struct ChainIndex(u32);
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
+pub enum ChainOn {
+    Interface(InterfaceIndex),
+    Block(BlockIndex),
+}
+
 #[derive(Builder, Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 pub struct ChainId {
     index: ChainIndex,
-    on: Either<InterfaceIndex, BlockIndex>,
+    on: ChainOn,
 }
 
 impl ChainId {
     /// Creates a new chain ID.
     #[must_use]
-    pub fn new(index: impl Into<ChainIndex>, on: Either<InterfaceIndex, BlockIndex>) -> Self {
+    pub fn new(index: impl Into<ChainIndex>, on: ChainOn) -> Self {
         Self {
             index: index.into(),
             on,
@@ -36,7 +42,7 @@ impl ChainId {
 
     /// Returns the block or interface which this chain is attached to.
     #[must_use]
-    pub fn on(&self) -> Either<InterfaceIndex, BlockIndex> {
+    pub fn on(&self) -> ChainOn {
         self.on
     }
 
@@ -99,7 +105,7 @@ impl Create for Manager<Chain> {
         Self: 'a,
     {
         let req = match requirement.id.on() {
-            Either::Left(interface) => self
+            ChainOn::Interface(interface) => self
                 .handle
                 .traffic_chain(
                     #[allow(clippy::cast_possible_wrap)] // u32 under the hood anyway
@@ -108,7 +114,7 @@ impl Create for Manager<Chain> {
                     },
                 )
                 .add(),
-            Either::Right(block) => self.handle.traffic_chain(0).add().block(block.into()),
+            ChainOn::Block(block) => self.handle.traffic_chain(0).add().block(block.into()),
         }
         .chain(requirement.id.chain().into());
 
@@ -140,7 +146,7 @@ impl Remove for Manager<Chain> {
         Self: 'a,
     {
         match observation.on() {
-            Either::Left(iface) => self
+            ChainOn::Interface(iface) => self
                 .handle
                 .traffic_chain(
                     #[allow(clippy::cast_possible_wrap)] // u32 under the hood anyway
@@ -149,7 +155,7 @@ impl Remove for Manager<Chain> {
                     },
                 )
                 .del(),
-            Either::Right(block) => self.handle.traffic_chain(0).del().block(block.into()),
+            ChainOn::Block(block) => self.handle.traffic_chain(0).del().block(block.into()),
         }
         .chain(observation.chain().into())
         .execute()

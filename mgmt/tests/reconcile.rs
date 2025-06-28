@@ -4,6 +4,7 @@
 use dataplane_mgmt as mgmt;
 
 use caps::Capability;
+use either::Either;
 use fixin::wrap;
 use interface_manager::Manager;
 use interface_manager::interface::{
@@ -20,7 +21,7 @@ use interface_manager::tc::qdisc::{Qdisc, QdiscProperties, QdiscSpec};
 use mgmt::vpc_manager::{RequiredInformationBase, RequiredInformationBaseBuilder, VpcManager};
 use net::eth::ethtype::EthType;
 use net::eth::mac::Mac;
-use net::interface::{AdminState, InterfaceIndex, InterfaceProperties};
+use net::interface::{AdminState, Interface, InterfaceIndex, InterfaceProperties};
 use net::ipv4::UnicastIpv4Addr;
 use net::pci::PciEbdf;
 use net::vxlan::{Vni, Vxlan};
@@ -1605,14 +1606,14 @@ async fn chain_in_block_with_template() {
 
     manager.create(&clsact).await.unwrap();
 
-    let chain_id = ChainId::new(ingress_block, 0);
+    let chain_id = ChainId::new(0, Either::Right(ingress_block));
 
     let chain_manager = Manager::<Chain>::new(handle.clone());
     let chain_spec = ChainSpecBuilder::default().id(chain_id).build().unwrap();
     chain_manager.create(&chain_spec).await.unwrap();
 
     let chain_spec = ChainSpecBuilder::default()
-        .id(ChainId::new(ingress_block, 1))
+        .id(ChainId::new(1, Either::Right(ingress_block)))
         .template(Some(
             [TcFilterFlowerOption::EthDst([0, 0, 0, 0, 0, 0])].into(),
         ))
@@ -1646,4 +1647,44 @@ async fn observe_actions() {
     for (_, action) in ab.tunnel_key.iter() {
         println!("{action:#?}");
     }
+}
+
+#[allow(clippy::too_many_lines)] // this is an integration test and is expected to be long
+#[tokio::test]
+#[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
+// #[wrap(run_in_netns("biscuit"))]
+#[traced_test]
+async fn observe_qdisc() {
+    let (mut connection, handle, _recv) = rtnetlink::new_connection().unwrap();
+    connection
+        .socket_mut()
+        .socket_mut()
+        .set_rx_buf_sz(812_992)
+        .unwrap();
+    tokio::spawn(connection);
+    let handle = Arc::new(handle);
+    let vpc_manager = VpcManager::<RequiredInformationBase>::new(handle.clone());
+    let rib = vpc_manager.observe().await.unwrap();
+
+    let qdisc_manger = Manager::<Qdisc>::new(handle.clone());
+
+    let x = qdisc_manger.observe().await;
+
+    println!("{x:#?}");
+
+    // for (_, iface) in rib.interfaces.iter() {
+    //     match &iface.properties {
+    //         InterfaceProperties::Vtep(vtep) => {
+    //             println!("{vtep:#?}");
+    //         }
+    //         InterfaceProperties::Pci(pci) => {
+    //             println!("pci:\n{pci:#?}");
+    //         }
+    //         _ => {}
+    //     }
+    // }
+
+    // let iface_manager = Manager::<Interface>::new(handle.clone());
+    // let interfaces = iface_manager.observe().await.unwrap();
+    // let qdisc_manager = Manager::<Qdisc>::new(handle.clone());
 }

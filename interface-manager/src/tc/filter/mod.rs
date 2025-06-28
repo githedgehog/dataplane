@@ -3,9 +3,8 @@
 
 use crate::Manager;
 use crate::tc::action::{Action, ActionSpec};
-use crate::tc::chain::ChainId;
+use crate::tc::chain::{ChainId, ChainOn};
 use derive_builder::Builder;
-use either::Either;
 use rekon::{AsRequirement, Create};
 use rtnetlink::packet_route::tc::TcFilterFlowerOption;
 use std::num::NonZero;
@@ -104,7 +103,7 @@ impl Create for Manager<Filter> {
             }
         }
         match requirement.chain.on() {
-            Either::Left(ifindex) => self
+            ChainOn::Interface(ifindex) => self
                 .handle
                 .traffic_filter(
                     #[allow(clippy::cast_possible_wrap)] // actually u32 under the hood anyway
@@ -113,7 +112,7 @@ impl Create for Manager<Filter> {
                     },
                 )
                 .add(),
-            Either::Right(block) => self.handle.traffic_filter(0).add().block(block.into()),
+            ChainOn::Block(block) => self.handle.traffic_filter(0).add().block(block.into()),
         }
         .chain(requirement.chain.chain().into())
         .handle(requirement.handle.into())
