@@ -4,8 +4,10 @@
 use crate::Manager;
 use crate::tc::block::BlockIndex;
 use derive_builder::Builder;
+use either::Either;
 use multi_index_map::MultiIndexMap;
-use rekon::Create;
+use net::interface::InterfaceIndex;
+use rekon::{Create, Observe, Remove, Update};
 use rtnetlink::packet_route::tc::TcFilterFlowerOption;
 use serde::{Deserialize, Serialize};
 
@@ -18,30 +20,30 @@ pub struct ChainIndex(u32);
 #[derive(Builder, Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 pub struct ChainId {
-    block_index: BlockIndex,
-    chain_index: ChainIndex,
+    index: ChainIndex,
+    on: Either<InterfaceIndex, BlockIndex>,
 }
 
 impl ChainId {
     /// Creates a new chain ID.
     #[must_use]
-    pub fn new(block_index: impl Into<BlockIndex>, chain_index: impl Into<ChainIndex>) -> Self {
+    pub fn new(index: impl Into<ChainIndex>, on: Either<InterfaceIndex, BlockIndex>) -> Self {
         Self {
-            block_index: block_index.into(),
-            chain_index: chain_index.into(),
+            index: index.into(),
+            on,
         }
     }
 
-    /// Returns the block index this chain is associated with.
+    /// Returns the block or interface which this chain is attached to.
     #[must_use]
-    pub fn block(&self) -> BlockIndex {
-        self.block_index
+    pub fn on(&self) -> Either<InterfaceIndex, BlockIndex> {
+        self.on
     }
 
-    /// Returns the index which identifies this chain within the block.
+    /// Returns the index which identifies this chain within the block or device
     #[must_use]
     pub fn chain(&self) -> ChainIndex {
-        self.chain_index
+        self.index
     }
 }
 
@@ -96,12 +98,20 @@ impl Create for Manager<Chain> {
     where
         Self: 'a,
     {
-        let req = self
-            .handle
-            .traffic_chain(0)
-            .add()
-            .block(requirement.id.block().into())
-            .chain(requirement.id.chain().into());
+        let req = match requirement.id.on() {
+            Either::Left(interface) => self
+                .handle
+                .traffic_chain(
+                    #[allow(clippy::cast_possible_wrap)] // u32 under the hood anyway
+                    {
+                        u32::from(interface) as i32
+                    },
+                )
+                .add(),
+            Either::Right(block) => self.handle.traffic_chain(0).add().block(block.into()),
+        }
+        .chain(requirement.id.chain().into());
+
         let req = match &requirement.template {
             None => req,
             Some(template) => match req.flower(template.as_slice()) {
@@ -114,3 +124,71 @@ impl Create for Manager<Chain> {
         req.execute().await
     }
 }
+
+impl Remove for Manager<Chain> {
+    type Observation<'a>
+        = &'a ChainId
+    where
+        Self: 'a;
+    type Outcome<'a>
+        = Result<(), rtnetlink::Error>
+    where
+        Self: 'a;
+
+    async fn remove<'a>(&self, observation: Self::Observation<'a>) -> Self::Outcome<'a>
+    where
+        Self: 'a,
+    {
+        match observation.on() {
+            Either::Left(iface) => self
+                .handle
+                .traffic_chain(
+                    #[allow(clippy::cast_possible_wrap)] // u32 under the hood anyway
+                    {
+                        iface.to_u32() as i32
+                    },
+                )
+                .del(),
+            Either::Right(block) => self.handle.traffic_chain(0).del().block(block.into()),
+        }
+        .chain(observation.chain().into())
+        .execute()
+        .await
+    }
+}
+
+impl Update for Manager<Chain> {
+    type Requirement<'a>
+        = &'a ChainSpec
+    where
+        Self: 'a;
+    type Observation<'a>
+        = &'a Chain
+    where
+        Self: 'a;
+    type Outcome<'a>
+        = Result<(), rtnetlink::Error>
+    where
+        Self: 'a;
+
+    async fn update<'a>(
+        &self,
+        requirement: Self::Requirement<'a>,
+        observation: Self::Observation<'a>,
+    ) -> Self::Outcome<'a> {
+        self.remove(&observation.id).await?;
+        self.create(requirement).await
+    }
+}
+
+// impl Observe for Manager<Chain> {
+//     type Observation<'a>
+//         = Vec<Chain>
+//     where
+//         Self: 'a;
+//
+//     async fn observe<'a>(&self) -> Self::Observation<'a> {
+//         let mut links = Manager::<Interface>::new()
+//         let mut x = self.handle.traffic_chain(0).get().block(s);
+//     }
+// }

@@ -16,8 +16,7 @@ use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
-#[allow(unused)]
-use tracing::{debug, error, info};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use crate::packet_processor::start_router;
@@ -35,25 +34,24 @@ fn init_logging() {
         .init();
 }
 
+#[cfg(not(feature = "packet-dumper"))]
 fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
     let pipeline = DynPipeline::new();
-    #[cfg(not(feature = "packet-dumper"))]
-    {
-        let custom_filter = |_packet: &Packet<Buf>| -> bool {
-            /* your own filter here */
-            true
-        };
-        pipeline.add_stage(PacketDumper::new(
-            "default",
-            true,
-            Some(Box::new(custom_filter)),
-        ))
-    }
+    let custom_filter = |_packet: &Packet<Buf>| -> bool {
+        /* your own filter here */
+        true
+    };
+    pipeline.add_stage(PacketDumper::new(
+        "default",
+        true,
+        Some(Box::new(custom_filter)),
+    ))
+}
 
-    #[cfg(feature = "packet-dumper")]
-    {
-        pipeline.add_stage(PacketDumper::new("default", true, None))
-    }
+#[cfg(feature = "packet-dumper")]
+fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
+    let pipeline = DynPipeline::new();
+    pipeline.add_stage(PacketDumper::new("default", true, None))
 }
 
 fn main() {

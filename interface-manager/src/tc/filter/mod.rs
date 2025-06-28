@@ -3,9 +3,9 @@
 
 use crate::Manager;
 use crate::tc::action::{Action, ActionSpec};
-use crate::tc::block::BlockIndex;
-use crate::tc::chain::{ChainId, ChainIndex};
+use crate::tc::chain::ChainId;
 use derive_builder::Builder;
+use either::Either;
 use rekon::{AsRequirement, Create};
 use rtnetlink::packet_route::tc::TcFilterFlowerOption;
 use std::num::NonZero;
@@ -103,18 +103,25 @@ impl Create for Manager<Filter> {
                 protocol = eth_type.to_be();
             }
         }
-        self.handle
-            // a value of zero in the ifindex tell the kernel "no interface, this is for a block"
-            .traffic_filter(0) // TODO: support non block filters
-            .add()
-            .chain(requirement.chain.chain().into())
-            .block(requirement.chain.block().into())
-            .handle(requirement.handle.into())
-            .protocol(protocol) // TODO: update if matching on ethtype
-            // .parent()  // TODO: tolerate multiple qdiscs
-            .priority(requirement.priority)
-            .flower(requirement.criteria.as_slice())?
-            .execute()
-            .await
+        match requirement.chain.on() {
+            Either::Left(ifindex) => self
+                .handle
+                .traffic_filter(
+                    #[allow(clippy::cast_possible_wrap)] // actually u32 under the hood anyway
+                    {
+                        ifindex.to_u32() as i32
+                    },
+                )
+                .add(),
+            Either::Right(block) => self.handle.traffic_filter(0).add().block(block.into()),
+        }
+        .chain(requirement.chain.chain().into())
+        .handle(requirement.handle.into())
+        .protocol(protocol)
+        // .parent()  // TODO: tolerate multiple qdiscs
+        .priority(requirement.priority)
+        .flower(requirement.criteria.as_slice())?
+        .execute()
+        .await
     }
 }

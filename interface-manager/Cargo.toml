@@ -25,6 +25,7 @@ rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["std"] }
 thiserror = { workspace = true, features = ["std"] }
 tracing = { workspace = true, features = ["attributes"] }
+either = { version = "1.15.0", features = ["serde"] }
 
 [dev-dependencies]
 # internal

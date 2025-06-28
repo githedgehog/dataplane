@@ -819,6 +819,7 @@ dependencies = [
  "dataplane-net",
  "dataplane-rekon",
  "derive_builder 0.20.2",
+ "either",
  "futures",
  "multi_index_map",
  "pci-ids",
@@ -1102,6 +1103,9 @@ name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "endian-type"
@@ -2434,7 +2438,6 @@ checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 [[package]]
 name = "rtnetlink"
 version = "0.17.0"
-source = "git+https://github.com/daniel-noland/rtnetlink.git?branch=hh%2Ftc-actions#39a6824d52130929aae83ea4cdca54a658e85e6a"
 dependencies = [
  "futures",
  "log",
