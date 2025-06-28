@@ -48,7 +48,6 @@ tracing-test = { workspace = true }
 fixin = { workspace = true }
 id = { workspace = true, features = ["bolero"] }
 interface-manager = { workspace = true, features = ["bolero"] }
-nat = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero"] }
 routing = { workspace = true, features = ["testing"] }
 test-utils = { workspace = true }

@@ -5,8 +5,8 @@
 
 pub mod config;
 mod iplist;
-#[cfg(any(test, feature = "testing"))]
-pub mod test;
+#[cfg(test)]
+mod test;
 
 use crate::NatDirection;
 use config::tables::{NatTables, TrieValue};
