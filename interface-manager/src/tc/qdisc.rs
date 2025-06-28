@@ -13,11 +13,87 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZero;
 use tracing::warn;
 
-#[derive(Builder, Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(
+    Builder, Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 pub struct QdiscHandle {
     pub major: u16,
     pub minor: u16,
+}
+
+impl From<QdiscHandle> for u32 {
+    fn from(handle: QdiscHandle) -> Self {
+        (u32::from(handle.major) << 16) | u32::from(handle.minor)
+    }
+}
+
+impl From<u32> for QdiscHandle {
+    fn from(handle: u32) -> Self {
+        Self {
+            major: (handle >> 16) as u16,
+            minor: ((0x0000_ffff) & handle) as u16,
+        }
+    }
+}
+
+impl QdiscHandle {
+    pub const INGRESS: Self = Self {
+        major: u16::MAX,
+        minor: 0xfff1,
+    };
+}
+
+#[derive(
+    Builder, Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
+#[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
+pub struct QdiscAddress {
+    parent: QdiscHandle,
+    handle: QdiscHandle,
+}
+
+impl QdiscAddress {
+    pub const CLSACT: Self = Self {
+        parent: QdiscHandle {
+            major: u16::MAX,
+            minor: 0xfff1,
+        },
+        handle: QdiscHandle {
+            major: 0xffff,
+            minor: 0,
+        },
+    };
+}
+
+#[derive(
+    Builder, Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
+#[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
+pub struct QdiscId {
+    #[builder(default = "QdiscAddress::CLSACT")]
+    address: QdiscAddress,
+    interface: InterfaceIndex,
+}
+
+impl QdiscId {
+    #[must_use]
+    pub const fn new_clsact_on(interface: InterfaceIndex) -> Self {
+        Self {
+            address: QdiscAddress::CLSACT,
+            interface,
+        }
+    }
+
+    #[must_use]
+    pub const fn address(&self) -> QdiscAddress {
+        self.address
+    }
+
+    #[must_use]
+    pub const fn interface(&self) -> InterfaceIndex {
+        self.interface
+    }
 }
 
 #[derive(
@@ -36,40 +112,25 @@ pub struct QdiscHandle {
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 pub struct Qdisc {
-    pub handle: QdiscHandle,
-    pub parent: QdiscHandle,
-    pub interface_index: InterfaceIndex,
+    #[multi_index(ordered_unique)]
+    pub id: QdiscId,
     #[builder(default)]
+    #[multi_index(ordered_non_unique)]
     pub ingress_block: Option<BlockIndex>,
     #[builder(default)]
+    #[multi_index(ordered_non_unique)]
     pub egress_block: Option<BlockIndex>,
     pub properties: QdiscProperties,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 pub enum QdiscProperties {
+    #[default]
     ClsAct,
 }
 
 impl Qdisc {
-    #[must_use]
-    pub fn new(
-        handle: QdiscHandle,
-        parent: QdiscHandle,
-        interface_index: InterfaceIndex,
-        properties: QdiscProperties,
-    ) -> Self {
-        Self {
-            handle,
-            parent,
-            interface_index,
-            ingress_block: None,
-            egress_block: None,
-            properties,
-        }
-    }
-
     pub fn ingress_block(&mut self, block: BlockIndex) -> &mut Self {
         self.ingress_block = Some(block);
         self
@@ -95,9 +156,11 @@ impl Qdisc {
     Serialize,
 )]
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[builder(build_fn(private, name = "_build"))]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 pub struct QdiscSpec {
-    pub interface_index: InterfaceIndex,
+    #[multi_index(ordered_unique)]
+    pub id: QdiscId,
     #[builder(default)]
     pub ingress_block: Option<BlockIndex>,
     #[builder(default)]
@@ -105,25 +168,47 @@ pub struct QdiscSpec {
     pub properties: QdiscProperties,
 }
 
-impl QdiscSpec {
-    #[must_use]
-    pub fn new(interface_index: InterfaceIndex, properties: QdiscProperties) -> Self {
-        Self {
-            interface_index,
-            ingress_block: None,
-            egress_block: None,
-            properties,
+impl QdiscSpecBuilder {
+    pub fn clsact_on(&mut self, interface_index: InterfaceIndex) -> &mut Self {
+        self.id = Some(QdiscId::new_clsact_on(interface_index));
+        self
+    }
+
+    /// Build a `QdiscSpec` from this builder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if
+    ///
+    /// * needed fields are missing
+    /// * the properties field is set to `ClsAct` but the address is not CLSACT
+    pub fn build(self) -> Result<QdiscSpec, QdiscSpecBuilderError> {
+        match (&self.id, &self.properties) {
+            (Some(id), Some(QdiscProperties::ClsAct)) => {
+                if id.address == QdiscAddress::CLSACT {
+                    self._build()
+                } else {
+                    Err(QdiscSpecBuilderError::ValidationError(format!(
+                        "clsact address mismatch: expected {:#?}, received {:#?}",
+                        QdiscAddress::CLSACT,
+                        id.address
+                    )))
+                }
+            }
+            _ => self._build(),
         }
     }
+}
 
-    pub fn ingress_block(&mut self, block: BlockIndex) -> &mut Self {
-        self.ingress_block = Some(block);
-        self
-    }
-
-    pub fn egress_block(&mut self, block: BlockIndex) -> &mut Self {
-        self.egress_block = Some(block);
-        self
+impl QdiscSpec {
+    #[must_use]
+    pub const fn new_clsact(interface_index: InterfaceIndex) -> Self {
+        Self {
+            id: QdiscId::new_clsact_on(interface_index),
+            ingress_block: None,
+            egress_block: None,
+            properties: QdiscProperties::ClsAct,
+        }
     }
 }
 
@@ -147,7 +232,7 @@ impl Create for Manager<Qdisc> {
             .add(
                 #[allow(clippy::cast_possible_wrap)]
                 {
-                    requirement.interface_index.to_u32() as i32
+                    requirement.id.interface.to_u32() as i32
                 },
             )
             .clsact();
@@ -191,33 +276,34 @@ impl Observe for Manager<Qdisc> {
                     continue;
                 }
             };
-            let qdisc_handle = QdiscHandle {
-                major: message.header.handle.major,
-                minor: message.header.handle.minor,
+            let address = QdiscAddress {
+                parent: QdiscHandle {
+                    major: message.header.parent.major,
+                    minor: message.header.parent.minor,
+                },
+                handle: QdiscHandle {
+                    major: message.header.handle.major,
+                    minor: message.header.handle.minor,
+                },
             };
 
-            builder.handle(qdisc_handle);
-
-            let parent_handle = QdiscHandle {
-                major: message.header.parent.major,
-                minor: message.header.parent.minor,
-            };
-            builder.parent(parent_handle);
-
-            let index = match InterfaceIndex::try_new(index_u32) {
+            match InterfaceIndex::try_new(index_u32) {
                 Err(err) => {
                     warn!("suspicious interface index observed: {err}");
                     continue;
                 }
-                Ok(idx) => idx,
+                Ok(interface_index) => builder.id(QdiscId {
+                    address,
+                    interface: interface_index,
+                }),
             };
-            builder.interface_index(index);
             for attr in &message.attributes {
                 match attr {
                     TcAttribute::Kind(kind) => {
                         if kind == "clsact" {
                             builder.properties(QdiscProperties::ClsAct);
                         }
+                        // TODO: handle other kinds of qdiscs
                     }
                     TcAttribute::IngressBlock(block) => {
                         let index = match NonZero::new(*block) {
@@ -266,11 +352,11 @@ impl Remove for Manager<Qdisc> {
         let mut req = self
             .handle
             .qdisc()
-            .del(observation.interface_index.to_u32() as i32);
-        req.message_mut().header.handle.major = observation.handle.major;
-        req.message_mut().header.handle.minor = observation.handle.minor;
-        req.message_mut().header.parent.major = observation.parent.major;
-        req.message_mut().header.parent.minor = observation.parent.minor;
+            .del(observation.id.interface.to_u32() as i32);
+        req.message_mut().header.parent.major = observation.id.address.parent.major;
+        req.message_mut().header.parent.minor = observation.id.address.parent.minor;
+        req.message_mut().header.handle.major = observation.id.address.handle.major;
+        req.message_mut().header.handle.minor = observation.id.address.handle.minor;
         req.execute().await
     }
 }
@@ -286,7 +372,7 @@ impl AsRequirement<QdiscSpec> for Qdisc {
         Self: 'a,
     {
         QdiscSpec {
-            interface_index: self.interface_index,
+            id: self.id,
             ingress_block: self.ingress_block,
             egress_block: self.egress_block,
             properties: self.properties.clone(),

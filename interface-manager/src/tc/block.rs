@@ -46,7 +46,7 @@ impl BlockIndex {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize)]
 pub enum BlockType {
     Ingress,
     Egress,
@@ -56,21 +56,15 @@ pub enum BlockType {
 pub struct Block {
     #[multi_index(ordered_unique)]
     index: BlockIndex,
+    #[multi_index(ordered_non_unique)]
     #[allow(clippy::struct_field_names)]
     block_type: BlockType,
-    devices: BTreeSet<InterfaceIndex>,
-    chains: MultiIndexChainMap,
 }
 
 impl Block {
     #[must_use]
     pub fn new(index: BlockIndex, block_type: BlockType) -> Self {
-        Self {
-            index,
-            block_type,
-            devices: BTreeSet::new(),
-            chains: MultiIndexChainMap::default(),
-        }
+        Self { index, block_type }
     }
 
     #[must_use]
@@ -81,27 +75,5 @@ impl Block {
     #[must_use]
     pub fn block_type(&self) -> BlockType {
         self.block_type
-    }
-
-    #[must_use]
-    pub fn devices(&self) -> &BTreeSet<InterfaceIndex> {
-        &self.devices
-    }
-
-    pub fn add_device(&mut self, device: InterfaceIndex) -> bool {
-        self.devices.insert(device)
-    }
-
-    pub fn remove_device(&mut self, device: InterfaceIndex) -> bool {
-        self.devices.remove(&device)
-    }
-
-    #[must_use]
-    pub fn chains(&self) -> &MultiIndexChainMap {
-        &self.chains
-    }
-
-    pub fn chains_mut(&mut self) -> &mut MultiIndexChainMap {
-        &mut self.chains
     }
 }

@@ -3,13 +3,15 @@
 
 use crate::Manager;
 use crate::tc::block::BlockIndex;
-use crate::tc::qdisc::Qdisc;
+use crate::tc::qdisc::{Qdisc, QdiscHandle};
 use derive_builder::Builder;
 use futures::TryStreamExt;
 use multi_index_map::MultiIndexMap;
 use net::interface::InterfaceIndex;
 use rekon::{Create, Observe, Remove, Update};
-use rtnetlink::packet_route::tc::{TcAttribute, TcFilterFlowerOption, TcMessage, TcOption};
+use rtnetlink::packet_route::tc::{
+    TcAttribute, TcFilterFlowerOption, TcHandle, TcMessage, TcOption,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use tracing::{debug, warn};
@@ -22,18 +24,24 @@ pub struct ChainIndex(u32);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
-pub enum ChainOn {
-    Interface(InterfaceIndex),
+pub enum ChainAttachment {
+    Interface {
+        interface: InterfaceIndex,
+        parent: QdiscHandle,
+    },
     Block(BlockIndex),
 }
 
-impl From<InterfaceIndex> for ChainOn {
+impl From<InterfaceIndex> for ChainAttachment {
     fn from(value: InterfaceIndex) -> Self {
-        Self::Interface(value)
+        Self::Interface {
+            interface: value,
+            parent: QdiscHandle::INGRESS, // TODO: this is maybe an over aggressive default
+        }
     }
 }
 
-impl From<BlockIndex> for ChainOn {
+impl From<BlockIndex> for ChainAttachment {
     fn from(value: BlockIndex) -> Self {
         Self::Block(value)
     }
@@ -43,13 +51,13 @@ impl From<BlockIndex> for ChainOn {
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 pub struct ChainId {
     index: ChainIndex,
-    on: ChainOn,
+    on: ChainAttachment,
 }
 
 impl ChainId {
     /// Creates a new chain ID.
     #[must_use]
-    pub fn new(index: impl Into<ChainIndex>, on: impl Into<ChainOn>) -> Self {
+    pub fn new(index: impl Into<ChainIndex>, on: impl Into<ChainAttachment>) -> Self {
         Self {
             index: index.into(),
             on: on.into(),
@@ -58,7 +66,7 @@ impl ChainId {
 
     /// Returns the block or interface which this chain is attached to.
     #[must_use]
-    pub fn on(&self) -> ChainOn {
+    pub fn on(&self) -> ChainAttachment {
         self.on
     }
 
@@ -121,16 +129,21 @@ impl Create for Manager<Chain> {
         Self: 'a,
     {
         let req = match requirement.id.on() {
-            ChainOn::Interface(interface) => self
-                .handle
-                .traffic_chain(
-                    #[allow(clippy::cast_possible_wrap)] // u32 under the hood anyway
-                    {
-                        u32::from(interface) as i32
-                    },
-                )
-                .add(),
-            ChainOn::Block(block) => self.handle.traffic_chain(0).add().block(block.into()),
+            ChainAttachment::Interface { interface, parent } => {
+                self.handle
+                    .traffic_chain(
+                        #[allow(clippy::cast_possible_wrap)] // u32 under the hood anyway
+                        {
+                            u32::from(interface) as i32
+                        },
+                    )
+                    .add()
+                    .parent(TcHandle {
+                        major: parent.major,
+                        minor: parent.minor,
+                    })
+            }
+            ChainAttachment::Block(block) => self.handle.traffic_chain(0).add().block(block.into()),
         }
         .chain(requirement.id.chain().into());
 
@@ -162,16 +175,20 @@ impl Remove for Manager<Chain> {
         Self: 'a,
     {
         match observation.on() {
-            ChainOn::Interface(iface) => self
+            ChainAttachment::Interface { interface, parent } => self
                 .handle
                 .traffic_chain(
                     #[allow(clippy::cast_possible_wrap)] // u32 under the hood anyway
                     {
-                        iface.to_u32() as i32
+                        interface.to_u32() as i32
                     },
                 )
-                .del(),
-            ChainOn::Block(block) => self.handle.traffic_chain(0).del().block(block.into()),
+                .del()
+                .parent(TcHandle {
+                    major: parent.major,
+                    minor: parent.minor,
+                }),
+            ChainAttachment::Block(block) => self.handle.traffic_chain(0).del().block(block.into()),
         }
         .chain(observation.chain().into())
         .execute()
@@ -298,7 +315,7 @@ impl Observe for Manager<Chain> {
             .chain(qdiscs.iter().filter_map(|qdisc| qdisc.egress_block))
             .collect();
         let devices: BTreeSet<InterfaceIndex> =
-            qdiscs.iter().map(|qdisc| qdisc.interface_index).collect();
+            qdiscs.iter().map(|qdisc| qdisc.id.interface()).collect();
         for block in blocks {
             let mut resp = self
                 .handle

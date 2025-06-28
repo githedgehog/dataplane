@@ -3,7 +3,7 @@
 
 use crate::Manager;
 use crate::tc::action::{Action, ActionSpec};
-use crate::tc::chain::{ChainId, ChainOn};
+use crate::tc::chain::{ChainAttachment, ChainId};
 use derive_builder::Builder;
 use rekon::{AsRequirement, Create};
 use rtnetlink::packet_route::tc::TcFilterFlowerOption;
@@ -103,16 +103,19 @@ impl Create for Manager<Filter> {
             }
         }
         match requirement.chain.on() {
-            ChainOn::Interface(ifindex) => self
+            ChainAttachment::Interface { interface, parent } => self
                 .handle
                 .traffic_filter(
                     #[allow(clippy::cast_possible_wrap)] // actually u32 under the hood anyway
                     {
-                        ifindex.to_u32() as i32
+                        interface.to_u32() as i32
                     },
                 )
-                .add(),
-            ChainOn::Block(block) => self.handle.traffic_filter(0).add().block(block.into()),
+                .add()
+                .parent(parent.into()),
+            ChainAttachment::Block(block) => {
+                self.handle.traffic_filter(0).add().block(block.into())
+            }
         }
         .chain(requirement.chain.chain().into())
         .handle(requirement.handle.into())

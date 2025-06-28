@@ -16,8 +16,8 @@ use interface_manager::interface::{
 };
 use interface_manager::tc::action::Action;
 use interface_manager::tc::block::BlockIndex;
-use interface_manager::tc::chain::{Chain, ChainId, ChainOn, ChainSpecBuilder};
-use interface_manager::tc::qdisc::{Qdisc, QdiscProperties, QdiscSpec};
+use interface_manager::tc::chain::{Chain, ChainAttachment, ChainId, ChainSpecBuilder};
+use interface_manager::tc::qdisc::{Qdisc, QdiscId, QdiscProperties, QdiscSpec, QdiscSpecBuilder};
 use mgmt::vpc_manager::{RequiredInformationBase, RequiredInformationBaseBuilder, VpcManager};
 use net::eth::ethtype::EthType;
 use net::eth::mac::Mac;
@@ -1595,14 +1595,14 @@ async fn chain_in_block_with_template() {
 
     let manager = Manager::<Qdisc>::new(handle.clone());
 
-    let mut clsact = QdiscSpec::new(
-        InterfaceIndex::try_new(69).unwrap(),
-        QdiscProperties::ClsAct,
-    );
     let ingress_block = BlockIndex::try_from(19).unwrap();
-    clsact
-        .ingress_block(ingress_block)
-        .egress_block(BlockIndex::try_from(20).unwrap());
+    let egress_block = BlockIndex::try_from(20).unwrap();
+    let mut clsact = QdiscSpecBuilder::default();
+    clsact.id(QdiscId::new_clsact_on(InterfaceIndex::try_new(20).unwrap()));
+    clsact.properties(QdiscProperties::ClsAct);
+    clsact.ingress_block(Some(ingress_block));
+    clsact.egress_block(Some(egress_block));
+    let clsact = clsact.build().unwrap();
 
     manager.create(&clsact).await.unwrap();
 
