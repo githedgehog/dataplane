@@ -90,10 +90,10 @@ mod tests {
         //         - not: 10.0.1.0/24  # to account for when fetching the address in range
         //         - not: 10.0.2.0/24  # to account for when fetching the address in range
         //         as:
-        //         - cidr: 1.1.0.0/17
-        //         - cidr: 1.2.0.0/17  # <- 1.2.3.4 will match here
-        //         - not: 1.2.0.0/24   # to account for when computing the offset
-        //         - not: 1.2.8.0/24
+        //         - cidr: 5.5.0.0/17
+        //         - cidr: 5.6.0.0/17  # <- 5.6.7.8 will match here
+        //         - not: 5.6.0.0/24   # to account for when computing the offset
+        //         - not: 5.6.8.0/24
         let expose3 = VpcExpose::empty()
             .ip("8.0.0.0/17".into())
             .not("8.0.0.0/24".into())
@@ -104,10 +104,10 @@ mod tests {
             .ip("10.0.0.0/16".into())
             .not("10.0.1.0/24".into())
             .not("10.0.2.0/24".into())
-            .as_range("1.1.0.0/17".into())
-            .as_range("1.2.0.0/17".into())
-            .not_as("1.2.0.0/24".into())
-            .not_as("1.2.8.0/24".into());
+            .as_range("5.5.0.0/17".into())
+            .as_range("5.6.0.0/17".into())
+            .not_as("5.6.0.0/24".into())
+            .not_as("5.6.8.0/24".into());
 
         let manifest2 = VpcManifest {
             name: "VPC-2".into(),
@@ -152,7 +152,7 @@ mod tests {
             .try_ipv4()
             .expect("Failed to get IPv4 header");
         println!("L3 header: {hdr0_out:?}");
-        assert_eq!(hdr0_out.destination(), addr_v4("10.0.132.4"));
+        assert_eq!(hdr0_out.destination(), addr_v4("10.0.136.8"));
     }
 
     #[test]

@@ -324,7 +324,7 @@ mod tests {
             .expect("Failed to get IPv4 header");
         let ref_tuple = NatTuple::new(
             Ipv4Addr::from_str("1.2.3.4").unwrap(),
-            Ipv4Addr::from_str("1.2.3.4").unwrap(),
+            Ipv4Addr::from_str("5.6.7.8").unwrap(),
             NextHeader::new(255),
             VrfId::from_str("1").unwrap(),
         );

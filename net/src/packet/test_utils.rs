@@ -30,7 +30,7 @@ use std::str::FromStr;
 #[must_use]
 /// Builds a test packet with the given TTL value.
 ///
-/// The packet is an IPv4 packet with a source and destination IP address of 1.2.3.4.
+/// The packet is an IPv4 packet with a source IP address of 1.2.3.4 and a destination of 5.6.7.8.
 /// The Ethernet source and destination MAC addresses are 0x02:00:00:00:00:01 and 0x02:00:00:00:00:02
 /// respectively.
 pub fn build_test_ipv4_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
@@ -42,7 +42,7 @@ pub fn build_test_ipv4_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPack
     )));
     let mut ipv4 = Ipv4::default();
     ipv4.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(1, 2, 3, 4)).unwrap());
-    ipv4.set_destination(Ipv4Addr::new(1, 2, 3, 4));
+    ipv4.set_destination(Ipv4Addr::new(5, 6, 7, 8));
     ipv4.set_ttl(ttl);
     headers.net(Some(Net::Ipv4(ipv4)));
 
