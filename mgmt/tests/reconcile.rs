@@ -16,7 +16,7 @@ use interface_manager::interface::{
 };
 use interface_manager::tc::action::Action;
 use interface_manager::tc::block::BlockIndex;
-use interface_manager::tc::chain::{Chain, ChainId, ChainSpecBuilder};
+use interface_manager::tc::chain::{Chain, ChainId, ChainOn, ChainSpecBuilder};
 use interface_manager::tc::qdisc::{Qdisc, QdiscProperties, QdiscSpec};
 use mgmt::vpc_manager::{RequiredInformationBase, RequiredInformationBaseBuilder, VpcManager};
 use net::eth::ethtype::EthType;
@@ -1606,14 +1606,14 @@ async fn chain_in_block_with_template() {
 
     manager.create(&clsact).await.unwrap();
 
-    let chain_id = ChainId::new(0, Either::Right(ingress_block));
+    let chain_id = ChainId::new(0, ingress_block);
 
     let chain_manager = Manager::<Chain>::new(handle.clone());
     let chain_spec = ChainSpecBuilder::default().id(chain_id).build().unwrap();
     chain_manager.create(&chain_spec).await.unwrap();
 
     let chain_spec = ChainSpecBuilder::default()
-        .id(ChainId::new(1, Either::Right(ingress_block)))
+        .id(ChainId::new(1, ingress_block))
         .template(Some(
             [TcFilterFlowerOption::EthDst([0, 0, 0, 0, 0, 0])].into(),
         ))

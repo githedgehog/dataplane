@@ -23,6 +23,18 @@ pub enum ChainOn {
     Block(BlockIndex),
 }
 
+impl From<InterfaceIndex> for ChainOn {
+    fn from(value: InterfaceIndex) -> Self {
+        Self::Interface(value)
+    }
+}
+
+impl From<BlockIndex> for ChainOn {
+    fn from(value: BlockIndex) -> Self {
+        Self::Block(value)
+    }
+}
+
 #[derive(Builder, Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 pub struct ChainId {
@@ -33,10 +45,10 @@ pub struct ChainId {
 impl ChainId {
     /// Creates a new chain ID.
     #[must_use]
-    pub fn new(index: impl Into<ChainIndex>, on: ChainOn) -> Self {
+    pub fn new(index: impl Into<ChainIndex>, on: impl Into<ChainOn>) -> Self {
         Self {
             index: index.into(),
-            on,
+            on: on.into(),
         }
     }
 

@@ -117,7 +117,6 @@ impl Create for Manager<Filter> {
         .chain(requirement.chain.chain().into())
         .handle(requirement.handle.into())
         .protocol(protocol)
-        // .parent()  // TODO: tolerate multiple qdiscs
         .priority(requirement.priority)
         .flower(requirement.criteria.as_slice())?
         .execute()
