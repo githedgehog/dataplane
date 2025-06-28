@@ -45,6 +45,7 @@ fn get_private_trie_value(expose: &VpcExpose, prefix: &Prefix) -> TrieValue {
 /// Returns an error if some lists of prefixes contain duplicates
 pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), TrieError> {
     let new_peering = optimize_peering(peering);
+    let mut local_expose_indices = vec![];
 
     new_peering.local.exposes.iter().try_for_each(|expose| {
         // Create new peering table for source NAT
@@ -64,14 +65,8 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Tri
 
         // Add peering table to PerVniTable
         table.src_nat_prefixes.push(peering_table);
-
-        // Update peering table to make relevant prefixes point to the new peering table, for each
-        // private prefix
-        let peering_index = table.src_nat_prefixes.len() - 1;
-        expose
-            .as_range
-            .iter()
-            .try_for_each(|prefix| table.src_nat_peers.rules.insert(prefix, peering_index))
+        local_expose_indices.push(table.src_nat_prefixes.len() - 1);
+        Ok(())
     })?;
 
     // Update table for destination NAT
@@ -86,7 +81,16 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Tri
         expose
             .not_as
             .iter()
-            .try_for_each(|prefix| table.dst_nat.insert_none(prefix))
+            .try_for_each(|prefix| table.dst_nat.insert_none(prefix));
+
+        // Update peering table to make relevant prefixes point to the new peering table, for each
+        // private prefix
+        expose.as_range.iter().try_for_each(|prefix| {
+            table
+                .src_nat_peers
+                .rules
+                .insert(prefix, local_expose_indices.clone())
+        })
     })?;
 
     Ok(())

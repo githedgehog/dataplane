@@ -66,13 +66,16 @@ impl PerVniTable {
     #[must_use]
     pub fn lookup_src_prefixes(&self, saddr: &IpAddr, daddr: &IpAddr) -> Option<&TrieValue> {
         // Find relevant prefix table for involved peer
-        let peer_index = self.src_nat_peers.lookup(daddr)?;
+        let peer_indices = self.src_nat_peers.lookup(daddr)?;
 
         // Look up for the NAT prefix in that table
-        let prefix_table = self.src_nat_prefixes.get(peer_index)?;
-        let (_, value) = prefix_table.lookup(saddr)?;
-
-        value.as_ref()
+        for peer_index in peer_indices {
+            let prefix_table = self.src_nat_prefixes.get(*peer_index)?;
+            if let Some((_, value)) = prefix_table.lookup(saddr) {
+                return value.as_ref();
+            }
+        }
+        None
     }
 
     /// Search for the list of prefixes for destination NAT associated to the given address.
@@ -106,7 +109,7 @@ pub struct NatPrefixRuleTable {
 /// lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatPeerRuleTable {
-    pub rules: PrefixTrie<usize>,
+    pub rules: PrefixTrie<Vec<usize>>,
 }
 
 impl NatPrefixRuleTable {
@@ -169,7 +172,13 @@ impl NatPeerRuleTable {
     ///
     /// Returns an error if the prefix is already in the table
     pub fn insert(&mut self, prefix: &Prefix, target_index: usize) -> Result<(), TrieError> {
-        self.rules.insert(prefix, target_index)
+        let rule_opt = self.rules.get_mut(prefix);
+        if let Some(rule) = rule_opt {
+            rule.push(target_index);
+            Ok(())
+        } else {
+            self.rules.insert(prefix, vec![target_index])
+        }
     }
 
     /// Looks up for the value associated with the given address.
@@ -179,8 +188,8 @@ impl NatPeerRuleTable {
     /// Returns the value associated with the given address if it is present in the trie. If the
     /// address is not present, it returns `None`.
     #[must_use]
-    pub fn lookup(&self, addr: &IpAddr) -> Option<usize> {
-        self.rules.lookup(addr).map(|(_, v)| v).copied()
+    pub fn lookup(&self, addr: &IpAddr) -> Option<&Vec<usize>> {
+        self.rules.lookup(addr).map(|(_, v)| v)
     }
 }
 

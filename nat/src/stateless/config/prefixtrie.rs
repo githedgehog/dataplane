@@ -57,6 +57,15 @@ where
         }
     }
 
+    /// Returns a mutable reference to the value associated with the given prefix.
+    /// If the prefix is not present, it returns `None`.
+    pub fn get_mut(&mut self, prefix: &Prefix) -> Option<&mut T> {
+        match prefix {
+            Prefix::IPV4(p) => self.trie_ipv4.get_mut(p),
+            Prefix::IPV6(p) => self.trie_ipv6.get_mut(p),
+        }
+    }
+
     /// Inserts a new IPv4 prefix and its associated value into the trie.
     ///
     /// Note: This method is not thread-safe.
