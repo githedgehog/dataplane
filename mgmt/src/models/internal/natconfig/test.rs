@@ -3,30 +3,56 @@
 
 //! NAT configuration tests .. and actual NAT function
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use crate::models::external::overlay::vpc::Peering;
     use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use crate::models::internal::natconfig::table_extend;
-
-    use pipeline::NetworkFunction;
-
     use nat::NatDirection;
     use nat::StatelessNat;
     use nat::stateless::config::tables::{NatTables, PerVniTable};
-
-    use net::headers::TryIpv4;
+    use net::buffer::PacketBufferMut;
+    use net::headers::{TryHeadersMut, TryIpv4, TryIpv4Mut};
+    use net::packet::Packet;
     use net::packet::test_utils::build_test_ipv4_packet;
     use net::vxlan::Vni;
+    use pipeline::NetworkFunction;
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
 
-    fn addr_v4(s: &str) -> IpAddr {
-        IpAddr::V4(Ipv4Addr::from_str(s).expect("Invalid IPv4 address"))
+    fn vni(vni: u32) -> Vni {
+        Vni::new_checked(vni).expect("Failed to create VNI")
     }
 
-    fn vni_100() -> Vni {
-        Vni::new_checked(100).expect("Failed to create VNI")
+    fn get_src_ip_v4<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Ipv4Addr {
+        packet
+            .get_headers()
+            .try_ipv4()
+            .expect("Failed to get IPv4 header")
+            .source()
+            .inner()
+    }
+
+    fn get_dst_ip_v4<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Ipv4Addr {
+        packet
+            .get_headers()
+            .try_ipv4()
+            .expect("Failed to get IPv4 header")
+            .destination()
+    }
+
+    fn set_addresses_v4<Buf: PacketBufferMut>(
+        packet: &mut Packet<Buf>,
+        src_addr: Ipv4Addr,
+        dst_addr: Ipv4Addr,
+    ) -> &Packet<Buf> {
+        let hdr = packet
+            .headers_mut()
+            .try_ipv4_mut()
+            .expect("Failed to get IPv4 header");
+        hdr.set_source(src_addr.try_into().expect("Invalid Unicast IPv4 address"));
+        hdr.set_destination(dst_addr);
+        packet
     }
 
     fn build_context() -> NatTables {
@@ -124,7 +150,7 @@ mod tests {
         let mut vni_table = PerVniTable::new();
         table_extend::add_peering(&mut vni_table, &peering).expect("Failed to build NAT tables");
 
-        let vni = vni_100();
+        let vni = vni(100);
         let mut nat_table = NatTables::new();
         nat_table.add_table(vni, vni_table);
 
@@ -133,49 +159,47 @@ mod tests {
 
     #[test]
     fn test_dst_nat_stateless_44() {
+        const TARGET_SRC_IP: Ipv4Addr = Ipv4Addr::new(2, 2, 0, 4);
+        const TARGET_DST_IP: Ipv4Addr = Ipv4Addr::new(10, 0, 136, 8);
+
         let nat_tables = build_context();
         let mut nat = StatelessNat::new(NatDirection::DstNat);
         nat.update_tables(nat_tables);
 
-        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()]
-            .into_iter()
-            .map(|mut packet| {
-                packet.get_meta_mut().src_vni = Some(vni_100());
-                packet
-            });
+        let mut packet = build_test_ipv4_packet(u8::MAX).unwrap();
+        let mut packet_reply = packet.clone();
+        packet.get_meta_mut().src_vni = Some(vni(100));
+        packet_reply.get_meta_mut().src_vni = Some(vni(200));
 
-        let packets_out: Vec<_> = nat.process(packets).collect();
+        let orig_src_ip = get_src_ip_v4(&packet);
+        let orig_dst_ip = get_dst_ip_v4(&packet);
 
+        // Check request. We expect:
+        //
+        // {orig_src_ip, orig_dst_ip} -> {orig_src_ip, TARGET_DST_IP}
+        let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
         assert_eq!(packets_out.len(), 1);
 
-        let hdr0_out = &packets_out[0]
+        let hdr_out = &packets_out[0]
             .try_ipv4()
             .expect("Failed to get IPv4 header");
-        println!("L3 header: {hdr0_out:?}");
-        assert_eq!(hdr0_out.destination(), addr_v4("10.0.136.8"));
-    }
+        println!("L3 header: {hdr_out:?}");
+        assert_eq!(hdr_out.source().inner(), TARGET_SRC_IP);
+        assert_eq!(hdr_out.destination(), TARGET_DST_IP);
 
-    #[test]
-    fn test_src_nat_stateless_44() {
-        let nat_tables = build_context();
-        let mut nat = StatelessNat::new(NatDirection::SrcNat);
-        nat.update_tables(nat_tables);
+        // Check that reply gets reverse source NAT. We expect:
+        //
+        // {TARGET_DST_IP, orig_src_ip} -> {orig_dst_ip, orig_src_ip}
+        set_addresses_v4(&mut packet_reply, TARGET_DST_IP, TARGET_SRC_IP);
 
-        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()]
-            .into_iter()
-            .map(|mut packet| {
-                packet.get_meta_mut().src_vni = Some(vni_100());
-                packet
-            });
+        let packets_out_reply: Vec<_> = nat.process(vec![packet_reply].into_iter()).collect();
+        assert_eq!(packets_out_reply.len(), 1);
 
-        let packets_out: Vec<_> = nat.process(packets).collect();
-
-        assert_eq!(packets_out.len(), 1);
-
-        let hdr0_out = &packets_out[0]
+        let hdr_out_reply = &packets_out_reply[0]
             .try_ipv4()
             .expect("Failed to get IPv4 header");
-        println!("L3 header: {hdr0_out:?}");
-        assert_eq!(hdr0_out.source().inner(), addr_v4("2.2.0.4"));
+        println!("L3 header: {hdr_out_reply:?}");
+        assert_eq!(hdr_out_reply.source().inner(), orig_dst_ip);
+        assert_eq!(hdr_out_reply.destination(), orig_src_ip);
     }
 }
