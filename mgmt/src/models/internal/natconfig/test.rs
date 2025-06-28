@@ -3,7 +3,7 @@
 
 //! NAT configuration tests .. and actual NAT function
 
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use crate::models::external::overlay::vpc::Peering;
     use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
@@ -139,19 +139,28 @@ mod tests {
             exposes: vec![expose3, expose4],
         };
 
-        let peering: Peering = Peering {
-            name: "test_peering".into(),
-            local: manifest1,
-            remote: manifest2,
+        let peering1 = Peering {
+            name: "test_peering1".into(),
+            local: manifest1.clone(),
+            remote: manifest2.clone(),
             remote_id: "12345".try_into().expect("Failed to create VPC ID"),
         };
+        let peering2 = Peering {
+            name: "test_peering2".into(),
+            local: manifest2,
+            remote: manifest1,
+            remote_id: "67890".try_into().expect("Failed to create VPC ID"),
+        };
 
-        let mut vni_table = PerVniTable::new();
-        table_extend::add_peering(&mut vni_table, &peering).expect("Failed to build NAT tables");
-
-        let vni = vni(100);
         let mut nat_table = NatTables::new();
-        nat_table.add_table(vni, vni_table);
+
+        let mut vni_table1 = PerVniTable::new();
+        table_extend::add_peering(&mut vni_table1, &peering1).expect("Failed to build NAT tables");
+        let mut vni_table2 = PerVniTable::new();
+        table_extend::add_peering(&mut vni_table2, &peering2).expect("Failed to build NAT tables");
+
+        nat_table.add_table(vni(100), vni_table1);
+        nat_table.add_table(vni(200), vni_table2);
 
         nat_table
     }
