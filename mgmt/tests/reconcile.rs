@@ -1654,7 +1654,7 @@ async fn observe_actions() {
 #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
 // #[wrap(run_in_netns("biscuit"))]
 #[traced_test]
-async fn observe_qdisc() {
+async fn observe_chain() {
     let (mut connection, handle, _recv) = rtnetlink::new_connection().unwrap();
     connection
         .socket_mut()
@@ -1667,10 +1667,13 @@ async fn observe_qdisc() {
     let rib = vpc_manager.observe().await.unwrap();
 
     let qdisc_manger = Manager::<Qdisc>::new(handle.clone());
+    let chain_manager = Manager::<Chain>::new(handle.clone());
+    let chains = chain_manager.observe().await;
+    println!("{chains:#?}");
 
-    let x = qdisc_manger.observe().await;
+    // let x = qdisc_manger.observe().await;
 
-    println!("{x:#?}");
+    // println!("{x:#?}");
 
     // for (_, iface) in rib.interfaces.iter() {
     //     match &iface.properties {
