@@ -50,11 +50,9 @@ impl NatTables {
     fn find_nat_ranges(
         &self,
         net: &mut Net,
-        vni_opt: Option<Vni>,
+        vni: Vni,
     ) -> Option<(Option<&TrieValue>, Option<&TrieValue>)> {
-        let vni = vni_opt?;
         let table = self.get_table(vni)?;
-
         let src_nat_ranges = table.lookup_src_prefixes(&net.src_addr(), &net.dst_addr());
         let dst_nat_ranges = table.lookup_dst_prefixes(&net.dst_addr());
 
@@ -135,7 +133,10 @@ impl StatelessNat {
         nat_tables: &NatTables,
         packet: &mut Packet<Buf>,
     ) {
-        let vni = packet.get_meta().src_vni;
+        let Some(vni) = packet.get_meta().src_vni else {
+            packet.done(DoneReason::Unroutable);
+            return;
+        };
         let Some(net) = packet.headers_mut().try_ip_mut() else {
             return;
         };
