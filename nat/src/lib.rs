@@ -18,7 +18,7 @@
 //! # use pipeline::NetworkFunction;
 //! use dataplane_nat::StatelessNat;
 //!
-//! let mut nat = StatelessNat::new();
+//! let (mut nat, _tablew) = StatelessNat::new();
 //! let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
 //! let packets_out: Vec<_> = nat.process(packets).collect();
 //!

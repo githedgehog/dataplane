@@ -7,17 +7,20 @@ pub mod config;
 mod iplist;
 pub mod natrw;
 
+pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
+
 use config::tables::{NatTables, TrieValue};
 use iplist::IpList;
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ipv4::UnicastIpv4Addr;
 use net::ipv6::UnicastIpv6Addr;
-use net::packet::Packet;
+use net::packet::{DoneReason, Packet};
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use std::net::IpAddr;
 
+#[must_use]
 fn map_ip_src_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
     let current_range = IpList::new(ranges.orig_prefixes());
     let target_range = IpList::new(ranges.target_prefixes());
@@ -25,6 +28,7 @@ fn map_ip_src_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
     target_range.addr_from_prefix_offset(&offset)
 }
 
+#[must_use]
 fn map_ip_dst_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
     let current_range = IpList::new(ranges.target_prefixes());
     let target_range = IpList::new(ranges.orig_prefixes());
@@ -36,7 +40,7 @@ fn map_ip_dst_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
 /// to run source or destination Network Address Translation (NAT) on their IP addresses.
 #[derive(Debug)]
 pub struct StatelessNat {
-    nat_tables: NatTables,
+    tablesr: NatTablesReader,
 }
 
 impl NatTables {
@@ -57,18 +61,18 @@ impl NatTables {
 
 #[allow(clippy::new_without_default)]
 impl StatelessNat {
-    /// Creates a new [`StatelessNat`] processor.
+    /// Creates a new [`StatelessNat`] processor, providing a writer to its internal `NatTables`.
     #[must_use]
-    pub fn new() -> Self {
-        let context = NatTables::new();
-        Self {
-            nat_tables: context,
-        }
+    pub fn new() -> (Self, NatTablesWriter) {
+        #![allow(clippy::similar_names)]
+        let tablesw = NatTablesWriter::new();
+        let tablesr = tablesw.get_reader();
+        (Self { tablesr }, tablesw)
     }
-
-    /// Updates the VNI tables in the NAT processor.
-    pub fn update_tables(&mut self, tables: NatTables) {
-        self.nat_tables = tables;
+    /// Creates a new [`StatelessNat`] processor as `new()`, but uses the provided `NatTablesReader`.
+    #[must_use]
+    pub fn with_reader(tablesr: NatTablesReader) -> Self {
+        Self { tablesr }
     }
 
     fn translate_src(net: &mut Net, ranges_src_nat: &TrieValue) -> Option<()> {
@@ -116,13 +120,17 @@ impl StatelessNat {
 
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
     /// function that we pass to [`StatelessNat::process`] to iterate over packets.
-    fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
+    #[allow(clippy::unused_self)]
+    fn process_packet<Buf: PacketBufferMut>(
+        &self,
+        nat_tables: &NatTables,
+        packet: &mut Packet<Buf>,
+    ) {
         let vni = packet.get_meta().src_vni;
         let Some(net) = packet.headers_mut().try_ip_mut() else {
             return;
         };
-        let Some((ranges_src_nat, ranges_dst_nat)) = self.nat_tables.find_nat_ranges(net, vni)
-        else {
+        let Some((ranges_src_nat, ranges_dst_nat)) = nat_tables.find_nat_ranges(net, vni) else {
             return;
         };
 
@@ -130,14 +138,25 @@ impl StatelessNat {
     }
 }
 
+
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatelessNat {
+    #[allow(clippy::if_not_else)]
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.map(|mut packet| {
-            self.process_packet(&mut packet);
-            packet
+        input.filter_map(|mut packet| {
+            if !packet.is_done() {
+                // fixme: ideally, we'd `enter` once for the whole batch. However,
+                // this requires boxing the closures, which may be worse than
+                // calling `enter` per packet? ... if not uglier
+                if let Some(tablesr) = &self.tablesr.enter() {
+                    self.process_packet(tablesr, &mut packet);
+                } else {
+                    packet.done(DoneReason::InternalFailure);
+                }
+            }
+            packet.enforce()
         })
     }
 }
