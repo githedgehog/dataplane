@@ -39,32 +39,36 @@ pub struct StatelessNat {
     nat_tables: NatTables,
 }
 
-#[allow(clippy::new_without_default)]
-impl StatelessNat {
-    /// Creates a new [`StatelessNat`] processor.
-    #[must_use]
-    pub fn new() -> Self {
-        let context = NatTables::new();
-        Self { nat_tables: context }
-    }
-
-    /// Updates the VNI tables in the NAT processor.
-    pub fn update_tables(&mut self, tables: NatTables) {
-        self.nat_tables = tables;
-    }
-
+impl NatTables {
     fn find_nat_ranges(
         &self,
         net: &mut Net,
         vni_opt: Option<Vni>,
     ) -> Option<(Option<&TrieValue>, Option<&TrieValue>)> {
         let vni = vni_opt?;
-        let table = self.nat_tables.get_table(vni)?;
+        let table = self.get_table(vni)?;
 
         let src_nat_ranges = table.lookup_src_prefixes(&net.src_addr(), &net.dst_addr());
         let dst_nat_ranges = table.lookup_dst_prefixes(&net.dst_addr());
 
         Some((src_nat_ranges, dst_nat_ranges))
+    }
+}
+
+#[allow(clippy::new_without_default)]
+impl StatelessNat {
+    /// Creates a new [`StatelessNat`] processor.
+    #[must_use]
+    pub fn new() -> Self {
+        let context = NatTables::new();
+        Self {
+            nat_tables: context,
+        }
+    }
+
+    /// Updates the VNI tables in the NAT processor.
+    pub fn update_tables(&mut self, tables: NatTables) {
+        self.nat_tables = tables;
     }
 
     fn translate_src(net: &mut Net, ranges_src_nat: &TrieValue) -> Option<()> {
@@ -117,7 +121,8 @@ impl StatelessNat {
         let Some(net) = packet.headers_mut().try_ip_mut() else {
             return;
         };
-        let Some((ranges_src_nat, ranges_dst_nat)) = self.find_nat_ranges(net, vni) else {
+        let Some((ranges_src_nat, ranges_dst_nat)) = self.nat_tables.find_nat_ranges(net, vni)
+        else {
             return;
         };
 
