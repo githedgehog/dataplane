@@ -13,22 +13,24 @@ use std::net::IpAddr;
 /// different connections established, but instead holding the base rules for stateful or static
 /// NAT.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NatTables {
-    pub tables: HashMap<u32, PerVniTable, RandomState>,
-}
+pub struct NatTables(HashMap<u32, PerVniTable, RandomState>);
 
 impl NatTables {
     /// Creates a new empty [`NatTables`]
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            tables: HashMap::with_hasher(RandomState::with_seed(0)),
-        }
+        Self(HashMap::with_hasher(RandomState::with_seed(0)))
     }
 
-    /// Adds a new table for the given VNI
+    /// Adds a new table for the given `Vni`
     pub fn add_table(&mut self, vni: Vni, table: PerVniTable) {
-        self.tables.insert(vni.as_u32(), table);
+        self.0.insert(vni.as_u32(), table);
+    }
+
+    /// Provide a reference to a `PerVniTable` for the given `Vni` if it exists
+    #[must_use]
+    pub fn get_table(&self, vni: Vni) -> Option<&PerVniTable> {
+        self.0.get(&vni.as_u32())
     }
 }
 
