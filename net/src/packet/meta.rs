@@ -50,7 +50,6 @@ pub enum DoneReason {
     InterfaceOperDown,    /* interface is oper down : no link */
     InterfaceUnknown,     /* the interface cannot be found */
     InterfaceUnsupported, /* the operation is not supported on the interface */
-    VrfUnknown,           /* the vrf does not exist */
     NatOutOfResources,    /* can't do NAT due to lack of resources */
     RouteFailure,         /* missing routing information */
     RouteDrop,            /* routing explicitly requests pkts to be dropped */
@@ -61,6 +60,8 @@ pub enum DoneReason {
     InvalidDstMac,        /* dropped the packet since it had to have an invalid destination mac */
     Malformed,            /* the packet does not conform / is malformed */
     MissingEtherType,     /* can't determine ethertype to use */
+    Unroutable,           /* we don't have state to forward the packet */
+    NatFailure,           /* It was not possible to NAT the packet */
     Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
 }
 
@@ -135,11 +136,11 @@ pub mod test {
         stats.incr(DoneReason::InterfaceAdmDown, 10);
         stats.incr(DoneReason::InterfaceAdmDown, 1);
         stats.incr(DoneReason::RouteFailure, 9);
-        stats.incr(DoneReason::VrfUnknown, 13);
+        stats.incr(DoneReason::Unroutable, 13);
 
         // look up some particular stats
         assert_eq!(stats.get_stat(DoneReason::InterfaceAdmDown), Some(11));
-        assert_eq!(stats.get_stat(DoneReason::VrfUnknown), Some(13));
+        assert_eq!(stats.get_stat(DoneReason::Unroutable), Some(13));
         assert_eq!(stats.get_stat(DoneReason::InterfaceUnsupported), None);
 
         // access the whole stats map
