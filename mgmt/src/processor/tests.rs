@@ -4,6 +4,7 @@
 #[cfg(test)]
 #[allow(dead_code)]
 pub mod test {
+    use nat::stateless::NatTablesWriter;
     use net::eth::mac::Mac;
     use net::interface::Mtu;
     use routing::prefix::Prefix;
@@ -345,11 +346,15 @@ pub mod test {
         /* open frrmi and connect to the faked frr-agent */
         let frrmi = FrrMi::new(frr_agent_path).await;
 
+        /* vpcmappings for vpc name resolution for vpc stats */
         let vpcmapw = VpcMapWriter::<VpcMapName>::new();
+
+        /* crate NatTables for stateless nat */
+        let nattablesw = NatTablesWriter::new();
 
         /* build config processor to test the processing of a config. The processor embeds the config database
         and has the frrmi. In this test, we don't use any channel to communicate the config. */
-        let (mut processor, _sender) = ConfigProcessor::new(frrmi, ctl, vpcmapw);
+        let (mut processor, _sender) = ConfigProcessor::new(frrmi, ctl, vpcmapw, nattablesw);
 
         /* let the processor process the config */
         match processor.process_incoming_config(config).await {
