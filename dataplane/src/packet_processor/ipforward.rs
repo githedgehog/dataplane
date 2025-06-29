@@ -15,6 +15,7 @@ use net::{buffer::PacketBufferMut, checksum::Checksum};
 use pipeline::NetworkFunction;
 
 use routing::fib::fibobjects::{EgressObject, FibEntry, PktInstruction};
+use routing::fib::fibtable::FibTable;
 use routing::fib::fibtable::FibTableReader;
 use routing::fib::fibtype::FibId;
 
@@ -89,8 +90,8 @@ impl IpForwarder {
         /* Perform lookup in the fib */
         let (prefix, fibentry) = fib.lpm_entry_prefix(packet);
         if let Some(fibentry) = &fibentry {
-            debug!("{nfi}: Packet hits prefix {prefix} in fib {fibid}. Entry is:");
-            debug!("{nfi}: {fibentry}");
+            debug!("{nfi}: Packet hits prefix {prefix} in fib {fibid}");
+            debug!("{nfi}: Entry is:\n{fibentry}");
 
             /* decrement packet TTL, unless the packet is for us */
             if !fibentry.is_iplocal() {
@@ -101,7 +102,7 @@ impl IpForwarder {
                 }
             }
             /* execute instructions according to FIB */
-            self.packet_exec_instructions(packet, fibentry, fib.get_vtep());
+            self.packet_exec_instructions(&fibtr, packet, fibentry, fib.get_vtep());
         } else {
             error!("Could not get fib group for {prefix}. Will drop packet...");
             packet.done(DoneReason::InternalFailure);
@@ -112,7 +113,8 @@ impl IpForwarder {
     fn packet_exec_instruction_local<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
-        _ifindex: IfIndex,
+        fibtable: &FibTable,
+        _ifindex: IfIndex, /* we get it from metadata */
     ) {
         let nfi = &self.name;
 
@@ -121,27 +123,30 @@ impl IpForwarder {
 
         match packet.vxlan_decap() {
             Some(Ok(vxlan)) => {
+                let vni = vxlan.vni();
                 debug!("{nfi}: DECAPSULATED vxlan packet:\n {packet}");
-                if let Some(fibtable) = self.fibtr.enter() {
-                    let vni = vxlan.vni();
-                    debug!("{nfi}: Packet is for vni {vni}");
-                    if let Some(fib) = fibtable.get_fib(&FibId::from_vni(vni)) {
-                        let Some(next_vrf) = fib.get_id().map(|id| id.as_u32()) else {
-                            error!("{nfi}: Failed to read fib!");
-                            packet.done(DoneReason::InternalFailure);
-                            return;
-                        };
-                        debug!("Next fib/vrf is {next_vrf}");
-                        packet.get_meta_mut().src_vni = Some(vni);
-                        packet.get_meta_mut().vrf = Some(next_vrf);
-                    } else {
-                        error!("{nfi}: Unable to read fib for vni {vni}");
-                        packet.done(DoneReason::InternalFailure);
-                    }
-                }
+                debug!("{nfi}: Packet comes with vni {vni}");
+                let fibid = FibId::from_vni(vni);
+                let Some(fib) = fibtable.get_fib(&fibid) else {
+                    error!("{nfi}: Failed to find fib {fibid} associated to vni {vni}");
+                    packet.done(DoneReason::Unroutable);
+                    return;
+                };
+                let Some(next_vrf) = fib.get_id().map(|id| id.as_u32()) else {
+                    error!("{nfi}: Failed to access fib {fibid} to determine vrf");
+                    packet.done(DoneReason::InternalFailure);
+                    return;
+                };
+                debug!("Next fib/vrf is {next_vrf}");
+
+                /* At this point decapsulation has already happened and `Packet` refers to
+                the innner packet. Annotate the incoming vni and the corresponding vrf to
+                make lookups from */
+                packet.get_meta_mut().src_vni = Some(vni);
+                packet.get_meta_mut().vrf = Some(next_vrf);
             }
             Some(Err(bad)) => {
-                warn!("oh no, the inner packet is bad: {bad:?}");
+                warn!("The decapsulated packet is malformed!: {bad:?}");
                 packet.done(DoneReason::Malformed);
             }
             None => {
@@ -308,13 +313,16 @@ impl IpForwarder {
     /// Execute a [`PktInstruction`] on the packet
     fn packet_exec_instruction<Buf: PacketBufferMut>(
         &self,
+        fibtable: &FibTable,
         vtep: &Vtep,
         packet: &mut Packet<Buf>,
         instruction: &PktInstruction,
     ) {
         match instruction {
             PktInstruction::Drop => self.packet_exec_instruction_drop(packet),
-            PktInstruction::Local(ifindex) => self.packet_exec_instruction_local(packet, *ifindex),
+            PktInstruction::Local(ifindex) => {
+                self.packet_exec_instruction_local(packet, fibtable, *ifindex);
+            }
             PktInstruction::Encap(encap) => self.packet_exec_instruction_encap(packet, encap, vtep),
             PktInstruction::Egress(egress) => self.packet_exec_instruction_egress(packet, egress),
             PktInstruction::Nat => {}
@@ -324,12 +332,13 @@ impl IpForwarder {
     /// Execute all of the [`PktInstruction`]s indicated by the given [`FibEntry`] on the packet
     fn packet_exec_instructions<Buf: PacketBufferMut>(
         &self,
+        fibtable: &FibTable,
         packet: &mut Packet<Buf>,
         fibentry: &FibEntry,
         vtep: &Vtep,
     ) {
         for inst in fibentry.iter() {
-            self.packet_exec_instruction(vtep, packet, inst);
+            self.packet_exec_instruction(fibtable, vtep, packet, inst);
             if packet.is_done() {
                 return;
             }
