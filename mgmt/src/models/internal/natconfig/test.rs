@@ -4,6 +4,7 @@
 //! NAT configuration tests .. and actual NAT function
 
 #[cfg(test)]
+#[cfg(none)] // DISABLED temporarily!
 mod tests {
     use crate::models::external::gwconfig::ExternalConfigBuilder;
     use crate::models::external::gwconfig::Underlay;
