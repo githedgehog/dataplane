@@ -265,7 +265,7 @@ impl Observe for Manager<Qdisc> {
     where
         Self: 'a,
     {
-        let mut resp = self.handle.qdisc().get().ingress().execute();
+        let mut resp = self.handle.qdisc().get().execute();
         let mut qdiscs = Vec::new();
         while let Ok(Some(message)) = resp.try_next().await {
             let mut builder = QdiscBuilder::create_empty();

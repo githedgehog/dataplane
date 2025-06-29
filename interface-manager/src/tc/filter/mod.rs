@@ -78,7 +78,11 @@ impl AsRequirement<FilterSpec> for Filter {
             priority: self.priority,
             chain: self.chain.clone(),
             criteria: self.criteria.clone(),
-            actions: self.actions.iter().map(Action::as_requirement).collect(),
+            actions: self
+                .actions
+                .iter()
+                .filter_map(Action::as_requirement)
+                .collect(),
         }
     }
 }

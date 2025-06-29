@@ -1651,7 +1651,7 @@ async fn observe_actions() {
 
 #[allow(clippy::too_many_lines)] // this is an integration test and is expected to be long
 #[tokio::test]
-#[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
+// #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
 // #[wrap(run_in_netns("biscuit"))]
 #[traced_test]
 async fn observe_chain() {
@@ -1664,9 +1664,15 @@ async fn observe_chain() {
     tokio::spawn(connection);
     let handle = Arc::new(handle);
     let vpc_manager = VpcManager::<RequiredInformationBase>::new(handle.clone());
-    let rib = vpc_manager.observe().await.unwrap();
+    let oib = vpc_manager.observe().await.unwrap();
+
+    for (_, x) in oib.pci_netdevs.iter() {
+        println!("{x:#?}");
+    }
 
     let qdisc_manger = Manager::<Qdisc>::new(handle.clone());
+    let qdiscs = qdisc_manger.observe().await;
+    println!("{qdiscs:#?}");
     let chain_manager = Manager::<Chain>::new(handle.clone());
     let chains = chain_manager.observe().await;
     println!("{chains:#?}");

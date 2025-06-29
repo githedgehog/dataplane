@@ -205,7 +205,7 @@ impl<T> From<ActionIndex<T>> for NonZero<u32> {
 
 impl AsRequirement<ActionSpec> for Action {
     type Requirement<'a>
-        = ActionSpec
+        = Option<ActionSpec>
     where
         Self: 'a;
 
@@ -213,11 +213,12 @@ impl AsRequirement<ActionSpec> for Action {
     where
         Self: 'a,
     {
-        ActionSpec {
+        Some(ActionSpec {
             details: match self.details {
-                ActionDetails::Mirred(details) => {
-                    ActionDetailsSpec::Mirred(details.as_requirement())
-                }
+                ActionDetails::Mirred(details) => match details.as_requirement() {
+                    None => None?,
+                    Some(as_req) => ActionDetailsSpec::Mirred(as_req),
+                },
                 ActionDetails::Generic(details) => {
                     ActionDetailsSpec::Generic(details.as_requirement())
                 }
@@ -225,7 +226,7 @@ impl AsRequirement<ActionSpec> for Action {
                     ActionDetailsSpec::TunnelKey(details.as_requirement())
                 }
             },
-        }
+        })
     }
 }
 
@@ -233,7 +234,7 @@ impl<'a> From<&'a ActionSpec> for TcAction {
     fn from(value: &'a ActionSpec) -> Self {
         match value.details {
             ActionDetailsSpec::Generic(details) => TcAction::from(&details),
-            ActionDetailsSpec::Mirred(details) => TcAction::from(details),
+            ActionDetailsSpec::Mirred(details) => TcAction::from(&details),
             ActionDetailsSpec::TunnelKey(details) => TcAction::from(details),
         }
     }
@@ -350,9 +351,14 @@ impl Reconcile for Manager<Action> {
     ) -> Self::Outcome<'a> {
         match (requirement, observation) {
             (Some(requirement), Some(observation)) => {
-                if *requirement == observation.as_requirement() {
-                    trace!("already reconciled: {requirement:#?} with {observation:#?}");
-                    return Ok(());
+                match observation.as_requirement() {
+                    None => {}
+                    Some(as_req) => {
+                        if *requirement == as_req {
+                            trace!("already reconciled: {requirement:#?} with {observation:#?}");
+                            return Ok(());
+                        }
+                    }
                 }
                 self.update(requirement, observation).await
             }

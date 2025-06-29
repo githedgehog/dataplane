@@ -102,6 +102,7 @@ impl std::ops::Add<u32> for ChainIndex {
 pub struct Chain {
     #[multi_index(ordered_unique)]
     id: ChainId,
+    #[builder(default)]
     template: Option<Vec<TcFilterFlowerOption>>,
 }
 

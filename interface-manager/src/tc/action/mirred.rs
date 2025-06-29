@@ -10,10 +10,106 @@ use net::interface::InterfaceIndex;
 use rekon::{AsRequirement, Create, Observe, Reconcile, Remove, Update};
 use rtnetlink::packet_route::tc::{
     TcAction, TcActionAttribute, TcActionMessageAttribute, TcActionMirrorOption, TcActionOption,
-    TcMirrorActionType,
 };
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tracing::warn;
+
+const TCA_EGRESS_REDIR: i32 = 1;
+const TCA_EGRESS_MIRROR: i32 = 2;
+const TCA_INGRESS_REDIR: i32 = 3;
+const TCA_INGRESS_MIRROR: i32 = 4;
+
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
+#[repr(i32)]
+#[non_exhaustive]
+pub enum SupportedMirredAction {
+    /// Redirect to the egress pipeline.
+    #[default]
+    EgressRedir = TCA_EGRESS_REDIR,
+    /// Mirror to the egress pipeline.
+    EgressMirror = TCA_EGRESS_MIRROR,
+    /// Redirect to the ingress pipeline.
+    IngressRedir = TCA_INGRESS_REDIR,
+    /// Mirror to the ingress pipeline.
+    IngressMirror = TCA_INGRESS_MIRROR,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[repr(i32)]
+#[non_exhaustive]
+pub enum MirredAction {
+    Supported(SupportedMirredAction),
+    Unknown(i32),
+}
+
+impl From<SupportedMirredAction> for MirredAction {
+    fn from(value: SupportedMirredAction) -> Self {
+        MirredAction::Supported(value)
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum UnsupportedMirredActionError {
+    #[error("unknown mirred action: {0}")]
+    UnknownAction(i32),
+}
+
+impl TryFrom<i32> for SupportedMirredAction {
+    type Error = UnsupportedMirredActionError;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            TCA_EGRESS_REDIR => Ok(SupportedMirredAction::EgressRedir),
+            TCA_EGRESS_MIRROR => Ok(SupportedMirredAction::EgressMirror),
+            TCA_INGRESS_REDIR => Ok(SupportedMirredAction::IngressRedir),
+            TCA_INGRESS_MIRROR => Ok(SupportedMirredAction::IngressMirror),
+            _ => Err(UnsupportedMirredActionError::UnknownAction(value)),
+        }
+    }
+}
+
+impl From<SupportedMirredAction> for i32 {
+    fn from(value: SupportedMirredAction) -> Self {
+        value as i32
+    }
+}
+
+impl From<i32> for MirredAction {
+    fn from(value: i32) -> Self {
+        match SupportedMirredAction::try_from(value) {
+            Ok(action) => MirredAction::Supported(action),
+            Err(err) => {
+                warn!("{err}");
+                MirredAction::Unknown(value)
+            }
+        }
+    }
+}
+
+impl TryFrom<MirredAction> for SupportedMirredAction {
+    type Error = UnsupportedMirredActionError;
+
+    fn try_from(value: MirredAction) -> Result<Self, Self::Error> {
+        match value {
+            MirredAction::Supported(action) => Ok(action),
+            MirredAction::Unknown(action) => {
+                Err(UnsupportedMirredActionError::UnknownAction(action))
+            }
+        }
+    }
+}
+
+impl From<MirredAction> for i32 {
+    fn from(value: MirredAction) -> Self {
+        match value {
+            MirredAction::Supported(x) => x.into(),
+            MirredAction::Unknown(x) => x,
+        }
+    }
+}
 
 #[derive(
     Builder,
@@ -33,9 +129,10 @@ use tracing::warn;
 #[multi_index_derive(Clone, Debug)]
 pub struct MirredSpec {
     #[multi_index(hashed_unique)]
-    pub index: ActionIndex<Mirred>,
+    index: ActionIndex<Mirred>,
     #[multi_index(ordered_non_unique)]
-    pub to: InterfaceIndex,
+    to: InterfaceIndex,
+    action: SupportedMirredAction,
 }
 
 #[derive(
@@ -59,6 +156,7 @@ pub struct Mirred {
     index: ActionIndex<Mirred>,
     #[multi_index(ordered_non_unique)]
     to: InterfaceIndex,
+    action: MirredAction,
 }
 
 impl ActionKind for Mirred {
@@ -67,15 +165,16 @@ impl ActionKind for Mirred {
 
 impl AsRequirement<MirredSpec> for Mirred {
     type Requirement<'a>
-        = MirredSpec
+        = Option<MirredSpec>
     where
         Self: 'a;
 
     fn as_requirement<'a>(&self) -> Self::Requirement<'a> {
-        MirredSpec {
+        Some(MirredSpec {
             index: self.index,
             to: self.to,
-        }
+            action: self.action.try_into().ok()?,
+        })
     }
 }
 
@@ -86,11 +185,16 @@ impl AsRequirement<MultiIndexMirredSpecMap> for MultiIndexMirredMap {
         Self: 'a;
 
     fn as_requirement<'a>(&self) -> Self::Requirement<'a> {
-        let mut x = MultiIndexMirredSpecMap::default();
+        let mut db = MultiIndexMirredSpecMap::default();
         for (_, mirred) in self.iter() {
-            x.insert(mirred.as_requirement());
+            match mirred.as_requirement() {
+                None => {}
+                Some(spec) => {
+                    db.insert(spec);
+                }
+            }
         }
-        x
+        db
     }
 }
 
@@ -105,7 +209,7 @@ impl Create for Manager<Mirred> {
         Self: 'a;
 
     async fn create<'a>(&self, requirement: Self::Requirement<'a>) -> Self::Outcome<'a> {
-        let action = TcAction::from(*requirement);
+        let action = TcAction::from(requirement);
         let mut resp = self.handle.traffic_action().add().action(action).execute();
         loop {
             match resp.try_next().await {
@@ -124,21 +228,37 @@ impl Create for Manager<Mirred> {
 
 mod helper {
     use crate::tc::action::ActionKind;
-    use crate::tc::action::mirred::{Mirred, MirredSpec};
+    use crate::tc::action::mirred::{Mirred, MirredAction, MirredSpec, SupportedMirredAction};
     use rtnetlink::packet_route::tc::{
         TcAction, TcActionAttribute, TcActionMirrorOption, TcActionOption, TcActionType, TcMirror,
-        TcMirrorActionType,
     };
+    use tracing::warn;
 
-    impl From<MirredSpec> for TcAction {
-        fn from(value: MirredSpec) -> Self {
+    // NOTE: it is annoying that this code needs to be duplicated in the `From<Mirred>` case below
+    //       I don't see a great way of avoiding this duplication without adding more complexity
+    //       than is justified to remove it.
+    impl<'a> From<&'a MirredSpec> for TcAction {
+        fn from(value: &'a MirredSpec) -> Self {
             let mut action = TcAction::default();
-            action.attributes = Vec::from(value);
+            action.attributes = Vec::from(*value);
             action.tab = 1;
             action
         }
     }
 
+    // NOTE: if you change this method, change the method above symmetrically
+    impl<'a> From<&'a Mirred> for TcAction {
+        fn from(value: &'a Mirred) -> Self {
+            let mut action = TcAction::default();
+            action.attributes = Vec::from(*value);
+            action.tab = 1;
+            action
+        }
+    }
+
+    // NOTE: it is annoying that this code needs to be duplicated in the `From<Mirred>` case below
+    //       I don't see a great way of avoiding this duplication without adding more complexity
+    //       than is justified to remove it.
     impl From<MirredSpec> for Vec<TcActionAttribute> {
         fn from(value: MirredSpec) -> Self {
             vec![
@@ -146,9 +266,46 @@ mod helper {
                 TcActionAttribute::Options(vec![TcActionOption::Mirror(
                     TcActionMirrorOption::Parms({
                         let mut mirror = TcMirror::default();
-                        mirror.eaction = TcMirrorActionType::EgressRedir;
+                        mirror.eaction = i32::from(value.action).into();
                         mirror.ifindex = value.to.into();
-                        mirror.generic.action = TcActionType::Stolen;
+                        mirror.generic.action = match value.action {
+                            SupportedMirredAction::EgressMirror
+                            | SupportedMirredAction::IngressMirror => TcActionType::Pipe,
+                            SupportedMirredAction::IngressRedir
+                            | SupportedMirredAction::EgressRedir => TcActionType::Stolen,
+                        };
+                        mirror.generic.refcnt = 1; // set or the kernel will auto clean it up
+                        mirror.generic.index = value.index.into();
+                        mirror
+                    }),
+                )]),
+            ]
+        }
+    }
+
+    impl From<Mirred> for Vec<TcActionAttribute> {
+        fn from(value: Mirred) -> Self {
+            vec![
+                TcActionAttribute::Kind(Mirred::KIND.to_string()),
+                TcActionAttribute::Options(vec![TcActionOption::Mirror(
+                    TcActionMirrorOption::Parms({
+                        let mut mirror = TcMirror::default();
+                        mirror.eaction = i32::from(value.action).into();
+                        mirror.ifindex = value.to.into();
+                        mirror.generic.action = match value.action {
+                            MirredAction::Supported(
+                                SupportedMirredAction::EgressMirror
+                                | SupportedMirredAction::IngressMirror,
+                            ) => TcActionType::Pipe,
+                            MirredAction::Supported(
+                                SupportedMirredAction::IngressRedir
+                                | SupportedMirredAction::EgressRedir,
+                            ) => TcActionType::Stolen,
+                            MirredAction::Unknown(x) => {
+                                warn!("unknown mirred action: {x}");
+                                TcActionType::Pipe
+                            }
+                        };
                         mirror.generic.refcnt = 1; // set or the kernel will auto clean it up
                         mirror.generic.index = value.index.into();
                         mirror
@@ -173,7 +330,7 @@ impl Remove for Manager<Mirred> {
         self.handle
             .traffic_action()
             .del()
-            .action(TcAction::from(observation.as_requirement()))
+            .action(TcAction::from(observation))
             .execute()
             .await
     }
@@ -223,12 +380,18 @@ impl Reconcile for Manager<Mirred> {
         observation: Self::Observation<'a>,
     ) -> Self::Outcome<'a> {
         match (requirement, observation) {
-            (Some(requirement), Some(observation)) => {
-                if observation.as_requirement() != *requirement {
-                    return self.update(requirement, observation).await;
+            (Some(requirement), Some(observation)) => match observation.as_requirement() {
+                None => {
+                    warn!("observed alien mirred action: {observation:#?}");
+                    self.remove(observation).await
                 }
-                Ok(())
-            }
+                Some(as_req) => {
+                    if as_req != *requirement {
+                        return self.update(requirement, observation).await;
+                    }
+                    Ok(())
+                }
+            },
             (Some(requirement), None) => self.create(requirement).await,
             (None, Some(observation)) => self.remove(observation).await,
             (None, None) => Ok(()),
@@ -273,15 +436,13 @@ impl<'a> TryFrom<&'a TcAction> for Mirred {
                                     )));
                                 }
                             }
-                            match params.eaction {
-                                TcMirrorActionType::EgressRedir => {
-                                    // ok
+                            match SupportedMirredAction::try_from(i32::from(params.generic.action))
+                            {
+                                Ok(action) => {
+                                    builder.action(MirredAction::Supported(action));
                                 }
-                                eaction => {
-                                    // TODO: support other eaction types in this data type
-                                    return Err(rtnetlink::Error::InvalidNla(format!(
-                                        "unsupported eaction: {eaction:?}"
-                                    )));
+                                Err(err) => {
+                                    warn!("{err}");
                                 }
                             }
                         }
