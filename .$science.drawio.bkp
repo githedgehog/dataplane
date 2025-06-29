@@ -1,6 +1,6 @@
 <mxfile host="Electron" agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/27.0.9 Chrome/134.0.6998.205 Electron/35.6.0 Safari/537.36" version="27.0.9">
   <diagram name="Page-1" id="6LvdTSR6CToOUOQbjaTI">
-    <mxGraphModel dx="3427" dy="1545" grid="1" gridSize="10" guides="0" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="350" pageHeight="70" math="0" shadow="0">
+    <mxGraphModel dx="2290" dy="840" grid="1" gridSize="10" guides="0" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="350" pageHeight="70" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -1324,7 +1324,7 @@
           <mxGeometry x="2250" y="2210" width="530" height="210" as="geometry" />
         </mxCell>
         <mxCell id="iFAmoDsHxomZacg7NxG3-68" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;Problems we expect to solve soon&lt;/h1&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;ul&gt;&lt;li&gt;&lt;span style=&quot;font-size: 21px; background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;checksum offload&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;span style=&quot;font-size: 21px; background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;encap/decap offload&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;span style=&quot;font-size: 21px; background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;routing offload&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;span style=&quot;font-size: 21px; background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;stateless nat offload&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;span style=&quot;font-size: 21px; background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;statefull nat offload&lt;/span&gt;&lt;/li&gt;&lt;/ul&gt;&lt;/div&gt;" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" vertex="1" parent="1">
-          <mxGeometry x="2860" y="2200" width="400" height="210" as="geometry" />
+          <mxGeometry x="2880" y="2210" width="400" height="250" as="geometry" />
         </mxCell>
         <mxCell id="iFAmoDsHxomZacg7NxG3-69" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;Constraints&lt;/h1&gt;&lt;div&gt;&lt;ul&gt;&lt;li&gt;&lt;font style=&quot;font-size: 21px;&quot;&gt;will always need the kernel at some level&lt;/font&gt;&lt;/li&gt;&lt;ul&gt;&lt;li&gt;&lt;font style=&quot;font-size: 21px;&quot;&gt;We &lt;i&gt;don&#39;t&lt;/i&gt;&amp;nbsp;want to reimplement linux networking&lt;/font&gt;&lt;/li&gt;&lt;/ul&gt;&lt;li&gt;&lt;span style=&quot;font-size: 21px;&quot;&gt;Will some day need&lt;/span&gt;&lt;/li&gt;&lt;ul&gt;&lt;li&gt;&lt;span style=&quot;font-size: 21px;&quot;&gt;L7 support&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;span style=&quot;font-size: 21px;&quot;&gt;MACsec / IPsec support&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;span style=&quot;font-size: 21px;&quot;&gt;VLAN / MPLS support&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;span style=&quot;font-size: 21px;&quot;&gt;untagged / marked traffic support (maybe)&lt;/span&gt;&lt;/li&gt;&lt;/ul&gt;&lt;li&gt;&lt;span style=&quot;font-size: 21px;&quot;&gt;Will always want a pure software version (not all workloads are wild RoCE things)&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;span style=&quot;font-size: 21px;&quot;&gt;At the same time, we will &quot;never&quot; reach 400Gb / 800Gb / 1.6Tb in software.&amp;nbsp; It is unlikely we will even have that much bandwidth to our own RAM.&amp;nbsp; We will always want an offload option if we want to play in that space.&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;span style=&quot;font-size: 21px;&quot;&gt;Don&#39;t depend on a specific network card (degrade gracefully when NIC is missing superpowers)&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;span style=&quot;font-size: 21px;&quot;&gt;Don&#39;t assume BGP is the only control plane we will ever need&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;span style=&quot;font-size: 21px;&quot;&gt;Don&#39;t assume VXLAN is the only encap we will ever use&lt;/span&gt;&lt;/li&gt;&lt;/ul&gt;&lt;/div&gt;" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" vertex="1" parent="1">
           <mxGeometry x="2250" y="2530" width="600" height="510" as="geometry" />
@@ -1510,10 +1510,10 @@
         <mxCell id="iFAmoDsHxomZacg7NxG3-142" value="vtep" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#60a917;fontColor=#ffffff;strokeColor=#2D7600;gradientColor=none;" vertex="1" parent="1">
           <mxGeometry x="5650" y="2460" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="iFAmoDsHxomZacg7NxG3-143" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;Egress injection:&lt;br&gt;&lt;ul&gt;&lt;li&gt;&lt;font style=&quot;font-size: 21px;&quot;&gt;inject into the &lt;font style=&quot;color: rgb(255, 22, 255);&quot;&gt;&lt;i&gt;egress&lt;/i&gt;&lt;/font&gt; pipeline &lt;i&gt;&lt;font style=&quot;color: rgb(255, 22, 255);&quot;&gt;of the bridge&lt;/font&gt;&lt;/i&gt; based on injected QinQ pair (which we strip with tc)&lt;/font&gt;&lt;/li&gt;&lt;/ul&gt;&lt;/h1&gt;" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" vertex="1" parent="1">
+        <mxCell id="iFAmoDsHxomZacg7NxG3-143" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;Egress injection:&lt;br&gt;&lt;ul&gt;&lt;li&gt;&lt;font style=&quot;font-size: 21px;&quot;&gt;inject into the &lt;font style=&quot;color: rgb(255, 22, 255);&quot;&gt;&lt;i&gt;egress&lt;/i&gt;&lt;/font&gt; pipeline &lt;i&gt;&lt;font style=&quot;color: rgb(255, 22, 255);&quot;&gt;of the vtep&lt;/font&gt;&lt;/i&gt;&amp;nbsp;based on injected QinQ pair (which we strip with tc)&lt;/font&gt;&lt;/li&gt;&lt;/ul&gt;&lt;/h1&gt;" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" vertex="1" parent="1">
           <mxGeometry x="5410" y="2570" width="400" height="200" as="geometry" />
         </mxCell>
-        <mxCell id="iFAmoDsHxomZacg7NxG3-144" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" source="iFAmoDsHxomZacg7NxG3-146" target="iFAmoDsHxomZacg7NxG3-131" parent="1">
+        <mxCell id="iFAmoDsHxomZacg7NxG3-144" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0.981;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="iFAmoDsHxomZacg7NxG3-146" target="iFAmoDsHxomZacg7NxG3-142" parent="1">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="6050" y="2560" />
@@ -1521,11 +1521,11 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="iFAmoDsHxomZacg7NxG3-147" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="iFAmoDsHxomZacg7NxG3-146" target="iFAmoDsHxomZacg7NxG3-135">
+        <mxCell id="iFAmoDsHxomZacg7NxG3-147" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="iFAmoDsHxomZacg7NxG3-146" target="iFAmoDsHxomZacg7NxG3-136">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="6050" y="2560" />
-              <mxPoint x="5525" y="2560" />
+              <mxPoint x="5528" y="2560" />
             </Array>
           </mxGeometry>
         </mxCell>
@@ -1687,6 +1687,9 @@
         </mxCell>
         <mxCell id="iFAmoDsHxomZacg7NxG3-208" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;The world as it stands&lt;/h1&gt;&lt;div&gt;&lt;ul&gt;&lt;li&gt;&lt;font style=&quot;font-size: 18px;&quot;&gt;need ingress injection&lt;/font&gt;&lt;/li&gt;&lt;li&gt;&lt;font style=&quot;font-size: 18px;&quot;&gt;need egress injection&lt;/font&gt;&lt;/li&gt;&lt;/ul&gt;&lt;/div&gt;" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" vertex="1" parent="1">
           <mxGeometry x="3640" y="2580" width="280" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="iFAmoDsHxomZacg7NxG3-216" value="" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="4880" y="2940" width="80" height="80" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
