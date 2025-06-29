@@ -3,6 +3,8 @@
 //
 //! Implements an Ip forwarding stage
 
+#![allow(clippy::similar_names)]
+
 use arrayvec::ArrayVec;
 use std::net::IpAddr;
 use tracing::{debug, error, trace, warn};
@@ -50,9 +52,7 @@ impl IpForwarder {
     /// Forward a [`Packet`]
     fn forward_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>, vrfid: VrfId) {
         let nfi = &self.name;
-
-        /* clear any prior VRF annotation in the packet */
-        packet.get_meta_mut().vrf.take();
+        let fibid = FibId::from_vrfid(vrfid);
 
         /* get destination ip address */
         let Some(dst) = packet.ip_destination() else {
@@ -67,38 +67,44 @@ impl IpForwarder {
            attached to a certain fib if the vrf metadata value was set.
            This extra lookup is a side effect of splitting into stages.
         */
-        if let Some(fibtr) = self.fibtr.enter() {
-            let Some(fibr) = fibtr.get_fib(&FibId::from_vrfid(vrfid)) else {
-                error!("{nfi}: Unable to find fib for vrf {vrfid}");
-                packet.done(DoneReason::InternalFailure);
-                return;
-            };
-            if let Some(fib) = fibr.enter() {
-                let (prefix, fibentry) = fib.lpm_entry_prefix(packet);
-                if let Some(fibentry) = &fibentry {
-                    debug!(
-                        "{nfi}: Packet hit prefix {prefix} in vrf|fib {}, fib entry:\n{}",
-                        fib.get_id().as_u32(),
-                        &fibentry
-                    );
 
-                    /* decrement packet TTL, unless the packet is for us */
-                    if !fibentry.is_iplocal() {
-                        Self::decrement_ttl(packet, dst);
-                        if packet.is_done() {
-                            warn!("TTL/Hop-count limit exceeded!");
-                            return;
-                        }
-                    }
-                    self.packet_exec_instructions(packet, fibentry, fib.get_vtep());
-                } else {
-                    error!("Could not get fib group for {prefix}. Will drop packet...");
-                    packet.done(DoneReason::InternalFailure);
+        /* Read-only access to the fib table */
+        let Some(fibtr) = self.fibtr.enter() else {
+            error!("{nfi}: Unable to lookup fib for vrf {vrfid}");
+            packet.done(DoneReason::InternalFailure);
+            return;
+        };
+        /* Lookup the fib which needs to be consulted */
+        let Some(fibr) = fibtr.get_fib(&fibid) else {
+            error!("{nfi}: Unable to find fib with id {fibid} for vrf {vrfid}");
+            packet.done(DoneReason::InternalFailure);
+            return;
+        };
+        /* Read-only access to fib */
+        let Some(fib) = fibr.enter() else {
+            error!("{nfi}: Unable to read from fib {fibid}");
+            packet.done(DoneReason::InternalFailure);
+            return;
+        };
+        /* Perform lookup in the fib */
+        let (prefix, fibentry) = fib.lpm_entry_prefix(packet);
+        if let Some(fibentry) = &fibentry {
+            debug!("{nfi}: Packet hits prefix {prefix} in fib {fibid}. Entry is:");
+            debug!("{nfi}: {fibentry}");
+
+            /* decrement packet TTL, unless the packet is for us */
+            if !fibentry.is_iplocal() {
+                Self::decrement_ttl(packet, dst);
+                if packet.is_done() {
+                    warn!("TTL/Hop-count limit exceeded!");
+                    return;
                 }
-            } else {
-                error!("{nfi}: Unable to read fib for vrf {vrfid}");
-                packet.done(DoneReason::InternalFailure);
             }
+            /* execute instructions according to FIB */
+            self.packet_exec_instructions(packet, fibentry, fib.get_vtep());
+        } else {
+            error!("Could not get fib group for {prefix}. Will drop packet...");
+            packet.done(DoneReason::InternalFailure);
         }
     }
 
@@ -324,6 +330,9 @@ impl IpForwarder {
     ) {
         for inst in fibentry.iter() {
             self.packet_exec_instruction(vtep, packet, inst);
+            if packet.is_done() {
+                return;
+            }
         }
     }
 
@@ -360,7 +369,9 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
         trace!("{}'", self.name);
         input.filter_map(move |mut packet| {
             if !packet.is_done() {
-                if let Some(vrfid) = packet.get_meta().vrf {
+                // strip off vrf id from metadata
+                let vrfid = packet.get_meta_mut().vrf.take();
+                if let Some(vrfid) = vrfid {
                     self.forward_packet(&mut packet, vrfid);
                 } else if packet.get_meta().oif.is_none() && !packet.get_meta().is_iplocal {
                     warn!("{}: missing information to handle packet", self.name);
