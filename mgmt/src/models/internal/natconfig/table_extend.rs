@@ -48,6 +48,10 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Tri
     let mut local_expose_indices = vec![];
 
     new_peering.local.exposes.iter().try_for_each(|expose| {
+        if expose.as_range.is_empty() {
+            // Nothing to do for source NAT, get out of here
+            return Ok(());
+        }
         // Create new peering table for source NAT
         let mut peering_table = NatPrefixRuleTable::new();
 
@@ -85,7 +89,12 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Tri
 
         // Update peering table to make relevant prefixes point to the new peering table, for each
         // private prefix
-        expose.as_range.iter().try_for_each(|prefix| {
+        let remote_public_prefixes = match expose.as_range.len() {
+            // If as_range is empty, there's no NAT for this expose, use public IPs
+            0 => &expose.ips,
+            _ => &expose.as_range,
+        };
+        remote_public_prefixes.iter().try_for_each(|prefix| {
             table
                 .src_nat_peers
                 .rules
