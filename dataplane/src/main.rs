@@ -88,7 +88,7 @@ fn main() {
     };
 
     /* start router and create routing pipeline */
-    let (builder, router, vpcmapw, statsr, _nattablew) = match start_router(config) {
+    let (builder, router, vpcmapw, statsr, nattablew) = match start_router(config) {
         Ok((router, pipeline, vpcmapw, statsr, nattablew)) => {
             (move || pipeline, router, vpcmapw, statsr, nattablew)
         }
@@ -101,7 +101,7 @@ fn main() {
     let frr_agent_path = router.get_frr_agent_path().to_str().unwrap();
 
     /* start management */
-    if let Err(e) = start_mgmt(grpc_addr, router_ctl, frr_agent_path, vpcmapw) {
+    if let Err(e) = start_mgmt(grpc_addr, router_ctl, nattablew, frr_agent_path, vpcmapw) {
         error!("Failed to start gRPC server: {e}");
         panic!("Failed to start gRPC server: {e}");
     } else {
