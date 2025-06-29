@@ -20,6 +20,9 @@ use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use std::net::IpAddr;
 
+#[allow(unused)]
+use tracing::{debug, error, warn};
+
 #[must_use]
 fn map_ip_src_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
     let current_range = IpList::new(ranges.orig_prefixes());
@@ -76,12 +79,15 @@ impl StatelessNat {
     }
 
     fn translate_src(net: &mut Net, ranges_src_nat: &TrieValue) -> Option<()> {
-        let target_src_ip = map_ip_src_nat(ranges_src_nat, &net.src_addr());
+        let current_src_ip = net.src_addr();
+        let target_src_ip = map_ip_src_nat(ranges_src_nat, &current_src_ip);
         match (net, target_src_ip) {
             (Net::Ipv4(hdr), IpAddr::V4(src_ip)) => {
+                debug!("Changing ipv4 src: {current_src_ip} -> {src_ip}");
                 hdr.set_source(UnicastIpv4Addr::new(src_ip).ok()?);
             }
             (Net::Ipv6(hdr), IpAddr::V6(src_ip)) => {
+                debug!("Changing ipv6 src: {current_src_ip} -> {src_ip}");
                 hdr.set_source(UnicastIpv6Addr::new(src_ip).ok()?);
             }
             _ => return None,
@@ -90,12 +96,15 @@ impl StatelessNat {
     }
 
     fn translate_dst(net: &mut Net, ranges_dst_nat: &TrieValue) -> Option<()> {
-        let target_dst_ip = map_ip_dst_nat(ranges_dst_nat, &net.dst_addr());
+        let current_dst_ip = net.dst_addr();
+        let target_dst_ip = map_ip_dst_nat(ranges_dst_nat, &current_dst_ip);
         match (net, target_dst_ip) {
             (Net::Ipv4(hdr), IpAddr::V4(dst_ip)) => {
+                debug!("Changing ipv4 dst: {current_dst_ip} -> {dst_ip}");
                 hdr.set_destination(dst_ip);
             }
             (Net::Ipv6(hdr), IpAddr::V6(dst_ip)) => {
+                debug!("Changing ipv6 dst: {current_dst_ip} -> {dst_ip}");
                 hdr.set_destination(dst_ip);
             }
             _ => return None,
@@ -110,10 +119,10 @@ impl StatelessNat {
         ranges_dst_nat: Option<&TrieValue>,
     ) -> Option<()> {
         if let Some(ranges_src) = ranges_src_nat {
-            Self::translate_src(net, ranges_src)?;
+            Self::translate_src(net, ranges_src)?; // fixme
         }
         if let Some(ranges_dst) = ranges_dst_nat {
-            Self::translate_dst(net, ranges_dst)?;
+            Self::translate_dst(net, ranges_dst)?; // fixme
         }
         Some(())
     }
@@ -138,7 +147,6 @@ impl StatelessNat {
     }
 }
 
-
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatelessNat {
     #[allow(clippy::if_not_else)]
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
@@ -155,6 +163,8 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatelessNat {
                 } else {
                     packet.done(DoneReason::InternalFailure);
                 }
+            } else {
+                warn!("Packet is done and will not NATed");
             }
             packet.enforce()
         })

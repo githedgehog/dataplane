@@ -34,6 +34,7 @@ mod tests {
     use pipeline::NetworkFunction;
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
+    use tracing_test::traced_test;
 
     fn addr_v4(addr: &str) -> Ipv4Addr {
         Ipv4Addr::from_str(addr).expect("Failed to create IPv4 address")
@@ -417,6 +418,7 @@ mod tests {
     }
 
     #[test]
+    #[traced_test]
     fn test_full_config() {
         let mut config = build_sample_config();
         config.validate().expect("Failed to validate config");
