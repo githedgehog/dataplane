@@ -144,6 +144,7 @@ impl IpForwarder {
                 make lookups from */
                 packet.get_meta_mut().src_vni = Some(vni);
                 packet.get_meta_mut().vrf = Some(next_vrf);
+                packet.get_meta_mut().nat = true;
             }
             Some(Err(bad)) => {
                 warn!("The decapsulated packet is malformed!: {bad:?}");
