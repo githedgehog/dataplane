@@ -18,7 +18,11 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# internal
 routing = { workspace = true, features = ["testing"] }
+
+# external
+tracing-test = { workspace = true, features = [] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(none)'] }
