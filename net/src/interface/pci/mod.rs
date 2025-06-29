@@ -26,8 +26,10 @@ pub mod switch;
 pub struct PciNetdevProperties {
     #[multi_index(ordered_non_unique)]
     pub parent_dev: PciEbdf,
+    #[builder(default)]
     #[multi_index(ordered_non_unique)]
     pub switch_id: Option<SwitchId>,
+    #[builder(default)]
     #[multi_index(ordered_non_unique)]
     pub port_name: Option<String>, // note: NOT strictly an InterfaceName
 }

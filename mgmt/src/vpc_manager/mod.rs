@@ -120,7 +120,7 @@ impl Observe for VpcManager<RequiredInformationBase> {
                     }
                 },
                 Err(err) => {
-                    debug!("{err:?}");
+                    eprintln!("{err:?}");
                 }
             }
         }
