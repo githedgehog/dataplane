@@ -8,20 +8,28 @@ mod iplist;
 pub mod natrw;
 
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
-
-use config::tables::{NatTables, TrieValue};
+use config::tables::{NatTables, PerVniTable, TrieValue};
 use iplist::IpList;
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ipv4::UnicastIpv4Addr;
 use net::ipv6::UnicastIpv6Addr;
 use net::packet::{DoneReason, Packet};
-use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use std::net::IpAddr;
+use thiserror::Error;
 
 #[allow(unused)]
 use tracing::{debug, error, warn};
+
+#[derive(Error, Debug, PartialEq)]
+enum NatError {
+    #[error("Unsupported NAT translation")]
+    UnsupportedTranslation,
+    #[error("Invalid address {0}")]
+    // this should not happen if the nat tables contained sanitized data
+    InvalidAddress(IpAddr),
+}
 
 #[must_use]
 fn map_ip_src_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
@@ -45,20 +53,6 @@ fn map_ip_dst_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
 pub struct StatelessNat {
     name: String,
     tablesr: NatTablesReader,
-}
-
-impl NatTables {
-    fn find_nat_ranges(
-        &self,
-        net: &mut Net,
-        vni: Vni,
-    ) -> Option<(Option<&TrieValue>, Option<&TrieValue>)> {
-        let table = self.get_table(vni)?;
-        let src_nat_ranges = table.lookup_src_prefixes(&net.src_addr(), &net.dst_addr());
-        let dst_nat_ranges = table.lookup_dst_prefixes(&net.dst_addr());
-
-        Some((src_nat_ranges, dst_nat_ranges))
-    }
 }
 
 #[allow(clippy::new_without_default)]
@@ -86,53 +80,84 @@ impl StatelessNat {
         }
     }
 
-    fn translate_src(net: &mut Net, ranges_src_nat: &TrieValue) -> Option<()> {
-        let current_src_ip = net.src_addr();
-        let target_src_ip = map_ip_src_nat(ranges_src_nat, &current_src_ip);
-        match (net, target_src_ip) {
-            (Net::Ipv4(hdr), IpAddr::V4(src_ip)) => {
-                debug!("Changing ipv4 src: {current_src_ip} -> {src_ip}");
-                hdr.set_source(UnicastIpv4Addr::new(src_ip).ok()?);
-            }
-            (Net::Ipv6(hdr), IpAddr::V6(src_ip)) => {
-                debug!("Changing ipv6 src: {current_src_ip} -> {src_ip}");
-                hdr.set_source(UnicastIpv6Addr::new(src_ip).ok()?);
-            }
-            _ => return None,
-        }
-        Some(())
+    /// Get the name of this instance
+    pub fn name(&self) -> &String {
+        &self.name
     }
 
-    fn translate_dst(net: &mut Net, ranges_dst_nat: &TrieValue) -> Option<()> {
-        let current_dst_ip = net.dst_addr();
-        let target_dst_ip = map_ip_dst_nat(ranges_dst_nat, &current_dst_ip);
-        match (net, target_dst_ip) {
-            (Net::Ipv4(hdr), IpAddr::V4(dst_ip)) => {
-                debug!("Changing ipv4 dst: {current_dst_ip} -> {dst_ip}");
-                hdr.set_destination(dst_ip);
-            }
-            (Net::Ipv6(hdr), IpAddr::V6(dst_ip)) => {
-                debug!("Changing ipv6 dst: {current_dst_ip} -> {dst_ip}");
-                hdr.set_destination(dst_ip);
-            }
-            _ => return None,
+    /// Translate packet source ip address.
+    /// # Errors
+    /// Returns `NatError::UnsupportedTranslation` if the translation is unsupported. On success, returns `Ok` indicating
+    /// if the address did actually change or not, since the NAT module may map it to the same address.
+    fn translate_src(&self, net: &mut Net, ranges_src_nat: &TrieValue) -> Result<bool, NatError> {
+        let nfi = self.name();
+        let current_src = net.src_addr();
+        let target_src = map_ip_src_nat(ranges_src_nat, &current_src);
+        if target_src == current_src {
+            return Ok(false);
         }
-        Some(())
+        match (net, target_src) {
+            (Net::Ipv4(hdr), IpAddr::V4(src)) => {
+                debug!("{nfi}: Changing ipv4 src: {current_src} -> {src}");
+                hdr.set_source(
+                    UnicastIpv4Addr::new(src).map_err(|_| NatError::InvalidAddress(target_src))?,
+                );
+                Ok(true)
+            }
+            (Net::Ipv6(hdr), IpAddr::V6(src)) => {
+                debug!("{nfi}: Changing ipv6 src: {current_src} -> {src}");
+                hdr.set_source(
+                    UnicastIpv6Addr::new(src).map_err(|_| NatError::InvalidAddress(target_src))?,
+                );
+                Ok(true)
+            }
+            _ => Err(NatError::UnsupportedTranslation),
+        }
+    }
+
+    /// Translate packet destination ip address.
+    /// # Errors
+    /// Returns `NatError::UnsupportedTranslation` if the translation is unsupported. On success, returns `Ok` indicating
+    /// if the address did actually change or not, since the NAT module may map it to the same address.
+    fn translate_dst(&self, net: &mut Net, ranges_dst_nat: &TrieValue) -> Result<bool, NatError> {
+        let nfi = self.name();
+        let current_dst = net.dst_addr();
+        let target_dst = map_ip_dst_nat(ranges_dst_nat, &current_dst);
+        if target_dst == current_dst {
+            return Ok(false);
+        }
+        match (net, target_dst) {
+            (Net::Ipv4(hdr), IpAddr::V4(dst)) => {
+                debug!("{nfi}: Changing ipv4 dst: {current_dst} -> {dst}");
+                hdr.set_destination(dst);
+                Ok(true)
+            }
+            (Net::Ipv6(hdr), IpAddr::V6(dst)) => {
+                debug!("{nfi}: Changing ipv6 dst: {current_dst} -> {dst}");
+                hdr.set_destination(dst);
+                Ok(true)
+            }
+            _ => Err(NatError::UnsupportedTranslation),
+        }
     }
 
     /// Applies network address translation to a packet, knowing the current and target ranges.
-    fn translate(
-        net: &mut Net,
-        ranges_src_nat: Option<&TrieValue>,
-        ranges_dst_nat: Option<&TrieValue>,
-    ) -> Option<()> {
-        if let Some(ranges_src) = ranges_src_nat {
-            Self::translate_src(net, ranges_src)?; // fixme
+    /// # Errors
+    /// This method may fail if `translate_src` or `translate_dst` fail, which can happen if
+    /// addresses are invalid or an unsupported translation is required (e.g. IPv4 -> IPv6).
+    fn translate(&self, net: &mut Net, per_vni_table: &PerVniTable) -> Result<bool, NatError> {
+        let (src_ranges, dst_ranges) =
+            per_vni_table.find_nat_ranges(net.src_addr(), net.dst_addr());
+
+        // will set to true if packet is modified
+        let mut modified = false;
+        if let Some(ranges_src) = src_ranges {
+            modified |= self.translate_src(net, ranges_src)?;
         }
-        if let Some(ranges_dst) = ranges_dst_nat {
-            Self::translate_dst(net, ranges_dst)?; // fixme
+        if let Some(ranges_dst) = dst_ranges {
+            modified |= self.translate_dst(net, ranges_dst)?;
         }
-        Some(())
+        Ok(modified)
     }
 
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
@@ -143,19 +168,38 @@ impl StatelessNat {
         nat_tables: &NatTables,
         packet: &mut Packet<Buf>,
     ) {
+        let nfi = self.name();
+
+        /* get vni annotation */
         let Some(vni) = packet.get_meta().src_vni else {
-            warn!("{}: Packet comes without vni annotation!", self.name);
+            warn!("{nfi}: Packet has no vni annotation!. Will drop...");
             packet.done(DoneReason::Unroutable);
             return;
         };
-        let Some(net) = packet.headers_mut().try_ip_mut() else {
-            return;
-        };
-        let Some((ranges_src_nat, ranges_dst_nat)) = nat_tables.find_nat_ranges(net, vni) else {
+
+        /* get per vni table */
+        let Some(table) = nat_tables.get_table(vni) else {
+            error!("{nfi}: Cant't find nat tables for vni {vni}");
+            packet.done(DoneReason::Unroutable);
             return;
         };
 
-        Self::translate(net, ranges_src_nat, ranges_dst_nat);
+        /* get ip header */
+        let Some(net) = packet.headers_mut().try_ip_mut() else {
+            error!("{nfi}: Failed to get ip headers!");
+            packet.done(DoneReason::InternalFailure);
+            return;
+        };
+
+        /* do the translations needed according to the `PerVniTable` */
+        match self.translate(net, table) {
+            Err(e) => {
+                error!("{nfi}: {e}");
+                packet.done(DoneReason::NatFailure);
+            }
+            Ok(false) => debug!("{nfi}: No NAT translation needed"),
+            Ok(true) => debug!("{nfi}: Packet was NAT'ed:\n{packet}"),
+        }
     }
 }
 
@@ -166,17 +210,16 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatelessNat {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(|mut packet| {
-            if !packet.is_done() {
+            if !packet.is_done() && packet.get_meta().nat {
                 // fixme: ideally, we'd `enter` once for the whole batch. However,
                 // this requires boxing the closures, which may be worse than
                 // calling `enter` per packet? ... if not uglier
                 if let Some(tablesr) = &self.tablesr.enter() {
                     self.process_packet(tablesr, &mut packet);
                 } else {
+                    error!("{}: failed to read nat tables", self.name);
                     packet.done(DoneReason::InternalFailure);
                 }
-            } else {
-                warn!("{}: Packet is done and will not NATed", self.name);
             }
             packet.enforce()
         })

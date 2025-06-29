@@ -8,6 +8,7 @@ use net::vxlan::Vni;
 use routing::prefix::Prefix;
 use std::collections::{BTreeSet, HashMap};
 use std::net::IpAddr;
+use tracing::debug;
 
 /// An object containing the rules for the NAT pipeline stage, not in terms of states for the
 /// different connections established, but instead holding the base rules for stateful or static
@@ -67,7 +68,8 @@ impl PerVniTable {
     /// Returns the value associated with the given address if it is present in the trie. If the
     /// address is not present, it returns `None`.
     #[must_use]
-    pub fn lookup_src_prefixes(&self, saddr: &IpAddr, daddr: &IpAddr) -> Option<&TrieValue> {
+    fn lookup_src_prefixes(&self, saddr: &IpAddr, daddr: &IpAddr) -> Option<&TrieValue> {
+        debug!("Looking up src prefixes for src: {saddr} dst: {daddr}...");
         // Find relevant prefix table for involved peer
         let peer_indices = self.src_nat_peers.lookup(daddr)?;
 
@@ -88,11 +90,23 @@ impl PerVniTable {
     /// Returns the value associated with the given address if it is present in the trie. If the
     /// address is not present, it returns `None`.
     #[must_use]
-    pub fn lookup_dst_prefixes(&self, addr: &IpAddr) -> Option<&TrieValue> {
+    fn lookup_dst_prefixes(&self, addr: &IpAddr) -> Option<&TrieValue> {
+        debug!("Looking up dst prefixes for address: {addr}...");
         // Look up for the NAT prefix in the table
         let (_, value) = self.dst_nat.lookup(addr)?;
 
         value.as_ref()
+    }
+
+    /// Calls `lookup_src_prefixes` and `lookup_dst_prefixes` for the given pair of src/dst addresses.
+    pub(crate) fn find_nat_ranges(
+        &self,
+        src: IpAddr,
+        dst: IpAddr,
+    ) -> (Option<&TrieValue>, Option<&TrieValue>) {
+        let src_nat_ranges = self.lookup_src_prefixes(&src, &dst);
+        let dst_nat_ranges = self.lookup_dst_prefixes(&dst);
+        (src_nat_ranges, dst_nat_ranges)
     }
 }
 
