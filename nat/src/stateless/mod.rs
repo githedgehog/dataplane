@@ -36,7 +36,7 @@ fn map_ip_dst_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
 /// to run source or destination Network Address Translation (NAT) on their IP addresses.
 #[derive(Debug)]
 pub struct StatelessNat {
-    context: NatTables,
+    nat_tables: NatTables,
 }
 
 #[allow(clippy::new_without_default)]
@@ -45,12 +45,12 @@ impl StatelessNat {
     #[must_use]
     pub fn new() -> Self {
         let context = NatTables::new();
-        Self { context }
+        Self { nat_tables: context }
     }
 
     /// Updates the VNI tables in the NAT processor.
     pub fn update_tables(&mut self, tables: NatTables) {
-        self.context = tables;
+        self.nat_tables = tables;
     }
 
     fn find_nat_ranges(
@@ -59,7 +59,7 @@ impl StatelessNat {
         vni_opt: Option<Vni>,
     ) -> Option<(Option<&TrieValue>, Option<&TrieValue>)> {
         let vni = vni_opt?;
-        let table = self.context.tables.get(&vni.as_u32())?;
+        let table = self.nat_tables.get_table(vni)?;
 
         let src_nat_ranges = table.lookup_src_prefixes(&net.src_addr(), &net.dst_addr());
         let dst_nat_ranges = table.lookup_dst_prefixes(&net.dst_addr());
