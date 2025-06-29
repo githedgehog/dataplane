@@ -767,6 +767,7 @@ dependencies = [
  "dataplane-dpdk",
  "dataplane-id",
  "dataplane-mgmt",
+ "dataplane-nat",
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-routing",
