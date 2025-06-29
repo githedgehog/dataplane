@@ -4,7 +4,6 @@
 //! NAT configuration tests .. and actual NAT function
 
 #[cfg(test)]
-#[cfg(none)] // DISABLED temporarily!
 mod tests {
     use crate::models::external::gwconfig::ExternalConfigBuilder;
     use crate::models::external::gwconfig::Underlay;
@@ -192,8 +191,8 @@ mod tests {
         const TARGET_DST_IP: Ipv4Addr = Ipv4Addr::new(10, 0, 136, 8);
 
         let nat_tables = build_context();
-        let mut nat = StatelessNat::new();
-        nat.update_tables(nat_tables);
+        let (mut nat, mut tablesw) = StatelessNat::new();
+        tablesw.update_nat_tables(nat_tables);
 
         let mut packet = build_test_ipv4_packet(u8::MAX).unwrap();
         let mut packet_reply = packet.clone();
@@ -431,8 +430,8 @@ mod tests {
             .nat_table
             .expect("Failed to build NAT tables");
 
-        let mut nat = StatelessNat::new();
-        nat.update_tables(nat_tables);
+        let (mut nat, mut tablesw) = StatelessNat::new();
+        tablesw.update_nat_tables(nat_tables);
 
         // Template for other packets
         let pt = build_test_ipv4_packet(u8::MAX).unwrap();
