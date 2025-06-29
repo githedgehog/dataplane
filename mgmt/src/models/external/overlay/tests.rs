@@ -97,11 +97,17 @@ pub mod test {
         let expose = VpcExpose::empty().ip("10.0.0.0/16".into());
         assert_eq!(expose.validate(), Ok(()));
 
+        // Empty ips but non-empty nots - Currently not supported
+        /*
         let expose = VpcExpose::empty().not("10.0.1.0/24".into());
         assert_eq!(expose.validate(), Ok(()));
+        */
 
+        // Empty as_range but non-empty not_as - Currently not supported
+        /*
         let expose = VpcExpose::empty().not_as("2.0.1.0/24".into());
         assert_eq!(expose.validate(), Ok(()));
+        */
 
         let expose = VpcExpose::empty()
             .ip("10.0.0.0/16".into())
@@ -120,10 +126,13 @@ pub mod test {
             .as_range("2::/64".into());
         assert_eq!(expose.validate(), Ok(()));
 
+        // Empty ips/as_range but non-empty nots/not_as - Currently not supported
+        /*
         let expose = VpcExpose::empty()
             .not("10.0.0.0/16".into())
             .not_as("2.0.0.0/16".into());
         assert_eq!(expose.validate(), Ok(()));
+        */
 
         // Incorrect: mixed IP versions
         let expose = VpcExpose::empty()

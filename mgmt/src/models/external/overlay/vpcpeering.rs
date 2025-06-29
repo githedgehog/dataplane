@@ -129,6 +129,22 @@ impl VpcExpose {
             ));
         }
 
+        // 6. Forbid empty ips list if not is non-empty.
+        //    Forbid empty as_range list if not_as is non-empty.
+        //    These configurations are allowed by the user API, but we don't currently support them,
+        //    so we reject them during validation.
+        //    https://github.com/githedgehog/dataplane/issues/650
+        if !self.nots.is_empty() && self.ips.is_empty() {
+            return Err(ConfigError::Forbidden(
+                "Empty 'ips' with non-empty 'nots' is currently not supported",
+            ));
+        }
+        if !self.not_as.is_empty() && self.as_range.is_empty() {
+            return Err(ConfigError::Forbidden(
+                "Empty 'as_range' with non-empty 'not_as' is currently not supported",
+            ));
+        }
+
         Ok(())
     }
 }
