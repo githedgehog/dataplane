@@ -192,7 +192,7 @@ mod tests {
         const TARGET_DST_IP: Ipv4Addr = Ipv4Addr::new(10, 0, 136, 8);
 
         let nat_tables = build_context();
-        let (mut nat, mut tablesw) = StatelessNat::new();
+        let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
         tablesw.update_nat_tables(nat_tables);
 
         let mut packet = build_test_ipv4_packet(u8::MAX).unwrap();
@@ -432,7 +432,7 @@ mod tests {
             .nat_table
             .expect("Failed to build NAT tables");
 
-        let (mut nat, mut tablesw) = StatelessNat::new();
+        let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
         tablesw.update_nat_tables(nat_tables);
 
         // Template for other packets

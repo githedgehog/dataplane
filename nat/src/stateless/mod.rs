@@ -43,6 +43,7 @@ fn map_ip_dst_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
 /// to run source or destination Network Address Translation (NAT) on their IP addresses.
 #[derive(Debug)]
 pub struct StatelessNat {
+    name: String,
     tablesr: NatTablesReader,
 }
 
@@ -64,16 +65,25 @@ impl NatTables {
 impl StatelessNat {
     /// Creates a new [`StatelessNat`] processor, providing a writer to its internal `NatTables`.
     #[must_use]
-    pub fn new() -> (Self, NatTablesWriter) {
+    pub fn new(name: &str) -> (Self, NatTablesWriter) {
         #![allow(clippy::similar_names)]
         let tablesw = NatTablesWriter::new();
         let tablesr = tablesw.get_reader();
-        (Self { tablesr }, tablesw)
+        (
+            Self {
+                name: name.to_string(),
+                tablesr,
+            },
+            tablesw,
+        )
     }
     /// Creates a new [`StatelessNat`] processor as `new()`, but uses the provided `NatTablesReader`.
     #[must_use]
-    pub fn with_reader(tablesr: NatTablesReader) -> Self {
-        Self { tablesr }
+    pub fn with_reader(name: &str, tablesr: NatTablesReader) -> Self {
+        Self {
+            name: name.to_string(),
+            tablesr,
+        }
     }
 
     fn translate_src(net: &mut Net, ranges_src_nat: &TrieValue) -> Option<()> {
@@ -134,6 +144,7 @@ impl StatelessNat {
         packet: &mut Packet<Buf>,
     ) {
         let Some(vni) = packet.get_meta().src_vni else {
+            warn!("{}: Packet comes without vni annotation!", self.name);
             packet.done(DoneReason::Unroutable);
             return;
         };
@@ -165,7 +176,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatelessNat {
                     packet.done(DoneReason::InternalFailure);
                 }
             } else {
-                warn!("Packet is done and will not NATed");
+                warn!("{}: Packet is done and will not NATed", self.name);
             }
             packet.enforce()
         })
