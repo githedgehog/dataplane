@@ -9,24 +9,6 @@
 //! This package implements a [`pipeline::NetworkFunction`] that provides Network Address
 //! Translation (NAT) functionality, either source or destination.
 //!
-//! # Example
-//!
-//! ```
-//! # use net::buffer::TestBuffer;
-//! # use net::headers::TryIpv4;
-//! # use net::packet::test_utils::build_test_ipv4_packet;
-//! # use pipeline::NetworkFunction;
-//! use dataplane_nat::StatelessNat;
-//!
-//! let (mut nat, _tablew) = StatelessNat::new();
-//! let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
-//! let packets_out: Vec<_> = nat.process(packets).collect();
-//!
-//! let hdr0_out = &packets_out[0]
-//!     .try_ipv4()
-//!     .expect("Failed to get IPv4 header");
-//! ```
-//!
 //! # Limitations
 //!
 //! The package is subject to the following limitations:
