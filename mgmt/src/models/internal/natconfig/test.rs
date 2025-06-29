@@ -5,19 +5,39 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::models::external::overlay::vpc::Peering;
-    use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
+    use crate::models::external::gwconfig::ExternalConfigBuilder;
+    use crate::models::external::gwconfig::Underlay;
+    use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
+    use crate::models::external::overlay::Overlay;
+    use crate::models::external::overlay::vpc::{Peering, Vpc, VpcTable};
+    use crate::models::external::overlay::vpcpeering::{
+        VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
+    };
+    use crate::models::internal::device::DeviceConfig;
+    use crate::models::internal::device::settings::DeviceSettings;
+    use crate::models::internal::interfaces::interface::InterfaceConfig;
+    use crate::models::internal::interfaces::interface::InterfaceConfigTable;
+    use crate::models::internal::interfaces::interface::{IfVtepConfig, InterfaceType};
     use crate::models::internal::natconfig::table_extend;
+    use crate::models::internal::routing::bgp::BgpConfig;
+    use crate::models::internal::routing::vrf::VrfConfig;
     use nat::StatelessNat;
     use nat::stateless::config::tables::{NatTables, PerVniTable};
     use net::buffer::PacketBufferMut;
+    use net::buffer::TestBuffer;
+    use net::eth::mac::Mac;
     use net::headers::{TryHeadersMut, TryIpv4, TryIpv4Mut};
+    use net::ipv4::Ipv4;
     use net::packet::Packet;
     use net::packet::test_utils::build_test_ipv4_packet;
     use net::vxlan::Vni;
     use pipeline::NetworkFunction;
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
+
+    fn addr_v4(addr: &str) -> Ipv4Addr {
+        Ipv4Addr::from_str(addr).expect("Failed to create IPv4 address")
+    }
 
     fn vni(vni: u32) -> Vni {
         Vni::new_checked(vni).expect("Failed to create VNI")
@@ -209,5 +229,316 @@ mod tests {
         println!("L3 header: {hdr_out_reply:?}");
         assert_eq!(hdr_out_reply.source().inner(), orig_dst_ip);
         assert_eq!(hdr_out_reply.destination(), orig_src_ip);
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn build_sample_config() -> GwConfig {
+        fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
+            manifest.add_expose(expose).expect("Failed to add expose");
+        }
+
+        let mut vpc_table = VpcTable::new();
+        let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
+        let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
+        let _ = vpc_table.add(Vpc::new("VPC-3", "CCCCC", 300).expect("Failed to add VPC"));
+        let _ = vpc_table.add(Vpc::new("VPC-4", "DDDDD", 400).expect("Failed to add VPC"));
+
+        // VPC1 --------- VPC 2
+        //  |    \           |
+        //  |      \         |
+        //  |        \       |
+        //  |          \     |
+        //  |            \   |
+        // VPC3 --------- VPC 4
+
+        // VPC1 <-> VPC2
+        let expose121 = VpcExpose::empty()
+            .ip("1.1.0.0/16".into())
+            .as_range("10.12.0.0/16".into());
+        let expose122 = VpcExpose::empty()
+            .ip("1.2.0.0/16".into())
+            .as_range("10.98.128.0/17".into())
+            .as_range("10.99.0.0/17".into());
+        let expose123 = VpcExpose::empty()
+            .ip("1.3.0.0/24".into())
+            .as_range("10.100.0.0/24".into());
+        let expose211 = VpcExpose::empty()
+            .ip("1.2.2.0/24".into())
+            .as_range("10.201.201.0/24".into());
+        let expose212 = VpcExpose::empty()
+            .ip("1.2.3.0/24".into())
+            .as_range("10.201.202.0/24".into());
+        let expose213 = VpcExpose::empty()
+            .ip("2.0.0.0/24".into())
+            .as_range("10.201.203.0/24".into());
+        let expose214 = VpcExpose::empty()
+            .ip("2.0.1.0/28".into())
+            .as_range("10.201.204.192/28".into());
+
+        // VPC1 <-> VPC3
+        let expose131 = VpcExpose::empty()
+            .ip("1.1.0.0/16".into())
+            .as_range("3.3.0.0/16".into());
+        let expose132 = VpcExpose::empty()
+            .ip("1.2.0.0/16".into())
+            .as_range("3.1.0.0/16".into())
+            .not_as("3.1.128.0/17".into())
+            .as_range("3.2.0.0/17".into());
+        let expose311 = VpcExpose::empty()
+            .ip("192.168.128.0/24".into())
+            .as_range("3.3.3.0/24".into());
+
+        // VPC1 <-> VPC4
+        let expose141 = VpcExpose::empty()
+            .ip("1.1.0.0/16".into())
+            .as_range("4.4.0.0/16".into());
+        let expose411 = VpcExpose::empty()
+            .ip("1.1.0.0/16".into())
+            .as_range("4.5.0.0/16".into());
+
+        // VPC2 <-> VPC4
+        let expose241 = VpcExpose::empty()
+            .ip("2.4.0.0/16".into())
+            .not("2.4.1.0/24".into())
+            .as_range("44.0.0.0/16".into())
+            .not_as("44.0.200.0/24".into());
+        let expose421 = VpcExpose::empty()
+            .ip("4.4.0.0/16".into())
+            .not("4.4.128.0/18".into())
+            .as_range("44.4.0.0/16".into())
+            .not_as("44.4.64.0/18".into());
+
+        // VPC3 <-> VPC4
+        let expose341 = VpcExpose::empty()
+            .ip("192.168.100.0/24".into())
+            .as_range("34.34.34.0/24".into());
+        let expose431 = VpcExpose::empty().ip("4.4.0.0/24".into());
+
+        // VPC1 <-> VPC2
+        let mut manifest12 = VpcManifest::new("VPC-1");
+        add_expose(&mut manifest12, expose121);
+        add_expose(&mut manifest12, expose122);
+        add_expose(&mut manifest12, expose123);
+        let mut manifest21 = VpcManifest::new("VPC-2");
+        add_expose(&mut manifest21, expose211);
+        add_expose(&mut manifest21, expose212);
+        add_expose(&mut manifest21, expose213);
+        add_expose(&mut manifest21, expose214);
+
+        // VPC1 <-> VPC3
+        let mut manifest13 = VpcManifest::new("VPC-1");
+        add_expose(&mut manifest13, expose131);
+        add_expose(&mut manifest13, expose132);
+        let mut manifest31 = VpcManifest::new("VPC-3");
+        add_expose(&mut manifest31, expose311);
+
+        // VPC1 <-> VPC4
+        let mut manifest14 = VpcManifest::new("VPC-1");
+        add_expose(&mut manifest14, expose141);
+        let mut manifest41 = VpcManifest::new("VPC-4");
+        add_expose(&mut manifest41, expose411);
+
+        // VPC2 <-> VPC4
+        let mut manifest24 = VpcManifest::new("VPC-2");
+        add_expose(&mut manifest24, expose241);
+        let mut manifest42 = VpcManifest::new("VPC-4");
+        add_expose(&mut manifest42, expose421);
+
+        // VPC3 <-> VPC4
+        let mut manifest34 = VpcManifest::new("VPC-3");
+        add_expose(&mut manifest34, expose341);
+        let mut manifest43 = VpcManifest::new("VPC-4");
+        add_expose(&mut manifest43, expose431);
+
+        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21);
+        let peering31 = VpcPeering::new("VPC-3--VPC-1", manifest31, manifest13);
+        let peering14 = VpcPeering::new("VPC-1--VPC-4", manifest14, manifest41);
+        let peering24 = VpcPeering::new("VPC-2--VPC-4", manifest24, manifest42);
+        let peering34 = VpcPeering::new("VPC-3--VPC-4", manifest34, manifest43);
+
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table.add(peering12).expect("Failed to add peering");
+        peering_table.add(peering31).expect("Failed to add peering");
+        peering_table.add(peering14).expect("Failed to add peering");
+        peering_table.add(peering24).expect("Failed to add peering");
+        peering_table.add(peering34).expect("Failed to add peering");
+
+        let overlay = Overlay::new(vpc_table, peering_table);
+
+        // Now comes some default configuration to build a valid GwConfig, not really relevant to
+        // our tests
+
+        let device_config = DeviceConfig::new(DeviceSettings::new("sample"));
+
+        let vtep = InterfaceConfig::new(
+            "vtep",
+            InterfaceType::Vtep(IfVtepConfig {
+                mac: Some(Mac::from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x01])),
+                local: Ipv4Addr::from_str("127.0.0.1").expect("Failed to create local address"),
+                ttl: None,
+                vni: None,
+            }),
+            false,
+        );
+        let mut vrf_config = VrfConfig::new("default", None, true);
+        vrf_config.add_interface_config(vtep);
+        let bgp = BgpConfig::new(1);
+        vrf_config.set_bgp(bgp);
+        let underlay = Underlay { vrf: vrf_config };
+
+        let mut external_builder = ExternalConfigBuilder::default();
+        external_builder.genid(1);
+        external_builder.device(device_config);
+        external_builder.underlay(underlay);
+        external_builder.overlay(overlay);
+        let external_config = external_builder
+            .build()
+            .expect("Failed to build external config");
+
+        GwConfig::new(external_config)
+    }
+
+    fn check_packet(
+        nat: &mut StatelessNat,
+        vni: Vni,
+        orig_src_ip: Ipv4Addr,
+        orig_dst_ip: Ipv4Addr,
+    ) -> (Ipv4Addr, Ipv4Addr) {
+        let mut packet = build_test_ipv4_packet(u8::MAX).unwrap();
+        packet.get_meta_mut().src_vni = Some(vni);
+        set_addresses_v4(&mut packet, orig_src_ip, orig_dst_ip);
+
+        let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+        let hdr_out = packets_out[0]
+            .try_ipv4()
+            .expect("Failed to get IPv4 header");
+
+        (hdr_out.source().inner(), hdr_out.destination())
+    }
+
+    #[test]
+    fn test_full_config() {
+        let mut config = build_sample_config();
+        config.validate().expect("Failed to validate config");
+        config
+            .build_internal_config()
+            .expect("Failed to build internal config");
+        println!("Internal config: {:#?}", config.internal);
+        let nat_tables = config
+            .internal
+            .expect("Failed to build internal config")
+            .nat_table
+            .expect("Failed to build NAT tables");
+
+        let mut nat = StatelessNat::new();
+        nat.update_tables(nat_tables);
+
+        // Template for other packets
+        let pt = build_test_ipv4_packet(u8::MAX).unwrap();
+
+        // No NAT
+        let (orig_src, orig_dst) = (addr_v4("8.8.8.8"), addr_v4("9.9.9.9"));
+        let (output_src, output_dst) = check_packet(&mut nat, vni(100), orig_src, orig_dst);
+        assert_eq!(output_src, orig_src);
+        assert_eq!(output_dst, orig_dst);
+
+        // expose121 <-> expose211
+        let (orig_src, orig_dst) = (addr_v4("1.1.2.3"), addr_v4("10.201.201.18"));
+        let (target_src, target_dst) = (addr_v4("10.12.2.3"), addr_v4("1.2.2.18"));
+        let (output_src, output_dst) = check_packet(&mut nat, vni(100), orig_src, orig_dst);
+        assert_eq!(output_src, target_src);
+        assert_eq!(output_dst, target_dst);
+        // Reverse path
+        let (output_src, output_dst) = check_packet(&mut nat, vni(200), target_dst, target_src);
+        assert_eq!(output_src, orig_dst);
+        assert_eq!(output_dst, orig_src);
+
+        // expose122 <-> expose211
+        let (orig_src, orig_dst) = (addr_v4("1.2.129.3"), addr_v4("10.201.201.22"));
+        let (target_src, target_dst) = (addr_v4("10.99.1.3"), addr_v4("1.2.2.22"));
+        let (output_src, output_dst) = check_packet(&mut nat, vni(100), orig_src, orig_dst);
+        assert_eq!(output_src, target_src);
+        assert_eq!(output_dst, target_dst);
+        // Reverse path
+        let (output_src, output_dst) = check_packet(&mut nat, vni(200), target_dst, target_src);
+        assert_eq!(output_src, orig_dst);
+        assert_eq!(output_dst, orig_src);
+
+        // expose123 <-> expose214
+        let (orig_src, orig_dst) = (addr_v4("1.3.0.7"), addr_v4("10.201.204.193"));
+        let (target_src, target_dst) = (addr_v4("10.100.0.7"), addr_v4("2.0.1.1"));
+        let (output_src, output_dst) = check_packet(&mut nat, vni(100), orig_src, orig_dst);
+        assert_eq!(output_src, target_src);
+        assert_eq!(output_dst, target_dst);
+        // Reverse path
+        let (output_src, output_dst) = check_packet(&mut nat, vni(200), target_dst, target_src);
+        assert_eq!(output_src, orig_dst);
+        assert_eq!(output_dst, orig_src);
+
+        // expose131 <-> expose311 (reusing expose121 private IPs)
+        let (orig_src, orig_dst) = (addr_v4("1.1.3.3"), addr_v4("3.3.3.3"));
+        let (target_src, target_dst) = (addr_v4("3.3.3.3"), addr_v4("192.168.128.3"));
+        let (output_src, output_dst) = check_packet(&mut nat, vni(100), orig_src, orig_dst);
+        assert_eq!(output_src, target_src);
+        assert_eq!(output_dst, target_dst);
+        // Reverse path
+        let (output_src, output_dst) = check_packet(&mut nat, vni(300), target_dst, target_src);
+        assert_eq!(output_src, orig_dst);
+        assert_eq!(output_dst, orig_src);
+
+        // expose132 <-> expose311
+        let (orig_src, orig_dst) = (addr_v4("1.2.130.1"), addr_v4("3.3.3.3"));
+        let (target_src, target_dst) = (addr_v4("3.2.2.1"), addr_v4("192.168.128.3"));
+        let (output_src, output_dst) = check_packet(&mut nat, vni(100), orig_src, orig_dst);
+        assert_eq!(output_src, target_src);
+        assert_eq!(output_dst, target_dst);
+        // Reverse path
+        let (output_src, output_dst) = check_packet(&mut nat, vni(300), target_dst, target_src);
+        assert_eq!(output_src, orig_dst);
+        assert_eq!(output_dst, orig_src);
+
+        // expose141 <-> expose411
+        let (orig_src, orig_dst) = (addr_v4("1.1.1.1"), addr_v4("4.5.1.1"));
+        let (target_src, target_dst) = (addr_v4("4.4.1.1"), addr_v4("1.1.1.1"));
+        let (output_src, output_dst) = check_packet(&mut nat, vni(100), orig_src, orig_dst);
+        assert_eq!(output_src, target_src);
+        assert_eq!(output_dst, target_dst);
+        // Reverse path
+        let (output_src, output_dst) = check_packet(&mut nat, vni(400), target_dst, target_src);
+        assert_eq!(output_src, orig_dst);
+        assert_eq!(output_dst, orig_src);
+
+        // expose241 <-> expose421 (first/last addresses of ranges)
+        let (orig_src, orig_dst) = (addr_v4("2.4.255.255"), addr_v4("44.4.0.0"));
+        let (target_src, target_dst) = (addr_v4("44.0.255.255"), addr_v4("4.4.0.0"));
+        let (output_src, output_dst) = check_packet(&mut nat, vni(200), orig_src, orig_dst);
+        assert_eq!(output_src, target_src);
+        assert_eq!(output_dst, target_dst);
+        // Reverse path
+        let (output_src, output_dst) = check_packet(&mut nat, vni(400), target_dst, target_src);
+        assert_eq!(output_src, orig_dst);
+        assert_eq!(output_dst, orig_src);
+
+        // expose241 <-> expose421 (playing with not/not_as)
+        let (orig_src, orig_dst) = (addr_v4("2.4.2.1"), addr_v4("44.4.136.2"));
+        let (target_src, target_dst) = (addr_v4("44.0.1.1"), addr_v4("4.4.72.2"));
+        let (output_src, output_dst) = check_packet(&mut nat, vni(200), orig_src, orig_dst);
+        assert_eq!(output_src, target_src);
+        assert_eq!(output_dst, target_dst);
+        // Reverse path
+        let (output_src, output_dst) = check_packet(&mut nat, vni(400), target_dst, target_src);
+        assert_eq!(output_src, orig_dst);
+        assert_eq!(output_dst, orig_src);
+
+        // expose341 <-> expose431 (one-side NAT)
+        let (orig_src, orig_dst) = (addr_v4("192.168.100.34"), addr_v4("4.4.0.43"));
+        let (target_src, target_dst) = (addr_v4("34.34.34.34"), addr_v4("4.4.0.43"));
+        let (output_src, output_dst) = check_packet(&mut nat, vni(300), orig_src, orig_dst);
+        assert_eq!(output_src, target_src);
+        assert_eq!(output_dst, target_dst);
+        // Reverse path
+        let (output_src, output_dst) = check_packet(&mut nat, vni(400), target_dst, target_src);
+        assert_eq!(output_src, orig_dst);
+        assert_eq!(output_dst, orig_src);
     }
 }
