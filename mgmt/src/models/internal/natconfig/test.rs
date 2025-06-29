@@ -199,6 +199,8 @@ mod tests {
         let mut packet_reply = packet.clone();
         packet.get_meta_mut().src_vni = Some(vni(100));
         packet_reply.get_meta_mut().src_vni = Some(vni(200));
+        packet.get_meta_mut().nat = true;
+        packet_reply.get_meta_mut().nat = true;
 
         let orig_src_ip = get_src_ip_v4(&packet);
         let orig_dst_ip = get_dst_ip_v4(&packet);
@@ -406,6 +408,7 @@ mod tests {
         orig_dst_ip: Ipv4Addr,
     ) -> (Ipv4Addr, Ipv4Addr) {
         let mut packet = build_test_ipv4_packet(u8::MAX).unwrap();
+        packet.get_meta_mut().nat = true;
         packet.get_meta_mut().src_vni = Some(vni);
         set_addresses_v4(&mut packet, orig_src_ip, orig_dst_ip);
 

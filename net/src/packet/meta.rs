@@ -67,6 +67,7 @@ pub enum DoneReason {
 
 #[allow(unused)]
 #[derive(Debug, Default, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct PacketMeta {
     pub iif: InterfaceId,             /* incoming interface - set early */
     pub oif: Option<InterfaceId>,     /* outgoing interface - set late */
@@ -78,6 +79,7 @@ pub struct PacketMeta {
     pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
     pub src_vni: Option<Vni>, /* the vni value of a received vxlan encap packet, if destined to gateway */
     pub dst_vni: Option<Vni>, /* the vni value of a vxlan packet re-encapsulated by the gateway */
+    pub nat: bool,            /* if true, NAT stage should attempt to nat the packet */
     pub keep: bool,           /* Keep the Packet even if it should be dropped */
 }
 impl PacketMeta {
