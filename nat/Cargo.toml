@@ -9,10 +9,13 @@ license = "Apache-2.0"
 ahash = { workspace = true }
 dashmap = { workspace = true }
 iptrie = { workspace = true }
+left-right = { workspace = true }
+#mgmt = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
 routing = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 routing = { workspace = true, features = ["testing"] }

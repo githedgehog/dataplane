@@ -5,6 +5,7 @@
 
 pub mod config;
 mod iplist;
+pub mod natrw;
 
 use config::tables::{NatTables, TrieValue};
 use iplist::IpList;

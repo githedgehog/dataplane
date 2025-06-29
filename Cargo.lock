@@ -908,7 +908,9 @@ dependencies = [
  "dataplane-pipeline",
  "dataplane-routing",
  "iptrie",
+ "left-right",
  "thiserror 2.0.12",
+ "tracing",
 ]
 
 [[package]]
