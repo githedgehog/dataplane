@@ -88,8 +88,10 @@ fn main() {
     };
 
     /* start router and create routing pipeline */
-    let (builder, router, vpcmapw, statsr) = match start_router(config) {
-        Ok((router, pipeline, vpcmapw, statsr)) => (move || pipeline, router, vpcmapw, statsr),
+    let (builder, router, vpcmapw, statsr, _nattablew) = match start_router(config) {
+        Ok((router, pipeline, vpcmapw, statsr, nattablew)) => {
+            (move || pipeline, router, vpcmapw, statsr, nattablew)
+        }
         Err(e) => {
             error!("Failed to start router: {e}");
             panic!("Failed to start router: {e}");
