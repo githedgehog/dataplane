@@ -25,7 +25,10 @@ impl Vpc {
         self.id.vrf_name().to_string()
     }
     pub(crate) fn import_route_map_ipv4(&self) -> String {
-        format!("RM-IMPORT-{}", self.name.to_uppercase())
+        format!("IPV4-IMPORTS-{}", self.name.to_uppercase())
+    }
+    pub(crate) fn import_route_map_ipv6(&self) -> String {
+        format!("IPV6-IMPORTS-{}", self.name.to_uppercase())
     }
     pub(crate) fn plist_with_vpc(&self, remote_name: &str) -> String {
         format!(
