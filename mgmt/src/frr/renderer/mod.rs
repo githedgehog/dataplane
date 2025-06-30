@@ -19,7 +19,7 @@ use crate::models::internal::InternalConfig;
 use tracing::debug;
 
 fn render_metadata(genid: &GenId) -> String {
-    format!("! config for gen {}", genid)
+    format!("! config for gen {genid}")
 }
 
 impl Render for InternalConfig {
