@@ -45,7 +45,12 @@ impl Ingress {
         if packet.try_ipv4().is_some() || packet.try_ipv6().is_some() {
             match &interface.attachment {
                 Some(Attachment::VRF(fibr)) => {
-                    let vrfid = fibr.get_id().unwrap().as_u32();
+                    let Some(vrfid) = fibr.get_id().map(|x| x.as_u32()) else {
+                        /* we may ocassionaly not be able to enter a fib on reconfigs */
+                        warn!("Failed to access fib on ingress!");
+                        packet.done(DoneReason::Unroutable);
+                        return;
+                    };
                     debug!("{nfi}: Packet is for VRF {vrfid}");
                     packet.get_meta_mut().vrf = Some(vrfid);
                 }
@@ -90,8 +95,8 @@ impl Ingress {
         interface: &Interface,
         packet: &mut Packet<Buf>,
     ) {
-        let nfi = self.name();
         if let Some(if_mac) = interface.get_mac() {
+            let nfi = self.name();
             trace!(
                 "{nfi}: Got packet over interface '{}' ({}) mac:{if_mac}",
                 interface.name, interface.ifindex
@@ -142,8 +147,8 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Ingress {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         trace!("{}", self.name);
-        let nfi = self.name.clone();
         input.filter_map(move |mut packet| {
+            let nfi = self.name();
             if !packet.is_done() {
                 if let Some(iftable) = self.iftr.enter() {
                     let iif = packet.get_meta().iif.get_id();
