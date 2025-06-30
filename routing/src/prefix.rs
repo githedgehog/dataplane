@@ -31,8 +31,8 @@ pub enum Prefix {
 }
 
 impl Prefix {
-    const MAX_LEN_IPV4: u8 = 32;
-    const MAX_LEN_IPV6: u8 = 128;
+    pub const MAX_LEN_IPV4: u8 = 32;
+    pub const MAX_LEN_IPV6: u8 = 128;
 
     /// Build 224.0.0.0/4 - Ideally this would be const
     #[must_use]
