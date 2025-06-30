@@ -37,6 +37,7 @@ use net::interface::{
     PciNetdevPropertiesBuilder, VrfPropertiesBuilder, VtepPropertiesBuilder,
 };
 use net::ipv4::addr::UnicastIpv4Addr;
+use net::pci::PciEbdf;
 use net::route::RouteTableId;
 use net::vxlan::InvalidVni;
 use rekon::{AsRequirement, Create, Op, Reconcile, Remove, Update};
@@ -46,7 +47,7 @@ use rtnetlink::packet_route::link::{
 };
 use rtnetlink::{LinkBridge, LinkUnspec, LinkVrf, LinkVxlan};
 use serde::{Deserialize, Serialize};
-use tracing::{error, warn};
+use tracing::{error, trace, warn};
 
 /// The specified / intended state for a network interface.
 ///
@@ -771,7 +772,16 @@ impl TryFromLinkMessage for Interface {
                 LinkAttribute::PhysPortName(phys_name) => {
                     pci_netdev_builder.port_name(Some(phys_name.clone()));
                 }
-                // TODO: missing parent dev in upstream library for the moment!
+                LinkAttribute::ParentDevName(parent_name) => {
+                    let dev = match PciEbdf::try_new(parent_name.clone()) {
+                        Ok(dev) => dev,
+                        Err(err) => {
+                            trace!("{err}");
+                            continue;
+                        }
+                    };
+                    pci_netdev_builder.parent_dev(dev);
+                }
                 _ => {}
             }
         }
