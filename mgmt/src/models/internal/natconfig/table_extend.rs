@@ -16,6 +16,8 @@ use tracing::error;
 /// Error type for NAT peering table extension operations.
 #[derive(thiserror::Error, Debug)]
 pub enum NatPeeringError {
+    #[error("entry already exists")]
+    EntryExists,
     #[error("failed to split prefix {0}")]
     SplitPrefixError(Prefix),
 }
@@ -51,8 +53,9 @@ fn get_private_trie_value(expose: &VpcExpose, prefix: &Prefix) -> TrieValue {
 /// # Errors
 ///
 /// Returns an error if some lists of prefixes contain duplicates
-pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), TrieError> {
-    let new_peering = optimize_peering(peering);
+pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), NatPeeringError> {
+    let new_peering = collapse_prefixes_peering(peering)?;
+
     let mut local_expose_indices = vec![];
 
     new_peering.local.exposes.iter().try_for_each(|expose| {
@@ -67,7 +70,9 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Tri
         // public prefixes
         expose.ips.iter().try_for_each(|prefix| {
             let pub_value = get_public_trie_value(expose, prefix);
-            peering_table.insert(prefix, pub_value)
+            peering_table
+                .insert(prefix, pub_value)
+                .map_err(|_| NatPeeringError::EntryExists)
         })?;
         // Add "None" entries for excluded prefixes
         expose
@@ -87,7 +92,10 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Tri
         // private prefixes
         expose.as_range.iter().try_for_each(|prefix| {
             let priv_value = get_private_trie_value(expose, prefix);
-            table.dst_nat.insert(prefix, priv_value)
+            table
+                .dst_nat
+                .insert(prefix, priv_value)
+                .map_err(|_| NatPeeringError::EntryExists)
         })?;
         // Add "None" entries for excluded prefixes
         expose
@@ -107,6 +115,7 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Tri
                 .src_nat_peers
                 .rules
                 .insert(prefix, local_expose_indices.clone())
+                .map_err(|_| NatPeeringError::EntryExists)
         })
     })?;
 
