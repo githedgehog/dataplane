@@ -204,26 +204,14 @@ impl Default for NatPeerRuleTable {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrieValue {
     orig: BTreeSet<Prefix>,
-    orig_excludes: BTreeSet<Prefix>,
     target: BTreeSet<Prefix>,
-    target_excludes: BTreeSet<Prefix>,
 }
 
 impl TrieValue {
     /// Creates a new [`TrieValue`]
     #[must_use]
-    pub fn new(
-        orig: BTreeSet<Prefix>,
-        orig_excludes: BTreeSet<Prefix>,
-        target: BTreeSet<Prefix>,
-        target_excludes: BTreeSet<Prefix>,
-    ) -> Self {
-        Self {
-            orig,
-            orig_excludes,
-            target,
-            target_excludes,
-        }
+    pub fn new(orig: BTreeSet<Prefix>, target: BTreeSet<Prefix>) -> Self {
+        Self { orig, target }
     }
 
     /// Accessor for original prefixes
@@ -232,22 +220,10 @@ impl TrieValue {
         &self.orig
     }
 
-    /// Accessor for original exclusion prefixes
-    #[must_use]
-    pub fn orig_excludes(&self) -> &BTreeSet<Prefix> {
-        &self.orig_excludes
-    }
-
     /// Accessor for target prefixes
     #[must_use]
     pub fn target_prefixes(&self) -> &BTreeSet<Prefix> {
         &self.target
-    }
-
-    /// Accessor for target exclusion prefixes
-    #[must_use]
-    pub fn target_excludes(&self) -> &BTreeSet<Prefix> {
-        &self.target_excludes
     }
 
     /// Iterates over the original prefixes
@@ -255,18 +231,8 @@ impl TrieValue {
         self.orig.iter()
     }
 
-    /// Iterates over the original exclusion prefixes
-    pub fn orig_excludes_iter(&self) -> impl Iterator<Item = &Prefix> {
-        self.orig_excludes.iter()
-    }
-
     /// Iterates over the target prefixes
     pub fn target_prefixes_iter(&self) -> impl Iterator<Item = &Prefix> {
         self.target.iter()
-    }
-
-    /// Iterates over the target exclusion prefixes
-    pub fn target_excludes_iter(&self) -> impl Iterator<Item = &Prefix> {
-        self.target_excludes.iter()
     }
 }

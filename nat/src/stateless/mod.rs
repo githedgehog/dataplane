@@ -18,15 +18,15 @@ use pipeline::NetworkFunction;
 use std::net::IpAddr;
 
 fn map_ip_src_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
-    let current_range = IpList::new(ranges.orig_prefixes(), ranges.orig_excludes());
-    let target_range = IpList::new(ranges.target_prefixes(), ranges.target_excludes());
+    let current_range = IpList::new(ranges.orig_prefixes());
+    let target_range = IpList::new(ranges.target_prefixes());
     let offset = current_range.addr_offset_in_prefix(current_ip);
     target_range.addr_from_prefix_offset(&offset)
 }
 
 fn map_ip_dst_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
-    let current_range = IpList::new(ranges.target_prefixes(), ranges.target_excludes());
-    let target_range = IpList::new(ranges.orig_prefixes(), ranges.orig_excludes());
+    let current_range = IpList::new(ranges.target_prefixes());
+    let target_range = IpList::new(ranges.orig_prefixes());
     let offset = current_range.addr_offset_in_prefix(current_ip);
     target_range.addr_from_prefix_offset(&offset)
 }

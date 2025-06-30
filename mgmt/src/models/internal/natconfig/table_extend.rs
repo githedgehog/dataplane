@@ -26,22 +26,18 @@ pub enum NatPeeringError {
 /// [`VpcExpose`]
 fn get_public_trie_value(expose: &VpcExpose, prefix: &Prefix) -> TrieValue {
     let orig = expose.ips.clone();
-    let orig_excludes = expose.nots.clone();
     let target = expose.as_range.clone();
-    let target_excludes = expose.not_as.clone();
 
-    TrieValue::new(orig, orig_excludes, target, target_excludes)
+    TrieValue::new(orig, target)
 }
 
 /// Create a [`TrieValue`] from the private side of a [`VpcExpose`], for a given prefix in this
 /// [`VpcExpose`]
 fn get_private_trie_value(expose: &VpcExpose, prefix: &Prefix) -> TrieValue {
     let orig = expose.ips.clone();
-    let orig_excludes = expose.nots.clone();
     let target = expose.as_range.clone();
-    let target_excludes = expose.not_as.clone();
 
-    TrieValue::new(orig, orig_excludes, target, target_excludes)
+    TrieValue::new(orig, target)
 }
 
 // Note: add_peering(table, peering) should be part of PerVniTable, but we prefer to keep it in a
@@ -66,19 +62,13 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Nat
         // Create new peering table for source NAT
         let mut peering_table = NatPrefixRuleTable::new();
 
-        // For each private prefix, add an entry containing the exclusion prefixes and the set of
-        // public prefixes
+        // For each private prefix, add an entry containing the set of public prefixes
         expose.ips.iter().try_for_each(|prefix| {
             let pub_value = get_public_trie_value(expose, prefix);
             peering_table
                 .insert(prefix, pub_value)
                 .map_err(|_| NatPeeringError::EntryExists)
         })?;
-        // Add "None" entries for excluded prefixes
-        expose
-            .nots
-            .iter()
-            .try_for_each(|prefix| peering_table.insert_none(prefix))?;
 
         // Add peering table to PerVniTable
         table.src_nat_prefixes.push(peering_table);
@@ -88,8 +78,7 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Nat
 
     // Update table for destination NAT
     new_peering.remote.exposes.iter().try_for_each(|expose| {
-        // For each public prefix, add an entry containing the exclusion prefixes and the set of
-        // private prefixes
+        // For each public prefix, add an entry containing the set of private prefixes
         expose.as_range.iter().try_for_each(|prefix| {
             let priv_value = get_private_trie_value(expose, prefix);
             table
@@ -97,11 +86,6 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Nat
                 .insert(prefix, priv_value)
                 .map_err(|_| NatPeeringError::EntryExists)
         })?;
-        // Add "None" entries for excluded prefixes
-        expose
-            .not_as
-            .iter()
-            .try_for_each(|prefix| table.dst_nat.insert_none(prefix));
 
         // Update peering table to make relevant prefixes point to the new peering table, for each
         // private prefix
