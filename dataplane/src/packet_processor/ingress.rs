@@ -13,6 +13,8 @@ use net::headers::{TryEth, TryIpv4, TryIpv6};
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 
+use metrics::counter;
+
 use routing::interfaces::iftablerw::IfTableReader;
 use routing::interfaces::interface::{Attachment, IfState, IfType, Interface};
 
@@ -53,11 +55,14 @@ impl Ingress {
                 None => {
                     warn!("{nfi}: Interface {} is detached", interface.name);
                     packet.done(DoneReason::InterfaceDetached);
+                    counter!("gateway_errors_total", "component" => "ingress", "error" => "interface_detached").increment(1);
                 }
             }
         } else {
             warn!("{nfi}: Processing of non-ip traffic is not supported");
             packet.done(DoneReason::NotIp);
+            counter!("gateway_errors_total", "component" => "ingress", "error" => "not_ip")
+                .increment(1);
         }
     }
 
@@ -72,6 +77,8 @@ impl Ingress {
         bridge domain. But we don't support bridging yet. */
         trace!("{nfi}: Recvd frame for mac {dst_mac} (not for us)");
         packet.done(DoneReason::MacNotForUs);
+        counter!("gateway_errors_total", "component" => "ingress", "error" => "mac_not_for_us")
+            .increment(1);
     }
 
     fn interface_ingress_eth_bcast<Buf: PacketBufferMut>(
@@ -82,6 +89,7 @@ impl Ingress {
         let nfi = self.name();
         packet.get_meta_mut().is_l2bcast = true;
         packet.done(DoneReason::Unhandled);
+        counter!("gateway_errors_total", "component" => "ingress", "error" => "bcast_not_supported").increment(1);
         warn!("{nfi}: Processing of broadcast ethernet frames is not supported");
     }
 
@@ -91,13 +99,17 @@ impl Ingress {
         packet: &mut Packet<Buf>,
     ) {
         let nfi = self.name();
+        let ifname = &interface.name;
         if let Some(if_mac) = interface.get_mac() {
             trace!(
                 "{nfi}: Got packet over interface '{}' ({}) mac:{if_mac}",
                 interface.name, interface.ifindex
             );
             match packet.try_eth() {
-                None => packet.done(DoneReason::NotEthernet),
+                None => {
+                    packet.done(DoneReason::NotEthernet);
+                    counter!("gateway_errors_total", "component" => "ingress", "error" => "not_ethernet").increment(1);
+                }
                 Some(eth) => {
                     let dmac = eth.destination().inner();
                     if dmac.is_broadcast() {
@@ -112,6 +124,8 @@ impl Ingress {
         } else {
             unreachable!();
         }
+        // We passed all checks, so we can assume the packet is valid
+        counter!("interface_packets_received_total", "component" => "ingress", "interface" => ifname.clone()).increment(1);
     }
 
     fn interface_ingress<Buf: PacketBufferMut>(
@@ -119,10 +133,13 @@ impl Ingress {
         interface: &Interface,
         packet: &mut Packet<Buf>,
     ) {
+        let ifname = &interface.name;
         if interface.admin_state == IfState::Down {
             packet.done(DoneReason::InterfaceAdmDown);
+            counter!("interface_errors_total", "component" => "ingress", "reason" => "admin_state_down", "interface" => ifname.clone()).increment(1);
         } else if interface.oper_state == IfState::Down {
             packet.done(DoneReason::InterfaceOperDown);
+            counter!("interface_errors_total", "component" => "ingress", "reason" => "oper_state_down", "interface" => ifname.clone()).increment(1);
         } else {
             match interface.iftype {
                 IfType::Ethernet(_) | IfType::Dot1q(_) => {
@@ -130,6 +147,7 @@ impl Ingress {
                 }
                 _ => {
                     packet.done(DoneReason::InterfaceUnsupported);
+                    counter!("interface_errors_total", "component" => "ingress", "reason" => "unsupported_interface", "interface" => interface.name.clone()).increment(1);
                 }
             }
         }
@@ -152,6 +170,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Ingress {
                     } else {
                         warn!("{nfi}: unknown incoming interface {iif}");
                         packet.done(DoneReason::InterfaceUnknown);
+                        counter!("gateway_errors_total", "component" => "ingress", "error" => "unknown_interface").increment(1);
                     }
                 }
             }

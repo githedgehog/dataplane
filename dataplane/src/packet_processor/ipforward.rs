@@ -21,6 +21,8 @@ use routing::interfaces::interface::IfIndex;
 use routing::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use routing::rib::vrf::VrfId;
 
+use metrics::counter;
+
 use net::headers::Headers;
 use net::headers::Net;
 use net::ip::NextHeader;
@@ -58,9 +60,17 @@ impl IpForwarder {
         let Some(dst) = packet.ip_destination() else {
             error!("{nfi}: Failed to get destination ip address for packet");
             packet.done(DoneReason::InternalFailure);
+            counter!("gateway_packets_dropped_total", "component" => "ipforward", "reason" => "no_destination_ip").increment(1);
             return;
         };
         debug!("{nfi}: processing packet to {dst} with vrf {vrfid}");
+
+        /* decrement packet TTL -- packet may be done if TTL is exceeded */
+        Self::decrement_ttl(packet, dst);
+        if packet.is_done() {
+            warn!("TTL/Hop-count limit exceeded!");
+            return;
+        }
 
         /* Get the fib to use: this lookup could be avoided since
            we know the interface the packet came from and it has to be
@@ -71,6 +81,7 @@ impl IpForwarder {
             let Some(fibr) = fibtr.get_fib(&FibId::from_vrfid(vrfid)) else {
                 error!("{nfi}: Unable to find fib for vrf {vrfid}");
                 packet.done(DoneReason::InternalFailure);
+                counter!("gateway_packets_dropped_total", "component" => "ipforward", "reason" => "no_fib_entry").increment(1);
                 return;
             };
             if let Some(fib) = fibr.enter() {
@@ -81,23 +92,17 @@ impl IpForwarder {
                         fib.get_id().as_u32(),
                         &fibentry
                     );
-
-                    /* decrement packet TTL, unless the packet is for us */
-                    if !fibentry.is_iplocal() {
-                        Self::decrement_ttl(packet, dst);
-                        if packet.is_done() {
-                            warn!("TTL/Hop-count limit exceeded!");
-                            return;
-                        }
-                    }
                     self.packet_exec_instructions(packet, fibentry, fib.get_vtep());
                 } else {
                     error!("Could not get fib group for {prefix}. Will drop packet...");
                     packet.done(DoneReason::InternalFailure);
+                    counter!("gateway_packets_dropped_total", "reason" => "no_fib_group_entry")
+                        .increment(1);
                 }
             } else {
                 error!("{nfi}: Unable to read fib for vrf {vrfid}");
                 packet.done(DoneReason::InternalFailure);
+                counter!("gateway_packets_dropped_total", "reason" => "no_fib_entry").increment(1);
             }
         }
     }
@@ -123,6 +128,7 @@ impl IpForwarder {
                         let Some(next_vrf) = fib.get_id().map(|id| id.as_u32()) else {
                             error!("{nfi}: Failed to read fib!");
                             packet.done(DoneReason::InternalFailure);
+                            counter!("gateway_packets_dropped_total", "component" => "ipforward", "reason" => "no_fib_entry").increment(1);
                             return;
                         };
                         debug!("Next fib/vrf is {next_vrf}");
@@ -131,18 +137,27 @@ impl IpForwarder {
                     } else {
                         error!("{nfi}: Unable to read fib for vni {vni}");
                         packet.done(DoneReason::InternalFailure);
+                        counter!("gateway_packets_dropped_total", "component" => "ipforward", "reason" => "no_fib_entry").increment(1);
                     }
                 }
             }
             Some(Err(bad)) => {
                 warn!("oh no, the inner packet is bad: {bad:?}");
                 packet.done(DoneReason::Malformed);
+                counter!("gateway_packets_dropped_total", "component" => "ipforward", "reason" => "malformed_packet").increment(1);
             }
             None => {
                 /* send to kernel, among other options */
                 debug!("Packet should be delivered to kernel...");
                 packet.get_meta_mut().oif = Some(packet.get_meta().iif); // FIXME: revisit this
                 packet.done(DoneReason::Delivered);
+                if packet.get_meta().src_vni.is_some() {
+                    let vni = packet.get_meta().src_vni.unwrap();
+                    counter!("gateway_packets_processed_total",  "vni" => vni.as_u32().to_string())
+                        .increment(1);
+                    counter!("gateway_bytes_processed_total", "vni" => vni.as_u32().to_string())
+                        .increment(u64::from(packet.header_len().get() + packet.payload_len()));
+                }
             }
         }
     }
@@ -206,10 +221,12 @@ impl IpForwarder {
         let Some(src_mac) = &vtep.get_mac() else {
             error!("Can't set source mac: VTEP has no mac associated!");
             packet.done(DoneReason::InternalFailure);
+            counter!("gateway_packets_dropped_total", "component" => "ipforward", "reason" => "no_src_mac").increment(1);
             return;
         };
         let Some(dst_mac) = &vxlan.dmac else {
             packet.done(DoneReason::InternalFailure);
+            counter!("gateway_packets_dropped_total", "component" => "ipforward", "reason" => "no_dst_mac").increment(1);
             return;
         };
 
@@ -217,6 +234,7 @@ impl IpForwarder {
         if let Err(e) = packet.set_eth_source(*src_mac) {
             error!("{nfi}: Failed to set src mac '{src_mac}': {e}");
             packet.done(DoneReason::InternalFailure);
+            counter!("gateway_packets_dropped_total", "component" => "ipforward", "reason" => "set_src_mac_error").increment(1);
             return;
         }
 
@@ -224,6 +242,7 @@ impl IpForwarder {
         if let Err(e) = packet.set_eth_destination(*dst_mac) {
             error!("{nfi}: Failed to set dst mac '{dst_mac}': {e}");
             packet.done(DoneReason::InternalFailure);
+            counter!("gateway_packets_dropped_total", "component" => "ipforward", "reason" => "set_dst_mac_error").increment(1);
             return;
         }
 
@@ -238,6 +257,7 @@ impl IpForwarder {
             Err(e) => {
                 error!("{nfi}: Failed to build VxLAN headers: {e}");
                 packet.done(DoneReason::InternalFailure);
+                counter!("gateway_packets_dropped_total", "component" => "ipforward",  "reason" => "vxlan_build_error").increment(1);
             }
             Ok(vxlan_headers) => match packet.vxlan_encap(&vxlan_headers) {
                 Ok(()) => {
@@ -253,6 +273,7 @@ impl IpForwarder {
                 Err(e) => {
                     error!("{nfi}: Failed to ENCAPSULATE packet with VxLAN: {e}");
                     packet.done(DoneReason::InternalFailure);
+                    counter!("gateway_packets_dropped_total", "component" => "ipforward", "reason" => "vxlan_encap_error").increment(1);
                 }
             },
         }
@@ -293,6 +314,7 @@ impl IpForwarder {
     #[allow(clippy::unused_self)] // Reserve the right to use self in the future
     fn packet_exec_instruction_drop<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
         packet.done(DoneReason::RouteDrop);
+        counter!("gateway_packets_dropped_total", "component" => "ipforward", "reason" => "route_drop").increment(1);
     }
 
     #[inline]
@@ -331,6 +353,7 @@ impl IpForwarder {
                 if let Some(ipv4) = packet.try_ipv4_mut() {
                     if ipv4.decrement_ttl().is_err() || ipv4.ttl() == 0 {
                         packet.done(DoneReason::HopLimitExceeded);
+                        counter!("gateway_packets_dropped_total", "component" => "ipforward", "reason" => "hop_limit_exceeded").increment(1);
                     }
                 } else {
                     unreachable!()
@@ -340,6 +363,7 @@ impl IpForwarder {
                 if let Some(ipv6) = packet.try_ipv6_mut() {
                     if ipv6.decrement_hop_limit().is_err() || ipv6.hop_limit() == 0 {
                         packet.done(DoneReason::HopLimitExceeded);
+                        counter!("gateway_packets_dropped_total", "component" => "ipforward", "reason" => "hop_limit_exceeded").increment(1);
                     }
                 } else {
                     unreachable!()

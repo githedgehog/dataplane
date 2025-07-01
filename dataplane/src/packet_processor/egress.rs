@@ -18,6 +18,8 @@ use net::headers::TryEthMut;
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 
+use metrics::counter;
+
 use routing::atable::atablerw::AtableReader;
 use routing::interfaces::iftablerw::IfTableReader;
 use routing::interfaces::interface::{IfIndex, IfState, IfType, Interface};
@@ -65,6 +67,8 @@ impl Egress {
         let Some(our_mac) = interface.get_mac() else {
             error!("{nfi}: Failed to get mac address of interface {ifname}!");
             packet.done(DoneReason::InternalFailure);
+            counter!("gateway_errors_total", "component" => "egress", "error" => "missing_src_mac")
+                .increment(1);
             return;
         };
 
@@ -72,6 +76,8 @@ impl Egress {
         let Ok(src_mac) = SourceMac::new(our_mac) else {
             error!("MAC {our_mac} of interface {ifname} can't be used as source!");
             packet.done(DoneReason::InternalFailure);
+            counter!("gateway_errors_total", "component" => "egress", "error" => "invalid_src_mac")
+                .increment(1);
             return;
         };
 
@@ -87,12 +93,14 @@ impl Egress {
             } else {
                 warn!("Unable to determine ethernet type");
                 packet.done(DoneReason::MissingEtherType);
+                counter!("gateway_errors_total", "component" => "egress", "error" => "missing_ether_type").increment(1);
                 return;
             }
         }
 
         debug!("Packet can be sent over iface {ifname} with dst MAC {dst_mac}");
         packet.done(DoneReason::Delivered);
+        counter!("interface_packets_transmitted_total", "component" => "egress", "interface" => ifname.clone()).increment(1);
     }
 
     fn interface_egress<Buf: PacketBufferMut>(
@@ -101,16 +109,22 @@ impl Egress {
         packet: &mut Packet<Buf>,
         dst_mac: DestinationMac,
     ) {
+        let ifname = &interface.name;
         if interface.admin_state == IfState::Down {
             packet.done(DoneReason::InterfaceAdmDown);
+            counter!("interface_errors_total", "component" => "egress", "reason" => "admin_state_down", "interface" => ifname.clone()).increment(1);
         } else if interface.oper_state == IfState::Down {
             packet.done(DoneReason::InterfaceOperDown);
+            counter!("interface_errors_total", "component" => "egress", "reason" => "oper_state_down", "interface" => ifname.clone()).increment(1);
         } else {
             match interface.iftype {
                 IfType::Ethernet(_) | IfType::Dot1q(_) => {
                     self.interface_egress_ethernet(interface, dst_mac, packet);
                 }
-                _ => packet.done(DoneReason::InterfaceUnsupported),
+                _ => {
+                    packet.done(DoneReason::InterfaceUnsupported);
+                    counter!("interface_errors_total", "component" => "egress", "reason" => "unsupported_interface", "interface" => ifname.clone()).increment(1);
+                }
             }
         }
     }
@@ -131,6 +145,7 @@ impl Egress {
                 /* Todo: Trigger ARP */
 
                 packet.done(DoneReason::MissL2resolution);
+                counter!("gateway_errors_total", "component" => "egress", "error" => "missing_l2_resolution").increment(1);
                 return None;
             };
             /* get the mac from the adjacency */
@@ -138,12 +153,14 @@ impl Egress {
             let Ok(dst_mac) = DestinationMac::new(adj_mac) else {
                 warn!("{nfi}, Can't use mac {adj_mac} as destination!");
                 packet.done(DoneReason::InvalidDstMac);
+                counter!("gateway_errors_total", "component" => "egress", "error" => "invalid_dst_mac").increment(1);
                 return None;
             };
             Some(dst_mac)
         } else {
             warn!("{nfi}: atable not readable!");
             packet.done(DoneReason::InternalFailure);
+            counter!("gateway_errors_total", "component" => "egress", "error" => "atable_not_readable").increment(1);
             None
         }
     }
@@ -185,6 +202,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Egress {
                 let Some(oif) = packet.get_meta().oif else {
                     warn!("{}: Missing oif metadata!", &self.name);
                     packet.done(DoneReason::RouteFailure);
+                    counter!("gateway_errors_total", "component" => "egress", "error" => "missing_oif").increment(1);
                     return packet.enforce();
                 };
 
@@ -203,10 +221,12 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Egress {
                     } else {
                         warn!("{}: Unknown interface with id {oif}", &self.name);
                         packet.done(DoneReason::InterfaceUnknown);
+                        counter!("gateway_errors_total", "component" => "egress", "error" => "unknown_interface").increment(1);
                     }
                 } else {
                     warn!("{}: Fib iftable no longer readable!", &self.name);
                     packet.done(DoneReason::InternalFailure);
+                    counter!("gateway_errors_total", "component" => "egress", "error" => "iftable_not_readable").increment(1);
                 }
             }
             packet.enforce()
