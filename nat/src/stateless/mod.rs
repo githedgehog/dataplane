@@ -9,7 +9,7 @@ pub mod natrw;
 
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
 use config::tables::{NatTables, PerVniTable, TrieValue};
-use iplist::IpList;
+use iplist::{IpList, IpListSubset};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ipv4::UnicastIpv4Addr;
@@ -34,7 +34,7 @@ enum NatError {
 
 #[must_use]
 fn map_ip_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
-    let current_range = IpList::new(ranges.orig_prefixes());
+    let current_range = IpListSubset::new(ranges.orig_prefix_offset(), *ranges.orig_prefix());
     let target_range = IpList::new(ranges.target_prefixes());
     let offset = current_range.addr_offset_in_prefix(current_ip);
     target_range.addr_from_prefix_offset(&offset)
