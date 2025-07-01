@@ -251,7 +251,8 @@ fn prefix_split(prefix: &Prefix) -> Result<(Prefix, Prefix), NatPeeringError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iptrie::{Ipv4Prefix, Ipv6Prefix};
+    use ipnet::IpNet;
+    use iptrie::{IpRTrieSet, Ipv4Prefix, Ipv6Prefix};
     use nat::stateless::config::tables::NatTables;
     use net::vxlan::Vni;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -567,5 +568,124 @@ mod tests {
             collapse_prefixes_peering(&peering).expect("Failed to collapse prefixes");
 
         assert_eq!(collapsed_peering.local.exposes[0], expected_expose);
+    }
+
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
+    use std::ops::Bound;
+    struct RandomPrefixSetGenerator {
+        is_ipv4: bool,
+        count: u32,
+    }
+
+    impl ValueGenerator for RandomPrefixSetGenerator {
+        type Output = BTreeSet<Prefix>;
+
+        fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
+            let mut prefixes = BTreeSet::new();
+            let is_ipv4 = self.is_ipv4;
+            let max_prefix_len = if is_ipv4 { 32 } else { 128 };
+
+            for _ in 0..self.count {
+                let prefix_len = d.gen_u8(Bound::Included(&1), Bound::Included(&max_prefix_len))?;
+                let addr = if is_ipv4 {
+                    IpAddr::from(d.produce::<Ipv4Addr>()?)
+                } else {
+                    IpAddr::from(d.produce::<Ipv6Addr>()?)
+                };
+                if let Ok(prefix) = Prefix::try_from((addr, prefix_len)) {
+                    prefixes.insert(prefix);
+                } else {
+                    unreachable!()
+                }
+            }
+            Some(prefixes)
+        }
+    }
+
+    struct PrefixExcludeAddrsGenerator {
+        prefix_max: u32,
+        exclude_max: u32,
+        addr_count: u32,
+    }
+
+    #[derive(Debug)]
+    struct PrefixExcludeAddrs {
+        prefixes: BTreeSet<Prefix>,
+        excludes: BTreeSet<Prefix>,
+        addrs: Vec<IpAddr>,
+    }
+
+    impl ValueGenerator for PrefixExcludeAddrsGenerator {
+        type Output = PrefixExcludeAddrs;
+
+        fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
+            let is_ipv4 = d.produce::<bool>()?;
+            let prefixes = RandomPrefixSetGenerator {
+                count: d.gen_u32(Bound::Included(&1), Bound::Included(&self.prefix_max))?,
+                is_ipv4,
+            }
+            .generate(d)?;
+            let excludes = RandomPrefixSetGenerator {
+                count: d.gen_u32(Bound::Included(&0), Bound::Included(&self.exclude_max))?,
+                is_ipv4,
+            }
+            .generate(d)?;
+
+            let mut addrs = Vec::with_capacity(usize::try_from(self.addr_count).unwrap());
+            for _ in 0..self.addr_count {
+                let addr = if is_ipv4 {
+                    IpAddr::V4(d.produce::<Ipv4Addr>()?)
+                } else {
+                    IpAddr::V6(d.produce::<Ipv6Addr>()?)
+                };
+                addrs.push(addr);
+            }
+            Some(PrefixExcludeAddrs {
+                prefixes,
+                excludes,
+                addrs,
+            })
+        }
+    }
+
+    fn prefix_oracle(addr: &IpNet, prefixes: &IpRTrieSet, excludes: &IpRTrieSet) -> bool {
+        !excludes.contains(addr) && prefixes.contains(addr)
+    }
+
+    #[test]
+    fn test_bolero_collapse_prefix_lists() {
+        let generator = PrefixExcludeAddrsGenerator {
+            prefix_max: 100,
+            exclude_max: 100,
+            addr_count: 1000,
+        };
+        bolero::check!()
+            .with_generator(generator)
+            .for_each(|data: &PrefixExcludeAddrs| {
+                let PrefixExcludeAddrs {
+                    prefixes,
+                    excludes,
+                    addrs,
+                } = data;
+                let mut prefixes_trie = IpRTrieSet::new();
+                let mut excludes_trie = IpRTrieSet::new();
+                let mut collapsed_prefixes_trie = IpRTrieSet::new();
+                for prefix in prefixes {
+                    prefixes_trie.insert(IpNet::from(*prefix));
+                }
+                for exclude in excludes {
+                    excludes_trie.insert(IpNet::from(*exclude));
+                }
+                let collapsed_prefixes = collapse_prefix_lists(prefixes, excludes).unwrap();
+                for prefix in collapsed_prefixes {
+                    collapsed_prefixes_trie.insert(IpNet::from(prefix));
+                }
+                for addr in addrs {
+                    let addr_net = IpNet::from(*addr);
+                    let oracle_result = prefix_oracle(&addr_net, &prefixes_trie, &excludes_trie);
+                    let collapsed_result = collapsed_prefixes_trie.contains(&addr_net);
+                    assert_eq!(oracle_result, collapsed_result);
+                }
+            });
     }
 }

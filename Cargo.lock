@@ -838,6 +838,7 @@ dependencies = [
  "fixin",
  "futures",
  "gateway_config",
+ "ipnet",
  "iptrie",
  "multi_index_map",
  "netdev",

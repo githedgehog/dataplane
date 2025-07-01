@@ -55,6 +55,7 @@ pipeline = { workspace = true }
 
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
+ipnet = { workspace = true }
 iptrie = { workspace = true }
 gateway_config = { workspace = true, features = ["bolero"] }
 pretty_assertions = { workspace = true }
