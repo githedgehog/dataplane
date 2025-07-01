@@ -9,7 +9,7 @@ pub mod natrw;
 
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
 use config::tables::{NatTables, PerVniTable, TrieValue};
-use iplist::{IpList, IpListSubset};
+use iplist::{IpList, IpListError, IpListSubset};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ipv4::UnicastIpv4Addr;
@@ -30,13 +30,14 @@ enum NatError {
     #[error("Invalid address {0}")]
     // this should not happen if the nat tables contained sanitized data
     InvalidAddress(IpAddr),
+    #[error("Failed to map IP address: {0}")]
+    MappingError(IpAddr),
 }
 
-#[must_use]
-fn map_ip_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
+fn map_ip_nat(ranges: &TrieValue, current_ip: &IpAddr) -> Result<IpAddr, IpListError> {
     let current_range = IpListSubset::new(ranges.orig_prefix_offset(), *ranges.orig_prefix());
     let target_range = IpList::new(ranges.target_prefixes());
-    let offset = current_range.addr_offset_in_prefix(current_ip);
+    let offset = current_range.addr_offset_in_prefix(current_ip)?;
     target_range.addr_from_prefix_offset(&offset)
 }
 
@@ -85,7 +86,8 @@ impl StatelessNat {
     fn translate_src(&self, net: &mut Net, ranges_src_nat: &TrieValue) -> Result<bool, NatError> {
         let nfi = self.name();
         let current_src = net.src_addr();
-        let target_src = map_ip_nat(ranges_src_nat, &current_src);
+        let target_src = map_ip_nat(ranges_src_nat, &current_src)
+            .map_err(|_| NatError::MappingError(current_src))?;
         if target_src == current_src {
             return Ok(false);
         }
@@ -115,7 +117,8 @@ impl StatelessNat {
     fn translate_dst(&self, net: &mut Net, ranges_dst_nat: &TrieValue) -> Result<bool, NatError> {
         let nfi = self.name();
         let current_dst = net.dst_addr();
-        let target_dst = map_ip_nat(ranges_dst_nat, &current_dst);
+        let target_dst = map_ip_nat(ranges_dst_nat, &current_dst)
+            .map_err(|_| NatError::MappingError(current_dst))?;
         if target_dst == current_dst {
             return Ok(false);
         }
