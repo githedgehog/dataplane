@@ -138,6 +138,14 @@ fn collapse_prefix_lists(
     excludes: &BTreeSet<Prefix>,
 ) -> Result<BTreeSet<Prefix>, NatPeeringError> {
     let mut result = prefixes.clone();
+
+    if result.is_empty() && !excludes.is_empty() {
+        match excludes.first().unwrap() {
+            Prefix::IPV4(_) => result.insert(Prefix::root_v4()),
+            Prefix::IPV6(_) => result.insert(Prefix::root_v6()),
+        };
+    }
+
     // Sort the exclusion prefixes by length in ascending order (meaning a /16 is _smaller_ than a
     // /24, and comes first). If there are some exclusion prefixes with overlap, this ensures that
     // we take out the biggest chunk from the allowed prefix first (and don't need to process the
