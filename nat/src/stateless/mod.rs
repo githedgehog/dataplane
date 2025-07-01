@@ -7,7 +7,7 @@ pub mod config;
 mod iplist;
 
 use config::tables::{NatTables, TrieValue};
-use iplist::{IpList, IpListSubset};
+use iplist::{IpList, IpListError, IpListSubset};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ipv4::UnicastIpv4Addr;
@@ -17,10 +17,10 @@ use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use std::net::IpAddr;
 
-fn map_ip_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
+fn map_ip_nat(ranges: &TrieValue, current_ip: &IpAddr) -> Result<IpAddr, IpListError> {
     let current_range = IpListSubset::new(ranges.orig_prefix_offset(), *ranges.orig_prefix());
     let target_range = IpList::new(ranges.target_prefixes());
-    let offset = current_range.addr_offset_in_prefix(current_ip);
+    let offset = current_range.addr_offset_in_prefix(current_ip)?;
     target_range.addr_from_prefix_offset(&offset)
 }
 
@@ -60,7 +60,7 @@ impl StatelessNat {
     }
 
     fn translate_src(net: &mut Net, ranges_src_nat: &TrieValue) -> Option<()> {
-        let target_src_ip = map_ip_nat(ranges_src_nat, &net.src_addr());
+        let target_src_ip = map_ip_nat(ranges_src_nat, &net.src_addr()).ok()?;
         match (net, target_src_ip) {
             (Net::Ipv4(hdr), IpAddr::V4(src_ip)) => {
                 hdr.set_source(UnicastIpv4Addr::new(src_ip).ok()?);
@@ -74,7 +74,7 @@ impl StatelessNat {
     }
 
     fn translate_dst(net: &mut Net, ranges_dst_nat: &TrieValue) -> Option<()> {
-        let target_dst_ip = map_ip_nat(ranges_dst_nat, &net.dst_addr());
+        let target_dst_ip = map_ip_nat(ranges_dst_nat, &net.dst_addr()).ok()?;
         match (net, target_dst_ip) {
             (Net::Ipv4(hdr), IpAddr::V4(dst_ip)) => {
                 hdr.set_destination(dst_ip);

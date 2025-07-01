@@ -8,6 +8,19 @@ use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
+/// Error type for [`IpList`] operations.
+#[derive(thiserror::Error, Debug)]
+pub enum IpListError {
+    #[error("IP address {0} not in prefix {1}")]
+    IpNotInPrefix(IpAddr, Prefix),
+    #[error("Offset {0} too big for prefix {1}")]
+    OffsetTooBig(u128, Prefix),
+    #[error("Offset {0} not in list {1:?}")]
+    OffsetNotInList(u128, IpList),
+    #[error("IP version mismatch between address {0} and prefix {1}")]
+    IpVersionMismatch(IpAddr, Prefix),
+}
+
 #[derive(Debug, Clone)]
 struct IpListPrefix {
     prefix: Prefix,
@@ -62,25 +75,31 @@ impl IpList {
         list
     }
 
-    fn get_addr_within_block(prefix: &Prefix, offset: u128) -> IpAddr {
+    fn get_addr_within_block(prefix: &Prefix, offset: u128) -> Result<IpAddr, IpListError> {
         let start_addr = prefix.as_address();
+        if offset >= prefix.size() {
+            return Err(IpListError::OffsetTooBig(offset, *prefix));
+        }
         match start_addr {
             IpAddr::V4(start) => {
                 let Ok(offset_u32) = u32::try_from(offset) else {
-                    unreachable!("Offset {offset} too big, bug in IpList");
+                    return Err(IpListError::OffsetTooBig(offset, *prefix));
                 };
                 // Now we form and return the address, by adding the offset to the start address.
                 let bits = start.to_bits() + offset_u32;
-                IpAddr::V4(Ipv4Addr::from(bits))
+                Ok(IpAddr::V4(Ipv4Addr::from(bits)))
             }
             IpAddr::V6(start) => {
                 let bits = start.to_bits() + offset;
-                IpAddr::V6(Ipv6Addr::from(bits))
+                Ok(IpAddr::V6(Ipv6Addr::from(bits)))
             }
         }
     }
 
-    pub fn addr_from_prefix_offset(&self, list_offset: &IpListOffset) -> IpAddr {
+    pub fn addr_from_prefix_offset(
+        &self,
+        list_offset: &IpListOffset,
+    ) -> Result<IpAddr, IpListError> {
         let offset = list_offset.offset;
         let mut block_offset: u128 = 0;
         match list_offset.ip_version {
@@ -93,7 +112,10 @@ impl IpList {
                     // Otherwise, keep incrementing the offset and keep looking
                     block_offset += block.size;
                 }
-                unreachable!("Failed to find address in IpList at offset {offset}")
+                Err(IpListError::OffsetNotInList(
+                    list_offset.offset,
+                    self.clone(),
+                ))
             }
             IpVersion::V6 => {
                 for block in &self.blocks_v6 {
@@ -102,7 +124,10 @@ impl IpList {
                     }
                     block_offset += block.size;
                 }
-                unreachable!("Failed to find address in IpList at offset {offset}")
+                Err(IpListError::OffsetNotInList(
+                    list_offset.offset,
+                    self.clone(),
+                ))
             }
         }
     }
@@ -119,33 +144,48 @@ impl IpListSubset {
         Self { offset, prefix }
     }
 
-    fn get_offset_within_block(&self, addr: &IpAddr) -> u128 {
+    fn get_offset_within_block(&self, addr: &IpAddr) -> Result<u128, IpListError> {
         match (addr, self.prefix.as_address()) {
             (IpAddr::V4(ip), IpAddr::V4(start)) => {
+                let ip_bits = u128::from(ip.to_bits());
+                let start_bits = u128::from(start.to_bits());
+
+                if ip_bits < start_bits {
+                    return Err(IpListError::IpNotInPrefix(*addr, self.prefix));
+                }
+                if ip_bits >= start_bits + self.prefix.size() {
+                    return Err(IpListError::IpNotInPrefix(*addr, self.prefix));
+                }
                 // We want the offset of the address within the block: the address converted to
                 // bits, minus the address of the start of the block
-                u128::from(ip.to_bits() - start.to_bits())
+                Ok(ip_bits - start_bits)
             }
             // See comments for v4
-            (IpAddr::V6(ip), IpAddr::V6(start)) => ip.to_bits() - start.to_bits(),
-            _ => {
-                let bad_prefix = self.prefix;
-                unreachable!(
-                    "IpList comparing address and prefix of different IP versions ({addr}, {bad_prefix})"
-                );
+            (IpAddr::V6(ip), IpAddr::V6(start)) => {
+                let ip_bits = ip.to_bits();
+                let start_bits = start.to_bits();
+
+                if ip_bits < start_bits {
+                    return Err(IpListError::IpNotInPrefix(*addr, self.prefix));
+                }
+                if ip_bits >= start_bits + self.prefix.size() {
+                    return Err(IpListError::IpNotInPrefix(*addr, self.prefix));
+                }
+                Ok(ip_bits - start_bits)
             }
+            _ => Err(IpListError::IpVersionMismatch(*addr, self.prefix)),
         }
     }
 
-    pub fn addr_offset_in_prefix(&self, addr: &IpAddr) -> IpListOffset {
-        let offset_within_block = self.get_offset_within_block(addr);
-        IpListOffset {
+    pub fn addr_offset_in_prefix(&self, addr: &IpAddr) -> Result<IpListOffset, IpListError> {
+        let offset_within_block = self.get_offset_within_block(addr)?;
+        Ok(IpListOffset {
             offset: self.offset + offset_within_block,
             ip_version: match addr {
                 IpAddr::V4(_) => IpVersion::V4,
                 IpAddr::V6(_) => IpVersion::V6,
             },
-        }
+        })
     }
 }
 
@@ -165,27 +205,38 @@ mod tests {
     fn test_iplist_subset() {
         let ipls = IpListSubset::new(0, "1.1.0.0/16".into());
 
-        let offset = ipls.addr_offset_in_prefix(&addr_v4("1.1.0.0"));
+        let offset = ipls
+            .addr_offset_in_prefix(&addr_v4("1.1.0.0"))
+            .expect("Failed to get offset");
         assert_eq!(offset.offset, 0);
 
-        let offset = ipls.addr_offset_in_prefix(&addr_v4("1.1.0.1"));
+        let offset = ipls
+            .addr_offset_in_prefix(&addr_v4("1.1.0.1"))
+            .expect("Failed to get offset");
         assert_eq!(offset.offset, 1);
 
-        let offset = ipls.addr_offset_in_prefix(&addr_v4("1.1.0.2"));
+        let offset = ipls
+            .addr_offset_in_prefix(&addr_v4("1.1.0.2"))
+            .expect("Failed to get offset");
         assert_eq!(offset.offset, 2);
 
-        let offset = ipls.addr_offset_in_prefix(&addr_v4("1.1.0.255"));
+        let offset = ipls
+            .addr_offset_in_prefix(&addr_v4("1.1.0.255"))
+            .expect("Failed to get offset");
         assert_eq!(offset.offset, 255);
 
-        let offset = ipls.addr_offset_in_prefix(&addr_v4("1.1.1.0"));
+        let offset = ipls
+            .addr_offset_in_prefix(&addr_v4("1.1.1.0"))
+            .expect("Failed to get offset");
         assert_eq!(offset.offset, 256);
 
-        let offset = ipls.addr_offset_in_prefix(&addr_v4("1.1.255.255"));
+        let offset = ipls
+            .addr_offset_in_prefix(&addr_v4("1.1.255.255"))
+            .expect("Failed to get offset");
         assert_eq!(offset.offset, 65535);
 
-        // We should probably return an error in this case, but at the moment we don't
-        let offset = ipls.addr_offset_in_prefix(&addr_v4("1.2.0.0"));
-        assert_eq!(offset.offset, 65536);
+        ipls.addr_offset_in_prefix(&addr_v4("1.2.0.0"))
+            .expect_err("Address not in prefix");
     }
 
     #[test]
@@ -200,51 +251,80 @@ mod tests {
         let iplist = IpList::new(&target_prefixes);
 
         assert_eq!(
-            iplist.addr_from_prefix_offset(&IpListOffset {
-                offset: 0,
-                ip_version: IpVersion::V4
-            }),
+            iplist
+                .addr_from_prefix_offset(&IpListOffset {
+                    offset: 0,
+                    ip_version: IpVersion::V4
+                })
+                .expect("Failed to get address"),
             addr_v4("2.1.0.0")
         );
 
         assert_eq!(
-            iplist.addr_from_prefix_offset(&IpListOffset {
-                offset: 1,
-                ip_version: IpVersion::V4
-            }),
+            iplist
+                .addr_from_prefix_offset(&IpListOffset {
+                    offset: 1,
+                    ip_version: IpVersion::V4
+                })
+                .expect("Failed to get address"),
             addr_v4("2.1.0.1")
         );
 
         assert_eq!(
-            iplist.addr_from_prefix_offset(&IpListOffset {
-                offset: 256 * 4 + 1,
-                ip_version: IpVersion::V4
-            }),
+            iplist
+                .addr_from_prefix_offset(&IpListOffset {
+                    offset: 256 * 4 + 1,
+                    ip_version: IpVersion::V4
+                })
+                .expect("Failed to get address"),
             addr_v4("2.1.4.1")
         );
 
         assert_eq!(
-            iplist.addr_from_prefix_offset(&IpListOffset {
-                offset: 65536,
-                ip_version: IpVersion::V4
-            }),
+            iplist
+                .addr_from_prefix_offset(&IpListOffset {
+                    offset: 65536,
+                    ip_version: IpVersion::V4
+                })
+                .expect("Failed to get address"),
             addr_v4("2.2.0.0")
         );
 
         assert_eq!(
-            iplist.addr_from_prefix_offset(&IpListOffset {
-                offset: 2 * 65536 + 256 * 5 + 1,
-                ip_version: IpVersion::V4
-            }),
+            iplist
+                .addr_from_prefix_offset(&IpListOffset {
+                    offset: 2 * 65536 + 256 * 5 + 1,
+                    ip_version: IpVersion::V4
+                })
+                .expect("Failed to get address"),
             addr_v4("2.3.5.1")
         );
 
         assert_eq!(
-            iplist.addr_from_prefix_offset(&IpListOffset {
-                offset: 3 * 65536 + 256 * (128 + 72) + 1,
-                ip_version: IpVersion::V4
-            }),
+            iplist
+                .addr_from_prefix_offset(&IpListOffset {
+                    offset: 3 * 65536 + 256 * (128 + 72) + 1,
+                    ip_version: IpVersion::V4
+                })
+                .expect("Failed to get address"),
             addr_v4("2.5.72.1")
         );
+
+        assert_eq!(
+            iplist
+                .addr_from_prefix_offset(&IpListOffset {
+                    offset: 3 * 65536 + 256 * (128 + 127) + 255,
+                    ip_version: IpVersion::V4
+                })
+                .expect("Failed to get address"),
+            addr_v4("2.5.127.255")
+        );
+
+        iplist
+            .addr_from_prefix_offset(&IpListOffset {
+                offset: 3 * 65536 + 256 * (128 + 127) + 256,
+                ip_version: IpVersion::V4,
+            })
+            .expect_err("Offset not in list");
     }
 }
