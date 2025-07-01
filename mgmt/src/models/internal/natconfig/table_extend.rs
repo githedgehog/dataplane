@@ -355,15 +355,6 @@ mod tests {
             expected
         );
 
-        // Empty prefixes, non-empty excludes
-        let prefixes = BTreeSet::new();
-        let excludes = btree_from(vec!["1.0.0.0/16", "2.0.0.0/24"]);
-        let expected = prefixes.clone();
-        assert_eq!(
-            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
-            expected
-        );
-
         // Excludes outside prefix
         let prefixes = btree_from(vec!["10.0.0.0/16"]);
         let excludes = btree_from(vec!["1.0.0.0/16", "2.0.0.0/24"]);
@@ -542,6 +533,48 @@ mod tests {
         let prefixes = btree_from(vec!["1.0.0.0/16"]);
         let excludes = btree_from(vec!["1.0.0.0/17", "1.0.0.0/24"]);
         let expected = btree_from(vec!["1.0.128.0/17"]);
+        assert_eq!(
+            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
+            expected
+        );
+
+        // Empty prefixes, non-empty excludes
+        let prefixes = BTreeSet::new();
+        let excludes = btree_from(vec!["1.0.0.0/16", "2.0.0.0/24"]);
+        let expected = btree_from(vec![
+            "0.0.0.0/8",
+            "1.1.0.0/16",
+            "1.2.0.0/15",
+            "1.4.0.0/14",
+            "1.8.0.0/13",
+            "1.16.0.0/12",
+            "1.32.0.0/11",
+            "1.64.0.0/10",
+            "1.128.0.0/9",
+            "2.0.1.0/24",
+            "2.0.2.0/23",
+            "2.0.4.0/22",
+            "2.0.8.0/21",
+            "2.0.16.0/20",
+            "2.0.32.0/19",
+            "2.0.64.0/18",
+            "2.0.128.0/17",
+            "2.1.0.0/16",
+            "2.2.0.0/15",
+            "2.4.0.0/14",
+            "2.8.0.0/13",
+            "2.16.0.0/12",
+            "2.32.0.0/11",
+            "2.64.0.0/10",
+            "2.128.0.0/9",
+            "3.0.0.0/8",
+            "4.0.0.0/6",
+            "8.0.0.0/5",
+            "16.0.0.0/4",
+            "32.0.0.0/3",
+            "64.0.0.0/2",
+            "128.0.0.0/1",
+        ]);
         assert_eq!(
             collapse_prefix_lists(&prefixes, &excludes).unwrap(),
             expected

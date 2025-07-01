@@ -313,6 +313,11 @@ mod tests {
             .ip("192.168.100.0/24".into())
             .as_range("34.34.34.0/24".into());
         let expose431 = VpcExpose::empty().ip("4.4.0.0/24".into());
+        let expose432 = VpcExpose::empty()
+            .not("192.0.0.0/2".into())
+            .not("4.0.0.0/8".into())
+            .not_as("0.0.0.0/2".into())
+            .not_as("255.0.0.0/8".into());
 
         // VPC1 <-> VPC2
         let mut manifest12 = VpcManifest::new("VPC-1");
@@ -349,6 +354,7 @@ mod tests {
         add_expose(&mut manifest34, expose341);
         let mut manifest43 = VpcManifest::new("VPC-4");
         add_expose(&mut manifest43, expose431);
+        add_expose(&mut manifest43, expose432);
 
         let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21);
         let peering31 = VpcPeering::new("VPC-3--VPC-1", manifest31, manifest13);
@@ -533,6 +539,17 @@ mod tests {
         // expose341 <-> expose431 (one-side NAT)
         let (orig_src, orig_dst) = (addr_v4("192.168.100.34"), addr_v4("4.4.0.43"));
         let (target_src, target_dst) = (addr_v4("34.34.34.34"), addr_v4("4.4.0.43"));
+        let (output_src, output_dst) = check_packet(&mut nat, vni(300), orig_src, orig_dst);
+        assert_eq!(output_src, target_src);
+        assert_eq!(output_dst, target_dst);
+        // Reverse path
+        let (output_src, output_dst) = check_packet(&mut nat, vni(400), target_dst, target_src);
+        assert_eq!(output_src, orig_dst);
+        assert_eq!(output_dst, orig_src);
+
+        // expose341 <-> expose432 (exclusion prefixes only)
+        let (orig_src, orig_dst) = (addr_v4("192.168.100.34"), addr_v4("65.1.1.1"));
+        let (target_src, target_dst) = (addr_v4("34.34.34.34"), addr_v4("1.1.1.1"));
         let (output_src, output_dst) = check_packet(&mut nat, vni(300), orig_src, orig_dst);
         assert_eq!(output_src, target_src);
         assert_eq!(output_dst, target_dst);
