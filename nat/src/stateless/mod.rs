@@ -33,17 +33,9 @@ enum NatError {
 }
 
 #[must_use]
-fn map_ip_src_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
+fn map_ip_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
     let current_range = IpList::new(ranges.orig_prefixes());
     let target_range = IpList::new(ranges.target_prefixes());
-    let offset = current_range.addr_offset_in_prefix(current_ip);
-    target_range.addr_from_prefix_offset(&offset)
-}
-
-#[must_use]
-fn map_ip_dst_nat(ranges: &TrieValue, current_ip: &IpAddr) -> IpAddr {
-    let current_range = IpList::new(ranges.target_prefixes());
-    let target_range = IpList::new(ranges.orig_prefixes());
     let offset = current_range.addr_offset_in_prefix(current_ip);
     target_range.addr_from_prefix_offset(&offset)
 }
@@ -93,7 +85,7 @@ impl StatelessNat {
     fn translate_src(&self, net: &mut Net, ranges_src_nat: &TrieValue) -> Result<bool, NatError> {
         let nfi = self.name();
         let current_src = net.src_addr();
-        let target_src = map_ip_src_nat(ranges_src_nat, &current_src);
+        let target_src = map_ip_nat(ranges_src_nat, &current_src);
         if target_src == current_src {
             return Ok(false);
         }
@@ -123,7 +115,7 @@ impl StatelessNat {
     fn translate_dst(&self, net: &mut Net, ranges_dst_nat: &TrieValue) -> Result<bool, NatError> {
         let nfi = self.name();
         let current_dst = net.dst_addr();
-        let target_dst = map_ip_dst_nat(ranges_dst_nat, &current_dst);
+        let target_dst = map_ip_nat(ranges_dst_nat, &current_dst);
         if target_dst == current_dst {
             return Ok(false);
         }
