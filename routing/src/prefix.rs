@@ -3,7 +3,7 @@
 
 //! Type to represent IP-version neutral network prefixes.
 
-use ipnet::{Ipv4Net, Ipv6Net};
+use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use iptrie::{IpPrefix, IpPrefixCovering, Ipv4Prefix, Ipv6Prefix};
 use serde::ser::SerializeStructVariant;
 use serde::{Deserialize, Serialize};
@@ -207,6 +207,16 @@ impl From<Ipv4Prefix> for Prefix {
 impl From<Ipv6Prefix> for Prefix {
     fn from(value: Ipv6Prefix) -> Self {
         Self::IPV6(value)
+    }
+}
+
+impl From<Prefix> for IpNet {
+    fn from(value: Prefix) -> Self {
+        let Ok(net) = IpNet::new(value.as_address(), value.length()) else {
+            // The length is checked in the construction of Prefix
+            unreachable!("Invalid prefix length");
+        };
+        net
     }
 }
 
