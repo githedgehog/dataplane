@@ -936,6 +936,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-vpcmap"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "dataplane-net",
+ "left-right",
+ "thiserror 2.0.12",
+ "tracing",
+ "tracing-test",
+]
+
+[[package]]
 name = "defer-drop"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

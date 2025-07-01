@@ -16,6 +16,7 @@ members = [
 	"rekon",
 	"routing",
 	"test-utils",
+	"vpcmap",
 ]
 
 resolver = "3"
@@ -39,6 +40,7 @@ pipeline = { path = "./pipeline", package = "dataplane-pipeline" }
 rekon = { path = "./rekon", package = "dataplane-rekon" }
 routing = { path = "./routing", package = "dataplane-routing" }
 test-utils = { path = "./test-utils", package = "dataplane-test-utils" }
+vpcmap = { path = "./vpcmap", package = "dataplane-vpcmap" }
 
 # External
 afpacket = { version = "0.2.3", default-features = false, features = [] }
