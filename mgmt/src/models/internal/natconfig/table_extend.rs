@@ -23,19 +23,29 @@ pub enum NatPeeringError {
 }
 
 /// Create a [`TrieValue`] from the public side of a [`VpcExpose`]
-fn get_public_trie_value(expose: &VpcExpose) -> TrieValue {
-    let orig = expose.ips.clone();
+fn get_public_trie_value(expose: &VpcExpose, prefix: &Prefix) -> TrieValue {
     let target = expose.as_range.clone();
-
-    TrieValue::new(orig, target)
+    let mut orig_prefix_offset = 0;
+    for p in &expose.ips {
+        if p == prefix {
+            break;
+        }
+        orig_prefix_offset += p.size();
+    }
+    TrieValue::new(*prefix, orig_prefix_offset, target)
 }
 
 /// Create a [`TrieValue`] from the private side of a [`VpcExpose`]
-fn get_private_trie_value(expose: &VpcExpose) -> TrieValue {
-    let orig = expose.as_range.clone();
+fn get_private_trie_value(expose: &VpcExpose, prefix: &Prefix) -> TrieValue {
     let target = expose.ips.clone();
-
-    TrieValue::new(orig, target)
+    let mut orig_prefix_offset = 0;
+    for p in &expose.as_range {
+        if p == prefix {
+            break;
+        }
+        orig_prefix_offset += p.size();
+    }
+    TrieValue::new(*prefix, orig_prefix_offset, target)
 }
 
 // Note: add_peering(table, peering) should be part of PerVniTable, but we prefer to keep it in a
@@ -62,7 +72,7 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Nat
 
         // For each private prefix, add an entry containing the set of public prefixes
         expose.ips.iter().try_for_each(|prefix| {
-            let pub_value = get_public_trie_value(expose);
+            let pub_value = get_public_trie_value(expose, prefix);
             peering_table
                 .insert(prefix, pub_value)
                 .map_err(|_| NatPeeringError::EntryExists)
@@ -78,7 +88,7 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Nat
     new_peering.remote.exposes.iter().try_for_each(|expose| {
         // For each public prefix, add an entry containing the set of private prefixes
         expose.as_range.iter().try_for_each(|prefix| {
-            let priv_value = get_private_trie_value(expose);
+            let priv_value = get_private_trie_value(expose, prefix);
             table
                 .dst_nat
                 .insert(prefix, priv_value)
