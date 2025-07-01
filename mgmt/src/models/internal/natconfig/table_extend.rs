@@ -22,20 +22,18 @@ pub enum NatPeeringError {
     SplitPrefixError(Prefix),
 }
 
-/// Create a [`TrieValue`] from the public side of a [`VpcExpose`], for a given prefix in this
-/// [`VpcExpose`]
-fn get_public_trie_value(expose: &VpcExpose, prefix: &Prefix) -> TrieValue {
+/// Create a [`TrieValue`] from the public side of a [`VpcExpose`]
+fn get_public_trie_value(expose: &VpcExpose) -> TrieValue {
     let orig = expose.ips.clone();
     let target = expose.as_range.clone();
 
     TrieValue::new(orig, target)
 }
 
-/// Create a [`TrieValue`] from the private side of a [`VpcExpose`], for a given prefix in this
-/// [`VpcExpose`]
-fn get_private_trie_value(expose: &VpcExpose, prefix: &Prefix) -> TrieValue {
-    let orig = expose.ips.clone();
-    let target = expose.as_range.clone();
+/// Create a [`TrieValue`] from the private side of a [`VpcExpose`]
+fn get_private_trie_value(expose: &VpcExpose) -> TrieValue {
+    let orig = expose.as_range.clone();
+    let target = expose.ips.clone();
 
     TrieValue::new(orig, target)
 }
@@ -64,7 +62,7 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Nat
 
         // For each private prefix, add an entry containing the set of public prefixes
         expose.ips.iter().try_for_each(|prefix| {
-            let pub_value = get_public_trie_value(expose, prefix);
+            let pub_value = get_public_trie_value(expose);
             peering_table
                 .insert(prefix, pub_value)
                 .map_err(|_| NatPeeringError::EntryExists)
@@ -80,7 +78,7 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Nat
     new_peering.remote.exposes.iter().try_for_each(|expose| {
         // For each public prefix, add an entry containing the set of private prefixes
         expose.as_range.iter().try_for_each(|prefix| {
-            let priv_value = get_private_trie_value(expose, prefix);
+            let priv_value = get_private_trie_value(expose);
             table
                 .dst_nat
                 .insert(prefix, priv_value)
