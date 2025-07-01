@@ -32,13 +32,22 @@ impl Display for PrefixListAction {
         }
     }
 }
+impl Display for IpVer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IpVer::V4 => write!(f, "ip"),
+            IpVer::V6 => write!(f, "ipv6"),
+        }
+    }
+}
 
 /* Impl Render */
 impl Render for PrefixListEntry {
-    type Context = String;
+    type Context = (String, u32); /* u32 is sequence */
     type Output = String;
     fn render(&self, ctx: &Self::Context) -> String {
-        let mut out = format!("{} seq {} {} {}", ctx, self.seq, self.action, self.prefix);
+        let seq = ctx.1;
+        let mut out = format!("{} seq {} {} {}", ctx.0, seq, self.action, self.prefix);
         if let Some(len_match) = &self.len_match {
             out += format!(" {}", &len_match).as_str();
         }
@@ -50,11 +59,13 @@ impl Render for PrefixList {
     type Output = ConfigBuilder;
     fn render(&self, _: &Self::Context) -> ConfigBuilder {
         let mut config = ConfigBuilder::new();
-        let pfx = format!("ip prefix-list {}", self.name);
+        let pfx = format!("{} prefix-list {}", self.ipver, self.name);
         if let Some(description) = &self.description {
             config += format!("{pfx} description \"{description}\"");
         }
-        self.entries.iter().for_each(|e| config += e.render(&pfx));
+        self.entries
+            .iter()
+            .for_each(|(seq, e)| config += e.render(&(pfx.clone(), *seq)));
         config
     }
 }
@@ -75,33 +86,110 @@ mod tests {
     use routing::prefix::Prefix;
 
     #[test]
-    fn test_ip_prefix_list_render() {
+    fn test_ipv4_prefix_list_render() {
         let mut plist = PrefixList::new(
-            "underlay-from-spines",
+            "IPV4-prefix-list",
+            IpVer::V4,
             Some("Some custom prefix list for a vpc".to_owned()),
         );
-        plist.add_entry(PrefixListEntry::new(
-            1,
-            PrefixListAction::Permit,
-            PrefixListPrefix::Any,
-            Some(PrefixListMatchLen::Le(31)),
-        ));
+        plist
+            .add_entry(
+                Some(1),
+                PrefixListEntry::new(
+                    PrefixListAction::Permit,
+                    PrefixListPrefix::Any,
+                    Some(PrefixListMatchLen::Le(31)),
+                ),
+            )
+            .expect("Should be ok");
 
-        plist.add_entry(PrefixListEntry::new(
-            2,
-            PrefixListAction::Deny,
-            PrefixListPrefix::Prefix(Prefix::expect_from(("8.8.8.8", 32))),
-            None,
-        ));
+        plist
+            .add_entry(
+                Some(2),
+                PrefixListEntry::new(
+                    PrefixListAction::Deny,
+                    PrefixListPrefix::Prefix(Prefix::expect_from(("8.8.8.8", 32))),
+                    None,
+                ),
+            )
+            .expect("Should be ok");
 
-        plist.add_entry(PrefixListEntry::new(
-            3,
-            PrefixListAction::Permit,
-            PrefixListPrefix::Prefix(Prefix::expect_from(("192.168.90.0", 24))),
-            None,
-        ));
+        plist
+            .add_entry(
+                Some(3),
+                PrefixListEntry::new(
+                    PrefixListAction::Permit,
+                    PrefixListPrefix::Prefix(Prefix::expect_from(("192.168.90.0", 24))),
+                    None,
+                ),
+            )
+            .expect("Should be ok");
 
         let out = plist.render(&());
         println!("{out}");
+    }
+
+    #[test]
+    fn test_ipv6_prefix_list_render() {
+        let mut plist = PrefixList::new(
+            "IPV6-prefix-list",
+            IpVer::V6,
+            Some("Some custom prefix list for a vpc".to_owned()),
+        );
+        plist
+            .add_entry(
+                Some(1),
+                PrefixListEntry::new(
+                    PrefixListAction::Permit,
+                    PrefixListPrefix::Any,
+                    Some(PrefixListMatchLen::Le(31)),
+                ),
+            )
+            .expect("Should be ok");
+
+        plist
+            .add_entry(
+                Some(2),
+                PrefixListEntry::new(
+                    PrefixListAction::Deny,
+                    PrefixListPrefix::Prefix(Prefix::expect_from(("3000:a:b::", 80))),
+                    None,
+                ),
+            )
+            .expect("Should be ok");
+        let out = plist.render(&());
+        println!("{out}");
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_prefix_list_check_version() {
+        let mut plist = PrefixList::new(
+            "IPV6-prefix-list",
+            IpVer::V6,
+            Some("Some custom prefix list for a vpc".to_owned()),
+        );
+        plist
+            .add_entry(
+                None,
+                PrefixListEntry::new(
+                    PrefixListAction::Deny,
+                    PrefixListPrefix::Prefix(Prefix::expect_from(("3000:a:b::", 80))),
+                    None,
+                ),
+            )
+            .expect("Should be ok");
+
+        // this should panic because we attempt to add IPv4
+        plist
+            .add_entry(
+                None,
+                PrefixListEntry::new(
+                    PrefixListAction::Permit,
+                    PrefixListPrefix::Prefix(Prefix::expect_from(("192.168.90.0", 24))),
+                    None,
+                ),
+            )
+            .expect("Should be ok");
     }
 }

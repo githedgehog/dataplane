@@ -6,9 +6,10 @@
 #[allow(unused)]
 use tracing::{debug, error, warn};
 
+use crate::models::external::overlay::Overlay;
+use crate::models::external::overlay::vpc::{Peering, Vpc};
 use crate::models::external::overlay::vpcpeering::VpcManifest;
-use crate::models::external::{ConfigError, overlay::Overlay};
-use crate::models::external::{ConfigResult, overlay::vpc::Vpc};
+use crate::models::external::{ConfigError, ConfigResult};
 use net::eth::mac::SourceMac;
 use net::ipv4::UnicastIpv4Addr;
 use net::route::RouteTableId;
@@ -19,11 +20,11 @@ use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
 use crate::models::internal::InternalConfig;
 use crate::models::internal::interfaces::interface::InterfaceType;
 use crate::models::internal::natconfig::table_extend::add_peering;
-use crate::models::internal::routing::bgp::{AfIpv4Ucast, AfIpv6Ucast, AfL2vpnEvpn};
+use crate::models::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
 use crate::models::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
 use crate::models::internal::routing::evpn::VtepConfig;
 use crate::models::internal::routing::prefixlist::{
-    PrefixList, PrefixListAction, PrefixListEntry, PrefixListMatchLen, PrefixListPrefix,
+    IpVer, PrefixList, PrefixListAction, PrefixListEntry, PrefixListMatchLen, PrefixListPrefix,
 };
 use crate::models::internal::routing::routemap::{
     MatchingPolicy, RouteMap, RouteMapEntry, RouteMapMatch,
@@ -38,155 +39,58 @@ fn build_drop_route(prefix: &Prefix) -> StaticRoute {
     StaticRoute::new(*prefix).nhop_reject()
 }
 
-/// Populate a prefix list from a remote manifest
-#[must_use]
-fn populate_prefix_list(plist: &mut PrefixList, rmanifest: &VpcManifest) -> Vec<StaticRoute> {
-    let mut sroute_vec: Vec<StaticRoute> = vec![];
-    let mut seq: u32 = 1;
+/// Populate a prefix list to import routes into a vpc vrf
+fn vpc_import_prefix_list_for_peer(
+    vpc: &Vpc,
+    rmanifest: &VpcManifest,
+) -> Result<PrefixList, ConfigError> {
+    let mut plist = PrefixList::new(
+        &vpc.import_plist_peer(&rmanifest.name),
+        IpVer::V4,
+        Some(vpc.import_plist_peer_desc(&rmanifest.name)),
+    );
     for expose in &rmanifest.exposes {
-        // native prefixes
-        for prefix in expose.ips.iter() {
-            let entry = PrefixListEntry::new(
-                seq,
+        // allow native prefixes, natted or not
+        let native_prefixes = expose.ips.iter().filter(|p| p.is_ipv4()).map(|prefix| {
+            PrefixListEntry::new(
                 PrefixListAction::Permit,
                 PrefixListPrefix::Prefix(*prefix),
                 Some(PrefixListMatchLen::Ge(prefix.length())),
-            );
-            plist.add_entry(entry);
-            seq += 1;
-        }
-        // native exclusions
-        for prefix in expose.nots.iter() {
-            let entry = PrefixListEntry::new(
-                seq,
+            )
+        });
+        plist.add_entries(native_prefixes)?;
+
+        // disallow prefix exceptions, whether there's nat or not
+        let nots = expose.nots.iter().filter(|p| p.is_ipv4()).map(|prefix| {
+            PrefixListEntry::new(
                 PrefixListAction::Deny,
                 PrefixListPrefix::Prefix(*prefix),
                 None,
-            );
-            plist.add_entry(entry);
-            seq += 1;
-        }
-        // this is extra security
-        sroute_vec = expose.nots.iter().map(build_drop_route).collect();
+            )
+        });
+        plist.add_entries(nots)?;
+    }
+    Ok(plist)
+}
 
-        // NAT
-        for prefix in expose.as_range.iter() {
-            let entry = PrefixListEntry::new(
-                seq,
-                PrefixListAction::Permit,
-                PrefixListPrefix::Prefix(*prefix),
-                None,
-            );
-            plist.add_entry(entry);
-            seq += 1;
-        }
+#[must_use]
+fn build_vpc_drop_routes(rmanifest: &VpcManifest) -> Vec<StaticRoute> {
+    let mut sroute_vec: Vec<StaticRoute> = vec![];
+    for expose in &rmanifest.exposes {
+        let mut statics: Vec<StaticRoute> = expose.nots.iter().map(build_drop_route).collect();
+        sroute_vec.append(&mut statics);
     }
     sroute_vec
 }
 
-/// Build a vector of prefix lists, one per peering, and a route-map for a given VPC
-#[must_use]
-fn vpc_ipv4_import_configuration(vpc: &Vpc) -> (RouteMap, Vec<PrefixList>, Vec<StaticRoute>) {
-    debug!("Building import config for vpc '{}'", vpc.name);
-    let mut seq: u32 = 10; /* route-map sequence number */
-    let mut plist_vec = vec![]; /* a vector of prefix lists to return */
-    let mut sroute_vec = vec![];
-    let mut rmap = RouteMap::new(&vpc.import_route_map_ipv4()); /* import route-map for this vpc */
-    for p in vpc.peerings.iter() {
-        let rmanifest = &p.remote;
-
-        /* build prefix list from remote manifest */
-        let mut plist = PrefixList::new(
-            &vpc.plist_with_vpc(&rmanifest.name),
-            Some(vpc.plist_with_vpc_descr(&rmanifest.name)),
-        );
-
-        /* populate prefix list and build static drops for excluded prefixes */
-        let mut statics = populate_prefix_list(&mut plist, rmanifest);
-        sroute_vec.append(&mut statics);
-
-        /* update route-map */
-        let entry = RouteMapEntry::new(seq, MatchingPolicy::Permit)
-            .add_match(RouteMapMatch::Ipv4AddressPrefixList(plist.name.clone()))
-            .add_match(RouteMapMatch::SrcVrf(p.remote_id.vrf_name().to_string()));
-        rmap.add_entry(entry);
-        seq += 10;
-
-        /* add prefix list to vector */
-        plist_vec.push(plist);
-    }
-    (rmap, plist_vec, sroute_vec)
-}
-
-/// Determine ipv4 imports for a VPC
-fn vpc_ipv4_imports(vpc: &Vpc) -> VrfImports {
-    let mut imports = VrfImports::new().set_routemap(&vpc.import_route_map_ipv4());
-    for p in vpc.peerings.iter() {
-        imports.add_vrf(p.remote_id.vrf_name().as_ref());
-    }
-    imports
-}
-/// Determine ipv6 imports for a VPC
-fn vpc_ipv6_imports(vpc: &Vpc) -> VrfImports {
-    let mut imports = VrfImports::new().set_routemap(&vpc.import_route_map_ipv6());
-    for p in vpc.peerings.iter() {
-        imports.add_vrf(p.remote_id.vrf_name().as_ref());
-    }
-    imports
-}
-
-fn vpc_ipv4_announce(vpc: &Vpc) -> Vec<Prefix> {
-    let mut prefixes: Vec<Prefix> = Vec::new();
-    for p in vpc.peerings.iter() {
-        for expose in &p.local.exposes {
-            prefixes.extend(expose.as_range.iter().filter(|p| p.is_ipv4()));
-        }
-    }
-    prefixes
-}
-fn vpc_ipv6_announce(vpc: &Vpc) -> Vec<Prefix> {
-    let mut prefixes: Vec<Prefix> = Vec::new();
-    for p in vpc.peerings.iter() {
-        for expose in &p.local.exposes {
-            prefixes.extend(expose.as_range.iter().filter(|p| p.is_ipv6()));
-        }
-    }
-    prefixes
-}
-
-/// Build AF Ipv4 unicast config for a VPC VRF
-fn vpc_bgp_af_ipv4(vpc: &Vpc) -> AfIpv4Ucast {
-    let mut af = AfIpv4Ucast::new();
-    if vpc.num_peerings() > 0 {
-        af.set_vrf_imports(vpc_ipv4_imports(vpc));
-        af.add_networks(vpc_ipv4_announce(vpc));
-    }
-    af
-}
-/// Build AF Ipv6 unicast config for a VPC VRF
-fn vpc_bgp_af_ipv6(vpc: &Vpc) -> AfIpv6Ucast {
-    let mut af = AfIpv6Ucast::new();
-    if vpc.num_peerings() > 0 {
-        af.set_vrf_imports(vpc_ipv6_imports(vpc));
-        af.add_networks(vpc_ipv6_announce(vpc));
-    }
-    af
-}
-
 /// Build AF l2vpn EVPN config for a VPC VRF
 fn vpc_bgp_af_l2vpn_evpn(vpc: &Vpc) -> AfL2vpnEvpn {
-    let af_l2vpn_evpn = AfL2vpnEvpn::new()
+    AfL2vpnEvpn::new()
         .set_adv_all_vni(false)
         .set_adv_default_gw(false)
         .set_adv_svi_ip(false)
-        .set_adv_ipv4_unicast(true);
-
-    if !vpc.has_peers_with_host_prefixes() {
-        debug!("Vpc {} has no peerings with host routes", vpc.name);
-        af_l2vpn_evpn.set_adv_ipv4_unicast_rmap("NO-IPV4-HOST-ROUTES".to_string())
-    } else {
-        af_l2vpn_evpn
-    }
+        .set_adv_ipv4_unicast(true)
+        .set_adv_ipv4_unicast_rmap(vpc.adv_rmap())
 }
 
 /// Build BGP options for a VPC VRF
@@ -198,6 +102,97 @@ fn vpc_bgp_options() -> BgpOptions {
         .set_supress_duplicates(true)
 }
 
+struct VpcRoutingConfigIpv4 {
+    /* imports */
+    import_rmap: RouteMap,          /* import route-map, one entry per peer */
+    import_plists: Vec<PrefixList>, /* import prefix list per peer */
+    vrf_imports: VrfImports,        /* import config summary */
+
+    /* advertise */
+    adv_nets: Vec<Prefix>,
+    adv_rmap: RouteMap,    /* one entry per peer */
+    adv_plist: PrefixList, /* one prefix list, one entry per peer */
+
+    /* static routes */
+    sroutes: Vec<StaticRoute>,
+}
+impl VpcRoutingConfigIpv4 {
+    fn new(vpc: &Vpc) -> Self {
+        Self {
+            import_rmap: RouteMap::new(&vpc.import_rmap_ipv4()),
+            import_plists: Vec::with_capacity(vpc.num_peerings()),
+            vrf_imports: VrfImports::new().set_routemap(&vpc.import_rmap_ipv4()),
+            adv_nets: vec![],
+            adv_rmap: RouteMap::new(&vpc.adv_rmap()),
+            adv_plist: PrefixList::new(&vpc.adv_plist(), IpVer::V4, Some(vpc.adv_plist_desc())),
+            sroutes: vec![],
+        }
+    }
+    fn build_routing_config_peer(&mut self, vpc: &Vpc, peer: &Peering) -> ConfigResult {
+        /* remote manifest */
+        let rmanifest = &peer.remote;
+
+        /* we import from this vrf */
+        self.vrf_imports.add_vrf(peer.remote_id.vrf_name().as_ref());
+
+        /* build prefix list for the peer from its remote manifest */
+        let plist = vpc_import_prefix_list_for_peer(vpc, rmanifest)?;
+
+        /* static drops for excluded prefixes (optional) */
+        let mut statics = build_vpc_drop_routes(rmanifest);
+        self.sroutes.append(&mut statics);
+
+        /* create import route-map entry */
+        let import_rmap_e = RouteMapEntry::new(MatchingPolicy::Permit)
+            .add_match(RouteMapMatch::Ipv4AddressPrefixList(plist.name.clone()))
+            .add_match(RouteMapMatch::SrcVrf(peer.remote_id.vrf_name().to_string()));
+
+        /* add entry */
+        self.import_rmap.add_entry(None, import_rmap_e)?;
+
+        /* add prefix list to vector */
+        self.import_plists.push(plist);
+
+        /* natted exposes */
+        let natted = rmanifest.exposes.iter().filter(|e| e.is_natted());
+
+        /* advertise */
+        let nets = natted.clone().flat_map(|e| e.as_range.iter());
+        self.adv_nets.extend(nets);
+
+        /* build adv prefix list */
+        for expose in rmanifest.exposes.iter() {
+            let prefixes = if expose.is_natted() {
+                expose.as_range.iter()
+            } else {
+                expose.ips.iter()
+            };
+            let plists = prefixes.map(|prefix| {
+                PrefixListEntry::new(
+                    PrefixListAction::Permit,
+                    PrefixListPrefix::Prefix(*prefix),
+                    None,
+                )
+            });
+            self.adv_plist.add_entries(plists)?;
+        }
+
+        /* create adv route-map entry and add it */
+        let adv_rmap_e = RouteMapEntry::new(MatchingPolicy::Permit).add_match(
+            RouteMapMatch::Ipv4AddressPrefixList(self.adv_plist.name.clone()),
+        );
+        self.adv_rmap.add_entry(None, adv_rmap_e)?;
+        Ok(())
+    }
+
+    fn build_routing_config(&mut self, vpc: &Vpc) -> ConfigResult {
+        for peer in vpc.peerings.iter() {
+            self.build_routing_config_peer(vpc, peer)?;
+        }
+        Ok(())
+    }
+}
+
 /// Build BGP config for a VPC VRF
 fn vpc_vrf_bgp_config(vpc: &Vpc, asn: u32, router_id: Option<Ipv4Addr>) -> BgpConfig {
     let mut bgp = BgpConfig::new(asn).set_vrf_name(vpc.vrf_name());
@@ -205,14 +200,11 @@ fn vpc_vrf_bgp_config(vpc: &Vpc, asn: u32, router_id: Option<Ipv4Addr>) -> BgpCo
         bgp.set_router_id(router_id);
     }
     bgp.set_bgp_options(vpc_bgp_options());
-    bgp.set_af_l2vpn_evpn(vpc_bgp_af_l2vpn_evpn(vpc));
-    bgp.set_af_ipv4unicast(vpc_bgp_af_ipv4(vpc));
-    bgp.set_af_ipv6unicast(vpc_bgp_af_ipv6(vpc));
     bgp
 }
 
 /// Build VRF config for a VPC
-fn vpc_vrf_config(vpc: &Vpc, asn: u32, router_id: Option<Ipv4Addr>) -> VrfConfig {
+fn vpc_vrf_config(vpc: &Vpc) -> Result<VrfConfig, ConfigError> {
     debug!("Building VRF config for vpc '{}'", vpc.name);
     /* build vrf config */
     let mut vrf_cfg = VrfConfig::new(&vpc.vrf_name(), Some(vpc.vni), false)
@@ -222,13 +214,20 @@ fn vpc_vrf_config(vpc: &Vpc, asn: u32, router_id: Option<Ipv4Addr>) -> VrfConfig
     /* set table-id: table ids should be unique per VRF. We should track them and pick unused ones.
     Setting this to the VNI is not too bad atm, except that we should avoid picking reserved values
     which may cause internal failures. FIXME: fredi */
-    // TODO: we can't just unwrap here
-    vrf_cfg = vrf_cfg.set_table_id(RouteTableId::try_from(vpc.vni.as_u32()).unwrap());
+    let table_id = RouteTableId::try_from(vpc.vni.as_u32()).unwrap_or_else(|_| unreachable!());
+    if 254_u32 == table_id.into() {
+        error!("Invalid configuration: Vni 254 is reserved");
+        return Err(ConfigError::InvalidVpcVni(vpc.vni.as_u32()));
+    }
+    vrf_cfg = vrf_cfg.set_table_id(table_id);
+    Ok(vrf_cfg)
+}
 
-    /* build BGP config for vrf */
-    vrf_cfg.set_bgp(vpc_vrf_bgp_config(vpc, asn, router_id));
-
-    vrf_cfg
+fn vpc_bgp_af_ipv4_unicast(vpc_rconf: &VpcRoutingConfigIpv4) -> AfIpv4Ucast {
+    let mut af = AfIpv4Ucast::new();
+    af.set_vrf_imports(vpc_rconf.vrf_imports.clone());
+    af.add_networks(vpc_rconf.adv_nets.clone());
+    af
 }
 
 fn build_vpc_internal_config(
@@ -240,27 +239,26 @@ fn build_vpc_internal_config(
     debug!("Building internal config for vpc '{}'", vpc.name);
 
     /* build VRF config */
-    let mut vrf_cfg = vpc_vrf_config(vpc, asn, router_id);
+    let mut vrf_cfg = vpc_vrf_config(vpc)?;
 
-    /* build import configuration */
-    let (rmap, plists, statics) = vpc_ipv4_import_configuration(vpc);
+    /* build bgp config */
+    let mut bgp = vpc_vrf_bgp_config(vpc, asn, router_id);
 
-    /* add route-map */
-    internal.add_route_map(rmap);
+    if vpc.num_peerings() > 0 {
+        let mut vpc_rconfig = VpcRoutingConfigIpv4::new(vpc); // fixme build from scratch / no mut
+        vpc_rconfig.build_routing_config(vpc)?;
+        bgp.set_af_ipv4unicast(vpc_bgp_af_ipv4_unicast(&vpc_rconfig));
+        bgp.set_af_l2vpn_evpn(vpc_bgp_af_l2vpn_evpn(vpc));
+        internal.add_route_map(vpc_rconfig.import_rmap.clone());
+        internal.add_route_map(vpc_rconfig.adv_rmap.clone());
+        internal.add_prefix_lists(vpc_rconfig.import_plists.clone());
+        internal.add_prefix_list(vpc_rconfig.adv_plist.clone());
+        vrf_cfg.add_static_routes(vpc_rconfig.sroutes.clone());
+    }
 
-    /* add prefix lists */
-    plists
-        .into_iter()
-        .for_each(|plist| internal.add_prefix_list(plist));
-
-    /* add static routes */
-    statics
-        .into_iter()
-        .for_each(|static_route| vrf_cfg.add_static_route(static_route));
-
-    /* add vrf config */
+    /* set bgp config */
+    vrf_cfg.set_bgp(bgp);
     internal.add_vrf_config(vrf_cfg)?;
-
     Ok(())
 }
 
@@ -304,15 +302,13 @@ fn get_vtep_info(external: &ExternalConfig) -> Result<VtepInfo, ConfigError> {
     }
 }
 
-fn build_vtep_config(external: &ExternalConfig, internal: &mut InternalConfig) -> ConfigResult {
+fn build_vtep_config(external: &ExternalConfig) -> Result<VtepConfig, ConfigError> {
     let vtep_info = get_vtep_info(external)?;
-
     let vtep = VtepConfig {
         address: vtep_info.ip.into(),
         mac: vtep_info.mac,
     };
-    internal.set_vtep(vtep);
-    Ok(())
+    Ok(vtep)
 }
 
 fn build_nat_internal_config(overlay: &Overlay, internal: &mut InternalConfig) -> ConfigResult {
@@ -329,63 +325,6 @@ fn build_nat_internal_config(overlay: &Overlay, internal: &mut InternalConfig) -
     Ok(())
 }
 
-fn build_no_ipv4_host_prefix_list(internal: &mut InternalConfig) {
-    let mut plist = PrefixList::new(
-        "NO-IPV4-HOST-ROUTES",
-        Some("Filter out ipv4 host routes".to_string()),
-    );
-    let entry = PrefixListEntry::new(
-        1,
-        PrefixListAction::Permit,
-        PrefixListPrefix::Prefix(Prefix::root_v4()),
-        Some(PrefixListMatchLen::Le(31)),
-    );
-    plist.add_entry(entry);
-    internal.plist_table.add_prefix_list(plist);
-}
-fn build_no_ipv4_host_route_map(internal: &mut InternalConfig) {
-    let mut rmap = RouteMap::new("NO-IPV4-HOST-ROUTES");
-    let entry = RouteMapEntry::new(1, MatchingPolicy::Permit).add_match(
-        RouteMapMatch::Ipv4AddressPrefixList("NO-IPV4-HOST-ROUTES".to_string()),
-    );
-    rmap.add_entry(entry);
-
-    let entry = RouteMapEntry::new(5, MatchingPolicy::Deny);
-    rmap.add_entry(entry);
-    internal.rmap_table.add_route_map(rmap);
-}
-fn build_no_ipv6_host_prefix_list(internal: &mut InternalConfig) {
-    let mut plist = PrefixList::new(
-        "NO-IPV6-HOST-ROUTES",
-        Some("Filter out ipv6 host routes".to_string()),
-    );
-    let entry = PrefixListEntry::new(
-        1,
-        PrefixListAction::Permit,
-        PrefixListPrefix::Prefix(Prefix::root_v6()),
-        Some(PrefixListMatchLen::Le(127)),
-    );
-    plist.add_entry(entry);
-    internal.plist_table.add_prefix_list(plist);
-}
-fn build_no_ipv6_host_route_map(internal: &mut InternalConfig) {
-    let mut rmap = RouteMap::new("NO-IPV6-HOST-ROUTES");
-    let entry = RouteMapEntry::new(1, MatchingPolicy::Permit).add_match(
-        RouteMapMatch::Ipv6AddressPrefixList("NO-IPV6-HOST-ROUTES".to_string()),
-    );
-    rmap.add_entry(entry);
-
-    let entry = RouteMapEntry::new(5, MatchingPolicy::Deny);
-    rmap.add_entry(entry);
-    internal.rmap_table.add_route_map(rmap);
-}
-fn build_host_route_filtering(internal: &mut InternalConfig) {
-    build_no_ipv4_host_prefix_list(internal);
-    build_no_ipv4_host_route_map(internal);
-    build_no_ipv6_host_prefix_list(internal);
-    build_no_ipv6_host_route_map(internal);
-}
-
 fn build_internal_overlay_config(
     overlay: &Overlay,
     asn: u32,
@@ -393,12 +332,17 @@ fn build_internal_overlay_config(
     internal: &mut InternalConfig,
 ) -> ConfigResult {
     debug!("Building overlay config...");
-    build_host_route_filtering(internal);
+    if overlay.vpc_table.is_empty() {
+        debug!("There is no overlay configuration");
+        return Ok(());
+    }
+
+    /* Vpcs and peering */
     for vpc in overlay.vpc_table.values() {
         build_vpc_internal_config(vpc, asn, router_id, internal)?;
     }
+    /* nat configuration */
     build_nat_internal_config(overlay, internal)?;
-    debug!("Internal config is:\n{internal:#?}");
     Ok(())
 }
 
@@ -408,22 +352,22 @@ pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, Config
     debug!("Building internal config for gen {genid}");
     let external = &config.external;
 
-    /* Build internal config object: device and underlay configs are copied as received */
+    /* Build internal config: device and underlay configs are copied as received */
     let mut internal = InternalConfig::new(external.device.clone());
     internal.add_vrf_config(external.underlay.vrf.clone())?;
+    if !external.overlay.vpc_table.is_empty() {
+        internal.set_vtep(build_vtep_config(external)?);
+    }
 
     /* Build overlay config */
     if let Some(bgp) = &external.underlay.vrf.bgp {
         let asn = bgp.asn;
         let router_id = bgp.router_id;
         build_internal_overlay_config(&external.overlay, asn, router_id, &mut internal)?;
-        if internal.vrfs.vpc_vrfs().count() > 0 {
-            build_vtep_config(external, &mut internal)?;
-        }
     } else if config.genid() != ExternalConfig::BLANK_GENID {
         warn!("Config has no BGP configuration");
     }
-
     debug!("Successfully built internal config for genid {genid}");
+    debug!("Internal config is:\n{internal:#?}");
     Ok(internal)
 }

@@ -24,20 +24,32 @@ impl Vpc {
     pub(crate) fn vrf_name(&self) -> String {
         self.id.vrf_name().to_string()
     }
-    pub(crate) fn import_route_map_ipv4(&self) -> String {
-        format!("IPV4-IMPORTS-{}", self.name.to_uppercase())
+    pub(crate) fn import_rmap_ipv4(&self) -> String {
+        format!("{}-IPV4-IMPORTS", self.name.to_uppercase())
     }
-    pub(crate) fn import_route_map_ipv6(&self) -> String {
-        format!("IPV6-IMPORTS-{}", self.name.to_uppercase())
+    pub(crate) fn import_rmap_ipv6(&self) -> String {
+        format!("{}-IPV6-IMPORTS", self.name.to_uppercase())
     }
-    pub(crate) fn plist_with_vpc(&self, remote_name: &str) -> String {
+    pub(crate) fn import_plist_peer(&self, remote_name: &str) -> String {
         format!(
             "{}-FROM-{}",
             &self.name.to_uppercase(),
             remote_name.to_uppercase()
         )
     }
-    pub(crate) fn plist_with_vpc_descr(&self, remote_name: &str) -> String {
+    pub(crate) fn import_plist_peer_desc(&self, remote_name: &str) -> String {
         format!("Prefixes of {} reachable by {}", remote_name, self.name)
+    }
+    pub(crate) fn adv_plist(&self) -> String {
+        format!("ADV-TO-{}", &self.name.to_uppercase())
+    }
+    pub(crate) fn adv_plist_desc(&self) -> String {
+        format!(
+            "Prefixes allowed to advertised to {}",
+            &self.name.to_uppercase()
+        )
+    }
+    pub(crate) fn adv_rmap(&self) -> String {
+        format!("ADV-TO-{}", &self.name.to_uppercase())
     }
 }
