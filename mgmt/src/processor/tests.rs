@@ -10,7 +10,6 @@ pub mod test {
     use routing::prefix::Prefix;
     use tracing_test::traced_test;
 
-    use crate::models::internal::device::settings::DeviceSettings;
     use crate::models::internal::device::settings::KernelPacketConfig;
     use crate::models::internal::device::settings::PacketDriver;
     use crate::models::internal::interfaces::interface::InterfaceConfig;
@@ -25,12 +24,18 @@ pub mod test {
     use crate::models::internal::routing::ospf::{OspfInterface, OspfNetwork};
     use crate::models::internal::routing::vrf::VrfConfig;
     use crate::models::internal::{device::DeviceConfig, routing::ospf::Ospf};
+    use crate::{
+        frr::renderer::builder::Render, models::internal::device::settings::DeviceSettings,
+    };
     use caps::Capability::CAP_NET_ADMIN;
     use std::net::IpAddr;
     use std::net::Ipv4Addr;
     use std::str::FromStr;
     use test_utils::with_caps;
     use tracing::{Level, error};
+
+    use crate::processor::confbuild::internal::build_internal_config;
+
     //    use crate::models::internal::routing::evpn::VtepConfig;
 
     use crate::models::external::gwconfig::ExternalConfig;
@@ -65,8 +70,18 @@ pub mod test {
     fn man_vpc1_with_vpc2() -> VpcManifest {
         let mut m1 = VpcManifest::new("VPC-1");
         let expose = VpcExpose::empty()
+            .ip(Prefix::expect_from(("192.168.60.0", 24)))
+            .not(Prefix::expect_from(("192.168.60.13", 32)));
+        m1.add_expose(expose).expect("Should succeed");
+
+        let expose = VpcExpose::empty()
             .ip(Prefix::expect_from(("192.168.50.0", 24)))
-            .not(Prefix::expect_from(("192.168.50.13", 32)));
+            .as_range(Prefix::expect_from(("100.100.50.0", 24)));
+        m1.add_expose(expose).expect("Should succeed");
+
+        let expose = VpcExpose::empty()
+            .ip(Prefix::expect_from(("192.168.30.0", 24)))
+            .as_range(Prefix::expect_from(("100.100.30.0", 24)));
         m1.add_expose(expose).expect("Should succeed");
         m1
     }
@@ -74,21 +89,38 @@ pub mod test {
         let mut m1 = VpcManifest::new("VPC-2");
         let expose = VpcExpose::empty()
             .ip(Prefix::expect_from(("192.168.80.0", 24)))
+            .not(Prefix::expect_from(("192.168.80.2", 32)));
+        m1.add_expose(expose).expect("Should succeed");
+
+        let expose = VpcExpose::empty()
+            .ip(Prefix::expect_from(("192.168.70.0", 24)))
+            .as_range(Prefix::expect_from(("200.200.70.0", 24)));
+        m1.add_expose(expose).expect("Should succeed");
+
+        let expose = VpcExpose::empty()
             .ip(Prefix::expect_from(("192.168.90.0", 24)))
-            .not(Prefix::expect_from(("192.168.90.2", 32)))
-            .not(Prefix::expect_from(("192.168.90.7", 32)));
+            .as_range(Prefix::expect_from(("200.200.90.0", 24)));
         m1.add_expose(expose).expect("Should succeed");
         m1
     }
     fn man_vpc1_with_vpc3() -> VpcManifest {
         let mut m1 = VpcManifest::new("VPC-1");
-        let expose = VpcExpose::empty().ip(Prefix::expect_from(("192.168.60.0", 24)));
+        let expose = VpcExpose::empty()
+            .ip(Prefix::expect_from(("192.168.60.0", 24)))
+            .as_range(Prefix::expect_from(("100.100.60.0", 24)));
         m1.add_expose(expose).expect("Should succeed");
         m1
     }
     fn man_vpc3_with_vpc1() -> VpcManifest {
         let mut m1 = VpcManifest::new("VPC-3");
-        let expose = VpcExpose::empty().ip(Prefix::expect_from(("192.168.128.0", 27)));
+        let expose = VpcExpose::empty()
+            .ip(Prefix::expect_from(("192.168.128.0", 27)))
+            .as_range(Prefix::expect_from(("100.30.128.0", 27)));
+        m1.add_expose(expose).expect("Should succeed");
+
+        let expose = VpcExpose::empty()
+            .ip(Prefix::expect_from(("192.168.100.0", 24)))
+            .as_range(Prefix::expect_from(("192.168.100.0", 24)));
         m1.add_expose(expose).expect("Should succeed");
         m1
     }
@@ -306,6 +338,23 @@ pub mod test {
 
         /* set VTEP configuration: FIXME, need to accommodate this to internal model */
         //let vtep = VtepConfig::new(loopback, Mac::from([0x2, 0x0, 0x0, 0x0, 0xaa, 0xbb]));
+    }
+
+    #[traced_test]
+    #[test]
+    fn check_frr_config() {
+        /* Not really a test but a tool to check generated FRR configs given a gateway config */
+        let external = sample_external_config();
+        let mut config = GwConfig::new(external);
+        config.validate().expect("Config validation failed");
+        if false {
+            let vpc_table = &config.external.overlay.vpc_table;
+            let peering_table = &config.external.overlay.peering_table;
+            println!("\n{vpc_table}\n{peering_table}");
+        }
+        let internal = build_internal_config(&config).expect("Should succeed");
+        let rendered = internal.render(&config.genid());
+        println!("{rendered}");
     }
 
     #[traced_test]

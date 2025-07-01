@@ -104,11 +104,11 @@ impl Render for Vec<RouteMapMatch> {
     }
 }
 impl Render for RouteMapEntry {
-    type Context = String;
+    type Context = (String, u32); /* u32 is sequence number */
     type Output = ConfigBuilder;
     fn render(&self, ctx: &Self::Context) -> Self::Output {
         let mut config = ConfigBuilder::new();
-        config += format!("{} {} {}", ctx, self.policy, self.seq);
+        config += format!("{} {} {}", ctx.0, self.policy, ctx.1);
         config += self.matches.render(&());
         config += self.actions.render(&());
         config += "exit";
@@ -122,10 +122,10 @@ impl Render for RouteMap {
     fn render(&self, _ctx: &Self::Context) -> Self::Output {
         let mut config = ConfigBuilder::new();
         config += MARKER;
-        let prefix = format!("route-map {}", self.name);
+        let render_prefix = format!("route-map {}", self.name);
         self.entries
             .iter()
-            .for_each(|e| config += e.render(&prefix));
+            .for_each(|(seq, e)| config += e.render(&(render_prefix.clone(), *seq)));
         config
     }
 }
@@ -148,22 +148,22 @@ mod tests {
 
     fn build_test_route_map() -> RouteMap {
         let mut rmap = RouteMap::new("Sample-route-map");
-        let entry = RouteMapEntry::new(10, MatchingPolicy::Permit)
+        let entry = RouteMapEntry::new(MatchingPolicy::Permit)
             .add_match(RouteMapMatch::SrcVrf("vrf-1".to_string()))
             .add_match(RouteMapMatch::EvpnVni(Vni::new_checked(3000).unwrap()))
             .add_match(RouteMapMatch::Ipv4AddressPrefixList(
                 "prefix-list-1".to_string(),
             ));
-        rmap.add_entry(entry);
+        rmap.add_entry(None, entry).unwrap();
 
-        let entry = RouteMapEntry::new(20, MatchingPolicy::Permit)
+        let entry = RouteMapEntry::new(MatchingPolicy::Permit)
             .add_match(RouteMapMatch::Metric(100))
             .add_action(RouteMapSetAction::Tag(13))
             .add_action(RouteMapSetAction::Weight(4000))
             .add_action(RouteMapSetAction::LocalPreference(100));
-        rmap.add_entry(entry);
+        rmap.add_entry(None, entry).unwrap();
 
-        let entry = RouteMapEntry::new(30, MatchingPolicy::Permit)
+        let entry = RouteMapEntry::new(MatchingPolicy::Permit)
             .add_match(RouteMapMatch::Ipv4NextHopPrefixList(
                 "NHOP-PLIST".to_string(),
             ))
@@ -171,10 +171,10 @@ mod tests {
                 vec![Community::NoExport, Community::LocalAs],
                 true,
             ));
-        rmap.add_entry(entry);
+        rmap.add_entry(None, entry).unwrap();
 
-        let entry = RouteMapEntry::new(40, MatchingPolicy::Deny);
-        rmap.add_entry(entry);
+        let entry = RouteMapEntry::new(MatchingPolicy::Deny);
+        rmap.add_entry(None, entry).unwrap();
         rmap
     }
 
