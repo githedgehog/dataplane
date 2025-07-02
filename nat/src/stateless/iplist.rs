@@ -242,7 +242,7 @@ impl IpListSubset {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::str::FromStr;
 
     fn addr_v4(s: &str) -> IpAddr {
@@ -250,8 +250,13 @@ mod tests {
         IpAddr::V4(Ipv4Addr::from_str(s).expect(format!("Invalid IPv4 address: {s}").as_str()))
     }
 
+    fn addr_v6(s: &str) -> IpAddr {
+        #[allow(clippy::expect_fun_call)]
+        IpAddr::V6(Ipv6Addr::from_str(s).expect(format!("Invalid IPv6 address: {s}").as_str()))
+    }
+
     #[test]
-    fn test_iplist_subset() {
+    fn test_iplist_subset_v4() {
         let ipls = IpListSubset::new(0, "1.1.0.0/16".into());
 
         let offset = ipls
@@ -303,7 +308,54 @@ mod tests {
     }
 
     #[test]
-    fn test_iplist() {
+    fn test_iplist_subset_v6() {
+        let ipls = IpListSubset::new(0, "2001:db8::/64".into());
+
+        let offset = ipls
+            .addr_offset_in_prefix(&addr_v6("2001:db8::"))
+            .expect("Failed to get offset");
+        assert_eq!(offset.offset, 0);
+
+        let offset = ipls
+            .addr_offset_in_prefix(&addr_v6("2001:db8::1"))
+            .expect("Failed to get offset");
+        assert_eq!(offset.offset, 1);
+
+        let offset = ipls
+            .addr_offset_in_prefix(&addr_v6("2001:db8::2"))
+            .expect("Failed to get offset");
+        assert_eq!(offset.offset, 2);
+
+        let offset = ipls
+            .addr_offset_in_prefix(&addr_v6("2001:db8::ffff:ffff:3"))
+            .expect("Failed to get offset");
+        assert_eq!(offset.offset, 0xffff * (1 << 32) + 0xffff * (1 << 16) + 3);
+
+        let offset = ipls
+            .addr_offset_in_prefix(&addr_v6("2001:db8::ffff:ffff:ffff:ffff"))
+            .expect("Failed to get offset");
+        assert_eq!(offset.offset, (1 << 64) - 1);
+
+        ipls.addr_offset_in_prefix(&addr_v6("2001:db9:0:1::"))
+            .expect_err("Address not in prefix");
+
+        let ipls = IpListSubset::new(1, "8000::/1".into());
+
+        let offset = ipls
+            .addr_offset_in_prefix(&addr_v6("8000::2"))
+            .expect("Failed to get offset");
+        assert_eq!(offset.offset, 3);
+
+        let ipls = IpListSubset::new(0, "::/0".into());
+
+        let offset = ipls
+            .addr_offset_in_prefix(&addr_v6("::"))
+            .expect("Failed to get offset");
+        assert_eq!(offset.offset, 0);
+    }
+
+    #[test]
+    fn test_iplist_v4() {
         let target_prefixes = BTreeSet::from([
             "2.1.0.0/16".into(),
             "2.2.0.0/16".into(),
@@ -400,6 +452,107 @@ mod tests {
                 })
                 .expect("Failed to get address"),
             addr_v4("0.0.0.0")
+        );
+    }
+
+    #[test]
+    fn test_iplist_v6() {
+        let target_prefixes = BTreeSet::from([
+            "2001:db8::/112".into(),
+            "2001:db9::/112".into(),
+            "2001:dba::/112".into(),
+            "2002::/113".into(),
+            "2003::/113".into(),
+        ]);
+        let iplist = IpList::new(&target_prefixes);
+
+        assert_eq!(
+            iplist
+                .addr_from_prefix_offset(&IpListOffset {
+                    offset: 0,
+                    ip_version: IpVersion::V6
+                })
+                .expect("Failed to get address"),
+            addr_v6("2001:db8::")
+        );
+
+        assert_eq!(
+            iplist
+                .addr_from_prefix_offset(&IpListOffset {
+                    offset: 1,
+                    ip_version: IpVersion::V6
+                })
+                .expect("Failed to get address"),
+            addr_v6("2001:db8::1")
+        );
+
+        assert_eq!(
+            iplist
+                .addr_from_prefix_offset(&IpListOffset {
+                    offset: 0x100a5,
+                    ip_version: IpVersion::V6
+                })
+                .expect("Failed to get address"),
+            addr_v6("2001:db9::a5")
+        );
+
+        assert_eq!(
+            iplist
+                .addr_from_prefix_offset(&IpListOffset {
+                    offset: 0x31234,
+                    ip_version: IpVersion::V6
+                })
+                .expect("Failed to get address"),
+            addr_v6("2002::1234")
+        );
+
+        assert_eq!(
+            iplist
+                .addr_from_prefix_offset(&IpListOffset {
+                    offset: 0x37fff,
+                    ip_version: IpVersion::V6
+                })
+                .expect("Failed to get address"),
+            addr_v6("2002::7fff")
+        );
+
+        assert_eq!(
+            iplist
+                .addr_from_prefix_offset(&IpListOffset {
+                    offset: 0x38000,
+                    ip_version: IpVersion::V6
+                })
+                .expect("Failed to get address"),
+            addr_v6("2003::0")
+        );
+
+        assert_eq!(
+            iplist
+                .addr_from_prefix_offset(&IpListOffset {
+                    offset: 0x3ffff,
+                    ip_version: IpVersion::V6
+                })
+                .expect("Failed to get address"),
+            addr_v6("2003::7fff")
+        );
+
+        iplist
+            .addr_from_prefix_offset(&IpListOffset {
+                offset: 0x40000,
+                ip_version: IpVersion::V6,
+            })
+            .expect_err("Offset not in list");
+
+        let target_prefixes = BTreeSet::from(["::/0".into()]);
+        let iplist = IpList::new(&target_prefixes);
+        assert_eq!(
+            iplist
+                .addr_from_prefix_offset(&IpListOffset {
+                    offset: 0,
+                    ip_version: IpVersion::V6,
+                })
+                .expect("Failed to get address"),
+            addr_v6("::")
         );
     }
 }
