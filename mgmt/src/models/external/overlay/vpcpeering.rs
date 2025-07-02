@@ -185,6 +185,25 @@ impl VpcManifest {
                     &expose_right.as_range,
                     &expose_right.not_as,
                 )?;
+                // If only one of the two exposes has an empty as_range list, then there's not NAT,
+                // meaning the publicly-exposed addresses are the "ips" list.  In this case, we only
+                // need to check that there's no overlap between as_range on one side and ips on the
+                // other.
+                if expose_left.as_range.is_empty() && !expose_right.as_range.is_empty() {
+                    validate_overlapping(
+                        &expose_left.ips,
+                        &expose_left.nots,
+                        &expose_right.as_range,
+                        &expose_right.not_as,
+                    )?;
+                } else if !expose_left.as_range.is_empty() && expose_right.as_range.is_empty() {
+                    validate_overlapping(
+                        &expose_left.as_range,
+                        &expose_left.not_as,
+                        &expose_right.ips,
+                        &expose_right.nots,
+                    )?;
+                }
             }
         }
         Ok(())

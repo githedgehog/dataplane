@@ -231,19 +231,54 @@ pub mod test {
             .ip("1.0.1.0/24".into()) // overlaps with expose1.ips
             .as_range("15.0.0.0/16".into())
             .as_range("16.0.0.0/24".into());
+        let expose4 = VpcExpose::empty()
+            .ip("6.0.0.0/16".into())
+            .ip("12.0.2.0/24".into()); // overlaps with expose1.as_range (no as_range for expose4)
+        let expose5 = VpcExpose::empty()
+            .ip("7.0.0.0/16".into())
+            .ip("3.0.3.0/24".into()); // overlaps with expose1.ips (even without as_range)
 
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(expose1).expect("Should succeed");
         manifest.add_expose(expose2).expect("Should succeed");
         assert_eq!(manifest.validate(), Ok(()));
 
-        // Overlap between a manifest's expoeses prefixes is not allowed
-        manifest.add_expose(expose3).expect("Should succeed");
+        // Overlap between a manifest's exposes prefixes is not allowed
+        let mut invalid_manifest = manifest.clone();
+        invalid_manifest
+            .add_expose(expose3)
+            .expect("Should succeed");
         assert_eq!(
-            manifest.validate(),
+            invalid_manifest.validate(),
             Err(ConfigError::OverlappingPrefixes(
                 "1.0.0.0/16".into(),
                 "1.0.1.0/24".into()
+            ))
+        );
+
+        // Overlap between a manifest's exposes prefixes is not allowed (ips / as_range collision)
+        let mut invalid_manifest = manifest.clone();
+        invalid_manifest
+            .add_expose(expose4)
+            .expect("Should succeed");
+        assert_eq!(
+            invalid_manifest.validate(),
+            Err(ConfigError::OverlappingPrefixes(
+                "12.0.0.0/16".into(),
+                "12.0.2.0/24".into()
+            ))
+        );
+
+        // Overlap between a manifest's exposes prefixes is not allowed (ips / ips collision)
+        let mut invalid_manifest = manifest.clone();
+        invalid_manifest
+            .add_expose(expose5)
+            .expect("Should succeed");
+        assert_eq!(
+            invalid_manifest.validate(),
+            Err(ConfigError::OverlappingPrefixes(
+                "3.0.0.0/16".into(),
+                "3.0.3.0/24".into()
             ))
         );
     }
