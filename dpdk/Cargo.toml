@@ -15,9 +15,9 @@ dpdk-sys = { workspace = true }
 errno = { workspace = true }
 net = { workspace = true }
 
-serde = { workspace = true, optional = true }
-thiserror = { workspace = true }
-tracing = { workspace = true, features = ["attributes"] }
+serde = { workspace = true, optional = true, default-features = false, features = ["derive"] }
+thiserror = { workspace = true, default-features = false, features = ["std"] }
+tracing = { workspace = true, default-features = false, features = ["attributes"] }
 
 [build-dependencies]
 dpdk-sysroot-helper = { workspace = true }

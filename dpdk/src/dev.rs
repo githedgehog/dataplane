@@ -324,13 +324,13 @@ impl From<u64> for RxOffload {
     }
 }
 
-#[non_exhaustive]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Verbose configuration for transmit offloads.
 ///
 /// This struct is mostly for coherent reporting on network cards.
 ///
 /// TODO: fill in remaining offload types from `rte_ethdev.h`
+#[non_exhaustive]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TxOffloadConfig {
     /// GENEVE tunnel segmentation offload.
     pub geneve_tnl_tso: bool,

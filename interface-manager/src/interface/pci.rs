@@ -13,13 +13,14 @@ use serde::{Deserialize, Serialize};
     Builder,
     Clone,
     Debug,
+    Default,
+    Deserialize,
     Eq,
     Hash,
     MultiIndexMap,
     Ord,
     PartialEq,
     PartialOrd,
-    Deserialize,
     Serialize,
 )]
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -30,7 +31,7 @@ pub struct PciNetdevPropertiesSpec {
     #[multi_index(ordered_non_unique)]
     pub port_name: Option<String>, // note: NOT strictly an InterfaceName
     #[multi_index(ordered_non_unique)]
-    pub parent_dev: PciEbdf, // typically a pci address
+    pub parent_dev: Option<PciEbdf>, // typically a pci address
 }
 
 impl AsRequirement<PciNetdevPropertiesSpec> for PciNetdevProperties {
@@ -46,15 +47,15 @@ impl AsRequirement<PciNetdevPropertiesSpec> for PciNetdevProperties {
         PciNetdevPropertiesSpec {
             switch_id: self.switch_id.clone(),
             port_name: self.port_name.clone(),
-            parent_dev: self.parent_dev.clone(),
+            parent_dev: Some(self.parent_dev.clone()),
         }
     }
 }
 
-impl PartialEq<PciNetdevProperties> for PciNetdevPropertiesSpec {
-    fn eq(&self, other: &PciNetdevProperties) -> bool {
-        self.parent_dev == other.parent_dev
-            && self.port_name == other.port_name
-            && self.switch_id == other.switch_id
-    }
-}
+// impl PartialEq<PciNetdevProperties> for PciNetdevPropertiesSpec {
+//     fn eq(&self, other: &PciNetdevProperties) -> bool {
+//         self.parent_dev == Some(other.parent_dev
+//             && self.port_name == other.port_name
+//             && self.switch_id == other.switch_id
+//     }
+// }

@@ -43,8 +43,6 @@ pub struct Eal {
     // TODO: flow
 }
 
-unsafe impl Sync for Eal {}
-
 /// Error type for EAL initialization failures.
 #[derive(Debug, thiserror::Error)]
 pub enum InitError {
@@ -67,7 +65,7 @@ struct ValidatedEalArgs(Vec<CString>);
 
 #[derive(Debug, thiserror::Error)]
 pub enum IllegalEalArguments {
-    #[error("Too many EAL arguments: {0} is too many")]
+    #[error("Too many EAL arguments: {0} received")]
     TooLong(usize),
     #[error("Found non ASCII characters in EAL arguments")]
     NonAscii,
@@ -115,14 +113,6 @@ impl ValidatedEalArgs {
 /// 4. The EAL has already been initialized.
 #[cold]
 pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
-    // NOTE: We need to be careful about freeing memory here!
-    // After _init is called, we swap to another memory allocator (the dpdk allocator).
-    // We can't free memory from the system allocator using the DPDK allocator.
-    // The easiest way around this issue is
-    // to make sure the memory used for initialization is completely freed
-    // before swapping allocators.
-    // The easiest way I know how to do that is by bundling the pre-shift logic into its own scope.
-    // The system memory will be free by the time this scope closes.
     let eal = {
         let mut args = ValidatedEalArgs::new(args).unwrap_or_else(|e| {
             Eal::fatal_error(e.to_string());

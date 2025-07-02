@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use crate::models::internal::InternalConfig;
+use crate::models::internal::interfaces::interface::InterfaceType;
 use crate::models::internal::routing::evpn::VtepConfig;
 use derive_builder::Builder;
 use futures::TryStreamExt;
@@ -10,12 +11,14 @@ use interface_manager::interface::{
     BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpecBuilder,
     MultiIndexInterfaceAssociationSpecMap, MultiIndexInterfaceSpecMap,
     MultiIndexPciNetdevPropertiesSpecMap, MultiIndexVrfPropertiesSpecMap,
-    MultiIndexVtepPropertiesSpecMap, TryFromLinkMessage, VrfPropertiesSpec, VtepPropertiesSpec,
+    MultiIndexVtepPropertiesSpecMap, PciNetdevPropertiesSpec, TryFromLinkMessage,
+    VrfPropertiesSpec, VtepPropertiesSpec,
 };
 use multi_index_map::MultiIndexMap;
 use net::eth::ethtype::EthType;
+use net::eth::mac::SourceMac;
 use net::interface::{
-    AdminState, Interface, InterfaceProperties, MultiIndexInterfaceMap,
+    AdminState, Interface, InterfaceName, InterfaceProperties, MultiIndexInterfaceMap,
     MultiIndexPciNetdevPropertiesMap, MultiIndexVrfPropertiesMap, MultiIndexVtepPropertiesMap,
 };
 use net::ip::UnicastIpAddr;
@@ -26,7 +29,7 @@ use rtnetlink::Handle;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::sync::Arc;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, warn};
 
 #[derive(Clone, Debug)]
 pub struct VpcManager<R> {
@@ -323,10 +326,6 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
         let mut vteps = MultiIndexVtepPropertiesSpecMap::default();
         let mut associations = MultiIndexInterfaceAssociationSpecMap::default();
         for config in internal.vrfs.iter_by_tableid() {
-            if config.default {
-                trace!("skipping default config: {config:?}");
-                continue;
-            }
             let main_vtep = internal.vtep.as_ref().unwrap_or_else(|| unreachable!());
             let vtep_ip = match main_vtep.address {
                 UnicastIpAddr::V4(vtep_ip) => vtep_ip,
@@ -339,12 +338,47 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
             let mut vrf = InterfaceSpecBuilder::default();
             let mut vtep = InterfaceSpecBuilder::default();
             let mut bridge = InterfaceSpecBuilder::default();
+            let mut pci_netdev = InterfaceSpecBuilder::default();
             vrf.controller(None);
             vrf.admin_state(AdminState::Up);
             match config.tableid {
                 None => {
-                    error!("no route_table_id set for config: {config:?}");
-                    panic!("no route_table_id set for config: {config:?}");
+                    for interface in config.interfaces.values() {
+                        match &interface.iftype {
+                            InterfaceType::Ethernet(eth) => {
+                                match eth.mac {
+                                    None => {}
+                                    Some(mac) => match SourceMac::try_from(mac) {
+                                        Ok(mac) => {
+                                            // TODO: we should validate this before we get here
+                                            pci_netdev.mac(Some(mac));
+                                        }
+                                        Err(err) => {
+                                            error!("{err:?}");
+                                        }
+                                    },
+                                }
+                                match InterfaceName::try_from(interface.name.clone()) {
+                                    Ok(interface_name) => {
+                                        pci_netdev.name(interface_name);
+                                    }
+                                    Err(illegal_name) => {
+                                        // TODO: we should validate this before we get here
+                                        error!("{illegal_name}");
+                                        continue;
+                                    }
+                                }
+                                pci_netdev.controller(None);
+                                pci_netdev.properties(InterfacePropertiesSpec::Pci(
+                                    PciNetdevPropertiesSpec::default(),
+                                ));
+                                pci_netdev.admin_state(AdminState::Up);
+                            }
+                            _ => {
+                                /* we only care about pci devices in the default netdev for now */
+                            }
+                        }
+                    }
                 }
                 Some(route_table_id) => {
                     debug!("route_table set for config: {config:?}");

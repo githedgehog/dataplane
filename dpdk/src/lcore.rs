@@ -287,13 +287,13 @@ impl LCoreIndex {
     /// # Note
     ///
     /// This iterator deliberately skips the main LCore.
-    #[tracing::instrument(level = "debug")]
+    #[tracing::instrument(level = "trace")]
     pub fn list() -> impl Iterator<Item = LCoreIndex> {
         LCoreIndexIterator::new()
     }
 
     /// Return the current [`LCoreIndex`] if enabled.  Returns `None` otherwise.
-    #[tracing::instrument(level = "debug")]
+    #[tracing::instrument(level = "trace")]
     pub fn current() -> Option<LCoreIndex> {
         let index = unsafe { dpdk_sys::rte_lcore_index(-1) as u32 };
         if index == u32::MAX {

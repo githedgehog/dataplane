@@ -8,11 +8,9 @@
 use tracing::Level;
 
 #[derive(Clone, Debug, Default)]
-
 pub struct DpdkPortConfig {}
 
 #[derive(Clone, Debug)]
-
 pub struct KernelPacketConfig {}
 
 #[derive(Clone, Debug)]

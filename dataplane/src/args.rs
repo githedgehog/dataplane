@@ -135,10 +135,10 @@ impl CmdArgs {
         }
 
         // To be removed
-        if self.allow.is_empty() {
-            out.push("--allow".to_string());
-            out.push("0000:01:00.0,dv_flow_en=1".to_string());
-        }
+        // if self.allow.is_empty() {
+        //     out.push("--allow".to_string());
+        //     out.push("0000:c1:00.0".to_string());
+        // }
 
         /* --log-level */
         for level in &self.log_level {

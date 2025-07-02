@@ -21,9 +21,9 @@ use crate::models::external::ConfigError;
 use crate::models::external::ConfigResult;
 use crate::models::internal::routing::ospf::OspfInterface;
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// An Ip address configured on a local interface
 /// Fixme(fredi): this type should be inherited from routing crate on new merge
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct InterfaceAddress {
     pub address: IpAddr,
     pub mask_len: u8,
@@ -34,10 +34,12 @@ pub struct IfVlanConfig {
     pub mac: Option<Mac>,
     pub vlan_id: Vid,
 }
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct IfEthConfig {
     pub mac: Option<Mac>,
 }
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct IfVtepConfig {
     pub mac: Option<Mac>,
@@ -54,9 +56,9 @@ pub enum InterfaceType {
     Vtep(IfVtepConfig),
 }
 
-#[derive(Clone, Debug, PartialEq)]
 /// A network interface configuration. An interface can be user-specified or internal. This config object
 /// includes data to create the interface in the kernel and configure it for routing (e.g. FRR)
+#[derive(Clone, Debug, PartialEq)]
 pub struct InterfaceConfig {
     pub name: String, /* key */
     pub iftype: InterfaceType,
@@ -68,8 +70,8 @@ pub struct InterfaceConfig {
     pub ospf: Option<OspfInterface>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
 /// An interface configuration table
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct InterfaceConfigTable(BTreeMap<String, InterfaceConfig>);
 
 impl InterfaceAddress {

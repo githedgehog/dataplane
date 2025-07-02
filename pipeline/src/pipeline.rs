@@ -11,6 +11,7 @@ use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use ordermap::OrderMap;
 use std::any::Any;
+use std::marker::PhantomData;
 
 /// A type that represents an Id for a stage or NF
 pub type StageId<Buf> = Id<Box<dyn DynNetworkFunction<Buf>>>;

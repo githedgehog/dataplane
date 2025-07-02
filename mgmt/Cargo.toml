@@ -16,11 +16,12 @@ bolero = ["dep:bolero", "interface-manager/bolero", "id/bolero", "net/bolero"]
 
 [dependencies]
 # internal
+errno = { workspace = true }
 gateway_config = { workspace = true }
 id = { workspace = true }
 interface-manager = { workspace = true }
-net = { workspace = true }
 nat = { workspace = true }
+net = { workspace = true }
 rekon = { workspace = true }
 routing = { workspace = true }
 stats = { workspace = true }
@@ -45,6 +46,8 @@ tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 tracing-test = { workspace = true }
+libc = { version = "1.0.0-alpha.1" }
+nix = { version = "0.30.1" }
 
 [dev-dependencies]
 # internal
@@ -62,5 +65,6 @@ caps = { workspace = true }
 gateway_config = { workspace = true, features = ["bolero"] }
 ipnet = { workspace = true }
 iptrie = { workspace = true }
+libc = { version = "1.0.0-alpha.1" }
 pretty_assertions = { workspace = true }
 tracing-test = { workspace = true, features = [] }

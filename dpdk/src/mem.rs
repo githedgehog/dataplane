@@ -193,7 +193,7 @@ impl PoolInner {
     ///
     /// You need to be careful when handing the return value to a [`dpdk_sys`] function or data
     /// structure.
-    /// In all cases you need to associate any copy of `*mut rte_mempool` back to the [`Pool`]
+    /// In all cases you need to associate any copy of `*mut rte_mempool` back with the [`Pool`]
     /// object's reference count.
     /// Failing that risks [`Drop`] ([RAII]) tearing down the [`Pool`] while it is still in use.
     ///
@@ -387,7 +387,7 @@ impl Drop for PoolInner {
 ///
 /// # Note
 ///
-/// This is a 0-cost transparent wrapper around an [`dpdk_sys::rte_mbuf`] pointer.
+/// This is a 0-cost transparent wrapper around a [` dpdk_sys::rte_mbuf `] pointer.
 /// It can be "safely" transmuted _to_ an `*mut rte_mbuf` under the assumption that
 /// standard borrowing rules are observed.
 #[repr(transparent)]
@@ -630,7 +630,7 @@ impl RteAllocator {
 }
 
 unsafe impl GlobalAlloc for RteAllocator {
-    #[inline]
+    #[inline(always)]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if SWITCHED.get() {
             unsafe {

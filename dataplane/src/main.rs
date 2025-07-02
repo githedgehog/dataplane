@@ -68,98 +68,114 @@ fn main() {
     /* parse cmd line args */
     let args = CmdArgs::parse();
 
-    let grpc_addr = match args.get_grpc_address() {
-        Ok(addr) => addr,
-        Err(e) => {
-            error!("Invalid gRPC address configuration: {e}");
-            panic!("Management service configuration error. Aborting...");
-        }
-    };
+    info!("Using driver DPDK...");
+    let eal = DriverDpdk::start(
+        [
+            "--in-memory",
+            "--main-lcore",
+            "2",
+            "--lcores",
+            "2,3-4",
+            "--iova-mode=va",
+            "--allow",
+            "0000:02:00.0,dv_flow_en=0",
+            "--vdev=net_tap,iface=mytap0,persist",
+        ],
+        &setup_pipeline,
+    );
 
-    /* router parameters */
-    let Ok(config) = RouterParamsBuilder::default()
-        .cli_sock_path(args.cli_sock_path())
-        .cpi_sock_path(args.cpi_sock_path())
-        .frr_agent_path(args.frr_agent_path())
-        .build()
-    else {
-        error!("Bad router configuration");
-        panic!("Bad router configuration");
-    };
-
-    // start the router and build a pipeline. `start_router` returns `InternalSetup` object
-    // that we deconstruct here to feed different components.
-    // TODO(fredi): reduce the number of args needed to start components by letting
-    // `start_router` already provide those grouped in the proper types.
-    let setup = match start_router(config) {
-        Ok(setup) => setup,
-        Err(e) => {
-            error!("Failed to start router: {e}");
-            panic!("Failed to start router: {e}");
-        }
-    };
-
-    /* pipeline builder */
-    let builder = move || setup.pipeline;
-
-    /* mgmt: router objects */
-    let router = setup.router;
-    let router_ctl = router.get_ctl_tx();
-    let frr_agent_path = router.get_frr_agent_path().to_str().unwrap();
-
-    /* mgmt: nat table */
-    let nattablew = setup.nattable;
-    let vpcmapw = setup.vpcmapw;
-    let statsr = setup.statsr;
-
-    /* start management */
-    if let Err(e) = start_mgmt(grpc_addr, router_ctl, nattablew, frr_agent_path, vpcmapw) {
-        error!("Failed to start gRPC server: {e}");
-        panic!("Failed to start gRPC server: {e}");
-    } else {
-        info!("Management gRPC server started successfully");
-    }
-
-    // Start metrics server early in the process
-    let _metrics_handle = if let Some(metrics_addr_result) = args.metrics_address() {
-        match metrics_addr_result {
-            Ok(metrics_addr) => match start_metrics_server(metrics_addr, statsr.clone()) {
-                Ok(handle) => {
-                    info!("Metrics server started on http://{metrics_addr}/metrics");
-                    Some(handle)
-                }
-                Err(e) => {
-                    error!("Failed to start metrics server: {}", e);
-                    warn!("Continuing without metrics...");
-                    None
-                }
-            },
-            Err(e) => {
-                error!("Invalid metrics address configuration: {}", e);
-                warn!("Continuing without metrics...");
-                None
-            }
-        }
-    } else {
-        info!("Metrics server disabled");
-        None
-    };
-
-    /* start driver with the provided pipeline builder */
-    match args.get_driver_name() {
-        "dpdk" => {
-            info!("Using driver DPDK...");
-            DriverDpdk::start(args.eal_params(), &setup_pipeline);
-        }
-        "kernel" => {
-            info!("Using driver kernel...");
-            DriverKernel::start(args.kernel_params(), builder);
-        }
-        other => {
-            error!("Unknown driver '{other}'. Aborting...");
-            panic!("Packet processing pipeline failed to start. Aborting...");
-        }
-    }
+    // let grpc_addr = match args.get_grpc_address() {
+    //     Ok(addr) => addr,
+    //     Err(e) => {
+    //         error!("Invalid gRPC address configuration: {e}");
+    //         panic!("Management service configuration error. Aborting...");
+    //     }
+    // };
+    //
+    // /* router parameters */
+    // let Ok(config) = RouterParamsBuilder::default()
+    //     .cli_sock_path(args.cli_sock_path())
+    //     .cpi_sock_path(args.cpi_sock_path())
+    //     .frr_agent_path(args.frr_agent_path())
+    //     .build()
+    // else {
+    //     error!("Bad router configuration");
+    //     panic!("Bad router configuration");
+    // };
+    //
+    // // start the router and build a pipeline. `start_router` returns `InternalSetup` object
+    // // that we deconstruct here to feed different components.
+    // // TODO(fredi): reduce the number of args needed to start components by letting
+    // // `start_router` already provide those grouped in the proper types.
+    // let setup = match start_router(config) {
+    //     Ok(setup) => setup,
+    //     Err(e) => {
+    //         error!("Failed to start router: {e}");
+    //         panic!("Failed to start router: {e}");
+    //     }
+    // };
+    //
+    // /* pipeline builder */
+    // let builder = move || setup.pipeline;
+    //
+    // /* mgmt: router objects */
+    // let router = setup.router;
+    // let router_ctl = router.get_ctl_tx();
+    // let frr_agent_path = router.get_frr_agent_path().to_str().unwrap();
+    //
+    // /* mgmt: nat table */
+    // let nattablew = setup.nattable;
+    // let vpcmapw = setup.vpcmapw;
+    // let statsr = setup.statsr;
+    //
+    // /* start management */
+    // if let Err(e) = start_mgmt(grpc_addr, router_ctl, nattablew, frr_agent_path, vpcmapw) {
+    //     error!("Failed to start gRPC server: {e}");
+    //     panic!("Failed to start gRPC server: {e}");
+    // } else {
+    //     info!("Management gRPC server started successfully");
+    // }
+    //
+    // // Start metrics server early in the process
+    // let _metrics_handle = if let Some(metrics_addr_result) = args.metrics_address() {
+    //     match metrics_addr_result {
+    //         Ok(metrics_addr) => match start_metrics_server(metrics_addr, statsr.clone()) {
+    //             Ok(handle) => {
+    //                 info!("Metrics server started on http://{metrics_addr}/metrics");
+    //                 Some(handle)
+    //             }
+    //             Err(e) => {
+    //                 error!("Failed to start metrics server: {}", e);
+    //                 warn!("Continuing without metrics...");
+    //                 None
+    //             }
+    //         },
+    //         Err(e) => {
+    //             error!("Invalid metrics address configuration: {}", e);
+    //             warn!("Continuing without metrics...");
+    //             None
+    //         }
+    //     }
+    // } else {
+    //     info!("Metrics server disabled");
+    //     None
+    // };
+    //
+    // /* start driver with the provided pipeline builder */
+    // match args.get_driver_name() {
+    //     "dpdk" => {
+    //         info!("Using driver DPDK...");
+    //         DriverDpdk::start(args.eal_params(), &setup_pipeline);
+    //     }
+    //     "kernel" => {
+    //         info!("Using driver kernel...");
+    //         DriverKernel::start(args.kernel_params(), builder);
+    //     }
+    //     other => {
+    //         error!("Unknown driver '{other}'. Aborting...");
+    //         panic!("Packet processing pipeline failed to start. Aborting...");
+    //     }
+    // }
 
     stop_rx.recv().expect("failed to receive stop signal");
     info!("Shutting down dataplane");

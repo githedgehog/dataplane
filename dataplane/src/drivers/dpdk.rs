@@ -5,7 +5,7 @@
 
 #![allow(unused)]
 
-use dpdk::dev::{Dev, TxOffloadConfig};
+use dpdk::dev::{Dev, DevIndex, RxOffload, TxOffloadConfig};
 use dpdk::eal::Eal;
 use dpdk::lcore::{LCoreId, WorkerThread};
 use dpdk::mem::{Mbuf, Pool, PoolConfig, PoolParams, RteAllocator};
@@ -20,37 +20,26 @@ use net::packet::Packet;
 use pipeline::sample_nfs::Passthrough;
 use pipeline::{self, DynPipeline, NetworkFunction};
 
-/*
-#[global_allocator]
-static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();
- */
-
+#[cold]
 fn init_eal(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
-    let rte = eal::init(args);
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .with_target(true)
-        .with_thread_ids(true)
-        .with_line_number(true)
-        .with_thread_names(true)
-        .init();
-    rte
+    eal::init(args)
 }
 
+#[cold]
 fn init_devices(eal: &Eal) -> Vec<Dev> {
     eal.dev
         .iter()
         .map(|dev| {
             let config = dev::DevConfig {
-                num_rx_queues: 2,
-                num_tx_queues: 2,
+                num_rx_queues: 4, // TODO: change to number of lcores
+                num_tx_queues: 4,
                 num_hairpin_queues: 0,
                 rx_offloads: None,
                 tx_offloads: Some(TxOffloadConfig::default()),
             };
             let mut dev = match config.apply(dev) {
                 Ok(stopped_dev) => {
-                    warn!("Device configured {stopped_dev:?}");
+                    info!("Device configured {stopped_dev:#?}");
                     stopped_dev
                 }
                 Err(err) => {
@@ -91,39 +80,45 @@ fn init_devices(eal: &Eal) -> Vec<Dev> {
         .collect()
 }
 
+#[cold]
 fn start_rte_workers(devices: &[Dev], setup_pipeline: &(impl Sync + Fn() -> DynPipeline<Mbuf>)) {
     LCoreId::iter().enumerate().for_each(|(i, lcore_id)| {
         info!("Starting RTE Worker on {lcore_id:?}");
         WorkerThread::launch(lcore_id, move || {
             let mut pipeline = setup_pipeline();
-            let rx_queue = devices[0]
-                .rx_queue(RxQueueIndex(u16::try_from(i).unwrap()))
+            let rx_queues = devices
+                .iter()
+                .map(|dev| dev.rx_queue(RxQueueIndex(u16::try_from(i).unwrap())))
+                .collect::<Option<Vec<_>>>()
                 .unwrap();
-            let tx_queue = devices[0]
-                .tx_queue(TxQueueIndex(u16::try_from(i).unwrap()))
+            let tx_queues = devices
+                .iter()
+                .map(|dev| dev.tx_queue(TxQueueIndex(u16::try_from(i).unwrap())))
+                .collect::<Option<Vec<_>>>()
                 .unwrap();
             loop {
-                let mbufs = rx_queue.receive();
-                let pkts = mbufs.filter_map(|mbuf| match Packet::new(mbuf) {
-                    Ok(pkt) => {
-                        debug!("packet: {pkt:?}");
-                        Some(pkt)
-                    }
-                    Err(e) => {
-                        trace!("Failed to parse packet: {e:?}");
-                        None
-                    }
-                });
-
-                let pkts_out = pipeline.process(pkts);
-                let buffers = pkts_out.filter_map(|pkt| match pkt.serialize() {
-                    Ok(buf) => Some(buf),
-                    Err(e) => {
-                        error!("{e:?}");
-                        None
-                    }
-                });
-                tx_queue.transmit(buffers);
+                for (i, rx_queue) in rx_queues.iter().enumerate() {
+                    let mbufs = rx_queue.receive();
+                    let pkts = mbufs.filter_map(|mbuf| match Packet::new(mbuf) {
+                        Ok(pkt) => {
+                            debug!("packet: {pkt:?}");
+                            Some(pkt)
+                        }
+                        Err(e) => {
+                            trace!("Failed to parse packet: {e:?}");
+                            None
+                        }
+                    });
+                    let pkts_out = pipeline.process(pkts);
+                    let buffers = pkts_out.filter_map(|pkt| match pkt.serialize() {
+                        Ok(buf) => Some(buf),
+                        Err(e) => {
+                            error!("{e:?}");
+                            None
+                        }
+                    });
+                    tx_queues[i].transmit(buffers);
+                }
             }
         });
     });
@@ -132,12 +127,14 @@ fn start_rte_workers(devices: &[Dev], setup_pipeline: &(impl Sync + Fn() -> DynP
 pub struct DriverDpdk;
 
 impl DriverDpdk {
+    #[cold]
     pub fn start(
         args: impl IntoIterator<Item = impl AsRef<str>>,
         setup_pipeline: &(impl Sync + Fn() -> DynPipeline<Mbuf>),
-    ) {
+    ) -> (Vec<Dev>, Eal) {
         let eal = init_eal(args);
         let devices = init_devices(&eal);
         start_rte_workers(&devices, setup_pipeline);
+        (devices, eal)
     }
 }
