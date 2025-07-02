@@ -88,12 +88,12 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Nat
         })?;
 
         // Update peering table to make relevant prefixes point to the new peering table, for each
-        // private prefix
-        let remote_public_prefixes = match expose.as_range.len() {
-            // If as_range is empty, there's no NAT for this expose, use public IPs
-            0 => &expose.ips,
-            _ => &expose.as_range,
-        };
+        // private prefix.
+        //
+        // Note that the public IPs are not always from the as_range list: if this list is empty,
+        // then there's no NAT required for the expose, meaning that the public IPs are those from
+        // the "ips" list.
+        let remote_public_prefixes = expose.public_ips();
         remote_public_prefixes.iter().try_for_each(|prefix| {
             table
                 .src_nat_peers

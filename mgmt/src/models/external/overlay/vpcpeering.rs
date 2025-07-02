@@ -40,6 +40,27 @@ impl VpcExpose {
     pub fn has_host_prefixes(&self) -> bool {
         self.ips.iter().filter(|p| p.is_host()).count() > 0
     }
+    // If the as_range list is empty, then there's no NAT required for the expose, meaning that the
+    // public IPs are those from the "ips" list. This method returns the current list of public IPs
+    // for the VpcExpose.
+    pub fn public_ips(&self) -> &BTreeSet<Prefix> {
+        if self.as_range.is_empty() {
+            &self.ips
+        } else {
+            &self.as_range
+        }
+    }
+    // Same as public_ips, but returns the list of excluded prefixes
+    pub fn public_excludes(&self) -> &BTreeSet<Prefix> {
+        if self.as_range.is_empty() {
+            &self.nots
+        } else {
+            &self.not_as
+        }
+    }
+    pub fn requires_nat(&self) -> bool {
+        !self.as_range.is_empty()
+    }
 
     /// Validate the [`VpcExpose`]:
     ///
@@ -173,35 +194,26 @@ impl VpcManifest {
         for (index, expose_left) in self.exposes.iter().enumerate() {
             // Loop over the remaining exposes in the list
             for expose_right in self.exposes.iter().skip(index + 1) {
+                // Always check for overlap for the lists of private IPs - these are not allowed to
+                // overlap inside of a given expose.
                 validate_overlapping(
                     &expose_left.ips,
                     &expose_left.nots,
                     &expose_right.ips,
                     &expose_right.nots,
                 )?;
-                validate_overlapping(
-                    &expose_left.as_range,
-                    &expose_left.not_as,
-                    &expose_right.as_range,
-                    &expose_right.not_as,
-                )?;
-                // If only one of the two exposes has an empty as_range list, then there's not NAT,
-                // meaning the publicly-exposed addresses are the "ips" list.  In this case, we only
-                // need to check that there's no overlap between as_range on one side and ips on the
-                // other.
-                if expose_left.as_range.is_empty() && !expose_right.as_range.is_empty() {
+                // If any of the expose requires NAT, then check for overlap for the lists of
+                // public prefixes. Depending on the case, this can be:
+                // - expose_left.as_range / expose_right.as_range
+                // - expose_left.ips      / expose_right.as_range
+                // - expose_left.as_range / expose_right.ips
+                // (along with the respective exclusion prefixes).
+                if expose_left.requires_nat() || expose_right.requires_nat() {
                     validate_overlapping(
-                        &expose_left.ips,
-                        &expose_left.nots,
-                        &expose_right.as_range,
-                        &expose_right.not_as,
-                    )?;
-                } else if !expose_left.as_range.is_empty() && expose_right.as_range.is_empty() {
-                    validate_overlapping(
-                        &expose_left.as_range,
-                        &expose_left.not_as,
-                        &expose_right.ips,
-                        &expose_right.nots,
+                        expose_left.public_ips(),
+                        expose_left.public_excludes(),
+                        expose_right.public_ips(),
+                        expose_right.public_excludes(),
                     )?;
                 }
             }
