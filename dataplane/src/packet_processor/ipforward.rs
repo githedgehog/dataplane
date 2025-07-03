@@ -141,7 +141,10 @@ impl IpForwarder {
             None => {
                 /* send to kernel, among other options */
                 debug!("Packet should be delivered to kernel...");
-                packet.get_meta_mut().oif = Some(packet.get_meta().iif); // FIXME: revisit this
+                /*
+                We can't re-inject packet on ingress, so let's disable this to avoid churn
+                packet.get_meta_mut().oif = Some(packet.get_meta().iif);
+                 */
                 packet.done(DoneReason::Delivered);
             }
         }
