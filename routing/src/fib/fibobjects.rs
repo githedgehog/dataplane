@@ -3,6 +3,8 @@
 
 //! Module that contains definitions and methods for fib objects
 
+use net::vxlan::Vni;
+
 use crate::interfaces::interface::IfIndex;
 use crate::rib::encapsulation::Encapsulation;
 use std::net::IpAddr;
@@ -177,6 +179,28 @@ impl FibEntry {
     }
     pub fn is_iplocal(&self) -> bool {
         self.instructions.len() == 1 && matches!(self.instructions[0], PktInstruction::Local(_))
+    }
+    pub fn is_vxlan(&self) -> Option<Vni> {
+        for inst in &self.instructions {
+            match inst {
+                PktInstruction::Encap(Encapsulation::Vxlan(vxlan)) => {
+                    return Some(vxlan.vni);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    pub fn is_vxlan_with_vni(&self, vni: Vni) -> bool {
+        for inst in &self.instructions {
+            match inst {
+                PktInstruction::Encap(Encapsulation::Vxlan(vxlan)) => {
+                    return vxlan.vni == vni;
+                }
+                _ => {}
+            }
+        }
+        false
     }
 }
 
