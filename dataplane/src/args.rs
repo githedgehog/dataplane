@@ -73,6 +73,19 @@ pub(crate) struct CmdArgs {
         default_value = DEFAULT_FRR_AGENT_PATH
     )]
     frr_agent_path: String,
+
+    /// Prometheus metrics server port
+    #[arg(
+        long,
+        value_name = "PORT",
+        default_value_t = 9090,
+        help = "Port for Prometheus metrics HTTP endpoint"
+    )]
+    metrics_port: u16,
+
+    /// Disable Prometheus metrics server
+    #[arg(long, help = "Disable the Prometheus metrics HTTP endpoint")]
+    disable_metrics: bool,
 }
 
 impl CmdArgs {
@@ -167,10 +180,26 @@ impl CmdArgs {
     pub fn cpi_sock_path(&self) -> String {
         self.cpi_sock_path.clone()
     }
+
     pub fn cli_sock_path(&self) -> String {
         self.cli_sock_path.clone()
     }
+
     pub fn frr_agent_path(&self) -> String {
         self.frr_agent_path.clone()
+    }
+
+    /// Get the metrics port, returns None if metrics are disabled
+    pub fn metrics_port(&self) -> Option<u16> {
+        if self.disable_metrics {
+            None
+        } else {
+            Some(self.metrics_port)
+        }
+    }
+
+    /// Check if metrics are enabled
+    pub fn metrics_enabled(&self) -> bool {
+        !self.disable_metrics
     }
 }
