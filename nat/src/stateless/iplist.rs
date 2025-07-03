@@ -3,7 +3,7 @@
 
 //! Static NAT address mapping
 
-use routing::prefix::Prefix;
+use routing::prefix::{Prefix, PrefixSize};
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -19,12 +19,16 @@ pub enum IpListError {
     OffsetNotInList(u128, IpList),
     #[error("IP version mismatch between address {0} and prefix {1}")]
     IpVersionMismatch(IpAddr, Prefix),
+    #[error("Prefix {0} is malformed")]
+    MalformedPrefix(Prefix),
+    #[error("Offset {0} too big for list {1:?}")]
+    MalformedIpList(u128, IpList),
 }
 
 #[derive(Debug, Clone)]
 struct IpListPrefix {
     prefix: Prefix,
-    size: u128,
+    size: PrefixSize,
 }
 
 impl IpListPrefix {
@@ -77,7 +81,9 @@ impl IpList {
 
     fn get_addr_within_block(prefix: &Prefix, offset: u128) -> Result<IpAddr, IpListError> {
         let start_addr = prefix.as_address();
-        if offset >= prefix.size() {
+        if let PrefixSize::U128(prefix_size) = prefix.size()
+            && offset >= prefix_size
+        {
             return Err(IpListError::OffsetTooBig(offset, *prefix));
         }
         match start_addr {
@@ -105,12 +111,30 @@ impl IpList {
         match list_offset.ip_version {
             IpVersion::V4 => {
                 for block in &self.blocks_v4 {
-                    // If our address is in this block, go find it an return it
-                    if block_offset + block.size > offset {
-                        return Self::get_addr_within_block(&block.prefix, offset - block_offset);
+                    match block.size {
+                        PrefixSize::U128(block_size) => {
+                            // Make sure we don't overflow the IP space.
+                            // The order of the terms for the addition and subtraction on the left
+                            // side of the comparison is important, to avoid overflows.
+                            if block_size > 0
+                                && u128::from(u32::MAX) + 1 - block_size < block_offset
+                            {
+                                return Err(IpListError::MalformedIpList(offset, self.clone()));
+                            }
+                            // If our address is in this block, go find it an return it
+                            if block_offset + block_size > offset {
+                                return Self::get_addr_within_block(
+                                    &block.prefix,
+                                    offset - block_offset,
+                                );
+                            }
+                            // Otherwise, increment the offset and keep looking
+                            block_offset += block_size;
+                        }
+                        _ => {
+                            return Err(IpListError::MalformedPrefix(block.prefix));
+                        }
                     }
-                    // Otherwise, keep incrementing the offset and keep looking
-                    block_offset += block.size;
                 }
                 Err(IpListError::OffsetNotInList(
                     list_offset.offset,
@@ -119,10 +143,34 @@ impl IpList {
             }
             IpVersion::V6 => {
                 for block in &self.blocks_v6 {
-                    if block_offset + block.size > offset {
-                        return Self::get_addr_within_block(&block.prefix, offset - block_offset);
+                    match block.size {
+                        PrefixSize::U128(block_size) => {
+                            // Make sure we don't overflow the IP space.
+                            // The order of the terms in the addition and subtraction on the left
+                            // side of the comparison is important, to avoid overflows.
+                            if block_size > 0 && u128::MAX - block_size + 1 < block_offset {
+                                return Err(IpListError::MalformedIpList(offset, self.clone()));
+                            }
+                            // If our address is in this block, go find it an return it
+                            if block_offset + block_size > offset {
+                                return Self::get_addr_within_block(
+                                    &block.prefix,
+                                    offset - block_offset,
+                                );
+                            }
+                            // Otherwise, increment the offset and keep looking
+                            block_offset += block_size;
+                        }
+                        PrefixSize::Ipv6MaxAddrs => {
+                            if self.blocks_v6.len() > 1 {
+                                return Err(IpListError::MalformedIpList(offset, self.clone()));
+                            }
+                            return Self::get_addr_within_block(&block.prefix, offset);
+                        }
+                        PrefixSize::Overflow => {
+                            return Err(IpListError::MalformedPrefix(block.prefix));
+                        }
                     }
-                    block_offset += block.size;
                 }
                 Err(IpListError::OffsetNotInList(
                     list_offset.offset,
@@ -145,6 +193,7 @@ impl IpListSubset {
     }
 
     fn get_offset_within_block(&self, addr: &IpAddr) -> Result<u128, IpListError> {
+        let prefix_size = self.prefix.size();
         match (addr, self.prefix.as_address()) {
             (IpAddr::V4(ip), IpAddr::V4(start)) => {
                 let ip_bits = u128::from(ip.to_bits());
@@ -153,7 +202,7 @@ impl IpListSubset {
                 if ip_bits < start_bits {
                     return Err(IpListError::IpNotInPrefix(*addr, self.prefix));
                 }
-                if ip_bits >= start_bits + self.prefix.size() {
+                if ip_bits - start_bits >= prefix_size {
                     return Err(IpListError::IpNotInPrefix(*addr, self.prefix));
                 }
                 // We want the offset of the address within the block: the address converted to
@@ -168,7 +217,7 @@ impl IpListSubset {
                 if ip_bits < start_bits {
                     return Err(IpListError::IpNotInPrefix(*addr, self.prefix));
                 }
-                if ip_bits >= start_bits + self.prefix.size() {
+                if ip_bits - start_bits >= prefix_size {
                     return Err(IpListError::IpNotInPrefix(*addr, self.prefix));
                 }
                 Ok(ip_bits - start_bits)
@@ -237,6 +286,20 @@ mod tests {
 
         ipls.addr_offset_in_prefix(&addr_v4("1.2.0.0"))
             .expect_err("Address not in prefix");
+
+        let ipls = IpListSubset::new(1, "0.0.0.0/1".into());
+
+        let offset = ipls
+            .addr_offset_in_prefix(&addr_v4("0.0.0.0"))
+            .expect("Failed to get offset");
+        assert_eq!(offset.offset, 1);
+
+        let ipls = IpListSubset::new(0, "0.0.0.0/0".into());
+
+        let offset = ipls
+            .addr_offset_in_prefix(&addr_v4("0.0.0.0"))
+            .expect("Failed to get offset");
+        assert_eq!(offset.offset, 0);
     }
 
     #[test]
@@ -326,5 +389,17 @@ mod tests {
                 ip_version: IpVersion::V4,
             })
             .expect_err("Offset not in list");
+
+        let target_prefixes = BTreeSet::from(["0.0.0.0/0".into()]);
+        let iplist = IpList::new(&target_prefixes);
+        assert_eq!(
+            iplist
+                .addr_from_prefix_offset(&IpListOffset {
+                    offset: 0,
+                    ip_version: IpVersion::V4,
+                })
+                .expect("Failed to get address"),
+            addr_v4("0.0.0.0")
+        );
     }
 }

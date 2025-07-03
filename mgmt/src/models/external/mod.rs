@@ -11,7 +11,7 @@ use crate::models::external::overlay::vpc::VpcId;
 use crate::models::external::overlay::vpcpeering::VpcExpose;
 
 use net::eth::mac::Mac;
-use routing::prefix::Prefix;
+use routing::prefix::{Prefix, PrefixSize};
 use thiserror::Error;
 
 /// The reasons why we may reject a configuration
@@ -68,8 +68,8 @@ pub enum ConfigError {
     #[error("Inconsistent IP version in VpcExpose: {0}")]
     InconsistentIpVersion(VpcExpose),
     // NAT-specific
-    #[error("Mismatched prefixes sizes for static NAT: {0} and {1}")]
-    MismatchedPrefixSizes(u128, u128),
+    #[error("Mismatched prefixes sizes for static NAT: {0:?} and {1:?}")]
+    MismatchedPrefixSizes(PrefixSize, PrefixSize),
 }
 
 /// Result-like type for configurations

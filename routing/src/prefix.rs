@@ -7,9 +7,12 @@ use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use iptrie::{IpPrefix, IpPrefixCovering, Ipv4Prefix, Ipv6Prefix};
 use serde::ser::SerializeStructVariant;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::fmt::{Debug, Display};
+use std::iter::Sum;
 pub use std::net::IpAddr;
 pub use std::net::{Ipv4Addr, Ipv6Addr};
+use std::ops::{Add, Sub};
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -110,10 +113,11 @@ impl Prefix {
 
     /// Get number of covered IP addresses
     #[must_use]
-    pub fn size(&self) -> u128 {
+    pub fn size(&self) -> PrefixSize {
         match *self {
-            Prefix::IPV4(p) => 2u128.pow(32 - u32::from(p.len())),
-            Prefix::IPV6(p) => 2u128.pow(128 - u32::from(p.len())),
+            Prefix::IPV4(p) => PrefixSize::U128(2u128.pow(32 - u32::from(p.len()))),
+            Prefix::IPV6(p) if p.len() == 0 => PrefixSize::Ipv6MaxAddrs,
+            Prefix::IPV6(p) => PrefixSize::U128(2u128.pow(128 - u32::from(p.len()))),
         }
     }
 
@@ -350,6 +354,210 @@ impl<'de> Deserialize<'de> for Prefix {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Ord, PartialOrd)]
+pub enum PrefixSize {
+    U128(u128),
+    Ipv6MaxAddrs,
+    Overflow,
+}
+
+impl Add<u128> for PrefixSize {
+    type Output = Self;
+
+    fn add(self, int: u128) -> Self {
+        match (self, int) {
+            // Returning early in the case the integer is 0 ensures that we always have int >= 1 in
+            // the next cases. We rely on it to avoid overflow.
+            (_, 0) => self,
+            (PrefixSize::U128(size), _) => {
+                // We want to compare (size + int) to (u128::MAX + 1), but to avoid overflow we swap
+                // the members. We exited early if int was 0, so we have int >= 1 and can safely
+                // subtract 1.
+                if int - 1 == u128::MAX - size {
+                    PrefixSize::Ipv6MaxAddrs
+                } else if int - 1 > u128::MAX - size {
+                    PrefixSize::Overflow
+                } else {
+                    PrefixSize::U128(size + int)
+                }
+            }
+            (PrefixSize::Ipv6MaxAddrs, _) => PrefixSize::Overflow,
+            (PrefixSize::Overflow, _) => PrefixSize::Overflow,
+        }
+    }
+}
+
+impl Add<PrefixSize> for PrefixSize {
+    type Output = Self;
+
+    fn add(self, other: PrefixSize) -> Self {
+        match other {
+            PrefixSize::U128(int) => self + int,
+            _ => PrefixSize::Overflow,
+        }
+    }
+}
+
+impl Add<&PrefixSize> for PrefixSize {
+    type Output = Self;
+
+    fn add(self, other: &PrefixSize) -> Self {
+        self + *other
+    }
+}
+
+impl Add<PrefixSize> for &PrefixSize {
+    type Output = PrefixSize;
+
+    fn add(self, other: PrefixSize) -> PrefixSize {
+        *self + other
+    }
+}
+
+impl Add<&PrefixSize> for &PrefixSize {
+    type Output = PrefixSize;
+
+    fn add(self, other: &PrefixSize) -> PrefixSize {
+        *self + *other
+    }
+}
+
+impl Sum<PrefixSize> for PrefixSize {
+    fn sum<I: Iterator<Item = PrefixSize>>(iter: I) -> Self {
+        iter.fold(PrefixSize::U128(0), |a, b| a + b)
+    }
+}
+
+impl<'a> Sum<&'a PrefixSize> for PrefixSize {
+    fn sum<I: Iterator<Item = &'a PrefixSize>>(iter: I) -> Self {
+        iter.fold(PrefixSize::U128(0), |a, b| a + b)
+    }
+}
+
+impl Sub<u128> for PrefixSize {
+    type Output = Self;
+
+    fn sub(self, int: u128) -> Self {
+        self - PrefixSize::U128(int)
+    }
+}
+
+impl Sub<u128> for &PrefixSize {
+    type Output = PrefixSize;
+
+    fn sub(self, int: u128) -> PrefixSize {
+        *self - int
+    }
+}
+
+impl Sub<PrefixSize> for PrefixSize {
+    type Output = Self;
+
+    fn sub(self, other: PrefixSize) -> Self {
+        match (self, other) {
+            (_, PrefixSize::U128(0)) => self,
+            (PrefixSize::U128(size_self), PrefixSize::U128(size_other)) => {
+                // May panic, just like a regular subtraction
+                PrefixSize::U128(size_self - size_other)
+            }
+            (PrefixSize::Ipv6MaxAddrs, PrefixSize::U128(size_other)) => {
+                PrefixSize::U128(u128::MAX - size_other + 1)
+            }
+            (PrefixSize::Ipv6MaxAddrs, PrefixSize::Ipv6MaxAddrs) => PrefixSize::U128(0),
+            (PrefixSize::U128(size_self), PrefixSize::Ipv6MaxAddrs) => {
+                // WILL panic, just like a regular subtraction
+                PrefixSize::U128(size_self - u128::MAX - 1)
+            }
+            _ => PrefixSize::Overflow,
+        }
+    }
+}
+
+impl Sub<&PrefixSize> for PrefixSize {
+    type Output = Self;
+
+    fn sub(self, other: &PrefixSize) -> Self {
+        self - *other
+    }
+}
+
+impl Sub<PrefixSize> for &PrefixSize {
+    type Output = PrefixSize;
+
+    fn sub(self, other: PrefixSize) -> PrefixSize {
+        *self - other
+    }
+}
+
+impl Sub<&PrefixSize> for &PrefixSize {
+    type Output = PrefixSize;
+
+    fn sub(self, other: &PrefixSize) -> PrefixSize {
+        *self - *other
+    }
+}
+
+impl PartialEq<u128> for PrefixSize {
+    fn eq(&self, other: &u128) -> bool {
+        match self {
+            PrefixSize::U128(size) => size == other,
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq<PrefixSize> for u128 {
+    fn eq(&self, other: &PrefixSize) -> bool {
+        match other {
+            PrefixSize::U128(size) => size == self,
+            _ => false,
+        }
+    }
+}
+
+impl PartialOrd<u128> for PrefixSize {
+    fn partial_cmp(&self, other: &u128) -> Option<Ordering> {
+        match self {
+            PrefixSize::U128(size) => size.partial_cmp(other),
+            _ => Some(Ordering::Greater),
+        }
+    }
+}
+
+impl PartialOrd<PrefixSize> for u128 {
+    fn partial_cmp(&self, other: &PrefixSize) -> Option<Ordering> {
+        match other {
+            PrefixSize::U128(size) => self.partial_cmp(size),
+            _ => Some(Ordering::Less),
+        }
+    }
+}
+
+impl From<u128> for PrefixSize {
+    fn from(value: u128) -> Self {
+        PrefixSize::U128(value)
+    }
+}
+
+impl TryFrom<PrefixSize> for u128 {
+    type Error = PrefixError;
+
+    fn try_from(value: PrefixSize) -> Result<Self, Self::Error> {
+        match value {
+            PrefixSize::U128(size) => Ok(size),
+            _ => Err(PrefixError::Invalid("Invalid prefix size".to_string())),
+        }
+    }
+}
+
+impl TryFrom<&PrefixSize> for u128 {
+    type Error = PrefixError;
+
+    fn try_from(value: &PrefixSize) -> Result<Self, Self::Error> {
+        u128::try_from(*value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::prefix::*;
@@ -371,7 +579,7 @@ mod tests {
         assert!(prefix.covers_addr(&"1.2.3.10".parse::<IpAddr>().expect("Bad address")));
         assert!(!prefix.covers_addr(&"1.2.9.10".parse::<IpAddr>().expect("Bad address")));
 
-        assert_eq!(prefix.size(), 2u128.pow(32 - 24));
+        assert_eq!(prefix.size(), PrefixSize::U128(2u128.pow(32 - 24)));
 
         // default - root
         let address: Ipv4Addr = "0.0.0.0".parse().unwrap();
@@ -395,7 +603,7 @@ mod tests {
         assert!(prefix.covers_addr(&"2001:a:b:c::10".parse::<IpAddr>().expect("Bad address")));
         assert!(!prefix.covers_addr(&"2001:a:b:9::10".parse::<IpAddr>().expect("Bad address")));
 
-        assert_eq!(prefix.size(), 2u128.pow(128 - 64));
+        assert_eq!(prefix.size(), PrefixSize::U128(2u128.pow(128 - 64)));
 
         // default - root
         let address: Ipv6Addr = "::".parse().unwrap();
@@ -476,5 +684,42 @@ mod tests {
         assert_eq!(yaml, "!IPV6\naddress: 'f00:baa::'\nlength: 64\n");
         let deserialized_yaml: Prefix = serde_yml::from_str(&yaml).unwrap();
         assert_eq!(prefix, deserialized_yaml);
+    }
+
+    #[test]
+    fn test_prefix_size() {
+        let prefix = Prefix::expect_from(("1.2.3.0", 24));
+        let prefix_size1 = prefix.size();
+        assert_eq!(prefix_size1, PrefixSize::U128(2u128.pow(32 - 24)));
+
+        let prefix_size0 = PrefixSize::U128(0);
+        let prefix_size_u128max = PrefixSize::U128(u128::MAX);
+        let prefix_size_max = PrefixSize::Ipv6MaxAddrs;
+        let prefix_size_overflow = PrefixSize::Overflow;
+
+        assert!(prefix_size0 < prefix_size1);
+        assert!(prefix_size1 < prefix_size_u128max);
+        assert!(prefix_size1 < prefix_size_max);
+        assert!(prefix_size1 < prefix_size_overflow);
+        assert!(prefix_size_u128max < prefix_size_max);
+        assert!(prefix_size_max < prefix_size_overflow);
+
+        assert_eq!(prefix_size0 + prefix_size1, PrefixSize::U128(2u128.pow(8)));
+        assert_eq!(prefix_size_u128max + 1, prefix_size_max);
+        assert_eq!(prefix_size_max + 1, prefix_size_overflow);
+        assert_eq!(prefix_size_overflow + prefix_size1, prefix_size_overflow);
+
+        assert_eq!(
+            prefix_size_max - prefix_size1,
+            PrefixSize::U128(u128::MAX - 2u128.pow(8) + 1)
+        );
+        assert_eq!(prefix_size_max - prefix_size_u128max, PrefixSize::U128(1));
+        assert_eq!(prefix_size_max - prefix_size_max, PrefixSize::U128(0));
+
+        assert!(prefix_size1 > 2u128.pow(8) - 1);
+        assert!(prefix_size1 == 2u128.pow(8));
+        assert!(prefix_size1 < 2u128.pow(8) + 1);
+
+        assert_eq!(u128::try_from(prefix_size1).unwrap(), 2u128.pow(8));
     }
 }
