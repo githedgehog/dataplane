@@ -4,6 +4,7 @@
 //! Dataplane configuration model: vpc peering
 
 use routing::prefix::Prefix;
+use routing::prefix::PrefixSize;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::ops::Bound::{Excluded, Unbounded};
@@ -121,7 +122,7 @@ impl VpcExpose {
             }
         }
 
-        fn prefixes_size(prefixes: &BTreeSet<Prefix>) -> u128 {
+        fn prefixes_size(prefixes: &BTreeSet<Prefix>) -> PrefixSize {
             prefixes.iter().map(|p| p.size()).sum()
         }
 
@@ -427,7 +428,8 @@ fn validate_overlapping(
         let union_size = union_excludes
             .iter()
             .map(|exclude| exclude.size())
-            .sum::<u128>();
+            .sum::<PrefixSize>();
+
         if union_size < intersection_prefix.size() {
             // Some addresses at the intersection of both prefixes are not covered by the union of
             // all exclusion prefixes, in other words, they are available from both prefixes. This
