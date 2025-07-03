@@ -24,8 +24,8 @@ impl NatTables {
     }
 
     /// Adds a new table for the given `Vni`
-    pub fn add_table(&mut self, vni: Vni, table: PerVniTable) {
-        self.0.insert(vni.as_u32(), table);
+    pub fn add_table(&mut self, table: PerVniTable) {
+        self.0.insert(table.vni.into(), table);
     }
 
     /// Provide a reference to a `PerVniTable` for the given `Vni` if it exists
@@ -45,6 +45,7 @@ impl Default for NatTables {
 /// given source VNI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PerVniTable {
+    pub vni: Vni,
     pub dst_nat: NatPrefixRuleTable,
     pub src_nat_peers: NatPeerRuleTable,
     pub src_nat_prefixes: Vec<NatPrefixRuleTable>,
@@ -53,8 +54,9 @@ pub struct PerVniTable {
 impl PerVniTable {
     /// Creates a new empty [`PerVniTable`]
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(vni: Vni) -> Self {
         Self {
+            vni,
             dst_nat: NatPrefixRuleTable::new(),
             src_nat_peers: NatPeerRuleTable::new(),
             src_nat_prefixes: Vec::new(),
@@ -107,12 +109,6 @@ impl PerVniTable {
         let src_nat_ranges = self.lookup_src_prefixes(&src, &dst);
         let dst_nat_ranges = self.lookup_dst_prefixes(&dst);
         (src_nat_ranges, dst_nat_ranges)
-    }
-}
-
-impl Default for PerVniTable {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -220,6 +216,7 @@ impl Default for NatPeerRuleTable {
 /// perform the address mapping for static NAT.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrieValue {
+    vni: Option<Vni>,
     orig: BTreeSet<Prefix>,
     target: BTreeSet<Prefix>,
 }
@@ -227,8 +224,17 @@ pub struct TrieValue {
 impl TrieValue {
     /// Creates a new [`TrieValue`]
     #[must_use]
-    pub fn new(orig: BTreeSet<Prefix>, target: BTreeSet<Prefix>) -> Self {
-        Self { orig, target }
+    pub fn new(vni: Vni, orig: BTreeSet<Prefix>, target: BTreeSet<Prefix>) -> Self {
+        Self {
+            vni: Some(vni),
+            orig,
+            target,
+        }
+    }
+    /// Get the `Vni` associated to this [`TrieValue`]
+    #[must_use]
+    pub fn get_vni(&self) -> Option<Vni> {
+        self.vni
     }
 
     /// Accessor for original prefixes
