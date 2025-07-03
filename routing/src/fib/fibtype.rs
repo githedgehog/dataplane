@@ -268,7 +268,25 @@ impl Fib {
         }
     }
 
-    /// Same as `lpm_entry` but reporting prefix
+    #[inline]
+    fn get_group_paths(group: &FibGroup, vni: Option<Vni>) -> Vec<&FibEntry> {
+        let mut out: Vec<&FibEntry> = Vec::with_capacity(group.entries().len());
+        for entry in group.entries() {
+            match vni {
+                Some(vni) => {
+                    if entry.is_vxlan_with_vni(vni) {
+                        out.push(entry);
+                    }
+                }
+                None => {
+                    out.push(entry);
+                }
+            }
+        }
+        out
+    }
+    /// Same as `lpm_entry` but reporting prefix and, in case packet is tagged with vxlan vni,
+    /// consider only next-hops for that vni.
     #[allow(clippy::cast_possible_truncation)]
     pub fn lpm_entry_prefix<Buf: PacketBufferMut>(
         &self,
@@ -276,18 +294,23 @@ impl Fib {
     ) -> (Prefix, Option<&FibEntry>) {
         if let Some(destination) = packet.ip_destination() {
             let (prefix, group) = self.lpm_with_prefix(&destination);
-            match group.len() {
+            let paths = Self::get_group_paths(group, packet.get_meta().dst_vni);
+            let entry = match paths.len() {
                 0 => {
-                    warn!("Can't forward packet: no groups for route to {prefix}. This is a bug");
-                    (prefix, None)
+                    warn!("Can't forward packet: no groups for route to {prefix}");
+                    None
                 }
-                1 => (prefix, Some(&group.entries()[0_usize])),
+                1 => Some(&paths[0_usize]),
                 k => {
                     debug!("Hashing pkt to choose one FibEntry out of {k}");
+                    if prefix.is_host() && packet.get_meta().dst_vni.is_some() {
+                        warn!("More than one path exists to reach host {prefix}!");
+                    }
                     let entry_index = packet.packet_hash_ecmp(0, (k - 1) as u8);
-                    (prefix, Some(&group.entries()[entry_index as usize]))
+                    Some(&paths[entry_index as usize])
                 }
-            }
+            };
+            (prefix, entry.map(|v| &**v))
         } else {
             unreachable!()
         }
