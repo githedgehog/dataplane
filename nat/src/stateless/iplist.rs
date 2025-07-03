@@ -555,4 +555,104 @@ mod tests {
             addr_v6("::")
         );
     }
+
+    use bolero::{Driver, ValueGenerator};
+    use std::ops::Bound;
+
+    struct IpListSubsetGenerator {}
+
+    impl ValueGenerator for IpListSubsetGenerator {
+        type Output = IpListSubset;
+
+        fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
+            let is_ipv4 = d.produce::<bool>()?;
+            let (addr, min_prefix_len, max_prefix_len, mut max_size) = if is_ipv4 {
+                (
+                    IpAddr::from(d.produce::<Ipv4Addr>()?),
+                    0,
+                    32,
+                    PrefixSize::U128(u128::from(u32::MAX) + 1),
+                )
+            } else {
+                (
+                    IpAddr::from(d.produce::<Ipv6Addr>()?),
+                    0,
+                    128,
+                    PrefixSize::Ipv6MaxAddrs,
+                )
+            };
+            let prefix_len = d
+                .gen_u8(
+                    Bound::Included(&min_prefix_len),
+                    Bound::Included(&max_prefix_len),
+                )
+                .expect("Failed to generate prefix length");
+            let prefix = Prefix::try_from((addr, prefix_len)).ok()?;
+            // prefix.size() never returns 0 so max_size - prefix.size() is always a PrefixSize::U128
+            max_size = max_size - prefix.size();
+            assert!(matches!(max_size, PrefixSize::U128(_)));
+            let offset = d.gen_u128(
+                Bound::Included(&0),
+                Bound::Excluded(&max_size.try_into().unwrap()),
+            )?;
+            Some(IpListSubset { offset, prefix })
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestData {
+        offsets: Vec<u128>,
+        ipls: IpListSubset,
+    }
+
+    struct TestDataGenerator {}
+
+    impl ValueGenerator for TestDataGenerator {
+        type Output = TestData;
+
+        fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
+            let ipls = IpListSubsetGenerator {}.generate(d)?;
+            let prefix = ipls.prefix;
+            let nb_addr = d.gen_usize(Bound::Included(&10), Bound::Included(&1000))?;
+            let mut offsets = Vec::with_capacity(nb_addr);
+
+            for _ in 0..nb_addr {
+                let offset_in_prefix = match prefix.size() {
+                    PrefixSize::U128(size) => {
+                        d.gen_u128(Bound::Included(&0), Bound::Excluded(&size))?
+                    }
+                    PrefixSize::Ipv6MaxAddrs => {
+                        d.gen_u128(Bound::Included(&0), Bound::Included(&u128::MAX))?
+                    }
+                    PrefixSize::Overflow => return None,
+                };
+                offsets.push(offset_in_prefix);
+            }
+            Some(TestData { offsets, ipls })
+        }
+    }
+
+    #[test]
+    fn test_bolero_iplist_subset() {
+        let generator = TestDataGenerator {};
+        bolero::check!()
+            .with_generator(generator)
+            .for_each(|data: &TestData| {
+                let ipls = &data.ipls;
+                let offsets = &data.offsets;
+                for offset in offsets {
+                    let addr = match ipls.prefix.as_address() {
+                        IpAddr::V4(ip) => IpAddr::V4(Ipv4Addr::from(
+                            u32::try_from(u128::from(ip.to_bits()) + offset)
+                                .expect("Offset too big"),
+                        )),
+                        IpAddr::V6(ip) => IpAddr::V6(Ipv6Addr::from(ip.to_bits() + offset)),
+                    };
+                    let offset_in_prefix = ipls
+                        .addr_offset_in_prefix(&addr)
+                        .expect("Offset not in prefix");
+                    assert_eq!(offset_in_prefix.offset, ipls.offset + offset);
+                }
+            });
+    }
 }

@@ -857,6 +857,7 @@ dependencies = [
 name = "dataplane-nat"
 version = "0.1.0"
 dependencies = [
+ "bolero",
  "dashmap",
  "dataplane-net",
  "dataplane-pipeline",
