@@ -8,20 +8,29 @@ license = "Apache-2.0"
 [dependencies]
 afpacket = { workspace = true }
 arrayvec = { workspace = true }
+axum = { workspace = true, features = ["http1", "json"] }
+axum-server = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "usage"] }
 ctrlc = { workspace = true, features = ["termination"] }
 dpdk = { workspace = true }
 dyn-iter = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
 id = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
 mgmt = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
 net = { workspace = true, features = ["test_buffer"] }
 netdev = { workspace = true }
+once_cell = { workspace = true }
 ordermap = { workspace = true, features = ["std"] }
+parking_lot = { workspace = true }
 pipeline = { workspace = true }
 routing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_yml = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["default"] }
 
