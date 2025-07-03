@@ -53,7 +53,12 @@ impl IpForwarder {
     /// Forward a [`Packet`]
     fn forward_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>, vrfid: VrfId) {
         let nfi = &self.name;
-        let fibid = FibId::from_vrfid(vrfid);
+        let fibid = if let Some(dst_vni) = packet.get_meta().dst_vni {
+            FibId::from_vni(dst_vni)
+        } else {
+            FibId::from_vrfid(vrfid)
+        };
+
 
         /* get destination ip address */
         let Some(dst) = packet.ip_destination() else {
