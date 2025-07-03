@@ -19,8 +19,8 @@ pub mod cmdtree_dp;
 pub mod completions;
 pub mod terminal;
 
-const DEFAULT_CLI_BIND: &str = "/tmp/cli.sock";
-const DEFAULT_DATAPLANE_PATH: &str = "/tmp/dataplane_ctl.sock";
+const DEFAULT_CLI_BIND: &str = "/var/run/dataplane/cliclient.sock";
+const DEFAULT_DATAPLANE_PATH: &str = "/var/run/dataplane/cli.sock";
 
 #[rustfmt::skip]
 fn greetings() {
