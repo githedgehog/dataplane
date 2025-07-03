@@ -58,8 +58,8 @@ impl InternalConfig {
             nat_table: None,
         }
     }
-    pub fn set_vtep(&mut self, vtep: VtepConfig) {
-        self.vtep = Some(vtep);
+    pub fn set_vtep(&mut self, vtep: Option<VtepConfig>) {
+        self.vtep = vtep;
     }
     pub fn get_vtep(&self) -> &Option<VtepConfig> {
         &self.vtep

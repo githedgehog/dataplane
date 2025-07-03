@@ -10,19 +10,17 @@ use crate::models::external::overlay::Overlay;
 use crate::models::external::overlay::vpc::{Peering, Vpc};
 use crate::models::external::overlay::vpcpeering::VpcManifest;
 use crate::models::external::{ConfigError, ConfigResult};
-use net::eth::mac::SourceMac;
-use net::ipv4::UnicastIpv4Addr;
 use net::route::RouteTableId;
 use routing::prefix::Prefix;
 use std::net::Ipv4Addr;
 
 use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
 use crate::models::internal::InternalConfig;
-use crate::models::internal::interfaces::interface::InterfaceType;
+
 use crate::models::internal::natconfig::table_extend::add_peering;
 use crate::models::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
 use crate::models::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
-use crate::models::internal::routing::evpn::VtepConfig;
+
 use crate::models::internal::routing::prefixlist::{
     IpVer, PrefixList, PrefixListAction, PrefixListEntry, PrefixListMatchLen, PrefixListPrefix,
 };
@@ -262,55 +260,6 @@ fn build_vpc_internal_config(
     Ok(())
 }
 
-struct VtepInfo {
-    ip: UnicastIpv4Addr,
-    mac: SourceMac,
-}
-
-fn get_vtep_info(external: &ExternalConfig) -> Result<VtepInfo, ConfigError> {
-    let Some(intf) = external.underlay.get_vtep_interface()? else {
-        return Err(ConfigError::InternalFailure(
-            "No VTEP configured".to_string(),
-        ));
-    };
-    match &intf.iftype {
-        InterfaceType::Vtep(vtep) => {
-            let mac = match vtep.mac {
-                Some(mac) => SourceMac::new(mac).map_err(|_| {
-                    ConfigError::BadVtepMacAddress(
-                        mac,
-                        "mac address is not a valid source mac address",
-                    )
-                }),
-                None => {
-                    return Err(ConfigError::InternalFailure(format!(
-                        "Missing VTEP MAC address on {}",
-                        intf.name
-                    )));
-                }
-            }?;
-
-            let ip = UnicastIpv4Addr::new(vtep.local).map_err(|_| {
-                ConfigError::InternalFailure(format!(
-                    "VTEP local address is not a valid unicast address {}",
-                    vtep.local
-                ))
-            })?;
-            Ok(VtepInfo { ip, mac })
-        }
-        _ => unreachable!(),
-    }
-}
-
-fn build_vtep_config(external: &ExternalConfig) -> Result<VtepConfig, ConfigError> {
-    let vtep_info = get_vtep_info(external)?;
-    let vtep = VtepConfig {
-        address: vtep_info.ip.into(),
-        mac: vtep_info.mac,
-    };
-    Ok(vtep)
-}
-
 fn build_nat_internal_config(overlay: &Overlay, internal: &mut InternalConfig) -> ConfigResult {
     let mut nat_tables = NatTables::new();
     for vpc in overlay.vpc_table.values() {
@@ -355,8 +304,9 @@ pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, Config
     /* Build internal config: device and underlay configs are copied as received */
     let mut internal = InternalConfig::new(external.device.clone());
     internal.add_vrf_config(external.underlay.vrf.clone())?;
+    internal.set_vtep(external.underlay.vtep.clone());
     if !external.overlay.vpc_table.is_empty() {
-        internal.set_vtep(build_vtep_config(external)?);
+        //internal.set_vtep(build_vtep_config(external)?);
     }
 
     /* Build overlay config */
