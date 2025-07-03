@@ -305,9 +305,6 @@ pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, Config
     let mut internal = InternalConfig::new(external.device.clone());
     internal.add_vrf_config(external.underlay.vrf.clone())?;
     internal.set_vtep(external.underlay.vtep.clone());
-    if !external.overlay.vpc_table.is_empty() {
-        //internal.set_vtep(build_vtep_config(external)?);
-    }
 
     /* Build overlay config */
     if let Some(bgp) = &external.underlay.vrf.bgp {
