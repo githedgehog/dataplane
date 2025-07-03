@@ -6,12 +6,8 @@
 
 use derive_builder::Builder;
 
-use std::net::IpAddr;
 use std::time::SystemTime;
 use tracing::debug;
-
-use net::eth::mac::SourceMac;
-use net::ipv4::UnicastIpv4Addr;
 
 use crate::models::external::overlay::Overlay;
 use crate::models::external::{ConfigError, ConfigResult};
@@ -19,7 +15,6 @@ use crate::models::internal::InternalConfig;
 
 use crate::models::internal::device::DeviceConfig;
 use crate::models::internal::device::settings::DeviceSettings;
-use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceType};
 use crate::models::internal::routing::evpn::VtepConfig;
 use crate::models::internal::routing::vrf::VrfConfig;
 
@@ -34,60 +29,10 @@ pub struct Underlay {
     pub vtep: Option<VtepConfig>,
 }
 
-impl TryFrom<&InterfaceConfig> for VtepConfig {
-    type Error = ConfigError;
-    fn try_from(intf: &InterfaceConfig) -> Result<Self, Self::Error> {
-        match &intf.iftype {
-            InterfaceType::Vtep(vtep) => {
-                let mac = match vtep.mac {
-                    Some(mac) => SourceMac::new(mac).map_err(|_| {
-                        ConfigError::BadVtepMacAddress(mac, "VTEP mac is not a valid source mac")
-                    }),
-                    None => {
-                        return Err(ConfigError::MissingParameter(format!(
-                            "VTEP MAC address on {}",
-                            intf.name
-                        )));
-                    }
-                }?;
-                let ip = UnicastIpv4Addr::new(vtep.local).map_err(|e| {
-                    ConfigError::BadVtepLocalAddress(IpAddr::V4(e), "Invalid address")
-                })?;
-                Ok(VtepConfig::new(ip.into(), mac))
-            }
-            _ => Err(ConfigError::InternalFailure(format!(
-                "Attempted to get vtep config from non-vtep interface {}",
-                intf.name
-            ))),
-        }
-    }
-}
-
 impl Underlay {
     pub fn new() -> Self {
         Self::default()
     }
-    /// Look up for a vtep interface in the list  of interfaces of the underlay VRF
-    /// and, if found, build a `VtepConfig` out of it. We accept at most one VTEP
-    /// interface and it has to have valid ip and mac. No Vtep interface is valid
-    /// if not VPCs are configured. This is checked elsewhere.
-    fn get_vtep_info(&self) -> Result<Option<VtepConfig>, ConfigError> {
-        let vteps: Vec<&InterfaceConfig> = self
-            .vrf
-            .interfaces
-            .values()
-            .filter(|config| matches!(config.iftype, InterfaceType::Vtep(_)))
-            .collect();
-        match vteps.len() {
-            0 => Ok(None),
-            1 => Ok(Some(VtepConfig::try_from(vteps[0])?)),
-            _ => Err(ConfigError::TooManyInstances(
-                "Vtep interfaces",
-                vteps.len(),
-            )),
-        }
-    }
-
     pub fn validate(&mut self) -> ConfigResult {
         debug!("Validating underlay configuration...");
 
@@ -96,10 +41,6 @@ impl Underlay {
             .interfaces
             .values()
             .try_for_each(|iface| iface.validate())?;
-
-        // if vtep interface is present (one at the most), validate it
-        // and set the vtep configuration
-        self.vtep = self.get_vtep_info()?;
         Ok(())
     }
 }
