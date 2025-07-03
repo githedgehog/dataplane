@@ -15,6 +15,7 @@ use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ipv4::UnicastIpv4Addr;
 use net::ipv6::UnicastIpv6Addr;
 use net::packet::{DoneReason, Packet};
+use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use std::net::IpAddr;
 use thiserror::Error;
@@ -145,7 +146,11 @@ impl StatelessNat {
     /// # Errors
     /// This method may fail if `translate_src` or `translate_dst` fail, which can happen if
     /// addresses are invalid or an unsupported translation is required (e.g. IPv4 -> IPv6).
-    fn translate(&self, net: &mut Net, per_vni_table: &PerVniTable) -> Result<bool, NatError> {
+    fn translate(
+        &self,
+        net: &mut Net,
+        per_vni_table: &PerVniTable,
+    ) -> Result<(bool, Option<Vni>), NatError> {
         let (src_ranges, dst_ranges) =
             per_vni_table.find_nat_ranges(net.src_addr(), net.dst_addr());
 
@@ -154,10 +159,15 @@ impl StatelessNat {
         if let Some(ranges_src) = src_ranges {
             modified |= self.translate_src(net, ranges_src)?;
         }
+        let mut dst_vni = None;
         if let Some(ranges_dst) = dst_ranges {
             modified |= self.translate_dst(net, ranges_dst)?;
+            dst_vni = ranges_dst.get_vni();
         }
-        Ok(modified)
+        /* Note: if dst_ranges is not Some(), we will not learn the dst_vni from this module.
+        If routing is fine, it may learn it itself. However, if the packet is not to be routed,
+        then dst_vni will remain unset and the drop statistics for vpc peerings not be updated. */
+        Ok((modified, dst_vni))
     }
 
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
@@ -197,8 +207,16 @@ impl StatelessNat {
                 error!("{nfi}: {e}");
                 packet.done(DoneReason::NatFailure);
             }
-            Ok(false) => debug!("{nfi}: No NAT translation needed"),
-            Ok(true) => debug!("{nfi}: Packet was NAT'ed:\n{packet}"),
+            Ok((modified, opt_vni)) => {
+                if let Some(vni) = opt_vni {
+                    packet.get_meta_mut().dst_vni = Some(vni);
+                }
+                if modified {
+                    debug!("{nfi}: Packet was NAT'ed:\n{packet}");
+                } else {
+                    debug!("{nfi}: No NAT translation needed");
+                }
+            }
         }
     }
 }

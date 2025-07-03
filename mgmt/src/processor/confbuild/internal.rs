@@ -314,12 +314,12 @@ fn build_vtep_config(external: &ExternalConfig) -> Result<VtepConfig, ConfigErro
 fn build_nat_internal_config(overlay: &Overlay, internal: &mut InternalConfig) -> ConfigResult {
     let mut nat_tables = NatTables::new();
     for vpc in overlay.vpc_table.values() {
-        let mut table = PerVniTable::new();
+        let mut table = PerVniTable::new(vpc.vni);
         for peering in &vpc.peerings {
-            add_peering(&mut table, peering)
+            add_peering(&mut table, peering, &overlay.vpc_table)
                 .map_err(|e| ConfigError::FailureApply(e.to_string()))?;
         }
-        nat_tables.add_table(vpc.vni, table);
+        nat_tables.add_table(table);
     }
     internal.add_nat_tables(nat_tables);
     Ok(())

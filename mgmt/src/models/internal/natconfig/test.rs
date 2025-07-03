@@ -175,13 +175,13 @@ mod tests {
 
         let mut nat_table = NatTables::new();
 
-        let mut vni_table1 = PerVniTable::new();
+        let mut vni_table1 = PerVniTable::new(vni(100));
         table_extend::add_peering(&mut vni_table1, &peering1).expect("Failed to build NAT tables");
-        let mut vni_table2 = PerVniTable::new();
+        let mut vni_table2 = PerVniTable::new(vni(200));
         table_extend::add_peering(&mut vni_table2, &peering2).expect("Failed to build NAT tables");
 
-        nat_table.add_table(vni(100), vni_table1);
-        nat_table.add_table(vni(200), vni_table2);
+        nat_table.add_table(vni_table1);
+        nat_table.add_table(vni_table2);
 
         nat_table
     }
