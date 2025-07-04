@@ -291,7 +291,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PipelineStats {
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         let nfi = &self.name;
         trace!("Stage '{nfi}'...");
-        let it = input.filter_map(|packet| {
+        let it = input.filter_map(|mut packet| {
             let sdisc = packet.get_meta().src_vni.map(VpcDiscriminant::VNI);
             let ddisc = packet.get_meta().dst_vni.map(VpcDiscriminant::VNI);
             let packet_len = u64::from(packet.total_len());
@@ -313,6 +313,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PipelineStats {
             } else {
                 warn!("Got packet without status!!");
             }
+            packet.get_meta_mut().keep = false; /* no longer disable enforce */
             packet.enforce()
         });
         // we can't do this here, meaning we have to refresh by packet. This is bad.
