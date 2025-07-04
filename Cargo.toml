@@ -80,7 +80,7 @@ serde = { version = "1.0.219", default-features = false, features = [] }
 serde_yml = { version = "0.0.12", default-features = false, features = [] }
 strum = { version = "0.27", features = ["derive"] }
 thiserror = { version = "2.0.12", default-features = false, features = [] }
-tokio = { version = "1.45.1", default-features = false, features = [] }
+tokio = { version = "1.46.0", default-features = false, features = [] }
 tokio-stream = { version = "0.1", default-features = false, features = [] }
 tonic = { version = "0.13", default-features = false, features = ["transport", "codegen"] }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] } # attribute feature is so commonly used that we should just leave it on globally
