@@ -355,6 +355,7 @@ impl<'de> Deserialize<'de> for Prefix {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Ord, PartialOrd)]
+#[cfg_attr(test, derive(bolero::generator::TypeGenerator))]
 pub enum PrefixSize {
     U128(u128),
     Ipv6MaxAddrs,
@@ -721,5 +722,82 @@ mod tests {
         assert!(prefix_size1 < 2u128.pow(8) + 1);
 
         assert_eq!(u128::try_from(prefix_size1).unwrap(), 2u128.pow(8));
+    }
+
+    #[test]
+    fn test_bolero_prefixsize_compare() {
+        bolero::check!()
+            .with_generator(bolero::generator::produce::<(
+                PrefixSize,
+                PrefixSize,
+                PrefixSize,
+            )>())
+            .for_each(|(one, two, three)| {
+                assert!(one < two || one == two || one > two);
+                assert!(one < three || one == three || one > three);
+                assert!(two < three || two == three || two > three);
+
+                let min = one.min(two).min(three);
+                let max = one.max(two).max(three);
+
+                assert!(min <= max);
+                assert!(max >= min);
+
+                assert!(max >= one);
+                assert!(max >= two);
+                assert!(max >= three);
+                assert!(one <= max);
+                assert!(two <= max);
+                assert!(three <= max);
+
+                assert!(min <= one);
+                assert!(min <= two);
+                assert!(min <= three);
+                assert!(one >= min);
+                assert!(two >= min);
+                assert!(three >= min);
+
+                if one < two && two < three {
+                    assert!(one < three);
+                }
+                if one == two && two == three {
+                    assert!(one == three);
+                }
+                if one > two && two > three {
+                    assert!(one > three);
+                }
+
+                if one < two {
+                    assert!(two > one);
+                    assert!(!(two < one));
+                    assert!(!(one > two));
+                    assert!(!(one == two));
+                } else if one == two {
+                    assert!(two == one);
+                    assert!(!(one < two));
+                    assert!(!(one > two));
+                    assert!(!(two < one));
+                    assert!(!(two < one));
+                } else {
+                    assert!(one > two);
+                    assert!(two < one);
+                    assert!(!(two > one));
+                    assert!(!(one < two));
+                    assert!(!(one == two));
+                }
+
+                if let (Ok(one_int), Ok(two_int)) = (u128::try_from(one), u128::try_from(two)) {
+                    if one < two {
+                        assert!(one_int < two_int);
+                    } else if one == two {
+                        assert!(one_int == two_int);
+                    } else {
+                        assert!(one_int > two_int);
+                    }
+                };
+
+                assert!((one + two) + three >= 0);
+                assert!(vec![*one, *two, *three].iter().sum::<PrefixSize>() >= 0);
+            });
     }
 }
