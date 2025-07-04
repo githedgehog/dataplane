@@ -14,6 +14,8 @@ routing = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+bolero = { workspace = true, default-features = false, features = ["alloc"] }
+net = { workspace = true, features = ["bolero"] }
 routing = { workspace = true, features = ["testing"] }
 
 [lints.rust]

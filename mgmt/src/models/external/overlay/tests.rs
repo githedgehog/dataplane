@@ -15,7 +15,7 @@ pub mod test {
     use crate::models::external::overlay::vpcpeering::VpcManifest;
     use crate::models::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
 
-    use routing::prefix::Prefix;
+    use routing::prefix::{Prefix, PrefixSize};
 
     /* Build sample manifests for a peering */
     fn build_manifest_vpc1() -> VpcManifest {
@@ -210,7 +210,10 @@ pub mod test {
             .as_range("2.0.0.0/24".into());
         assert_eq!(
             expose.validate(),
-            Err(ConfigError::MismatchedPrefixSizes(65536 - 256, 256))
+            Err(ConfigError::MismatchedPrefixSizes(
+                PrefixSize::U128(65536 - 256),
+                PrefixSize::U128(256)
+            ))
         );
     }
 

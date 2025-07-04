@@ -857,6 +857,7 @@ dependencies = [
 name = "dataplane-nat"
 version = "0.1.0"
 dependencies = [
+ "bolero",
  "dashmap",
  "dataplane-net",
  "dataplane-pipeline",
@@ -904,6 +905,7 @@ name = "dataplane-routing"
 version = "0.1.0"
 dependencies = [
  "ahash",
+ "bolero",
  "bytes",
  "dataplane-cli",
  "dataplane-net",

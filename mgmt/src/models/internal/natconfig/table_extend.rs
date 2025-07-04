@@ -7,7 +7,7 @@ use crate::models::external::overlay::vpc::Peering;
 use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
 use nat::stateless::config::prefixtrie::{PrefixTrie, TrieError};
 use nat::stateless::config::tables::{NatPrefixRuleTable, PerVniTable, TrieValue};
-use routing::prefix::Prefix;
+use routing::prefix::{Prefix, PrefixSize};
 use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -20,24 +20,60 @@ pub enum NatPeeringError {
     EntryExists,
     #[error("failed to split prefix {0}")]
     SplitPrefixError(Prefix),
+    #[error("malformed peering")]
+    MalformedPeering,
 }
 
-/// Create a [`TrieValue`] from the public side of a [`VpcExpose`], for a given prefix in this
-/// [`VpcExpose`]
-fn get_public_trie_value(expose: &VpcExpose, prefix: &Prefix) -> TrieValue {
-    let orig = expose.ips.clone();
-    let target = expose.as_range.clone();
-
-    TrieValue::new(orig, target)
+fn add_prefix_size(
+    offset: u128,
+    prefix_size: PrefixSize,
+    is_ipv4: bool,
+) -> Result<u128, NatPeeringError> {
+    match (is_ipv4, prefix_size) {
+        (true, PrefixSize::U128(size)) => {
+            if offset > u128::from(u32::MAX) - size {
+                // Adding the size of the current prefix to the offset would overflow the IP address
+                // space, which makes no sense. We have a malformed peering.
+                return Err(NatPeeringError::MalformedPeering);
+            }
+            Ok(offset + size)
+        }
+        (false, PrefixSize::U128(size)) => {
+            if offset > u128::MAX - size {
+                return Err(NatPeeringError::MalformedPeering);
+            }
+            Ok(offset + size)
+        }
+        // We've covered all existing addresses in the IPv6, but still haven't found our prefix.
+        // We have a malformed peering.
+        _ => Err(NatPeeringError::MalformedPeering),
+    }
 }
 
-/// Create a [`TrieValue`] from the private side of a [`VpcExpose`], for a given prefix in this
-/// [`VpcExpose`]
-fn get_private_trie_value(expose: &VpcExpose, prefix: &Prefix) -> TrieValue {
-    let orig = expose.ips.clone();
-    let target = expose.as_range.clone();
+fn generate_trie_values<'a>(
+    prefixes_to_update: &'a BTreeSet<Prefix>,
+    prefixes_to_point_to: &BTreeSet<Prefix>,
+) -> impl Iterator<Item = Result<(&'a Prefix, TrieValue), NatPeeringError>> {
+    let target = prefixes_to_point_to.clone();
+    let mut prefix_offset = 0;
 
-    TrieValue::new(orig, target)
+    prefixes_to_update.iter().map(move |prefix| {
+        let trie_value = TrieValue::new(*prefix, prefix_offset, target.clone());
+        prefix_offset = add_prefix_size(prefix_offset, prefix.size(), prefix.is_ipv4())?;
+        Ok((prefix, trie_value))
+    })
+}
+
+fn generate_public_trie_values(
+    expose: &VpcExpose,
+) -> impl Iterator<Item = Result<(&Prefix, TrieValue), NatPeeringError>> {
+    generate_trie_values(&expose.ips, &expose.as_range)
+}
+
+fn generate_private_trie_values(
+    expose: &VpcExpose,
+) -> impl Iterator<Item = Result<(&Prefix, TrieValue), NatPeeringError>> {
+    generate_trie_values(&expose.as_range, &expose.ips)
 }
 
 // Note: add_peering(table, peering) should be part of PerVniTable, but we prefer to keep it in a
@@ -63,10 +99,10 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Nat
         let mut peering_table = NatPrefixRuleTable::new();
 
         // For each private prefix, add an entry containing the set of public prefixes
-        expose.ips.iter().try_for_each(|prefix| {
-            let pub_value = get_public_trie_value(expose, prefix);
+        generate_public_trie_values(expose).try_for_each(|result| {
+            let (prefix, public_value) = result?;
             peering_table
-                .insert(prefix, pub_value)
+                .insert(prefix, public_value)
                 .map_err(|_| NatPeeringError::EntryExists)
         })?;
 
@@ -79,11 +115,11 @@ pub fn add_peering(table: &mut PerVniTable, peering: &Peering) -> Result<(), Nat
     // Update table for destination NAT
     new_peering.remote.exposes.iter().try_for_each(|expose| {
         // For each public prefix, add an entry containing the set of private prefixes
-        expose.as_range.iter().try_for_each(|prefix| {
-            let priv_value = get_private_trie_value(expose, prefix);
+        generate_private_trie_values(expose).try_for_each(|result| {
+            let (prefix, private_value) = result?;
             table
                 .dst_nat
-                .insert(prefix, priv_value)
+                .insert(prefix, private_value)
                 .map_err(|_| NatPeeringError::EntryExists)
         })?;
 

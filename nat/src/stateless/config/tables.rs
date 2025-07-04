@@ -201,34 +201,40 @@ impl Default for NatPeerRuleTable {
 
 /// A value associated with a prefix in the trie, and that encapsulates all information required to
 /// perform the address mapping for static NAT.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrieValue {
-    orig: BTreeSet<Prefix>,
+    orig_prefix: Prefix,
+    orig_prefix_offset: u128,
     target: BTreeSet<Prefix>,
 }
 
 impl TrieValue {
     /// Creates a new [`TrieValue`]
     #[must_use]
-    pub fn new(orig: BTreeSet<Prefix>, target: BTreeSet<Prefix>) -> Self {
-        Self { orig, target }
+    pub fn new(orig_prefix: Prefix, orig_prefix_offset: u128, target: BTreeSet<Prefix>) -> Self {
+        Self {
+            orig_prefix,
+            orig_prefix_offset,
+            target,
+        }
     }
 
-    /// Accessor for original prefixes
+    /// Accessor for original prefix offset
     #[must_use]
-    pub fn orig_prefixes(&self) -> &BTreeSet<Prefix> {
-        &self.orig
+    pub fn orig_prefix_offset(&self) -> u128 {
+        self.orig_prefix_offset
+    }
+
+    /// Accessor for original prefix
+    #[must_use]
+    pub fn orig_prefix(&self) -> &Prefix {
+        &self.orig_prefix
     }
 
     /// Accessor for target prefixes
     #[must_use]
     pub fn target_prefixes(&self) -> &BTreeSet<Prefix> {
         &self.target
-    }
-
-    /// Iterates over the original prefixes
-    pub fn orig_prefixes_iter(&self) -> impl Iterator<Item = &Prefix> {
-        self.orig.iter()
     }
 
     /// Iterates over the target prefixes
