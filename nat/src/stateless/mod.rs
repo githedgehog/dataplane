@@ -4,8 +4,6 @@
 //! Stateless NAT implementation
 
 pub mod config;
-#[allow(unused)]
-mod iplist;
 pub mod natrw;
 
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
