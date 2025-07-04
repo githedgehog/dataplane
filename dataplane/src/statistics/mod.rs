@@ -2,23 +2,22 @@
 
 use axum::{Router, http::StatusCode, response::Response, routing::get};
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
+use stats::PacketStatsReader;
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use tokio::task::JoinHandle as TokioJoinHandle;
 use tracing::{error, info};
 
 pub mod global_counters;
-use global_counters::{VpcCounters, sync_to_prometheus};
+use global_counters::sync_to_prometheus;
 
 /// Simple Prometheus metrics handler
 #[derive(Clone)]
 pub struct PrometheusHandler {
     prometheus_handle: PrometheusHandle,
-    vpc_counters: Arc<RwLock<Vec<VpcCounters>>>,
+    statsr: PacketStatsReader,
 }
 
 impl PrometheusHandler {
-    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(statsr: PacketStatsReader) -> Result<Self, Box<dyn std::error::Error>> {
         // Initialize metrics descriptions
         global_counters::init_metrics();
 
@@ -34,22 +33,16 @@ impl PrometheusHandler {
 
         Ok(Self {
             prometheus_handle,
-            vpc_counters: Arc::new(RwLock::new(Vec::new())),
+            statsr,
         })
-    }
-
-    /// Update VPC counters (called from your main application)
-    pub async fn update_vpc_counters(&self, counters: Vec<VpcCounters>) {
-        let mut vpc_counters = self.vpc_counters.write().await;
-        *vpc_counters = counters;
     }
 
     /// Get the Prometheus metrics as a string
     pub async fn render_metrics(&self) -> String {
-        // Get current VPC counters and sync them to Prometheus
-        let vpc_counters = self.vpc_counters.read().await.clone();
-        sync_to_prometheus(vpc_counters);
-
+        // Get current dataplane per-VPC counters and sync them to Prometheus
+        if let Some(statsr) = self.statsr.enter() {
+            sync_to_prometheus(&statsr);
+        }
         // Render the metrics
         self.prometheus_handle.render()
     }
@@ -70,8 +63,9 @@ async fn metrics_handler(
 /// Start the metrics server
 pub fn start_metrics_server(
     port: u16,
+    statsr: PacketStatsReader,
 ) -> Result<(std::thread::JoinHandle<()>, Arc<PrometheusHandler>), Box<dyn std::error::Error>> {
-    let prometheus_handler = Arc::new(PrometheusHandler::new()?);
+    let prometheus_handler = Arc::new(PrometheusHandler::new(statsr)?);
     let handler_for_thread = prometheus_handler.clone();
 
     let handle = std::thread::Builder::new()

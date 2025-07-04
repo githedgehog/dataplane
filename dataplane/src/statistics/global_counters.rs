@@ -1,29 +1,7 @@
 // src/statistics/global_counters.rs
 
 use metrics::{counter, describe_counter, describe_gauge, gauge};
-
-#[derive(Debug, Clone)]
-pub struct VpcCounters {
-    pub name: String,
-    pub rx: u64,
-    pub tx: u64,
-    pub rx_bytes: u64,
-    pub tx_bytes: u64,
-    pub drops: u64,
-}
-
-impl VpcCounters {
-    pub fn new(name: String) -> Self {
-        Self {
-            name,
-            rx: 0,
-            tx: 0,
-            rx_bytes: 0,
-            tx_bytes: 0,
-            drops: 0,
-        }
-    }
-}
+use stats::PacketStats;
 
 /// Metric name constants
 pub const VPC_PACKETS_TOTAL: &str = "vpc_packets_total";
@@ -42,32 +20,27 @@ pub fn init_metrics() {
     );
 }
 
-/// Sync VPC data to Prometheus metrics (called on /metrics request)
-pub fn sync_to_prometheus(vpc_counters: Vec<VpcCounters>) {
+pub fn sync_to_prometheus(packet_stats: &PacketStats) {
     // Increment the metrics request counter
     counter!(METRICS_REQUESTS_TOTAL).increment(1);
 
-    // Populate metrics crate counters using gauge!() macro
-    for vpc in vpc_counters {
-        let vpc_name = vpc.name.clone();
+    packet_stats.vpcstats.values().for_each(|stats| {
+        // packets RX by VPC
+        gauge!(VPC_PACKETS_TOTAL, "vpc" => stats.vpc.clone(), "direction" => "rx")
+            .set(stats.rx_pkts as f64);
 
-        // RX packets
-        gauge!(VPC_PACKETS_TOTAL, "vpc" => vpc_name.clone(), "direction" => "rx")
-            .set(vpc.rx as f64);
+        // bytes RX by VPC
+        gauge!(VPC_BYTES_TOTAL, "vpc" => stats.vpc.clone(), "direction" => "rx")
+            .set(stats.rx_bytes as f64);
 
-        // TX packets
-        gauge!(VPC_PACKETS_TOTAL, "vpc" => vpc_name.clone(), "direction" => "tx")
-            .set(vpc.tx as f64);
+        // packets TX by VPC
+        gauge!(VPC_PACKETS_TOTAL, "vpc" => stats.vpc.clone(), "direction" => "tx")
+            .set(stats.tx_pkts as f64);
 
-        // RX bytes
-        gauge!(VPC_BYTES_TOTAL, "vpc" => vpc_name.clone(), "direction" => "rx")
-            .set(vpc.rx_bytes as f64);
+        // bytes TX by VPC
+        gauge!(VPC_BYTES_TOTAL, "vpc" => stats.vpc.clone(), "direction" => "tx")
+            .set(stats.tx_bytes as f64);
 
-        // TX bytes
-        gauge!(VPC_BYTES_TOTAL, "vpc" => vpc_name.clone(), "direction" => "tx")
-            .set(vpc.tx_bytes as f64);
-
-        // Drops
-        gauge!(VPC_DROPS_TOTAL, "vpc" => vpc_name).set(vpc.drops as f64);
-    }
+        // TODO(fredi): add support for drops
+    });
 }
