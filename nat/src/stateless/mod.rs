@@ -4,12 +4,12 @@
 //! Stateless NAT implementation
 
 pub mod config;
+#[allow(unused)]
 mod iplist;
 pub mod natrw;
 
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
 use config::tables::{NatTables, PerVniTable, TrieValue};
-use iplist::{IpList, IpListError, IpListSubset};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ipv4::UnicastIpv4Addr;
@@ -17,7 +17,7 @@ use net::ipv6::UnicastIpv6Addr;
 use net::packet::{DoneReason, Packet};
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use thiserror::Error;
 
 #[allow(unused)]
@@ -32,13 +32,47 @@ enum NatError {
     InvalidAddress(IpAddr),
     #[error("Failed to map IP address: {0}")]
     MappingError(IpAddr),
+    #[error("Failed to map IP address offset: {0}")]
+    MappingOffsetError(u128),
 }
 
-fn map_ip_nat(ranges: &TrieValue, current_ip: &IpAddr) -> Result<IpAddr, IpListError> {
-    let current_range = IpListSubset::new(ranges.orig_prefix_offset(), *ranges.orig_prefix());
-    let target_range = IpList::new(ranges.target_prefixes());
-    let offset = current_range.addr_offset_in_prefix(current_ip)?;
-    target_range.addr_from_prefix_offset(&offset)
+fn addr_offset_in_range(range_start: &IpAddr, addr: &IpAddr) -> Result<u128, NatError> {
+    match (range_start, addr) {
+        (IpAddr::V4(range_start), IpAddr::V4(addr)) => {
+            let addr_bits = addr.to_bits();
+            if addr_bits < range_start.to_bits() {
+                return Err(NatError::MappingError(IpAddr::V4(*addr)));
+            }
+            Ok(u128::from(addr_bits - range_start.to_bits()))
+        }
+        (IpAddr::V6(range_start), IpAddr::V6(addr)) => {
+            let addr_bits = addr.to_bits();
+            if addr_bits < range_start.to_bits() {
+                return Err(NatError::MappingError(IpAddr::V6(*addr)));
+            }
+            Ok(addr_bits - range_start.to_bits())
+        }
+        _ => Err(NatError::MappingError(*addr)),
+    }
+}
+
+fn addr_from_offset(range_start: &IpAddr, offset: u128) -> Result<IpAddr, NatError> {
+    match range_start {
+        IpAddr::V4(range_start) => {
+            let bits = range_start.to_bits()
+                + u32::try_from(offset).map_err(|_| NatError::MappingOffsetError(offset))?;
+            Ok(IpAddr::V4(Ipv4Addr::from(bits)))
+        }
+        IpAddr::V6(range_start) => {
+            let bits = range_start.to_bits() + offset;
+            Ok(IpAddr::V6(Ipv6Addr::from(bits)))
+        }
+    }
+}
+
+fn map_ip_nat(ranges: &TrieValue, current_ip: &IpAddr) -> Result<IpAddr, NatError> {
+    let offset = addr_offset_in_range(&ranges.orig_range_start, current_ip)?;
+    addr_from_offset(&ranges.target_range_start, offset)
 }
 
 /// A NAT processor, implementing the [`NetworkFunction`] trait. [`StatelessNat`] processes packets
@@ -152,12 +186,12 @@ impl StatelessNat {
         // will set to true if packet is modified
         let mut modified = false;
         if let Some(ranges_src) = src_ranges {
-            modified |= self.translate_src(net, ranges_src)?;
+            modified |= self.translate_src(net, &ranges_src)?;
         }
         let mut dst_vni = None;
         if let Some(ranges_dst) = dst_ranges {
-            modified |= self.translate_dst(net, ranges_dst)?;
-            dst_vni = ranges_dst.get_vni();
+            modified |= self.translate_dst(net, &ranges_dst)?;
+            dst_vni = ranges_dst.vni;
         }
         /* Note: if dst_ranges is not Some(), we will not learn the dst_vni from this module.
         If routing is fine, it may learn it itself. However, if the packet is not to be routed,
