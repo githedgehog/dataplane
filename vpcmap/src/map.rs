@@ -23,12 +23,12 @@ pub struct VpcMap<T: Clone>(HashMap<VpcDiscriminant, T, RandomState>);
 
 impl<T: Clone> VpcMap<T> {
     #[must_use]
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self(HashMap::with_hasher(RandomState::with_seed(0)))
     }
-    /// Add the given entry to the map
-    #[cfg(test)]
-    pub(crate) fn add(&mut self, disc: VpcDiscriminant, entry: T) -> VpcMapResult<()> {
+    /// Add the given entry to the map. N.B. this method adds elements directly to the table object
+    /// and is only public so that users can build their non-wrapped table and call `VpcMapWriter::set_map`.
+    pub fn add(&mut self, disc: VpcDiscriminant, entry: T) -> VpcMapResult<()> {
         if let std::collections::hash_map::Entry::Vacant(e) = self.0.entry(disc) {
             e.insert(entry);
             Ok(())
