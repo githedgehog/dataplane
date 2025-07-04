@@ -76,6 +76,7 @@ impl<T: Clone> Absorb<VpcMapChange<T>> for VpcMap<T> {
 }
 
 pub struct VpcMapWriter<T: Clone>(WriteHandle<VpcMap<T>, VpcMapChange<T>>);
+#[derive(Clone)]
 pub struct VpcMapReader<T: Clone>(ReadHandle<VpcMap<T>>);
 
 impl<T: Clone> VpcMapWriter<T> {
