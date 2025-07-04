@@ -19,12 +19,19 @@ use routing::fib::fibtable::FibTableReader;
 use routing::interfaces::iftablerw::IfTableReader;
 use routing::{Router, RouterError, RouterParams};
 
+use vpcmap::map::VpcMapReader;
+use vpcmap::map::VpcMapWriter;
+
+use stats::PipelineStats;
+use stats::VpcMapName;
+
 /// Build the pipeline for a router. The composition of the pipeline (in stages)
 /// is currently hard-coded.
 fn setup_routing_pipeline<Buf: PacketBufferMut>(
     iftr: IfTableReader,
     fibtr: FibTableReader,
     atreader: AtableReader,
+    vpcmap: VpcMapReader<VpcMapName>,
 ) -> DynPipeline<Buf> {
     let stage_ingress = Ingress::new("Ingress", iftr.clone());
     let stage_egress = Egress::new("Egress", iftr, atreader);
@@ -32,6 +39,7 @@ fn setup_routing_pipeline<Buf: PacketBufferMut>(
     let iprouter2 = IpForwarder::new("IP-Forward-2", fibtr);
     let dumper1 = PacketDumper::new("pre-ingress", true, Some(PacketDumper::vxlan_or_icmp()));
     let dumper2 = PacketDumper::new("post-egress", true, Some(PacketDumper::vxlan_or_icmp()));
+    let stats = PipelineStats::new("stats", vpcmap);
 
     DynPipeline::new()
         .add_stage(dumper1)
@@ -40,18 +48,21 @@ fn setup_routing_pipeline<Buf: PacketBufferMut>(
         .add_stage(iprouter2)
         .add_stage(stage_egress)
         .add_stage(dumper2)
+        .add_stage(stats)
 }
 
 /// Start a router and provide the associated pipeline
 #[allow(unused)]
 pub fn start_router<Buf: PacketBufferMut>(
     params: RouterParams,
-) -> Result<(Router, DynPipeline<Buf>), RouterError> {
+) -> Result<(Router, DynPipeline<Buf>, VpcMapWriter<VpcMapName>), RouterError> {
     let router = Router::new(params)?;
+    let vpcmapw = VpcMapWriter::<VpcMapName>::new();
     let pipeline = setup_routing_pipeline(
         router.get_iftabler(),
         router.get_fibtr(),
         router.get_atabler(),
+        vpcmapw.get_reader(),
     );
-    Ok((router, pipeline))
+    Ok((router, pipeline, vpcmapw))
 }
