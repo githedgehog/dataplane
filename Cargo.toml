@@ -14,7 +14,7 @@ members = [
 	"net",
 	"pipeline",
 	"rekon",
-	"routing",
+	"routing", "stats",
 	"test-utils",
 	"vpcmap",
 ]
@@ -39,6 +39,7 @@ net = { path = "./net", package = "dataplane-net", features = ["test_buffer"] }
 pipeline = { path = "./pipeline", package = "dataplane-pipeline" }
 rekon = { path = "./rekon", package = "dataplane-rekon" }
 routing = { path = "./routing", package = "dataplane-routing" }
+stats = { path = "./stats", package = "dataplane-stats" }
 test-utils = { path = "./test-utils", package = "dataplane-test-utils" }
 vpcmap = { path = "./vpcmap", package = "dataplane-vpcmap" }
 

@@ -966,6 +966,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-stats"
+version = "0.1.0"
+dependencies = [
+ "dataplane-net",
+ "dataplane-pipeline",
+ "dataplane-vpcmap",
+ "left-right",
+ "tracing",
+]
+
+[[package]]
 name = "dataplane-test-utils"
 version = "0.1.0"
 dependencies = [
