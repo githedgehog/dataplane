@@ -8,7 +8,7 @@
 mod args;
 mod drivers;
 mod packet_processor;
-mod statistics;  // Add statistics module
+mod statistics; // Add statistics module
 
 use crate::args::{CmdArgs, Parser};
 use drivers::dpdk::DriverDpdk;
@@ -17,10 +17,10 @@ use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
+use tokio::{io, spawn};
 #[allow(unused)]
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
-use tokio::{io, spawn};
 
 use crate::packet_processor::start_router;
 use mgmt::processor::launch::start_mgmt;
@@ -89,8 +89,8 @@ fn main() {
     };
 
     /* start router and create routing pipeline */
-    let (builder, router, vpcmapw) = match start_router(config) {
-        Ok((router, pipeline, vpcmapw)) => (move || pipeline, router, vpcmapw),
+    let (builder, router, vpcmapw, statsr) = match start_router(config) {
+        Ok((router, pipeline, vpcmapw, statsr)) => (move || pipeline, router, vpcmapw, statsr),
         Err(e) => {
             error!("Failed to start router: {e}");
             panic!("Failed to start router: {e}");
@@ -107,20 +107,22 @@ fn main() {
         info!("Management gRPC server started successfully");
     }
 
-  // Start metrics server early in the process
-  let metrics_port = args.metrics_port().unwrap_or(9090);
-  let _metrics_handle = match start_metrics_server(metrics_port) {
-      Ok(handle) => {
-          info!("Metrics server started on http://0.0.0.0:{}/metrics", metrics_port);
-          Some(handle)
-      }
-      Err(e) => {
-          error!("Failed to start metrics server: {}", e);
-          warn!("Continuing without metrics...");
-          None
-      }
-  };
-
+    // Start metrics server early in the process
+    let metrics_port = args.metrics_port().unwrap_or(9090);
+    let _metrics_handle = match start_metrics_server(metrics_port) {
+        Ok(handle) => {
+            info!(
+                "Metrics server started on http://0.0.0.0:{}/metrics",
+                metrics_port
+            );
+            Some(handle)
+        }
+        Err(e) => {
+            error!("Failed to start metrics server: {}", e);
+            warn!("Continuing without metrics...");
+            None
+        }
+    };
 
     /* start driver with the provided pipeline */
     match args.get_driver_name() {
@@ -140,8 +142,10 @@ fn main() {
 
     info!("All components started successfully. Gateway is running.");
     if let Some(_) = _metrics_handle {
-        info!("Metrics available at http://0.0.0.0:{}/metrics", metrics_port);
-
+        info!(
+            "Metrics available at http://0.0.0.0:{}/metrics",
+            metrics_port
+        );
     }
 
     stop_rx.recv().expect("failed to receive stop signal");
