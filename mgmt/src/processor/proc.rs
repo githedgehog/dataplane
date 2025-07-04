@@ -32,7 +32,8 @@ use net::interface::{Interface, InterfaceName};
 use routing::ctl::RouterCtlSender;
 
 use stats::VpcMapName;
-use vpcmap::map::VpcMapWriter;
+use vpcmap::VpcDiscriminant;
+use vpcmap::map::{VpcMap, VpcMapWriter};
 
 /// A request type to the `ConfigProcessor`
 #[derive(Debug)]
@@ -156,6 +157,7 @@ impl ConfigProcessor {
             current.as_deref(),
             &mut self.frrmi,
             &mut self.router_ctl,
+            &mut self.vpcmapw,
         )
         .await?;
 
@@ -182,6 +184,7 @@ impl ConfigProcessor {
                 None,
                 &mut self.frrmi,
                 &mut self.router_ctl,
+                &mut self.vpcmapw,
             )
             .await;
         }
@@ -349,6 +352,23 @@ async fn apply_router_config(
     Ok(())
 }
 
+/// refresh mappings for per vpc statistics
+fn update_stats_vpc_mappings(config: &GwConfig, vpcmapw: &mut VpcMapWriter<VpcMapName>) {
+    // create a mapping table frome the vpc table in the config
+    // FIXME(fredi): visibility
+    // FIXME(fredi): generalize the vpcmapName table
+    let vpc_table = &config.external.overlay.vpc_table;
+    let mut vpcmap = VpcMap::<VpcMapName>::new();
+    for vpc in vpc_table.values() {
+        let disc = VpcDiscriminant::VNI(vpc.vni);
+        let map = VpcMapName::new(disc, &vpc.name);
+        vpcmap
+            .add(VpcDiscriminant::VNI(vpc.vni), map)
+            .unwrap_or_else(|_| unreachable!());
+    }
+    vpcmapw.set_map(vpcmap);
+}
+
 /// Main function to apply a config
 async fn apply_gw_config(
     vpc_mgr: &VpcManager<RequiredInformationBase>,
@@ -356,6 +376,7 @@ async fn apply_gw_config(
     _current: Option<&GwConfig>,
     frrmi: &mut FrrMi,
     router_ctl: &mut RouterCtlSender,
+    vpcmapw: &mut VpcMapWriter<VpcMapName>,
 ) -> ConfigResult {
     let genid = config.genid();
 
@@ -391,6 +412,9 @@ async fn apply_gw_config(
 
     /* apply config in frr via the frrmi and frr-agent */
     apply_config_frr(frrmi, genid, internal).await?;
+
+    /* update stats mappings */
+    update_stats_vpc_mappings(config, vpcmapw);
 
     info!("Successfully applied config for genid {genid}");
     Ok(())
