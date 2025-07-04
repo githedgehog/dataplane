@@ -39,10 +39,9 @@ impl RoutingDb {
         self.config = Some(config);
     }
     pub fn have_config(&self) -> bool {
-        if let Some(config) = &self.config {
-            config.genid() != 0
-        } else {
-            false
+        match &self.config {
+            Some(config) => config.genid() != 0,
+            None => false,
         }
     }
 }

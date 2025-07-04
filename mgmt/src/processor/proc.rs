@@ -380,15 +380,17 @@ async fn apply_gw_config(
 ) -> ConfigResult {
     let genid = config.genid();
 
-    /* probe the FRR agent. If unreachable, there's no point in trying to apply a config */
-    let res: Result<(), ConfigError> = frrmi
-        .probe()
-        .await
-        .map_err(|_| ConfigError::FrrAgentUnreachable);
+    /*
+       /* probe the FRR agent. If unreachable, there's no point in trying to apply a config */
+       let res: Result<(), ConfigError> = frrmi
+           .probe()
+           .await
+           .map_err(|_| ConfigError::FrrAgentUnreachable);
 
-    if genid != ExternalConfig::BLANK_GENID && res.is_err() {
-        return Err(ConfigError::FrrAgentUnreachable);
-    }
+       if genid != ExternalConfig::BLANK_GENID && res.is_err() {
+           return Err(ConfigError::FrrAgentUnreachable);
+       }
+    */
 
     /* make sure we built internal config */
     let Some(internal) = &config.internal else {
@@ -397,6 +399,13 @@ async fn apply_gw_config(
             "No internal config was built".to_string(),
         ));
     };
+
+    if genid == ExternalConfig::BLANK_GENID {
+        /* apply config with VPC manager */
+        vpc_mgr.apply_config(internal, genid).await?;
+        info!("Successfully applied config for genid {genid}");
+        return Ok(());
+    }
 
     /* lock the CPI to prevent updates on the routing db. No explicit unlocking is
     required. The CPI will be automatically unlocked when this guard goes out of scope */
