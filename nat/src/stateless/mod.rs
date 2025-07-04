@@ -4,7 +4,6 @@
 //! Stateless NAT implementation
 
 pub mod config;
-mod iplist;
 
 use config::tables::{NatTables, TrieValue};
 use net::buffer::PacketBufferMut;
