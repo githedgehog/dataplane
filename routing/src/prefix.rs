@@ -354,12 +354,47 @@ impl<'de> Deserialize<'de> for Prefix {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(Debug, Copy, Clone)]
 #[cfg_attr(test, derive(bolero::generator::TypeGenerator))]
 pub enum PrefixSize {
     U128(u128),
     Ipv6MaxAddrs,
     Overflow,
+}
+
+impl PrefixSize {
+    pub fn is_overflow(&self) -> bool {
+        matches!(self, PrefixSize::Overflow)
+    }
+}
+
+impl PartialEq<PrefixSize> for PrefixSize {
+    fn eq(&self, other: &PrefixSize) -> bool {
+        match (self, other) {
+            (PrefixSize::U128(size), PrefixSize::U128(other_size)) => size == other_size,
+            (PrefixSize::Ipv6MaxAddrs, PrefixSize::Ipv6MaxAddrs) => true,
+            (PrefixSize::U128(_), PrefixSize::Ipv6MaxAddrs) => false,
+            (PrefixSize::Ipv6MaxAddrs, PrefixSize::U128(_)) => false,
+            (PrefixSize::Overflow, _) => false,
+            (_, PrefixSize::Overflow) => false,
+        }
+    }
+}
+
+impl PartialOrd<PrefixSize> for PrefixSize {
+    fn partial_cmp(&self, other: &PrefixSize) -> Option<Ordering> {
+        match (self, other) {
+            (PrefixSize::U128(size), PrefixSize::U128(other_size)) => size.partial_cmp(other_size),
+            (PrefixSize::U128(_), PrefixSize::Ipv6MaxAddrs) => Some(Ordering::Less),
+            (PrefixSize::Ipv6MaxAddrs, PrefixSize::U128(_)) => Some(Ordering::Greater),
+            (PrefixSize::Overflow, PrefixSize::U128(_)) => Some(Ordering::Greater),
+            (PrefixSize::U128(_), PrefixSize::Overflow) => Some(Ordering::Less),
+            (PrefixSize::Ipv6MaxAddrs, PrefixSize::Overflow) => Some(Ordering::Less),
+            (PrefixSize::Overflow, PrefixSize::Ipv6MaxAddrs) => Some(Ordering::Greater),
+            (PrefixSize::Ipv6MaxAddrs, PrefixSize::Ipv6MaxAddrs) => Some(Ordering::Equal),
+            (PrefixSize::Overflow, PrefixSize::Overflow) => None,
+        }
+    }
 }
 
 impl Add<u128> for PrefixSize {
@@ -704,11 +739,13 @@ mod tests {
         assert!(prefix_size1 < prefix_size_overflow);
         assert!(prefix_size_u128max < prefix_size_max);
         assert!(prefix_size_max < prefix_size_overflow);
+        // Overflow is like NaN, not equal to itself
+        assert!(prefix_size_overflow != prefix_size_overflow);
 
         assert_eq!(prefix_size0 + prefix_size1, PrefixSize::U128(2u128.pow(8)));
         assert_eq!(prefix_size_u128max + 1, prefix_size_max);
-        assert_eq!(prefix_size_max + 1, prefix_size_overflow);
-        assert_eq!(prefix_size_overflow + prefix_size1, prefix_size_overflow);
+        assert!((prefix_size_max + 1).is_overflow());
+        assert!((prefix_size_overflow + prefix_size1).is_overflow());
 
         assert_eq!(
             prefix_size_max - prefix_size1,
@@ -733,57 +770,21 @@ mod tests {
                 PrefixSize,
             )>())
             .for_each(|(one, two, three)| {
-                assert!(one < two || one == two || one > two);
-                assert!(one < three || one == three || one > three);
-                assert!(two < three || two == three || two > three);
-
-                let min = one.min(two).min(three);
-                let max = one.max(two).max(three);
-
-                assert!(min <= max);
-                assert!(max >= min);
-
-                assert!(max >= one);
-                assert!(max >= two);
-                assert!(max >= three);
-                assert!(one <= max);
-                assert!(two <= max);
-                assert!(three <= max);
-
-                assert!(min <= one);
-                assert!(min <= two);
-                assert!(min <= three);
-                assert!(one >= min);
-                assert!(two >= min);
-                assert!(three >= min);
-
+                // Transitivity for PartialOrd
                 if one < two && two < three {
                     assert!(one < three);
                 }
-                if one == two && two == three {
-                    assert!(one == three);
-                }
-                if one > two && two > three {
-                    assert!(one > three);
-                }
 
+                // Duality for PartialOrd
                 if one < two {
                     assert!(two > one);
-                    assert!(!(two < one));
-                    assert!(!(one > two));
-                    assert!(!(one == two));
-                } else if one == two {
+                }
+
+                if one == two {
+                    // Consitency between PartialEq and PartialOrd
+                    assert!(one.partial_cmp(two) == Some(Ordering::Equal));
+                    // PartialEq is symmetric
                     assert!(two == one);
-                    assert!(!(one < two));
-                    assert!(!(one > two));
-                    assert!(!(two < one));
-                    assert!(!(two < one));
-                } else {
-                    assert!(one > two);
-                    assert!(two < one);
-                    assert!(!(two > one));
-                    assert!(!(one < two));
-                    assert!(!(one == two));
                 }
 
                 if let (Ok(one_int), Ok(two_int)) = (u128::try_from(one), u128::try_from(two)) {
