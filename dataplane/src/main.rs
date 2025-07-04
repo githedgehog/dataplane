@@ -17,7 +17,6 @@ use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
-use tokio::{io, spawn};
 #[allow(unused)]
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -109,7 +108,7 @@ fn main() {
 
     // Start metrics server early in the process
     let metrics_port = args.metrics_port().unwrap_or(9090);
-    let _metrics_handle = match start_metrics_server(metrics_port) {
+    let _metrics_handle = match start_metrics_server(metrics_port, statsr) {
         Ok(handle) => {
             info!(
                 "Metrics server started on http://0.0.0.0:{}/metrics",
