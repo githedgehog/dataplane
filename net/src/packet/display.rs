@@ -243,7 +243,8 @@ impl Display for PacketMeta {
         fmt_opt(f, "    vrf", self.vrf, false)?;
         fmt_opt(f, "    bd", self.bridge, true)?;
         fmt_opt(f, "    next-hop", self.nh_addr, true)?;
-        fmt_opt(f, "    done", self.done, true)
+        fmt_opt(f, "    done", self.done, true)?;
+        writeln!(f, "    keep: {}", self.keep)
     }
 }
 
