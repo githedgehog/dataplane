@@ -108,7 +108,7 @@ fn main() {
 
     // Start metrics server early in the process
     let metrics_port = args.metrics_port().unwrap_or(9090);
-    let _metrics_handle = match start_metrics_server(metrics_port, statsr) {
+    let metrics_handle = match start_metrics_server(metrics_port, statsr) {
         Ok(handle) => {
             info!(
                 "Metrics server started on http://0.0.0.0:{}/metrics",
@@ -140,7 +140,7 @@ fn main() {
     }
 
     info!("All components started successfully. Gateway is running.");
-    if let Some(_) = _metrics_handle {
+    if metrics_handle.is_some() {
         info!(
             "Metrics available at http://0.0.0.0:{}/metrics",
             metrics_port
