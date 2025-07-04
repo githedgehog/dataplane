@@ -31,6 +31,9 @@ use net::interface::display::MultiIndexInterfaceMapView;
 use net::interface::{Interface, InterfaceName};
 use routing::ctl::RouterCtlSender;
 
+use stats::VpcMapName;
+use vpcmap::map::VpcMapWriter;
+
 /// A request type to the `ConfigProcessor`
 #[derive(Debug)]
 pub enum ConfigRequest {
@@ -72,6 +75,8 @@ pub(crate) struct ConfigProcessor {
     frrmi: FrrMi,
     router_ctl: RouterCtlSender,
     vpc_mgr: VpcManager<RequiredInformationBase>,
+    #[allow(unused)]
+    vpcmapw: VpcMapWriter<VpcMapName>,
 }
 
 impl ConfigProcessor {
@@ -81,6 +86,7 @@ impl ConfigProcessor {
     pub(crate) fn new(
         frrmi: FrrMi,
         router_ctl: RouterCtlSender,
+        vpcmapw: VpcMapWriter<VpcMapName>,
     ) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
         let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
@@ -99,6 +105,7 @@ impl ConfigProcessor {
             frrmi,
             router_ctl,
             vpc_mgr,
+            vpcmapw,
         };
         (processor, tx)
     }
