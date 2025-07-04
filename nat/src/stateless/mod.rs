@@ -4,10 +4,8 @@
 //! Stateless NAT implementation
 
 pub mod config;
-mod iplist;
 
 use config::tables::{NatTables, TrieValue};
-use iplist::{IpList, IpListError, IpListSubset};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ipv4::UnicastIpv4Addr;
@@ -15,13 +13,44 @@ use net::ipv6::UnicastIpv6Addr;
 use net::packet::Packet;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-fn map_ip_nat(ranges: &TrieValue, current_ip: &IpAddr) -> Result<IpAddr, IpListError> {
-    let current_range = IpListSubset::new(ranges.orig_prefix_offset(), *ranges.orig_prefix());
-    let target_range = IpList::new(ranges.target_prefixes());
-    let offset = current_range.addr_offset_in_prefix(current_ip)?;
-    target_range.addr_from_prefix_offset(&offset)
+fn addr_offset_in_range(range_start: &IpAddr, addr: &IpAddr) -> Result<u128, ()> {
+    match (range_start, addr) {
+        (IpAddr::V4(range_start), IpAddr::V4(addr)) => {
+            let addr_bits = addr.to_bits();
+            if addr_bits < range_start.to_bits() {
+                return Err(());
+            }
+            Ok(u128::from(addr_bits - range_start.to_bits()))
+        }
+        (IpAddr::V6(range_start), IpAddr::V6(addr)) => {
+            let addr_bits = addr.to_bits();
+            if addr_bits < range_start.to_bits() {
+                return Err(());
+            }
+            Ok(addr_bits - range_start.to_bits())
+        }
+        _ => Err(()),
+    }
+}
+
+fn addr_from_offset(range_start: &IpAddr, offset: u128) -> Result<IpAddr, ()> {
+    match range_start {
+        IpAddr::V4(range_start) => {
+            let bits = range_start.to_bits() + u32::try_from(offset).map_err(|_| ())?;
+            Ok(IpAddr::V4(Ipv4Addr::from(bits)))
+        }
+        IpAddr::V6(range_start) => {
+            let bits = range_start.to_bits() + offset;
+            Ok(IpAddr::V6(Ipv6Addr::from(bits)))
+        }
+    }
+}
+
+fn map_ip_nat(ranges: &TrieValue, current_ip: &IpAddr) -> Result<IpAddr, ()> {
+    let offset = addr_offset_in_range(&ranges.orig_range_start, current_ip)?;
+    addr_from_offset(&ranges.target_range_start, offset)
 }
 
 /// A NAT processor, implementing the [`NetworkFunction`] trait. [`StatelessNat`] processes packets
@@ -49,7 +78,7 @@ impl StatelessNat {
         &self,
         net: &mut Net,
         vni_opt: Option<Vni>,
-    ) -> Option<(Option<&TrieValue>, Option<&TrieValue>)> {
+    ) -> Option<(Option<TrieValue>, Option<TrieValue>)> {
         let vni = vni_opt?;
         let table = self.context.tables.get(&vni.as_u32())?;
 
@@ -90,14 +119,14 @@ impl StatelessNat {
     /// Applies network address translation to a packet, knowing the current and target ranges.
     fn translate(
         net: &mut Net,
-        ranges_src_nat: Option<&TrieValue>,
-        ranges_dst_nat: Option<&TrieValue>,
+        ranges_src_nat: Option<TrieValue>,
+        ranges_dst_nat: Option<TrieValue>,
     ) -> Option<()> {
         if let Some(ranges_src) = ranges_src_nat {
-            Self::translate_src(net, ranges_src)?;
+            Self::translate_src(net, &ranges_src)?;
         }
         if let Some(ranges_dst) = ranges_dst_nat {
-            Self::translate_dst(net, ranges_dst)?;
+            Self::translate_dst(net, &ranges_dst)?;
         }
         Some(())
     }
