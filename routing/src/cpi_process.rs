@@ -98,7 +98,13 @@ impl RpcOperation for IpRoute {
             RpcResultCode::Ok
         } else {
             error!("Unable to find VRF with id {}", self.vrfid);
-            RpcResultCode::Failure
+            // if we did not find vrf, we don't have the route
+            // tell frr all is good
+            if !db.have_config() {
+                RpcResultCode::Ok
+            } else {
+                RpcResultCode::Failure
+            }
         }
     }
 }
@@ -199,7 +205,7 @@ fn handle_request(
     // ignore additions if have no config. Connects are allowed, so are deletions to wipe out old state
     if !db.have_config() && op == RpcOp::Add {
         debug!("Ignoring message: no config is available");
-        let resp_msg = build_response_msg(req, RpcResultCode::Failure, None);
+        let resp_msg = build_response_msg(req, RpcResultCode::Ok, None);
         csock.send_msg(resp_msg, peer);
         return;
     }

@@ -18,9 +18,9 @@ use net::headers::TryEthMut;
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 
-use routing::atable::atablerw::AtableReader;
 use routing::interfaces::iftablerw::IfTableReader;
 use routing::interfaces::interface::{IfIndex, IfState, IfType, Interface};
+use routing::{atable::atablerw::AtableReader, interfaces::iftable::IfTable};
 
 #[allow(unused)]
 pub struct Egress {
@@ -168,6 +168,31 @@ impl Egress {
             None
         }
     }
+
+    #[inline]
+    fn egress_process<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>, iftable: &IfTable) {
+        let Some(oif) = packet.get_meta().oif else {
+            warn!("{}: Missing oif metadata!", &self.name);
+            packet.done(DoneReason::RouteFailure);
+            return;
+        };
+
+        /* resolve destination mac */
+        let oif = oif.get_id();
+        let Some(dst_mac) = self.resolve_next_mac(oif, packet) else {
+            // we could not figure out the destination MAC.
+            // resolve_next_mac() already calls packet.done()
+            return;
+        };
+
+        /* get interface to send packet over */
+        if let Some(interface) = iftable.get_interface(oif) {
+            self.interface_egress(interface, packet, dst_mac);
+        } else {
+            warn!("{}: Unknown interface with id {oif}", &self.name);
+            packet.done(DoneReason::InterfaceUnknown);
+        }
+    }
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Egress {
@@ -182,28 +207,8 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Egress {
 
         input.filter_map(move |mut packet| {
             if !packet.is_done() {
-                let Some(oif) = packet.get_meta().oif else {
-                    warn!("{}: Missing oif metadata!", &self.name);
-                    packet.done(DoneReason::RouteFailure);
-                    return packet.enforce();
-                };
-
-                /* resolve destination mac */
-                let oif = oif.get_id();
-                let Some(dst_mac) = self.resolve_next_mac(oif, &mut packet) else {
-                    // we could not figure out the destination MAC.
-                    // resolve_next_mac() already calls packet.done()
-                    return packet.enforce();
-                };
-
-                /* get interface to send packet over */
                 if let Some(iftable) = self.iftr.enter() {
-                    if let Some(interface) = iftable.get_interface(oif) {
-                        self.interface_egress(interface, &mut packet, dst_mac);
-                    } else {
-                        warn!("{}: Unknown interface with id {oif}", &self.name);
-                        packet.done(DoneReason::InterfaceUnknown);
-                    }
+                    self.egress_process(&mut packet, &iftable);
                 } else {
                     warn!("{}: Fib iftable no longer readable!", &self.name);
                     packet.done(DoneReason::InternalFailure);

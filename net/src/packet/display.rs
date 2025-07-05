@@ -240,10 +240,12 @@ impl Display for PacketMeta {
         )?;
         fmt_opt(f, "    src-vni", self.src_vni, false)?;
         fmt_opt(f, "    dst-vni", self.dst_vni, true)?;
+        writeln!(f, "    do-nat: {}", self.nat)?;
         fmt_opt(f, "    vrf", self.vrf, false)?;
         fmt_opt(f, "    bd", self.bridge, true)?;
         fmt_opt(f, "    next-hop", self.nh_addr, true)?;
-        fmt_opt(f, "    done", self.done, true)
+        fmt_opt(f, "    done", self.done, true)?;
+        writeln!(f, "    keep: {}", self.keep)
     }
 }
 

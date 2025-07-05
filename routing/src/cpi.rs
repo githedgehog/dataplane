@@ -67,7 +67,7 @@ impl CpiHandle {
 }
 
 pub const DEFAULT_DP_UX_PATH: &str = "/var/run/frr/hh/dataplane.sock";
-pub const DEFAULT_DP_UX_PATH_CLI: &str = "/tmp/dataplane_ctl.sock";
+pub const DEFAULT_DP_UX_PATH_CLI: &str = "/var/run/dataplane/cli.sock";
 pub const DEFAULT_FRR_AGENT_PATH: &str = "/var/run/frr/frr-agent.sock";
 
 pub struct CpiConf {
@@ -263,12 +263,13 @@ mod tests {
     #[test]
     fn test_cpi_ctl() {
         let cpi_bind_addr = "/tmp/hh_dataplane.sock".to_string();
+        let cli_bind_addr = "/tmp/hh_cli.sock".to_string();
         let _ = std::fs::remove_file(&cpi_bind_addr);
 
         /* Build cpi configuration */
         let conf = CpiConf {
             cpi_sock_path: Some(cpi_bind_addr),
-            cli_sock_path: None,
+            cli_sock_path: Some(cli_bind_addr),
         };
 
         /* create interface table */

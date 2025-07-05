@@ -9,12 +9,14 @@ use derive_builder::Builder;
 use std::time::SystemTime;
 use tracing::debug;
 
+use crate::models::external::overlay::Overlay;
 use crate::models::external::{ConfigError, ConfigResult};
 use crate::models::internal::InternalConfig;
+
 use crate::models::internal::device::DeviceConfig;
-use crate::models::internal::interfaces::interface::{InterfaceConfig, InterfaceType};
+use crate::models::internal::device::settings::DeviceSettings;
+use crate::models::internal::routing::evpn::VtepConfig;
 use crate::models::internal::routing::vrf::VrfConfig;
-use crate::models::{external::overlay::Overlay, internal::device::settings::DeviceSettings};
 
 use crate::processor::confbuild::internal::build_internal_config;
 
@@ -24,28 +26,14 @@ pub type GenId = i64;
 #[derive(Clone, Default, Debug)]
 pub struct Underlay {
     pub vrf: VrfConfig, /* default vrf */
+    pub vtep: Option<VtepConfig>,
 }
+
 impl Underlay {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn get_vtep_interface(&self) -> Result<Option<&InterfaceConfig>, ConfigError> {
-        let vteps: Vec<&InterfaceConfig> = self
-            .vrf
-            .interfaces
-            .values()
-            .filter(|config| matches!(config.iftype, InterfaceType::Vtep(_)))
-            .collect();
-        match vteps.len() {
-            0 => Ok(None),
-            1 => Ok(Some(vteps[0])),
-            _ => Err(ConfigError::TooManyInstances(
-                "Vtep interfaces",
-                vteps.len(),
-            )),
-        }
-    }
-    pub fn validate(&self) -> ConfigResult {
+    pub fn validate(&mut self) -> ConfigResult {
         debug!("Validating underlay configuration...");
 
         // validate interfaces
@@ -53,7 +41,6 @@ impl Underlay {
             .interfaces
             .values()
             .try_for_each(|iface| iface.validate())?;
-
         Ok(())
     }
 }
@@ -104,11 +91,10 @@ impl ExternalConfig {
         self.underlay.validate()?;
         self.overlay.validate()?;
 
-        // one vtep at the most -- but none is fine if have no VPCs
-        let vtep = self.underlay.get_vtep_interface()?;
-        if !self.overlay.vpc_table.is_empty() && vtep.is_none() {
+        // if there are vpcs configured, there must be a vtep configured
+        if !self.overlay.vpc_table.is_empty() && self.underlay.vtep.is_none() {
             return Err(ConfigError::MissingParameter(
-                "Vtep interface configuration",
+                "Vtep interface configuration".to_string(),
             ));
         }
         Ok(())

@@ -48,7 +48,7 @@ pub enum ConfigError {
     #[error("Missing identifier: {0}")]
     MissingIdentifier(&'static str),
     #[error("Missing mandatory parameter: {0}")]
-    MissingParameter(&'static str),
+    MissingParameter(String),
     #[error("Multiple instances of {0} found, expected {1}")]
     TooManyInstances(&'static str, usize),
     #[error("Frr agent is unreachable")]
