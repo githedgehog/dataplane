@@ -225,7 +225,7 @@ fn vpc_vrf_config(vpc: &Vpc) -> Result<VrfConfig, ConfigError> {
 
 fn vpc_bgp_af_ipv4_unicast(vpc_rconf: &VpcRoutingConfigIpv4) -> AfIpv4Ucast {
     let mut af = AfIpv4Ucast::new();
-    af.set_vrf_imports(vpc_rconf.vrf_imports.clone());
+    //af.set_vrf_imports(vpc_rconf.vrf_imports.clone());
     af.add_networks(vpc_rconf.adv_nets.clone());
     af
 }
