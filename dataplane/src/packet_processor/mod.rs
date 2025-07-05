@@ -58,20 +58,21 @@ fn setup_routing_pipeline<Buf: PacketBufferMut>(
     (pipeline, stats_reader)
 }
 
+pub(crate) struct InternalSetup<Buf>
+where
+    Buf: PacketBufferMut,
+{
+    pub router: Router,
+    pub pipeline: DynPipeline<Buf>,
+    pub vpcmapw: VpcMapWriter<VpcMapName>,
+    pub statsr: PacketStatsReader,
+    pub nattable: NatTablesWriter,
+}
+
 /// Start a router and provide the associated pipeline
-#[allow(unused)]
-pub fn start_router<Buf: PacketBufferMut>(
+pub(crate) fn start_router<Buf: PacketBufferMut>(
     params: RouterParams,
-) -> Result<
-    (
-        Router,
-        DynPipeline<Buf>,
-        VpcMapWriter<VpcMapName>,
-        PacketStatsReader,
-        NatTablesWriter,
-    ),
-    RouterError,
-> {
+) -> Result<InternalSetup<Buf>, RouterError> {
     let nattable = NatTablesWriter::new();
     let router = Router::new(params)?;
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
@@ -82,5 +83,11 @@ pub fn start_router<Buf: PacketBufferMut>(
         vpcmapw.get_reader(),
         nattable.get_reader(),
     );
-    Ok((router, pipeline, vpcmapw, statsr, nattable))
+    Ok(InternalSetup {
+        router,
+        pipeline,
+        vpcmapw,
+        statsr,
+        nattable,
+    })
 }
