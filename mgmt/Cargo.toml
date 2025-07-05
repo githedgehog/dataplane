@@ -23,6 +23,9 @@ net = { workspace = true }
 nat = { workspace = true }
 rekon = { workspace = true }
 routing = { workspace = true }
+stats = { workspace = true }
+vpcmap = { workspace = true }
+
 
 # external
 async-trait = { workspace = true }

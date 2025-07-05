@@ -229,7 +229,7 @@ impl Reconcile for VpcManager<RequiredInformationBase> {
         for (_, interface) in observation.interfaces.iter() {
             match requirement.interfaces.get_by_name(&interface.name) {
                 None => match interface.properties {
-                    InterfaceProperties::Other => {}
+                    InterfaceProperties::Other | InterfaceProperties::Pci(_) => {}
                     _ => {
                         reconciled = false;
                         match iface_handle.remove(interface).await {

@@ -77,10 +77,15 @@ pub struct PacketMeta {
     pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
     pub src_vni: Option<Vni>, /* the vni value of a received vxlan encap packet, if destined to gateway */
     pub dst_vni: Option<Vni>, /* the vni value of a vxlan packet re-encapsulated by the gateway */
-
-    #[cfg(test)]
-    /* Keep the Packet in spite of calling packet.enforce(). This is for testing */
-    pub keep: bool,
+    pub keep: bool,           /* Keep the Packet even if it should be dropped */
+}
+impl PacketMeta {
+    pub(crate) fn new(keep: bool) -> Self {
+        Self {
+            keep,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Default, Debug)]

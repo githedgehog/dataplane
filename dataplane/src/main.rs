@@ -8,6 +8,7 @@
 mod args;
 mod drivers;
 mod packet_processor;
+mod statistics; // Add statistics module
 
 use crate::args::{CmdArgs, Parser};
 use drivers::dpdk::DriverDpdk;
@@ -17,12 +18,15 @@ use net::packet::Packet;
 use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
 #[allow(unused)]
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::packet_processor::start_router;
 use mgmt::processor::launch::start_mgmt;
 use routing::RouterParamsBuilder;
+
+// Import statistics functions
+use crate::statistics::start_metrics_server;
 
 fn init_logging() {
     tracing_subscriber::fmt()
@@ -84,8 +88,8 @@ fn main() {
     };
 
     /* start router and create routing pipeline */
-    let (builder, router) = match start_router(config) {
-        Ok((router, pipeline)) => (move || pipeline, router),
+    let (builder, router, vpcmapw, statsr) = match start_router(config) {
+        Ok((router, pipeline, vpcmapw, statsr)) => (move || pipeline, router, vpcmapw, statsr),
         Err(e) => {
             error!("Failed to start router: {e}");
             panic!("Failed to start router: {e}");
@@ -95,10 +99,29 @@ fn main() {
     let frr_agent_path = router.get_frr_agent_path().to_str().unwrap();
 
     /* start management */
-    if let Err(e) = start_mgmt(grpc_addr, router_ctl, frr_agent_path) {
+    if let Err(e) = start_mgmt(grpc_addr, router_ctl, frr_agent_path, vpcmapw) {
         error!("Failed to start gRPC server: {e}");
         panic!("Failed to start gRPC server: {e}");
+    } else {
+        info!("Management gRPC server started successfully");
     }
+
+    // Start metrics server early in the process
+    let metrics_port = args.metrics_port().unwrap_or(9090);
+    let metrics_handle = match start_metrics_server(metrics_port, statsr) {
+        Ok(handle) => {
+            info!(
+                "Metrics server started on http://0.0.0.0:{}/metrics",
+                metrics_port
+            );
+            Some(handle)
+        }
+        Err(e) => {
+            error!("Failed to start metrics server: {}", e);
+            warn!("Continuing without metrics...");
+            None
+        }
+    };
 
     /* start driver with the provided pipeline */
     match args.get_driver_name() {
@@ -114,6 +137,14 @@ fn main() {
             error!("Unknown driver '{other}'. Aborting...");
             panic!("Packet processing pipeline failed to start. Aborting...");
         }
+    }
+
+    info!("All components started successfully. Gateway is running.");
+    if metrics_handle.is_some() {
+        info!(
+            "Metrics available at http://0.0.0.0:{}/metrics",
+            metrics_port
+        );
     }
 
     stop_rx.recv().expect("failed to receive stop signal");

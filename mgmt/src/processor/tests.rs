@@ -50,6 +50,9 @@ pub mod test {
     use routing::{Router, RouterParamsBuilder};
     use tracing::debug;
 
+    use stats::VpcMapName;
+    use vpcmap::map::VpcMapWriter;
+
     /* OVERLAY config sample builders */
     fn sample_vpc_table() -> VpcTable {
         let mut vpc_table = VpcTable::new();
@@ -342,9 +345,11 @@ pub mod test {
         /* open frrmi and connect to the faked frr-agent */
         let frrmi = FrrMi::new(frr_agent_path).await;
 
+        let vpcmapw = VpcMapWriter::<VpcMapName>::new();
+
         /* build config processor to test the processing of a config. The processor embeds the config database
         and has the frrmi. In this test, we don't use any channel to communicate the config. */
-        let (mut processor, _sender) = ConfigProcessor::new(frrmi, ctl);
+        let (mut processor, _sender) = ConfigProcessor::new(frrmi, ctl, vpcmapw);
 
         /* let the processor process the config */
         match processor.process_incoming_config(config).await {
