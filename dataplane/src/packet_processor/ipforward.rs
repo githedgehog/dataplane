@@ -59,7 +59,6 @@ impl IpForwarder {
             FibId::from_vrfid(vrfid)
         };
 
-
         /* get destination ip address */
         let Some(dst) = packet.ip_destination() else {
             error!("{nfi}: Failed to get destination ip address for packet");

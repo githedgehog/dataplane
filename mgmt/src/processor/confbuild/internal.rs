@@ -214,11 +214,11 @@ fn vpc_vrf_config(vpc: &Vpc) -> Result<VrfConfig, ConfigError> {
     /* set table-id: table ids should be unique per VRF. We should track them and pick unused ones.
     Setting this to the VNI is not too bad atm, except that we should avoid picking reserved values
     which may cause internal failures. FIXME: fredi */
-    let table_id = RouteTableId::try_from(vpc.vni.as_u32()).unwrap_or_else(|_| unreachable!());
-    if 254_u32 == table_id.into() {
+    if vpc.vni.as_u32() == 254_u32 {
         error!("Invalid configuration: Vni 254 is reserved");
         return Err(ConfigError::InvalidVpcVni(vpc.vni.as_u32()));
     }
+    let table_id = RouteTableId::try_from(vpc.vni.as_u32()).unwrap_or_else(|_| unreachable!());
     vrf_cfg = vrf_cfg.set_table_id(table_id);
     Ok(vrf_cfg)
 }
