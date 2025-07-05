@@ -27,6 +27,7 @@ use crate::vpc_manager::{RequiredInformationBase, VpcManager};
 use rekon::{Observe, Reconcile};
 use tracing::{debug, error, info, warn};
 
+use nat::stateless::NatTablesWriter;
 use net::interface::display::MultiIndexInterfaceMapView;
 use net::interface::{Interface, InterfaceName};
 use routing::ctl::RouterCtlSender;
@@ -76,8 +77,8 @@ pub(crate) struct ConfigProcessor {
     frrmi: FrrMi,
     router_ctl: RouterCtlSender,
     vpc_mgr: VpcManager<RequiredInformationBase>,
-    #[allow(unused)]
     vpcmapw: VpcMapWriter<VpcMapName>,
+    nattablew: NatTablesWriter,
 }
 
 impl ConfigProcessor {
@@ -88,6 +89,7 @@ impl ConfigProcessor {
         frrmi: FrrMi,
         router_ctl: RouterCtlSender,
         vpcmapw: VpcMapWriter<VpcMapName>,
+        nattablew: NatTablesWriter,
     ) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
         let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
@@ -107,6 +109,7 @@ impl ConfigProcessor {
             router_ctl,
             vpc_mgr,
             vpcmapw,
+            nattablew,
         };
         (processor, tx)
     }
@@ -158,6 +161,7 @@ impl ConfigProcessor {
             &mut self.frrmi,
             &mut self.router_ctl,
             &mut self.vpcmapw,
+            &mut self.nattablew,
         )
         .await?;
 
@@ -185,6 +189,7 @@ impl ConfigProcessor {
                 &mut self.frrmi,
                 &mut self.router_ctl,
                 &mut self.vpcmapw,
+                &mut self.nattablew,
             )
             .await;
         }
@@ -369,6 +374,13 @@ fn update_stats_vpc_mappings(config: &GwConfig, vpcmapw: &mut VpcMapWriter<VpcMa
     vpcmapw.set_map(vpcmap);
 }
 
+/// Update the Nat tables for stateless NAT
+fn apply_nat_config(nattablesw: &mut NatTablesWriter, internal: &InternalConfig) {
+    if let Some(nat_table) = &internal.nat_table {
+        nattablesw.update_nat_tables(nat_table.clone());
+    }
+}
+
 /// Main function to apply a config
 async fn apply_gw_config(
     vpc_mgr: &VpcManager<RequiredInformationBase>,
@@ -377,6 +389,7 @@ async fn apply_gw_config(
     frrmi: &mut FrrMi,
     router_ctl: &mut RouterCtlSender,
     vpcmapw: &mut VpcMapWriter<VpcMapName>,
+    nattablesw: &mut NatTablesWriter,
 ) -> ConfigResult {
     let genid = config.genid();
 
@@ -425,6 +438,9 @@ async fn apply_gw_config(
 
     /* apply config in frr via the frrmi and frr-agent */
     apply_config_frr(frrmi, genid, internal).await?;
+
+    /* apply nat config */
+    apply_nat_config(nattablesw, internal);
 
     /* update stats mappings */
     update_stats_vpc_mappings(config, vpcmapw);

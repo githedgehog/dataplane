@@ -21,6 +21,7 @@ metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 mgmt = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
+nat = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
 netdev = { workspace = true }
 once_cell = { workspace = true }

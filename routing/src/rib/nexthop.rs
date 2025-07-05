@@ -387,22 +387,18 @@ impl NhopStore {
             nhop.fibgroup.take();
         }
     }
-
     #[allow(dead_code)]
     pub fn resolve_nhop_instructions(&self, rstore: &RmacStore) {
         for nhop in self.iter() {
             nhop.resolve_instructions(rstore);
         }
     }
-
-    #[allow(dead_code)]
     pub fn lazy_resolve_all(&self, vrf: &Vrf) {
         for nhop in self.iter() {
             nhop.lazy_resolve(vrf);
         }
     }
-    #[allow(dead_code)]
-    pub fn set_fibgroup(&self, rstore: &RmacStore) {
+    pub fn set_fibgroup_all(&self, rstore: &RmacStore) {
         for nhop in self.iter() {
             nhop.set_fibgroup(rstore);
         }

@@ -14,9 +14,10 @@ use std::task::{Context, Poll};
 use tokio::net::UnixListener;
 use tokio::sync::mpsc::Sender;
 use tokio::{io, spawn};
-
-use routing::ctl::RouterCtlSender;
 use tokio_stream::Stream;
+
+use nat::stateless::NatTablesWriter;
+use routing::ctl::RouterCtlSender;
 
 use crate::grpc::server::create_config_service;
 use tonic::transport::Server;
@@ -174,6 +175,7 @@ pub enum GrpcAddress {
 pub fn start_mgmt(
     grpc_addr: GrpcAddress,
     router_ctl: RouterCtlSender,
+    nattablew: NatTablesWriter,
     frr_agent_path: &str,
     vpcmapw: VpcMapWriter<VpcMapName>,
 ) -> Result<std::thread::JoinHandle<()>, Error> {
@@ -200,7 +202,7 @@ pub fn start_mgmt(
             /* block thread to run gRPC and configuration processor */
             rt.block_on(async {
                 let frrmi = start_frrmi(&frr_agent_path).await;
-                let (processor, tx) = ConfigProcessor::new(frrmi, router_ctl, vpcmapw);
+                let (processor, tx) = ConfigProcessor::new(frrmi, router_ctl, vpcmapw, nattablew);
                 spawn(async { processor.run().await });
 
                 // Start the appropriate server based on address type

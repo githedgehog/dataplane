@@ -39,7 +39,6 @@ pub struct VrfImports {
 pub struct AfIpv4Ucast {
     pub redistribute: Vec<Redistribute>,
     pub imports: Option<VrfImports>,
-    /// Networks to advertise
     pub networks: Vec<Prefix>,
 }
 
@@ -47,7 +46,6 @@ pub struct AfIpv4Ucast {
 pub struct AfIpv6Ucast {
     pub redistribute: Vec<Redistribute>,
     pub imports: Option<VrfImports>,
-    /// Networks to advertise
     pub networks: Vec<Prefix>,
 }
 

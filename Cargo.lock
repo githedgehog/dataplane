@@ -767,6 +767,7 @@ dependencies = [
  "dataplane-dpdk",
  "dataplane-id",
  "dataplane-mgmt",
+ "dataplane-nat",
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-routing",
@@ -902,12 +903,16 @@ dependencies = [
 name = "dataplane-nat"
 version = "0.1.0"
 dependencies = [
+ "ahash 0.8.10",
  "dashmap",
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-routing",
  "iptrie",
+ "left-right",
  "thiserror 2.0.12",
+ "tracing",
+ "tracing-test",
 ]
 
 [[package]]

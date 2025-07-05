@@ -89,6 +89,9 @@ impl VrfConfig {
     pub fn add_static_route(&mut self, static_route: StaticRoute) {
         self.static_routes.insert(static_route);
     }
+    pub fn add_static_routes(&mut self, static_routes: impl IntoIterator<Item = StaticRoute>) {
+        self.static_routes.extend(static_routes);
+    }
     pub fn add_interface_config(&mut self, if_cfg: InterfaceConfig) {
         self.interfaces.add_interface_config(if_cfg);
     }
