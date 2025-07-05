@@ -262,6 +262,7 @@ fn prefix_split(prefix: &Prefix) -> Result<(Prefix, Prefix), NatPeeringError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::external::overlay::vpc::Vpc;
     use ipnet::IpNet;
     use iptrie::{IpRTrieSet, Ipv4Prefix, Ipv6Prefix};
     use nat::stateless::config::tables::NatTables;
@@ -314,8 +315,14 @@ mod tests {
             remote_id: "12345".try_into().expect("Failed to create VPC ID"),
         };
 
-        let mut vni_table = PerVniTable::new(vni(100));
-        add_peering(&mut vni_table, &peering).expect("Failed to build NAT tables");
+        let vni = Vni::new_checked(100).unwrap();
+        let mut vpctable = VpcTable::new();
+        let mut vpc = Vpc::new("VPC", "12345", vni.as_u32()).unwrap();
+        vpc.peerings.push(peering.clone());
+        vpctable.add(vpc);
+
+        let mut vni_table = PerVniTable::new(vni);
+        add_peering(&mut vni_table, &peering, &vpctable).expect("Failed to build NAT tables");
     }
 
     #[test]

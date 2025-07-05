@@ -173,12 +173,30 @@ mod tests {
             remote_id: "67890".try_into().expect("Failed to create VPC ID"),
         };
 
+        // This code is extremely convoluted
+        let mut vpctable = VpcTable::new();
+
+        // vpc-1
+        let vni1 = Vni::new_checked(100).unwrap();
+        let mut vpc1 = Vpc::new("VPC-1", "67890", vni1.as_u32()).unwrap();
+        vpc1.peerings.push(peering1.clone());
+        vpctable.add(vpc1);
+
+        // vpc-2
+        let vni2 = Vni::new_checked(200).unwrap();
+        let mut vpc2 = Vpc::new("VPC-2", "12345", vni2.as_u32()).unwrap();
+        vpc2.peerings.push(peering2.clone());
+        vpctable.add(vpc2);
+
         let mut nat_table = NatTables::new();
 
-        let mut vni_table1 = PerVniTable::new(vni(100));
-        table_extend::add_peering(&mut vni_table1, &peering1).expect("Failed to build NAT tables");
-        let mut vni_table2 = PerVniTable::new(vni(200));
-        table_extend::add_peering(&mut vni_table2, &peering2).expect("Failed to build NAT tables");
+        let mut vni_table1 = PerVniTable::new(vni1);
+        table_extend::add_peering(&mut vni_table1, &peering1, &vpctable)
+            .expect("Failed to build NAT tables");
+
+        let mut vni_table2 = PerVniTable::new(vni2);
+        table_extend::add_peering(&mut vni_table2, &peering2, &vpctable)
+            .expect("Failed to build NAT tables");
 
         nat_table.add_table(vni_table1);
         nat_table.add_table(vni_table2);
