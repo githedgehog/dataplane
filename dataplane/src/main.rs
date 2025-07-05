@@ -76,7 +76,7 @@ fn main() {
         }
     };
 
-    /* router configuration */
+    /* router parameters */
     let Ok(config) = RouterParamsBuilder::default()
         .cli_sock_path(args.cli_sock_path())
         .cpi_sock_path(args.cpi_sock_path())
@@ -87,18 +87,30 @@ fn main() {
         panic!("Bad router configuration");
     };
 
-    /* start router and create routing pipeline */
-    let (builder, router, vpcmapw, statsr, nattablew) = match start_router(config) {
-        Ok((router, pipeline, vpcmapw, statsr, nattablew)) => {
-            (move || pipeline, router, vpcmapw, statsr, nattablew)
-        }
+    // start the router and build a pipeline. `start_router` returns `InternalSetup` object
+    // that we deconstruct here to feed different components.
+    // TODO(fredi): reduce the number of args needed to start components by letting
+    // `start_router` already provide those grouped in the proper types.
+    let setup = match start_router(config) {
+        Ok(setup) => setup,
         Err(e) => {
             error!("Failed to start router: {e}");
             panic!("Failed to start router: {e}");
         }
     };
+
+    /* pipeline builder */
+    let builder = move || setup.pipeline;
+
+    /* mgmt: router objects */
+    let router = setup.router;
     let router_ctl = router.get_ctl_tx();
     let frr_agent_path = router.get_frr_agent_path().to_str().unwrap();
+
+    /* mgmt: nat table */
+    let nattablew = setup.nattable;
+    let vpcmapw = setup.vpcmapw;
+    let statsr = setup.statsr;
 
     /* start management */
     if let Err(e) = start_mgmt(grpc_addr, router_ctl, nattablew, frr_agent_path, vpcmapw) {
@@ -133,7 +145,7 @@ fn main() {
         None
     };
 
-    /* start driver with the provided pipeline */
+    /* start driver with the provided pipeline builder */
     match args.get_driver_name() {
         "dpdk" => {
             info!("Using driver DPDK...");
