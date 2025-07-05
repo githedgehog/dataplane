@@ -212,6 +212,7 @@ impl StatelessNat {
                     packet.get_meta_mut().dst_vni = Some(vni);
                 }
                 if modified {
+                    packet.update_checksums();
                     debug!("{nfi}: Packet was NAT'ed:\n{packet}");
                 } else {
                     debug!("{nfi}: No NAT translation needed");
