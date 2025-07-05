@@ -403,6 +403,48 @@ impl Vrf {
         };
     }
 
+    #[allow(unused)] // Not used
+    pub fn refresh_fib(&mut self, rstore: &RmacStore, resvrf: &Vrf) {
+        self.nhstore.lazy_resolve_all(resvrf);
+        self.nhstore.set_fibgroup_all(rstore);
+
+        let updates: Vec<(Prefix, FibGroup)> = self
+            .iter_v4()
+            .map(|(prefix, route)| {
+                let mut fibgroup = FibGroup::new();
+                for nhop in &route.s_nhops {
+                    let nhfibg = &*nhop.rc.fibgroup.borrow();
+                    fibgroup.extend(nhfibg);
+                }
+                (Prefix::IPV4(*prefix), fibgroup)
+            })
+            .collect(); /* collect to avoid borrow-checker complaints */
+        if let Some(fibw) = &mut self.fibw {
+            updates.into_iter().for_each(|(prefix, fibgroup)| {
+                fibw.add_fibgroup(prefix, fibgroup, false);
+            });
+            fibw.publish();
+        }
+    }
+
+    pub fn refresh_fib_updates(&self, rstore: &RmacStore, resvrf: &Vrf) -> Vec<(Prefix, FibGroup)> {
+        self.nhstore.lazy_resolve_all(resvrf);
+        self.nhstore.set_fibgroup_all(rstore);
+
+        let updates: Vec<(Prefix, FibGroup)> = self
+            .iter_v4()
+            .map(|(prefix, route)| {
+                let mut fibgroup = FibGroup::new();
+                for nhop in &route.s_nhops {
+                    let nhfibg = &*nhop.rc.fibgroup.borrow();
+                    fibgroup.extend(nhfibg);
+                }
+                (Prefix::IPV4(*prefix), fibgroup)
+            })
+            .collect();
+        updates
+    }
+
     pub fn add_route_complete(
         &mut self,
         prefix: &Prefix,
@@ -434,9 +476,8 @@ impl Vrf {
                 let nhfibg = &*nhop.rc.fibgroup.borrow();
                 fibgroup.extend(nhfibg);
             }
-
             // add to fib
-            fibw.add_fibgroup(*prefix, fibgroup);
+            fibw.add_fibgroup(*prefix, fibgroup, true);
         }
 
         // store the route
@@ -448,10 +489,6 @@ impl Vrf {
         if let Some(mut prior) = prior {
             self.deregister_shared_nexthops(&mut prior);
         }
-
-        // FIXME(fredi): we still lack the re-resolution of overlay next-hops in case
-        // underlay routing changes. Such changes will be addressed in subsequent PRs
-        // as they entail larger changes.
     }
 
     /////////////////////////////////////////////////////////////////////////

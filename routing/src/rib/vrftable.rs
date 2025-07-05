@@ -225,6 +225,14 @@ impl VrfTable {
         self.by_id.get(&vrfid).ok_or(RouterError::NoSuchVrf)
     }
 
+    pub fn get_default_vrf(&self) -> &Vrf {
+        self.by_id.get(&0_u32).unwrap_or_else(|| unreachable!())
+    }
+
+    pub fn get_default_vrf_mut(&mut self) -> &mut Vrf {
+        self.by_id.get_mut(&0_u32).unwrap_or_else(|| unreachable!())
+    }
+
     //////////////////////////////////////////////////////////////////
     /// Mutably access a VRF from its id.
     //////////////////////////////////////////////////////////////////

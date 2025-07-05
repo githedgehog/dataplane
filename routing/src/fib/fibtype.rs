@@ -358,8 +358,13 @@ impl FibWriter {
     pub fn get_id(&self) -> Option<FibId> {
         self.0.enter().map(|fib| fib.get_id())
     }
-    pub fn add_fibgroup(&mut self, prefix: Prefix, group: FibGroup) {
+    pub fn add_fibgroup(&mut self, prefix: Prefix, group: FibGroup, publish: bool) {
         self.0.append(FibChange::AddFibGroup((prefix, group)));
+        if publish {
+            self.0.publish();
+        }
+    }
+    pub fn publish(&mut self) {
         self.0.publish();
     }
     pub fn del_fibgroup(&mut self, prefix: Prefix) {

@@ -3,9 +3,13 @@
 
 //! Main processing functions of the CPI
 
-use crate::evpn::RmacEntry;
+use crate::rib::Vrf;
+use crate::rib::VrfTable;
 use crate::routingdb::RoutingDb;
 use crate::rpc_adapt::is_evpn_route;
+use crate::{evpn::RmacEntry, fib::fibobjects::FibGroup};
+use crate::{evpn::RmacStore, prefix::Prefix};
+
 use bytes::Bytes;
 use dplane_rpc::msg::*;
 use dplane_rpc::socks::RpcCachedSock;
@@ -63,6 +67,41 @@ fn nonlocal_nhop(iproute: &IpRoute) -> bool {
     false
 }
 
+// Fixme(fredi): remove this
+fn update_vrf(vrf: &mut Vrf, rmac_store: &RmacStore) {
+    let updates = vrf.refresh_fib_updates(rmac_store, vrf);
+    if let Some(fibw) = &mut vrf.fibw {
+        updates.into_iter().for_each(|(prefix, fibgroup)| {
+            fibw.add_fibgroup(prefix, fibgroup, false);
+        });
+        fibw.publish();
+    }
+}
+
+// Fixme(fredi): remove this
+fn update_vrfs(vrftable: &mut VrfTable, rmac_store: &RmacStore) {
+    let vrf0 = vrftable.get_default_vrf_mut();
+    update_vrf(vrf0, rmac_store);
+    let vrf0 = vrftable.get_default_vrf();
+
+    let updates: Vec<(u32, Vec<(Prefix, FibGroup)>)> = vrftable
+        .values()
+        .filter(|vrf| vrf.vrfid != 0)
+        .map(|vrf| (vrf.vrfid, vrf.refresh_fib_updates(rmac_store, vrf0)))
+        .collect();
+
+    for (vrfid, updates) in &updates {
+        if let Ok(vrf) = vrftable.get_vrf_mut(*vrfid) {
+            if let Some(fibw) = &mut vrf.fibw {
+                updates.into_iter().for_each(|(prefix, fibgroup)| {
+                    fibw.add_fibgroup(*prefix, fibgroup.clone(), false); // avoid this clone
+                });
+                fibw.publish();
+            }
+        }
+    }
+}
+
 impl RpcOperation for IpRoute {
     type ObjectStore = RoutingDb;
     #[allow(unused_mut)]
@@ -78,11 +117,11 @@ impl RpcOperation for IpRoute {
             };
             vrf.add_route_rpc(self, Some(vrf0), rmac_store, iftabler);
         } else {
-            let Ok(vrf) = vrftable.get_vrf_mut(self.vrfid) else {
+            let Ok(vrf0) = vrftable.get_vrf_mut(self.vrfid) else {
                 error!("Unable to find VRF with id {}", self.vrfid);
                 return RpcResultCode::Failure;
             };
-            vrf.add_route_rpc(self, None, rmac_store, iftabler);
+            vrf0.add_route_rpc(self, None, rmac_store, iftabler);
         }
         RpcResultCode::Ok
     }
@@ -225,11 +264,17 @@ fn handle_request(
             RpcOp::Del => rmac.del(db),
             _ => RpcResultCode::InvalidRequest,
         },
-        Some(RpcObject::IpRoute(route)) => match op {
-            RpcOp::Add | RpcOp::Update => route.add(db),
-            RpcOp::Del => route.del(db),
-            _ => RpcResultCode::InvalidRequest,
-        },
+        Some(RpcObject::IpRoute(route)) => {
+            let res = match op {
+                RpcOp::Add | RpcOp::Update => route.add(db),
+                RpcOp::Del => route.del(db),
+                _ => RpcResultCode::InvalidRequest,
+            };
+            if route.vrfid == 0 {
+                update_vrfs(&mut db.vrftable, &db.rmac_store);
+            }
+            res
+        }
         Some(RpcObject::ConnectInfo(conninfo)) => match op {
             RpcOp::Connect => conninfo.connect(),
             _ => RpcResultCode::InvalidRequest,
