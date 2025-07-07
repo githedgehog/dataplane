@@ -15,7 +15,7 @@ mod test;
 
 use crate::models::external::overlay::vpc::{Peering, VpcTable};
 use crate::models::external::overlay::vpcpeering::VpcExpose;
-use nat::stateless::config::tables::{NatPrefixRuleTable, PerVniTable, TrieValue};
+use nat::stateless::config::tables::{NatPrefixRuleTable, NatTableValue, PerVniTable};
 use net::vxlan::Vni;
 use routing::prefix::Prefix;
 use std::collections::BTreeSet;
@@ -31,26 +31,26 @@ pub enum NatPeeringError {
     MalformedPeering,
 }
 
-fn generate_trie_values<'a>(
+fn generate_nat_values<'a>(
     vni: Vni,
     prefixes_to_update: &'a BTreeSet<Prefix>,
     prefixes_to_point_to: &'a BTreeSet<Prefix>,
-) -> impl Iterator<Item = Result<TrieValue, NatPeeringError>> {
+) -> impl Iterator<Item = Result<NatTableValue, NatPeeringError>> {
     range_builder::RangeBuilder::<'a>::new(vni, prefixes_to_update, prefixes_to_point_to)
 }
 
-fn generate_public_trie_values(
+fn generate_public_values(
     vni: Vni,
     expose: &VpcExpose,
-) -> impl Iterator<Item = Result<TrieValue, NatPeeringError>> {
-    generate_trie_values(vni, &expose.ips, &expose.as_range)
+) -> impl Iterator<Item = Result<NatTableValue, NatPeeringError>> {
+    generate_nat_values(vni, &expose.ips, &expose.as_range)
 }
 
-fn generate_private_trie_values(
+fn generate_private_values(
     vni: Vni,
     expose: &VpcExpose,
-) -> impl Iterator<Item = Result<TrieValue, NatPeeringError>> {
-    generate_trie_values(vni, &expose.as_range, &expose.ips)
+) -> impl Iterator<Item = Result<NatTableValue, NatPeeringError>> {
+    generate_nat_values(vni, &expose.as_range, &expose.ips)
 }
 
 // Note: add_peering(table, peering) should be part of PerVniTable, but we prefer to keep it in a
@@ -80,7 +80,7 @@ pub fn add_peering(
         let mut peering_table = NatPrefixRuleTable::new();
 
         // For each private prefix, add an entry containing the set of public prefixes
-        generate_public_trie_values(table.vni, expose).try_for_each(|value| {
+        generate_public_values(table.vni, expose).try_for_each(|value| {
             peering_table
                 .insert(&value?)
                 .map_err(|_| NatPeeringError::EntryExists)
@@ -101,7 +101,7 @@ pub fn add_peering(
     // Update table for destination NAT
     new_peering.remote.exposes.iter().try_for_each(|expose| {
         // For each public prefix, add an entry containing the set of private prefixes
-        generate_private_trie_values(remote_vni, expose).try_for_each(|value| {
+        generate_private_values(remote_vni, expose).try_for_each(|value| {
             table
                 .dst_nat
                 .insert(&value?)

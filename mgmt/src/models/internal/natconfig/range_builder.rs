@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use super::NatPeeringError;
-use nat::stateless::config::tables::TrieValue;
+use nat::stateless::config::tables::NatTableValue;
 use net::vxlan::Vni;
 use routing::prefix::{Prefix, PrefixSize};
 use std::cmp::Ordering;
@@ -99,7 +99,7 @@ impl<'a> RangeBuilder<'a> {
 }
 
 impl Iterator for RangeBuilder<'_> {
-    type Item = Result<TrieValue, NatPeeringError>;
+    type Item = Result<NatTableValue, NatPeeringError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.offset_cursor_orig >= PrefixSize::Ipv6MaxAddrs
@@ -122,7 +122,7 @@ impl Iterator for RangeBuilder<'_> {
                 let target_prefix_size = target_prefix.size();
 
                 // Create new range based on current cursor values
-                let mut value = TrieValue {
+                let mut value = NatTableValue {
                     vni: Some(self.vni),
                     orig_range_start: orig_addr,
                     orig_range_end: orig_addr,

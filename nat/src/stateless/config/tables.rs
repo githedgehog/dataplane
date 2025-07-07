@@ -80,7 +80,7 @@ impl PerVniTable {
     /// Returns the NAT ranges information associated with the given address if it is present in the
     /// table. If the address is not present, it returns `None`.
     #[must_use]
-    pub fn lookup_src_prefixes(&self, saddr: &IpAddr, daddr: &IpAddr) -> Option<TrieValue> {
+    pub fn lookup_src_prefixes(&self, saddr: &IpAddr, daddr: &IpAddr) -> Option<NatTableValue> {
         debug!("Looking up src prefixes for src: {saddr} dst: {daddr}...");
         // Find relevant table for involved peer
         let peer_indices = self.src_nat_peers.lookup(daddr)?;
@@ -102,7 +102,7 @@ impl PerVniTable {
     /// Returns the NAT ranges information associated with the given address if it is present in the
     /// table. If the address is not present, it returns `None`.
     #[must_use]
-    pub fn lookup_dst_prefixes(&self, addr: &IpAddr) -> Option<TrieValue> {
+    pub fn lookup_dst_prefixes(&self, addr: &IpAddr) -> Option<NatTableValue> {
         debug!("Looking up dst prefixes for address: {addr}...");
         self.dst_nat.lookup(addr)
     }
@@ -112,7 +112,7 @@ impl PerVniTable {
         &self,
         src: IpAddr,
         dst: IpAddr,
-    ) -> (Option<TrieValue>, Option<TrieValue>) {
+    ) -> (Option<NatTableValue>, Option<NatTableValue>) {
         let src_nat_ranges = self.lookup_src_prefixes(&src, &dst);
         let dst_nat_ranges = self.lookup_dst_prefixes(&dst);
         (src_nat_ranges, dst_nat_ranges)
@@ -142,7 +142,7 @@ impl NatPrefixRuleTable {
     ///
     /// Returns an error if the IP version of the address does not match the IP version of the IP
     /// addresses in the value.
-    pub fn insert(&mut self, value: &TrieValue) -> Result<(), NatTablesError> {
+    pub fn insert(&mut self, value: &NatTableValue) -> Result<(), NatTablesError> {
         match (
             value.orig_range_start,
             value.orig_range_end,
@@ -180,15 +180,19 @@ impl NatPrefixRuleTable {
     /// Returns the value associated with the given address if it is present in the table. If the
     /// address is not present, it returns `None`.
     #[must_use]
-    pub fn lookup(&self, addr: &IpAddr) -> Option<TrieValue> {
+    pub fn lookup(&self, addr: &IpAddr) -> Option<NatTableValue> {
         match addr {
             IpAddr::V4(ip) => {
-                let value = self.rules_v4.range(..=ip).next_back().map(|v| TrieValue {
-                    vni: v.1.0,
-                    orig_range_start: IpAddr::V4(*v.0),
-                    orig_range_end: IpAddr::V4(v.1.1),
-                    target_range_start: IpAddr::V4(v.1.2),
-                });
+                let value = self
+                    .rules_v4
+                    .range(..=ip)
+                    .next_back()
+                    .map(|v| NatTableValue {
+                        vni: v.1.0,
+                        orig_range_start: IpAddr::V4(*v.0),
+                        orig_range_end: IpAddr::V4(v.1.1),
+                        target_range_start: IpAddr::V4(v.1.2),
+                    });
                 match value {
                     Some(v) if v.orig_range_end < *ip => None,
                     Some(v) => Some(v),
@@ -196,12 +200,16 @@ impl NatPrefixRuleTable {
                 }
             }
             IpAddr::V6(ip) => {
-                let value = self.rules_v6.range(..=ip).next_back().map(|v| TrieValue {
-                    vni: v.1.0,
-                    orig_range_start: IpAddr::V6(*v.0),
-                    orig_range_end: IpAddr::V6(v.1.1),
-                    target_range_start: IpAddr::V6(v.1.2),
-                });
+                let value = self
+                    .rules_v6
+                    .range(..=ip)
+                    .next_back()
+                    .map(|v| NatTableValue {
+                        vni: v.1.0,
+                        orig_range_start: IpAddr::V6(*v.0),
+                        orig_range_end: IpAddr::V6(v.1.1),
+                        target_range_start: IpAddr::V6(v.1.2),
+                    });
                 match value {
                     Some(v) if v.orig_range_end < *ip => None,
                     Some(v) => Some(v),
@@ -264,7 +272,7 @@ impl Default for NatPeerRuleTable {
 /// A value associated with a prefix in the table, and that encapsulates all information required to
 /// perform the address mapping for stateless NAT.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrieValue {
+pub struct NatTableValue {
     pub vni: Option<Vni>,
     pub orig_range_start: IpAddr,
     pub orig_range_end: IpAddr,

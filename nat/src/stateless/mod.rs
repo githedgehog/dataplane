@@ -7,7 +7,7 @@ pub mod config;
 pub mod natrw;
 
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
-use config::tables::{NatTables, PerVniTable, TrieValue};
+use config::tables::{NatTableValue, NatTables, PerVniTable};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ipv4::UnicastIpv4Addr;
@@ -70,7 +70,7 @@ fn addr_from_offset(range_start: &IpAddr, offset: u128) -> Result<IpAddr, NatErr
 
 fn map_ip_nat(
     stage_name: &str,
-    ranges: &TrieValue,
+    ranges: &NatTableValue,
     current_ip: &IpAddr,
 ) -> Result<IpAddr, NatError> {
     let offset = addr_offset_in_range(&ranges.orig_range_start, current_ip)?;
@@ -123,7 +123,11 @@ impl StatelessNat {
     /// # Errors
     /// Returns `NatError::UnsupportedTranslation` if the translation is unsupported. On success, returns `Ok` indicating
     /// if the address did actually change or not, since the NAT module may map it to the same address.
-    fn translate_src(&self, net: &mut Net, ranges_src_nat: &TrieValue) -> Result<bool, NatError> {
+    fn translate_src(
+        &self,
+        net: &mut Net,
+        ranges_src_nat: &NatTableValue,
+    ) -> Result<bool, NatError> {
         let nfi = self.name();
         let current_src = net.src_addr();
         let target_src = map_ip_nat(nfi, ranges_src_nat, &current_src)
@@ -154,7 +158,11 @@ impl StatelessNat {
     /// # Errors
     /// Returns `NatError::UnsupportedTranslation` if the translation is unsupported. On success, returns `Ok` indicating
     /// if the address did actually change or not, since the NAT module may map it to the same address.
-    fn translate_dst(&self, net: &mut Net, ranges_dst_nat: &TrieValue) -> Result<bool, NatError> {
+    fn translate_dst(
+        &self,
+        net: &mut Net,
+        ranges_dst_nat: &NatTableValue,
+    ) -> Result<bool, NatError> {
         let nfi = self.name();
         let current_dst = net.dst_addr();
         let target_dst = map_ip_nat(nfi, ranges_dst_nat, &current_dst)
