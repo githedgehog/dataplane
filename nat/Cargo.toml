@@ -19,11 +19,9 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 # internal
-net = { workspace = true, features = ["bolero"] }
 routing = { workspace = true, features = ["testing"] }
 
 # external
-bolero = { workspace = true, default-features = false, features = ["alloc"] }
 tracing-test = { workspace = true, features = [] }
 
 [lints.rust]
