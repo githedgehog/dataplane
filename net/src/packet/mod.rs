@@ -191,6 +191,12 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// This is extremely unlikely in that the maximum mbuf length is far less than that, and we
     /// don't currently support multi-segment packets.
     pub fn vxlan_encap(&mut self, params: &VxlanEncap) -> Result<(), <Buf as Prepend>::Error> {
+        // refresh checksums if told to. N.B. this is DISABLED as the (single) caller does this.
+        // TODO: decide if this should be done here or not.
+        #[allow(clippy::overly_complex_bool_expr)]
+        if false && self.get_meta().refresh_chksums {
+            self.update_checksums();
+        }
         //compute room required
         let needed = self.headers.size().get();
         let buf = self.payload.prepend(needed)?;
@@ -244,6 +250,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Update the network and transport checksums based on the current headers.
     pub fn update_checksums(&mut self) -> &mut Self {
         self.headers.update_checksums(&self.payload);
+        self.get_meta_mut().refresh_chksums = false;
         self
     }
 
