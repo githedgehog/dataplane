@@ -246,10 +246,14 @@ impl IpForwarder {
             return;
         }
 
-        // make sure ipv4 checksum is updated. This is needed because we decremented the TTL of the
-        // inner packet.
-        if let Some(ipv4) = packet.headers_mut().try_ipv4_mut() {
+        // If packet requires updating checksums (e.g. because it was natted), do so.
+        // Otherwise, refresh at least the ipv4 checksum, as we decremented the TTL.
+        if packet.get_meta().refresh_chksums {
+            packet.update_checksums();
+        } else if let Some(ipv4) = packet.headers_mut().try_ipv4_mut() {
             ipv4.update_checksum(&());
+        } else {
+            unreachable!()
         }
 
         // build vxlan headers for encapsulation

@@ -189,7 +189,7 @@ impl StatelessNat {
 
         /* get per vni table */
         let Some(table) = nat_tables.get_table(vni) else {
-            error!("{nfi}: Cant't find nat tables for vni {vni}");
+            error!("{nfi}: Can't find nat tables for vni {vni}");
             packet.done(DoneReason::Unroutable);
             return;
         };
@@ -212,7 +212,7 @@ impl StatelessNat {
                     packet.get_meta_mut().dst_vni = Some(vni);
                 }
                 if modified {
-                    packet.update_checksums();
+                    packet.get_meta_mut().refresh_chksums = true;
                     debug!("{nfi}: Packet was NAT'ed:\n{packet}");
                 } else {
                     debug!("{nfi}: No NAT translation needed");
