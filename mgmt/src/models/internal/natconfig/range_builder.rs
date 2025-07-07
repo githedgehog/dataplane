@@ -231,3 +231,147 @@ impl Iterator for RangeBuilder<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::str::FromStr;
+
+    fn addr_v4(addr: &str) -> IpAddr {
+        Ipv4Addr::from_str(addr).unwrap().into()
+    }
+
+    fn generate_nat_values<'a>(
+        vni: Vni,
+        prefixes_to_update: &'a BTreeSet<Prefix>,
+        prefixes_to_point_to: &'a BTreeSet<Prefix>,
+    ) -> impl Iterator<Item = Result<NatTableValue, NatPeeringError>> {
+        RangeBuilder::<'a>::new(vni, prefixes_to_update, prefixes_to_point_to)
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn test_generate_nat_values() {
+        let vni = Vni::new_checked(100).expect("Failed to create VNI");
+
+        let prefixes_to_update = BTreeSet::from([
+            "1.0.0.0/24".into(),
+            "2.0.0.0/24".into(),
+            "3.0.0.0/24".into(),
+            "4.0.0.0/24".into(),
+            "5.0.0.0/16".into(),
+            "6.0.0.0/32".into(),
+        ]);
+        let prefixes_to_point_to = BTreeSet::from([
+            "10.0.0.0/16".into(),
+            "11.0.0.0/22".into(),
+            "12.0.0.0/32".into(),
+        ]);
+
+        let size_left = prefixes_to_update
+            .iter()
+            .map(|p: &Prefix| p.size())
+            .sum::<PrefixSize>();
+        let size_right = prefixes_to_point_to
+            .iter()
+            .map(|p: &Prefix| p.size())
+            .sum::<PrefixSize>();
+
+        // Sanity check for the test
+        assert_eq!(size_left, size_right);
+
+        let mut nat_ranges = generate_nat_values(vni, &prefixes_to_update, &prefixes_to_point_to);
+
+        assert_eq!(
+            nat_ranges
+                .next()
+                .expect("Failed to get next NAT values")
+                .expect("Error when building NAT value"),
+            NatTableValue {
+                vni: Some(vni),
+                orig_range_start: addr_v4("1.0.0.0"),
+                orig_range_end: addr_v4("1.0.0.255"),
+                target_range_start: addr_v4("10.0.0.0"),
+            }
+        );
+
+        assert_eq!(
+            nat_ranges
+                .next()
+                .expect("Failed to get next NAT values")
+                .expect("Error when building NAT value"),
+            NatTableValue {
+                vni: Some(vni),
+                orig_range_start: addr_v4("2.0.0.0"),
+                orig_range_end: addr_v4("2.0.0.255"),
+                target_range_start: addr_v4("10.0.1.0"),
+            }
+        );
+
+        assert_eq!(
+            nat_ranges
+                .next()
+                .expect("Failed to get next NAT values")
+                .expect("Error when building NAT value"),
+            NatTableValue {
+                vni: Some(vni),
+                orig_range_start: addr_v4("3.0.0.0"),
+                orig_range_end: addr_v4("3.0.0.255"),
+                target_range_start: addr_v4("10.0.2.0"),
+            }
+        );
+
+        assert_eq!(
+            nat_ranges
+                .next()
+                .expect("Failed to get next NAT values")
+                .expect("Error when building NAT value"),
+            NatTableValue {
+                vni: Some(vni),
+                orig_range_start: addr_v4("4.0.0.0"),
+                orig_range_end: addr_v4("4.0.0.255"),
+                target_range_start: addr_v4("10.0.3.0"),
+            }
+        );
+
+        assert_eq!(
+            nat_ranges
+                .next()
+                .expect("Failed to get next NAT values")
+                .expect("Error when building NAT value"),
+            NatTableValue {
+                vni: Some(vni),
+                orig_range_start: addr_v4("5.0.0.0"),
+                orig_range_end: addr_v4("5.0.251.255"),
+                target_range_start: addr_v4("10.0.4.0"),
+            }
+        );
+
+        assert_eq!(
+            nat_ranges
+                .next()
+                .expect("Failed to get next NAT values")
+                .expect("Error when building NAT value"),
+            NatTableValue {
+                vni: Some(vni),
+                orig_range_start: addr_v4("5.0.252.0"),
+                orig_range_end: addr_v4("5.0.255.255"),
+                target_range_start: addr_v4("11.0.0.0"),
+            }
+        );
+
+        assert_eq!(
+            nat_ranges
+                .next()
+                .expect("Failed to get next NAT values")
+                .expect("Error when building NAT value"),
+            NatTableValue {
+                vni: Some(vni),
+                orig_range_start: addr_v4("6.0.0.0"),
+                orig_range_end: addr_v4("6.0.0.0"),
+                target_range_start: addr_v4("12.0.0.0"),
+            }
+        );
+    }
+}
