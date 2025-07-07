@@ -30,7 +30,6 @@ procfs = { workspace = true }
 netdev = { workspace = true }
 
 [dev-dependencies]
-bolero = { workspace = true, default-features = false }
 serde_yml = { workspace = true }
 tracing-test = { workspace = true, features = [] }
 
