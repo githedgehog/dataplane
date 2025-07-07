@@ -74,14 +74,14 @@ pub(crate) struct CmdArgs {
     )]
     frr_agent_path: String,
 
-    /// Prometheus metrics server port
+    /// Prometheus metrics server bind address
     #[arg(
         long,
-        value_name = "PORT",
-        default_value_t = 9090,
-        help = "Port for Prometheus metrics HTTP endpoint"
+        value_name = "Metrics Address and Port",
+        default_value = "127.0.0.1:9090",
+        help = "Bind address and port for Prometheus metrics HTTP endpoint (e.g., 127.0.0.1:9090, 0.0.0.0:8080)"
     )]
-    metrics_port: u16,
+    metrics_address: String,
 
     /// Disable Prometheus metrics server
     #[arg(long, help = "Disable the Prometheus metrics HTTP endpoint")]
@@ -189,17 +189,29 @@ impl CmdArgs {
         self.frr_agent_path.clone()
     }
 
-    /// Get the metrics port, returns None if metrics are disabled
-    pub fn metrics_port(&self) -> Option<u16> {
+    /// Get the metrics bind address, returns None if metrics are disabled
+    pub fn metrics_address(&self) -> Option<Result<SocketAddr, String>> {
         if self.disable_metrics {
             None
         } else {
-            Some(self.metrics_port)
+            Some(self.parse_metrics_address())
         }
+    }
+
+    /// Parse the metrics address string into a socket address
+    fn parse_metrics_address(&self) -> Result<SocketAddr, String> {
+        self.metrics_address
+            .parse::<SocketAddr>()
+            .map_err(|e| format!("Invalid metrics address '{}': {}", self.metrics_address, e))
     }
 
     /// Check if metrics are enabled
     pub fn metrics_enabled(&self) -> bool {
         !self.disable_metrics
+    }
+
+    /// Get the raw metrics address string
+    pub fn metrics_address_string(&self) -> &str {
+        &self.metrics_address
     }
 }

@@ -4,7 +4,6 @@
 use axum::{Router, http::StatusCode, response::Response, routing::get};
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 use stats::PacketStatsReader;
-use std::sync::Arc;
 use tracing::{error, info};
 
 pub mod global_counters;
@@ -56,18 +55,17 @@ async fn metrics_handler(
     let metrics = handler.render_metrics();
     Response::builder()
         .status(StatusCode::OK)
-        .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        .header("Content-Type", "text/plain; version=1.0.0; charset=utf-8")
         .body(metrics)
         .unwrap()
 }
 
 /// Start the metrics server
 pub fn start_metrics_server(
-    port: u16,
+    addr: std::net::SocketAddr,
     statsr: PacketStatsReader,
-) -> Result<(std::thread::JoinHandle<()>, Arc<PrometheusHandler>), Box<dyn std::error::Error>> {
-    let prometheus_handler = Arc::new(PrometheusHandler::new(statsr)?);
-    let handler_for_thread = prometheus_handler.clone();
+) -> Result<std::thread::JoinHandle<()>, Box<dyn std::error::Error>> {
+    let prometheus_handler = PrometheusHandler::new(statsr)?;
 
     let handle = std::thread::Builder::new()
         .name("metrics-server".to_string())
@@ -85,9 +83,7 @@ pub fn start_metrics_server(
             rt.block_on(async {
                 let app = Router::new()
                     .route("/metrics", get(metrics_handler))
-                    .with_state(handler_for_thread.as_ref().clone());
-
-                let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+                    .with_state(prometheus_handler);
 
                 info!("Metrics server listening on {}", addr);
 
@@ -97,5 +93,5 @@ pub fn start_metrics_server(
             });
         })?;
 
-    Ok((handle, prometheus_handler))
+    Ok(handle)
 }
