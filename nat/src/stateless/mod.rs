@@ -68,8 +68,16 @@ fn addr_from_offset(range_start: &IpAddr, offset: u128) -> Result<IpAddr, NatErr
     }
 }
 
-fn map_ip_nat(ranges: &TrieValue, current_ip: &IpAddr) -> Result<IpAddr, NatError> {
+fn map_ip_nat(
+    stage_name: &str,
+    ranges: &TrieValue,
+    current_ip: &IpAddr,
+) -> Result<IpAddr, NatError> {
     let offset = addr_offset_in_range(&ranges.orig_range_start, current_ip)?;
+    debug!(
+        "{stage_name}: Mapping {current_ip} from range {}-{} to range {}: found offset {offset}",
+        ranges.orig_range_start, ranges.orig_range_end, ranges.target_range_start
+    );
     addr_from_offset(&ranges.target_range_start, offset)
 }
 
@@ -118,7 +126,7 @@ impl StatelessNat {
     fn translate_src(&self, net: &mut Net, ranges_src_nat: &TrieValue) -> Result<bool, NatError> {
         let nfi = self.name();
         let current_src = net.src_addr();
-        let target_src = map_ip_nat(ranges_src_nat, &current_src)
+        let target_src = map_ip_nat(nfi, ranges_src_nat, &current_src)
             .map_err(|_| NatError::MappingError(current_src))?;
         if target_src == current_src {
             return Ok(false);
@@ -149,7 +157,7 @@ impl StatelessNat {
     fn translate_dst(&self, net: &mut Net, ranges_dst_nat: &TrieValue) -> Result<bool, NatError> {
         let nfi = self.name();
         let current_dst = net.dst_addr();
-        let target_dst = map_ip_nat(ranges_dst_nat, &current_dst)
+        let target_dst = map_ip_nat(nfi, ranges_dst_nat, &current_dst)
             .map_err(|_| NatError::MappingError(current_dst))?;
         if target_dst == current_dst {
             return Ok(false);
