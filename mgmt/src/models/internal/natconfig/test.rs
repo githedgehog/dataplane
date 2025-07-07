@@ -18,7 +18,7 @@ mod tests {
     use crate::models::internal::interfaces::interface::InterfaceConfig;
     use crate::models::internal::interfaces::interface::InterfaceConfigTable;
     use crate::models::internal::interfaces::interface::{IfVtepConfig, InterfaceType};
-    use crate::models::internal::natconfig::table_extend;
+    use crate::models::internal::natconfig;
     use crate::models::internal::routing::bgp::BgpConfig;
     use crate::models::internal::routing::vrf::VrfConfig;
     use nat::StatelessNat;
@@ -191,11 +191,11 @@ mod tests {
         let mut nat_table = NatTables::new();
 
         let mut vni_table1 = PerVniTable::new(vni1);
-        table_extend::add_peering(&mut vni_table1, &peering1, &vpctable)
+        natconfig::add_peering(&mut vni_table1, &peering1, &vpctable)
             .expect("Failed to build NAT tables");
 
         let mut vni_table2 = PerVniTable::new(vni2);
-        table_extend::add_peering(&mut vni_table2, &peering2, &vpctable)
+        natconfig::add_peering(&mut vni_table2, &peering2, &vpctable)
             .expect("Failed to build NAT tables");
 
         nat_table.add_table(vni_table1);
