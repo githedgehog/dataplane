@@ -107,20 +107,28 @@ fn main() {
     }
 
     // Start metrics server early in the process
-    let metrics_port = args.metrics_port().unwrap_or(9090);
-    let metrics_handle = match start_metrics_server(metrics_port, statsr) {
-        Ok(handle) => {
-            info!(
-                "Metrics server started on http://0.0.0.0:{}/metrics",
-                metrics_port
-            );
-            Some(handle)
+    let metrics_handle = if let Some(metrics_addr_result) = args.metrics_address() {
+        match metrics_addr_result {
+            Ok(metrics_addr) => match start_metrics_server(metrics_addr, statsr.clone()) {
+                Ok(handle) => {
+                    info!("Metrics server started on http://{metrics_addr}/metrics");
+                    Some(handle)
+                }
+                Err(e) => {
+                    error!("Failed to start metrics server: {}", e);
+                    warn!("Continuing without metrics...");
+                    None
+                }
+            },
+            Err(e) => {
+                error!("Invalid metrics address configuration: {}", e);
+                warn!("Continuing without metrics...");
+                None
+            }
         }
-        Err(e) => {
-            error!("Failed to start metrics server: {}", e);
-            warn!("Continuing without metrics...");
-            None
-        }
+    } else {
+        info!("Metrics server disabled");
+        None
     };
 
     /* start driver with the provided pipeline */
@@ -141,10 +149,9 @@ fn main() {
 
     info!("All components started successfully. Gateway is running.");
     if metrics_handle.is_some() {
-        info!(
-            "Metrics available at http://0.0.0.0:{}/metrics",
-            metrics_port
-        );
+        if let Some(Ok(addr)) = args.metrics_address() {
+            info!("Metrics available at http://{addr}/metrics");
+        }
     }
 
     stop_rx.recv().expect("failed to receive stop signal");
