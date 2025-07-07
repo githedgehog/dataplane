@@ -50,7 +50,6 @@ pub enum DoneReason {
     InterfaceOperDown,    /* interface is oper down : no link */
     InterfaceUnknown,     /* the interface cannot be found */
     InterfaceUnsupported, /* the operation is not supported on the interface */
-    VrfUnknown,           /* the vrf does not exist */
     NatOutOfResources,    /* can't do NAT due to lack of resources */
     RouteFailure,         /* missing routing information */
     RouteDrop,            /* routing explicitly requests pkts to be dropped */
@@ -61,11 +60,14 @@ pub enum DoneReason {
     InvalidDstMac,        /* dropped the packet since it had to have an invalid destination mac */
     Malformed,            /* the packet does not conform / is malformed */
     MissingEtherType,     /* can't determine ethertype to use */
+    Unroutable,           /* we don't have state to forward the packet */
+    NatFailure,           /* It was not possible to NAT the packet */
     Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
 }
 
 #[allow(unused)]
 #[derive(Debug, Default, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct PacketMeta {
     pub iif: InterfaceId,             /* incoming interface - set early */
     pub oif: Option<InterfaceId>,     /* outgoing interface - set late */
@@ -77,10 +79,16 @@ pub struct PacketMeta {
     pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
     pub src_vni: Option<Vni>, /* the vni value of a received vxlan encap packet, if destined to gateway */
     pub dst_vni: Option<Vni>, /* the vni value of a vxlan packet re-encapsulated by the gateway */
-
-    #[cfg(test)]
-    /* Keep the Packet in spite of calling packet.enforce(). This is for testing */
-    pub keep: bool,
+    pub nat: bool,            /* if true, NAT stage should attempt to nat the packet */
+    pub keep: bool,           /* Keep the Packet even if it should be dropped */
+}
+impl PacketMeta {
+    pub(crate) fn new(keep: bool) -> Self {
+        Self {
+            keep,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Default, Debug)]
@@ -130,11 +138,11 @@ pub mod test {
         stats.incr(DoneReason::InterfaceAdmDown, 10);
         stats.incr(DoneReason::InterfaceAdmDown, 1);
         stats.incr(DoneReason::RouteFailure, 9);
-        stats.incr(DoneReason::VrfUnknown, 13);
+        stats.incr(DoneReason::Unroutable, 13);
 
         // look up some particular stats
         assert_eq!(stats.get_stat(DoneReason::InterfaceAdmDown), Some(11));
-        assert_eq!(stats.get_stat(DoneReason::VrfUnknown), Some(13));
+        assert_eq!(stats.get_stat(DoneReason::Unroutable), Some(13));
         assert_eq!(stats.get_stat(DoneReason::InterfaceUnsupported), None);
 
         // access the whole stats map

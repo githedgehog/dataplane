@@ -27,9 +27,14 @@ use crate::vpc_manager::{RequiredInformationBase, VpcManager};
 use rekon::{Observe, Reconcile};
 use tracing::{debug, error, info, warn};
 
+use nat::stateless::NatTablesWriter;
 use net::interface::display::MultiIndexInterfaceMapView;
 use net::interface::{Interface, InterfaceName};
 use routing::ctl::RouterCtlSender;
+
+use stats::VpcMapName;
+use vpcmap::VpcDiscriminant;
+use vpcmap::map::{VpcMap, VpcMapWriter};
 
 /// A request type to the `ConfigProcessor`
 #[derive(Debug)]
@@ -72,6 +77,8 @@ pub(crate) struct ConfigProcessor {
     frrmi: FrrMi,
     router_ctl: RouterCtlSender,
     vpc_mgr: VpcManager<RequiredInformationBase>,
+    vpcmapw: VpcMapWriter<VpcMapName>,
+    nattablew: NatTablesWriter,
 }
 
 impl ConfigProcessor {
@@ -81,6 +88,8 @@ impl ConfigProcessor {
     pub(crate) fn new(
         frrmi: FrrMi,
         router_ctl: RouterCtlSender,
+        vpcmapw: VpcMapWriter<VpcMapName>,
+        nattablew: NatTablesWriter,
     ) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
         let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
@@ -99,6 +108,8 @@ impl ConfigProcessor {
             frrmi,
             router_ctl,
             vpc_mgr,
+            vpcmapw,
+            nattablew,
         };
         (processor, tx)
     }
@@ -149,6 +160,8 @@ impl ConfigProcessor {
             current.as_deref(),
             &mut self.frrmi,
             &mut self.router_ctl,
+            &mut self.vpcmapw,
+            &mut self.nattablew,
         )
         .await?;
 
@@ -175,6 +188,8 @@ impl ConfigProcessor {
                 None,
                 &mut self.frrmi,
                 &mut self.router_ctl,
+                &mut self.vpcmapw,
+                &mut self.nattablew,
             )
             .await;
         }
@@ -342,6 +357,30 @@ async fn apply_router_config(
     Ok(())
 }
 
+/// refresh mappings for per vpc statistics
+fn update_stats_vpc_mappings(config: &GwConfig, vpcmapw: &mut VpcMapWriter<VpcMapName>) {
+    // create a mapping table frome the vpc table in the config
+    // FIXME(fredi): visibility
+    // FIXME(fredi): generalize the vpcmapName table
+    let vpc_table = &config.external.overlay.vpc_table;
+    let mut vpcmap = VpcMap::<VpcMapName>::new();
+    for vpc in vpc_table.values() {
+        let disc = VpcDiscriminant::VNI(vpc.vni);
+        let map = VpcMapName::new(disc, &vpc.name);
+        vpcmap
+            .add(VpcDiscriminant::VNI(vpc.vni), map)
+            .unwrap_or_else(|_| unreachable!());
+    }
+    vpcmapw.set_map(vpcmap);
+}
+
+/// Update the Nat tables for stateless NAT
+fn apply_nat_config(nattablesw: &mut NatTablesWriter, internal: &InternalConfig) {
+    if let Some(nat_table) = &internal.nat_table {
+        nattablesw.update_nat_tables(nat_table.clone());
+    }
+}
+
 /// Main function to apply a config
 async fn apply_gw_config(
     vpc_mgr: &VpcManager<RequiredInformationBase>,
@@ -349,14 +388,22 @@ async fn apply_gw_config(
     _current: Option<&GwConfig>,
     frrmi: &mut FrrMi,
     router_ctl: &mut RouterCtlSender,
+    vpcmapw: &mut VpcMapWriter<VpcMapName>,
+    nattablesw: &mut NatTablesWriter,
 ) -> ConfigResult {
     let genid = config.genid();
 
-    /* probe the FRR agent. If unreachable, there's no point in trying to apply a config */
-    frrmi
-        .probe()
-        .await
-        .map_err(|_| ConfigError::FrrAgentUnreachable)?;
+    /*
+       /* probe the FRR agent. If unreachable, there's no point in trying to apply a config */
+       let res: Result<(), ConfigError> = frrmi
+           .probe()
+           .await
+           .map_err(|_| ConfigError::FrrAgentUnreachable);
+
+       if genid != ExternalConfig::BLANK_GENID && res.is_err() {
+           return Err(ConfigError::FrrAgentUnreachable);
+       }
+    */
 
     /* make sure we built internal config */
     let Some(internal) = &config.internal else {
@@ -365,6 +412,13 @@ async fn apply_gw_config(
             "No internal config was built".to_string(),
         ));
     };
+
+    if genid == ExternalConfig::BLANK_GENID {
+        /* apply config with VPC manager */
+        vpc_mgr.apply_config(internal, genid).await?;
+        info!("Successfully applied config for genid {genid}");
+        return Ok(());
+    }
 
     /* lock the CPI to prevent updates on the routing db. No explicit unlocking is
     required. The CPI will be automatically unlocked when this guard goes out of scope */
@@ -384,6 +438,12 @@ async fn apply_gw_config(
 
     /* apply config in frr via the frrmi and frr-agent */
     apply_config_frr(frrmi, genid, internal).await?;
+
+    /* apply nat config */
+    apply_nat_config(nattablesw, internal);
+
+    /* update stats mappings */
+    update_stats_vpc_mappings(config, vpcmapw);
 
     info!("Successfully applied config for genid {genid}");
     Ok(())

@@ -3,8 +3,10 @@
 
 //! Dataplane configuration model: route maps
 
+use crate::models::external::{ConfigError, ConfigResult};
 use net::vxlan::Vni;
 use std::collections::{BTreeMap, BTreeSet};
+use tracing::error;
 
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum MatchingPolicy {
@@ -53,7 +55,6 @@ pub enum Community {
 
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub struct RouteMapEntry {
-    pub seq: u32,
     pub policy: MatchingPolicy,
     pub matches: Vec<RouteMapMatch>,
     pub actions: Vec<RouteMapSetAction>,
@@ -62,7 +63,8 @@ pub struct RouteMapEntry {
 #[derive(Clone, Debug)]
 pub struct RouteMap {
     pub name: String,
-    pub entries: BTreeSet<RouteMapEntry>,
+    next_seq: u32,
+    pub entries: BTreeMap<u32, RouteMapEntry>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -70,9 +72,8 @@ pub struct RouteMapTable(BTreeMap<String, RouteMap>);
 
 /* Impl basic ops */
 impl RouteMapEntry {
-    pub fn new(seq: u32, policy: MatchingPolicy) -> Self {
+    pub fn new(policy: MatchingPolicy) -> Self {
         Self {
-            seq,
             policy,
             matches: vec![],
             actions: vec![],
@@ -91,11 +92,29 @@ impl RouteMap {
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_owned(),
-            entries: BTreeSet::new(),
+            next_seq: 1,
+            entries: BTreeMap::new(),
         }
     }
-    pub fn add_entry(&mut self, entry: RouteMapEntry) {
-        self.entries.insert(entry);
+    pub fn add_entry(&mut self, seq: Option<u32>, entry: RouteMapEntry) -> ConfigResult {
+        let seq = match seq {
+            Some(n) => n,
+            None => {
+                let value = self.next_seq;
+                self.next_seq += 1;
+                value
+            }
+        };
+        if self.entries.contains_key(&seq) {
+            let msg = format!(
+                "Duplicate route-mape seq {} in route map {}",
+                seq, self.name
+            );
+            error!("{msg}");
+            return Err(ConfigError::InternalFailure(msg));
+        }
+        self.entries.insert(seq, entry);
+        Ok(())
     }
 }
 impl RouteMapTable {

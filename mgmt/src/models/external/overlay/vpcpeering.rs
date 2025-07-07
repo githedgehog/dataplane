@@ -58,7 +58,7 @@ impl VpcExpose {
             &self.not_as
         }
     }
-    pub fn requires_nat(&self) -> bool {
+    pub fn is_natted(&self) -> bool {
         !self.as_range.is_empty()
     }
 
@@ -208,7 +208,7 @@ impl VpcManifest {
                 // - expose_left.ips      / expose_right.as_range
                 // - expose_left.as_range / expose_right.ips
                 // (along with the respective exclusion prefixes).
-                if expose_left.requires_nat() || expose_right.requires_nat() {
+                if expose_left.is_natted() || expose_right.is_natted() {
                     validate_overlapping(
                         expose_left.public_ips(),
                         expose_left.public_excludes(),

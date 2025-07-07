@@ -58,8 +58,8 @@ impl InternalConfig {
             nat_table: None,
         }
     }
-    pub fn set_vtep(&mut self, vtep: VtepConfig) {
-        self.vtep = Some(vtep);
+    pub fn set_vtep(&mut self, vtep: Option<VtepConfig>) {
+        self.vtep = vtep;
     }
     pub fn get_vtep(&self) -> &Option<VtepConfig> {
         &self.vtep
@@ -69,6 +69,9 @@ impl InternalConfig {
     }
     pub fn add_prefix_list(&mut self, plist: PrefixList) {
         self.plist_table.add_prefix_list(plist);
+    }
+    pub fn add_prefix_lists(&mut self, plists: impl IntoIterator<Item = PrefixList>) {
+        self.plist_table.add_prefix_lists(plists);
     }
     pub fn add_route_map(&mut self, rmap: RouteMap) {
         self.rmap_table.add_route_map(rmap);

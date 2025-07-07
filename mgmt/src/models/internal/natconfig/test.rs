@@ -34,6 +34,7 @@ mod tests {
     use pipeline::NetworkFunction;
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
+    use tracing_test::traced_test;
 
     fn addr_v4(addr: &str) -> Ipv4Addr {
         Ipv4Addr::from_str(addr).expect("Failed to create IPv4 address")
@@ -172,15 +173,33 @@ mod tests {
             remote_id: "67890".try_into().expect("Failed to create VPC ID"),
         };
 
+        // This code is extremely convoluted
+        let mut vpctable = VpcTable::new();
+
+        // vpc-1
+        let vni1 = Vni::new_checked(100).unwrap();
+        let mut vpc1 = Vpc::new("VPC-1", "67890", vni1.as_u32()).unwrap();
+        vpc1.peerings.push(peering1.clone());
+        vpctable.add(vpc1);
+
+        // vpc-2
+        let vni2 = Vni::new_checked(200).unwrap();
+        let mut vpc2 = Vpc::new("VPC-2", "12345", vni2.as_u32()).unwrap();
+        vpc2.peerings.push(peering2.clone());
+        vpctable.add(vpc2);
+
         let mut nat_table = NatTables::new();
 
-        let mut vni_table1 = PerVniTable::new();
-        table_extend::add_peering(&mut vni_table1, &peering1).expect("Failed to build NAT tables");
-        let mut vni_table2 = PerVniTable::new();
-        table_extend::add_peering(&mut vni_table2, &peering2).expect("Failed to build NAT tables");
+        let mut vni_table1 = PerVniTable::new(vni1);
+        table_extend::add_peering(&mut vni_table1, &peering1, &vpctable)
+            .expect("Failed to build NAT tables");
 
-        nat_table.add_table(vni(100), vni_table1);
-        nat_table.add_table(vni(200), vni_table2);
+        let mut vni_table2 = PerVniTable::new(vni2);
+        table_extend::add_peering(&mut vni_table2, &peering2, &vpctable)
+            .expect("Failed to build NAT tables");
+
+        nat_table.add_table(vni_table1);
+        nat_table.add_table(vni_table2);
 
         nat_table
     }
@@ -191,13 +210,15 @@ mod tests {
         const TARGET_DST_IP: Ipv4Addr = Ipv4Addr::new(10, 0, 136, 8);
 
         let nat_tables = build_context();
-        let mut nat = StatelessNat::new();
-        nat.update_tables(nat_tables);
+        let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
+        tablesw.update_nat_tables(nat_tables);
 
         let mut packet = build_test_ipv4_packet(u8::MAX).unwrap();
         let mut packet_reply = packet.clone();
         packet.get_meta_mut().src_vni = Some(vni(100));
         packet_reply.get_meta_mut().src_vni = Some(vni(200));
+        packet.get_meta_mut().nat = true;
+        packet_reply.get_meta_mut().nat = true;
 
         let orig_src_ip = get_src_ip_v4(&packet);
         let orig_dst_ip = get_dst_ip_v4(&packet);
@@ -384,7 +405,10 @@ mod tests {
         vrf_config.add_interface_config(vtep);
         let bgp = BgpConfig::new(1);
         vrf_config.set_bgp(bgp);
-        let underlay = Underlay { vrf: vrf_config };
+        let underlay = Underlay {
+            vrf: vrf_config,
+            vtep: None,
+        };
 
         let mut external_builder = ExternalConfigBuilder::default();
         external_builder.genid(1);
@@ -405,6 +429,7 @@ mod tests {
         orig_dst_ip: Ipv4Addr,
     ) -> (Ipv4Addr, Ipv4Addr) {
         let mut packet = build_test_ipv4_packet(u8::MAX).unwrap();
+        packet.get_meta_mut().nat = true;
         packet.get_meta_mut().src_vni = Some(vni);
         set_addresses_v4(&mut packet, orig_src_ip, orig_dst_ip);
 
@@ -417,6 +442,7 @@ mod tests {
     }
 
     #[test]
+    #[traced_test]
     fn test_full_config() {
         let mut config = build_sample_config();
         config.validate().expect("Failed to validate config");
@@ -430,8 +456,8 @@ mod tests {
             .nat_table
             .expect("Failed to build NAT tables");
 
-        let mut nat = StatelessNat::new();
-        nat.update_tables(nat_tables);
+        let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
+        tablesw.update_nat_tables(nat_tables);
 
         // Template for other packets
         let pt = build_test_ipv4_packet(u8::MAX).unwrap();
