@@ -24,29 +24,19 @@ pub enum NatPeeringError {
 }
 
 /// Create a [`TrieValue`] from the public side of a [`VpcExpose`]
-fn get_public_trie_value(vni: Vni, expose: &VpcExpose, prefix: &Prefix) -> TrieValue {
+fn get_public_trie_value(vni: Vni, expose: &VpcExpose) -> TrieValue {
+    let orig = expose.ips.clone();
     let target = expose.as_range.clone();
-    let mut orig_prefix_offset = 0;
-    for p in &expose.ips {
-        if p == prefix {
-            break;
-        }
-        orig_prefix_offset += p.size();
-    }
-    TrieValue::new(vni, *prefix, orig_prefix_offset, target)
+
+    TrieValue::new(vni, orig, target)
 }
 
 /// Create a [`TrieValue`] from the private side of a [`VpcExpose`]
-fn get_private_trie_value(vni: Vni, expose: &VpcExpose, prefix: &Prefix) -> TrieValue {
+fn get_private_trie_value(vni: Vni, expose: &VpcExpose) -> TrieValue {
+    let orig = expose.as_range.clone();
     let target = expose.ips.clone();
-    let mut orig_prefix_offset = 0;
-    for p in &expose.as_range {
-        if p == prefix {
-            break;
-        }
-        orig_prefix_offset += p.size();
-    }
-    TrieValue::new(vni, *prefix, orig_prefix_offset, target)
+
+    TrieValue::new(vni, orig, target)
 }
 
 // Note: add_peering(table, peering) should be part of PerVniTable, but we prefer to keep it in a
@@ -77,7 +67,7 @@ pub fn add_peering(
 
         // For each private prefix, add an entry containing the set of public prefixes
         expose.ips.iter().try_for_each(|prefix| {
-            let pub_value = get_public_trie_value(table.vni, expose, prefix);
+            let pub_value = get_public_trie_value(table.vni, expose);
             peering_table
                 .insert(prefix, pub_value)
                 .map_err(|_| NatPeeringError::EntryExists)
@@ -99,7 +89,7 @@ pub fn add_peering(
     new_peering.remote.exposes.iter().try_for_each(|expose| {
         // For each public prefix, add an entry containing the set of private prefixes
         expose.as_range.iter().try_for_each(|prefix| {
-            let priv_value = get_private_trie_value(remote_vni, expose, prefix);
+            let priv_value = get_private_trie_value(remote_vni, expose);
             table
                 .dst_nat
                 .insert(prefix, priv_value)
