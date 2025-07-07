@@ -64,7 +64,7 @@ impl TryFrom<NatPort> for UdpPort {
 }
 
 pub trait NatPool<I: NatIp> {
-    fn allocate(&self) -> Result<(I, Option<NatPort>), AllocatorError>;
+    fn allocate(&self) -> Result<(I, I, Option<NatPort>, Option<NatPort>), AllocatorError>;
 }
 
 #[derive(Debug, Clone)]
@@ -74,7 +74,7 @@ pub struct NatDefaultPool<I: NatIp> {
 }
 
 impl<I: NatIp> NatPool<I> for NatDefaultPool<I> {
-    fn allocate(&self) -> Result<(I, Option<NatPort>), AllocatorError> {
+    fn allocate(&self) -> Result<(I, I, Option<NatPort>, Option<NatPort>), AllocatorError> {
         todo!()
     }
 }

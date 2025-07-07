@@ -105,9 +105,11 @@ impl<'a> NatSessionManager<'a, NatDefaultSession<'a, Ipv4Addr>> for NatDefaultSe
 
 #[derive(Debug, Clone)]
 pub struct NatState {
-    // Translation IP address and port
-    target_ip: IpAddr,
-    target_port: Option<NatPort>,
+    // Translation IP addresses and ports
+    target_src_addr: IpAddr,
+    target_dst_addr: IpAddr,
+    target_src_port: Option<NatPort>,
+    target_dst_port: Option<NatPort>,
     // Flags for session management
     flags: u64,
     // Timestamps for garbage-collector
@@ -122,10 +124,17 @@ pub struct NatState {
 }
 
 impl NatState {
-    pub fn new(target_ip: IpAddr, target_port: Option<NatPort>) -> Self {
+    pub fn new(
+        target_src_addr: IpAddr,
+        target_dst_addr: IpAddr,
+        target_src_port: Option<NatPort>,
+        target_dst_port: Option<NatPort>,
+    ) -> Self {
         Self {
-            target_ip,
-            target_port,
+            target_src_addr,
+            target_dst_addr,
+            target_src_port,
+            target_dst_port,
             flags: 0,
             last_used: Instant::now(),
             closed_at: None,
@@ -134,8 +143,13 @@ impl NatState {
             originator: 0,
         }
     }
-    pub fn get_nat(&self) -> (IpAddr, Option<NatPort>) {
-        (self.target_ip, self.target_port)
+    pub fn get_nat(&self) -> (IpAddr, IpAddr, Option<NatPort>, Option<NatPort>) {
+        (
+            self.target_src_addr,
+            self.target_dst_addr,
+            self.target_src_port,
+            self.target_dst_port,
+        )
     }
     pub fn update_last_used(&mut self) {
         self.last_used = Instant::now();
@@ -185,16 +199,29 @@ mod tests {
     use std::net::IpAddr;
     use std::str::FromStr;
 
+    fn addr(addr: &str) -> IpAddr {
+        IpAddr::from_str(addr).unwrap()
+    }
+
+    fn addr_v4(addr: &str) -> Ipv4Addr {
+        Ipv4Addr::from_str(addr).unwrap()
+    }
+
     #[test]
     fn test_session_insert_remove() {
         let mut sessions = NatDefaultSessionManager::new();
         let tuple = NatTuple::new(
-            Ipv4Addr::from_str("1.2.3.4").unwrap(),
-            Ipv4Addr::from_str("5.6.7.8").unwrap(),
+            addr_v4("1.2.3.4"),
+            addr_v4("5.6.7.8"),
             NextHeader::UDP,
             VrfId::from_str("1").unwrap(),
         );
-        let state = NatState::new(IpAddr::V4(Ipv4Addr::from_str("10.0.0.1").unwrap()), None);
+        let state = NatState::new(
+            addr("10.0.0.1"),
+            addr("10.0.0.2"),
+            Some(NatPort::new_checked(8080).unwrap()),
+            None,
+        );
         sessions
             .insert_session_v4(tuple.clone(), state.clone())
             .unwrap();
@@ -206,10 +233,13 @@ mod tests {
             .table_v4
             .get(&tuple)
             .expect("Session not found");
+        assert_eq!(session.value().target_src_addr, addr("10.0.0.1"));
+        assert_eq!(session.value().target_dst_addr, addr("10.0.0.2"));
         assert_eq!(
-            session.value().target_ip,
-            IpAddr::V4(Ipv4Addr::from_str("10.0.0.1").unwrap())
+            session.value().target_src_port,
+            Some(NatPort::new_checked(8080).unwrap())
         );
+        assert_eq!(session.value().target_dst_port, None);
 
         // Try inserting a duplicate entry in the table
         assert!(sessions.insert_session_v4(tuple.clone(), state).is_err());
@@ -222,25 +252,31 @@ mod tests {
     fn test_session_lookup() {
         let mut sessions = NatDefaultSessionManager::new();
         let tuple = NatTuple::new(
-            Ipv4Addr::from_str("1.2.3.4").unwrap(),
-            Ipv4Addr::from_str("5.6.7.8").unwrap(),
+            addr_v4("1.2.3.4"),
+            addr_v4("5.6.7.8"),
             NextHeader::UDP,
             VrfId::from_str("1").unwrap(),
         );
-        let state = NatState::new(IpAddr::V4(Ipv4Addr::from_str("10.0.0.1").unwrap()), None);
+        let state = NatState::new(
+            addr("10.0.0.1"),
+            addr("10.0.0.2"),
+            Some(NatPort::new_checked(8080).unwrap()),
+            None,
+        );
         sessions
             .insert_session_v4(tuple.clone(), state.clone())
             .unwrap();
 
         assert_eq!(sessions.table_v4.len(), 1);
 
-        let mut session = sessions.lookup_v4_mut(&tuple).unwrap();
+        let mut session = sessions.lookup_v4_mut(&tuple).expect("Session not found");
+        let state = session.get_state_mut().expect("Cannot get session state");
+        assert_eq!(state.target_src_addr, addr("10.0.0.1"));
+        assert_eq!(state.target_dst_addr, addr("10.0.0.2"));
         assert_eq!(
-            session
-                .get_state_mut()
-                .expect("Session not found")
-                .target_ip,
-            IpAddr::V4(Ipv4Addr::from_str("10.0.0.1").unwrap())
+            state.target_src_port,
+            Some(NatPort::new_checked(8080).unwrap())
         );
+        assert_eq!(state.target_dst_port, None);
     }
 }

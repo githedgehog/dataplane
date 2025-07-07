@@ -185,42 +185,30 @@ impl StatefulNat {
     }
 
     #[allow(clippy::unnecessary_wraps)]
-    // TODO: Fix regarding directions
     fn stateful_translate<Buf: PacketBufferMut>(
         packet: &mut Packet<Buf>,
         state: &NatState,
         next_header: NextHeader,
     ) -> Option<()> {
-        /*
         let headers = packet.headers_mut();
         let net = headers.try_ip_mut()?;
-        let (target_ip, target_port) = state.get_nat();
+        let (target_src_addr, target_dst_addr, target_src_port, target_dst_port) = state.get_nat();
 
-        match direction {
-            NatDirection::SrcNat => match (net, target_ip) {
-                (Net::Ipv4(ip_hdr), IpAddr::V4(ip)) => {
-                    ip_hdr.set_source(UnicastIpv4Addr::new(ip).ok()?);
-                    let transport = headers.try_transport_mut()?;
-                    Self::set_source_port(transport, next_header, target_port);
-                }
-                (Net::Ipv6(ip_hdr), IpAddr::V6(ip)) => {
-                    todo!()
-                }
-                (_, _) => return None,
-            },
-            NatDirection::DstNat => match (net, target_ip) {
-                (Net::Ipv4(ip_hdr), IpAddr::V4(ip)) => {
-                    ip_hdr.set_destination(ip);
-                    let transport = headers.try_transport_mut()?;
-                    Self::set_destination_port(transport, next_header, target_port);
-                }
-                (Net::Ipv6(ip_hdr), IpAddr::V6(ip)) => {
-                    todo!()
-                }
-                (_, _) => return None,
-            },
+        match (net, target_src_addr, target_dst_addr) {
+            (Net::Ipv4(ip_hdr), IpAddr::V4(target_src_ip), IpAddr::V4(target_dst_ip)) => {
+                ip_hdr
+                    .set_source(UnicastIpv4Addr::new(target_src_ip).ok()?)
+                    .set_destination(target_dst_ip);
+
+                let transport = headers.try_transport_mut()?;
+                Self::set_source_port(transport, next_header, target_src_port);
+                Self::set_destination_port(transport, next_header, target_dst_port);
+            }
+            (Net::Ipv6(ip_hdr), IpAddr::V6(target_src_ip), IpAddr::V6(target_dst_ip)) => {
+                todo!()
+            }
+            (_, _, _) => return None,
         }
-        */
         Some(())
     }
 
@@ -244,8 +232,14 @@ impl StatefulNat {
 
         // Else, if we need NAT for this packet, create a new session and translate the address
         if let Some(pool) = self.find_nat_pool::<Ipv4Addr>(tuple, tuple.vrf_id) {
-            let (target_ip, target_port) = pool.allocate().ok()?;
-            let mut new_state = NatState::new(target_ip.to_ip_addr(), target_port);
+            let (target_src_addr, target_dst_addr, target_src_port, target_dst_port) =
+                pool.allocate().ok()?;
+            let mut new_state = NatState::new(
+                target_src_addr.to_ip_addr(),
+                target_dst_addr.to_ip_addr(),
+                target_src_port,
+                target_dst_port,
+            );
             Self::update_stats(&mut new_state, total_bytes);
             self.create_session_v4(tuple, new_state.clone()).ok()?;
             Self::stateful_translate::<Buf>(packet, &new_state, tuple.next_header);
