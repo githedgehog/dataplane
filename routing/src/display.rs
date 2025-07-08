@@ -187,7 +187,7 @@ impl Display for Route {
     }
 }
 
-fn fmt_vrf_trie<P: Prefix, F: Fn(&(&P, &Route)) -> bool>(
+fn fmt_vrf_trie<P: Prefix + Display, F: Fn(&(&P, &Route)) -> bool>(
     f: &mut std::fmt::Formatter<'_>,
     show_string: &str,
     trie: &PrefixMap<P, Route>,
@@ -195,7 +195,7 @@ fn fmt_vrf_trie<P: Prefix, F: Fn(&(&P, &Route)) -> bool>(
 ) -> std::fmt::Result {
     Heading(format!("{show_string} routes ({})", trie.len())).fmt(f)?;
     for (prefix, route) in trie.iter() {
-        writeln!(f, "  {prefix:?} {route}")?;
+        writeln!(f, "  {prefix} {route}")?;
     }
     Ok(())
 }
@@ -254,7 +254,7 @@ impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Route)) -> bool> Display for VrfViewV4<'_,
         fmt_vrf_oneline(&self.vrf, f)?;
         Heading(format!("Ipv4 routes ({total_routes})")).fmt(f)?;
         for (prefix, route) in rt_iter {
-            write!(f, "  {prefix:?} {route}")?;
+            write!(f, "  {prefix} {route}")?;
             displayed += 1;
         }
         if displayed != total_routes {
@@ -288,7 +288,7 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Route)) -> bool> Display for VrfViewV6<'_,
         fmt_vrf_oneline(&self.vrf, f)?;
         Heading(format!("Ipv6 routes ({total_routes})")).fmt(f)?;
         for (prefix, route) in rt_iter {
-            write!(f, "  {prefix:?} {route}")?;
+            write!(f, "  {prefix} {route}")?;
             displayed += 1;
         }
         if displayed != total_routes {
@@ -674,7 +674,7 @@ impl Display for FibId {
     }
 }
 
-fn fmt_fib_trie<P: Prefix, F: Fn(&(&P, &Rc<FibGroup>)) -> bool>(
+fn fmt_fib_trie<P: Prefix + Display, F: Fn(&(&P, &Rc<FibGroup>)) -> bool>(
     f: &mut std::fmt::Formatter<'_>,
     fibid: FibId,
     show_string: &str,
@@ -687,7 +687,7 @@ fn fmt_fib_trie<P: Prefix, F: Fn(&(&P, &Rc<FibGroup>)) -> bool>(
     ))
     .fmt(f)?;
     for (prefix, group) in trie.iter().filter(group_filter) {
-        write!(f, "  {prefix:?}: {group}")?;
+        write!(f, "  {prefix}: {group}")?;
     }
     Ok(())
 }
@@ -734,7 +734,7 @@ impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Rc<FibGroup>)) -> bool> Display for FibVie
         fmt_vrf_oneline(&self.vrf, f)?;
         Heading(format!("Ipv4 FIB ({total_entries} destinations)")).fmt(f)?;
         for (prefix, group) in rt_iter {
-            write!(f, "  {prefix:?} {group}")?;
+            write!(f, "  {prefix} {group}")?;
             displayed += 1;
         }
         if displayed != total_entries {
@@ -771,7 +771,7 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Rc<FibGroup>)) -> bool> Display for FibVie
         fmt_vrf_oneline(&self.vrf, f)?;
         Heading(format!("Ipv6 FIB ({total_entries} destinations)")).fmt(f)?;
         for (prefix, group) in rt_iter {
-            write!(f, "  {prefix:?} {group}")?;
+            write!(f, "  {prefix} {group}")?;
             displayed += 1;
         }
 
