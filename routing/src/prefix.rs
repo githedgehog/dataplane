@@ -427,9 +427,12 @@ impl Add<PrefixSize> for PrefixSize {
     type Output = Self;
 
     fn add(self, other: PrefixSize) -> Self {
-        match other {
-            PrefixSize::U128(int) => self + int,
-            _ => PrefixSize::Overflow,
+        match (self, other) {
+            // This case is necessary to avoid returning PrefixSize::Overflow for
+            // PrefixSize::U128(0) + PrefixSize::Ipv6MaxAddrs
+            (PrefixSize::U128(0), _) => other,
+            (_, PrefixSize::U128(int)) => self + int,
+            (_, PrefixSize::Ipv6MaxAddrs) | (_, PrefixSize::Overflow) => PrefixSize::Overflow,
         }
     }
 }
