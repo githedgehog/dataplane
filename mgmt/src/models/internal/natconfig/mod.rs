@@ -21,7 +21,7 @@ use routing::prefix::Prefix;
 use std::collections::BTreeSet;
 
 /// Error type for NAT peering table extension operations.
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum NatPeeringError {
     #[error("entry already exists")]
     EntryExists,
