@@ -131,6 +131,9 @@ pub enum CliAction {
 
     SetLoglevel,
 
+    // cpi
+    ShowCpiStats,
+
     // vpcs
     ShowVpc,
     ShowVpcPifs,

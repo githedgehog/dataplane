@@ -9,6 +9,13 @@ use log::Level;
 use std::convert::AsRef;
 use strum::IntoEnumIterator;
 
+fn cmd_show_cpi() -> Node {
+    let mut root = Node::new("cpi");
+    root += Node::new("stats")
+        .desc("Show control-plane interface")
+        .action(CliAction::ShowCpiStats as u16);
+    root
+}
 fn cmd_show_pipelines() -> Node {
     let mut root = Node::new("pipeline")
         .desc("Show packet-processing pipelines")
@@ -159,7 +166,6 @@ fn cmd_show_interface() -> Node {
 }
 fn cmd_show_routing() -> Node {
     let mut root = Node::new("");
-    root += Node::new("cpi").desc("show the status of the routing interface");
     root += cmd_show_adjacency_table();
     root += cmd_show_interface();
     root += cmd_show_evpn();
@@ -189,6 +195,7 @@ fn cmd_show_kernel() -> Node {
 }
 fn cmd_show() -> Node {
     let mut root: Node = Node::new("show");
+    root += cmd_show_cpi();
     root += cmd_show_vpc();
     root += cmd_show_pipelines();
     root += cmd_show_nat();

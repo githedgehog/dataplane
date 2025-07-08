@@ -3,14 +3,15 @@
 
 //! Main processing functions of the CPI
 
-use crate::evpn::RmacStore;
-use crate::rib::Vrf;
-use crate::rib::VrfTable;
+use crate::cpi::CpiStats;
+use crate::evpn::{RmacEntry, RmacStore};
+use crate::fib::fibobjects::FibGroup;
+use crate::rib::{Vrf, VrfTable};
 use crate::routingdb::RoutingDb;
 use crate::rpc_adapt::is_evpn_route;
-use crate::{evpn::RmacEntry, fib::fibobjects::FibGroup};
 
 use bytes::Bytes;
+use chrono::Local;
 use dplane_rpc::msg::*;
 use dplane_rpc::socks::RpcCachedSock;
 use dplane_rpc::wire::*;
@@ -24,7 +25,7 @@ use tracing::{debug, error, info, trace, warn};
 /* convenience trait */
 trait RpcOperation {
     type ObjectStore;
-    fn connect(&self) -> RpcResultCode
+    fn connect(&self, _stats: &mut Self::ObjectStore) -> RpcResultCode
     where
         Self: Sized,
     {
@@ -45,9 +46,18 @@ trait RpcOperation {
 }
 
 impl RpcOperation for ConnectInfo {
-    type ObjectStore = ();
-    fn connect(&self) -> RpcResultCode {
+    type ObjectStore = CpiStats;
+    fn connect(&self, stats: &mut Self::ObjectStore) -> RpcResultCode {
+        info!("Got connect request from {}, pid {}", self.name, self.pid);
+        if let Some(pid) = stats.last_pid {
+            warn!("CP had already been connected with pid {}..", pid);
+            if pid != self.pid {
+                warn!("Frr reports a new pid of {}", self.pid);
+            }
+        }
         if self.verinfo == VerInfo::default() {
+            stats.last_pid = Some(self.pid);
+            stats.connect_time = Some(Local::now());
             RpcResultCode::Ok
         } else {
             error!("Got connection request with mismatch RPC version!!");
@@ -205,11 +215,54 @@ fn build_notification_msg() -> RpcMsg {
 }
 
 /* message handlers */
+fn update_stats(
+    stats: &mut CpiStats,
+    op: RpcOp,
+    object: Option<&RpcObject>,
+    res_code: RpcResultCode,
+) {
+    let index = res_code.as_usize();
+    match object {
+        None => {}
+        Some(RpcObject::IfAddress(_)) => match op {
+            RpcOp::Add => stats.add_ifaddr.incr_by(index, 1),
+            RpcOp::Del => stats.del_ifaddr.incr_by(index, 1),
+            _ => unreachable!(),
+        },
+        Some(RpcObject::Rmac(_)) => match op {
+            RpcOp::Add => stats.add_rmac.incr_by(index, 1),
+            RpcOp::Del => stats.del_rmac.incr_by(index, 1),
+            _ => unreachable!(),
+        },
+        Some(RpcObject::IpRoute(_)) => match op {
+            RpcOp::Add => stats.add_route.incr_by(index, 1),
+            RpcOp::Update => stats.update_route.incr_by(index, 1),
+            RpcOp::Del => stats.del_route.incr_by(index, 1),
+            _ => unreachable!(),
+        },
+        Some(RpcObject::ConnectInfo(_)) => stats.connect.incr_by(index, 1),
+    }
+}
+fn rpc_reply(
+    csock: &mut RpcCachedSock,
+    peer: &SocketAddr,
+    req: &RpcRequest,
+    rescode: RpcResultCode,
+    stats: &mut CpiStats,
+) {
+    let op = req.get_op();
+    let object = req.get_object();
+    let resp_msg = build_response_msg(req, rescode, None);
+    csock.send_msg(resp_msg, peer);
+    update_stats(stats, op, object, rescode);
+}
+
 fn handle_request(
     csock: &mut RpcCachedSock,
     peer: &SocketAddr,
     req: &RpcRequest,
     db: &mut RoutingDb,
+    stats: &mut CpiStats,
 ) {
     let op = req.get_op();
     let object = req.get_object();
@@ -218,8 +271,7 @@ fn handle_request(
     // ignore additions if have no config. Connects are allowed, so are deletions to wipe out old state
     if !db.have_config() && op == RpcOp::Add {
         debug!("Ignoring message: no config is available");
-        let resp_msg = build_response_msg(req, RpcResultCode::Ok, None);
-        csock.send_msg(resp_msg, peer);
+        rpc_reply(csock, peer, req, RpcResultCode::Ignored, stats);
         return;
     }
 
@@ -250,22 +302,27 @@ fn handle_request(
             res
         }
         Some(RpcObject::ConnectInfo(conninfo)) => match op {
-            RpcOp::Connect => conninfo.connect(),
+            RpcOp::Connect => conninfo.connect(stats),
             _ => RpcResultCode::InvalidRequest,
         },
     };
-    let resp_msg = build_response_msg(req, res_code, None);
-    csock.send_msg(resp_msg, peer);
+    rpc_reply(csock, peer, req, res_code, stats);
 }
 fn handle_response(_csock: &RpcCachedSock, _peer: &SocketAddr, _res: &RpcResponse) {}
 fn handle_notification(_csock: &RpcCachedSock, peer: &SocketAddr, _notif: &RpcNotification) {
     warn!("Received a notification message from {:?}", peer);
 }
 fn handle_control(_csock: &RpcCachedSock, _peer: &SocketAddr, _ctl: &RpcControl) {}
-fn handle_rpc_msg(csock: &mut RpcCachedSock, peer: &SocketAddr, msg: &RpcMsg, db: &mut RoutingDb) {
+fn handle_rpc_msg(
+    csock: &mut RpcCachedSock,
+    peer: &SocketAddr,
+    msg: &RpcMsg,
+    db: &mut RoutingDb,
+    stats: &mut CpiStats,
+) {
     match msg {
         RpcMsg::Control(ctl) => handle_control(csock, peer, ctl),
-        RpcMsg::Request(req) => handle_request(csock, peer, req, db),
+        RpcMsg::Request(req) => handle_request(csock, peer, req, db, stats),
         RpcMsg::Response(resp) => handle_response(csock, peer, resp),
         RpcMsg::Notification(notif) => handle_notification(csock, peer, notif),
     }
@@ -277,13 +334,16 @@ pub fn process_rx_data(
     peer: &SocketAddr,
     data: &[u8],
     db: &mut RoutingDb,
+    stats: &mut CpiStats,
 ) {
     let peer_addr = peer.as_pathname().unwrap_or_else(|| Path::new("unnamed"));
     trace!("CPI: recvd {} bytes from {:?}...", data.len(), peer_addr);
     let mut buf_rx = Bytes::copy_from_slice(data); // TODO: avoid this copy
+    stats.last_msg_rx = Some(Local::now());
     match RpcMsg::decode(&mut buf_rx) {
-        Ok(msg) => handle_rpc_msg(csock, peer, &msg, db),
+        Ok(msg) => handle_rpc_msg(csock, peer, &msg, db, stats),
         Err(e) => {
+            stats.decode_failures += 1;
             error!("Failure decoding msg rx from {:?}: {:?}", peer, e);
             let notif = build_notification_msg();
             csock.send_msg(notif, peer);

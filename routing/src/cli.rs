@@ -5,6 +5,7 @@
 
 #![allow(clippy::unnecessary_wraps)]
 
+use crate::cpi::CpiStats;
 use crate::display::IfTableAddress;
 use crate::display::{FibGroups, FibViewV4, FibViewV6};
 use crate::display::{VrfV4Nexthops, VrfV6Nexthops, VrfViewV4, VrfViewV6};
@@ -354,8 +355,13 @@ fn show_ip_fib_groups(
     }
 }
 
-fn do_handle_cli_request(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliError> {
+fn do_handle_cli_request(
+    request: CliRequest,
+    db: &RoutingDb,
+    stats: &CpiStats,
+) -> Result<CliResponse, CliError> {
     let response = match request.action {
+        CliAction::ShowCpiStats => CliResponse::from_request_ok(request, format!("\n{stats}")),
         CliAction::ShowRouterInterfaces => {
             if let Some(iftable) = db.iftw.enter() {
                 CliResponse::from_request_ok(request, format!("\n{}", *iftable))
@@ -416,15 +422,16 @@ fn do_handle_cli_request(request: CliRequest, db: &RoutingDb) -> Result<CliRespo
     Ok(response)
 }
 
-pub fn handle_cli_request(
+pub(crate) fn handle_cli_request(
     sock: &UnixDatagram,
     peer: &SocketAddr,
     request: CliRequest,
     db: &RoutingDb,
+    stats: &CpiStats,
 ) {
     trace!("Got cli request: {:#?} from {:?}", request, peer);
 
-    let cliresponse = do_handle_cli_request(request.clone(), db)
+    let cliresponse = do_handle_cli_request(request.clone(), db, stats)
         .unwrap_or_else(|e| CliResponse::from_request_fail(request, e));
 
     /* serialize the response */

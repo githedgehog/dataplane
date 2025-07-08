@@ -17,8 +17,9 @@ use crate::interfaces::iftablerw::IfTableWriter;
 use crate::routingdb::RoutingDb;
 
 use cli::cliproto::{CliRequest, CliSerialize};
-use dplane_rpc::socks::RpcCachedSock;
+use dplane_rpc::{msg::RpcResultCode, socks::RpcCachedSock};
 
+use chrono::{DateTime, Local};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 use std::fs;
@@ -99,6 +100,40 @@ fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
 pub(crate) const CPSOCK: Token = Token(0);
 pub(crate) const CLISOCK: Token = Token(1);
 
+pub(crate) const CPI_STATS_SIZE: usize = RpcResultCode::RpcResultCodeMax as usize;
+#[derive(Default)]
+pub(crate) struct StatsRow(pub(crate) [u64; CPI_STATS_SIZE]);
+impl StatsRow {
+    pub(crate) fn incr_by(&mut self, index: usize, value: u64) {
+        self.0[index] += value;
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct CpiStats {
+    // last reported pid (or some id u32)
+    pub(crate) last_pid: Option<u32>,
+
+    // last connect time
+    pub(crate) connect_time: Option<DateTime<Local>>,
+
+    // last time a message was received
+    pub(crate) last_msg_rx: Option<DateTime<Local>>,
+
+    // decoding failures
+    pub(crate) decode_failures: u64,
+
+    // stats per request / object
+    pub(crate) connect: StatsRow,
+    pub(crate) add_route: StatsRow,
+    pub(crate) update_route: StatsRow,
+    pub(crate) del_route: StatsRow,
+    pub(crate) add_ifaddr: StatsRow,
+    pub(crate) del_ifaddr: StatsRow,
+    pub(crate) add_rmac: StatsRow,
+    pub(crate) del_rmac: StatsRow,
+}
+
 pub(crate) struct Cpi {
     pub(crate) run: bool,
     pub(crate) frozen: bool,
@@ -109,6 +144,7 @@ pub(crate) struct Cpi {
     pub(crate) cached_sock: RpcCachedSock,
     pub(crate) ctl_tx: Sender<CpiCtlMsg>,
     pub(crate) ctl_rx: Receiver<CpiCtlMsg>,
+    pub(crate) stats: CpiStats,
 }
 impl Cpi {
     fn new(conf: &CpiConf) -> Result<Cpi, RouterError> {
@@ -165,6 +201,7 @@ impl Cpi {
             cached_sock,
             ctl_tx,
             ctl_rx,
+            stats: CpiStats::default(),
         })
     }
 }
@@ -202,7 +239,13 @@ pub fn start_cpi(
                     CPSOCK => {
                         while event.is_readable() {
                             if let Ok((len, peer)) = cpi.cached_sock.recv_from(buf.as_mut_slice()) {
-                                process_rx_data(&mut cpi.cached_sock, &peer, &buf[..len], &mut db);
+                                process_rx_data(
+                                    &mut cpi.cached_sock,
+                                    &peer,
+                                    &buf[..len],
+                                    &mut db,
+                                    &mut cpi.stats,
+                                );
                             } else {
                                 break;
                             }
@@ -224,7 +267,13 @@ pub fn start_cpi(
                         while event.is_readable() {
                             if let Ok((len, peer)) = cpi.clisock.recv_from(buf.as_mut_slice()) {
                                 if let Ok(request) = CliRequest::deserialize(&buf[0..len]) {
-                                    handle_cli_request(&cpi.clisock, &peer, request, &db);
+                                    handle_cli_request(
+                                        &cpi.clisock,
+                                        &peer,
+                                        request,
+                                        &db,
+                                        &cpi.stats,
+                                    );
                                 }
                             } else {
                                 break;

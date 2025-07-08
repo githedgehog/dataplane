@@ -4,6 +4,7 @@
 //! Module that implements Display for routing objects
 
 use crate::atable::adjacency::{Adjacency, AdjacencyTable};
+use crate::cpi::{CpiStats, StatsRow};
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::fib::fibtable::FibTable;
 use crate::fib::fibtype::{Fib, FibId};
@@ -812,6 +813,73 @@ impl<'a> Display for FibGroups<'a> {
         for group in fibr.group_iter() {
             write!(f, " ({}) {group}", Rc::strong_count(group))?;
         }
+        Ok(())
+    }
+}
+
+//========================= CPI ================================//
+macro_rules! STATS_ROW_FMT {
+    () => {
+        " {:<16} {:<12} {:<12} {:<12} {:<12} {:<12}"
+    };
+}
+fn fmt_cpi_stats_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    writeln!(
+        f,
+        "{}",
+        format_args!(
+            STATS_ROW_FMT!(),
+            "op", "Ok", "Ignored", "Failure", "Invalid", "Unsupp"
+        )
+    )
+}
+fn fmt_stats_row(f: &mut std::fmt::Formatter<'_>, name: &str, row: &StatsRow) -> std::fmt::Result {
+    writeln!(
+        f,
+        "{}",
+        format_args!(
+            STATS_ROW_FMT!(),
+            name, row.0[0], row.0[1], row.0[2], row.0[3], row.0[4],
+        )
+    )
+}
+
+impl Display for CpiStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        //let fmt_iso8 = "%Y-%m-%dT%H:%M:%S%.3f%:z";
+        let fmt_simple = "%Y-%m-%dT %H:%M:%S";
+
+        let empty = "--".to_string();
+        let connect_t = &self
+            .connect_time
+            .map(|t| t.format(fmt_simple).to_string())
+            .unwrap_or_else(|| "never".to_string());
+        let last_msg_rx_t = &self
+            .last_msg_rx
+            .map(|t| t.format(fmt_simple).to_string())
+            .unwrap_or_else(|| "--".to_string());
+        let pid = self
+            .last_pid
+            .map(|pid| pid.to_string())
+            .unwrap_or_else(|| empty);
+
+        Heading("Control-plane interface".to_string()).fmt(f)?;
+        writeln!(f, " last connect: {connect_t} pid {pid}")?;
+        writeln!(f, " last msg rx : {last_msg_rx_t}")?;
+        writeln!(f, " decode failures: {}", self.decode_failures)?;
+        writeln!(f)?;
+
+        fmt_cpi_stats_heading(f)?;
+        fmt_stats_row(f, "connect", &self.connect)?;
+        fmt_stats_row(f, "Add route", &self.add_route)?;
+        fmt_stats_row(f, "Upd route", &self.update_route)?;
+        fmt_stats_row(f, "Del route", &self.del_route)?;
+
+        fmt_stats_row(f, "Add ifAddr", &self.add_ifaddr)?;
+        fmt_stats_row(f, "Del ifAddr", &self.del_ifaddr)?;
+
+        fmt_stats_row(f, "Add rmac", &self.add_rmac)?;
+        fmt_stats_row(f, "Del rmac", &self.del_rmac)?;
         Ok(())
     }
 }
