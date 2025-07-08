@@ -971,6 +971,7 @@ dependencies = [
  "ahash 0.8.10",
  "bolero",
  "bytes",
+ "chrono",
  "dataplane-cli",
  "dataplane-lpm",
  "dataplane-net",
