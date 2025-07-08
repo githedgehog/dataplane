@@ -35,8 +35,8 @@ pub enum Prefix {
 }
 
 impl Prefix {
-    pub const MAX_LEN_IPV4: u8 = 32;
-    pub const MAX_LEN_IPV6: u8 = 128;
+    pub const MAX_LEN_IPV4: u8 = Ipv4PrefixLen::MAX_LEN;
+    pub const MAX_LEN_IPV6: u8 = Ipv6PrefixLen::MAX_LEN;
 
     /// Build 224.0.0.0/4 - Ideally this would be const
     #[must_use]
@@ -174,8 +174,8 @@ impl Prefix {
     #[must_use]
     pub fn is_host(&self) -> bool {
         match self {
-            Prefix::IPV4(_) => self.length() == 32,
-            Prefix::IPV6(_) => self.length() == 128,
+            Prefix::IPV4(_) => self.length() == Prefix::MAX_LEN_IPV4,
+            Prefix::IPV6(_) => self.length() == Prefix::MAX_LEN_IPV6,
         }
     }
 }
