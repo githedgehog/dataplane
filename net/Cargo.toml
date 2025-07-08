@@ -23,6 +23,8 @@ ordermap = { workspace = true, features = ["std"] }
 serde = { workspace = true, features = ["derive", "std"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+ipnet = { workspace = true, features = ["serde"] }
+prefix-trie = { workspace = true, features = ["ipnet"] }
 
 [dev-dependencies]
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"] }

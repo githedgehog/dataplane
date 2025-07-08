@@ -28,8 +28,10 @@ pub mod ecn;
 
 mod checksum;
 pub mod frag_offset;
+mod prefix;
 
 pub use checksum::*;
+pub use prefix::*;
 
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;

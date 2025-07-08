@@ -6,8 +6,9 @@
 
 #![allow(clippy::missing_errors_doc)]
 
-use iptrie::map::RTrieMap;
-use iptrie::{Ipv4Prefix, Ipv6Prefix};
+use net::ipv4::Ipv4Prefix;
+use net::ipv6::Ipv6Prefix;
+use prefix_trie::PrefixMap;
 use routing::prefix::Prefix;
 use std::fmt::Debug;
 use std::net::IpAddr;
@@ -27,8 +28,8 @@ pub enum TrieError {
 /// Internally, it relies on two different tries, one for IPv4 and one for IPv6.
 #[derive(Default, Clone)]
 pub struct PrefixTrie<T> {
-    trie_ipv4: RTrieMap<Ipv4Prefix, T>,
-    trie_ipv6: RTrieMap<Ipv6Prefix, T>,
+    trie_ipv4: PrefixMap<Ipv4Prefix, T>,
+    trie_ipv6: PrefixMap<Ipv6Prefix, T>,
 }
 
 impl<T> PrefixTrie<T>
@@ -39,8 +40,8 @@ where
     #[must_use]
     pub fn new() -> Self {
         Self {
-            trie_ipv4: RTrieMap::new(),
-            trie_ipv6: RTrieMap::new(),
+            trie_ipv4: PrefixMap::new(),
+            trie_ipv6: PrefixMap::new(),
         }
     }
 }
@@ -49,14 +50,6 @@ impl<T> PrefixTrie<T>
 where
     T: Debug,
 {
-    /// Creates a new [`PrefixTrie`].
-    pub fn with_roots(root_v4: T, root_v6: T) -> Self {
-        Self {
-            trie_ipv4: RTrieMap::with_root(root_v4),
-            trie_ipv6: RTrieMap::with_root(root_v6),
-        }
-    }
-
     /// Returns a mutable reference to the value associated with the given prefix.
     /// If the prefix is not present, it returns `None`.
     pub fn get_mut(&mut self, prefix: &Prefix) -> Option<&mut T> {
@@ -110,28 +103,14 @@ where
     #[must_use]
     pub fn lookup(&self, addr: &IpAddr) -> Option<(Prefix, &T)> {
         match addr {
-            IpAddr::V4(ip) => {
-                let (&k, v) = self.trie_ipv4.lookup(&Ipv4Prefix::from(*ip));
-                // The RTrieMap lookup always return an entry; if no better match, it returns the
-                // root of the map, which always exists.  This means that to check if the result is
-                // "empty", we need to check whether the returned entry is the root for the map.
-                if Prefix::IPV4(k).is_root() {
-                    None
-                } else {
-                    Some((Prefix::IPV4(k), v))
-                }
-            }
-            IpAddr::V6(ip) => {
-                let (&k, v) = self.trie_ipv6.lookup(&Ipv6Prefix::from(*ip));
-                // The RTrieMap lookup always return an entry; if no better match, it returns the
-                // root of the map, which always exists.  This means that to check if the result is
-                // "empty", we need to check whether the returned entry is the root for the map.
-                if Prefix::IPV6(k).is_root() {
-                    None
-                } else {
-                    Some((Prefix::IPV6(k), v))
-                }
-            }
+            IpAddr::V4(ip) => self
+                .trie_ipv4
+                .get_lpm(&Ipv4Prefix::from(*ip))
+                .map(|(k, v)| (Prefix::IPV4(*k), v)),
+            IpAddr::V6(ip) => self
+                .trie_ipv6
+                .get_lpm(&Ipv6Prefix::from(*ip))
+                .map(|(k, v)| (Prefix::IPV6(*k), v)),
         }
     }
 }
@@ -181,7 +160,7 @@ mod tests {
     }
 
     fn prefix_v6(s: &str) -> Ipv6Prefix {
-        Ipv6Prefix::from_str(s).expect("Invalid IPv6 prefix")
+        Ipv6Prefix::from_str(s).unwrap()
     }
 
     fn addr_v4(s: &str) -> IpAddr {
@@ -202,8 +181,8 @@ mod tests {
             .expect("Failed to insert prefix");
 
         pt.insert_ipv6(
-            prefix_v6("aa:bb:cc:dd::/32"),
-            "prefix_aa:bb:cc:dd::/32".to_string(),
+            prefix_v6("aa:bb:cc:dd::/64"),
+            "prefix_aa:bb:cc:dd::/64".to_string(),
         )
         .expect("Failed to insert prefix");
 
@@ -230,8 +209,8 @@ mod tests {
         assert_eq!(
             pt.lookup(&addr_v6("aa:bb:cc:dd::1")),
             Some((
-                Prefix::IPV6(prefix_v6("aa:bb:cc:dd::/32")),
-                &"prefix_aa:bb:cc:dd::/32".to_string()
+                Prefix::IPV6(prefix_v6("aa:bb:cc:dd::/64")),
+                &"prefix_aa:bb:cc:dd::/64".to_string()
             ))
         );
 

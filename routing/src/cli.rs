@@ -15,7 +15,8 @@ use crate::rib::vrftable::VrfTable;
 use crate::routingdb::RoutingDb;
 
 use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, CliSerialize, RouteProtocol};
-use iptrie::{Ipv4Prefix, Ipv6Prefix};
+use net::ipv4::Ipv4Prefix;
+use net::ipv6::Ipv6Prefix;
 use net::vxlan::Vni;
 use std::os::unix::net::{SocketAddr, UnixDatagram};
 use tracing::{error, trace};

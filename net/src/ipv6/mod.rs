@@ -22,9 +22,12 @@ use tracing::{debug, trace};
 
 pub mod addr;
 pub mod flow_label;
+mod prefix;
 
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
+
+pub use prefix::*;
 
 /// An IPv6 header
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

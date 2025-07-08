@@ -8,11 +8,10 @@ license = "Apache-2.0"
 [dependencies]
 ahash = { workspace = true }
 dashmap = { workspace = true }
-iptrie = { workspace = true }
 left-right = { workspace = true }
-#mgmt = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
+prefix-trie = { workspace = true, features = ["ipnet"] }
 routing = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

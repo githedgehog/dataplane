@@ -3,15 +3,16 @@
 
 //! VRF module to store Ipv4 and Ipv6 routing tables
 
+#[cfg(test)]
+use crate::pretty_utils::Frame;
+use net::ipv4::Ipv4Prefix;
+use net::ipv6::Ipv6Prefix;
+use prefix_trie::PrefixMap;
 use std::hash::Hash;
 use std::iter::Filter;
 use std::net::IpAddr;
-use std::num::NonZeroUsize;
 use std::rc::Rc;
 use tracing::debug;
-
-#[cfg(test)]
-use crate::pretty_utils::Frame;
 
 use super::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::evpn::{RmacStore, Vtep};
@@ -19,8 +20,6 @@ use crate::fib::fibobjects::FibGroup;
 use crate::fib::fibtype::{FibId, FibReader, FibWriter};
 use crate::interfaces::interface::IfIndex;
 use crate::prefix::Prefix;
-use iptrie::map::RTrieMap;
-use iptrie::{Ipv4Prefix, Ipv6Prefix};
 use net::route::RouteTableId;
 use net::vxlan::Vni;
 
@@ -120,8 +119,8 @@ pub struct Vrf {
     pub tableid: Option<RouteTableId>,
     pub description: Option<String>,
     pub(crate) status: VrfStatus,
-    pub(crate) routesv4: RTrieMap<Ipv4Prefix, Route>,
-    pub(crate) routesv6: RTrieMap<Ipv6Prefix, Route>,
+    pub(crate) routesv4: PrefixMap<Ipv4Prefix, Route>,
+    pub(crate) routesv6: PrefixMap<Ipv6Prefix, Route>,
     pub(crate) nhstore: NhopStore,
     pub(crate) vni: Option<Vni>,
     pub(crate) fibw: Option<FibWriter>,
@@ -172,9 +171,6 @@ pub type RouteV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &Route)) -> bool>;
 pub type RouteV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &Route)) -> bool>;
 
 impl Vrf {
-    const DEFAULT_IPV4_CAPACITY: usize = 0;
-    const DEFAULT_IPV6_CAPACITY: usize = 0;
-
     /////////////////////////////////////////////////////////////////////////
     /// Create a new [`Vrf`]
     /////////////////////////////////////////////////////////////////////////
@@ -187,8 +183,8 @@ impl Vrf {
             description: config.description.to_owned(),
             vni: config.vni,
             status: VrfStatus::Active,
-            routesv4: RTrieMap::with_capacity(Vrf::DEFAULT_IPV4_CAPACITY),
-            routesv6: RTrieMap::with_capacity(Vrf::DEFAULT_IPV6_CAPACITY),
+            routesv4: PrefixMap::new(),
+            routesv6: PrefixMap::new(),
             nhstore: NhopStore::new(),
             fibw: None,
         };
@@ -282,8 +278,7 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     pub fn check_deletion(&mut self) {
         if self.status == VrfStatus::Deleting {
-            let one = NonZeroUsize::new(1).unwrap_or_else(|| unreachable!());
-            if self.routesv4.len() == one && self.routesv6.len() == one {
+            if self.routesv4.len() == 1 && self.routesv6.len() == 1 {
                 let r1 = self
                     .get_route(Prefix::root_v4())
                     .unwrap_or_else(|| unreachable!());
@@ -604,10 +599,10 @@ impl Vrf {
         self.iter_v6().filter(filter)
     }
     pub fn len_v4(&self) -> usize {
-        self.routesv4.len().get()
+        self.routesv4.len()
     }
     pub fn len_v6(&self) -> usize {
-        self.routesv6.len().get()
+        self.routesv6.len()
     }
     /////////////////////////////////////////////////////////////////////////
     // LPM, single call
@@ -615,11 +610,15 @@ impl Vrf {
 
     #[inline]
     fn lpm_v4(&self, target: Ipv4Prefix) -> (&Ipv4Prefix, &Route) {
-        self.routesv4.lookup(&target)
+        self.routesv4
+            .get_lpm(&target)
+            .unwrap_or_else(|| unreachable!())
     }
     #[inline]
     fn lpm_v6(&self, target: Ipv6Prefix) -> (&Ipv6Prefix, &Route) {
-        self.routesv6.lookup(&target)
+        self.routesv6
+            .get_lpm(&target)
+            .unwrap_or_else(|| unreachable!())
     }
     pub fn lpm(&self, target: IpAddr) -> (Prefix, &Route) {
         match target {
@@ -844,7 +843,7 @@ pub mod tests {
 
     #[test]
     fn test_patricia () {
-        let mut trie:RTrieMap<Ipv4Prefix, ()> = RTrieMap::new();
+        let mut trie:PrefixMap<Ipv4Prefix, ()> = PrefixMap::new();
         let prefix1 = Ipv4Prefix::from_str("10.0.0.1/32").unwrap();
         trie.insert(prefix1, ());
         trie.remove(&prefix1);
@@ -858,7 +857,7 @@ pub mod tests {
         /* connected */
         let nh = build_test_nhop(None, Some(1), 0, None);
         let connected = build_test_route(RouteOrigin::Connected, 0, 1);
-        let prefix = Prefix::expect_from(("10.0.0.1", 24));
+        let prefix = Prefix::expect_from(("10.0.0.0", 24));
         vrf.add_route(&prefix, connected.clone() /* only test */, &[nh], None);
 
         /* ospf */

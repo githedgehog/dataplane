@@ -61,6 +61,6 @@ bolero = { workspace = true, default-features = false, features = ["alloc"] }
 caps = { workspace = true }
 gateway_config = { workspace = true, features = ["bolero"] }
 ipnet = { workspace = true }
-iptrie = { workspace = true }
+prefix-trie = { workspace = true, features = [] }
 pretty_assertions = { workspace = true }
 tracing-test = { workspace = true, features = [] }
