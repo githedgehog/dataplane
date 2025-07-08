@@ -569,14 +569,14 @@ mod tests {
                         network1.address().to_bits() & network2.address().to_bits(),
                         network1.address().to_bits()
                     );
-                    assert!(network1.prefix_len() >= network2.prefix_len());
+                    assert!(network1.prefix_len() <= network2.prefix_len());
                     assert!(largest_possible_network(network1.address()).contains(network2));
                 } else if network2.contains(network1) {
                     assert_eq!(
                         network1.address().to_bits() & network2.address().to_bits(),
                         network2.address().to_bits()
                     );
-                    assert!(network2.prefix_len() >= network1.prefix_len());
+                    assert!(network2.prefix_len() <= network1.prefix_len());
                     assert!(largest_possible_network(network2.address()).contains(network1));
                 } else {
                     assert_ne!(network1.address().to_bits(), network2.address().to_bits());
