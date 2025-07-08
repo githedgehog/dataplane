@@ -4,7 +4,8 @@
 //! Type to represent IP-version neutral network prefixes.
 
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
-use iptrie::{IpPrefix, IpPrefixCovering, Ipv4Prefix, Ipv6Prefix};
+use net::ipv4::{Contains, Ipv4Prefix, Ipv4PrefixLen};
+use net::ipv6::{Ipv6Prefix, Ipv6PrefixLen};
 use serde::ser::SerializeStructVariant;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -40,12 +41,12 @@ impl Prefix {
     /// Build 224.0.0.0/4 - Ideally this would be const
     #[must_use]
     pub fn ipv4_link_local_mcast_prefix() -> Prefix {
-        Prefix::IPV4(Ipv4Prefix::new(Ipv4Addr::new(224, 0, 0, 0), 8).expect("Bad prefix")) // FIXME(fredi)
+        Prefix::IPV4(Ipv4Prefix::new_assert([224, 0, 0, 0], 8)) // FIXME(fredi)
     }
     /// Build 0.0.0.0/0. "Default" is a very overloaded term. Calling this `root_v4`.
     #[must_use]
     pub fn root_v4() -> Prefix {
-        Prefix::IPV4(Ipv4Prefix::default())
+        Prefix::IPV4(Ipv4Prefix::new_assert([0, 0, 0, 0], 0))
     }
     /// Build `::/0`.
     #[must_use]
@@ -97,8 +98,8 @@ impl Prefix {
     #[must_use]
     pub fn as_address(&self) -> IpAddr {
         match *self {
-            Prefix::IPV4(p) => p.network().into(),
-            Prefix::IPV6(p) => p.network().into(),
+            Prefix::IPV4(p) => p.address().into(),
+            Prefix::IPV6(p) => p.address().into(),
         }
     }
 
@@ -106,8 +107,8 @@ impl Prefix {
     #[must_use]
     pub fn length(&self) -> u8 {
         match *self {
-            Prefix::IPV4(p) => p.len(),
-            Prefix::IPV6(p) => p.len(),
+            Prefix::IPV4(p) => p.prefix_len().as_u8(),
+            Prefix::IPV6(p) => p.prefix_len().as_u8(),
         }
     }
 
@@ -115,9 +116,9 @@ impl Prefix {
     #[must_use]
     pub fn size(&self) -> PrefixSize {
         match *self {
-            Prefix::IPV4(p) => PrefixSize::U128(2u128.pow(32 - u32::from(p.len()))),
-            Prefix::IPV6(p) if p.len() == 0 => PrefixSize::Ipv6MaxAddrs,
-            Prefix::IPV6(p) => PrefixSize::U128(2u128.pow(128 - u32::from(p.len()))),
+            Prefix::IPV4(p) => PrefixSize::U128(2u128.pow(32 - u32::from(p.prefix_len().as_u8()))),
+            Prefix::IPV6(p) if p.prefix_len().as_u8() == 0 => PrefixSize::Ipv6MaxAddrs,
+            Prefix::IPV6(p) => PrefixSize::U128(2u128.pow(128 - u32::from(p.prefix_len().as_u8()))),
         }
     }
 
@@ -125,8 +126,8 @@ impl Prefix {
     #[must_use]
     pub fn covers_addr(&self, addr: &IpAddr) -> bool {
         match (self, addr) {
-            (Prefix::IPV4(p), IpAddr::V4(a)) => p.covers(a),
-            (Prefix::IPV6(p), IpAddr::V6(a)) => p.covers(a),
+            (Prefix::IPV4(p), IpAddr::V4(a)) => p.contains(*a),
+            (Prefix::IPV6(p), IpAddr::V6(a)) => p.contains(*a),
             _ => false,
         }
     }
@@ -135,8 +136,8 @@ impl Prefix {
     #[must_use]
     pub fn covers(&self, other: &Prefix) -> bool {
         match (self, other) {
-            (Prefix::IPV4(p1), Prefix::IPV4(p2)) => p1.covers(p2),
-            (Prefix::IPV6(p1), Prefix::IPV6(p2)) => p1.covers(p2),
+            (Prefix::IPV4(p1), Prefix::IPV4(p2)) => p1.contains(*p2),
+            (Prefix::IPV6(p1), Prefix::IPV6(p2)) => p1.contains(*p2),
             _ => false,
         }
     }
@@ -166,7 +167,7 @@ impl Prefix {
         T: TryInto<Prefix>,
         T::Error: Debug,
     {
-        val.try_into().expect("Invalid prefix")
+        val.try_into().unwrap()
     }
 
     /// Tell if prefix is a host
@@ -185,10 +186,12 @@ impl TryFrom<(IpAddr, u8)> for Prefix {
     fn try_from(tuple: (IpAddr, u8)) -> Result<Self, Self::Error> {
         match tuple.0 {
             IpAddr::V4(a) => Ok(Prefix::IPV4(
-                Ipv4Prefix::new(a, tuple.1).map_err(|e| PrefixError::Invalid(e.to_string()))?,
+                Ipv4Prefix::new_strict(a, tuple.1)
+                    .map_err(|e| PrefixError::Invalid(e.to_string()))?,
             )),
             IpAddr::V6(a) => Ok(Prefix::IPV6(
-                Ipv6Prefix::new(a, tuple.1).map_err(|e| PrefixError::Invalid(e.to_string()))?,
+                Ipv6Prefix::new_strict(a, tuple.1)
+                    .map_err(|e| PrefixError::Invalid(e.to_string()))?,
             )),
         }
     }
@@ -251,8 +254,8 @@ impl TryFrom<(&str, u8)> for Prefix {
             .map_err(|_| PrefixError::Invalid("Invalid address format".to_string()))?;
 
         let max_len = match addr {
-            IpAddr::V4(_) => Ipv4Prefix::MAX_LEN,
-            IpAddr::V6(_) => Ipv6Prefix::MAX_LEN,
+            IpAddr::V4(_) => Ipv4PrefixLen::MAX_LEN,
+            IpAddr::V6(_) => Ipv6PrefixLen::MAX_LEN,
         };
         if mask_len > max_len {
             return Err(PrefixError::InvalidLength(mask_len));
@@ -343,11 +346,13 @@ impl<'de> Deserialize<'de> for Prefix {
         let prefix = PrefixSerialized::deserialize(deserializer)?;
         match prefix {
             PrefixSerialized::IPV4(ps) => {
-                let p = Ipv4Prefix::new(ps.address, ps.length).map_err(serde::de::Error::custom)?;
+                let p = Ipv4Prefix::new_tolerant(ps.address, ps.length)
+                    .map_err(serde::de::Error::custom)?;
                 Ok(Prefix::IPV4(p))
             }
             PrefixSerialized::IPV6(ps) => {
-                let p = Ipv6Prefix::new(ps.address, ps.length).map_err(serde::de::Error::custom)?;
+                let p = Ipv6Prefix::new_tolerant(ps.address, ps.length)
+                    .map_err(serde::de::Error::custom)?;
                 Ok(Prefix::IPV6(p))
             }
         }
@@ -602,8 +607,7 @@ mod tests {
 
     #[test]
     fn test_prefix_v4() {
-        let ipv4_addr: Ipv4Addr = "1.2.3.0".parse().expect("Bad address");
-        let ipv4_pfx = Ipv4Prefix::new(ipv4_addr, 24).expect("Should succeed");
+        let ipv4_pfx = Ipv4Prefix::new_assert([1, 2, 3, 0], 24);
         let _prefix: Prefix = ipv4_pfx.into();
         let prefix = Prefix::from(ipv4_pfx);
         let ipv4_pfx_back: &Ipv4Prefix = (&prefix).into();
@@ -619,15 +623,14 @@ mod tests {
 
         // default - root
         let address: Ipv4Addr = "0.0.0.0".parse().unwrap();
-        let iptrie_pfx = Ipv4Prefix::new(address, 0).unwrap();
+        let iptrie_pfx = Ipv4Prefix::new_tolerant(address, 0).unwrap();
         let prefix = Prefix::from(iptrie_pfx);
         assert_eq!(prefix, Prefix::root_v4());
     }
 
     #[test]
     fn test_prefix_v6() {
-        let ipv6_addr: Ipv6Addr = "2001:a:b:c::".parse().expect("Bad address");
-        let ipv6_pfx = Ipv6Prefix::new(ipv6_addr, 64).expect("Should succeed");
+        let ipv6_pfx = Ipv6Prefix::new_assert([0x2001, 0xa, 0xb, 0xc, 0, 0, 0, 0], 64);
         let _prefix: Prefix = ipv6_pfx.into();
         let prefix = Prefix::from(ipv6_pfx);
         let ipv6_pfx_back: &Ipv6Prefix = (&prefix).into();
@@ -643,7 +646,7 @@ mod tests {
 
         // default - root
         let address: Ipv6Addr = "::".parse().unwrap();
-        let iptrie_pfx = Ipv6Prefix::new(address, 0).unwrap();
+        let iptrie_pfx = Ipv6Prefix::new_strict(address, 0).unwrap();
         let prefix = Prefix::from(iptrie_pfx);
         assert_eq!(prefix, Prefix::root_v6());
     }
@@ -701,8 +704,7 @@ mod tests {
 
     #[test]
     fn test_serde() {
-        let ipv4_addr: Ipv4Addr = "1.2.3.0".parse().expect("Bad address");
-        let ipv4_pfx = Ipv4Prefix::new(ipv4_addr, 24).expect("Should succeed");
+        let ipv4_pfx = Ipv4Prefix::new_assert([1, 2, 3, 0], 24);
         let prefix = Prefix::from(ipv4_pfx);
 
         // serialize prefix as YAML
@@ -712,7 +714,7 @@ mod tests {
         assert_eq!(prefix, deserialized_yaml);
 
         let ipv6_addr: Ipv6Addr = "f00:baa::".parse().expect("Bad address");
-        let ipv6_pfx = Ipv6Prefix::new(ipv6_addr, 64).expect("Should succeed");
+        let ipv6_pfx = Ipv6Prefix::new_strict(ipv6_addr, 64).expect("Should succeed");
         let prefix = Prefix::from(ipv6_pfx);
 
         // serialize prefix as YAML

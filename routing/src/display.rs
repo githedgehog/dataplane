@@ -22,12 +22,12 @@ use crate::evpn::{RmacEntry, RmacStore, Vtep};
 use crate::pretty_utils::{Heading, line};
 use crate::testfib::TestFib;
 
-use iptrie::map::RTrieMap;
-use iptrie::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
+use net::ipv4::Ipv4Prefix;
+use net::ipv6::Ipv6Prefix;
 use net::vxlan::Vni;
+use prefix_trie::{Prefix, PrefixMap};
 use std::fmt::Display;
 use std::rc::Rc;
-
 use tracing::{error, warn};
 
 //================================= Common ==========================//
@@ -187,10 +187,10 @@ impl Display for Route {
     }
 }
 
-fn fmt_vrf_trie<P: IpPrefix, F: Fn(&(&P, &Route)) -> bool>(
+fn fmt_vrf_trie<P: Prefix, F: Fn(&(&P, &Route)) -> bool>(
     f: &mut std::fmt::Formatter<'_>,
     show_string: &str,
-    trie: &RTrieMap<P, Route>,
+    trie: &PrefixMap<P, Route>,
     _route_filter: F,
 ) -> std::fmt::Result {
     Heading(format!("{show_string} routes ({})", trie.len())).fmt(f)?;
@@ -674,11 +674,11 @@ impl Display for FibId {
     }
 }
 
-fn fmt_fib_trie<P: IpPrefix, F: Fn(&(&P, &Rc<FibGroup>)) -> bool>(
+fn fmt_fib_trie<P: Prefix, F: Fn(&(&P, &Rc<FibGroup>)) -> bool>(
     f: &mut std::fmt::Formatter<'_>,
     fibid: FibId,
     show_string: &str,
-    trie: &RTrieMap<P, Rc<FibGroup>>,
+    trie: &PrefixMap<P, Rc<FibGroup>>,
     group_filter: F,
 ) -> std::fmt::Result {
     Heading(format!(
