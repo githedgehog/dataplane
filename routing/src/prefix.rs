@@ -46,12 +46,12 @@ impl Prefix {
     /// Build 0.0.0.0/0. "Default" is a very overloaded term. Calling this `root_v4`.
     #[must_use]
     pub fn root_v4() -> Prefix {
-        Prefix::IPV4(Ipv4Prefix::new_assert([0, 0, 0, 0], 0))
+        Prefix::IPV4(Ipv4Prefix::ROOT)
     }
     /// Build `::/0`.
     #[must_use]
     pub fn root_v6() -> Prefix {
-        Prefix::IPV6(Ipv6Prefix::default())
+        Prefix::IPV6(Ipv6Prefix::ROOT)
     }
     /// Tell if a prefix is a root prefix
     #[must_use]
