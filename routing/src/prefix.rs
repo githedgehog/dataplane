@@ -929,6 +929,588 @@ mod tests {
         assert_eq!(u128::try_from(prefix_size1).unwrap(), 2u128.pow(8));
     }
 
+    // Credits to https://stackoverflow.com/a/59211519
+    fn catch_unwind_silent<F: FnOnce() -> R + std::panic::UnwindSafe, R>(
+        f: F,
+    ) -> std::thread::Result<R> {
+        let panic_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let result = std::panic::catch_unwind(f);
+        std::panic::set_hook(panic_hook);
+        result
+    }
+
+    #[test]
+    fn test_prefix_size_op() {
+        // Add trait: PrefixSize + u128
+        assert_eq!(PrefixSize::U128(0) + 0, PrefixSize::U128(0));
+        assert_eq!(PrefixSize::U128(0) + 2, PrefixSize::U128(2));
+        assert_eq!(PrefixSize::U128(1) + 0, PrefixSize::U128(1));
+        assert_eq!(PrefixSize::U128(1) + 2, PrefixSize::U128(3));
+        assert_eq!(PrefixSize::U128(1) + u128::MAX, PrefixSize::Ipv6MaxAddrs);
+        assert!((PrefixSize::U128(2) + u128::MAX).is_overflow());
+        assert_eq!(
+            PrefixSize::U128(u128::MAX - 1) + 1,
+            PrefixSize::U128(u128::MAX)
+        );
+        assert_eq!(PrefixSize::U128(u128::MAX) + 1, PrefixSize::Ipv6MaxAddrs);
+        assert!((PrefixSize::U128(u128::MAX) + 2).is_overflow());
+        assert_eq!(PrefixSize::Ipv6MaxAddrs + 0, PrefixSize::Ipv6MaxAddrs);
+        assert!((PrefixSize::Ipv6MaxAddrs + 1).is_overflow());
+        assert!((PrefixSize::Overflow + 0).is_overflow());
+        assert!((PrefixSize::Overflow + 1).is_overflow());
+
+        // Add trait: u128 + PrefixSize
+        assert_eq!(0 + PrefixSize::U128(0), PrefixSize::U128(0));
+        assert_eq!(2 + PrefixSize::U128(0), PrefixSize::U128(2));
+        assert_eq!(0 + PrefixSize::U128(1), PrefixSize::U128(1));
+        assert_eq!(2 + PrefixSize::U128(1), PrefixSize::U128(3));
+        assert_eq!(u128::MAX + PrefixSize::U128(1), PrefixSize::Ipv6MaxAddrs);
+        assert!((u128::MAX + PrefixSize::U128(2)).is_overflow());
+        assert_eq!(
+            1 + PrefixSize::U128(u128::MAX - 1),
+            PrefixSize::U128(u128::MAX)
+        );
+        assert_eq!(1 + PrefixSize::U128(u128::MAX), PrefixSize::Ipv6MaxAddrs);
+        assert_eq!(0 + PrefixSize::Ipv6MaxAddrs, PrefixSize::Ipv6MaxAddrs);
+        assert!((1 + PrefixSize::Ipv6MaxAddrs).is_overflow());
+        assert!((0 + PrefixSize::Overflow).is_overflow());
+        assert!((1 + PrefixSize::Overflow).is_overflow());
+
+        // Add trait:: PrefixSize + PrefixSize
+        assert_eq!(
+            PrefixSize::U128(0) + PrefixSize::U128(0),
+            PrefixSize::U128(0)
+        );
+        assert_eq!(
+            PrefixSize::U128(0) + PrefixSize::U128(1),
+            PrefixSize::U128(1)
+        );
+        assert_eq!(
+            PrefixSize::U128(1) + PrefixSize::U128(0),
+            PrefixSize::U128(1)
+        );
+        assert_eq!(
+            PrefixSize::U128(1) + PrefixSize::U128(1),
+            PrefixSize::U128(2)
+        );
+        assert_eq!(
+            PrefixSize::U128(u128::MAX) + PrefixSize::U128(0),
+            PrefixSize::U128(u128::MAX)
+        );
+        assert_eq!(
+            PrefixSize::U128(u128::MAX) + PrefixSize::U128(1),
+            PrefixSize::Ipv6MaxAddrs
+        );
+        assert!((PrefixSize::U128(u128::MAX) + PrefixSize::U128(2)).is_overflow());
+        assert_eq!(
+            PrefixSize::Ipv6MaxAddrs + PrefixSize::U128(0),
+            PrefixSize::Ipv6MaxAddrs
+        );
+        assert_eq!(
+            PrefixSize::U128(0) + PrefixSize::Ipv6MaxAddrs,
+            PrefixSize::Ipv6MaxAddrs
+        );
+        assert!((PrefixSize::Ipv6MaxAddrs + PrefixSize::U128(1)).is_overflow());
+        assert!((PrefixSize::U128(1) + PrefixSize::Ipv6MaxAddrs).is_overflow());
+        assert!((PrefixSize::Overflow + PrefixSize::U128(0)).is_overflow());
+        assert!((PrefixSize::Overflow + PrefixSize::U128(1)).is_overflow());
+        assert!((PrefixSize::Overflow + PrefixSize::Ipv6MaxAddrs).is_overflow());
+        assert!((PrefixSize::U128(0) + PrefixSize::Overflow).is_overflow());
+        assert!((PrefixSize::U128(1) + PrefixSize::Overflow).is_overflow());
+        assert!((PrefixSize::Ipv6MaxAddrs + PrefixSize::Overflow).is_overflow());
+        assert!((PrefixSize::Overflow + PrefixSize::Overflow).is_overflow());
+
+        // Add trait: by reference, composition
+        let prefix_size_0 = PrefixSize::U128(0);
+        let prefix_size_1 = PrefixSize::U128(1);
+        let prefix_size_2 = PrefixSize::U128(2);
+        let prefix_size_max = PrefixSize::Ipv6MaxAddrs;
+        assert_eq!(&prefix_size_0 + prefix_size_1, PrefixSize::U128(1));
+        assert_eq!(prefix_size_2 + &prefix_size_1, PrefixSize::U128(3));
+        assert_eq!(&prefix_size_2 + &prefix_size_2, PrefixSize::U128(4));
+        assert!((&prefix_size_1 + prefix_size_max).is_overflow());
+        assert!((prefix_size_1 + &prefix_size_max).is_overflow());
+        assert!((&prefix_size_1 + &prefix_size_max).is_overflow());
+        assert_eq!(
+            &prefix_size_1
+                + 2
+                + &prefix_size_0
+                + 8
+                + prefix_size_2
+                + PrefixSize::U128(4)
+                + &prefix_size_2
+                + prefix_size_1,
+            PrefixSize::U128(20)
+        );
+
+        // AddAssign trait
+        let mut prefix_size = PrefixSize::U128(0);
+        prefix_size += PrefixSize::U128(1);
+        assert_eq!(prefix_size, PrefixSize::U128(1));
+
+        let mut prefix_size = PrefixSize::U128(1);
+        prefix_size += PrefixSize::U128(2);
+        assert_eq!(prefix_size, PrefixSize::U128(3));
+
+        let mut prefix_size = PrefixSize::U128(u128::MAX - 1);
+        prefix_size += PrefixSize::U128(1);
+        assert_eq!(prefix_size, PrefixSize::U128(u128::MAX));
+
+        let mut prefix_size = PrefixSize::U128(u128::MAX);
+        prefix_size += PrefixSize::U128(1);
+        assert_eq!(prefix_size, PrefixSize::Ipv6MaxAddrs);
+
+        let mut prefix_size = PrefixSize::Ipv6MaxAddrs;
+        prefix_size += PrefixSize::U128(1);
+        assert!(prefix_size.is_overflow());
+
+        let mut prefix_size = PrefixSize::Overflow;
+        prefix_size += PrefixSize::U128(1);
+        assert!(prefix_size.is_overflow());
+
+        let mut prefix_size = PrefixSize::U128(0);
+        prefix_size += 1;
+        assert_eq!(prefix_size, PrefixSize::U128(1));
+
+        let mut prefix_size = PrefixSize::U128(u128::MAX);
+        prefix_size += 1;
+        assert_eq!(prefix_size, PrefixSize::Ipv6MaxAddrs);
+
+        let mut prefix_size = PrefixSize::Ipv6MaxAddrs;
+        prefix_size += 1;
+        assert!(prefix_size.is_overflow());
+
+        let mut prefix_size = PrefixSize::Overflow;
+        prefix_size += 1;
+        assert!(prefix_size.is_overflow());
+
+        // Sub trait: PrefixSize - u128
+        assert_eq!(PrefixSize::U128(0) - 0, PrefixSize::U128(0));
+        assert_eq!(PrefixSize::U128(1) - 0, PrefixSize::U128(1));
+        assert_eq!(PrefixSize::U128(1) - 1, PrefixSize::U128(0));
+        assert_eq!(PrefixSize::U128(u128::MAX) - 0, PrefixSize::U128(u128::MAX));
+        assert_eq!(
+            PrefixSize::U128(u128::MAX) - 1,
+            PrefixSize::U128(u128::MAX - 1)
+        );
+        assert_eq!(PrefixSize::U128(u128::MAX) - u128::MAX, PrefixSize::U128(0));
+        assert_eq!(PrefixSize::Ipv6MaxAddrs - 0, PrefixSize::Ipv6MaxAddrs);
+        assert_eq!(PrefixSize::Ipv6MaxAddrs - 1, PrefixSize::U128(u128::MAX));
+        assert_eq!(PrefixSize::Ipv6MaxAddrs - u128::MAX, PrefixSize::U128(1));
+        assert!((PrefixSize::Overflow - 0).is_overflow());
+        assert!((PrefixSize::Overflow - 1).is_overflow());
+        assert!((PrefixSize::Overflow - u128::MAX).is_overflow());
+
+        let result = catch_unwind_silent(|| PrefixSize::U128(0) - 1);
+        assert!(result.is_err());
+
+        let result = catch_unwind_silent(|| PrefixSize::U128(7) - u128::MAX);
+        assert!(result.is_err());
+
+        // Sub trait: PrefixSize - PrefixSize
+        assert_eq!(
+            PrefixSize::U128(0) - PrefixSize::U128(0),
+            PrefixSize::U128(0)
+        );
+        assert_eq!(
+            PrefixSize::U128(1) - PrefixSize::U128(0),
+            PrefixSize::U128(1)
+        );
+        assert_eq!(
+            PrefixSize::U128(1) - PrefixSize::U128(1),
+            PrefixSize::U128(0)
+        );
+        assert_eq!(
+            PrefixSize::U128(u128::MAX) - PrefixSize::U128(0),
+            PrefixSize::U128(u128::MAX)
+        );
+        assert_eq!(
+            PrefixSize::U128(u128::MAX) - PrefixSize::U128(u128::MAX - 1),
+            PrefixSize::U128(1)
+        );
+        assert_eq!(
+            PrefixSize::U128(u128::MAX) - PrefixSize::U128(u128::MAX),
+            PrefixSize::U128(0)
+        );
+        assert_eq!(
+            PrefixSize::Ipv6MaxAddrs - PrefixSize::U128(0),
+            PrefixSize::Ipv6MaxAddrs
+        );
+        assert_eq!(
+            PrefixSize::Ipv6MaxAddrs - PrefixSize::U128(1),
+            PrefixSize::U128(u128::MAX)
+        );
+        assert_eq!(
+            PrefixSize::Ipv6MaxAddrs - PrefixSize::U128(u128::MAX),
+            PrefixSize::U128(1)
+        );
+        assert_eq!(
+            PrefixSize::Ipv6MaxAddrs - PrefixSize::Ipv6MaxAddrs,
+            PrefixSize::U128(0)
+        );
+        assert!((PrefixSize::Overflow - PrefixSize::U128(0)).is_overflow());
+        assert!((PrefixSize::Overflow - PrefixSize::U128(u128::MAX)).is_overflow());
+        assert!((PrefixSize::Overflow - PrefixSize::Ipv6MaxAddrs).is_overflow());
+
+        let result = catch_unwind_silent(|| PrefixSize::U128(7) - PrefixSize::U128(8));
+        assert!(result.is_err());
+
+        let result = catch_unwind_silent(|| PrefixSize::U128(u128::MAX) - PrefixSize::Ipv6MaxAddrs);
+        assert!(result.is_err());
+
+        let result = catch_unwind_silent(|| PrefixSize::U128(u128::MAX) - PrefixSize::Overflow);
+        assert!(result.is_err());
+
+        let result = catch_unwind_silent(|| PrefixSize::Ipv6MaxAddrs - PrefixSize::Overflow);
+        assert!(result.is_err());
+
+        let result = catch_unwind_silent(|| PrefixSize::Overflow - PrefixSize::Overflow);
+        assert!(result.is_err());
+
+        // Sub trait: by reference, composition
+        assert_eq!(
+            PrefixSize::U128(0) - &PrefixSize::U128(0),
+            PrefixSize::U128(0)
+        );
+        assert_eq!(
+            PrefixSize::U128(1) - &PrefixSize::U128(0),
+            PrefixSize::U128(1)
+        );
+        assert_eq!(
+            PrefixSize::U128(1) - &PrefixSize::U128(1),
+            PrefixSize::U128(0)
+        );
+        assert_eq!(
+            &PrefixSize::U128(0) - PrefixSize::U128(0),
+            PrefixSize::U128(0)
+        );
+        assert_eq!(
+            &PrefixSize::U128(1) - PrefixSize::U128(0),
+            PrefixSize::U128(1)
+        );
+        assert_eq!(
+            &PrefixSize::U128(1) - PrefixSize::U128(1),
+            PrefixSize::U128(0)
+        );
+        assert_eq!(
+            &PrefixSize::U128(0) - &PrefixSize::U128(0),
+            PrefixSize::U128(0)
+        );
+        assert_eq!(
+            &PrefixSize::U128(1) - &PrefixSize::U128(0),
+            PrefixSize::U128(1)
+        );
+        assert_eq!(
+            &PrefixSize::U128(1) - &PrefixSize::U128(1),
+            PrefixSize::U128(0)
+        );
+        assert_eq!(
+            PrefixSize::U128(u128::MAX) - &PrefixSize::U128(0),
+            PrefixSize::U128(u128::MAX)
+        );
+        assert_eq!(
+            PrefixSize::U128(u128::MAX) - &PrefixSize::U128(u128::MAX - 1),
+            PrefixSize::U128(1)
+        );
+        assert_eq!(
+            PrefixSize::U128(u128::MAX) - &PrefixSize::U128(u128::MAX),
+            PrefixSize::U128(0)
+        );
+        assert_eq!(&PrefixSize::Ipv6MaxAddrs - 0, PrefixSize::Ipv6MaxAddrs);
+        assert_eq!(&PrefixSize::Ipv6MaxAddrs - 1, PrefixSize::U128(u128::MAX));
+        assert_eq!(
+            &PrefixSize::Ipv6MaxAddrs - PrefixSize::U128(u128::MAX),
+            PrefixSize::U128(1)
+        );
+        assert_eq!(
+            &PrefixSize::Ipv6MaxAddrs - &PrefixSize::Ipv6MaxAddrs,
+            PrefixSize::U128(0)
+        );
+        assert!((PrefixSize::Overflow - &PrefixSize::U128(0)).is_overflow());
+        assert!((&PrefixSize::Overflow - &PrefixSize::U128(u128::MAX)).is_overflow());
+        assert!((PrefixSize::Overflow - &PrefixSize::Ipv6MaxAddrs).is_overflow());
+
+        assert_eq!(
+            PrefixSize::Ipv6MaxAddrs - &PrefixSize::U128(u128::MAX) - 1,
+            PrefixSize::U128(0)
+        );
+        assert_eq!(
+            PrefixSize::U128(20)
+                - &PrefixSize::U128(5)
+                - 3
+                - PrefixSize::U128(2)
+                - 0
+                - &PrefixSize::U128(1)
+                - PrefixSize::U128(0)
+                - 8,
+            PrefixSize::U128(1)
+        );
+
+        let result = catch_unwind_silent(|| {
+            PrefixSize::Ipv6MaxAddrs - PrefixSize::U128(u128::MAX) - &PrefixSize::U128(1) - 1
+        });
+        assert!(result.is_err());
+
+        let result = catch_unwind_silent(|| &PrefixSize::Overflow - &PrefixSize::Overflow);
+        assert!(result.is_err());
+
+        // SubAssign
+        let mut prefix_size = PrefixSize::U128(20);
+        prefix_size -= PrefixSize::U128(5);
+        prefix_size -= 3;
+        prefix_size -= PrefixSize::U128(2);
+        prefix_size -= 0;
+        prefix_size -= &PrefixSize::U128(1);
+        prefix_size -= PrefixSize::U128(0);
+        prefix_size -= 8;
+        assert_eq!(prefix_size, PrefixSize::U128(1));
+
+        let mut prefix_size = PrefixSize::Ipv6MaxAddrs;
+        prefix_size -= &PrefixSize::U128(u128::MAX - 8);
+        prefix_size -= &PrefixSize::U128(3);
+        prefix_size -= 2;
+        prefix_size -= PrefixSize::U128(0);
+        prefix_size -= PrefixSize::U128(1);
+        prefix_size -= 1;
+        prefix_size -= &PrefixSize::U128(1);
+        assert_eq!(prefix_size, PrefixSize::U128(1));
+
+        let mut prefix_size = PrefixSize::Overflow;
+        prefix_size -= PrefixSize::U128(u128::MAX);
+        prefix_size -= 0;
+        prefix_size -= &PrefixSize::U128(1);
+        prefix_size -= PrefixSize::Ipv6MaxAddrs;
+        assert!(prefix_size.is_overflow());
+
+        let result = catch_unwind_silent(|| {
+            let mut prefix_size = PrefixSize::Overflow;
+            prefix_size -= PrefixSize::Overflow;
+        });
+        assert!(result.is_err());
+
+        // Mul trait: PrefixSize * u128
+        assert_eq!(PrefixSize::U128(0) * 2, PrefixSize::U128(0));
+        assert_eq!(PrefixSize::U128(1) * 0, PrefixSize::U128(0));
+        assert_eq!(PrefixSize::U128(1) * 2, PrefixSize::U128(2));
+        assert_eq!(
+            PrefixSize::U128(2_u128.pow(127)) * 2,
+            PrefixSize::Ipv6MaxAddrs
+        );
+        assert!((PrefixSize::U128(u128::MAX) * 2).is_overflow());
+        let max_div_by_three = u128::MAX / 3;
+        assert_eq!(max_div_by_three * 3, u128::MAX);
+        assert_eq!(
+            PrefixSize::U128(max_div_by_three) * 3,
+            PrefixSize::U128(u128::MAX)
+        );
+        assert_eq!(PrefixSize::Ipv6MaxAddrs * 0, PrefixSize::U128(0));
+        assert_eq!(PrefixSize::Ipv6MaxAddrs * 1, PrefixSize::Ipv6MaxAddrs);
+        assert!((PrefixSize::Ipv6MaxAddrs * 2).is_overflow());
+        assert_eq!(PrefixSize::Overflow * 0, PrefixSize::U128(0));
+        assert!((PrefixSize::Overflow * 1).is_overflow());
+        assert!((PrefixSize::Overflow * 2).is_overflow());
+
+        // Mul trait: u128 * PrefixSize
+        assert_eq!(0 * PrefixSize::U128(0), PrefixSize::U128(0));
+        assert_eq!(0 * PrefixSize::U128(1), PrefixSize::U128(0));
+        assert_eq!(2 * PrefixSize::U128(1), PrefixSize::U128(2));
+        assert_eq!(
+            2 * PrefixSize::U128(2_u128.pow(127)),
+            PrefixSize::Ipv6MaxAddrs
+        );
+        assert!((2 * PrefixSize::U128(u128::MAX)).is_overflow());
+        assert_eq!(
+            3 * PrefixSize::U128(max_div_by_three),
+            PrefixSize::U128(u128::MAX)
+        );
+        assert_eq!(0 * PrefixSize::Ipv6MaxAddrs, PrefixSize::U128(0));
+        assert_eq!(1 * PrefixSize::Ipv6MaxAddrs, PrefixSize::Ipv6MaxAddrs);
+        assert!((2 * PrefixSize::Ipv6MaxAddrs).is_overflow());
+        assert_eq!(0 * PrefixSize::Overflow, PrefixSize::U128(0));
+        assert!((1 * PrefixSize::Overflow).is_overflow());
+        assert!((2 * PrefixSize::Overflow).is_overflow());
+
+        // Mul trait: by reference, composition
+        let prefix_size_0 = PrefixSize::U128(0);
+        let prefix_size_1 = PrefixSize::U128(1);
+        let prefix_size_2_127 = PrefixSize::U128(2_u128.pow(127));
+        let prefix_size_max = PrefixSize::Ipv6MaxAddrs;
+        assert_eq!(&prefix_size_0 * 2, PrefixSize::U128(0));
+        assert_eq!(2 * &prefix_size_0, PrefixSize::U128(0));
+        assert_eq!(&prefix_size_1 * 2, PrefixSize::U128(2));
+        assert_eq!(2 * &prefix_size_1, PrefixSize::U128(2));
+        assert_eq!(&prefix_size_2_127 * 2, PrefixSize::Ipv6MaxAddrs);
+        assert_eq!(2 * &prefix_size_2_127, PrefixSize::Ipv6MaxAddrs);
+        assert_eq!(1 * prefix_size_max, PrefixSize::Ipv6MaxAddrs);
+        assert_eq!(1 * &prefix_size_max * 1, PrefixSize::Ipv6MaxAddrs);
+        assert_eq!(&prefix_size_1 * 2 * 3, PrefixSize::U128(6));
+        assert_eq!(2 * prefix_size_1 * 3, PrefixSize::U128(6));
+        assert_eq!(2 * &prefix_size_1 * 0, PrefixSize::U128(0));
+        assert!((2 * &prefix_size_max).is_overflow());
+
+        // MulAssign trait
+        let mut prefix_size = PrefixSize::U128(0);
+        prefix_size *= 2;
+        assert_eq!(prefix_size, PrefixSize::U128(0));
+
+        let mut prefix_size = PrefixSize::U128(1);
+        prefix_size *= 0;
+        assert_eq!(prefix_size, PrefixSize::U128(0));
+
+        let mut prefix_size = PrefixSize::U128(1);
+        prefix_size *= 2;
+        assert_eq!(prefix_size, PrefixSize::U128(2));
+
+        let mut prefix_size = PrefixSize::U128(2_u128.pow(127));
+        prefix_size *= 2;
+        assert_eq!(prefix_size, PrefixSize::Ipv6MaxAddrs);
+
+        let mut prefix_size = PrefixSize::U128(u128::MAX);
+        prefix_size *= 2;
+        assert!(prefix_size.is_overflow());
+
+        let mut prefix_size = PrefixSize::U128(max_div_by_three);
+        prefix_size *= 3;
+        assert_eq!(prefix_size, PrefixSize::U128(u128::MAX));
+
+        let mut prefix_size = PrefixSize::Ipv6MaxAddrs;
+        prefix_size *= 0;
+        assert_eq!(prefix_size, PrefixSize::U128(0));
+
+        let mut prefix_size = PrefixSize::Ipv6MaxAddrs;
+        prefix_size *= 1;
+        assert_eq!(prefix_size, PrefixSize::Ipv6MaxAddrs);
+
+        let mut prefix_size = PrefixSize::Ipv6MaxAddrs;
+        prefix_size *= 2;
+        assert!(prefix_size.is_overflow());
+
+        let mut prefix_size = PrefixSize::Overflow;
+        prefix_size *= 0;
+        assert_eq!(prefix_size, PrefixSize::U128(0));
+
+        let mut prefix_size = PrefixSize::Overflow;
+        prefix_size *= 1;
+        assert!(prefix_size.is_overflow());
+
+        let mut prefix_size = PrefixSize::Overflow;
+        prefix_size *= 2;
+        assert!(prefix_size.is_overflow());
+
+        // Div trait: PrefixSize / u128
+        let result = catch_unwind_silent(|| {
+            let _ = PrefixSize::U128(0) / 0;
+        });
+        assert!(result.is_err());
+
+        let result = catch_unwind_silent(|| {
+            let _ = PrefixSize::U128(5) / 0;
+        });
+        assert!(result.is_err());
+
+        let result = catch_unwind_silent(|| {
+            let _ = PrefixSize::Ipv6MaxAddrs / 0;
+        });
+        assert!(result.is_err());
+
+        let result = catch_unwind_silent(|| {
+            let _ = PrefixSize::Overflow / 0;
+        });
+        assert!(result.is_err());
+
+        assert_eq!(PrefixSize::U128(0) / 5, PrefixSize::U128(0));
+        assert_eq!(PrefixSize::U128(5) / 5, PrefixSize::U128(1));
+        assert_eq!(PrefixSize::U128(10) / 5, PrefixSize::U128(2));
+        assert_eq!(
+            PrefixSize::U128(u128::MAX) / 5,
+            PrefixSize::U128(u128::MAX / 5)
+        );
+        assert_eq!(PrefixSize::U128(5) / u128::MAX, PrefixSize::U128(0));
+        assert_eq!(PrefixSize::Ipv6MaxAddrs / 1, PrefixSize::Ipv6MaxAddrs);
+        assert_eq!(
+            PrefixSize::Ipv6MaxAddrs / 5,
+            PrefixSize::U128(u128::MAX / 5)
+        );
+        assert_eq!(
+            PrefixSize::Ipv6MaxAddrs / 2,
+            PrefixSize::U128(u128::MAX / 2 + 1)
+        );
+        assert_eq!(
+            PrefixSize::Ipv6MaxAddrs / (2_u128.pow(127) - 1),
+            PrefixSize::U128(2)
+        );
+        assert_eq!(
+            PrefixSize::Ipv6MaxAddrs / 2_u128.pow(127),
+            PrefixSize::U128(2)
+        );
+        assert_eq!(
+            PrefixSize::Ipv6MaxAddrs / (2_u128.pow(127) + 1),
+            PrefixSize::U128(1)
+        );
+        assert!((PrefixSize::Overflow / 1).is_overflow());
+        assert!((PrefixSize::Overflow / u128::MAX).is_overflow());
+
+        // Div trait: by reference, composition
+        let prefix_size_0 = PrefixSize::U128(0);
+        let prefix_size_1 = PrefixSize::U128(1);
+        let prefix_size_2_127 = PrefixSize::U128(2_u128.pow(127));
+        let prefix_size_max = PrefixSize::Ipv6MaxAddrs;
+        assert_eq!(&prefix_size_0 / 2, PrefixSize::U128(0));
+        assert_eq!(&prefix_size_1 / 2, PrefixSize::U128(0));
+        assert_eq!(&prefix_size_2_127 / 2, PrefixSize::U128(2_u128.pow(126)));
+        assert_eq!(
+            &prefix_size_2_127 / 2 / 2 / 2,
+            PrefixSize::U128(2_u128.pow(124))
+        );
+        assert_eq!(&prefix_size_max / 2, PrefixSize::U128(u128::MAX / 2 + 1));
+        assert_eq!(&prefix_size_max / 2 * 2, PrefixSize::Ipv6MaxAddrs);
+        assert!((&prefix_size_max / 2 * 2 + PrefixSize::U128(1)).is_overflow());
+
+        // DivAssign trait
+        let mut prefix_size = PrefixSize::U128(0);
+        prefix_size /= 2;
+        assert_eq!(prefix_size, PrefixSize::U128(0));
+
+        let mut prefix_size = PrefixSize::U128(1);
+        prefix_size /= 2;
+        assert_eq!(prefix_size, PrefixSize::U128(0));
+
+        let mut prefix_size = PrefixSize::U128(2);
+        prefix_size /= 2;
+        assert_eq!(prefix_size, PrefixSize::U128(1));
+
+        let mut prefix_size = PrefixSize::U128(u128::MAX);
+        prefix_size /= 2;
+        assert_eq!(prefix_size, PrefixSize::U128(u128::MAX / 2));
+
+        let mut prefix_size = PrefixSize::Ipv6MaxAddrs;
+        prefix_size /= 2;
+        assert_eq!(prefix_size, PrefixSize::U128(u128::MAX / 2 + 1));
+
+        let mut prefix_size = PrefixSize::Overflow;
+        prefix_size /= 2;
+        assert!(prefix_size.is_overflow());
+
+        let result = catch_unwind_silent(|| {
+            let mut prefix_size = PrefixSize::U128(1);
+            prefix_size /= 0;
+        });
+        assert!(result.is_err());
+
+        // All combined
+        let mut prefix_size = PrefixSize::U128(0);
+        prefix_size += PrefixSize::U128(1) + 2 + &PrefixSize::U128(3) + (4 * PrefixSize::U128(2))
+            - (PrefixSize::Ipv6MaxAddrs - PrefixSize::U128(u128::MAX))
+            + (PrefixSize::Ipv6MaxAddrs * 0)
+            - (PrefixSize::U128(8) / 3)
+            - 2;
+        assert_eq!(
+            prefix_size,
+            PrefixSize::U128(1 + 2 + 3 + 4 * 2 - 1 + 0 - 2 - 2)
+        );
+    }
+
     #[test]
     fn test_bolero_prefixsize_compare() {
         bolero::check!()
