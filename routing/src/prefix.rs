@@ -12,7 +12,7 @@ use std::fmt::{Debug, Display};
 use std::iter::Sum;
 pub use std::net::IpAddr;
 pub use std::net::{Ipv4Addr, Ipv6Addr};
-use std::ops::{Add, Sub};
+use std::ops::{Add, AddAssign, Sub};
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -423,6 +423,30 @@ impl Add<u128> for PrefixSize {
     }
 }
 
+impl Add<u128> for &PrefixSize {
+    type Output = PrefixSize;
+
+    fn add(self, int: u128) -> PrefixSize {
+        *self + int
+    }
+}
+
+impl Add<PrefixSize> for u128 {
+    type Output = PrefixSize;
+
+    fn add(self, other: PrefixSize) -> PrefixSize {
+        other + self
+    }
+}
+
+impl Add<&PrefixSize> for u128 {
+    type Output = PrefixSize;
+
+    fn add(self, other: &PrefixSize) -> PrefixSize {
+        *other + self
+    }
+}
+
 impl Add<PrefixSize> for PrefixSize {
     type Output = Self;
 
@@ -458,6 +482,24 @@ impl Add<&PrefixSize> for &PrefixSize {
 
     fn add(self, other: &PrefixSize) -> PrefixSize {
         *self + *other
+    }
+}
+
+impl AddAssign<PrefixSize> for PrefixSize {
+    fn add_assign(&mut self, other: PrefixSize) {
+        *self = *self + other;
+    }
+}
+
+impl AddAssign<&PrefixSize> for PrefixSize {
+    fn add_assign(&mut self, other: &PrefixSize) {
+        *self = *self + other;
+    }
+}
+
+impl AddAssign<u128> for PrefixSize {
+    fn add_assign(&mut self, int: u128) {
+        *self = *self + int;
     }
 }
 
