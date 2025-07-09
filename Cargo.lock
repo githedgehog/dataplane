@@ -1140,8 +1140,8 @@ dependencies = [
 
 [[package]]
 name = "dplane-rpc"
-version = "1.0.2"
-source = "git+https://github.com/githedgehog/dplane-rpc.git#79a7929186716c3f463866614a9b23ea4b641949"
+version = "1.1.0"
+source = "git+https://github.com/githedgehog/dplane-rpc.git#dec4aabd377b00ab8b35dafc5e3adae57930522c"
 dependencies = [
  "bytes",
  "cbindgen",

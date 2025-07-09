@@ -204,29 +204,6 @@ fn build_notification_msg() -> RpcMsg {
 }
 
 /* message handlers */
-fn collect_objects(_ovec: &mut [&RpcObject], filter: Option<&GetFilter>) -> RpcResultCode {
-    if let Some(_filter) = filter {
-        // get the objects considering the filter and place refs in ovec
-    } else {
-        // get all objects and place refs in ovec
-    }
-    RpcResultCode::Ok
-}
-fn handle_get_request(csock: &mut RpcCachedSock, peer: &SocketAddr, req: &RpcRequest) {
-    let mut objects: Vec<&RpcObject> = vec![];
-    let x = req.get_object();
-    let res_code = match x {
-        None => collect_objects(&mut objects, None),
-        Some(RpcObject::GetFilter(filter)) => collect_objects(&mut objects, Some(filter)),
-        _ => {
-            error!("Received Get request with invalid object");
-            RpcResultCode::InvalidRequest
-        }
-    };
-
-    let resp_msg = build_response_msg(req, res_code, Some(objects));
-    csock.send_msg(resp_msg, peer);
-}
 fn handle_request(
     csock: &mut RpcCachedSock,
     peer: &SocketAddr,
@@ -236,10 +213,6 @@ fn handle_request(
     let op = req.get_op();
     let object = req.get_object();
     debug!("Handling {}", req);
-
-    if op == RpcOp::Get {
-        return handle_get_request(csock, peer, req);
-    }
 
     // ignore additions if have no config. Connects are allowed, so are deletions to wipe out old state
     if !db.have_config() && op == RpcOp::Add {
@@ -279,7 +252,6 @@ fn handle_request(
             RpcOp::Connect => conninfo.connect(),
             _ => RpcResultCode::InvalidRequest,
         },
-        _ => RpcResultCode::InvalidRequest,
     };
     let resp_msg = build_response_msg(req, res_code, None);
     csock.send_msg(resp_msg, peer);
