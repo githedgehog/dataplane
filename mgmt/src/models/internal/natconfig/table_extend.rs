@@ -627,7 +627,11 @@ mod tests {
     }
 
     use bolero::{Driver, TypeGenerator, ValueGenerator};
+    use net::ipv4::{Ipv4Prefix, Ipv4PrefixLen};
+    use net::ipv6::Ipv6PrefixLen;
+    use prefix_trie::PrefixMap;
     use std::ops::Bound;
+
     struct RandomPrefixSetGenerator {
         is_ipv4: bool,
         count: u32,
@@ -639,7 +643,11 @@ mod tests {
         fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
             let mut prefixes = BTreeSet::new();
             let is_ipv4 = self.is_ipv4;
-            let max_prefix_len = if is_ipv4 { 32 } else { 128 };
+            let max_prefix_len = if is_ipv4 {
+                Ipv4PrefixLen::MAX_LEN
+            } else {
+                Ipv6PrefixLen::MAX_LEN
+            };
 
             for _ in 0..self.count {
                 let prefix_len = d.gen_u8(Bound::Included(&1), Bound::Included(&max_prefix_len))?;
@@ -704,10 +712,14 @@ mod tests {
         }
     }
 
-    // fn prefix_oracle(addr: &IpNet, prefixes: &IpRTrieSet, excludes: &IpRTrieSet) -> bool {
-    //     !excludes.contains(addr) && prefixes.contains(addr)
-    // }
-    //
+    fn prefix_oracle<P: prefix_trie::Prefix, K>(
+        addr: &P,
+        prefixes: &PrefixMap<P, K>,
+        excludes: &PrefixMap<P, K>,
+    ) -> bool {
+        excludes.get_lpm_prefix(addr).is_none() && prefixes.get_lpm_prefix(addr).is_some()
+    }
+
     // #[test]
     // fn test_bolero_collapse_prefix_lists() {
     //     let generator = PrefixExcludeAddrsGenerator {

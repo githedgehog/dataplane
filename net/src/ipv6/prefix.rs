@@ -63,9 +63,9 @@ pub enum Ipv6PrefixParseError {
 }
 
 impl Ipv6PrefixLen {
-    /// The largest possible prefix length for IPv6 (i.e. /128)
+    /// The longest possible prefix length for IPv6 (i.e. /128)
     pub const MAX_LEN: u8 = 128;
-    /// The largest possible prefix length for IPv6 (i.e. /128)
+    /// The longest possible prefix length for IPv6 (i.e. /128)
     pub const MAX: Self = Self(Self::MAX_LEN);
     /// The minimum possible prefix length for IPv6 (i.e. /0)
     pub const MIN: Self = Self(0);
@@ -377,33 +377,14 @@ mod contract {
         }
     }
 
-    /// generate the largest possible network from an [`Ipv6Addr`]
+    /// generate the largest possible network from an [`Ipv6Addr`] (i.e., the network with the
+    /// shortest possible prefix such that none of the host bits in the supplied address are set).
     #[must_use]
     pub const fn largest_possible_network(ip: Ipv6Addr) -> Ipv6Prefix {
         #[allow(clippy::cast_possible_truncation)] // upper bounded to 128
         let prefix_len = Ipv6PrefixLen::MAX_LEN - (ip.to_bits().trailing_zeros() as u8);
         Ipv6Prefix::new_assert(ip.segments(), prefix_len)
     }
-
-    // /// Value generator which selects an arbitrary Ipv6 Address and then computes the largest legal
-    // /// [`Ipv6Prefix`] from that address.
-    // pub struct LargestPossibleNetworkGenerator;
-    //
-    // impl LargestPossibleNetworkGenerator {
-    //     /// Create a new [`LargestPossibleNetworkGenerator`]
-    //     #[must_use]
-    //     pub fn new<D: Driver>(driver: &mut D) -> Option<Self> {
-    //         Some(Self(largest_possible_network(driver.produce()?)))
-    //     }
-    // }
-    //
-    // impl ValueGenerator for LargestPossibleNetworkGenerator {
-    //     type Output = Ipv6Prefix;
-    //
-    //     fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
-    //         Some(largest_possible_network(driver.produce()?))
-    //     }
-    // }
 
     /// Value generator which produces contained networks of the provided [`Ipv6Prefix`].
     ///
@@ -466,7 +447,6 @@ mod tests {
     };
     use std::net::Ipv6Addr;
     use std::panic::catch_unwind;
-    use std::time::Duration;
 
     #[test]
     #[should_panic]
@@ -609,10 +589,7 @@ mod tests {
                     let max_addr = if net.prefix_len().0 == 0 {
                         u128::MAX
                     } else {
-                        #[allow(clippy::cast_possible_truncation)] // bounded math
-                        {
-                            net.address().to_bits() + (1u128 << (128 - net.prefix_len().0)) - 1
-                        }
+                        net.address().to_bits() + (1u128 << (128 - net.prefix_len().0)) - 1
                     };
                     assert!(addr.to_bits() < min_addr || addr.to_bits() > max_addr);
                 }

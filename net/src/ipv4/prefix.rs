@@ -62,9 +62,9 @@ pub enum Ipv4PrefixParseError {
 }
 
 impl Ipv4PrefixLen {
-    /// The largest possible prefix length for IPv4 (i.e. /32)
+    /// The longest possible prefix length for IPv4 (i.e. /32)
     pub const MAX_LEN: u8 = 32;
-    /// The largest possible prefix length for IPv4 (i.e. /32)
+    /// The longest possible prefix length for IPv4 (i.e. /32)
     pub const MAX: Self = Self(Self::MAX_LEN);
     /// The minimum possible prefix length for IPv4 (i.e. /0)
     pub const MIN: Self = Self(0);
@@ -382,33 +382,14 @@ mod contract {
         }
     }
 
-    /// generate the largest possible network from an [`Ipv4Addr`]
+    /// generate the largest possible network from an [`Ipv4Addr`] (i.e., the network with the
+    /// shortest possible prefix such that none of the host bits in the supplied address are set).
     #[must_use]
     pub const fn largest_possible_network(ip: Ipv4Addr) -> Ipv4Prefix {
         #[allow(clippy::cast_possible_truncation)] // upper bounded to 32
         let prefix_len = Ipv4PrefixLen::MAX_LEN - (ip.to_bits().trailing_zeros() as u8);
         Ipv4Prefix::new_assert(ip.octets(), prefix_len)
     }
-
-    // /// Value generator which selects an arbitrary Ipv4 Address and then computes the largest legal
-    // /// [`Ipv4Prefix`] from that address.
-    // pub struct LargestPossibleNetworkGenerator;
-    //
-    // impl LargestPossibleNetworkGenerator {
-    //     /// Create a new [`LargestPossibleNetworkGenerator`]
-    //     #[must_use]
-    //     pub fn new<D: Driver>(driver: &mut D) -> Option<Self> {
-    //         Some(Self(largest_possible_network(driver.produce()?)))
-    //     }
-    // }
-    //
-    // impl ValueGenerator for LargestPossibleNetworkGenerator {
-    //     type Output = Ipv4Prefix;
-    //
-    //     fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
-    //         Some(largest_possible_network(driver.produce()?))
-    //     }
-    // }
 
     /// Value generator which produces contained networks of the provided [`Ipv4Prefix`].
     ///
@@ -470,7 +451,6 @@ mod tests {
     };
     use std::net::Ipv4Addr;
     use std::panic::catch_unwind;
-    use std::time::Duration;
 
     #[test]
     #[should_panic]
