@@ -312,15 +312,7 @@ impl From<Ipv6Prefix> for Ipv6Net {
 
 impl From<Ipv6Net> for Ipv6Prefix {
     fn from(value: Ipv6Net) -> Self {
-        let net_addr = Ipv6Addr::from_bits(
-            value.addr().to_bits()
-                & (!0u128)
-                    .overflowing_shl(
-                        u32::from(Ipv6PrefixLen::MAX_LEN) - u32::from(value.prefix_len()),
-                    )
-                    .0,
-        );
-        Ipv6Prefix::new_tolerant(net_addr, value.prefix_len())
+        Ipv6Prefix::new_tolerant(value.addr(), value.prefix_len())
             .unwrap_or_else(|e| unreachable!("{}", e))
     }
 }

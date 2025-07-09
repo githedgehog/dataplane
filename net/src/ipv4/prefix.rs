@@ -317,15 +317,7 @@ impl From<Ipv4Prefix> for Ipv4Net {
 
 impl From<Ipv4Net> for Ipv4Prefix {
     fn from(value: Ipv4Net) -> Self {
-        let net_addr = Ipv4Addr::from_bits(
-            value.addr().to_bits()
-                & (!0u32)
-                    .overflowing_shl(
-                        u32::from(Ipv4PrefixLen::MAX_LEN) - u32::from(value.prefix_len()),
-                    )
-                    .0,
-        );
-        Ipv4Prefix::new_tolerant(net_addr, value.prefix_len())
+        Ipv4Prefix::new_tolerant(value.addr(), value.prefix_len())
             .unwrap_or_else(|e| unreachable!("{}", e))
     }
 }

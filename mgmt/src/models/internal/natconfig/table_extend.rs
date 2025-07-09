@@ -735,8 +735,8 @@ mod tests {
     //                 excludes,
     //                 addrs,
     //             } = data;
-    //             let mut prefixes_trie = IpRTrieSet::new();
-    //             let mut excludes_trie = IpRTrieSet::new();
+    //             let mut prefixes_trie = PrefixMap::new();
+    //             let mut excludes_trie = PrefixMap::new();
     //             let mut collapsed_prefixes_trie = IpRTrieSet::new();
     //             for prefix in prefixes {
     //                 prefixes_trie.insert(IpNet::from(*prefix));
@@ -749,7 +749,7 @@ mod tests {
     //                 collapsed_prefixes_trie.insert(IpNet::from(prefix));
     //             }
     //             for addr in addrs {
-    //                 let addr_net = IpNet::from(*addr);
+    //                 let addr_net = Ipv4Prefix::from(*addr);
     //                 let oracle_result = prefix_oracle(&addr_net, &prefixes_trie, &excludes_trie);
     //                 let collapsed_result = collapsed_prefixes_trie.contains(&addr_net);
     //                 assert_eq!(oracle_result, collapsed_result);

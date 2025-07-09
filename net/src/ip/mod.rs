@@ -3,6 +3,8 @@
 
 //! Helper methods and types which are common between IPv4 and IPv6
 
+mod prefix;
+
 use crate::ipv4::UnicastIpv4Addr;
 use crate::ipv6::UnicastIpv6Addr;
 use etherparse::IpNumber;
