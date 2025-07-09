@@ -12,7 +12,7 @@ use std::fmt::{Debug, Display};
 use std::iter::Sum;
 pub use std::net::IpAddr;
 pub use std::net::{Ipv4Addr, Ipv6Addr};
-use std::ops::{Add, AddAssign, Sub, SubAssign};
+use std::ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign};
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -605,6 +605,60 @@ impl SubAssign<&PrefixSize> for PrefixSize {
 impl SubAssign<u128> for PrefixSize {
     fn sub_assign(&mut self, int: u128) {
         *self = *self - int;
+    }
+}
+
+impl Mul<u128> for PrefixSize {
+    type Output = Self;
+
+    fn mul(self, int: u128) -> Self {
+        match (self, int) {
+            (_, 0) | (PrefixSize::U128(0), _) => PrefixSize::U128(0),
+            (PrefixSize::U128(size), int) => {
+                if size - 1 == u128::MAX / int && u128::MAX % int == int - 1 {
+                    PrefixSize::Ipv6MaxAddrs
+                } else if size > u128::MAX / int
+                    || (size - 1 == u128::MAX / int && u128::MAX % int != int - 1)
+                {
+                    PrefixSize::Overflow
+                } else {
+                    PrefixSize::U128(size * int)
+                }
+            }
+            (PrefixSize::Ipv6MaxAddrs, 1) => PrefixSize::Ipv6MaxAddrs,
+            (PrefixSize::Ipv6MaxAddrs, _) => PrefixSize::Overflow,
+            (PrefixSize::Overflow, _) => PrefixSize::Overflow,
+        }
+    }
+}
+
+impl Mul<u128> for &PrefixSize {
+    type Output = PrefixSize;
+
+    fn mul(self, int: u128) -> PrefixSize {
+        *self * int
+    }
+}
+
+impl Mul<PrefixSize> for u128 {
+    type Output = PrefixSize;
+
+    fn mul(self, other: PrefixSize) -> PrefixSize {
+        other * self
+    }
+}
+
+impl Mul<&PrefixSize> for u128 {
+    type Output = PrefixSize;
+
+    fn mul(self, other: &PrefixSize) -> PrefixSize {
+        *other * self
+    }
+}
+
+impl MulAssign<u128> for PrefixSize {
+    fn mul_assign(&mut self, int: u128) {
+        *self = *self * int;
     }
 }
 
