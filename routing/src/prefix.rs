@@ -12,7 +12,7 @@ use std::fmt::{Debug, Display};
 use std::iter::Sum;
 pub use std::net::IpAddr;
 pub use std::net::{Ipv4Addr, Ipv6Addr};
-use std::ops::{Add, AddAssign, Sub};
+use std::ops::{Add, AddAssign, Sub, SubAssign};
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -538,18 +538,30 @@ impl Sub<PrefixSize> for PrefixSize {
         match (self, other) {
             (_, PrefixSize::U128(0)) => self,
             (PrefixSize::U128(size_self), PrefixSize::U128(size_other)) => {
-                // May panic, just like a regular subtraction
-                PrefixSize::U128(size_self - size_other)
+                // Make sure it never wraps (but panics) in case of overflow, negative PrefixSize
+                // doesn't make sense.
+                if size_self < size_other {
+                    panic!("attempt to subtract with overflow");
+                } else {
+                    PrefixSize::U128(size_self - size_other)
+                }
+            }
+            (PrefixSize::U128(_), PrefixSize::Ipv6MaxAddrs) => {
+                panic!("attempt to subtract with overflow");
             }
             (PrefixSize::Ipv6MaxAddrs, PrefixSize::U128(size_other)) => {
                 PrefixSize::U128(u128::MAX - size_other + 1)
             }
             (PrefixSize::Ipv6MaxAddrs, PrefixSize::Ipv6MaxAddrs) => PrefixSize::U128(0),
-            (PrefixSize::U128(size_self), PrefixSize::Ipv6MaxAddrs) => {
-                // WILL panic, just like a regular subtraction
-                PrefixSize::U128(size_self - u128::MAX - 1)
+            (_, PrefixSize::Overflow) => {
+                // Subtracting Overflow from anything is undefined.
+                // Make it panic, on purpose.
+                panic!("attempt to subtract with overflow");
             }
-            _ => PrefixSize::Overflow,
+            (PrefixSize::Overflow, _) => {
+                // Subtracting something from Overflow remains Overflow
+                PrefixSize::Overflow
+            }
         }
     }
 }
@@ -575,6 +587,24 @@ impl Sub<&PrefixSize> for &PrefixSize {
 
     fn sub(self, other: &PrefixSize) -> PrefixSize {
         *self - *other
+    }
+}
+
+impl SubAssign<PrefixSize> for PrefixSize {
+    fn sub_assign(&mut self, other: PrefixSize) {
+        *self = *self - other;
+    }
+}
+
+impl SubAssign<&PrefixSize> for PrefixSize {
+    fn sub_assign(&mut self, other: &PrefixSize) {
+        *self = *self - other;
+    }
+}
+
+impl SubAssign<u128> for PrefixSize {
+    fn sub_assign(&mut self, int: u128) {
+        *self = *self - int;
     }
 }
 

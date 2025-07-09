@@ -589,7 +589,7 @@ mod tests {
                 .expect("Failed to generate prefix length");
             let prefix = Prefix::try_from((addr, prefix_len)).ok()?;
             // prefix.size() never returns 0 so max_size - prefix.size() is always a PrefixSize::U128
-            max_size = max_size - prefix.size();
+            max_size -= prefix.size();
             assert!(matches!(max_size, PrefixSize::U128(_)));
             let offset = d.gen_u128(
                 Bound::Included(&0),
