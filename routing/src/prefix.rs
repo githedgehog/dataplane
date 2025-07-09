@@ -12,7 +12,7 @@ use std::fmt::{Debug, Display};
 use std::iter::Sum;
 pub use std::net::IpAddr;
 pub use std::net::{Ipv4Addr, Ipv6Addr};
-use std::ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign};
+use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -659,6 +659,45 @@ impl Mul<&PrefixSize> for u128 {
 impl MulAssign<u128> for PrefixSize {
     fn mul_assign(&mut self, int: u128) {
         *self = *self * int;
+    }
+}
+
+impl Div<u128> for PrefixSize {
+    type Output = Self;
+
+    fn div(self, int: u128) -> Self {
+        match (self, int) {
+            #[allow(unconditional_panic)]
+            (_, 0) => {
+                // Division by 0 - make it panic, on purpose.
+                PrefixSize::U128(1 / 0)
+            }
+            (PrefixSize::U128(size), int) => PrefixSize::U128(size / int),
+            (PrefixSize::Ipv6MaxAddrs, 1) => PrefixSize::Ipv6MaxAddrs,
+            (PrefixSize::Ipv6MaxAddrs, int) => {
+                let mut res = u128::MAX / int;
+                let remainder = u128::MAX - (res * int) + 1;
+                if remainder == int {
+                    res += 1;
+                }
+                PrefixSize::U128(res)
+            }
+            (PrefixSize::Overflow, _) => PrefixSize::Overflow,
+        }
+    }
+}
+
+impl Div<u128> for &PrefixSize {
+    type Output = PrefixSize;
+
+    fn div(self, int: u128) -> PrefixSize {
+        *self / int
+    }
+}
+
+impl DivAssign<u128> for PrefixSize {
+    fn div_assign(&mut self, int: u128) {
+        *self = *self / int;
     }
 }
 
