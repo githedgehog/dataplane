@@ -599,6 +599,28 @@ impl TryFrom<&PrefixSize> for u128 {
     }
 }
 
+// impl prefix_trie::Prefix for Prefix {
+//     type R = u128;
+//
+//     fn repr(&self) -> Self::R {
+//         match self {
+//             Prefix::IPV4(p) => u128::from(p.repr()),
+//             Prefix::IPV6(p) => p.repr(),
+//         }
+//     }
+//
+//     fn prefix_len(&self) -> u8 {
+//         match self {
+//             Prefix::IPV4(p) => p.prefix_len().into(),
+//             Prefix::IPV6(p) => p.prefix_len().into(),
+//         }
+//     }
+//
+//     fn from_repr_len(repr: Self::R, len: u8) -> Self {
+//
+//     }
+// }
+
 #[cfg(test)]
 mod tests {
     use crate::prefix::*;

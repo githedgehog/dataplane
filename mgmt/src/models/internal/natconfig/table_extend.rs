@@ -740,7 +740,7 @@ mod tests {
                 let mut excludes_trie = PrefixMap::new();
                 let mut collapsed_prefixes_trie = PrefixMap::new();
                 for prefix in prefixes {
-                    prefixes_trie.insert(IpPrefix::new_strict());
+                    prefixes_trie.insert(IpNet::from(*prefix));
                 }
                 for exclude in excludes {
                     excludes_trie.insert(IpNet::from(*exclude));
