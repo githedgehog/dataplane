@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::ipv4;
 use crate::ipv4::{
     Contains, InvalidIpv4Network, InvalidIpv4PrefixLength, Ipv4Prefix, Ipv4PrefixLen,
     Ipv4PrefixParseError,
@@ -22,7 +21,9 @@ use std::str::FromStr;
 /// are set in the address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum IpPrefix {
+    /// An IPv4 prefix
     V4(Ipv4Prefix),
+    /// An IPv6 prefix
     V6(Ipv6Prefix),
 }
 impl From<IpAddr> for IpPrefix {
@@ -36,7 +37,9 @@ impl From<IpAddr> for IpPrefix {
 
 /// A checked type describing possible lengths of ip prefixes
 pub enum IpPrefixLen {
+    /// A valid ipv4 prefix length
     V4(Ipv4PrefixLen),
+    /// A valid ipv6 prefix length
     V6(Ipv6PrefixLen),
 }
 
@@ -54,8 +57,10 @@ pub enum InvalidIpPrefixLength {
 /// An error indicating that an invalid network was provided.
 #[derive(Debug, thiserror::Error)]
 pub enum InvalidIpNetwork {
+    /// An invalid Ipv4 network
     #[error(transparent)]
     InvalidIpv4Network(#[from] InvalidIpv4Network),
+    /// An invalid Ipv6 network
     #[error(transparent)]
     InvalidIpv6Network(#[from] InvalidIpv6Network),
 }
@@ -63,8 +68,10 @@ pub enum InvalidIpNetwork {
 /// An error indicating that an invalid network was provided.
 #[derive(Debug, thiserror::Error)]
 pub enum IpPrefixParseError {
+    /// A failed attempt to parse an ipv4 prefix
     #[error(transparent)]
     V4(#[from] Ipv4PrefixParseError),
+    /// A failed attempt to parse an ipv6 prefix
     #[error(transparent)]
     V6(#[from] Ipv6PrefixParseError),
     /// Failed to parse input as ipv4 or ipv6 prefix
@@ -131,6 +138,19 @@ impl IpPrefix {
         }
     }
 
+    /// Create an [`IpPrefix`] even if the argument contains non-network bits.
+    ///
+    /// This method is useful in the cases that
+    ///
+    /// 1. You can't trust your routing input and still don't wish to reject the routes (ideally,
+    ///    this does not happen).
+    /// 2. You need to convert an interface address assignment into a route
+    ///
+    /// This method will log (at debug level) if the provided address contains non-network bits.
+    ///
+    /// # Errors
+    ///
+    /// * Returns an error if the provided prefix length is greater than [`Ipv4PrefixLen::MAX_LEN`].
     #[tracing::instrument(level = "trace")]
     pub fn new_tolerant(
         addr: impl Into<IpAddr> + Debug,
@@ -150,6 +170,7 @@ impl IpPrefix {
     }
 
     /// Returns the address of the network.
+    #[must_use]
     pub const fn address(&self) -> IpAddr {
         match self {
             IpPrefix::V4(p) => IpAddr::V4(p.address()),

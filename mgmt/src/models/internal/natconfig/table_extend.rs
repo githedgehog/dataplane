@@ -627,6 +627,7 @@ mod tests {
     }
 
     use bolero::{Driver, TypeGenerator, ValueGenerator};
+    use net::ip::IpPrefix;
     use net::ipv4::{Ipv4Prefix, Ipv4PrefixLen};
     use net::ipv6::Ipv6PrefixLen;
     use prefix_trie::PrefixMap;
@@ -720,40 +721,40 @@ mod tests {
         excludes.get_lpm_prefix(addr).is_none() && prefixes.get_lpm_prefix(addr).is_some()
     }
 
-    // #[test]
-    // fn test_bolero_collapse_prefix_lists() {
-    //     let generator = PrefixExcludeAddrsGenerator {
-    //         prefix_max: 100,
-    //         exclude_max: 100,
-    //         addr_count: 1000,
-    //     };
-    //     bolero::check!()
-    //         .with_generator(generator)
-    //         .for_each(|data: &PrefixExcludeAddrs| {
-    //             let PrefixExcludeAddrs {
-    //                 prefixes,
-    //                 excludes,
-    //                 addrs,
-    //             } = data;
-    //             let mut prefixes_trie = PrefixMap::new();
-    //             let mut excludes_trie = PrefixMap::new();
-    //             let mut collapsed_prefixes_trie = IpRTrieSet::new();
-    //             for prefix in prefixes {
-    //                 prefixes_trie.insert(IpNet::from(*prefix));
-    //             }
-    //             for exclude in excludes {
-    //                 excludes_trie.insert(IpNet::from(*exclude));
-    //             }
-    //             let collapsed_prefixes = collapse_prefix_lists(prefixes, excludes).unwrap();
-    //             for prefix in collapsed_prefixes {
-    //                 collapsed_prefixes_trie.insert(IpNet::from(prefix));
-    //             }
-    //             for addr in addrs {
-    //                 let addr_net = Ipv4Prefix::from(*addr);
-    //                 let oracle_result = prefix_oracle(&addr_net, &prefixes_trie, &excludes_trie);
-    //                 let collapsed_result = collapsed_prefixes_trie.contains(&addr_net);
-    //                 assert_eq!(oracle_result, collapsed_result);
-    //             }
-    //         });
-    // }
+    #[test]
+    fn test_bolero_collapse_prefix_lists() {
+        let generator = PrefixExcludeAddrsGenerator {
+            prefix_max: 100,
+            exclude_max: 100,
+            addr_count: 1000,
+        };
+        bolero::check!()
+            .with_generator(generator)
+            .for_each(|data: &PrefixExcludeAddrs| {
+                let PrefixExcludeAddrs {
+                    prefixes,
+                    excludes,
+                    addrs,
+                } = data;
+                let mut prefixes_trie = PrefixMap::new();
+                let mut excludes_trie = PrefixMap::new();
+                let mut collapsed_prefixes_trie = PrefixMap::new();
+                for prefix in prefixes {
+                    prefixes_trie.insert(IpPrefix::new_strict());
+                }
+                for exclude in excludes {
+                    excludes_trie.insert(IpNet::from(*exclude));
+                }
+                let collapsed_prefixes = collapse_prefix_lists(prefixes, excludes).unwrap();
+                for prefix in collapsed_prefixes {
+                    collapsed_prefixes_trie.insert(IpNet::from(prefix));
+                }
+                for addr in addrs {
+                    let addr_net = Ipv4Prefix::from(*addr);
+                    let oracle_result = prefix_oracle(&addr_net, &prefixes_trie, &excludes_trie);
+                    let collapsed_result = collapsed_prefixes_trie.contains(&addr_net);
+                    assert_eq!(oracle_result, collapsed_result);
+                }
+            });
+    }
 }

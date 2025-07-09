@@ -11,6 +11,8 @@ use etherparse::IpNumber;
 use std::fmt::{Debug, Display, Formatter};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+pub use prefix::*;
+
 /// Thin wrapper around [`IpNumber`]
 ///
 /// This exists to allow us to implement `TypeGenerator` without violating rust's orphan rules.
