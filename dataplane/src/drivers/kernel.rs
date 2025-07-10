@@ -3,6 +3,15 @@
 
 //! Kernel dataplane driver
 
+#![deny(
+    unsafe_code,
+    clippy::all,
+    clippy::pedantic,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
+
 use afpacket::sync::RawPacketStream;
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
@@ -35,7 +44,10 @@ impl Kif {
     /// and a packet socket opened, which gets registered in a poller to detect
     /// activity.
     fn new(ifindex: u32, name: &str, token: Token) -> Option<Self> {
-        let mut sock = RawPacketStream::new().expect("Failed to create raw sock");
+        let Ok(mut sock) = RawPacketStream::new() else {
+            error!("Failed to open raw sock for interface {name}");
+            return None;
+        };
         sock.set_non_blocking();
         if let Err(e) = sock.bind(name) {
             error!("Failed to bind to interface '{name}'");
@@ -64,7 +76,7 @@ impl KifTable {
     /// Create kernel interface table
     pub fn new() -> Self {
         Self {
-            poll: Poll::new().expect("Failed to create poller"),
+            poll: Poll::new().unwrap_or_else(|_| unreachable!()),
             next_token: 1,
             by_token: HashMap::new(),
         }
@@ -125,9 +137,9 @@ fn build_kif_table(args: impl IntoIterator<Item = impl AsRef<str> + Clone>) -> K
     /* check what interfaces we're interested in from args */
     let ifnames: Vec<String> = args.into_iter().map(|x| x.as_ref().to_owned()).collect();
     if ifnames.is_empty() {
-        error!("Please specify at least one interface to capture packets from.");
-        error!("--interface ANY captures over all interfaces.");
-        std::process::exit(-1);
+        warn!("No interfaces have been specified. No packet will be processed!");
+        warn!("Consider specifying them with --interface. ANY captures over all interfaces.");
+        return kiftable;
     }
 
     if ifnames.len() == 1 && ifnames[0].to_uppercase() == "ANY" {
@@ -167,7 +179,10 @@ impl DriverKernel {
         /* poll the registered interfaces */
         let mut events = Events::with_capacity(64);
         loop {
-            kiftable.poll.poll(&mut events, None).expect("Poll error");
+            if let Err(e) = kiftable.poll.poll(&mut events, None) {
+                warn!("Poll error: {e}");
+                continue;
+            }
             for event in &events {
                 if let Some(interface) = kiftable.get_mut(event.token()) {
                     /* get vector of packets (only one) */
