@@ -138,6 +138,7 @@ impl ConfigProcessor {
     }
 
     /// Apply a blank configuration
+    #[allow(unused)]
     async fn apply_blank_config(&mut self) -> ConfigResult {
         let mut blank = GwConfig::blank();
         let _ = blank.build_internal_config();
@@ -224,13 +225,6 @@ impl ConfigProcessor {
     #[allow(unreachable_code)]
     pub async fn run(mut self) {
         info!("Starting config processor...");
-
-        // apply initial blank config: we may want to remove this to handle the case
-        // where dataplane is restarted and we don't want to flush the state of the system.
-        if let Err(e) = self.apply_blank_config().await {
-            warn!("Failed to apply blank config!: {e}");
-        }
-
         loop {
             // receive config requests over channel from gRPC server
             match self.rx.recv().await {

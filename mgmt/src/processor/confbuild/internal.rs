@@ -368,6 +368,8 @@ pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, Config
         warn!("Config has no BGP configuration");
     }
     debug!("Successfully built internal config for genid {genid}");
-    debug!("Internal config is:\n{internal:#?}");
+    if genid != ExternalConfig::BLANK_GENID {
+        debug!("Internal config is:\n{internal:#?}");
+    }
     Ok(internal)
 }
