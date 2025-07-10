@@ -8,8 +8,7 @@ use crate::ipv4::{
 use crate::ipv6::{
     InvalidIpv6Network, InvalidIpv6PrefixLength, Ipv6Prefix, Ipv6PrefixLen, Ipv6PrefixParseError,
 };
-use ipnet::{IpNet, Ipv4Net};
-use prefix_trie::Prefix;
+use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display, Formatter};
 use std::net::IpAddr;
@@ -74,7 +73,7 @@ pub enum IpPrefixParseError {
     /// A failed attempt to parse an ipv6 prefix
     #[error(transparent)]
     V6(#[from] Ipv6PrefixParseError),
-    /// Failed to parse input as ipv4 or ipv6 prefix
+    /// Failed to parse input as an ipv4 or ipv6 prefix
     #[error("failed to parse input '{0}' as ipv4 or ipv6 prefix")]
     ParseFailure(String),
 }
@@ -269,7 +268,6 @@ mod contract {
     use crate::ip::prefix::{IpPrefix, IpPrefixLen};
     use crate::{ipv4, ipv6};
     use bolero::{Driver, TypeGenerator, ValueGenerator};
-    use std::net::IpAddr;
 
     impl TypeGenerator for IpPrefixLen {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
@@ -291,22 +289,7 @@ mod contract {
         }
     }
 
-    pub const fn largest_possible_network(ip: IpAddr) -> IpPrefix {
-        match ip {
-            IpAddr::V4(addr) => IpPrefix::V4(ipv4::largest_possible_network(addr)),
-            IpAddr::V6(addr) => IpPrefix::V6(ipv6::largest_possible_network(addr)),
-        }
-    }
-
     pub struct ContainedNetworkGenerator(IpPrefix);
-
-    impl ContainedNetworkGenerator {
-        /// Create a new [`ContainedNetworkGenerator`]
-        #[must_use]
-        pub const fn new(network: IpPrefix) -> Self {
-            Self(network)
-        }
-    }
 
     impl ValueGenerator for ContainedNetworkGenerator {
         type Output = IpPrefix;
@@ -343,13 +326,10 @@ mod contract {
 #[cfg(test)]
 mod tests {
     use crate::ip::prefix::{InvalidIpNetwork, IpPrefix, IpPrefixLen};
-    use crate::ipv4::{
-        ContainedNetworkGenerator, Contains, InvalidIpv4Network, InvalidIpv4PrefixLength,
-        Ipv4Prefix, Ipv4PrefixLen, NetworkAndSubNetworkGenerator, largest_possible_network,
-    };
+    use crate::ipv4::{Contains, InvalidIpv4Network, Ipv4PrefixLen};
     use crate::ipv6::{InvalidIpv6Network, Ipv6PrefixLen};
-    use std::net::{Ipv4Addr, Ipv6Addr};
-    use std::panic::catch_unwind;
+    use crate::{ipv4, ipv6};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     #[test]
     fn non_network_bits_in_checked_ipv4_constructor_returns_error() {
@@ -414,6 +394,13 @@ mod tests {
             });
     }
 
+    pub const fn largest_possible_network(ip: IpAddr) -> IpPrefix {
+        match ip {
+            IpAddr::V4(addr) => IpPrefix::V4(ipv4::largest_possible_network(addr)),
+            IpAddr::V6(addr) => IpPrefix::V6(ipv6::largest_possible_network(addr)),
+        }
+    }
+
     #[test]
     fn contained_logic_fuzzing() {
         bolero::check!()
@@ -421,10 +408,7 @@ mod tests {
             .cloned()
             .for_each(|(network, subnetwork)| {
                 assert!(network.contains(subnetwork));
-                assert!(
-                    super::contract::largest_possible_network(network.address())
-                        .contains(subnetwork)
-                );
+                assert!(largest_possible_network(network.address()).contains(subnetwork));
                 if subnetwork.contains(network) {
                     assert_eq!(network, subnetwork);
                 } else {

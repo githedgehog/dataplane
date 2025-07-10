@@ -139,7 +139,7 @@ if [ "${TEST_TYPE:-""}" = "FUZZ" ]; then
   # note: we don't need ${SUDO} here (i.e., we can resolve sudo via the $PATH) because this branch only ever happens
   # when this script is being executed in the compile-env; the compile-env is the only place environment able to execute
   # the full fuzz tests.
-  sudo setcap "${CAPS}" "${test_exe}"
+#  sudo setcap "${CAPS}" "${test_exe}"
   exec "${@}"
 elif [ "${SHOULD_WRAP}" -eq 0 ]; then
   # In this branch

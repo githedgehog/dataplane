@@ -305,6 +305,7 @@ mod tests {
     use ipnet::IpNet;
     use nat::stateless::config::tables::NatTables;
     use net::vxlan::Vni;
+    use std::marker::PhantomData;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::str::FromStr;
 
@@ -629,81 +630,79 @@ mod tests {
     use bolero::{Driver, TypeGenerator, ValueGenerator};
     use net::ip::IpPrefix;
     use net::ipv4::{Ipv4Prefix, Ipv4PrefixLen};
-    use net::ipv6::Ipv6PrefixLen;
+    use net::ipv6::{Ipv6Prefix, Ipv6PrefixLen};
     use prefix_trie::PrefixMap;
     use std::ops::Bound;
 
-    struct RandomPrefixSetGenerator {
-        is_ipv4: bool,
+    struct RandomPrefixSetGenerator<Ip: IpAddrLike> {
         count: u32,
+        _marker: PhantomData<Ip>,
     }
 
-    impl ValueGenerator for RandomPrefixSetGenerator {
-        type Output = BTreeSet<Prefix>;
+    impl<Ip> ValueGenerator for RandomPrefixSetGenerator<Ip>
+    where
+        Ip: IpAddrLike,
+        Ip::Prefix: 'static + Ord + TypeGenerator,
+    {
+        type Output = BTreeSet<Ip::Prefix>;
 
         fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
             let mut prefixes = BTreeSet::new();
-            let is_ipv4 = self.is_ipv4;
-            let max_prefix_len = if is_ipv4 {
-                Ipv4PrefixLen::MAX_LEN
-            } else {
-                Ipv6PrefixLen::MAX_LEN
-            };
-
             for _ in 0..self.count {
-                let prefix_len = d.gen_u8(Bound::Included(&1), Bound::Included(&max_prefix_len))?;
-                let addr = if is_ipv4 {
-                    IpAddr::from(d.produce::<Ipv4Addr>()?)
-                } else {
-                    IpAddr::from(d.produce::<Ipv6Addr>()?)
-                };
-                if let Ok(prefix) = Prefix::try_from((addr, prefix_len)) {
-                    prefixes.insert(prefix);
-                } else {
-                    unreachable!()
-                }
+                prefixes.insert(d.produce()?);
             }
             Some(prefixes)
         }
     }
 
-    struct PrefixExcludeAddrsGenerator {
+    struct PrefixExcludeAddrsGenerator<Ip: IpAddrLike> {
         prefix_max: u32,
         exclude_max: u32,
         addr_count: u32,
+        _marker: PhantomData<Ip>,
+    }
+
+    // sealed trait for ip address like types
+    trait IpAddrLike: Into<IpAddr> {
+        type Prefix: prefix_trie::Prefix;
+    }
+
+    impl IpAddrLike for Ipv4Addr {
+        type Prefix = Ipv4Prefix;
+    }
+    impl IpAddrLike for Ipv6Addr {
+        type Prefix = Ipv6Prefix;
     }
 
     #[derive(Debug)]
-    struct PrefixExcludeAddrs {
-        prefixes: BTreeSet<Prefix>,
-        excludes: BTreeSet<Prefix>,
-        addrs: Vec<IpAddr>,
+    struct PrefixExcludeAddrs<Ip: IpAddrLike> {
+        prefixes: BTreeSet<Ip::Prefix>,
+        excludes: BTreeSet<Ip::Prefix>,
+        addrs: Vec<Ip>,
     }
 
-    impl ValueGenerator for PrefixExcludeAddrsGenerator {
-        type Output = PrefixExcludeAddrs;
+    impl<Ip> ValueGenerator for PrefixExcludeAddrsGenerator<Ip>
+    where
+        Ip: 'static + IpAddrLike + TypeGenerator,
+        Ip::Prefix: 'static + Ord + TypeGenerator,
+    {
+        type Output = PrefixExcludeAddrs<Ip>;
 
         fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
-            let is_ipv4 = d.produce::<bool>()?;
-            let prefixes = RandomPrefixSetGenerator {
+            let prefixes = RandomPrefixSetGenerator::<Ip> {
                 count: d.gen_u32(Bound::Included(&1), Bound::Included(&self.prefix_max))?,
-                is_ipv4,
+                _marker: PhantomData,
             }
             .generate(d)?;
-            let excludes = RandomPrefixSetGenerator {
+            let excludes = RandomPrefixSetGenerator::<Ip> {
                 count: d.gen_u32(Bound::Included(&0), Bound::Included(&self.exclude_max))?,
-                is_ipv4,
+                _marker: PhantomData,
             }
             .generate(d)?;
 
             let mut addrs = Vec::with_capacity(usize::try_from(self.addr_count).unwrap());
             for _ in 0..self.addr_count {
-                let addr = if is_ipv4 {
-                    IpAddr::V4(d.produce::<Ipv4Addr>()?)
-                } else {
-                    IpAddr::V6(d.produce::<Ipv6Addr>()?)
-                };
-                addrs.push(addr);
+                addrs.push(d.produce()?);
             }
             Some(PrefixExcludeAddrs {
                 prefixes,
@@ -714,47 +713,85 @@ mod tests {
     }
 
     fn prefix_oracle<P: prefix_trie::Prefix, K>(
-        addr: &P,
+        p: &P,
         prefixes: &PrefixMap<P, K>,
         excludes: &PrefixMap<P, K>,
     ) -> bool {
-        excludes.get_lpm_prefix(addr).is_none() && prefixes.get_lpm_prefix(addr).is_some()
+        let exclude = excludes.get_lpm_prefix(p).is_some();
+        let includes = prefixes.get_lpm_prefix(p).is_some();
+        (!exclude && includes) || (exclude && !includes)
     }
 
     #[test]
     fn test_bolero_collapse_prefix_lists() {
-        let generator = PrefixExcludeAddrsGenerator {
+        let generator_v4 = PrefixExcludeAddrsGenerator {
             prefix_max: 100,
             exclude_max: 100,
             addr_count: 1000,
+            _marker: PhantomData::<Ipv4Addr>,
+        };
+        let generator_v6 = PrefixExcludeAddrsGenerator {
+            prefix_max: 100,
+            exclude_max: 100,
+            addr_count: 1000,
+            _marker: PhantomData::<Ipv6Addr>,
         };
         bolero::check!()
-            .with_generator(generator)
-            .for_each(|data: &PrefixExcludeAddrs| {
-                let PrefixExcludeAddrs {
-                    prefixes,
-                    excludes,
-                    addrs,
-                } = data;
-                let mut prefixes_trie = PrefixMap::new();
-                let mut excludes_trie = PrefixMap::new();
-                let mut collapsed_prefixes_trie = PrefixMap::new();
-                for prefix in prefixes {
-                    prefixes_trie.insert(IpNet::from(*prefix));
-                }
-                for exclude in excludes {
-                    excludes_trie.insert(IpNet::from(*exclude));
-                }
-                let collapsed_prefixes = collapse_prefix_lists(prefixes, excludes).unwrap();
-                for prefix in collapsed_prefixes {
-                    collapsed_prefixes_trie.insert(IpNet::from(prefix));
-                }
-                for addr in addrs {
-                    let addr_net = Ipv4Prefix::from(*addr);
-                    let oracle_result = prefix_oracle(&addr_net, &prefixes_trie, &excludes_trie);
-                    let collapsed_result = collapsed_prefixes_trie.contains(&addr_net);
-                    assert_eq!(oracle_result, collapsed_result);
-                }
-            });
+            .with_generator((generator_v4, generator_v6))
+            .for_each(
+                |(v4, v6): &(PrefixExcludeAddrs<Ipv4Addr>, PrefixExcludeAddrs<Ipv6Addr>)| {
+                    let mut prefixes_ipv4_trie = PrefixMap::new();
+                    let mut prefixes_ipv6_trie = PrefixMap::new();
+                    let mut excludes_ipv4_trie = PrefixMap::new();
+                    let mut excludes_ipv6_trie = PrefixMap::new();
+                    for &prefix in &v4.prefixes {
+                        prefixes_ipv4_trie.insert(prefix, ());
+                    }
+                    for &exclude in &v4.excludes {
+                        excludes_ipv4_trie.insert(exclude, ());
+                    }
+                    for &prefix in &v6.prefixes {
+                        prefixes_ipv6_trie.insert(prefix, ());
+                    }
+                    for &exclude in &v6.excludes {
+                        excludes_ipv6_trie.insert(exclude, ());
+                    }
+                    let prefixes = v4
+                        .prefixes
+                        .iter()
+                        .copied()
+                        .map(Prefix::IPV4)
+                        .chain(v6.prefixes.iter().copied().map(Prefix::IPV6))
+                        .collect();
+                    let excludes = v4
+                        .excludes
+                        .iter()
+                        .copied()
+                        .map(Prefix::IPV4)
+                        .chain(v6.excludes.iter().copied().map(Prefix::IPV6))
+                        .collect();
+                    let collapsed_prefixes = collapse_prefix_lists(&prefixes, &excludes).unwrap();
+                    let mut collapsed_prefixes_trie_ipv4 = PrefixMap::new();
+                    let mut collapsed_prefixes_trie_ipv6 = PrefixMap::new();
+                    for prefix in collapsed_prefixes {
+                        match prefix {
+                            Prefix::IPV4(prefix) => {
+                                collapsed_prefixes_trie_ipv4.insert(prefix, ());
+                            }
+                            Prefix::IPV6(prefix) => {
+                                collapsed_prefixes_trie_ipv6.insert(prefix, ());
+                            }
+                        }
+                    }
+                    assert!(v4.addrs.iter().copied().all(|addr| {
+                        let prefix = Ipv4Prefix::from(addr);
+                        let oracle_result =
+                            prefix_oracle(&prefix, &prefixes_ipv4_trie, &excludes_ipv4_trie);
+                        let collapsed_result = collapsed_prefixes_trie_ipv4.contains_key(&prefix);
+                        assert_eq!(oracle_result, collapsed_result);
+                        oracle_result == collapsed_result
+                    }));
+                },
+            );
     }
 }
