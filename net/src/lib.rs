@@ -28,6 +28,7 @@ pub mod ipv6;
 pub mod packet;
 pub mod parse;
 pub mod pci;
+pub mod prefix;
 pub mod route;
 pub mod tcp;
 pub mod udp;

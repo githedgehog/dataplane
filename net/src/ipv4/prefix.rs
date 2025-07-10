@@ -5,7 +5,7 @@
 #[allow(unused_imports)] // re-export
 pub use contract::*;
 use ipnet::{AddrParseError, Ipv4Net};
-use prefix_trie::{Prefix, PrefixMap};
+use prefix_trie::Prefix;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display, Formatter};
 use std::net::Ipv4Addr;
