@@ -359,6 +359,82 @@ impl<'de> Deserialize<'de> for Prefix {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum PrefixLen {
+    IPV4(Ipv4PrefixLen),
+    IPV6(Ipv6PrefixLen),
+}
+
+impl PrefixLen {
+    /// Tell if a prefix length is a root prefix length
+    #[must_use]
+    pub fn is_root(&self) -> bool {
+        match self {
+            PrefixLen::IPV4(_) => *self == PrefixLen::IPV4(Ipv4PrefixLen::MIN),
+            PrefixLen::IPV6(_) => *self == PrefixLen::IPV6(Ipv6PrefixLen::MIN),
+        }
+    }
+
+    /// Tell if a prefix length covers a single IP
+    #[must_use]
+    pub fn is_host(&self) -> bool {
+        match self {
+            PrefixLen::IPV4(_) => *self == PrefixLen::IPV4(Ipv4PrefixLen::MAX),
+            PrefixLen::IPV6(_) => *self == PrefixLen::IPV6(Ipv6PrefixLen::MAX),
+        }
+    }
+
+    /// Return max prefix length for IP version of the given prefix length
+    #[must_use]
+    pub fn max_length(&self) -> Self {
+        match self {
+            PrefixLen::IPV4(_) => PrefixLen::IPV4(Ipv4PrefixLen::MAX),
+            PrefixLen::IPV6(_) => PrefixLen::IPV6(Ipv6PrefixLen::MAX),
+        }
+    }
+
+    /// Check whether the prefix length is IPv4
+    #[must_use]
+    pub fn is_ipv4(&self) -> bool {
+        matches!(self, PrefixLen::IPV4(_))
+    }
+
+    /// Check whether the prefix length is IPv6
+    #[must_use]
+    pub fn is_ipv6(&self) -> bool {
+        matches!(self, PrefixLen::IPV6(_))
+    }
+
+    /// Interpret the [`PrefixLen`] as a `u8`
+    pub fn as_u8(&self) -> u8 {
+        match self {
+            PrefixLen::IPV4(len) => len.as_u8(),
+            PrefixLen::IPV6(len) => len.as_u8(),
+        }
+    }
+}
+
+impl From<Ipv4PrefixLen> for PrefixLen {
+    fn from(value: Ipv4PrefixLen) -> Self {
+        PrefixLen::IPV4(value)
+    }
+}
+
+impl From<Ipv6PrefixLen> for PrefixLen {
+    fn from(value: Ipv6PrefixLen) -> Self {
+        PrefixLen::IPV6(value)
+    }
+}
+
+impl From<Prefix> for PrefixLen {
+    fn from(value: Prefix) -> Self {
+        match value {
+            Prefix::IPV4(p) => PrefixLen::IPV4(p.prefix_len()),
+            Prefix::IPV6(p) => PrefixLen::IPV6(p.prefix_len()),
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 #[cfg_attr(test, derive(bolero::generator::TypeGenerator))]
 pub enum PrefixSize {
@@ -370,6 +446,32 @@ pub enum PrefixSize {
 impl PrefixSize {
     pub fn is_overflow(&self) -> bool {
         matches!(self, PrefixSize::Overflow)
+    }
+}
+
+impl From<PrefixLen> for PrefixSize {
+    fn from(value: PrefixLen) -> Self {
+        match value {
+            PrefixLen::IPV4(len) => {
+                PrefixSize::U128(2_u128.pow(u32::from(Ipv4PrefixLen::MAX_LEN - len.as_u8())))
+            }
+            PrefixLen::IPV6(_) if value.is_root() => PrefixSize::Ipv6MaxAddrs,
+            PrefixLen::IPV6(len) => {
+                PrefixSize::U128(2_u128.pow(u32::from(Ipv6PrefixLen::MAX_LEN - len.as_u8())))
+            }
+        }
+    }
+}
+
+impl From<Ipv4PrefixLen> for PrefixSize {
+    fn from(value: Ipv4PrefixLen) -> Self {
+        Self::from(PrefixLen::IPV4(value))
+    }
+}
+
+impl From<Ipv6PrefixLen> for PrefixSize {
+    fn from(value: Ipv6PrefixLen) -> Self {
+        Self::from(PrefixLen::IPV6(value))
     }
 }
 
@@ -603,6 +705,7 @@ impl TryFrom<&PrefixSize> for u128 {
 mod tests {
     use crate::prefix::*;
     use serde_yml;
+    use std::convert::Into;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[test]
@@ -722,6 +825,111 @@ mod tests {
         assert_eq!(yaml, "!IPV6\naddress: 'f00:baa::'\nlength: 64\n");
         let deserialized_yaml: Prefix = serde_yml::from_str(&yaml).unwrap();
         assert_eq!(prefix, deserialized_yaml);
+    }
+
+    #[test]
+    fn test_prefix_length() {
+        // IPv4
+
+        let pl_0 = PrefixLen::from(Ipv4PrefixLen::new_assert(0));
+        let pl_24 = PrefixLen::from(Ipv4PrefixLen::new_assert(24));
+        let pl_32 = PrefixLen::from(Ipv4PrefixLen::new_assert(32));
+
+        let pl_0_alt = PrefixLen::from(Prefix::root_v4());
+        let pl_24_alt = PrefixLen::from(Prefix::expect_from(("1.2.3.0", 24)));
+        let pl_32_alt = PrefixLen::from(Prefix::expect_from(("1.2.3.4", 32)));
+
+        assert_eq!(pl_0, pl_0_alt);
+        assert_eq!(pl_24, pl_24_alt);
+        assert_eq!(pl_32, pl_32_alt);
+
+        assert!(pl_0.is_root());
+        assert!(!pl_24.is_root());
+        assert!(!pl_32.is_root());
+
+        assert!(!pl_0.is_host());
+        assert!(!pl_24.is_host());
+        assert!(pl_32.is_host());
+
+        assert_eq!(pl_0.max_length().as_u8(), Ipv4PrefixLen::MAX_LEN);
+        assert_eq!(pl_24.max_length().as_u8(), Ipv4PrefixLen::MAX_LEN);
+        assert_eq!(pl_32.max_length().as_u8(), Ipv4PrefixLen::MAX_LEN);
+
+        assert!(pl_0.is_ipv4());
+        assert!(pl_24.is_ipv4());
+        assert!(pl_32.is_ipv4());
+
+        assert!(!pl_0.is_ipv6());
+        assert!(!pl_24.is_ipv6());
+        assert!(!pl_32.is_ipv6());
+
+        assert_eq!(pl_0.as_u8(), 0);
+        assert_eq!(pl_24.as_u8(), 24);
+        assert_eq!(pl_32.as_u8(), 32);
+
+        assert_eq!(
+            <PrefixLen as Into<PrefixSize>>::into(pl_0),
+            PrefixSize::U128(2_u128.pow(u32::from(Ipv4PrefixLen::MAX_LEN)))
+        );
+        assert_eq!(
+            <PrefixLen as Into<PrefixSize>>::into(pl_24),
+            PrefixSize::U128(2_u128.pow(u32::from(Ipv4PrefixLen::MAX_LEN - 24)))
+        );
+        assert_eq!(
+            <PrefixLen as Into<PrefixSize>>::into(pl_32),
+            PrefixSize::U128(1)
+        );
+
+        // IPv6
+
+        let pl_0 = PrefixLen::from(Ipv6PrefixLen::new_assert(0));
+        let pl_64 = PrefixLen::from(Ipv6PrefixLen::new_assert(64));
+        let pl_128 = PrefixLen::from(Ipv6PrefixLen::new_assert(128));
+
+        let pl_0_alt = PrefixLen::from(Prefix::root_v6());
+        let pl_64_alt = PrefixLen::from(Prefix::expect_from(("2001:a:b:c::", 64)));
+        let pl_128_alt = PrefixLen::from(Prefix::expect_from(("2001:a:b:c::", 128)));
+
+        assert_eq!(pl_0, pl_0_alt);
+        assert_eq!(pl_64, pl_64_alt);
+        assert_eq!(pl_128, pl_128_alt);
+
+        assert!(pl_0.is_root());
+        assert!(!pl_64.is_root());
+        assert!(!pl_128.is_root());
+
+        assert!(!pl_0.is_host());
+        assert!(!pl_64.is_host());
+        assert!(pl_128.is_host());
+
+        assert_eq!(pl_0.max_length().as_u8(), Ipv6PrefixLen::MAX_LEN);
+        assert_eq!(pl_64.max_length().as_u8(), Ipv6PrefixLen::MAX_LEN);
+        assert_eq!(pl_128.max_length().as_u8(), Ipv6PrefixLen::MAX_LEN);
+
+        assert!(pl_0.is_ipv6());
+        assert!(pl_64.is_ipv6());
+        assert!(pl_128.is_ipv6());
+
+        assert!(!pl_0.is_ipv4());
+        assert!(!pl_64.is_ipv4());
+        assert!(!pl_128.is_ipv4());
+
+        assert_eq!(pl_0.as_u8(), 0);
+        assert_eq!(pl_64.as_u8(), 64);
+        assert_eq!(pl_128.as_u8(), 128);
+
+        assert_eq!(
+            <PrefixLen as Into<PrefixSize>>::into(pl_0),
+            PrefixSize::Ipv6MaxAddrs
+        );
+        assert_eq!(
+            <PrefixLen as Into<PrefixSize>>::into(pl_64),
+            PrefixSize::U128(2_u128.pow(u32::from(Ipv6PrefixLen::MAX_LEN - 64)))
+        );
+        assert_eq!(
+            <PrefixLen as Into<PrefixSize>>::into(pl_128),
+            PrefixSize::U128(1)
+        );
     }
 
     #[test]
