@@ -12,9 +12,10 @@ use crate::rpc_adapt::is_evpn_route;
 
 use bytes::Bytes;
 use chrono::Local;
-use dplane_rpc::msg::*;
 use dplane_rpc::socks::RpcCachedSock;
 use dplane_rpc::wire::*;
+use dplane_rpc::msg::*;
+use dplane_rpc::socks::Pretty;
 use lpm::prefix::Prefix;
 use std::os::unix::net::SocketAddr;
 
@@ -213,6 +214,10 @@ fn build_notification_msg() -> RpcMsg {
     let notif = RpcNotification {};
     notif.wrap_in_msg()
 }
+fn build_control_msg() -> RpcMsg {
+    let control = RpcControl {};
+    control.wrap_in_msg()
+}
 
 /* message handlers */
 fn update_stats(
@@ -324,7 +329,16 @@ fn handle_response(_csock: &RpcCachedSock, _peer: &SocketAddr, _res: &RpcRespons
 fn handle_notification(_csock: &RpcCachedSock, peer: &SocketAddr, _notif: &RpcNotification) {
     warn!("Received a notification message from {:?}", peer);
 }
-fn handle_control(_csock: &RpcCachedSock, _peer: &SocketAddr, _ctl: &RpcControl) {}
+fn handle_control(
+    csock: &mut RpcCachedSock,
+    peer: &SocketAddr,
+    _ctl: &RpcControl,
+    stats: &mut CpiStats,
+) {
+    let control = build_control_msg();
+    stats.control_rx += 1;
+    csock.send_msg(control, peer);
+}
 fn handle_rpc_msg(
     csock: &mut RpcCachedSock,
     peer: &SocketAddr,
@@ -333,7 +347,7 @@ fn handle_rpc_msg(
     stats: &mut CpiStats,
 ) {
     match msg {
-        RpcMsg::Control(ctl) => handle_control(csock, peer, ctl),
+        RpcMsg::Control(ctl) => handle_control(csock, peer, ctl, stats),
         RpcMsg::Request(req) => handle_request(csock, peer, req, db, stats),
         RpcMsg::Response(resp) => handle_response(csock, peer, resp),
         RpcMsg::Notification(notif) => handle_notification(csock, peer, notif),
@@ -356,7 +370,7 @@ pub fn process_rx_data(
         Ok(msg) => handle_rpc_msg(csock, peer, &msg, db, stats),
         Err(e) => {
             stats.decode_failures += 1;
-            error!("Failure decoding msg rx from {:?}: {:?}", peer, e);
+            error!("Failure decoding msg rx from {}: {:?}", peer.pretty(), e);
             let notif = build_notification_msg();
             csock.send_msg(notif, peer);
         }

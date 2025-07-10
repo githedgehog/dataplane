@@ -867,6 +867,7 @@ impl Display for CpiStats {
         writeln!(f, " last connect: {connect_t} pid {pid}")?;
         writeln!(f, " last msg rx : {last_msg_rx_t}")?;
         writeln!(f, " decode failures: {}", self.decode_failures)?;
+        writeln!(f, " ctl/keepalives : {}", self.control_rx)?;
         writeln!(f)?;
 
         fmt_cpi_stats_heading(f)?;

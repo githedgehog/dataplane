@@ -132,6 +132,9 @@ pub(crate) struct CpiStats {
     pub(crate) del_ifaddr: StatsRow,
     pub(crate) add_rmac: StatsRow,
     pub(crate) del_rmac: StatsRow,
+
+    // control - keepalives
+    pub(crate) control_rx: u64,
 }
 
 pub(crate) struct Cpi {
