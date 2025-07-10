@@ -690,7 +690,7 @@ mod tests {
 
         fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
             let prefixes = RandomPrefixSetGenerator::<Ip> {
-                count: d.gen_u32(Bound::Included(&1), Bound::Included(&self.prefix_max))?,
+                count: d.gen_u32(Bound::Included(&0), Bound::Included(&self.prefix_max))?,
                 _marker: PhantomData,
             }
             .generate(d)?;
@@ -700,10 +700,11 @@ mod tests {
             }
             .generate(d)?;
 
-            let mut addrs = Vec::with_capacity(usize::try_from(self.addr_count).unwrap());
-            for _ in 0..self.addr_count {
-                addrs.push(d.produce()?);
-            }
+            let addr_count = d.gen_usize(
+                Bound::Included(&0),
+                Bound::Included(&(self.addr_count as usize)),
+            )?;
+            let addrs = (0..=addr_count).filter_map(|_| d.produce()).collect();
             Some(PrefixExcludeAddrs {
                 prefixes,
                 excludes,
@@ -717,9 +718,7 @@ mod tests {
         prefixes: &PrefixMap<P, K>,
         excludes: &PrefixMap<P, K>,
     ) -> bool {
-        let exclude = excludes.get_lpm_prefix(p).is_some();
-        let includes = prefixes.get_lpm_prefix(p).is_some();
-        (!exclude && includes) || (exclude && !includes)
+        excludes.get_lpm_prefix(p).is_none() && prefixes.get_lpm_prefix(p).is_some()
     }
 
     #[test]
@@ -787,7 +786,9 @@ mod tests {
                         let prefix = Ipv4Prefix::from(addr);
                         let oracle_result =
                             prefix_oracle(&prefix, &prefixes_ipv4_trie, &excludes_ipv4_trie);
-                        let collapsed_result = collapsed_prefixes_trie_ipv4.contains_key(&prefix);
+                        let collapsed_result = collapsed_prefixes_trie_ipv4
+                            .get_lpm_prefix(&prefix)
+                            .is_some();
                         assert_eq!(oracle_result, collapsed_result);
                         oracle_result == collapsed_result
                     }));
