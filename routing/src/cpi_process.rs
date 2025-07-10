@@ -268,9 +268,21 @@ fn handle_request(
     let object = req.get_object();
     debug!("Handling {}", req);
 
+    // We should not see requests before a connect, because the plugin always sends a connect as the very
+    // first message when it first connects. If dataplane restarts, plugin will get xmit failures, cache
+    // messages and attempt to reconnect. On success, it will send cached messages again. So, if we get
+    // messages without having seen a connect, that means we restarted. We will ignore those messages
+    // since we need the plugin to push the whole state again anyway and, to be able to process it,
+    // we need to have a configuration.
+    if op != RpcOp::Connect && stats.last_pid.is_none() {
+        warn!("Ignoring request: no prior connect received. Did we restart?");
+        rpc_reply(csock, peer, req, RpcResultCode::Ignored, stats);
+        return;
+    }
+
     // ignore additions if have no config. Connects are allowed, so are deletions to wipe out old state
     if !db.have_config() && op == RpcOp::Add {
-        debug!("Ignoring message: no config is available");
+        debug!("Ignoring request: no config is available");
         rpc_reply(csock, peer, req, RpcResultCode::Ignored, stats);
         return;
     }
