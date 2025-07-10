@@ -393,18 +393,6 @@ async fn apply_gw_config(
 ) -> ConfigResult {
     let genid = config.genid();
 
-    /*
-       /* probe the FRR agent. If unreachable, there's no point in trying to apply a config */
-       let res: Result<(), ConfigError> = frrmi
-           .probe()
-           .await
-           .map_err(|_| ConfigError::FrrAgentUnreachable);
-
-       if genid != ExternalConfig::BLANK_GENID && res.is_err() {
-           return Err(ConfigError::FrrAgentUnreachable);
-       }
-    */
-
     /* make sure we built internal config */
     let Some(internal) = &config.internal else {
         error!("Config for genid {genid} does not have internal config");

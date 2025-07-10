@@ -3,6 +3,7 @@
 
 // FRRMI: FRR management interface
 
+#![allow(clippy::collapsible_if)]
 #![cfg(unix)]
 use bytes::Buf;
 use bytes::BytesMut;
@@ -17,7 +18,7 @@ use std::str;
 use std::str::from_utf8;
 use thiserror::Error;
 #[allow(unused)]
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::frr::renderer::builder::ConfigBuilder;
 use crate::models::external::gwconfig::GenId;
@@ -51,7 +52,7 @@ pub enum FrrErr {
 
 /// Connect to the specified remote path and provide a [`UnixStream`] socket.
 /// Will fail if connection does not succeed in the indicated timeout specified as a [`Duration`].
-pub async fn connect_sock_stream<P: AsRef<Path> + ?Sized + std::fmt::Display>(
+async fn connect_sock_stream<P: AsRef<Path> + ?Sized + std::fmt::Display>(
     remote: &P,
     tout: Duration,
 ) -> Result<UnixStream, FrrErr> {
@@ -60,7 +61,7 @@ pub async fn connect_sock_stream<P: AsRef<Path> + ?Sized + std::fmt::Display>(
         .await
         .map_err(|_| FrrErr::TimeOut)?
         .map_err(|_| {
-            error!("Failed to connect to {}", remote);
+            warn!("Failed to connect to {}", remote);
             FrrErr::ConnectFailed("Failed to connect")
         })?;
     debug!("Connected to {}", remote);
@@ -141,8 +142,7 @@ async fn send_buf(sock: &mut UnixStream, buf: &[u8]) -> Result<(), FrrErr> {
 async fn send_msg(sock: &mut UnixStream, genid: GenId, msg: &[u8]) -> Result<(), FrrErr> {
     /* length of data */
     let length = msg.len() as u64;
-
-    debug!("Sending message. Genid: {genid} size: {length}");
+    trace!("Sending message. Genid: {genid} size: {length}");
 
     /* assemble wire message: |length|genid|data| */
     let mut wire_msg = BytesMut::with_capacity(msg.len() + 16);
@@ -152,7 +152,7 @@ async fn send_msg(sock: &mut UnixStream, genid: GenId, msg: &[u8]) -> Result<(),
 
     /* send wire message */
     send_buf(sock, &wire_msg).await?;
-    debug!("Successfully sent msg. data-len: {length} genid: {genid}");
+    trace!("Successfully sent msg. data-len: {length} genid: {genid}");
     Ok(())
 }
 
@@ -171,21 +171,15 @@ impl FrrMi {
             remote: remote_addr.to_string(),
             timeout: Duration::from_secs(Self::FRRMI_TIMEOUT),
         };
+        info!("Created frrmi to frr-agent at {}", &frrmi.remote);
         let _ = frrmi.connect().await;
-        if frrmi.is_connected() {
-            let _ = frrmi.probe().await;
-            if !frrmi.is_connected() {
-                warn!("Frrmi is NOT connected to agent");
-            }
+        if !frrmi.is_connected() {
+            warn!("Could not connect to frr-agent. That's fine, will retry when needed");
         }
-        info!(
-            "Created frrmi. remote: {} connected: {}",
-            &frrmi.remote,
-            frrmi.is_connected(),
-        );
         frrmi
     }
     pub async fn connect(&mut self) -> Result<(), FrrErr> {
+        debug!("Connecting to {} ...", &self.remote);
         let timeout = Duration::from_secs(Self::FRRMI_TIMEOUT);
         let stream = connect_sock_stream(&self.remote, timeout).await?;
         self.sock = Some(stream);
@@ -198,22 +192,30 @@ impl FrrMi {
     /// Probe the frr-agent with this [`FrrMi`] by sending a keepalive message
     pub async fn probe(&mut self) -> Result<(), FrrErr> {
         if !self.is_connected() {
-            debug!("Frrmi is not connected to agent...");
+            debug!("Frrmi is not connected...");
             self.connect().await?;
         }
         debug!("Probing frr-agent...");
-        self.send_receive(0, "KEEPALIVE").await
+        let status = if self.do_send_receive(0, "KEEPALIVE").await.is_err() {
+            self.connect().await?;
+            self.do_send_receive(0, "KEEPALIVE").await
+        } else {
+            Ok(())
+        };
+        match status {
+            Ok(()) => info!("Communication with FRR-agent is ok"),
+            Err(ref e) => warn!("Frr-agent is unreachable: {e}"),
+        }
+        status
     }
 
     /// Receive a response
     async fn receive_response(&mut self) -> Result<(), FrrErr> {
-        debug!("Awaiting reply from frr-agent at {}...", self.remote);
+        let remote = &self.remote;
+        debug!("Awaiting reply from frr-agent at {remote}");
         if let Some(stream) = &mut self.sock {
             let (genid, response) = receive_msg_timed(stream, self.timeout).await?;
-            debug!(
-                "Got response from frr-agent at {} for genid {genid}: {response}",
-                self.remote
-            );
+            debug!("Got response from frr-agent at {remote} for genid {genid}: {response}");
             match response.as_str() {
                 "Ok" => Ok(()),
                 _ => Err(FrrErr::ReloadErr(response)),
@@ -223,31 +225,29 @@ impl FrrMi {
         }
     }
 
-    /// Send a message over this [`FrrMi`], such as a config or a keepalive and receive the response.
-    /// Returns error if message could not be sent, or the response could not
-    /// be received, or a response was received but it was not "Ok"
-    async fn send_receive(&mut self, genid: GenId, msg: &str) -> Result<(), FrrErr> {
-        if !self.is_connected() {
-            debug!("Frmmi is not connected to agent...");
-            self.connect().await?;
+    /// send a message and receive a response
+    async fn do_send_receive(&mut self, genid: GenId, msg: &str) -> Result<(), FrrErr> {
+        let Some(sock) = &mut self.sock else {
+            error!("Can't send message: no socket!");
+            return Err(FrrErr::NotConnected);
+        };
+        if let Err(e) = send_msg(sock, genid, msg.as_bytes()).await {
+            warn!("Sending msg failed ({e}). Disconnecting...");
+            let _ = sock.shutdown().await;
+            self.sock.take();
+            return Err(e);
         }
+        /* we could send the request. So, receive the response */
+        self.receive_response().await
+    }
 
-        if let Some(sock) = &mut self.sock {
-            /* send the request: if sending fails, we may disconnect */
-            #[allow(clippy::collapsible_if)]
-            if let Err(e) = send_msg(sock, genid, msg.as_bytes()).await {
-                if matches!(e, FrrErr::PeerLeft | FrrErr::RxFail(_) | FrrErr::TxFail(_)) {
-                    warn!("Got error: {e}. Disconnecting frrmi...");
-                    let _ = sock.shutdown().await;
-                    self.sock.take();
-                    return Err(e);
-                }
-            }
-            /* we could send the request: receive the response */
-            self.receive_response().await
-        } else {
-            unreachable!()
-        }
+    /// Send a config message over this [`FrrMi`], and receive the response.
+    /// Returns error if message could not be sent, or the response could not
+    /// be received, or a response was received but it was not "Ok". Prior to
+    /// sending, probe the communication to frr-agent and reconnect if needed.
+    async fn send_receive(&mut self, genid: GenId, msg: &str) -> Result<(), FrrErr> {
+        self.probe().await?;
+        self.do_send_receive(genid, msg).await
     }
 
     /// Apply the config in FRR represented by [`ConfigBuilder`] using this [`FrrMi`]
@@ -262,7 +262,7 @@ impl FrrMi {
             error!("Failed to apply config for gen {genid}: {e}");
             Err(e)
         } else {
-            info!("Successfully applied config for gen {genid} in FRR");
+            info!("Applied config for gen {genid} in FRR");
             Ok(())
         }
     }
