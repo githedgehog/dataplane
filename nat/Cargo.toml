@@ -8,8 +8,8 @@ license = "Apache-2.0"
 [dependencies]
 ahash = { workspace = true }
 dashmap = { workspace = true }
-iptrie = { workspace = true }
 left-right = { workspace = true }
+lpm = { workspace = true }
 #mgmt = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
