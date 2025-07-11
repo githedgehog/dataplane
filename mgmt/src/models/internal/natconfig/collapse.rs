@@ -155,7 +155,8 @@ mod tests {
     use super::*;
     use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use ipnet::IpNet;
-    use iptrie::IpRTrieSet;
+    use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
+    use lpm::trie::IpRTrieSet;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     #[test]
