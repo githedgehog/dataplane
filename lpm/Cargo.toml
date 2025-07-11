@@ -1,5 +1,5 @@
 [package]
-name = "dataplane-routing"
+name = "dataplane-lpm"
 version = "0.1.0"
 edition = "2024"
 publish = false
@@ -9,6 +9,12 @@ license = "Apache-2.0"
 testing = []
 
 [dependencies]
+ipnet = { workspace = true }
+iptrie = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
 
 [dev-dependencies]
+bolero = { workspace = true, default-features = false }
+serde_yml = { workspace = true }
 
