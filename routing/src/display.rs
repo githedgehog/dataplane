@@ -22,8 +22,8 @@ use crate::evpn::{RmacEntry, RmacStore, Vtep};
 use crate::pretty_utils::{Heading, line};
 use crate::testfib::TestFib;
 
-use iptrie::map::RTrieMap;
-use iptrie::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
+use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
+use lpm::trie::RTrieMap;
 use net::vxlan::Vni;
 use std::fmt::Display;
 use std::rc::Rc;

@@ -16,7 +16,6 @@ derive_builder = { workspace = true, features = ["default", "std"] }
 dplane-rpc = { workspace = true }
 lpm = { workspace = true }
 ipnet = { workspace = true }
-iptrie = { workspace = true }
 left-right = { workspace = true }
 mac_address= { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
