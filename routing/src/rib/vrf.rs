@@ -19,8 +19,8 @@ use crate::fib::fibobjects::FibGroup;
 use crate::fib::fibtype::{FibId, FibReader, FibWriter};
 use crate::interfaces::interface::IfIndex;
 use crate::prefix::Prefix;
-use iptrie::map::RTrieMap;
-use iptrie::{Ipv4Prefix, Ipv6Prefix};
+use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
+use lpm::trie::RTrieMap;
 use net::route::RouteTableId;
 use net::vxlan::Vni;
 
