@@ -2,3 +2,9 @@
 // Copyright Open Network Fabric Authors
 
 //! A library to implement Longest Prefix Match (LPM) functions.
+
+#![allow(clippy::all)]
+#![allow(clippy::pedantic)]
+#![allow(clippy::similar_names)]
+
+pub mod prefix;
