@@ -4,7 +4,7 @@
 //! Type to represent IP-version neutral network prefixes.
 
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
-use iptrie::{IpPrefix, IpPrefixCovering, Ipv4Prefix, Ipv6Prefix};
+use iptrie::IpPrefixCovering;
 use serde::ser::SerializeStructVariant;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -15,6 +15,8 @@ pub use std::net::{Ipv4Addr, Ipv6Addr};
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 use std::str::FromStr;
 use thiserror::Error;
+
+pub use iptrie::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
 
 #[derive(Debug, Error)]
 pub enum PrefixError {
