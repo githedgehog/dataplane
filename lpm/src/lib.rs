@@ -8,3 +8,4 @@
 #![allow(clippy::similar_names)]
 
 pub mod prefix;
+pub mod trie;
