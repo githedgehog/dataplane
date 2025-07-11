@@ -3,8 +3,10 @@
 
 //! Type to represent IP-version neutral network prefixes.
 
+pub mod ip;
+pub use ip::{IpPrefix, IpPrefixCovering, Ipv4Prefix, Ipv6Prefix};
+
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
-use iptrie::IpPrefixCovering;
 use serde::ser::SerializeStructVariant;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -15,8 +17,6 @@ pub use std::net::{Ipv4Addr, Ipv6Addr};
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 use std::str::FromStr;
 use thiserror::Error;
-
-pub use iptrie::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
 
 #[derive(Debug, Error)]
 pub enum PrefixError {
@@ -29,7 +29,7 @@ pub enum PrefixError {
 /// Type to represent both IPv4 and IPv6 prefixes to expose an IP version-independent API.
 /// Since we will not store prefixes, putting Ipv6 on the same basket as IPv4 will not penalize the
 /// memory requirements of Ipv4
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Prefix {
     IPV4(Ipv4Prefix),
     IPV6(Ipv6Prefix),
