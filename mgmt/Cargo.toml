@@ -51,6 +51,7 @@ tracing-test = { workspace = true }
 fixin = { workspace = true }
 id = { workspace = true, features = ["bolero"] }
 interface-manager = { workspace = true, features = ["bolero"] }
+lpm = { workspace = true }
 net = { workspace = true, features = ["bolero"] }
 pipeline = { workspace = true }
 routing = { workspace = true, features = ["testing"] }
@@ -61,6 +62,5 @@ bolero = { workspace = true, default-features = false, features = ["alloc"] }
 caps = { workspace = true }
 gateway_config = { workspace = true, features = ["bolero"] }
 ipnet = { workspace = true }
-iptrie = { workspace = true }
 pretty_assertions = { workspace = true }
 tracing-test = { workspace = true, features = [] }
