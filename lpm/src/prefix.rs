@@ -39,6 +39,7 @@ impl Prefix {
 
     /// Build 224.0.0.0/4 - Ideally this would be const
     #[must_use]
+    #[allow(clippy::missing_panics_doc)] // This should never actually panic
     pub fn ipv4_link_local_mcast_prefix() -> Prefix {
         Prefix::IPV4(Ipv4Prefix::new(Ipv4Addr::new(224, 0, 0, 0), 8).expect("Bad prefix")) // FIXME(fredi)
     }
@@ -63,8 +64,10 @@ impl Prefix {
     /// Get the inner `Ipv4Prefix` from a Prefix
     /// # Panics
     /// This method panics if the Prefix does not contain an IPv4 prefix
+    #[cfg(any(test, feature = "testing"))]
     #[allow(unused)]
-    pub(crate) fn get_v4(&self) -> &Ipv4Prefix {
+    #[must_use]
+    pub fn get_v4(&self) -> &Ipv4Prefix {
         match self {
             Prefix::IPV4(p) => p,
             Prefix::IPV6(_) => unreachable!("Not an IPv4 prefix!"),
@@ -73,8 +76,10 @@ impl Prefix {
     /// Get the inner `Ipv6Prefix` from a Prefix
     /// # Panics
     /// This method panics if the Prefix does not contain an IPv6 prefix
+    #[cfg(any(test, feature = "testing"))]
     #[allow(unused)]
-    pub(crate) fn get_v6(&self) -> &Ipv6Prefix {
+    #[must_use]
+    pub fn get_v6(&self) -> &Ipv6Prefix {
         match self {
             Prefix::IPV4(_) => unreachable!("Not an IPv6 prefix!"),
             Prefix::IPV6(p) => p,
@@ -161,6 +166,7 @@ impl Prefix {
     }
 
     #[cfg(any(test, feature = "testing"))]
+    #[allow(clippy::missing_panics_doc)]
     pub fn expect_from<T>(val: T) -> Self
     where
         T: TryInto<Prefix>,
@@ -363,6 +369,7 @@ pub enum PrefixSize {
 }
 
 impl PrefixSize {
+    #[must_use]
     pub fn is_overflow(&self) -> bool {
         matches!(self, PrefixSize::Overflow)
     }
@@ -373,10 +380,10 @@ impl PartialEq<PrefixSize> for PrefixSize {
         match (self, other) {
             (PrefixSize::U128(size), PrefixSize::U128(other_size)) => size == other_size,
             (PrefixSize::Ipv6MaxAddrs, PrefixSize::Ipv6MaxAddrs) => true,
-            (PrefixSize::U128(_), PrefixSize::Ipv6MaxAddrs) => false,
-            (PrefixSize::Ipv6MaxAddrs, PrefixSize::U128(_)) => false,
-            (PrefixSize::Overflow, _) => false,
-            (_, PrefixSize::Overflow) => false,
+            (PrefixSize::U128(_), PrefixSize::Ipv6MaxAddrs)
+            | (PrefixSize::Ipv6MaxAddrs, PrefixSize::U128(_))
+            | (PrefixSize::Overflow, _)
+            | (_, PrefixSize::Overflow) => false,
         }
     }
 }
@@ -385,12 +392,12 @@ impl PartialOrd<PrefixSize> for PrefixSize {
     fn partial_cmp(&self, other: &PrefixSize) -> Option<Ordering> {
         match (self, other) {
             (PrefixSize::U128(size), PrefixSize::U128(other_size)) => size.partial_cmp(other_size),
-            (PrefixSize::U128(_), PrefixSize::Ipv6MaxAddrs) => Some(Ordering::Less),
-            (PrefixSize::Ipv6MaxAddrs, PrefixSize::U128(_)) => Some(Ordering::Greater),
-            (PrefixSize::Overflow, PrefixSize::U128(_)) => Some(Ordering::Greater),
-            (PrefixSize::U128(_), PrefixSize::Overflow) => Some(Ordering::Less),
-            (PrefixSize::Ipv6MaxAddrs, PrefixSize::Overflow) => Some(Ordering::Less),
-            (PrefixSize::Overflow, PrefixSize::Ipv6MaxAddrs) => Some(Ordering::Greater),
+            (PrefixSize::U128(_), PrefixSize::Overflow | PrefixSize::Ipv6MaxAddrs)
+            | (PrefixSize::Ipv6MaxAddrs, PrefixSize::Overflow) => Some(Ordering::Less),
+            (PrefixSize::Ipv6MaxAddrs, PrefixSize::U128(_))
+            | (PrefixSize::Overflow, PrefixSize::Ipv6MaxAddrs | PrefixSize::U128(_)) => {
+                Some(Ordering::Greater)
+            }
             (PrefixSize::Ipv6MaxAddrs, PrefixSize::Ipv6MaxAddrs) => Some(Ordering::Equal),
             (PrefixSize::Overflow, PrefixSize::Overflow) => None,
         }
@@ -409,16 +416,13 @@ impl Add<u128> for PrefixSize {
                 // We want to compare (size + int) to (u128::MAX + 1), but to avoid overflow we swap
                 // the members. We exited early if int was 0, so we have int >= 1 and can safely
                 // subtract 1.
-                if int - 1 == u128::MAX - size {
-                    PrefixSize::Ipv6MaxAddrs
-                } else if int - 1 > u128::MAX - size {
-                    PrefixSize::Overflow
-                } else {
-                    PrefixSize::U128(size + int)
+                match (int - 1).partial_cmp(&(u128::MAX - size)) {
+                    Some(Ordering::Equal) => PrefixSize::Ipv6MaxAddrs,
+                    Some(Ordering::Greater) => PrefixSize::Overflow,
+                    _ => PrefixSize::U128(size + int),
                 }
             }
-            (PrefixSize::Ipv6MaxAddrs, _) => PrefixSize::Overflow,
-            (PrefixSize::Overflow, _) => PrefixSize::Overflow,
+            (PrefixSize::Ipv6MaxAddrs | PrefixSize::Overflow, _) => PrefixSize::Overflow,
         }
     }
 }
@@ -456,7 +460,7 @@ impl Add<PrefixSize> for PrefixSize {
             // PrefixSize::U128(0) + PrefixSize::Ipv6MaxAddrs
             (PrefixSize::U128(0), _) => other,
             (_, PrefixSize::U128(int)) => self + int,
-            (_, PrefixSize::Ipv6MaxAddrs) | (_, PrefixSize::Overflow) => PrefixSize::Overflow,
+            (_, PrefixSize::Ipv6MaxAddrs | PrefixSize::Overflow) => PrefixSize::Overflow,
         }
     }
 }
@@ -626,8 +630,7 @@ impl Mul<u128> for PrefixSize {
                 }
             }
             (PrefixSize::Ipv6MaxAddrs, 1) => PrefixSize::Ipv6MaxAddrs,
-            (PrefixSize::Ipv6MaxAddrs, _) => PrefixSize::Overflow,
-            (PrefixSize::Overflow, _) => PrefixSize::Overflow,
+            (PrefixSize::Ipv6MaxAddrs | PrefixSize::Overflow, _) => PrefixSize::Overflow,
         }
     }
 }
@@ -941,6 +944,9 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::op_ref)]
+    #[allow(clippy::erasing_op)]
     fn test_prefix_size_op() {
         // Add trait: PrefixSize + u128
         assert_eq!(PrefixSize::U128(0) + 0, PrefixSize::U128(0));
@@ -1505,10 +1511,13 @@ mod tests {
             + (PrefixSize::Ipv6MaxAddrs * 0)
             - (PrefixSize::U128(8) / 3)
             - 2;
-        assert_eq!(
-            prefix_size,
-            PrefixSize::U128(1 + 2 + 3 + 4 * 2 - 1 + 0 - 2 - 2)
-        );
+        #[allow(clippy::identity_op)]
+        {
+            assert_eq!(
+                prefix_size,
+                PrefixSize::U128(1 + 2 + 3 + 4 * 2 - 1 + 0 - 2 - 2)
+            );
+        }
     }
 
     #[test]
@@ -1545,10 +1554,10 @@ mod tests {
                     } else {
                         assert!(one_int > two_int);
                     }
-                };
+                }
 
                 assert!((one + two) + three >= 0);
-                assert!(vec![*one, *two, *three].iter().sum::<PrefixSize>() >= 0);
+                assert!([*one, *two, *three].iter().sum::<PrefixSize>() >= 0);
             });
     }
 }

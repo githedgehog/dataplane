@@ -3,8 +3,8 @@
 
 //! A library to implement Longest Prefix Match (LPM) functions.
 
-#![allow(clippy::all)]
-#![allow(clippy::pedantic)]
+#![deny(clippy::all)]
+#![deny(clippy::pedantic)]
 #![allow(clippy::similar_names)]
 
 pub mod prefix;
