@@ -5,9 +5,9 @@
 
 #![allow(clippy::collapsible_if)]
 
-use iptrie::map::RTrieMap;
-use iptrie::{Ipv4Prefix, Ipv6Prefix};
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
+use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
+use lpm::trie::RTrieMap;
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::rc::Rc;

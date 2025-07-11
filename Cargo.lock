@@ -975,7 +975,6 @@ dependencies = [
  "derive_builder 0.20.2",
  "dplane-rpc",
  "ipnet",
- "iptrie",
  "left-right",
  "mac_address",
  "mio",
