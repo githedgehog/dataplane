@@ -18,7 +18,6 @@ mod errors;
 pub mod evpn;
 pub mod fib;
 pub mod interfaces;
-pub mod prefix;
 pub mod pretty_utils;
 pub mod rib;
 
@@ -29,4 +28,5 @@ pub mod testfib;
 
 // re-exports
 pub use errors::RouterError;
+pub use lpm::prefix;
 pub use router::{Router, RouterParams, RouterParamsBuilder};
