@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::prefix::IpPrefix;
+use crate::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix, Prefix};
 
 mod prefix_map_impl;
 pub use prefix_map_impl::*;
@@ -39,4 +39,50 @@ pub trait TrieMap: Clone {
         Q: Into<Self::Prefix> + Clone;
 
     fn remove(&mut self, prefix: &Self::Prefix) -> Option<Self::Value>;
+}
+
+pub struct IpPrefixTrie<V: Clone> {
+    ipv4: PrefixMapTrie<Ipv4Prefix, V>,
+    ipv6: PrefixMapTrie<Ipv6Prefix, V>,
+}
+
+impl<V: Clone> IpPrefixTrie<V> {
+    #[allow(clippy::new_without_default)]
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            ipv4: PrefixMapTrie::new(),
+            ipv6: PrefixMapTrie::new(),
+        }
+    }
+
+    pub fn insert(&mut self, prefix: Prefix, value: V) -> Option<V> {
+        match prefix {
+            Prefix::IPV4(prefix) => self.ipv4.insert(prefix, value),
+            Prefix::IPV6(prefix) => self.ipv6.insert(prefix, value),
+        }
+    }
+
+    pub fn remove(&mut self, prefix: &Prefix) -> Option<V> {
+        match prefix {
+            Prefix::IPV4(prefix) => self.ipv4.remove(prefix),
+            Prefix::IPV6(prefix) => self.ipv6.remove(prefix),
+        }
+    }
+
+    pub fn lookup<Q>(&self, addr: Q) -> Option<(Prefix, &V)>
+    where
+        Q: Into<Prefix> + Clone,
+    {
+        match addr.into() {
+            Prefix::IPV4(prefix) => self
+                .ipv4
+                .lookup(&prefix)
+                .map(|(k, v)| (Prefix::IPV4(*k), v)),
+            Prefix::IPV6(prefix) => self
+                .ipv6
+                .lookup(&prefix)
+                .map(|(k, v)| (Prefix::IPV6(*k), v)),
+        }
+    }
 }
