@@ -7,7 +7,7 @@ use std::fmt::Display;
 
 use crate::frr::renderer::builder::{ConfigBuilder, Render};
 use crate::models::internal::routing::statics::{StaticRoute, StaticRouteNhop};
-use routing::prefix::Prefix;
+use lpm::prefix::Prefix;
 
 /* impl Display */
 impl Display for StaticRouteNhop {

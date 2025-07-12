@@ -11,7 +11,7 @@ use crate::models::internal::routing::bgp::{
     BgpNeighbor, BgpOptions, BgpUpdateSource, NeighSendCommunities, Protocol, Redistribute,
 };
 
-use routing::prefix::{Prefix, PrefixString};
+use lpm::prefix::{Prefix, PrefixString};
 
 use gateway_config::bgp_neighbor_update_source::Source;
 

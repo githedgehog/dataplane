@@ -10,10 +10,10 @@ use crate::models::external::overlay::Overlay;
 use crate::models::external::overlay::vpc::{Peering, Vpc};
 use crate::models::external::overlay::vpcpeering::VpcManifest;
 use crate::models::external::{ConfigError, ConfigResult};
+use lpm::prefix::Prefix;
 use net::eth::mac::SourceMac;
 use net::ipv4::UnicastIpv4Addr;
 use net::route::RouteTableId;
-use routing::prefix::Prefix;
 use std::net::Ipv4Addr;
 
 use crate::models::external::gwconfig::{ExternalConfig, GwConfig};

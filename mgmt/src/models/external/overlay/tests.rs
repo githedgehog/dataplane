@@ -15,7 +15,7 @@ pub mod test {
     use crate::models::external::overlay::vpcpeering::VpcManifest;
     use crate::models::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
 
-    use routing::prefix::{Prefix, PrefixSize};
+    use lpm::prefix::{Prefix, PrefixSize};
 
     /* Build sample manifests for a peering */
     fn build_manifest_vpc1() -> VpcManifest {

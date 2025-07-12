@@ -3,8 +3,7 @@
 
 //! Dataplane configuration model: vpc peering
 
-use routing::prefix::Prefix;
-use routing::prefix::PrefixSize;
+use lpm::prefix::{Prefix, PrefixSize};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::ops::Bound::{Excluded, Unbounded};

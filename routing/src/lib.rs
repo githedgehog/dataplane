@@ -18,7 +18,6 @@ mod errors;
 pub mod evpn;
 pub mod fib;
 pub mod interfaces;
-pub mod prefix;
 pub mod pretty_utils;
 pub mod rib;
 

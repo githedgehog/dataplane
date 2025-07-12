@@ -14,8 +14,8 @@ bytes = { workspace = true, features = ["serde"] }
 cli = { workspace = true }
 derive_builder = { workspace = true, features = ["default", "std"] }
 dplane-rpc = { workspace = true }
+lpm = { workspace = true }
 ipnet = { workspace = true }
-iptrie = { workspace = true }
 left-right = { workspace = true }
 mac_address= { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
@@ -31,6 +31,7 @@ netdev = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true, default-features = false }
+lpm = { workspace = true, features = ["testing"] }
 serde_yml = { workspace = true }
 tracing-test = { workspace = true, features = [] }
 

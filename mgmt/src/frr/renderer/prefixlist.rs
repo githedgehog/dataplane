@@ -83,7 +83,7 @@ impl Render for PrefixListTable {
 #[allow(dead_code)]
 mod tests {
     use super::*;
-    use routing::prefix::Prefix;
+    use lpm::prefix::Prefix;
 
     #[test]
     fn test_ipv4_prefix_list_render() {
