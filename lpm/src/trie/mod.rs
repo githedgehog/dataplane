@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
 use crate::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix, Prefix};
 
 mod prefix_map_impl;

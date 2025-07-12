@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
 use std::net::{Ipv4Addr, Ipv6Addr};
