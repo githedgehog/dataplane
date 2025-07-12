@@ -7,7 +7,7 @@
 
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
-use lpm::trie::RTrieMap;
+use lpm::trie::{PrefixMapTrieWithDefault, TrieMap};
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::rc::Rc;
@@ -53,8 +53,8 @@ impl FibId {
 pub struct Fib {
     id: FibId,
     version: u64,
-    routesv4: RTrieMap<Ipv4Prefix, Rc<FibGroup>>,
-    routesv6: RTrieMap<Ipv6Prefix, Rc<FibGroup>>,
+    routesv4: PrefixMapTrieWithDefault<Ipv4Prefix, Rc<FibGroup>>,
+    routesv6: PrefixMapTrieWithDefault<Ipv6Prefix, Rc<FibGroup>>,
     groups: BTreeSet<Rc<FibGroup>>, /* shared fib groups */
     vtep: Vtep,
 }
@@ -70,14 +70,18 @@ impl Fib {
     }
     #[must_use]
     pub fn new(id: FibId) -> Self {
+        let routesv4 = unsafe { PrefixMapTrieWithDefault::new() };
+        let routesv6 = unsafe { PrefixMapTrieWithDefault::new() };
         let mut fib = Self {
             id,
             version: 0,
-            routesv4: RTrieMap::new(),
-            routesv6: RTrieMap::new(),
+            routesv4,
+            routesv6,
             groups: BTreeSet::new(),
             vtep: Vtep::new(),
         };
+
+        // Adding groups to the fib makes the above unsafe calls safe
         let group = Self::drop_fibgroup();
         fib.add_fibgroup(Prefix::root_v4(), group.clone());
         fib.add_fibgroup(Prefix::root_v6(), group);
@@ -167,13 +171,13 @@ impl Fib {
     /// Tell the number of IPv4 routes in this [`Fib`]
     #[must_use]
     pub fn len_v4(&self) -> usize {
-        self.routesv4.len().get()
+        self.routesv4.len()
     }
 
     /// Tell the number of IPv6 routes in this [`Fib`]
     #[must_use]
     pub fn len_v6(&self) -> usize {
-        self.routesv6.len().get()
+        self.routesv6.len()
     }
 
     /// Tell the number of [`FibGroup`] routes in this [`Fib`]
@@ -204,13 +208,13 @@ impl Fib {
 
     #[must_use]
     /// Get a reference to the inner IPv4 trie
-    pub fn get_v4_trie(&self) -> &RTrieMap<Ipv4Prefix, Rc<FibGroup>> {
+    pub fn get_v4_trie(&self) -> &PrefixMapTrieWithDefault<Ipv4Prefix, Rc<FibGroup>> {
         &self.routesv4
     }
 
     #[must_use]
     /// Get a reference to the inner IPv6 trie
-    pub fn get_v6_trie(&self) -> &RTrieMap<Ipv6Prefix, Rc<FibGroup>> {
+    pub fn get_v6_trie(&self) -> &PrefixMapTrieWithDefault<Ipv6Prefix, Rc<FibGroup>> {
         &self.routesv6
     }
 
@@ -219,11 +223,11 @@ impl Fib {
     pub fn lpm_with_prefix(&self, target: &IpAddr) -> (Prefix, &FibGroup) {
         match target {
             IpAddr::V4(a) => {
-                let (prefix, group) = self.routesv4.lookup(a);
+                let (prefix, group) = self.routesv4.lookup_wd(a);
                 (Prefix::IPV4(*prefix), group)
             }
             IpAddr::V6(a) => {
-                let (prefix, group) = self.routesv6.lookup(a);
+                let (prefix, group) = self.routesv6.lookup_wd(a);
                 (Prefix::IPV6(*prefix), group)
             }
         }
@@ -233,11 +237,11 @@ impl Fib {
     pub fn lpm(&self, target: &IpAddr) -> &FibGroup {
         match target {
             IpAddr::V4(a) => {
-                let (_, group) = self.routesv4.lookup(a);
+                let (_, group) = self.routesv4.lookup_wd(a);
                 group
             }
             IpAddr::V6(a) => {
-                let (_, group) = self.routesv6.lookup(a);
+                let (_, group) = self.routesv6.lookup_wd(a);
                 group
             }
         }
