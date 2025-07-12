@@ -19,6 +19,7 @@ bolero = ["dep:bolero", "interface-manager/bolero", "id/bolero", "net/bolero"]
 gateway_config = { workspace = true }
 id = { workspace = true }
 interface-manager = { workspace = true }
+lpm = { workspace = true }
 net = { workspace = true }
 nat = { workspace = true }
 rekon = { workspace = true }

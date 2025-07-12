@@ -10,8 +10,8 @@ use crate::models::external::gwconfig::GenId;
 use crate::models::external::overlay::vpc::VpcId;
 use crate::models::external::overlay::vpcpeering::VpcExpose;
 
+use lpm::prefix::{Prefix, PrefixSize};
 use net::eth::mac::Mac;
-use routing::prefix::{Prefix, PrefixSize};
 use thiserror::Error;
 
 /// The reasons why we may reject a configuration

@@ -3,7 +3,7 @@
 
 //! Dataplane configuration model: static routes
 
-use routing::prefix::Prefix;
+use lpm::prefix::Prefix;
 use std::net::IpAddr;
 
 #[derive(Clone, Debug, Ord, Eq, PartialEq, PartialOrd)]

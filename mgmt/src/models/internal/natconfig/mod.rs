@@ -15,9 +15,9 @@ mod test;
 
 use crate::models::external::overlay::vpc::{Peering, VpcTable};
 use crate::models::external::overlay::vpcpeering::VpcExpose;
+use lpm::prefix::Prefix;
 use nat::stateless::config::tables::{NatPrefixRuleTable, NatTableValue, PerVniTable};
 use net::vxlan::Vni;
-use routing::prefix::Prefix;
 use std::collections::BTreeSet;
 
 /// Error type for NAT peering table extension operations.

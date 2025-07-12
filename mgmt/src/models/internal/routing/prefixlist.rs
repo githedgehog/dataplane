@@ -3,7 +3,7 @@
 
 //! Dataplane configuration model: prefix list
 
-use routing::prefix::Prefix;
+use lpm::prefix::Prefix;
 use std::collections::{BTreeMap, BTreeSet};
 use std::default;
 use tracing::error;
