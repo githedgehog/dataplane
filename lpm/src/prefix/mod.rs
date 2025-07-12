@@ -221,7 +221,14 @@ impl From<Ipv6Prefix> for Prefix {
         Self::IPV6(value)
     }
 }
-
+impl From<IpAddr> for Prefix {
+    fn from(value: IpAddr) -> Self {
+        match value {
+            IpAddr::V4(a) => Prefix::IPV4(Ipv4Prefix::from(a)),
+            IpAddr::V6(a) => Prefix::IPV6(Ipv6Prefix::from(a)),
+        }
+    }
+}
 impl From<Prefix> for IpNet {
     fn from(value: Prefix) -> Self {
         let Ok(net) = IpNet::new(value.as_address(), value.length()) else {
