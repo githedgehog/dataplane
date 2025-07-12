@@ -156,7 +156,7 @@ mod tests {
     use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use ipnet::IpNet;
     use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
-    use lpm::trie::IpRTrieSet;
+    use lpm::trie::IpPrefixTrie;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     #[test]
@@ -500,8 +500,12 @@ mod tests {
         }
     }
 
-    fn prefix_oracle(addr: &IpNet, prefixes: &IpRTrieSet, excludes: &IpRTrieSet) -> bool {
-        !excludes.contains(addr) && prefixes.contains(addr)
+    fn prefix_oracle(
+        addr: &IpAddr,
+        prefixes: &IpPrefixTrie<()>,
+        excludes: &IpPrefixTrie<()>,
+    ) -> bool {
+        excludes.lookup(*addr).is_none() && prefixes.lookup(*addr).is_some()
     }
 
     #[test]
@@ -519,23 +523,22 @@ mod tests {
                     excludes,
                     addrs,
                 } = data;
-                let mut prefixes_trie = IpRTrieSet::new();
-                let mut excludes_trie = IpRTrieSet::new();
-                let mut collapsed_prefixes_trie = IpRTrieSet::new();
+                let mut prefixes_trie = IpPrefixTrie::<()>::new();
+                let mut excludes_trie = IpPrefixTrie::<()>::new();
+                let mut collapsed_prefixes_trie = IpPrefixTrie::<()>::new();
                 for prefix in prefixes {
-                    prefixes_trie.insert(IpNet::from(*prefix));
+                    prefixes_trie.insert(*prefix, ());
                 }
                 for exclude in excludes {
-                    excludes_trie.insert(IpNet::from(*exclude));
+                    excludes_trie.insert(*exclude, ());
                 }
                 let collapsed_prefixes = collapse_prefix_lists(prefixes, excludes).unwrap();
                 for prefix in collapsed_prefixes {
-                    collapsed_prefixes_trie.insert(IpNet::from(prefix));
+                    collapsed_prefixes_trie.insert(prefix, ());
                 }
                 for addr in addrs {
-                    let addr_net = IpNet::from(*addr);
-                    let oracle_result = prefix_oracle(&addr_net, &prefixes_trie, &excludes_trie);
-                    let collapsed_result = collapsed_prefixes_trie.contains(&addr_net);
+                    let oracle_result = prefix_oracle(addr, &prefixes_trie, &excludes_trie);
+                    let collapsed_result = collapsed_prefixes_trie.lookup(*addr).is_some();
                     assert_eq!(oracle_result, collapsed_result);
                 }
             });
