@@ -6,17 +6,16 @@
 #![allow(clippy::collapsible_if)]
 
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
-use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
-use lpm::trie::{PrefixMapTrieWithDefault, TrieMap};
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::rc::Rc;
 
+use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
+use lpm::trie::{PrefixMapTrieWithDefault, TrieMap};
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use net::vxlan::Vni;
 
-use crate::prefix::Prefix;
 use crate::rib::vrf::VrfId;
 use crate::{
     evpn::Vtep,

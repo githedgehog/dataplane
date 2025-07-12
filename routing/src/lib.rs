@@ -28,5 +28,4 @@ pub mod testfib;
 
 // re-exports
 pub use errors::RouterError;
-pub use lpm::prefix;
 pub use router::{Router, RouterParams, RouterParamsBuilder};
