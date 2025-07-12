@@ -40,7 +40,9 @@ impl Representable for Ipv6Addr {
 }
 
 #[allow(clippy::len_without_is_empty)]
-pub trait IpPrefix: Sized + Debug + Clone + From<Self::Addr> + Default + PartialEq {
+pub trait IpPrefix:
+    Sized + Debug + Display + Clone + From<Self::Addr> + Default + PartialEq
+{
     type Repr: Debug + Unsigned + PrimInt + Zero + CheckedShr;
     type Addr: Display + Debug + Clone + Eq + Hash + Representable<Repr = Self::Repr>;
     const MAX_LEN: u8;
@@ -61,10 +63,16 @@ pub trait IpPrefixCovering<Other> {
 // IPv4 Prefix
 ////////////////////////////////////////////////////////////
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Ipv4Prefix(Ipv4Net);
 
 impl Ipv4Prefix {}
+
+impl Debug for Ipv4Prefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self}")
+    }
+}
 
 impl Display for Ipv4Prefix {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -81,10 +89,12 @@ impl IpPrefix for Ipv4Prefix {
     ///
     /// Returns an error if the length is greater than `Self::MAX_LEN`
     fn new(addr_in: Ipv4Addr, len: u8) -> Result<Self, PrefixError> {
-        let addr = Ipv4Addr::from_bits(addr_in.to_bits() & u32::MAX << len);
         if len > Self::MAX_LEN {
             return Err(PrefixError::InvalidLength(len));
         }
+        let addr = Ipv4Addr::from_bits(
+            addr_in.to_bits() & u32::MAX.unbounded_shl(u32::from(Self::MAX_LEN - len)),
+        );
         Ok(Self(
             Ipv4Net::new(addr, len).map_err(|e| PrefixError::Invalid(e.to_string()))?,
         ))
@@ -124,9 +134,7 @@ impl From<Ipv4Addr> for Ipv4Prefix {
 
 impl From<Ipv4Net> for Ipv4Prefix {
     fn from(value: Ipv4Net) -> Self {
-        let network =
-            Ipv4Addr::from_bits(value.network().to_bits() & u32::MAX << value.prefix_len());
-        Self::new(network, value.prefix_len())
+        Self::new(value.network(), value.prefix_len())
             .unwrap_or_else(|_| unreachable!("Invalid IPv6 prefix: {:?}", value))
     }
 }
@@ -152,7 +160,7 @@ impl FromStr for Ipv4Prefix {
 // IPv6 Prefix
 ////////////////////////////////////////////////////////////
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Ipv6Prefix(Ipv6Net);
 
 impl Ipv6Prefix {}
@@ -160,6 +168,12 @@ impl Ipv6Prefix {}
 impl Default for Ipv6Prefix {
     fn default() -> Self {
         Self(Ipv6Net::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), 0).unwrap())
+    }
+}
+
+impl Debug for Ipv6Prefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self}")
     }
 }
 
@@ -181,6 +195,9 @@ impl IpPrefix for Ipv6Prefix {
         if len > Self::MAX_LEN {
             return Err(PrefixError::InvalidLength(len));
         }
+        let addr = Ipv6Addr::from_bits(
+            addr.to_bits() & u128::MAX.unbounded_shl(u32::from(Self::MAX_LEN - len)),
+        );
         Ok(Self(
             Ipv6Net::new(addr, len).map_err(|e| PrefixError::Invalid(e.to_string()))?,
         ))
@@ -213,9 +230,7 @@ impl From<Ipv6Addr> for Ipv6Prefix {
 
 impl From<Ipv6Net> for Ipv6Prefix {
     fn from(value: Ipv6Net) -> Self {
-        let network =
-            Ipv6Addr::from_bits(value.network().to_bits() & u128::MAX << value.prefix_len());
-        Self::new(network, value.prefix_len())
+        Self::new(value.network(), value.prefix_len())
             .unwrap_or_else(|_| unreachable!("Invalid IPv6 prefix: {:?}", value))
     }
 }
@@ -235,5 +250,64 @@ impl FromStr for Ipv6Prefix {
             .map_err(|_| PrefixError::Invalid(s.to_string()))?;
 
         Self::new(addr, len)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ipv4_prefix_from_str() {
+        let prefix = "192.168.1.0/24".parse::<Ipv4Prefix>().unwrap();
+        assert_eq!(prefix.network(), Ipv4Addr::new(192, 168, 1, 0));
+    }
+
+    #[test]
+    fn test_ipv4_covers() {
+        let prefix = "192.168.1.0/24".parse::<Ipv4Prefix>().unwrap();
+        assert!(prefix.covers(&Ipv4Addr::new(192, 168, 1, 1)));
+        assert!(!prefix.covers(&Ipv4Addr::new(192, 168, 2, 1)));
+
+        assert!(prefix.covers(&prefix));
+        assert!(prefix.covers(&Ipv4Prefix::new(Ipv4Addr::new(192, 168, 1, 0), 25).unwrap()));
+        assert!(!prefix.covers(&Ipv4Prefix::new(Ipv4Addr::new(192, 168, 1, 0), 23).unwrap()));
+
+        let big_prefix = "128.0.0.0/1".parse::<Ipv4Prefix>().unwrap();
+        assert!(big_prefix.covers(&prefix));
+        assert!(!prefix.covers(&big_prefix));
+    }
+
+    #[test]
+    fn test_ipv6_prefix_from_str() {
+        let prefix = "2001:db8::/32".parse::<Ipv6Prefix>().unwrap();
+        assert_eq!(
+            prefix.network(),
+            Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn test_ipv6_covers() {
+        let prefix = "2001:db8::/32".parse::<Ipv6Prefix>().unwrap();
+        assert!(prefix.covers(&Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)));
+        assert!(prefix.covers(&Ipv6Addr::new(0x2001, 0xdb8, 0xabcd, 0, 0, 0, 0, 0)));
+        assert!(!prefix.covers(&Ipv6Addr::new(0x2001, 0xdb9, 0, 0, 0, 0, 0, 0)));
+
+        assert!(prefix.covers(&prefix));
+        assert!(
+            prefix.covers(
+                &Ipv6Prefix::new(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0), 48).unwrap()
+            )
+        );
+        assert!(
+            !prefix.covers(
+                &Ipv6Prefix::new(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0), 16).unwrap()
+            )
+        );
+
+        let big_prefix = "::/2".parse::<Ipv6Prefix>().unwrap();
+        assert!(big_prefix.covers(&prefix));
+        assert!(!prefix.covers(&big_prefix));
     }
 }

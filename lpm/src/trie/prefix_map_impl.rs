@@ -2,11 +2,25 @@ use crate::prefix::IpPrefix;
 use crate::prefix::ip::Representable;
 use prefix_trie::PrefixMap;
 use std::default::Default;
+use std::fmt::{Debug, Display};
 
 use crate::trie::{TrieMap, TrieMapNew, TrieMapWithDefault};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct IpPrefixW<P: IpPrefix>(P);
+
+impl<P: IpPrefix> Debug for IpPrefixW<P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self}")
+    }
+}
+
+impl<P: IpPrefix> Display for IpPrefixW<P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 impl<P: IpPrefix> prefix_trie::Prefix for IpPrefixW<P> {
     type R = P::Repr;
 
@@ -31,7 +45,7 @@ impl<P: IpPrefix> prefix_trie::Prefix for IpPrefixW<P> {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct PrefixMapTrie<P, V>(PrefixMap<IpPrefixW<P>, V>)
 where
     P: IpPrefix,
