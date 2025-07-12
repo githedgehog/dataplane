@@ -61,7 +61,7 @@ fn collapse_prefix_lists(
             // exclusion prefixes.
             if exclude.covers(prefix) {
                 result.remove(prefix);
-                break;
+                continue;
             }
 
             // If allowed prefix covers the exclusion prefix, then it means the exclusion prefix
@@ -533,13 +533,16 @@ mod tests {
                     excludes_trie.insert(*exclude, ());
                 }
                 let collapsed_prefixes = collapse_prefix_lists(prefixes, excludes).unwrap();
-                for prefix in collapsed_prefixes {
+                for prefix in collapsed_prefixes.clone() {
                     collapsed_prefixes_trie.insert(prefix, ());
                 }
                 for addr in addrs {
                     let oracle_result = prefix_oracle(addr, &prefixes_trie, &excludes_trie);
                     let collapsed_result = collapsed_prefixes_trie.lookup(*addr).is_some();
-                    assert_eq!(oracle_result, collapsed_result);
+                    assert_eq!(
+                        oracle_result, collapsed_result,
+                        "addr: {addr:?}, collapsed={collapsed_prefixes_trie:#?}, collapsed_prefixes={collapsed_prefixes:#?}"
+                    );
                 }
             });
     }
