@@ -4,8 +4,8 @@
 use crate::stateless::config::prefixtrie::{PrefixTrie, TrieError};
 
 use ahash::RandomState;
+use lpm::prefix::Prefix;
 use net::vxlan::Vni;
-use routing::prefix::Prefix;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};

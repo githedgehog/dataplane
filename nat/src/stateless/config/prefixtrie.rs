@@ -6,9 +6,8 @@
 
 #![allow(clippy::missing_errors_doc)]
 
-use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
+use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapNew};
-use routing::prefix::Prefix;
 use std::fmt::Debug;
 use std::net::IpAddr;
 
