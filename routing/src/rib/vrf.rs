@@ -6,7 +6,6 @@
 use std::hash::Hash;
 use std::iter::Filter;
 use std::net::IpAddr;
-use std::num::NonZeroUsize;
 use std::rc::Rc;
 use tracing::debug;
 
@@ -20,7 +19,7 @@ use crate::fib::fibtype::{FibId, FibReader, FibWriter};
 use crate::interfaces::interface::IfIndex;
 use crate::prefix::Prefix;
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
-use lpm::trie::RTrieMap;
+use lpm::trie::{PrefixMapTrieWithDefault, TrieMap};
 use net::route::RouteTableId;
 use net::vxlan::Vni;
 
@@ -120,8 +119,8 @@ pub struct Vrf {
     pub tableid: Option<RouteTableId>,
     pub description: Option<String>,
     pub(crate) status: VrfStatus,
-    pub(crate) routesv4: RTrieMap<Ipv4Prefix, Route>,
-    pub(crate) routesv6: RTrieMap<Ipv6Prefix, Route>,
+    pub(crate) routesv4: PrefixMapTrieWithDefault<Ipv4Prefix, Route>,
+    pub(crate) routesv6: PrefixMapTrieWithDefault<Ipv6Prefix, Route>,
     pub(crate) nhstore: NhopStore,
     pub(crate) vni: Option<Vni>,
     pub(crate) fibw: Option<FibWriter>,
@@ -180,6 +179,10 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     #[must_use]
     pub fn new(config: &RouterVrfConfig) -> Self {
+        let routesv4 =
+            unsafe { PrefixMapTrieWithDefault::with_capacity(Vrf::DEFAULT_IPV4_CAPACITY) };
+        let routesv6 =
+            unsafe { PrefixMapTrieWithDefault::with_capacity(Vrf::DEFAULT_IPV6_CAPACITY) };
         let mut vrf = Self {
             name: config.name.to_owned(),
             vrfid: config.vrfid,
@@ -187,13 +190,14 @@ impl Vrf {
             description: config.description.to_owned(),
             vni: config.vni,
             status: VrfStatus::Active,
-            routesv4: RTrieMap::with_capacity(Vrf::DEFAULT_IPV4_CAPACITY),
-            routesv6: RTrieMap::with_capacity(Vrf::DEFAULT_IPV6_CAPACITY),
+            routesv4,
+            routesv6,
             nhstore: NhopStore::new(),
             fibw: None,
         };
 
         /* add default routes with default next-hop with action DROP */
+        /* These adds make the unsafe code above safe */
         vrf.add_route(
             &Prefix::root_v4(),
             Route::default(),
@@ -282,8 +286,7 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     pub fn check_deletion(&mut self) {
         if self.status == VrfStatus::Deleting {
-            let one = NonZeroUsize::new(1).unwrap_or_else(|| unreachable!());
-            if self.routesv4.len() == one && self.routesv6.len() == one {
+            if self.routesv4.len() == 1 && self.routesv6.len() == 1 {
                 let r1 = self
                     .get_route(Prefix::root_v4())
                     .unwrap_or_else(|| unreachable!());
@@ -604,10 +607,10 @@ impl Vrf {
         self.iter_v6().filter(filter)
     }
     pub fn len_v4(&self) -> usize {
-        self.routesv4.len().get()
+        self.routesv4.len()
     }
     pub fn len_v6(&self) -> usize {
-        self.routesv6.len().get()
+        self.routesv6.len()
     }
     /////////////////////////////////////////////////////////////////////////
     // LPM, single call
@@ -615,11 +618,11 @@ impl Vrf {
 
     #[inline]
     fn lpm_v4(&self, target: Ipv4Prefix) -> (&Ipv4Prefix, &Route) {
-        self.routesv4.lookup(&target)
+        self.routesv4.lookup_wd(&target)
     }
     #[inline]
     fn lpm_v6(&self, target: Ipv6Prefix) -> (&Ipv6Prefix, &Route) {
-        self.routesv6.lookup(&target)
+        self.routesv6.lookup_wd(&target)
     }
     pub fn lpm(&self, target: IpAddr) -> (Prefix, &Route) {
         match target {
@@ -841,14 +844,6 @@ pub mod tests {
 
     }
 
-
-    #[test]
-    fn test_patricia () {
-        let mut trie:RTrieMap<Ipv4Prefix, ()> = RTrieMap::new();
-        let prefix1 = Ipv4Prefix::from_str("10.0.0.1/32").unwrap();
-        trie.insert(prefix1, ());
-        trie.remove(&prefix1);
-    }
 
     #[test]
     fn test_route_filtering() {

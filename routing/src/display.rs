@@ -23,7 +23,7 @@ use crate::pretty_utils::{Heading, line};
 use crate::testfib::TestFib;
 
 use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
-use lpm::trie::RTrieMap;
+use lpm::trie::{PrefixMapTrieWithDefault, TrieMap};
 use net::vxlan::Vni;
 use std::fmt::Display;
 use std::rc::Rc;
@@ -190,7 +190,7 @@ impl Display for Route {
 fn fmt_vrf_trie<P: IpPrefix, F: Fn(&(&P, &Route)) -> bool>(
     f: &mut std::fmt::Formatter<'_>,
     show_string: &str,
-    trie: &RTrieMap<P, Route>,
+    trie: &PrefixMapTrieWithDefault<P, Route>,
     _route_filter: F,
 ) -> std::fmt::Result {
     Heading(format!("{show_string} routes ({})", trie.len())).fmt(f)?;
@@ -678,7 +678,7 @@ fn fmt_fib_trie<P: IpPrefix, F: Fn(&(&P, &Rc<FibGroup>)) -> bool>(
     f: &mut std::fmt::Formatter<'_>,
     fibid: FibId,
     show_string: &str,
-    trie: &RTrieMap<P, Rc<FibGroup>>,
+    trie: &PrefixMapTrieWithDefault<P, Rc<FibGroup>>,
     group_filter: F,
 ) -> std::fmt::Result {
     Heading(format!(
