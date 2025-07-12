@@ -496,7 +496,7 @@ pub mod tests {
         AfL2vpnEvpn, BgpConfig, BgpNeighbor, NeighSendCommunities, Protocol, Redistribute,
         VrfImports,
     };
-    use routing::prefix::Prefix;
+    use lpm::prefix::Prefix;
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
 

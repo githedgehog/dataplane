@@ -4,10 +4,10 @@
 #[cfg(test)]
 #[allow(dead_code)]
 pub mod test {
+    use lpm::prefix::Prefix;
     use nat::stateless::NatTablesWriter;
     use net::eth::mac::Mac;
     use net::interface::Mtu;
-    use routing::prefix::Prefix;
     use tracing_test::traced_test;
 
     use crate::models::internal::device::settings::KernelPacketConfig;
