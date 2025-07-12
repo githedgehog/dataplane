@@ -3,7 +3,7 @@
 
 use super::NatPeeringError;
 use crate::models::external::overlay::vpc::Peering;
-use routing::prefix::Prefix;
+use lpm::prefix::Prefix;
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::error;

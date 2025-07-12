@@ -5,8 +5,8 @@
 
 #![allow(unused)]
 
+use lpm::prefix::Prefix;
 use net::vxlan::Vni;
-use routing::prefix::Prefix;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use tracing::{debug, warn};

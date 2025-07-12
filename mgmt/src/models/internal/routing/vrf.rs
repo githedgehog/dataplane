@@ -8,10 +8,10 @@ use super::ospf::Ospf;
 use super::statics::StaticRoute;
 use crate::models::external::{ConfigError, overlay::vpc::VpcId};
 use crate::models::internal::{ConfigResult, InterfaceConfig, InterfaceConfigTable};
+use lpm::prefix::Prefix;
 use multi_index_map::MultiIndexMap;
 use net::route::RouteTableId;
 use net::vxlan::Vni;
-use routing::prefix::Prefix;
 use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, MultiIndexMap)]

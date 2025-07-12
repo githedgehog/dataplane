@@ -5,7 +5,7 @@ use gateway_config::config as gateway_config;
 use std::convert::TryFrom;
 
 use crate::models::external::overlay::vpcpeering::VpcExpose;
-use routing::prefix::{Prefix, PrefixString};
+use lpm::prefix::{Prefix, PrefixString};
 
 impl TryFrom<&gateway_config::Expose> for VpcExpose {
     type Error = String;

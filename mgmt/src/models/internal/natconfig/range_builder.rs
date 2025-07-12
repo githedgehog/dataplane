@@ -2,9 +2,9 @@
 // Copyright Open Network Fabric Authors
 
 use super::NatPeeringError;
+use lpm::prefix::{Prefix, PrefixSize};
 use nat::stateless::config::tables::NatTableValue;
 use net::vxlan::Vni;
-use routing::prefix::{Prefix, PrefixSize};
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::net::IpAddr;
@@ -511,7 +511,7 @@ mod tests {
     // Bolero tests
 
     use bolero::{Driver, ValueGenerator};
-    use routing::prefix::{Prefix, PrefixSize};
+    use lpm::prefix::{Prefix, PrefixSize};
     use std::cmp::max;
     use std::net::Ipv6Addr;
     use std::ops::Bound;
