@@ -7,7 +7,7 @@
 #![allow(clippy::missing_errors_doc)]
 
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
-use lpm::trie::RTrieMap;
+use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapNew};
 use routing::prefix::Prefix;
 use std::fmt::Debug;
 use std::net::IpAddr;
@@ -25,35 +25,31 @@ pub enum TrieError {
 /// It is used to efficiently look up the value associated with a given IP address.
 ///
 /// Internally, it relies on two different tries, one for IPv4 and one for IPv6.
-#[derive(Default, Clone)]
-pub struct PrefixTrie<T> {
-    trie_ipv4: RTrieMap<Ipv4Prefix, T>,
-    trie_ipv6: RTrieMap<Ipv6Prefix, T>,
+#[derive(Clone)]
+pub struct PrefixTrie<T: Clone> {
+    trie_ipv4: PrefixMapTrie<Ipv4Prefix, T>,
+    trie_ipv6: PrefixMapTrie<Ipv6Prefix, T>,
 }
 
 impl<T> PrefixTrie<T>
 where
-    T: Default + Debug,
+    T: Default + Debug + Clone,
 {
     /// Creates a new [`PrefixTrie`].
     #[must_use]
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
-            trie_ipv4: RTrieMap::new(),
-            trie_ipv6: RTrieMap::new(),
+            trie_ipv4: PrefixMapTrie::new(),
+            trie_ipv6: PrefixMapTrie::new(),
         }
     }
-}
 
-impl<T> PrefixTrie<T>
-where
-    T: Debug,
-{
-    /// Creates a new [`PrefixTrie`].
+    #[must_use]
     pub fn with_roots(root_v4: T, root_v6: T) -> Self {
         Self {
-            trie_ipv4: RTrieMap::with_root(root_v4),
-            trie_ipv6: RTrieMap::with_root(root_v6),
+            trie_ipv4: PrefixMapTrie::with_root(root_v4),
+            trie_ipv6: PrefixMapTrie::with_root(root_v6),
         }
     }
 
@@ -110,35 +106,21 @@ where
     #[must_use]
     pub fn lookup(&self, addr: &IpAddr) -> Option<(Prefix, &T)> {
         match addr {
-            IpAddr::V4(ip) => {
-                let (&k, v) = self.trie_ipv4.lookup(&Ipv4Prefix::from(*ip));
-                // The RTrieMap lookup always return an entry; if no better match, it returns the
-                // root of the map, which always exists.  This means that to check if the result is
-                // "empty", we need to check whether the returned entry is the root for the map.
-                if Prefix::IPV4(k).is_root() {
-                    None
-                } else {
-                    Some((Prefix::IPV4(k), v))
-                }
-            }
-            IpAddr::V6(ip) => {
-                let (&k, v) = self.trie_ipv6.lookup(&Ipv6Prefix::from(*ip));
-                // The RTrieMap lookup always return an entry; if no better match, it returns the
-                // root of the map, which always exists.  This means that to check if the result is
-                // "empty", we need to check whether the returned entry is the root for the map.
-                if Prefix::IPV6(k).is_root() {
-                    None
-                } else {
-                    Some((Prefix::IPV6(k), v))
-                }
-            }
+            IpAddr::V4(ip) => self
+                .trie_ipv4
+                .lookup(&Ipv4Prefix::from(*ip))
+                .map(|(k, v)| (Prefix::IPV4(*k), v)),
+            IpAddr::V6(ip) => self
+                .trie_ipv6
+                .lookup(&Ipv6Prefix::from(*ip))
+                .map(|(k, v)| (Prefix::IPV6(*k), v)),
         }
     }
 }
 
 impl<T> Debug for PrefixTrie<T>
 where
-    T: Debug,
+    T: Debug + Clone,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_map()
@@ -150,7 +132,7 @@ where
 
 impl<T> PartialEq for PrefixTrie<T>
 where
-    T: PartialEq,
+    T: PartialEq + Clone,
 {
     fn eq(&self, other: &Self) -> bool {
         self.trie_ipv4.len() == other.trie_ipv4.len()
@@ -168,7 +150,7 @@ where
     }
 }
 
-impl<T> Eq for PrefixTrie<T> where T: Eq {}
+impl<T> Eq for PrefixTrie<T> where T: Eq + Clone {}
 
 #[cfg(test)]
 mod tests {
