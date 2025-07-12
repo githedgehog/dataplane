@@ -3,17 +3,18 @@
 
 //! Main processing functions of the CPI
 
+use crate::evpn::RmacStore;
 use crate::rib::Vrf;
 use crate::rib::VrfTable;
 use crate::routingdb::RoutingDb;
 use crate::rpc_adapt::is_evpn_route;
 use crate::{evpn::RmacEntry, fib::fibobjects::FibGroup};
-use crate::{evpn::RmacStore, prefix::Prefix};
 
 use bytes::Bytes;
 use dplane_rpc::msg::*;
 use dplane_rpc::socks::RpcCachedSock;
 use dplane_rpc::wire::*;
+use lpm::prefix::Prefix;
 use std::os::unix::net::SocketAddr;
 
 use std::path::Path;
