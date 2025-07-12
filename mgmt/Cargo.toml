@@ -51,7 +51,7 @@ tracing-test = { workspace = true }
 fixin = { workspace = true }
 id = { workspace = true, features = ["bolero"] }
 interface-manager = { workspace = true, features = ["bolero"] }
-lpm = { workspace = true }
+lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero"] }
 pipeline = { workspace = true }
 routing = { workspace = true, features = ["testing"] }
