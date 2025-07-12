@@ -41,6 +41,7 @@ pub trait TrieMap: Clone {
     fn remove(&mut self, prefix: &Self::Prefix) -> Option<Self::Value>;
 }
 
+#[derive(Debug, Clone)]
 pub struct IpPrefixTrie<V: Clone> {
     ipv4: PrefixMapTrie<Ipv4Prefix, V>,
     ipv6: PrefixMapTrie<Ipv6Prefix, V>,
