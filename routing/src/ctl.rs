@@ -12,12 +12,15 @@ use tokio::task;
 #[allow(unused)]
 use tracing::{debug, error, info, warn};
 
+use crate::RouterError;
+use crate::config::{FrrConfig, RouterConfig};
 use crate::cpi::{CPSOCK, Cpi};
+use crate::frrmi::FrrmiRequest;
 use crate::routingdb::RoutingDb;
-use crate::{RouterError, config::RouterConfig};
+
 use mio::unix::SourceFd;
 
-type CpiCtlReplyTx = AsyncSender<Result<(), RouterError>>;
+pub(crate) type CpiCtlReplyTx = AsyncSender<Result<(), RouterError>>;
 
 #[repr(transparent)]
 pub struct LockGuard(Option<Sender<CpiCtlMsg>>);
@@ -83,7 +86,8 @@ impl RouterCtlSender {
         Ok(())
     }
     pub async fn configure(&mut self, config: RouterConfig) -> Result<(), RouterError> {
-        debug!("Requesting router to apply configuration...");
+        let genid = config.genid();
+        debug!("Requesting router to apply config for gen {genid}...");
         let (reply_tx, reply_rx) = oneshot::channel();
         let msg = CpiCtlMsg::Configure(config, reply_tx);
         self.0
@@ -131,15 +135,40 @@ fn handle_lock(cpi: &mut Cpi, lock: bool, reply_to: Option<CpiCtlReplyTx>) {
     }
 }
 
-/// Handle a configure request and reply with the result
-fn handle_configure(config: RouterConfig, db: &mut RoutingDb, reply_to: CpiCtlReplyTx) {
+fn request_frr_config(cpi: &mut Cpi, genid: i64, cfg: FrrConfig) {
+    let req = FrrmiRequest::new(genid, cfg);
+    cpi.frrmi.queue_request(req);
+}
+
+/// Handle a configure request. This function applies the configuration that
+/// pertains to the router and that of FRR if provided.
+fn handle_configure(
+    cpi: &mut Cpi,
+    config: RouterConfig,
+    db: &mut RoutingDb,
+    reply_to: CpiCtlReplyTx,
+) {
+    /* apply router config */
     let result = config.apply(db);
-    if let Err(e) = reply_to.send(result) {
-        error!("Fatal: could not reply to configure request: {e:?}");
-    } else {
-        debug!("Replied to configure request");
-        db.set_config(config);
+    if result.is_err() {
+        let _ = reply_to.send(result).map_err(|e| {
+            error!("Fatal: could not reply to configure request: {e:?}");
+        });
+        return;
     }
+
+    /* request application of frr config */
+    if let Some(frr_config) = config.get_frr_config() {
+        request_frr_config(cpi, config.genid(), frr_config.clone());
+    }
+
+    /* reply */
+    let _ = reply_to.send(result).map_err(|e| {
+        error!("Fatal: could not reply to configure request: {e:?}");
+    });
+
+    /* store the config */
+    db.set_config(config);
 }
 
 /// Handle a request from the control channel
@@ -152,7 +181,7 @@ pub(crate) fn handle_ctl_msg(cpi: &mut Cpi, db: &mut RoutingDb) {
         Ok(CpiCtlMsg::Lock(reply_to)) => handle_lock(cpi, true, Some(reply_to)),
         Ok(CpiCtlMsg::Unlock(reply_to)) => handle_lock(cpi, false, Some(reply_to)),
         Ok(CpiCtlMsg::GuardedUnlock) => handle_lock(cpi, false, None),
-        Ok(CpiCtlMsg::Configure(config, reply_to)) => handle_configure(config, db, reply_to),
+        Ok(CpiCtlMsg::Configure(config, reply_to)) => handle_configure(cpi, config, db, reply_to),
         Err(TryRecvError::Empty) => {}
         Err(e) => {
             error!("Error receiving from ctl channel {e:?}");
