@@ -73,7 +73,7 @@ where
 
     fn with_root(value: V) -> Self {
         let mut ret = Self::new();
-        ret.insert(P::default(), value);
+        ret.insert(P::ROOT, value);
         ret
     }
 }

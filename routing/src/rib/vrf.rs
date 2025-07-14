@@ -178,10 +178,8 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     #[must_use]
     pub fn new(config: &RouterVrfConfig) -> Self {
-        let routesv4 =
-            unsafe { PrefixMapTrieWithDefault::with_capacity(Vrf::DEFAULT_IPV4_CAPACITY) };
-        let routesv6 =
-            unsafe { PrefixMapTrieWithDefault::with_capacity(Vrf::DEFAULT_IPV6_CAPACITY) };
+        let routesv4 = PrefixMapTrieWithDefault::with_capacity(Vrf::DEFAULT_IPV4_CAPACITY);
+        let routesv6 = PrefixMapTrieWithDefault::with_capacity(Vrf::DEFAULT_IPV6_CAPACITY);
         let mut vrf = Self {
             name: config.name.to_owned(),
             vrfid: config.vrfid,
