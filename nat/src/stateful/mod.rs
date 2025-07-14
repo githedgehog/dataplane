@@ -10,6 +10,7 @@ mod port;
 pub mod sessions;
 
 use crate::stateful::natip::NatIp;
+use crate::stateful::port::NatPort;
 use crate::stateful::sessions::{
     NatDefaultSession, NatDefaultSessionManager, NatSession, NatSessionManager, NatState,
 };
@@ -25,6 +26,12 @@ use pipeline::NetworkFunction;
 use routing::rib::vrf::VrfId;
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr};
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum StatefulNatError {
+    #[error("invalid port {0}")]
+    InvalidPort(u16),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NatTuple<I: NatIp> {
@@ -102,39 +109,47 @@ impl StatefulNat {
     fn set_source_port(
         transport: &mut Transport,
         next_header: NextHeader,
-        target_port: Option<port::NatPort>,
-    ) {
-        let Some(port) = target_port else {
-            return;
-        };
+        new_port: NatPort,
+    ) -> Result<(), StatefulNatError> {
         match (transport, next_header) {
             (Transport::Tcp(tcp), NextHeader::TCP) => {
-                tcp.set_source(TcpPort::try_from(port).unwrap());
+                tcp.set_source(
+                    TcpPort::try_from(new_port)
+                        .map_err(|_| StatefulNatError::InvalidPort(new_port.as_u16()))?,
+                );
             }
             (Transport::Udp(udp), NextHeader::UDP) => {
-                udp.set_source(UdpPort::try_from(port).unwrap());
+                udp.set_source(
+                    UdpPort::try_from(new_port)
+                        .map_err(|_| StatefulNatError::InvalidPort(new_port.as_u16()))?,
+                );
             }
             _ => {}
         }
+        Ok(())
     }
 
     fn set_destination_port(
         transport: &mut Transport,
         next_header: NextHeader,
-        target_port: Option<port::NatPort>,
-    ) {
-        let Some(port) = target_port else {
-            return;
-        };
+        target_port: NatPort,
+    ) -> Result<(), StatefulNatError> {
         match (transport, next_header) {
             (Transport::Tcp(tcp), NextHeader::TCP) => {
-                tcp.set_destination(TcpPort::try_from(port).unwrap());
+                tcp.set_destination(
+                    TcpPort::try_from(target_port)
+                        .map_err(|_| StatefulNatError::InvalidPort(target_port.as_u16()))?,
+                );
             }
             (Transport::Udp(udp), NextHeader::UDP) => {
-                udp.set_destination(UdpPort::try_from(port).unwrap());
+                udp.set_destination(
+                    UdpPort::try_from(target_port)
+                        .map_err(|_| StatefulNatError::InvalidPort(target_port.as_u16()))?,
+                );
             }
             _ => {}
         }
+        Ok(())
     }
 
     #[allow(clippy::unnecessary_wraps)]
@@ -152,7 +167,7 @@ impl StatefulNat {
                 ip_hdr.set_source(UnicastIpv4Addr::new(target_src_ip).ok()?);
 
                 let transport = headers.try_transport_mut()?;
-                Self::set_source_port(transport, next_header, Some(target_src_port));
+                Self::set_source_port(transport, next_header, target_src_port).ok()?;
             }
             (Net::Ipv6(ip_hdr), Some(IpAddr::V6(target_src_ip)), Some(target_src_port)) => {
                 todo!()
@@ -167,7 +182,7 @@ impl StatefulNat {
                 ip_hdr.set_destination(target_dst_ip);
 
                 let transport = headers.try_transport_mut()?;
-                Self::set_destination_port(transport, next_header, Some(target_dst_port));
+                Self::set_destination_port(transport, next_header, target_dst_port).ok()?;
             }
             (Net::Ipv6(ip_hdr), Some(IpAddr::V6(target_dst_ip)), Some(target_dst_port)) => {
                 todo!()
@@ -311,15 +326,15 @@ mod tests {
                 .clone(),
         );
         let next_header = NextHeader::TCP;
-        let target_port = Some(NatPort::new_checked(1234).expect("Invalid port"));
+        let target_port = NatPort::new_checked(1234).expect("Invalid port");
 
-        StatefulNat::set_source_port(&mut transport, next_header, target_port);
+        StatefulNat::set_source_port(&mut transport, next_header, target_port).unwrap();
         let Transport::Tcp(ref mut tcp) = transport else {
             unreachable!()
         };
         assert_eq!(tcp.source(), TcpPort::try_from(1234).unwrap());
 
-        StatefulNat::set_destination_port(&mut transport, next_header, target_port);
+        StatefulNat::set_destination_port(&mut transport, next_header, target_port).unwrap();
         let Transport::Tcp(ref mut tcp) = transport else {
             unreachable!()
         };
@@ -335,15 +350,15 @@ mod tests {
                 .clone(),
         );
         let next_header = NextHeader::UDP;
-        let target_port = Some(NatPort::new_checked(1234).expect("Invalid port"));
+        let target_port = NatPort::new_checked(1234).expect("Invalid port");
 
-        StatefulNat::set_source_port(&mut transport, next_header, target_port);
+        StatefulNat::set_source_port(&mut transport, next_header, target_port).unwrap();
         let Transport::Udp(ref mut udp) = transport else {
             unreachable!()
         };
         assert_eq!(udp.source(), UdpPort::try_from(1234).unwrap());
 
-        StatefulNat::set_destination_port(&mut transport, next_header, target_port);
+        StatefulNat::set_destination_port(&mut transport, next_header, target_port).unwrap();
         let Transport::Udp(ref mut udp) = transport else {
             unreachable!()
         };
