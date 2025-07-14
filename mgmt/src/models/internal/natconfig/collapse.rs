@@ -441,20 +441,13 @@ mod tests {
                 let prefix_len = d.gen_u8(Bound::Included(&1), Bound::Included(&max_prefix_len))?;
                 let addr = if is_ipv4 {
                     let bits: u32 = d.produce()?;
-                    let bits =
-                        bits & u32::MAX.unbounded_shl(u32::from(Ipv4Prefix::MAX_LEN - prefix_len));
                     IpAddr::from(Ipv4Addr::from_bits(bits))
                 } else {
                     let bits: u128 = d.produce()?;
-                    let bits =
-                        bits & u128::MAX.unbounded_shl(u32::from(Ipv6Prefix::MAX_LEN - prefix_len));
                     IpAddr::from(Ipv6Addr::from_bits(bits))
                 };
-                if let Ok(prefix) = Prefix::try_from((addr, prefix_len)) {
-                    prefixes.insert(prefix);
-                } else {
-                    unreachable!()
-                }
+                let prefix = Prefix::from(IpNet::new_assert(addr, prefix_len));
+                prefixes.insert(prefix);
             }
             Some(prefixes)
         }
