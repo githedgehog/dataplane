@@ -20,6 +20,8 @@ use crate::models::internal::InternalConfig;
 use crate::models::internal::interfaces::interface::InterfaceConfig;
 use crate::models::internal::routing::vrf::VrfConfig;
 
+use crate::frr::renderer::builder::Render;
+
 use routing::evpn::Vtep;
 use routing::rib::vrf::{RouterVrfConfig, VrfId};
 use routing::{config::RouterConfig, interfaces::interface::RouterInterfaceConfig};
@@ -198,5 +200,10 @@ pub(crate) fn generate_router_config(
     if gen_intf_cfg {
         generate_router_interfaces_config(internal, kernel_vrfs, &mut router_config)?;
     }
+
+    /* set frr config as part of the router config */
+    let frr_cfg = internal.render(&genid);
+    router_config.set_frr_config(frr_cfg.to_string());
+
     Ok(router_config)
 }

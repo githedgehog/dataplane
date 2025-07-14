@@ -28,6 +28,9 @@ use crate::routingdb::RoutingDb;
 use crate::config::interface::ReconfigInterfacePlan;
 use crate::config::vrf::ReconfigVrfPlan;
 
+/// Alias for FRR config. Currently, FRR config is received as a string.
+pub type FrrConfig = String;
+
 //////////////////////////////////////////////////////////////////////////////////
 /// The main configuration object for a router
 //////////////////////////////////////////////////////////////////////////////////
@@ -37,6 +40,7 @@ pub struct RouterConfig {
     vrfs: BTreeMap<VrfId, RouterVrfConfig>,
     interfaces: BTreeMap<IfIndex, RouterInterfaceConfig>,
     vtep: Option<Vtep>,
+    frr_cfg: Option<FrrConfig>,
 }
 
 /// Builder methods
@@ -47,6 +51,7 @@ impl RouterConfig {
             vrfs: BTreeMap::new(),
             interfaces: BTreeMap::new(),
             vtep: None,
+            frr_cfg: None,
         }
     }
     pub fn genid(&self) -> i64 {
@@ -60,6 +65,12 @@ impl RouterConfig {
     }
     pub fn set_vtep(&mut self, vtep: Vtep) {
         self.vtep = Some(vtep);
+    }
+    pub fn set_frr_config(&mut self, frr_cfg: FrrConfig) {
+        self.frr_cfg = Some(frr_cfg);
+    }
+    pub fn get_frr_config(&self) -> &Option<FrrConfig> {
+        &self.frr_cfg
     }
     pub fn validate(&self) -> Result<(), RouterError> {
         // check for duplicate vnis
