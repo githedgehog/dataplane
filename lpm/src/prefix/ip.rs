@@ -152,9 +152,16 @@ impl From<Ipv4Addr> for Ipv4Prefix {
 }
 
 impl From<Ipv4Net> for Ipv4Prefix {
+    /// Convert an [`Ipv4Net`] into an [`Ipv4Prefix`].
+    ///
+    /// This conversion will zero any host bits set in the address as they make no sense in the
+    /// context of a prefix.
     fn from(value: Ipv4Net) -> Self {
-        Self::new(value.network(), value.prefix_len())
-            .unwrap_or_else(|_| unreachable!("Invalid IPv6 prefix: {:?}", value))
+        let addr = Ipv4Addr::from_bits(
+            value.network().to_bits()
+                & u32::MAX.unbounded_shl(u32::from(Self::MAX_LEN - value.prefix_len())),
+        );
+        Ipv4Prefix(Ipv4Net::new_assert(addr, value.prefix_len()))
     }
 }
 
@@ -261,9 +268,16 @@ impl From<Ipv6Addr> for Ipv6Prefix {
 }
 
 impl From<Ipv6Net> for Ipv6Prefix {
+    /// Convert an [`Ipv6Net`] into an [`Ipv6Prefix`].
+    ///
+    /// This conversion will zero any host bits set in the address as they make no sense in the
+    /// context of a prefix.
     fn from(value: Ipv6Net) -> Self {
-        Self::new(value.network(), value.prefix_len())
-            .unwrap_or_else(|_| unreachable!("Invalid IPv6 prefix: {:?}", value))
+        let addr = Ipv6Addr::from_bits(
+            value.network().to_bits()
+                & u128::MAX.unbounded_shl(u32::from(Self::MAX_LEN - value.prefix_len())),
+        );
+        Ipv6Prefix(Ipv6Net::new_assert(addr, value.prefix_len()))
     }
 }
 
