@@ -301,6 +301,14 @@ impl Rio {
         let req = FrrmiRequest::new(genid, cfg);
         self.frrmi.queue_request(req);
     }
+    /// Request to reapply the last configuration
+    fn reapply_frr_config(&mut self, db: &RoutingDb) {
+        if let Some(rconfig) = &db.config {
+            if let Some(frr_cfg) = rconfig.get_frr_config() {
+                self.request_frr_config(rconfig.genid(), frr_cfg.clone());
+            }
+        }
+    }
 }
 
 #[allow(clippy::missing_errors_doc)]
