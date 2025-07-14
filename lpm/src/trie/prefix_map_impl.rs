@@ -55,13 +55,10 @@ pub struct PrefixMapTrie<P, V>(PrefixMap<IpPrefixW<P>, V>)
 where
     P: IpPrefix;
 
-impl<P, V> TrieMapNew for PrefixMapTrie<P, V>
+impl<P, V> TrieMapNew<PrefixMapTrie<P, V>> for PrefixMapTrie<P, V>
 where
     P: IpPrefix,
 {
-    type Prefix = P;
-    type Value = V;
-
     fn new() -> Self {
         Self(PrefixMap::new())
     }

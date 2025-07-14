@@ -8,9 +8,9 @@ use tracing::warn;
 
 #[derive(Debug, Clone)]
 #[repr(transparent)]
-pub struct TrieMapWithDefault<T: TrieMap + TrieMapNew>(T);
+pub struct TrieMapWithDefault<T: TrieMap<Value: Default> + TrieMapNew<T>>(T);
 
-impl<T: TrieMap + TrieMapNew> TrieMapWithDefault<T> {
+impl<T: TrieMap<Value: Default> + TrieMapNew<T>> TrieMapWithDefault<T> {
     pub fn with_root(value: <T as TrieMap>::Value) -> Self {
         let mut ret = T::new();
         ret.insert(<T as TrieMap>::Prefix::ROOT, value);
@@ -62,7 +62,7 @@ impl<T: TrieMap + TrieMapNew> TrieMapWithDefault<T> {
     }
 }
 
-impl<T: TrieMap + TrieMapNew> Default for TrieMapWithDefault<T>
+impl<T: TrieMap + TrieMapNew<T>> Default for TrieMapWithDefault<T>
 where
     <T as TrieMap>::Value: Default,
 {
@@ -71,7 +71,7 @@ where
     }
 }
 
-impl<T: TrieMap + TrieMapNew> TrieMap for TrieMapWithDefault<T> {
+impl<T: TrieMap<Value: Default> + TrieMapNew<T>> TrieMap for TrieMapWithDefault<T> {
     type Prefix = <T as TrieMap>::Prefix;
     type Value = <T as TrieMap>::Value;
     type Error = <T as TrieMap>::Error;
