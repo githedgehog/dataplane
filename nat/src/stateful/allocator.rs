@@ -7,7 +7,8 @@ use std::collections::HashSet;
 use std::fmt::Debug;
 
 pub trait NatPool<I: NatIp> {
-    fn allocate(&self) -> Result<(I, I, Option<NatPort>, Option<NatPort>), NatPortError>;
+    #[allow(clippy::type_complexity)]
+    fn allocate(&self) -> Result<(Option<(I, NatPort)>, Option<(I, NatPort)>), NatPortError>;
 }
 
 #[derive(Debug, Clone)]
@@ -17,7 +18,7 @@ pub struct NatDefaultPool<I: NatIp> {
 }
 
 impl<I: NatIp> NatPool<I> for NatDefaultPool<I> {
-    fn allocate(&self) -> Result<(I, I, Option<NatPort>, Option<NatPort>), NatPortError> {
+    fn allocate(&self) -> Result<(Option<(I, NatPort)>, Option<(I, NatPort)>), NatPortError> {
         todo!()
     }
 }
