@@ -183,8 +183,8 @@ mod tests {
             .expect("Failed to insert prefix");
 
         pt.insert_ipv6(
-            prefix_v6("aa:bb:cc:dd::/32"),
-            "prefix_aa:bb:cc:dd::/32".to_string(),
+            prefix_v6("aa:bb:cc:dd::/64"),
+            "prefix_aa:bb:cc:dd::/64".to_string(),
         )
         .expect("Failed to insert prefix");
 
@@ -211,8 +211,8 @@ mod tests {
         assert_eq!(
             pt.lookup(&addr_v6("aa:bb:cc:dd::1")),
             Some((
-                Prefix::IPV6(prefix_v6("aa:bb:cc:dd::/32")),
-                &"prefix_aa:bb:cc:dd::/32".to_string()
+                Prefix::IPV6(prefix_v6("aa:bb:cc:dd::/64")),
+                &"prefix_aa:bb:cc:dd::/64".to_string()
             ))
         );
 

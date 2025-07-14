@@ -155,7 +155,7 @@ mod tests {
     use super::*;
     use crate::models::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use ipnet::IpNet;
-    use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
+    use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
     use lpm::trie::IpPrefixTrie;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -440,9 +440,15 @@ mod tests {
             for _ in 0..self.count {
                 let prefix_len = d.gen_u8(Bound::Included(&1), Bound::Included(&max_prefix_len))?;
                 let addr = if is_ipv4 {
-                    IpAddr::from(d.produce::<Ipv4Addr>()?)
+                    let bits: u32 = d.produce()?;
+                    let bits =
+                        bits & u32::MAX.unbounded_shl(u32::from(Ipv4Prefix::MAX_LEN - prefix_len));
+                    IpAddr::from(Ipv4Addr::from_bits(bits))
                 } else {
-                    IpAddr::from(d.produce::<Ipv6Addr>()?)
+                    let bits: u128 = d.produce()?;
+                    let bits =
+                        bits & u128::MAX.unbounded_shl(u32::from(Ipv6Prefix::MAX_LEN - prefix_len));
+                    IpAddr::from(Ipv6Addr::from_bits(bits))
                 };
                 if let Ok(prefix) = Prefix::try_from((addr, prefix_len)) {
                     prefixes.insert(prefix);

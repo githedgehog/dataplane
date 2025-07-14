@@ -850,7 +850,7 @@ pub mod tests {
         /* connected */
         let nh = build_test_nhop(None, Some(1), 0, None);
         let connected = build_test_route(RouteOrigin::Connected, 0, 1);
-        let prefix = Prefix::expect_from(("10.0.0.1", 24));
+        let prefix = Prefix::expect_from(("10.0.0.0", 24));
         vrf.add_route(&prefix, connected.clone() /* only test */, &[nh], None);
 
         /* ospf */
