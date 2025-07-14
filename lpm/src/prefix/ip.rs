@@ -75,6 +75,7 @@ pub trait IpPrefixCovering<Other> {
 ////////////////////////////////////////////////////////////
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
 pub struct Ipv4Prefix(Ipv4Net);
 
 impl Debug for Ipv4Prefix {
@@ -188,6 +189,7 @@ impl FromStr for Ipv4Prefix {
 ////////////////////////////////////////////////////////////
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
 pub struct Ipv6Prefix(Ipv6Net);
 
 impl Debug for Ipv6Prefix {
