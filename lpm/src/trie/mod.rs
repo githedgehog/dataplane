@@ -2,6 +2,8 @@
 // Copyright Open Network Fabric Authors
 
 use crate::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix, Prefix};
+use std::borrow::Borrow;
+use std::net::IpAddr;
 
 mod prefix_map_impl;
 pub use prefix_map_impl::*;
@@ -11,22 +13,35 @@ pub use trie_with_default::TrieMapWithDefault;
 
 pub trait TrieMapNew {
     type Prefix: IpPrefix;
-    type Value: Clone;
+    type Value;
 
     fn new() -> Self;
     fn with_capacity(capacity: usize) -> Self;
     fn with_root(value: Self::Value) -> Self;
 }
 
-pub trait TrieMap: Clone {
+pub trait TrieMap {
     type Prefix: IpPrefix;
     type Value;
     type Error;
 
-    /// This function gets the prefix, with exact match, it does not do LPM
-    fn get(&self, prefix: &Self::Prefix) -> Option<&Self::Value>;
-    /// This function gets the prefix, with exact match, it does not do LPM
-    fn get_mut(&mut self, prefix: &Self::Prefix) -> Option<&mut Self::Value>;
+    /// This function gets a reference to the prefix entry installed in the map (if any).
+    ///
+    /// <div class="warning">
+    /// This method does not do an LPM lookup!
+    /// </div>
+    fn get<B>(&self, prefix: B) -> Option<&Self::Value>
+    where
+        B: Borrow<Self::Prefix>;
+
+    /// This function gets a mutable reference to the prefix entry installed in the map (if any).
+    ///
+    /// <div class="warning">
+    /// This method does not do an LPM lookup!
+    /// </div>
+    fn get_mut<B>(&mut self, prefix: B) -> Option<&mut Self::Value>
+    where
+        B: Borrow<Self::Prefix>;
 
     fn iter(&self) -> impl Iterator<Item = (&Self::Prefix, &Self::Value)>;
     fn is_empty(&self) -> bool;
@@ -35,16 +50,18 @@ pub trait TrieMap: Clone {
 
     fn len(&self) -> usize;
 
-    /// This function gets the prefix, with longest prefix match
-    fn lookup<Q>(&self, addr: &Q) -> Option<(&Self::Prefix, &Self::Value)>
+    /// Gets the prefix with the longest match
+    fn lookup<A>(&self, addr: A) -> Option<(&Self::Prefix, &Self::Value)>
     where
-        Q: Into<Self::Prefix> + Clone;
+        A: Into<Self::Prefix>;
 
-    fn remove(&mut self, prefix: &Self::Prefix) -> Option<Self::Value>;
+    fn remove<B>(&mut self, prefix: B) -> Option<Self::Value>
+    where
+        B: Borrow<Self::Prefix>;
 }
 
 #[derive(Debug, Clone)]
-pub struct IpPrefixTrie<V: Clone> {
+pub struct IpPrefixTrie<V> {
     ipv4: PrefixMapTrie<Ipv4Prefix, V>,
     ipv6: PrefixMapTrie<Ipv6Prefix, V>,
 }
@@ -74,17 +91,11 @@ impl<V: Clone> IpPrefixTrie<V> {
 
     pub fn lookup<Q>(&self, addr: Q) -> Option<(Prefix, &V)>
     where
-        Q: Into<Prefix> + Clone,
+        Q: Into<IpAddr>,
     {
         match addr.into() {
-            Prefix::IPV4(prefix) => self
-                .ipv4
-                .lookup(&prefix)
-                .map(|(k, v)| (Prefix::IPV4(*k), v)),
-            Prefix::IPV6(prefix) => self
-                .ipv6
-                .lookup(&prefix)
-                .map(|(k, v)| (Prefix::IPV6(*k), v)),
+            IpAddr::V4(ip) => self.ipv4.lookup(ip).map(|(k, v)| (Prefix::IPV4(*k), v)),
+            IpAddr::V6(ip) => self.ipv6.lookup(ip).map(|(k, v)| (Prefix::IPV6(*k), v)),
         }
     }
 }

@@ -223,11 +223,11 @@ impl Fib {
     pub fn lpm_with_prefix(&self, target: &IpAddr) -> (Prefix, &FibGroup) {
         match target {
             IpAddr::V4(a) => {
-                let (prefix, group) = self.routesv4.lookup_wd(a);
+                let (prefix, group) = self.routesv4.lookup_wd(*a);
                 (Prefix::IPV4(*prefix), group)
             }
             IpAddr::V6(a) => {
-                let (prefix, group) = self.routesv6.lookup_wd(a);
+                let (prefix, group) = self.routesv6.lookup_wd(*a);
                 (Prefix::IPV6(*prefix), group)
             }
         }
@@ -237,11 +237,11 @@ impl Fib {
     pub fn lpm(&self, target: &IpAddr) -> &FibGroup {
         match target {
             IpAddr::V4(a) => {
-                let (_, group) = self.routesv4.lookup_wd(a);
+                let (_, group) = self.routesv4.lookup_wd(*a);
                 group
             }
             IpAddr::V6(a) => {
-                let (_, group) = self.routesv6.lookup_wd(a);
+                let (_, group) = self.routesv6.lookup_wd(*a);
                 group
             }
         }

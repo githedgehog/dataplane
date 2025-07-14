@@ -615,11 +615,11 @@ impl Vrf {
 
     #[inline]
     fn lpm_v4(&self, target: Ipv4Prefix) -> (&Ipv4Prefix, &Route) {
-        self.routesv4.lookup_wd(&target)
+        self.routesv4.lookup_wd(target)
     }
     #[inline]
     fn lpm_v6(&self, target: Ipv6Prefix) -> (&Ipv6Prefix, &Route) {
-        self.routesv6.lookup_wd(&target)
+        self.routesv6.lookup_wd(target)
     }
     pub fn lpm(&self, target: IpAddr) -> (Prefix, &Route) {
         match target {

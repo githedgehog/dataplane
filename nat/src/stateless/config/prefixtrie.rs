@@ -107,11 +107,11 @@ where
         match addr {
             IpAddr::V4(ip) => self
                 .trie_ipv4
-                .lookup(&Ipv4Prefix::from(*ip))
+                .lookup(Ipv4Prefix::from(*ip))
                 .map(|(k, v)| (Prefix::IPV4(*k), v)),
             IpAddr::V6(ip) => self
                 .trie_ipv6
-                .lookup(&Ipv6Prefix::from(*ip))
+                .lookup(Ipv6Prefix::from(*ip))
                 .map(|(k, v)| (Prefix::IPV6(*k), v)),
         }
     }
