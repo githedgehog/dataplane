@@ -8,7 +8,7 @@ use std::borrow::Borrow;
 use std::default::Default;
 use std::fmt::{Debug, Display};
 
-use crate::trie::{TrieMap, TrieMapNew, TrieMapWithDefault};
+use crate::trie::{TrieMap, TrieMapFactory, TrieMapWithDefault};
 
 #[derive(Clone)]
 #[repr(transparent)]
@@ -55,11 +55,11 @@ pub struct PrefixMapTrie<P, V>(PrefixMap<IpPrefixW<P>, V>)
 where
     P: IpPrefix;
 
-impl<P, V> TrieMapNew<PrefixMapTrie<P, V>> for PrefixMapTrie<P, V>
+impl<P, V> TrieMapFactory<PrefixMapTrie<P, V>> for PrefixMapTrie<P, V>
 where
     P: IpPrefix,
 {
-    fn new() -> Self {
+    fn create() -> Self {
         Self(PrefixMap::new())
     }
 
@@ -69,7 +69,7 @@ where
     }
 
     fn with_root(value: V) -> Self {
-        let mut ret = Self::new();
+        let mut ret = Self::create();
         ret.insert(P::ROOT, value);
         ret
     }

@@ -11,9 +11,8 @@ pub use prefix_map_impl::*;
 mod trie_with_default;
 pub use trie_with_default::TrieMapWithDefault;
 
-pub trait TrieMapNew<T: TrieMap> {
-    #[allow(clippy::new_ret_no_self)] // factory method
-    fn new() -> T;
+pub trait TrieMapFactory<T: TrieMap> {
+    fn create() -> T;
     fn with_capacity(capacity: usize) -> T;
     fn with_root(value: T::Value) -> T;
 }
@@ -68,8 +67,8 @@ impl<V: Clone> IpPrefixTrie<V> {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            ipv4: PrefixMapTrie::new(),
-            ipv6: PrefixMapTrie::new(),
+            ipv4: PrefixMapTrie::create(),
+            ipv6: PrefixMapTrie::create(),
         }
     }
 
