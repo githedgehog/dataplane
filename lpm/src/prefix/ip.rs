@@ -2,14 +2,12 @@
 // Copyright Open Network Fabric Authors
 
 use std::fmt::{Debug, Display};
-use std::hash::Hash;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
+use crate::prefix::PrefixError;
 use ipnet::{Ipv4Net, Ipv6Net};
 use num_traits::{CheckedShr, PrimInt, Unsigned, Zero};
-
-use crate::prefix::PrefixError;
 
 pub trait Representable {
     type Repr: Unsigned + PrimInt + Zero + CheckedShr;
@@ -287,9 +285,58 @@ impl FromStr for Ipv6Prefix {
     }
 }
 
+#[cfg(any(test, feature = "testing"))]
+mod contract {
+    use crate::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix, Prefix};
+    use bolero::{Driver, TypeGenerator};
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::ops::Bound;
+
+    impl TypeGenerator for Ipv4Prefix {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let addr = Ipv4Addr::from_bits(driver.produce()?);
+            let len = Ipv4Prefix::MAX_LEN
+                - driver.gen_u8(
+                    Bound::Included(&0),
+                    Bound::Included(
+                        &u8::try_from(addr.to_bits().trailing_zeros())
+                            .unwrap_or_else(|_| unreachable!()),
+                    ),
+                )?;
+            Some(Ipv4Prefix::new(addr, len).unwrap_or_else(|_| unreachable!()))
+        }
+    }
+
+    impl TypeGenerator for Ipv6Prefix {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let addr = Ipv6Addr::from_bits(driver.produce()?);
+            let len = Ipv6Prefix::MAX_LEN
+                - driver.gen_u8(
+                    Bound::Included(&0),
+                    Bound::Included(
+                        &u8::try_from(addr.to_bits().trailing_zeros())
+                            .unwrap_or_else(|_| unreachable!()),
+                    ),
+                )?;
+            Some(Ipv6Prefix::new(addr, len).unwrap_or_else(|_| unreachable!()))
+        }
+    }
+
+    impl TypeGenerator for Prefix {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            Some(if driver.gen_bool(None)? {
+                Prefix::IPV4(driver.produce()?)
+            } else {
+                Prefix::IPV6(driver.produce()?)
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use num_traits::Bounded;
 
     #[test]
     fn test_ipv4_prefix_from_str() {
@@ -361,5 +408,66 @@ mod tests {
         let p2 = "2001:db9::/32".parse::<Ipv6Prefix>().unwrap();
         assert!(!p1.covers(&p2));
         assert!(!p2.covers(&p1));
+    }
+
+    fn prefix_contract<P: IpPrefix + IpPrefixCovering<P>>(prefix: &P) {
+        assert!(P::ROOT.covers(prefix));
+        let len = prefix.len();
+        if len > 0 {
+            assert!(!prefix.covers(&P::ROOT));
+        }
+        assert_eq!(P::new(prefix.network(), prefix.len()).unwrap(), *prefix);
+        assert!(len <= P::MAX_LEN);
+        let host_prefix = (len..=P::MAX_LEN)
+            .map(|len| P::new(prefix.network(), len).unwrap())
+            .fold(prefix.clone(), |parent, child| {
+                assert!(parent.covers(&parent));
+                assert!(parent.covers(&child));
+                assert!(child.covers(&child));
+                if parent.len() < child.len() {
+                    assert!(!child.covers(&parent));
+                } else {
+                    assert!(child.covers(&parent));
+                }
+                child
+            });
+        assert_eq!(host_prefix.len(), P::MAX_LEN);
+        let root_prefix = (0..=len)
+            .rev()
+            .map(|len| {
+                let mask = if len == 0 {
+                    <P as IpPrefix>::Repr::min_value()
+                } else {
+                    <P as IpPrefix>::Repr::max_value().unsigned_shl(u32::from(P::MAX_LEN - len))
+                };
+                let parent = P::Addr::from_bits(prefix.network().to_bits() & mask);
+                P::new(parent, len).unwrap()
+            })
+            .fold(prefix.clone(), |child, parent| {
+                assert!(parent.covers(&parent));
+                assert!(parent.covers(&child));
+                assert!(child.covers(&child));
+                if parent.len() < child.len() {
+                    assert!(!child.covers(&parent));
+                } else {
+                    assert!(child.covers(&parent));
+                }
+                parent
+            });
+        assert_eq!(root_prefix, P::ROOT);
+    }
+
+    #[test]
+    fn ipv4_prefix_contract() {
+        bolero::check!()
+            .with_type::<Ipv4Prefix>()
+            .for_each(prefix_contract);
+    }
+
+    #[test]
+    fn ipv6_prefix_contract() {
+        bolero::check!()
+            .with_type::<Ipv4Prefix>()
+            .for_each(prefix_contract);
     }
 }
