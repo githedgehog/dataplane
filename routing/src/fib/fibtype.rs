@@ -67,6 +67,7 @@ impl Fib {
     pub fn drop_fibgroup() -> FibGroup {
         FibGroup::with_entry(FibEntry::with_inst(PktInstruction::Drop))
     }
+
     #[must_use]
     pub fn new(id: FibId) -> Self {
         let routesv4 = PrefixMapTrieWithDefault::new();

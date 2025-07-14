@@ -30,7 +30,9 @@ pub trait TrieMap: Clone {
 
     fn iter(&self) -> impl Iterator<Item = (&Self::Prefix, &Self::Value)>;
     fn is_empty(&self) -> bool;
+
     fn insert(&mut self, prefix: Self::Prefix, value: Self::Value) -> Option<Self::Value>;
+
     fn len(&self) -> usize;
 
     /// This function gets the prefix, with longest prefix match

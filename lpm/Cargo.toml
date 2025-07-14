@@ -9,7 +9,7 @@ license = "Apache-2.0"
 testing = []
 
 [dependencies]
-ipnet = { workspace = true }
+ipnet = { workspace = true, features = ["serde"] }
 num-traits = { workspace = true }
 prefix-trie = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
