@@ -50,7 +50,6 @@ pub struct IpPrefixTrie<V: Clone> {
 }
 
 impl<V: Clone> IpPrefixTrie<V> {
-    #[allow(clippy::new_without_default)]
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -87,5 +86,11 @@ impl<V: Clone> IpPrefixTrie<V> {
                 .lookup(&prefix)
                 .map(|(k, v)| (Prefix::IPV6(*k), v)),
         }
+    }
+}
+
+impl<V: Clone> Default for IpPrefixTrie<V> {
+    fn default() -> Self {
+        Self::new()
     }
 }
