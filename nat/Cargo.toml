@@ -19,6 +19,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 # internal
+lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero"] }
 routing = { workspace = true, features = ["testing"] }
 
