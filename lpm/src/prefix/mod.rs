@@ -152,25 +152,6 @@ impl Prefix {
         }
     }
 
-    /// Build a [`Prefix`] from (&str, u8)
-    /// For a mysterious reason the compiler complains about a conflicting implementation in
-    /// crate core when implementing this as `TryFrom`<(&str, u8)> for Prefix.
-    ///
-    /// # Errors
-    /// Fails if the address bits are invalid or the prefix exceeds the maximum allowed.
-    pub fn try_from_tuple(tuple: (&str, u8)) -> Result<Self, PrefixError> {
-        let a = IpAddr::from_str(tuple.0).map_err(|e| PrefixError::Invalid(e.to_string()))?;
-        let max_len = match a {
-            IpAddr::V4(_) => Prefix::MAX_LEN_IPV4,
-            IpAddr::V6(_) => Prefix::MAX_LEN_IPV6,
-        };
-        if tuple.1 > max_len {
-            Err(PrefixError::InvalidLength(tuple.1))
-        } else {
-            Prefix::try_from((a, tuple.1))
-        }
-    }
-
     #[cfg(any(test, feature = "testing"))]
     #[allow(clippy::missing_panics_doc)]
     pub fn expect_from<T>(val: T) -> Self
