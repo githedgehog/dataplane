@@ -110,8 +110,13 @@ pub(crate) const CPI_STATS_SIZE: usize = RpcResultCode::RpcResultCodeMax as usiz
 #[derive(Default)]
 pub(crate) struct StatsRow(pub(crate) [u64; CPI_STATS_SIZE]);
 impl StatsRow {
-    pub(crate) fn incr_by(&mut self, index: usize, value: u64) {
-        self.0[index] += value;
+    pub(crate) fn incr(&mut self, res_code: RpcResultCode) {
+        let index = res_code.as_usize();
+        self.0[index] += 1;
+    }
+    pub(crate) fn get(&self, res_code: RpcResultCode) -> u64 {
+        let index = res_code.as_usize();
+        self.0[index]
     }
 }
 

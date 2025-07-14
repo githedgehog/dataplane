@@ -224,26 +224,25 @@ fn update_stats(
     object: Option<&RpcObject>,
     res_code: RpcResultCode,
 ) {
-    let index = res_code.as_usize();
     match object {
         None => {}
         Some(RpcObject::IfAddress(_)) => match op {
-            RpcOp::Add => stats.add_ifaddr.incr_by(index, 1),
-            RpcOp::Del => stats.del_ifaddr.incr_by(index, 1),
+            RpcOp::Add => stats.add_ifaddr.incr(res_code),
+            RpcOp::Del => stats.del_ifaddr.incr(res_code),
             _ => unreachable!(),
         },
         Some(RpcObject::Rmac(_)) => match op {
-            RpcOp::Add => stats.add_rmac.incr_by(index, 1),
-            RpcOp::Del => stats.del_rmac.incr_by(index, 1),
+            RpcOp::Add => stats.add_rmac.incr(res_code),
+            RpcOp::Del => stats.del_rmac.incr(res_code),
             _ => unreachable!(),
         },
         Some(RpcObject::IpRoute(_)) => match op {
-            RpcOp::Add => stats.add_route.incr_by(index, 1),
-            RpcOp::Update => stats.update_route.incr_by(index, 1),
-            RpcOp::Del => stats.del_route.incr_by(index, 1),
+            RpcOp::Add => stats.add_route.incr(res_code),
+            RpcOp::Update => stats.update_route.incr(res_code),
+            RpcOp::Del => stats.del_route.incr(res_code),
             _ => unreachable!(),
         },
-        Some(RpcObject::ConnectInfo(_)) => stats.connect.incr_by(index, 1),
+        Some(RpcObject::ConnectInfo(_)) => stats.connect.incr(res_code),
     }
 }
 fn rpc_reply(

@@ -179,7 +179,7 @@ impl Frrmi {
 
         debug!("Sending config request to frr-agent for gen {genid}...");
         Self::send(sock, &mut self.writeb)?;
-        debug!("FRR config request for gen {genid} successfullt sent");
+        debug!("FRR config request for gen {genid} successfully sent");
         self.timeout = Instant::now().checked_add(Self::TIMEOUT);
         Ok(())
     }
