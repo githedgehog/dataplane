@@ -106,8 +106,8 @@ impl<'a> NatSessionManager<'a, NatDefaultSession<'a, Ipv4Addr>> for NatDefaultSe
 #[derive(Debug, Clone)]
 pub struct NatState {
     // Translation IP addresses and ports
-    target_src_addr: IpAddr,
-    target_dst_addr: IpAddr,
+    target_src_addr: Option<IpAddr>,
+    target_dst_addr: Option<IpAddr>,
     target_src_port: Option<NatPort>,
     target_dst_port: Option<NatPort>,
     // Flags for session management
@@ -125,8 +125,8 @@ pub struct NatState {
 
 impl NatState {
     pub fn new(
-        target_src_addr: IpAddr,
-        target_dst_addr: IpAddr,
+        target_src_addr: Option<IpAddr>,
+        target_dst_addr: Option<IpAddr>,
         target_src_port: Option<NatPort>,
         target_dst_port: Option<NatPort>,
     ) -> Self {
@@ -143,7 +143,14 @@ impl NatState {
             originator: 0,
         }
     }
-    pub fn get_nat(&self) -> (IpAddr, IpAddr, Option<NatPort>, Option<NatPort>) {
+    pub fn get_nat(
+        &self,
+    ) -> (
+        Option<IpAddr>,
+        Option<IpAddr>,
+        Option<NatPort>,
+        Option<NatPort>,
+    ) {
         (
             self.target_src_addr,
             self.target_dst_addr,
@@ -217,8 +224,8 @@ mod tests {
             VrfId::from_str("1").unwrap(),
         );
         let state = NatState::new(
-            addr("10.0.0.1"),
-            addr("10.0.0.2"),
+            Some(addr("10.0.0.1")),
+            Some(addr("10.0.0.2")),
             Some(NatPort::new_checked(8080).unwrap()),
             None,
         );
@@ -233,8 +240,8 @@ mod tests {
             .table_v4
             .get(&tuple)
             .expect("Session not found");
-        assert_eq!(session.value().target_src_addr, addr("10.0.0.1"));
-        assert_eq!(session.value().target_dst_addr, addr("10.0.0.2"));
+        assert_eq!(session.value().target_src_addr, Some(addr("10.0.0.1")));
+        assert_eq!(session.value().target_dst_addr, Some(addr("10.0.0.2")));
         assert_eq!(
             session.value().target_src_port,
             Some(NatPort::new_checked(8080).unwrap())
@@ -258,8 +265,8 @@ mod tests {
             VrfId::from_str("1").unwrap(),
         );
         let state = NatState::new(
-            addr("10.0.0.1"),
-            addr("10.0.0.2"),
+            Some(addr("10.0.0.1")),
+            Some(addr("10.0.0.2")),
             Some(NatPort::new_checked(8080).unwrap()),
             None,
         );
@@ -271,8 +278,8 @@ mod tests {
 
         let mut session = sessions.lookup_v4_mut(&tuple).expect("Session not found");
         let state = session.get_state_mut().expect("Cannot get session state");
-        assert_eq!(state.target_src_addr, addr("10.0.0.1"));
-        assert_eq!(state.target_dst_addr, addr("10.0.0.2"));
+        assert_eq!(state.target_src_addr, Some(addr("10.0.0.1")));
+        assert_eq!(state.target_dst_addr, Some(addr("10.0.0.2")));
         assert_eq!(
             state.target_src_port,
             Some(NatPort::new_checked(8080).unwrap())
