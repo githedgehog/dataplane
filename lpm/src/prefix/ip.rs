@@ -55,6 +55,10 @@ pub trait IpPrefix:
     /// # Errors
     ///
     /// Returns an error if the length is greater than `Self::MAX_LEN`
+    ///
+    /// # Safety
+    ///
+    /// It is the caller's responsibility to ensure that the prefix does not contain set host bits.
     fn new(addr: Self::Addr, len: u8) -> Result<Self, PrefixError>;
     fn network(&self) -> Self::Addr;
     fn len(&self) -> u8;
@@ -110,6 +114,14 @@ impl IpPrefix for Ipv4Prefix {
         let addr = Ipv4Addr::from_bits(
             addr_in.to_bits() & u32::MAX.unbounded_shl(u32::from(Self::MAX_LEN - len)),
         );
+        if addr_in != addr {
+            let err = format!(
+                "{addr_in}/{len} has host bits set: address in binary is {:b}, {:b} would be correct",
+                addr_in.to_bits(),
+                addr.to_bits()
+            );
+            return Err(PrefixError::Invalid(err));
+        }
         Ok(Self(
             Ipv4Net::new(addr, len).map_err(|e| PrefixError::Invalid(e.to_string()))?,
         ))
@@ -208,11 +220,19 @@ impl IpPrefix for Ipv6Prefix {
         if len > Self::MAX_LEN {
             return Err(PrefixError::InvalidLength(len));
         }
-        let addr = Ipv6Addr::from_bits(
+        let addr_fixed = Ipv6Addr::from_bits(
             addr.to_bits() & u128::MAX.unbounded_shl(u32::from(Self::MAX_LEN - len)),
         );
+        if addr_fixed != addr {
+            let err = format!(
+                "{addr}/{len} has host bits set: address in binary is {:128b}, {:128b} would be correct for prefix length {len}",
+                addr.to_bits(),
+                addr_fixed.to_bits()
+            );
+            return Err(PrefixError::Invalid(err));
+        }
         Ok(Self(
-            Ipv6Net::new(addr, len).map_err(|e| PrefixError::Invalid(e.to_string()))?,
+            Ipv6Net::new(addr_fixed, len).map_err(|e| PrefixError::Invalid(e.to_string()))?,
         ))
     }
     fn network(&self) -> Self::Addr {
