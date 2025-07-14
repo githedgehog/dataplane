@@ -37,7 +37,7 @@ impl<P: IpPrefix> prefix_trie::Prefix for IpPrefixW<P> {
 
     fn from_repr_len(repr: Self::R, len: u8) -> Self {
         assert!(
-            (len <= P::MAX_LEN),
+            len <= P::MAX_LEN,
             "Invalid length in from_repr_len: {repr:?} {len}",
         );
         let addr = P::Addr::from_bits(repr);

@@ -60,7 +60,9 @@ pub trait IpPrefix:
     ///
     /// It is the caller's responsibility to ensure that the prefix does not contain set host bits.
     fn new(addr: Self::Addr, len: u8) -> Result<Self, PrefixError>;
+
     fn network(&self) -> Self::Addr;
+
     fn len(&self) -> u8;
 }
 
@@ -95,8 +97,10 @@ impl Display for Ipv4Prefix {
 
 impl IpPrefix for Ipv4Prefix {
     type Repr = u32;
-    const MAX_LEN: u8 = 32;
+
     type Addr = Ipv4Addr;
+    const MAX_LEN: u8 = 32;
+
     const ROOT: Ipv4Prefix = Ipv4Prefix(match Ipv4Net::new(Ipv4Addr::new(0, 0, 0, 0), 0) {
         Ok(root) => root,
         Err(_) => {
@@ -104,9 +108,6 @@ impl IpPrefix for Ipv4Prefix {
         }
     });
 
-    /// # Errors
-    ///
-    /// Returns an error if the length is greater than `Self::MAX_LEN`
     fn new(addr_in: Ipv4Addr, len: u8) -> Result<Self, PrefixError> {
         if len > Self::MAX_LEN {
             return Err(PrefixError::InvalidLength(len));
@@ -306,7 +307,7 @@ mod tests {
         // Prefix is covered by prefix
         assert!(prefix.covers(&prefix));
         assert!(prefix.covers(&Ipv4Prefix::new(Ipv4Addr::new(192, 168, 1, 0), 25).unwrap()));
-        assert!(!prefix.covers(&Ipv4Prefix::new(Ipv4Addr::new(192, 168, 1, 0), 23).unwrap()));
+        assert!(!prefix.covers(&Ipv4Prefix::new(Ipv4Addr::new(192, 168, 4, 0), 23).unwrap()));
 
         // Big prefix covers small prefix
         let big_prefix = "128.0.0.0/1".parse::<Ipv4Prefix>().unwrap();
@@ -346,7 +347,7 @@ mod tests {
         );
         assert!(
             !prefix.covers(
-                &Ipv6Prefix::new(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0), 16).unwrap()
+                &Ipv6Prefix::new(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0), 31).unwrap()
             )
         );
 

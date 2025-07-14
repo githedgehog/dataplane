@@ -39,22 +39,25 @@ impl Prefix {
     pub const MAX_LEN_IPV4: u8 = 32;
     pub const MAX_LEN_IPV6: u8 = 128;
 
-    /// Build 224.0.0.0/4 - Ideally this would be const
+    /// Build 224.0.0.0/4 - Ideally, this would be const
     #[must_use]
     #[allow(clippy::missing_panics_doc)] // This should never actually panic
     pub fn ipv4_link_local_mcast_prefix() -> Prefix {
         Prefix::IPV4(Ipv4Prefix::new(Ipv4Addr::new(224, 0, 0, 0), 8).expect("Bad prefix")) // FIXME(fredi)
     }
+
     /// Build 0.0.0.0/0. "Default" is a very overloaded term. Calling this `root_v4`.
     #[must_use]
     pub const fn root_v4() -> Prefix {
         Prefix::IPV4(Ipv4Prefix::ROOT)
     }
+
     /// Build `::/0`.
     #[must_use]
     pub const fn root_v6() -> Prefix {
         Prefix::IPV6(Ipv6Prefix::ROOT)
     }
+
     /// Tell if a prefix is a root prefix
     #[must_use]
     pub fn is_root(&self) -> bool {
@@ -75,6 +78,7 @@ impl Prefix {
             Prefix::IPV6(_) => unreachable!("Not an IPv4 prefix!"),
         }
     }
+
     /// Get the inner `Ipv6Prefix` from a Prefix
     /// # Panics
     /// This method panics if the Prefix does not contain an IPv6 prefix
@@ -118,7 +122,7 @@ impl Prefix {
         }
     }
 
-    /// Get number of covered IP addresses
+    /// Get the number of covered IP addresses
     #[must_use]
     pub fn size(&self) -> PrefixSize {
         match *self {
@@ -128,7 +132,7 @@ impl Prefix {
         }
     }
 
-    /// Check whether prefix covers a given address
+    /// Check whether this prefix covers a given address
     #[must_use]
     pub fn covers_addr(&self, addr: &IpAddr) -> bool {
         match (self, addr) {
@@ -138,7 +142,7 @@ impl Prefix {
         }
     }
 
-    /// Check whether prefix covers another prefix
+    /// Check whether this prefix covers another prefix
     #[must_use]
     pub fn covers(&self, other: &Prefix) -> bool {
         match (self, other) {
@@ -174,15 +178,15 @@ impl Prefix {
         T: TryInto<Prefix>,
         T::Error: Debug,
     {
-        val.try_into().expect("Invalid prefix")
+        val.try_into().unwrap()
     }
 
-    /// Tell if prefix is a host
+    /// Tell if this prefix is a host prefix
     #[must_use]
     pub fn is_host(&self) -> bool {
         match self {
-            Prefix::IPV4(_) => self.length() == 32,
-            Prefix::IPV6(_) => self.length() == 128,
+            Prefix::IPV4(_) => self.length() == Ipv4Prefix::MAX_LEN,
+            Prefix::IPV6(_) => self.length() == Ipv6Prefix::MAX_LEN,
         }
     }
 }
@@ -190,14 +194,10 @@ impl Prefix {
 impl TryFrom<(IpAddr, u8)> for Prefix {
     type Error = PrefixError;
 
-    fn try_from(tuple: (IpAddr, u8)) -> Result<Self, Self::Error> {
-        match tuple.0 {
-            IpAddr::V4(a) => Ok(Prefix::IPV4(
-                Ipv4Prefix::new(a, tuple.1).map_err(|e| PrefixError::Invalid(e.to_string()))?,
-            )),
-            IpAddr::V6(a) => Ok(Prefix::IPV6(
-                Ipv6Prefix::new(a, tuple.1).map_err(|e| PrefixError::Invalid(e.to_string()))?,
-            )),
+    fn try_from((addr, prefix_len): (IpAddr, u8)) -> Result<Self, Self::Error> {
+        match addr {
+            IpAddr::V4(addr) => Ipv4Prefix::new(addr, prefix_len).map(Prefix::IPV4),
+            IpAddr::V6(addr) => Ipv6Prefix::new(addr, prefix_len).map(Prefix::IPV6),
         }
     }
 }
@@ -206,21 +206,25 @@ impl From<Ipv4Net> for Prefix {
         Prefix::IPV4(Ipv4Prefix::from(value))
     }
 }
+
 impl From<Ipv6Net> for Prefix {
     fn from(value: Ipv6Net) -> Self {
         Prefix::IPV6(Ipv6Prefix::from(value))
     }
 }
+
 impl From<Ipv4Prefix> for Prefix {
     fn from(value: Ipv4Prefix) -> Self {
         Self::IPV4(value)
     }
 }
+
 impl From<Ipv6Prefix> for Prefix {
     fn from(value: Ipv6Prefix) -> Self {
         Self::IPV6(value)
     }
 }
+
 impl From<IpAddr> for Prefix {
     fn from(value: IpAddr) -> Self {
         match value {
@@ -229,6 +233,7 @@ impl From<IpAddr> for Prefix {
         }
     }
 }
+
 impl From<Prefix> for IpNet {
     fn from(value: Prefix) -> Self {
         let Ok(net) = IpNet::new(value.as_address(), value.length()) else {
@@ -275,6 +280,7 @@ impl TryFrom<(&str, u8)> for Prefix {
         Prefix::try_from((addr, mask_len))
     }
 }
+
 /// Only for testing. Will panic with non-IPv4 prefixes
 #[cfg(any(test, feature = "testing"))]
 impl<'a> From<&'a Prefix> for &'a Ipv4Prefix {
@@ -285,6 +291,7 @@ impl<'a> From<&'a Prefix> for &'a Ipv4Prefix {
         }
     }
 }
+
 /// Only for testing. Will panic with non-IPv6 prefixes
 #[cfg(any(test, feature = "testing"))]
 impl<'a> From<&'a Prefix> for &'a Ipv6Prefix {
@@ -295,6 +302,7 @@ impl<'a> From<&'a Prefix> for &'a Ipv6Prefix {
         }
     }
 }
+
 /// Only for testing. Will panic with badly formatted prefix strings
 #[cfg(any(test, feature = "testing"))]
 impl From<&str> for Prefix {
@@ -920,7 +928,7 @@ mod tests {
         assert!(prefix_size_u128max < prefix_size_max);
         assert!(prefix_size_max < prefix_size_overflow);
         // Overflow is like NaN, not equal to itself
-        assert!(prefix_size_overflow != prefix_size_overflow);
+        assert_ne!(prefix_size_overflow, prefix_size_overflow);
 
         assert_eq!(prefix_size0 + prefix_size1, PrefixSize::U128(2u128.pow(8)));
         assert_eq!(prefix_size_u128max + 1, prefix_size_max);
@@ -935,7 +943,7 @@ mod tests {
         assert_eq!(prefix_size_max - prefix_size_max, PrefixSize::U128(0));
 
         assert!(prefix_size1 > 2u128.pow(8) - 1);
-        assert!(prefix_size1 == 2u128.pow(8));
+        assert_eq!(prefix_size1, 2u128.pow(8));
         assert!(prefix_size1 < 2u128.pow(8) + 1);
 
         assert_eq!(u128::try_from(prefix_size1).unwrap(), 2u128.pow(8));
@@ -1559,7 +1567,7 @@ mod tests {
                     if one < two {
                         assert!(one_int < two_int);
                     } else if one == two {
-                        assert!(one_int == two_int);
+                        assert_eq!(one_int, two_int);
                     } else {
                         assert!(one_int > two_int);
                     }
