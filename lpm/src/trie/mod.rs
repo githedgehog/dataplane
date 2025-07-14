@@ -11,13 +11,11 @@ pub use prefix_map_impl::*;
 mod trie_with_default;
 pub use trie_with_default::TrieMapWithDefault;
 
-pub trait TrieMapNew {
-    type Prefix: IpPrefix;
-    type Value;
-
-    fn new() -> Self;
-    fn with_capacity(capacity: usize) -> Self;
-    fn with_root(value: Self::Value) -> Self;
+pub trait TrieMapNew<T: TrieMap> {
+    #[allow(clippy::new_ret_no_self)] // factory method
+    fn new() -> T;
+    fn with_capacity(capacity: usize) -> T;
+    fn with_root(value: T::Value) -> T;
 }
 
 pub trait TrieMap {
