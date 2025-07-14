@@ -50,6 +50,8 @@ pub trait IpPrefix:
     type Addr: Display + Debug + Clone + Eq + Hash + Representable<Repr = Self::Repr>;
     const MAX_LEN: u8;
 
+    const ROOT: Self;
+
     /// # Errors
     ///
     /// Returns an error if the length is greater than `Self::MAX_LEN`
@@ -77,7 +79,7 @@ impl Debug for Ipv4Prefix {
 
 impl Default for Ipv4Prefix {
     fn default() -> Self {
-        Self(Ipv4Net::new(Ipv4Addr::new(0, 0, 0, 0), 0).unwrap())
+        Ipv4Prefix::ROOT
     }
 }
 
@@ -91,6 +93,12 @@ impl IpPrefix for Ipv4Prefix {
     type Repr = u32;
     const MAX_LEN: u8 = 32;
     type Addr = Ipv4Addr;
+    const ROOT: Ipv4Prefix = Ipv4Prefix(match Ipv4Net::new(Ipv4Addr::new(0, 0, 0, 0), 0) {
+        Ok(root) => root,
+        Err(_) => {
+            panic!("unreachable")
+        }
+    });
 
     /// # Errors
     ///
@@ -172,7 +180,7 @@ impl Debug for Ipv6Prefix {
 
 impl Default for Ipv6Prefix {
     fn default() -> Self {
-        Self(Ipv6Net::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), 0).unwrap())
+        Ipv6Prefix::ROOT
     }
 }
 
@@ -187,9 +195,15 @@ impl IpPrefix for Ipv6Prefix {
     type Addr = Ipv6Addr;
     const MAX_LEN: u8 = 128;
 
-    /// # Errors
-    ///
-    /// Returns an error if the length is greater than `Self::MAX_LEN`
+    const ROOT: Ipv6Prefix = Ipv6Prefix(
+        match Ipv6Net::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), 0) {
+            Ok(root) => root,
+            Err(_) => {
+                panic!("unreachable")
+            }
+        },
+    );
+
     fn new(addr: Ipv6Addr, len: u8) -> Result<Self, PrefixError> {
         if len > Self::MAX_LEN {
             return Err(PrefixError::InvalidLength(len));
