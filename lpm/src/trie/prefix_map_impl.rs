@@ -4,6 +4,7 @@
 use crate::prefix::IpPrefix;
 use crate::prefix::ip::Representable;
 use prefix_trie::PrefixMap;
+use std::borrow::Borrow;
 use std::default::Default;
 use std::fmt::{Debug, Display};
 
@@ -21,7 +22,7 @@ impl<P: IpPrefix> Debug for IpPrefixW<P> {
 
 impl<P: IpPrefix> Display for IpPrefixW<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}/{}", self.0.network(), self.0.len())
     }
 }
 
@@ -52,13 +53,11 @@ impl<P: IpPrefix> prefix_trie::Prefix for IpPrefixW<P> {
 #[derive(Debug, Default, Clone)]
 pub struct PrefixMapTrie<P, V>(PrefixMap<IpPrefixW<P>, V>)
 where
-    P: IpPrefix,
-    V: Clone;
+    P: IpPrefix;
 
 impl<P, V> TrieMapNew for PrefixMapTrie<P, V>
 where
     P: IpPrefix,
-    V: Clone,
 {
     type Prefix = P;
     type Value = V;
@@ -82,7 +81,6 @@ where
 impl<P, V> TrieMap for PrefixMapTrie<P, V>
 where
     P: IpPrefix,
-    V: Clone,
 {
     type Prefix = P;
     type Value = V;
@@ -92,12 +90,18 @@ where
         self.0.iter().map(|(p, v)| (&p.0, v))
     }
 
-    fn get(&self, prefix: &P) -> Option<&V> {
-        self.0.get(&IpPrefixW(prefix.clone()))
+    fn get<B>(&self, prefix: B) -> Option<&V>
+    where
+        B: Borrow<P>,
+    {
+        self.0.get(&IpPrefixW(prefix.borrow().clone()))
     }
 
-    fn get_mut(&mut self, prefix: &P) -> Option<&mut V> {
-        self.0.get_mut(&IpPrefixW(prefix.clone()))
+    fn get_mut<B>(&mut self, prefix: B) -> Option<&mut V>
+    where
+        B: Borrow<P>,
+    {
+        self.0.get_mut(&IpPrefixW(prefix.borrow().clone()))
     }
 
     fn len(&self) -> usize {
@@ -109,20 +113,23 @@ where
     }
 
     fn insert(&mut self, prefix: P, value: V) -> Option<V> {
-        self.0.insert(IpPrefixW(prefix.clone()), value)
+        self.0.insert(IpPrefixW(prefix), value)
     }
 
-    fn remove(&mut self, prefix: &P) -> Option<V> {
-        self.0.remove(&IpPrefixW(prefix.clone()))
-    }
-
-    fn lookup<Q>(&self, addr: &Q) -> Option<(&P, &V)>
+    fn remove<B>(&mut self, prefix: B) -> Option<V>
     where
-        Q: Into<P> + Clone,
+        B: Borrow<P>,
+    {
+        self.0.remove(&IpPrefixW(prefix.borrow().clone()))
+    }
+
+    fn lookup<A>(&self, addr: A) -> Option<(&P, &V)>
+    where
+        A: Into<Self::Prefix>,
     {
         self.0
-            .get_lpm(&IpPrefixW(addr.clone().into()))
-            .map(|x| (&x.0.0, x.1))
+            .get_lpm(&IpPrefixW(addr.into()))
+            .map(|(p, v)| (&p.0, v))
     }
 }
 

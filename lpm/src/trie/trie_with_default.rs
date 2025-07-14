@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use tracing::warn;
 use crate::prefix::IpPrefix;
 use crate::trie::{TrieMap, TrieMapNew};
+use std::borrow::Borrow;
+use tracing::warn;
 
 #[derive(Debug, Clone)]
 #[repr(transparent)]
@@ -51,9 +52,9 @@ impl<T: TrieMap + TrieMapNew> TrieMapWithDefault<T> {
     /// a result since there is a default prefix in the trie.  `lookup` will
     /// may return None.  As a result, the return type here is just `&Value`
     /// not `Option<&Value>`
-    pub fn lookup_wd<Q>(&self, addr: &Q) -> (&<T as TrieMap>::Prefix, &<T as TrieMap>::Value)
+    pub fn lookup_wd<B>(&self, addr: B) -> (&<T as TrieMap>::Prefix, &<T as TrieMap>::Value)
     where
-        Q: Into<<T as TrieMap>::Prefix> + Clone,
+        B: Into<<T as TrieMap>::Prefix>,
     {
         self.0
             .lookup(addr)
@@ -79,11 +80,17 @@ impl<T: TrieMap + TrieMapNew> TrieMap for TrieMapWithDefault<T> {
         self.0.iter()
     }
 
-    fn get(&self, prefix: &Self::Prefix) -> Option<&Self::Value> {
+    fn get<B>(&self, prefix: B) -> Option<&Self::Value>
+    where
+        B: Borrow<Self::Prefix>,
+    {
         self.0.get(prefix)
     }
 
-    fn get_mut(&mut self, prefix: &Self::Prefix) -> Option<&mut Self::Value> {
+    fn get_mut<B>(&mut self, prefix: B) -> Option<&mut Self::Value>
+    where
+        B: Borrow<Self::Prefix>,
+    {
         self.0.get_mut(prefix)
     }
 
@@ -99,16 +106,16 @@ impl<T: TrieMap + TrieMapNew> TrieMap for TrieMapWithDefault<T> {
         self.0.len()
     }
 
-    fn lookup<Q>(&self, addr: &Q) -> Option<(&Self::Prefix, &Self::Value)>
+    fn lookup<A>(&self, addr: A) -> Option<(&Self::Prefix, &Self::Value)>
     where
-        Q: Into<Self::Prefix> + Clone,
+        A: Into<Self::Prefix>,
     {
         self.0.lookup(addr)
     }
 
-    fn remove(&mut self, prefix: &Self::Prefix) -> Option<Self::Value> {
-        if *prefix == Self::Prefix::ROOT {
-            warn!("Removing default prefix from trie with default!");
+    fn remove<P: Borrow<Self::Prefix>>(&mut self, prefix: P) -> Option<Self::Value> {
+        if *prefix.borrow() == Self::Prefix::ROOT {
+            warn!("Attempt to remove root prefix from trie: refusing operation!");
             return None;
         }
         self.0.remove(prefix)
