@@ -73,6 +73,13 @@ fn init_router(params: &RouterParams) -> Result<CpiConf, RouterError> {
                 .ok_or(RouterError::InvalidPath("(cli path)".to_string()))?
                 .to_owned(),
         ),
+        frrmi_sock_path: Some(
+            params
+                .frr_agent_path
+                .to_str()
+                .ok_or(RouterError::InvalidPath("(frr-agent path)".to_string()))?
+                .to_owned(),
+        ),
     })
 }
 
