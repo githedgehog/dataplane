@@ -7,7 +7,7 @@
 #![allow(clippy::missing_errors_doc)]
 
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
-use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapNew};
+use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
 use std::fmt::Debug;
 use std::net::IpAddr;
 
@@ -39,8 +39,8 @@ where
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
-            trie_ipv4: PrefixMapTrie::new(),
-            trie_ipv6: PrefixMapTrie::new(),
+            trie_ipv4: PrefixMapTrie::create(),
+            trie_ipv6: PrefixMapTrie::create(),
         }
     }
 
