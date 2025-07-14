@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use tracing::warn;
-
+use crate::prefix::IpPrefix;
 use crate::trie::{TrieMap, TrieMapNew};
 
 #[derive(Debug, Clone)]
@@ -12,38 +12,35 @@ pub struct TrieMapWithDefault<T: TrieMap + TrieMapNew>(T);
 impl<T: TrieMap + TrieMapNew> TrieMapWithDefault<T> {
     pub fn with_root(value: <T as TrieMap>::Value) -> Self {
         let mut ret = T::new();
-        ret.insert(<T as TrieMap>::Prefix::default(), value);
+        ret.insert(<T as TrieMap>::Prefix::ROOT, value);
         Self(ret)
     }
 
     pub fn with_root_and_capacity(value: <T as TrieMap>::Value, capacity: usize) -> Self {
         let mut ret = T::with_capacity(capacity);
-        ret.insert(<T as TrieMap>::Prefix::default(), value);
+        ret.insert(<T as TrieMap>::Prefix::ROOT, value);
         Self(ret)
     }
 
-    /// Create an empty trie so that default can be set later
-    ///
-    /// # Safety
-    /// This function is unsafe because it creates an empty trie, which may panic
-    /// in `lookup_wd` if the default value is not set before using the trie.
-    ///
-    /// The caller must ensure that the default value is set before using the trie.
+    /// Create an empty trie with the root set to the default value
     #[must_use]
-    pub unsafe fn new() -> Self {
-        Self(T::new())
+    pub fn new() -> Self
+    where
+        <T as TrieMap>::Value: Default,
+    {
+        Self::with_capacity(1)
     }
 
-    /// Create an empty trie with a given capacity so that default can be set later
-    ///
-    /// # Safety
-    /// This function is unsafe because it creates an empty trie, which may panic
-    /// in `lookup_wd` if the default value is not set before using the trie.
-    ///
-    /// The caller must ensure that the default value is set before using the trie.
+    /// Create an empty trie with the specified capacity with the root set to the default value
     #[must_use]
-    pub unsafe fn with_capacity(capacity: usize) -> Self {
-        Self(T::with_capacity(capacity))
+    pub fn with_capacity(capacity: usize) -> Self
+    where
+        <T as TrieMap>::Value: Default,
+    {
+        let mut this = Self(T::with_capacity(capacity));
+        this.0
+            .insert(<T as TrieMap>::Prefix::ROOT, Default::default());
+        this
     }
 
     /// This function gets the prefix, with longest prefix match
@@ -101,7 +98,7 @@ impl<T: TrieMap + TrieMapNew> TrieMap for TrieMapWithDefault<T> {
     }
 
     fn remove(&mut self, prefix: &Self::Prefix) -> Option<Self::Value> {
-        if *prefix == Self::Prefix::default() {
+        if *prefix == Self::Prefix::ROOT {
             warn!("Removing default prefix from trie with default!");
             return None;
         }

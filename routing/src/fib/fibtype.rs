@@ -69,8 +69,8 @@ impl Fib {
     }
     #[must_use]
     pub fn new(id: FibId) -> Self {
-        let routesv4 = unsafe { PrefixMapTrieWithDefault::new() };
-        let routesv6 = unsafe { PrefixMapTrieWithDefault::new() };
+        let routesv4 = PrefixMapTrieWithDefault::new();
+        let routesv6 = PrefixMapTrieWithDefault::new();
         let mut fib = Self {
             id,
             version: 0,
