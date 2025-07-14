@@ -61,6 +61,15 @@ impl<T: TrieMap + TrieMapNew> TrieMapWithDefault<T> {
     }
 }
 
+impl<T: TrieMap + TrieMapNew> Default for TrieMapWithDefault<T>
+where
+    <T as TrieMap>::Value: Default,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: TrieMap + TrieMapNew> TrieMap for TrieMapWithDefault<T> {
     type Prefix = <T as TrieMap>::Prefix;
     type Value = <T as TrieMap>::Value;
