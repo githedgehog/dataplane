@@ -332,6 +332,7 @@ pub fn start_rio(
         info!("CLI Listening at {}.", &rio.cli_sock_path);
         let mut events = Events::with_capacity(64);
         let mut buf = vec![0; 1024];
+        let mut num_connects: u64 = 0;
 
         /* create routing database: this is fully owned by the CPI */
         let mut db = RoutingDb::new(fibtw, iftw, atabler);
@@ -429,6 +430,16 @@ pub fn start_rio(
 
             /* handle control-channel messages */
             handle_ctl_msg(&mut rio, &mut db);
+
+            /* check if frr has restarted. If so, apply last config */
+            let connects = rio.cpistats.connect.get(RpcResultCode::Ok);
+            if num_connects != connects {
+                num_connects = connects;
+                if connects != 1 {
+                    debug!("FRR appears to have restarted. Applying last config...");
+                    rio.reapply_frr_config(&db);
+                }
+            }
         }
     };
     let handle = thread::Builder::new()
