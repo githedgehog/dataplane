@@ -43,11 +43,9 @@ impl Representable for Ipv6Addr {
 }
 
 #[allow(clippy::len_without_is_empty)]
-pub trait IpPrefix:
-    Sized + Debug + Display + Clone + From<Self::Addr> + Default + PartialEq
-{
+pub trait IpPrefix: Debug + Clone + From<Self::Addr> + PartialEq {
     type Repr: Debug + Unsigned + PrimInt + Zero + CheckedShr;
-    type Addr: Display + Debug + Clone + Eq + Hash + Representable<Repr = Self::Repr>;
+    type Addr: Display + Debug + Clone + Eq + Representable<Repr = Self::Repr>;
     const MAX_LEN: u8;
 
     const ROOT: Self;
