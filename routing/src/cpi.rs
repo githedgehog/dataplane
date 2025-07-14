@@ -1,483 +1,377 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Control-plane interface (CPI)
+//! Main processing functions of the Control-plane interface (CPI)
 
-#![allow(clippy::items_after_statements)]
-
-use crate::atable::atablerw::AtableReader;
-use crate::cli::handle_cli_request;
-use crate::cpi_process::process_rx_data;
-use crate::ctl::handle_ctl_msg;
-
-use crate::ctl::{CpiCtlMsg, RouterCtlSender};
-use crate::errors::RouterError;
-use crate::fib::fibtable::FibTableWriter;
-use crate::frrmi::{FrrErr, Frrmi};
-use crate::interfaces::iftablerw::IfTableWriter;
+use crate::evpn::{RmacEntry, RmacStore};
+use crate::fib::fibobjects::FibGroup;
+use crate::rib::{Vrf, VrfTable};
+use crate::rio::CpiStats;
 use crate::routingdb::RoutingDb;
+use crate::rpc_adapt::is_evpn_route;
 
-use cli::cliproto::{CliRequest, CliSerialize};
-use dplane_rpc::{msg::RpcResultCode, socks::RpcCachedSock};
+use bytes::Bytes;
+use chrono::Local;
+use dplane_rpc::socks::RpcCachedSock;
+use dplane_rpc::wire::*;
+use dplane_rpc::{msg::*, socks::Pretty};
+use lpm::prefix::Prefix;
+use std::os::unix::net::SocketAddr;
 
-use chrono::{DateTime, Local};
-use mio::unix::SourceFd;
-use mio::{Events, Interest, Poll, Token};
-use std::fs;
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixDatagram;
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
-use tokio::sync::mpsc::{Receiver, Sender, channel};
-
+use std::path::Path;
 #[allow(unused)]
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
-// capacity of cpi control channel. This should have very little impact on performance.
-const CTL_CHANNEL_CAPACITY: usize = 100;
-
-pub struct CpiHandle {
-    pub ctl: Sender<CpiCtlMsg>,
-    pub handle: Option<JoinHandle<()>>,
+/* convenience trait */
+trait RpcOperation {
+    type ObjectStore;
+    fn connect(&self, _stats: &mut Self::ObjectStore) -> RpcResultCode
+    where
+        Self: Sized,
+    {
+        RpcResultCode::InvalidRequest
+    }
+    fn add(&self, _db: &mut Self::ObjectStore) -> RpcResultCode
+    where
+        Self: Sized,
+    {
+        RpcResultCode::InvalidRequest
+    }
+    fn del(&self, _db: &mut Self::ObjectStore) -> RpcResultCode
+    where
+        Self: Sized,
+    {
+        RpcResultCode::InvalidRequest
+    }
 }
-impl CpiHandle {
-    /// Terminate the CPI
-    ///
-    /// # Errors
-    /// Fails if the channel has been dropped or the thread cannot be joined
-    pub fn finish(&mut self) -> Result<(), RouterError> {
-        debug!("Requesting CPI to stop..");
-        self.ctl
-            .try_send(CpiCtlMsg::Finish)
-            .map_err(|_| RouterError::Internal("Error sending over ctl channel"))?;
 
-        let handle = self.handle.take();
-        if let Some(handle) = handle {
-            debug!("Waiting for CPI to terminate..");
-            handle
-                .join()
-                .map_err(|_| RouterError::Internal("Error joining thread"))?;
-            debug!("CPI ended successfully");
-            Ok(())
+impl RpcOperation for ConnectInfo {
+    type ObjectStore = CpiStats;
+    fn connect(&self, stats: &mut Self::ObjectStore) -> RpcResultCode {
+        info!("Got connect request from {}, pid {}", self.name, self.pid);
+        if let Some(pid) = stats.last_pid {
+            warn!("CP had already been connected with pid {}..", pid);
+            if pid != self.pid {
+                warn!("Frr reports a new pid of {}", self.pid);
+            }
+        }
+        if self.verinfo == VerInfo::default() {
+            stats.last_pid = Some(self.pid);
+            stats.connect_time = Some(Local::now());
+            RpcResultCode::Ok
         } else {
-            Err(RouterError::Internal("No handle"))
-        }
-    }
-    #[must_use]
-    pub fn get_ctl_tx(&self) -> RouterCtlSender {
-        RouterCtlSender::new(self.ctl.clone())
-    }
-}
-
-pub const DEFAULT_DP_UX_PATH: &str = "/var/run/frr/hh/dataplane.sock";
-pub const DEFAULT_DP_UX_PATH_CLI: &str = "/var/run/dataplane/cli.sock";
-pub const DEFAULT_FRR_AGENT_PATH: &str = "/var/run/frr/frr-agent.sock";
-
-pub struct CpiConf {
-    pub cpi_sock_path: Option<String>,
-    pub cli_sock_path: Option<String>,
-    pub frrmi_sock_path: Option<String>,
-}
-impl Default for CpiConf {
-    fn default() -> Self {
-        Self {
-            cpi_sock_path: Some(DEFAULT_DP_UX_PATH.to_string()),
-            cli_sock_path: Some(DEFAULT_DP_UX_PATH_CLI.to_string()),
-            frrmi_sock_path: Some(DEFAULT_FRR_AGENT_PATH.to_string()),
+            error!("Got connection request with mismatch RPC version!!");
+            error!("Supported version is v{VER_DP_MAJOR}{VER_DP_MINOR}{VER_DP_PATCH}");
+            RpcResultCode::Failure
         }
     }
 }
 
-fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
-    let _ = std::fs::remove_file(path);
-    let sock = UnixDatagram::bind(path).map_err(|_| RouterError::InvalidPath(path.to_owned()))?;
-    let mut perms = fs::metadata(path)
-        .map_err(|_| RouterError::Internal("Failure retrieving socket metadata"))?
-        .permissions();
-    perms.set_mode(0o777);
-    fs::set_permissions(path, perms).map_err(|_| RouterError::PermError)?;
-    sock.set_nonblocking(true)
-        .map_err(|_| RouterError::Internal("Failure setting non-blocking socket"))?;
-    Ok(sock)
-}
-
-pub(crate) const CPSOCK: Token = Token(0);
-pub(crate) const CLISOCK: Token = Token(1);
-pub(crate) const FRRMISOCK: Token = Token(2);
-
-pub(crate) const CPI_STATS_SIZE: usize = RpcResultCode::RpcResultCodeMax as usize;
-#[derive(Default)]
-pub(crate) struct StatsRow(pub(crate) [u64; CPI_STATS_SIZE]);
-impl StatsRow {
-    pub(crate) fn incr_by(&mut self, index: usize, value: u64) {
-        self.0[index] += value;
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct CpiStats {
-    // last reported pid (or some id u32)
-    pub(crate) last_pid: Option<u32>,
-
-    // last connect time
-    pub(crate) connect_time: Option<DateTime<Local>>,
-
-    // last time a message was received
-    pub(crate) last_msg_rx: Option<DateTime<Local>>,
-
-    // decoding failures
-    pub(crate) decode_failures: u64,
-
-    // stats per request / object
-    pub(crate) connect: StatsRow,
-    pub(crate) add_route: StatsRow,
-    pub(crate) update_route: StatsRow,
-    pub(crate) del_route: StatsRow,
-    pub(crate) add_ifaddr: StatsRow,
-    pub(crate) del_ifaddr: StatsRow,
-    pub(crate) add_rmac: StatsRow,
-    pub(crate) del_rmac: StatsRow,
-
-    // control - keepalives
-    pub(crate) control_rx: u64,
-}
-
-pub(crate) struct Cpi {
-    pub(crate) run: bool,
-    pub(crate) frozen: bool,
-    pub(crate) cp_sock_path: String,
-    pub(crate) cli_sock_path: String,
-    pub(crate) poller: Poll,
-    pub(crate) clisock: UnixDatagram,
-    pub(crate) cached_sock: RpcCachedSock,
-    pub(crate) frrmi: Frrmi,
-    pub(crate) ctl_tx: Sender<CpiCtlMsg>,
-    pub(crate) ctl_rx: Receiver<CpiCtlMsg>,
-    pub(crate) stats: CpiStats,
-}
-impl Cpi {
-    fn new(conf: &CpiConf) -> Result<Cpi, RouterError> {
-        /* path to bind to for routing function */
-        let cp_sock_path = conf.cpi_sock_path.as_ref().map_or_else(
-            || DEFAULT_DP_UX_PATH.to_owned(),
-            std::borrow::ToOwned::to_owned,
-        );
-
-        /* path to bind to for cli */
-        let cli_sock_path = conf.cli_sock_path.as_ref().map_or_else(
-            || DEFAULT_DP_UX_PATH_CLI.to_owned(),
-            std::borrow::ToOwned::to_owned,
-        );
-
-        /* path of frr-agent */
-        let frrmi_sock_path = conf.frrmi_sock_path.as_ref().map_or_else(
-            || DEFAULT_FRR_AGENT_PATH.to_owned(),
-            std::borrow::ToOwned::to_owned,
-        );
-
-        /* create unix sock for routing function and bind it */
-        let cpsock = open_unix_sock(&cp_sock_path)?;
-
-        /* create unix sock for cli and bind it */
-        let clisock = open_unix_sock(&cli_sock_path)?;
-
-        /* frrmi - communication to frr-agent */
-        let frrmi = Frrmi::new(&frrmi_sock_path);
-
-        /* internal ctl channel */
-        let (ctl_tx, ctl_rx) = channel::<CpiCtlMsg>(CTL_CHANNEL_CAPACITY);
-
-        /* Routing socket */
-        let cpsock_fd = cpsock.as_raw_fd();
-        let mut ev_cpsock = SourceFd(&cpsock_fd);
-
-        /* Build a cached socket */
-        let cached_sock = RpcCachedSock::from_sock(cpsock);
-
-        /* cli socket */
-        let clisock_fd = clisock.as_raw_fd();
-        let mut ev_clisock = SourceFd(&clisock_fd);
-
-        /* create poller and register cp_sock and cli_sock */
-        let poller = Poll::new().map_err(|_| RouterError::Internal("Poll creation failed"))?;
-        poller
-            .registry()
-            .register(&mut ev_cpsock, CPSOCK, Interest::READABLE)
-            .map_err(|_| RouterError::Internal("Failed to register CPI sock"))?;
-        poller
-            .registry()
-            .register(&mut ev_clisock, CLISOCK, Interest::READABLE)
-            .map_err(|_| RouterError::Internal("Failed to register CLI sock"))?;
-
-        Ok(Cpi {
-            run: true,
-            frozen: false,
-            cp_sock_path,
-            cli_sock_path,
-            poller,
-            clisock,
-            cached_sock,
-            frrmi,
-            ctl_tx,
-            ctl_rx,
-            stats: CpiStats::default(),
-        })
-    }
-    pub(crate) fn register(&self, token: Token, fd: i32, interests: Interest) {
-        debug!("Registering fd {fd}...");
-        let mut ev_sock = SourceFd(&fd);
-        if let Err(e) = self
-            .poller
-            .registry()
-            .register(&mut ev_sock, token, interests)
-        {
-            error!("Fatal: could not register descriptor {fd}: {e}");
+fn nonlocal_nhop(iproute: &IpRoute) -> bool {
+    let vrfid = iproute.vrfid;
+    for nhop in &iproute.nhops {
+        // NB: for simplicity we assume all nhops for a route belong to same vrf
+        if nhop.vrfid != vrfid {
+            return true;
         }
     }
-    pub(crate) fn reregister(&self, token: Token, fd: i32, interests: Interest) {
-        debug!("Re-registering fd {fd}...");
-        let mut ev_sock = SourceFd(&fd);
-        if let Err(e) = self
-            .poller
-            .registry()
-            .reregister(&mut ev_sock, token, interests)
-        {
-            error!("Fatal: could not re-register descriptor {fd}: {e}");
-        }
+    false
+}
+
+// Fixme(fredi): remove this
+fn update_vrf(vrf: &mut Vrf, rmac_store: &RmacStore) {
+    let updates = vrf.refresh_fib_updates(rmac_store, vrf);
+    if let Some(fibw) = &mut vrf.fibw {
+        updates.into_iter().for_each(|(prefix, fibgroup)| {
+            fibw.add_fibgroup(prefix, fibgroup, false);
+        });
+        fibw.publish();
     }
-    fn deregister(&self, fd: i32) {
-        debug!("Deregistering fd {fd}...");
-        let mut ev_sock = SourceFd(&fd);
-        if let Err(e) = self.poller.registry().deregister(&mut ev_sock) {
-            warn!("Error deregistering descriptor {fd}: {e}")
-        }
-    }
-    fn frrmi_connect(&mut self) {
-        if !self.frrmi.has_sock() {
-            self.frrmi.connect();
-            if let Some(sock_fd) = self.frrmi.get_sock_fd() {
-                debug!("Registering frrmi sock (fd:{sock_fd})...");
-                self.register(FRRMISOCK, sock_fd, Interest::READABLE);
+}
+
+// Fixme(fredi): remove this
+fn update_vrfs(vrftable: &mut VrfTable, rmac_store: &RmacStore) {
+    let vrf0 = vrftable.get_default_vrf_mut();
+    update_vrf(vrf0, rmac_store);
+    let vrf0 = vrftable.get_default_vrf();
+
+    let updates: Vec<(u32, Vec<(Prefix, FibGroup)>)> = vrftable
+        .values()
+        .filter(|vrf| vrf.vrfid != 0)
+        .map(|vrf| (vrf.vrfid, vrf.refresh_fib_updates(rmac_store, vrf0)))
+        .collect();
+
+    for (vrfid, updates) in &updates {
+        if let Ok(vrf) = vrftable.get_vrf_mut(*vrfid) {
+            if let Some(fibw) = &mut vrf.fibw {
+                updates.into_iter().for_each(|(prefix, fibgroup)| {
+                    fibw.add_fibgroup(*prefix, fibgroup.clone(), false); // avoid this clone
+                });
+                fibw.publish();
             }
         }
     }
-    fn frrmi_disconnect(&mut self) {
-        if let Some(sock_fd) = self.frrmi.get_sock_fd() {
-            debug!("Disconnecting frrmi (fd:{sock_fd})...");
-            self.deregister(sock_fd);
-            self.frrmi.disconnect();
+}
+
+impl RpcOperation for IpRoute {
+    type ObjectStore = RoutingDb;
+    #[allow(unused_mut)]
+    fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
+        let rmac_store = &db.rmac_store;
+        let vrftable = &mut db.vrftable;
+        let iftabler = &db.iftw.as_iftable_reader();
+
+        if self.vrfid != 0 && (is_evpn_route(self) || nonlocal_nhop(self)) {
+            let Ok((vrf, vrf0)) = vrftable.get_with_default_mut(self.vrfid) else {
+                error!("Unable to get vrf with id {}", self.vrfid);
+                return RpcResultCode::Failure;
+            };
+            vrf.add_route_rpc(self, Some(vrf0), rmac_store, iftabler);
+        } else {
+            let Ok(vrf0) = vrftable.get_vrf_mut(self.vrfid) else {
+                error!("Unable to find VRF with id {}", self.vrfid);
+                return RpcResultCode::Failure;
+            };
+            vrf0.add_route_rpc(self, None, rmac_store, iftabler);
         }
+        RpcResultCode::Ok
     }
-    pub(crate) fn frrmi_restart(&mut self) {
-        debug!("Restarting frrmi...");
-        self.frrmi_disconnect();
-        self.frrmi_connect();
-    }
-    fn service_frrmi_requests(&mut self) {
-        if self.frrmi.has_sock() {
-            match self.frrmi.service_request() {
-                Ok(()) => {} // nothing to do. If a request was sent, wait for response.
-                Err(FrrErr::IOBusy) => {
-                    if let Some(fd) = self.frrmi.get_sock_fd() {
-                        self.reregister(FRRMISOCK, fd, Interest::WRITABLE | Interest::READABLE);
-                    }
-                }
-                Err(e) => {
-                    warn!("Error sending over frrmi: {e}");
-                    self.frrmi_restart();
+    fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
+        let vrftable = &mut db.vrftable;
+        if let Ok(vrf) = vrftable.get_vrf_mut(self.vrfid) {
+            vrf.del_route_rpc(self);
+            if vrf.can_be_deleted() {
+                if let Err(e) = vrftable.remove_vrf(self.vrfid, &mut db.iftw) {
+                    warn!("Failed to delete vrf {}: {e}", self.vrfid);
                 }
             }
+            RpcResultCode::Ok
+        } else {
+            error!("Unable to find VRF with id {}", self.vrfid);
+            // if we did not find vrf, we don't have the route
+            // tell frr all is good
+            if !db.have_config() {
+                RpcResultCode::Ok
+            } else {
+                RpcResultCode::Failure
+            }
         }
     }
 }
+impl RpcOperation for Rmac {
+    type ObjectStore = RoutingDb;
+    fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
+        let rmac_store = &mut db.rmac_store;
+        let Ok(rmac) = RmacEntry::try_from(self) else {
+            error!("Failed to store rmac entry {self}");
+            return RpcResultCode::Failure;
+        };
+        rmac_store.add_rmac_entry(rmac);
+        RpcResultCode::Ok
+    }
+    fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
+        let rmac_store = &mut db.rmac_store;
+        let Ok(rmac) = RmacEntry::try_from(self) else {
+            return RpcResultCode::Failure;
+        };
+        rmac_store.del_rmac_entry(&rmac);
+        RpcResultCode::Ok
+    }
+}
 
-#[allow(clippy::missing_errors_doc)]
-pub fn start_cpi(
-    conf: &CpiConf,
-    fibtw: FibTableWriter,
-    iftw: IfTableWriter,
-    atabler: AtableReader,
-) -> Result<CpiHandle, RouterError> {
-    let mut cpi = Cpi::new(conf)?;
-    let ctl_tx = cpi.ctl_tx.clone();
+impl RpcOperation for IfAddress {
+    type ObjectStore = RoutingDb;
+    fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
+        db.iftw
+            .add_ip_address(self.ifindex, (self.address, self.mask_len));
+        RpcResultCode::Ok
+    }
+    fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
+        db.iftw
+            .del_ip_address(self.ifindex, (self.address, self.mask_len));
+        RpcResultCode::Ok
+    }
+}
 
-    /* CPI & CLI loop */
-    let cpi_loop = move || {
-        info!("CPI Listening at {}.", &cpi.cp_sock_path);
-        info!("CLI Listening at {}.", &cpi.cli_sock_path);
-        let mut events = Events::with_capacity(64);
-        let mut buf = vec![0; 1024];
-
-        /* create routing database: this is fully owned by the CPI */
-        let mut db = RoutingDb::new(fibtw, iftw, atabler);
-
-        info!("Entering CPI IO loop....");
-        while cpi.run {
-            if let Err(e) = cpi.poller.poll(&mut events, Some(Duration::from_secs(1))) {
-                error!("Poller error!: {e}");
-                continue;
-            }
-
-            /* connect to frr-agent if we're not connected*/
-            cpi.frrmi_connect();
-
-            /* service pending frr reconfig requests if any */
-            cpi.service_frrmi_requests();
-
-            /* did any request time out? */
-            cpi.frrmi.timeout();
-
-            /* events on unix sockets */
-            for event in &events {
-                match event.token() {
-                    CPSOCK => {
-                        while event.is_readable() {
-                            if let Ok((len, peer)) = cpi.cached_sock.recv_from(buf.as_mut_slice()) {
-                                process_rx_data(
-                                    &mut cpi.cached_sock,
-                                    &peer,
-                                    &buf[..len],
-                                    &mut db,
-                                    &mut cpi.stats,
-                                );
-                            } else {
-                                break;
-                            }
-                        }
-                        if event.is_writable() && !cpi.frozen {
-                            cpi.cached_sock.flush_out_fast();
-                            if !cpi.cached_sock.interests().is_writable() {
-                                if let Err(e) = cpi.poller.registry().reregister(
-                                    &mut SourceFd(&cpi.cached_sock.get_raw_fd()),
-                                    CPSOCK,
-                                    cpi.cached_sock.interests(),
-                                ) {
-                                    error!("Poller reregister failed for CPI: {e} !!!");
-                                }
-                            }
-                        }
-                    }
-                    CLISOCK => {
-                        while event.is_readable() {
-                            if let Ok((len, peer)) = cpi.clisock.recv_from(buf.as_mut_slice()) {
-                                if let Ok(request) = CliRequest::deserialize(&buf[0..len]) {
-                                    handle_cli_request(
-                                        &cpi.clisock,
-                                        &peer,
-                                        request,
-                                        &db,
-                                        &cpi.stats,
-                                    );
-                                }
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                    FRRMISOCK => {
-                        if event.is_error() {
-                            cpi.frrmi_restart();
-                            continue;
-                        }
-                        if event.is_readable() {
-                            match cpi.frrmi.recv_msg() {
-                                Ok(None) => {} // do nothing; continue receiving
-                                Ok(Some(response)) => cpi.frrmi.process_response(response),
-                                Err(e) => {
-                                    error!("Failed to receive over frrmi: {e}");
-                                    cpi.frrmi_restart();
-                                }
-                            }
-                        }
-                        if event.is_writable() {
-                            // resume xmit of any outstanding request that may have been partially sent
-                            let res = cpi.frrmi.send_msg_resume();
-                            if !matches!(res, Err(FrrErr::IOBusy)) {
-                                // unregister in all cases except if we get IOBusy again.
-                                if let Some(fd) = cpi.frrmi.get_sock_fd() {
-                                    cpi.reregister(FRRMISOCK, fd, Interest::READABLE);
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            /* handle control-channel messages */
-            handle_ctl_msg(&mut cpi, &mut db);
-        }
+/* message builders */
+fn build_response_msg(
+    req: &RpcRequest,
+    rescode: RpcResultCode,
+    _objects: Option<Vec<&RpcObject>>,
+) -> RpcMsg {
+    let op = req.get_op();
+    let seqn = req.get_seqn();
+    let response = RpcResponse {
+        op,
+        seqn,
+        rescode,
+        objs: vec![],
     };
-    let handle = thread::Builder::new()
-        .name("CPI".to_string())
-        .spawn(cpi_loop)
-        .map_err(|_| RouterError::Internal("Failure spawning thread"))?;
-
-    Ok(CpiHandle {
-        ctl: ctl_tx,
-        handle: Some(handle),
-    })
+    response.wrap_in_msg()
+}
+fn build_notification_msg() -> RpcMsg {
+    let notif = RpcNotification {};
+    notif.wrap_in_msg()
+}
+fn build_control_msg() -> RpcMsg {
+    let control = RpcControl {};
+    control.wrap_in_msg()
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::atable::atablerw::AtableWriter;
-    use crate::cpi::{CpiConf, start_cpi};
-    use crate::errors::RouterError;
-    use crate::fib::fibtable::FibTableWriter;
-    use crate::interfaces::iftablerw::IfTableWriter;
-    use std::thread;
-    use std::time::Duration;
-
-    #[test]
-    fn test_cpi_ctl() {
-        let cpi_bind_addr = "/tmp/hh_dataplane.sock".to_string();
-        let cli_bind_addr = "/tmp/hh_cli.sock".to_string();
-        let frra_path = "/tmp/frr-agent.sock".to_string();
-        let _ = std::fs::remove_file(&cpi_bind_addr);
-
-        /* Build cpi configuration */
-        let conf = CpiConf {
-            cpi_sock_path: Some(cpi_bind_addr),
-            cli_sock_path: Some(cli_bind_addr),
-            frrmi_sock_path: Some(frra_path),
-        };
-
-        /* create interface table */
-        let (iftw, _iftr) = IfTableWriter::new();
-
-        /* create fib table */
-        let (fibtw, _fibtr) = FibTableWriter::new();
-
-        /* create atable */
-        let (_atablew, atabler) = AtableWriter::new();
-
-        /* start CPI */
-        let mut cpi = start_cpi(&conf, fibtw, iftw, atabler).expect("Should succeed");
-        thread::sleep(Duration::from_secs(3));
-        assert_eq!(cpi.finish(), Ok(()));
+/* message handlers */
+fn update_stats(
+    stats: &mut CpiStats,
+    op: RpcOp,
+    object: Option<&RpcObject>,
+    res_code: RpcResultCode,
+) {
+    let index = res_code.as_usize();
+    match object {
+        None => {}
+        Some(RpcObject::IfAddress(_)) => match op {
+            RpcOp::Add => stats.add_ifaddr.incr_by(index, 1),
+            RpcOp::Del => stats.del_ifaddr.incr_by(index, 1),
+            _ => unreachable!(),
+        },
+        Some(RpcObject::Rmac(_)) => match op {
+            RpcOp::Add => stats.add_rmac.incr_by(index, 1),
+            RpcOp::Del => stats.del_rmac.incr_by(index, 1),
+            _ => unreachable!(),
+        },
+        Some(RpcObject::IpRoute(_)) => match op {
+            RpcOp::Add => stats.add_route.incr_by(index, 1),
+            RpcOp::Update => stats.update_route.incr_by(index, 1),
+            RpcOp::Del => stats.del_route.incr_by(index, 1),
+            _ => unreachable!(),
+        },
+        Some(RpcObject::ConnectInfo(_)) => stats.connect.incr_by(index, 1),
     }
-    #[test]
-    fn test_cpi_failure_bad_path() {
-        /* Build cpi configuration with bad path for unix sock */
-        let conf = CpiConf {
-            cpi_sock_path: Some("/nonexistent/hh_dataplane.sock".to_string()),
-            cli_sock_path: None,
-            frrmi_sock_path: None,
-        };
+}
+fn rpc_reply(
+    csock: &mut RpcCachedSock,
+    peer: &SocketAddr,
+    req: &RpcRequest,
+    rescode: RpcResultCode,
+    stats: &mut CpiStats,
+) {
+    let op = req.get_op();
+    let object = req.get_object();
+    let resp_msg = build_response_msg(req, rescode, None);
+    csock.send_msg(resp_msg, peer);
+    update_stats(stats, op, object, rescode);
+}
 
-        /* create interface table */
-        let (iftw, _iftr) = IfTableWriter::new();
+fn handle_request(
+    csock: &mut RpcCachedSock,
+    peer: &SocketAddr,
+    req: &RpcRequest,
+    db: &mut RoutingDb,
+    stats: &mut CpiStats,
+) {
+    let op = req.get_op();
+    let object = req.get_object();
+    debug!("Handling {}", req);
 
-        /* create fib table */
-        let (fibtw, _fibtr) = FibTableWriter::new();
+    // We should not see requests before a connect, because the plugin always sends a connect as the very
+    // first message when it first connects. If dataplane restarts, plugin will get xmit failures, cache
+    // messages and attempt to reconnect. On success, it will send cached messages again. So, if we get
+    // messages without having seen a connect, that means we restarted. We will ignore those messages
+    // since we need the plugin to push the whole state again anyway and, to be able to process it,
+    // we need to have a configuration.
+    if op != RpcOp::Connect && stats.last_pid.is_none() {
+        warn!("Ignoring request: no prior connect received. Did we restart?");
+        rpc_reply(csock, peer, req, RpcResultCode::Ignored, stats);
+        return;
+    }
 
-        /* create atable */
-        let (_atablew, atabler) = AtableWriter::new();
+    // ignore additions if have no config. Connects are allowed, so are deletions to wipe out old state
+    if !db.have_config() && op == RpcOp::Add {
+        debug!("Ignoring request: no config is available");
+        rpc_reply(csock, peer, req, RpcResultCode::Ignored, stats);
+        return;
+    }
 
-        /* start CPI */
-        let cpi = start_cpi(&conf, fibtw, iftw, atabler);
-        assert!(cpi.is_err_and(|e| matches!(e, RouterError::InvalidPath(_))));
+    let res_code = match object {
+        None => {
+            error!("Received {:?} request without object!", op);
+            RpcResultCode::InvalidRequest
+        }
+        Some(RpcObject::IfAddress(ifaddr)) => match op {
+            RpcOp::Add => ifaddr.add(db),
+            RpcOp::Del => ifaddr.del(db),
+            _ => RpcResultCode::InvalidRequest,
+        },
+        Some(RpcObject::Rmac(rmac)) => match op {
+            RpcOp::Add => rmac.add(db),
+            RpcOp::Del => rmac.del(db),
+            _ => RpcResultCode::InvalidRequest,
+        },
+        Some(RpcObject::IpRoute(route)) => {
+            let res = match op {
+                RpcOp::Add | RpcOp::Update => route.add(db),
+                RpcOp::Del => route.del(db),
+                _ => RpcResultCode::InvalidRequest,
+            };
+            if route.vrfid == 0 {
+                update_vrfs(&mut db.vrftable, &db.rmac_store);
+            }
+            res
+        }
+        Some(RpcObject::ConnectInfo(conninfo)) => match op {
+            RpcOp::Connect => conninfo.connect(stats),
+            _ => RpcResultCode::InvalidRequest,
+        },
+    };
+    rpc_reply(csock, peer, req, res_code, stats);
+}
+fn handle_response(_csock: &RpcCachedSock, _peer: &SocketAddr, _res: &RpcResponse) {}
+fn handle_notification(_csock: &RpcCachedSock, peer: &SocketAddr, _notif: &RpcNotification) {
+    warn!("Received a notification message from {:?}", peer);
+}
+fn handle_control(
+    csock: &mut RpcCachedSock,
+    peer: &SocketAddr,
+    _ctl: &RpcControl,
+    stats: &mut CpiStats,
+) {
+    let control = build_control_msg();
+    stats.control_rx += 1;
+    csock.send_msg(control, peer);
+}
+fn handle_rpc_msg(
+    csock: &mut RpcCachedSock,
+    peer: &SocketAddr,
+    msg: &RpcMsg,
+    db: &mut RoutingDb,
+    stats: &mut CpiStats,
+) {
+    match msg {
+        RpcMsg::Control(ctl) => handle_control(csock, peer, ctl, stats),
+        RpcMsg::Request(req) => handle_request(csock, peer, req, db, stats),
+        RpcMsg::Response(resp) => handle_response(csock, peer, resp),
+        RpcMsg::Notification(notif) => handle_notification(csock, peer, notif),
+    }
+}
+
+/* process rx data from UX sock */
+pub fn process_rx_data(
+    csock: &mut RpcCachedSock,
+    peer: &SocketAddr,
+    data: &[u8],
+    db: &mut RoutingDb,
+    stats: &mut CpiStats,
+) {
+    let peer_addr = peer.as_pathname().unwrap_or_else(|| Path::new("unnamed"));
+    trace!("CPI: recvd {} bytes from {:?}...", data.len(), peer_addr);
+    let mut buf_rx = Bytes::copy_from_slice(data); // TODO: avoid this copy
+    stats.last_msg_rx = Some(Local::now());
+    match RpcMsg::decode(&mut buf_rx) {
+        Ok(msg) => handle_rpc_msg(csock, peer, &msg, db, stats),
+        Err(e) => {
+            stats.decode_failures += 1;
+            error!("Failure decoding msg rx from {}: {:?}", peer.pretty(), e);
+            let notif = build_notification_msg();
+            csock.send_msg(notif, peer);
+        }
     }
 }

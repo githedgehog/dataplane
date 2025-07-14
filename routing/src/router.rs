@@ -10,15 +10,15 @@ use tracing::{debug, error};
 
 use crate::atable::atablerw::AtableReader;
 use crate::atable::resolver::AtResolver;
-use crate::cpi::{CpiConf, CpiHandle, start_cpi};
 use crate::ctl::RouterCtlSender;
 use crate::errors::RouterError;
 use crate::fib::fibtable::{FibTableReader, FibTableWriter};
 use crate::interfaces::iftablerw::{IfTableReader, IfTableWriter};
+use crate::rio::{RioConf, RioHandle, start_rio};
 
-use crate::cpi::DEFAULT_DP_UX_PATH;
-use crate::cpi::DEFAULT_DP_UX_PATH_CLI;
-use crate::cpi::DEFAULT_FRR_AGENT_PATH;
+use crate::rio::DEFAULT_DP_UX_PATH;
+use crate::rio::DEFAULT_DP_UX_PATH_CLI;
+use crate::rio::DEFAULT_FRR_AGENT_PATH;
 /// Struct to configure router object. N.B we derive a builder type `RouterConfig`
 /// and provide defaults for each field.
 #[derive(Builder, Debug)]
@@ -51,14 +51,14 @@ pub struct Router {
     name: String,
     params: RouterParams,
     resolver: AtResolver,
-    cpi: CpiHandle,
+    rio_handle: RioHandle,
     iftr: IfTableReader,
     fibtr: FibTableReader,
 }
 
-// Build cpi configuration from the router configuration
-fn init_router(params: &RouterParams) -> Result<CpiConf, RouterError> {
-    Ok(CpiConf {
+// Build the router IO configuration from the router configuration
+fn init_router(params: &RouterParams) -> Result<RioConf, RouterError> {
+    Ok(RioConf {
         cpi_sock_path: Some(
             params
                 .cpi_sock_path
@@ -90,7 +90,7 @@ impl Router {
         let name = &params.name;
 
         debug!("{name}: Initializing...");
-        let cpiconf = init_router(&params)?;
+        let rioconf = init_router(&params)?;
 
         debug!("{name}: Creating interface table...");
         let (iftw, iftr) = IfTableWriter::new();
@@ -102,15 +102,15 @@ impl Router {
         let (mut resolver, atabler) = AtResolver::new(true);
         resolver.start(3);
 
-        debug!("{name}: Starting CPI...");
-        let cpi = start_cpi(&cpiconf, fibtw, iftw, atabler)?;
+        debug!("{name}: Starting router IO...");
+        let rio_handle = start_rio(&rioconf, fibtw, iftw, atabler)?;
 
         debug!("{name}: Successfully started with parameters:\n{params}");
         let router = Router {
             name: name.to_owned(),
             params,
             resolver,
-            cpi,
+            rio_handle,
             iftr,
             fibtr,
         };
@@ -119,8 +119,11 @@ impl Router {
 
     /// Stop this router instance
     pub fn stop(&mut self) {
-        if let Err(e) = self.cpi.finish() {
-            error!("Failed to stop the cpi for router '{}': {e}", self.name);
+        if let Err(e) = self.rio_handle.finish() {
+            error!(
+                "Failed to stop the router IO for router '{}': {e}",
+                self.name
+            );
         }
         self.resolver.stop();
         debug!("Router instance '{}' is now stopped", self.name);
@@ -143,7 +146,7 @@ impl Router {
 
     #[must_use]
     pub fn get_ctl_tx(&self) -> RouterCtlSender {
-        self.cpi.get_ctl_tx()
+        self.rio_handle.get_ctl_tx()
     }
     #[must_use]
     pub fn get_cpi_sock_path(&self) -> &PathBuf {

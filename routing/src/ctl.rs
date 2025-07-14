@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Control channel for the CPI
+//! Control channel for the router
 
 use mio::Interest;
 use tokio::sync::mpsc::Sender;
@@ -14,22 +14,20 @@ use tracing::{debug, error, info, warn};
 
 use crate::RouterError;
 use crate::config::{FrrConfig, RouterConfig};
-use crate::cpi::{CPSOCK, Cpi};
 use crate::frrmi::FrrmiRequest;
+use crate::rio::{CPSOCK, Rio};
 use crate::routingdb::RoutingDb;
 
-use mio::unix::SourceFd;
-
-pub(crate) type CpiCtlReplyTx = AsyncSender<Result<(), RouterError>>;
+pub(crate) type RouterCtlReplyTx = AsyncSender<Result<(), RouterError>>;
 
 #[repr(transparent)]
-pub struct LockGuard(Option<Sender<CpiCtlMsg>>);
+pub struct LockGuard(Option<Sender<RouterCtlMsg>>);
 impl Drop for LockGuard {
     fn drop(&mut self) {
         let tx = self.0.take();
         if let Some(tx) = tx {
             task::spawn(async move {
-                if let Err(e) = tx.send(CpiCtlMsg::GuardedUnlock).await {
+                if let Err(e) = tx.send(RouterCtlMsg::GuardedUnlock).await {
                     error!("Fatal: could not send unlock request!!: {e}");
                 }
             });
@@ -37,18 +35,18 @@ impl Drop for LockGuard {
     }
 }
 
-pub enum CpiCtlMsg {
+pub enum RouterCtlMsg {
     Finish,
-    Lock(CpiCtlReplyTx),
-    Unlock(CpiCtlReplyTx),
+    Lock(RouterCtlReplyTx),
+    Unlock(RouterCtlReplyTx),
     GuardedUnlock,
-    Configure(RouterConfig, CpiCtlReplyTx),
+    Configure(RouterConfig, RouterCtlReplyTx),
 }
 
-// An object to send control messages to the cpi/router
-pub struct RouterCtlSender(tokio::sync::mpsc::Sender<CpiCtlMsg>);
+// An object to send control messages to the router
+pub struct RouterCtlSender(tokio::sync::mpsc::Sender<RouterCtlMsg>);
 impl RouterCtlSender {
-    pub(crate) fn new(tx: Sender<CpiCtlMsg>) -> Self {
+    pub(crate) fn new(tx: Sender<RouterCtlMsg>) -> Self {
         Self(tx)
     }
     pub(crate) fn as_lock_guard(&self) -> LockGuard {
@@ -58,7 +56,7 @@ impl RouterCtlSender {
     pub async fn lock(&mut self) -> Result<LockGuard, RouterError> {
         debug!("Requesting CPI lock...");
         let (reply_tx, reply_rx) = oneshot::channel();
-        let msg = CpiCtlMsg::Lock(reply_tx);
+        let msg = RouterCtlMsg::Lock(reply_tx);
         self.0
             .send(msg)
             .await
@@ -74,7 +72,7 @@ impl RouterCtlSender {
     pub async fn unlock(&mut self) -> Result<(), RouterError> {
         debug!("Requesting CPI lock...");
         let (reply_tx, reply_rx) = oneshot::channel();
-        let msg = CpiCtlMsg::Unlock(reply_tx);
+        let msg = RouterCtlMsg::Unlock(reply_tx);
         self.0
             .send(msg)
             .await
@@ -89,7 +87,7 @@ impl RouterCtlSender {
         let genid = config.genid();
         debug!("Requesting router to apply config for gen {genid}...");
         let (reply_tx, reply_rx) = oneshot::channel();
-        let msg = CpiCtlMsg::Configure(config, reply_tx);
+        let msg = RouterCtlMsg::Configure(config, reply_tx);
         self.0
             .send(msg)
             .await
@@ -103,25 +101,16 @@ impl RouterCtlSender {
 }
 
 /// Handle a lock request for the indicated CPI
-fn handle_lock(cpi: &mut Cpi, lock: bool, reply_to: Option<CpiCtlReplyTx>) {
+fn handle_lock(rio: &mut Rio, lock: bool, reply_to: Option<RouterCtlReplyTx>) {
     let action = if lock { "lock" } else { "unlock" };
     let interests = if lock {
-        cpi.frozen = true;
+        rio.frozen = true;
         Interest::WRITABLE
     } else {
-        cpi.frozen = false;
+        rio.frozen = false;
         Interest::WRITABLE | Interest::READABLE
     };
-    let result = cpi
-        .poller
-        .registry()
-        .reregister(
-            &mut SourceFd(&cpi.cached_sock.get_raw_fd()),
-            CPSOCK,
-            interests,
-        )
-        .map_err(|_| RouterError::Internal("(un)-locking failed"));
-
+    let result = rio.reregister(CPSOCK, rio.cpi_sock.get_raw_fd(), interests);
     if result.is_ok() {
         debug!("The CPI is now {action}ed");
     } else {
@@ -135,18 +124,18 @@ fn handle_lock(cpi: &mut Cpi, lock: bool, reply_to: Option<CpiCtlReplyTx>) {
     }
 }
 
-fn request_frr_config(cpi: &mut Cpi, genid: i64, cfg: FrrConfig) {
+fn request_frr_config(rio: &mut Rio, genid: i64, cfg: FrrConfig) {
     let req = FrrmiRequest::new(genid, cfg);
-    cpi.frrmi.queue_request(req);
+    rio.frrmi.queue_request(req);
 }
 
 /// Handle a configure request. This function applies the configuration that
 /// pertains to the router and that of FRR if provided.
 fn handle_configure(
-    cpi: &mut Cpi,
+    rio: &mut Rio,
     config: RouterConfig,
     db: &mut RoutingDb,
-    reply_to: CpiCtlReplyTx,
+    reply_to: RouterCtlReplyTx,
 ) {
     /* apply router config */
     let result = config.apply(db);
@@ -159,7 +148,7 @@ fn handle_configure(
 
     /* request application of frr config */
     if let Some(frr_config) = config.get_frr_config() {
-        request_frr_config(cpi, config.genid(), frr_config.clone());
+        request_frr_config(rio, config.genid(), frr_config.clone());
     }
 
     /* reply */
@@ -172,16 +161,18 @@ fn handle_configure(
 }
 
 /// Handle a request from the control channel
-pub(crate) fn handle_ctl_msg(cpi: &mut Cpi, db: &mut RoutingDb) {
-    match cpi.ctl_rx.try_recv() {
-        Ok(CpiCtlMsg::Finish) => {
+pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
+    match rio.ctl_rx.try_recv() {
+        Ok(RouterCtlMsg::Finish) => {
             info!("Got request to shutdown. Au revoir ...");
-            cpi.run = false;
+            rio.run = false;
         }
-        Ok(CpiCtlMsg::Lock(reply_to)) => handle_lock(cpi, true, Some(reply_to)),
-        Ok(CpiCtlMsg::Unlock(reply_to)) => handle_lock(cpi, false, Some(reply_to)),
-        Ok(CpiCtlMsg::GuardedUnlock) => handle_lock(cpi, false, None),
-        Ok(CpiCtlMsg::Configure(config, reply_to)) => handle_configure(cpi, config, db, reply_to),
+        Ok(RouterCtlMsg::Lock(reply_to)) => handle_lock(rio, true, Some(reply_to)),
+        Ok(RouterCtlMsg::Unlock(reply_to)) => handle_lock(rio, false, Some(reply_to)),
+        Ok(RouterCtlMsg::GuardedUnlock) => handle_lock(rio, false, None),
+        Ok(RouterCtlMsg::Configure(config, reply_to)) => {
+            handle_configure(rio, config, db, reply_to)
+        }
         Err(TryRecvError::Empty) => {}
         Err(e) => {
             error!("Error receiving from ctl channel {e:?}");

@@ -5,9 +5,9 @@
 
 pub(crate) use clap::Parser;
 use mgmt::processor::launch::GrpcAddress;
-use routing::cpi::DEFAULT_DP_UX_PATH;
-use routing::cpi::DEFAULT_DP_UX_PATH_CLI;
-use routing::cpi::DEFAULT_FRR_AGENT_PATH;
+use routing::rio::DEFAULT_DP_UX_PATH;
+use routing::rio::DEFAULT_DP_UX_PATH_CLI;
+use routing::rio::DEFAULT_FRR_AGENT_PATH;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing::{debug, error};

@@ -10,8 +10,7 @@
 pub mod atable;
 pub mod cli;
 pub mod config;
-pub mod cpi;
-mod cpi_process;
+mod cpi;
 pub mod ctl;
 mod display;
 mod errors;
@@ -21,6 +20,7 @@ mod frrmi;
 pub mod interfaces;
 pub mod pretty_utils;
 pub mod rib;
+pub mod rio;
 
 mod router;
 pub mod routingdb;

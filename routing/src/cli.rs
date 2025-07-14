@@ -5,7 +5,6 @@
 
 #![allow(clippy::unnecessary_wraps)]
 
-use crate::cpi::CpiStats;
 use crate::display::IfTableAddress;
 use crate::display::{FibGroups, FibViewV4, FibViewV6};
 use crate::display::{VrfV4Nexthops, VrfV6Nexthops, VrfViewV4, VrfViewV6};
@@ -13,6 +12,7 @@ use crate::fib::fibtype::{FibGroupV4Filter, FibGroupV6Filter};
 use crate::rib::vrf::{Route, RouteOrigin, Vrf, VrfId};
 use crate::rib::vrf::{RouteV4Filter, RouteV6Filter};
 use crate::rib::vrftable::VrfTable;
+use crate::rio::CpiStats;
 use crate::routingdb::RoutingDb;
 
 use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, CliSerialize, RouteProtocol};

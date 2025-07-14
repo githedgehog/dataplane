@@ -4,10 +4,10 @@
 //! Module that implements Display for routing objects
 
 use crate::atable::adjacency::{Adjacency, AdjacencyTable};
-use crate::cpi::{CpiStats, StatsRow};
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::fib::fibtable::FibTable;
 use crate::fib::fibtype::{Fib, FibId};
+use crate::rio::{CpiStats, StatsRow};
 
 use crate::rib::VrfTable;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
