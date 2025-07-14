@@ -116,6 +116,10 @@ impl<T: TrieMap + TrieMapNew> TrieMap for TrieMapWithDefault<T> {
     fn remove<P: Borrow<Self::Prefix>>(&mut self, prefix: P) -> Option<Self::Value> {
         if *prefix.borrow() == Self::Prefix::ROOT {
             warn!("Attempt to remove root prefix from trie: refusing operation!");
+            debug_assert!(
+                false,
+                "Attempt to remove root prefix from trie: refusing operation!"
+            );
             return None;
         }
         self.0.remove(prefix)
