@@ -7,13 +7,13 @@
 
 use crate::atable::atablerw::AtableReader;
 use crate::cli::handle_cli_request;
+use crate::config::FrrConfig;
 use crate::cpi::process_rx_data;
 use crate::ctl::handle_ctl_msg;
-
 use crate::ctl::{RouterCtlMsg, RouterCtlSender};
 use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
-use crate::frrmi::{FrrErr, Frrmi};
+use crate::frrmi::{FrrErr, Frrmi, FrrmiRequest};
 use crate::interfaces::iftablerw::IfTableWriter;
 use crate::routingdb::RoutingDb;
 
@@ -296,6 +296,10 @@ impl Rio {
                 }
             }
         }
+    }
+    pub(crate) fn request_frr_config(&mut self, genid: i64, cfg: FrrConfig) {
+        let req = FrrmiRequest::new(genid, cfg);
+        self.frrmi.queue_request(req);
     }
 }
 

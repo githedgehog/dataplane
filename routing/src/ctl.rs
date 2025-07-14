@@ -13,8 +13,7 @@ use tokio::task;
 use tracing::{debug, error, info, warn};
 
 use crate::RouterError;
-use crate::config::{FrrConfig, RouterConfig};
-use crate::frrmi::FrrmiRequest;
+use crate::config::RouterConfig;
 use crate::rio::{CPSOCK, Rio};
 use crate::routingdb::RoutingDb;
 
@@ -124,11 +123,6 @@ fn handle_lock(rio: &mut Rio, lock: bool, reply_to: Option<RouterCtlReplyTx>) {
     }
 }
 
-fn request_frr_config(rio: &mut Rio, genid: i64, cfg: FrrConfig) {
-    let req = FrrmiRequest::new(genid, cfg);
-    rio.frrmi.queue_request(req);
-}
-
 /// Handle a configure request. This function applies the configuration that
 /// pertains to the router and that of FRR if provided.
 fn handle_configure(
@@ -148,7 +142,7 @@ fn handle_configure(
 
     /* request application of frr config */
     if let Some(frr_config) = config.get_frr_config() {
-        request_frr_config(rio, config.genid(), frr_config.clone());
+        rio.request_frr_config(config.genid(), frr_config.clone());
     }
 
     /* reply */
