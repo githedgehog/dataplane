@@ -194,6 +194,15 @@ impl From<Ipv6Net> for Prefix {
     }
 }
 
+impl From<IpNet> for Prefix {
+    fn from(value: IpNet) -> Self {
+        match value {
+            IpNet::V4(v) => Prefix::IPV4(Ipv4Prefix::from(v)),
+            IpNet::V6(v) => Prefix::IPV6(Ipv6Prefix::from(v)),
+        }
+    }
+}
+
 impl From<Ipv4Prefix> for Prefix {
     fn from(value: Ipv4Prefix) -> Self {
         Self::IPV4(value)
