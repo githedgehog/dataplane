@@ -17,6 +17,7 @@ mod display;
 mod errors;
 pub mod evpn;
 pub mod fib;
+mod frrmi;
 pub mod interfaces;
 pub mod pretty_utils;
 pub mod rib;
