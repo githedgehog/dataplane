@@ -6,9 +6,10 @@ publish = false
 license = "Apache-2.0"
 
 [features]
-testing = []
+testing = ["dep:bolero"]
 
 [dependencies]
+bolero = { workspace = true, optional = true }
 ipnet = { workspace = true, features = ["serde"] }
 num-traits = { workspace = true }
 prefix-trie = { workspace = true }
