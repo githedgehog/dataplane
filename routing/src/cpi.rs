@@ -13,6 +13,7 @@ use crate::ctl::handle_ctl_msg;
 use crate::ctl::{CpiCtlMsg, RouterCtlSender};
 use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
+use crate::frrmi::{FrrErr, Frrmi};
 use crate::interfaces::iftablerw::IfTableWriter;
 use crate::routingdb::RoutingDb;
 
@@ -29,7 +30,9 @@ use std::os::unix::net::UnixDatagram;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
-use tracing::{debug, error, info};
+
+#[allow(unused)]
+use tracing::{debug, error, info, warn};
 
 // capacity of cpi control channel. This should have very little impact on performance.
 const CTL_CHANNEL_CAPACITY: usize = 100;
@@ -74,12 +77,14 @@ pub const DEFAULT_FRR_AGENT_PATH: &str = "/var/run/frr/frr-agent.sock";
 pub struct CpiConf {
     pub cpi_sock_path: Option<String>,
     pub cli_sock_path: Option<String>,
+    pub frrmi_sock_path: Option<String>,
 }
 impl Default for CpiConf {
     fn default() -> Self {
         Self {
             cpi_sock_path: Some(DEFAULT_DP_UX_PATH.to_string()),
             cli_sock_path: Some(DEFAULT_DP_UX_PATH_CLI.to_string()),
+            frrmi_sock_path: Some(DEFAULT_FRR_AGENT_PATH.to_string()),
         }
     }
 }
@@ -99,6 +104,7 @@ fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
 
 pub(crate) const CPSOCK: Token = Token(0);
 pub(crate) const CLISOCK: Token = Token(1);
+pub(crate) const FRRMISOCK: Token = Token(2);
 
 pub(crate) const CPI_STATS_SIZE: usize = RpcResultCode::RpcResultCodeMax as usize;
 #[derive(Default)]
@@ -145,6 +151,7 @@ pub(crate) struct Cpi {
     pub(crate) poller: Poll,
     pub(crate) clisock: UnixDatagram,
     pub(crate) cached_sock: RpcCachedSock,
+    pub(crate) frrmi: Frrmi,
     pub(crate) ctl_tx: Sender<CpiCtlMsg>,
     pub(crate) ctl_rx: Receiver<CpiCtlMsg>,
     pub(crate) stats: CpiStats,
@@ -163,11 +170,20 @@ impl Cpi {
             std::borrow::ToOwned::to_owned,
         );
 
+        /* path of frr-agent */
+        let frrmi_sock_path = conf.frrmi_sock_path.as_ref().map_or_else(
+            || DEFAULT_FRR_AGENT_PATH.to_owned(),
+            std::borrow::ToOwned::to_owned,
+        );
+
         /* create unix sock for routing function and bind it */
         let cpsock = open_unix_sock(&cp_sock_path)?;
 
         /* create unix sock for cli and bind it */
         let clisock = open_unix_sock(&cli_sock_path)?;
+
+        /* frrmi - communication to frr-agent */
+        let frrmi = Frrmi::new(&frrmi_sock_path);
 
         /* internal ctl channel */
         let (ctl_tx, ctl_rx) = channel::<CpiCtlMsg>(CTL_CHANNEL_CAPACITY);
@@ -202,10 +218,77 @@ impl Cpi {
             poller,
             clisock,
             cached_sock,
+            frrmi,
             ctl_tx,
             ctl_rx,
             stats: CpiStats::default(),
         })
+    }
+    pub(crate) fn register(&self, token: Token, fd: i32, interests: Interest) {
+        debug!("Registering fd {fd}...");
+        let mut ev_sock = SourceFd(&fd);
+        if let Err(e) = self
+            .poller
+            .registry()
+            .register(&mut ev_sock, token, interests)
+        {
+            error!("Fatal: could not register descriptor {fd}: {e}");
+        }
+    }
+    pub(crate) fn reregister(&self, token: Token, fd: i32, interests: Interest) {
+        debug!("Re-registering fd {fd}...");
+        let mut ev_sock = SourceFd(&fd);
+        if let Err(e) = self
+            .poller
+            .registry()
+            .reregister(&mut ev_sock, token, interests)
+        {
+            error!("Fatal: could not re-register descriptor {fd}: {e}");
+        }
+    }
+    fn deregister(&self, fd: i32) {
+        debug!("Deregistering fd {fd}...");
+        let mut ev_sock = SourceFd(&fd);
+        if let Err(e) = self.poller.registry().deregister(&mut ev_sock) {
+            warn!("Error deregistering descriptor {fd}: {e}")
+        }
+    }
+    fn frrmi_connect(&mut self) {
+        if !self.frrmi.has_sock() {
+            self.frrmi.connect();
+            if let Some(sock_fd) = self.frrmi.get_sock_fd() {
+                debug!("Registering frrmi sock (fd:{sock_fd})...");
+                self.register(FRRMISOCK, sock_fd, Interest::READABLE);
+            }
+        }
+    }
+    fn frrmi_disconnect(&mut self) {
+        if let Some(sock_fd) = self.frrmi.get_sock_fd() {
+            debug!("Disconnecting frrmi (fd:{sock_fd})...");
+            self.deregister(sock_fd);
+            self.frrmi.disconnect();
+        }
+    }
+    pub(crate) fn frrmi_restart(&mut self) {
+        debug!("Restarting frrmi...");
+        self.frrmi_disconnect();
+        self.frrmi_connect();
+    }
+    fn service_frrmi_requests(&mut self) {
+        if self.frrmi.has_sock() {
+            match self.frrmi.service_request() {
+                Ok(()) => {} // nothing to do. If a request was sent, wait for response.
+                Err(FrrErr::IOBusy) => {
+                    if let Some(fd) = self.frrmi.get_sock_fd() {
+                        self.reregister(FRRMISOCK, fd, Interest::WRITABLE | Interest::READABLE);
+                    }
+                }
+                Err(e) => {
+                    warn!("Error sending over frrmi: {e}");
+                    self.frrmi_restart();
+                }
+            }
+        }
     }
 }
 
@@ -235,6 +318,15 @@ pub fn start_cpi(
                 error!("Poller error!: {e}");
                 continue;
             }
+
+            /* connect to frr-agent if we're not connected*/
+            cpi.frrmi_connect();
+
+            /* service pending frr reconfig requests if any */
+            cpi.service_frrmi_requests();
+
+            /* did any request time out? */
+            cpi.frrmi.timeout();
 
             /* events on unix sockets */
             for event in &events {
@@ -283,6 +375,32 @@ pub fn start_cpi(
                             }
                         }
                     }
+                    FRRMISOCK => {
+                        if event.is_error() {
+                            cpi.frrmi_restart();
+                            continue;
+                        }
+                        if event.is_readable() {
+                            match cpi.frrmi.recv_msg() {
+                                Ok(None) => {} // do nothing; continue receiving
+                                Ok(Some(response)) => cpi.frrmi.process_response(response),
+                                Err(e) => {
+                                    error!("Failed to receive over frrmi: {e}");
+                                    cpi.frrmi_restart();
+                                }
+                            }
+                        }
+                        if event.is_writable() {
+                            // resume xmit of any outstanding request that may have been partially sent
+                            let res = cpi.frrmi.send_msg_resume();
+                            if !matches!(res, Err(FrrErr::IOBusy)) {
+                                // unregister in all cases except if we get IOBusy again.
+                                if let Some(fd) = cpi.frrmi.get_sock_fd() {
+                                    cpi.reregister(FRRMISOCK, fd, Interest::READABLE);
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -316,12 +434,14 @@ mod tests {
     fn test_cpi_ctl() {
         let cpi_bind_addr = "/tmp/hh_dataplane.sock".to_string();
         let cli_bind_addr = "/tmp/hh_cli.sock".to_string();
+        let frra_path = "/tmp/frr-agent.sock".to_string();
         let _ = std::fs::remove_file(&cpi_bind_addr);
 
         /* Build cpi configuration */
         let conf = CpiConf {
             cpi_sock_path: Some(cpi_bind_addr),
             cli_sock_path: Some(cli_bind_addr),
+            frrmi_sock_path: Some(frra_path),
         };
 
         /* create interface table */
@@ -344,6 +464,7 @@ mod tests {
         let conf = CpiConf {
             cpi_sock_path: Some("/nonexistent/hh_dataplane.sock".to_string()),
             cli_sock_path: None,
+            frrmi_sock_path: None,
         };
 
         /* create interface table */
