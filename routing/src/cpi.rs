@@ -18,7 +18,6 @@ use dplane_rpc::{msg::*, socks::Pretty};
 use lpm::prefix::Prefix;
 use std::os::unix::net::SocketAddr;
 
-use std::path::Path;
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
 
@@ -361,8 +360,7 @@ pub fn process_rx_data(
     db: &mut RoutingDb,
     stats: &mut CpiStats,
 ) {
-    let peer_addr = peer.as_pathname().unwrap_or_else(|| Path::new("unnamed"));
-    trace!("CPI: recvd {} bytes from {:?}...", data.len(), peer_addr);
+    trace!("CPI: recvd {} bytes from {}...", data.len(), peer.pretty());
     let mut buf_rx = Bytes::copy_from_slice(data); // TODO: avoid this copy
     stats.last_msg_rx = Some(Local::now());
     match RpcMsg::decode(&mut buf_rx) {
