@@ -10,6 +10,7 @@ use std::fmt::{Debug, Display};
 use crate::trie::{TrieMap, TrieMapNew, TrieMapWithDefault};
 
 #[derive(Clone)]
+#[repr(transparent)]
 struct IpPrefixW<P: IpPrefix>(P);
 
 impl<P: IpPrefix> Debug for IpPrefixW<P> {
