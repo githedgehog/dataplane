@@ -18,10 +18,10 @@ use crate::models::external::{ConfigError, ConfigResult, stringify};
 use crate::models::internal::InternalConfig;
 
 use crate::frr::frrmi::FrrMi;
+use crate::models::external::gwconfig::GenId;
 use crate::processor::confbuild::router::generate_router_config;
 use crate::processor::display::GwConfigDatabaseSummary;
 use crate::processor::gwconfigdb::GwConfigDatabase;
-use crate::{frr::renderer::builder::Render, models::external::gwconfig::GenId};
 
 use crate::vpc_manager::{RequiredInformationBase, VpcManager};
 use rekon::{Observe, Reconcile};
@@ -74,7 +74,6 @@ impl ConfigChannelRequest {
 pub(crate) struct ConfigProcessor {
     config_db: GwConfigDatabase,
     rx: mpsc::Receiver<ConfigChannelRequest>,
-    frrmi: FrrMi,
     router_ctl: RouterCtlSender,
     vpc_mgr: VpcManager<RequiredInformationBase>,
     vpcmapw: VpcMapWriter<VpcMapName>,
@@ -86,7 +85,7 @@ impl ConfigProcessor {
 
     /// Create a [`ConfigProcessor`]
     pub(crate) fn new(
-        frrmi: FrrMi,
+        _frrmi: FrrMi,
         router_ctl: RouterCtlSender,
         vpcmapw: VpcMapWriter<VpcMapName>,
         nattablew: NatTablesWriter,
@@ -105,7 +104,6 @@ impl ConfigProcessor {
         let processor = Self {
             config_db: GwConfigDatabase::new(),
             rx,
-            frrmi,
             router_ctl,
             vpc_mgr,
             vpcmapw,
@@ -159,7 +157,6 @@ impl ConfigProcessor {
             &self.vpc_mgr,
             &mut config,
             current.as_deref(),
-            &mut self.frrmi,
             &mut self.router_ctl,
             &mut self.vpcmapw,
             &mut self.nattablew,
@@ -187,7 +184,6 @@ impl ConfigProcessor {
                 &self.vpc_mgr,
                 prior,
                 None,
-                &mut self.frrmi,
                 &mut self.router_ctl,
                 &mut self.vpcmapw,
                 &mut self.nattablew,
@@ -313,22 +309,6 @@ impl VpcManager<RequiredInformationBase> {
     }
 }
 
-/// Build FRR config and apply it with the frr-agent over the frrmi
-async fn apply_config_frr(
-    frrmi: &mut FrrMi,
-    genid: GenId,
-    internal: &InternalConfig,
-) -> ConfigResult {
-    let rendered = internal.render(&genid);
-
-    frrmi
-        .apply_config(genid, &rendered)
-        .await
-        .map_err(|e| ConfigError::FailureApply(format!("Error applying FRR config: {e}")))?;
-
-    Ok(())
-}
-
 /// Build router config and apply it over the router control channel
 async fn apply_router_config(
     kernel_vrfs: &HashMap<InterfaceName, Interface>,
@@ -380,7 +360,6 @@ async fn apply_gw_config(
     vpc_mgr: &VpcManager<RequiredInformationBase>,
     config: &mut GwConfig,
     _current: Option<&GwConfig>,
-    frrmi: &mut FrrMi,
     router_ctl: &mut RouterCtlSender,
     vpcmapw: &mut VpcMapWriter<VpcMapName>,
     nattablesw: &mut NatTablesWriter,
@@ -415,17 +394,14 @@ async fn apply_gw_config(
     /* get vrf interfaces from kernel and build a hashmap keyed by name */
     let kernel_vrfs = vpc_mgr.get_kernel_vrfs().await?;
 
-    /* apply config in router */
-    apply_router_config(&kernel_vrfs, config, router_ctl).await?;
-
-    /* apply config in frr via the frrmi and frr-agent */
-    apply_config_frr(frrmi, genid, internal).await?;
-
     /* apply nat config */
     apply_nat_config(nattablesw, internal);
 
     /* update stats mappings */
     update_stats_vpc_mappings(config, vpcmapw);
+
+    /* apply config in router */
+    apply_router_config(&kernel_vrfs, config, router_ctl).await?;
 
     info!("Successfully applied config for genid {genid}");
     Ok(())
