@@ -5,7 +5,6 @@
 
 #![allow(clippy::unnecessary_wraps)]
 
-use crate::cpi::CpiStats;
 use crate::display::IfTableAddress;
 use crate::display::{FibGroups, FibViewV4, FibViewV6};
 use crate::display::{VrfV4Nexthops, VrfV6Nexthops, VrfViewV4, VrfViewV6};
@@ -13,6 +12,7 @@ use crate::fib::fibtype::{FibGroupV4Filter, FibGroupV6Filter};
 use crate::rib::vrf::{Route, RouteOrigin, Vrf, VrfId};
 use crate::rib::vrf::{RouteV4Filter, RouteV6Filter};
 use crate::rib::vrftable::VrfTable;
+use crate::rio::Rio;
 use crate::routingdb::RoutingDb;
 
 use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, CliSerialize, RouteProtocol};
@@ -358,10 +358,13 @@ fn show_ip_fib_groups(
 fn do_handle_cli_request(
     request: CliRequest,
     db: &RoutingDb,
-    stats: &CpiStats,
+    rio: &Rio,
 ) -> Result<CliResponse, CliError> {
+    let cpi_s = &rio.cpistats;
+    let frrmi = &rio.frrmi;
     let response = match request.action {
-        CliAction::ShowCpiStats => CliResponse::from_request_ok(request, format!("\n{stats}")),
+        CliAction::ShowCpiStats => CliResponse::from_request_ok(request, format!("\n {cpi_s}")),
+        CliAction::ShowFrrmiStats => CliResponse::from_request_ok(request, format!("\n{frrmi}")),
         CliAction::ShowRouterInterfaces => {
             if let Some(iftable) = db.iftw.enter() {
                 CliResponse::from_request_ok(request, format!("\n{}", *iftable))
@@ -427,11 +430,11 @@ pub(crate) fn handle_cli_request(
     peer: &SocketAddr,
     request: CliRequest,
     db: &RoutingDb,
-    stats: &CpiStats,
+    rio: &Rio,
 ) {
     trace!("Got cli request: {:#?} from {:?}", request, peer);
 
-    let cliresponse = do_handle_cli_request(request.clone(), db, stats)
+    let cliresponse = do_handle_cli_request(request.clone(), db, rio)
         .unwrap_or_else(|e| CliResponse::from_request_fail(request, e));
 
     /* serialize the response */

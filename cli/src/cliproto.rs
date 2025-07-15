@@ -134,6 +134,9 @@ pub enum CliAction {
     // cpi
     ShowCpiStats,
 
+    // frrmi
+    ShowFrrmiStats,
+
     // vpcs
     ShowVpc,
     ShowVpcPifs,

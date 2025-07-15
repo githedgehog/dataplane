@@ -341,13 +341,7 @@ pub fn start_rio(
                         while event.is_readable() {
                             if let Ok((len, peer)) = rio.clisock.recv_from(buf.as_mut_slice()) {
                                 if let Ok(request) = CliRequest::deserialize(&buf[0..len]) {
-                                    handle_cli_request(
-                                        &rio.clisock,
-                                        &peer,
-                                        request,
-                                        &db,
-                                        &rio.cpistats,
-                                    );
+                                    handle_cli_request(&rio.clisock, &peer, request, &db, &rio);
                                 }
                             } else {
                                 break;
