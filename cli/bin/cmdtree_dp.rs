@@ -21,6 +21,10 @@ fn cmd_show_frrmi() -> Node {
     root += Node::new("stats")
         .desc("Show frr management interface")
         .action(CliAction::ShowFrrmiStats as u16);
+    root += Node::new("last-config")
+        .desc("Show last frr config applied over the frrmi")
+        .action(CliAction::ShowFrrmiLastConfig as u16);
+
     root
 }
 fn cmd_show_pipelines() -> Node {

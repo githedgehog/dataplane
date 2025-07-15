@@ -8,7 +8,7 @@ use crate::cpi::{CpiStats, StatsRow};
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::fib::fibtable::FibTable;
 use crate::fib::fibtype::{Fib, FibId};
-use crate::frrmi::{Frrmi, FrrmiStats};
+use crate::frrmi::{FrrAppliedConfig, Frrmi, FrrmiStats};
 
 use crate::rib::VrfTable;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
@@ -961,7 +961,7 @@ impl Display for FrrmiStats {
 
 impl Display for Frrmi {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Heading("Management interface".to_string()).fmt(f)?;
+        Heading("FRR Management interface".to_string()).fmt(f)?;
         let status = if self.has_sock() {
             "connected"
         } else {
@@ -970,5 +970,13 @@ impl Display for Frrmi {
         writeln!(f, " status: {status}")?;
         writeln!(f, " remote: {}", self.get_remote())?;
         self.get_stats().fmt(f)
+    }
+}
+
+impl Display for FrrAppliedConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Heading("Last FRR config applied".to_string()).fmt(f)?;
+        writeln!(f, " genid: {}", self.genid)?;
+        writeln!(f, " \n{}", self.cfg)
     }
 }

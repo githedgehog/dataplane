@@ -365,6 +365,10 @@ fn do_handle_cli_request(
     let response = match request.action {
         CliAction::ShowCpiStats => CliResponse::from_request_ok(request, format!("\n {cpi_s}")),
         CliAction::ShowFrrmiStats => CliResponse::from_request_ok(request, format!("\n{frrmi}")),
+        CliAction::ShowFrrmiLastConfig => match frrmi.get_applied_cfg() {
+            None => CliResponse::from_request_ok(request, format!("\n No config is applied")),
+            Some(cfg) => CliResponse::from_request_ok(request, format!("\n{cfg}")),
+        },
         CliAction::ShowRouterInterfaces => {
             if let Some(iftable) = db.iftw.enter() {
                 CliResponse::from_request_ok(request, format!("\n{}", *iftable))

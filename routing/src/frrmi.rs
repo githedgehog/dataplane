@@ -41,14 +41,14 @@ pub(crate) enum FrrErr {
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 #[derive(Default)]
 pub(crate) struct Frrmi {
-    sock: Option<UnixStream>,           /* socket to frr-agent (non-blocking) */
-    remote: String,                     /* address of frr-agent */
-    writeb: IoBuffer,                   /* write buffer for tx */
-    readb: IoBuffer,                    /* read buffer for rx */
-    inservice: Option<FrrmiRequest>,    /* the request currently being serviced */
-    timeout: Option<Instant>,           /* timeout for the current request in service */
-    requests: VecDeque<FrrmiRequest>,   /* queue of other requests to frr-agent */
-    stats: FrrmiStats,                  /* stats */
+    sock: Option<UnixStream>,         /* socket to frr-agent (non-blocking) */
+    remote: String,                   /* address of frr-agent */
+    writeb: IoBuffer,                 /* write buffer for tx */
+    readb: IoBuffer,                  /* read buffer for rx */
+    inservice: Option<FrrmiRequest>,  /* the request currently being serviced */
+    timeout: Option<Instant>,         /* timeout for the current request in service */
+    requests: VecDeque<FrrmiRequest>, /* queue of other requests to frr-agent */
+    stats: FrrmiStats,                /* stats */
     applied_cfg: Option<FrrAppliedConfig>, /* last successfully applied config */
 }
 
