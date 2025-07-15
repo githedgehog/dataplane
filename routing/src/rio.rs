@@ -259,7 +259,7 @@ impl Rio {
         }
     }
     pub(crate) fn request_frr_config(&mut self, genid: i64, cfg: FrrConfig) {
-        let req = FrrmiRequest::new(genid, cfg);
+        let req = FrrmiRequest::new(genid, cfg, 0);
         self.frrmi.queue_request(req);
     }
     /// Request to reapply the last configuration

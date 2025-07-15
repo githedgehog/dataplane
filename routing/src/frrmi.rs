@@ -13,7 +13,7 @@ use thiserror::Error;
 use crate::config::FrrConfig;
 
 #[allow(unused)]
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 #[derive(Error, Debug)]
 pub(crate) enum FrrErr {
@@ -76,12 +76,23 @@ pub(crate) struct FrrmiStats {
 }
 
 pub(crate) struct FrrmiRequest {
-    genid: i64,     /* gen id this frr-config corresponds to */
-    cfg: FrrConfig, /* confif to frr-agent is a string */
+    genid: i64,      /* gen id this frr-config corresponds to */
+    cfg: FrrConfig,  /* confif to frr-agent is a string */
+    max_retries: u8, /* max number of times to retry configuration on failure */
 }
+
+const CLEAN_CONFIG: &'static str = "! Empty config";
+
 impl FrrmiRequest {
-    pub(crate) fn new(genid: i64, cfg: String) -> Self {
-        Self { genid, cfg }
+    pub(crate) fn new(genid: i64, cfg: String, max_retries: u8) -> Self {
+        Self {
+            genid,
+            cfg,
+            max_retries,
+        }
+    }
+    pub(crate) fn blank() -> Self {
+        FrrmiRequest::new(0, CLEAN_CONFIG.to_string(), 0)
     }
 }
 
@@ -139,7 +150,7 @@ impl Frrmi {
     }
     pub(crate) fn timeout(&mut self) {
         if self.timeout.take_if(|t| *t < Instant::now()).is_some() {
-            warn!("Request sent to frr-agent timed out!");
+            warn!("Request sent to frr-agent timed out! Will reconnect...");
             self.disconnect();
         }
     }
@@ -199,6 +210,35 @@ impl Frrmi {
 
         Ok(())
     }
+    ///////////////////////////////////////////////////////////////////////////////////////////////////
+    /// Schedule a retry to attempt reconfiguring FRR again. This only makes sense if, prior to
+    /// retrying a config, we clean-up the current config with a simpler one. For this reason,
+    /// all requests are currently set with a max-retries of 0.
+    ///////////////////////////////////////////////////////////////////////////////////////////////////
+    pub(crate) fn config_retry(&mut self, mut request: FrrmiRequest) {
+        let genid = request.genid;
+
+        // give up after exhausting number of attempts
+        if request.max_retries == 0 {
+            warn!("Ran out of attempts to config FRR for gen {genid}");
+            return;
+        }
+        // if new configs have arrived, don't try to reapply a config
+        if !self.requests.is_empty() {
+            warn!("Skipping config of FRR for gen {genid}: newer configs exist");
+            return;
+        }
+        warn!("Will retry FRR config for gen {genid}...");
+        request.max_retries -= 1;
+        self.requests.push_front(request);
+
+        // Attempt to clean-up the config before re-applying the actual config.
+        // This is disabled as the blank config is unsuitable for us and providing a suitable
+        //  one requires the ability to build frr configs, which we don't have here.
+        if false {
+            self.requests.push_front(FrrmiRequest::blank());
+        }
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -255,7 +295,6 @@ impl Frrmi {
                 Err(e) => return Err(FrrErr::IOFailure(e.to_string())),
             }
         }
-        debug!("Sent full buffer of length {} octets", writeb.len());
         writeb.clear();
         Ok(())
     }
@@ -283,7 +322,7 @@ impl Frrmi {
         };
         loop {
             let pending = self.readb.next_read_len();
-            debug!("Recv data (read:{} pending:{pending})", self.readb.used);
+            trace!("Recv data (read:{} pending:{pending})", self.readb.used);
             match Self::recv(sock, &mut self.readb, pending) {
                 Ok(0) => return Err(FrrErr::PeerLeft),
                 Ok(_) => {
@@ -311,7 +350,8 @@ impl Frrmi {
 impl Frrmi {
     pub fn process_response(&mut self, response: FrrmiResponse) {
         let Some(request) = self.inservice.take() else {
-            warn!("Got response over frrmi to unsolicited request!. Ignoring it...");
+            error!("Got response over frrmi to unsolicited request!. Ignoring it...");
+            self.timeout.take();
             return;
         };
         let reqgen = request.genid;
@@ -332,7 +372,8 @@ impl Frrmi {
             self.stats.last_fail_genid = Some(response.genid);
             self.stats.apply_failures += 1;
             let out = response.get_response_data();
-            error!("Failed to apply FRR configuration: {out}");
+            error!("Failed to apply FRR configuration for gen {respgen}: {out}");
+            self.config_retry(request);
         }
         // cancel timeout
         self.timeout.take();
@@ -428,6 +469,7 @@ impl IoBuffer {
         // decode message as string
         let Ok(data) = from_utf8(&self.buffer[16..self.used]) else {
             self.clear();
+            error!("Failed to decode response rx over frrmi!");
             return Err(FrrErr::DecodeFailure);
         };
         let data = data.to_string();
