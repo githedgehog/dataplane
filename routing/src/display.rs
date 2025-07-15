@@ -8,6 +8,7 @@ use crate::cpi::{CpiStats, StatsRow};
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::fib::fibtable::FibTable;
 use crate::fib::fibtype::{Fib, FibId};
+use crate::frrmi::{Frrmi, FrrmiStats};
 
 use crate::rib::VrfTable;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
@@ -882,5 +883,64 @@ impl Display for CpiStats {
         fmt_stats_row(f, "Add rmac", &self.add_rmac)?;
         fmt_stats_row(f, "Del rmac", &self.del_rmac)?;
         Ok(())
+    }
+}
+
+//========================= Frrmi ================================//
+impl Display for FrrmiStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let fmt_simple = "%Y-%m-%dT %H:%M:%S";
+
+        let last_conn_time = &self
+            .last_conn_time
+            .map(|t| t.format(fmt_simple).to_string())
+            .unwrap_or_else(|| "never".to_string());
+
+        let last_disconn_time = &self
+            .last_disconn_time
+            .map(|t| t.format(fmt_simple).to_string())
+            .unwrap_or_else(|| "never".to_string());
+
+        let last_ok_t = &self
+            .last_ok_time
+            .map(|t| t.format(fmt_simple).to_string())
+            .unwrap_or_else(|| "".to_string());
+
+        let last_fail_t = &self
+            .last_fail_time
+            .map(|t| t.format(fmt_simple).to_string())
+            .unwrap_or_else(|| "".to_string());
+
+        let last_ok_genid = self
+            .last_ok_genid
+            .map(|genid| genid.to_string())
+            .unwrap_or_else(|| "none".to_string());
+
+        let last_fail_genid = self
+            .last_fail_genid
+            .map(|genid| genid.to_string())
+            .unwrap_or_else(|| "none".to_string());
+
+        writeln!(f, " Last connection : {last_conn_time}")?;
+        writeln!(f, " Last disconnect : {last_disconn_time}")?;
+        writeln!(f, " Last cfg applied: {last_ok_genid} {last_ok_t}")?;
+        writeln!(f, " Last cfg failure: {last_fail_genid} {last_fail_t}")?;
+        writeln!(f, " Configs applied : {}", self.apply_oks)?;
+        writeln!(f, " Configs failed  : {}", self.apply_failures)?;
+        Ok(())
+    }
+}
+
+impl Display for Frrmi {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Heading("Management interface".to_string()).fmt(f)?;
+        let status = if self.has_sock() {
+            "connected"
+        } else {
+            "not connnected"
+        };
+        writeln!(f, " status: {status}")?;
+        writeln!(f, " remote: {}", self.get_remote())?;
+        self.get_stats().fmt(f)
     }
 }

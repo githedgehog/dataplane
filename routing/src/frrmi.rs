@@ -138,6 +138,14 @@ impl Frrmi {
     pub(crate) fn has_sock(&self) -> bool {
         self.sock.is_some()
     }
+    #[must_use]
+    pub(crate) fn get_remote(&self) -> &String {
+        &self.remote
+    }
+    #[must_use]
+    pub(crate) fn get_stats(&self) -> &FrrmiStats {
+        &self.stats
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
