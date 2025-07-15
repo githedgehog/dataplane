@@ -10,6 +10,8 @@ use std::time::Instant;
 use std::{collections::VecDeque, time::Duration};
 use thiserror::Error;
 
+use crate::config::FrrConfig;
+
 #[allow(unused)]
 use tracing::{debug, error, info, warn};
 
@@ -39,14 +41,25 @@ pub(crate) enum FrrErr {
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 #[derive(Default)]
 pub(crate) struct Frrmi {
-    sock: Option<UnixStream>,         /* socket to frr-agent (non-blocking) */
-    remote: String,                   /* address of frr-agent */
-    writeb: IoBuffer,                 /* write buffer for tx */
-    readb: IoBuffer,                  /* read buffer for rx */
-    inservice: Option<FrrmiRequest>,  /* the request currently being serviced */
-    timeout: Option<Instant>,         /* timeout for the current request in service */
-    requests: VecDeque<FrrmiRequest>, /* queue of other requests to frr-agent */
-    stats: FrrmiStats,                /* stats */
+    sock: Option<UnixStream>,           /* socket to frr-agent (non-blocking) */
+    remote: String,                     /* address of frr-agent */
+    writeb: IoBuffer,                   /* write buffer for tx */
+    readb: IoBuffer,                    /* read buffer for rx */
+    inservice: Option<FrrmiRequest>,    /* the request currently being serviced */
+    timeout: Option<Instant>,           /* timeout for the current request in service */
+    requests: VecDeque<FrrmiRequest>,   /* queue of other requests to frr-agent */
+    stats: FrrmiStats,                  /* stats */
+    applied_cfg: Option<FrrAppliedConfig>, /* last successfully applied config */
+}
+
+pub(crate) struct FrrAppliedConfig {
+    pub(crate) genid: i64,
+    pub(crate) cfg: FrrConfig,
+}
+impl FrrAppliedConfig {
+    fn new(genid: i64, cfg: FrrConfig) -> Self {
+        Self { genid, cfg }
+    }
 }
 
 /// Stats for the `Frrmi`
@@ -63,12 +76,12 @@ pub(crate) struct FrrmiStats {
 }
 
 pub(crate) struct FrrmiRequest {
-    genid: i64,   /* gen id this frr-config corresponds to */
-    data: String, /* msg to frr-agent is a string */
+    genid: i64,     /* gen id this frr-config corresponds to */
+    cfg: FrrConfig, /* confif to frr-agent is a string */
 }
 impl FrrmiRequest {
-    pub(crate) fn new(genid: i64, data: String) -> Self {
-        Self { genid, data }
+    pub(crate) fn new(genid: i64, cfg: String) -> Self {
+        Self { genid, cfg }
     }
 }
 
@@ -146,6 +159,14 @@ impl Frrmi {
     pub(crate) fn get_stats(&self) -> &FrrmiStats {
         &self.stats
     }
+    pub fn clear_applied_cfg(&mut self) {
+        self.applied_cfg.take();
+    }
+    #[must_use]
+    #[allow(unused)]
+    pub fn get_applied_cfg(&self) -> &Option<FrrAppliedConfig> {
+        &self.applied_cfg
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -193,7 +214,7 @@ impl Frrmi {
     ///////////////////////////////////////////////////////////////////////////////////////////////////
     pub(crate) fn send_msg(&mut self, req: FrrmiRequest) -> Result<(), FrrErr> {
         let genid = req.genid;
-        let data = req.data.as_bytes();
+        let data = req.cfg.as_bytes();
         self.readb.clear();
         self.writeb.clear();
         self.writeb.serialize(genid, data);
@@ -305,6 +326,7 @@ impl Frrmi {
             self.stats.last_ok_time = Some(Local::now());
             self.stats.last_ok_genid = Some(response.genid);
             self.stats.apply_oks += 1;
+            self.applied_cfg = Some(FrrAppliedConfig::new(request.genid, request.cfg));
         } else {
             self.stats.last_fail_time = Some(Local::now());
             self.stats.last_fail_genid = Some(response.genid);

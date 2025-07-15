@@ -387,6 +387,7 @@ pub fn start_rio(
                 num_connects = connects;
                 if connects != 1 {
                     debug!("FRR appears to have restarted. Applying last config...");
+                    rio.frrmi.clear_applied_cfg(); /* Frr has no config */
                     rio.reapply_frr_config(&db);
                 }
             }
