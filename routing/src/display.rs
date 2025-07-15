@@ -24,6 +24,7 @@ use crate::evpn::{RmacEntry, RmacStore, Vtep};
 use crate::pretty_utils::{Heading, line};
 use crate::testfib::TestFib;
 
+use chrono::DateTime;
 use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
 use lpm::trie::{PrefixMapTrieWithDefault, TrieMap};
 use net::vxlan::Vni;
@@ -818,6 +819,38 @@ impl<'a> Display for FibGroups<'a> {
     }
 }
 
+//========================= Time utils =========================//
+use chrono::Local;
+fn fmt_time(time: &DateTime<Local>) -> String {
+    //let fmt_iso8 = "%Y-%m-%dT%H:%M:%S%.3f%:z";
+    let fmt_simple = "%Y-%m-%dT %H:%M:%S";
+    let mut out = time.format(fmt_simple).to_string();
+    out += " (";
+
+    let now = Local::now();
+    let elapsed = (now - time).num_seconds();
+    let weeks = elapsed / (7 * 24 * 60 * 60);
+    let days = (elapsed % (7 * 24 * 60 * 60)) / (24 * 60 * 60);
+    let hours = (elapsed % (24 * 60 * 60)) / (60 * 60);
+    let minutes = (elapsed % (60 * 60)) / 60;
+    let seconds = elapsed % 60;
+
+    if weeks > 0 {
+        out += &format!("{} weeks ", weeks);
+    }
+    if days > 0 {
+        out += &format!("{} days ", days);
+    }
+    if hours > 0 {
+        out += &format!("{} hours ", hours);
+    }
+    if minutes > 0 {
+        out += &format!("{} min ", minutes);
+    }
+    out += &format!("{} s ago)", seconds);
+    out
+}
+
 //========================= CPI ================================//
 macro_rules! STATS_ROW_FMT {
     () => {
@@ -847,17 +880,14 @@ fn fmt_stats_row(f: &mut std::fmt::Formatter<'_>, name: &str, row: &StatsRow) ->
 
 impl Display for CpiStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        //let fmt_iso8 = "%Y-%m-%dT%H:%M:%S%.3f%:z";
-        let fmt_simple = "%Y-%m-%dT %H:%M:%S";
-
         let empty = "--".to_string();
         let connect_t = &self
             .connect_time
-            .map(|t| t.format(fmt_simple).to_string())
+            .map(|t| fmt_time(&t))
             .unwrap_or_else(|| "never".to_string());
         let last_msg_rx_t = &self
             .last_msg_rx
-            .map(|t| t.format(fmt_simple).to_string())
+            .map(|t| fmt_time(&t))
             .unwrap_or_else(|| "--".to_string());
         let pid = self
             .last_pid
@@ -865,7 +895,7 @@ impl Display for CpiStats {
             .unwrap_or_else(|| empty);
 
         Heading("Control-plane interface".to_string()).fmt(f)?;
-        writeln!(f, " last connect: {connect_t} pid {pid}")?;
+        writeln!(f, " last connect: {connect_t} pid: {pid}")?;
         writeln!(f, " last msg rx : {last_msg_rx_t}")?;
         writeln!(f, " decode failures: {}", self.decode_failures)?;
         writeln!(f, " ctl/keepalives : {}", self.control_rx)?;
@@ -889,26 +919,24 @@ impl Display for CpiStats {
 //========================= Frrmi ================================//
 impl Display for FrrmiStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let fmt_simple = "%Y-%m-%dT %H:%M:%S";
-
         let last_conn_time = &self
             .last_conn_time
-            .map(|t| t.format(fmt_simple).to_string())
+            .map(|t| fmt_time(&t))
             .unwrap_or_else(|| "never".to_string());
 
         let last_disconn_time = &self
             .last_disconn_time
-            .map(|t| t.format(fmt_simple).to_string())
+            .map(|t| fmt_time(&t))
             .unwrap_or_else(|| "never".to_string());
 
         let last_ok_t = &self
             .last_ok_time
-            .map(|t| t.format(fmt_simple).to_string())
+            .map(|t| fmt_time(&t))
             .unwrap_or_else(|| "".to_string());
 
         let last_fail_t = &self
             .last_fail_time
-            .map(|t| t.format(fmt_simple).to_string())
+            .map(|t| fmt_time(&t))
             .unwrap_or_else(|| "".to_string());
 
         let last_ok_genid = self
