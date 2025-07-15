@@ -8,7 +8,7 @@
 use crate::atable::atablerw::AtableReader;
 use crate::cli::handle_cli_request;
 use crate::config::FrrConfig;
-use crate::cpi::process_rx_data;
+use crate::cpi::{CpiStats, process_rx_data};
 use crate::ctl::handle_ctl_msg;
 use crate::ctl::{RouterCtlMsg, RouterCtlSender};
 use crate::errors::RouterError;
@@ -20,7 +20,6 @@ use crate::routingdb::RoutingDb;
 use cli::cliproto::{CliRequest, CliSerialize};
 use dplane_rpc::{msg::RpcResultCode, socks::RpcCachedSock};
 
-use chrono::{DateTime, Local};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 use std::fs;
@@ -105,49 +104,6 @@ fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
 pub(crate) const CPSOCK: Token = Token(0);
 pub(crate) const CLISOCK: Token = Token(1);
 pub(crate) const FRRMISOCK: Token = Token(2);
-
-pub(crate) const CPI_STATS_SIZE: usize = RpcResultCode::RpcResultCodeMax as usize;
-#[derive(Default)]
-pub(crate) struct StatsRow(pub(crate) [u64; CPI_STATS_SIZE]);
-impl StatsRow {
-    pub(crate) fn incr(&mut self, res_code: RpcResultCode) {
-        let index = res_code.as_usize();
-        self.0[index] += 1;
-    }
-    pub(crate) fn get(&self, res_code: RpcResultCode) -> u64 {
-        let index = res_code.as_usize();
-        self.0[index]
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct CpiStats {
-    // last reported pid (or some id u32)
-    pub(crate) last_pid: Option<u32>,
-
-    // last connect time
-    pub(crate) connect_time: Option<DateTime<Local>>,
-
-    // last time a message was received
-    pub(crate) last_msg_rx: Option<DateTime<Local>>,
-
-    // decoding failures
-    pub(crate) decode_failures: u64,
-
-    // stats per request / object
-    pub(crate) connect: StatsRow,
-    pub(crate) add_route: StatsRow,
-    pub(crate) update_route: StatsRow,
-    pub(crate) del_route: StatsRow,
-    pub(crate) add_ifaddr: StatsRow,
-    pub(crate) del_ifaddr: StatsRow,
-    pub(crate) add_rmac: StatsRow,
-    pub(crate) del_rmac: StatsRow,
-
-    // control - keepalives
-    pub(crate) control_rx: u64,
-}
-
 /// `Rio` is the router IO loop state
 pub(crate) struct Rio {
     pub(crate) run: bool,

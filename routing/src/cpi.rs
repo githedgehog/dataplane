@@ -6,12 +6,11 @@
 use crate::evpn::{RmacEntry, RmacStore};
 use crate::fib::fibobjects::FibGroup;
 use crate::rib::{Vrf, VrfTable};
-use crate::rio::CpiStats;
 use crate::routingdb::RoutingDb;
 use crate::rpc_adapt::is_evpn_route;
 
 use bytes::Bytes;
-use chrono::Local;
+use chrono::{DateTime, Local};
 use dplane_rpc::socks::RpcCachedSock;
 use dplane_rpc::wire::*;
 use dplane_rpc::{msg::*, socks::Pretty};
@@ -20,6 +19,48 @@ use std::os::unix::net::SocketAddr;
 
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
+
+pub(crate) const CPI_STATS_SIZE: usize = RpcResultCode::RpcResultCodeMax as usize;
+#[derive(Default)]
+pub(crate) struct StatsRow(pub(crate) [u64; CPI_STATS_SIZE]);
+impl StatsRow {
+    pub(crate) fn incr(&mut self, res_code: RpcResultCode) {
+        let index = res_code.as_usize();
+        self.0[index] += 1;
+    }
+    pub(crate) fn get(&self, res_code: RpcResultCode) -> u64 {
+        let index = res_code.as_usize();
+        self.0[index]
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct CpiStats {
+    // last reported pid (or some id u32)
+    pub(crate) last_pid: Option<u32>,
+
+    // last connect time
+    pub(crate) connect_time: Option<DateTime<Local>>,
+
+    // last time a message was received
+    pub(crate) last_msg_rx: Option<DateTime<Local>>,
+
+    // decoding failures
+    pub(crate) decode_failures: u64,
+
+    // stats per request / object
+    pub(crate) connect: StatsRow,
+    pub(crate) add_route: StatsRow,
+    pub(crate) update_route: StatsRow,
+    pub(crate) del_route: StatsRow,
+    pub(crate) add_ifaddr: StatsRow,
+    pub(crate) del_ifaddr: StatsRow,
+    pub(crate) add_rmac: StatsRow,
+    pub(crate) del_rmac: StatsRow,
+
+    // control - keepalives
+    pub(crate) control_rx: u64,
+}
 
 /* convenience trait */
 trait RpcOperation {
