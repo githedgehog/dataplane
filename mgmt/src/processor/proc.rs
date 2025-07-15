@@ -17,7 +17,6 @@ use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
 use crate::models::external::{ConfigError, ConfigResult, stringify};
 use crate::models::internal::InternalConfig;
 
-use crate::frr::frrmi::FrrMi;
 use crate::models::external::gwconfig::GenId;
 use crate::processor::confbuild::router::generate_router_config;
 use crate::processor::display::GwConfigDatabaseSummary;
@@ -85,7 +84,6 @@ impl ConfigProcessor {
 
     /// Create a [`ConfigProcessor`]
     pub(crate) fn new(
-        _frrmi: FrrMi,
         router_ctl: RouterCtlSender,
         vpcmapw: VpcMapWriter<VpcMapName>,
         nattablew: NatTablesWriter,

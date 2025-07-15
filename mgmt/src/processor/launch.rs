@@ -22,7 +22,6 @@ use routing::ctl::RouterCtlSender;
 use crate::grpc::server::create_config_service;
 use tonic::transport::Server;
 
-use crate::frr::frrmi::FrrMi;
 use stats::VpcMapName;
 use tracing::{debug, error, info, warn};
 use vpcmap::map::VpcMapWriter;
@@ -144,11 +143,6 @@ async fn start_grpc_server_unix(
     Ok(())
 }
 
-/* create frrmi to talk to frr-agent */
-async fn start_frrmi(frr_agent_path: &str) -> FrrMi {
-    FrrMi::new(frr_agent_path).await
-}
-
 /// Enum for the different types of server addresses
 #[derive(Debug)]
 enum ServerAddress {
@@ -176,7 +170,6 @@ pub fn start_mgmt(
     grpc_addr: GrpcAddress,
     router_ctl: RouterCtlSender,
     nattablew: NatTablesWriter,
-    frr_agent_path: &str,
     vpcmapw: VpcMapWriter<VpcMapName>,
 ) -> Result<std::thread::JoinHandle<()>, Error> {
     /* build server address from provided grpc address */
@@ -185,7 +178,6 @@ pub fn start_mgmt(
         GrpcAddress::UnixSocket(path) => ServerAddress::Unix(path.to_path_buf()),
     };
     debug!("Will start gRPC listening on {server_address}");
-    let frr_agent_path = frr_agent_path.to_owned();
 
     std::thread::Builder::new()
         .name("mgmt".to_string())
@@ -201,8 +193,7 @@ pub fn start_mgmt(
 
             /* block thread to run gRPC and configuration processor */
             rt.block_on(async {
-                let frrmi = start_frrmi(&frr_agent_path).await;
-                let (processor, tx) = ConfigProcessor::new(frrmi, router_ctl, vpcmapw, nattablew);
+                let (processor, tx) = ConfigProcessor::new(router_ctl, vpcmapw, nattablew);
                 spawn(async { processor.run().await });
 
                 // Start the appropriate server based on address type

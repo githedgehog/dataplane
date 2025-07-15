@@ -105,7 +105,6 @@ fn main() {
     /* mgmt: router objects */
     let router = setup.router;
     let router_ctl = router.get_ctl_tx();
-    let frr_agent_path = router.get_frr_agent_path().to_str().unwrap();
 
     /* mgmt: nat table */
     let nattablew = setup.nattable;
@@ -113,7 +112,7 @@ fn main() {
     let statsr = setup.statsr;
 
     /* start management */
-    if let Err(e) = start_mgmt(grpc_addr, router_ctl, nattablew, frr_agent_path, vpcmapw) {
+    if let Err(e) = start_mgmt(grpc_addr, router_ctl, nattablew, vpcmapw) {
         error!("Failed to start gRPC server: {e}");
         panic!("Failed to start gRPC server: {e}");
     } else {
