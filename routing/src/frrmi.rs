@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use chrono::{DateTime, Local};
 use mio::net::UnixStream;
 use std::io::{self, ErrorKind, Read, Write};
 use std::os::fd::AsRawFd;
@@ -45,6 +46,20 @@ pub(crate) struct Frrmi {
     inservice: Option<FrrmiRequest>,  /* the request currently being serviced */
     timeout: Option<Instant>,         /* timeout for the current request in service */
     requests: VecDeque<FrrmiRequest>, /* queue of other requests to frr-agent */
+    stats: FrrmiStats,                /* stats */
+}
+
+/// Stats for the `Frrmi`
+#[derive(Default)]
+pub(crate) struct FrrmiStats {
+    pub(crate) last_conn_time: Option<DateTime<Local>>, /* the last time that connecting to frr-agent succeeded */
+    pub(crate) last_disconn_time: Option<DateTime<Local>>, /* the time when the last disconnect happened */
+    pub(crate) last_ok_genid: Option<i64>,                 /* genid of the last applied config */
+    pub(crate) last_fail_genid: Option<i64>, /* genid of the most recent config that failed (excluding communication errors) */
+    pub(crate) last_ok_time: Option<DateTime<Local>>, /* time when last config succeeded */
+    pub(crate) last_fail_time: Option<DateTime<Local>>, /* time when last config failed */
+    pub(crate) apply_oks: u64,               /* number of configs applied successfully */
+    pub(crate) apply_failures: u64,          /* number of times applying a config failed */
 }
 
 pub(crate) struct FrrmiRequest {
@@ -89,6 +104,7 @@ impl Frrmi {
     pub(crate) fn connect(&mut self) {
         self.sock = UnixStream::connect(&self.remote).ok();
         if self.sock.is_some() {
+            self.stats.last_conn_time = Some(Local::now());
             info!("Successfully connected to frr-agent at {}", self.remote);
         }
     }
@@ -106,6 +122,7 @@ impl Frrmi {
             }
         }
         debug!("Frrmi is now disconnected");
+        self.stats.last_disconn_time = Some(Local::now());
     }
     pub(crate) fn timeout(&mut self) {
         if self.timeout.take_if(|t| *t < Instant::now()).is_some() {
@@ -277,7 +294,13 @@ impl Frrmi {
         // this is just for logging
         if response.is_success() {
             info!("Frr configuration successfully applied for gen {respgen}");
+            self.stats.last_ok_time = Some(Local::now());
+            self.stats.last_ok_genid = Some(response.genid);
+            self.stats.apply_oks += 1;
         } else {
+            self.stats.last_fail_time = Some(Local::now());
+            self.stats.last_fail_genid = Some(response.genid);
+            self.stats.apply_failures += 1;
             let out = response.get_response_data();
             error!("Failed to apply FRR configuration: {out}");
         }
