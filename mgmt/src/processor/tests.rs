@@ -50,7 +50,6 @@ pub mod test {
         VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
     };
 
-    use crate::frr::frrmi::tests::fake_frr_agent;
     use crate::processor::proc::ConfigProcessor;
     use routing::{Router, RouterParamsBuilder};
     use tracing::debug;
@@ -385,12 +384,6 @@ pub mod test {
         /* router control */
         let ctl = router.get_ctl_tx();
 
-        /* router frr-agent path */
-        let frr_agent_path = router.get_frr_agent_path().to_str().expect("Bad path");
-
-        /* start fake frr-agent listening at the configured frr-agent path */
-        let frr_agent = fake_frr_agent(frr_agent_path).await;
-
         /* vpcmappings for vpc name resolution for vpc stats */
         let vpcmapw = VpcMapWriter::<VpcMapName>::new();
 
@@ -409,10 +402,6 @@ pub mod test {
                 panic!("{e}");
             }
         }
-
-        /* stop the fake frr-agent */
-        debug!("Stopping frr-agent...");
-        frr_agent.abort();
 
         /* stop the router */
         debug!("Stopping the router...");
