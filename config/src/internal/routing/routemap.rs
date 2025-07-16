@@ -72,6 +72,7 @@ pub struct RouteMapTable(BTreeMap<String, RouteMap>);
 
 /* Impl basic ops */
 impl RouteMapEntry {
+    #[must_use]
     pub fn new(policy: MatchingPolicy) -> Self {
         Self {
             policy,
@@ -79,16 +80,19 @@ impl RouteMapEntry {
             actions: vec![],
         }
     }
+    #[must_use]
     pub fn add_match(mut self, m: RouteMapMatch) -> Self {
         self.matches.push(m);
         self
     }
+    #[must_use]
     pub fn add_action(mut self, action: RouteMapSetAction) -> Self {
         self.actions.push(action);
         self
     }
 }
 impl RouteMap {
+    #[must_use]
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_owned(),
@@ -97,14 +101,14 @@ impl RouteMap {
         }
     }
     pub fn add_entry(&mut self, seq: Option<u32>, entry: RouteMapEntry) -> ConfigResult {
-        let seq = match seq {
-            Some(n) => n,
-            None => {
-                let value = self.next_seq;
-                self.next_seq += 1;
-                value
-            }
+        let seq = if let Some(n) = seq {
+            n
+        } else {
+            let value = self.next_seq;
+            self.next_seq += 1;
+            value
         };
+
         if self.entries.contains_key(&seq) {
             let msg = format!(
                 "Duplicate route-mape seq {} in route map {}",
@@ -118,6 +122,7 @@ impl RouteMap {
     }
 }
 impl RouteMapTable {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

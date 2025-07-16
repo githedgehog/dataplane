@@ -4,6 +4,7 @@
 //! Dataplane configuration model: vpc
 
 #![allow(unused)]
+#![allow(clippy::missing_errors_doc)]
 
 use lpm::prefix::Prefix;
 use net::vxlan::Vni;
@@ -34,6 +35,7 @@ pub struct Peering {
 /// Type for a fixed-sized VPC unique id
 pub struct VpcId(pub(crate) [char; 5]);
 impl VpcId {
+    #[must_use]
     pub fn new(chars: [char; 5]) -> Self {
         Self(chars)
     }
@@ -90,7 +92,7 @@ impl Vpc {
             .peerings_vpc(&self.name)
             .map(|p| {
                 let (local, remote) = p.get_peering_manifests(&self.name);
-                let remote_id = idmap.get(&remote.name).unwrap();
+                let remote_id = idmap.get(&remote.name).unwrap_or_else(|| unreachable!());
                 Peering {
                     name: p.name.clone(),
                     local: local.clone(),
@@ -107,10 +109,12 @@ impl Vpc {
         }
     }
     /// Tell how many peerings this VPC has
+    #[must_use]
     pub fn num_peerings(&self) -> usize {
         self.peerings.len()
     }
     /// Tell if the peerings of this VPC have host routes
+    #[must_use]
     pub fn has_peers_with_host_prefixes(&self) -> bool {
         self.peerings
             .iter()
@@ -128,14 +132,17 @@ pub struct VpcTable {
 }
 impl VpcTable {
     /// Create new vpc table
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
     /// Number of VPCs in [`VpcTable`]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.vpcs.len()
     }
     /// Tells if [`VpcTable`] is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.vpcs.is_empty()
     }
@@ -153,16 +160,18 @@ impl VpcTable {
         }
         self.vnis.insert(vpc.vni);
         self.ids.insert(vpc.id.clone(), vpc.name.clone());
-        self.vpcs.insert(vpc.name.to_owned(), vpc);
+        self.vpcs.insert(vpc.name.clone(), vpc);
         Ok(())
     }
     /// Get a [`Vpc`] from the vpc table by name
+    #[must_use]
     pub fn get_vpc(&self, vpc_name: &str) -> Option<&Vpc> {
         self.vpcs.get(vpc_name)
     }
     /// Get a [`Vpc`] by [`VpcId`]
-    pub fn get_vpc_by_vpcid(&self, vpcid: VpcId) -> Option<&Vpc> {
-        match self.ids.get(&vpcid) {
+    #[must_use]
+    pub fn get_vpc_by_vpcid(&self, vpcid: &VpcId) -> Option<&Vpc> {
+        match self.ids.get(vpcid) {
             Some(name) => self.vpcs.get(name),
             None => None,
         }

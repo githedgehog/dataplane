@@ -19,6 +19,7 @@ pub struct Frr {
 }
 #[allow(dead_code)]
 impl Frr {
+    #[must_use]
     pub fn new(profile: FrrProfile, hostname: &str) -> Self {
         Self {
             profile,

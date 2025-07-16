@@ -42,6 +42,7 @@ pub struct InternalConfig {
 }
 
 impl InternalConfig {
+    #[must_use]
     pub fn new(dev_cfg: DeviceConfig) -> Self {
         // Frr profile is not configurable for the time being
         let frr = Frr::new(
@@ -61,6 +62,7 @@ impl InternalConfig {
     pub fn set_vtep(&mut self, vtep: VtepConfig) {
         self.vtep = Some(vtep);
     }
+    #[must_use]
     pub fn get_vtep(&self) -> &Option<VtepConfig> {
         &self.vtep
     }

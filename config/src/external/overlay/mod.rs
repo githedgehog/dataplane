@@ -21,6 +21,7 @@ pub struct Overlay {
 }
 
 impl Overlay {
+    #[must_use]
     pub fn new(vpc_table: VpcTable, peering_table: VpcPeeringTable) -> Self {
         Self {
             vpc_table,

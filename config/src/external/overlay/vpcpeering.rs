@@ -18,31 +18,38 @@ pub struct VpcExpose {
     pub not_as: BTreeSet<Prefix>,
 }
 impl VpcExpose {
+    #[must_use]
     pub fn empty() -> Self {
         Self::default()
     }
+    #[must_use]
     pub fn ip(mut self, prefix: Prefix) -> Self {
         self.ips.insert(prefix);
         self
     }
+    #[must_use]
     pub fn not(mut self, prefix: Prefix) -> Self {
         self.nots.insert(prefix);
         self
     }
+    #[must_use]
     pub fn as_range(mut self, prefix: Prefix) -> Self {
         self.as_range.insert(prefix);
         self
     }
+    #[must_use]
     pub fn not_as(mut self, prefix: Prefix) -> Self {
         self.not_as.insert(prefix);
         self
     }
+    #[must_use]
     pub fn has_host_prefixes(&self) -> bool {
         self.ips.iter().filter(|p| p.is_host()).count() > 0
     }
     // If the as_range list is empty, then there's no NAT required for the expose, meaning that the
     // public IPs are those from the "ips" list. This method returns the current list of public IPs
     // for the VpcExpose.
+    #[must_use]
     pub fn public_ips(&self) -> &BTreeSet<Prefix> {
         if self.as_range.is_empty() {
             &self.ips
@@ -51,6 +58,7 @@ impl VpcExpose {
         }
     }
     // Same as public_ips, but returns the list of excluded prefixes
+    #[must_use]
     pub fn public_excludes(&self) -> &BTreeSet<Prefix> {
         if self.as_range.is_empty() {
             &self.nots
@@ -58,6 +66,7 @@ impl VpcExpose {
             &self.not_as
         }
     }
+    #[must_use]
     pub fn is_natted(&self) -> bool {
         !self.as_range.is_empty()
     }
@@ -98,7 +107,7 @@ impl VpcExpose {
 
         // 2. Check that items in prefix lists of each kind don't overlap
         for prefixes in [&self.ips, &self.nots, &self.as_range, &self.not_as] {
-            for prefix in prefixes.iter() {
+            for prefix in prefixes {
                 // Loop over the remaining prefixes in the tree
                 for other_prefix in prefixes.range((Excluded(prefix), Unbounded)) {
                     if prefix.covers(other_prefix) || other_prefix.covers(prefix) {
@@ -114,13 +123,14 @@ impl VpcExpose {
             if prefixes.is_empty() {
                 continue;
             }
-            for exclude in excludes.iter() {
+            for exclude in excludes {
                 if !prefixes.iter().any(|p| p.covers(exclude)) {
                     return Err(ConfigError::OutOfRangeExclusionPrefix(*exclude));
                 }
             }
         }
 
+        #[allow(clippy::items_after_statements)]
         fn prefixes_size(prefixes: &BTreeSet<Prefix>) -> PrefixSize {
             prefixes.iter().map(|p| p.size()).sum()
         }
@@ -176,12 +186,14 @@ pub struct VpcManifest {
     pub exposes: Vec<VpcExpose>,
 }
 impl VpcManifest {
+    #[must_use]
     pub fn new(vpc_name: &str) -> Self {
         Self {
             name: vpc_name.to_owned(),
             ..Default::default()
         }
     }
+    #[must_use]
     pub fn has_host_prefixes(&self) -> bool {
         self.exposes
             .iter()
@@ -243,6 +255,7 @@ pub struct VpcPeering {
     pub right: VpcManifest, /* manifest for the other side */
 }
 impl VpcPeering {
+    #[must_use]
     pub fn new(name: &str, left: VpcManifest, right: VpcManifest) -> Self {
         Self {
             name: name.to_owned(),
@@ -257,6 +270,7 @@ impl VpcPeering {
         Ok(())
     }
     /// Given a peering fetch the manifests, orderly depending on the provided vpc name
+    #[must_use]
     pub fn get_peering_manifests(&self, vpc: &str) -> (&VpcManifest, &VpcManifest) {
         if self.left.name == vpc {
             (&self.left, &self.right)
@@ -270,14 +284,17 @@ impl VpcPeering {
 pub struct VpcPeeringTable(BTreeMap<String, VpcPeering>);
 impl VpcPeeringTable {
     /// Create a new, empty [`VpcPeeringTable`]
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
     /// Number of peerings in [`VpcPeeringTable`]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
     /// Tells if [`VpcPeeringTable`] contains peerings or not
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -299,7 +316,7 @@ impl VpcPeeringTable {
             return Err(ConfigError::DuplicateVpcPeeringId(peering.name.clone()));
         }
 
-        if self.0.insert(peering.name.to_owned(), peering).is_some() {
+        if self.0.insert(peering.name.clone(), peering).is_some() {
             // We should have prevented this case by checking for duplicates just above.
             // This should never happen, unless we have another thread modifying the table.
             unreachable!("Unexpected race condition in peering table")
@@ -328,8 +345,8 @@ fn validate_overlapping(
 ) -> Result<(), ConfigError> {
     // Find colliding prefixes
     let mut colliding = Vec::new();
-    for prefix_left in prefixes_left.iter() {
-        for prefix_right in prefixes_right.iter() {
+    for prefix_left in prefixes_left {
+        for prefix_right in prefixes_right {
             if prefix_left.covers(prefix_right) || prefix_right.covers(prefix_left) {
                 colliding.push((*prefix_left, *prefix_right));
             }

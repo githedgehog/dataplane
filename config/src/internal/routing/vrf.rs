@@ -52,6 +52,7 @@ impl Default for VrfConfig {
 }
 
 impl VrfConfig {
+    #[must_use]
     pub fn new(name: &str, vni: Option<Vni>, default: bool) -> Self {
         Self {
             name: name.to_owned(),
@@ -61,21 +62,22 @@ impl VrfConfig {
             ..Default::default()
         }
     }
+    #[must_use]
+    #[allow(clippy::missing_panics_doc)]
     pub fn set_vpc_id(mut self, vpc_id: VpcId) -> Self {
-        if self.default {
-            panic!("Can't set vpc_id for default vrf");
-        }
+        debug_assert!(!self.default, "Can't set vpc_id for default vrf");
         self.vpc_id = Some(vpc_id);
         self
     }
+    #[must_use]
     pub fn set_description(mut self, description: &str) -> Self {
         self.description = Some(description.to_owned());
         self
     }
+    #[must_use]
+    #[allow(clippy::missing_panics_doc)]
     pub fn set_table_id(mut self, tableid: RouteTableId) -> Self {
-        if self.default {
-            panic!("Can't set table id for default vrf");
-        }
+        debug_assert!(!self.default, "Can't set vpc_id for default vrf");
         self.tableid = Some(tableid);
         self
     }
@@ -105,12 +107,14 @@ impl VrfConfigTable {
     //////////////////////////////////////////////////////////
     /// Create an empty `VrfConfigTable`
     //////////////////////////////////////////////////////////
+    #[must_use]
     pub fn new() -> Self {
         VrfConfigTable::default()
     }
     //////////////////////////////////////////////////////////
     /// Get a reference to the default vrf config
     //////////////////////////////////////////////////////////
+    #[must_use]
     pub fn default_vrf_config(&self) -> Option<&VrfConfig> {
         self.iter_by_name().find(|vrf| vrf.default)
     }

@@ -94,7 +94,7 @@ pub fn add_peering(
 
     /* get vni for remote manifest */
     let remote_vni = vpc_table
-        .get_vpc_by_vpcid(new_peering.remote_id)
+        .get_vpc_by_vpcid(&new_peering.remote_id)
         .unwrap_or_else(|| unreachable!())
         .vni;
 

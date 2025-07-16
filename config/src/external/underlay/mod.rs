@@ -13,6 +13,7 @@ pub struct Underlay {
     pub vrf: VrfConfig, /* default vrf */
 }
 impl Underlay {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

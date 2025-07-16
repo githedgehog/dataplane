@@ -12,6 +12,7 @@ pub struct Ospf {
 }
 
 impl Ospf {
+    #[must_use]
     pub fn new(router_id: Ipv4Addr) -> Self {
         Self {
             router_id,
@@ -41,6 +42,7 @@ pub struct OspfInterface {
 }
 
 impl OspfInterface {
+    #[must_use]
     pub fn new(area: Ipv4Addr) -> Self {
         Self {
             passive: false,
@@ -49,14 +51,17 @@ impl OspfInterface {
             network: None,
         }
     }
+    #[must_use]
     pub fn set_passive(mut self, value: bool) -> Self {
         self.passive = value;
         self
     }
+    #[must_use]
     pub fn set_cost(mut self, cost: u32) -> Self {
         self.cost = Some(cost);
         self
     }
+    #[must_use]
     pub fn set_network(mut self, network: OspfNetwork) -> Self {
         self.network = Some(network);
         self

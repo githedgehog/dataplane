@@ -82,6 +82,7 @@ pub enum ConfigError {
 /// Result-like type for configurations
 pub type ConfigResult = Result<(), ConfigError>;
 
+#[must_use]
 pub fn stringify(conf_result: &ConfigResult) -> String {
     match conf_result {
         Ok(()) => "Ok".to_string(),

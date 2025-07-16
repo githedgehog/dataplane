@@ -25,6 +25,7 @@ pub struct StaticRoute {
 }
 
 impl StaticRoute {
+    #[must_use]
     pub fn new(prefix: Prefix) -> Self {
         Self {
             prefix,
@@ -33,30 +34,37 @@ impl StaticRoute {
             tag: None,
         }
     }
+    #[must_use]
     pub fn nhop_addr(mut self, addr: IpAddr) -> Self {
         self.next_hop = StaticRouteNhop::Address(addr);
         self
     }
+    #[must_use]
     pub fn nhop_iface(mut self, ifname: String) -> Self {
         self.next_hop = StaticRouteNhop::Interface(ifname);
         self
     }
+    #[must_use]
     pub fn nhop_blackhole(mut self) -> Self {
         self.next_hop = StaticRouteNhop::Blackhole;
         self
     }
+    #[must_use]
     pub fn nhop_null0(mut self) -> Self {
         self.next_hop = StaticRouteNhop::Null0;
         self
     }
+    #[must_use]
     pub fn nhop_reject(mut self) -> Self {
         self.next_hop = StaticRouteNhop::Reject;
         self
     }
+    #[must_use]
     pub fn nhop_vrf(mut self, vrfname: String) -> Self {
         self.next_hop_vrf = Some(vrfname);
         self
     }
+    #[must_use]
     pub fn tag(mut self, tag: u32) -> Self {
         self.tag = Some(tag);
         self

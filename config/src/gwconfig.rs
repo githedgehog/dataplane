@@ -63,6 +63,7 @@ impl GwConfig {
     //////////////////////////////////////////////////////////////////
     /// Create a [`GwConfig`] object with a given [`ExternalConfig`].
     //////////////////////////////////////////////////////////////////
+    #[must_use]
     pub fn new(external: ExternalConfig) -> Self {
         Self {
             meta: GwConfigMeta::new(),
@@ -90,6 +91,7 @@ impl GwConfig {
     //////////////////////////////////////////////////////////////////
     /// Return the [`GenId`] of a [`GwConfig`] object.
     //////////////////////////////////////////////////////////////////
+    #[must_use]
     pub fn genid(&self) -> GenId {
         self.external.genid
     }

@@ -194,6 +194,7 @@ pub struct BgpConfig {
 
 /* ===== impls: Builders ===== */
 impl Redistribute {
+    #[must_use]
     pub fn new(protocol: Protocol, metric: Option<u32>, rmap: Option<String>) -> Self {
         Self {
             protocol,
@@ -203,9 +204,11 @@ impl Redistribute {
     }
 }
 impl VrfImports {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
+    #[must_use]
     pub fn set_routemap(mut self, routemap: &str) -> Self {
         self.routemap = Some(routemap.to_owned());
         self
@@ -215,6 +218,7 @@ impl VrfImports {
     }
 }
 impl AfIpv4Ucast {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             redistribute: vec![],
@@ -237,6 +241,7 @@ impl AfIpv4Ucast {
     }
 }
 impl AfIpv6Ucast {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             redistribute: vec![],
@@ -258,215 +263,265 @@ impl AfIpv6Ucast {
     }
 }
 impl AfL2vpnEvpn {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
+    #[must_use]
     pub fn set_adv_all_vni(mut self, value: bool) -> Self {
         self.adv_all_vni = value;
         self
     }
+    #[must_use]
     pub fn set_adv_default_gw(mut self, value: bool) -> Self {
         self.adv_default_gw = value;
         self
     }
+    #[must_use]
     pub fn set_adv_svi_ip(mut self, value: bool) -> Self {
         self.adv_svi_ip = value;
         self
     }
+    #[must_use]
     pub fn set_adv_ipv4_unicast(mut self, value: bool) -> Self {
         self.adv_ipv4_unicast = value;
         self
     }
+    #[must_use]
     pub fn set_adv_ipv4_unicast_rmap(mut self, rmap: String) -> Self {
         self.adv_ipv4_unicast_rmap = Some(rmap);
         self
     }
+    #[must_use]
     pub fn set_adv_ipv6_unicast(mut self, value: bool) -> Self {
         self.adv_ipv6_unicast = value;
         self
     }
+    #[must_use]
     pub fn set_adv_ipv6_unicast_rmap(mut self, rmap: String) -> Self {
         self.adv_ipv6_unicast_rmap = Some(rmap);
         self
     }
+    #[must_use]
     pub fn set_default_originate_ipv4(mut self, value: bool) -> Self {
         self.default_originate_ipv4 = value;
         self
     }
+    #[must_use]
     pub fn set_default_originate_ipv6(mut self, value: bool) -> Self {
         self.default_originate_ipv6 = value;
         self
     }
 }
 impl BgpNeighCapabilities {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
+    #[must_use]
     pub fn dynamic(mut self, value: bool) -> Self {
         self.dynamic = value;
         self
     }
+    #[must_use]
     pub fn ext_nhop(mut self, value: bool) -> Self {
         self.ext_nhop = value;
         self
     }
+    #[must_use]
     pub fn fqdn(mut self, value: bool) -> Self {
         self.fqdn = value;
         self
     }
+    #[must_use]
     pub fn software_ver(mut self, value: bool) -> Self {
         self.software_ver = value;
         self
     }
 }
 impl BgpNeighbor {
+    #[must_use]
     pub fn new_host(address: IpAddr) -> Self {
         Self {
             ntype: BgpNeighType::Host(address),
             ..Default::default()
         }
     }
+    #[must_use]
     pub fn new_peer_group(group: &str) -> Self {
         Self {
             ntype: BgpNeighType::PeerGroup(group.to_owned()),
             ..Default::default()
         }
     }
+    #[must_use]
     pub fn is_peer_group(&self) -> bool {
         matches!(self.ntype, BgpNeighType::PeerGroup(_))
     }
 
     /* capabilities */
+    #[must_use]
     pub fn set_capabilities(mut self, capas: BgpNeighCapabilities) -> Self {
         self.capabilities = capas;
         self
     }
 
     /* === options == */
+    #[must_use]
     pub fn set_route_map_in(mut self, rmap_name: &str) -> Self {
         self.route_map_in = Some(rmap_name.to_owned());
         self
     }
+    #[must_use]
     pub fn set_route_map_out(mut self, rmap_name: &str) -> Self {
         self.route_map_out = Some(rmap_name.to_owned());
         self
     }
+    #[must_use]
     pub fn set_remote_as(mut self, asn: u32) -> Self {
         self.remote_as = Some(asn);
         self
     }
+    #[must_use]
     pub fn set_peer_group(mut self, peer_group: &str) -> Self {
         self.peer_group = Some(peer_group.to_owned());
         self
     }
+    #[must_use]
     pub fn set_description(mut self, description: &str) -> Self {
         self.description = Some(description.to_owned());
         self
     }
+    #[must_use]
     pub fn set_update_source_address(mut self, address: IpAddr) -> Self {
         self.update_source = Some(BgpUpdateSource::Address(address));
         self
     }
+    #[must_use]
     pub fn set_update_source_interface(mut self, ifname: &str) -> Self {
         self.update_source = Some(BgpUpdateSource::Interface(ifname.to_owned()));
         self
     }
+    #[must_use]
     pub fn set_update_source(mut self, update_source: Option<BgpUpdateSource>) -> Self {
         self.update_source = update_source;
         self
     }
+    #[must_use]
     pub fn set_weight(mut self, weight: u16) -> Self {
         self.weight = Some(weight);
         self
     }
+    #[must_use]
     pub fn set_send_community(mut self, comm: NeighSendCommunities) -> Self {
         self.send_community = Some(comm);
         self
     }
+    #[must_use]
     pub fn set_ebgp_multihop(mut self, max_hops: u8) -> Self {
         self.ebgp_multihop = Some(max_hops);
         self
     }
+    #[must_use]
     pub fn set_ttl_security(mut self, hops: u8) -> Self {
         self.ttl_sec_hops = Some(hops);
         self
     }
+    #[must_use]
     pub fn set_advertisement_interval(mut self, interval: u16) -> Self {
         self.advertisement_interval = Some(interval);
         self
     }
+    #[must_use]
     pub fn set_maximum_prefix(mut self, max: u32) -> Self {
         self.maximum_prefix = Some(max);
         self
     }
+    #[must_use]
     pub fn set_maximum_prefix_out(mut self, max: u32) -> Self {
         self.maximum_prefix_out = Some(max);
         self
     }
+    #[must_use]
     pub fn set_timer_connect(mut self, timer: u16) -> Self {
         self.timer_connect = Some(timer);
         self
     }
+    #[must_use]
     pub fn set_timer_delay_open(mut self, timer: u8) -> Self {
         self.timer_delay_open = Some(timer);
         self
     }
+    #[must_use]
     pub fn set_tcp_mss(mut self, mss: u16) -> Self {
         self.tcp_mss = Some(mss);
         self
     }
 
     /* === switches == */
+    #[must_use]
     pub fn set_passive(mut self, value: bool) -> Self {
         self.passive = value;
         self
     }
+    #[must_use]
     pub fn set_as_override(mut self, value: bool) -> Self {
         self.as_override = value;
         self
     }
+    #[must_use]
     pub fn set_strict_capability_match(mut self, value: bool) -> Self {
         self.strict_capability_match = value;
         self
     }
+    #[must_use]
     pub fn set_dont_capability_negotiate(mut self, value: bool) -> Self {
         self.dont_capability_negotiate = value;
         self
     }
+    #[must_use]
     pub fn set_allow_as_in(mut self, value: bool) -> Self {
         self.allow_as_in = value;
         self
     }
+    #[must_use]
     pub fn set_extended_link_bandwidth(mut self, value: bool) -> Self {
         self.extended_link_bandwidth = value;
         self
     }
+    #[must_use]
     pub fn set_next_hop_self(mut self, value: bool) -> Self {
         self.next_hop_self = value;
         self
     }
+    #[must_use]
     pub fn set_remove_private_as(mut self, value: bool) -> Self {
         self.remove_private_as = value;
         self
     }
+    #[must_use]
     pub fn set_rr_client(mut self, value: bool) -> Self {
         self.rr_client = value;
         self
     }
+    #[must_use]
     pub fn set_default_originate(mut self, value: bool) -> Self {
         self.default_originate = value;
         self
     }
 
     /* AFs: activated explicitly */
+    #[must_use]
     pub fn ipv4_unicast_activate(mut self, value: bool) -> Self {
         self.ipv4_unicast = value;
         self
     }
+    #[must_use]
     pub fn ipv6_unicast_activate(mut self, value: bool) -> Self {
         self.ipv6_unicast = value;
         self
     }
+    #[must_use]
     pub fn l2vpn_evpn_activate(mut self, value: bool) -> Self {
         self.l2vpn_evpn = value;
         self
@@ -474,49 +529,60 @@ impl BgpNeighbor {
 }
 
 impl BgpOptions {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
+    #[must_use]
     pub fn set_network_import_check(mut self, value: bool) -> Self {
         self.network_import_check = value;
         self
     }
+    #[must_use]
     pub fn set_ebgp_requires_policy(mut self, value: bool) -> Self {
         self.ebgp_requires_policy = value;
         self
     }
+    #[must_use]
     pub fn set_bgp_default_unicast(mut self, value: bool) -> Self {
         self.bgp_default_unicast = value;
         self
     }
+    #[must_use]
     pub fn set_supress_fib_pending(mut self, value: bool) -> Self {
         self.supress_fib_pending = value;
         self
     }
+    #[must_use]
     pub fn set_supress_duplicates(mut self, value: bool) -> Self {
         self.supress_duplicates = value;
         self
     }
+    #[must_use]
     pub fn set_minimum_holdtime(mut self, min_hold_time: u16) -> Self {
         self.minimum_holdtime = Some(min_hold_time);
         self
     }
+    #[must_use]
     pub fn set_listen_range(mut self, prefix: Prefix, group: String) -> Self {
         self.listen_range = Some((prefix, group));
         self
     }
+    #[must_use]
     pub fn set_listen_limit(mut self, limit: u16) -> Self {
         self.listen_limit = Some(limit);
         self
     }
 }
 impl BgpConfig {
+    #[must_use]
     pub fn new(asn: u32) -> Self {
         Self {
             asn,
             ..Default::default()
         }
     }
+    #[must_use]
     pub fn set_vrf_name(mut self, vrf_name: String) -> Self {
         self.vrf = Some(vrf_name);
         self

@@ -56,6 +56,7 @@ pub struct PrefixListTable(BTreeMap<String, PrefixList>);
 
 /* Impl basic ops */
 impl PrefixList {
+    #[must_use]
     pub fn new(name: &str, ipver: IpVer, description: Option<String>) -> Self {
         Self {
             name: name.to_owned(),
@@ -74,14 +75,14 @@ impl PrefixList {
             error!("{msg}");
             return Err(ConfigError::InternalFailure(msg));
         }
-        let seq = match seq {
-            Some(n) => n,
-            None => {
-                let value = self.next_seq;
-                self.next_seq += 1;
-                value
-            }
+        let seq = if let Some(n) = seq {
+            n
+        } else {
+            let value = self.next_seq;
+            self.next_seq += 1;
+            value
         };
+
         if self.entries.contains_key(&seq) {
             let msg = format!(
                 "Duplicate prefix list seq {} in prefix list {}",
@@ -104,6 +105,7 @@ impl PrefixList {
     }
 }
 impl PrefixListEntry {
+    #[must_use]
     pub fn new(
         action: PrefixListAction,
         prefix: PrefixListPrefix,
@@ -117,6 +119,7 @@ impl PrefixListEntry {
     }
     /// Tell if a `PrefixListEntry` can be added to a `PrefixList` depending on
     /// the prefix it contains (ipv4 of ipv6) and the `PrefixList` `IpVer` value
+    #[must_use]
     pub fn is_version_compatible(&self, ipver: IpVer) -> bool {
         match self.prefix {
             PrefixListPrefix::Prefix(prefix) => match ipver {
@@ -128,6 +131,7 @@ impl PrefixListEntry {
     }
 }
 impl PrefixListTable {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

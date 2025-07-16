@@ -29,6 +29,7 @@ impl ExternalConfig {
     pub const BLANK_GENID: GenId = 0;
 
     #[allow(clippy::new_without_default)]
+    #[must_use]
     pub fn new() -> Self {
         Self {
             genid: Self::BLANK_GENID,

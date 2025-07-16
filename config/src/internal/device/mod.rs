@@ -18,6 +18,7 @@ pub struct DeviceConfig {
     pub ports: Vec<PortConfig>,
 }
 impl DeviceConfig {
+    #[must_use]
     pub fn new(settings: DeviceSettings) -> Self {
         Self {
             settings,

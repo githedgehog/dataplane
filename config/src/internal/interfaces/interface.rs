@@ -69,6 +69,7 @@ pub struct InterfaceConfig {
 pub struct InterfaceConfigTable(BTreeMap<String, InterfaceConfig>);
 
 impl InterfaceAddress {
+    #[must_use]
     pub fn new(address: IpAddr, mask_len: u8) -> Self {
         Self { address, mask_len }
     }
@@ -103,6 +104,7 @@ impl FromStr for InterfaceAddress {
 }
 
 impl InterfaceConfig {
+    #[must_use]
     pub fn new(name: &str, iftype: InterfaceType, internal: bool) -> Self {
         Self {
             name: name.to_owned(),
@@ -115,27 +117,33 @@ impl InterfaceConfig {
             ospf: None,
         }
     }
+    #[must_use]
     pub fn set_description(mut self, description: &str) -> Self {
         self.description = Some(description.to_owned());
         self
     }
+    #[must_use]
     pub fn set_mtu(mut self, mtu: Mtu) -> Self {
         self.mtu = Some(mtu);
         self
     }
+    #[must_use]
     pub fn add_address(mut self, address: IpAddr, mask_len: u8) -> Self {
         self.addresses
             .insert(InterfaceAddress::new(address, mask_len));
         self
     }
+    #[must_use]
     pub fn set_vrf(mut self, vrfname: &str) -> Self {
         self.vrf = Some(vrfname.to_owned());
         self
     }
+    #[must_use]
     pub fn set_ospf(mut self, ospf: OspfInterface) -> Self {
         self.ospf = Some(ospf);
         self
     }
+    #[must_use]
     pub fn is_vtep(&self) -> bool {
         matches!(self.iftype, InterfaceType::Vtep(_))
     }
@@ -151,31 +159,31 @@ impl InterfaceConfig {
                     vtep.local.into(),
                     "address is not unicast",
                 ));
-            } else {
-                match &vtep.mac {
-                    Some(mac) => {
-                        if SourceMac::new(*mac).is_err() {
-                            return Err(ConfigError::BadVtepMacAddress(
-                                *mac,
-                                "mac address is not a valid source mac address",
-                            ));
-                        };
-                    }
-                    None => return Err(ConfigError::MissingParameter("VTEP MAC address")),
-                }
             }
-        };
+            match &vtep.mac {
+                Some(mac) => {
+                    if SourceMac::new(*mac).is_err() {
+                        return Err(ConfigError::BadVtepMacAddress(
+                            *mac,
+                            "mac address is not a valid source mac address",
+                        ));
+                    }
+                }
+                None => return Err(ConfigError::MissingParameter("VTEP MAC address")),
+            }
+        }
 
         Ok(())
     }
 }
 
 impl InterfaceConfigTable {
+    #[must_use]
     pub fn new() -> Self {
         Self(BTreeMap::new())
     }
     pub fn add_interface_config(&mut self, cfg: InterfaceConfig) {
-        self.0.insert(cfg.name.to_owned(), cfg);
+        self.0.insert(cfg.name.clone(), cfg);
     }
     pub fn values(&self) -> impl Iterator<Item = &InterfaceConfig> {
         self.0.values()

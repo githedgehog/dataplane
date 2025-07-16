@@ -29,6 +29,7 @@ pub struct DeviceSettings {
 }
 
 impl DeviceSettings {
+    #[must_use]
     pub fn new(hostname: &str) -> Self {
         Self {
             hostname: hostname.to_owned(),
@@ -36,10 +37,12 @@ impl DeviceSettings {
             driver: PacketDriver::DPDK(DpdkPortConfig::default()),
         }
     }
+    #[must_use]
     pub fn set_loglevel(mut self, loglevel: Level) -> Self {
         self.loglevel = loglevel;
         self
     }
+    #[must_use]
     pub fn set_packet_driver(mut self, driver: PacketDriver) -> Self {
         self.driver = driver;
         self

@@ -3,13 +3,25 @@
 
 //! Display of model objects
 
+#![allow(clippy::manual_string_new)]
+
 use crate::external::overlay::vpc::Vpc;
-// use routing::pretty_utils::Heading;
 use std::fmt::Display;
 
 use crate::external::overlay::vpc::{Peering, VpcId, VpcTable};
 use crate::external::overlay::vpcpeering::VpcManifest;
 use crate::external::overlay::vpcpeering::{VpcExpose, VpcPeering, VpcPeeringTable};
+
+struct Heading(String);
+const LINE_WIDTH: usize = 81;
+impl Display for Heading {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let len = (LINE_WIDTH - (self.0.len() + 2)) / 2;
+        write!(f, " {0:─<width$}", "─", width = len)?;
+        write!(f, " {} ", self.0)?;
+        writeln!(f, " {0:─<width$}", "─", width = len)
+    }
+}
 
 const SEP: &str = "       ";
 
@@ -113,11 +125,11 @@ pub struct VpcDetailed<'a>(pub &'a Vpc);
 impl Display for VpcDetailed<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let vpc = self.0;
-        // Heading(format!("vpc: {}", vpc.name)).fmt(f)?; // BROKEN
+        Heading(format!("vpc: {}", vpc.name)).fmt(f)?;
         writeln!(f, " name: {} Id: {}", vpc.name, vpc.id)?;
         writeln!(f, " vni : {}", vpc.vni)?;
         writeln!(f, " peerings: {}", vpc.peerings.len())?;
-        // Heading(format!("Peerings of {}", vpc.name)).fmt(f)?; //BROKEN
+        Heading(format!("Peerings of {}", vpc.name)).fmt(f)?;
         for peering in &vpc.peerings {
             peering.fmt(f)?;
         }
@@ -162,7 +174,7 @@ impl Display for Vpc {
 }
 impl Display for VpcTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        //Heading(format!("VPCs ({})", self.len())).fmt(f)?; //BROKEN
+        Heading(format!("VPCs ({})", self.len())).fmt(f)?;
         fmt_vpc_table_heading(f)?;
         for vpc in self.values() {
             vpc.fmt(f)?;
@@ -195,7 +207,7 @@ impl Display for VpcPeering {
 }
 impl Display for VpcPeeringTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        //  Heading(format!("VPC Peering Table ({})", self.len())).fmt(f)?; // BROKEN
+        Heading(format!("VPC Peering Table ({})", self.len())).fmt(f)?;
         for peering in self.values() {
             peering.fmt(f)?;
         }
