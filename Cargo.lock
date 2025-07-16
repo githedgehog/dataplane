@@ -904,6 +904,7 @@ dependencies = [
  "bytes",
  "caps",
  "chrono",
+ "dataplane-config",
  "dataplane-id",
  "dataplane-interface-manager",
  "dataplane-lpm",
