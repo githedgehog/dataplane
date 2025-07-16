@@ -11,7 +11,6 @@
 
 mod collapse;
 mod range_builder;
-mod test;
 
 use crate::external::overlay::vpc::{Peering, VpcTable};
 use crate::external::overlay::vpcpeering::VpcExpose;

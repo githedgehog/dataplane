@@ -9,4 +9,3 @@ mod display;
 pub mod gwconfigdb;
 pub mod launch;
 pub mod proc;
-pub mod tests;

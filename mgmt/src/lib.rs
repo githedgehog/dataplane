@@ -14,3 +14,5 @@ pub mod frr;
 
 /* VPC manager */
 pub mod vpc_manager;
+
+mod tests;

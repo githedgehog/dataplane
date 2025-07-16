@@ -5,35 +5,32 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::GwConfig;
-    use crate::external::ExternalConfig;
-    use crate::external::ExternalConfigBuilder;
-    use crate::external::overlay::Overlay;
-    use crate::external::overlay::vpc::{Peering, Vpc, VpcTable};
-    use crate::external::overlay::vpcpeering::{
+    use crate::processor::confbuild::internal::build_internal_config;
+    use config::GwConfig;
+    use config::external::ExternalConfigBuilder;
+    use config::external::overlay::Overlay;
+    use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
+    use config::external::overlay::vpcpeering::{
         VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
     };
-    use crate::external::underlay::Underlay;
-    use crate::internal::device::DeviceConfig;
-    use crate::internal::device::settings::DeviceSettings;
-    use crate::internal::interfaces::interface::InterfaceConfig;
-    use crate::internal::interfaces::interface::InterfaceConfigTable;
-    use crate::internal::interfaces::interface::{IfVtepConfig, InterfaceType};
-    use crate::internal::natconfig;
-    use crate::internal::routing::bgp::BgpConfig;
-    use crate::internal::routing::vrf::VrfConfig;
+    use config::external::underlay::Underlay;
+    use config::internal::device::DeviceConfig;
+    use config::internal::device::settings::DeviceSettings;
+    use config::internal::interfaces::interface::InterfaceConfig;
+    use config::internal::interfaces::interface::{IfVtepConfig, InterfaceType};
+    use config::internal::natconfig;
+    use config::internal::routing::bgp::BgpConfig;
+    use config::internal::routing::vrf::VrfConfig;
     use nat::StatelessNat;
     use nat::stateless::config::tables::{NatTables, PerVniTable};
     use net::buffer::PacketBufferMut;
-    use net::buffer::TestBuffer;
     use net::eth::mac::Mac;
     use net::headers::{TryHeadersMut, TryIpv4, TryIpv4Mut};
-    use net::ipv4::Ipv4;
     use net::packet::Packet;
     use net::packet::test_utils::build_test_ipv4_packet;
     use net::vxlan::Vni;
     use pipeline::NetworkFunction;
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::Ipv4Addr;
     use std::str::FromStr;
     use tracing_test::traced_test;
 
@@ -181,13 +178,13 @@ mod tests {
         let vni1 = Vni::new_checked(100).unwrap();
         let mut vpc1 = Vpc::new("VPC-1", "67890", vni1.as_u32()).unwrap();
         vpc1.peerings.push(peering1.clone());
-        vpctable.add(vpc1);
+        vpctable.add(vpc1).unwrap();
 
         // vpc-2
         let vni2 = Vni::new_checked(200).unwrap();
         let mut vpc2 = Vpc::new("VPC-2", "12345", vni2.as_u32()).unwrap();
         vpc2.peerings.push(peering2.clone());
-        vpctable.add(vpc2);
+        vpctable.add(vpc2).unwrap();
 
         let mut nat_table = NatTables::new();
 
@@ -441,25 +438,23 @@ mod tests {
 
     #[test]
     #[traced_test]
-    #[cfg(any())]
     fn test_full_config() {
         let mut config = build_sample_config();
         config.validate().expect("Failed to validate config");
-        //config
-        //  .build_internal_config() //BROKEN
-        //.expect("Failed to build internal config");
-        println!("Internal config: {:#?}", config.internal);
-        let nat_tables = config
+        let internal = build_internal_config(&config).expect("Failed to build internal config");
+        println!("Internal config: {:#?}", &internal);
+        config.set_internal_config(internal);
+        let nat_tables = &config
             .internal
-            .expect("Failed to build internal config")
+            .unwrap()
             .nat_table
             .expect("Failed to build NAT tables");
 
         let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
-        tablesw.update_nat_tables(nat_tables);
+        tablesw.update_nat_tables(nat_tables.clone());
 
         // Template for other packets
-        let pt = build_test_ipv4_packet(u8::MAX).unwrap();
+        let _pt = build_test_ipv4_packet(u8::MAX).unwrap();
 
         // No NAT
         let (orig_src, orig_dst) = (addr_v4("8.8.8.8"), addr_v4("9.9.9.9"));
