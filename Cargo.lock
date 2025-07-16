@@ -804,6 +804,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-config"
+version = "0.1.0"
+
+[[package]]
 name = "dataplane-dpdk"
 version = "0.1.0"
 dependencies = [
