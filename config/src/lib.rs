@@ -1,4 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Configuration model(s) for dataplane
+//! Configuration models for dataplane. The external model is the model assumed by the RPC.
+//! The internal model is the model assumed internally. For an external configuration, the
+//! dataplane process builds an internal, developed configuration, which is the configuration
+//! that gets distributed and applied in the system. Type `GwConfig` is the main object tpo hold
+//! both the `ExternalConfig` and `InternalConfig` for a given config generation.
+
+#![deny(
+    unsafe_code,
+    clippy::all,
+    clippy::pedantic,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
+
+pub mod display;
+pub mod errors;
+pub mod external;
+pub mod gwconfig;
+pub mod internal;
+
+pub use errors::{ConfigError, ConfigResult, stringify}; // re-export
+pub use external::{ExternalConfig, GenId}; // re-export
+pub use gwconfig::{GwConfig, GwConfigMeta}; // re-export
+pub use internal::InternalConfig; // re-export

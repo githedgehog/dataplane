@@ -6,3 +6,27 @@ publish = false
 license = "Apache-2.0"
 
 [dependencies]
+# internal
+nat = { workspace = true } # temporary. This dependency will be removed
+net = { workspace = true }
+lpm = { workspace = true }
+
+# external
+derive_builder = { workspace = true, default-features = false, features = ["default"] }
+multi_index_map = { workspace = true, features = ["serde"] }
+thiserror = { workspace = true }
+tracing = { workspace = true, features = ["attributes"] }
+tracing-test = { workspace = true }
+
+[dev-dependencies]
+# internal
+pipeline = { workspace = true } # should be removed w/ NAT
+lpm = { workspace = true, features = ["testing"] }
+
+# external
+bolero = { workspace = true, default-features = false, features = ["alloc"] }
+caps = { workspace = true }
+gateway_config = { workspace = true, features = ["bolero"] }
+ipnet = { workspace = true }
+pretty_assertions = { workspace = true }
+tracing-test = { workspace = true, features = [] }

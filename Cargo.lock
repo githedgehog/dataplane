@@ -806,6 +806,22 @@ dependencies = [
 [[package]]
 name = "dataplane-config"
 version = "0.1.0"
+dependencies = [
+ "bolero",
+ "caps",
+ "dataplane-lpm",
+ "dataplane-nat",
+ "dataplane-net",
+ "dataplane-pipeline",
+ "derive_builder 0.20.2",
+ "gateway_config",
+ "ipnet",
+ "multi_index_map",
+ "pretty_assertions",
+ "thiserror 2.0.12",
+ "tracing",
+ "tracing-test",
+]
 
 [[package]]
 name = "dataplane-dpdk"
