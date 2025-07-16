@@ -872,7 +872,6 @@ dependencies = [
  "multi_index_map",
  "pci-ids",
  "pci-info",
- "pciid-parser",
  "rtnetlink",
  "serde",
  "thiserror 2.0.12",
@@ -2298,12 +2297,6 @@ dependencies = [
  "libc 0.2.174",
  "windows 0.58.0",
 ]
-
-[[package]]
-name = "pciid-parser"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0008e816fcdaf229cdd540e9b6ca2dc4a10d65c31624abb546c6420a02846e61"
 
 [[package]]
 name = "percent-encoding"

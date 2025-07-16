@@ -3,10 +3,19 @@
 
 #![allow(clippy::pedantic, clippy::unwrap_used)]
 
+use bolero::bolero_engine::driver::cache::Cache;
+use hwlocality::object::TopologyObject;
+use hwlocality::object::attributes::{
+    NUMANodeAttributes, ObjectAttributes, PCIDeviceAttributes, UpstreamAttributes,
+};
 use id::Id;
-use multi_index_map::MultiIndexMap;
 use net::buffer::PacketBufferMut;
+use pci_ids::{Device, FromId, Vendor};
 use pci_info::{PciDevice, PciEnumerator};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::num::NonZero;
+use std::thread::Thread;
 
 #[repr(u16)]
 pub enum KnownNetworkCardVendor {
@@ -69,55 +78,326 @@ pub fn walk_pci() -> impl Iterator<Item = PciDevice> {
         .filter_map(Result::ok)
 }
 
-pub type OsThreadId = u32;
+#[repr(transparent)]
+pub struct ReadOnlyWrapper<T>(T);
 
-pub struct HyperThreadedCore {
-    id: Id<Self, u32>,
-    sibling_id: Id<Self, u32>,
-}
-pub trait Core {
-    type Id;
-    fn id(&self) -> Self::Id;
-}
-
-pub trait Sibling {
-    type Id;
-    fn sibling_id(&self) -> Self::Id;
-}
-
-impl Core for HyperThreadedCore {
-    type Id = Id<Self, u32>;
-
-    fn id(&self) -> Id<Self, u32> {
-        self.id
+impl<T> From<T> for ReadOnlyWrapper<T> {
+    fn from(value: T) -> Self {
+        Self(value)
     }
 }
 
-impl Sibling for HyperThreadedCore {
-    type Id = <Self as Core>::Id;
+#[derive(Debug, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct NumaNodeAttributes {
+    local_memory: Option<NonZero<u64>>,
+    page_types: BTreeSet<MemoryPageType>,
+}
 
-    fn sibling_id(&self) -> Self::Id {
-        self.sibling_id
+impl<'a> From<NUMANodeAttributes<'a>> for NumaNodeAttributes {
+    fn from(value: NUMANodeAttributes<'a>) -> Self {
+        Self {
+            local_memory: value.local_memory(),
+            page_types: value.page_types().iter().map(|x| (*x).into()).collect(),
+        }
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Task<T> {
-    Main(T),
-    Worker(T),
-    Assistant(T),
-    Service(T),
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct MemoryPageType {
+    size: NonZero<u64>,
+    count: u64,
 }
 
-#[derive(MultiIndexMap)]
-pub struct Dispatch<C: Core + Clone + PartialEq + Eq + PartialOrd + Ord> {
-    #[multi_index(ordered_unique)]
-    task: Task<C>,
+impl From<hwlocality::object::attributes::MemoryPageType> for MemoryPageType {
+    fn from(value: hwlocality::object::attributes::MemoryPageType) -> Self {
+        Self {
+            size: value.size(),
+            count: value.count(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "&str", into = "String")]
+pub enum CacheType {
+    /// Unified cache
+    Unified,
+    /// Data cache
+    Data,
+    /// Instruction cache (filtered out by default)
+    Instruction,
+}
+
+impl From<CacheType> for String {
+    fn from(value: CacheType) -> Self {
+        match value {
+            CacheType::Unified => "unified",
+            CacheType::Data => "data",
+            CacheType::Instruction => "instruction",
+        }
+        .to_string()
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[error("invalid cache type: {0:?}")]
+pub struct InvalidCacheType(String);
+
+impl<'a> TryFrom<&'a str> for CacheType {
+    type Error = InvalidCacheType;
+
+    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+        Ok(match value {
+            "unified" => CacheType::Unified,
+            "data" => CacheType::Data,
+            "instruction" => CacheType::Instruction,
+            x => Err(InvalidCacheType(x.to_string()))?,
+        })
+    }
+}
+
+impl TryFrom<hwlocality::object::types::CacheType> for CacheType {
+    type Error = InvalidCacheType;
+
+    fn try_from(value: hwlocality::object::types::CacheType) -> Result<Self, Self::Error> {
+        Ok(match value {
+            hwlocality::object::types::CacheType::Unified => CacheType::Unified,
+            hwlocality::object::types::CacheType::Data => CacheType::Data,
+            hwlocality::object::types::CacheType::Instruction => CacheType::Instruction,
+            _ => return Err(InvalidCacheType("unknown".to_string()))?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CacheAttributes {
+    cache_type: CacheType,
+    size: NonZero<u64>,
+    line_size: Option<NonZero<usize>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct InvalidCacheAttributes;
+
+impl TryFrom<hwlocality::object::attributes::CacheAttributes> for CacheAttributes {
+    type Error = InvalidCacheAttributes;
+
+    fn try_from(
+        value: hwlocality::object::attributes::CacheAttributes,
+    ) -> Result<Self, Self::Error> {
+        Ok(Self {
+            cache_type: CacheType::try_from(value.cache_type())
+                .map_err(|_| InvalidCacheAttributes)?,
+            size: match value.size() {
+                None => return Err(InvalidCacheAttributes),
+                Some(size) => size,
+            },
+            line_size: value.line_size(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct GroupAttributes {
+    depth: usize,
+}
+
+impl TryFrom<hwlocality::object::attributes::GroupAttributes> for GroupAttributes {
+    type Error = ();
+
+    fn try_from(
+        value: hwlocality::object::attributes::GroupAttributes,
+    ) -> Result<Self, Self::Error> {
+        Ok(Self {
+            depth: value.depth(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PciDeviceAttributes {
+    vendor_name: Option<String>,
+    device_name: Option<String>,
+    vendor_id: u16,
+    device_id: u16,
+    revision: u8,
+    subvendor_id: u16,
+    subdevice_id: u16,
+    sub_vendor_name: Option<String>,
+    sub_device_name: Option<String>,
+    bus_device: u8,
+    bus_id: u8,
+    domain: u16,
+    function: u8,
+    class_id: u16,
+    link_speed: String,
+}
+
+impl From<PCIDeviceAttributes> for PciDeviceAttributes {
+    fn from(value: PCIDeviceAttributes) -> Self {
+        Self {
+            vendor_name: Vendor::from_id(value.vendor_id()).map(|x| x.name().to_string()),
+            device_name: Device::from_vid_pid(value.vendor_id(), value.device_id())
+                .map(|x| x.name().to_string()),
+            vendor_id: value.vendor_id(),
+            device_id: value.device_id(),
+            revision: value.revision(),
+            subvendor_id: value.subvendor_id(),
+            subdevice_id: value.subdevice_id(),
+            sub_vendor_name: Vendor::from_id(value.subvendor_id()).map(|x| x.name().to_string()),
+            sub_device_name: Device::from_vid_pid(value.subvendor_id(), value.subdevice_id())
+                .map(|x| x.name().to_string()),
+            bus_device: value.bus_device(),
+            bus_id: value.bus_id(),
+            domain: value.domain(),
+            function: value.function(),
+            class_id: value.class_id(),
+            link_speed: value.link_speed().to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum BridgeType {
+    Pci,
+    Host,
+}
+
+impl From<BridgeType> for String {
+    fn from(value: BridgeType) -> Self {
+        match value {
+            BridgeType::Pci => "pci".to_string(),
+            BridgeType::Host => "host".to_string(),
+        }
+    }
+}
+
+impl TryFrom<String> for BridgeType {
+    type Error = ();
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Ok(match value.as_str() {
+            "pci" => BridgeType::Pci,
+            "host" => BridgeType::Host,
+            _ => return Err(()),
+        })
+    }
+}
+
+impl TryFrom<hwlocality::object::types::BridgeType> for BridgeType {
+    type Error = ();
+
+    fn try_from(value: hwlocality::object::types::BridgeType) -> Result<Self, Self::Error> {
+        Ok(match value {
+            hwlocality::object::types::BridgeType::PCI => BridgeType::Pci,
+            hwlocality::object::types::BridgeType::Host => BridgeType::Host,
+            _ => Err(())?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct BridgeAttributes {
+    upstream_type: BridgeType,
+    downstream_type: BridgeType,
+    upstream_attributes: Option<PciDeviceAttributes>,
+}
+
+impl TryFrom<hwlocality::object::attributes::BridgeAttributes> for BridgeAttributes {
+    type Error = ();
+
+    fn try_from(
+        value: hwlocality::object::attributes::BridgeAttributes,
+    ) -> Result<Self, Self::Error> {
+        Ok(Self {
+            upstream_type: value.upstream_type().try_into()?,
+            downstream_type: value.downstream_type().try_into()?,
+            upstream_attributes: value
+                .upstream_attributes()
+                .map(|UpstreamAttributes::PCI(&p)| p.into()),
+        })
+    }
+}
+
+// pub struct OsDevice {
+//     pub device_type: String,
+// }
+
+#[derive(Debug, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum NodeAttributes {
+    NumaNode(NumaNodeAttributes),
+    Cache(CacheAttributes),
+    Pci(PciDeviceAttributes),
+    Bridge(BridgeAttributes),
+    Group(GroupAttributes),
+    // OsDevice(OsDeviceAttributes),
+}
+
+#[derive(Debug, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Node {
+    pub name: Option<String>,
+    pub attributes: NodeAttributes,
+}
+
+pub struct Core;
+pub struct NumaNode;
+pub struct CpuDie;
+pub struct CpuSocket;
+
+pub struct CpuCache<const N: usize>;
+
+pub struct SystemLayout {
+    sockets: BTreeSet<Id<CpuSocket>>,
+    dies: BTreeSet<Id<CpuDie>>,
+    numa_nodes: BTreeSet<Id<NumaNode>>,
+    cores: BTreeSet<Id<Core>>,
+    threads: BTreeSet<Id<Thread>>,
+    l1_caches: BTreeSet<Id<CpuCache<1>>>,
+    l2_caches: BTreeSet<Id<CpuCache<2>>>,
+    l3_caches: BTreeSet<Id<CpuCache<3>>>,
+}
+
+pub trait Layout<const THREADING: usize = 2> {
+    fn sockets(&self) -> impl Iterator<Item = Id<CpuSocket>>;
+    fn dies(&self) -> impl Iterator<Item = Id<CpuDie>>;
+    fn numa_nodes(&self) -> impl Iterator<Item = Id<NumaNode>>;
+    fn cores(&self) -> impl Iterator<Item = Id<Core>>;
+    fn threads(&self) -> impl Iterator<Item = Id<Thread>>;
+    fn caches<const N: usize>(&self) -> impl Iterator<Item = Id<CpuCache<N>>>;
+    fn sibling_threads(&self) -> impl Iterator<Item = (Id<Core>, [Id<Core>; THREADING])>;
+}
+
+impl TryFrom<ObjectAttributes<'_>> for NodeAttributes {
+    type Error = ();
+
+    fn try_from(value: ObjectAttributes) -> Result<Self, ()> {
+        Ok(match value {
+            ObjectAttributes::NUMANode(&x) => Self::NumaNode(x.into()),
+            ObjectAttributes::Cache(&x) => Self::Cache(x.try_into().unwrap()),
+            ObjectAttributes::Group(&x) => Self::Group(x.try_into()?),
+            ObjectAttributes::PCIDevice(&x) => Self::Pci(x.into()),
+            ObjectAttributes::Bridge(&x) => Self::Bridge(x.try_into().unwrap()),
+            ObjectAttributes::OSDevice(&x) => Err(())?,
+        })
+    }
+}
+
+impl<'a> TryFrom<&'a TopologyObject> for Node {
+    type Error = ();
+    fn try_from(value: &'a TopologyObject) -> Result<Self, ()> {
+        Ok(Node {
+            name: value.name().map(|x| x.to_string_lossy().to_string()),
+            attributes: value
+                .attributes()
+                .and_then(|x| NodeAttributes::try_from(x).ok())
+                .ok_or(())?,
+        })
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::physical::walk_pci;
+    use crate::physical::{Node, walk_pci};
     use caps::Capability::CAP_SYS_ADMIN;
     use fixin::wrap;
     use hwlocality::Topology;
@@ -128,6 +408,7 @@ mod test {
     use hwlocality::topology::builder::{BuildFlags, TypeFilter};
     use pci_ids::{Device, FromId, Vendor};
     use pci_info::PciInfo;
+    use std::collections::BTreeMap;
     use std::fs;
     use test_utils::with_caps;
 
@@ -249,6 +530,30 @@ mod test {
         }
     }
 
+    struct TopologyFilter {
+        bridge: TypeFilter,
+        pci: TypeFilter,
+        os: TypeFilter,
+        machine: TypeFilter,
+        core: TypeFilter,
+        die: TypeFilter,
+        l1_cache: TypeFilter,
+        l1_i_cache: TypeFilter,
+        l2cache: TypeFilter,
+        l2_i_cache: TypeFilter,
+        l3cache: TypeFilter,
+        l3_i_cache: TypeFilter,
+        l4cache: TypeFilter,
+        l5cache: TypeFilter,
+        memcache: TypeFilter,
+        misc: TypeFilter,
+        numanode: TypeFilter,
+    }
+
+    struct TopoFilter {
+        filters: BTreeMap<ObjectType, TypeFilter>,
+    }
+
     #[test]
     // #[wrap(with_caps([CAP_SYS_ADMIN, CAP_SYS_RAWIO, CAP_NET_ADMIN]))]
     fn print_children_test() {
@@ -291,6 +596,12 @@ mod test {
             .unwrap()
             .with_type_filter(ObjectType::L3ICache, TypeFilter::KeepAll)
             .unwrap()
+            .with_type_filter(ObjectType::L4Cache, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::L5Cache, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::Group, TypeFilter::KeepStructure)
+            .unwrap()
             .with_flags(BuildFlags::INCLUDE_DISALLOWED)
             .unwrap()
             .build()
@@ -301,11 +612,20 @@ mod test {
         println!("*** flags: {:#?}", topology.build_flags());
 
         println!("*** Topology tree");
-        print_children(topology.root_object(), 0);
+        print_children2(topology.root_object());
         // for bridge in topology.bridges() {
         //     println!("*** io device {bridge}");
         //     print_children(bridge);
         // }
+    }
+
+    fn print_children2(obj: &TopologyObject) -> Result<(), ()> {
+        let node = Node::try_from(obj);
+        println!("{node:#?}");
+        for child in obj.all_children() {
+            print_children2(child)?;
+        }
+        Ok(())
     }
 
     fn print_children(obj: &TopologyObject, depth: usize) {
@@ -318,75 +638,101 @@ mod test {
         // }
         // println!("\n{obj:#?}");
         let p = "\t".repeat(depth);
+        let pp = format!("{p} * ");
+        let pf = format!("{p}   ");
 
-        println!("{p}name: {:?}", obj.name());
-        println!("{p}depth: {}", obj.depth());
-        println!("{p}cpu set: {:?}", obj.cpuset());
-        println!("{p}complete cpu set: {:?}", obj.complete_cpuset());
+        println!("{pp}name: {:?}", obj.name());
+        println!("{pf}depth: {}", obj.depth());
+        println!("{pf}cpu set: {:?}", obj.cpuset());
+        println!("{pf}complete cpu set: {:?}", obj.complete_cpuset());
         match obj.attributes() {
             Some(ObjectAttributes::NUMANode(n)) => {
-                println!("{p}numa node");
-                println!("{p}  local memory: {:?}", n.local_memory());
+                println!("{pf}numa node");
+                println!("{pf}  local memory: {:?}", n.local_memory());
                 if !n.page_types().is_empty() {
-                    println!("{p}  page type: [");
+                    println!("{pf}  page type: [");
                     for page_type in n.page_types() {
-                        println!("{p}    {page_type:?}");
+                        println!("{pf}    {page_type:?}");
                     }
-                    println!("{p}  ]");
+                    println!("{pf}  ]");
                 }
             }
             Some(ObjectAttributes::Cache(c)) => {
-                println!("{p}cache:");
-                println!("{p}  type: {}", c.cache_type());
-                println!("{p}  size: {:?}", c.size());
-                println!("{p}  line_size: {:?}", c.line_size());
-                println!("{p}  depth: {}", c.depth());
-                println!("{p}  associativity: {:?}", c.associativity());
+                println!("{pf}cache:");
+                println!("{pf}  type: {}", c.cache_type());
+                println!("{pf}  size: {:?}", c.size());
+                println!("{pf}  line_size: {:?}", c.line_size());
+                println!("{pf}  depth: {}", c.depth());
+                println!("{pf}  associativity: {:?}", c.associativity());
             }
             Some(ObjectAttributes::Group(g)) => {
-                println!("{p}group:");
-                println!("{p}  depth: {}", g.depth());
+                println!("{pf}group:");
+                println!("{pf}  depth: {}", g.depth());
             }
             Some(ObjectAttributes::PCIDevice(d)) => {
-                println!("{p}pci device:");
-                println!("{p}  vendor: {:x}", d.vendor_id());
-                println!("{p}  device: {:x}", d.device_id());
-                println!("{p}  revision: {:x}", d.revision());
-                println!("{p}  sub-vendor id: {}", d.subvendor_id());
-                println!("{p}  sub-device id: {}", d.subdevice_id());
-                println!("{p}  bus device: {}", d.bus_device());
-                println!("{p}  bus: {}", d.bus_id());
-                println!("{p}  domain: {}", d.domain());
-                println!("{p}  function: {}", d.function());
-                println!("{p}  class: {}", d.class_id());
-                println!("{p}  link speed: {}", d.link_speed());
+                println!("{pf}pci device:");
+                println!("{pf}  vendor: {:x}", d.vendor_id());
+                match Vendor::from_id(d.vendor_id()) {
+                    None => {
+                        println!("{pf}  vendor name: unknown");
+                    }
+                    Some(vendor) => {
+                        println!("{pf}  vendor name: {}", vendor.name());
+                    }
+                };
+                println!("{pf}  device: {:x}", d.device_id());
+                match Device::from_vid_pid(d.vendor_id(), d.device_id()) {
+                    None => {
+                        println!("{pf}  device name: unknown");
+                    }
+                    Some(device) => {
+                        println!("{pf}  device name: {}", device.name());
+                    }
+                };
+                println!("{pf}  revision: {:x}", d.revision());
+                println!("{pf}  sub-vendor id: {}", d.subvendor_id());
+                println!("{pf}  sub-device id: {}", d.subdevice_id());
+                match Device::from_vid_pid(d.subvendor_id(), d.subdevice_id()) {
+                    None => {
+                        println!("{pf}  sub-device name: unknown");
+                    }
+                    Some(device) => {
+                        println!("{pf}  sub-device name: {}", device.name());
+                    }
+                }
+                println!("{pf}  bus device: {}", d.bus_device());
+                println!("{pf}  bus: {}", d.bus_id());
+                println!("{pf}  domain: {}", d.domain());
+                println!("{pf}  function: {}", d.function());
+                println!("{pf}  class: {}", d.class_id());
+                println!("{pf}  link speed: {}", d.link_speed());
             }
             Some(ObjectAttributes::Bridge(b)) => {
-                println!("{p}bridge:");
-                println!("{p}  upstream type: {}", b.upstream_type());
-                println!("{p}  downstream type: {}", b.downstream_type());
-                println!("{p}  depth: {}", b.depth());
+                println!("{pf}bridge:");
+                println!("{pf}  upstream type: {}", b.upstream_type());
+                println!("{pf}  downstream type: {}", b.downstream_type());
+                println!("{pf}  depth: {}", b.depth());
                 if let Some(attr) = b.downstream_attributes() {
                     match attr {
                         DownstreamAttributes::PCI(attr) => {
-                            println!("{p}  downstream attributes: [");
-                            println!("{p}    domain: {}", attr.domain());
-                            println!("{p}    secondary bus: {}", attr.secondary_bus());
-                            println!("{p}    subordinate bus: {}", attr.subordinate_bus());
-                            println!("{p}  ]");
+                            println!("{pf}  downstream attributes: [");
+                            println!("{pf}    domain: {}", attr.domain());
+                            println!("{pf}    secondary bus: {}", attr.secondary_bus());
+                            println!("{pf}    subordinate bus: {}", attr.subordinate_bus());
+                            println!("{pf}  ]");
                         }
                     }
                 }
             }
             Some(ObjectAttributes::OSDevice(o)) => {
-                println!("{p}os device:");
-                println!("{p}  device type: {}", o.device_type());
+                println!("{pf}os device:");
+                println!("{pf}  device type: {}", o.device_type());
             }
             None => {}
         }
         for info in obj.infos() {
             println!(
-                "{p}{}: {}",
+                "{pf}{}: {}",
                 info.name().to_string_lossy(),
                 info.value().to_string_lossy()
             );

@@ -26,8 +26,7 @@ thiserror = { workspace = true, features = ["std"] }
 tracing = { workspace = true, features = ["attributes"] }
 pci-ids = { workspace = true, default-features = false, features = [] }
 pci-info = { workspace = true, default-features = false, features = ["pci_subclass_debug_strings", "pci_interface_func_debug_strings", "pci_class_debug_strings"] }
-pciid-parser = { version = "0.8.0", default-features = false, features = [] }
-hwlocality = { version = "1.0.0-alpha.8", default-features = true, features = ["hwloc-latest"] }
+hwlocality = { version = "1.0.0-alpha.10", default-features = true, features = ["hwloc-latest"] }
 
 [dev-dependencies]
 # internal
