@@ -5,13 +5,9 @@ use chrono::{DateTime, Utc};
 use routing::pretty_utils::Heading;
 use std::fmt::Display;
 
-use crate::models::external::gwconfig::ExternalConfig;
-use crate::models::external::gwconfig::GenId;
-use crate::models::external::gwconfig::GwConfig;
-use crate::models::external::gwconfig::GwConfigMeta;
-
-use crate::models::internal::InternalConfig;
 use crate::processor::gwconfigdb::GwConfigDatabase;
+#[allow(unused)]
+use config::{ExternalConfig, GenId, GwConfig, GwConfigMeta, InternalConfig};
 
 macro_rules! CONFIGDB_TBL_FMT {
     () => {
@@ -83,41 +79,11 @@ impl Display for GwConfigDatabaseSummary<'_> {
     }
 }
 
-// TODO(fredi)
-impl Display for GwConfigMeta {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // TODO
-        Ok(())
-    }
-}
-// TODO(fredi)
-impl Display for ExternalConfig {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // TODO
-        Ok(())
-    }
-}
-// TODO(fredi)
-impl Display for InternalConfig {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // TODO
-        Ok(())
-    }
-}
-// TODO(fredi)
-impl Display for GwConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.meta.fmt(f)?;
-        self.external.fmt(f)?;
-        if let Some(internal) = &self.internal {
-            internal.fmt(f)?;
-        }
-        Ok(())
-    }
-}
+/*
 // TODO(fredi)
 impl Display for GwConfigDatabase {
     fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Ok(())
     }
 }
+ */

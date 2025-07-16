@@ -4,7 +4,7 @@
 //! Config renderer: vrfs
 
 use crate::frr::renderer::builder::{ConfigBuilder, MARKER, Render};
-use crate::models::internal::routing::vrf::{VrfConfig, VrfConfigTable};
+use config::internal::routing::vrf::{VrfConfig, VrfConfigTable};
 
 /* impl Render */
 impl Render for VrfConfig {
@@ -43,35 +43,34 @@ impl Render for VrfConfigTable {
         cfg
     }
 }
-impl VrfConfig {
-    pub fn render_vrf_bgp(&self) -> ConfigBuilder {
-        let mut cfg = ConfigBuilder::new();
-        if let Some(bgp) = self.bgp.as_ref() {
-            cfg += bgp.render(&());
-        }
-        cfg
+
+fn render_vrf_bgp(vrf: &VrfConfig) -> ConfigBuilder {
+    let mut cfg = ConfigBuilder::new();
+    if let Some(bgp) = vrf.bgp.as_ref() {
+        cfg += bgp.render(&());
     }
-    pub fn render_vrf_ospf(&self) -> ConfigBuilder {
-        let mut cfg = ConfigBuilder::new();
-        if let Some(ospf) = self.ospf.as_ref() {
-            cfg += ospf.render(&());
-        }
-        cfg
-    }
+    cfg
 }
-impl VrfConfigTable {
-    pub fn render_vrf_bgp(&self) -> ConfigBuilder {
-        let mut cfg = ConfigBuilder::new();
-        self.iter_by_tableid()
-            .for_each(|vrf| cfg += vrf.render_vrf_bgp());
-        cfg
+fn render_vrf_ospf(vrf: &VrfConfig) -> ConfigBuilder {
+    let mut cfg = ConfigBuilder::new();
+    if let Some(ospf) = vrf.ospf.as_ref() {
+        cfg += ospf.render(&());
     }
-    pub fn render_vrf_ospf(&self) -> ConfigBuilder {
-        let mut cfg = ConfigBuilder::new();
-        self.iter_by_tableid()
-            .for_each(|vrf| cfg += vrf.render_vrf_ospf());
-        cfg
-    }
+    cfg
+}
+pub fn render_vrfs_bgp(vrf_table: &VrfConfigTable) -> ConfigBuilder {
+    let mut cfg = ConfigBuilder::new();
+    vrf_table
+        .iter_by_tableid()
+        .for_each(|vrf| cfg += render_vrf_bgp(vrf));
+    cfg
+}
+pub fn render_vrfs_ospf(vrf_table: &VrfConfigTable) -> ConfigBuilder {
+    let mut cfg = ConfigBuilder::new();
+    vrf_table
+        .iter_by_tableid()
+        .for_each(|vrf| cfg += render_vrf_ospf(vrf));
+    cfg
 }
 
 #[cfg(test)]
@@ -79,7 +78,7 @@ impl VrfConfigTable {
 mod tests {
     use super::*;
     use crate::frr::renderer::statics::tests::build_static_routes;
-    use crate::models::internal::routing::vrf::VrfConfig;
+    use config::internal::routing::vrf::VrfConfig;
     use net::vxlan::Vni;
 
     #[test]

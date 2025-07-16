@@ -14,8 +14,9 @@ pub mod statics;
 pub mod vrf;
 
 use crate::frr::renderer::builder::{ConfigBuilder, Render};
-use crate::models::external::gwconfig::GenId;
-use crate::models::internal::InternalConfig;
+use crate::frr::renderer::vrf::{render_vrfs_bgp, render_vrfs_ospf};
+
+use config::{GenId, InternalConfig};
 use tracing::debug;
 
 fn render_metadata(genid: &GenId) -> String {
@@ -50,10 +51,10 @@ impl Render for InternalConfig {
             .for_each(|vrf| cfg += vrf.interfaces.render(&()));
 
         /* Vrf BGP instances */
-        cfg += self.vrfs.render_vrf_bgp();
+        cfg += render_vrfs_bgp(&self.vrfs);
 
         /* vrf OSPF instance */
-        cfg += self.vrfs.render_vrf_ospf();
+        cfg += render_vrfs_ospf(&self.vrfs);
 
         /* route maps */
         cfg += self.rmap_table.render(&());

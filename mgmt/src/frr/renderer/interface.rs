@@ -3,14 +3,13 @@
 
 //! Config renderer: interfaces
 
-use std::fmt::Display;
 use std::net::IpAddr;
 
-use crate::frr::renderer::builder::{ConfigBuilder, MARKER, Render};
+use crate::frr::renderer::builder::{ConfigBuilder, MARKER, Render, Rendered};
 
-use crate::models::internal::interfaces::interface::InterfaceAddress;
-use crate::models::internal::interfaces::interface::InterfaceConfig;
-use crate::models::internal::interfaces::interface::InterfaceConfigTable;
+use config::internal::interfaces::interface::InterfaceAddress;
+use config::internal::interfaces::interface::InterfaceConfig;
+use config::internal::interfaces::interface::InterfaceConfigTable;
 
 fn ip_address_type_str(address: &IpAddr) -> &'static str {
     match address {
@@ -19,20 +18,17 @@ fn ip_address_type_str(address: &IpAddr) -> &'static str {
     }
 }
 
-#[repr(transparent)]
-pub struct RenderInterfaceAddress<'a>(pub &'a InterfaceAddress);
-
-impl<'a> Display for RenderInterfaceAddress<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
+impl Rendered for InterfaceAddress {
+    fn rendered(&self) -> String {
+        format!(
             " {} address {}/{}",
-            ip_address_type_str(&self.0.address),
-            &self.0.address,
-            self.0.mask_len
+            ip_address_type_str(&self.address),
+            &self.address,
+            self.mask_len
         )
     }
 }
+
 impl Render for InterfaceConfig {
     type Context = ();
     type Output = ConfigBuilder;
@@ -43,9 +39,7 @@ impl Render for InterfaceConfig {
         if let Some(description) = &self.description {
             config += format!(" description {description}");
         }
-        self.addresses
-            .iter()
-            .for_each(|a| config += RenderInterfaceAddress(a).to_string());
+        self.addresses.iter().for_each(|a| config += a.rendered());
         if let Some(ospf) = &self.ospf {
             config += ospf.render(&());
         }
@@ -71,8 +65,8 @@ impl Render for InterfaceConfigTable {
 #[allow(dead_code)]
 pub mod tests {
     use super::*;
-    use crate::models::internal::interfaces::interface::IfEthConfig;
-    use crate::models::internal::interfaces::interface::InterfaceType;
+    use config::internal::interfaces::interface::IfEthConfig;
+    use config::internal::interfaces::interface::InterfaceType;
     use net::interface::Mtu;
     use std::net::IpAddr;
     use std::str::FromStr;

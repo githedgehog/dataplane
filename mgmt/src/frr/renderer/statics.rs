@@ -3,21 +3,19 @@
 
 //! Config renderer: static routes
 
-use std::fmt::Display;
-
-use crate::frr::renderer::builder::{ConfigBuilder, Render};
-use crate::models::internal::routing::statics::{StaticRoute, StaticRouteNhop};
+use crate::frr::renderer::builder::{ConfigBuilder, Render, Rendered};
+use config::internal::routing::statics::{StaticRoute, StaticRouteNhop};
 use lpm::prefix::Prefix;
 
 /* impl Display */
-impl Display for StaticRouteNhop {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Rendered for StaticRouteNhop {
+    fn rendered(&self) -> String {
         match self {
-            StaticRouteNhop::Interface(ifname) => write!(f, "{ifname}"),
-            StaticRouteNhop::Address(address) => write!(f, "{address}"),
-            StaticRouteNhop::Null0 => write!(f, "Null0"),
-            StaticRouteNhop::Reject => write!(f, "reject"),
-            StaticRouteNhop::Blackhole => write!(f, "blackhole"),
+            StaticRouteNhop::Interface(ifname) => ifname.to_string(),
+            StaticRouteNhop::Address(address) => format!("{address}"),
+            StaticRouteNhop::Null0 => "Null0".to_string(),
+            StaticRouteNhop::Reject => "reject".to_string(),
+            StaticRouteNhop::Blackhole => "blackhole".to_string(),
             StaticRouteNhop::Unset => panic!("Missing next-hop"),
         }
     }
@@ -40,7 +38,7 @@ impl Render for StaticRoute {
             " {} route {} {}",
             ip_route_type_str(&self.prefix),
             self.prefix,
-            self.next_hop
+            self.next_hop.rendered()
         );
         if let Some(nhop_vrf) = &self.next_hop_vrf {
             statement += format!(" nexthop-vrf {nhop_vrf}").as_ref();
@@ -57,7 +55,7 @@ impl Render for StaticRoute {
 #[allow(dead_code)]
 pub mod tests {
     use super::*;
-    use crate::models::internal::routing::statics::StaticRoute;
+    use config::internal::routing::statics::StaticRoute;
     use std::collections::BTreeSet;
     use std::net::IpAddr;
     use std::str::FromStr;

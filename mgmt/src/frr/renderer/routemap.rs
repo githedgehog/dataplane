@@ -3,31 +3,30 @@
 
 //! Config renderer: route maps
 
-use crate::frr::renderer::builder::{ConfigBuilder, MARKER, Render};
-use crate::models::internal::routing::routemap::*;
-use std::fmt::Display;
+use crate::frr::renderer::builder::{ConfigBuilder, MARKER, Render, Rendered};
+use config::internal::routing::routemap::*;
 
 /* Impl Display */
-impl Display for MatchingPolicy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Rendered for MatchingPolicy {
+    fn rendered(&self) -> String {
         match self {
-            MatchingPolicy::Deny => write!(f, "deny"),
-            MatchingPolicy::Permit => write!(f, "permit"),
+            MatchingPolicy::Deny => "deny".to_string(),
+            MatchingPolicy::Permit => "permit".to_string(),
         }
     }
 }
-impl Display for Community {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Rendered for Community {
+    fn rendered(&self) -> String {
         match self {
-            Community::None => write!(f, "none"),
-            Community::ASNVAL(asn, val) => write!(f, "{asn}{val}"),
-            Community::NoAdvertise => write!(f, "no-advertise"),
-            Community::NoPeer => write!(f, "no-peer"),
-            Community::NoExport => write!(f, "no-export"),
-            Community::Blackhole => write!(f, "blackhole"),
-            Community::LocalAs => write!(f, "local-AS"),
-            Community::GracefulShutdown => write!(f, "graceful-shutdown"),
-            Community::AcceptOwn => write!(f, "accept-own"),
+            Community::None => "none".to_string(),
+            Community::ASNVAL(asn, val) => format!("{asn}{val}"),
+            Community::NoAdvertise => "no-advertise".to_string(),
+            Community::NoPeer => "no-peer".to_string(),
+            Community::NoExport => "no-export".to_string(),
+            Community::Blackhole => "blackhole".to_string(),
+            Community::LocalAs => "local-AS".to_string(),
+            Community::GracefulShutdown => "graceful-shutdown".to_string(),
+            Community::AcceptOwn => "accept-own".to_string(),
         }
     }
 }
@@ -46,7 +45,7 @@ impl Render for RouteMapSetAction {
                 let mut communities = "community".to_string();
                 for c in comms {
                     communities += " ";
-                    communities += c.to_string().as_str();
+                    communities += c.rendered().as_str();
                 }
                 if *additive {
                     communities += " additive";
@@ -108,7 +107,7 @@ impl Render for RouteMapEntry {
     type Output = ConfigBuilder;
     fn render(&self, ctx: &Self::Context) -> Self::Output {
         let mut config = ConfigBuilder::new();
-        config += format!("{} {} {}", ctx.0, self.policy, ctx.1);
+        config += format!("{} {} {}", ctx.0, self.policy.rendered(), ctx.1);
         config += self.matches.render(&());
         config += self.actions.render(&());
         config += "exit";
@@ -143,7 +142,7 @@ impl Render for RouteMapTable {
 #[allow(dead_code)]
 mod tests {
     use super::*;
-    use crate::models::internal::routing::routemap::RouteMap;
+    use config::internal::routing::routemap::RouteMap;
     use net::vxlan::Vni;
 
     fn build_test_route_map() -> RouteMap {

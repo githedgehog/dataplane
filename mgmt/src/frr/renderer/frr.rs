@@ -3,16 +3,15 @@
 
 //! Config renderer: frr
 
-use crate::frr::renderer::builder::{ConfigBuilder, MARKER, Render};
-use crate::models::internal::routing::frr::{Frr, FrrProfile};
-use std::fmt::Display;
+use crate::frr::renderer::builder::{ConfigBuilder, MARKER, Render, Rendered};
+use config::internal::routing::frr::{Frr, FrrProfile};
 
 /* Display */
-impl Display for FrrProfile {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Rendered for FrrProfile {
+    fn rendered(&self) -> String {
         match self {
-            FrrProfile::Datacenter => write!(f, "datacenter"),
-            FrrProfile::Traditional => write!(f, "traditional"),
+            FrrProfile::Datacenter => "datacenter".to_string(),
+            FrrProfile::Traditional => "traditional".to_string(),
         }
     }
 }
@@ -23,7 +22,7 @@ impl Render for Frr {
     type Output = ConfigBuilder;
     fn render(&self, _: &Self::Context) -> Self::Output {
         let mut cfg = ConfigBuilder::new();
-        cfg += format!("frr defaults {}", self.profile).as_str();
+        cfg += format!("frr defaults {}", self.profile.rendered()).as_str();
         cfg += format!("hostname {}", self.hostname).as_str();
         cfg += "service integrated-vtysh-config";
         cfg += MARKER;

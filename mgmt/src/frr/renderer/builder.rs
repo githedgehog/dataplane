@@ -77,3 +77,7 @@ pub(crate) trait Render {
     type Output; /* type of output produced */
     fn render(&self, ctx: &Self::Context) -> Self::Output;
 }
+
+pub(crate) trait Rendered {
+    fn rendered(&self) -> String;
+}

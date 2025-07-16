@@ -4,5 +4,4 @@
 //! Dataplane gRPC handling module.
 //! Implements gRPC request reception and response building.
 
-pub mod converter;
 pub mod server;

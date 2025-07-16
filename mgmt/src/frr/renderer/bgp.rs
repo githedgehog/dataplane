@@ -1,57 +1,55 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::frr::renderer::builder::{ConfigBuilder, MARKER, Render};
-use crate::models::internal::routing::bgp::BgpConfig;
-use crate::models::internal::routing::bgp::BgpNeighType;
-use crate::models::internal::routing::bgp::BgpNeighbor;
-use crate::models::internal::routing::bgp::BgpOptions;
-use crate::models::internal::routing::bgp::BgpUpdateSource;
-use crate::models::internal::routing::bgp::NeighSendCommunities;
-use crate::models::internal::routing::bgp::Redistribute;
-use crate::models::internal::routing::bgp::VrfImports;
-use crate::models::internal::routing::bgp::{AfIpv4Ucast, AfIpv6Ucast, AfL2vpnEvpn};
-use crate::models::internal::routing::bgp::{BgpNeighCapabilities, Protocol};
-
-use std::fmt::Display;
+use crate::frr::renderer::builder::{ConfigBuilder, MARKER, Render, Rendered};
+use config::internal::routing::bgp::BgpConfig;
+use config::internal::routing::bgp::BgpNeighType;
+use config::internal::routing::bgp::BgpNeighbor;
+use config::internal::routing::bgp::BgpOptions;
+use config::internal::routing::bgp::BgpUpdateSource;
+use config::internal::routing::bgp::NeighSendCommunities;
+use config::internal::routing::bgp::Redistribute;
+use config::internal::routing::bgp::VrfImports;
+use config::internal::routing::bgp::{AfIpv4Ucast, AfIpv6Ucast, AfL2vpnEvpn};
+use config::internal::routing::bgp::{BgpNeighCapabilities, Protocol};
 
 /* impl Display */
-impl Display for BgpNeighType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Rendered for BgpNeighType {
+    fn rendered(&self) -> String {
         match self {
             BgpNeighType::Unset => panic!("Bgp neighbor without type"),
-            BgpNeighType::Host(address) => write!(f, "{address}"),
-            BgpNeighType::PeerGroup(group) => write!(f, "{group}"),
+            BgpNeighType::Host(address) => format!("{address}"),
+            BgpNeighType::PeerGroup(group) => group.to_string(),
         }
     }
 }
-impl Display for BgpUpdateSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Rendered for BgpUpdateSource {
+    fn rendered(&self) -> String {
         match self {
-            BgpUpdateSource::Address(address) => write!(f, "{address}"),
-            BgpUpdateSource::Interface(ifname) => write!(f, "{ifname}"),
+            BgpUpdateSource::Address(address) => format!("{address}"),
+            BgpUpdateSource::Interface(ifname) => ifname.to_string(),
         }
     }
 }
-impl Display for NeighSendCommunities {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Rendered for NeighSendCommunities {
+    fn rendered(&self) -> String {
         match self {
-            NeighSendCommunities::All => write!(f, "all"),
-            NeighSendCommunities::Both => write!(f, "both"),
-            NeighSendCommunities::Extended => write!(f, "extended"),
-            NeighSendCommunities::Large => write!(f, "large"),
-            NeighSendCommunities::Standard => write!(f, "standard"),
+            NeighSendCommunities::All => "all".to_string(),
+            NeighSendCommunities::Both => "both".to_string(),
+            NeighSendCommunities::Extended => "extended".to_string(),
+            NeighSendCommunities::Large => "large".to_string(),
+            NeighSendCommunities::Standard => "standard".to_string(),
         }
     }
 }
-impl Display for Protocol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Rendered for Protocol {
+    fn rendered(&self) -> String {
         match self {
-            Protocol::Connected => write!(f, "connected"),
-            Protocol::Local => write!(f, "local"),
-            Protocol::Static => write!(f, "static"),
-            Protocol::ISIS => write!(f, "isis"),
-            Protocol::OSPF => write!(f, "ospf"),
+            Protocol::Connected => "connected".to_string(),
+            Protocol::Local => "local".to_string(),
+            Protocol::Static => "static".to_string(),
+            Protocol::ISIS => "isis".to_string(),
+            Protocol::OSPF => "ospf".to_string(),
         }
     }
 }
@@ -94,7 +92,7 @@ fn bgp_neigh_options(neigh: &BgpNeighbor, prefix: &str) -> ConfigBuilder {
     neigh
         .update_source
         .as_ref()
-        .map(|source| cfg += format!(" {} update-source {source}", &prefix));
+        .map(|source| cfg += format!(" {} update-source {}", &prefix, source.rendered()));
 
     /* route-map in */
     neigh
@@ -118,7 +116,7 @@ fn bgp_neigh_options(neigh: &BgpNeighbor, prefix: &str) -> ConfigBuilder {
     neigh
         .send_community
         .as_ref()
-        .map(|com| cfg += format!(" {} send-community {com}", &prefix));
+        .map(|com| cfg += format!(" {} send-community {}", &prefix, com.rendered()));
 
     /* ebgp multihop */
     neigh
@@ -175,67 +173,67 @@ fn bgp_neigh_bool_switches(neigh: &BgpNeighbor, prefix: &str) -> ConfigBuilder {
 
     /* passive */
     if neigh.passive {
-        cfg += format!(" {} passive", &prefix);
+        cfg += format!(" {prefix} passive");
     }
 
     /* as override */
     if neigh.as_override {
-        cfg += format!(" {} as-override", &prefix);
+        cfg += format!(" {prefix} as-override");
     }
 
     /* strict-capability-match */
     if neigh.strict_capability_match {
-        cfg += format!(" {} strict-capability-match", &prefix);
+        cfg += format!(" {prefix} strict-capability-match");
     }
     /* strict-capability-match */
     if neigh.dont_capability_negotiate {
-        cfg += format!(" {} dont-capability-negotiate", &prefix);
+        cfg += format!(" {prefix} dont-capability-negotiate");
     }
 
     /* allow as in */
     if neigh.allow_as_in {
-        cfg += format!(" {} allowas-in", &prefix);
+        cfg += format!(" {prefix} allowas-in");
     }
 
     /* extended link bw */
     if neigh.extended_link_bandwidth {
-        cfg += format!(" {} extended-link-bandwidth", &prefix);
+        cfg += format!(" {prefix} extended-link-bandwidth");
     }
 
     /* extended link bw */
     if neigh.next_hop_self {
-        cfg += format!(" {} next-hop-self", &prefix);
+        cfg += format!(" {prefix} next-hop-self");
     }
 
     /* extended link bw */
     if neigh.remove_private_as {
-        cfg += format!(" {} remove-private-AS", &prefix);
+        cfg += format!(" {prefix} remove-private-AS");
     }
 
     /* extended link bw */
     if neigh.rr_client {
-        cfg += format!(" {} route-reflector-client", &prefix);
+        cfg += format!(" {prefix} route-reflector-client");
     }
 
     /* default originate */
     if neigh.default_originate {
-        cfg += format!(" {} default-originate", &prefix);
+        cfg += format!(" {prefix} default-originate");
     }
     cfg
 }
 fn bgp_neigh_capabilities(capa: &BgpNeighCapabilities, prefix: &str) -> ConfigBuilder {
     let mut cfg = ConfigBuilder::new();
     if capa.dynamic {
-        cfg += format!(" {} capability dynamic", &prefix);
+        cfg += format!(" {prefix} capability dynamic");
     }
     if capa.ext_nhop {
-        cfg += format!(" {} capability extended-nexthop", &prefix);
+        cfg += format!(" {prefix} capability extended-nexthop");
     }
     if capa.fqdn {
-        cfg += format!(" {} capability fqdn", &prefix);
+        cfg += format!(" {prefix} capability fqdn");
     }
     if capa.software_ver {
-        cfg += format!(" {} capability software-version", &prefix);
+        cfg += format!(" {prefix} capability software-version");
     }
     cfg
 }
@@ -245,7 +243,7 @@ impl Render for Redistribute {
     type Context = ();
     type Output = ConfigBuilder;
     fn render(&self, _: &Self::Context) -> Self::Output {
-        let mut redist = format!(" redistribute {}", self.protocol);
+        let mut redist = format!(" redistribute {}", self.protocol.rendered());
         if let Some(metric) = self.metric {
             redist += format!(" metric {metric}").as_str();
         }
@@ -283,7 +281,7 @@ impl Render for AfIpv4Ucast {
         bgp.neighbors
             .iter()
             .filter(|neigh| neigh.ipv4_unicast)
-            .for_each(|neigh| cfg += format!(" neighbor {} activate", neigh.ntype));
+            .for_each(|neigh| cfg += format!(" neighbor {} activate", neigh.ntype.rendered()));
 
         /* redistribution */
         self.redistribute
@@ -319,7 +317,7 @@ impl Render for AfIpv6Ucast {
         bgp.neighbors
             .iter()
             .filter(|neigh| neigh.ipv6_unicast)
-            .for_each(|neigh| cfg += format!(" neighbor {} activate", neigh.ntype));
+            .for_each(|neigh| cfg += format!(" neighbor {} activate", neigh.ntype.rendered()));
 
         /* redistribution */
         self.redistribute
@@ -355,7 +353,7 @@ impl Render for AfL2vpnEvpn {
         bgp.neighbors
             .iter()
             .filter(|neigh| neigh.l2vpn_evpn)
-            .for_each(|neigh| cfg += format!(" neighbor {} activate", neigh.ntype));
+            .for_each(|neigh| cfg += format!(" neighbor {} activate", neigh.ntype.rendered()));
 
         if self.adv_all_vni {
             cfg += " advertise-all-vni";
@@ -396,7 +394,7 @@ impl Render for BgpNeighbor {
     type Output = ConfigBuilder;
     fn render(&self, _: &Self::Context) -> ConfigBuilder {
         let mut cfg = ConfigBuilder::new();
-        let neigh_name = self.ntype.to_string();
+        let neigh_name = self.ntype.rendered();
         cfg += bgp_neigh_minimal(self, &neigh_name);
         let neigh_prefix = format!("neighbor {neigh_name}");
 
@@ -492,7 +490,7 @@ impl Render for BgpConfig {
 #[allow(dead_code)]
 pub mod tests {
     use super::*;
-    use crate::models::internal::routing::bgp::{
+    use config::internal::routing::bgp::{
         AfL2vpnEvpn, BgpConfig, BgpNeighbor, NeighSendCommunities, Protocol, Redistribute,
         VrfImports,
     };

@@ -4,52 +4,42 @@
 #[cfg(test)]
 #[allow(dead_code)]
 pub mod test {
+    use caps::Capability::CAP_NET_ADMIN;
     use lpm::prefix::Prefix;
     use nat::stateless::NatTablesWriter;
     use net::eth::mac::Mac;
     use net::interface::Mtu;
-    use tracing_test::traced_test;
-
-    use crate::models::internal::device::settings::KernelPacketConfig;
-    use crate::models::internal::device::settings::PacketDriver;
-    use crate::models::internal::interfaces::interface::InterfaceConfig;
-    use crate::models::internal::interfaces::interface::*;
-    use crate::models::internal::routing::bgp::AfIpv4Ucast;
-    use crate::models::internal::routing::bgp::AfL2vpnEvpn;
-    use crate::models::internal::routing::bgp::BgpConfig;
-    use crate::models::internal::routing::bgp::BgpNeighCapabilities;
-    use crate::models::internal::routing::bgp::BgpNeighbor;
-    use crate::models::internal::routing::bgp::BgpOptions;
-    use crate::models::internal::routing::bgp::NeighSendCommunities;
-    use crate::models::internal::routing::ospf::{OspfInterface, OspfNetwork};
-    use crate::models::internal::routing::vrf::VrfConfig;
-    use crate::models::internal::{device::DeviceConfig, routing::ospf::Ospf};
-    use crate::{
-        frr::renderer::builder::Render, models::internal::device::settings::DeviceSettings,
-    };
-    use caps::Capability::CAP_NET_ADMIN;
     use std::net::IpAddr;
     use std::net::Ipv4Addr;
     use std::str::FromStr;
     use test_utils::with_caps;
     use tracing::{Level, error};
+    use tracing_test::traced_test;
 
-    use crate::processor::confbuild::internal::build_internal_config;
-
-    //    use crate::models::internal::routing::evpn::VtepConfig;
-
-    use crate::models::external::gwconfig::ExternalConfig;
-    use crate::models::external::gwconfig::ExternalConfigBuilder;
-    use crate::models::external::gwconfig::GwConfig;
-    use crate::models::external::gwconfig::Underlay;
-    // use crate::models::external::configdb::gwconfigdb::GwConfigDatabase;
-
-    use crate::models::external::overlay::Overlay;
-    use crate::models::external::overlay::vpc::{Vpc, VpcTable};
-    use crate::models::external::overlay::vpcpeering::{
+    use config::external::ExternalConfigBuilder;
+    use config::external::overlay::Overlay;
+    use config::external::overlay::vpc::{Vpc, VpcTable};
+    use config::external::overlay::vpcpeering::{
         VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
     };
+    use config::external::underlay::Underlay;
 
+    use config::internal::device::DeviceConfig;
+    use config::internal::device::settings::DeviceSettings;
+    use config::internal::device::settings::KernelPacketConfig;
+    use config::internal::device::settings::PacketDriver;
+    use config::internal::interfaces::interface::{
+        IfEthConfig, IfVtepConfig, InterfaceConfig, InterfaceType,
+    };
+    use config::internal::routing::bgp::*;
+    use config::internal::routing::ospf::{Ospf, OspfInterface, OspfNetwork};
+    use config::internal::routing::vrf::VrfConfig;
+
+    use config::{ExternalConfig, GwConfig};
+
+    use crate::frr::renderer::builder::Render;
+
+    use crate::processor::confbuild::internal::build_internal_config;
     use crate::processor::proc::ConfigProcessor;
     use routing::{Router, RouterParamsBuilder};
     use tracing::debug;

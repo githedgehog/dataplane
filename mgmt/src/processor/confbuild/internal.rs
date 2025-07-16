@@ -6,31 +6,31 @@
 #[allow(unused)]
 use tracing::{debug, error, warn};
 
-use crate::models::external::overlay::Overlay;
-use crate::models::external::overlay::vpc::{Peering, Vpc};
-use crate::models::external::overlay::vpcpeering::VpcManifest;
-use crate::models::external::{ConfigError, ConfigResult};
+use config::external::overlay::Overlay;
+use config::external::overlay::vpc::{Peering, Vpc};
+use config::external::overlay::vpcpeering::VpcManifest;
+use config::{ConfigError, ConfigResult};
+
 use lpm::prefix::Prefix;
 use net::eth::mac::SourceMac;
 use net::ipv4::UnicastIpv4Addr;
 use net::route::RouteTableId;
 use std::net::Ipv4Addr;
 
-use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
-use crate::models::internal::InternalConfig;
-use crate::models::internal::interfaces::interface::InterfaceType;
-use crate::models::internal::natconfig::add_peering;
-use crate::models::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
-use crate::models::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
-use crate::models::internal::routing::evpn::VtepConfig;
-use crate::models::internal::routing::prefixlist::{
+use crate::processor::confbuild::namegen::{VpcConfigNames, VpcInterfacesNames};
+
+use config::internal::interfaces::interface::InterfaceType;
+use config::internal::natconfig::add_peering;
+use config::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
+use config::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
+use config::internal::routing::evpn::VtepConfig;
+use config::internal::routing::prefixlist::{
     IpVer, PrefixList, PrefixListAction, PrefixListEntry, PrefixListMatchLen, PrefixListPrefix,
 };
-use crate::models::internal::routing::routemap::{
-    MatchingPolicy, RouteMap, RouteMapEntry, RouteMapMatch,
-};
-use crate::models::internal::routing::statics::StaticRoute;
-use crate::models::internal::routing::vrf::VrfConfig;
+use config::internal::routing::routemap::{MatchingPolicy, RouteMap, RouteMapEntry, RouteMapMatch};
+use config::internal::routing::statics::StaticRoute;
+use config::internal::routing::vrf::VrfConfig;
+use config::{ExternalConfig, GwConfig, InternalConfig};
 use nat::stateless::config::tables::{NatTables, PerVniTable};
 
 /// Build a drop route

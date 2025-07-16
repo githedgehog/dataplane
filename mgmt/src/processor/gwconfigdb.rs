@@ -3,11 +3,9 @@
 
 //! Configuration database: entity able to store multiple gateway configurations
 
+use config::{ConfigError, ConfigResult, ExternalConfig, GenId, GwConfig};
 use std::collections::BTreeMap;
 use tracing::{debug, error, info};
-
-use crate::models::external::gwconfig::{ExternalConfig, GenId, GwConfig};
-use crate::models::external::{ConfigError, ConfigResult};
 
 #[derive(Default)]
 #[allow(unused)]
@@ -18,27 +16,27 @@ pub struct GwConfigDatabase {
 }
 
 impl GwConfigDatabase {
+    #[must_use]
     pub fn new() -> Self {
         debug!("Building config database...");
         let mut configdb = Self::default();
-        let mut blank = GwConfig::blank();
-        if let Err(e) = blank.build_internal_config() {
-            unreachable!("Failed to build internal config for blank config: {e}");
-        }
-        configdb.add(blank);
+        configdb.add(GwConfig::blank());
         configdb
     }
     pub fn add(&mut self, config: GwConfig) {
         debug!("Storing config '{}' in config db...", config.genid());
         self.configs.insert(config.external.genid, config);
     }
+
     #[allow(clippy::len_without_is_empty)]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.configs.len()
     }
     pub fn iter(&self) -> impl Iterator<Item = (&GenId, &GwConfig)> {
         self.configs.iter()
     }
+    #[must_use]
     pub fn get(&self, genid: GenId) -> Option<&GwConfig> {
         self.configs.get(&genid)
     }
@@ -76,15 +74,18 @@ impl GwConfigDatabase {
     }
 
     /// Get the generation Id of the currently applied config, if any.
+    #[must_use]
     pub fn get_current_gen(&self) -> Option<GenId> {
         self.current
     }
     /// Get a reference to the config currently applied, if any.
+    #[must_use]
     pub fn get_current_config(&self) -> Option<&GwConfig> {
         self.current.and_then(|genid| self.get(genid))
     }
 
     /// Get a mutable reference to the config currently applied, if any.
+    #[must_use]
     pub fn get_current_config_mut(&mut self) -> Option<&mut GwConfig> {
         self.current.and_then(|genid| self.get_mut(genid))
     }

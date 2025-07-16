@@ -3,40 +3,39 @@
 
 //! Config renderer: prefix list
 
-use crate::frr::renderer::builder::{ConfigBuilder, Render};
-use crate::models::internal::routing::prefixlist::*;
-use std::fmt::Display;
+use crate::frr::renderer::builder::{ConfigBuilder, Render, Rendered};
+use config::internal::routing::prefixlist::*;
 
 /* Impl Display */
-impl Display for PrefixListMatchLen {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Rendered for PrefixListMatchLen {
+    fn rendered(&self) -> String {
         match self {
-            PrefixListMatchLen::Ge(len) => write!(f, "ge {len}"),
-            PrefixListMatchLen::Le(len) => write!(f, "le {len}"),
+            PrefixListMatchLen::Ge(len) => format!("ge {len}"),
+            PrefixListMatchLen::Le(len) => format!("le {len}"),
         }
     }
 }
-impl Display for PrefixListPrefix {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Rendered for PrefixListPrefix {
+    fn rendered(&self) -> String {
         match self {
-            PrefixListPrefix::Any => write!(f, "any"),
-            PrefixListPrefix::Prefix(prefix) => write!(f, "{prefix}"),
+            PrefixListPrefix::Any => "any".to_string(),
+            PrefixListPrefix::Prefix(prefix) => format!("{prefix}"),
         }
     }
 }
-impl Display for PrefixListAction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Rendered for PrefixListAction {
+    fn rendered(&self) -> String {
         match self {
-            PrefixListAction::Deny => write!(f, "deny"),
-            PrefixListAction::Permit => write!(f, "permit"),
+            PrefixListAction::Deny => "deny".to_string(),
+            PrefixListAction::Permit => "permit".to_string(),
         }
     }
 }
-impl Display for IpVer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Rendered for IpVer {
+    fn rendered(&self) -> String {
         match self {
-            IpVer::V4 => write!(f, "ip"),
-            IpVer::V6 => write!(f, "ipv6"),
+            IpVer::V4 => "ip".to_string(),
+            IpVer::V6 => "ipv6".to_string(),
         }
     }
 }
@@ -47,9 +46,15 @@ impl Render for PrefixListEntry {
     type Output = String;
     fn render(&self, ctx: &Self::Context) -> String {
         let seq = ctx.1;
-        let mut out = format!("{} seq {} {} {}", ctx.0, seq, self.action, self.prefix);
+        let mut out = format!(
+            "{} seq {} {} {}",
+            ctx.0,
+            seq,
+            self.action.rendered(),
+            self.prefix.rendered()
+        );
         if let Some(len_match) = &self.len_match {
-            out += format!(" {}", &len_match).as_str();
+            out += format!(" {}", len_match.rendered()).as_str();
         }
         out
     }
@@ -59,7 +64,7 @@ impl Render for PrefixList {
     type Output = ConfigBuilder;
     fn render(&self, _: &Self::Context) -> ConfigBuilder {
         let mut config = ConfigBuilder::new();
-        let pfx = format!("{} prefix-list {}", self.ipver, self.name);
+        let pfx = format!("{} prefix-list {}", self.ipver.rendered(), self.name);
         if let Some(description) = &self.description {
             config += format!("{pfx} description \"{description}\"");
         }

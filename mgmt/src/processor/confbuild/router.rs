@@ -7,18 +7,17 @@ use netdev::Interface as NetDevInterface;
 use netdev::get_interfaces;
 use netdev::interface::InterfaceType;
 
+use crate::processor::confbuild::namegen::VpcInterfacesNames;
+
 use std::collections::HashMap;
 use tracing::{debug, error};
 
 use net::interface::{Interface, InterfaceName, Mtu};
 use routing::interfaces::interface::{AttachConfig, IfDataEthernet, IfState, IfType};
 
-use crate::models::external::ConfigError;
-use crate::models::external::gwconfig::GwConfig;
-
-use crate::models::internal::InternalConfig;
-use crate::models::internal::interfaces::interface::InterfaceConfig;
-use crate::models::internal::routing::vrf::VrfConfig;
+use config::internal::interfaces::interface::InterfaceConfig;
+use config::internal::routing::vrf::VrfConfig;
+use config::{ConfigError, GwConfig, InternalConfig};
 
 use crate::frr::renderer::builder::Render;
 

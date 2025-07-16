@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::models::internal::InternalConfig;
-use crate::models::internal::routing::evpn::VtepConfig;
+use crate::processor::confbuild::namegen::VpcInterfacesNames;
+
+use config::InternalConfig;
+use config::internal::routing::evpn::VtepConfig;
 use derive_builder::Builder;
 use futures::TryStreamExt;
 use interface_manager::Manager;

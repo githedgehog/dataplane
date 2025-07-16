@@ -3,8 +3,6 @@
 
 //! Dataplane management module
 
-/* models for internal and external configurations of the gw */
-pub mod models;
 /* gRPC entry point */
 pub mod grpc;
 
@@ -13,4 +11,6 @@ pub mod processor;
 
 /* Frr drivers */
 pub mod frr;
+
+/* VPC manager */
 pub mod vpc_manager;

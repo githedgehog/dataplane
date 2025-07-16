@@ -13,12 +13,12 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver;
 
-use crate::models::external::gwconfig::{ExternalConfig, GwConfig};
-use crate::models::external::{ConfigError, ConfigResult, stringify};
-use crate::models::internal::InternalConfig;
+use config::{ConfigError, ConfigResult, stringify};
+use config::{ExternalConfig, GenId, GwConfig, InternalConfig};
 
-use crate::models::external::gwconfig::GenId;
-use crate::processor::confbuild::router::generate_router_config;
+use crate::processor::confbuild::{
+    internal::build_internal_config, router::generate_router_config,
+};
 use crate::processor::display::GwConfigDatabaseSummary;
 use crate::processor::gwconfigdb::GwConfigDatabase;
 
@@ -82,7 +82,10 @@ pub(crate) struct ConfigProcessor {
 impl ConfigProcessor {
     const CHANNEL_SIZE: usize = 1; // This should not be changed
 
+    /////////////////////////////////////////////////////////////////////////////////
     /// Create a [`ConfigProcessor`]
+    /////////////////////////////////////////////////////////////////////////////////
+    #[must_use]
     pub(crate) fn new(
         router_ctl: RouterCtlSender,
         vpcmapw: VpcMapWriter<VpcMapName>,
@@ -119,7 +122,8 @@ impl ConfigProcessor {
             return Err(ConfigError::ConfigAlreadyExists(genid));
         }
         config.validate()?;
-        config.build_internal_config()?;
+        let internal = build_internal_config(&config)?;
+        config.set_internal_config(internal);
         let e = match self.apply(config).await {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -137,7 +141,8 @@ impl ConfigProcessor {
     #[allow(unused)]
     async fn apply_blank_config(&mut self) -> ConfigResult {
         let mut blank = GwConfig::blank();
-        let _ = blank.build_internal_config();
+        let internal = build_internal_config(&blank)?;
+        blank.set_internal_config(internal);
         self.apply(blank).await
     }
 
@@ -162,9 +167,9 @@ impl ConfigProcessor {
         .await?;
 
         if let Some(current) = current {
-            current.set_state(false, Some(genid));
+            current.meta.set_state(current.genid(), false, Some(genid));
         }
-        config.set_state(true, None);
+        config.meta.set_state(genid, true, None);
         self.config_db.set_current_gen(genid);
         if !self.config_db.contains(genid) {
             self.config_db.add(config);
