@@ -169,6 +169,61 @@ To do this, add the following to your `.vscode/settings.json` file:
     "editor.formatOnSave": true
 },
 ```
+
+## Code organization
+
+The dataplane code is organized in a set of crates. All crates aren't equal (or they are but some are more equal than others).
+The `dataplane` crate contains the main binary and may include any other as a dependency. The crates developed within this project
+are aliased to `dataplane-NAME` and referred to as internal. Since Rust is not a good friend of circular dependencies, here come some guidelines to avoid those.
+
+### Dependencies
+
+There is a set of low-level infrastructure crates (tier-1) with limited internal dependencies which many other crates may refer to.
+The tier-1 set of crates includes: `net`, `pipeline`, `lpm` or `config`. Note that some of those refer to the others (e.g. `net` is a dependency of `pipeline`).
+
+A second tier of crates use the prior set to add extended functionalities. These include `nat` or `routing`. These crates may have `config` as
+dependency, but not vice-versa. I.e. in general, tier-n can only have as  dependencies, crates in tier-k, k<=n.
+Finally, crate `mgmt` (tier-3) may make use of any the internal crates (tier-1 and tier-2). No  no other crate other than `dataplane` (tier-4) should
+depend on `mgmt`.
+
+### Dependency cheat-sheet
+ * No crate should ever depend on `dataplane`.
+ * No crate except `dataplane` should depend on `mgmt`.
+ * Crate `config` should never depend on tier-2 crates (e.g. `nat` or `routing`).
+ * The general rule is that a tier-n crate can only have as dependencies crates in tier-k, k<=n.
+ * In other words, in a graphical representation as below, dependency arrows can never go upwards.
+
+
+```
+     ┌─────────────────────────────────┐
+     │           dataplane             │
+     └┬───────────┬─────────┬──────────┘
+      │           │         │
+      │           │         │
+      │           │   ┌─────▼────┐
+      │           │   │          │
+      │           │   │   mgmt   ┼───────────────┐      tier-3
+      │           │   │          │               │
+      │           │   └┬───────┬─┘               │
+      │           │    │       │                 │
+ ┌────┘      ┌────▼────▼┐   ┌──▼───────┐         │
+ │           │          │   │          │         │
+ │     ┌─────┼   nat    │   │ routing  ┼───────┐ │      tier-2
+ │     │     │          │   │          │       │ │
+ │     │     └──────┬───┘   └──────────┘       │ │
+ │     │            │                          │ │
+┌▼─────▼───┐  ┌─────▼────┐  ┌──────────┐  ┌────▼─▼───┐
+│          │  │          │  │          │  │          │
+│   net    │  │   lpm    │  │ pipeline │  │ config   │  tier-1
+│          │  │          │  │          │  │          │
+└───▲──────┘  └──────────┘  └───┬──────┘  └──────────┘
+    │                           │
+    └───────────────────────────┘
+```
+ 
+
+
+
 ## License
 
 The Dataplane of the Hedgehog Open Fabric Network is licensed under the
