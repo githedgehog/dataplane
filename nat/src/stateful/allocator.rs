@@ -1,27 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use super::NatIp;
-use super::port::{NatPort, NatPortError};
-use std::collections::HashSet;
+use super::NatTuple;
+use super::port::NatPort;
 use std::fmt::Debug;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
-pub trait NatPool<I: NatIp> {
-    #[allow(clippy::type_complexity)]
-    fn allocate(&self) -> Result<(Option<(I, NatPort)>, Option<(I, NatPort)>), NatPortError>;
+#[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum AllocatorError {
 }
 
-#[derive(Debug, Clone)]
-pub struct NatDefaultPool<I: NatIp> {
-    ips: HashSet<I>,
-    allocated: NatAllocations,
+#[allow(clippy::type_complexity)]
+pub trait NatAllocator: Debug {
+    fn new() -> Self;
+    fn allocate_v4(
+        &mut self,
+        tuple: &NatTuple<Ipv4Addr>,
+    ) -> Result<(Option<(Ipv4Addr, NatPort)>, Option<(Ipv4Addr, NatPort)>), AllocatorError>;
+    fn allocate_v6(
+        &mut self,
+        tuple: &NatTuple<Ipv6Addr>,
+    ) -> Result<(Option<(Ipv6Addr, NatPort)>, Option<(Ipv6Addr, NatPort)>), AllocatorError>;
 }
-
-impl<I: NatIp> NatPool<I> for NatDefaultPool<I> {
-    fn allocate(&self) -> Result<(Option<(I, NatPort)>, Option<(I, NatPort)>), NatPortError> {
-        todo!()
-    }
-}
-
-#[derive(Debug, Clone)]
-struct NatAllocations {}
