@@ -38,8 +38,10 @@ _image_profile := if profile == "debug" { "debug" } else { "release" }
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
 [private]
 _dpdk_sys_container_tag := dpdk_sys_commit
+
 [private]
 _libc_container := _dpdk_sys_container_repo + "/libc-env:" + _dpdk_sys_container_tag + "." + _image_profile
+
 [private]
 _debug_env_container := _dpdk_sys_container_repo + "/debug-env:" + _dpdk_sys_container_tag + "." + _image_profile
 [private]
@@ -423,6 +425,32 @@ build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile
         "${TAG}" \
         "{{ _container_repo }}:$(truncate128 "{{ _slug }}")"
     fi
+
+# Build a container for local testing, without cache and extended base
+[script]
+build-container-quick: (compile-env "cargo" "--locked" "build" ("--target=" + target) "--package=dataplane" "--package=dataplane-cli")
+    {{ _just_debuggable_ }}
+    {{ _define_truncate128 }}
+    mkdir -p "artifact/{{ target }}/{{ profile }}"
+    cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/dataplane" "artifact/{{ target }}/{{ profile }}/dataplane"
+    cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/cli" "artifact/{{ target }}/{{ profile }}/dataplane-cli"
+    declare build_date
+    build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
+    declare -r build_date
+    declare -r TAG="{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")"
+    sudo -E docker build \
+      --label "git.commit={{ _commit }}" \
+      --label "git.branch={{ _branch }}" \
+      --label "git.tree-state={{ _clean }}" \
+      --label "build.date=${build_date}" \
+      --label "build.timestamp={{ _build_time }}" \
+      --tag "${TAG}" \
+      --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/dataplane" \
+      --build-arg ARTIFACT_CLI="artifact/{{ target }}/{{ profile }}/dataplane-cli" \
+      --build-arg BASE="{{ _debug_env_container }}" \
+      .
+
+    sudo -E docker tag "${TAG}" "dataplane:local-testing-latest"
 
 # Build and push containers
 [script]
