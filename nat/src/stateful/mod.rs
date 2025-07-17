@@ -6,9 +6,12 @@
 #![allow(unused_imports)]
 
 mod allocator;
+mod default_allocator;
 mod port;
 pub mod sessions;
 
+use crate::stateful::allocator::NatAllocator;
+use crate::stateful::default_allocator::NatDefaultAllocator;
 use crate::stateful::port::NatPort;
 use crate::stateful::sessions::{
     NatDefaultSession, NatDefaultSessionManager, NatSession, NatSessionManager, NatState,
@@ -26,7 +29,7 @@ use routing::rib::vrf::VrfId;
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StatefulNatError {
     #[error("invalid port {0}")]
     InvalidPort(u16),
@@ -105,6 +108,7 @@ impl<I: NatIp> NatTuple<I> {
 #[derive(Debug)]
 pub struct StatefulNat {
     sessions: NatDefaultSessionManager,
+    allocator: NatDefaultAllocator,
 }
 
 #[allow(clippy::new_without_default)]
@@ -114,6 +118,7 @@ impl StatefulNat {
     pub fn new() -> Self {
         Self {
             sessions: NatDefaultSessionManager::new(),
+            allocator: NatDefaultAllocator::new(),
         }
     }
 
@@ -144,14 +149,6 @@ impl StatefulNat {
         self.sessions.insert_session_v4(tuple.clone(), state)
 
         // TODO: Reverse session
-    }
-
-    fn find_nat_pool<I: NatIp>(
-        &self,
-        tuple: &NatTuple<I>,
-        vrf_id: VrfId,
-    ) -> Option<&dyn allocator::NatPool<I>> {
-        todo!()
     }
 
     fn set_source_port(
@@ -259,11 +256,7 @@ impl StatefulNat {
         }
 
         // Else, if we need NAT for this packet, create a new session and translate the address
-        let Some(pool) = self.find_nat_pool::<Ipv4Addr>(tuple, tuple.vrf_id) else {
-            // No pool, leave the packet unchanged
-            return None;
-        };
-        let Ok(alloc) = pool.allocate() else {
+        let Ok(alloc) = self.allocator.allocate_v4(tuple) else {
             // TODO: Log error, drop packet, update metrics
             return None;
         };
