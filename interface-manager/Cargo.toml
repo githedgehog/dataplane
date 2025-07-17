@@ -30,8 +30,9 @@ hwlocality = { version = "1.0.0-alpha.10", default-features = true, features = [
 
 [dev-dependencies]
 # internal
-net = { workspace = true, features = ["bolero"] }
 fixin = { workspace = true }
+net = { workspace = true, features = ["bolero"] }
+serde_yml = { workspace = true, features = [] }
 test-utils = { workspace = true }
 
 # external

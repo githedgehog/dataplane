@@ -3,17 +3,19 @@
 
 #![allow(clippy::pedantic, clippy::unwrap_used)]
 
-use bolero::bolero_engine::driver::cache::Cache;
 use hwlocality::object::TopologyObject;
 use hwlocality::object::attributes::{
-    NUMANodeAttributes, ObjectAttributes, PCIDeviceAttributes, UpstreamAttributes,
+    NUMANodeAttributes, OSDeviceAttributes, ObjectAttributes, PCIDeviceAttributes,
+    UpstreamAttributes,
 };
+use hwlocality::object::types::OSDeviceType;
 use id::Id;
 use net::buffer::PacketBufferMut;
 use pci_ids::{Device, FromId, Vendor};
 use pci_info::{PciDevice, PciEnumerator};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::{Display, Formatter};
 use std::num::NonZero;
 use std::thread::Thread;
 
@@ -202,15 +204,11 @@ pub struct GroupAttributes {
     depth: usize,
 }
 
-impl TryFrom<hwlocality::object::attributes::GroupAttributes> for GroupAttributes {
-    type Error = ();
-
-    fn try_from(
-        value: hwlocality::object::attributes::GroupAttributes,
-    ) -> Result<Self, Self::Error> {
-        Ok(Self {
+impl From<hwlocality::object::attributes::GroupAttributes> for GroupAttributes {
+    fn from(value: hwlocality::object::attributes::GroupAttributes) -> Self {
+        Self {
             depth: value.depth(),
-        })
+        }
     }
 }
 
@@ -258,6 +256,7 @@ impl From<PCIDeviceAttributes> for PciDeviceAttributes {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum BridgeType {
     Pci,
     Host,
@@ -319,24 +318,126 @@ impl TryFrom<hwlocality::object::attributes::BridgeAttributes> for BridgeAttribu
     }
 }
 
-// pub struct OsDevice {
-//     pub device_type: String,
-// }
-
 #[derive(Debug, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum NodeAttributes {
     NumaNode(NumaNodeAttributes),
     Cache(CacheAttributes),
     Pci(PciDeviceAttributes),
     Bridge(BridgeAttributes),
     Group(GroupAttributes),
-    // OsDevice(OsDeviceAttributes),
+    OsDevice(OsDeviceAttributes),
 }
 
 #[derive(Debug, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Node {
-    pub name: Option<String>,
-    pub attributes: NodeAttributes,
+    #[serde(rename = "type")]
+    type_: String,
+    physical_index: Id<Node, u64>,
+    os_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subtype: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(flatten)]
+    properties: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attributes: Option<NodeAttributes>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    children: Vec<Node>,
+}
+
+#[derive(Debug, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum OsDeviceType {
+    Storage,
+    Gpu,
+    Network,
+    OpenFabrics,
+    Dma,
+    CoProcessor,
+    Memory,
+}
+
+impl From<OsDeviceType> for String {
+    fn from(value: OsDeviceType) -> Self {
+        match value {
+            OsDeviceType::Storage => "storage".to_string(),
+            OsDeviceType::Gpu => "gpu".to_string(),
+            OsDeviceType::Network => "network".to_string(),
+            OsDeviceType::OpenFabrics => "openfabrics".to_string(),
+            OsDeviceType::Dma => "dma".to_string(),
+            OsDeviceType::CoProcessor => "coprocessor".to_string(),
+            OsDeviceType::Memory => "memory".to_string(),
+        }
+    }
+}
+
+impl TryFrom<String> for OsDeviceType {
+    type Error = ();
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Ok(match value.as_str() {
+            "storage" => OsDeviceType::Storage,
+            "gpu" => OsDeviceType::Gpu,
+            "network" => OsDeviceType::Network,
+            "openfabrics" => OsDeviceType::OpenFabrics,
+            "dma" => OsDeviceType::Dma,
+            "coprocessor" => OsDeviceType::CoProcessor,
+            "memory" => OsDeviceType::Memory,
+            _ => Err(())?,
+        })
+    }
+}
+
+impl Display for OsDeviceType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OsDeviceType::Storage => write!(f, "storage"),
+            OsDeviceType::Gpu => write!(f, "gpu"),
+            OsDeviceType::Network => write!(f, "network"),
+            OsDeviceType::OpenFabrics => write!(f, "openfabrics"),
+            OsDeviceType::Dma => write!(f, "dma"),
+            OsDeviceType::CoProcessor => write!(f, "coprocessor"),
+            OsDeviceType::Memory => write!(f, "memory"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct OsDeviceAttributes {
+    pub device_type: OsDeviceType,
+}
+
+impl TryFrom<OSDeviceType> for OsDeviceType {
+    type Error = ();
+
+    fn try_from(value: OSDeviceType) -> Result<Self, Self::Error> {
+        Ok(match value {
+            OSDeviceType::Storage => OsDeviceType::Storage,
+            OSDeviceType::GPU => OsDeviceType::Gpu,
+            OSDeviceType::Network => OsDeviceType::Network,
+            OSDeviceType::OpenFabrics => OsDeviceType::OpenFabrics,
+            OSDeviceType::DMA => OsDeviceType::Dma,
+            OSDeviceType::CoProcessor => OsDeviceType::CoProcessor,
+            OSDeviceType::Unknown(_) => Err(())?,
+        })
+    }
+}
+
+pub struct OsDevice {
+    pub device_type: OSDeviceType,
+}
+
+impl TryFrom<OSDeviceAttributes> for OsDeviceAttributes {
+    type Error = ();
+
+    fn try_from(value: OSDeviceAttributes) -> Result<Self, Self::Error> {
+        Ok(Self {
+            device_type: value.device_type().try_into()?,
+        })
+    }
 }
 
 pub struct Core;
@@ -373,25 +474,44 @@ impl TryFrom<ObjectAttributes<'_>> for NodeAttributes {
     fn try_from(value: ObjectAttributes) -> Result<Self, ()> {
         Ok(match value {
             ObjectAttributes::NUMANode(&x) => Self::NumaNode(x.into()),
-            ObjectAttributes::Cache(&x) => Self::Cache(x.try_into().unwrap()),
-            ObjectAttributes::Group(&x) => Self::Group(x.try_into()?),
+            ObjectAttributes::Cache(&x) => Self::Cache(x.try_into().map_err(|_| {
+                println!("failed to convert cache attributes");
+            })?),
+            ObjectAttributes::Group(&x) => Self::Group(x.into()),
             ObjectAttributes::PCIDevice(&x) => Self::Pci(x.into()),
-            ObjectAttributes::Bridge(&x) => Self::Bridge(x.try_into().unwrap()),
-            ObjectAttributes::OSDevice(&x) => Err(())?,
+            ObjectAttributes::Bridge(&x) => Self::Bridge(x.try_into().map_err(|_| {
+                println!("failed to convert bridge attributes");
+            })?),
+            ObjectAttributes::OSDevice(&x) => Self::OsDevice(x.try_into().map_err(|_| {
+                println!("failed to convert os device attributes");
+            })?),
         })
     }
 }
 
-impl<'a> TryFrom<&'a TopologyObject> for Node {
-    type Error = ();
-    fn try_from(value: &'a TopologyObject) -> Result<Self, ()> {
-        Ok(Node {
+impl<'a> From<&'a TopologyObject> for Node {
+    fn from(value: &'a TopologyObject) -> Self {
+        Node {
+            physical_index: Id::from(value.global_persistent_index()),
+            os_index: value.os_index(),
             name: value.name().map(|x| x.to_string_lossy().to_string()),
+            type_: value.object_type().to_string(),
+            subtype: value.subtype().map(|x| x.to_string_lossy().to_string()),
+            properties: value
+                .infos()
+                .iter()
+                .map(|x| {
+                    (
+                        x.name().to_string_lossy().to_string(),
+                        x.value().to_string_lossy().to_string(),
+                    )
+                })
+                .collect(),
             attributes: value
                 .attributes()
-                .and_then(|x| NodeAttributes::try_from(x).ok())
-                .ok_or(())?,
-        })
+                .and_then(|x| NodeAttributes::try_from(x).ok()),
+            children: value.all_children().map(Node::from).collect(),
+        }
     }
 }
 
@@ -496,7 +616,7 @@ mod test {
                                     .to_string_lossy()
                             );
                         }
-                        Err(err) => {
+                        Err(_) => {
                             return;
                         }
                     }
@@ -612,20 +732,20 @@ mod test {
         println!("*** flags: {:#?}", topology.build_flags());
 
         println!("*** Topology tree");
-        print_children2(topology.root_object());
+        let system = print_children2(topology.root_object());
+        println!("{}", serde_yml::to_string(&system).unwrap());
+        // print_children(
+        //     topology.root_object(),
+        //     0,
+        //
         // for bridge in topology.bridges() {
         //     println!("*** io device {bridge}");
         //     print_children(bridge);
         // }
     }
 
-    fn print_children2(obj: &TopologyObject) -> Result<(), ()> {
-        let node = Node::try_from(obj);
-        println!("{node:#?}");
-        for child in obj.all_children() {
-            print_children2(child)?;
-        }
-        Ok(())
+    fn print_children2(obj: &TopologyObject) -> Node {
+        Node::from(obj)
     }
 
     fn print_children(obj: &TopologyObject, depth: usize) {
