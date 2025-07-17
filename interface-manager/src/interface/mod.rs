@@ -7,6 +7,7 @@ mod association;
 mod bridge;
 mod pci;
 mod properties;
+mod tap;
 mod vrf;
 mod vtep;
 
@@ -20,6 +21,8 @@ pub use bridge::*;
 pub use pci::*;
 #[allow(unused_imports)] // re-export
 pub use properties::*;
+#[allow(unused_imports)] // re-export
+pub use tap::*;
 #[allow(unused_imports)] // re-export
 pub use vrf::*;
 #[allow(unused_imports)] // re-export
