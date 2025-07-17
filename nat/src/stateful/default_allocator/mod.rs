@@ -7,6 +7,7 @@ use super::allocator::AllocatorError;
 use crate::stateful::port::NatPort;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
+mod ip_alloc;
 mod port_alloc;
 
 #[derive(Debug)]
