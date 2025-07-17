@@ -10,11 +10,11 @@
 
 pub mod device;
 pub mod interfaces;
-pub mod natconfig;
 pub mod routing;
 
 use derive_builder::Builder;
 
+use super::ConfigResult;
 use crate::external::GenId;
 use crate::internal::device::DeviceConfig;
 use crate::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
@@ -23,11 +23,6 @@ use crate::internal::routing::frr::Frr;
 use crate::internal::routing::prefixlist::{PrefixList, PrefixListTable};
 use crate::internal::routing::routemap::{RouteMap, RouteMapTable};
 use crate::internal::routing::vrf::{VrfConfig, VrfConfigTable};
-
-use nat::stateless::config::prefixtrie::{PrefixTrie, TrieError};
-use nat::stateless::config::tables::NatTables;
-
-use super::ConfigResult;
 
 #[derive(Clone, Debug)]
 /* Main internal GW configuration */
@@ -38,7 +33,6 @@ pub struct InternalConfig {
     pub vrfs: VrfConfigTable,
     pub plist_table: PrefixListTable,
     pub rmap_table: RouteMapTable,
-    pub nat_table: Option<NatTables>,
 }
 
 impl InternalConfig {
@@ -56,7 +50,6 @@ impl InternalConfig {
             vrfs: VrfConfigTable::new(),
             plist_table: PrefixListTable::new(),
             rmap_table: RouteMapTable::new(),
-            nat_table: None,
         }
     }
     pub fn set_vtep(&mut self, vtep: VtepConfig) {
@@ -77,8 +70,5 @@ impl InternalConfig {
     }
     pub fn add_route_map(&mut self, rmap: RouteMap) {
         self.rmap_table.add_route_map(rmap);
-    }
-    pub fn add_nat_tables(&mut self, nat_tables: NatTables) {
-        self.nat_table = Some(nat_tables);
     }
 }

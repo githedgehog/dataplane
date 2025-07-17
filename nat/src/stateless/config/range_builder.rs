@@ -2,8 +2,8 @@
 // Copyright Open Network Fabric Authors
 
 use super::NatPeeringError;
+use crate::stateless::config::tables::NatTableValue;
 use lpm::prefix::{Prefix, PrefixSize};
-use nat::stateless::config::tables::NatTableValue;
 use net::vxlan::Vni;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
@@ -135,7 +135,7 @@ impl<'a> RangeBuilder<'a> {
                 let prefix_target_remain_size = target_prefix_size - self.offset_cursor_target;
 
                 // Compute range size
-                let mut range_size = if prefix_orig_remain_size < prefix_target_remain_size {
+                let range_size = if prefix_orig_remain_size < prefix_target_remain_size {
                     prefix_orig_remain_size
                 } else {
                     prefix_target_remain_size
@@ -608,7 +608,7 @@ mod tests {
                             self.child_right.as_mut().expect("Right child is None"),
                         )
                     }
-                    (Some(node_left), Some(node_right)) => (
+                    (Some(_node_left), Some(_node_right)) => (
                         // The node has children already, return them.
                         self.child_left.as_mut().expect("Left child is None"),
                         self.child_right.as_mut().expect("Right child is None"),
@@ -628,7 +628,7 @@ mod tests {
                 d.produce::<bool>().unwrap()
             };
             let mut next_node = child_left;
-            if (pick_right) {
+            if pick_right {
                 next_node = child_right;
                 // If picking the right child, update the start address for our prefix to reflect
                 // the path we're traversing in the tree.
@@ -638,7 +638,7 @@ mod tests {
 
             // Recursively process the next child, retrieve the IP address and updated size for the
             // child
-            let (ip, updated_size) =
+            let (ip, _updated_size) =
                 next_node.process_node(length, depth + 1, start_addr_bits, d)?;
 
             // Update remaining slots size for this node: the maximum of the remaining slots of the
@@ -656,6 +656,7 @@ mod tests {
 
     struct IpSpace {
         root: Box<PrefixNode>,
+        #[allow(unused)]
         is_ipv4: bool,
     }
 
@@ -859,9 +860,8 @@ mod tests {
 
                 // Generate NAT ranges
                 let vni = Vni::new_checked(100).expect("Failed to create VNI");
-                let mut nat_ranges =
-                    generate_nat_values(vni, prefixes_to_update, prefixes_to_point_to)
-                        .collect::<Vec<_>>();
+                let nat_ranges = generate_nat_values(vni, prefixes_to_update, prefixes_to_point_to)
+                    .collect::<Vec<_>>();
 
                 // Make sure that each IP picked within the original prefixes is in exactly one of
                 // the generated IP range

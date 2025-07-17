@@ -13,12 +13,14 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver;
 
+use config::external::overlay::Overlay;
 use config::{ConfigError, ConfigResult, stringify};
 use config::{ExternalConfig, GenId, GwConfig, InternalConfig};
 
-use crate::processor::confbuild::{
-    internal::build_internal_config, router::generate_router_config,
-};
+use crate::processor::confbuild::internal::build_internal_config;
+use crate::processor::confbuild::internal::build_nat_internal_config;
+use crate::processor::confbuild::router::generate_router_config;
+
 use crate::processor::display::GwConfigDatabaseSummary;
 use crate::processor::gwconfigdb::GwConfigDatabase;
 
@@ -352,10 +354,10 @@ fn update_stats_vpc_mappings(config: &GwConfig, vpcmapw: &mut VpcMapWriter<VpcMa
 }
 
 /// Update the Nat tables for stateless NAT
-fn apply_nat_config(nattablesw: &mut NatTablesWriter, internal: &InternalConfig) {
-    if let Some(nat_table) = &internal.nat_table {
-        nattablesw.update_nat_tables(nat_table.clone());
-    }
+fn apply_nat_config(overlay: &Overlay, nattablesw: &mut NatTablesWriter) -> ConfigResult {
+    let nat_table = build_nat_internal_config(overlay)?;
+    nattablesw.update_nat_tables(nat_table);
+    Ok(())
 }
 
 /// Main function to apply a config
@@ -398,7 +400,7 @@ async fn apply_gw_config(
     let kernel_vrfs = vpc_mgr.get_kernel_vrfs().await?;
 
     /* apply nat config */
-    apply_nat_config(nattablesw, internal);
+    apply_nat_config(&config.external.overlay, nattablesw)?;
 
     /* update stats mappings */
     update_stats_vpc_mappings(config, vpcmapw);

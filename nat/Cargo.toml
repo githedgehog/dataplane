@@ -7,6 +7,7 @@ license = "Apache-2.0"
 
 [dependencies]
 ahash = { workspace = true }
+config = { workspace = true }
 dashmap = { workspace = true }
 left-right = { workspace = true }
 lpm = { workspace = true }
@@ -24,7 +25,9 @@ routing = { workspace = true, features = ["testing"] }
 
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
+ipnet = { workspace = true }
 tracing-test = { workspace = true, features = [] }
+
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(none)'] }

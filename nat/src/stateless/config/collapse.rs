@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use super::NatPeeringError;
-use crate::external::overlay::vpc::Peering;
+use config::external::overlay::vpc::Peering;
 use lpm::prefix::Prefix;
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -153,9 +153,8 @@ fn prefix_split(prefix: &Prefix) -> Result<(Prefix, Prefix), NatPeeringError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
+    use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use ipnet::IpNet;
-    use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
     use lpm::trie::IpPrefixTrie;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -402,7 +401,7 @@ mod tests {
             .not("3.0.128.0/17".into());
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(expose).expect("Failed to add expose");
-        let mut manifest_empty = VpcManifest::new("VPC-2");
+        let manifest_empty = VpcManifest::new("VPC-2");
         let peering = Peering {
             name: "test_peering".into(),
             local: manifest,
@@ -422,7 +421,7 @@ mod tests {
         assert_eq!(collapsed_peering.local.exposes[0], expected_expose);
     }
 
-    use bolero::{Driver, TypeGenerator, ValueGenerator};
+    use bolero::{Driver, ValueGenerator};
     use std::ops::Bound;
     struct RandomPrefixSetGenerator {
         is_ipv4: bool,

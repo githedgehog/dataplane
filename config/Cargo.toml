@@ -8,7 +8,6 @@ license = "Apache-2.0"
 [dependencies]
 # internal
 gateway_config = { workspace = true }
-nat = { workspace = true } # temporary. This dependency will be removed
 net = { workspace = true }
 lpm = { workspace = true }
 

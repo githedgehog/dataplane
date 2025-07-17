@@ -20,7 +20,6 @@ use std::net::Ipv4Addr;
 use crate::processor::confbuild::namegen::{VpcConfigNames, VpcInterfacesNames};
 
 use config::internal::interfaces::interface::InterfaceType;
-use config::internal::natconfig::add_peering;
 use config::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
 use config::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
 use config::internal::routing::evpn::VtepConfig;
@@ -31,6 +30,8 @@ use config::internal::routing::routemap::{MatchingPolicy, RouteMap, RouteMapEntr
 use config::internal::routing::statics::StaticRoute;
 use config::internal::routing::vrf::VrfConfig;
 use config::{ExternalConfig, GwConfig, InternalConfig};
+
+use nat::stateless::config::add_peering;
 use nat::stateless::config::tables::{NatTables, PerVniTable};
 
 /// Build a drop route
@@ -311,7 +312,7 @@ fn build_vtep_config(external: &ExternalConfig) -> Result<VtepConfig, ConfigErro
     Ok(vtep)
 }
 
-fn build_nat_internal_config(overlay: &Overlay, internal: &mut InternalConfig) -> ConfigResult {
+pub(crate) fn build_nat_internal_config(overlay: &Overlay) -> Result<NatTables, ConfigError> {
     let mut nat_tables = NatTables::new();
     for vpc in overlay.vpc_table.values() {
         let mut table = PerVniTable::new(vpc.vni);
@@ -321,8 +322,7 @@ fn build_nat_internal_config(overlay: &Overlay, internal: &mut InternalConfig) -
         }
         nat_tables.add_table(table);
     }
-    internal.add_nat_tables(nat_tables);
-    Ok(())
+    Ok(nat_tables)
 }
 
 fn build_internal_overlay_config(
@@ -331,18 +331,12 @@ fn build_internal_overlay_config(
     router_id: Option<Ipv4Addr>,
     internal: &mut InternalConfig,
 ) -> ConfigResult {
-    debug!("Building overlay config...");
-    if overlay.vpc_table.is_empty() {
-        debug!("There is no overlay configuration");
-        return Ok(());
-    }
+    debug!("Building overlay config ({} VPCs)", overlay.vpc_table.len());
 
-    /* Vpcs and peering */
+    /* Vpcs and peerings */
     for vpc in overlay.vpc_table.values() {
         build_vpc_internal_config(vpc, asn, router_id, internal)?;
     }
-    /* nat configuration */
-    build_nat_internal_config(overlay, internal)?;
     Ok(())
 }
 
@@ -363,10 +357,15 @@ pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, Config
     if let Some(bgp) = &external.underlay.vrf.bgp {
         let asn = bgp.asn;
         let router_id = bgp.router_id;
-        build_internal_overlay_config(&external.overlay, asn, router_id, &mut internal)?;
+        if !external.overlay.vpc_table.is_empty() {
+            build_internal_overlay_config(&external.overlay, asn, router_id, &mut internal)?;
+        } else {
+            debug!("The configuration does not specify any VPCs...");
+        }
     } else if config.genid() != ExternalConfig::BLANK_GENID {
         warn!("Config has no BGP configuration");
     }
+    /* done */
     debug!("Successfully built internal config for genid {genid}");
     if genid != ExternalConfig::BLANK_GENID {
         debug!("Internal config is:\n{internal:#?}");
