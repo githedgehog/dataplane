@@ -18,7 +18,9 @@ rekon = { workspace = true }
 bolero = { workspace = true, optional = true, default-features = false, features = ["alloc"] }
 derive_builder = { workspace = true, default-features = false, features = ["default"] }
 futures = { workspace = true, features = ["default"] }
+libc = { workspace = true, features = [] }
 multi_index_map = { workspace = true, features = ["serde"] }
+nix = { workspace = true, default-features = false, features = ["ioctl"] }
 rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["std"] }
 thiserror = { workspace = true, features = ["std"] }
