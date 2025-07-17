@@ -925,6 +925,7 @@ dependencies = [
  "dataplane-pipeline",
  "dataplane-routing",
  "left-right",
+ "rand",
  "thiserror 2.0.12",
  "tracing",
  "tracing-test",

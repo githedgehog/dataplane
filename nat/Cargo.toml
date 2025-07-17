@@ -12,6 +12,7 @@ left-right = { workspace = true }
 lpm = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
+rand = { workspace = true }
 routing = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

@@ -9,6 +9,12 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum AllocatorError {
+    #[error("failed to allocate port block")]
+    NoPortBlock,
+    #[error("no free port block available (base: {0})")]
+    NoFreePort(u16),
+    #[error("failed to allocate port: {0}")]
+    PortAllocationFailed(NatPortError),
 }
 
 #[allow(clippy::type_complexity)]
