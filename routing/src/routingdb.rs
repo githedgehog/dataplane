@@ -44,4 +44,7 @@ impl RoutingDb {
             None => false,
         }
     }
+    pub fn current_config(&self) -> Option<i64> {
+        self.config.as_ref().map(|rconfig| rconfig.genid())
+    }
 }

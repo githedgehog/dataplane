@@ -268,11 +268,24 @@ fn cmd_local() -> Node {
     root
 }
 
-#[allow(unused)]
+fn cmd_frrmi_apply_last() -> Node {
+    let mut root = Node::new("apply");
+    root += Node::new("last-config")
+        .desc("Apply the last config in FRR")
+        .action(CliAction::FrrmiApplyLastConfig as u16);
+    root
+}
+fn cmd_frrmi() -> Node {
+    let mut root = Node::new("frrmi");
+    root += cmd_frrmi_apply_last();
+    root
+}
+
 pub fn gw_cmd_tree() -> Node {
     let mut root = Node::new("");
     root += cmd_local();
     root += cmd_mgmt();
     root += cmd_show();
+    root += cmd_frrmi();
     root
 }

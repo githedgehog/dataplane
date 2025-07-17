@@ -18,7 +18,7 @@ use crate::routingdb::RoutingDb;
 use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, CliSerialize, RouteProtocol};
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
-use std::os::unix::net::{SocketAddr, UnixDatagram};
+use std::os::unix::net::SocketAddr;
 use tracing::{error, trace};
 
 impl From<&RouteProtocol> for RouteOrigin {
@@ -358,7 +358,7 @@ fn show_ip_fib_groups(
 fn do_handle_cli_request(
     request: CliRequest,
     db: &RoutingDb,
-    rio: &Rio,
+    rio: &mut Rio,
 ) -> Result<CliResponse, CliError> {
     let cpi_s = &rio.cpistats;
     let frrmi = &rio.frrmi;
@@ -369,6 +369,17 @@ fn do_handle_cli_request(
             None => CliResponse::from_request_ok(request, format!("\n No config is applied")),
             Some(cfg) => CliResponse::from_request_ok(request, format!("\n{cfg}")),
         },
+        CliAction::FrrmiApplyLastConfig => {
+            if let Some(genid) = db.current_config() {
+                rio.reapply_frr_config(&db);
+                CliResponse::from_request_ok(
+                    request,
+                    format!("Requested to apply config for gen {genid}"),
+                )
+            } else {
+                CliResponse::from_request_ok(request, format!("There is no configuration"))
+            }
+        }
         CliAction::ShowRouterInterfaces => {
             if let Some(iftable) = db.iftw.enter() {
                 CliResponse::from_request_ok(request, format!("\n{}", *iftable))
@@ -430,11 +441,10 @@ fn do_handle_cli_request(
 }
 
 pub(crate) fn handle_cli_request(
-    sock: &UnixDatagram,
+    rio: &mut Rio,
     peer: &SocketAddr,
     request: CliRequest,
     db: &RoutingDb,
-    rio: &Rio,
 ) {
     trace!("Got cli request: {:#?} from {:?}", request, peer);
 
@@ -448,8 +458,8 @@ pub(crate) fn handle_cli_request(
     });
 
     let response_len = (response.len() as u64).to_ne_bytes();
-    let _ = sock.send_to_addr(&response_len, peer); // FIXME
-    match sock.send_to_addr(&response, peer) {
+    let _ = rio.clisock.send_to_addr(&response_len, peer); // FIXME
+    match rio.clisock.send_to_addr(&response, peer) {
         Ok(len) => trace!("Sent cli response ({len} octets)"),
         Err(e) => error!("Failure sending CLI response: {e}"),
     }

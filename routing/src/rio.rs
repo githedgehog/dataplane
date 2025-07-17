@@ -263,7 +263,7 @@ impl Rio {
         self.frrmi.queue_request(req);
     }
     /// Request to reapply the last configuration
-    fn reapply_frr_config(&mut self, db: &RoutingDb) {
+    pub(crate) fn reapply_frr_config(&mut self, db: &RoutingDb) {
         if let Some(rconfig) = &db.config {
             if let Some(frr_cfg) = rconfig.get_frr_config() {
                 self.request_frr_config(rconfig.genid(), frr_cfg.clone());
@@ -341,7 +341,7 @@ pub fn start_rio(
                         while event.is_readable() {
                             if let Ok((len, peer)) = rio.clisock.recv_from(buf.as_mut_slice()) {
                                 if let Ok(request) = CliRequest::deserialize(&buf[0..len]) {
-                                    handle_cli_request(&rio.clisock, &peer, request, &db, &rio);
+                                    handle_cli_request(&mut rio, &peer, request, &db);
                                 }
                             } else {
                                 break;

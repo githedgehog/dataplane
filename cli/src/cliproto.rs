@@ -137,6 +137,7 @@ pub enum CliAction {
     // frrmi
     ShowFrrmiStats,
     ShowFrrmiLastConfig,
+    FrrmiApplyLastConfig,
 
     // vpcs
     ShowVpc,
