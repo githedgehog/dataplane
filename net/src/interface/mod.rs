@@ -108,7 +108,7 @@ impl From<InterfaceIndex> for u32 {
     }
 }
 
-const MAX_INTERFACE_NAME_LEN: usize = 16;
+const MAX_INTERFACE_NAME_LEN: usize = 15;
 
 /// A string which has been checked to be a legal linux network interface name.
 ///
@@ -130,7 +130,7 @@ impl Display for InterfaceName {
 }
 
 impl InterfaceName {
-    /// The maximum legal length of a linux network interface name (including the trailing NUL)
+    /// The maximum legal length of a linux network interface name (excluding the trailing NUL)
     pub const MAX_LEN: usize = MAX_INTERFACE_NAME_LEN;
 }
 
@@ -365,7 +365,7 @@ mod contract {
             ];
             #[allow(clippy::cast_possible_truncation)] // const eval
             let target_length =
-                (1 + (driver.produce::<u8>()? % (InterfaceName::MAX_LEN as u8 - 2))) as usize;
+                (1 + (driver.produce::<u8>()? % (InterfaceName::MAX_LEN as u8 - 1))) as usize;
             let mut base_string = String::with_capacity(target_length + 1);
             for _ in 0..target_length {
                 let selected_char_index = (driver.produce::<u8>()? % NUM_LEGAL_CHARS) as usize;
