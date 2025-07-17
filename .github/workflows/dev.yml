@@ -270,11 +270,56 @@ jobs:
         with:
           limit-access-to-actor: true
 
+  vlab:
+    if: "${{ needs.check_changes.outputs.devfiles == 'true' }}"
+    needs:
+      - check
+
+    name: "${{ matrix.hybrid && 'hlab' || 'vlab' }}-${{ matrix.fabricmode == 'spine-leaf' && 'sl' || 'cc' }}-${{ matrix.gateway && 'gw-' || '' }}${{ matrix.includeonie && 'onie-' || '' }}${{ matrix.buildmode }}-${{ matrix.vpcmode }}"
+
+    uses: githedgehog/fabricator/.github/workflows/run-vlab.yaml@master
+    with:
+      skip: ${{ matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+hlab') || !matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+vlab') }}
+      fabricatorref: master
+      prebuild: "just bump dataplane HEAD.x86_64-unknown-linux-gnu.debug.${{ github.event.pull_request.merge_commit_sha }}"
+      fabricmode: ${{ matrix.fabricmode }}
+      gateway: ${{ matrix.gateway }}
+      includeonie: ${{ matrix.includeonie }}
+      buildmode: ${{ matrix.buildmode }}
+      vpcmode: ${{ matrix.vpcmode }}
+      releasetest: ${{ contains(github.event.pull_request.labels.*.name, 'ci:+release') }}
+      hybrid: ${{ matrix.hybrid }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        fabricmode:
+          - spine-leaf
+        gateway:
+          - true
+        includeonie:
+          - false
+        buildmode:
+          - iso
+        vpcmode:
+          - l2vni
+          - l3vni
+        hybrid:
+          - false
+        include:
+          - fabricmode: spine-leaf
+            gateway: true
+            includeonie: false
+            buildmode: iso
+            vpcmode: l2vni
+            hybrid: true
+
   summary:
     name: "Summary"
     runs-on: "ubuntu-latest"
     needs:
       - check
+      - vlab
     # Run always, except when the "check" job was skipped.
     #
     # When the check job is skipped, summary will be marked as skipped, and
@@ -282,10 +327,15 @@ jobs:
     # Why don't we do the same for check jobs? Because their names depend on
     # matrix values, and if we skip them the names won't be generated and
     # GitHub won't be able to find skipped jobs for required status checks.
-    if: ${{ always() && needs.check.result != 'skipped' }}
+    if: ${{ always() }}
     steps:
       - name: "Flag any check matrix failures"
-        if: ${{ needs.check.result != 'success' }}
+        if: ${{ needs.check.result != 'success' && needs.check.result != 'skipped' }}
         run: |
-          echo '::error:: Some job(s) failed'
+          echo '::error:: Some check job(s) failed'
+          exit 1
+      - name: "Flag any vlab matrix failures"
+        if: ${{ needs.vlab.result != 'success' && needs.vlab.result != 'skipped' }}
+        run: |
+          echo '::error:: Some vlab job(s) failed'
           exit 1
