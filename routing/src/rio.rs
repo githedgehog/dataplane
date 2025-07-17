@@ -165,7 +165,7 @@ impl Rio {
         let poller = Poll::new().map_err(|_| RouterError::Internal("Poll creation failed"))?;
         poller
             .registry()
-            .register(&mut ev_cpsock, CPSOCK, Interest::READABLE)
+            .register(&mut ev_cpsock, CPSOCK, Interest::PRIORITY)
             .map_err(|_| RouterError::Internal("Failed to register CPI sock"))?;
         poller
             .registry()

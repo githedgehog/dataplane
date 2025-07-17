@@ -325,7 +325,8 @@ fn handle_request(
 
     // ignore additions if have no config. Connects are allowed, so are deletions to wipe out old state
     if !db.have_config() && op == RpcOp::Add {
-        debug!("Ignoring request: no config is available");
+        error!("Ignoring request: there's no config. This should not happen...");
+        error!("..but may not cause malfunction.");
         rpc_reply(csock, peer, req, RpcResultCode::Ignored, stats);
         return;
     }
