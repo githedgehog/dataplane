@@ -3,11 +3,12 @@
 
 //! Stateless NAT implementation
 
-pub mod config;
+pub mod compute;
 pub mod natrw;
+mod test;
 
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
-use config::tables::{NatTableValue, NatTables, PerVniTable};
+use compute::tables::{NatTableValue, NatTables, PerVniTable};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ipv4::UnicastIpv4Addr;

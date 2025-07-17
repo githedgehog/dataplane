@@ -4,4 +4,3 @@
 //! Mgmt tests
 
 mod mgmt;
-mod nat;

@@ -5,7 +5,6 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::processor::confbuild::internal::build_internal_config;
     use config::GwConfig;
     use config::external::ExternalConfigBuilder;
     use config::external::overlay::Overlay;
@@ -18,11 +17,13 @@ mod tests {
     use config::internal::device::settings::DeviceSettings;
     use config::internal::interfaces::interface::InterfaceConfig;
     use config::internal::interfaces::interface::{IfVtepConfig, InterfaceType};
-    use config::internal::natconfig;
     use config::internal::routing::bgp::BgpConfig;
     use config::internal::routing::vrf::VrfConfig;
-    use nat::StatelessNat;
-    use nat::stateless::config::tables::{NatTables, PerVniTable};
+
+    use crate::StatelessNat;
+    use crate::stateless::compute::tables::{NatTables, PerVniTable};
+    use crate::stateless::compute::{add_peering, build_nat_configuration};
+
     use net::buffer::PacketBufferMut;
     use net::eth::mac::Mac;
     use net::headers::{TryHeadersMut, TryIpv4, TryIpv4Mut};
@@ -189,12 +190,10 @@ mod tests {
         let mut nat_table = NatTables::new();
 
         let mut vni_table1 = PerVniTable::new(vni1);
-        natconfig::add_peering(&mut vni_table1, &peering1, &vpctable)
-            .expect("Failed to build NAT tables");
+        add_peering(&mut vni_table1, &peering1, &vpctable).expect("Failed to build NAT tables");
 
         let mut vni_table2 = PerVniTable::new(vni2);
-        natconfig::add_peering(&mut vni_table2, &peering2, &vpctable)
-            .expect("Failed to build NAT tables");
+        add_peering(&mut vni_table2, &peering2, &vpctable).expect("Failed to build NAT tables");
 
         nat_table.add_table(vni_table1);
         nat_table.add_table(vni_table2);
@@ -441,14 +440,9 @@ mod tests {
     fn test_full_config() {
         let mut config = build_sample_config();
         config.validate().expect("Failed to validate config");
-        let internal = build_internal_config(&config).expect("Failed to build internal config");
-        println!("Internal config: {:#?}", &internal);
-        config.set_internal_config(internal);
-        let nat_tables = &config
-            .internal
-            .unwrap()
-            .nat_table
-            .expect("Failed to build NAT tables");
+
+        let nat_tables = build_nat_configuration(&config.external.overlay).unwrap();
+        println!("Nat tables: {:#?}", &nat_tables);
 
         let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
         tablesw.update_nat_tables(nat_tables.clone());

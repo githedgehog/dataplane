@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use super::NatPeeringError;
-use crate::stateless::config::tables::NatTableValue;
+use crate::stateless::compute::tables::NatTableValue;
 use lpm::prefix::{Prefix, PrefixSize};
 use net::vxlan::Vni;
 use std::cmp::Ordering;

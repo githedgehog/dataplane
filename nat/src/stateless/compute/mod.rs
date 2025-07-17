@@ -5,6 +5,7 @@
 
 #![deny(clippy::all, clippy::pedantic)]
 #![deny(rustdoc::all)]
+#![allow(clippy::missing_errors_doc)]
 
 pub mod collapse;
 pub mod prefixtrie;
@@ -12,10 +13,15 @@ pub mod range_builder;
 pub mod tables;
 
 use crate::stateless::NatTableValue;
+use crate::stateless::NatTables;
 use crate::stateless::PerVniTable;
-use crate::stateless::config::tables::NatPrefixRuleTable;
+use crate::stateless::compute::tables::NatPrefixRuleTable;
+
+use config::ConfigError;
+use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Peering, VpcTable};
 use config::external::overlay::vpcpeering::VpcExpose;
+
 use lpm::prefix::Prefix;
 use net::vxlan::Vni;
 use std::collections::BTreeSet;
@@ -61,7 +67,7 @@ fn generate_private_values(
 /// # Errors
 ///
 /// Returns an error if some lists of prefixes contain duplicates
-pub fn add_peering(
+pub(crate) fn add_peering(
     table: &mut PerVniTable,
     peering: &Peering,
     vpc_table: &VpcTable,
@@ -126,6 +132,19 @@ pub fn add_peering(
     Ok(())
 }
 
+/// Main function to build the NAT configuration (`NatTables`) for a given `Overlay` configuration.
+pub fn build_nat_configuration(overlay: &Overlay) -> Result<NatTables, ConfigError> {
+    let mut nat_tables = NatTables::new();
+    for vpc in overlay.vpc_table.values() {
+        let mut table = PerVniTable::new(vpc.vni);
+        for peering in &vpc.peerings {
+            add_peering(&mut table, peering, &overlay.vpc_table)
+                .map_err(|e| ConfigError::FailureApply(e.to_string()))?;
+        }
+        nat_tables.add_table(table);
+    }
+    Ok(nat_tables)
+}
 #[cfg(test)]
 mod tests {
     use super::*;

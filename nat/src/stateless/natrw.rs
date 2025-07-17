@@ -9,7 +9,7 @@ use left_right::new_from_empty;
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
 use tracing::debug;
 
-use crate::stateless::config::tables::{NatTableValue, NatTables};
+use crate::stateless::compute::tables::{NatTableValue, NatTables};
 
 enum NatTablesChange {
     UpdateNatTables(NatTables),
