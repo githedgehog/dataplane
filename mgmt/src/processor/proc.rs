@@ -18,8 +18,9 @@ use config::{ConfigError, ConfigResult, stringify};
 use config::{ExternalConfig, GenId, GwConfig, InternalConfig};
 
 use crate::processor::confbuild::internal::build_internal_config;
-use crate::processor::confbuild::internal::build_nat_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
+use nat::stateless::NatTablesWriter;
+use nat::stateless::compute::build_nat_configuration;
 
 use crate::processor::display::GwConfigDatabaseSummary;
 use crate::processor::gwconfigdb::GwConfigDatabase;
@@ -28,7 +29,6 @@ use crate::vpc_manager::{RequiredInformationBase, VpcManager};
 use rekon::{Observe, Reconcile};
 use tracing::{debug, error, info, warn};
 
-use nat::stateless::NatTablesWriter;
 use net::interface::display::MultiIndexInterfaceMapView;
 use net::interface::{Interface, InterfaceName};
 use routing::ctl::RouterCtlSender;
@@ -355,7 +355,7 @@ fn update_stats_vpc_mappings(config: &GwConfig, vpcmapw: &mut VpcMapWriter<VpcMa
 
 /// Update the Nat tables for stateless NAT
 fn apply_nat_config(overlay: &Overlay, nattablesw: &mut NatTablesWriter) -> ConfigResult {
-    let nat_table = build_nat_internal_config(overlay)?;
+    let nat_table = build_nat_configuration(overlay)?;
     nattablesw.update_nat_tables(nat_table);
     Ok(())
 }

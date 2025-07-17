@@ -31,9 +31,6 @@ use config::internal::routing::statics::StaticRoute;
 use config::internal::routing::vrf::VrfConfig;
 use config::{ExternalConfig, GwConfig, InternalConfig};
 
-use nat::stateless::config::add_peering;
-use nat::stateless::config::tables::{NatTables, PerVniTable};
-
 /// Build a drop route
 #[must_use]
 fn build_drop_route(prefix: &Prefix) -> StaticRoute {
@@ -310,19 +307,6 @@ fn build_vtep_config(external: &ExternalConfig) -> Result<VtepConfig, ConfigErro
         mac: vtep_info.mac,
     };
     Ok(vtep)
-}
-
-pub(crate) fn build_nat_internal_config(overlay: &Overlay) -> Result<NatTables, ConfigError> {
-    let mut nat_tables = NatTables::new();
-    for vpc in overlay.vpc_table.values() {
-        let mut table = PerVniTable::new(vpc.vni);
-        for peering in &vpc.peerings {
-            add_peering(&mut table, peering, &overlay.vpc_table)
-                .map_err(|e| ConfigError::FailureApply(e.to_string()))?;
-        }
-        nat_tables.add_table(table);
-    }
-    Ok(nat_tables)
 }
 
 fn build_internal_overlay_config(
