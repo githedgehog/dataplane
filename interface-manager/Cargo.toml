@@ -24,6 +24,7 @@ nix = { workspace = true, default-features = false, features = ["ioctl"] }
 rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["std"] }
 thiserror = { workspace = true, features = ["std"] }
+tokio = { workspace = true, default-features = false, features = ["fs", "io-util"] }
 tracing = { workspace = true, features = ["attributes"] }
 
 [dev-dependencies]

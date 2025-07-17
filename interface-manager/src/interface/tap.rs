@@ -137,3 +137,101 @@ mod helper {
         }
     }
 }
+
+impl TapDevice {
+    /// Open (or create) a persisted Tap device with the provided name.
+    ///
+    /// # Errors
+    ///
+    /// If the tap device cannot be opened or created, an io::Error is returned.
+    #[cold]
+    #[tracing::instrument(level = "info")]
+    pub async fn open(name: &InterfaceName) -> Result<Self, std::io::Error> {
+        let ifreq = helper::InterfaceRequest::new(name);
+        debug!("opening /dev/net/tun");
+        let tap_file = tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(false)
+            .truncate(false)
+            .open("/dev/net/tun")
+            .await?;
+        debug!("attempting to create tap device: {name}");
+        #[allow(unsafe_code, clippy::borrow_as_ptr)] // well-checked constraints
+        let ret = unsafe { helper::make_tap_device(tap_file.as_raw_fd(), &ifreq)? };
+        if ret < 0 {
+            let err = std::io::Error::last_os_error();
+            error!("failed to create tap device {name}: {err}");
+            return Err(err);
+        }
+        info!("created tap device: {name}");
+        debug!("attempting to persist tap device: {name}");
+        #[allow(unsafe_code, clippy::borrow_as_ptr)] // well-checked constraints
+        let ret = unsafe { helper::persist_tap_device(tap_file.as_raw_fd(), &ifreq)? };
+        if ret < 0 {
+            let err = std::io::Error::last_os_error();
+            error!("failed to persist tap device {name}: {err}");
+            return Err(err);
+        }
+        info!("persisted tap device: {name}");
+        Ok(Self { file: tap_file })
+    }
+
+    /// Read a packet from the tap, filling out the provided buffer with the contents of the packet.
+    ///
+    /// # Errors
+    ///
+    /// If the tap device cannot be read, a [`tokio::io::Error`] is returned.
+    ///
+    /// # Panics
+    ///
+    /// This method should not panic assuming that all types involved uphold required invariants.
+    #[tracing::instrument(level = "trace")]
+    pub async fn read<Buf: PacketBufferMut>(
+        &mut self,
+        buf: &mut Buf,
+    ) -> Result<NonZero<u16>, tokio::io::Error> {
+        let bytes_read = self.file.read(buf.as_mut()).await?;
+        let bytes_read = match u16::try_from(bytes_read) {
+            Ok(bytes_read) => bytes_read,
+            Err(err) => {
+                error!("nonsense packet length received: {err}");
+                return Err(tokio::io::Error::other(err));
+            }
+        };
+        let Some(bytes_read) = NonZero::new(bytes_read) else {
+            return Err(tokio::io::Error::new(
+                tokio::io::ErrorKind::UnexpectedEof,
+                "unexpected EOF on tap device",
+            ));
+        };
+        let orig_len = match u16::try_from(buf.as_ref().len()) {
+            Ok(orig_len) => orig_len,
+            Err(err) => {
+                error!("nonsense sized buffer: {}", buf.as_ref().len());
+                return Err(tokio::io::Error::other(err));
+            }
+        };
+        if orig_len < bytes_read.get() {
+            error!("buffer too small: {orig_len} < {bytes_read}");
+            return Err(tokio::io::Error::new(
+                tokio::io::ErrorKind::InvalidInput,
+                "buffer too small to hold received data",
+            ));
+        }
+        #[allow(clippy::expect_used)] // memory integrity requirement already checked
+        buf.trim_from_end(orig_len - bytes_read.get())
+            .expect("failed to trim buffer: illegal memory manipulation");
+        Ok(bytes_read)
+    }
+
+    /// Write the provided buffer to the tap.
+    ///
+    /// # Errors
+    ///
+    /// If the tap device cannot be written to, a [`tokio::io::Error`] is returned.
+    #[tracing::instrument(level = "trace")]
+    pub async fn write<Buf: PacketBuffer>(&mut self, buf: Buf) -> Result<(), tokio::io::Error> {
+        self.file.write_all(buf.as_ref()).await
+    }
+}
