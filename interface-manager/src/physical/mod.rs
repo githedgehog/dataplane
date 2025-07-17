@@ -333,14 +333,13 @@ pub enum NodeAttributes {
 pub struct Node {
     #[serde(rename = "type")]
     type_: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subtype: Option<String>,
     physical_index: Id<Node, u64>,
     os_index: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    subtype: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    #[serde(flatten)]
     properties: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     attributes: Option<NodeAttributes>,
@@ -440,34 +439,6 @@ impl TryFrom<OSDeviceAttributes> for OsDeviceAttributes {
     }
 }
 
-pub struct Core;
-pub struct NumaNode;
-pub struct CpuDie;
-pub struct CpuSocket;
-
-pub struct CpuCache<const N: usize>;
-
-pub struct SystemLayout {
-    sockets: BTreeSet<Id<CpuSocket>>,
-    dies: BTreeSet<Id<CpuDie>>,
-    numa_nodes: BTreeSet<Id<NumaNode>>,
-    cores: BTreeSet<Id<Core>>,
-    threads: BTreeSet<Id<Thread>>,
-    l1_caches: BTreeSet<Id<CpuCache<1>>>,
-    l2_caches: BTreeSet<Id<CpuCache<2>>>,
-    l3_caches: BTreeSet<Id<CpuCache<3>>>,
-}
-
-pub trait Layout<const THREADING: usize = 2> {
-    fn sockets(&self) -> impl Iterator<Item = Id<CpuSocket>>;
-    fn dies(&self) -> impl Iterator<Item = Id<CpuDie>>;
-    fn numa_nodes(&self) -> impl Iterator<Item = Id<NumaNode>>;
-    fn cores(&self) -> impl Iterator<Item = Id<Core>>;
-    fn threads(&self) -> impl Iterator<Item = Id<Thread>>;
-    fn caches<const N: usize>(&self) -> impl Iterator<Item = Id<CpuCache<N>>>;
-    fn sibling_threads(&self) -> impl Iterator<Item = (Id<Core>, [Id<Core>; THREADING])>;
-}
-
 impl TryFrom<ObjectAttributes<'_>> for NodeAttributes {
     type Error = ();
 
@@ -518,7 +489,7 @@ impl<'a> From<&'a TopologyObject> for Node {
 #[cfg(test)]
 mod test {
     use crate::physical::{Node, walk_pci};
-    use caps::Capability::CAP_SYS_ADMIN;
+    use caps::Capability::{CAP_NET_ADMIN, CAP_SYS_ADMIN, CAP_SYS_RAWIO};
     use fixin::wrap;
     use hwlocality::Topology;
     use hwlocality::object::TopologyObject;
@@ -675,7 +646,7 @@ mod test {
     }
 
     #[test]
-    // #[wrap(with_caps([CAP_SYS_ADMIN, CAP_SYS_RAWIO, CAP_NET_ADMIN]))]
+    #[wrap(with_caps([CAP_SYS_RAWIO]))]
     fn print_children_test() {
         let topology = Topology::builder()
             .with_type_filter(ObjectType::Bridge, TypeFilter::KeepAll)
