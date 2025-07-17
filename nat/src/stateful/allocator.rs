@@ -4,6 +4,7 @@
 use super::NatIp;
 use super::NatTuple;
 use super::port::{NatPort, NatPortError};
+use net::ip::NextHeader;
 use std::fmt::Debug;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -17,6 +18,8 @@ pub enum AllocatorError {
     NoFreePort(u16),
     #[error("failed to allocate port: {0}")]
     PortAllocationFailed(NatPortError),
+    #[error("unsupported protocol: {0:?}")]
+    UnsupportedProtocol(NextHeader),
     #[error("internal issue")]
     InternalIssue,
 }

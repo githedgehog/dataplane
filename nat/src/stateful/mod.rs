@@ -26,6 +26,7 @@ use net::udp::port::UdpPort;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use routing::rib::vrf::VrfId;
+use std::fmt::Debug;
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -38,7 +39,7 @@ pub enum StatefulNatError {
 mod private {
     pub trait Sealed {}
 }
-pub trait NatIp: private::Sealed + Clone + Eq + Hash {
+pub trait NatIp: private::Sealed + Debug + Clone + Copy + Eq + Ord + Hash {
     fn to_ip_addr(&self) -> IpAddr;
     fn from_src_addr(net: &Net) -> Option<Self>;
     fn from_dst_addr(net: &Net) -> Option<Self>;
