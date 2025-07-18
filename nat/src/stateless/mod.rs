@@ -3,12 +3,11 @@
 
 //! Stateless NAT implementation
 
-pub mod compute;
 pub mod natrw;
+pub mod setup;
 mod test;
 
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
-use compute::tables::{NatTableValue, NatTables, PerVniTable};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ipv4::UnicastIpv4Addr;
@@ -16,6 +15,7 @@ use net::ipv6::UnicastIpv6Addr;
 use net::packet::{DoneReason, Packet};
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
+use setup::tables::{NatTableValue, NatTables, PerVniTable};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use thiserror::Error;
 

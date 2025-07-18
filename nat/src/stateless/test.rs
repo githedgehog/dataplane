@@ -21,8 +21,8 @@ mod tests {
     use config::internal::routing::vrf::VrfConfig;
 
     use crate::StatelessNat;
-    use crate::stateless::compute::tables::{NatTables, PerVniTable};
-    use crate::stateless::compute::{add_peering, build_nat_configuration};
+    use crate::stateless::setup::tables::{NatTables, PerVniTable};
+    use crate::stateless::setup::{add_peering, build_nat_configuration};
 
     use net::buffer::PacketBufferMut;
     use net::eth::mac::Mac;

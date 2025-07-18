@@ -20,7 +20,7 @@ use config::{ExternalConfig, GenId, GwConfig, InternalConfig};
 use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
 use nat::stateless::NatTablesWriter;
-use nat::stateless::compute::build_nat_configuration;
+use nat::stateless::setup::build_nat_configuration;
 
 use crate::processor::display::GwConfigDatabaseSummary;
 use crate::processor::gwconfigdb::GwConfigDatabase;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::stateless::compute::prefixtrie::{PrefixTrie, TrieError};
+use crate::stateless::setup::prefixtrie::{PrefixTrie, TrieError};
 
 use ahash::RandomState;
 use lpm::prefix::Prefix;

@@ -15,7 +15,7 @@ pub mod tables;
 use crate::stateless::NatTableValue;
 use crate::stateless::NatTables;
 use crate::stateless::PerVniTable;
-use crate::stateless::compute::tables::NatPrefixRuleTable;
+use crate::stateless::setup::tables::NatPrefixRuleTable;
 
 use config::ConfigError;
 use config::external::overlay::Overlay;
