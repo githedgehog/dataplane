@@ -177,7 +177,6 @@ pub enum Header {
     Icmp4(Icmp4),
     Icmp6(Icmp6),
     IpAuth(IpAuth),
-    IpV6Ext(Ipv6Ext), // TODO: break out nested enum.  Nesting is counter productive here
     Encap(UdpEncap),
 }
 
@@ -185,22 +184,13 @@ impl ParsePayload for Header {
     type Next = Header;
 
     fn parse_payload(&self, cursor: &mut Reader) -> Option<Header> {
-        use Header::{Encap, Eth, Icmp4, Icmp6, IpAuth, IpV6Ext, Ipv4, Ipv6, Tcp, Udp, Vlan};
+        use Header::{Encap, Eth, Icmp4, Icmp6, IpAuth, Ipv4, Ipv6, Tcp, Udp, Vlan};
         match self {
             Eth(eth) => eth.parse_payload(cursor).map(Header::from),
             Vlan(vlan) => vlan.parse_payload(cursor).map(Header::from),
             Ipv4(ipv4) => ipv4.parse_payload(cursor).map(Header::from),
             Ipv6(ipv6) => ipv6.parse_payload(cursor).map(Header::from),
             IpAuth(auth) => auth.parse_payload(cursor).map(Header::from),
-            IpV6Ext(ext) => {
-                if let Ipv6(ipv6) = self {
-                    ext.parse_payload_with(&ipv6.next_header(), cursor)
-                        .map(Header::from)
-                } else {
-                    debug!("ipv6 extension header outside ipv6 header");
-                    None
-                }
-            }
             Udp(udp) => udp.parse_payload(cursor).map(Header::from),
             Encap(_) | Tcp(_) | Icmp4(_) | Icmp6(_) => None,
         }
@@ -244,13 +234,6 @@ impl Parse for Headers {
                 Header::IpAuth(auth) => {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
                         this.net_ext.push(NetExt::IpAuth(auth));
-                    } else {
-                        break;
-                    }
-                }
-                Header::IpV6Ext(ext) => {
-                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
-                        this.net_ext.push(NetExt::Ipv6Ext(ext));
                     } else {
                         break;
                     }
@@ -861,12 +844,6 @@ impl From<Net> for Header {
 impl From<IpAuth> for Header {
     fn from(value: IpAuth) -> Self {
         Header::IpAuth(value)
-    }
-}
-
-impl From<Ipv6Ext> for Header {
-    fn from(value: Ipv6Ext) -> Self {
-        Header::IpV6Ext(value)
     }
 }
 

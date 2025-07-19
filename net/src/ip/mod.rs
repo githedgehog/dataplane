@@ -41,6 +41,22 @@ impl NextHeader {
     /// ICMP6 next header
     pub const ICMP6: NextHeader = NextHeader(IpNumber::IPV6_ICMP);
 
+    /// IP (v4 or v6) authentication header
+    pub const IP_AUTH: NextHeader = NextHeader(IpNumber::AUTHENTICATION_HEADER);
+
+    /// IPv6 destination options
+    pub const IPV6_DESTINATION_OPTIONS: NextHeader = NextHeader(IpNumber::IPV6_DESTINATION_OPTIONS);
+
+    /// IPv6 fragmentation header
+    pub const IPV6_FRAGMENTATION_HEADER: NextHeader =
+        NextHeader(IpNumber::IPV6_FRAGMENTATION_HEADER);
+
+    /// IPv6 hop-by-hop options
+    pub const IPV6_HOP_BY_HOP_OPTIONS: NextHeader = NextHeader(IpNumber::IPV6_HEADER_HOP_BY_HOP);
+
+    /// IPv6 route header
+    pub const IPV6_ROUTE_HEADER: NextHeader = NextHeader(IpNumber::IPV6_ROUTE_HEADER);
+
     /// Get the inner (wrapped) `etherparse` [`IpNumber`] type
     pub(crate) fn inner(self) -> IpNumber {
         self.0

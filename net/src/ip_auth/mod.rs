@@ -17,7 +17,7 @@ use tracing::{debug, trace};
 ///
 /// This may appear in IPv4 and IPv6 headers.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IpAuth(Box<IpAuthHeader>);
+pub struct IpAuth(pub(crate) Box<IpAuthHeader>);
 
 impl Parse for IpAuth {
     type Error = etherparse::err::ip_auth::HeaderSliceError;
@@ -26,9 +26,7 @@ impl Parse for IpAuth {
         if buf.len() > u16::MAX as usize {
             return Err(ParseError::BufferTooLong(buf.len()));
         }
-        let (inner, rest) = IpAuthHeader::from_slice(buf)
-            .map(|(h, rest)| (Box::new(h), rest))
-            .map_err(ParseError::Invalid)?;
+        let (inner, rest) = IpAuthHeader::from_slice(buf).map_err(ParseError::Invalid)?;
         assert!(
             rest.len() < buf.len(),
             "rest.len() >= buf.len() ({rest} >= {buf})",
@@ -38,7 +36,7 @@ impl Parse for IpAuth {
         #[allow(clippy::cast_possible_truncation)] // buffer length bounded above
         let consumed =
             NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
-        Ok((Self(inner), consumed))
+        Ok((Self(Box::new(inner)), consumed))
     }
 }
 

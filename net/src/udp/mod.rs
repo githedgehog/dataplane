@@ -144,7 +144,7 @@ impl Udp {
     fn compute_checksum_ipv6(&self, net: &Ipv6, payload: impl AsRef<[u8]>) -> UdpChecksum {
         #[allow(clippy::expect_used)] // payload greater than 2^16 bytes should be excluded by DPDK
         self.0
-            .calc_checksum_ipv6(&net.0, payload.as_ref())
+            .calc_checksum_ipv6(&net.header, payload.as_ref())
             .expect("unreasonable payload")
             .into()
     }
