@@ -58,15 +58,15 @@ impl Checksum for Ipv4 {
     type Checksum = Ipv4Checksum;
 
     fn checksum(&self) -> Self::Checksum {
-        Ipv4Checksum(self.0.header_checksum)
+        Ipv4Checksum(self.header.header_checksum)
     }
 
     fn compute_checksum(&self, _payload: &Self::Payload<'_>) -> Self::Checksum {
-        Ipv4Checksum(self.0.calc_header_checksum())
+        Ipv4Checksum(self.header.calc_header_checksum())
     }
 
     fn set_checksum(&mut self, checksum: Self::Checksum) -> &mut Self {
-        self.0.header_checksum = checksum.0;
+        self.header.header_checksum = checksum.0;
         self
     }
 }

@@ -36,7 +36,7 @@ impl Tcp {
     fn compute_checksum_ipv4(&self, net: &Ipv4, payload: impl AsRef<[u8]>) -> TcpChecksum {
         #[allow(clippy::expect_used)] // DPDK should exclude payload greater than 2^16 bytes
         self.0
-            .calc_checksum_ipv4(&net.0, payload.as_ref())
+            .calc_checksum_ipv4(&net.header, payload.as_ref())
             .expect("unreasonable payload")
             .into()
     }
