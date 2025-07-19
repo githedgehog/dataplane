@@ -1,0 +1,24 @@
+[package]
+name = "dataplane-pkt-meta"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[features]
+testing = []
+
+[dependencies]
+lpm = { workspace = true }
+config = { workspace = true }
+left-right = { workspace = true }
+net = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+
+[dev-dependencies]
+bolero = { workspace = true, default-features = false }
+lpm = { workspace = true, features = ["testing"] }
+tracing-test = { workspace = true, features = [] }
+
