@@ -983,6 +983,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-pkt-meta"
+version = "0.1.0"
+dependencies = [
+ "bolero",
+ "dataplane-config",
+ "dataplane-lpm",
+ "dataplane-net",
+ "left-right",
+ "thiserror 2.0.12",
+ "tracing",
+ "tracing-test",
+]
+
+[[package]]
 name = "dataplane-rekon"
 version = "0.1.0"
 
