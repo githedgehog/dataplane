@@ -991,6 +991,7 @@ dependencies = [
  "dataplane-config",
  "dataplane-lpm",
  "dataplane-net",
+ "dataplane-pipeline",
  "left-right",
  "thiserror 2.0.12",
  "tracing",

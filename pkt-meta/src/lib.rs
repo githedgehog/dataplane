@@ -2,3 +2,5 @@
 // Copyright Open Network Fabric Authors
 
 #![deny(clippy::all, clippy::pedantic)]
+
+pub mod dst_vni_lookup;

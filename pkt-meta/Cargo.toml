@@ -13,6 +13,7 @@ lpm = { workspace = true }
 config = { workspace = true }
 left-right = { workspace = true }
 net = { workspace = true }
+pipeline = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
