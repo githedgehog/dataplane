@@ -7,7 +7,6 @@
 #![deny(rustdoc::all)]
 #![allow(clippy::missing_errors_doc)]
 
-pub mod collapse;
 pub mod prefixtrie;
 pub mod range_builder;
 pub mod tables;
@@ -21,6 +20,7 @@ use config::ConfigError;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Peering, VpcTable};
 use config::external::overlay::vpcpeering::VpcExpose;
+use config::utils::{ConfigUtilError, collapse_prefixes_peering};
 
 use lpm::prefix::Prefix;
 use net::vxlan::Vni;
@@ -72,7 +72,9 @@ pub(crate) fn add_peering(
     peering: &Peering,
     vpc_table: &VpcTable,
 ) -> Result<(), NatPeeringError> {
-    let new_peering = collapse::collapse_prefixes_peering(peering)?;
+    let new_peering = collapse_prefixes_peering(peering).map_err(|e| match e {
+        ConfigUtilError::SplitPrefixError(prefix) => NatPeeringError::SplitPrefixError(prefix),
+    })?;
 
     let mut local_expose_indices = vec![];
 

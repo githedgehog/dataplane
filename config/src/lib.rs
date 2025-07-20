@@ -26,6 +26,7 @@ pub mod errors;
 pub mod external;
 pub mod gwconfig;
 pub mod internal;
+pub mod utils;
 
 pub use errors::{ConfigError, ConfigResult, stringify}; // re-export
 pub use external::{ExternalConfig, GenId}; // re-export

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use super::NatPeeringError;
-use config::external::overlay::vpc::Peering;
+use crate::external::overlay::vpc::Peering;
+use crate::utils::ConfigUtilError;
 use lpm::prefix::Prefix;
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -14,7 +14,7 @@ use tracing::error;
 //
 // For example, for a given expose with "ips" as 1.0.0.0/16 and "nots" as 1.0.0.0/18, the resulting
 // expose will contain 1.0.128.0/17 and 1.0.64.0/18 as "ips" prefixes, and an empty "nots" list.
-pub fn collapse_prefixes_peering(peering: &Peering) -> Result<Peering, NatPeeringError> {
+pub fn collapse_prefixes_peering(peering: &Peering) -> Result<Peering, ConfigUtilError> {
     let mut clone = peering.clone();
     for expose in &mut clone
         .local
@@ -38,7 +38,7 @@ pub fn collapse_prefixes_peering(peering: &Peering) -> Result<Peering, NatPeerin
 fn collapse_prefix_lists(
     prefixes: &BTreeSet<Prefix>,
     excludes: &BTreeSet<Prefix>,
-) -> Result<BTreeSet<Prefix>, NatPeeringError> {
+) -> Result<BTreeSet<Prefix>, ConfigUtilError> {
     let mut result = prefixes.clone();
     // Sort the exclusion prefixes by length in ascending order (meaning a /16 is _smaller_ than a
     // /24, and comes first). If there are some exclusion prefixes with overlap, this ensures that
@@ -82,7 +82,7 @@ fn collapse_prefix_lists(
 // Split a given allowed prefix into smaller allowed prefixes, taking into account exclusion
 // prefixes, to express the same range of allowed IP addresses without the need for exclusion
 // prefixes.
-fn apply_exclude(prefix: &Prefix, exclude: &Prefix) -> Result<BTreeSet<Prefix>, NatPeeringError> {
+fn apply_exclude(prefix: &Prefix, exclude: &Prefix) -> Result<BTreeSet<Prefix>, ConfigUtilError> {
     let mut result = BTreeSet::new();
     let mut prefix_covering_exclude = *prefix;
     let len_diff = exclude.length() - prefix.length();
@@ -107,7 +107,7 @@ fn apply_exclude(prefix: &Prefix, exclude: &Prefix) -> Result<BTreeSet<Prefix>, 
 // # Errors
 //
 // Returns an error if the prefix is a /32 (for IPv4) or /128 (for IPv6)
-fn prefix_split(prefix: &Prefix) -> Result<(Prefix, Prefix), NatPeeringError> {
+fn prefix_split(prefix: &Prefix) -> Result<(Prefix, Prefix), ConfigUtilError> {
     let prefix_len = prefix.length();
     let prefix_address = prefix.as_address();
 
@@ -122,7 +122,7 @@ fn prefix_split(prefix: &Prefix) -> Result<(Prefix, Prefix), NatPeeringError> {
         IpAddr::V4(addr) => {
             if prefix_len == Prefix::MAX_LEN_IPV4 {
                 error!("Cannot split IPv4 prefix of length {prefix_len}");
-                return Err(NatPeeringError::SplitPrefixError(*prefix));
+                return Err(ConfigUtilError::SplitPrefixError(*prefix));
             }
             let new_addr = addr | Ipv4Addr::from_bits(1 << (32 - prefix_len - 1));
             IpAddr::V4(new_addr)
@@ -130,7 +130,7 @@ fn prefix_split(prefix: &Prefix) -> Result<(Prefix, Prefix), NatPeeringError> {
         IpAddr::V6(addr) => {
             if prefix_len == Prefix::MAX_LEN_IPV6 {
                 error!("Cannot split IPv6 prefix of length {prefix_len}");
-                return Err(NatPeeringError::SplitPrefixError(*prefix));
+                return Err(ConfigUtilError::SplitPrefixError(*prefix));
             }
             let new_addr = addr | Ipv6Addr::from_bits(1 << (128 - prefix_len - 1));
             IpAddr::V6(new_addr)
@@ -140,11 +140,11 @@ fn prefix_split(prefix: &Prefix) -> Result<(Prefix, Prefix), NatPeeringError> {
     let Ok(subprefix_low) = Prefix::try_from((prefix_address, prefix_len + 1)) else {
         // We should never reach this, we returned early if dealing with a /32
         error!("Bug in apply_exclude logics (/32)");
-        return Err(NatPeeringError::SplitPrefixError(*prefix));
+        return Err(ConfigUtilError::SplitPrefixError(*prefix));
     };
     let Ok(subprefix_high) = Prefix::try_from((split_address, prefix_len + 1)) else {
         error!("Bug in apply_exclude logics (/128)");
-        return Err(NatPeeringError::SplitPrefixError(*prefix));
+        return Err(ConfigUtilError::SplitPrefixError(*prefix));
     };
 
     Ok((subprefix_low, subprefix_high))
@@ -153,7 +153,7 @@ fn prefix_split(prefix: &Prefix) -> Result<(Prefix, Prefix), NatPeeringError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
+    use crate::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use ipnet::IpNet;
     use lpm::trie::IpPrefixTrie;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
