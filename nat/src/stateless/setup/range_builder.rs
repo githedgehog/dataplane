@@ -4,7 +4,6 @@
 use super::NatPeeringError;
 use crate::stateless::setup::tables::NatTableValue;
 use lpm::prefix::{Prefix, PrefixSize};
-use net::vxlan::Vni;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::net::IpAddr;
@@ -55,8 +54,6 @@ fn add_offset_to_address(addr: &IpAddr, offset: PrefixSize) -> Result<IpAddr, Na
 
 #[derive(Debug)]
 pub struct RangeBuilder<'a> {
-    vni: Vni,
-
     prefix_iter_orig: std::collections::btree_set::Iter<'a, Prefix>,
     prefix_iter_target: std::collections::btree_set::Iter<'a, Prefix>,
 
@@ -72,12 +69,10 @@ pub struct RangeBuilder<'a> {
 
 impl<'a> RangeBuilder<'a> {
     pub fn new(
-        vni: Vni,
         prefixes_to_update: &'a BTreeSet<Prefix>,
         prefixes_to_point_to: &'a BTreeSet<Prefix>,
     ) -> Self {
         let mut builder = Self {
-            vni,
             prefix_iter_orig: prefixes_to_update.iter(),
             prefix_iter_target: prefixes_to_point_to.iter(),
             prefix_cursor_orig: None,
@@ -124,7 +119,6 @@ impl<'a> RangeBuilder<'a> {
 
                 // Create new range based on current cursor values
                 let mut value = NatTableValue {
-                    vni: Some(self.vni),
                     orig_range_start: orig_addr,
                     orig_range_end: orig_addr,
                     target_range_start: target_addr,
@@ -294,18 +288,15 @@ mod tests {
     }
 
     fn generate_nat_values<'a>(
-        vni: Vni,
         prefixes_to_update: &'a BTreeSet<Prefix>,
         prefixes_to_point_to: &'a BTreeSet<Prefix>,
     ) -> impl Iterator<Item = Result<NatTableValue, NatPeeringError>> {
-        RangeBuilder::<'a>::new(vni, prefixes_to_update, prefixes_to_point_to)
+        RangeBuilder::<'a>::new(prefixes_to_update, prefixes_to_point_to)
     }
 
     #[test]
     #[allow(clippy::too_many_lines)]
     fn test_generate_nat_values() {
-        let vni = Vni::new_checked(100).expect("Failed to create VNI");
-
         let prefixes_to_update = BTreeSet::from([
             "1.0.0.0/24".into(),
             "2.0.0.0/24".into(),
@@ -332,7 +323,7 @@ mod tests {
         // Sanity check for the test
         assert_eq!(size_left, size_right);
 
-        let mut nat_ranges = generate_nat_values(vni, &prefixes_to_update, &prefixes_to_point_to);
+        let mut nat_ranges = generate_nat_values(&prefixes_to_update, &prefixes_to_point_to);
 
         assert_eq!(
             nat_ranges
@@ -340,7 +331,6 @@ mod tests {
                 .expect("Failed to get next NAT values")
                 .expect("Error when building NAT value"),
             NatTableValue {
-                vni: Some(vni),
                 orig_range_start: addr_v4("1.0.0.0"),
                 orig_range_end: addr_v4("1.0.0.255"),
                 target_range_start: addr_v4("10.0.0.0"),
@@ -353,7 +343,6 @@ mod tests {
                 .expect("Failed to get next NAT values")
                 .expect("Error when building NAT value"),
             NatTableValue {
-                vni: Some(vni),
                 orig_range_start: addr_v4("2.0.0.0"),
                 orig_range_end: addr_v4("2.0.0.255"),
                 target_range_start: addr_v4("10.0.1.0"),
@@ -366,7 +355,6 @@ mod tests {
                 .expect("Failed to get next NAT values")
                 .expect("Error when building NAT value"),
             NatTableValue {
-                vni: Some(vni),
                 orig_range_start: addr_v4("3.0.0.0"),
                 orig_range_end: addr_v4("3.0.0.255"),
                 target_range_start: addr_v4("10.0.2.0"),
@@ -379,7 +367,6 @@ mod tests {
                 .expect("Failed to get next NAT values")
                 .expect("Error when building NAT value"),
             NatTableValue {
-                vni: Some(vni),
                 orig_range_start: addr_v4("4.0.0.0"),
                 orig_range_end: addr_v4("4.0.0.255"),
                 target_range_start: addr_v4("10.0.3.0"),
@@ -392,7 +379,6 @@ mod tests {
                 .expect("Failed to get next NAT values")
                 .expect("Error when building NAT value"),
             NatTableValue {
-                vni: Some(vni),
                 orig_range_start: addr_v4("5.0.0.0"),
                 orig_range_end: addr_v4("5.0.251.255"),
                 target_range_start: addr_v4("10.0.4.0"),
@@ -405,7 +391,6 @@ mod tests {
                 .expect("Failed to get next NAT values")
                 .expect("Error when building NAT value"),
             NatTableValue {
-                vni: Some(vni),
                 orig_range_start: addr_v4("5.0.252.0"),
                 orig_range_end: addr_v4("5.0.255.255"),
                 target_range_start: addr_v4("11.0.0.0"),
@@ -418,7 +403,6 @@ mod tests {
                 .expect("Failed to get next NAT values")
                 .expect("Error when building NAT value"),
             NatTableValue {
-                vni: Some(vni),
                 orig_range_start: addr_v4("6.0.0.0"),
                 orig_range_end: addr_v4("6.0.0.0"),
                 target_range_start: addr_v4("12.0.0.0"),
@@ -428,8 +412,6 @@ mod tests {
 
     #[test]
     fn test_contiguous_prefixes() {
-        let vni = Vni::new_checked(100).expect("Failed to create VNI");
-
         // 1.0.0.0-1.0.2.255 -> 10.0.0.0-10.0.2.255
         // 1.0.3.0-1.0.3.255 -> 11.0.0.0-11.0.0.255
         // 2.0.0.0-2.3.255.255 -> 11.0.1.0-11.4.0.255
@@ -466,7 +448,7 @@ mod tests {
         // Sanity check for the test
         assert_eq!(size_left, size_right);
 
-        let mut nat_ranges = generate_nat_values(vni, &prefixes_to_update, &prefixes_to_point_to);
+        let mut nat_ranges = generate_nat_values(&prefixes_to_update, &prefixes_to_point_to);
 
         assert_eq!(
             nat_ranges
@@ -474,7 +456,6 @@ mod tests {
                 .expect("Failed to get next NAT values")
                 .expect("Error when building NAT value"),
             NatTableValue {
-                vni: Some(vni),
                 orig_range_start: addr_v4("1.0.0.0"),
                 orig_range_end: addr_v4("1.0.2.255"),
                 target_range_start: addr_v4("10.0.0.0"),
@@ -487,7 +468,6 @@ mod tests {
                 .expect("Failed to get next NAT values")
                 .expect("Error when building NAT value"),
             NatTableValue {
-                vni: Some(vni),
                 orig_range_start: addr_v4("1.0.3.0"),
                 orig_range_end: addr_v4("1.0.3.255"),
                 target_range_start: addr_v4("11.0.0.0"),
@@ -500,7 +480,6 @@ mod tests {
                 .expect("Failed to get next NAT values")
                 .expect("Error when building NAT value"),
             NatTableValue {
-                vni: Some(vni),
                 orig_range_start: addr_v4("2.0.0.0"),
                 orig_range_end: addr_v4("2.3.255.255"),
                 target_range_start: addr_v4("11.0.1.0"),
@@ -859,8 +838,7 @@ mod tests {
                 assert_eq!(orig_ranges_size, target_ranges_size);
 
                 // Generate NAT ranges
-                let vni = Vni::new_checked(100).expect("Failed to create VNI");
-                let nat_ranges = generate_nat_values(vni, prefixes_to_update, prefixes_to_point_to)
+                let nat_ranges = generate_nat_values(prefixes_to_update, prefixes_to_point_to)
                     .collect::<Vec<_>>();
 
                 // Make sure that each IP picked within the original prefixes is in exactly one of

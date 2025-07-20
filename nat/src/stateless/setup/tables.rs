@@ -122,8 +122,8 @@ impl PerVniTable {
 /// From a current address prefix, find the target address prefix.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NatPrefixRuleTable {
-    pub rules_v4: BTreeMap<Ipv4Addr, (Option<Vni>, Ipv4Addr, Ipv4Addr)>,
-    pub rules_v6: BTreeMap<Ipv6Addr, (Option<Vni>, Ipv6Addr, Ipv6Addr)>,
+    pub rules_v4: BTreeMap<Ipv4Addr, (Ipv4Addr, Ipv4Addr)>,
+    pub rules_v6: BTreeMap<Ipv6Addr, (Ipv6Addr, Ipv6Addr)>,
 }
 
 impl NatPrefixRuleTable {
@@ -149,20 +149,12 @@ impl NatPrefixRuleTable {
             value.target_range_start,
         ) {
             (IpAddr::V4(start), IpAddr::V4(end), IpAddr::V4(target)) => {
-                if self
-                    .rules_v4
-                    .insert(start, (value.vni, end, target))
-                    .is_some()
-                {
+                if self.rules_v4.insert(start, (end, target)).is_some() {
                     return Err(NatTablesError::EntryExists);
                 }
             }
             (IpAddr::V6(start), IpAddr::V6(end), IpAddr::V6(target)) => {
-                if self
-                    .rules_v6
-                    .insert(start, (value.vni, end, target))
-                    .is_some()
-                {
+                if self.rules_v6.insert(start, (end, target)).is_some() {
                     return Err(NatTablesError::EntryExists);
                 }
             }
@@ -188,10 +180,9 @@ impl NatPrefixRuleTable {
                     .range(..=ip)
                     .next_back()
                     .map(|v| NatTableValue {
-                        vni: v.1.0,
                         orig_range_start: IpAddr::V4(*v.0),
-                        orig_range_end: IpAddr::V4(v.1.1),
-                        target_range_start: IpAddr::V4(v.1.2),
+                        orig_range_end: IpAddr::V4(v.1.0),
+                        target_range_start: IpAddr::V4(v.1.1),
                     });
                 match value {
                     Some(v) if v.orig_range_end < *ip => None,
@@ -205,10 +196,9 @@ impl NatPrefixRuleTable {
                     .range(..=ip)
                     .next_back()
                     .map(|v| NatTableValue {
-                        vni: v.1.0,
                         orig_range_start: IpAddr::V6(*v.0),
-                        orig_range_end: IpAddr::V6(v.1.1),
-                        target_range_start: IpAddr::V6(v.1.2),
+                        orig_range_end: IpAddr::V6(v.1.0),
+                        target_range_start: IpAddr::V6(v.1.1),
                     });
                 match value {
                     Some(v) if v.orig_range_end < *ip => None,
@@ -273,7 +263,6 @@ impl Default for NatPeerRuleTable {
 /// perform the address mapping for stateless NAT.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatTableValue {
-    pub vni: Option<Vni>,
     pub orig_range_start: IpAddr,
     pub orig_range_end: IpAddr,
     pub target_range_start: IpAddr,
