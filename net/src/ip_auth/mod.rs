@@ -46,9 +46,15 @@ impl Parse for IpAuth {
         #[allow(clippy::cast_possible_truncation)] // buffer length bounded above
         let consumed = buf.len() - rest.len();
         let remainder = consumed % 4;
+        if consumed + remainder > buf.len() {
+            return Err(ParseError::Length(LengthError {
+                expected: consumed + remainder,
+                actual: buf.len(),
+            }));
+        }
         if remainder != 0 {
             let adjusted = min(consumed + remainder, buf.len());
-            Self::Error::Invalid(buf[adjusted..].to_vec())
+
         }
         Ok((Self(Box::new(inner)), consumed))
     }
