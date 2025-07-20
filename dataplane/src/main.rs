@@ -108,11 +108,12 @@ fn main() {
 
     /* mgmt: nat table */
     let nattablew = setup.nattable;
+    let vnitablesw = setup.vnitablesw;
     let vpcmapw = setup.vpcmapw;
     let statsr = setup.statsr;
 
     /* start management */
-    if let Err(e) = start_mgmt(grpc_addr, router_ctl, nattablew, vpcmapw) {
+    if let Err(e) = start_mgmt(grpc_addr, router_ctl, nattablew, vnitablesw, vpcmapw) {
         error!("Failed to start gRPC server: {e}");
         panic!("Failed to start gRPC server: {e}");
     } else {

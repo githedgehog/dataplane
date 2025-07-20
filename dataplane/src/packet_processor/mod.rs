@@ -10,6 +10,8 @@ use super::packet_processor::egress::Egress;
 use super::packet_processor::ingress::Ingress;
 use super::packet_processor::ipforward::IpForwarder;
 
+use pkt_meta::dst_vni_lookup::{DstVniLookup, VniTablesReader, VniTablesWriter};
+
 use nat::StatelessNat;
 use nat::stateless::{NatTablesReader, NatTablesWriter};
 
@@ -35,9 +37,11 @@ fn setup_routing_pipeline<Buf: PacketBufferMut>(
     atreader: AtableReader,
     vpcmap: VpcMapReader<VpcMapName>,
     nattablesr: NatTablesReader,
+    vnitablesr: VniTablesReader,
 ) -> (DynPipeline<Buf>, PacketStatsReader) {
     let stage_ingress = Ingress::new("Ingress", iftr.clone());
     let stage_egress = Egress::new("Egress", iftr, atreader);
+    let dst_vni_lookup = DstVniLookup::new("dst-vni-lookup", vnitablesr);
     let iprouter1 = IpForwarder::new("IP-Forward-1", fibtr.clone());
     let iprouter2 = IpForwarder::new("IP-Forward-2", fibtr);
     let stateless_nat = StatelessNat::with_reader("stateless-NAT", nattablesr);
@@ -50,6 +54,7 @@ fn setup_routing_pipeline<Buf: PacketBufferMut>(
         .add_stage(dumper1)
         .add_stage(stage_ingress)
         .add_stage(iprouter1)
+        .add_stage(dst_vni_lookup)
         .add_stage(stateless_nat)
         .add_stage(iprouter2)
         .add_stage(stage_egress)
@@ -67,6 +72,7 @@ where
     pub vpcmapw: VpcMapWriter<VpcMapName>,
     pub statsr: PacketStatsReader,
     pub nattable: NatTablesWriter,
+    pub vnitablesw: VniTablesWriter,
 }
 
 /// Start a router and provide the associated pipeline
@@ -74,6 +80,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     params: RouterParams,
 ) -> Result<InternalSetup<Buf>, RouterError> {
     let nattable = NatTablesWriter::new();
+    let vnitablesw = VniTablesWriter::new();
     let router = Router::new(params)?;
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
     let (pipeline, statsr) = setup_routing_pipeline(
@@ -82,6 +89,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         router.get_atabler(),
         vpcmapw.get_reader(),
         nattable.get_reader(),
+        vnitablesw.get_reader(),
     );
     Ok(InternalSetup {
         router,
@@ -89,5 +97,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         vpcmapw,
         statsr,
         nattable,
+        vnitablesw,
     })
 }

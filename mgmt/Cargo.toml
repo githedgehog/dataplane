@@ -23,6 +23,7 @@ interface-manager = { workspace = true }
 lpm = { workspace = true }
 net = { workspace = true }
 nat = { workspace = true }
+pkt-meta = { workspace = true }
 rekon = { workspace = true }
 routing = { workspace = true }
 stats = { workspace = true }

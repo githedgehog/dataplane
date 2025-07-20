@@ -21,6 +21,8 @@ use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
 use nat::stateless::NatTablesWriter;
 use nat::stateless::setup::build_nat_configuration;
+use pkt_meta::dst_vni_lookup::VniTablesWriter;
+use pkt_meta::dst_vni_lookup::setup::build_dst_vni_lookup_configuration;
 
 use crate::processor::display::GwConfigDatabaseSummary;
 use crate::processor::gwconfigdb::GwConfigDatabase;
@@ -79,6 +81,7 @@ pub(crate) struct ConfigProcessor {
     vpc_mgr: VpcManager<RequiredInformationBase>,
     vpcmapw: VpcMapWriter<VpcMapName>,
     nattablew: NatTablesWriter,
+    vnitablesw: VniTablesWriter,
 }
 
 impl ConfigProcessor {
@@ -92,6 +95,7 @@ impl ConfigProcessor {
         router_ctl: RouterCtlSender,
         vpcmapw: VpcMapWriter<VpcMapName>,
         nattablew: NatTablesWriter,
+        vnitablesw: VniTablesWriter,
     ) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
         let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
@@ -111,6 +115,7 @@ impl ConfigProcessor {
             vpc_mgr,
             vpcmapw,
             nattablew,
+            vnitablesw,
         };
         (processor, tx)
     }
@@ -165,6 +170,7 @@ impl ConfigProcessor {
             &mut self.router_ctl,
             &mut self.vpcmapw,
             &mut self.nattablew,
+            &mut self.vnitablesw,
         )
         .await?;
 
@@ -192,6 +198,7 @@ impl ConfigProcessor {
                 &mut self.router_ctl,
                 &mut self.vpcmapw,
                 &mut self.nattablew,
+                &mut self.vnitablesw,
             )
             .await;
         }
@@ -360,6 +367,15 @@ fn apply_nat_config(overlay: &Overlay, nattablesw: &mut NatTablesWriter) -> Conf
     Ok(())
 }
 
+/// Update the VNI tables for dst_vni_lookup
+fn apply_dst_vni_lookup_config(
+    overlay: &Overlay,
+    vnitablesw: &mut VniTablesWriter,
+) -> ConfigResult {
+    let vni_tables = build_dst_vni_lookup_configuration(overlay)?;
+    vnitablesw.update_vni_tables(vni_tables);
+    Ok(())
+}
 /// Main function to apply a config
 async fn apply_gw_config(
     vpc_mgr: &VpcManager<RequiredInformationBase>,
@@ -368,6 +384,7 @@ async fn apply_gw_config(
     router_ctl: &mut RouterCtlSender,
     vpcmapw: &mut VpcMapWriter<VpcMapName>,
     nattablesw: &mut NatTablesWriter,
+    vnitablesw: &mut VniTablesWriter,
 ) -> ConfigResult {
     let genid = config.genid();
 
@@ -401,6 +418,9 @@ async fn apply_gw_config(
 
     /* apply nat config */
     apply_nat_config(&config.external.overlay, nattablesw)?;
+
+    /* apply dst_vni_lookup config */
+    apply_dst_vni_lookup_config(&config.external.overlay, vnitablesw)?;
 
     /* update stats mappings */
     update_stats_vpc_mappings(config, vpcmapw);

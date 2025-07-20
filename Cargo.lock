@@ -770,6 +770,7 @@ dependencies = [
  "dataplane-nat",
  "dataplane-net",
  "dataplane-pipeline",
+ "dataplane-pkt-meta",
  "dataplane-routing",
  "dataplane-stats",
  "dataplane-vpcmap",
