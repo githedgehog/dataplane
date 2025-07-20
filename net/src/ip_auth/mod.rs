@@ -48,7 +48,7 @@ impl Parse for IpAuth {
         let remainder = consumed % 4;
         if remainder != 0 {
             let adjusted = min(consumed + remainder, buf.len());
-
+            Self::Error::Invalid(buf[adjusted..].to_vec())
         }
         Ok((Self(Box::new(inner)), consumed))
     }
