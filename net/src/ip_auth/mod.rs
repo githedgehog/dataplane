@@ -48,13 +48,14 @@ impl Parse for IpAuth {
         let remainder = consumed % 4;
         if consumed + remainder > buf.len() {
             return Err(ParseError::Length(LengthError {
-                expected: consumed + remainder,
+                expected: NonZero::new(consumed + remainder).unwrap_or_else(|| unreachable!()),
                 actual: buf.len(),
             }));
         }
-        if remainder != 0 {
-            let adjusted = min(consumed + remainder, buf.len());
-
+        for byte in &rest[consumed..(consumed + remainder)] {
+            if *byte != 0 {
+                return Err(ParseError::Invalid(byte));
+            }
         }
         Ok((Self(Box::new(inner)), consumed))
     }
