@@ -300,7 +300,7 @@ remove-compile-env:
 
 # refresh the compile-env (clear and restore)
 [script]
-refresh-compile-env: pull remove-compile-env create-compile-env
+refresh-compile-env: remove-compile-env create-compile-env
 
 # clean up (delete) old compile-env images from system
 [script]

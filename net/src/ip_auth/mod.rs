@@ -3,21 +3,31 @@
 
 //! IP authentication header type and logic.
 
+use std::cmp::min;
 use crate::headers::Header;
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
-use crate::parse::{Parse, ParseError, ParsePayload, Reader};
+use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader};
 use crate::tcp::Tcp;
 use crate::udp::Udp;
 use etherparse::{IpAuthHeader, IpNumber};
 use std::num::NonZero;
+use arrayvec::ArrayVec;
 use tracing::{debug, trace};
+use crate::ipv4::Ipv4;
 
 /// An Ip authentication header.
 ///
 /// This may appear in IPv4 and IPv6 headers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IpAuth(pub(crate) Box<IpAuthHeader>);
+
+impl IpAuth {
+    /// The maximum length of n `IpAuth` header.
+    pub const MAX_LEN: usize = IpAuthHeader::MAX_LEN;
+
+}
+
 
 impl Parse for IpAuth {
     type Error = etherparse::err::ip_auth::HeaderSliceError;
@@ -34,79 +44,37 @@ impl Parse for IpAuth {
             buf = buf.len()
         );
         #[allow(clippy::cast_possible_truncation)] // buffer length bounded above
-        let consumed =
-            NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
+        let consumed = buf.len() - rest.len();
+        let remainder = consumed % 4;
+        if remainder != 0 {
+            let adjusted = min(consumed + remainder, buf.len());
+
+        }
         Ok((Self(Box::new(inner)), consumed))
     }
 }
 
-pub(crate) enum IpAuthNext {
-    Tcp(Tcp),
-    Udp(Udp),
-    Icmp4(Icmp4),
-    Icmp6(Icmp6),
-    IpAuth(IpAuth),
-}
+impl DeParse for IpAuth {
+    type Error = ();
 
-impl ParsePayload for IpAuth {
-    type Next = IpAuthNext;
-
-    fn parse_payload(&self, cursor: &mut Reader) -> Option<Self::Next> {
-        match self.0.next_header {
-            IpNumber::TCP => cursor
-                .parse::<Tcp>()
-                .map_err(|e| {
-                    debug!("failed to parse tcp: {e:?}");
-                })
-                .map(|(val, _)| Self::Next::Tcp(val))
-                .ok(),
-            IpNumber::UDP => cursor
-                .parse::<Udp>()
-                .map_err(|e| {
-                    debug!("failed to parse udp: {e:?}");
-                })
-                .map(|(val, _)| Self::Next::Udp(val))
-                .ok(),
-            IpNumber::ICMP => cursor
-                .parse::<Icmp4>()
-                .map_err(|e| {
-                    debug!("failed to parse icmp4: {e:?}");
-                })
-                .map(|(val, _)| Self::Next::Icmp4(val))
-                .ok(),
-            IpNumber::IPV6_ICMP => cursor
-                .parse::<Icmp6>()
-                .map_err(|e| {
-                    debug!("failed to parse icmp6: {e:?}");
-                })
-                .map(|(val, _)| Self::Next::Icmp6(val))
-                .ok(),
-            IpNumber::AUTHENTICATION_HEADER => {
-                debug!("nested ip auth header");
-                cursor
-                    .parse::<IpAuth>()
-                    .map_err(|e| {
-                        debug!("failed to parse ip auth header: {e:?}");
-                    })
-                    .map(|(val, _)| Self::Next::IpAuth(val))
-                    .ok()
-            }
-            _ => {
-                trace!("unsupported protocol: {:?}", self.0.next_header);
-                None
-            }
-        }
+    fn size(&self) -> NonZero<u16> {
+        NonZero::new(u16::try_from(self.0.header_len()).unwrap_or_else(|_| unreachable!()))
+            .unwrap_or_else(|| unreachable!())
     }
-}
 
-impl From<IpAuthNext> for Header {
-    fn from(value: IpAuthNext) -> Self {
-        match value {
-            IpAuthNext::Tcp(x) => Header::Tcp(x),
-            IpAuthNext::Udp(x) => Header::Udp(x),
-            IpAuthNext::Icmp4(x) => Header::Icmp4(x),
-            IpAuthNext::Icmp6(x) => Header::Icmp6(x),
-            IpAuthNext::IpAuth(x) => Header::IpAuth(x),
+    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
+        if buf.len() > u16::MAX as usize {
+            return Err(DeParseError::BufferTooLong(buf.len()));
         }
+        let buf_len = buf.len();
+        let self_size = self.size().get() as usize;
+        if buf_len < self_size {
+            return Err(DeParseError::Length(LengthError {
+                expected: self.size().into_non_zero_usize(),
+                actual: buf_len,
+            }));
+        }
+        buf[..self_size].copy_from_slice(&self.0.to_bytes());
+        Ok(self.size())
     }
 }

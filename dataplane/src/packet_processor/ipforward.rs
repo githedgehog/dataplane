@@ -206,7 +206,6 @@ impl IpForwarder {
             eth: None, /* to be set at egress */
             vlan: ArrayVec::default(),
             net: Some(net),
-            net_ext: ArrayVec::default(),
             transport: None, /* should be UDP, but it is automatically done */
             udp_encap: Some(udp_encap),
         };

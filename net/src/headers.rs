@@ -15,7 +15,7 @@ use crate::ipv4::Ipv4;
 use crate::ipv6::{Ipv6, Ipv6Ext};
 use crate::parse::{
     DeParse, DeParseError, IllegalBufferLength, IntoNonZeroUSize, LengthError, Parse, ParseError,
-    ParsePayload, ParsePayloadWith, Reader, Writer,
+    ParsePayload, Reader, Writer,
 };
 use crate::tcp::{Tcp, TcpChecksumPayload};
 use crate::udp::{Udp, UdpChecksumPayload, UdpEncap};
@@ -31,17 +31,14 @@ use tracing::{debug, error, trace};
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
-const MAX_VLANS: usize = 4;
-const MAX_NET_EXTENSIONS: usize = 2;
 
 // TODO: remove `pub` from all fields
 #[derive(Debug, PartialEq, Eq, Clone, Default, Builder)]
 #[builder(default)]
 pub struct Headers {
     pub eth: Option<Eth>,
-    pub vlan: ArrayVec<Vlan, MAX_VLANS>,
+    pub vlan: ArrayVec<Vlan, { Headers::MAX_VLANS }>,
     pub net: Option<Net>,
-    pub net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
     pub transport: Option<Transport>,
     pub udp_encap: Option<UdpEncap>,
 }
@@ -176,7 +173,6 @@ pub enum Header {
     Udp(Udp),
     Icmp4(Icmp4),
     Icmp6(Icmp6),
-    IpAuth(IpAuth),
     Encap(UdpEncap),
 }
 
@@ -184,13 +180,12 @@ impl ParsePayload for Header {
     type Next = Header;
 
     fn parse_payload(&self, cursor: &mut Reader) -> Option<Header> {
-        use Header::{Encap, Eth, Icmp4, Icmp6, IpAuth, Ipv4, Ipv6, Tcp, Udp, Vlan};
+        use Header::{Encap, Eth, Icmp4, Icmp6, Ipv4, Ipv6, Tcp, Udp, Vlan};
         match self {
             Eth(eth) => eth.parse_payload(cursor).map(Header::from),
             Vlan(vlan) => vlan.parse_payload(cursor).map(Header::from),
             Ipv4(ipv4) => ipv4.parse_payload(cursor).map(Header::from),
             Ipv6(ipv6) => ipv6.parse_payload(cursor).map(Header::from),
-            IpAuth(auth) => auth.parse_payload(cursor).map(Header::from),
             Udp(udp) => udp.parse_payload(cursor).map(Header::from),
             Encap(_) | Tcp(_) | Icmp4(_) | Icmp6(_) => None,
         }
@@ -206,10 +201,9 @@ impl Parse for Headers {
         let (eth, _) = cursor.parse::<Eth>()?;
         let mut this = Headers {
             eth: Some(eth.clone()),
+            vlan: ArrayVec::default(),
             net: None,
             transport: None,
-            vlan: ArrayVec::default(),
-            net_ext: ArrayVec::default(),
             udp_encap: None,
         };
         let mut prior = Header::Eth(eth);
@@ -225,15 +219,8 @@ impl Parse for Headers {
                 Header::Icmp6(icmp6) => this.transport = Some(Transport::Icmp6(icmp6)),
                 Header::Encap(encap) => this.udp_encap = Some(encap),
                 Header::Vlan(vlan) => {
-                    if this.vlan.len() < MAX_VLANS {
+                    if this.vlan.len() < Headers::MAX_VLANS {
                         this.vlan.push(vlan);
-                    } else {
-                        break;
-                    }
-                }
-                Header::IpAuth(auth) => {
-                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
-                        this.net_ext.push(NetExt::IpAuth(auth));
                     } else {
                         break;
                     }
@@ -298,7 +285,7 @@ impl DeParse for Headers {
                 cursor.write(eth)?;
             }
         }
-        for vlan in self.vlan.iter().rev() {
+        for vlan in self.vlan.iter() {
             cursor.write(vlan)?;
         }
         match self.net {
@@ -352,7 +339,7 @@ impl DeParse for Headers {
 pub enum PushVlanError {
     #[error("can't push vlan without an ethernet header")]
     NoEthernetHeader,
-    #[error("Header already has as many VLAN headers as parser can support (max is {MAX_VLANS})")]
+    #[error("Header already has as many VLAN headers as parser can support (max is {})", Headers::MAX_VLANS)]
     TooManyVlans,
 }
 
@@ -363,6 +350,10 @@ pub enum PopVlanError {
 }
 
 impl Headers {
+
+    /// The maximum number of VLANs headers which will be parsed
+    pub const MAX_VLANS: usize = 4;
+
     /// Create a new [`Headers`] with the supplied `Eth` header.
     pub fn new() -> Headers {
         Headers::default()
@@ -392,7 +383,7 @@ impl Headers {
     #[allow(unsafe_code)]
     #[allow(dead_code)]
     unsafe fn push_vlan_header_unchecked(&mut self, vlan: Vlan) -> Result<(), PushVlanError> {
-        if self.vlan.len() < MAX_VLANS {
+        if self.vlan.len() < Headers::MAX_VLANS {
             self.vlan.push(vlan);
             Ok(())
         } else {
@@ -405,7 +396,7 @@ impl Headers {
     /// This method will ensure that the `eth` field has its [`EthType`] adjusted to
     /// [`EthType::VLAN`] if there are no [`Vlan`]s on the stack at the time this method was called.
     pub fn push_vlan(&mut self, vid: Vid) -> Result<(), PushVlanError> {
-        if self.vlan.len() >= MAX_VLANS {
+        if self.vlan.len() >= Headers::MAX_VLANS {
             return Err(PushVlanError::TooManyVlans);
         }
         match &mut self.eth {
@@ -841,12 +832,6 @@ impl From<Net> for Header {
     }
 }
 
-impl From<IpAuth> for Header {
-    fn from(value: IpAuth) -> Self {
-        Header::IpAuth(value)
-    }
-}
-
 impl From<Udp> for Header {
     fn from(value: Udp) -> Self {
         Header::Udp(value)
@@ -1226,7 +1211,6 @@ mod contract {
                                 eth: Some(eth),
                                 vlan: Default::default(),
                                 net: Some(Net::Ipv4(ipv4)),
-                                net_ext: Default::default(),
                                 transport: Some(Transport::Tcp(tcp)),
                                 udp_encap: None,
                             };
@@ -1244,7 +1228,6 @@ mod contract {
                                 eth: Some(eth),
                                 vlan: Default::default(),
                                 net: Some(Net::Ipv4(ipv4)),
-                                net_ext: Default::default(),
                                 transport: Some(Transport::Udp(udp)),
                                 udp_encap,
                             };
@@ -1256,7 +1239,6 @@ mod contract {
                                 eth: Some(eth),
                                 vlan: ArrayVec::default(),
                                 net: Some(Net::Ipv4(ipv4)),
-                                net_ext: Default::default(),
                                 transport: Some(Transport::Icmp4(icmp)),
                                 udp_encap: None,
                             };
@@ -1275,7 +1257,6 @@ mod contract {
                                 eth: Some(eth),
                                 vlan: Default::default(),
                                 net: Some(Net::Ipv6(ipv6)),
-                                net_ext: Default::default(),
                                 transport: Some(Transport::Tcp(tcp)),
                                 udp_encap: None,
                             };
@@ -1293,7 +1274,6 @@ mod contract {
                                 eth: Some(eth),
                                 vlan: Default::default(),
                                 net: Some(Net::Ipv6(ipv6)),
-                                net_ext: Default::default(),
                                 transport: Some(Transport::Udp(udp)),
                                 udp_encap,
                             };
@@ -1305,7 +1285,6 @@ mod contract {
                                 eth: Some(eth),
                                 vlan: Default::default(),
                                 net: Some(Net::Ipv6(ipv6)),
-                                net_ext: Default::default(),
                                 transport: Some(Transport::Icmp6(icmp6)),
                                 udp_encap: None,
                             };

@@ -351,8 +351,6 @@ impl Ipv6Ext {
             Ipv6Ext::Auth(x) => x.0.header_len(),
             Ipv6Ext::Other(x) => x.0.header_len(),
         };
-        let rem = len_usize % 8;
-        let len_usize = len_usize + rem;
         NonZero::new(match u16::try_from(len_usize) {
             Ok(len) => len,
             Err(err) => {
@@ -373,10 +371,6 @@ impl Ipv6Ext {
         match self {
             Ipv6Ext::Auth(x) => rvec.extend(x.0.to_bytes()),
             Ipv6Ext::Other(x) => rvec.extend(x.0.to_bytes()),
-        }
-        // spec requires padding to a multiple of 8 bytes
-        while rvec.len() < expected_len {
-            rvec.push(0);
         }
         rvec
     }
