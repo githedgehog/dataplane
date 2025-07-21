@@ -4,7 +4,7 @@
 //! IPv4 address types
 
 use std::fmt::{Debug, Display, Formatter};
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 
 /// Thin wrapper around [`Ipv4Addr`]
 ///
@@ -63,6 +63,16 @@ impl TryFrom<Ipv4Addr> for UnicastIpv4Addr {
 impl From<UnicastIpv4Addr> for Ipv4Addr {
     fn from(value: UnicastIpv4Addr) -> Self {
         value.inner()
+    }
+}
+
+impl TryFrom<IpAddr> for UnicastIpv4Addr {
+    type Error = IpAddr;
+    fn try_from(value: IpAddr) -> Result<Self, Self::Error> {
+        match value {
+            IpAddr::V4(addr) => Ok(UnicastIpv4Addr(addr)),
+            IpAddr::V6(_) => Err(value),
+        }
     }
 }
 
