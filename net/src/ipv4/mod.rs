@@ -332,7 +332,7 @@ impl Parse for Ipv4 {
         while protocol == IpNumber::AUTHENTICATION_HEADER && out.ext.len() < Ipv4::MAX_EXTENSIONS {
             match IpAuth::parse(rest) {
                 Ok((ext, jump)) => {
-                    if ext.header.header_len() < 16 {
+                    if 12 + ext.header.raw_icv().len() < 16 {
                         debug!("authentication header is too short");
                         return Err(ParseError::Invalid(Ipv4Error::IllegalIpAuth(
                             IpAuthError::InvalidPadding,
@@ -382,7 +382,7 @@ impl DeParse for Ipv4 {
     fn size(&self) -> NonZero<u16> {
         #[allow(clippy::cast_possible_truncation)] // ipv4 headers have a safe upper bound on length
         let base = self.header.header_len();
-        let exts: usize = self.ext.iter().map(|x| x.header.header_len()).sum();
+        let exts: usize = self.ext.iter().map(|x| 12 + x.header.raw_icv().len()).sum();
         let len = u16::try_from(base + exts).unwrap_or_else(|_| unreachable!());
         NonZero::new(len).unwrap_or_else(|| unreachable!())
     }
@@ -401,7 +401,7 @@ impl DeParse for Ipv4 {
         let mut offset = self.header.header_len();
         buf[..offset].copy_from_slice(&self.header.to_bytes());
         for ext in &self.ext {
-            let len = ext.header.header_len();
+            let len = 12 + ext.header.raw_icv().len();
             ext.deparse(&mut buf[offset..(offset + len)])?;
             offset += len;
         }
@@ -540,11 +540,15 @@ mod contract {
 
 #[cfg(test)]
 mod test {
-
     use crate::ipv4::{Ipv4, Ipv4Error};
     use crate::parse::{DeParse, IntoNonZeroUSize, Parse, ParseError};
+    use std::borrow::Cow;
+    use std::cmp::min;
+    use std::fs::File;
 
     use etherparse::err::ipv4::{HeaderError, HeaderSliceError};
+    use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionOption;
+    use pcap_file::{DataLink, pcapng};
 
     const MIN_LEN_USIZE: usize = 20;
     const MAX_LEN_USIZE: usize = 60;
@@ -579,9 +583,50 @@ mod test {
             .for_each(|arbitrary: &[u8; 4 * MAX_LEN_USIZE]| {
                 match Ipv4::parse(arbitrary) {
                     Ok((header, consumed)) => {
+                        let out =
+                            File::create("/tmp/pcap/ipv4::parse_arbitrary_bytes.pcapng").unwrap();
+                        let mut pcap_writer = pcapng::PcapNgWriter::new(out).unwrap();
+                        let input =
+                            pcapng::blocks::interface_description::InterfaceDescriptionBlock {
+                                linktype: DataLink::IPV4,
+                                snaplen: 0,
+                                options: vec![
+                                    InterfaceDescriptionOption::Comment("first serialize".into()),
+                                    InterfaceDescriptionOption::IfName("first".into()),
+                                ],
+                            };
+                        let output =
+                            pcapng::blocks::interface_description::InterfaceDescriptionBlock {
+                                linktype: DataLink::IPV4,
+                                snaplen: 0,
+                                options: vec![
+                                    InterfaceDescriptionOption::Comment("parse back".into()),
+                                    InterfaceDescriptionOption::IfName("second".into()),
+                                ],
+                            };
+                        pcap_writer.write_pcapng_block(input).unwrap();
+                        pcap_writer.write_pcapng_block(output).unwrap();
+                        let mut output_packet =
+                            pcapng::blocks::enhanced_packet::EnhancedPacketBlock::default();
+                        output_packet.interface_id = 0;
+                        output_packet.data = Cow::from(
+                            &arbitrary[..min(header.size().get() as usize, arbitrary.len())],
+                        );
+                        output_packet.original_len = u32::from(header.size().get());
+                        pcap_writer.write_pcapng_block(output_packet).unwrap();
+                        let mut output_packet =
+                            pcapng::blocks::enhanced_packet::EnhancedPacketBlock::default();
+
                         assert!(consumed.into_non_zero_usize().get() <= arbitrary.len());
                         let mut deparsed = vec![0; consumed.into_non_zero_usize().get()];
                         header.deparse(&mut deparsed).unwrap();
+                        output_packet.interface_id = 1;
+                        output_packet.data = Cow::from(
+                            &deparsed[..min(header.size().get() as usize, deparsed.len())],
+                        );
+                        output_packet.original_len = u32::from(header.size().get());
+                        pcap_writer.write_pcapng_block(output_packet).unwrap();
+                        pcap_writer.into_inner().sync_all().unwrap();
                         let (reparsed, _) = Ipv4::parse(&deparsed).unwrap();
                         assert_eq!(header, reparsed);
                         assert_eq!(&arbitrary[..=5], &deparsed.as_slice()[..=5]);

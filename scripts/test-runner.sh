@@ -179,6 +179,7 @@ fi
   --tmpfs "/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
   --tmpfs "/var/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
   --tmpfs "/tmp:nodev,noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
+  --mount "type=bind,source=/tmp/pcap,target=/tmp/pcap,readonly=false,bind-propagation=rprivate" \
   --user="$(id -u):$(id -g)" \
   --group-add="$(getent group docker | cut -d: -f3)" \
   --env LLVM_PROFILE_FILE="${LLVM_PROFILE_FILE:-""}" \

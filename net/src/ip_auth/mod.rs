@@ -39,7 +39,7 @@ pub enum IpAuthError {
     #[error("zero is not a valid payload length for IP authentication")]
     ZeroPayloadLength,
     /// [`IpAuth`] headers must be zero padded to multiples of 4 bytes
-    #[error("ip auth ")]
+    #[error("ip auth padding failure")]
     InvalidPadding,
 }
 
@@ -85,8 +85,10 @@ impl DeParse for IpAuth {
     type Error = ();
 
     fn size(&self) -> NonZero<u16> {
-        NonZero::new(u16::try_from(self.header.header_len()).unwrap_or_else(|_| unreachable!()))
-            .unwrap_or_else(|| unreachable!())
+        NonZero::new(
+            u16::try_from(12 + self.header.raw_icv().len()).unwrap_or_else(|_| unreachable!()),
+        )
+        .unwrap_or_else(|| unreachable!())
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {

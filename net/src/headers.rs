@@ -31,7 +31,6 @@ use tracing::{debug, error, trace};
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
-
 // TODO: remove `pub` from all fields
 #[derive(Debug, PartialEq, Eq, Clone, Default, Builder)]
 #[builder(default)]
@@ -339,7 +338,10 @@ impl DeParse for Headers {
 pub enum PushVlanError {
     #[error("can't push vlan without an ethernet header")]
     NoEthernetHeader,
-    #[error("Header already has as many VLAN headers as parser can support (max is {})", Headers::MAX_VLANS)]
+    #[error(
+        "Header already has as many VLAN headers as parser can support (max is {})",
+        Headers::MAX_VLANS
+    )]
     TooManyVlans,
 }
 
@@ -350,7 +352,6 @@ pub enum PopVlanError {
 }
 
 impl Headers {
-
     /// The maximum number of VLANs headers which will be parsed
     pub const MAX_VLANS: usize = 4;
 
@@ -1300,35 +1301,82 @@ mod contract {
 #[cfg(any(test, kani))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // fine to unwarp in tests
 mod test {
+    use super::*;
     use crate::headers::Headers;
     use crate::headers::contract::CommonHeaders;
     use crate::icmp4::Icmp4Checksum;
-    use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, Parse, ParseError};
-
-    use super::*;
     use crate::icmp6::{Icmp6Checksum, Icmp6ChecksumPayload};
     use crate::ipv4::Ipv4Checksum;
+    use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, Parse, ParseError};
     use crate::tcp::{TcpChecksum, TcpChecksumPayload};
     use crate::udp::{UdpChecksum, UdpChecksumPayload};
+    use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketOption;
+    use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionOption;
+    use pcap_file::{DataLink, pcapng};
+    use std::borrow::Cow;
+    use std::fs::File;
+    use std::panic::catch_unwind;
 
     fn parse_back_test(headers: &Headers) {
-        let mut buffer = [0_u8; 1024];
-        let bytes_written =
-            match headers.deparse(&mut buffer[..headers.size().into_non_zero_usize().get()]) {
-                Ok(written) => written,
-                Err(DeParseError::Length(e)) => unreachable!("{e:?}", e = e),
-                Err(DeParseError::Invalid(e)) => unreachable!("{e:?}", e = e),
-                Err(DeParseError::BufferTooLong(_)) => unreachable!(),
+        let result = |headers: &Headers| {
+            let mut buffer = [0_u8; 16384];
+            let bytes_written =
+                match headers.deparse(&mut buffer[..headers.size().into_non_zero_usize().get()]) {
+                    Ok(written) => written,
+                    Err(DeParseError::Length(e)) => unreachable!("{e:?}", e = e),
+                    Err(DeParseError::Invalid(e)) => unreachable!("{e:?}", e = e),
+                    Err(DeParseError::BufferTooLong(_)) => unreachable!(),
+                };
+            let (parsed, bytes_parsed) =
+                match Headers::parse(&buffer[..bytes_written.into_non_zero_usize().get()]) {
+                    Ok(k) => k,
+                    Err(ParseError::Length(e)) => unreachable!("{e:?}", e = e),
+                    Err(ParseError::Invalid(e)) => unreachable!("{e:?}", e = e),
+                    Err(ParseError::BufferTooLong(_)) => unreachable!(),
+                };
+            if headers != &parsed || bytes_parsed != headers.size() {
+                return Err((parsed, buffer));
+            }
+            Ok((parsed, buffer))
+        };
+        if let Err((parsed, buffer)) = result(headers) {
+            let pcap_file = File::create("/tmp/pcap/headers::parse_back_test.pcapng").unwrap();
+            let mut pcap_writer = pcapng::PcapNgWriter::new(pcap_file).unwrap();
+            let input = pcapng::blocks::interface_description::InterfaceDescriptionBlock {
+                linktype: DataLink::ETHERNET,
+                snaplen: 0,
+                options: vec![
+                    InterfaceDescriptionOption::Comment("first serialize".into()),
+                    InterfaceDescriptionOption::IfName("first".into()),
+                ],
             };
-        let (parsed, bytes_parsed) =
-            match Headers::parse(&buffer[..bytes_written.into_non_zero_usize().get()]) {
-                Ok(k) => k,
-                Err(ParseError::Length(e)) => unreachable!("{e:?}", e = e),
-                Err(ParseError::Invalid(e)) => unreachable!("{e:?}", e = e),
-                Err(ParseError::BufferTooLong(_)) => unreachable!(),
+            let output = pcapng::blocks::interface_description::InterfaceDescriptionBlock {
+                linktype: DataLink::ETHERNET,
+                snaplen: 0,
+                options: vec![
+                    InterfaceDescriptionOption::Comment("parse back".into()),
+                    InterfaceDescriptionOption::IfName("second".into()),
+                ],
             };
-        assert_eq!(headers, &parsed);
-        assert_eq!(bytes_parsed, headers.size());
+            pcap_writer.write_pcapng_block(input).unwrap();
+            pcap_writer.write_pcapng_block(output).unwrap();
+            let mut output_packet = pcapng::blocks::enhanced_packet::EnhancedPacketBlock::default();
+            output_packet.interface_id = 0;
+            output_packet.data = Cow::from(&buffer[..headers.size().get() as usize]);
+            output_packet.original_len = headers.size().get() as u32;
+            pcap_writer.write_pcapng_block(output_packet).unwrap();
+            let mut output_packet = pcapng::blocks::enhanced_packet::EnhancedPacketBlock::default();
+            let mut buffer2 = [0_u8; 16384];
+            println!("parsed: {:#?}", parsed);
+            parsed
+                .deparse(&mut buffer2[..parsed.size().get() as usize])
+                .unwrap();
+            output_packet.interface_id = 1;
+            output_packet.data = Cow::from(&buffer2[..headers.size().get() as usize]);
+            output_packet.original_len = parsed.size().get() as u32;
+            pcap_writer.write_pcapng_block(output_packet).unwrap();
+            panic!("{headers:#?}");
+        }
     }
 
     #[test]
