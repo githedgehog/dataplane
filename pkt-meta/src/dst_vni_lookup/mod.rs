@@ -185,3 +185,175 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DstVniLookup {
         })
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::{DstVniLookup, VniTable, VniTables, VniTablesWriter};
+    use lpm::prefix::Prefix;
+    use net::buffer::TestBuffer;
+    use net::headers::{Net, TryHeadersMut, TryIpMut};
+    use net::ipv4::addr::UnicastIpv4Addr;
+    use net::ipv6::addr::UnicastIpv6Addr;
+    use net::packet::test_utils::{build_test_ipv4_packet, build_test_ipv6_packet};
+    use net::packet::{DoneReason, Packet};
+    use net::vxlan::Vni;
+    use pipeline::NetworkFunction;
+    use std::net::IpAddr;
+
+    fn set_dst_addr(packet: &mut Packet<TestBuffer>, addr: IpAddr) {
+        let net = packet.headers_mut().try_ip_mut().unwrap();
+        match net {
+            Net::Ipv4(ip) => {
+                ip.set_destination(UnicastIpv4Addr::try_from(addr).unwrap().into());
+            }
+            Net::Ipv6(ip) => {
+                ip.set_destination(UnicastIpv6Addr::try_from(addr).unwrap().into());
+            }
+        }
+    }
+
+    fn create_test_packet(src_vni: Option<Vni>, dst_addr: IpAddr) -> Packet<TestBuffer> {
+        let mut ret = match dst_addr {
+            IpAddr::V4(_) => build_test_ipv4_packet(100).unwrap(),
+            IpAddr::V6(_) => build_test_ipv6_packet(100).unwrap(),
+        };
+        set_dst_addr(&mut ret, dst_addr);
+        ret.meta.src_vni = src_vni;
+        ret
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn test_dst_vni_lookup() {
+        ////////////////////////////
+        // Setup VNIs
+        let vni100 = Vni::new_checked(100).unwrap();
+        let vni101 = Vni::new_checked(101).unwrap();
+        let vni102 = Vni::new_checked(102).unwrap();
+        let vni200 = Vni::new_checked(200).unwrap();
+        let vni201 = Vni::new_checked(201).unwrap();
+        let vni202 = Vni::new_checked(202).unwrap();
+
+        ////////////////////////////
+        // Setup VNI tables
+
+        // VNI 100
+        let mut vni_table_100 = VniTable::new();
+        let dst_vni_100_192_168_1_0_24 = vni101;
+        let dst_vni_100_192_168_0_0_16 = vni102;
+        vni_table_100
+            .dst_vnis
+            .insert(Prefix::from("192.168.1.0/24"), dst_vni_100_192_168_1_0_24);
+        vni_table_100
+            .dst_vnis
+            .insert(Prefix::from("192.168.0.0/16"), dst_vni_100_192_168_0_0_16);
+        vni_table_100.dst_vnis.insert(
+            Prefix::from("::192.168.1.0/120"),
+            dst_vni_100_192_168_1_0_24,
+        );
+        vni_table_100.dst_vnis.insert(
+            Prefix::from("::192.168.0.0/112"),
+            dst_vni_100_192_168_0_0_16,
+        );
+
+        // VNI 200
+        let mut vni_table_200 = VniTable::new();
+        let dst_vni_200_192_168_2_0_24 = vni201;
+        let dst_vni_200_192_168_0_0_16 = vni202;
+        vni_table_200
+            .dst_vnis
+            .insert(Prefix::from("192.168.2.0/24"), dst_vni_200_192_168_2_0_24);
+        vni_table_200
+            .dst_vnis
+            .insert(Prefix::from("192.168.2.0/16"), dst_vni_200_192_168_0_0_16);
+        vni_table_200.dst_vnis.insert(
+            Prefix::from("::192.168.2.0/120"),
+            dst_vni_200_192_168_2_0_24,
+        );
+        vni_table_200.dst_vnis.insert(
+            Prefix::from("::192.168.0.0/112"),
+            dst_vni_200_192_168_0_0_16,
+        );
+
+        ////////////////////////////
+        // Setup VNI tables writer
+        let mut vni_tables = VniTables::new();
+        vni_tables.tables_by_vni.insert(vni100, vni_table_100);
+        vni_tables.tables_by_vni.insert(vni200, vni_table_200);
+        let mut vnitablesw = VniTablesWriter::new();
+        vnitablesw.update_vni_tables(vni_tables);
+
+        ////////////////////////////
+        // Setup DstVniLookup stage
+        let mut dst_vni_lookup = DstVniLookup::new("test", vnitablesw.get_reader());
+
+        ////////////////////////////
+        // Test IPv4 packets
+
+        let p_100_dst_addr_192_168_1_1 =
+            create_test_packet(Some(vni100), "192.168.1.1".parse().unwrap());
+        let p_100_dst_addr_192_168_100_1 =
+            create_test_packet(Some(vni100), "192.168.100.1".parse().unwrap());
+        let p_200_dst_addr_192_168_2_1 =
+            create_test_packet(Some(vni200), "192.168.2.1".parse().unwrap());
+        let p_200_dst_addr_10_0_0_1 = create_test_packet(Some(vni100), "10.0.0.1".parse().unwrap());
+        let p_none_dst_addr = create_test_packet(
+            Some(Vni::new_checked(1000).unwrap()),
+            "192.168.100.1".parse().unwrap(),
+        );
+
+        let packets_in = [
+            p_100_dst_addr_192_168_1_1,
+            p_100_dst_addr_192_168_100_1,
+            p_200_dst_addr_192_168_2_1,
+            p_200_dst_addr_10_0_0_1,
+            p_none_dst_addr,
+        ];
+        let packets = dst_vni_lookup
+            .process(packets_in.into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 5);
+        assert_eq!(packets[0].meta.dst_vni, Some(dst_vni_100_192_168_1_0_24));
+        assert!(!packets[0].is_done());
+        assert_eq!(packets[1].meta.dst_vni, Some(dst_vni_100_192_168_0_0_16));
+        assert!(!packets[1].is_done());
+        assert_eq!(packets[2].meta.dst_vni, Some(dst_vni_200_192_168_2_0_24));
+        assert!(!packets[2].is_done());
+        assert_eq!(packets[3].meta.dst_vni, None);
+        assert_eq!(packets[3].get_done(), Some(DoneReason::Unroutable));
+        assert_eq!(packets[4].meta.dst_vni, None);
+        assert_eq!(packets[4].get_done(), Some(DoneReason::Unroutable));
+
+        ////////////////////////////
+        // Test IPv6 packets
+
+        let p_100_dst_addr_v6_192_168_1_1 =
+            create_test_packet(Some(vni100), "::192.168.1.1".parse().unwrap());
+        let p_100_dst_addr_v6_192_168_100_1 =
+            create_test_packet(Some(vni100), "::192.168.100.1".parse().unwrap());
+        let p_200_dst_addr_v6_192_168_2_1 =
+            create_test_packet(Some(vni200), "::192.168.2.1".parse().unwrap());
+        let p_200_dst_addr_v6_10_0_0_1 =
+            create_test_packet(Some(vni100), "::10.0.0.1".parse().unwrap());
+
+        let packets_in = [
+            p_100_dst_addr_v6_192_168_1_1,
+            p_100_dst_addr_v6_192_168_100_1,
+            p_200_dst_addr_v6_192_168_2_1,
+            p_200_dst_addr_v6_10_0_0_1,
+        ];
+        let packets = dst_vni_lookup
+            .process(packets_in.into_iter())
+            .collect::<Vec<_>>();
+        assert_eq!(packets.len(), 4);
+        assert_eq!(packets[0].meta.dst_vni, Some(dst_vni_100_192_168_1_0_24));
+        assert!(!packets[0].is_done());
+        assert_eq!(packets[1].meta.dst_vni, Some(dst_vni_100_192_168_0_0_16));
+        assert!(!packets[1].is_done());
+        assert_eq!(packets[2].meta.dst_vni, Some(dst_vni_200_192_168_2_0_24));
+        assert!(!packets[2].is_done());
+        assert_eq!(packets[3].meta.dst_vni, None);
+        assert_eq!(packets[3].get_done(), Some(DoneReason::Unroutable));
+    }
+}
