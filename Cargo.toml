@@ -91,7 +91,7 @@ rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh
 rustyline = { version = "16.0.0", default-features = false, features = [] }
 serde = { version = "1.0.219", default-features = false, features = [] }
 serde_yml = { version = "0.0.12", default-features = false, features = [] }
-strum = { version = "0.27.1", features = ["derive"] }
+strum = { version = "0.27.2", features = ["derive"] }
 thiserror = { version = "2.0.12", default-features = false, features = [] }
 tokio = { version = "1.46.1", default-features = false, features = [] }
 tokio-stream = { version = "0.1.17", default-features = false, features = [] }
