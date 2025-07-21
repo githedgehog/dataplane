@@ -8,7 +8,7 @@ use crate::cpi::{CpiStats, StatsRow};
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::fib::fibtable::FibTable;
 use crate::fib::fibtype::{Fib, FibId};
-use crate::frrmi::{FrrAppliedConfig, Frrmi, FrrmiStats};
+use crate::frr::frrmi::{FrrAppliedConfig, Frrmi, FrrmiStats};
 
 use crate::rib::VrfTable;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};

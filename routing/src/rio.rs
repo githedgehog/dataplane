@@ -13,7 +13,7 @@ use crate::ctl::handle_ctl_msg;
 use crate::ctl::{RouterCtlMsg, RouterCtlSender};
 use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
-use crate::frrmi::{FrrErr, Frrmi, FrrmiRequest};
+use crate::frr::frrmi::{FrrErr, Frrmi, FrrmiRequest};
 use crate::interfaces::iftablerw::IfTableWriter;
 use crate::routingdb::RoutingDb;
 
