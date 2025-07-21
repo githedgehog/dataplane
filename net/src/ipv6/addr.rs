@@ -7,7 +7,7 @@
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 use std::fmt::{Debug, Display, Formatter};
-use std::net::Ipv6Addr;
+use std::net::{IpAddr, Ipv6Addr};
 
 /// A type representing the set of unicast ipv6 addresses.
 #[non_exhaustive]
@@ -49,6 +49,22 @@ impl UnicastIpv6Addr {
     #[must_use]
     pub const fn inner(self) -> Ipv6Addr {
         self.0
+    }
+}
+
+impl From<UnicastIpv6Addr> for Ipv6Addr {
+    fn from(value: UnicastIpv6Addr) -> Self {
+        value.inner()
+    }
+}
+
+impl TryFrom<IpAddr> for UnicastIpv6Addr {
+    type Error = IpAddr;
+    fn try_from(value: IpAddr) -> Result<Self, Self::Error> {
+        match value {
+            IpAddr::V6(addr) => Ok(UnicastIpv6Addr(addr)),
+            IpAddr::V4(_) => Err(value),
+        }
     }
 }
 
