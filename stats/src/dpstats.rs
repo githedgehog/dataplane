@@ -16,7 +16,7 @@ use std::sync::atomic::Ordering;
 
 use net::packet::DoneReason;
 use net::vxlan::Vni;
-use std::{collections::HashMap, hash::Hash};
+use std::{collections::HashMap, collections::HashSet, hash::Hash};
 use vpcmap::VpcDiscriminant;
 use vpcmap::map::VpcMapReader;
 
@@ -96,7 +96,8 @@ pub struct PacketStats {
     pub vpcmatrix: HashMap<(VpcDiscriminant, VpcDiscriminant), VpcPeeringStats>,
     //dropstats: PacketDropStats, // TODO
     pub vpcstats: HashMap<VpcDiscriminant, VpcStats>,
-    vpcmap_r: VpcMapReader<VpcMapName>, // FIXME(fredi): should this be in stage?
+    vpcmap_r: VpcMapReader<VpcMapName>,
+    known_vpcs: HashSet<VpcDiscriminant>, // Track known VPCs for cleanup
 }
 impl PacketStats {
     pub fn new(vpcmap_r: VpcMapReader<VpcMapName>) -> Self {
@@ -104,7 +105,71 @@ impl PacketStats {
             vpcmatrix: HashMap::new(),
             vpcstats: HashMap::new(),
             vpcmap_r,
+            known_vpcs: HashSet::new(),
         }
+    }
+
+    /// Synchronize stats with the current VPC map and clean up removed VPCs
+    pub fn sync_with_vpc_map(&mut self) {
+        let Some(mapper) = self.vpcmap_r.enter() else {
+            warn!("Unable to read vpc mapper for cleanup!");
+            return;
+        };
+        
+        // Get current VPCs from the map
+        let mut current_vpcs = HashSet::new();
+        
+        // Collect VPCs that still exist in the map from our known VPCs
+        for &disc in &self.known_vpcs {
+            if mapper.get(disc).is_some() {
+                current_vpcs.insert(disc);
+            }
+        }
+        
+        // Also add any VPCs we find in current stats that still exist in the map
+        for &disc in self.vpcstats.keys() {
+            if mapper.get(disc).is_some() {
+                current_vpcs.insert(disc);
+            }
+        }
+        
+        // Find removed VPCs
+        let removed_vpcs: Vec<VpcDiscriminant> = self.known_vpcs
+            .difference(&current_vpcs)
+            .copied()
+            .collect();
+        
+        if !removed_vpcs.is_empty() {
+            trace!("Cleaning up stats for {} removed VPCs", removed_vpcs.len());
+            
+            // Clean up stats for removed VPCs
+            for removed_vpc in &removed_vpcs {
+                self.vpcstats.remove(removed_vpc);
+                trace!("Removed VPC stats for discriminant {:?}", removed_vpc);
+            }
+            
+            // Remove peering stats involving removed VPCs
+            let initial_matrix_size = self.vpcmatrix.len();
+            self.vpcmatrix.retain(|(src, dst), _| {
+                !removed_vpcs.contains(src) && !removed_vpcs.contains(dst)
+            });
+            let removed_peering_stats = initial_matrix_size - self.vpcmatrix.len();
+            
+            if removed_peering_stats > 0 {
+                trace!("Removed {} peering stats entries", removed_peering_stats);
+            }
+        }
+        
+        self.known_vpcs = current_vpcs;
+    }
+
+    /// Get statistics about current state (useful for monitoring)
+    pub fn get_cleanup_stats(&self) -> (usize, usize, usize) {
+        (
+            self.known_vpcs.len(),
+            self.vpcstats.len(),
+            self.vpcmatrix.len(),
+        )
     }
 
     #[inline]
@@ -129,6 +194,10 @@ impl PacketStats {
         bytes: u64,
         dreason: DoneReason,
     ) {
+        // Track both VPCs as known
+        self.known_vpcs.insert(sdisc);
+        self.known_vpcs.insert(ddisc);
+        
         if let Some(cell) = self.vpcmatrix.get_mut(&(sdisc, ddisc)) {
             // Update existing cell
             Self::update_matrix_cell(cell, bytes, dreason);
@@ -152,7 +221,11 @@ impl PacketStats {
             self.vpcmatrix.insert((sdisc, ddisc), cell);
         }
     }
+    
     fn update_vpcstats_rx(&mut self, disc: VpcDiscriminant, bytes: u64) {
+        // Track VPC as known
+        self.known_vpcs.insert(disc);
+        
         if let Some(entry) = self.vpcstats.get_mut(&disc) {
             entry.rx_pkts += 1;
             entry.rx_bytes += bytes;
@@ -171,7 +244,11 @@ impl PacketStats {
             self.vpcstats.insert(disc, entry);
         }
     }
+    
     fn update_vpcstats_tx(&mut self, disc: VpcDiscriminant, bytes: u64) {
+        // Track VPC as known
+        self.known_vpcs.insert(disc);
+        
         if let Some(entry) = self.vpcstats.get_mut(&disc) {
             entry.tx_pkts += 1;
             entry.tx_bytes += bytes;
@@ -197,6 +274,7 @@ enum PacketStatsChange {
     VpcIngress((VpcDiscriminant, u64)),
     VpcEgress((VpcDiscriminant, u64)),
     PeeringStats((VpcDiscriminant, VpcDiscriminant, u64, DoneReason)),
+    SyncWithVpcMap, // New variant for triggering cleanup
 }
 
 pub struct PacketStatsWriter(WriteHandle<PacketStats, PacketStatsChange>);
@@ -211,6 +289,9 @@ impl Absorb<PacketStatsChange> for PacketStats {
             }
             PacketStatsChange::PeeringStats((sdisc, ddisc, bytes, dreason)) => {
                 self.update_vpcmatrix(*sdisc, *ddisc, *bytes, *dreason);
+            }
+            PacketStatsChange::SyncWithVpcMap => {
+                self.sync_with_vpc_map();
             }
         }
     }
@@ -228,6 +309,7 @@ impl PacketStatsWriter {
         );
         (PacketStatsWriter(w), PacketStatsReader(r))
     }
+    
     pub fn update_vpcmatrix(
         &mut self,
         sdisc: VpcDiscriminant,
@@ -239,12 +321,20 @@ impl PacketStatsWriter {
             sdisc, ddisc, bytes, dreason,
         )));
     }
+    
     pub fn update_vpcstats_ingress(&mut self, disc: VpcDiscriminant, bytes: u64) {
         self.0.append(PacketStatsChange::VpcIngress((disc, bytes)));
     }
+    
     pub fn update_vpcstats_egress(&mut self, disc: VpcDiscriminant, bytes: u64) {
         self.0.append(PacketStatsChange::VpcEgress((disc, bytes)));
     }
+    
+    /// Trigger cleanup of stale VPC stats by syncing with the VPC map
+    pub fn trigger_cleanup(&mut self) {
+        self.0.append(PacketStatsChange::SyncWithVpcMap);
+    }
+    
     pub fn refresh(&mut self) {
         self.0.publish();
     }
@@ -255,6 +345,11 @@ pub struct PacketStatsReader(ReadHandle<PacketStats>);
 impl PacketStatsReader {
     pub fn enter(&self) -> Option<ReadGuard<'_, PacketStats>> {
         self.0.enter()
+    }
+    
+    /// Get cleanup statistics (known VPCs, VPC stats entries, peering stats entries)
+    pub fn get_cleanup_stats(&self) -> Option<(usize, usize, usize)> {
+        self.enter().map(|guard| guard.get_cleanup_stats())
     }
 }
 
@@ -278,8 +373,14 @@ impl PipelineStats {
             refresh: AtomicBool::new(false),
         }
     }
+    
     pub fn get_reader(&self) -> PacketStatsReader {
         PacketStatsReader(self.stats.0.clone())
+    }
+    
+    /// Trigger cleanup of stale VPC stats
+    pub fn trigger_cleanup(&mut self) {
+        self.stats.trigger_cleanup();
     }
 }
 

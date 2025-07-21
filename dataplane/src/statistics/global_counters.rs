@@ -6,6 +6,7 @@
 use metrics::{counter, describe_counter, describe_gauge, gauge};
 use stats::PacketStats;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -71,6 +72,35 @@ impl Default for StatsHistory {
 /// Global state for tracking previous statistics
 static STATS_HISTORY: Mutex<Option<StatsHistory>> = Mutex::new(None);
 
+/// Global state for tracking removed VPCs that need metric cleanup
+static REMOVED_VPCS: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
+
+/// Global state for tracking all known VPCs and peerings for cleanup
+static KNOWN_METRICS: Mutex<KnownMetrics> = Mutex::new(KnownMetrics::new());
+
+#[derive(Debug)]
+struct KnownMetrics {
+    vpc_names: HashSet<String>,
+    peering_keys: HashSet<String>, // "src_vpc:dst_vpc"
+}
+
+impl KnownMetrics {
+    const fn new() -> Self {
+        Self {
+            vpc_names: HashSet::new(),
+            peering_keys: HashSet::new(),
+        }
+    }
+}
+
+/// Store removed VPCs for cleanup (called from config processor)
+pub fn store_removed_vpcs(removed_vpcs: Vec<String>) {
+    let mut removed_guard = REMOVED_VPCS.lock().unwrap();
+    for vpc in removed_vpcs {
+        removed_guard.insert(vpc);
+    }
+}
+
 /// Initialize metrics descriptions
 pub fn init_metrics() {
     // Absolute value metrics
@@ -110,9 +140,113 @@ pub fn init_metrics() {
     );
 }
 
+/// Zero out all metrics for a removed VPC
+fn zero_vpc_metrics(vpc_name: &str) {
+    // Zero VPC metrics for both directions
+    gauge!(VPC_PKTS, "vpc" => vpc_name, "direction" => "rx").set(0.0);
+    gauge!(VPC_BYTES, "vpc" => vpc_name, "direction" => "rx").set(0.0);
+    gauge!(VPC_PKTS, "vpc" => vpc_name, "direction" => "tx").set(0.0);
+    gauge!(VPC_BYTES, "vpc" => vpc_name, "direction" => "tx").set(0.0);
+    gauge!(VPC_DROPPED_PKTS, "vpc" => vpc_name, "direction" => "rx").set(0.0);
+    gauge!(VPC_DROPPED_PKTS, "vpc" => vpc_name, "direction" => "tx").set(0.0);
+    
+    // Zero rate metrics
+    gauge!(VPC_PKTS_PER_SECOND, "vpc" => vpc_name, "direction" => "rx").set(0.0);
+    gauge!(VPC_BYTES_PER_SECOND, "vpc" => vpc_name, "direction" => "rx").set(0.0);
+    gauge!(VPC_PKTS_PER_SECOND, "vpc" => vpc_name, "direction" => "tx").set(0.0);
+    gauge!(VPC_BYTES_PER_SECOND, "vpc" => vpc_name, "direction" => "tx").set(0.0);
+    gauge!(VPC_DROPPED_PKTS_PER_SECOND, "vpc" => vpc_name, "direction" => "rx").set(0.0);
+    gauge!(VPC_DROPPED_PKTS_PER_SECOND, "vpc" => vpc_name, "direction" => "tx").set(0.0);
+}
+
+/// Zero out all peering metrics for a specific VPC (as source or destination)
+fn zero_peering_metrics_for_vpc(vpc_name: &str, known_metrics: &KnownMetrics) {
+    // Find all peering keys that involve this VPC
+    let affected_peerings: Vec<String> = known_metrics
+        .peering_keys
+        .iter()
+        .filter(|key| {
+            let parts: Vec<&str> = key.split(':').collect();
+            parts.len() == 2 && (parts[0] == vpc_name || parts[1] == vpc_name)
+        })
+        .cloned()
+        .collect();
+    
+    for peering_key in affected_peerings {
+        let parts: Vec<&str> = peering_key.split(':').collect();
+        if parts.len() == 2 { // SMATOV: I am paranoic about the format, so good old C style check
+            let src_vpc = parts[0];
+            let dst_vpc = parts[1];
+            zero_single_peering_metrics(src_vpc, dst_vpc);
+        }
+    }
+}
+
+/// Zero out metrics for a specific peering relationship
+fn zero_single_peering_metrics(src_vpc: &str, dst_vpc: &str) {
+    gauge!(PEERING_PKTS, "src" => src_vpc, "dst" => dst_vpc).set(0.0);
+    gauge!(PEERING_BYTES, "src" => src_vpc, "dst" => dst_vpc).set(0.0);
+    gauge!(PEERING_DROPPED_PKTS, "src" => src_vpc, "dst" => dst_vpc).set(0.0);
+    gauge!(PEERING_DROPPED_BYTES, "src" => src_vpc, "dst" => dst_vpc).set(0.0);
+    
+    gauge!(PEERING_PKTS_PER_SECOND, "src" => src_vpc, "dst" => dst_vpc).set(0.0);
+    gauge!(PEERING_BYTES_PER_SECOND, "src" => src_vpc, "dst" => dst_vpc).set(0.0);
+    gauge!(PEERING_DROPPED_PKTS_PER_SECOND, "src" => src_vpc, "dst" => dst_vpc).set(0.0);
+    gauge!(PEERING_DROPPED_BYTES_PER_SECOND, "src" => src_vpc, "dst" => dst_vpc).set(0.0);
+}
+
+/// Handle cleanup of removed VPCs
+fn handle_removed_vpcs_cleanup() {
+    let mut removed_guard = REMOVED_VPCS.lock().unwrap();
+    if removed_guard.is_empty() {
+        return;
+    }
+    
+    let known_metrics_guard = KNOWN_METRICS.lock().unwrap();
+    
+    // Zero out metrics for each removed VPC
+    for vpc_name in removed_guard.iter() {
+        zero_vpc_metrics(vpc_name);
+        zero_peering_metrics_for_vpc(vpc_name, &known_metrics_guard);
+    }
+    
+    // Clear the removed VPCs list
+    removed_guard.clear();
+    drop(known_metrics_guard);
+    drop(removed_guard);
+}
+
+/// Clean up metrics for peerings that no longer exist
+fn cleanup_stale_peering_metrics(current_peerings: &HashSet<String>) {
+    let mut known_metrics_guard = KNOWN_METRICS.lock().unwrap();
+    
+    // Find peerings that existed before but don't exist now
+    let removed_peerings: Vec<String> = known_metrics_guard
+        .peering_keys
+        .difference(current_peerings)
+        .cloned()
+        .collect();
+    
+    // Zero out metrics for removed peerings
+    for peering_key in removed_peerings {
+        let parts: Vec<&str> = peering_key.split(':').collect();
+        if parts.len() == 2 {
+            let src_vpc = parts[0];
+            let dst_vpc = parts[1];
+            zero_single_peering_metrics(src_vpc, dst_vpc);
+        }
+    }
+    
+    // Update known peerings
+    known_metrics_guard.peering_keys = current_peerings.clone();
+}
+
 pub fn sync_to_prometheus(packet_stats: &PacketStats) {
     // Increment the metrics request counter
     counter!(METRICS_REQUESTS).increment(1);
+
+    // Handle cleanup of removed VPCs first
+    handle_removed_vpcs_cleanup();
 
     let now = Instant::now();
     let mut history_guard = STATS_HISTORY.lock().unwrap();
@@ -125,9 +259,14 @@ pub fn sync_to_prometheus(packet_stats: &PacketStats) {
         1.0 // Avoid division by zero
     };
 
+    // Track current VPCs and peerings for cleanup
+    let mut current_vpc_names = HashSet::new();
+    let mut current_peering_keys = HashSet::new();
+
     // Process VPC statistics
     packet_stats.vpcstats.values().for_each(|stats| {
         let vpc_name = &stats.vpc;
+        current_vpc_names.insert(vpc_name.clone());
 
         // Set absolute values
         gauge!(VPC_PKTS, "vpc" => vpc_name.clone(), "direction" => "rx").set(stats.rx_pkts as f64);
@@ -172,6 +311,7 @@ pub fn sync_to_prometheus(packet_stats: &PacketStats) {
         let src_vpc = &stats.src_vpc;
         let dst_vpc = &stats.dst_vpc;
         let peering_key = format!("{src_vpc}:{dst_vpc}");
+        current_peering_keys.insert(peering_key.clone());
 
         // Set absolute values
         gauge!(PEERING_PKTS, "src" => src_vpc.clone(), "dst" => dst_vpc.clone()).set(stats.pkts as f64);
@@ -196,6 +336,9 @@ pub fn sync_to_prometheus(packet_stats: &PacketStats) {
             }
         }
     });
+
+    // Clean up stale peering metrics
+    cleanup_stale_peering_metrics(&current_peering_keys);
 
     // Update history with current values
     let mut new_vpc_stats = HashMap::new();
@@ -230,4 +373,11 @@ pub fn sync_to_prometheus(packet_stats: &PacketStats) {
         vpc_stats: new_vpc_stats,
         peering_stats: new_peering_stats,
     });
+
+    // Update known metrics for future cleanup
+    {
+        let mut known_metrics_guard = KNOWN_METRICS.lock().unwrap();
+        known_metrics_guard.vpc_names = current_vpc_names;
+        known_metrics_guard.peering_keys = current_peering_keys;
+    }
 }

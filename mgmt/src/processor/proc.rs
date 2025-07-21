@@ -4,6 +4,7 @@
 // !Configuration processor
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures::TryFutureExt;
@@ -33,7 +34,7 @@ use net::interface::display::MultiIndexInterfaceMapView;
 use net::interface::{Interface, InterfaceName};
 use routing::ctl::RouterCtlSender;
 
-use stats::VpcMapName;
+use stats::{VpcMapName, PacketStatsWriter};
 use vpcmap::VpcDiscriminant;
 use vpcmap::map::{VpcMap, VpcMapWriter};
 
@@ -79,6 +80,7 @@ pub(crate) struct ConfigProcessor {
     vpc_mgr: VpcManager<RequiredInformationBase>,
     vpcmapw: VpcMapWriter<VpcMapName>,
     nattablew: NatTablesWriter,
+    stats_writer: Option<PacketStatsWriter>, // Add stats writer for cleanup
 }
 
 impl ConfigProcessor {
@@ -92,6 +94,7 @@ impl ConfigProcessor {
         router_ctl: RouterCtlSender,
         vpcmapw: VpcMapWriter<VpcMapName>,
         nattablew: NatTablesWriter,
+        stats_writer: Option<PacketStatsWriter>, // Add stats writer parameter
     ) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
         let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
@@ -111,6 +114,7 @@ impl ConfigProcessor {
             vpc_mgr,
             vpcmapw,
             nattablew,
+            stats_writer,
         };
         (processor, tx)
     }
@@ -165,6 +169,7 @@ impl ConfigProcessor {
             &mut self.router_ctl,
             &mut self.vpcmapw,
             &mut self.nattablew,
+            &mut self.stats_writer,
         )
         .await?;
 
@@ -192,6 +197,7 @@ impl ConfigProcessor {
                 &mut self.router_ctl,
                 &mut self.vpcmapw,
                 &mut self.nattablew,
+                &mut self.stats_writer,
             )
             .await;
         }
@@ -336,11 +342,47 @@ async fn apply_router_config(
     Ok(())
 }
 
-/// refresh mappings for per vpc statistics
-fn update_stats_vpc_mappings(config: &GwConfig, vpcmapw: &mut VpcMapWriter<VpcMapName>) {
-    // create a mapping table frome the vpc table in the config
-    // FIXME(fredi): visibility
-    // FIXME(fredi): generalize the vpcmapName table
+/// Get the set of VPCs from the current configuration
+fn get_current_vpcs(config: &GwConfig) -> HashSet<String> {
+    let vpc_table = &config.external.overlay.vpc_table;
+    vpc_table.values().map(|vpc| vpc.name.clone()).collect()
+}
+
+/// refresh mappings for per vpc statistics and handle cleanup
+fn update_stats_vpc_mappings(
+    config: &GwConfig,
+    current_config: Option<&GwConfig>,
+    vpcmapw: &mut VpcMapWriter<VpcMapName>,
+    stats_writer: &mut Option<PacketStatsWriter>,
+) {
+    // Get the current VPCs from the new config
+    let new_vpcs = get_current_vpcs(config);
+    
+    // Get the previous VPCs if we have a current config
+    let previous_vpcs = current_config
+        .map(get_current_vpcs)
+        .unwrap_or_else(HashSet::new);
+    
+    // Find removed VPCs
+    let removed_vpcs: Vec<String> = previous_vpcs
+        .difference(&new_vpcs)
+        .cloned()
+        .collect();
+    
+    if !removed_vpcs.is_empty() {
+        info!("Detected {} removed VPCs: {:?}", removed_vpcs.len(), removed_vpcs);
+        
+        // Trigger cleanup in stats system if available
+        if let Some(stats_writer) = stats_writer {
+            stats_writer.trigger_cleanup();
+        }
+        
+        // Store removed VPCs for prometheus cleanup
+        // We'll use a global state to track this for the metrics handler
+        crate::metrics::store_removed_vpcs(removed_vpcs);
+    }
+    
+    // create a mapping table from the vpc table in the config
     let vpc_table = &config.external.overlay.vpc_table;
     let mut vpcmap = VpcMap::<VpcMapName>::new();
     for vpc in vpc_table.values() {
@@ -351,6 +393,8 @@ fn update_stats_vpc_mappings(config: &GwConfig, vpcmapw: &mut VpcMapWriter<VpcMa
             .unwrap_or_else(|_| unreachable!());
     }
     vpcmapw.set_map(vpcmap);
+    
+    info!("Updated VPC mappings for {} VPCs", vpc_table.len());
 }
 
 /// Update the Nat tables for stateless NAT
@@ -364,10 +408,11 @@ fn apply_nat_config(overlay: &Overlay, nattablesw: &mut NatTablesWriter) -> Conf
 async fn apply_gw_config(
     vpc_mgr: &VpcManager<RequiredInformationBase>,
     config: &mut GwConfig,
-    _current: Option<&GwConfig>,
+    current: Option<&GwConfig>,
     router_ctl: &mut RouterCtlSender,
     vpcmapw: &mut VpcMapWriter<VpcMapName>,
     nattablesw: &mut NatTablesWriter,
+    stats_writer: &mut Option<PacketStatsWriter>,
 ) -> ConfigResult {
     let genid = config.genid();
 
@@ -382,6 +427,10 @@ async fn apply_gw_config(
     if genid == ExternalConfig::BLANK_GENID {
         /* apply config with VPC manager */
         vpc_mgr.apply_config(internal, genid).await?;
+        
+        /* update stats mappings (this will clear everything for blank config) */
+        update_stats_vpc_mappings(config, current, vpcmapw, stats_writer);
+        
         info!("Successfully applied config for genid {genid}");
         return Ok(());
     }
@@ -402,8 +451,8 @@ async fn apply_gw_config(
     /* apply nat config */
     apply_nat_config(&config.external.overlay, nattablesw)?;
 
-    /* update stats mappings */
-    update_stats_vpc_mappings(config, vpcmapw);
+    /* update stats mappings with cleanup detection */
+    update_stats_vpc_mappings(config, current, vpcmapw, stats_writer);
 
     /* apply config in router */
     apply_router_config(&kernel_vrfs, config, router_ctl).await?;
