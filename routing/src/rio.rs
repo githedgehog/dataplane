@@ -394,7 +394,7 @@ pub fn start_rio(
         }
     };
     let handle = thread::Builder::new()
-        .name("RIO".to_string())
+        .name("routerIO".to_string())
         .spawn(rio_loop)
         .map_err(|_| RouterError::Internal("Failure spawning thread"))?;
 
