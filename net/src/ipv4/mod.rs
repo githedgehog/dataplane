@@ -6,7 +6,7 @@
 use crate::headers::Header;
 use crate::icmp4::Icmp4;
 use crate::ip::NextHeader;
-use crate::ip_auth::IpAuth;
+use crate::ip_auth::{IpAuth, IpAuthError};
 pub use crate::ipv4::addr::UnicastIpv4Addr;
 use crate::ipv4::dscp::Dscp;
 use crate::ipv4::ecn::Ecn;
@@ -57,12 +57,13 @@ pub struct Ipv4LengthError {
 
 impl Ipv4 {
     /// The maximum number of IPv4 extensions allowed before the header is rejected as invalid
-    pub const MAX_EXTENSIONS: usize = 2;
+    pub const MAX_EXTENSIONS: usize = 8;
 
     /// The minimum length of an IPv4 header (i.e., a header with no options)
     #[allow(clippy::unwrap_used)] // const-eval and trivially safe
     pub const MIN_LEN: NonZero<u16> = NonZero::new(20).unwrap();
 
+    // TODO: this needs to be adjusted to clarify that we are only talking about the base header
     /// The maximum length of an IPv4 header (i.e., a header with full options)
     #[allow(clippy::unwrap_used)] // const-eval and trivially safe
     pub const MAX_LEN: NonZero<u16> = NonZero::new(60).unwrap();
@@ -296,12 +297,18 @@ pub struct TtlAlreadyZero;
 /// Error which is triggered during construction of an [`Ipv4`] object.
 #[derive(thiserror::Error, Debug)]
 pub enum Ipv4Error {
-    /// Source address is invalid because it is multicast.
+    /// The source address is invalid because it is multicast.
     #[error("multicast source forbidden (received {0})")]
     InvalidSourceAddr(Ipv4Addr),
     /// Error triggered when etherparse fails to parse the header.
     #[error(transparent)]
     Invalid(etherparse::err::ipv4::HeaderSliceError),
+    /// Incorrect option padding
+    #[error("non-zero option padding")]
+    InvalidOptionPadding,
+    /// Ipv4 header was ok, but the ip auth extension posed a security / integrity violation
+    #[error(transparent)]
+    IllegalIpAuth(IpAuthError),
 }
 
 impl Parse for Ipv4 {
@@ -323,16 +330,45 @@ impl Parse for Ipv4 {
         let mut out = Self::new(etherparse_header).map_err(ParseError::Invalid)?;
         let mut protocol = out.header.protocol;
         while protocol == IpNumber::AUTHENTICATION_HEADER && out.ext.len() < Ipv4::MAX_EXTENSIONS {
-            let (ext, jump) = match IpAuth::parse(rest) {
-                Ok(x) => x,
+            match IpAuth::parse(rest) {
+                Ok((ext, jump)) => {
+                    if ext.header.header_len() < 16 {
+                        debug!("authentication header is too short");
+                        return Err(ParseError::Invalid(Ipv4Error::IllegalIpAuth(
+                            IpAuthError::InvalidPadding,
+                        )));
+                    }
+                    // the icv needs to be an integral multiple of 32 bits or else it requires
+                    // padding.  This transitively requires that the whole header be a multiple of 8
+                    // bytes in length because the header size neglecting the icv is a fixed 12
+                    // bytes.  Both the whole header and the icv need to end on a multiple of 4
+                    // bytes.
+                    let remainder = (ext.size().get() % 8) as usize;
+                    if remainder != 0 {
+                        let required = consumed + jump.get() as usize + remainder;
+                        if buf.len() < required {
+                            debug!("authentication header has invalid length");
+                            return Err(ParseError::Invalid(Ipv4Error::IllegalIpAuth(
+                                IpAuthError::InvalidPadding,
+                            )));
+                        }
+                        let padding = &buf[consumed..required];
+                        if padding.iter().any(|x| *x != 0) {
+                            return Err(ParseError::Invalid(Ipv4Error::IllegalIpAuth(
+                                IpAuthError::InvalidPadding,
+                            )));
+                        }
+                        consumed = required;
+                    }
+                    protocol = ext.header.next_header;
+                    out.ext.push(ext);
+                    consumed += jump.get() as usize;
+                }
                 Err(err) => {
                     debug!("failed to parse authentication header: {err:?}");
                     break;
                 }
-            };
-            protocol = ext.0.next_header;
-            out.ext.push(ext);
-            consumed += jump.get() as usize;
+            }
         }
         let consumed = u16::try_from(consumed).unwrap_or_else(|_| unreachable!());
         let consumed = NonZero::new(consumed).unwrap_or_else(|| unreachable!());
@@ -344,9 +380,9 @@ impl DeParse for Ipv4 {
     type Error = ();
 
     fn size(&self) -> NonZero<u16> {
-        #[allow(clippy::cast_possible_truncation)] // ipv4 headers have safe upper bound on length
+        #[allow(clippy::cast_possible_truncation)] // ipv4 headers have a safe upper bound on length
         let base = self.header.header_len();
-        let exts: usize = self.ext.iter().map(|x| x.0.header_len()).sum();
+        let exts: usize = self.ext.iter().map(|x| x.header.header_len()).sum();
         let len = u16::try_from(base + exts).unwrap_or_else(|_| unreachable!());
         NonZero::new(len).unwrap_or_else(|| unreachable!())
     }
@@ -365,7 +401,7 @@ impl DeParse for Ipv4 {
         let mut offset = self.header.header_len();
         buf[..offset].copy_from_slice(&self.header.to_bytes());
         for ext in &self.ext {
-            let len = ext.0.header_len();
+            let len = ext.header.header_len();
             ext.deparse(&mut buf[offset..(offset + len)])?;
             offset += len;
         }
@@ -504,9 +540,10 @@ mod contract {
 
 #[cfg(test)]
 mod test {
-    use crate::ip_auth::IpAuth;
+
     use crate::ipv4::{Ipv4, Ipv4Error};
     use crate::parse::{DeParse, IntoNonZeroUSize, Parse, ParseError};
+
     use etherparse::err::ipv4::{HeaderError, HeaderSliceError};
 
     const MIN_LEN_USIZE: usize = 20;
@@ -539,7 +576,7 @@ mod test {
     fn parse_arbitrary_bytes() {
         bolero::check!()
             .with_type()
-            .for_each(|arbitrary: &[u8; MAX_LEN_USIZE]| {
+            .for_each(|arbitrary: &[u8; 4 * MAX_LEN_USIZE]| {
                 match Ipv4::parse(arbitrary) {
                     Ok((header, consumed)) => {
                         assert!(consumed.into_non_zero_usize().get() <= arbitrary.len());
@@ -555,21 +592,29 @@ mod test {
                             &deparsed.as_slice()[7..MIN_LEN_USIZE]
                         );
                         if !header.options().is_empty() {
-                            let opt_len = MIN_LEN_USIZE + header.options().len();
+                            let len = header.header.header_len();
                             assert_eq!(
-                                &arbitrary[MIN_LEN_USIZE..opt_len],
-                                &deparsed[MIN_LEN_USIZE..opt_len],
+                                &arbitrary[MIN_LEN_USIZE..len],
+                                &deparsed[MIN_LEN_USIZE..len],
                                 "deparsed != original\n{header:#?}"
                             );
                         }
-                        if !header.ext.is_empty() {
-                            let offset = header.header.header_len();
-                            let consumed = consumed.into_non_zero_usize().get();
+                        let mut base = header.header.header_len();
+                        for ext in &header.ext {
+                            let ext_len = ext.header.header_len();
+                            // note: there are 16 reserved bits 2 bytes into the header that we
+                            // must ignore in the ip auth header.
                             assert_eq!(
-                                &arbitrary[offset..consumed],
-                                &deparsed[offset..consumed],
+                                &deparsed[base..(base + 2)],
+                                &arbitrary[base..(base + 2)],
                                 "deparsed != original\n{header:#?}\n{reparsed:#?}"
                             );
+                            assert_eq!(
+                                &deparsed[(base + 4)..(base + ext_len)],
+                                &arbitrary[(base + 4)..(base + ext_len)],
+                                "deparsed != original\n{header:#?}\n{reparsed:#?}"
+                            );
+                            base += ext_len;
                         }
                     }
                     Err(e) => match e {
@@ -590,57 +635,12 @@ mod test {
                             // The minimum header is 5 * 4 = 20 bytes.
                             assert!(((4 * ihl) as usize) < MIN_LEN_USIZE);
                         }
-                        ParseError::Invalid(_) | ParseError::BufferTooLong(_) => unreachable!(),
-                    },
-                }
-            });
-    }
-
-    #[test]
-    #[cfg_attr(kani, kani::proof)]
-    fn parse_arbitrary_bytes_with_auth() {
-        bolero::check!()
-            .with_type()
-            .for_each(|arbitrary: &[u8; MIN_LEN_USIZE + 128]| {
-                match Ipv4::parse(arbitrary) {
-                    Ok((header, consumed)) => {
-                        assert!(consumed.into_non_zero_usize().get() <= arbitrary.len());
-                        let mut deparsed = vec![0; consumed.into_non_zero_usize().get()];
-                        header.deparse(&mut deparsed).unwrap();
-                        assert_eq!(&arbitrary[..=5], &deparsed.as_slice()[..=5]);
-                        // reserved bit in ipv4 flags should serialize to zero
-                        assert_eq!(arbitrary[6] & 0b0111_1111, deparsed[6]);
-                        assert_eq!(
-                            &arbitrary[7..MIN_LEN_USIZE],
-                            &deparsed.as_slice()[7..MIN_LEN_USIZE]
-                        );
-                        #[cfg(not(kani))] // remove when we fix options generation
-                        assert_eq!(
-                            &arbitrary[MIN_LEN_USIZE..consumed.into_non_zero_usize().get()],
-                            &deparsed.as_slice()
-                                [MIN_LEN_USIZE..consumed.into_non_zero_usize().get()],
-                            "deparsed != original\n{header:#?}"
-                        );
-                    }
-                    Err(e) => match e {
-                        ParseError::Length(e) => {
-                            assert!(e.expected.get() < arbitrary.len());
-                            assert_eq!(e.actual, arbitrary.len());
+                        ParseError::Invalid(Ipv4Error::IllegalIpAuth(_)) => {
+                            // TODO: more elaborate assertions about the invalidity of the header
                         }
-                        ParseError::Invalid(Ipv4Error::InvalidSourceAddr(source)) => {
-                            assert!(source.is_multicast());
+                        ParseError::BufferTooLong(_) | ParseError::Invalid(_) => {
+                            unreachable!()
                         }
-                        ParseError::Invalid(Ipv4Error::Invalid(HeaderSliceError::Content(
-                            HeaderError::UnexpectedVersion { version_number },
-                        ))) => assert_ne!(version_number, 4),
-                        ParseError::Invalid(Ipv4Error::Invalid(HeaderSliceError::Content(
-                            HeaderError::HeaderLengthSmallerThanHeader { ihl },
-                        ))) => {
-                            // Remember, ihl is given in units of 4-byte values.
-                            // The minimum header is 5 * 4 = 20 bytes.
-                            assert!((4 * ihl as usize) < MIN_LEN_USIZE);
-                        }
-                        ParseError::Invalid(_) | ParseError::BufferTooLong(_) => unreachable!(),
                     },
                 }
             });

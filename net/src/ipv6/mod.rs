@@ -6,7 +6,7 @@
 use crate::headers::Header;
 use crate::icmp6::Icmp6;
 use crate::ip::NextHeader;
-use crate::ip_auth::IpAuth;
+use crate::ip_auth::{IpAuth, IpAuthError};
 pub use crate::ipv6::addr::UnicastIpv6Addr;
 use crate::ipv6::flow_label::FlowLabel;
 use crate::parse::{
@@ -16,9 +16,9 @@ use crate::parse::{
 use crate::tcp::Tcp;
 use crate::udp::Udp;
 use arrayvec::ArrayVec;
-use etherparse::err::ip_auth;
-use etherparse::err::ip_auth::HeaderError;
-use etherparse::{IpAuthHeader, IpNumber, Ipv6Header, Ipv6RawExtHeader};
+use etherparse::{
+    IpNumber, Ipv6ExtensionsSlice, Ipv6Header, Ipv6RawExtHeader, Ipv6RawExtHeaderSlice,
+};
 use std::net::Ipv6Addr;
 use std::num::{NonZero, NonZeroUsize};
 use tracing::{debug, trace};
@@ -348,7 +348,7 @@ impl Ipv6Ext {
     #[must_use]
     pub fn header_len(&self) -> NonZero<u16> {
         let len_usize = match self {
-            Ipv6Ext::Auth(x) => x.0.header_len(),
+            Ipv6Ext::Auth(x) => x.header.header_len(),
             Ipv6Ext::Other(x) => x.0.header_len(),
         };
         NonZero::new(match u16::try_from(len_usize) {
@@ -369,7 +369,7 @@ impl Ipv6Ext {
         let expected_len = self.header_len().get() as usize;
         let mut rvec = Vec::with_capacity(expected_len);
         match self {
-            Ipv6Ext::Auth(x) => rvec.extend(x.0.to_bytes()),
+            Ipv6Ext::Auth(x) => rvec.extend(x.header.to_bytes()),
             Ipv6Ext::Other(x) => rvec.extend(x.0.to_bytes()),
         }
         rvec
@@ -394,7 +394,7 @@ impl Ipv6Ext {
     #[must_use]
     pub fn next_header(&self) -> NextHeader {
         match self {
-            Ipv6Ext::Auth(x) => NextHeader(x.0.next_header),
+            Ipv6Ext::Auth(x) => NextHeader(x.header.next_header),
             Ipv6Ext::Other(x) => NextHeader(x.0.next_header),
         }
     }
@@ -412,9 +412,9 @@ pub enum Ipv6ExtError {
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 #[error("invalid ipv6 extension header")]
 pub enum Ipv6ScalarExtError {
-    /// The IPv6 extension header is invalid
-    #[error("invalid ipv6 extension header found")]
-    Invalid,
+    /// The IPv6 auth header is invalid
+    #[error("invalid ipv6 auth header found")]
+    InvalidAuthHeader(IpAuthError),
     /// There are no further IPv6 extension headers to parse
     #[error("there are no further IPv6 extension headers to parse")]
     NoFurtherExtensions,
@@ -431,42 +431,61 @@ impl ParseWith for Ipv6Ext {
         if buf.len() > u16::MAX as usize {
             return Err(ParseError::BufferTooLong(buf.len()));
         }
-        let (output, rest) = match ip_number {
-            NextHeader::IP_AUTH => IpAuthHeader::from_slice(buf)
-                .map_err(|e| match e {
-                    ip_auth::HeaderSliceError::Len(l) => ParseError::Length(LengthError {
-                        expected: NonZeroUsize::new(l.required_len)
-                            .unwrap_or_else(|| unreachable!()),
-                        actual: buf.len(),
-                    }),
-                    ip_auth::HeaderSliceError::Content(e) => match e {
-                        HeaderError::ZeroPayloadLen => ParseError::Length(LengthError {
-                            expected: NonZero::new(16).unwrap_or_else(|| unreachable!()),
-                            actual: 0,
-                        }),
-                    },
-                })
-                .map(|(h, rest)| (Self::Auth(IpAuth(Box::new(h))), rest))?,
-            nhdr if nhdr.0.is_ipv6_ext_header_value() => Ipv6RawExtHeader::from_slice(buf)
-                .map_err(|e| {
+        let (output, mut consumed) = match ip_number {
+            NextHeader::IP_AUTH => {
+                let (auth, consumed) = IpAuth::parse(buf).map_err(|e| match e {
+                    ParseError::Invalid(e) => {
+                        ParseError::Invalid(Ipv6ScalarExtError::InvalidAuthHeader(e))
+                    }
+                    ParseError::BufferTooLong(err) => ParseError::BufferTooLong(err),
+                    ParseError::Length(e) => ParseError::Length(e),
+                })?;
+                (Ipv6Ext::Auth(auth), consumed)
+            }
+            nhdr if nhdr.0.is_ipv6_ext_header_value() => {
+                let (output, rest) = Ipv6RawExtHeader::from_slice(buf).map_err(|e| {
                     ParseError::Length(LengthError {
                         expected: NonZeroUsize::new(e.required_len)
                             .unwrap_or_else(|| unreachable!()),
                         actual: buf.len(),
                     })
-                })
-                .map(|(h, rest)| (Self::Other(OtherIpv6Ext(Box::new(h))), rest))?,
-            NextHeader(_) => Err(ParseError::Invalid(Ipv6ScalarExtError::NoFurtherExtensions))?,
+                })?;
+                assert!(rest.len() < buf.len());
+                let consumed =
+                    u16::try_from(buf.len() - rest.len()).unwrap_or_else(|_| unreachable!());
+                let consumed = NonZero::new(consumed).unwrap_or_else(|| unreachable!());
+                (Ipv6Ext::Other(OtherIpv6Ext(Box::new(output))), consumed)
+            }
+            _ => Err(ParseError::Invalid(Ipv6ScalarExtError::NoFurtherExtensions))?,
         };
         assert!(
-            rest.len() < buf.len(),
-            "rest.len() >= buf.len() ({rest} >= {buf})",
-            rest = rest.len(),
+            (consumed.get() as usize) <= buf.len(),
+            "consumed more than size of buffer ({consumed} >= {buf})",
+            consumed = consumed.get(),
             buf = buf.len()
         );
-        #[allow(clippy::cast_possible_truncation)] // buffer length bounded above
-        let consumed =
-            NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
+
+        /// In ipv6 specifically, extension headers must be zero padded to multiples of
+        /// 8 bytes.  This is different from ipv4 where authentication header padding is to 4 byte
+        /// multiples.
+        let remainder = consumed.get() % 8;
+        if remainder != 0 {
+            if (consumed.get() + remainder) as usize > buf.len() {
+                return Err(ParseError::Invalid(Ipv6ScalarExtError::InvalidAuthHeader(
+                    IpAuthError::InvalidPadding,
+                )));
+            }
+            consumed = NonZero::new(consumed.get() + remainder).unwrap_or_else(|| unreachable!());
+            let consumed = consumed.get() as usize;
+            let remainder = remainder as usize;
+            let padding = &buf[consumed..consumed + remainder];
+            // if padding exists, it must be zeros or the header is invalid
+            if padding.iter().any(|&byte| byte != 0) {
+                return Err(ParseError::Invalid(Ipv6ScalarExtError::InvalidAuthHeader(
+                    IpAuthError::InvalidPadding,
+                )));
+            }
+        }
         Ok((output, consumed))
     }
 }
@@ -496,7 +515,7 @@ impl ParseWith for ArrayVec<Ipv6Ext, { Ipv6::MAX_EXTENSIONS }> {
                     ParseError::Invalid(Ipv6ScalarExtError::NoFurtherExtensions) => {
                         break;
                     }
-                    ParseError::Invalid(Ipv6ScalarExtError::Invalid) => {
+                    ParseError::Invalid(Ipv6ScalarExtError::InvalidAuthHeader(_)) => {
                         Err(ParseError::Invalid(Ipv6ExtError::Invalid))?;
                     }
                     ParseError::BufferTooLong(e) => Err(ParseError::BufferTooLong(e))?,
