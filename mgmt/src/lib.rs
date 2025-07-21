@@ -9,9 +9,6 @@ pub mod grpc;
 /* Configuration processor */
 pub mod processor;
 
-/* Frr drivers */
-pub mod frr;
-
 /* VPC manager */
 pub mod vpc_manager;
 

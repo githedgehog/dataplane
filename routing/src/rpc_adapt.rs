@@ -16,7 +16,9 @@ use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::{FwAction, NhopKey};
 use crate::rib::vrf::{Route, RouteNhop, RouteOrigin, Vrf};
 
-use dplane_rpc::msg::{ForwardAction, IpRoute, NextHop, NextHopEncap, Rmac, RouteType, VxlanEncap};
+use dplane_rpc::msg::{
+    ForwardAction, IpRoute, NextHop, NextHopEncap, Rmac, RouteTableId, RouteType, VxlanEncap,
+};
 use lpm::prefix::Prefix;
 use net::eth::mac::Mac;
 use net::vxlan::Vni;
@@ -180,7 +182,7 @@ impl Vrf {
         };
 
         if let Some(tableid) = self.tableid {
-            if iproute.tableid != tableid.into() {
+            if iproute.tableid != RouteTableId::from(tableid) {
                 warn!("Table id mismatch for {iproute}; vrf tableid is {tableid}");
             }
         }

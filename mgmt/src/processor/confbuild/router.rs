@@ -19,7 +19,7 @@ use config::internal::interfaces::interface::InterfaceConfig;
 use config::internal::routing::vrf::VrfConfig;
 use config::{ConfigError, GwConfig, InternalConfig};
 
-use crate::frr::renderer::builder::Render;
+use routing::frr::renderer::builder::Render;
 
 use routing::evpn::Vtep;
 use routing::rib::vrf::{RouterVrfConfig, VrfId};

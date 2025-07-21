@@ -72,12 +72,12 @@ impl AddAssign<&str> for ConfigBuilder {
 }
 
 /// Main trait to build FRR configs for frr-reload.py
-pub(crate) trait Render {
+pub trait Render {
     type Context; /* context passed to renderer */
     type Output; /* type of output produced */
     fn render(&self, ctx: &Self::Context) -> Self::Output;
 }
 
-pub(crate) trait Rendered {
+pub trait Rendered {
     fn rendered(&self) -> String;
 }

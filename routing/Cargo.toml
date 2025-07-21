@@ -13,6 +13,7 @@ ahash = { workspace = true }
 bytes = { workspace = true, features = ["serde"] }
 chrono = { workspace = true, features = ["clock"] }
 cli = { workspace = true }
+config = { workspace = true }
 derive_builder = { workspace = true, features = ["default", "std"] }
 dplane-rpc = { workspace = true }
 lpm = { workspace = true }

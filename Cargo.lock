@@ -995,6 +995,7 @@ dependencies = [
  "bytes",
  "chrono",
  "dataplane-cli",
+ "dataplane-config",
  "dataplane-lpm",
  "dataplane-net",
  "derive_builder 0.20.2",
