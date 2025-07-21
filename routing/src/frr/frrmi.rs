@@ -52,9 +52,10 @@ pub(crate) struct Frrmi {
     applied_cfg: Option<FrrAppliedConfig>, /* last successfully applied config */
 }
 
-pub(crate) struct FrrAppliedConfig {
-    pub(crate) genid: i64,
-    pub(crate) cfg: FrrConfig,
+#[derive(Clone, Debug)]
+pub struct FrrAppliedConfig {
+    pub genid: i64,
+    pub cfg: FrrConfig,
 }
 impl FrrAppliedConfig {
     fn new(genid: i64, cfg: FrrConfig) -> Self {

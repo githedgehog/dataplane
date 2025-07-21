@@ -14,10 +14,17 @@ use tracing::{debug, error, info, warn};
 
 use crate::RouterError;
 use crate::config::RouterConfig;
+use crate::frr::frrmi::FrrAppliedConfig;
 use crate::rio::{CPSOCK, Rio};
 use crate::routingdb::RoutingDb;
 
-pub(crate) type RouterCtlReplyTx = AsyncSender<Result<(), RouterError>>;
+pub(crate) type RouterCtlReplyTx = AsyncSender<RouterCtlReply>;
+
+#[derive(Debug)]
+pub enum RouterCtlReply {
+    Result(Result<(), RouterError>),
+    FrrConfig(Option<FrrAppliedConfig>),
+}
 
 #[repr(transparent)]
 pub struct LockGuard(Option<Sender<RouterCtlMsg>>);
@@ -40,6 +47,7 @@ pub enum RouterCtlMsg {
     Unlock(RouterCtlReplyTx),
     GuardedUnlock,
     Configure(RouterConfig, RouterCtlReplyTx),
+    GetFrrAppliedConfig(RouterCtlReplyTx),
 }
 
 // An object to send control messages to the router
@@ -63,7 +71,11 @@ impl RouterCtlSender {
         let reply = reply_rx
             .await
             .map_err(|_| RouterError::Internal("Failed to receive lock reply"))?;
-        reply?;
+
+        let RouterCtlReply::Result(result) = reply else {
+            unreachable!()
+        };
+        result?;
         Ok(self.as_lock_guard())
     }
     #[allow(unused)]
@@ -79,8 +91,10 @@ impl RouterCtlSender {
         let reply = reply_rx
             .await
             .map_err(|_| RouterError::Internal("Failed to receive unlock reply"))?;
-        reply?;
-        Ok(())
+        let RouterCtlReply::Result(result) = reply else {
+            unreachable!()
+        };
+        result
     }
     pub async fn configure(&mut self, config: RouterConfig) -> Result<(), RouterError> {
         let genid = config.genid();
@@ -94,8 +108,28 @@ impl RouterCtlSender {
         let reply = reply_rx
             .await
             .map_err(|_| RouterError::Internal("Failed to receive configure reply"))?;
-        reply?;
-        Ok(())
+
+        let RouterCtlReply::Result(result) = reply else {
+            unreachable!()
+        };
+        result
+    }
+    pub async fn get_frr_applied_config(
+        &mut self,
+    ) -> Result<Option<FrrAppliedConfig>, RouterError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let msg = RouterCtlMsg::GetFrrAppliedConfig(reply_tx);
+        self.0
+            .send(msg)
+            .await
+            .map_err(|_| RouterError::Internal("Failed to send get FRR applied config"))?;
+        let reply = reply_rx
+            .await
+            .map_err(|_| RouterError::Internal("Failed to receive reply for get FRR config"))?;
+        let RouterCtlReply::FrrConfig(frr_cfg) = reply else {
+            unreachable!()
+        };
+        Ok(frr_cfg)
     }
 }
 
@@ -117,7 +151,7 @@ fn handle_lock(rio: &mut Rio, lock: bool, reply_to: Option<RouterCtlReplyTx>) {
     }
 
     if let Some(reply_to) = reply_to {
-        if let Err(e) = reply_to.send(result) {
+        if let Err(e) = reply_to.send(RouterCtlReply::Result(result)) {
             error!("Fatal: could not reply to lock/unlock request: {e:?}");
         }
     }
@@ -134,7 +168,7 @@ fn handle_configure(
     /* apply router config */
     let result = config.apply(db);
     if result.is_err() {
-        let _ = reply_to.send(result).map_err(|e| {
+        let _ = reply_to.send(RouterCtlReply::Result(result)).map_err(|e| {
             error!("Fatal: could not reply to configure request: {e:?}");
         });
         return;
@@ -146,12 +180,22 @@ fn handle_configure(
     }
 
     /* reply */
-    let _ = reply_to.send(result).map_err(|e| {
+    let _ = reply_to.send(RouterCtlReply::Result(result)).map_err(|e| {
         error!("Fatal: could not reply to configure request: {e:?}");
     });
 
     /* store the config */
     db.set_config(config);
+}
+
+/// Handle get applied FRR config
+fn handle_get_frr_applied_config(rio: &Rio, reply_to: RouterCtlReplyTx) {
+    let frr_cfg = rio.frrmi.get_applied_cfg().as_ref().map(|c| c.clone());
+    let _ = reply_to
+        .send(RouterCtlReply::FrrConfig(frr_cfg))
+        .map_err(|e| {
+            error!("Fatal: could not reply to get applied FRR config request: {e:?}");
+        });
 }
 
 /// Handle a request from the control channel
@@ -166,6 +210,9 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
         Ok(RouterCtlMsg::GuardedUnlock) => handle_lock(rio, false, None),
         Ok(RouterCtlMsg::Configure(config, reply_to)) => {
             handle_configure(rio, config, db, reply_to)
+        }
+        Ok(RouterCtlMsg::GetFrrAppliedConfig(reply_to)) => {
+            handle_get_frr_applied_config(rio, reply_to)
         }
         Err(TryRecvError::Empty) => {}
         Err(e) => {
