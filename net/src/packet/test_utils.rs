@@ -19,12 +19,14 @@ use crate::headers::{HeadersBuilder, Net, Transport};
 use crate::ip::NextHeader;
 use crate::ipv4::Ipv4;
 use crate::ipv4::addr::UnicastIpv4Addr;
+use crate::ipv6::Ipv6;
+use crate::ipv6::addr::UnicastIpv6Addr;
 use crate::packet::{InvalidPacket, Packet};
 use crate::parse::DeParse;
 use crate::udp::Udp;
 use crate::udp::port::UdpPort;
 use std::default::Default;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
 #[must_use]
@@ -45,6 +47,32 @@ pub fn build_test_ipv4_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPack
     ipv4.set_destination(Ipv4Addr::new(5, 6, 7, 8));
     ipv4.set_ttl(ttl);
     headers.net(Some(Net::Ipv4(ipv4)));
+
+    let headers = headers.build().unwrap();
+    let mut buffer: TestBuffer = TestBuffer::new();
+    headers.deparse(buffer.as_mut()).unwrap();
+    Packet::new(buffer)
+}
+
+#[must_use]
+/// Builds a test packet with the given TTL value.
+///
+/// The packet is an IPv6 packet with a source IP address of `::1.2.3.4` and a destination of `::5.6.7.8`.
+/// The Ethernet source and destination MAC addresses are 0x02:00:00:00:00:01 and 0x02:00:00:00:00:02
+/// respectively.
+pub fn build_test_ipv6_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+    let mut headers = HeadersBuilder::default();
+    headers.eth(Some(Eth::new(
+        SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
+        DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
+        EthType::IPV6,
+    )));
+    let mut ipv6 = Ipv6::default();
+    // To construct an Ipv6Addr from a string, use FromStr or "::1.2.3.4".parse()
+    ipv6.set_source(UnicastIpv6Addr::new("::1.2.3.4".parse::<Ipv6Addr>().unwrap()).unwrap());
+    ipv6.set_destination("::5.6.7.8".parse::<Ipv6Addr>().unwrap());
+    ipv6.set_hop_limit(ttl);
+    headers.net(Some(Net::Ipv6(ipv6)));
 
     let headers = headers.build().unwrap();
     let mut buffer: TestBuffer = TestBuffer::new();
