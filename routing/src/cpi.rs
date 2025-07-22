@@ -16,6 +16,7 @@ use dplane_rpc::wire::*;
 use dplane_rpc::{msg::*, socks::Pretty};
 use lpm::prefix::Prefix;
 use std::os::unix::net::SocketAddr;
+use std::process;
 
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
@@ -62,14 +63,26 @@ pub(crate) struct CpiStats {
     pub(crate) control_rx: u64,
 }
 
+fn build_connect_info(synt: u64) -> ConnectInfo {
+    ConnectInfo {
+        pid: process::id(),
+        name: "GW-dataplane".to_string(),
+        verinfo: VerInfo::default(),
+        synt,
+    }
+}
+
 /* convenience trait */
 trait RpcOperation {
     type ObjectStore;
-    fn connect(&self, _stats: &mut Self::ObjectStore) -> RpcResultCode
+    fn connect(&self, _stats: &mut Self::ObjectStore) -> (RpcObject, RpcResultCode)
     where
         Self: Sized,
     {
-        RpcResultCode::InvalidRequest
+        (
+            RpcObject::ConnectInfo(build_connect_info(0)),
+            RpcResultCode::InvalidRequest,
+        )
     }
     fn add(&self, _db: &mut Self::ObjectStore) -> RpcResultCode
     where
@@ -87,7 +100,7 @@ trait RpcOperation {
 
 impl RpcOperation for ConnectInfo {
     type ObjectStore = CpiStats;
-    fn connect(&self, stats: &mut Self::ObjectStore) -> RpcResultCode {
+    fn connect(&self, stats: &mut Self::ObjectStore) -> (RpcObject, RpcResultCode) {
         info!("Got connect request from {}, pid {}", self.name, self.pid);
         if let Some(pid) = stats.last_pid {
             warn!("CP had already been connected with pid {}..", pid);
@@ -98,11 +111,17 @@ impl RpcOperation for ConnectInfo {
         if self.verinfo == VerInfo::default() {
             stats.last_pid = Some(self.pid);
             stats.connect_time = Some(Local::now());
-            RpcResultCode::Ok
+            (
+                RpcObject::ConnectInfo(build_connect_info(1)),
+                RpcResultCode::Ok,
+            )
         } else {
             error!("Got connection request with mismatch RPC version!!");
             error!("Supported version is v{VER_DP_MAJOR}{VER_DP_MINOR}{VER_DP_PATCH}");
-            RpcResultCode::Failure
+            (
+                RpcObject::ConnectInfo(build_connect_info(0)),
+                RpcResultCode::Failure,
+            )
         }
     }
 }
@@ -237,15 +256,19 @@ impl RpcOperation for IfAddress {
 fn build_response_msg(
     req: &RpcRequest,
     rescode: RpcResultCode,
-    _objects: Option<Vec<&RpcObject>>,
+    object: Option<RpcObject>,
 ) -> RpcMsg {
     let op = req.get_op();
     let seqn = req.get_seqn();
+    let mut objs = Vec::new();
+    if let Some(object) = object {
+        objs.push(object);
+    }
     let response = RpcResponse {
         op,
         seqn,
         rescode,
-        objs: vec![],
+        objs,
     };
     response.wrap_in_msg()
 }
@@ -253,8 +276,8 @@ fn build_notification_msg() -> RpcMsg {
     let notif = RpcNotification {};
     notif.wrap_in_msg()
 }
-fn build_control_msg() -> RpcMsg {
-    let control = RpcControl {};
+fn build_control_msg(refresh: u8) -> RpcMsg {
+    let control = RpcControl { refresh };
     control.wrap_in_msg()
 }
 
@@ -292,10 +315,11 @@ fn rpc_reply(
     req: &RpcRequest,
     rescode: RpcResultCode,
     stats: &mut CpiStats,
+    resp_object: Option<RpcObject>,
 ) {
     let op = req.get_op();
     let object = req.get_object();
-    let resp_msg = build_response_msg(req, rescode, None);
+    let resp_msg = build_response_msg(req, rescode, resp_object);
     csock.send_msg(resp_msg, peer);
     update_stats(stats, op, object, rescode);
 }
@@ -319,7 +343,7 @@ fn handle_request(
     // we need to have a configuration.
     if op != RpcOp::Connect && stats.last_pid.is_none() {
         warn!("Ignoring request: no prior connect received. Did we restart?");
-        rpc_reply(csock, peer, req, RpcResultCode::Ignored, stats);
+        rpc_reply(csock, peer, req, RpcResultCode::Ignored, stats, None);
         return;
     }
 
@@ -327,10 +351,11 @@ fn handle_request(
     if !db.have_config() && op == RpcOp::Add {
         error!("Ignoring request: there's no config. This should not happen...");
         error!("..but may not cause malfunction.");
-        rpc_reply(csock, peer, req, RpcResultCode::Ignored, stats);
+        rpc_reply(csock, peer, req, RpcResultCode::Ignored, stats, None);
         return;
     }
 
+    let mut response_object: Option<RpcObject> = None;
     let res_code = match object {
         None => {
             error!("Received {:?} request without object!", op);
@@ -358,11 +383,15 @@ fn handle_request(
             res
         }
         Some(RpcObject::ConnectInfo(conninfo)) => match op {
-            RpcOp::Connect => conninfo.connect(stats),
+            RpcOp::Connect => {
+                let (obj, res) = conninfo.connect(stats);
+                response_object = Some(obj);
+                res
+            }
             _ => RpcResultCode::InvalidRequest,
         },
     };
-    rpc_reply(csock, peer, req, res_code, stats);
+    rpc_reply(csock, peer, req, res_code, stats, response_object);
 }
 fn handle_response(_csock: &RpcCachedSock, _peer: &SocketAddr, _res: &RpcResponse) {}
 fn handle_notification(_csock: &RpcCachedSock, peer: &SocketAddr, _notif: &RpcNotification) {
@@ -374,7 +403,7 @@ fn handle_control(
     _ctl: &RpcControl,
     stats: &mut CpiStats,
 ) {
-    let control = build_control_msg();
+    let control = build_control_msg(0);
     stats.control_rx += 1;
     csock.send_msg(control, peer);
 }
