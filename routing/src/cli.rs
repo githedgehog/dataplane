@@ -5,6 +5,7 @@
 
 #![allow(clippy::unnecessary_wraps)]
 
+use crate::cpi::rpc_send_control;
 use crate::display::IfTableAddress;
 use crate::display::{FibGroups, FibViewV4, FibViewV6};
 use crate::display::{VrfV4Nexthops, VrfV6Nexthops, VrfViewV4, VrfViewV6};
@@ -379,6 +380,16 @@ fn do_handle_cli_request(
             } else {
                 CliResponse::from_request_ok(request, format!("There is no configuration"))
             }
+        }
+        CliAction::CpiRequestRefresh => {
+            let Some(peer) = &rio.cpistats.peer else {
+                return Ok(CliResponse::from_request_ok(
+                    request,
+                    format!("No connection over CPI"),
+                ));
+            };
+            rpc_send_control(&mut rio.cpi_sock, peer, true);
+            CliResponse::from_request_ok(request, format!("Requested refresh..."))
         }
         CliAction::ShowRouterInterfaces => {
             if let Some(iftable) = db.iftw.enter() {

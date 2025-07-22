@@ -281,11 +281,25 @@ fn cmd_frrmi() -> Node {
     root
 }
 
+fn cmd_cpi_request_refresh() -> Node {
+    let mut root = Node::new("request");
+    root += Node::new("refresh")
+        .desc("Request routing state")
+        .action(CliAction::CpiRequestRefresh as u16);
+    root
+}
+fn cmd_cpi() -> Node {
+    let mut root = Node::new("cpi");
+    root += cmd_cpi_request_refresh();
+    root
+}
+
 pub fn gw_cmd_tree() -> Node {
     let mut root = Node::new("");
     root += cmd_local();
     root += cmd_mgmt();
     root += cmd_show();
     root += cmd_frrmi();
+    root += cmd_cpi();
     root
 }

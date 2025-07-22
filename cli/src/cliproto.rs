@@ -133,6 +133,7 @@ pub enum CliAction {
 
     // cpi
     ShowCpiStats,
+    CpiRequestRefresh,
 
     // frrmi
     ShowFrrmiStats,
