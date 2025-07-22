@@ -317,7 +317,7 @@ fn update_stats(
         Some(RpcObject::ConnectInfo(_)) => stats.connect.incr(res_code),
     }
 }
-fn rpc_reply(
+fn rpc_send_response(
     csock: &mut RpcCachedSock,
     peer: &SocketAddr,
     req: &RpcRequest,
@@ -330,6 +330,11 @@ fn rpc_reply(
     let resp_msg = build_response_msg(req, rescode, resp_object);
     csock.send_msg(resp_msg, peer);
     update_stats(stats, op, object, rescode);
+}
+pub(crate) fn rpc_send_control(csock: &mut RpcCachedSock, peer: &SocketAddr, refresh: bool) {
+    let refresh: u8 = if refresh { 1 } else { 0 };
+    let control = build_control_msg(refresh);
+    csock.send_msg(control, peer);
 }
 
 fn handle_request(
@@ -351,7 +356,7 @@ fn handle_request(
     // we need to have a configuration.
     if op != RpcOp::Connect && stats.last_pid.is_none() {
         warn!("Ignoring request: no prior connect received. Did we restart?");
-        rpc_reply(csock, peer, req, RpcResultCode::Ignored, stats, None);
+        rpc_send_response(csock, peer, req, RpcResultCode::Ignored, stats, None);
         return;
     }
 
@@ -359,7 +364,7 @@ fn handle_request(
     if !db.have_config() && op == RpcOp::Add {
         error!("Ignoring request: there's no config. This should not happen...");
         error!("..but may not cause malfunction.");
-        rpc_reply(csock, peer, req, RpcResultCode::Ignored, stats, None);
+        rpc_send_response(csock, peer, req, RpcResultCode::Ignored, stats, None);
         return;
     }
 
@@ -399,7 +404,7 @@ fn handle_request(
             _ => RpcResultCode::InvalidRequest,
         },
     };
-    rpc_reply(csock, peer, req, res_code, stats, response_object);
+    rpc_send_response(csock, peer, req, res_code, stats, response_object);
 }
 fn handle_response(_csock: &RpcCachedSock, _peer: &SocketAddr, _res: &RpcResponse) {}
 fn handle_notification(_csock: &RpcCachedSock, peer: &SocketAddr, _notif: &RpcNotification) {
@@ -411,9 +416,8 @@ fn handle_control(
     _ctl: &RpcControl,
     stats: &mut CpiStats,
 ) {
-    let control = build_control_msg(0);
     stats.control_rx += 1;
-    csock.send_msg(control, peer);
+    rpc_send_control(csock, peer, false);
 }
 fn handle_rpc_msg(
     csock: &mut RpcCachedSock,
