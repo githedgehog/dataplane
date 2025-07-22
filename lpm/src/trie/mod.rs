@@ -95,6 +95,14 @@ impl<V: Clone> IpPrefixTrie<V> {
             IpAddr::V6(ip) => self.ipv6.lookup(ip).map(|(k, v)| (Prefix::IPV6(*k), v)),
         }
     }
+
+    pub fn len(&self) -> usize {
+        self.ipv4.len() + self.ipv6.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ipv4.is_empty() && self.ipv6.is_empty()
+    }
 }
 
 impl<V: Clone> Default for IpPrefixTrie<V> {
