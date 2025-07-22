@@ -29,6 +29,7 @@ use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
 use lpm::trie::{PrefixMapTrieWithDefault, TrieMap};
 use net::vxlan::Vni;
 use std::fmt::Display;
+use std::os::unix::net::SocketAddr;
 use std::rc::Rc;
 
 use tracing::{error, warn};
@@ -878,6 +879,13 @@ fn fmt_stats_row(f: &mut std::fmt::Formatter<'_>, name: &str, row: &StatsRow) ->
     )
 }
 
+fn fmt_socketaddr(addr: &SocketAddr) -> String {
+    match addr.as_pathname() {
+        Some(path) => path.display().to_string(),
+        None => "abstract".to_string(),
+    }
+}
+
 impl Display for CpiStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let empty = "--".to_string();
@@ -893,9 +901,13 @@ impl Display for CpiStats {
             .last_pid
             .map(|pid| pid.to_string())
             .unwrap_or_else(|| empty);
+        let peer = match &self.peer {
+            Some(a) => fmt_socketaddr(a),
+            None => "--".to_string(),
+        };
 
         Heading("Control-plane interface".to_string()).fmt(f)?;
-        writeln!(f, " last connect: {connect_t} pid: {pid}")?;
+        writeln!(f, " last connect: {connect_t} pid: {pid} peer: {peer}")?;
         writeln!(f, " last msg rx : {last_msg_rx_t}")?;
         writeln!(f, " decode failures: {}", self.decode_failures)?;
         writeln!(f, " ctl/keepalives : {}", self.control_rx)?;

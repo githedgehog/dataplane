@@ -43,6 +43,9 @@ pub(crate) struct CpiStats {
     // last connect time
     pub(crate) connect_time: Option<DateTime<Local>>,
 
+    // last address
+    pub(crate) peer: Option<SocketAddr>,
+
     // last time a message was received
     pub(crate) last_msg_rx: Option<DateTime<Local>>,
 
@@ -75,7 +78,7 @@ fn build_connect_info(synt: u64) -> ConnectInfo {
 /* convenience trait */
 trait RpcOperation {
     type ObjectStore;
-    fn connect(&self, _stats: &mut Self::ObjectStore) -> (RpcObject, RpcResultCode)
+    fn connect(&self, _stats: &mut Self::ObjectStore, _: &SocketAddr) -> (RpcObject, RpcResultCode)
     where
         Self: Sized,
     {
@@ -100,7 +103,11 @@ trait RpcOperation {
 
 impl RpcOperation for ConnectInfo {
     type ObjectStore = CpiStats;
-    fn connect(&self, stats: &mut Self::ObjectStore) -> (RpcObject, RpcResultCode) {
+    fn connect(
+        &self,
+        stats: &mut Self::ObjectStore,
+        peer: &SocketAddr,
+    ) -> (RpcObject, RpcResultCode) {
         info!("Got connect request from {}, pid {}", self.name, self.pid);
         if let Some(pid) = stats.last_pid {
             warn!("CP had already been connected with pid {}..", pid);
@@ -111,6 +118,7 @@ impl RpcOperation for ConnectInfo {
         if self.verinfo == VerInfo::default() {
             stats.last_pid = Some(self.pid);
             stats.connect_time = Some(Local::now());
+            stats.peer = Some(peer.clone());
             (
                 RpcObject::ConnectInfo(build_connect_info(1)),
                 RpcResultCode::Ok,
@@ -384,7 +392,7 @@ fn handle_request(
         }
         Some(RpcObject::ConnectInfo(conninfo)) => match op {
             RpcOp::Connect => {
-                let (obj, res) = conninfo.connect(stats);
+                let (obj, res) = conninfo.connect(stats, peer);
                 response_object = Some(obj);
                 res
             }
