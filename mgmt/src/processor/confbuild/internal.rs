@@ -151,20 +151,13 @@ impl VpcRoutingConfigIpv4 {
         /* add prefix list to vector */
         self.import_plists.push(plist);
 
-        /* natted exposes */
-        let natted = rmanifest.exposes.iter().filter(|e| e.is_natted());
-
         /* advertise */
-        let nets = natted.clone().flat_map(|e| e.as_range.iter());
+        let nets = rmanifest.exposes.iter().flat_map(|e| e.public_ips().iter());
         self.adv_nets.extend(nets);
 
         /* build adv prefix list */
         for expose in rmanifest.exposes.iter() {
-            let prefixes = if expose.is_natted() {
-                expose.as_range.iter()
-            } else {
-                expose.ips.iter()
-            };
+            let prefixes = expose.public_ips().iter();
             let plists = prefixes.map(|prefix| {
                 PrefixListEntry::new(
                     PrefixListAction::Permit,
