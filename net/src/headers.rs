@@ -1310,12 +1310,250 @@ mod test {
     use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, Parse, ParseError};
     use crate::tcp::{TcpChecksum, TcpChecksumPayload};
     use crate::udp::{UdpChecksum, UdpChecksumPayload};
+    use miette::{Diagnostic, IntoDiagnostic, LabeledSpan, NamedSource, SourceSpan};
     use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketOption;
     use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionOption;
     use pcap_file::{DataLink, pcapng};
-    use std::borrow::Cow;
+    use std::borrow::{Borrow, Cow};
+    use std::cell::UnsafeCell;
+    use std::fmt::{Display, Formatter};
     use std::fs::File;
     use std::panic::catch_unwind;
+    use std::sync::Arc;
+
+    #[derive(thiserror::Error, Debug, Diagnostic)]
+    #[error("bad things")]
+    #[diagnostic(
+        code(oopse::my::bad),
+        url(docsrs),
+        help("have you considered being better at this?")
+    )]
+    pub struct MyBad<'r, D>
+    where
+        D: Diagnostic + Send + Sync,
+        &'r D: Borrow<D>,
+    {
+        #[source_code]
+        src: NamedSource<String>,
+        #[label("here's your\n\ttrouble")]
+        bad_bit: SourceSpan,
+        #[related]
+        hint: Option<&'r D>,
+        #[label(collection, "related issues")]
+        labels: Vec<LabeledSpan>,
+    }
+
+    #[test]
+    fn this_fails() {
+        let src = "source \n text with \n some words \n in it".to_string();
+
+        let x = miette::MietteDiagnostic::new("some\nscience here")
+            .with_labels([
+                LabeledSpan::new(Some("potato".to_string()), 0, 2),
+                LabeledSpan::new(Some("biscuit".to_string()), 0, 4),
+                LabeledSpan::new(Some("cheese".to_string()), 13, 4),
+            ])
+            .with_severity(miette::Severity::Error)
+            .with_code("secondary::diagnostic")
+            .with_help("you want help?");
+
+        let handler = miette::GraphicalReportHandler::new_themed(miette::GraphicalTheme::unicode());
+        let handler = handler
+            .with_show_related_as_nested(true)
+            .with_wrap_lines(false)
+            .with_context_lines(3)
+            .without_cause_chain();
+        let mut out = String::with_capacity(16384);
+        handler
+            .render_report(&mut out, &x as &dyn Diagnostic)
+            .unwrap();
+
+        let y = miette::MietteDiagnostic::new(out)
+            .with_labels([
+                LabeledSpan::new(Some("nesting".to_string()), 0, 2),
+                LabeledSpan::new(Some("multi line?".to_string()), 7, 4),
+            ])
+            .with_severity(miette::Severity::Warning)
+            .with_code("nested::diagnostic")
+            .with_help("I want help?");
+
+        let my_bad = MyBad {
+            src: NamedSource::new("my_source", src),
+            bad_bit: (9, 4).into(),
+            hint: Some(&x),
+            labels: vec![
+                LabeledSpan::new(Some("nesting".to_string()), 0, 2),
+                LabeledSpan::new(Some("multi line?".to_string()), 7, 4),
+                LabeledSpan::new(Some("one line".to_string()), 9, 4),
+            ],
+        };
+        let mut out = String::with_capacity(16384);
+        handler
+            .render_report(&mut out, &my_bad as &dyn Diagnostic)
+            .unwrap();
+        println!("{out}");
+    }
+
+    #[test]
+    fn biscuit() {
+        let builder = rtshark::RTSharkBuilder::builder()
+            .input_path("/tmp/pcap/biscuit.pcapng")
+            .env_path("/usr/bin");
+        let mut tshark = builder.spawn().unwrap();
+        while let Some(packet) = tshark.read().unwrap() {
+            for layer in packet {
+                println!("layer: {}", layer.name());
+                for metadata in layer.iter() {
+                    match metadata.size() {
+                        None | Some(0) => {
+                            println!(
+                                "\t[{name}, {val}]",
+                                name = metadata.name(),
+                                val = metadata.value()
+                            );
+                        }
+                        Some(_) => {}
+                    }
+                }
+                for metadata in layer.iter() {
+                    match metadata.size() {
+                        None | Some(0) => {}
+                        Some(size) => {
+                            let position = metadata.position().unwrap();
+                            let last = position + size;
+                            println!(
+                                "\t\t[{name}, {val}, {position}-{last}, {raw}]",
+                                name = metadata.name(),
+                                val = metadata.value(),
+                                raw = metadata.raw_value(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ParseBackTest {
+        pub test_name: &'static str,
+        pub orig: Headers,
+        pub parsed: Option<Headers>,
+    }
+
+    #[allow(unsafe_code)] // panic handle helper
+    unsafe impl Send for ParseBackTest {}
+    #[allow(unsafe_code)] // panic handle helper
+    unsafe impl Sync for ParseBackTest {}
+
+    pub trait Test {
+        type Input<'a>
+        where
+            Self: 'a;
+        type Outcome<'a>
+        where
+            Self: 'a;
+
+        fn test<'a>(&self, input: impl AsRef<Self::Input<'a>>) -> Self::Outcome<'a>
+        where
+            Self: 'a;
+    }
+
+    pub trait Log {
+        type Event<'a>
+        where
+            Self: 'a;
+
+        fn log<'a>(&mut self, event: Self::Event<'a>)
+        where
+            Self: 'a;
+    }
+
+    #[allow(unsafe_code)] // panic handle helper
+    fn parse_back_panic_response(data: &ParseBackTest) {
+        let pcap_file =
+            File::create(format!("/tmp/pcap/{name}.pcapng", name = data.test_name)).unwrap();
+        let mut pcap = pcapng::PcapNgWriter::new(pcap_file).unwrap();
+        let orig_name = InterfaceDescriptionOption::IfName(Cow::from("orig"));
+        let parsed_name = InterfaceDescriptionOption::IfName(Cow::from("parsed"));
+        let orig_if = pcapng::blocks::interface_description::InterfaceDescriptionBlock {
+            linktype: DataLink::ETHERNET,
+            snaplen: 0,
+            options: vec![orig_name.clone()],
+        };
+        let parsed_if = pcapng::blocks::interface_description::InterfaceDescriptionBlock {
+            linktype: DataLink::ETHERNET,
+            snaplen: 0,
+            options: vec![parsed_name.clone()],
+        };
+        pcap.write_pcapng_block(orig_if).unwrap();
+        pcap.write_pcapng_block(parsed_if).unwrap();
+        let parsed_if_idx = pcap
+            .interfaces()
+            .iter()
+            .enumerate()
+            .find_map(|(i, b)| {
+                if b.options.contains(&orig_name) {
+                    u32::try_from(i).ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        let parsed_if_idx = pcap
+            .interfaces()
+            .iter()
+            .enumerate()
+            .find_map(|(i, b)| {
+                if b.options.contains(&parsed_name) {
+                    u32::try_from(i).ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+
+        let mut orig_buffer = Vec::with_capacity(data.orig.size().get() as usize);
+        let mut parsed_buffer = data
+            .parsed
+            .clone()
+            .map(|ref p| Vec::with_capacity(p.size().get() as usize));
+        let orig_deparse = data.orig.deparse(&mut orig_buffer);
+        let parsed_deparse = match parsed_buffer {
+            Some(ref mut parsed_buffer) => data.parsed.clone().map(|p| p.deparse(parsed_buffer)),
+            None => None,
+        };
+
+        let mut orig_packet_block = pcapng::blocks::enhanced_packet::EnhancedPacketBlock::default();
+        orig_packet_block.interface_id = parsed_if_idx;
+        orig_packet_block.data = Cow::from(orig_buffer.as_slice());
+        orig_packet_block.original_len = data.orig.size().get() as _;
+        orig_packet_block.options = vec![EnhancedPacketOption::Comment(Cow::from(format!(
+            "deparsed ok: {orig_deparse:#?}",
+        )))];
+        let mut parsed_packet_block =
+            pcapng::blocks::enhanced_packet::EnhancedPacketBlock::default();
+        parsed_packet_block.interface_id = parsed_if_idx;
+        parsed_packet_block.data = parsed_buffer.map_or(Cow::from(&[]), |p| Cow::from(p.clone()));
+        parsed_packet_block.original_len = data.parsed.clone().map_or(0, |p| p.size().get() as _);
+        parsed_packet_block.options = vec![EnhancedPacketOption::Comment(Cow::from(format!(
+            "deparsed ok: {parsed_deparse:#?}",
+        )))];
+        let orig_res = pcap.write_pcapng_block(orig_packet_block);
+        let parsed_res = pcap.write_pcapng_block(parsed_packet_block);
+        match (orig_res, parsed_res) {
+            (Ok(_), Ok(_)) => {}
+            (Ok(_), Err(_)) => {
+                panic!("failed to write parsed packet block");
+            }
+            (Err(_), Ok(_)) => {
+                panic!("failed to write orig packet block");
+            }
+            (Err(_), Err(_)) => {
+                panic!("failed to write orig and parsed packet blocks");
+            }
+        }
+    }
 
     fn parse_back_test(headers: &Headers) {
         let result = |headers: &Headers| {
@@ -1367,7 +1605,6 @@ mod test {
             pcap_writer.write_pcapng_block(output_packet).unwrap();
             let mut output_packet = pcapng::blocks::enhanced_packet::EnhancedPacketBlock::default();
             let mut buffer2 = [0_u8; 16384];
-            println!("parsed: {:#?}", parsed);
             parsed
                 .deparse(&mut buffer2[..parsed.size().get() as usize])
                 .unwrap();

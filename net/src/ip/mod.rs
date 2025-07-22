@@ -44,6 +44,9 @@ impl NextHeader {
     /// IP (v4 or v6) authentication header
     pub const IP_AUTH: NextHeader = NextHeader(IpNumber::AUTHENTICATION_HEADER);
 
+    /// IP (v4 or v6) esp header
+    pub const ESP: NextHeader = NextHeader(IpNumber::ENCAPSULATING_SECURITY_PAYLOAD);
+
     /// IPv6 destination options
     pub const IPV6_DESTINATION_OPTIONS: NextHeader = NextHeader(IpNumber::IPV6_DESTINATION_OPTIONS);
 

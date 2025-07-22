@@ -28,8 +28,10 @@ log = "0.4.27"
 [dev-dependencies]
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"] }
 etherparse = { workspace = true, default-features = false, features = ["std"] }
+miette = { version = "7.6.0", default-features = true, features = ["fancy", "derive", "serde"] }
 ordermap = { workspace = true }
 pcap-file = { version = "3.0.0-rc1", default-features = false, features = [] }
+rtshark = { version = "3.2.0", default-features = false, features = [] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

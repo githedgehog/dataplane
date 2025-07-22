@@ -85,10 +85,8 @@ impl DeParse for IpAuth {
     type Error = ();
 
     fn size(&self) -> NonZero<u16> {
-        NonZero::new(
-            u16::try_from(12 + self.header.raw_icv().len()).unwrap_or_else(|_| unreachable!()),
-        )
-        .unwrap_or_else(|| unreachable!())
+        NonZero::new(u16::try_from(self.header.header_len()).unwrap_or_else(|_| unreachable!()))
+            .unwrap_or_else(|| unreachable!())
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {

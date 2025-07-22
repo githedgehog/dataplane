@@ -332,7 +332,7 @@ impl Parse for Ipv4 {
         while protocol == IpNumber::AUTHENTICATION_HEADER && out.ext.len() < Ipv4::MAX_EXTENSIONS {
             match IpAuth::parse(rest) {
                 Ok((ext, jump)) => {
-                    if 12 + ext.header.raw_icv().len() < 16 {
+                    if ext.header.header_len() < 16 {
                         debug!("authentication header is too short");
                         return Err(ParseError::Invalid(Ipv4Error::IllegalIpAuth(
                             IpAuthError::InvalidPadding,
@@ -382,7 +382,7 @@ impl DeParse for Ipv4 {
     fn size(&self) -> NonZero<u16> {
         #[allow(clippy::cast_possible_truncation)] // ipv4 headers have a safe upper bound on length
         let base = self.header.header_len();
-        let exts: usize = self.ext.iter().map(|x| 12 + x.header.raw_icv().len()).sum();
+        let exts: usize = self.ext.iter().map(|x| x.header.header_len()).sum();
         let len = u16::try_from(base + exts).unwrap_or_else(|_| unreachable!());
         NonZero::new(len).unwrap_or_else(|| unreachable!())
     }
@@ -401,7 +401,7 @@ impl DeParse for Ipv4 {
         let mut offset = self.header.header_len();
         buf[..offset].copy_from_slice(&self.header.to_bytes());
         for ext in &self.ext {
-            let len = 12 + ext.header.raw_icv().len();
+            let len = ext.header.header_len();
             ext.deparse(&mut buf[offset..(offset + len)])?;
             offset += len;
         }
@@ -576,6 +576,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     #[cfg_attr(kani, kani::proof)]
     fn parse_arbitrary_bytes() {
         bolero::check!()

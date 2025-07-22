@@ -16,9 +16,7 @@ use crate::parse::{
 use crate::tcp::Tcp;
 use crate::udp::Udp;
 use arrayvec::ArrayVec;
-use etherparse::{
-    IpNumber, Ipv6ExtensionsSlice, Ipv6Header, Ipv6RawExtHeader, Ipv6RawExtHeaderSlice,
-};
+use etherparse::{IpNumber, Ipv6Header, Ipv6RawExtHeader};
 use std::net::Ipv6Addr;
 use std::num::{NonZero, NonZeroUsize};
 use tracing::{debug, trace};
@@ -42,7 +40,7 @@ pub struct Ipv6 {
 impl Ipv6 {
     /// The maximum number of IPv6 extension headers which may be attached before the packet will be
     /// dropped as invalid.
-    pub const MAX_EXTENSIONS: usize = 2;
+    pub const MAX_EXTENSIONS: usize = 8;
 
     /// The minimum length (in bytes) of an [`Ipv6`] header.
     #[allow(clippy::unwrap_used)] // safe due to const eval
@@ -355,7 +353,12 @@ impl Ipv6Ext {
     #[must_use]
     pub fn header_len(&self) -> NonZero<u16> {
         let len_usize = match self {
-            Ipv6Ext::Auth(x) => 12 + x.header.raw_icv().len(),
+            Ipv6Ext::Auth(x) => {
+                /// ip auth headers must be padded to 8 byte multiples
+                let base = x.header.header_len();
+                let remainder = base % 8;
+                base + (8 - remainder)
+            }
             Ipv6Ext::Other(x) => x.0.header_len(),
         };
         NonZero::new(match u16::try_from(len_usize) {
@@ -376,7 +379,13 @@ impl Ipv6Ext {
         let expected_len = self.header_len().get() as usize;
         let mut rvec = Vec::with_capacity(expected_len);
         match self {
-            Ipv6Ext::Auth(x) => rvec.extend(x.header.to_bytes()),
+            Ipv6Ext::Auth(x) => {
+                let as_bytes = x.header.to_bytes();
+                let padding_len = 8 - (as_bytes.len() % 8);
+                rvec.extend(as_bytes);
+                let padding = [0u8; 8];
+                rvec.extend(&padding[..padding_len]);
+            }
             Ipv6Ext::Other(x) => rvec.extend(x.0.to_bytes()),
         }
         rvec
@@ -440,13 +449,31 @@ impl ParseWith for Ipv6Ext {
         }
         let (output, mut consumed) = match ip_number {
             NextHeader::IP_AUTH => {
-                let (auth, consumed) = IpAuth::parse(buf).map_err(|e| match e {
+                let (auth, mut consumed) = IpAuth::parse(buf).map_err(|e| match e {
                     ParseError::Invalid(e) => {
                         ParseError::Invalid(Ipv6ScalarExtError::InvalidAuthHeader(e))
                     }
                     ParseError::BufferTooLong(err) => ParseError::BufferTooLong(err),
                     ParseError::Length(e) => ParseError::Length(e),
                 })?;
+                // spec requires that extension headers be aligned to 64-bit
+                // Zero padding is expected if we are only 32-bit aligned.
+                if auth.header.header_len() % 8 != 0 {
+                    let base = auth.header.header_len();
+                    let expected_len = base + 4;
+                    if buf.len() < expected_len {
+                        return Err(ParseError::Length(LengthError {
+                            expected: NonZero::new(expected_len).unwrap_or_else(|| unreachable!()),
+                            actual: buf.len(),
+                        }));
+                    }
+                    if buf[base..expected_len] != [0u8; 4] {
+                        return Err(ParseError::Invalid(Ipv6ScalarExtError::InvalidAuthHeader(
+                            IpAuthError::InvalidPadding,
+                        )));
+                    }
+                    consumed = NonZero::new(consumed.get() + 4).unwrap_or_else(|| unreachable!());
+                }
                 (Ipv6Ext::Auth(auth), consumed)
             }
             nhdr if nhdr.0.is_ipv6_ext_header_value() => {
@@ -475,24 +502,25 @@ impl ParseWith for Ipv6Ext {
         /// In ipv6 specifically, extension headers must be zero padded to multiples of
         /// 8 bytes.  This is different from ipv4 where authentication header padding is to 4 byte
         /// multiples.
-        // let remainder = consumed.get() % 8;
-        // if remainder != 0 {
-        //     if (consumed.get() + remainder) as usize > buf.len() {
-        //         return Err(ParseError::Invalid(Ipv6ScalarExtError::InvalidAuthHeader(
-        //             IpAuthError::InvalidPadding,
-        //         )));
-        //     }
-        //     consumed = NonZero::new(consumed.get() + remainder).unwrap_or_else(|| unreachable!());
-        //     let consumed = consumed.get() as usize;
-        //     let remainder = remainder as usize;
-        //     let padding = &buf[consumed..consumed + remainder];
-        //     // if padding exists, it must be zeros or the header is invalid
-        //     if padding.iter().any(|&byte| byte != 0) {
-        //         return Err(ParseError::Invalid(Ipv6ScalarExtError::InvalidAuthHeader(
-        //             IpAuthError::InvalidPadding,
-        //         )));
-        //     }
-        // }
+        let remainder = consumed.get() % 8;
+        if remainder != 0 {
+            let padding_len = 8 - remainder;
+            if (consumed.get() + padding_len) as usize > buf.len() {
+                return Err(ParseError::Invalid(Ipv6ScalarExtError::InvalidAuthHeader(
+                    IpAuthError::InvalidPadding,
+                )));
+            }
+            let base = consumed.get() as usize;
+            let end = base + padding_len as usize;
+            let padding = &buf[base..end];
+            consumed = NonZero::new(consumed.get() + padding_len).unwrap_or_else(|| unreachable!());
+            // if padding exists, it must be zeros or the header is invalid
+            if padding.iter().any(|&byte| byte != 0) {
+                return Err(ParseError::Invalid(Ipv6ScalarExtError::InvalidAuthHeader(
+                    IpAuthError::InvalidPadding,
+                )));
+            }
+        }
         Ok((output, consumed))
     }
 }
@@ -617,8 +645,99 @@ mod test {
     use crate::parse::{DeParse, IntoNonZeroUSize, Parse, ParseError};
     use etherparse::Ipv6Header;
     use etherparse::err::ipv6::{HeaderError, HeaderSliceError};
+    use miette::{LabeledSpan, NamedSource, SourceOffset, SourceSpan};
+    use std::fmt::{Display, Formatter};
+    use std::num::NonZero;
 
     const MIN_LEN: usize = Ipv6::MIN_LEN.get() as usize;
+
+    #[derive(Debug, thiserror::Error, miette::Diagnostic)]
+    #[diagnostic(code(ipv6::header), help("look mom, a packet"))]
+    pub struct Ipv6Diag<'r> {
+        bin: &'r [u8],
+        #[source_code]
+        chunks: String,
+        #[source_code]
+        hex: String,
+        #[label(collection)]
+        labels: Vec<LabeledSpan>,
+        #[source]
+        error: Option<ParseError<Ipv6Error>>,
+    }
+
+    impl Ipv6Diag<'_> {
+        #[allow(clippy::format_collect)]
+        fn hex(&self) -> String {
+            self.bin
+                .iter()
+                .map(|&byte| format!("{byte:02x}"))
+                .collect::<String>()
+        }
+    }
+
+    pub const fn span(span: (usize, usize)) -> (usize, usize) {
+        (span.0, (span.1 - span.0))
+    }
+
+    impl Ipv6Diag<'_> {
+        fn from_chunks(input: &[u8]) -> Ipv6Diag {
+            const VERSION: (usize, usize) = (0, 1);
+            const TRAFFIC_CLASS: (usize, usize) = (1, 3);
+            const FLOW_LABEL: (usize, usize) = (3, 8);
+            const PAYLOAD_LENGTH: (usize, usize) = (8, 12);
+            const NEXT_HEADER: (usize, usize) = (12, 14);
+            const HOP_LIMIT: (usize, usize) = (14, 16);
+            const SOURCE: (usize, usize) = (16, 48);
+            const DESTINATION: (usize, usize) = (48, 80);
+            const CHUNKS: [(&str, (usize, usize)); 8] = [
+                ("version", VERSION),
+                ("traffic-class", TRAFFIC_CLASS),
+                ("flow-label", FLOW_LABEL),
+                ("length", PAYLOAD_LENGTH),
+                ("next-header", NEXT_HEADER),
+                ("hop-limit", HOP_LIMIT),
+                ("source", SOURCE),
+                ("destination", DESTINATION),
+            ];
+
+            let hex = input
+                .iter()
+                .fold(String::with_capacity(input.len() * 2), |acc, &byte| {
+                    acc + format!("{byte:02x}").as_str()
+                });
+
+            let chunks = CHUNKS
+                .iter()
+                .filter_map(|&(name, (start, end))| {
+                    hex.get(start..end).map(std::string::ToString::to_string)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let parse = Ipv6::parse(input);
+            let mut labels: Vec<_> = chunks
+                .split_ascii_whitespace()
+                .enumerate()
+                .zip(CHUNKS)
+                .map(|((idx, portion), (field, (start, end)))| {
+                    LabeledSpan::new(Some(field.to_string()), start + idx, end - start)
+                })
+                .collect();
+            labels.push(LabeledSpan::new(Some("a note!".to_string()), 2, 3));
+            Ipv6Diag {
+                bin: input,
+                hex,
+                chunks,
+                labels,
+                error: parse.err(),
+            }
+        }
+    }
+
+    impl Display for Ipv6Diag<'_> {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            writeln!(f, "{}", self.chunks)
+        }
+    }
 
     #[test]
     #[cfg_attr(kani, kani::proof)]
@@ -629,6 +748,19 @@ mod test {
             let (header2, consumed) =
                 crate::ipv6::Ipv6::parse(&buf[..len.into_non_zero_usize().get()]).unwrap();
             assert_eq!(consumed, len);
+            let x = Ipv6Diag::from_chunks(&buf[..len.into_non_zero_usize().get()]);
+            let mut out2 = String::with_capacity(16384);
+            miette::JSONReportHandler::new()
+                .render_report(&mut out2, &x)
+                .unwrap();
+            let mut out = String::with_capacity(16384);
+            miette::GraphicalReportHandler::new_themed(miette::GraphicalTheme::unicode())
+                .render_report(&mut out, &x)
+                .unwrap();
+            if !out.is_empty() && header.hop_limit() == 17 {
+                panic!("{out2}");
+                panic!("{out}");
+            }
             assert_eq!(header, &header2);
         });
     }
@@ -683,7 +815,7 @@ mod test {
     #[test]
     #[cfg_attr(kani, kani::proof)]
     fn parse_arbitrary_bytes_above_minimum() {
-        const TEST_SLICE_LEN: usize = 4096;
+        const TEST_SLICE_LEN: usize = 256;
         bolero::check!()
             .with_type()
             .for_each(|slice: &[u8; TEST_SLICE_LEN]| {
@@ -713,7 +845,10 @@ mod test {
                     bytes_read, bytes_read2,
                     "header: {header:#?}, parse_back: {parse_back:#?}"
                 );
-                assert_eq!(header, parse_back);
+                assert_eq!(
+                    header, parse_back,
+                    "header: {header:#?}, parse_back: {parse_back:#?}"
+                );
                 assert_eq!(
                     &slice[..Ipv6Header::LEN],
                     &slice2[..Ipv6Header::LEN],
