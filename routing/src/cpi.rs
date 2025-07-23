@@ -6,6 +6,7 @@
 use crate::evpn::{RmacEntry, RmacStore};
 use crate::fib::fibobjects::FibGroup;
 use crate::rib::{Vrf, VrfTable};
+use crate::rio::Rio;
 use crate::routingdb::RoutingDb;
 use crate::rpc_adapt::is_evpn_route;
 
@@ -35,8 +36,28 @@ impl StatsRow {
     }
 }
 
+#[derive(Default, PartialEq)]
+pub(crate) enum CpiStatus {
+    #[default]
+    NotConnected, /* FRR has not connected -- or we're not attending it */
+    Incompatible, /* FRR has attempted to connect but we use incompatible RPC versions */
+    Connected,    /* FRR has connected normally */
+    FrrRestarted, /* FRR has reconnected: it has restarted */
+    NeedRefresh,  /* FRR has reconnected: we have restarted */
+}
+impl CpiStatus {
+    pub(crate) fn change(&mut self, new: CpiStatus) {
+        if *self != new {
+            debug!("Transitioning to status {new}");
+            *self = new;
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct CpiStats {
+    pub(crate) status: CpiStatus,
+
     // last reported pid (or some id u32)
     pub(crate) last_pid: Option<u32>,
 
@@ -78,14 +99,11 @@ fn build_connect_info(synt: u64) -> ConnectInfo {
 /* convenience trait */
 trait RpcOperation {
     type ObjectStore;
-    fn connect(&self, _stats: &mut Self::ObjectStore, _: &SocketAddr) -> (RpcObject, RpcResultCode)
+    fn connect(&self, _stats: &mut Self::ObjectStore, _: &SocketAddr) -> RpcResultCode
     where
         Self: Sized,
     {
-        (
-            RpcObject::ConnectInfo(build_connect_info(0)),
-            RpcResultCode::InvalidRequest,
-        )
+        RpcResultCode::InvalidRequest
     }
     fn add(&self, _db: &mut Self::ObjectStore) -> RpcResultCode
     where
@@ -103,14 +121,13 @@ trait RpcOperation {
 
 impl RpcOperation for ConnectInfo {
     type ObjectStore = CpiStats;
-    fn connect(
-        &self,
-        stats: &mut Self::ObjectStore,
-        peer: &SocketAddr,
-    ) -> (RpcObject, RpcResultCode) {
-        info!("Got connect request from {}, pid {}", self.name, self.pid);
+    fn connect(&self, stats: &mut Self::ObjectStore, peer: &SocketAddr) -> RpcResultCode {
+        info!(
+            "Got connect from {}; ver:{} pid:{} synt:{}",
+            self.name, self.verinfo, self.pid, self.synt
+        );
         if let Some(pid) = stats.last_pid {
-            warn!("CP had already been connected with pid {}..", pid);
+            warn!("FRR had already been connected with pid: {}..", pid);
             if pid != self.pid {
                 warn!("Frr reports a new pid of {}", self.pid);
             }
@@ -119,17 +136,20 @@ impl RpcOperation for ConnectInfo {
             stats.last_pid = Some(self.pid);
             stats.connect_time = Some(Local::now());
             stats.peer = Some(peer.clone());
-            (
-                RpcObject::ConnectInfo(build_connect_info(1)),
-                RpcResultCode::Ok,
-            )
+            stats.status.change(CpiStatus::Connected);
+
+            if stats.connect.get(RpcResultCode::Ok) > 0 && self.synt == 0 {
+                stats.status.change(CpiStatus::FrrRestarted);
+            }
+            if stats.connect.get(RpcResultCode::Ok) == 0 && self.synt != 0 {
+                stats.status.change(CpiStatus::NeedRefresh);
+            }
+            RpcResultCode::Ok
         } else {
+            stats.status.change(CpiStatus::Incompatible);
             error!("Got connection request with mismatch RPC version!!");
             error!("Supported version is v{VER_DP_MAJOR}{VER_DP_MINOR}{VER_DP_PATCH}");
-            (
-                RpcObject::ConnectInfo(build_connect_info(0)),
-                RpcResultCode::Failure,
-            )
+            RpcResultCode::Failure
         }
     }
 }
@@ -288,6 +308,25 @@ fn build_control_msg(refresh: u8) -> RpcMsg {
     let control = RpcControl { refresh };
     control.wrap_in_msg()
 }
+/* message senders */
+fn rpc_send_response(
+    rio: &mut Rio,
+    peer: &SocketAddr,
+    req: &RpcRequest,
+    rescode: RpcResultCode,
+    resp_object: Option<RpcObject>,
+) {
+    let op = req.get_op();
+    let object = req.get_object();
+    let resp_msg = build_response_msg(req, rescode, resp_object);
+    rio.cpi_sock.send_msg(resp_msg, peer);
+    update_stats(&mut rio.cpistats, op, object, rescode);
+}
+pub(crate) fn rpc_send_control(csock: &mut RpcCachedSock, peer: &SocketAddr, refresh: bool) {
+    let refresh: u8 = if refresh { 1 } else { 0 };
+    let control = build_control_msg(refresh);
+    csock.send_msg(control, peer);
+}
 
 /* message handlers */
 fn update_stats(
@@ -317,33 +356,8 @@ fn update_stats(
         Some(RpcObject::ConnectInfo(_)) => stats.connect.incr(res_code),
     }
 }
-fn rpc_send_response(
-    csock: &mut RpcCachedSock,
-    peer: &SocketAddr,
-    req: &RpcRequest,
-    rescode: RpcResultCode,
-    stats: &mut CpiStats,
-    resp_object: Option<RpcObject>,
-) {
-    let op = req.get_op();
-    let object = req.get_object();
-    let resp_msg = build_response_msg(req, rescode, resp_object);
-    csock.send_msg(resp_msg, peer);
-    update_stats(stats, op, object, rescode);
-}
-pub(crate) fn rpc_send_control(csock: &mut RpcCachedSock, peer: &SocketAddr, refresh: bool) {
-    let refresh: u8 = if refresh { 1 } else { 0 };
-    let control = build_control_msg(refresh);
-    csock.send_msg(control, peer);
-}
 
-fn handle_request(
-    csock: &mut RpcCachedSock,
-    peer: &SocketAddr,
-    req: &RpcRequest,
-    db: &mut RoutingDb,
-    stats: &mut CpiStats,
-) {
+fn handle_request(rio: &mut Rio, peer: &SocketAddr, req: &RpcRequest, db: &mut RoutingDb) {
     let op = req.get_op();
     let object = req.get_object();
     debug!("Handling {}", req);
@@ -354,9 +368,9 @@ fn handle_request(
     // messages without having seen a connect, that means we restarted. We will ignore those messages
     // since we need the plugin to push the whole state again anyway and, to be able to process it,
     // we need to have a configuration.
-    if op != RpcOp::Connect && stats.last_pid.is_none() {
+    if op != RpcOp::Connect && rio.cpistats.last_pid.is_none() {
         warn!("Ignoring request: no prior connect received. Did we restart?");
-        rpc_send_response(csock, peer, req, RpcResultCode::Ignored, stats, None);
+        rpc_send_response(rio, peer, req, RpcResultCode::Ignored, None);
         return;
     }
 
@@ -364,7 +378,7 @@ fn handle_request(
     if !db.have_config() && op == RpcOp::Add {
         error!("Ignoring request: there's no config. This should not happen...");
         error!("..but may not cause malfunction.");
-        rpc_send_response(csock, peer, req, RpcResultCode::Ignored, stats, None);
+        rpc_send_response(rio, peer, req, RpcResultCode::Ignored, None);
         return;
     }
 
@@ -397,14 +411,15 @@ fn handle_request(
         }
         Some(RpcObject::ConnectInfo(conninfo)) => match op {
             RpcOp::Connect => {
-                let (obj, res) = conninfo.connect(stats, peer);
-                response_object = Some(obj);
+                let res = conninfo.connect(&mut rio.cpistats, peer);
+                let synt = if res == RpcResultCode::Ok { 1 } else { 0 };
+                response_object = Some(RpcObject::ConnectInfo(build_connect_info(synt)));
                 res
             }
             _ => RpcResultCode::InvalidRequest,
         },
     };
-    rpc_send_response(csock, peer, req, res_code, stats, response_object);
+    rpc_send_response(rio, peer, req, res_code, response_object);
 }
 fn handle_response(_csock: &RpcCachedSock, _peer: &SocketAddr, _res: &RpcResponse) {}
 fn handle_notification(_csock: &RpcCachedSock, peer: &SocketAddr, _notif: &RpcNotification) {
@@ -419,39 +434,28 @@ fn handle_control(
     stats.control_rx += 1;
     rpc_send_control(csock, peer, false);
 }
-fn handle_rpc_msg(
-    csock: &mut RpcCachedSock,
-    peer: &SocketAddr,
-    msg: &RpcMsg,
-    db: &mut RoutingDb,
-    stats: &mut CpiStats,
-) {
+fn handle_rpc_msg(rio: &mut Rio, peer: &SocketAddr, msg: &RpcMsg, db: &mut RoutingDb) {
+    let csock = &mut rio.cpi_sock;
     match msg {
-        RpcMsg::Control(ctl) => handle_control(csock, peer, ctl, stats),
-        RpcMsg::Request(req) => handle_request(csock, peer, req, db, stats),
+        RpcMsg::Control(ctl) => handle_control(csock, peer, ctl, &mut rio.cpistats),
+        RpcMsg::Request(req) => handle_request(rio, peer, req, db),
         RpcMsg::Response(resp) => handle_response(csock, peer, resp),
         RpcMsg::Notification(notif) => handle_notification(csock, peer, notif),
     }
 }
 
 /* process rx data from UX sock */
-pub fn process_rx_data(
-    csock: &mut RpcCachedSock,
-    peer: &SocketAddr,
-    data: &[u8],
-    db: &mut RoutingDb,
-    stats: &mut CpiStats,
-) {
+pub fn process_rx_data(rio: &mut Rio, peer: &SocketAddr, data: &[u8], db: &mut RoutingDb) {
     trace!("CPI: recvd {} bytes from {}...", data.len(), peer.pretty());
     let mut buf_rx = Bytes::copy_from_slice(data); // TODO: avoid this copy
-    stats.last_msg_rx = Some(Local::now());
+    rio.cpistats.last_msg_rx = Some(Local::now());
     match RpcMsg::decode(&mut buf_rx) {
-        Ok(msg) => handle_rpc_msg(csock, peer, &msg, db, stats),
+        Ok(msg) => handle_rpc_msg(rio, peer, &msg, db),
         Err(e) => {
-            stats.decode_failures += 1;
+            rio.cpistats.decode_failures += 1;
             error!("Failure decoding msg rx from {}: {:?}", peer.pretty(), e);
             let notif = build_notification_msg();
-            csock.send_msg(notif, peer);
+            rio.cpi_sock.send_msg(notif, peer);
         }
     }
 }

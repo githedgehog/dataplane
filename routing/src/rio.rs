@@ -5,20 +5,19 @@
 
 #![allow(clippy::items_after_statements)]
 
-use crate::atable::atablerw::AtableReader;
 use crate::cli::handle_cli_request;
 use crate::config::FrrConfig;
-use crate::cpi::{CpiStats, process_rx_data};
-use crate::ctl::handle_ctl_msg;
-use crate::ctl::{RouterCtlMsg, RouterCtlSender};
+use crate::cpi::{CpiStats, process_rx_data, rpc_send_control};
+use crate::ctl::{RouterCtlMsg, RouterCtlSender, handle_ctl_msg};
 use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
 use crate::frr::frrmi::{FrrErr, Frrmi, FrrmiRequest};
 use crate::interfaces::iftablerw::IfTableWriter;
 use crate::routingdb::RoutingDb;
+use crate::{atable::atablerw::AtableReader, cpi::CpiStatus};
 
 use cli::cliproto::{CliRequest, CliSerialize};
-use dplane_rpc::{msg::RpcResultCode, socks::RpcCachedSock};
+use dplane_rpc::socks::RpcCachedSock;
 
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
@@ -270,6 +269,28 @@ impl Rio {
             }
         }
     }
+
+    /// Check the status of the CPI and react accordingly
+    pub(crate) fn cpi_status_check(&mut self, db: &RoutingDb) {
+        match self.cpistats.status {
+            CpiStatus::NotConnected => {}
+            CpiStatus::Connected => {}
+            CpiStatus::Incompatible => {}
+            CpiStatus::FrrRestarted => {
+                warn!("FRR appears to have restarted. Applying last config...");
+                self.frrmi.clear_applied_cfg(); /* we know Frr has no config */
+                self.reapply_frr_config(&db); /* request agent to apply last config */
+                self.cpistats.status.change(CpiStatus::Connected);
+            }
+            CpiStatus::NeedRefresh => {
+                warn!("We appear to have restarted. Requesting refresh to FRR...");
+                if let Some(peer) = &self.cpistats.peer {
+                    rpc_send_control(&mut self.cpi_sock, peer, true);
+                    self.cpistats.status.change(CpiStatus::Connected);
+                }
+            }
+        }
+    }
 }
 
 #[allow(clippy::missing_errors_doc)]
@@ -284,11 +305,11 @@ pub fn start_rio(
 
     /* router IO loop */
     let rio_loop = move || {
-        info!("CPI Listening at {}.", &rio.cp_sock_path);
-        info!("CLI Listening at {}.", &rio.cli_sock_path);
+        info!("CPI: Listening at {}.", &rio.cp_sock_path);
+        info!("CLI: Listening at {}.", &rio.cli_sock_path);
+        info!("FRRMI: will connect to {}.", &rio.frrmi.get_remote());
         let mut events = Events::with_capacity(64);
         let mut buf = vec![0; 1024];
-        let mut num_connects: u64 = 0;
 
         /* create routing database: this is fully owned by the CPI */
         let mut db = RoutingDb::new(fibtw, iftw, atabler);
@@ -315,13 +336,7 @@ pub fn start_rio(
                     CPSOCK => {
                         while event.is_readable() {
                             if let Ok((len, peer)) = rio.cpi_sock.recv_from(buf.as_mut_slice()) {
-                                process_rx_data(
-                                    &mut rio.cpi_sock,
-                                    &peer,
-                                    &buf[..len],
-                                    &mut db,
-                                    &mut rio.cpistats,
-                                );
+                                process_rx_data(&mut rio, &peer, &buf[..len], &mut db);
                             } else {
                                 break;
                             }
@@ -336,6 +351,7 @@ pub fn start_rio(
                                 );
                             }
                         }
+                        rio.cpi_status_check(&db);
                     }
                     CLISOCK => {
                         while event.is_readable() {
@@ -380,17 +396,6 @@ pub fn start_rio(
 
             /* handle control-channel messages */
             handle_ctl_msg(&mut rio, &mut db);
-
-            /* check if frr has restarted. If so, apply last config */
-            let connects = rio.cpistats.connect.get(RpcResultCode::Ok);
-            if num_connects != connects {
-                num_connects = connects;
-                if connects != 1 {
-                    debug!("FRR appears to have restarted. Applying last config...");
-                    rio.frrmi.clear_applied_cfg(); /* Frr has no config */
-                    rio.reapply_frr_config(&db);
-                }
-            }
         }
     };
     let handle = thread::Builder::new()

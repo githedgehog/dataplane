@@ -3,12 +3,15 @@
 
 //! Module that implements Display for routing objects
 
-use crate::atable::adjacency::{Adjacency, AdjacencyTable};
 use crate::cpi::{CpiStats, StatsRow};
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::fib::fibtable::FibTable;
 use crate::fib::fibtype::{Fib, FibId};
 use crate::frr::frrmi::{FrrAppliedConfig, Frrmi, FrrmiStats};
+use crate::{
+    atable::adjacency::{Adjacency, AdjacencyTable},
+    cpi::CpiStatus,
+};
 
 use crate::rib::VrfTable;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
@@ -886,6 +889,18 @@ fn fmt_socketaddr(addr: &SocketAddr) -> String {
     }
 }
 
+impl Display for CpiStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CpiStatus::NotConnected => write!(f, "Not-connected"),
+            CpiStatus::Incompatible => write!(f, "Incompatible"),
+            CpiStatus::Connected => write!(f, "Connected"),
+            CpiStatus::FrrRestarted => write!(f, "Frr-restarted"),
+            CpiStatus::NeedRefresh => write!(f, "Need refresh"),
+        }
+    }
+}
+
 impl Display for CpiStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let empty = "--".to_string();
@@ -907,6 +922,7 @@ impl Display for CpiStats {
         };
 
         Heading("Control-plane interface".to_string()).fmt(f)?;
+        writeln!(f, " STATUS: {}", self.status)?;
         writeln!(f, " last connect: {connect_t} pid: {pid} peer: {peer}")?;
         writeln!(f, " last msg rx : {last_msg_rx_t}")?;
         writeln!(f, " decode failures: {}", self.decode_failures)?;
