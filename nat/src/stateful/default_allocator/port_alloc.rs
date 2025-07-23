@@ -111,18 +111,17 @@ impl PortAllocator {
 }
 
 #[derive(Debug, Clone)]
-pub struct PortBlockAllocator {
+struct BlockAllocator {
     // Randomised base port numbers from 1024 to 65535, by increments of 256
     //
     // FIXME: We only randomise port blocks at cration of the NatAllocIp, making it trivial to
     // determine port order if the block is later reused.
     blocks: [PortBlock; 252],
-    allocator: PortAllocator,
     usable_blocks: u8,
 }
 
-impl PortBlockAllocator {
-    pub fn new() -> Self {
+impl BlockAllocator {
+    fn new() -> Self {
         let mut rng = rand::rng();
         // Skip ports 0 to 1023
         let mut base_ports = (4..=255).collect::<Vec<_>>();
@@ -131,37 +130,17 @@ impl PortBlockAllocator {
         let mut blocks = std::array::from_fn(|i| PortBlock::new(base_ports[i]));
         blocks[0].mark_heating();
 
-        let allocator = PortAllocator::new(0, &blocks[0]);
-
         Self {
             blocks,
-            allocator,
             usable_blocks: 251,
         }
     }
 
-    pub fn has_usable_ports(&self) -> bool {
-        self.usable_blocks > 0 || !self.allocator.is_full()
+    fn has_usable_blocks(&self) -> bool {
+        self.usable_blocks > 0
     }
 
-    pub fn allocate_port(&mut self) -> Result<NatPort, AllocatorError> {
-        let port = self.allocator.allocate_port()?;
-
-        // If we picked the last port in the allocator block, set the block as cooling and allocate
-        // a new block
-        if self.allocator.is_full() {
-            self.blocks[self.allocator.index].mark_cooling();
-            self.usable_blocks -= 1;
-            // Do not fail on error: this means we ran out of blocks, but that's OK for this port,
-            // it will be up to the caller to check port availability before the next port
-            // allocation request, and to pick another IP address if necessary.
-            let _ = self.allocate_block();
-        }
-
-        Ok(port)
-    }
-
-    fn allocate_block(&mut self) -> Result<(), AllocatorError> {
+    fn allocate(&mut self) -> Result<usize, AllocatorError> {
         let (index, block) = self
             .blocks
             .iter_mut()
@@ -171,7 +150,59 @@ impl PortBlockAllocator {
 
         block.mark_heating();
 
-        self.allocator = PortAllocator::new(index, block);
+        Ok(index)
+    }
+
+    fn mark_block_full(&mut self, index: usize) {
+        self.blocks[index].mark_cooling();
+        self.usable_blocks -= 1;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PortBlockAllocator {
+    block_allocator: BlockAllocator,
+    allocator: PortAllocator,
+}
+
+impl PortBlockAllocator {
+    pub fn new() -> Self {
+        let block_allocator = BlockAllocator::new();
+        let allocator = PortAllocator::new(0, &block_allocator.blocks[0]);
+
+        Self {
+            block_allocator,
+            allocator,
+        }
+    }
+
+    pub fn has_usable_ports(&self) -> bool {
+        self.has_usable_blocks() || !self.allocator.is_full()
+    }
+
+    pub fn allocate_port(&mut self) -> Result<NatPort, AllocatorError> {
+        let port = self.allocator.allocate_port()?;
+
+        // If we picked the last port in the allocator block, set the block as cooling and allocate
+        // a new block
+        if self.allocator.is_full() {
+            self.block_allocator.mark_block_full(self.allocator.index);
+            // Do not fail on error: this means we ran out of blocks, but that's OK for this port,
+            // it will be up to the caller to check port availability before the next port
+            // allocation request, and to pick another IP address if necessary.
+            let _ = self.allocate_block();
+        }
+
+        Ok(port)
+    }
+
+    fn has_usable_blocks(&self) -> bool {
+        self.block_allocator.has_usable_blocks()
+    }
+
+    fn allocate_block(&mut self) -> Result<(), AllocatorError> {
+        let index = self.block_allocator.allocate()?;
+        self.allocator = PortAllocator::new(index, &self.block_allocator.blocks[index]);
         Ok(())
     }
 }
