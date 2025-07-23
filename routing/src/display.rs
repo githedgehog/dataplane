@@ -825,7 +825,7 @@ impl<'a> Display for FibGroups<'a> {
 
 //========================= Time utils =========================//
 use chrono::Local;
-fn fmt_time(time: &DateTime<Local>) -> String {
+pub(crate) fn fmt_time(time: &DateTime<Local>) -> String {
     //let fmt_iso8 = "%Y-%m-%dT%H:%M:%S%.3f%:z";
     let fmt_simple = "%Y-%m-%dT %H:%M:%S";
     let mut out = time.format(fmt_simple).to_string();

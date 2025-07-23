@@ -14,6 +14,8 @@ mod cpi;
 pub mod ctl;
 mod display;
 mod errors;
+#[macro_use]
+pub(crate) mod event;
 pub mod evpn;
 pub mod fib;
 pub mod frr;
