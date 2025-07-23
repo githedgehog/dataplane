@@ -85,7 +85,7 @@ impl NatPool<Ipv4Addr> {
         let alloc_ip = AllocatedIp::new(Ipv4Addr::from(offset));
 
         // Move the new IP to the front of the list of IP in use for allocation
-        self.allocated_ips.add_in_use(alloc_ip.clone());
+        self.allocated_ips.add_in_use(alloc_ip);
         Ok(())
     }
 
@@ -143,7 +143,7 @@ impl NatPool<Ipv6Addr> {
         let alloc_ip = AllocatedIp::new(self.map_offset(offset)?);
 
         // Move the new IP to the front of the list of IP in use for allocation
-        self.allocated_ips.add_in_use(alloc_ip.clone());
+        self.allocated_ips.add_in_use(alloc_ip);
         Ok(())
     }
 
