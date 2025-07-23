@@ -21,6 +21,8 @@ pub mod fib;
 pub mod frr;
 pub mod interfaces;
 pub mod pretty_utils;
+#[macro_use]
+mod revent;
 pub mod rib;
 pub mod rio;
 
