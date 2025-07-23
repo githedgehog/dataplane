@@ -140,6 +140,9 @@ pub enum CliAction {
     ShowFrrmiLastConfig,
     FrrmiApplyLastConfig,
 
+    // Eventlog
+    RouterEventLog,
+
     // vpcs
     ShowVpc,
     ShowVpcPifs,

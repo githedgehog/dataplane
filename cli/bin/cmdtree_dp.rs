@@ -9,14 +9,14 @@ use log::Level;
 use std::convert::AsRef;
 use strum::IntoEnumIterator;
 
-fn cmd_show_cpi() -> Node {
+fn cmd_show_router_cpi() -> Node {
     let mut root = Node::new("cpi");
     root += Node::new("stats")
         .desc("Show control-plane interface")
         .action(CliAction::ShowCpiStats as u16);
     root
 }
-fn cmd_show_frrmi() -> Node {
+fn cmd_show_router_frrmi() -> Node {
     let mut root = Node::new("frrmi");
     root += Node::new("stats")
         .desc("Show frr management interface")
@@ -27,6 +27,19 @@ fn cmd_show_frrmi() -> Node {
 
     root
 }
+fn cmd_show_router_eventlog() -> Node {
+    Node::new("events")
+        .desc("Show relevant router events")
+        .action(CliAction::RouterEventLog as u16)
+}
+fn cmd_show_router() -> Node {
+    let mut root = Node::new("router");
+    root += cmd_show_router_frrmi();
+    root += cmd_show_router_cpi();
+    root += cmd_show_router_eventlog();
+    root
+}
+
 fn cmd_show_pipelines() -> Node {
     let mut root = Node::new("pipeline")
         .desc("Show packet-processing pipelines")
@@ -206,8 +219,7 @@ fn cmd_show_kernel() -> Node {
 }
 fn cmd_show() -> Node {
     let mut root: Node = Node::new("show");
-    root += cmd_show_cpi();
-    root += cmd_show_frrmi();
+    root += cmd_show_router();
     root += cmd_show_vpc();
     root += cmd_show_pipelines();
     root += cmd_show_nat();

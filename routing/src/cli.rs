@@ -10,6 +10,7 @@ use crate::display::IfTableAddress;
 use crate::display::{FibGroups, FibViewV4, FibViewV6};
 use crate::display::{VrfV4Nexthops, VrfV6Nexthops, VrfViewV4, VrfViewV6};
 use crate::fib::fibtype::{FibGroupV4Filter, FibGroupV6Filter};
+use crate::revent::ROUTER_EVENTS;
 use crate::rib::vrf::{Route, RouteOrigin, Vrf, VrfId};
 use crate::rib::vrf::{RouteV4Filter, RouteV6Filter};
 use crate::rib::vrftable::VrfTable;
@@ -391,6 +392,10 @@ fn do_handle_cli_request(
             rpc_send_control(&mut rio.cpi_sock, peer, true);
             CliResponse::from_request_ok(request, format!("Requested refresh..."))
         }
+        CliAction::RouterEventLog => ROUTER_EVENTS.with(|el| {
+            let el = el.borrow();
+            CliResponse::from_request_ok(request, format!("{el}"))
+        }),
         CliAction::ShowRouterInterfaces => {
             if let Some(iftable) = db.iftw.enter() {
                 CliResponse::from_request_ok(request, format!("\n{}", *iftable))
