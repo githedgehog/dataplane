@@ -23,6 +23,7 @@ multi_index_map = { workspace = true, features = ["serde"] }
 nix = { workspace = true, default-features = false, features = ["ioctl"] }
 rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["std"] }
+static_assertions = { workspace = true, features = [] }
 thiserror = { workspace = true, features = ["std"] }
 tokio = { workspace = true, default-features = false, features = ["fs", "io-util"] }
 tracing = { workspace = true, features = ["attributes"] }

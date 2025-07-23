@@ -56,11 +56,8 @@ mod helper {
         #[cold]
         #[tracing::instrument(level = "trace")]
         pub(super) fn new(name: &InterfaceName) -> Self {
-            assert_eq!(
-                libc::IF_NAMESIZE,
-                InterfaceName::MAX_LEN + 1,
-                "unsupported platform"
-            );
+            // we cannot support any platform for which this condition does not hold
+            static_assertions::const_assert_eq!(libc::IF_NAMESIZE, InterfaceName::MAX_LEN + 1);
             let mut ifreq = libc::ifreq {
                 ifr_name: [0; libc::IF_NAMESIZE],
                 ifr_ifru: libc::__c_anonymous_ifr_ifru {
