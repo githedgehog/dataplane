@@ -13,6 +13,7 @@ use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
 use crate::frr::frrmi::{FrrErr, Frrmi, FrrmiRequest};
 use crate::interfaces::iftablerw::IfTableWriter;
+use crate::revent::{ROUTER_EVENTS, RouterEvent};
 use crate::routingdb::RoutingDb;
 use crate::{atable::atablerw::AtableReader, cpi::CpiStatus};
 
@@ -286,6 +287,7 @@ impl Rio {
                 warn!("We appear to have restarted. Requesting refresh to FRR...");
                 if let Some(peer) = &self.cpistats.peer {
                     rpc_send_control(&mut self.cpi_sock, peer, true);
+                    revent!(RouterEvent::CpiRefreshRequested);
                     self.cpistats.status.change(CpiStatus::Connected);
                 }
             }
@@ -313,6 +315,8 @@ pub fn start_rio(
 
         /* create routing database: this is fully owned by the CPI */
         let mut db = RoutingDb::new(fibtw, iftw, atabler);
+
+        revent!(RouterEvent::Started);
 
         info!("Entering router IO loop....");
         while rio.run {

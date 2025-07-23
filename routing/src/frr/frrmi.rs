@@ -11,6 +11,7 @@ use std::{collections::VecDeque, time::Duration};
 use thiserror::Error;
 
 use crate::config::FrrConfig;
+use crate::revent::{ROUTER_EVENTS, RouterEvent, revent};
 use config::GenId;
 
 #[allow(unused)]
@@ -132,6 +133,7 @@ impl Frrmi {
         if self.sock.is_some() {
             self.stats.last_conn_time = Some(Local::now());
             info!("Successfully connected to frr-agent at {}", self.remote);
+            revent!(RouterEvent::FrrmiConnectSucceeded);
         }
     }
     pub(crate) fn disconnect(&mut self) {
@@ -149,6 +151,7 @@ impl Frrmi {
         }
         debug!("Frrmi is now disconnected");
         self.stats.last_disconn_time = Some(Local::now());
+        revent!(RouterEvent::FrrmiDisconnected);
     }
     pub(crate) fn timeout(&mut self) {
         if self.timeout.take_if(|t| *t < Instant::now()).is_some() {
@@ -207,9 +210,10 @@ impl Frrmi {
         self.sock.as_mut().ok_or_else(|| FrrErr::NotConnected)?;
         if let Some(req) = self.requests.pop_front() {
             debug!("Initiating new FRR reconfiguration (gen: {})", req.genid);
+            let genid = req.genid;
             self.send_msg(req)?;
+            revent!(RouterEvent::FrrConfigApplyRequested(genid));
         }
-
         Ok(())
     }
     ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -326,7 +330,10 @@ impl Frrmi {
             let pending = self.readb.next_read_len();
             trace!("Recv data (read:{} pending:{pending})", self.readb.used);
             match Self::recv(sock, &mut self.readb, pending) {
-                Ok(0) => return Err(FrrErr::PeerLeft),
+                Ok(0) => {
+                    revent!(RouterEvent::FrrmiPeerLeft);
+                    return Err(FrrErr::PeerLeft);
+                }
                 Ok(_) => {
                     if self.readb.next_read_len() == 0 {
                         match self.readb.deserialize() {
@@ -362,19 +369,20 @@ impl Frrmi {
             warn!("Response genid {respgen} does not match the expected {reqgen}");
         }
 
-        // this is just for logging
         if response.is_success() {
             info!("Frr configuration successfully applied for gen {respgen}");
             self.stats.last_ok_time = Some(Local::now());
             self.stats.last_ok_genid = Some(response.genid);
             self.stats.apply_oks += 1;
             self.applied_cfg = Some(FrrAppliedConfig::new(request.genid, request.cfg));
+            revent!(RouterEvent::FrrConfigApplySuccess(response.genid));
         } else {
             self.stats.last_fail_time = Some(Local::now());
             self.stats.last_fail_genid = Some(response.genid);
             self.stats.apply_failures += 1;
             let out = response.get_response_data();
             error!("Failed to apply FRR configuration for gen {respgen}: {out}");
+            revent!(RouterEvent::FrrConfigApplyFailure(response.genid));
             self.config_retry(request);
         }
         // cancel timeout

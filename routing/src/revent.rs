@@ -3,8 +3,6 @@
 
 //! Router events and evenytlog
 
-#![allow(unused)]
-
 use crate::cpi::CpiStatus;
 use crate::event::EventLog;
 use config::GenId;
@@ -71,3 +69,5 @@ macro_rules! revent {
         ROUTER_EVENTS.with(|evlog| evlog.borrow_mut().add($item))
     };
 }
+
+pub(crate) use revent;

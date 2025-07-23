@@ -5,6 +5,7 @@
 
 use crate::evpn::{RmacEntry, RmacStore};
 use crate::fib::fibobjects::FibGroup;
+use crate::revent::{ROUTER_EVENTS, RouterEvent, revent};
 use crate::rib::{Vrf, VrfTable};
 use crate::rio::Rio;
 use crate::routingdb::RoutingDb;
@@ -36,7 +37,7 @@ impl StatsRow {
     }
 }
 
-#[derive(Default, PartialEq)]
+#[derive(Default, Copy, Clone, PartialEq)]
 pub(crate) enum CpiStatus {
     #[default]
     NotConnected, /* FRR has not connected -- or we're not attending it */
@@ -50,6 +51,7 @@ impl CpiStatus {
         if *self != new {
             debug!("Transitioning to status {new}");
             *self = new;
+            revent!(RouterEvent::CpiStatusChange(new));
         }
     }
 }

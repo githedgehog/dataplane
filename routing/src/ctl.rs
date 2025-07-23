@@ -15,6 +15,7 @@ use tracing::{debug, error, info, warn};
 use crate::RouterError;
 use crate::config::RouterConfig;
 use crate::frr::frrmi::FrrAppliedConfig;
+use crate::revent::{ROUTER_EVENTS, RouterEvent, revent};
 use crate::rio::{CPSOCK, Rio};
 use crate::routingdb::RoutingDb;
 
@@ -165,9 +166,12 @@ fn handle_configure(
     db: &mut RoutingDb,
     reply_to: RouterCtlReplyTx,
 ) {
+    revent!(RouterEvent::GotConfigRequest(config.genid()));
+
     /* apply router config */
     let result = config.apply(db);
     if result.is_err() {
+        revent!(RouterEvent::ConfigFailed(config.genid()));
         let _ = reply_to.send(RouterCtlReply::Result(result)).map_err(|e| {
             error!("Fatal: could not reply to configure request: {e:?}");
         });
@@ -177,6 +181,12 @@ fn handle_configure(
     /* request application of frr config */
     if let Some(frr_config) = config.get_frr_config() {
         rio.request_frr_config(config.genid(), frr_config.clone());
+    }
+
+    /* generate event depending on result */
+    match result {
+        Ok(_) => revent!(RouterEvent::ConfigSuceeded(config.genid())),
+        Err(_) => revent!(RouterEvent::ConfigFailed(config.genid())),
     }
 
     /* reply */
