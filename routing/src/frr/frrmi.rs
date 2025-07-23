@@ -11,6 +11,7 @@ use std::{collections::VecDeque, time::Duration};
 use thiserror::Error;
 
 use crate::config::FrrConfig;
+use config::GenId;
 
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
@@ -54,11 +55,11 @@ pub(crate) struct Frrmi {
 
 #[derive(Clone, Debug)]
 pub struct FrrAppliedConfig {
-    pub genid: i64,
+    pub genid: GenId,
     pub cfg: FrrConfig,
 }
 impl FrrAppliedConfig {
-    fn new(genid: i64, cfg: FrrConfig) -> Self {
+    fn new(genid: GenId, cfg: FrrConfig) -> Self {
         Self { genid, cfg }
     }
 }
@@ -68,16 +69,16 @@ impl FrrAppliedConfig {
 pub(crate) struct FrrmiStats {
     pub(crate) last_conn_time: Option<DateTime<Local>>, /* the last time that connecting to frr-agent succeeded */
     pub(crate) last_disconn_time: Option<DateTime<Local>>, /* the time when the last disconnect happened */
-    pub(crate) last_ok_genid: Option<i64>,                 /* genid of the last applied config */
-    pub(crate) last_fail_genid: Option<i64>, /* genid of the most recent config that failed (excluding communication errors) */
+    pub(crate) last_ok_genid: Option<GenId>,               /* genid of the last applied config */
+    pub(crate) last_fail_genid: Option<GenId>, /* genid of the most recent config that failed (excluding communication errors) */
     pub(crate) last_ok_time: Option<DateTime<Local>>, /* time when last config succeeded */
     pub(crate) last_fail_time: Option<DateTime<Local>>, /* time when last config failed */
-    pub(crate) apply_oks: u64,               /* number of configs applied successfully */
-    pub(crate) apply_failures: u64,          /* number of times applying a config failed */
+    pub(crate) apply_oks: u64,                 /* number of configs applied successfully */
+    pub(crate) apply_failures: u64,            /* number of times applying a config failed */
 }
 
 pub(crate) struct FrrmiRequest {
-    genid: i64,      /* gen id this frr-config corresponds to */
+    genid: GenId,    /* gen id this frr-config corresponds to */
     cfg: FrrConfig,  /* confif to frr-agent is a string */
     max_retries: u8, /* max number of times to retry configuration on failure */
 }
@@ -85,7 +86,7 @@ pub(crate) struct FrrmiRequest {
 const CLEAN_CONFIG: &'static str = "! Empty config";
 
 impl FrrmiRequest {
-    pub(crate) fn new(genid: i64, cfg: String, max_retries: u8) -> Self {
+    pub(crate) fn new(genid: GenId, cfg: String, max_retries: u8) -> Self {
         Self {
             genid,
             cfg,
@@ -98,7 +99,7 @@ impl FrrmiRequest {
 }
 
 pub(crate) struct FrrmiResponse {
-    genid: i64,   /* gen id the response corresponds to */
+    genid: GenId, /* gen id the response corresponds to */
     data: String, /* frr-agent response is a string */
 }
 impl FrrmiResponse {

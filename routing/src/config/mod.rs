@@ -9,11 +9,10 @@ mod interface;
 mod vrf;
 mod vtep;
 
+use config::GenId;
 use net::vxlan::Vni;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt::format,
-};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::format;
 use tracing::{debug, error};
 
 use crate::RouterError;
@@ -36,7 +35,7 @@ pub type FrrConfig = String;
 //////////////////////////////////////////////////////////////////////////////////
 #[derive(Debug)]
 pub struct RouterConfig {
-    genid: i64, /* not using mgmt GenId to avoid circ dependencies */
+    genid: GenId,
     vrfs: BTreeMap<VrfId, RouterVrfConfig>,
     interfaces: BTreeMap<IfIndex, RouterInterfaceConfig>,
     vtep: Option<Vtep>,
@@ -45,7 +44,7 @@ pub struct RouterConfig {
 
 /// Builder methods
 impl RouterConfig {
-    pub fn new(genid: i64) -> Self {
+    pub fn new(genid: GenId) -> Self {
         Self {
             genid,
             vrfs: BTreeMap::new(),
@@ -54,7 +53,7 @@ impl RouterConfig {
             frr_cfg: None,
         }
     }
-    pub fn genid(&self) -> i64 {
+    pub fn genid(&self) -> GenId {
         self.genid
     }
     pub fn add_vrf(&mut self, vrfconfig: RouterVrfConfig) {
