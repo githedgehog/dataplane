@@ -4,6 +4,7 @@
 use super::AllocatorError;
 use super::NatPort;
 use rand::seq::SliceRandom;
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NatAllocBlockState {
@@ -77,11 +78,11 @@ impl Bitmap256 {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct PortAllocator {
     base_port_idx: u16,
     index: usize,
-    usage_bitmap: Bitmap256,
+    usage_bitmap: Mutex<Bitmap256>,
 }
 
 impl PortAllocator {
@@ -89,12 +90,12 @@ impl PortAllocator {
         Self {
             base_port_idx: u16::from(block.base_port_idx),
             index,
-            usage_bitmap: Bitmap256::new(),
+            usage_bitmap: Mutex::new(Bitmap256::new()),
         }
     }
 
     fn allocate_port(&mut self) -> Result<NatPort, AllocatorError> {
-        let bitmap_offset = self.usage_bitmap.allocate().map_err(|()| {
+        let bitmap_offset = self.usage_bitmap.lock().unwrap().allocate().map_err(|()| {
             // Bitmap is full, meaning we no longer have any free port in the block.
             // The caller should make sure this never happens, by checking whether the block is full
             // after calling the function, and allocating new blocks as necessary.
@@ -106,11 +107,11 @@ impl PortAllocator {
     }
 
     fn is_full(&self) -> bool {
-        self.usage_bitmap.is_full()
+        self.usage_bitmap.lock().unwrap().is_full()
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct BlockAllocator {
     // Randomised base port numbers from 1024 to 65535, by increments of 256
     //
@@ -159,9 +160,9 @@ impl BlockAllocator {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PortBlockAllocator {
-    block_allocator: BlockAllocator,
+    block_allocator: Mutex<BlockAllocator>,
     allocator: PortAllocator,
 }
 
@@ -171,7 +172,7 @@ impl PortBlockAllocator {
         let allocator = PortAllocator::new(0, &block_allocator.blocks[0]);
 
         Self {
-            block_allocator,
+            block_allocator: block_allocator.into(),
             allocator,
         }
     }
@@ -186,23 +187,20 @@ impl PortBlockAllocator {
         // If we picked the last port in the allocator block, set the block as cooling and allocate
         // a new block
         if self.allocator.is_full() {
-            self.block_allocator.mark_block_full(self.allocator.index);
+            let mut block_allocator = self.block_allocator.lock().unwrap();
+            block_allocator.mark_block_full(self.allocator.index);
             // Do not fail on error: this means we ran out of blocks, but that's OK for this port,
             // it will be up to the caller to check port availability before the next port
             // allocation request, and to pick another IP address if necessary.
-            let _ = self.allocate_block();
+            if let Ok(index) = block_allocator.allocate() {
+                self.allocator = PortAllocator::new(index, &block_allocator.blocks[index]);
+            }
         }
 
         Ok(port)
     }
 
     fn has_usable_blocks(&self) -> bool {
-        self.block_allocator.has_usable_blocks()
-    }
-
-    fn allocate_block(&mut self) -> Result<(), AllocatorError> {
-        let index = self.block_allocator.allocate()?;
-        self.allocator = PortAllocator::new(index, &self.block_allocator.blocks[index]);
-        Ok(())
+        self.block_allocator.lock().unwrap().has_usable_blocks()
     }
 }
