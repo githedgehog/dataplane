@@ -11,8 +11,6 @@ mod tap;
 mod vrf;
 mod vtep;
 
-use std::num::NonZero;
-
 #[allow(unused_imports)] // re-export
 pub use association::*;
 #[allow(unused_imports)] // re-export
@@ -50,6 +48,7 @@ use rtnetlink::packet_route::link::{
 };
 use rtnetlink::{LinkBridge, LinkUnspec, LinkVrf, LinkVxlan};
 use serde::{Deserialize, Serialize};
+use std::num::NonZero;
 use tracing::{error, trace, warn};
 
 /// The specified / intended state for a network interface.
