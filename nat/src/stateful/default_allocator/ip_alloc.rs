@@ -8,7 +8,7 @@ use crate::stateful::port::NatPort;
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, VecDeque};
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
 #[derive(Debug)]
 struct AllocatedIpsList<I: NatIp> {
@@ -71,7 +71,7 @@ impl PoolBitmap {
 pub struct NatPool<I: NatIp> {
     bitmap: PoolBitmap,
     bitmap_mapping: BTreeMap<u32, u128>,
-    allocated_ips: AllocatedIpsList<I>,
+    allocated_ips: RwLock<AllocatedIpsList<I>>,
 }
 
 impl<I: NatIp> NatPool<I> {
@@ -79,17 +79,35 @@ impl<I: NatIp> NatPool<I> {
         Self {
             bitmap: PoolBitmap::new(),
             bitmap_mapping: BTreeMap::new(),
-            allocated_ips: AllocatedIpsList {
+            allocated_ips: RwLock::new(AllocatedIpsList {
                 in_use: VecDeque::new(),
                 full: Vec::new(),
-            },
+            }),
+            // XXX TODO: cached_ip
         }
     }
 }
 
 impl NatPool<Ipv4Addr> {
     pub fn allocate(&mut self) -> Result<(Ipv4Addr, NatPort), AllocatorError> {
-        let ip = self.get_ip()?;
+        // Clean up any full allocated IP address from the list
+        self.allocated_ips.write().unwrap().pull_first_usable();
+
+        let mut allocated_ips = self.allocated_ips.write().unwrap();
+        // If we have no entry left, allocate a new one
+        if allocated_ips.get_first().is_none() {
+            let offset = self.bitmap.pop_ip()?;
+            let alloc_ip = AllocatedIp::new(Ipv4Addr::from(offset));
+
+            // Move the new IP to the front of the list of IP in use for allocation
+            allocated_ips.add_in_use(alloc_ip);
+        }
+
+        // Return the first entry from the list of available allocated IP addresses
+        let ip = allocated_ips
+            .get_first_mut()
+            .ok_or(AllocatorError::NoFreeIp)?;
+
         let port = ip.allocate_port()?;
 
         Ok((ip.ip(), port))
@@ -101,29 +119,35 @@ impl NatPool<Ipv4Addr> {
         let alloc_ip = AllocatedIp::new(Ipv4Addr::from(offset));
 
         // Move the new IP to the front of the list of IP in use for allocation
-        self.allocated_ips.add_in_use(alloc_ip);
+        self.allocated_ips.write().unwrap().add_in_use(alloc_ip);
         Ok(())
-    }
-
-    fn get_ip(&mut self) -> Result<&mut AllocatedIp<Ipv4Addr>, AllocatorError> {
-        // Clean up any full allocated IP address from the list
-        self.allocated_ips.pull_first_usable();
-
-        // If we have no entry left, allocate a new one
-        if self.allocated_ips.get_first().is_none() {
-            self.use_new_ip()?;
-        }
-
-        // Return the first entry from the list of available allocated IP addresses
-        self.allocated_ips
-            .get_first_mut()
-            .ok_or(AllocatorError::NoFreeIp)
     }
 }
 
 impl NatPool<Ipv6Addr> {
     pub fn allocate(&mut self) -> Result<(Ipv6Addr, NatPort), AllocatorError> {
-        let ip = self.get_ip()?;
+        // Clean up any full allocated IP address from the list
+        self.allocated_ips.write().unwrap().pull_first_usable();
+
+        let mut allocated_ips = self.allocated_ips.write().unwrap();
+        // If we have no entry left, allocate a new one
+        if allocated_ips.get_first().is_none() {
+            let offset = self.bitmap.pop_ip()?;
+
+            // For IPv6, the offset does not directly convert to an IP address because the bitmap space
+            // is lower than the IPv6 addressing space. Instead, we need to map the offset to the
+            // corresponding address within our list of prefixes.
+            let alloc_ip = AllocatedIp::new(self.map_offset(offset)?);
+
+            // Move the new IP to the front of the list of IP in use for allocation
+            allocated_ips.add_in_use(alloc_ip);
+        }
+
+        // Return the first entry from the list of available allocated IP addresses
+        let ip = allocated_ips
+            .get_first_mut()
+            .ok_or(AllocatorError::NoFreeIp)?;
+
         let port = ip.allocate_port()?;
 
         Ok((ip.ip(), port))
@@ -146,35 +170,6 @@ impl NatPool<Ipv6Addr> {
         Ok(Ipv6Addr::from(
             prefix_start_bits + u128::from(offset - prefix_offset),
         ))
-    }
-
-    fn use_new_ip(&mut self) -> Result<(), AllocatorError> {
-        // Retrieve the first available offset
-        let offset = self.bitmap.pop_ip()?;
-
-        // For IPv6, the offset does not directly convert to an IP address because the bitmap space
-        // is lower than the IPv6 addressing space. Instead, we need to map the offset to the
-        // corresponding address within our list of prefixes.
-        let alloc_ip = AllocatedIp::new(self.map_offset(offset)?);
-
-        // Move the new IP to the front of the list of IP in use for allocation
-        self.allocated_ips.add_in_use(alloc_ip);
-        Ok(())
-    }
-
-    fn get_ip(&mut self) -> Result<&mut AllocatedIp<Ipv6Addr>, AllocatorError> {
-        // Clean up any full allocated IP address from the list
-        self.allocated_ips.pull_first_usable();
-
-        // If we have no entry left, allocate a new one
-        if self.allocated_ips.get_first().is_none() {
-            self.use_new_ip()?;
-        }
-
-        // Return the first entry from the list of available allocated IP addresses
-        self.allocated_ips
-            .get_first_mut()
-            .ok_or(AllocatorError::NoFreeIp)
     }
 }
 
