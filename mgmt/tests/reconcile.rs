@@ -170,6 +170,7 @@ async fn reconcile_demo() {
             InterfacePropertiesSpec::Pci(prop) => {
                 pci_props.try_insert(prop.clone()).unwrap();
             }
+            InterfacePropertiesSpec::Dummy => {}
             InterfacePropertiesSpec::Tap => {}
         }
     }
@@ -259,6 +260,7 @@ async fn reconcile_demo() {
         for interface in interfaces {
             match &interface.properties {
                 InterfacePropertiesSpec::Bridge(_)
+                | InterfacePropertiesSpec::Dummy
                 | InterfacePropertiesSpec::Pci(_)
                 | InterfacePropertiesSpec::Tap => {}
                 InterfacePropertiesSpec::Vtep(props) => {
