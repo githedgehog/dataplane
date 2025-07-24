@@ -170,6 +170,7 @@ async fn reconcile_demo() {
             InterfacePropertiesSpec::Pci(prop) => {
                 pci_props.try_insert(prop.clone()).unwrap();
             }
+            InterfacePropertiesSpec::Tap => {}
         }
     }
 
@@ -258,15 +259,14 @@ async fn reconcile_demo() {
         ];
         for interface in interfaces {
             match &interface.properties {
-                InterfacePropertiesSpec::Bridge(_) => {}
+                InterfacePropertiesSpec::Bridge(_)
+                | InterfacePropertiesSpec::Pci(_)
+                | InterfacePropertiesSpec::Tap => {}
                 InterfacePropertiesSpec::Vtep(props) => {
                     req.vteps.try_insert(props.clone()).unwrap();
                 }
                 InterfacePropertiesSpec::Vrf(props) => {
                     req.vrfs.try_insert(props.clone()).unwrap();
-                }
-                InterfacePropertiesSpec::Pci(props) => {
-                    req.pci_netdevs.try_insert(props.clone()).unwrap();
                 }
             }
             req.interfaces.try_insert(interface).unwrap();

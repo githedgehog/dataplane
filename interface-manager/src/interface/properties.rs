@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 pub enum InterfacePropertiesSpec {
     /// The planned properties of a bridge.
     Bridge(BridgePropertiesSpec),
+    /// The planned properties of a tap device
+    Tap,
     /// The planned properties of a vtep (vxlan device).
     Vtep(VtepPropertiesSpec),
     /// The planned properties of a vrf
@@ -37,6 +39,7 @@ impl AsRequirement<InterfacePropertiesSpec> for InterfaceProperties {
             }
             InterfaceProperties::Vrf(props) => InterfacePropertiesSpec::Vrf(props.as_requirement()),
             InterfaceProperties::Pci(rep) => InterfacePropertiesSpec::Pci(rep.as_requirement()),
+            InterfaceProperties::Tap => InterfacePropertiesSpec::Tap,
             InterfaceProperties::Other => return None,
         })
     }

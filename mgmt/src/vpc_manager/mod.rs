@@ -603,11 +603,8 @@ mod contract {
                                 .unwrap();
                         }
                     }
-                    InterfacePropertiesSpec::Pci(_) => {
-                        if let Ok(rep) = requirements.interfaces.try_insert(interface) {
-                            pci_netdevs.push(rep.clone());
-                        }
-                    }
+                    InterfacePropertiesSpec::Tap
+                    | InterfacePropertiesSpec::Pci(_) => {}
                 }
             }
             if !bridges.is_empty() {
