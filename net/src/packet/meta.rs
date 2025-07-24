@@ -63,6 +63,7 @@ pub enum DoneReason {
     MissingEtherType,     /* can't determine ethertype to use */
     Unroutable,           /* we don't have state to forward the packet */
     NatFailure,           /* It was not possible to NAT the packet */
+    Local,                /* the packet has to be locally consumed by kernel */
     Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
 }
 
