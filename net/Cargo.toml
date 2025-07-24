@@ -14,6 +14,7 @@ test_buffer = []
 [dependencies]
 ahash = { workspace = true }
 arrayvec = { workspace = true, features = ["serde", "std"] }
+bitflags = { workspace = true }
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional = true }
 derive_builder = { workspace = true, features = ["alloc"] }
 etherparse = { workspace = true, features = ["std"] }
