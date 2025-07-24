@@ -965,6 +965,7 @@ dependencies = [
  "ahash 0.8.10",
  "arrayvec",
  "bolero",
+ "dataplane-id",
  "derive_builder 0.20.2",
  "etherparse",
  "linux-raw-sys 0.10.0",
