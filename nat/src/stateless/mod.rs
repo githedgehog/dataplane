@@ -13,6 +13,7 @@ use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ipv4::UnicastIpv4Addr;
 use net::ipv6::UnicastIpv6Addr;
 use net::packet::{DoneReason, Packet};
+use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use setup::tables::{NatTableValue, NatTables, PerVniTable};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -32,6 +33,8 @@ enum NatError {
     MappingError(IpAddr),
     #[error("Failed to map IP address offset: {0}")]
     MappingOffsetError(u128),
+    #[error("Can't find NAT tables for VNI {0}")]
+    MissingTable(Vni),
 }
 
 fn addr_offset_in_range(range_start: &IpAddr, addr: &IpAddr) -> Result<u128, NatError> {
@@ -189,9 +192,20 @@ impl StatelessNat {
     /// # Errors
     /// This method may fail if `translate_src` or `translate_dst` fail, which can happen if
     /// addresses are invalid or an unsupported translation is required (e.g. IPv4 -> IPv6).
-    fn translate(&self, net: &mut Net, per_vni_table: &PerVniTable) -> Result<bool, NatError> {
+    fn translate(
+        &self,
+        nat_tables: &NatTables,
+        net: &mut Net,
+        src_vni: Vni,
+        dst_vni: Vni,
+    ) -> Result<bool, NatError> {
+        let Some(table) = nat_tables.get_table(src_vni) else {
+            error!("Can't find NAT tables for VNI {src_vni}");
+            return Err(NatError::MissingTable(src_vni));
+        };
+
         let (src_ranges, dst_ranges) =
-            per_vni_table.find_nat_ranges(net.src_addr(), net.dst_addr());
+            table.find_nat_ranges(net.src_addr(), net.dst_addr(), dst_vni);
 
         // will set to true if packet is modified
         let mut modified = false;
@@ -202,9 +216,6 @@ impl StatelessNat {
         if let Some(ranges_dst) = dst_ranges {
             modified |= self.translate_dst(net, &ranges_dst)?;
         }
-        /* Note: if dst_ranges is not Some(), we will not learn the dst_vni from this module.
-        If routing is fine, it may learn it itself. However, if the packet is not to be routed,
-        then dst_vni will remain unset and the drop statistics for vpc peerings not be updated. */
         Ok(modified)
     }
 
@@ -218,29 +229,29 @@ impl StatelessNat {
     ) {
         let nfi = self.name();
 
-        /* get vni annotation */
-        let Some(vni) = packet.get_meta().src_vni else {
-            warn!("{nfi}: Packet has no vni annotation!. Will drop...");
+        /* get source VNI annotation */
+        let Some(src_vni) = packet.get_meta().src_vni else {
+            warn!("{nfi}: Packet has no source VNI annotation!. Will drop...");
             packet.done(DoneReason::Unroutable);
             return;
         };
 
-        /* get per vni table */
-        let Some(table) = nat_tables.get_table(vni) else {
-            error!("{nfi}: Can't find nat tables for vni {vni}");
+        /* get destination VNI annotation */
+        let Some(dst_vni) = packet.get_meta().dst_vni else {
+            warn!("{nfi}: Packet has no destination VNI annotation!. Will drop...");
             packet.done(DoneReason::Unroutable);
             return;
         };
 
-        /* get ip header */
+        /* get IP header */
         let Some(net) = packet.headers_mut().try_ip_mut() else {
-            error!("{nfi}: Failed to get ip headers!");
+            error!("{nfi}: Failed to get IP headers!");
             packet.done(DoneReason::InternalFailure);
             return;
         };
 
-        /* do the translations needed according to the `PerVniTable` */
-        match self.translate(net, table) {
+        /* do the translations needed according to the NAT tables */
+        match self.translate(nat_tables, net, src_vni, dst_vni) {
             Err(e) => {
                 error!("{nfi}: {e}");
                 packet.done(DoneReason::NatFailure);

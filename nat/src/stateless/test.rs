@@ -190,10 +190,10 @@ mod tests {
         let mut nat_table = NatTables::new();
 
         let mut vni_table1 = PerVniTable::new(vni1);
-        add_peering(&mut vni_table1, &peering1).expect("Failed to build NAT tables");
+        add_peering(&mut vni_table1, &peering1, vni2).expect("Failed to build NAT tables");
 
         let mut vni_table2 = PerVniTable::new(vni2);
-        add_peering(&mut vni_table2, &peering2).expect("Failed to build NAT tables");
+        add_peering(&mut vni_table2, &peering2, vni1).expect("Failed to build NAT tables");
 
         nat_table.add_table(vni_table1);
         nat_table.add_table(vni_table2);
@@ -213,7 +213,9 @@ mod tests {
         let mut packet = build_test_ipv4_packet(u8::MAX).unwrap();
         let mut packet_reply = packet.clone();
         packet.get_meta_mut().src_vni = Some(vni(100));
+        packet.get_meta_mut().dst_vni = Some(vni(200));
         packet_reply.get_meta_mut().src_vni = Some(vni(200));
+        packet_reply.get_meta_mut().dst_vni = Some(vni(100));
         packet.get_meta_mut().nat = true;
         packet_reply.get_meta_mut().nat = true;
 
@@ -418,13 +420,15 @@ mod tests {
 
     fn check_packet(
         nat: &mut StatelessNat,
-        vni: Vni,
+        src_vni: Vni,
+        dst_vni: Vni,
         orig_src_ip: Ipv4Addr,
         orig_dst_ip: Ipv4Addr,
     ) -> (Ipv4Addr, Ipv4Addr) {
         let mut packet = build_test_ipv4_packet(u8::MAX).unwrap();
         packet.get_meta_mut().nat = true;
-        packet.get_meta_mut().src_vni = Some(vni);
+        packet.get_meta_mut().src_vni = Some(src_vni);
+        packet.get_meta_mut().dst_vni = Some(dst_vni);
         set_addresses_v4(&mut packet, orig_src_ip, orig_dst_ip);
 
         let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
@@ -437,6 +441,7 @@ mod tests {
 
     #[test]
     #[traced_test]
+    #[allow(clippy::too_many_lines)]
     fn test_full_config() {
         let mut config = build_sample_config();
         config.validate().expect("Failed to validate config");
@@ -452,106 +457,125 @@ mod tests {
 
         // No NAT
         let (orig_src, orig_dst) = (addr_v4("8.8.8.8"), addr_v4("9.9.9.9"));
-        let (output_src, output_dst) = check_packet(&mut nat, vni(100), orig_src, orig_dst);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst);
         assert_eq!(output_src, orig_src);
         assert_eq!(output_dst, orig_dst);
 
         // expose121 <-> expose211
         let (orig_src, orig_dst) = (addr_v4("1.1.2.3"), addr_v4("10.201.201.18"));
         let (target_src, target_dst) = (addr_v4("10.12.2.3"), addr_v4("1.2.2.18"));
-        let (output_src, output_dst) = check_packet(&mut nat, vni(100), orig_src, orig_dst);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst);
         assert_eq!(output_src, target_src);
         assert_eq!(output_dst, target_dst);
         // Reverse path
-        let (output_src, output_dst) = check_packet(&mut nat, vni(200), target_dst, target_src);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(200), vni(100), target_dst, target_src);
         assert_eq!(output_src, orig_dst);
         assert_eq!(output_dst, orig_src);
 
         // expose122 <-> expose211
         let (orig_src, orig_dst) = (addr_v4("1.2.129.3"), addr_v4("10.201.201.22"));
         let (target_src, target_dst) = (addr_v4("10.99.1.3"), addr_v4("1.2.2.22"));
-        let (output_src, output_dst) = check_packet(&mut nat, vni(100), orig_src, orig_dst);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst);
         assert_eq!(output_src, target_src);
         assert_eq!(output_dst, target_dst);
         // Reverse path
-        let (output_src, output_dst) = check_packet(&mut nat, vni(200), target_dst, target_src);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(200), vni(100), target_dst, target_src);
         assert_eq!(output_src, orig_dst);
         assert_eq!(output_dst, orig_src);
 
         // expose123 <-> expose214
         let (orig_src, orig_dst) = (addr_v4("1.3.0.7"), addr_v4("10.201.204.193"));
         let (target_src, target_dst) = (addr_v4("10.100.0.7"), addr_v4("2.0.1.1"));
-        let (output_src, output_dst) = check_packet(&mut nat, vni(100), orig_src, orig_dst);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst);
         assert_eq!(output_src, target_src);
         assert_eq!(output_dst, target_dst);
         // Reverse path
-        let (output_src, output_dst) = check_packet(&mut nat, vni(200), target_dst, target_src);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(200), vni(100), target_dst, target_src);
         assert_eq!(output_src, orig_dst);
         assert_eq!(output_dst, orig_src);
 
         // expose131 <-> expose311 (reusing expose121 private IPs)
         let (orig_src, orig_dst) = (addr_v4("1.1.3.3"), addr_v4("3.3.3.3"));
         let (target_src, target_dst) = (addr_v4("3.3.3.3"), addr_v4("192.168.128.3"));
-        let (output_src, output_dst) = check_packet(&mut nat, vni(100), orig_src, orig_dst);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(100), vni(300), orig_src, orig_dst);
         assert_eq!(output_src, target_src);
         assert_eq!(output_dst, target_dst);
         // Reverse path
-        let (output_src, output_dst) = check_packet(&mut nat, vni(300), target_dst, target_src);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(300), vni(100), target_dst, target_src);
         assert_eq!(output_src, orig_dst);
         assert_eq!(output_dst, orig_src);
 
         // expose132 <-> expose311
         let (orig_src, orig_dst) = (addr_v4("1.2.130.1"), addr_v4("3.3.3.3"));
         let (target_src, target_dst) = (addr_v4("3.2.2.1"), addr_v4("192.168.128.3"));
-        let (output_src, output_dst) = check_packet(&mut nat, vni(100), orig_src, orig_dst);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(100), vni(300), orig_src, orig_dst);
         assert_eq!(output_src, target_src);
         assert_eq!(output_dst, target_dst);
         // Reverse path
-        let (output_src, output_dst) = check_packet(&mut nat, vni(300), target_dst, target_src);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(300), vni(100), target_dst, target_src);
         assert_eq!(output_src, orig_dst);
         assert_eq!(output_dst, orig_src);
 
         // expose141 <-> expose411
         let (orig_src, orig_dst) = (addr_v4("1.1.1.1"), addr_v4("4.5.1.1"));
         let (target_src, target_dst) = (addr_v4("4.4.1.1"), addr_v4("1.1.1.1"));
-        let (output_src, output_dst) = check_packet(&mut nat, vni(100), orig_src, orig_dst);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(100), vni(400), orig_src, orig_dst);
         assert_eq!(output_src, target_src);
         assert_eq!(output_dst, target_dst);
         // Reverse path
-        let (output_src, output_dst) = check_packet(&mut nat, vni(400), target_dst, target_src);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(400), vni(100), target_dst, target_src);
         assert_eq!(output_src, orig_dst);
         assert_eq!(output_dst, orig_src);
 
         // expose241 <-> expose421 (first/last addresses of ranges)
         let (orig_src, orig_dst) = (addr_v4("2.4.255.255"), addr_v4("44.4.0.0"));
         let (target_src, target_dst) = (addr_v4("44.0.255.255"), addr_v4("4.4.0.0"));
-        let (output_src, output_dst) = check_packet(&mut nat, vni(200), orig_src, orig_dst);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(200), vni(400), orig_src, orig_dst);
         assert_eq!(output_src, target_src);
         assert_eq!(output_dst, target_dst);
         // Reverse path
-        let (output_src, output_dst) = check_packet(&mut nat, vni(400), target_dst, target_src);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(400), vni(200), target_dst, target_src);
         assert_eq!(output_src, orig_dst);
         assert_eq!(output_dst, orig_src);
 
         // expose241 <-> expose421 (playing with not/not_as)
         let (orig_src, orig_dst) = (addr_v4("2.4.2.1"), addr_v4("44.4.136.2"));
         let (target_src, target_dst) = (addr_v4("44.0.1.1"), addr_v4("4.4.72.2"));
-        let (output_src, output_dst) = check_packet(&mut nat, vni(200), orig_src, orig_dst);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(200), vni(400), orig_src, orig_dst);
         assert_eq!(output_src, target_src);
         assert_eq!(output_dst, target_dst);
         // Reverse path
-        let (output_src, output_dst) = check_packet(&mut nat, vni(400), target_dst, target_src);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(400), vni(200), target_dst, target_src);
         assert_eq!(output_src, orig_dst);
         assert_eq!(output_dst, orig_src);
 
         // expose341 <-> expose431 (one-side NAT)
         let (orig_src, orig_dst) = (addr_v4("192.168.100.34"), addr_v4("4.4.0.43"));
         let (target_src, target_dst) = (addr_v4("34.34.34.34"), addr_v4("4.4.0.43"));
-        let (output_src, output_dst) = check_packet(&mut nat, vni(300), orig_src, orig_dst);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(300), vni(400), orig_src, orig_dst);
         assert_eq!(output_src, target_src);
         assert_eq!(output_dst, target_dst);
         // Reverse path
-        let (output_src, output_dst) = check_packet(&mut nat, vni(400), target_dst, target_src);
+        let (output_src, output_dst) =
+            check_packet(&mut nat, vni(400), vni(300), target_dst, target_src);
         assert_eq!(output_src, orig_dst);
         assert_eq!(output_dst, orig_src);
     }

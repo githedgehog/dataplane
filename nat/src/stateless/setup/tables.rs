@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::stateless::setup::prefixtrie::{PrefixTrie, TrieError};
-
 use ahash::RandomState;
-use lpm::prefix::Prefix;
 use net::vxlan::Vni;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
@@ -56,9 +53,8 @@ impl Default for NatTables {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PerVniTable {
     pub vni: Vni,
-    pub dst_nat: NatPrefixRuleTable,
-    pub src_nat_peers: NatPeerRuleTable,
-    pub src_nat_prefixes: Vec<NatPrefixRuleTable>,
+    pub dst_nat: NatRuleTable,
+    pub src_nat: HashMap<Vni, NatRuleTable>,
 }
 
 impl PerVniTable {
@@ -67,9 +63,8 @@ impl PerVniTable {
     pub fn new(vni: Vni) -> Self {
         Self {
             vni,
-            dst_nat: NatPrefixRuleTable::new(),
-            src_nat_peers: NatPeerRuleTable::new(),
-            src_nat_prefixes: Vec::new(),
+            dst_nat: NatRuleTable::new(),
+            src_nat: HashMap::new(),
         }
     }
 
@@ -80,19 +75,9 @@ impl PerVniTable {
     /// Returns the NAT ranges information associated with the given address if it is present in the
     /// table. If the address is not present, it returns `None`.
     #[must_use]
-    pub fn lookup_src_prefixes(&self, saddr: &IpAddr, daddr: &IpAddr) -> Option<NatTableValue> {
-        debug!("Looking up src prefixes for src: {saddr} dst: {daddr}...");
-        // Find relevant table for involved peer
-        let peer_indices = self.src_nat_peers.lookup(daddr)?;
-
-        // Look up for the NAT range in that table
-        for peer_index in peer_indices {
-            let prefix_table = self.src_nat_prefixes.get(*peer_index)?;
-            if let Some(value) = prefix_table.lookup(saddr) {
-                return Some(value);
-            }
-        }
-        None
+    pub fn lookup_src_prefixes(&self, addr: &IpAddr, dst_vni: Vni) -> Option<NatTableValue> {
+        debug!("Looking up src prefixes for address: {addr}, dst_vni: {dst_vni}...");
+        self.src_nat.get(&dst_vni)?.lookup(addr)
     }
 
     /// Search for the NAT ranges information for destination NAT associated to the given address.
@@ -112,8 +97,9 @@ impl PerVniTable {
         &self,
         src: IpAddr,
         dst: IpAddr,
+        dst_vni: Vni,
     ) -> (Option<NatTableValue>, Option<NatTableValue>) {
-        let src_nat_ranges = self.lookup_src_prefixes(&src, &dst);
+        let src_nat_ranges = self.lookup_src_prefixes(&src, dst_vni);
         let dst_nat_ranges = self.lookup_dst_prefixes(&dst);
         (src_nat_ranges, dst_nat_ranges)
     }
@@ -121,14 +107,14 @@ impl PerVniTable {
 
 /// From a current address prefix, find the target address prefix.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct NatPrefixRuleTable {
+pub struct NatRuleTable {
     pub rules_v4: BTreeMap<Ipv4Addr, (Ipv4Addr, Ipv4Addr)>,
     pub rules_v6: BTreeMap<Ipv6Addr, (Ipv6Addr, Ipv6Addr)>,
 }
 
-impl NatPrefixRuleTable {
+impl NatRuleTable {
     #[must_use]
-    /// Creates a new empty [`NatPrefixRuleTable`]
+    /// Creates a new empty [`NatRuleTable`]
     pub fn new() -> Self {
         Self {
             rules_v4: BTreeMap::new(),
@@ -207,55 +193,6 @@ impl NatPrefixRuleTable {
                 }
             }
         }
-    }
-}
-
-/// From a current address prefix, find the relevant [`NatPrefixRuleTable`] for the target prefix
-/// lookup.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NatPeerRuleTable {
-    pub rules: PrefixTrie<Vec<usize>>,
-}
-
-impl NatPeerRuleTable {
-    /// Creates a new empty [`NatPeerRuleTable`]
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            rules: PrefixTrie::new(),
-        }
-    }
-
-    /// Inserts a new entry in the table
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the prefix is already in the table
-    pub fn insert(&mut self, prefix: &Prefix, target_index: usize) -> Result<(), TrieError> {
-        let rule_opt = self.rules.get_mut(prefix);
-        if let Some(rule) = rule_opt {
-            rule.push(target_index);
-            Ok(())
-        } else {
-            self.rules.insert(prefix, vec![target_index])
-        }
-    }
-
-    /// Looks up for the value associated with the given address.
-    ///
-    /// # Returns
-    ///
-    /// Returns the value associated with the given address if it is present in the trie. If the
-    /// address is not present, it returns `None`.
-    #[must_use]
-    pub fn lookup(&self, addr: &IpAddr) -> Option<&Vec<usize>> {
-        self.rules.lookup(addr).map(|(_, v)| v)
-    }
-}
-
-impl Default for NatPeerRuleTable {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
