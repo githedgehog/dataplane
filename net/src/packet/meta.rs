@@ -6,6 +6,7 @@
 use crate::vxlan::Vni;
 use std::collections::HashMap;
 use std::net::IpAddr;
+use tracing::error;
 
 /// Every VRF is univocally identified with a numerical VRF id
 pub type VrfId = u32;
@@ -69,6 +70,7 @@ pub enum DoneReason {
 #[derive(Debug, Default, Clone)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct PacketMeta {
+    initialized: bool,                /* initialized */
     pub iif: InterfaceId,             /* incoming interface - set early */
     pub oif: Option<InterfaceId>,     /* outgoing interface - set late */
     pub nh_addr: Option<IpAddr>,      /* IP address of next-hop */
@@ -86,8 +88,16 @@ pub struct PacketMeta {
 impl PacketMeta {
     pub(crate) fn new(keep: bool) -> Self {
         Self {
+            initialized: true,
             keep,
             ..Default::default()
+        }
+    }
+}
+impl Drop for PacketMeta {
+    fn drop(&mut self) {
+        if self.done.is_none() && self.initialized {
+            error!("Attempted to drop packet with unspecified verdict!");
         }
     }
 }
