@@ -106,7 +106,7 @@ impl Display for InterfaceProperties {
             InterfaceProperties::Vrf(vrf) => vrf.fmt(f),
             InterfaceProperties::Vtep(vtep) => vtep.fmt(f),
             InterfaceProperties::Pci(rep) => rep.fmt(f),
-            InterfaceProperties::Tap => "".fmt(f),
+            InterfaceProperties::Dummy | InterfaceProperties::Tap => "".fmt(f),
             InterfaceProperties::Other => write!(f, "other"),
         }
     }
@@ -115,6 +115,7 @@ impl Display for InterfaceProperties {
 fn ifproperty_to_str(properties: &InterfaceProperties) -> &'static str {
     match properties {
         InterfaceProperties::Bridge(_) => "bridge",
+        InterfaceProperties::Dummy => "dummy",
         InterfaceProperties::Vrf(_) => "vrf",
         InterfaceProperties::Vtep(_) => "vtep",
         InterfaceProperties::Pci(_) => "pci",

@@ -604,6 +604,7 @@ mod contract {
                         }
                     }
                     InterfacePropertiesSpec::Tap
+                    | InterfacePropertiesSpec::Dummy
                     | InterfacePropertiesSpec::Pci(_) => {}
                 }
             }
