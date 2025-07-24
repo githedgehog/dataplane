@@ -7,7 +7,6 @@
 #![deny(rustdoc::all)]
 #![allow(clippy::missing_errors_doc)]
 
-pub mod prefixtrie;
 pub mod range_builder;
 pub mod tables;
 
