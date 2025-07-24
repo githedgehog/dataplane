@@ -204,7 +204,6 @@ async fn reconcile_demo() {
         .interfaces(required_interface_map)
         .vteps(vtep_props)
         .vrfs(vrf_props)
-        .pci_netdevs(pci_props)
         .associations(associations)
         .build()
         .unwrap();

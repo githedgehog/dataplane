@@ -15,12 +15,12 @@ pub enum InterfacePropertiesSpec {
     Bridge(BridgePropertiesSpec),
     /// The planned properties of a tap device
     Tap,
+    /// The expected properties of a pci netdev.
+    Pci(PciNetdevPropertiesSpec),
     /// The planned properties of a vtep (vxlan device).
     Vtep(VtepPropertiesSpec),
     /// The planned properties of a vrf
     Vrf(VrfPropertiesSpec),
-    /// The expected properties of a pci netdev.
-    Pci(PciNetdevPropertiesSpec),
 }
 
 impl AsRequirement<InterfacePropertiesSpec> for InterfaceProperties {
