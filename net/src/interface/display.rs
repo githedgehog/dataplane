@@ -86,13 +86,13 @@ impl Display for PciNetdevProperties {
         match &self.switch_id {
             None => {}
             Some(switch_id) => {
-                write!(f, "switch-id: {switch_id}")?;
+                write!(f, "switch-id: {switch_id} ")?;
             }
         }
         match &self.port_name {
             None => {}
             Some(port_name) => {
-                write!(f, "port-name: {port_name}")?;
+                write!(f, "port-name: {port_name} ")?;
             }
         }
         write!(f, "parent-dev: {}", self.parent_dev)
