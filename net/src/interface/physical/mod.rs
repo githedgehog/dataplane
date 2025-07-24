@@ -3,6 +3,8 @@
 
 pub mod switch;
 
+mod bus;
 mod pci;
 
+pub use bus::*;
 pub use pci::*;
