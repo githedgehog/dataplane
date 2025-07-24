@@ -21,8 +21,8 @@ mod tests {
     use config::internal::routing::vrf::VrfConfig;
 
     use crate::StatelessNat;
+    use crate::stateless::setup::build_nat_configuration;
     use crate::stateless::setup::tables::{NatTables, PerVniTable};
-    use crate::stateless::setup::{add_peering, build_nat_configuration};
 
     use net::buffer::PacketBufferMut;
     use net::eth::mac::Mac;
@@ -190,10 +190,14 @@ mod tests {
         let mut nat_table = NatTables::new();
 
         let mut vni_table1 = PerVniTable::new(vni1);
-        add_peering(&mut vni_table1, &peering1, vni2).expect("Failed to build NAT tables");
+        vni_table1
+            .add_peering(&peering1, vni2)
+            .expect("Failed to build NAT tables");
 
         let mut vni_table2 = PerVniTable::new(vni2);
-        add_peering(&mut vni_table2, &peering2, vni1).expect("Failed to build NAT tables");
+        vni_table2
+            .add_peering(&peering2, vni1)
+            .expect("Failed to build NAT tables");
 
         nat_table.add_table(vni_table1);
         nat_table.add_table(vni_table2);

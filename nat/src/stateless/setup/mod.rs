@@ -55,53 +55,50 @@ fn generate_private_values(
     generate_nat_values(&expose.as_range, &expose.ips)
 }
 
-// Note: add_peering(table, peering) should be part of PerVniTable, but we prefer to keep it in a
-// separate submodule because it relies on definitions from the external models, unlike the rest of
-// the PerVniTable implementation.
-//
-/// Add a [`Peering`] to a [`PerVniTable`]
-///
-/// # Errors
-///
-/// Returns an error if some lists of prefixes contain duplicates
-pub(crate) fn add_peering(
-    table: &mut PerVniTable,
-    peering: &Peering,
-    dst_vni: Vni,
-) -> Result<(), NatPeeringError> {
-    let new_peering = collapse_prefixes_peering(peering).map_err(|e| match e {
-        ConfigUtilError::SplitPrefixError(prefix) => NatPeeringError::SplitPrefixError(prefix),
-    })?;
+impl PerVniTable {
+    /// Add a [`Peering`] to a [`PerVniTable`]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if some lists of prefixes contain duplicates
+    pub(crate) fn add_peering(
+        &mut self,
+        peering: &Peering,
+        dst_vni: Vni,
+    ) -> Result<(), NatPeeringError> {
+        let new_peering = collapse_prefixes_peering(peering).map_err(|e| match e {
+            ConfigUtilError::SplitPrefixError(prefix) => NatPeeringError::SplitPrefixError(prefix),
+        })?;
 
-    new_peering.local.exposes.iter().try_for_each(|expose| {
-        if expose.as_range.is_empty() {
-            // Nothing to do for source NAT, get out of here
-            return Ok(());
-        }
+        new_peering.local.exposes.iter().try_for_each(|expose| {
+            if expose.as_range.is_empty() {
+                // Nothing to do for source NAT, get out of here
+                return Ok(());
+            }
 
-        // If we don't have a NAT rules table for this destination VPC already, create it
-        let peering_table = table.src_nat.entry(dst_vni).or_default();
+            // If we don't have a NAT rules table for this destination VPC already, create it
+            let peering_table = self.src_nat.entry(dst_vni).or_default();
 
-        // For each private prefix, add an entry containing the set of public prefixes
-        generate_public_values(expose).try_for_each(|value| {
-            peering_table
-                .insert(&value?)
-                .map_err(|_| NatPeeringError::EntryExists)
-        })
-    })?;
+            // For each private prefix, add an entry containing the set of public prefixes
+            generate_public_values(expose).try_for_each(|value| {
+                peering_table
+                    .insert(&value?)
+                    .map_err(|_| NatPeeringError::EntryExists)
+            })
+        })?;
 
-    // Update table for destination NAT
-    new_peering.remote.exposes.iter().try_for_each(|expose| {
-        // For each public prefix, add an entry containing the set of private prefixes
-        generate_private_values(expose).try_for_each(|value| {
-            table
-                .dst_nat
-                .insert(&value?)
-                .map_err(|_| NatPeeringError::EntryExists)
-        })
-    })?;
+        // Update table for destination NAT
+        new_peering.remote.exposes.iter().try_for_each(|expose| {
+            // For each public prefix, add an entry containing the set of private prefixes
+            generate_private_values(expose).try_for_each(|value| {
+                self.dst_nat
+                    .insert(&value?)
+                    .map_err(|_| NatPeeringError::EntryExists)
+            })
+        })?;
 
-    Ok(())
+        Ok(())
+    }
 }
 
 fn get_remote_vni(peering: &Peering, vpc_table: &VpcTable) -> Vni {
@@ -118,7 +115,8 @@ pub fn build_nat_configuration(overlay: &Overlay) -> Result<NatTables, ConfigErr
         let mut table = PerVniTable::new(vpc.vni);
         for peering in &vpc.peerings {
             let dst_vni = get_remote_vni(peering, &overlay.vpc_table);
-            add_peering(&mut table, peering, dst_vni)
+            table
+                .add_peering(peering, dst_vni)
                 .map_err(|e| ConfigError::FailureApply(e.to_string()))?;
         }
         nat_tables.add_table(table);
@@ -185,6 +183,8 @@ mod tests {
         vpctable.add(src_vpc).unwrap();
 
         let mut vni_table = PerVniTable::new(src_vni);
-        add_peering(&mut vni_table, &peering, dst_vni).expect("Failed to build NAT tables");
+        vni_table
+            .add_peering(&peering, dst_vni)
+            .expect("Failed to build NAT tables");
     }
 }
