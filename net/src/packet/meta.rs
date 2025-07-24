@@ -4,6 +4,7 @@
 #![allow(missing_docs)] // TODO
 
 use crate::vxlan::Vni;
+use bitflags::bitflags;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use tracing::error;
@@ -67,37 +68,94 @@ pub enum DoneReason {
     Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
 }
 
+bitflags! {
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    struct MetaFlags: u16 {
+        const INITIALIZED = 0b0000_0001; /* initialized */
+        const IS_L2_BCAST = 0b0000_0010; /* frame is eth broadcast */
+        const NAT         = 0b0000_0100; /* if true, NAT stage should attempt to NAT the packet */
+        const REFR_CHKSUM = 0b0000_1000; /* if true, an indication that packet checksums need to be refreshed */
+        const KEEP        = 0b0001_0000; /* Keep the Packet even if it should be dropped */
+    }
+}
+
 #[allow(unused)]
 #[derive(Debug, Default, Clone)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct PacketMeta {
-    initialized: bool,                /* initialized */
+    flags: MetaFlags,
     pub iif: InterfaceId,             /* incoming interface - set early */
     pub oif: Option<InterfaceId>,     /* outgoing interface - set late */
     pub nh_addr: Option<IpAddr>,      /* IP address of next-hop */
-    pub is_l2bcast: bool,             /* frame is broadcast */
-    pub is_iplocal: bool,             /* frame contains an ip packet for local delivery */
     pub vrf: Option<VrfId>,           /* for IP packet, the VRF to use to route it */
     pub bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
     pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
     pub src_vni: Option<Vni>, /* the vni value of a received vxlan encap packet, if destined to gateway */
     pub dst_vni: Option<Vni>, /* the vni value of a vxlan packet re-encapsulated by the gateway */
-    pub nat: bool,            /* if true, NAT stage should attempt to nat the packet */
-    pub refresh_chksums: bool, /* if true, an indication that packet checksums need to be refreshed */
-    pub keep: bool,            /* Keep the Packet even if it should be dropped */
 }
 impl PacketMeta {
+    #[must_use]
     pub(crate) fn new(keep: bool) -> Self {
+        let mut flags = MetaFlags::INITIALIZED;
+        if keep {
+            flags |= MetaFlags::KEEP;
+        }
         Self {
-            initialized: true,
-            keep,
+            flags,
             ..Default::default()
+        }
+    }
+    #[must_use]
+    pub fn nat(&self) -> bool {
+        self.flags.contains(MetaFlags::NAT)
+    }
+    pub fn set_nat(&mut self, value: bool) {
+        if value {
+            self.flags.insert(MetaFlags::NAT);
+        } else {
+            self.flags.remove(MetaFlags::NAT);
+        }
+    }
+    #[must_use]
+    pub fn is_initialized(&self) -> bool {
+        self.flags.contains(MetaFlags::INITIALIZED)
+    }
+    #[must_use]
+    pub fn is_l2bcast(&self) -> bool {
+        self.flags.contains(MetaFlags::IS_L2_BCAST)
+    }
+    pub fn set_l2bcast(&mut self, value: bool) {
+        if value {
+            self.flags.insert(MetaFlags::IS_L2_BCAST);
+        } else {
+            self.flags.remove(MetaFlags::IS_L2_BCAST);
+        }
+    }
+    #[must_use]
+    pub fn checksum_refresh(&self) -> bool {
+        self.flags.contains(MetaFlags::REFR_CHKSUM)
+    }
+    pub fn set_checksum_refresh(&mut self, value: bool) {
+        if value {
+            self.flags.insert(MetaFlags::REFR_CHKSUM);
+        } else {
+            self.flags.remove(MetaFlags::REFR_CHKSUM);
+        }
+    }
+    #[must_use]
+    pub fn keep(&self) -> bool {
+        self.flags.contains(MetaFlags::KEEP)
+    }
+    pub fn set_keep(&mut self, value: bool) {
+        if value {
+            self.flags.insert(MetaFlags::KEEP);
+        } else {
+            self.flags.remove(MetaFlags::KEEP);
         }
     }
 }
 impl Drop for PacketMeta {
     fn drop(&mut self) {
-        if self.done.is_none() && self.initialized {
+        if self.done.is_none() && self.is_initialized() {
             error!("Attempted to drop packet with unspecified verdict!");
         }
     }

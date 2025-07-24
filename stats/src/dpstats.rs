@@ -313,7 +313,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PipelineStats {
             } else {
                 warn!("Got packet without status!!");
             }
-            packet.get_meta_mut().keep = false; /* no longer disable enforce */
+            packet.get_meta_mut().set_keep(false); /* no longer disable enforce */
             packet.enforce()
         });
         // we can't do this here, meaning we have to refresh by packet. This is bad.

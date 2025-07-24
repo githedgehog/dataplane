@@ -85,7 +85,7 @@ impl Ingress {
         packet: &mut Packet<Buf>,
     ) {
         let nfi = self.name();
-        packet.get_meta_mut().is_l2bcast = true;
+        packet.get_meta_mut().set_l2bcast(true);
         packet.done(DoneReason::Unhandled);
         warn!("{nfi}: Processing of broadcast ethernet frames is not supported");
     }

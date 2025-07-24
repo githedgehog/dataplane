@@ -233,19 +233,15 @@ impl Display for PacketMeta {
         write!(f, "    iif: {}", self.iif.get_id())?;
         fmt_opt(f, " oif", self.oif, true)?;
 
-        writeln!(
-            f,
-            "    bcast: {} iplocal: {}",
-            self.is_l2bcast, self.is_iplocal
-        )?;
+        writeln!(f, "    bcast: {}", self.is_l2bcast())?;
         fmt_opt(f, "    src-vni", self.src_vni, false)?;
         fmt_opt(f, "    dst-vni", self.dst_vni, true)?;
-        writeln!(f, "    do-nat: {}", self.nat)?;
+        writeln!(f, "    do-nat: {}", self.nat())?;
         fmt_opt(f, "    vrf", self.vrf, false)?;
         fmt_opt(f, "    bd", self.bridge, true)?;
         fmt_opt(f, "    next-hop", self.nh_addr, true)?;
         fmt_opt(f, "    done", self.done, true)?;
-        writeln!(f, "    keep: {}", self.keep)
+        writeln!(f, "    keep: {}", self.keep())
     }
 }
 

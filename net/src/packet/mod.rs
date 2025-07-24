@@ -194,7 +194,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         // refresh checksums if told to. N.B. this is DISABLED as the (single) caller does this.
         // TODO: decide if this should be done here or not.
         #[allow(clippy::overly_complex_bool_expr)]
-        if false && self.get_meta().refresh_chksums {
+        if false && self.get_meta().checksum_refresh() {
             self.update_checksums();
         }
         //compute room required
@@ -250,7 +250,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Update the network and transport checksums based on the current headers.
     pub fn update_checksums(&mut self) -> &mut Self {
         self.headers.update_checksums(&self.payload);
-        self.get_meta_mut().refresh_chksums = false;
+        self.get_meta_mut().set_checksum_refresh(false);
         self
     }
 
@@ -356,8 +356,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Wraps a packet in an `Option` depending on the metadata:
     /// If [`Packet`] is to be dropped, returns `None`. Else, `Some`.
     pub fn enforce(self) -> Option<Self> {
-        if self.meta.keep {
-            // ignore the request to drop and keep the packet instead.
+        if self.meta.keep() {
+            // keep packets even if they should be dropped
             return Some(self);
         }
         match self.get_done() {

@@ -258,7 +258,7 @@ impl StatelessNat {
             }
             Ok(modified) => {
                 if modified {
-                    packet.get_meta_mut().refresh_chksums = true;
+                    packet.get_meta_mut().set_checksum_refresh(true);
                     debug!("{nfi}: Packet was NAT'ed:\n{packet}");
                 } else {
                     debug!("{nfi}: No NAT translation needed");
@@ -275,7 +275,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatelessNat {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(|mut packet| {
-            if !packet.is_done() && packet.get_meta().nat {
+            if !packet.is_done() && packet.get_meta().nat() {
                 // fixme: ideally, we'd `enter` once for the whole batch. However,
                 // this requires boxing the closures, which may be worse than
                 // calling `enter` per packet? ... if not uglier

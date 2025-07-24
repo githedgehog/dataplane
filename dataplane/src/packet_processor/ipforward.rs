@@ -148,7 +148,7 @@ impl IpForwarder {
                 make lookups from */
                 packet.get_meta_mut().src_vni = Some(vni);
                 packet.get_meta_mut().vrf = Some(next_vrf);
-                packet.get_meta_mut().nat = true;
+                packet.get_meta_mut().set_nat(true);
             }
             Some(Err(bad)) => {
                 warn!("The decapsulated packet is malformed!: {bad:?}");
@@ -248,7 +248,7 @@ impl IpForwarder {
 
         // If packet requires updating checksums (e.g. because it was natted), do so.
         // Otherwise, refresh at least the ipv4 checksum, as we decremented the TTL.
-        if packet.get_meta().refresh_chksums {
+        if packet.get_meta().checksum_refresh() {
             packet.update_checksums();
         } else if let Some(ipv4) = packet.headers_mut().try_ipv4_mut() {
             ipv4.update_checksum(&());
@@ -391,7 +391,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
                 let vrfid = packet.get_meta_mut().vrf.take();
                 if let Some(vrfid) = vrfid {
                     self.forward_packet(&mut packet, vrfid);
-                } else if packet.get_meta().oif.is_none() && !packet.get_meta().is_iplocal {
+                } else {
                     warn!("{}: missing information to handle packet", self.name);
                 }
             }
