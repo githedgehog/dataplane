@@ -4,6 +4,7 @@
 use crate::processor::confbuild::namegen::VpcInterfacesNames;
 
 use config::InternalConfig;
+use config::internal::interfaces::interface::InterfaceType;
 use config::internal::routing::evpn::VtepConfig;
 use derive_builder::Builder;
 use futures::TryStreamExt;
@@ -11,14 +12,15 @@ use interface_manager::Manager;
 use interface_manager::interface::{
     BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpecBuilder,
     MultiIndexInterfaceAssociationSpecMap, MultiIndexInterfaceSpecMap,
-    MultiIndexPciNetdevPropertiesSpecMap, MultiIndexVrfPropertiesSpecMap,
-    MultiIndexVtepPropertiesSpecMap, TryFromLinkMessage, VrfPropertiesSpec, VtepPropertiesSpec,
+    MultiIndexVrfPropertiesSpecMap, MultiIndexVtepPropertiesSpecMap, TryFromLinkMessage,
+    VrfPropertiesSpec, VtepPropertiesSpec,
 };
 use multi_index_map::MultiIndexMap;
 use net::eth::ethtype::EthType;
+use net::eth::mac::SourceMac;
 use net::interface::{
-    AdminState, Interface, InterfaceProperties, MultiIndexInterfaceMap,
-    MultiIndexPciNetdevPropertiesMap, MultiIndexVrfPropertiesMap, MultiIndexVtepPropertiesMap,
+    AdminState, Interface, InterfaceName, InterfaceProperties, MultiIndexInterfaceMap,
+    MultiIndexVrfPropertiesMap, MultiIndexVtepPropertiesMap,
 };
 use net::ip::UnicastIpAddr;
 use net::route::RouteTableId;
@@ -28,7 +30,7 @@ use rtnetlink::Handle;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::sync::Arc;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, warn};
 
 #[derive(Clone, Debug)]
 pub struct VpcManager<R> {
@@ -86,7 +88,6 @@ impl From<Vni> for VpcDiscriminant {
 #[derive(Clone, Debug, Deserialize, Serialize, Default, Builder)]
 pub struct RequiredInformationBase {
     pub interfaces: MultiIndexInterfaceSpecMap,
-    pub pci_netdevs: MultiIndexPciNetdevPropertiesSpecMap,
     pub vrfs: MultiIndexVrfPropertiesSpecMap,
     pub vteps: MultiIndexVtepPropertiesSpecMap,
     pub associations: MultiIndexInterfaceAssociationSpecMap,
@@ -95,7 +96,6 @@ pub struct RequiredInformationBase {
 #[derive(Clone, Debug, Deserialize, Serialize, Default, Builder)]
 pub struct ObservedInformationBase {
     pub interfaces: MultiIndexInterfaceMap,
-    pub pci_netdevs: MultiIndexPciNetdevPropertiesMap,
     pub vrfs: MultiIndexVrfPropertiesMap,
     pub vteps: MultiIndexVtepPropertiesMap,
 }
@@ -128,7 +128,6 @@ impl Observe for VpcManager<RequiredInformationBase> {
         }
         let mut vtep_properties = MultiIndexVtepPropertiesMap::default();
         let mut vrf_properties = MultiIndexVrfPropertiesMap::default();
-        let mut pci_netdev_properties = MultiIndexPciNetdevPropertiesMap::default();
         let mut indexes_to_remove = vec![];
         for (_, observation) in observations.iter() {
             match &observation.properties {
@@ -150,18 +149,11 @@ impl Observe for VpcManager<RequiredInformationBase> {
                         }
                     }
                 }
-                InterfaceProperties::Pci(pci) => {
-                    match pci_netdev_properties.try_insert(pci.clone()) {
-                        Ok(_) => {}
-                        Err(err) => {
-                            error!("{err:?}");
-                            indexes_to_remove.push(observation.index);
-                        }
-                    }
-                }
-                InterfaceProperties::Other | InterfaceProperties::Bridge(_) => {
-                    /* nothing to index */
-                }
+                InterfaceProperties::Other
+                | InterfaceProperties::Tap
+                | InterfaceProperties::Pci(_)
+                | InterfaceProperties::Bridge(_)
+                | InterfaceProperties::Dummy => { /* nothing to index */ }
             }
         }
         for sliced in indexes_to_remove {
@@ -171,7 +163,6 @@ impl Observe for VpcManager<RequiredInformationBase> {
             .interfaces(observations)
             .vteps(vtep_properties)
             .vrfs(vrf_properties)
-            .pci_netdevs(pci_netdev_properties)
             .build()
         {
             Ok(ob) => Ok(ob),
@@ -319,9 +310,6 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
         let mut rb_builder = RequiredInformationBaseBuilder::default();
         let mut interfaces = MultiIndexInterfaceSpecMap::default();
         let mut vrfs = MultiIndexVrfPropertiesSpecMap::default();
-        // TODO: empty for now:
-        // will need to get expected pci devices from internal config in follow on pr
-        let pci_netdevs = MultiIndexPciNetdevPropertiesSpecMap::default();
         let mut vteps = MultiIndexVtepPropertiesSpecMap::default();
         let mut associations = MultiIndexInterfaceAssociationSpecMap::default();
         for config in internal.vrfs.iter_by_tableid() {
@@ -388,10 +376,7 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
             vrf.controller(None);
             vrf.admin_state(AdminState::Up);
             match config.tableid {
-                None => {
-                    error!("no route_table_id set for config: {config:?}");
-                    panic!("no route_table_id set for config: {config:?}");
-                }
+                None => {}
                 Some(route_table_id) => {
                     debug!("route_table set for config: {config:?}");
                     vrf.properties(InterfacePropertiesSpec::Vrf(VrfPropertiesSpec {
@@ -516,7 +501,6 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
         rb_builder.interfaces(interfaces);
         rb_builder.vteps(vteps);
         rb_builder.vrfs(vrfs);
-        rb_builder.pci_netdevs(pci_netdevs);
         rb_builder.associations(associations);
         rb_builder.build()
     }
@@ -557,7 +541,6 @@ mod contract {
             }
             let mut requirements = RequiredInformationBase::default();
             let mut bridges = vec![];
-            let mut pci_netdevs = vec![];
             let mut vrfs = vec![];
             let mut vteps = vec![];
 

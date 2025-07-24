@@ -28,6 +28,7 @@ pub use vtep::*;
 
 use crate::{Manager, manager_of};
 use derive_builder::Builder;
+use futures::TryFutureExt;
 use multi_index_map::MultiIndexMap;
 use net::eth::ethtype::EthType;
 use net::eth::mac::SourceMac;
@@ -43,13 +44,13 @@ use net::route::RouteTableId;
 use net::vxlan::InvalidVni;
 use rekon::{AsRequirement, Create, Op, Reconcile, Remove, Update};
 use rtnetlink::packet_route::link::{
-    InfoBridge, InfoData, InfoVrf, InfoVxlan, LinkAttribute, LinkFlags, LinkInfo, LinkMessage,
-    State,
+    InfoBridge, InfoData, InfoKind, InfoVrf, InfoVxlan, LinkAttribute, LinkFlags, LinkInfo,
+    LinkMessage, State,
 };
-use rtnetlink::{LinkBridge, LinkUnspec, LinkVrf, LinkVxlan};
+use rtnetlink::{LinkBridge, LinkDummy, LinkUnspec, LinkVrf, LinkVxlan};
 use serde::{Deserialize, Serialize};
 use std::num::NonZero;
-use tracing::{error, trace, warn};
+use tracing::{debug, error, warn};
 
 /// The specified / intended state for a network interface.
 ///
