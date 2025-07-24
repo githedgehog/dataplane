@@ -7,8 +7,9 @@ license = "Apache-2.0"
 
 [features]
 default = []
+netdevsim = []
 
-bolero = ["dep:bolero"]
+bolero = ["dep:bolero", "id/bolero"]
 test_buffer = []
 
 [dependencies]
@@ -24,6 +25,7 @@ ordermap = { workspace = true, features = ["std"] }
 serde = { workspace = true, features = ["derive", "std"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+id = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"] }

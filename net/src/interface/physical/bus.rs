@@ -6,4 +6,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Deserialize, Serialize)]
 pub enum Bus {
     Pci,
+    #[cfg(feature = "netdevsim")]
+    NetDevSim,
 }

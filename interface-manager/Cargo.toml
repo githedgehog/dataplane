@@ -7,6 +7,7 @@ publish = false
 
 [features]
 default = []
+netdevsim = []
 bolero = ["dep:bolero", "net/bolero"]
 
 [dependencies]

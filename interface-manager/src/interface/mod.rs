@@ -11,6 +11,7 @@ mod tap;
 mod vrf;
 mod vtep;
 
+
 #[allow(unused_imports)] // re-export
 pub use association::*;
 #[allow(unused_imports)] // re-export
@@ -25,6 +26,12 @@ pub use tap::*;
 pub use vrf::*;
 #[allow(unused_imports)] // re-export
 pub use vtep::*;
+
+#[cfg(feature = "netdevsim")]
+mod netdevsim;
+#[cfg(feature = "netdevsim")]
+#[allow(unused_imports)]
+pub use netdevsim::*;
 
 use crate::{Manager, manager_of};
 use derive_builder::Builder;

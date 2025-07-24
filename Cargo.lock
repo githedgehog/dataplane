@@ -966,6 +966,7 @@ dependencies = [
  "arrayvec",
  "bitflags 2.9.1",
  "bolero",
+ "dataplane-id",
  "derive_builder 0.20.2",
  "etherparse",
  "linux-raw-sys 0.10.0",
