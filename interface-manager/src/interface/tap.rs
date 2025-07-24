@@ -1,12 +1,32 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use derive_builder::Builder;
+use multi_index_map::MultiIndexMap;
 use net::buffer::{PacketBuffer, PacketBufferMut};
 use net::interface::InterfaceName;
+use serde::{Deserialize, Serialize};
 use std::num::NonZero;
-use std::os::fd::AsRawFd;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{debug, error, info};
+use tracing::error;
+
+/// The planned properties of a dummy interface.
+#[derive(
+    Builder,
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    MultiIndexMap,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Deserialize,
+    Serialize,
+)]
+#[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
+pub struct TapDevicePropertiesSpec {}
 
 #[derive(Debug)]
 #[repr(transparent)]
@@ -31,31 +51,51 @@ mod helper {
     /// We are subject to a contract with the kernel.
     /// </div>
     #[repr(transparent)]
-    #[derive(Debug, Copy, Clone)]
-    pub(super) struct InterfaceRequest(libc::ifreq);
+    #[derive(Debug)]
+    struct InterfaceRequestInner(libc::ifreq);
+
+    /// This is a validated type around a value which is regrettably fragile.
+    ///
+    /// 1. Passed directly to the kernel.
+    /// 2. By a privileged thread.
+    /// 3. In an ioctl.
+    /// 4. By an implicitly null terminated pointer.
+    ///
+    /// As a result, strict checks are in place to ensure memory integrity.
+    #[derive(Debug)]
+    #[non_exhaustive]
+    pub(super) struct InterfaceRequest {
+        pub(super) name: InterfaceName,
+        request: Pin<Box<InterfaceRequestInner>>,
+    }
+
+    #[allow(unsafe_code)]
+    unsafe impl Send for InterfaceRequest {}
 
     use net::interface::InterfaceName;
     use nix::libc;
+    use std::os::fd::AsRawFd;
+    use std::pin::Pin;
+    use tracing::{info, trace, warn};
 
     nix::ioctl_write_ptr_bad!(
         /// Create a tap device
         make_tap_device,
         libc::TUNSETIFF,
-        InterfaceRequest
+        InterfaceRequestInner
     );
 
     nix::ioctl_write_ptr_bad!(
         /// Keep the tap device after the program ends
         persist_tap_device,
         libc::TUNSETPERSIST,
-        InterfaceRequest
+        InterfaceRequestInner
     );
 
-    impl InterfaceRequest {
-        /// Create a new `InterfaceRequest`.
-        #[cold]
+    impl InterfaceRequestInner {
+        /// Create a new `InterfaceRequestInner`.
         #[tracing::instrument(level = "trace")]
-        pub(super) fn new(name: &InterfaceName) -> Self {
+        fn new(name: &InterfaceName) -> Self {
             // we cannot support any platform for which this condition does not hold
             static_assertions::const_assert_eq!(libc::IF_NAMESIZE, InterfaceName::MAX_LEN + 1);
             let mut ifreq = libc::ifreq {
@@ -71,16 +111,57 @@ mod helper {
                     ifreq.ifr_name[i] = *byte as libc::c_char;
                 }
             }
-            InterfaceRequest(ifreq)
+            InterfaceRequestInner(ifreq)
+        }
+    }
+
+    impl InterfaceRequest {
+        /// Create a new `InterfaceRequest`.
+        #[cold]
+        #[tracing::instrument(level = "trace")]
+        pub fn new(name: InterfaceName) -> Self {
+            let request = Box::pin(InterfaceRequestInner::new(&name));
+            Self { name, request }
+        }
+
+        pub async fn create(self) -> Result<(), std::io::Error> {
+            let name = self.name;
+            trace!("opening /dev/net/tun");
+            let tap_file = tokio::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(false)
+                .truncate(false)
+                .open("/dev/net/tun")
+                .await?;
+            trace!("attempting to create tap device");
+            #[allow(unsafe_code, clippy::borrow_as_ptr)] // well-checked constraints
+            let ret = unsafe { make_tap_device(tap_file.as_raw_fd(), &*self.request)? };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                warn!("failed to create tap device {name}: {err}");
+                return Err(err);
+            }
+            info!("created tap device");
+            trace!("attempting to persist tap device");
+            #[allow(unsafe_code, clippy::borrow_as_ptr)] // well-checked constraints
+            let ret = unsafe { persist_tap_device(tap_file.as_raw_fd(), &*self.request)? };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                warn!("failed to persist tap device: {err}");
+                return Err(err);
+            }
+            info!("persisted tap device: {name}");
+            Ok(())
         }
     }
 
     #[cfg(any(test, feature = "bolero"))]
     mod contract {
-        use crate::interface::tap::helper::InterfaceRequest;
+        use crate::interface::tap::helper::InterfaceRequestInner;
         use bolero::{Driver, TypeGenerator};
 
-        impl TypeGenerator for InterfaceRequest {
+        impl TypeGenerator for InterfaceRequestInner {
             fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
                 Some(Self::new(&driver.produce()?))
             }
@@ -89,7 +170,7 @@ mod helper {
 
     #[cfg(test)]
     mod test {
-        use crate::interface::tap::helper::InterfaceRequest;
+        use crate::interface::tap::helper::InterfaceRequestInner;
         use net::interface::InterfaceName;
         use std::ffi::CStr;
 
@@ -99,7 +180,7 @@ mod helper {
                 .with_type()
                 .for_each(|name: &InterfaceName| {
                     let name_str = name.to_string();
-                    let ifreq = InterfaceRequest::new(name);
+                    let ifreq = InterfaceRequestInner::new(name);
                     assert_eq!(ifreq.0.ifr_name[ifreq.0.ifr_name.len() - 1], 0);
                     assert_eq!(ifreq.0.ifr_name[name_str.len()], 0);
                     #[allow(unsafe_code)] // test code
@@ -116,7 +197,7 @@ mod helper {
                     assert_eq!(*name, name_parse_back);
                     assert_eq!(
                         ifreq.0.ifr_name,
-                        InterfaceRequest::new(&name_parse_back).0.ifr_name
+                        InterfaceRequestInner::new(&name_parse_back).0.ifr_name
                     );
                 });
         }
@@ -125,11 +206,14 @@ mod helper {
         fn interface_request_contract() {
             bolero::check!()
                 .with_type()
-                .for_each(|req: &InterfaceRequest| {
+                .for_each(|req: &InterfaceRequestInner| {
                     #[allow(unsafe_code)] // test code
                     let as_cstr = unsafe { CStr::from_ptr(req.0.ifr_name.as_ptr()) };
                     let as_ifname = InterfaceName::try_from(as_cstr.to_str().unwrap()).unwrap();
-                    assert_eq!(req.0.ifr_name, InterfaceRequest::new(&as_ifname).0.ifr_name);
+                    assert_eq!(
+                        req.0.ifr_name,
+                        InterfaceRequestInner::new(&as_ifname).0.ifr_name
+                    );
                 });
         }
     }
@@ -143,35 +227,8 @@ impl TapDevice {
     /// If the tap device cannot be opened or created, an io::Error is returned.
     #[cold]
     #[tracing::instrument(level = "info")]
-    pub async fn open(name: &InterfaceName) -> Result<Self, std::io::Error> {
-        let ifreq = helper::InterfaceRequest::new(name);
-        debug!("opening /dev/net/tun");
-        let tap_file = tokio::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(false)
-            .truncate(false)
-            .open("/dev/net/tun")
-            .await?;
-        debug!("attempting to create tap device: {name}");
-        #[allow(unsafe_code, clippy::borrow_as_ptr)] // well-checked constraints
-        let ret = unsafe { helper::make_tap_device(tap_file.as_raw_fd(), &ifreq)? };
-        if ret < 0 {
-            let err = std::io::Error::last_os_error();
-            error!("failed to create tap device {name}: {err}");
-            return Err(err);
-        }
-        info!("created tap device: {name}");
-        debug!("attempting to persist tap device: {name}");
-        #[allow(unsafe_code, clippy::borrow_as_ptr)] // well-checked constraints
-        let ret = unsafe { helper::persist_tap_device(tap_file.as_raw_fd(), &ifreq)? };
-        if ret < 0 {
-            let err = std::io::Error::last_os_error();
-            error!("failed to persist tap device {name}: {err}");
-            return Err(err);
-        }
-        info!("persisted tap device: {name}");
-        Ok(Self { file: tap_file })
+    pub async fn open(name: &InterfaceName) -> Result<(), std::io::Error> {
+        helper::InterfaceRequest::new(name.clone()).create().await
     }
 
     /// Read a packet from the tap, filling out the provided buffer with the contents of the packet.
