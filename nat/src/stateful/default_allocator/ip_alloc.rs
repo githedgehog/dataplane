@@ -8,8 +8,9 @@ use crate::stateful::port::NatPort;
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, VecDeque};
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::sync::Mutex;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct AllocatedIpsList<I: NatIp> {
     in_use: VecDeque<AllocatedIp<I>>,
     full: Vec<AllocatedIp<I>>,
@@ -51,8 +52,24 @@ impl<I: NatIp> AllocatedIpsList<I> {
 }
 
 #[derive(Debug)]
+pub struct PoolBitmap(Mutex<RoaringBitmap>);
+
+impl PoolBitmap {
+    fn new() -> Self {
+        Self(Mutex::new(RoaringBitmap::new()))
+    }
+
+    fn pop_ip(&mut self) -> Result<u32, AllocatorError> {
+        let mut bitmap = self.0.lock().unwrap();
+        let offset = bitmap.min().ok_or(AllocatorError::NoFreeIp)?;
+        bitmap.remove(offset);
+        Ok(offset)
+    }
+}
+
+#[derive(Debug)]
 pub struct NatPool<I: NatIp> {
-    bitmap: RoaringBitmap,
+    bitmap: PoolBitmap,
     bitmap_mapping: BTreeMap<u32, u128>,
     allocated_ips: AllocatedIpsList<I>,
 }
@@ -60,7 +77,7 @@ pub struct NatPool<I: NatIp> {
 impl<I: NatIp> NatPool<I> {
     pub fn new() -> Self {
         Self {
-            bitmap: RoaringBitmap::new(),
+            bitmap: PoolBitmap::new(),
             bitmap_mapping: BTreeMap::new(),
             allocated_ips: AllocatedIpsList {
                 in_use: VecDeque::new(),
@@ -80,8 +97,7 @@ impl NatPool<Ipv4Addr> {
 
     fn use_new_ip(&mut self) -> Result<(), AllocatorError> {
         // Retrieve the first available IP address
-        let offset = self.bitmap.min().ok_or(AllocatorError::NoFreeIp)?;
-        self.bitmap.remove(offset);
+        let offset = self.bitmap.pop_ip()?;
         let alloc_ip = AllocatedIp::new(Ipv4Addr::from(offset));
 
         // Move the new IP to the front of the list of IP in use for allocation
@@ -134,8 +150,7 @@ impl NatPool<Ipv6Addr> {
 
     fn use_new_ip(&mut self) -> Result<(), AllocatorError> {
         // Retrieve the first available offset
-        let offset = self.bitmap.min().ok_or(AllocatorError::NoFreeIp)?;
-        self.bitmap.remove(offset);
+        let offset = self.bitmap.pop_ip()?;
 
         // For IPv6, the offset does not directly convert to an IP address because the bitmap space
         // is lower than the IPv6 addressing space. Instead, we need to map the offset to the
@@ -163,7 +178,7 @@ impl NatPool<Ipv6Addr> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct AllocatedIp<I: NatIp> {
     ip: I,
     port_allocator: PortBlockAllocator,
