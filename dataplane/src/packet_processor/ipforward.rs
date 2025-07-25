@@ -223,25 +223,26 @@ impl IpForwarder {
         let nfi = &self.name;
 
         let Some(src_mac) = &vtep.get_mac() else {
-            error!("Can't set source mac: VTEP has no mac associated!");
+            error!("{nfi}: VxLAN encap FAILED: VTEP has no mac associated!");
             packet.done(DoneReason::InternalFailure);
             return;
         };
         let Some(dst_mac) = &vxlan.dmac else {
+            error!("{nfi}: VxLAN encap FAILED: unknown dst rmac!");
             packet.done(DoneReason::InternalFailure);
             return;
         };
 
         // set current packet src mac (inner)
         if let Err(e) = packet.set_eth_source(*src_mac) {
-            error!("{nfi}: Failed to set src mac '{src_mac}': {e}");
+            error!("{nfi}: VxLAN encap FAILED: can't set src mac '{src_mac}': {e}");
             packet.done(DoneReason::InternalFailure);
             return;
         }
 
         // set current packet dst mac (inner)
         if let Err(e) = packet.set_eth_destination(*dst_mac) {
-            error!("{nfi}: Failed to set dst mac '{dst_mac}': {e}");
+            error!("{nfi}: VxLAN encap FAILED: can't set dst mac '{dst_mac}': {e}");
             packet.done(DoneReason::InternalFailure);
             return;
         }
@@ -265,12 +266,14 @@ impl IpForwarder {
             Ok(vxlan_headers) => match packet.vxlan_encap(&vxlan_headers) {
                 Ok(()) => {
                     debug!("{nfi}: ENCAPSULATED packet with VxLAN:\n {packet}");
+
                     let vni = vxlan_headers
                         .headers()
                         .udp_encap
                         .as_ref()
                         .unwrap_or_else(|| unreachable!())
                         .vxlan_vni();
+
                     packet.get_meta_mut().dst_vni = vni;
                 }
                 Err(e) => {
