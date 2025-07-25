@@ -5,23 +5,21 @@ use arrayvec::ArrayVec;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display, Formatter, LowerHex};
 
-const SWITCH_ID_MAX_LEN: usize = 32;
-
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
 #[repr(transparent)]
-pub struct SwitchId(ArrayVec<u8, SWITCH_ID_MAX_LEN>);
+pub struct SwitchId(ArrayVec<u8, { SwitchId::MAX_LEN }>);
 
 #[derive(thiserror::Error, Debug)]
 pub enum SwitchIdError {
     #[error("SwitchId is empty")]
     Empty,
-    #[error("Maximum length of an ESwitchId is 32 bytes, received {0} bytes")]
+    #[error("Maximum length of an ESwitchId is {MAX} bytes, received {0} bytes", MAX = SwitchId::MAX_LEN)]
     InvalidLength(usize),
 }
 
 impl SwitchId {
     /// The maximum length of an [`SwitchId`] in bytes
-    pub const MAX_LEN: usize = SWITCH_ID_MAX_LEN;
+    pub const MAX_LEN: usize = 128;
 
     /// Create a new [`SwitchId`] from a raw byte slice
     ///
@@ -71,7 +69,7 @@ impl Display for SwitchId {
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
-    use crate::interface::switch::{SWITCH_ID_MAX_LEN, SwitchId};
+    use crate::interface::switch::SwitchId;
     use arrayvec::ArrayVec;
     use bolero::generator::bolero_generator::bounded::BoundedValue;
     use bolero::{Driver, TypeGenerator};
@@ -82,7 +80,7 @@ mod contract {
             let len = usize::gen_bounded(
                 driver,
                 Bound::Included(&1),
-                Bound::Excluded(&SWITCH_ID_MAX_LEN),
+                Bound::Excluded(&SwitchId::MAX_LEN),
             )?;
             let mut bytes = ArrayVec::new();
             for _ in 0..len {
