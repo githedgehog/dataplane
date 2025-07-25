@@ -657,11 +657,11 @@ mod tests {
             println!("{nhop}");
 
             // build fib entry for next-hop
-            let mut fibgroup = nhop.as_fib_entry_group();
-            println!("{fibgroup}");
+            //            let mut fibgroup = nhop.as_fib_entry_group();
+            //            println!("{fibgroup}");
 
-            fibgroup.resolve(&rmac_store);
-            println!("{fibgroup}");
+            //            fibgroup.resolve(&rmac_store);
+            //            println!("{fibgroup}");
         }
 
         {
@@ -671,11 +671,11 @@ mod tests {
             // we have to collect all fib entries
             let mut fibgroup = FibGroup::new();
             for nhop in route.s_nhops.iter() {
-                fibgroup.extend(&mut nhop.rc.as_fib_entry_group());
+                //                fibgroup.extend(&mut nhop.rc.as_fib_entry_group());
             }
 
-            fibgroup.resolve(&rmac_store);
-            println!("{fibgroup}");
+            //            fibgroup.resolve(&rmac_store);
+            //            println!("{fibgroup}");
         }
 
         {
@@ -685,10 +685,10 @@ mod tests {
             // we have to collect all fib entries
             let mut fibgroup = FibGroup::new();
             for nhop in route.s_nhops.iter() {
-                fibgroup.extend(&mut nhop.rc.as_fib_entry_group());
+                //               fibgroup.extend(&mut nhop.rc.as_fib_entry_group());
             }
 
-            fibgroup.resolve(&rmac_store);
+            //            fibgroup.resolve(&rmac_store);
             println!("{fibgroup}");
         }
     }
@@ -711,7 +711,7 @@ mod tests {
             let mut fibgroup = FibGroup::new();
             for nhop in route.s_nhops.iter() {
                 println!("next-hop is:\n {nhop}");
-                fibgroup.extend(&nhop.rc.as_fib_entry_group_lazy());
+                fibgroup.extend(&nhop.rc.build_nhop_fibgroup());
             }
             println!("Fib group is:\n {fibgroup}");
 
@@ -733,7 +733,7 @@ mod tests {
             let mut fibgroup = FibGroup::new();
             for nhop in route.s_nhops.iter() {
                 println!("next-hop is:\n {nhop}");
-                fibgroup.extend(&mut nhop.rc.as_fib_entry_group_lazy());
+                fibgroup.extend(&mut nhop.rc.build_nhop_fibgroup());
             }
             println!("Fib group is:\n {fibgroup}");
 
@@ -755,13 +755,13 @@ mod tests {
             // we have to collect all fib entries
             let mut fibgroup = FibGroup::new();
             for nhop in route.s_nhops.iter() {
-                fibgroup.extend(&mut nhop.rc.as_fib_entry_group_lazy());
+                fibgroup.extend(&mut nhop.rc.build_nhop_fibgroup());
             }
         }
         fib.purge();
         println!("{fib}");
         for nhop in vrf.nhstore.iter() {
-            let fibgroup = nhop.as_fib_entry_group_lazy();
+            let fibgroup = nhop.build_nhop_fibgroup();
             let _ = fib.add_group(fibgroup.clone());
         }
         println!("{fib}");

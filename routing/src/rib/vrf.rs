@@ -431,15 +431,22 @@ impl Vrf {
         let updates: Vec<(Prefix, FibGroup)> = self
             .iter_v4()
             .map(|(prefix, route)| {
-                let mut fibgroup = FibGroup::new();
-                for nhop in &route.s_nhops {
-                    let nhfibg = &*nhop.rc.fibgroup.borrow();
-                    fibgroup.extend(nhfibg);
-                }
+                let fibgroup = Self::build_route_fib_group(route);
                 (Prefix::IPV4(*prefix), fibgroup)
             })
             .collect();
         updates
+    }
+
+    #[inline]
+    #[must_use]
+    fn build_route_fib_group(route: &Route) -> FibGroup {
+        let mut fibgroup = FibGroup::new();
+        for nhop in &route.s_nhops {
+            let nhfibg = &*nhop.rc.fibgroup.borrow();
+            fibgroup.extend(nhfibg);
+        }
+        fibgroup
     }
 
     pub fn add_route_complete(
@@ -453,10 +460,8 @@ impl Vrf {
         // register next-hops. This mutates the route adding references to the stored next-hops
         self.register_shared_nhops(&mut route, nhops);
 
-        // resolve next-hops
-        let rvrf = vrf0.unwrap_or(self);
-
         // resolve the next-hops of the received route
+        let rvrf = vrf0.unwrap_or(self);
         for shim in &route.s_nhops {
             let refc = self.nhstore.get_nhop_rc_count(&shim.rc.key);
             if refc == 2 {
@@ -465,17 +470,9 @@ impl Vrf {
             }
         }
 
-        // Fib is optional atm
-        if let Some(fibw) = &mut self.fibw {
-            // build a fib group from the fib groups of all next-hops for this route
-            let mut fibgroup = FibGroup::new();
-            for nhop in &route.s_nhops {
-                let nhfibg = &*nhop.rc.fibgroup.borrow();
-                fibgroup.extend(nhfibg);
-            }
-            // add to fib
-            fibw.add_fibgroup(*prefix, fibgroup, true);
-        }
+        // build a fib group from the fib groups of all next-hops for this route. We build this
+        // before storing the route as that will move it into the VRF.
+        let fibgroup = Self::build_route_fib_group(&route);
 
         // store the route
         let prior = match prefix {
@@ -485,6 +482,12 @@ impl Vrf {
         // if we happen to replace a route, unregister its next-hops
         if let Some(mut prior) = prior {
             self.deregister_shared_nexthops(&mut prior);
+        }
+
+        // Push (prefix, fibgroup) to fib.
+        if let Some(fibw) = &mut self.fibw {
+            // add to fib
+            fibw.add_fibgroup(*prefix, fibgroup, true);
         }
     }
 

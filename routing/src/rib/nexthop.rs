@@ -200,7 +200,7 @@ impl Nhop {
         let mut resolvers = Vec::new();
         debug!("Resolving {a} with vrf '{}'({})", vrf.name, vrf.vrfid);
         let (prefix, route) = vrf.lpm(a);
-        debug!("Address {a} resolves with route to {prefix}");
+        debug!("Address {a} resolves with route to {prefix}:");
         for nh in &route.s_nhops {
             if *nh.rc == *self {
                 error!(
@@ -208,12 +208,9 @@ impl Nhop {
                     nh.rc
                 );
             } else {
+                debug!(" -> {}", nh.rc);
                 resolvers.push(nh.rc.clone());
             }
-        }
-        debug!("Address {a} resolves to");
-        for resolver in &resolvers {
-            debug!(" -> {resolver}");
         }
         // update resolvers
         self.resolvers.replace(resolvers);
@@ -390,7 +387,7 @@ impl NhopStore {
     #[allow(dead_code)]
     pub fn resolve_nhop_instructions(&self, rstore: &RmacStore) {
         for nhop in self.iter() {
-            nhop.resolve_instructions(rstore);
+            nhop.build_nhop_instructions(rstore);
         }
     }
     pub fn lazy_resolve_all(&self, vrf: &Vrf) {

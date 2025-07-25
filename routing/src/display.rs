@@ -648,7 +648,6 @@ impl Display for PktInstruction {
             PktInstruction::Local(ifindex) => write!(f, "Local (if {ifindex})"),
             PktInstruction::Egress(egress) => write!(f, "egress: {egress}"),
             PktInstruction::Encap(encap) => write!(f, "encap: {encap}"),
-            PktInstruction::Nat => write!(f, "NAT"),
         }
     }
 }
