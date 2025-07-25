@@ -170,16 +170,13 @@ pub type RouteV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &Route)) -> bool>;
 pub type RouteV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &Route)) -> bool>;
 
 impl Vrf {
-    const DEFAULT_IPV4_CAPACITY: usize = 0;
-    const DEFAULT_IPV6_CAPACITY: usize = 0;
-
     /////////////////////////////////////////////////////////////////////////
     /// Create a new [`Vrf`]
     /////////////////////////////////////////////////////////////////////////
     #[must_use]
     pub fn new(config: &RouterVrfConfig) -> Self {
-        let routesv4 = PrefixMapTrieWithDefault::with_capacity(Vrf::DEFAULT_IPV4_CAPACITY);
-        let routesv6 = PrefixMapTrieWithDefault::with_capacity(Vrf::DEFAULT_IPV6_CAPACITY);
+        let routesv4 = PrefixMapTrieWithDefault::new();
+        let routesv6 = PrefixMapTrieWithDefault::new();
         let mut vrf = Self {
             name: config.name.to_owned(),
             vrfid: config.vrfid,
