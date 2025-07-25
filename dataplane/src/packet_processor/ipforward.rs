@@ -334,7 +334,6 @@ impl IpForwarder {
             }
             PktInstruction::Encap(encap) => self.packet_exec_instruction_encap(packet, encap, vtep),
             PktInstruction::Egress(egress) => self.packet_exec_instruction_egress(packet, egress),
-            PktInstruction::Nat => {}
         }
     }
 

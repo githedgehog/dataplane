@@ -16,11 +16,9 @@ use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use net::vxlan::Vni;
 
+use crate::evpn::Vtep;
+use crate::fib::fibobjects::{FibEntry, FibGroup, PktInstruction};
 use crate::rib::vrf::VrfId;
-use crate::{
-    evpn::Vtep,
-    fib::fibobjects::{FibEntry, FibGroup, PktInstruction},
-};
 
 use tracing::{debug, info, warn};
 

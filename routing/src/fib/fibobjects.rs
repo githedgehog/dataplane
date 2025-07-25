@@ -213,5 +213,4 @@ pub enum PktInstruction {
     Local(IfIndex),       /* packet is destined to gw */
     Encap(Encapsulation), /* encapsulate the packet */
     Egress(EgressObject), /* send the packet over interface to some ip */
-    Nat,
 }
