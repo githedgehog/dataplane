@@ -31,13 +31,26 @@ pub(crate) struct FibGroupStore(HashMap<NhopKey, Rc<UnsafeCell<FibGroup>>, Rando
 impl FibGroupStore {
     #[must_use]
     pub(crate) fn new() -> Self {
-        Self(HashMap::with_hasher(RandomState::with_seed(0)))
+        let mut store = Self(HashMap::with_hasher(RandomState::with_seed(0)));
+        store.add_mod_group(&NhopKey::with_drop(), Self::drop_fibgroup());
+        store
     }
     #[must_use]
     #[allow(clippy::len_without_is_empty)]
     pub(crate) fn len(&self) -> usize {
         self.0.len()
     }
+    #[must_use]
+    fn drop_fibgroup() -> FibGroup {
+        FibGroup::with_entry(FibEntry::drop_fibentry())
+    }
+    #[must_use]
+    /// get an Rc for the drop `Fibgroup`. The drop fibgroup is unique.
+    pub fn get_drop_fibgroup_ref(&self) -> Rc<UnsafeCell<FibGroup>> {
+        self.get_ref(&NhopKey::with_drop())
+            .unwrap_or_else(|| unreachable!())
+    }
+
     ////////////////////////////////////////////////////////////////////////////////
     /// Add a `FibGroup` for a given `NhopKey` or replace it if it exists.
     ////////////////////////////////////////////////////////////////////////////////
@@ -94,6 +107,10 @@ impl FibRoute {
     #[must_use]
     pub(crate) fn new() -> Self {
         Self(vec![])
+    }
+    #[must_use]
+    pub fn with_fibgroup(fg_ref: Rc<UnsafeCell<FibGroup>>) -> Self {
+        Self(vec![fg_ref])
     }
     /// Add a reference to a `FibGroup` to a `FibRoute`
     pub(crate) fn add_fibgroup_ref(&mut self, fg_ref: Rc<UnsafeCell<FibGroup>>) {
@@ -250,7 +267,7 @@ pub mod tests {
         store.add_mod_group(&key2, g2.clone());
         store.add_mod_group(&key3, g3.clone());
         store.add_mod_group(&key4, g4.clone());
-        assert_eq!(store.len(), 4);
+        assert_eq!(store.len(), 4 + 1); // +1 is for drop group
         println!("{store:#?}");
 
         // Build a route that references the four fibgroups
@@ -278,8 +295,8 @@ pub mod tests {
         store.del(&key2);
         store.del(&key3);
         store.del(&key4);
-        assert_eq!(store.len(), 4);
-        assert_eq!(store.purge(), 0);
+        assert_eq!(store.len(), 4 + 1); // +1 is for drop group
+        assert_eq!(store.purge(), 1);
 
         // remove last fibgroup from route and remove it: should be removed
         fibroute.0.pop();
