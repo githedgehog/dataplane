@@ -139,6 +139,10 @@ impl FibEntry {
             instructions: vec![instruction],
         }
     }
+    #[must_use]
+    pub fn drop_fibentry() -> Self {
+        Self::with_inst(PktInstruction::Drop)
+    }
     pub fn add(&mut self, instruction: PktInstruction) {
         self.instructions.push(instruction);
     }
