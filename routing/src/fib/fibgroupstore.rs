@@ -77,6 +77,9 @@ impl FibGroupStore {
         self.0.get(key).map(|group| unsafe { &*group.get() })
     }
     pub(crate) fn del(&mut self, key: &NhopKey) {
+        if key == &NhopKey::with_drop() {
+            return;
+        }
         let mut remove: bool = false;
         if let Some(group) = self.0.get(key) {
             if Rc::strong_count(group) == 1 {
@@ -96,7 +99,13 @@ impl FibGroupStore {
     ////////////////////////////////////////////////////////////////////////////////////////////////////
     pub fn purge(&mut self) -> usize {
         let len = self.len();
-        self.0.retain(|_key, group| Rc::strong_count(group) > 1);
+        self.0
+            .retain(|key, group|  { let keep = Rc::strong_count(group) > 1 || key == &NhopKey::with_drop();
+                if !keep {
+                    debug!("Will purge fibgroup for nhop '{key}'");
+                }
+                keep
+        });
         len - self.len()
     }
 }
@@ -296,12 +305,12 @@ pub mod tests {
         store.del(&key3);
         store.del(&key4);
         assert_eq!(store.len(), 4 + 1); // +1 is for drop group
-        assert_eq!(store.purge(), 1);
+        assert_eq!(store.purge(), 0);
 
         // remove last fibgroup from route and remove it: should be removed
         fibroute.0.pop();
         store.del(&key4);
-        assert_eq!(store.len(), 3);
+        assert_eq!(store.len(), (4 + 1) - 1);
 
         // remove another one
         fibroute.0.pop();
@@ -314,6 +323,6 @@ pub mod tests {
         store.del(&key1);
         store.del(&key2);
         store.del(&key3);
-        assert_eq!(store.len(), 0);
+        assert_eq!(store.len(), 1); // drop group always remains
     }
 }
