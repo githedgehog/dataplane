@@ -6,10 +6,11 @@
 
 mod allocator;
 mod default_allocator;
+mod ippalloc;
 mod port;
 pub mod sessions;
 
-use crate::stateful::allocator::NatAllocator;
+use crate::stateful::allocator::{AllocatorError, NatAllocator};
 use crate::stateful::default_allocator::NatDefaultAllocator;
 use crate::stateful::port::NatPort;
 use crate::stateful::sessions::{
@@ -25,6 +26,7 @@ use net::udp::port::UdpPort;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use routing::rib::vrf::VrfId;
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -42,6 +44,10 @@ pub trait NatIp: private::Sealed + Debug + Clone + Copy + Eq + Ord + Hash {
     fn to_ip_addr(&self) -> IpAddr;
     fn from_src_addr(net: &Net) -> Option<Self>;
     fn from_dst_addr(net: &Net) -> Option<Self>;
+    fn try_from_offset(
+        offset: u32,
+        bitmap_mapping: &BTreeMap<u32, u128>,
+    ) -> Result<Self, AllocatorError>;
 }
 impl private::Sealed for Ipv4Addr {}
 impl private::Sealed for Ipv6Addr {}
@@ -63,6 +69,12 @@ impl NatIp for Ipv4Addr {
             None
         }
     }
+    fn try_from_offset(
+        offset: u32,
+        _bitmap_mapping: &BTreeMap<u32, u128>,
+    ) -> Result<Self, AllocatorError> {
+        Ok(Ipv4Addr::from(offset))
+    }
 }
 impl NatIp for Ipv6Addr {
     fn to_ip_addr(&self) -> IpAddr {
@@ -81,6 +93,16 @@ impl NatIp for Ipv6Addr {
         } else {
             None
         }
+    }
+    // TODO: Pass mapping function as argument
+    fn try_from_offset(
+        offset: u32,
+        bitmap_mapping: &BTreeMap<u32, u128>,
+    ) -> Result<Self, AllocatorError> {
+        // For IPv6, the offset does not directly convert to an IP address because the bitmap space
+        // is lower than the IPv6 addressing space. Instead, we need to map the offset to the
+        // corresponding address within our list of prefixes.
+        ippalloc::map_offset(offset, bitmap_mapping)
     }
 }
 
