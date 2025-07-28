@@ -80,7 +80,7 @@ impl<I: NatIp> IpAllocator<I> {
 }
 
 impl<I: NatIp> IpAllocator<I> {
-    fn reuse_allocated_ip(&self) -> Result<Arc<AllocatedPort<I>>, AllocatorError> {
+    fn reuse_allocated_ip(&self) -> Result<AllocatedPort<I>, AllocatorError> {
         let allocated_ips = self.pool.read().unwrap();
         for ip_weak in allocated_ips.ips_in_use() {
             let Some(ip) = ip_weak.upgrade() else {
@@ -115,7 +115,7 @@ impl<I: NatIp> IpAllocator<I> {
         allocated_ips.cleanup();
     }
 
-    pub fn allocate(&self) -> Result<Arc<AllocatedPort<I>>, AllocatorError> {
+    pub fn allocate(&self) -> Result<AllocatedPort<I>, AllocatorError> {
         // FIXME: Should we clean up every time??
         self.cleanup_used_ips();
 
@@ -155,14 +155,16 @@ pub fn map_offset(
 #[derive(Debug)]
 struct AllocatedIp<I: NatIp> {
     ip: I,
-    port_allocator: Mutex<port_alloc::PortBlockAllocator>,
+    block_allocator: port_alloc::BlockAllocator,
+    allocated_blocks: RwLock<VecDeque<Arc<AllocatedPortBlock<I>>>>,
 }
 
 impl<I: NatIp> AllocatedIp<I> {
     fn new(ip: I) -> Self {
         Self {
             ip,
-            port_allocator: port_alloc::PortBlockAllocator::new().into(),
+            block_allocator: port_alloc::BlockAllocator::new(),
+            allocated_blocks: RwLock::new(VecDeque::new()),
         }
     }
 
@@ -170,18 +172,18 @@ impl<I: NatIp> AllocatedIp<I> {
         self.ip
     }
 
-    fn allocate_block(&self) -> Result<Arc<AllocatedPortBlock<I>>, AllocatorError> {
-        todo!()
-    }
-
     fn has_free_ports(&self) -> bool {
         todo!()
     }
 
-    fn allocate_port(&self) -> Result<Arc<AllocatedPort<I>>, AllocatorError> {
-        // TODO
+    fn allocate_block(self: Arc<Self>) -> Result<AllocatedPortBlock<I>, AllocatorError> {
+        self.block_allocator.allocate(self.clone())
+    }
+
+    fn allocate_port(self: Arc<Self>) -> Result<AllocatedPort<I>, AllocatorError> {
+        // TODO: error handling for port
         let allocated_block = self.allocate_block()?;
-        allocated_block.allocate_port()
+        Arc::new(allocated_block).allocate_port()
     }
 }
 
@@ -194,15 +196,32 @@ impl<I: NatIp> Drop for AllocatedIp<I> {
 #[derive(Debug)]
 pub struct AllocatedPortBlock<I: NatIp> {
     ip: Arc<AllocatedIp<I>>,
+    base_port_idx: u16,
+    index: usize,
+    usage_bitmap: Mutex<port_alloc::Bitmap256>,
 }
 
 impl<I: NatIp> AllocatedPortBlock<I> {
-    fn new(ip: Arc<AllocatedIp<I>>) -> Self {
-        Self { ip }
+    fn new(ip: Arc<AllocatedIp<I>>, index: usize, base_port_index: u8) -> Self {
+        Self {
+            ip,
+            base_port_idx: u16::from(base_port_index),
+            index,
+            usage_bitmap: Mutex::new(port_alloc::Bitmap256::new()),
+        }
     }
 
-    fn allocate_port(&self) -> Result<Arc<AllocatedPort<I>>, AllocatorError> {
-        todo!()
+    fn allocate_port(self: Arc<Self>) -> Result<AllocatedPort<I>, AllocatorError> {
+        let bitmap_offset = self
+            .usage_bitmap
+            .lock()
+            .unwrap()
+            .allocate()
+            .map_err(|()| AllocatorError::NoFreePort(self.base_port_idx))?;
+
+        NatPort::new_checked(self.base_port_idx * 256 + bitmap_offset)
+            .map_err(AllocatorError::PortAllocationFailed)
+            .map(|port| AllocatedPort::new(port, self.clone()))
     }
 }
 

@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use crate::stateful::NatIp;
+use crate::stateful::ippalloc::AllocatedIp;
+use crate::stateful::ippalloc::AllocatedPortBlock;
+
 use super::AllocatorError;
 use super::NatPort;
 use rand::seq::SliceRandom;
+use std::sync::Arc;
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,24 +46,24 @@ impl PortBlock {
 }
 
 #[derive(Debug, Clone)]
-struct Bitmap256 {
+pub struct Bitmap256 {
     first_half: u128,
     second_half: u128,
 }
 
 impl Bitmap256 {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             first_half: 0,
             second_half: 0,
         }
     }
 
-    fn is_full(&self) -> bool {
+    pub fn is_full(&self) -> bool {
         self.first_half == u128::MAX && self.second_half == u128::MAX
     }
 
-    fn allocate(&mut self) -> Result<u16, ()> {
+    pub fn allocate(&mut self) -> Result<u16, ()> {
         #[allow(clippy::cast_possible_truncation)] // max value is 128
         let ones = self.first_half.leading_ones() as u16;
         if ones < 128 {
@@ -79,14 +84,14 @@ impl Bitmap256 {
 }
 
 #[derive(Debug)]
-struct PortAllocator {
+pub struct PortAllocator {
     base_port_idx: u16,
     index: usize,
     usage_bitmap: Mutex<Bitmap256>,
 }
 
 impl PortAllocator {
-    fn new(index: usize, block: &PortBlock) -> Self {
+    pub fn new(index: usize, block: &PortBlock) -> Self {
         Self {
             base_port_idx: u16::from(block.base_port_idx),
             index,
@@ -94,7 +99,7 @@ impl PortAllocator {
         }
     }
 
-    fn allocate_port(&mut self) -> Result<NatPort, AllocatorError> {
+    pub fn allocate_port(&self) -> Result<NatPort, AllocatorError> {
         let bitmap_offset = self.usage_bitmap.lock().unwrap().allocate().map_err(|()| {
             // Bitmap is full, meaning we no longer have any free port in the block.
             // The caller should make sure this never happens, by checking whether the block is full
@@ -112,7 +117,7 @@ impl PortAllocator {
 }
 
 #[derive(Debug)]
-struct BlockAllocator {
+pub struct BlockAllocatorOld {
     // Randomised base port numbers from 1024 to 65535, by increments of 256
     //
     // FIXME: We only randomise port blocks at cration of the NatAllocIp, making it trivial to
@@ -121,7 +126,7 @@ struct BlockAllocator {
     usable_blocks: u8,
 }
 
-impl BlockAllocator {
+impl BlockAllocatorOld {
     fn new() -> Self {
         let mut rng = rand::rng();
         // Skip ports 0 to 1023
@@ -141,7 +146,7 @@ impl BlockAllocator {
         self.usable_blocks > 0
     }
 
-    fn allocate(&mut self) -> Result<usize, AllocatorError> {
+    pub fn allocate(&mut self) -> Result<usize, AllocatorError> {
         let (index, block) = self
             .blocks
             .iter_mut()
@@ -161,14 +166,64 @@ impl BlockAllocator {
 }
 
 #[derive(Debug)]
+pub struct BlockAllocator {
+    // Randomised base port numbers from 1024 to 65535, by increments of 256
+    //
+    // FIXME: We only randomise port blocks at cration of the NatAllocIp, making it trivial to
+    // determine port order if the block is later reused.
+    blocks: [PortBlock; 252],
+    usable_blocks: u8,
+}
+
+impl BlockAllocator {
+    pub fn new() -> Self {
+        let mut rng = rand::rng();
+        // Skip ports 0 to 1023
+        let mut base_ports = (4..=255).collect::<Vec<_>>();
+
+        base_ports.shuffle(&mut rng);
+        let mut blocks = std::array::from_fn(|i| PortBlock::new(base_ports[i]));
+        blocks[0].mark_heating();
+
+        Self {
+            blocks,
+            usable_blocks: 251,
+        }
+    }
+
+    fn has_usable_blocks(&self) -> bool {
+        self.usable_blocks > 0
+    }
+
+    pub fn allocate<I: NatIp>(
+        &self,
+        ip: Arc<AllocatedIp<I>>,
+    ) -> Result<AllocatedPortBlock<I>, AllocatorError> {
+        let (index, block) = self
+            .blocks
+            .iter()
+            .enumerate()
+            .find(|(_, block)| block.state == NatAllocBlockState::Free)
+            .ok_or(AllocatorError::NoPortBlock)?;
+
+        Ok(AllocatedPortBlock::new(ip, index, block.base_port_idx))
+    }
+
+    fn mark_block_full(&mut self, index: usize) {
+        self.blocks[index].mark_cooling();
+        self.usable_blocks -= 1;
+    }
+}
+
+#[derive(Debug)]
 pub struct PortBlockAllocator {
-    block_allocator: Mutex<BlockAllocator>,
+    block_allocator: Mutex<BlockAllocatorOld>,
     allocator: PortAllocator,
 }
 
 impl PortBlockAllocator {
     pub fn new() -> Self {
-        let block_allocator = BlockAllocator::new();
+        let block_allocator = BlockAllocatorOld::new();
         let allocator = PortAllocator::new(0, &block_allocator.blocks[0]);
 
         Self {
