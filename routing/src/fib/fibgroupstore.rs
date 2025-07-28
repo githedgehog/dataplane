@@ -87,16 +87,10 @@ impl FibGroupStore {
         if key == &NhopKey::with_drop() {
             return;
         }
-        let mut remove: bool = false;
         if let Some(group) = self.0.get(key) {
             if Rc::strong_count(group) == 1 {
-                remove = true;
+                self.0.remove(key);
             }
-        } else {
-            return;
-        }
-        if remove {
-            self.0.remove(key);
         }
     }
     ////////////////////////////////////////////////////////////////////////////////////////////////////
