@@ -18,7 +18,7 @@ use crate::fib::fibobjects::FibGroup;
 use crate::fib::fibtype::{FibId, FibReader, FibWriter};
 use crate::interfaces::interface::IfIndex;
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
-use lpm::trie::{PrefixMapTrieWithDefault, TrieMap};
+use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
 use net::route::RouteTableId;
 use net::vxlan::Vni;
 
@@ -118,8 +118,8 @@ pub struct Vrf {
     pub tableid: Option<RouteTableId>,
     pub description: Option<String>,
     pub(crate) status: VrfStatus,
-    pub(crate) routesv4: PrefixMapTrieWithDefault<Ipv4Prefix, Route>,
-    pub(crate) routesv6: PrefixMapTrieWithDefault<Ipv6Prefix, Route>,
+    pub(crate) routesv4: PrefixMapTrie<Ipv4Prefix, Route>,
+    pub(crate) routesv6: PrefixMapTrie<Ipv6Prefix, Route>,
     pub(crate) nhstore: NhopStore,
     pub(crate) vni: Option<Vni>,
     pub(crate) fibw: Option<FibWriter>,
@@ -175,8 +175,8 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     #[must_use]
     pub fn new(config: &RouterVrfConfig) -> Self {
-        let routesv4 = PrefixMapTrieWithDefault::new();
-        let routesv6 = PrefixMapTrieWithDefault::new();
+        let routesv4 = PrefixMapTrie::create();
+        let routesv6 = PrefixMapTrie::create();
         let mut vrf = Self {
             name: config.name.to_owned(),
             vrfid: config.vrfid,
@@ -615,11 +615,15 @@ impl Vrf {
 
     #[inline]
     fn lpm_v4(&self, target: Ipv4Prefix) -> (&Ipv4Prefix, &Route) {
-        self.routesv4.lookup_wd(target)
+        self.routesv4
+            .lookup(target)
+            .unwrap_or_else(|| unreachable!())
     }
     #[inline]
     fn lpm_v6(&self, target: Ipv6Prefix) -> (&Ipv6Prefix, &Route) {
-        self.routesv6.lookup_wd(target)
+        self.routesv6
+            .lookup(target)
+            .unwrap_or_else(|| unreachable!())
     }
     pub fn lpm(&self, target: IpAddr) -> (Prefix, &Route) {
         match target {

@@ -11,7 +11,7 @@ use std::net::IpAddr;
 use std::rc::Rc;
 
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
-use lpm::trie::{PrefixMapTrieWithDefault, TrieMap};
+use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use net::vxlan::Vni;
@@ -50,8 +50,8 @@ impl FibId {
 pub struct Fib {
     id: FibId,
     version: u64,
-    routesv4: PrefixMapTrieWithDefault<Ipv4Prefix, Rc<FibGroup>>,
-    routesv6: PrefixMapTrieWithDefault<Ipv6Prefix, Rc<FibGroup>>,
+    routesv4: PrefixMapTrie<Ipv4Prefix, Rc<FibGroup>>,
+    routesv6: PrefixMapTrie<Ipv6Prefix, Rc<FibGroup>>,
     groups: BTreeSet<Rc<FibGroup>>, /* shared fib groups */
     vtep: Vtep,
 }
@@ -68,8 +68,8 @@ impl Fib {
 
     #[must_use]
     pub fn new(id: FibId) -> Self {
-        let routesv4 = PrefixMapTrieWithDefault::new();
-        let routesv6 = PrefixMapTrieWithDefault::new();
+        let routesv4 = PrefixMapTrie::create();
+        let routesv6 = PrefixMapTrie::create();
         let mut fib = Self {
             id,
             version: 0,
@@ -206,13 +206,13 @@ impl Fib {
 
     #[must_use]
     /// Get a reference to the inner IPv4 trie
-    pub fn get_v4_trie(&self) -> &PrefixMapTrieWithDefault<Ipv4Prefix, Rc<FibGroup>> {
+    pub fn get_v4_trie(&self) -> &PrefixMapTrie<Ipv4Prefix, Rc<FibGroup>> {
         &self.routesv4
     }
 
     #[must_use]
     /// Get a reference to the inner IPv6 trie
-    pub fn get_v6_trie(&self) -> &PrefixMapTrieWithDefault<Ipv6Prefix, Rc<FibGroup>> {
+    pub fn get_v6_trie(&self) -> &PrefixMapTrie<Ipv6Prefix, Rc<FibGroup>> {
         &self.routesv6
     }
 
@@ -221,11 +221,11 @@ impl Fib {
     pub fn lpm_with_prefix(&self, target: &IpAddr) -> (Prefix, &FibGroup) {
         match target {
             IpAddr::V4(a) => {
-                let (prefix, group) = self.routesv4.lookup_wd(*a);
+                let (prefix, group) = self.routesv4.lookup(*a).unwrap_or_else(|| unreachable!());
                 (Prefix::IPV4(*prefix), group)
             }
             IpAddr::V6(a) => {
-                let (prefix, group) = self.routesv6.lookup_wd(*a);
+                let (prefix, group) = self.routesv6.lookup(*a).unwrap_or_else(|| unreachable!());
                 (Prefix::IPV6(*prefix), group)
             }
         }
@@ -235,11 +235,11 @@ impl Fib {
     pub fn lpm(&self, target: &IpAddr) -> &FibGroup {
         match target {
             IpAddr::V4(a) => {
-                let (_, group) = self.routesv4.lookup_wd(*a);
+                let (_, group) = self.routesv4.lookup(*a).unwrap_or_else(|| unreachable!());
                 group
             }
             IpAddr::V6(a) => {
-                let (_, group) = self.routesv6.lookup_wd(*a);
+                let (_, group) = self.routesv6.lookup(*a).unwrap_or_else(|| unreachable!());
                 group
             }
         }

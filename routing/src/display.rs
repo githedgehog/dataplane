@@ -3,15 +3,12 @@
 
 //! Module that implements Display for routing objects
 
-use crate::cpi::{CpiStats, StatsRow};
+use crate::atable::adjacency::{Adjacency, AdjacencyTable};
+use crate::cpi::{CpiStats, CpiStatus, StatsRow};
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::fib::fibtable::FibTable;
 use crate::fib::fibtype::{Fib, FibId};
 use crate::frr::frrmi::{FrrAppliedConfig, Frrmi, FrrmiStats};
-use crate::{
-    atable::adjacency::{Adjacency, AdjacencyTable},
-    cpi::CpiStatus,
-};
 
 use crate::rib::VrfTable;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
@@ -29,7 +26,7 @@ use crate::testfib::TestFib;
 
 use chrono::DateTime;
 use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
-use lpm::trie::{PrefixMapTrieWithDefault, TrieMap};
+use lpm::trie::{PrefixMapTrie, TrieMap};
 use net::vxlan::Vni;
 use std::fmt::Display;
 use std::os::unix::net::SocketAddr;
@@ -197,7 +194,7 @@ impl Display for Route {
 fn fmt_vrf_trie<P: IpPrefix, F: Fn(&(&P, &Route)) -> bool>(
     f: &mut std::fmt::Formatter<'_>,
     show_string: &str,
-    trie: &PrefixMapTrieWithDefault<P, Route>,
+    trie: &PrefixMapTrie<P, Route>,
     _route_filter: F,
 ) -> std::fmt::Result {
     Heading(format!("{show_string} routes ({})", trie.len())).fmt(f)?;
@@ -684,7 +681,7 @@ fn fmt_fib_trie<P: IpPrefix, F: Fn(&(&P, &Rc<FibGroup>)) -> bool>(
     f: &mut std::fmt::Formatter<'_>,
     fibid: FibId,
     show_string: &str,
-    trie: &PrefixMapTrieWithDefault<P, Rc<FibGroup>>,
+    trie: &PrefixMapTrie<P, Rc<FibGroup>>,
     group_filter: F,
 ) -> std::fmt::Result {
     Heading(format!(
