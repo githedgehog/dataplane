@@ -24,6 +24,13 @@ use ahash::RandomState;
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use thiserror::Error;
+
+#[derive(Error, Debug, PartialEq)]
+pub enum FibError {
+    #[error("Failed to find fibgroup for nh {0}")]
+    NoFibGroup(NhopKey),
+}
 
 #[derive(Clone, Default, Debug)]
 pub(crate) struct FibGroupStore(HashMap<NhopKey, Rc<UnsafeCell<FibGroup>>, RandomState>);
@@ -175,9 +182,27 @@ impl FibRoute {
     }
 }
 
+impl FibRoute {
+    #[must_use]
+    ///////////////////////////////////////////////////////////////////////////////////
+    /// Creates a `FibRoute` with the `FibGroups` corresponding to a set of `NhopKey`s.
+    /// Fails if it can't find a FibGroup for any of the `NhopKey`s.
+    ///////////////////////////////////////////////////////////////////////////////////
+    pub(crate) fn from_nhopkeys(store: &FibGroupStore, keys: &[NhopKey]) -> Result<Self, FibError> {
+        let mut route = FibRoute::new();
+        for key in keys {
+            let fg_ref = store
+                .get_ref(key)
+                .ok_or_else(|| FibError::NoFibGroup(key.clone()))?;
+            route.0.push(fg_ref);
+        }
+        Ok(route)
+    }
+}
+
 #[cfg(test)]
 pub mod tests {
-    use crate::fib::fibgroupstore::{FibGroupStore, FibRoute};
+    use crate::fib::fibgroupstore::{FibError, FibGroupStore, FibRoute};
     use crate::fib::fibobjects::EgressObject;
     use crate::fib::fibobjects::FibEntry;
     use crate::fib::fibobjects::FibGroup;
@@ -324,5 +349,58 @@ pub mod tests {
         store.del(&key2);
         store.del(&key3);
         assert_eq!(store.len(), 1); // drop group always remains
+    }
+
+    #[test]
+    fn test_fibroute_from_nhopkeys() {
+        // create multiple fib entries
+        let e1 = build_fib_entry_egress(1, "10.0.1.1", "eth1");
+        let e2 = build_fib_entry_egress(2, "10.0.2.1", "eth2");
+        let e3 = build_fib_entry_egress(3, "10.0.3.1", "eth3");
+        let e4 = build_fib_entry_egress(4, "10.0.3.4", "eth4");
+        let e5 = build_fib_entry_egress(5, "10.0.3.5", "eth5");
+        let e6 = build_fib_entry_egress(6, "10.0.3.6", "eth6");
+        let e7 = build_fib_entry_egress(7, "10.0.3.7", "eth7");
+        let e8 = build_fib_entry_egress(8, "10.0.3.8", "eth8");
+
+        // create several fibgroups of distinct sizes
+        let g1 = build_fibgroup(&[e1.clone(), e2.clone()]);
+        let g2 = build_fibgroup(&[e3.clone(), e4.clone(), e5.clone(), e6.clone()]);
+        let g3 = build_fibgroup(&[e7.clone()]);
+        let g4 = build_fibgroup(&[e8.clone()]);
+
+        // create a dummy nhop key whose contents do not matter other than for storing each fibgroup
+        let key1 = NhopKey::with_address(&IpAddr::from_str("8.0.0.1").unwrap());
+        let key2 = NhopKey::with_address(&IpAddr::from_str("8.0.0.2").unwrap());
+        let key3 = NhopKey::with_address(&IpAddr::from_str("8.0.0.3").unwrap());
+        let key4 = NhopKey::with_address(&IpAddr::from_str("8.0.0.4").unwrap());
+
+        // create a fibgroup store and store the fibgroups with the respective nhop keys
+        let mut store = FibGroupStore::new();
+        store.add_mod_group(&key1, g1.clone());
+        store.add_mod_group(&key2, g2.clone());
+        store.add_mod_group(&key3, g3.clone());
+        store.add_mod_group(&key4, g4.clone());
+        assert_eq!(store.len(), 4 + 1); // +1 is for drop group
+
+        // create a FibRoute from the keys
+        let fibroute = FibRoute::from_nhopkeys(
+            &store,
+            &[key1.clone(), key2.clone(), key3.clone(), key4.clone()],
+        )
+        .unwrap();
+
+        assert_eq!(fibroute.0.len(), 4);
+        assert_eq!(unsafe { &*fibroute.0[0].get() }, store.get(&key1).unwrap());
+        assert_eq!(unsafe { &*fibroute.0[1].get() }, store.get(&key2).unwrap());
+        assert_eq!(unsafe { &*fibroute.0[2].get() }, store.get(&key3).unwrap());
+        assert_eq!(unsafe { &*fibroute.0[3].get() }, store.get(&key4).unwrap());
+        println!("{fibroute:#?}");
+
+        // Attempt to create a Fibroute with a key for which no fibgroup exists: should fail
+        let key = NhopKey::with_address(&IpAddr::from_str("9.0.0.1").unwrap());
+        let fibroute = FibRoute::from_nhopkeys(&store, &[key1, key2, key]);
+        assert!(matches!(fibroute, Err(FibError::NoFibGroup(ref key))));
+        println!("{fibroute:#?}");
     }
 }
