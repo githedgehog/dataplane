@@ -20,6 +20,7 @@ use std::io::Read;
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::fd::RawFd;
+use std::sync::Mutex;
 
 use std::{thread, time};
 
@@ -174,50 +175,70 @@ impl DriverKernel {
         let mut pipeline = setup_pipeline();
 
         /* build kernel interface table from interfaces available and cmd line args */
-        let mut kiftable = build_kif_table(args);
+        let mut kiftable = Mutex::new(build_kif_table(args));
 
         /* poll the registered interfaces */
-        let mut events = Events::with_capacity(64);
-        loop {
-            if let Err(e) = kiftable.poll.poll(&mut events, None) {
-                warn!("Poll error: {e}");
-                continue;
-            }
-            for event in &events {
-                if let Some(interface) = kiftable.get_mut(event.token()) {
-                    /* get vector of packets (only one) */
-                    let pkts = DriverKernel::packet_recv(interface);
-                    let pkts_out = pipeline.process(pkts.into_iter());
+        let worker_loop = move || {
+            let mut events = Events::with_capacity(64);
+            loop {
+                if let Err(e) = kiftable.lock().unwrap().poll.poll(&mut events, None) {
+                    warn!("Poll error: {e}");
+                    continue;
+                }
+                for event in &events {
+                    if let Some(interface) = kiftable.lock().unwrap().get_mut(event.token()) {
+                        /* get vector of packets (only one) */
+                        let pkts = DriverKernel::packet_recv(interface);
 
-                    /* deal with processed packets */
-                    for mut pkt in pkts_out {
-                        let mut meta = pkt.get_meta_mut();
-                        if let Some(oif) = &meta.oif {
-                            /* lookup outgoing interface and xmit packet */
-                            if let Some(outgoing) = kiftable.get_mut_by_index(oif.get_id()) {
-                                match pkt.serialize() {
-                                    Ok(out) => {
-                                        debug!(
-                                            "Sending frame of length {} octets over interface {}",
-                                            out.as_ref().len(),
-                                            &outgoing.name
-                                        );
-                                        outgoing.sock.write_all(out.as_ref());
+                        let pkts_out = pipeline.process(pkts.into_iter());
+
+                        /* deal with processed packets */
+                        for mut pkt in pkts_out {
+                            let mut meta = pkt.get_meta_mut();
+                            if let Some(oif) = &meta.oif {
+                                /* lookup outgoing interface and xmit packet */
+                                if let Some(outgoing) =
+                                    kiftable.lock().unwrap().get_mut_by_index(oif.get_id())
+                                {
+                                    match pkt.serialize() {
+                                        Ok(out) => {
+                                            debug!(
+                                                "Sending frame of length {} octets over interface {}",
+                                                out.as_ref().len(),
+                                                &outgoing.name
+                                            );
+                                            outgoing.sock.write_all(out.as_ref());
+                                        }
+                                        Err(e) => {
+                                            error!("Failure serializing packet: {e:?}");
+                                        }
                                     }
-                                    Err(e) => {
-                                        error!("Failure serializing packet: {e:?}");
-                                    }
+                                } else {
+                                    warn!("Unable to find interface with ifindex {}", oif.get_id());
                                 }
                             } else {
-                                warn!("Unable to find interface with ifindex {}", oif.get_id());
+                                warn!("Outgoing interface not set for packet");
                             }
-                        } else {
-                            warn!("Outgoing interface not set for packet");
                         }
                     }
                 }
             }
-        }
+        };
+
+        let handle = thread::Builder::new()
+            .name("kernel-1".to_string())
+            .spawn(worker_loop)
+            .unwrap();
+
+        let handle = thread::Builder::new()
+            .name("kernel-2".to_string())
+            .spawn(worker_loop)
+            .unwrap();
+
+        let handle = thread::Builder::new()
+            .name("kernel-3".to_string())
+            .spawn(worker_loop)
+            .unwrap();
     }
 
     /// Tries to receive frames from the indicated interface and builds `Packet`s
