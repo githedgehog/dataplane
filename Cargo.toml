@@ -33,7 +33,7 @@ dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys" }
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpdk-sysroot-helper" }
 dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", version = "1.1.2"}
 errno = { path = "./errno", package = "dataplane-errno" }
-gateway_config = { git = "https://github.com/githedgehog/gateway-proto", tag = "v0.11.0", version = "0.11.0" }
+gateway_config = { git = "https://github.com/githedgehog/gateway-proto", tag = "v0.12.0", version = "0.12.0" }
 id = { path = "./id", package = "dataplane-id" }
 interface-manager = { path = "./interface-manager", package = "dataplane-interface-manager" }
 lpm = { path = "./lpm", package = "dataplane-lpm" }
@@ -100,7 +100,7 @@ strum = { version = "0.27.2", features = ["derive"] }
 thiserror = { version = "2.0.12", default-features = false, features = [] }
 tokio = { version = "1.47.0", default-features = false, features = [] }
 tokio-stream = { version = "0.1.17", default-features = false, features = [] }
-tonic = { version = "0.13.1", default-features = false, features = ["transport", "codegen"] }
+tonic = { version = "0.14.0", default-features = false, features = ["transport", "codegen"] }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
 tracing-subscriber = { version = "0.3.19", default-features = false, features = [] }
 tracing-test = { version = "0.2.5", default-features = false, features = [] }
