@@ -99,13 +99,17 @@ impl Nhop {
     //////////////////////////////////////////////////////////////////////
     /// Determine instructions for a next-hop and build its fibgroup
     //////////////////////////////////////////////////////////////////////
-    pub(crate) fn set_fibgroup(&self, rstore: &RmacStore) {
+    pub(crate) fn set_fibgroup(&self, rstore: &RmacStore) -> bool {
         // determine nhop pkt instructions. This is independent of the routing table
         self.build_nhop_instructions(rstore);
         // build the fibgroup for a next-hop. This requires the nhop to be resolved
         // and its resolvers too, and that these have packet instructions up to date
         let fibgroup = self.build_nhop_fibgroup();
-        self.fibgroup.replace(fibgroup);
+        let changed = fibgroup != *self.fibgroup.borrow();
+        if changed {
+            self.fibgroup.replace(fibgroup);
+        }
+        changed
     }
 }
 
@@ -116,7 +120,7 @@ impl VxlanEncapsulation {
         self.dmac = rstore.get_rmac(self.vni, self.remote).map(|e| e.mac);
         if self.dmac.is_none() {
             warn!(
-                "Router mac for vni {} remote {} is not known!",
+                "Router mac for vni {} and remote {} is not known!",
                 self.vni.as_u32(),
                 self.remote
             );

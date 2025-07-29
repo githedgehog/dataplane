@@ -25,6 +25,7 @@ use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use thiserror::Error;
+use tracing::debug;
 
 #[derive(Error, Debug, PartialEq)]
 pub enum FibError {
@@ -90,6 +91,7 @@ impl FibGroupStore {
         if let Some(group) = self.0.get(key) {
             if Rc::strong_count(group) == 1 {
                 self.0.remove(key);
+                debug!("Deleted fibgroup for key {key}");
             }
         }
     }
@@ -100,12 +102,12 @@ impl FibGroupStore {
     ////////////////////////////////////////////////////////////////////////////////////////////////////
     pub fn purge(&mut self) -> usize {
         let len = self.len();
-        self.0
-            .retain(|key, group|  { let keep = Rc::strong_count(group) > 1 || key == &NhopKey::with_drop();
-                if !keep {
-                    debug!("Will purge fibgroup for nhop '{key}'");
-                }
-                keep
+        self.0.retain(|key, group| {
+            let keep = Rc::strong_count(group) > 1 || key == &NhopKey::with_drop();
+            if !keep {
+                debug!("Will purge fibgroup for nhop '{key}'");
+            }
+            keep
         });
         len - self.len()
     }

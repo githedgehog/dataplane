@@ -39,13 +39,6 @@ impl Prefix {
     pub const MAX_LEN_IPV4: u8 = 32;
     pub const MAX_LEN_IPV6: u8 = 128;
 
-    /// Build 224.0.0.0/4 - Ideally, this would be const
-    #[must_use]
-    #[allow(clippy::missing_panics_doc)] // This should never actually panic
-    pub fn ipv4_link_local_mcast_prefix() -> Prefix {
-        Prefix::IPV4(Ipv4Prefix::new(Ipv4Addr::new(224, 0, 0, 0), 8).expect("Bad prefix")) // FIXME(fredi)
-    }
-
     /// Build 0.0.0.0/0. "Default" is a very overloaded term. Calling this `root_v4`.
     #[must_use]
     pub const fn root_v4() -> Prefix {

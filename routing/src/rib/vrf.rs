@@ -14,9 +14,7 @@ use crate::pretty_utils::Frame;
 
 use super::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::evpn::{RmacStore, Vtep};
-use crate::fib::fibobjects::FibGroup;
 use crate::fib::fibtype::{FibId, FibReader, FibWriter};
-use crate::interfaces::interface::IfIndex;
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
 use net::route::RouteTableId;
@@ -30,14 +28,6 @@ pub type VrfId = u32;
 pub struct RouteNhop {
     pub vrfid: VrfId,
     pub key: NhopKey,
-}
-impl RouteNhop {
-    fn from_nhkey(key: &NhopKey) -> RouteNhop {
-        Self {
-            vrfid: 0,
-            key: key.clone(),
-        }
-    }
 }
 impl Default for RouteNhop {
     fn default() -> Self {
@@ -67,16 +57,6 @@ pub struct Route {
     pub distance: u8,
     pub metric: u32,
     pub s_nhops: Vec<ShimNhop>,
-}
-impl Route {
-    fn with_origin(origin: RouteOrigin) -> Self {
-        Self {
-            origin,
-            distance: 0,
-            metric: 0,
-            s_nhops: vec![],
-        }
-    }
 }
 impl Default for Route {
     fn default() -> Self {
@@ -191,7 +171,6 @@ impl Vrf {
         };
 
         /* add default routes with default next-hop with action DROP */
-        /* These adds make the unsafe code above safe */
         vrf.add_route(
             &Prefix::root_v4(),
             Route::default(),
@@ -346,18 +325,14 @@ impl Vrf {
             } else {
                 Some(nhop.vrfid)
             };
-            /* create shim next-hop */
             let shim = ShimNhop::new(ext_vrf, shared);
-
-            /* add to route */
             route.s_nhops.push(shim);
         }
     }
 
     #[inline]
     /////////////////////////////////////////////////////////////////////////
-    /// Declare next-hop is no longer needed. Nhop will be deleted if no one
-    /// needs it.
+    /// Declare next-hop is no longer needed. Will be deleted if no one needs it.
     /////////////////////////////////////////////////////////////////////////
     fn deregister_shared_nhop(&mut self, shim: ShimNhop) {
         let key = shim.rc.key.clone();
@@ -384,7 +359,7 @@ impl Vrf {
         nhops: &[RouteNhop],
         vrf0: Option<&Vrf>,
     ) {
-        // register next-hops. This mutates the route adding refernces to the stored next-hops
+        // register next-hops. This mutates the route adding references to the stored next-hops
         self.register_shared_nhops(&mut route, nhops);
 
         // resolve next-hops
@@ -400,53 +375,27 @@ impl Vrf {
         };
     }
 
-    #[allow(unused)] // Not used
-    pub fn refresh_fib(&mut self, rstore: &RmacStore, resvrf: &Vrf) {
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+    /// Re-resolve the next-hops of a `Vrf`, rebuild their fibgroups and, if they changed, reflect
+    /// the changes in the corresponding `Fib`
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+    pub fn refresh_fib(&mut self, rstore: &RmacStore, resvrf: Option<&Vrf>) {
+        let resvrf = resvrf.unwrap_or(self);
         self.nhstore.lazy_resolve_all(resvrf);
-        self.nhstore.set_fibgroup_all(rstore);
 
-        let updates: Vec<(Prefix, FibGroup)> = self
-            .iter_v4()
-            .map(|(prefix, route)| {
-                let mut fibgroup = FibGroup::new();
-                for nhop in &route.s_nhops {
-                    let nhfibg = &*nhop.rc.fibgroup.borrow();
-                    fibgroup.extend(nhfibg);
-                }
-                (Prefix::IPV4(*prefix), fibgroup)
-            })
-            .collect(); /* collect to avoid borrow-checker complaints */
+        let changed = self.nhstore.rebuild_fibgroups(rstore);
+        let mut count = 0;
         if let Some(fibw) = &mut self.fibw {
-            updates.into_iter().for_each(|(prefix, fibgroup)| {
-                fibw.add_fibgroup(prefix, fibgroup, false);
-            });
-            fibw.publish();
+            for nhop in changed {
+                let fibgroup = &*nhop.fibgroup.borrow();
+                debug!("Updating fib group for nhop {}...", nhop.key);
+                fibw.register_fibgroup(&nhop.as_ref().key, fibgroup, false);
+                count += 1;
+            }
+            if count > 0 {
+                fibw.publish();
+            }
         }
-    }
-
-    pub fn refresh_fib_updates(&self, rstore: &RmacStore, resvrf: &Vrf) -> Vec<(Prefix, FibGroup)> {
-        self.nhstore.lazy_resolve_all(resvrf);
-        self.nhstore.set_fibgroup_all(rstore);
-
-        let updates: Vec<(Prefix, FibGroup)> = self
-            .iter_v4()
-            .map(|(prefix, route)| {
-                let fibgroup = Self::build_route_fib_group(route);
-                (Prefix::IPV4(*prefix), fibgroup)
-            })
-            .collect();
-        updates
-    }
-
-    #[inline]
-    #[must_use]
-    fn build_route_fib_group(route: &Route) -> FibGroup {
-        let mut fibgroup = FibGroup::new();
-        for nhop in &route.s_nhops {
-            let nhfibg = &*nhop.rc.fibgroup.borrow();
-            fibgroup.extend(nhfibg);
-        }
-        fibgroup
     }
 
     pub fn add_route_complete(
@@ -466,29 +415,35 @@ impl Vrf {
             let refc = self.nhstore.get_nhop_rc_count(&shim.rc.key);
             if refc == 2 {
                 shim.rc.lazy_resolve(rvrf);
-                shim.rc.as_ref().set_fibgroup(rstore);
             }
         }
 
-        // build a fib group from the fib groups of all next-hops for this route. We build this
-        // before storing the route as that will move it into the VRF.
-        let fibgroup = Self::build_route_fib_group(&route);
+        // update fib
+        if let Some(fibw) = &mut self.fibw {
+            let mut nhkeys = Vec::with_capacity(route.s_nhops.len());
+            for shim in &route.s_nhops {
+                if shim.rc.as_ref().set_fibgroup(rstore) {
+                    let fibgroup = &*shim.rc.as_ref().fibgroup.borrow();
+                    fibw.register_fibgroup(&shim.rc.key, fibgroup, false);
+                }
+                nhkeys.push(shim.rc.key.clone());
+            }
+            fibw.add_fibroute(*prefix, nhkeys, true);
+        }
 
-        // store the route
+        // store the route in this vrf
         let prior = match prefix {
             Prefix::IPV4(p) => self.routesv4.insert(*p, route),
             Prefix::IPV6(p) => self.routesv6.insert(*p, route),
         };
+
         // if we happen to replace a route, unregister its next-hops
         if let Some(mut prior) = prior {
             self.deregister_shared_nexthops(&mut prior);
         }
 
-        // Push (prefix, fibgroup) to fib.
-        if let Some(fibw) = &mut self.fibw {
-            // add to fib
-            fibw.add_fibgroup(*prefix, fibgroup, true);
-        }
+        // refresh this FIB
+        self.refresh_fib(rstore, vrf0);
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -497,8 +452,6 @@ impl Vrf {
 
     #[inline]
     fn del_route_v4(&mut self, prefix: Ipv4Prefix) {
-        // iptrie forbids removing the default route (at root).
-        // So, we have to replace it with a dummy route with action Drop, to actually represent a lack of route.
         if prefix == Ipv4Prefix::default() {
             if let Some(mut prior) = self.routesv4.insert(prefix, Route::default()) {
                 self.deregister_shared_nexthops(&mut prior);
@@ -515,8 +468,6 @@ impl Vrf {
     }
     #[inline]
     fn del_route_v6(&mut self, prefix: Ipv6Prefix) {
-        // iptrie forbids removing the default route (at root).
-        // So, we have to replace it with a dummy route with action Drop, to actually represent a lack of route.
         if prefix == Ipv6Prefix::default() {
             if let Some(mut prior) = self.routesv6.insert(prefix, Route::default()) {
                 self.deregister_shared_nexthops(&mut prior);
@@ -531,15 +482,16 @@ impl Vrf {
             self.deregister_shared_nexthops(found);
         }
     }
-    pub fn del_route(&mut self, prefix: Prefix) {
+    pub fn del_route(&mut self, prefix: Prefix, vrf0: Option<&Vrf>, rstore: &RmacStore) {
         match prefix {
             Prefix::IPV4(p) => self.del_route_v4(p),
             Prefix::IPV6(p) => self.del_route_v6(p),
         }
         if let Some(fibw) = &mut self.fibw {
-            fibw.del_fibgroup(prefix);
+            fibw.del_fibroute(prefix);
         }
         self.check_deletion();
+        self.refresh_fib(rstore, vrf0);
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -581,9 +533,9 @@ impl Vrf {
         }
     }
 
-    // ///////////////////////////////////////////////////////////////////////
-    // iterators, filters and counts
-    // ///////////////////////////////////////////////////////////////////////
+    /////////////////////////////////////////////////////////////////////////
+    /// iterators, filters and counts
+    /////////////////////////////////////////////////////////////////////////
 
     pub fn iter_v4(&self) -> impl Iterator<Item = (&Ipv4Prefix, &Route)> {
         self.routesv4.iter()
@@ -637,26 +589,6 @@ impl Vrf {
             }
         }
     }
-
-    /////////////////////////////////////////////////////////////////////////
-    /// Special routes
-    /////////////////////////////////////////////////////////////////////////
-    pub fn add_link_local_intf_multicast_route(&mut self, ifindex: IfIndex) {
-        let nhkey = NhopKey::new(
-            RouteOrigin::Local,
-            None,
-            Some(ifindex),
-            None,
-            FwAction::default(),
-            None,
-        );
-        self.add_route(
-            &Prefix::ipv4_link_local_mcast_prefix(),
-            Route::with_origin(RouteOrigin::Local),
-            &[RouteNhop::from_nhkey(&nhkey)],
-            None,
-        );
-    }
 }
 
 #[cfg(test)]
@@ -701,6 +633,7 @@ pub mod tests {
 
     #[test]
     fn test_default_idempotence() {
+        let rstore = RmacStore::new();
         let vrf_cfg = RouterVrfConfig::new(0, "default");
         let mut vrf = Vrf::new(&vrf_cfg);
 
@@ -712,8 +645,8 @@ pub mod tests {
         check_default_drop_v6(&vrf);
 
         /* default-Drop routes cannot be deleted */
-        vrf.del_route(pref_v4);
-        vrf.del_route(pref_v6);
+        vrf.del_route(pref_v4, None, &rstore);
+        vrf.del_route(pref_v6, None, &rstore);
         check_default_drop_v4(&vrf);
         check_default_drop_v6(&vrf);
 
@@ -756,6 +689,7 @@ pub mod tests {
 
     #[test]
     fn test_default_replace_v4() {
+        let rstore = RmacStore::new();
         let vrf_cfg = RouterVrfConfig::new(0, "default");
         let mut vrf = Vrf::new(&vrf_cfg);
         vrf.dump(Some("Initial (clean)"));
@@ -770,7 +704,7 @@ pub mod tests {
         vrf.dump(Some("With static IPv4 default non-drop route"));
 
         /* delete the static default. This should put back again a default route with action DROP */
-        vrf.del_route(prefix);
+        vrf.del_route(prefix, None, &rstore);
         check_default_drop_v4(&vrf);
 
         vrf.dump(Some("After removing the IPv4 static default"));
@@ -778,6 +712,7 @@ pub mod tests {
 
     #[test]
     fn test_default_replace_v6() {
+        let rstore = RmacStore::new();
         let vrf_cfg = RouterVrfConfig::new(0, "default");
         let mut vrf = Vrf::new(&vrf_cfg);
 
@@ -793,7 +728,7 @@ pub mod tests {
         vrf.dump(Some("With static IPv6 default non-drop route"));
 
         /* delete the static default. This should put back again a default route with action DROP */
-        vrf.del_route(prefix);
+        vrf.del_route(prefix, None, &rstore);
         check_default_drop_v6(&vrf);
 
         vrf.dump(Some("After removing the IPv6 static default"));
@@ -801,6 +736,7 @@ pub mod tests {
 
     #[test]
     fn test_vrf_basic() {
+        let rstore = RmacStore::new();
         let num_routes = 10;
         let vrf_cfg = RouterVrfConfig::new(0, "default");
         let mut vrf = Vrf::new(&vrf_cfg);
@@ -831,7 +767,7 @@ pub mod tests {
         for i in 1..=num_routes {
             /* delete v4 routes one at a time */
             let prefix = Prefix::expect_from((format!("7.0.0.{i}").as_str(), 32));
-            vrf.del_route(prefix);
+            vrf.del_route(prefix, None, &rstore);
 
             /* each route prefix should resolve only to default */
             let target = prefix.as_address();
