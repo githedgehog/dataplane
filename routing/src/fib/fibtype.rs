@@ -18,6 +18,7 @@ use net::vxlan::Vni;
 
 use crate::evpn::Vtep;
 use crate::fib::fibobjects::{FibEntry, FibGroup, PktInstruction};
+use crate::fib::fibgroupstore::FibGroupStore;
 use crate::rib::vrf::VrfId;
 
 use tracing::{debug, info, warn};
@@ -53,6 +54,7 @@ pub struct Fib {
     routesv4: PrefixMapTrie<Ipv4Prefix, Rc<FibGroup>>,
     routesv6: PrefixMapTrie<Ipv6Prefix, Rc<FibGroup>>,
     groups: BTreeSet<Rc<FibGroup>>, /* shared fib groups */
+    groupstore: FibGroupStore,
     vtep: Vtep,
 }
 
@@ -68,14 +70,13 @@ impl Fib {
 
     #[must_use]
     pub fn new(id: FibId) -> Self {
-        let routesv4 = PrefixMapTrie::create();
-        let routesv6 = PrefixMapTrie::create();
         let mut fib = Self {
             id,
             version: 0,
-            routesv4,
-            routesv6,
+            routesv4: PrefixMapTrie::create(),
+            routesv6: PrefixMapTrie::create(),
             groups: BTreeSet::new(),
+            groupstore: FibGroupStore::new(),
             vtep: Vtep::new(),
         };
 
