@@ -5,6 +5,7 @@
 
 use crate::atable::adjacency::{Adjacency, AdjacencyTable};
 use crate::cpi::{CpiStats, CpiStatus, StatsRow};
+use crate::fib::fibgroupstore::FibRoute;
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::fib::fibtable::FibTable;
 use crate::fib::fibtype::{Fib, FibId};
@@ -13,7 +14,7 @@ use crate::frr::frrmi::{FrrAppliedConfig, Frrmi, FrrmiStats};
 use crate::rib::VrfTable;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
-use crate::rib::vrf::{Route, ShimNhop, Vrf, VrfStatus};
+use crate::rib::vrf::{Route, RouteOrigin, ShimNhop, Vrf, VrfStatus};
 
 use crate::interfaces::iftable::IfTable;
 use crate::interfaces::interface::Attachment;
@@ -65,7 +66,6 @@ impl Display for Encapsulation {
         write!(f, "")?;
         match self {
             Encapsulation::Vxlan(encap) => encap.fmt(f)?,
-            //write!(f, "Vxlan (vni:{})", e.vni.as_u32())?,
             Encapsulation::Mpls(label) => write!(f, "MPLS (label:{label})")?,
         }
         Ok(())
@@ -73,7 +73,19 @@ impl Display for Encapsulation {
 }
 
 //=================== VRFs, routes and next-hops ====================//
-
+impl Display for RouteOrigin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RouteOrigin::Local => write!(f, "local"),
+            RouteOrigin::Connected => write!(f, "connected"),
+            RouteOrigin::Static => write!(f, "static"),
+            RouteOrigin::Ospf => write!(f, "ospf"),
+            RouteOrigin::Isis => write!(f, "is-is"),
+            RouteOrigin::Bgp => write!(f, "bgp"),
+            RouteOrigin::Other => write!(f, "other"),
+        }
+    }
+}
 impl Display for NhopKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(address) = self.address {
@@ -183,9 +195,9 @@ impl Display for ShimNhop {
 }
 impl Display for Route {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{:?} [{}/{}]", self.origin, self.distance, self.metric)?;
-        for slim in &self.s_nhops {
-            writeln!(f, "       {slim}")?;
+        writeln!(f, "{} [{}/{}]", self.origin, self.distance, self.metric)?;
+        for shim in &self.s_nhops {
+            writeln!(f, "       {shim}")?;
         }
         Ok(())
     }
@@ -630,7 +642,15 @@ impl Display for TestFib {
 }
 
 //========================= Fib ================================//
-
+impl Display for FibId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match self {
+            FibId::Id(vrfid) => write!(f, "vrfid: {vrfid}")?,
+            FibId::Vni(vni) => write!(f, "vni: {vni:?}")?,
+        }
+        Ok(())
+    }
+}
 impl Display for EgressObject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         fmt_opt_value(f, " interface", &self.ifname, false)?;
@@ -650,38 +670,42 @@ impl Display for PktInstruction {
 }
 impl Display for FibEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        writeln!(f, "     ■ FibEntry ({} actions):", self.len())?;
+        writeln!(f, "        - entry:")?;
         for (n, inst) in self.iter().enumerate() {
-            writeln!(f, "         {n} {inst}")?;
+            writeln!(f, "            {n} {inst}")?;
         }
         Ok(())
     }
 }
 impl Display for FibGroup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        writeln!(f, "FibGroup ({} entries):", self.len())?;
+        writeln!(f, "     ■ group ({} entries):", self.len())?;
         for entry in self.iter() {
-            writeln!(f, "{entry}")?;
+            write!(f, "{entry}")?;
+        }
+        writeln!(f)
+    }
+}
+impl Display for FibRoute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "via {} groups, {} entries:",
+            self.num_groups(),
+            self.len()
+        )?;
+        for group in self.iter() {
+            group.fmt(f)?;
         }
         Ok(())
     }
 }
 
-impl Display for FibId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        match self {
-            FibId::Id(vrfid) => write!(f, "vrfid: {vrfid}")?,
-            FibId::Vni(vni) => write!(f, "vni: {vni:?}")?,
-        }
-        Ok(())
-    }
-}
-
-fn fmt_fib_trie<P: IpPrefix, F: Fn(&(&P, &Rc<FibGroup>)) -> bool>(
+fn fmt_fib_trie<P: IpPrefix, F: Fn(&(&P, &FibRoute)) -> bool>(
     f: &mut std::fmt::Formatter<'_>,
     fibid: FibId,
     show_string: &str,
-    trie: &PrefixMapTrie<P, Rc<FibGroup>>,
+    trie: &PrefixMapTrie<P, FibRoute>,
     group_filter: F,
 ) -> std::fmt::Result {
     Heading(format!(
@@ -689,8 +713,8 @@ fn fmt_fib_trie<P: IpPrefix, F: Fn(&(&P, &Rc<FibGroup>)) -> bool>(
         trie.len()
     ))
     .fmt(f)?;
-    for (prefix, group) in trie.iter().filter(group_filter) {
-        write!(f, "  {prefix:?}: {group}")?;
+    for (prefix, route) in trie.iter().filter(group_filter) {
+        write!(f, "  {prefix:?}: {route}")?;
     }
     Ok(())
 }
@@ -716,12 +740,12 @@ impl Display for FibTable {
 
 pub struct FibViewV4<'a, F>
 where
-    F: Fn(&(&Ipv4Prefix, &Rc<FibGroup>)) -> bool,
+    F: Fn(&(&Ipv4Prefix, &FibRoute)) -> bool,
 {
     pub vrf: &'a Vrf,
     pub filter: &'a F,
 }
-impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Rc<FibGroup>)) -> bool> Display for FibViewV4<'_, F> {
+impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &FibRoute)) -> bool> Display for FibViewV4<'_, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Some(fibw) = &self.vrf.fibw else {
             return writeln!(f, "No fib");
@@ -736,8 +760,8 @@ impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Rc<FibGroup>)) -> bool> Display for FibVie
 
         fmt_vrf_oneline(&self.vrf, f)?;
         Heading(format!("Ipv4 FIB ({total_entries} destinations)")).fmt(f)?;
-        for (prefix, group) in rt_iter {
-            write!(f, "  {prefix:?} {group}")?;
+        for (prefix, route) in rt_iter {
+            write!(f, "  {prefix:?} {route}")?;
             displayed += 1;
         }
         if displayed != total_entries {
@@ -753,12 +777,12 @@ impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Rc<FibGroup>)) -> bool> Display for FibVie
 
 pub struct FibViewV6<'a, F>
 where
-    F: Fn(&(&Ipv6Prefix, &Rc<FibGroup>)) -> bool,
+    F: Fn(&(&Ipv6Prefix, &FibRoute)) -> bool,
 {
     pub vrf: &'a Vrf,
     pub filter: &'a F,
 }
-impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Rc<FibGroup>)) -> bool> Display for FibViewV6<'_, F> {
+impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &FibRoute)) -> bool> Display for FibViewV6<'_, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Some(fibw) = &self.vrf.fibw else {
             return writeln!(f, "No fib");
@@ -773,8 +797,8 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Rc<FibGroup>)) -> bool> Display for FibVie
 
         fmt_vrf_oneline(&self.vrf, f)?;
         Heading(format!("Ipv6 FIB ({total_entries} destinations)")).fmt(f)?;
-        for (prefix, group) in rt_iter {
-            write!(f, "  {prefix:?} {group}")?;
+        for (prefix, route) in rt_iter {
+            write!(f, "  {prefix:?} {route}")?;
             displayed += 1;
         }
 
@@ -813,7 +837,7 @@ impl<'a> Display for FibGroups<'a> {
         writeln!(f, " groups: {num_groups}\n")?;
 
         for group in fibr.group_iter() {
-            write!(f, " ({}) {group}", Rc::strong_count(group))?;
+            write!(f, " {group}")?;
         }
         Ok(())
     }

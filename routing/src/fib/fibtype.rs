@@ -6,9 +6,7 @@
 #![allow(clippy::collapsible_if)]
 
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
-use std::collections::BTreeSet;
 use std::net::IpAddr;
-use std::rc::Rc;
 
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
@@ -17,11 +15,13 @@ use net::packet::Packet;
 use net::vxlan::Vni;
 
 use crate::evpn::Vtep;
-use crate::fib::fibobjects::{FibEntry, FibGroup, PktInstruction};
-use crate::fib::fibgroupstore::FibGroupStore;
+use crate::fib::fibgroupstore::{FibGroupStore, FibRoute};
+use crate::fib::fibobjects::{FibEntry, FibGroup};
+use crate::rib::nexthop::NhopKey;
 use crate::rib::vrf::VrfId;
 
-use tracing::{debug, info, warn};
+#[allow(unused)]
+use tracing::{debug, error, info, warn};
 
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 /// An id we use to idenfify a FIB
@@ -50,40 +50,29 @@ impl FibId {
 #[derive(Clone)]
 pub struct Fib {
     id: FibId,
-    version: u64,
-    routesv4: PrefixMapTrie<Ipv4Prefix, Rc<FibGroup>>,
-    routesv6: PrefixMapTrie<Ipv6Prefix, Rc<FibGroup>>,
-    groups: BTreeSet<Rc<FibGroup>>, /* shared fib groups */
+    routesv4: PrefixMapTrie<Ipv4Prefix, FibRoute>,
+    routesv6: PrefixMapTrie<Ipv6Prefix, FibRoute>,
     groupstore: FibGroupStore,
     vtep: Vtep,
 }
 
-pub type FibGroupV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &Rc<FibGroup>)) -> bool>;
-pub type FibGroupV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &Rc<FibGroup>)) -> bool>;
+pub type FibRouteV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &FibRoute)) -> bool>;
+pub type FibRouteV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &FibRoute)) -> bool>;
 
 impl Fib {
-    /// the default fibgroup for default routes
-    #[must_use]
-    pub fn drop_fibgroup() -> FibGroup {
-        FibGroup::with_entry(FibEntry::with_inst(PktInstruction::Drop))
-    }
-
     #[must_use]
     pub fn new(id: FibId) -> Self {
         let mut fib = Self {
             id,
-            version: 0,
             routesv4: PrefixMapTrie::create(),
             routesv6: PrefixMapTrie::create(),
-            groups: BTreeSet::new(),
             groupstore: FibGroupStore::new(),
             vtep: Vtep::new(),
         };
-
-        // Adding groups to the fib makes the above unsafe calls safe
-        let group = Self::drop_fibgroup();
-        fib.add_fibgroup(Prefix::root_v4(), group.clone());
-        fib.add_fibgroup(Prefix::root_v6(), group);
+        // default route
+        let route = FibRoute::with_fibgroup(fib.groupstore.get_drop_fibgroup_ref());
+        fib.add_fibroute(Prefix::root_v4(), route.clone());
+        fib.add_fibroute(Prefix::root_v6(), route);
         fib
     }
 
@@ -93,56 +82,46 @@ impl Fib {
         self.id
     }
 
-    /// Add a [`FibGroup`] to a prefix
-    pub fn add_fibgroup(&mut self, prefix: Prefix, group: FibGroup) -> Option<Rc<FibGroup>> {
-        let rc_group = self.store_group(group);
+    /// Add a [`FibRoute`]
+    fn add_fibroute(&mut self, prefix: Prefix, route: FibRoute) -> Option<FibRoute> {
         match prefix {
-            Prefix::IPV4(p) => self.routesv4.insert(p, rc_group),
-            Prefix::IPV6(p) => self.routesv6.insert(p, rc_group),
+            Prefix::IPV4(p) => self.routesv4.insert(p, route),
+            Prefix::IPV6(p) => self.routesv6.insert(p, route),
         }
     }
 
-    /// Remove a [`FibGroup`] from a prefix
-    pub fn del_fibgroup(&mut self, prefix: Prefix) {
+    /// Add a [`FibRoute`]
+    fn build_add_fibroute(&mut self, prefix: Prefix, keys: &[NhopKey]) {
+        let Ok(route) = FibRoute::from_nhopkeys(&self.groupstore, keys) else {
+            error!("Failed to build fibroute for keys {keys:#?}");
+            return;
+        };
+        self.add_fibroute(prefix, route);
+    }
+
+    /// Delete the [`FibRoute`] for a prefix
+    fn del_fibroute(&mut self, prefix: Prefix) {
         match prefix {
             Prefix::IPV4(p4) => {
                 if p4 == Ipv4Prefix::default() {
-                    if let Some(prior) = self.add_fibgroup(Prefix::root_v4(), Self::drop_fibgroup())
-                    {
-                        self.unstore_group(&prior);
+                    let route = FibRoute::with_fibgroup(self.groupstore.get_drop_fibgroup_ref());
+                    if let Some(_prior) = self.add_fibroute(Prefix::root_v4(), route) {
+                        // TODO: n.b. route increases refct of drop - that's ok
                     }
-                } else if let Some(group) = self.routesv4.remove(&p4) {
-                    self.unstore_group(&group);
+                } else {
+                    self.routesv4.remove(&p4);
                 }
             }
             Prefix::IPV6(p6) => {
                 if p6 == Ipv6Prefix::default() {
-                    if let Some(prior) = self.add_fibgroup(Prefix::root_v6(), Self::drop_fibgroup())
-                    {
-                        self.unstore_group(&prior);
-                    }
-                } else if let Some(group) = self.routesv6.remove(&p6) {
-                    self.unstore_group(&group);
+                    let route = FibRoute::with_fibgroup(self.groupstore.get_drop_fibgroup_ref());
+                    if let Some(_prior) = self.add_fibroute(Prefix::root_v6(), route) {}
+                } else {
+                    self.routesv6.remove(&p6);
                 }
             }
         }
-    }
-
-    /// Store a new [`FibGroup`], without creating it if an identical group exists.
-    #[must_use]
-    pub fn store_group(&mut self, group: FibGroup) -> Rc<FibGroup> {
-        let rc_gr = Rc::new(group);
-        if let Some(e) = self.groups.get(&rc_gr) {
-            Rc::clone(e)
-        } else {
-            self.groups.insert(Rc::clone(&rc_gr));
-            rc_gr
-        }
-    }
-
-    /// Remove a [`FibGroup`] from the shared groups
-    pub fn unstore_group(&mut self, group: &FibGroup) {
-        self.groups.remove(group);
+        self.groupstore.purge();
     }
 
     /// Set the [`Vtep`] for this [`Fib`]
@@ -182,117 +161,91 @@ impl Fib {
     /// Tell the number of [`FibGroup`] routes in this [`Fib`]
     #[must_use]
     pub fn len_groups(&self) -> usize {
-        self.groups.len()
-    }
-
-    #[must_use]
-    pub fn version(&self) -> u64 {
-        self.version
+        self.groupstore.len()
     }
 
     /// Iterate over IPv4 routes/entries
-    pub fn iter_v4(&self) -> impl Iterator<Item = (&Ipv4Prefix, &Rc<FibGroup>)> {
+    pub fn iter_v4(&self) -> impl Iterator<Item = (&Ipv4Prefix, &FibRoute)> {
         self.routesv4.iter()
     }
 
     /// Iterate over IPv6 routes/entries
-    pub fn iter_v6(&self) -> impl Iterator<Item = (&Ipv6Prefix, &Rc<FibGroup>)> {
+    pub fn iter_v6(&self) -> impl Iterator<Item = (&Ipv6Prefix, &FibRoute)> {
         self.routesv6.iter()
     }
 
     /// Iterate over [`FibGroup`]s
-    pub fn group_iter(&self) -> impl Iterator<Item = &Rc<FibGroup>> {
-        self.groups.iter()
+    pub fn group_iter(&self) -> impl Iterator<Item = &FibGroup> {
+        self.groupstore.values()
     }
 
     #[must_use]
     /// Get a reference to the inner IPv4 trie
-    pub fn get_v4_trie(&self) -> &PrefixMapTrie<Ipv4Prefix, Rc<FibGroup>> {
+    pub fn get_v4_trie(&self) -> &PrefixMapTrie<Ipv4Prefix, FibRoute> {
         &self.routesv4
     }
 
     #[must_use]
     /// Get a reference to the inner IPv6 trie
-    pub fn get_v6_trie(&self) -> &PrefixMapTrie<Ipv6Prefix, Rc<FibGroup>> {
+    pub fn get_v6_trie(&self) -> &PrefixMapTrie<Ipv6Prefix, FibRoute> {
         &self.routesv6
     }
 
-    /// Do lpm lookup with the given `IpAddr`
+    /// Do lpm lookup for the given `IpAddr`
     #[must_use]
-    pub fn lpm_with_prefix(&self, target: &IpAddr) -> (Prefix, &FibGroup) {
+    pub fn lpm_with_prefix(&self, target: &IpAddr) -> (Prefix, &FibRoute) {
         match target {
             IpAddr::V4(a) => {
-                let (prefix, group) = self.routesv4.lookup(*a).unwrap_or_else(|| unreachable!());
-                (Prefix::IPV4(*prefix), group)
+                let (prefix, route) = self.routesv4.lookup(*a).unwrap_or_else(|| unreachable!());
+                (Prefix::IPV4(*prefix), route)
             }
             IpAddr::V6(a) => {
-                let (prefix, group) = self.routesv6.lookup(*a).unwrap_or_else(|| unreachable!());
-                (Prefix::IPV6(*prefix), group)
-            }
-        }
-    }
-    /// Identical to `lpm_with_prefix`, but without reporting the prefix hit
-    #[must_use]
-    pub fn lpm(&self, target: &IpAddr) -> &FibGroup {
-        match target {
-            IpAddr::V4(a) => {
-                let (_, group) = self.routesv4.lookup(*a).unwrap_or_else(|| unreachable!());
-                group
-            }
-            IpAddr::V6(a) => {
-                let (_, group) = self.routesv6.lookup(*a).unwrap_or_else(|| unreachable!());
-                group
+                let (prefix, route) = self.routesv6.lookup(*a).unwrap_or_else(|| unreachable!());
+                (Prefix::IPV6(*prefix), route)
             }
         }
     }
 
-    /// Given a [`Packet`], uses [`Self::lpm()`] to retrieve the [`FibGroup`] to forward a packet.
-    /// However, instead of returning the entire [`FibGroup`], returns a single [`FibEntry`] selected
-    /// by computing a hash on the invariant header fields of the IP and L4 headers.
+    /// Identical to `lpm_with_prefix`, but without reporting the prefix hit
+    #[must_use]
+    pub fn lpm(&self, target: &IpAddr) -> &FibRoute {
+        let (_, route) = self.lpm_with_prefix(target);
+        route
+    }
+
+    /// Given a [`Packet`], uses [`Self::lpm()`] to retrieve the [`FibRoute`] to forward a packet.
+    /// However, instead of returning the entire [`FibRoute`], returns a single [`FibEntry`] out of
+    /// those in the `FibGroup`s that make up the [`FibRoute`]. The entry selected is chosen by
+    /// computing a hash on the invariant header fields of the IP and L4 headers.
     #[must_use]
     #[allow(clippy::cast_possible_truncation)]
     pub fn lpm_entry<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> Option<&FibEntry> {
-        if let Some(destination) = packet.ip_destination() {
-            let group = self.lpm(&destination);
-            match group.len() {
-                0 => {
-                    warn!("Cannot forward packet: no fibgroups for route. This is a bug");
-                    None
-                }
-                1 => Some(&group.entries()[0_usize]),
-                k => {
-                    debug!("Hashing pkt to choose one FibEntry out of {k}");
-                    let entry_index = packet.packet_hash_ecmp(0, (k - 1) as u8);
-                    Some(&group.entries()[entry_index as usize])
-                }
-            }
-        } else {
-            unreachable!()
-        }
+        let (_, entry) = self.lpm_entry_prefix(packet);
+        entry
     }
 
-    /// Same as `lpm_entry` but reporting prefix and, in case packet is tagged with vxlan vni,
-    /// consider only next-hops for that vni.
+    /// Same as `lpm_entry` but reporting prefix
     #[allow(clippy::cast_possible_truncation)]
     pub fn lpm_entry_prefix<Buf: PacketBufferMut>(
         &self,
         packet: &Packet<Buf>,
     ) -> (Prefix, Option<&FibEntry>) {
         if let Some(destination) = packet.ip_destination() {
-            let (prefix, group) = self.lpm_with_prefix(&destination);
-            match group.len() {
+            let (prefix, route) = self.lpm_with_prefix(&destination);
+            match route.len() {
                 0 => {
-                    warn!("Can't forward packet: no groups for route to {prefix}");
+                    warn!("Can't forward packet: no route to {prefix}. This is a bug.");
                     (prefix, None)
                 }
-                1 => (prefix, Some(&group.entries()[0_usize])),
+                1 => (prefix, route.get_fibentry(0)),
                 k => {
-                    debug!("Hashing pkt to choose one FibEntry out of {k}");
                     let entry_index = packet.packet_hash_ecmp(0, (k - 1) as u8);
-                    (prefix, Some(&group.entries()[entry_index as usize]))
+                    debug!("Selected FibEntry {entry_index}/{k} to forward packet");
+                    (prefix, route.get_fibentry(entry_index as usize))
                 }
             }
         } else {
+            error!("Failed to get destination IP address!");
             unreachable!()
         }
     }
@@ -300,21 +253,20 @@ impl Fib {
 
 #[derive(Debug)]
 pub enum FibChange {
-    AddFibGroup((Prefix, FibGroup)),
-    DelFibGroup(Prefix),
+    RegisterFibGroup((NhopKey, FibGroup)),
+    AddFibRoute((Prefix, Vec<NhopKey>)),
+    DelFibRoute(Prefix),
     SetVtep(Vtep),
 }
 
 impl Absorb<FibChange> for Fib {
     fn absorb_first(&mut self, change: &mut FibChange, _: &Self) {
-        self.version += 1; // FIXME: only update if s/t changed
         match change {
-            FibChange::AddFibGroup((prefix, group)) => {
-                if let Some(group) = self.add_fibgroup(*prefix, group.clone()) {
-                    self.unstore_group(&group);
-                }
+            FibChange::RegisterFibGroup((key, fibgroup)) => {
+                self.groupstore.add_mod_group(key, fibgroup.clone())
             }
-            FibChange::DelFibGroup(prefix) => self.del_fibgroup(*prefix),
+            FibChange::AddFibRoute((prefix, keys)) => self.build_add_fibroute(*prefix, keys),
+            FibChange::DelFibRoute(prefix) => self.del_fibroute(*prefix),
             FibChange::SetVtep(vtep) => self.set_vtep(vtep),
         }
     }
@@ -339,17 +291,21 @@ impl FibWriter {
     pub fn get_id(&self) -> Option<FibId> {
         self.0.enter().map(|fib| fib.get_id())
     }
-    pub fn add_fibgroup(&mut self, prefix: Prefix, group: FibGroup, publish: bool) {
-        self.0.append(FibChange::AddFibGroup((prefix, group)));
+    pub fn register_fibgroup(&mut self, key: &NhopKey, fibgroup: &FibGroup, publish: bool) {
+        self.0
+            .append(FibChange::RegisterFibGroup((key.clone(), fibgroup.clone())));
         if publish {
             self.0.publish();
         }
     }
-    pub fn publish(&mut self) {
-        self.0.publish();
+    pub fn add_fibroute(&mut self, prefix: Prefix, keys: Vec<NhopKey>, publish: bool) {
+        self.0.append(FibChange::AddFibRoute((prefix, keys)));
+        if publish {
+            self.0.publish();
+        }
     }
-    pub fn del_fibgroup(&mut self, prefix: Prefix) {
-        self.0.append(FibChange::DelFibGroup(prefix));
+    pub fn del_fibroute(&mut self, prefix: Prefix) {
+        self.0.append(FibChange::DelFibRoute(prefix));
         self.0.publish();
     }
     pub fn set_vtep(&mut self, vtep: Vtep) {
@@ -359,6 +315,9 @@ impl FibWriter {
     pub fn get_vtep(&self) -> Vtep {
         let fib = self.enter().unwrap_or_else(|| unreachable!());
         fib.vtep.clone()
+    }
+    pub fn publish(&mut self) {
+        self.0.publish();
     }
     #[must_use]
     pub fn as_fibreader(&self) -> FibReader {

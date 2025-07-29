@@ -9,7 +9,7 @@ use crate::cpi::rpc_send_control;
 use crate::display::IfTableAddress;
 use crate::display::{FibGroups, FibViewV4, FibViewV6};
 use crate::display::{VrfV4Nexthops, VrfV6Nexthops, VrfViewV4, VrfViewV6};
-use crate::fib::fibtype::{FibGroupV4Filter, FibGroupV6Filter};
+use crate::fib::fibtype::{FibRouteV4Filter, FibRouteV6Filter};
 use crate::revent::ROUTER_EVENTS;
 use crate::rib::vrf::{Route, RouteOrigin, Vrf, VrfId};
 use crate::rib::vrf::{RouteV4Filter, RouteV6Filter};
@@ -218,23 +218,23 @@ fn show_vrfs(request: CliRequest, db: &RoutingDb) -> Result<CliResponse, CliErro
     }
 }
 
-fn show_fibgroups_ipv4(vrf: &Vrf, filter: &FibGroupV4Filter) -> String {
+fn show_fibgroups_ipv4(vrf: &Vrf, filter: &FibRouteV4Filter) -> String {
     let view = FibViewV4 { vrf, filter };
     format!("{view}")
 }
-fn show_fibgroups_ipv6(vrf: &Vrf, filter: &FibGroupV6Filter) -> String {
+fn show_fibgroups_ipv6(vrf: &Vrf, filter: &FibRouteV6Filter) -> String {
     let view = FibViewV6 { vrf, filter };
     format!("{view}")
 }
 
-fn fibgroup_filter_v4(_request: &CliRequest) -> FibGroupV4Filter {
+fn fibgroup_filter_v4(_request: &CliRequest) -> FibRouteV4Filter {
     // Todo(fredi): filter by prefix, next-hop, interface and encap
-    let filter: FibGroupV4Filter = Box::new(|(_, _)| true);
+    let filter: FibRouteV4Filter = Box::new(|(_, _)| true);
     filter
 }
-fn fibgroup_filter_v6(_request: &CliRequest) -> FibGroupV6Filter {
+fn fibgroup_filter_v6(_request: &CliRequest) -> FibRouteV6Filter {
     // Todo(fredi): filter by prefix, next-hop, interface and encap
-    let filter: FibGroupV6Filter = Box::new(|(_, _)| true);
+    let filter: FibRouteV6Filter = Box::new(|(_, _)| true);
     filter
 }
 
@@ -242,7 +242,7 @@ fn show_single_fib_v4(
     request: CliRequest,
     vrftable: &VrfTable,
     vrfid: VrfId,
-    filter: &FibGroupV4Filter,
+    filter: &FibRouteV4Filter,
 ) -> Result<CliResponse, CliError> {
     let out;
     if let Ok(vrf) = vrftable.get_vrf(vrfid) {
@@ -257,7 +257,7 @@ fn show_single_fib_v6(
     request: CliRequest,
     vrftable: &VrfTable,
     vrfid: VrfId,
-    filter: &FibGroupV6Filter,
+    filter: &FibRouteV6Filter,
 ) -> Result<CliResponse, CliError> {
     let out;
     if let Ok(vrf) = vrftable.get_vrf(vrfid) {
@@ -271,7 +271,7 @@ fn show_single_fib_v6(
 fn show_multi_fib_v4(
     request: CliRequest,
     vrftable: &VrfTable,
-    filter: &FibGroupV4Filter,
+    filter: &FibRouteV4Filter,
 ) -> Result<CliResponse, CliError> {
     let mut out = String::new();
     for vrf in vrftable.values() {
@@ -282,7 +282,7 @@ fn show_multi_fib_v4(
 fn show_multi_fib_v6(
     request: CliRequest,
     vrftable: &VrfTable,
-    filter: &FibGroupV6Filter,
+    filter: &FibRouteV6Filter,
 ) -> Result<CliResponse, CliError> {
     let mut out = String::new();
     for vrf in vrftable.values() {

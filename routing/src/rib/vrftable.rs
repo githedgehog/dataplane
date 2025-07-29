@@ -4,13 +4,16 @@
 //! Vrf table module that stores multiple vrfs. Every vrf is uniquely identified by a vrfid
 //! and optionally identified by a Vni. A vrf table always has a default vrf.
 
-#[cfg(test)]
-use super::vrf::VrfStatus;
-use super::vrf::{Vrf, VrfId};
+use crate::RouterError;
+use crate::evpn::RmacStore;
 use crate::fib::fibtable::FibTableWriter;
 use crate::fib::fibtype::FibId;
 use crate::interfaces::iftablerw::IfTableWriter;
-use crate::{errors::RouterError, rib::vrf::RouterVrfConfig};
+use crate::rib::vrf::{RouterVrfConfig, Vrf, VrfId};
+
+#[cfg(test)]
+use crate::rib::vrf::VrfStatus;
+
 use ahash::RandomState;
 use net::vxlan::Vni;
 use std::collections::HashMap;
@@ -199,7 +202,7 @@ impl VrfTable {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Remove all of the VRFs with status `Deleted``
+    /// Remove all of the VRFs with status `Deleted`
     //////////////////////////////////////////////////////////////////
     #[cfg(test)]
     pub fn remove_deleted_vrfs(&mut self, iftablew: &mut IfTableWriter) {
@@ -219,7 +222,7 @@ impl VrfTable {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Immutably access a VRF from its id.
+    /// Immutably access a [`Vrf`] from its id.
     //////////////////////////////////////////////////////////////////
     pub fn get_vrf(&self, vrfid: VrfId) -> Result<&Vrf, RouterError> {
         self.by_id.get(&vrfid).ok_or(RouterError::NoSuchVrf)
@@ -312,6 +315,32 @@ impl VrfTable {
     //////////////////////////////////////////////////////////////////
     pub fn contains(&self, vrfid: VrfId) -> bool {
         self.by_id.contains_key(&vrfid)
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Refresh the fib groups for all non-default vrfs. This method
+    /// is ugly to make the borrow-checker happy. We first collect the
+    /// Ids of the non-default VRFs and then call Self::get_with_default_mut()
+    /// for every Id and the Id of the default VRF. This is so because
+    /// get_disjoint_mut() requires a const number of ids, but the number
+    /// of VRFs is non-const.
+    //////////////////////////////////////////////////////////////////
+    pub fn refresh_non_default_fibs(&mut self, rstore: &RmacStore) {
+        // collect the vrf ids for all non-default VRFs
+        let vrfids: Vec<VrfId> = self
+            .by_id
+            .iter()
+            .filter_map(|(vrfid, _)| if *vrfid != 0 { Some(vrfid) } else { None })
+            .cloned()
+            .collect();
+
+        // refresh each of the non-default vrfs collected
+        for vrfid in vrfids {
+            let (vrf, vrf0) = self
+                .get_with_default_mut(vrfid)
+                .unwrap_or_else(|_| unreachable!());
+            vrf.refresh_fib(rstore, Some(vrf0));
+        }
     }
 }
 
