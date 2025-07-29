@@ -109,6 +109,19 @@ impl FibGroupStore {
         });
         len - self.len()
     }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////
+    /// Iterate over the `FibGroups` in the store
+    ////////////////////////////////////////////////////////////////////////////////////////////////////
+    pub(crate) fn values(&self) -> impl Iterator<Item = &FibGroup> {
+        unsafe { self.0.values().map(|group| &*group.get()) }
+    }
+    ////////////////////////////////////////////////////////////////////////////////////////////////////
+    /// Iterate over the `FibGroups` in the store
+    ////////////////////////////////////////////////////////////////////////////////////////////////////
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&NhopKey, &FibGroup)> {
+        unsafe { self.0.iter().map(|(key, group)| (key, &*group.get())) }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -136,6 +149,7 @@ impl FibRoute {
             None
         }
     }
+
     /////////////////////////////////////////////////////////////////////////////////////////////////
     /// Tells the total number of `FibEntry`s in a `FibRoute`, as the sum of the lengths of its `FibGroup`s
     /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -145,6 +159,15 @@ impl FibRoute {
             .iter()
             .fold(0, |val, g| unsafe { val + (&*g.get()).len() })
     }
+
+    /////////////////////////////////////////////////////////////////////////////////////////////////
+    /// Tells the number of `FibGroup`s that a `FibRoute` has
+    /////////////////////////////////////////////////////////////////////////////////////////////////
+    #[must_use]
+    pub(crate) fn num_groups(&self) -> usize {
+        self.0.len()
+    }
+
     ////////////////////////////////////////////////////////////////////////////////////////////////
     /// A Fibroute is a vector of fibgroups, and each fibgroup is itself a vector of FibEntries.
     /// We cannot "merge" all of the FibEntries into a single vector since that would defeat the purpose
@@ -173,6 +196,13 @@ impl FibRoute {
             index -= group.len();
         }
         None
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+    /// Provide iterator over the `FibGroups` that a `Fibroute` refers to
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &FibGroup> {
+        unsafe { self.0.iter().map(|group| &*group.get()) }
     }
 }
 
@@ -297,6 +327,11 @@ pub mod tests {
         store.add_mod_group(&key4, g4.clone());
         assert_eq!(store.len(), 4 + 1); // +1 is for drop group
         println!("{store:#?}");
+
+        // Iterator
+        for (key, group) in store.iter() {
+            println!("{key} -> {group}");
+        }
 
         // Build a route that references the four fibgroups
         let mut fibroute = FibRoute::new();
