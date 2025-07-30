@@ -327,15 +327,18 @@ impl NhopStore {
 
     /////////////////////////////////////////////////////////////////////////////////////
     /// Declare that a next-hop is no longer of our interest. The nhop may be removed or
-    /// not, depending on whether there are other references to it.
+    /// not, depending on whether there are other references to it. This method returns
+    /// true if the next-hop was removed and false otherwise.
     /////////////////////////////////////////////////////////////////////////////////////
-    pub(crate) fn del_nhop(&mut self, key: &NhopKey) {
+    pub(crate) fn del_nhop(&mut self, key: &NhopKey) -> bool {
         let target = Nhop::new_from_key(key);
         if let Some(existing) = self.0.get(&target) {
             if Rc::strong_count(existing) == 1 {
                 self.0.remove(&target);
+                return true;
             }
         }
+        false
     }
 
     //////////////////////////////////////////////////////////////////
