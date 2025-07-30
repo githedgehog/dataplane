@@ -327,46 +327,13 @@ impl NhopStore {
 
     /////////////////////////////////////////////////////////////////////////////////////
     /// Declare that a next-hop is no longer of our interest. The nhop may be removed or
-    /// not, depending on whether there are other references to it. This function could
-    /// just be `self.map.remove()`. However, that would just remove an Rc<Nhop> from the
-    /// collection while other elements might have living references to it. We want the
-    /// store to be and exhaustive, in that it should contain only living nexthops and
-    /// all of them. I.e., no next-hop object should be alive outside of this collection.
-    /// So, we'll remove elements from this collection iff no one refers to them.
-    /// This should guarantee the uniqueness of next-hops and their referrals.
+    /// not, depending on whether there are other references to it.
     /////////////////////////////////////////////////////////////////////////////////////
     pub(crate) fn del_nhop(&mut self, key: &NhopKey) {
         let target = Nhop::new_from_key(key);
-        let mut remove: bool = false;
         if let Some(existing) = self.0.get(&target) {
             if Rc::strong_count(existing) == 1 {
-                remove = true;
-            }
-        }
-        if remove {
-            debug!("Will delete nhop {target}");
-            /* Nobody refers to this next-hop, so we're good to remove it. We could happily call
-               self.map.remove(): all the references to its resolvers will be gone too.
-               But those resolvers may get one less reference and may need to be purged too, and
-               by doing so, the next-hops used to resolve them ... So, we recourse. Nothing terribly
-               bad would happen if we didn't. In principle all next-hops should stay alive as long
-               as a route refers to them. This is just a sanity to protect against the race where a
-               route is removed but its next-hop remains alive due to a referral and then that referral
-               is gone, causing the next-hop to remain in the store.
-            */
-            if let Some(existing) = self.0.take(&target) {
-                /* N.B. this mutable borrow should be "safe" in spite of the recursion because
-                the only case where it wouldn't would be if borrow_xx() was called for the same
-                nhop, but that should happen if its refcount is 1 and we don't keep other refs around */
-                if let Ok(mut resolvers) = existing.resolvers.try_borrow_mut() {
-                    while let Some(r) = resolvers.pop() {
-                        let key = r.key.clone(); /* copy the key since we'll drop the Rc */
-                        drop(r);
-                        self.del_nhop(&key);
-                    }
-                } else {
-                    error!("Try-borrow-mut failed on resolvers while deleting next-hop!");
-                }
+                self.0.remove(&target);
             }
         }
     }
@@ -738,10 +705,6 @@ mod tests {
         /* Delete nexthop. Since it has no extra reference it should be gone */
         store.del_nhop(&key);
         assert!(!store.contains(&key));
-
-        /* ... and since it refers to all other next-hops (indirectly) and no
-        other next-hop does, all should be gone too */
-        assert_eq!(store.len(), 0);
     }
 
     #[test]
