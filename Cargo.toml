@@ -62,7 +62,7 @@ bolero = { version = "0.13.4", default-features = false, features = [] }
 bytes = { version = "1.10.1", default-features = false, features = [] }
 caps = { version = "0.5.5", default-features = false, features = [] }
 chrono = { version = "0.4.41", default-features = false, features = ["clock"] }
-clap = { version = "4.5.41", default-features = true, features = [] }
+clap = { version = "4.5.42", default-features = true, features = [] }
 ctrlc = { version = "3.4.7", default-features = false, features = [] }
 dashmap = { version = "6.1.0", default-features = false, features = [] }
 derive_builder = { version = "0.20.2", default-features = false, features = ["default", "std"] }
