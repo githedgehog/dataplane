@@ -68,6 +68,8 @@ impl NatAllocator for NatDefaultAllocator {
         }
     }
 
+    // TODO: Update trait to 1) return a struct instead of complex Result/Option mix, and 2) return
+    // the allocations for the return path, too
     fn allocate_v4(
         &mut self,
         tuple: &NatTuple<Ipv4Addr>,
