@@ -1,257 +1,205 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::stateful::NatIp;
-use crate::stateful::allocator::AllocatorError;
+//! Default IP and port allocator for stateful NAT
+
+use super::NatAllocator;
+use super::NatIp;
+use super::NatTuple;
+use super::allocator::AllocatorError;
 use crate::stateful::port::NatPort;
-use roaring::RoaringBitmap;
-use std::collections::{BTreeMap, VecDeque};
-use std::net::Ipv6Addr;
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use net::ip::NextHeader;
+use routing::rib::vrf::VrfId;
+use std::collections::BTreeMap;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
-mod port_alloc;
+mod alloc;
 
-// FIXME: No need for Mutex around bitmap if we're always under NatPool's RwLock
-#[derive(Debug)]
-pub struct PoolBitmap(Mutex<RoaringBitmap>);
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PoolTableKey<I: NatIp> {
+    protocol: NextHeader,
+    id: VrfId,
+    dst: I,
+}
 
-impl PoolBitmap {
-    fn new() -> Self {
-        Self(Mutex::new(RoaringBitmap::new()))
-    }
-
-    fn pop_ip(&mut self) -> Result<u32, AllocatorError> {
-        let mut bitmap = self.0.lock().unwrap();
-        let offset = bitmap.min().ok_or(AllocatorError::NoFreeIp)?;
-        bitmap.remove(offset);
-        Ok(offset)
+impl<I: NatIp> PoolTableKey<I> {
+    pub fn new(protocol: NextHeader, id: VrfId, dst: I) -> Self {
+        Self { protocol, id, dst }
     }
 }
 
 #[derive(Debug)]
-struct NatPool<I: NatIp> {
-    bitmap: PoolBitmap,
-    bitmap_mapping: BTreeMap<u32, u128>,
-    in_use: VecDeque<Weak<AllocatedIp<I>>>,
-}
+pub struct PoolTable<I: NatIp, J: alloc::NatIpWithBitmap>(
+    BTreeMap<PoolTableKey<I>, alloc::IpAllocator<J>>,
+);
 
-impl<I: NatIp> NatPool<I> {
-    fn add_in_use(&mut self, ip: &Arc<AllocatedIp<I>>) {
-        self.in_use.push_back(Arc::downgrade(ip));
-    }
-
-    fn get_first(&self) -> Option<&Weak<AllocatedIp<I>>> {
-        self.in_use.front()
-    }
-
-    fn cleanup(&mut self) {
-        self.in_use.retain(|ip| ip.upgrade().is_some());
-    }
-
-    fn ips_in_use(&self) -> impl Iterator<Item = &Weak<AllocatedIp<I>>> {
-        self.in_use.iter()
-    }
-
-    fn use_new_ip(&mut self) -> Result<AllocatedIp<I>, AllocatorError> {
-        // Retrieve the first available offset
-        let offset = self.bitmap.pop_ip()?;
-
-        let ip = I::try_from_offset(offset, &self.bitmap_mapping)?;
-        Ok(AllocatedIp::new(ip))
-    }
-}
-
-#[derive(Debug)]
-pub struct IpAllocator<I: NatIp> {
-    pool: RwLock<NatPool<I>>,
-}
-
-impl<I: NatIp> IpAllocator<I> {
+impl<I: NatIp, J: alloc::NatIpWithBitmap> PoolTable<I, J> {
     pub fn new() -> Self {
-        Self {
-            pool: NatPool {
-                bitmap: PoolBitmap::new(),
-                bitmap_mapping: BTreeMap::new(),
-                in_use: VecDeque::new(),
-            }
-            .into(),
+        Self(BTreeMap::new())
+    }
+
+    fn get_mut(&mut self, key: &PoolTableKey<I>) -> Option<&mut alloc::IpAllocator<J>> {
+        // We need to find the entry with the ID, and the prefix for the corresponding address.
+        // Get the range of "lower" entries, the one with the address before ours is the prefix we
+        // need, if the ID also matches.
+        match self.0.range_mut(..=key).next_back() {
+            Some((k, v)) if k.id == key.id && k.protocol == key.protocol => Some(v),
+            _ => None,
         }
     }
 }
 
-impl<I: NatIp> IpAllocator<I> {
-    fn reuse_allocated_ip(&self) -> Result<AllocatedPort<I>, AllocatorError> {
-        let allocated_ips = self.pool.read().unwrap();
-        for ip_weak in allocated_ips.ips_in_use() {
-            let Some(ip) = ip_weak.upgrade() else {
-                continue;
-            };
-            if !ip.has_free_ports() {
-                continue;
-            }
-            match ip.allocate_port() {
-                Ok(port) => return Ok(port),
-                Err(AllocatorError::NoFreePort(_)) => {}
-                Err(e) => return Err(e),
-            }
-        }
-        Err(AllocatorError::NoFreeIp)
-    }
-
-    fn allocate_new_ip(&self) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
-        let mut allocated_ips = self.pool.write().unwrap();
-        let new_ip = allocated_ips.use_new_ip()?;
-        allocated_ips.add_in_use(&Arc::new(new_ip));
-
-        allocated_ips
-            .get_first()
-            .unwrap()
-            .upgrade()
-            .ok_or(AllocatorError::InternalIssue)
-    }
-
-    fn cleanup_used_ips(&self) {
-        let mut allocated_ips = self.pool.write().unwrap();
-        allocated_ips.cleanup();
-    }
-
-    pub fn allocate(&self) -> Result<AllocatedPort<I>, AllocatorError> {
-        // FIXME: Should we clean up every time??
-        self.cleanup_used_ips();
-
-        if let Ok(port) = self.reuse_allocated_ip() {
-            return Ok(port);
-        }
-
-        if let Ok(ip) = self.allocate_new_ip() {
-            return ip.allocate_port();
-        }
-
-        Err(AllocatorError::NoFreeIp)
-    }
-}
-
-pub fn map_offset(
-    offset: u32,
-    bitmap_mapping: &BTreeMap<u32, u128>,
-) -> Result<Ipv6Addr, AllocatorError> {
-    // Field bitmap_mapping is a BTreeMap that associates, to each given u32 offset, an IPv6
-    // address, as a u128, corresponding to the network address of the corresponding prefix in
-    // the list.
-    // Here we lookup for the closest lower offset in the tree, which returns the network
-    // address for the prefix start address and its offset, and we deduce the IPv6 address we're
-    // looking for.
-    let (prefix_offset, prefix_start_bits) = bitmap_mapping
-        .range(..=offset)
-        .next_back()
-        .ok_or(AllocatorError::InternalIssue)?;
-
-    // Generate the IPv6 address: prefix network address - prefix offset + address offset
-    Ok(Ipv6Addr::from(
-        prefix_start_bits + u128::from(offset - prefix_offset),
-    ))
-}
-
+#[allow(clippy::struct_field_names)]
 #[derive(Debug)]
-struct AllocatedIp<I: NatIp> {
-    ip: I,
-    block_allocator: port_alloc::BlockAllocator,
-    allocated_blocks: RwLock<VecDeque<Arc<AllocatedPortBlock<I>>>>,
+pub struct NatDefaultAllocator {
+    pools_src44: PoolTable<Ipv4Addr, Ipv4Addr>,
+    pools_dst44: PoolTable<Ipv4Addr, Ipv4Addr>,
+    pools_src66: PoolTable<Ipv6Addr, Ipv6Addr>,
+    pools_dst66: PoolTable<Ipv6Addr, Ipv6Addr>,
 }
 
-impl<I: NatIp> AllocatedIp<I> {
-    fn new(ip: I) -> Self {
+impl NatAllocator for NatDefaultAllocator {
+    fn new() -> Self {
         Self {
-            ip,
-            block_allocator: port_alloc::BlockAllocator::new(),
-            allocated_blocks: RwLock::new(VecDeque::new()),
+            pools_src44: PoolTable::new(),
+            pools_dst44: PoolTable::new(),
+            pools_src66: PoolTable::new(),
+            pools_dst66: PoolTable::new(),
         }
     }
 
-    fn ip(&self) -> I {
-        self.ip
-    }
+    fn allocate_v4(
+        &mut self,
+        tuple: &NatTuple<Ipv4Addr>,
+    ) -> Result<(Option<(Ipv4Addr, NatPort)>, Option<(Ipv4Addr, NatPort)>), AllocatorError> {
+        Self::check_proto(tuple.next_header)?;
 
-    fn has_free_ports(&self) -> bool {
+        let pool_src_opt = self.pools_src44.get_mut(&PoolTableKey::new(
+            tuple.next_header,
+            tuple.vrf_id,
+            tuple.dst_ip,
+        ));
+        let pool_dst_opt = self.pools_dst44.get_mut(&PoolTableKey::new(
+            tuple.next_header,
+            tuple.vrf_id,
+            tuple.dst_ip,
+        ));
+
+        let src_mapping = match pool_src_opt {
+            Some(pool_src) => Some(pool_src.allocate()?),
+            None => None,
+        };
+
+        let dst_mapping = match pool_dst_opt {
+            Some(pool_dst) => Some(pool_dst.allocate()?),
+            None => None,
+        };
+
+        //Ok((src_mapping, dst_mapping))
         todo!()
     }
 
-    fn allocate_block(self: Arc<Self>) -> Result<AllocatedPortBlock<I>, AllocatorError> {
-        self.block_allocator.allocate(self.clone())
-    }
+    fn allocate_v6(
+        &mut self,
+        tuple: &NatTuple<Ipv6Addr>,
+    ) -> Result<(Option<(Ipv6Addr, NatPort)>, Option<(Ipv6Addr, NatPort)>), AllocatorError> {
+        Self::check_proto(tuple.next_header)?;
 
-    fn allocate_port(self: Arc<Self>) -> Result<AllocatedPort<I>, AllocatorError> {
-        // TODO: error handling for port
-        let allocated_block = self.allocate_block()?;
-        Arc::new(allocated_block).allocate_port()
-    }
-}
+        let pool_src_opt = self.pools_src66.get_mut(&PoolTableKey::new(
+            tuple.next_header,
+            tuple.vrf_id,
+            tuple.dst_ip,
+        ));
+        let pool_dst_opt = self.pools_dst66.get_mut(&PoolTableKey::new(
+            tuple.next_header,
+            tuple.vrf_id,
+            tuple.dst_ip,
+        ));
 
-impl<I: NatIp> Drop for AllocatedIp<I> {
-    fn drop(&mut self) {
+        let src_mapping = match pool_src_opt {
+            Some(pool_src) => Some(pool_src.allocate()?),
+            None => None,
+        };
+
+        let dst_mapping = match pool_dst_opt {
+            Some(pool_dst) => Some(pool_dst.allocate()?),
+            None => None,
+        };
+
+        //Ok((src_mapping, dst_mapping))
         todo!()
     }
 }
 
-#[derive(Debug)]
-pub struct AllocatedPortBlock<I: NatIp> {
-    ip: Arc<AllocatedIp<I>>,
-    base_port_idx: u16,
-    index: usize,
-    usage_bitmap: Mutex<port_alloc::Bitmap256>,
-}
+impl NatDefaultAllocator {
+    pub fn update(
+        &mut self,
+        pools_src44: PoolTable<Ipv4Addr, Ipv4Addr>,
+        pools_dst44: PoolTable<Ipv4Addr, Ipv4Addr>,
+        pools_src66: PoolTable<Ipv6Addr, Ipv6Addr>,
+        pools_dst66: PoolTable<Ipv6Addr, Ipv6Addr>,
+    ) {
+        self.pools_src44 = pools_src44;
+        self.pools_dst44 = pools_dst44;
+        self.pools_src66 = pools_src66;
+        self.pools_dst66 = pools_dst66;
+    }
 
-impl<I: NatIp> AllocatedPortBlock<I> {
-    fn new(ip: Arc<AllocatedIp<I>>, index: usize, base_port_index: u8) -> Self {
-        Self {
-            ip,
-            base_port_idx: u16::from(base_port_index),
-            index,
-            usage_bitmap: Mutex::new(port_alloc::Bitmap256::new()),
+    fn check_proto(next_header: NextHeader) -> Result<(), AllocatorError> {
+        match next_header {
+            NextHeader::TCP | NextHeader::UDP => Ok(()),
+            _ => Err(AllocatorError::UnsupportedProtocol(next_header)),
         }
     }
-
-    fn allocate_port(self: Arc<Self>) -> Result<AllocatedPort<I>, AllocatorError> {
-        let bitmap_offset = self
-            .usage_bitmap
-            .lock()
-            .unwrap()
-            .allocate()
-            .map_err(|()| AllocatorError::NoFreePort(self.base_port_idx))?;
-
-        NatPort::new_checked(self.base_port_idx * 256 + bitmap_offset)
-            .map_err(AllocatorError::PortAllocationFailed)
-            .map(|port| AllocatedPort::new(port, self.clone()))
-    }
 }
 
-impl<I: NatIp> Drop for AllocatedPortBlock<I> {
-    fn drop(&mut self) {
-        todo!()
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[derive(Debug)]
-pub struct AllocatedPort<I: NatIp> {
-    port: NatPort,
-    block_allocator: Arc<AllocatedPortBlock<I>>,
-}
+    // Ensure that keys are sorted first by VRF ID, and then by IP address. This is essential to
+    // make sure we can lookup for entries associated with prefixes for a given ID in the pool
+    // tables.
+    #[test]
+    fn test_key_order() {
+        let key1 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(1, 1, 1, 1));
+        let key2 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(1, 1, 1, 1));
+        assert!(key1 == key2);
 
-impl<I: NatIp> AllocatedPort<I> {
-    pub fn new(port: NatPort, block_allocator: Arc<AllocatedPortBlock<I>>) -> Self {
-        Self {
-            port,
-            block_allocator,
-        }
-    }
+        let key1 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(1, 1, 1, 1));
+        let key2 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(1, 1, 1, 2));
+        assert!(key1 < key2);
 
-    pub fn port(&self) -> NatPort {
-        self.port
-    }
-}
+        let key1 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(2, 1, 1, 1));
+        let key2 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(1, 255, 255, 255));
+        assert!(key1 > key2);
 
-impl<I: NatIp> Drop for AllocatedPort<I> {
-    fn drop(&mut self) {
-        todo!()
+        // Mixing IDs
+
+        let key1 = PoolTableKey::new(NextHeader::TCP, 2, Ipv4Addr::new(1, 1, 1, 1));
+        let key2 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(1, 1, 1, 1));
+        assert!(key1 > key2);
+
+        let key1 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(1, 1, 1, 1));
+        let key2 = PoolTableKey::new(NextHeader::TCP, 2, Ipv4Addr::new(1, 1, 1, 2));
+        assert!(key1 < key2);
+
+        let key1 = PoolTableKey::new(NextHeader::TCP, 2, Ipv4Addr::new(1, 1, 1, 1));
+        let key2 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(2, 2, 2, 2));
+        assert!(key1 > key2);
+
+        let key1 = PoolTableKey::new(NextHeader::TCP, 2, Ipv4Addr::new(1, 1, 1, 1));
+        let key2 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(255, 255, 255, 255));
+        assert!(key1 > key2);
+
+        // Mixing protocols
+
+        let key1 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(1, 1, 1, 1));
+        let key2 = PoolTableKey::new(NextHeader::UDP, 1, Ipv4Addr::new(1, 1, 1, 1));
+        assert!(key1 < key2);
+
+        let key1 = PoolTableKey::new(NextHeader::TCP, 2, Ipv4Addr::new(2, 2, 2, 2));
+        let key2 = PoolTableKey::new(NextHeader::UDP, 1, Ipv4Addr::new(1, 1, 1, 1));
+        assert!(key1 < key2);
     }
 }
