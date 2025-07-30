@@ -332,12 +332,14 @@ impl Vrf {
 
     #[inline]
     /////////////////////////////////////////////////////////////////////////
-    /// Declare next-hop is no longer needed. Will be deleted if no one needs it.
+    /// Declare next-hop is no longer needed. The next-hop may not be removed
+    /// at this point since it may be used by other routes. This method returns
+    /// true if the next-hop was removed and false otherwise.
     /////////////////////////////////////////////////////////////////////////
-    fn deregister_shared_nhop(&mut self, shim: ShimNhop) {
+    fn deregister_shared_nhop(&mut self, shim: ShimNhop) -> bool {
         let key = shim.rc.key.clone();
         drop(shim);
-        self.nhstore.del_nhop(&key);
+        self.nhstore.del_nhop(&key)
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -345,7 +347,9 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     fn deregister_shared_nexthops(&mut self, route: &mut Route) {
         while let Some(shim) = route.s_nhops.pop() {
-            self.deregister_shared_nhop(shim);
+            if self.deregister_shared_nhop(shim) {
+                // TODO
+            }
         }
     }
 
