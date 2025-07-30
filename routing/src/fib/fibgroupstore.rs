@@ -25,7 +25,9 @@ use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use thiserror::Error;
-use tracing::debug;
+
+#[allow(unused)]
+use tracing::{debug, warn};
 
 #[derive(Error, Debug, PartialEq)]
 pub enum FibError {
@@ -88,10 +90,14 @@ impl FibGroupStore {
         if key == &NhopKey::with_drop() {
             return;
         }
+        debug!("Attempting to delete fibgroup for nhop '{key}'...");
         if let Some(group) = self.0.get(key) {
-            if Rc::strong_count(group) == 1 {
+            let refcount = Rc::strong_count(group);
+            if refcount == 1 {
                 self.0.remove(key);
-                debug!("Deleted fibgroup for key {key}");
+                debug!("Deleted fibgroup for nhop '{key}'");
+            } else {
+                debug!("Can't delete fibgroup for nhop '{key}' yet: refcount is {refcount}");
             }
         }
     }
