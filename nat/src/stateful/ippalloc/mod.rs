@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 mod alloc;
+mod port_alloc;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolTableKey<I: NatIp> {
