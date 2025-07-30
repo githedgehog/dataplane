@@ -346,9 +346,19 @@ impl Vrf {
     /// De-register a shared next-hop for the route
     /////////////////////////////////////////////////////////////////////////
     fn deregister_shared_nexthops(&mut self, route: &mut Route) {
+        let mut count = 0;
         while let Some(shim) = route.s_nhops.pop() {
+            let key = shim.rc.key.clone();
             if self.deregister_shared_nhop(shim) {
-                // TODO
+                count += 1;
+                if let Some(fibw) = &mut self.fibw {
+                    fibw.unregister_fibgroup(&key, false);
+                }
+            }
+        }
+        if count > 0 {
+            if let Some(fibw) = &mut self.fibw {
+                fibw.publish();
             }
         }
     }

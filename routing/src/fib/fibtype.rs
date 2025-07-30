@@ -101,27 +101,33 @@ impl Fib {
 
     /// Delete the [`FibRoute`] for a prefix
     fn del_fibroute(&mut self, prefix: Prefix) {
-        match prefix {
+        let removed = match prefix {
             Prefix::IPV4(p4) => {
                 if p4 == Ipv4Prefix::default() {
                     let route = FibRoute::with_fibgroup(self.groupstore.get_drop_fibgroup_ref());
-                    if let Some(_prior) = self.add_fibroute(Prefix::root_v4(), route) {
-                        // TODO: n.b. route increases refct of drop - that's ok
-                    }
+                    self.add_fibroute(Prefix::root_v4(), route)
                 } else {
-                    self.routesv4.remove(&p4);
+                    self.routesv4.remove(&p4)
                 }
             }
             Prefix::IPV6(p6) => {
                 if p6 == Ipv6Prefix::default() {
                     let route = FibRoute::with_fibgroup(self.groupstore.get_drop_fibgroup_ref());
-                    if let Some(_prior) = self.add_fibroute(Prefix::root_v6(), route) {}
+                    self.add_fibroute(Prefix::root_v6(), route)
                 } else {
-                    self.routesv6.remove(&p6);
+                    self.routesv6.remove(&p6)
                 }
             }
+        };
+        if removed.is_some() {
+            // here, we could iterate over the fibgroups of the removed route. However, in order to remove it
+            // from the group store, we'd need the key which we don't have. We could lookup the elements in the
+            // store matching each of the fibgroups (addresses) the route had, but it is simpler and probably
+            // faster to just purge. Since we still keep a ref to the removed route, let's make sure we drop
+            // it before we purge, so that it's references are gone before!
+            drop(removed);
+            self.groupstore.purge();
         }
-        self.groupstore.purge();
     }
 
     /// Set the [`Vtep`] for this [`Fib`]
@@ -252,8 +258,9 @@ impl Fib {
 }
 
 #[derive(Debug)]
-pub enum FibChange {
+enum FibChange {
     RegisterFibGroup((NhopKey, FibGroup)),
+    UnregisterFibGroup(NhopKey),
     AddFibRoute((Prefix, Vec<NhopKey>)),
     DelFibRoute(Prefix),
     SetVtep(Vtep),
@@ -264,6 +271,9 @@ impl Absorb<FibChange> for Fib {
         match change {
             FibChange::RegisterFibGroup((key, fibgroup)) => {
                 self.groupstore.add_mod_group(key, fibgroup.clone())
+            }
+            FibChange::UnregisterFibGroup(key) => {
+                self.groupstore.del(key);
             }
             FibChange::AddFibRoute((prefix, keys)) => self.build_add_fibroute(*prefix, keys),
             FibChange::DelFibRoute(prefix) => self.del_fibroute(*prefix),
@@ -294,6 +304,12 @@ impl FibWriter {
     pub fn register_fibgroup(&mut self, key: &NhopKey, fibgroup: &FibGroup, publish: bool) {
         self.0
             .append(FibChange::RegisterFibGroup((key.clone(), fibgroup.clone())));
+        if publish {
+            self.0.publish();
+        }
+    }
+    pub fn unregister_fibgroup(&mut self, key: &NhopKey, publish: bool) {
+        self.0.append(FibChange::UnregisterFibGroup(key.clone()));
         if publish {
             self.0.publish();
         }
