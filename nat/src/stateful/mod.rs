@@ -174,8 +174,6 @@ impl StatefulNat {
         state: NatState,
     ) -> Result<(), sessions::SessionError> {
         self.sessions.insert_session_v4(tuple.clone(), state)
-
-        // TODO: Reverse session
     }
 
     fn set_source_port(
@@ -295,6 +293,58 @@ impl StatefulNat {
         )
     }
 
+    fn new_reverse_session<I: NatIp>(
+        tuple: &NatTuple<I>,
+        alloc: &AllocationResult<AllocatedPort<I>>,
+        peer_vrf_id: VrfId,
+    ) -> (NatTuple<I>, NatState) {
+        // Forward session:
+        //   f.init:(src: a, dst: B) -> f.nated:(src: A, dst: b)
+        //
+        // We want to create the following session:
+        //   r.init:(src: b, dst: A) -> r.nated:(src: B, dst: a)
+        //
+        // So we want:
+        // - tuple r.init = (src: f.nated.dst, dst: f.nated.src)
+        // - mapping r.nated = (src: f.init.dst, dst: f.init.src)
+
+        let reverse_src = match alloc.dst.as_ref().map(AllocatedPort::ip) {
+            Some(ip) => ip,
+            // No destination NAT for forward session:
+            // f.init:(src: a, dst: b) -> f.nated:(src: A, dst: b)
+            //
+            // Reverse session will be:
+            // r.init:(src: b, dst: A) -> r.nated:(src: b, dst: a)
+            //
+            // Use destination IP from forward tuple.
+            None => tuple.dst_ip,
+        };
+        let reverse_dst = match alloc.src.as_ref().map(AllocatedPort::ip) {
+            Some(ip) => ip,
+            None => tuple.src_ip,
+        };
+
+        let reverse_tuple = NatTuple::new(
+            reverse_src,
+            reverse_dst,
+            alloc.dst.as_ref().map(|p| p.port().as_u16()),
+            alloc.src.as_ref().map(|p| p.port().as_u16()),
+            tuple.next_header,
+            peer_vrf_id,
+        );
+
+        // Do not reuse information from forward tuple, because the IPs and ports for the reverse
+        // session need to be registered with the allocator. Use the elements returned from the
+        // allocator.
+        let reverse_state = NatState::new(
+            alloc.return_src.as_ref().map(|p| p.ip().to_ip_addr()),
+            alloc.return_dst.as_ref().map(|p| p.ip().to_ip_addr()),
+            alloc.return_src.as_ref().map(AllocatedPort::port),
+            alloc.return_dst.as_ref().map(AllocatedPort::port),
+        );
+        (reverse_tuple, reverse_state)
+    }
+
     fn translate_packet_v4<Buf: PacketBufferMut>(
         &mut self,
         packet: &mut Packet<Buf>,
@@ -323,6 +373,11 @@ impl StatefulNat {
         let mut new_state = Self::new_state_from_alloc(&alloc);
         Self::update_stats(&mut new_state, total_bytes);
         self.create_session_v4(tuple, new_state.clone()).ok()?;
+
+        let (reverse_tuple, reverse_state) = Self::new_reverse_session(tuple, &alloc, dst_vrf_id);
+        self.create_session_v4(&reverse_tuple, reverse_state.clone())
+            .ok()?;
+
         Self::stateful_translate::<Buf>(packet, &new_state, tuple.next_header);
         Some(())
     }
