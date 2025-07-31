@@ -11,8 +11,6 @@ mod tap;
 mod vrf;
 mod vtep;
 
-use std::num::NonZero;
-
 #[allow(unused_imports)] // re-export
 pub use association::*;
 #[allow(unused_imports)] // re-export
@@ -45,12 +43,13 @@ use net::route::RouteTableId;
 use net::vxlan::InvalidVni;
 use rekon::{AsRequirement, Create, Op, Reconcile, Remove, Update};
 use rtnetlink::packet_route::link::{
-    InfoBridge, InfoData, InfoVrf, InfoVxlan, LinkAttribute, LinkFlags, LinkInfo, LinkMessage,
-    State,
+    InfoBridge, InfoData, InfoKind, InfoVrf, InfoVxlan, LinkAttribute, LinkFlags, LinkInfo,
+    LinkMessage, State,
 };
 use rtnetlink::{LinkBridge, LinkUnspec, LinkVrf, LinkVxlan};
 use serde::{Deserialize, Serialize};
-use tracing::{error, trace, warn};
+use std::num::NonZero;
+use tracing::{debug, error, warn};
 
 /// The specified / intended state for a network interface.
 ///
@@ -606,81 +605,70 @@ pub trait TryFromLinkMessage {
         Self: Sized;
 }
 
-fn extract_vrf_data(builder: &mut VrfPropertiesBuilder, info: &LinkInfo) {
-    if let LinkInfo::Data(InfoData::Vrf(datas)) = info {
-        for data in datas {
-            if let InfoVrf::TableId(raw) = data {
-                match RouteTableId::try_from(*raw) {
-                    Ok(route_table) => {
-                        builder.route_table_id(route_table);
-                    }
-                    Err(err) => {
-                        error!("zero is not a legal route table id!: {err:?}");
-                    }
+fn extract_vrf_data(builder: &mut VrfPropertiesBuilder, datas: &[InfoVrf]) {
+    for data in datas {
+        if let InfoVrf::TableId(raw) = data {
+            match RouteTableId::try_from(*raw) {
+                Ok(route_table) => {
+                    builder.route_table_id(route_table);
+                }
+                Err(err) => {
+                    error!("zero is not a legal route table id!: {err:?}");
                 }
             }
         }
     }
 }
 
-fn extract_vxlan_info(builder: &mut VtepPropertiesBuilder, info: &LinkInfo) {
-    if let LinkInfo::Data(InfoData::Vxlan(datas)) = info {
-        for data in datas {
-            match data {
-                InfoVxlan::Id(vni) => {
-                    match (*vni).try_into() {
-                        Ok(vni) => {
-                            builder.vni(Some(vni));
-                        }
-                        Err(InvalidVni::ReservedZero) => {
-                            builder.vni(None); // likely an external vtep
-                        }
-                        Err(InvalidVni::TooLarge(wrong)) => {
-                            error!("found too large VNI: {wrong}");
-                        }
+fn extract_vxlan_info(builder: &mut VtepPropertiesBuilder, datas: &[InfoVxlan]) {
+    for data in datas {
+        match data {
+            InfoVxlan::Id(vni) => {
+                match (*vni).try_into() {
+                    Ok(vni) => {
+                        builder.vni(Some(vni));
+                    }
+                    Err(InvalidVni::ReservedZero) => {
+                        builder.vni(None); // likely an external vtep
+                    }
+                    Err(InvalidVni::TooLarge(wrong)) => {
+                        error!("found too large VNI: {wrong}");
                     }
                 }
-                InfoVxlan::Local(local) => match UnicastIpv4Addr::try_from(*local) {
-                    Ok(local) => {
-                        if local.inner().is_unspecified() {
-                            warn!(
-                                "likely OS error: unspecified local ipv4 address for vtep: {local}"
-                            );
-                            builder.local(None);
-                        }
-                        builder.local(Some(local));
-                    }
-                    Err(err) => {
-                        error!("{err}");
+            }
+            InfoVxlan::Local(local) => match UnicastIpv4Addr::try_from(*local) {
+                Ok(local) => {
+                    if local.inner().is_unspecified() {
+                        warn!("likely OS error: unspecified local ipv4 address for vtep: {local}");
                         builder.local(None);
                     }
-                },
-                InfoVxlan::Ttl(ttl) => {
-                    builder.ttl(Some(*ttl));
+                    builder.local(Some(local));
                 }
-                _ => {}
+                Err(err) => {
+                    error!("{err}");
+                    builder.local(None);
+                }
+            },
+            InfoVxlan::Ttl(ttl) => {
+                builder.ttl(Some(*ttl));
             }
+            _ => {}
         }
     }
 }
 
-fn extract_bridge_info(builder: &mut BridgePropertiesBuilder, info: &LinkInfo) -> bool {
-    let mut is_bridge = false;
-    if let LinkInfo::Data(InfoData::Bridge(datas)) = info {
-        is_bridge = true;
-        for data in datas {
-            match data {
-                InfoBridge::VlanFiltering(f) => {
-                    builder.vlan_filtering(*f);
-                }
-                InfoBridge::VlanProtocol(p) => {
-                    builder.vlan_protocol(EthType::from(*p));
-                }
-                _ => {}
+fn extract_bridge_info(builder: &mut BridgePropertiesBuilder, datas: &[InfoBridge]) {
+    for data in datas {
+        match data {
+            InfoBridge::VlanFiltering(f) => {
+                builder.vlan_filtering(*f);
             }
+            InfoBridge::VlanProtocol(p) => {
+                builder.vlan_protocol(EthType::from(*p));
+            }
+            _ => {}
         }
     }
-    is_bridge
 }
 
 impl TryFromLinkMessage for Interface {
@@ -699,7 +687,7 @@ impl TryFromLinkMessage for Interface {
         let mut vrf_builder = VrfPropertiesBuilder::default();
         let mut bridge_builder = BridgePropertiesBuilder::default();
         let mut pci_netdev_builder = PciNetdevPropertiesBuilder::default();
-        let mut is_bridge = false;
+        let mut kind: Option<InfoKind> = None;
         builder.admin_state(if message.header.flags.contains(LinkFlags::Up) {
             AdminState::Up
         } else {
@@ -719,9 +707,29 @@ impl TryFromLinkMessage for Interface {
                 }
                 LinkAttribute::LinkInfo(infos) => {
                     for info in infos {
-                        extract_vrf_data(&mut vrf_builder, info);
-                        extract_vxlan_info(&mut vtep_builder, info);
-                        is_bridge |= extract_bridge_info(&mut bridge_builder, info);
+                        match info {
+                            LinkInfo::Kind(kind_) => match &kind {
+                                None => {
+                                    kind = Some(kind_.clone());
+                                }
+                                Some(old_kind) => {
+                                    warn!("duplicate kind attribute: {old_kind:?} {kind_:?}");
+                                }
+                            },
+                            LinkInfo::Data(data) => match data {
+                                InfoData::Bridge(datas) => {
+                                    extract_bridge_info(&mut bridge_builder, datas);
+                                }
+                                InfoData::Vxlan(datas) => {
+                                    extract_vxlan_info(&mut vtep_builder, datas);
+                                }
+                                InfoData::Vrf(datas) => {
+                                    extract_vrf_data(&mut vrf_builder, datas);
+                                }
+                                _ => {}
+                            },
+                            _ => {}
+                        }
                     }
                 }
                 LinkAttribute::IfName(name) => match InterfaceName::try_from(name.clone()) {
@@ -779,7 +787,7 @@ impl TryFromLinkMessage for Interface {
                     let dev = match PciEbdf::try_new(parent_name.clone()) {
                         Ok(dev) => dev,
                         Err(err) => {
-                            trace!("{err}");
+                            debug!("{err}");
                             continue;
                         }
                     };
@@ -789,44 +797,41 @@ impl TryFromLinkMessage for Interface {
             }
         }
 
-        match (
-            vrf_builder.build(),
-            vtep_builder.build(),
-            pci_netdev_builder.build(),
-        ) {
-            (Ok(vrf), Err(_), Err(_)) => {
-                builder.properties(InterfaceProperties::Vrf(vrf));
-            }
-            (Err(_), Ok(vtep), Err(_)) => {
-                builder.properties(InterfaceProperties::Vtep(vtep));
-            }
-            (Err(_), Err(_), Ok(rep)) => {
-                builder.properties(InterfaceProperties::Pci(rep));
-            }
-            (Err(_), Err(_), Err(_)) => {
-                if is_bridge {
-                    match bridge_builder.build() {
-                        Ok(bridge) => {
-                            builder.properties(InterfaceProperties::Bridge(bridge));
-                        }
-                        Err(err) => {
-                            error!("{err:?}");
-                        }
+        match (kind, pci_netdev_builder.build()) {
+            (Some(kind), Err(_)) => match kind {
+                InfoKind::Bridge => match bridge_builder.build() {
+                    Ok(props) => {
+                        builder.properties(InterfaceProperties::Bridge(props));
                     }
-                }
+                    Err(e) => {
+                        debug!("failed to assemble bridge properties: {e}");
+                    }
+                },
+                InfoKind::Vxlan => match vtep_builder.build() {
+                    Ok(props) => {
+                        builder.properties(InterfaceProperties::Vtep(props));
+                    }
+                    Err(e) => {
+                        debug!("failed to assemble vtep properties {e}");
+                    }
+                },
+                InfoKind::Vrf => match vrf_builder.build() {
+                    Ok(props) => {
+                        builder.properties(InterfaceProperties::Vrf(props));
+                    }
+                    Err(e) => {
+                        debug!("{e}");
+                    }
+                },
+                _ => {}
+            },
+            (None, Ok(props)) => {
+                builder.properties(InterfaceProperties::Pci(props));
             }
-            (Ok(vrf), Ok(vtep), Ok(rep)) => {
-                error!("multiple link types satisfied at once: {vrf:?}, {vtep:?}, {rep:?}");
+            (Some(kind), Ok(pci)) => {
+                warn!("pci and info kind data are mutually exclusive: {kind:#?}, {pci:#?}");
             }
-            (Ok(vrf), Ok(vtep), Err(_)) => {
-                error!("multiple link types satisfied at once: {vrf:?}, {vtep:?}");
-            }
-            (Ok(vrf), Err(_), Ok(rep)) => {
-                error!("multiple link types satisfied at once: {vrf:?}, {rep:?}");
-            }
-            (Err(_), Ok(vtep), Ok(rep)) => {
-                error!("multiple link types satisfied at once: {vtep:?}, {rep:?}");
-            }
+            (None, Err(_)) => {}
         }
         builder.build()
     }
