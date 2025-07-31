@@ -332,6 +332,14 @@ impl VrfTable {
             }
         }
     }
+
+    /////////////////////////////////////////////////////////////////////////
+    // Set/unset stale flag for all routes in all vrfs
+    /////////////////////////////////////////////////////////////////////////
+    pub fn set_stale(&mut self, value: bool) {
+        debug!("Marking all routes as stale..");
+        self.by_id.values_mut().for_each(|vrf| vrf.set_stale(value));
+    }
 }
 
 #[cfg(test)]
