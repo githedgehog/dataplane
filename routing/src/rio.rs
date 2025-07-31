@@ -27,7 +27,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 
 #[allow(unused)]
@@ -117,6 +117,7 @@ pub(crate) struct Rio {
     pub(crate) ctl_tx: Sender<RouterCtlMsg>,
     pub(crate) ctl_rx: Receiver<RouterCtlMsg>,
     pub(crate) cpistats: CpiStats,
+    stale_timeout: Option<Instant>,
 }
 impl Rio {
     fn new(conf: &RioConf) -> Result<Rio, RouterError> {
@@ -184,6 +185,7 @@ impl Rio {
             ctl_tx,
             ctl_rx,
             cpistats: CpiStats::new(),
+            stale_timeout: None,
         })
     }
     pub(crate) fn register(&self, token: Token, fd: i32, interests: Interest) {
@@ -295,6 +297,12 @@ impl Rio {
                 }
             }
         }
+    }
+    fn set_stale_timeout(&mut self) {
+        let duration = 60;
+        debug!("Set stale timeout ({duration} seconds)");
+        let duration = Duration::from_secs(duration);
+        self.stale_timeout = Instant::now().checked_add(duration);
     }
 }
 
