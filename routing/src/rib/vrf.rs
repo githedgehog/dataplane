@@ -3,6 +3,7 @@
 
 //! VRF module to store Ipv4 and Ipv6 routing tables
 
+use bitflags::bitflags;
 use std::hash::Hash;
 use std::iter::Filter;
 use std::net::IpAddr;
@@ -24,7 +25,7 @@ use net::vxlan::Vni;
 pub type VrfId = u32;
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
-/// A next-hop in the VRF
+/// A temporary data structure that represents a route next-hop
 pub struct RouteNhop {
     pub vrfid: VrfId,
     pub key: NhopKey,
@@ -35,6 +36,13 @@ impl Default for RouteNhop {
             vrfid: 0,
             key: NhopKey::with_drop(),
         }
+    }
+}
+
+bitflags! {
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    pub struct RouteFlags: u8 {
+        const STALE = 0b0000_0001; /* the route is stale, if set */
     }
 }
 
@@ -53,6 +61,7 @@ pub enum RouteOrigin {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Route {
+    pub flags: RouteFlags,
     pub origin: RouteOrigin,
     pub distance: u8,
     pub metric: u32,
@@ -61,10 +70,23 @@ pub struct Route {
 impl Default for Route {
     fn default() -> Self {
         Self {
+            flags: RouteFlags::default(),
             origin: RouteOrigin::default(),
             distance: 0,
             metric: 0,
             s_nhops: Vec::with_capacity(1),
+        }
+    }
+}
+impl Route {
+    pub fn is_stale(&self) -> bool {
+        self.flags.contains(RouteFlags::STALE)
+    }
+    pub fn set_stale(&mut self, value: bool) {
+        if value {
+            self.flags.insert(RouteFlags::STALE);
+        } else {
+            self.flags.remove(RouteFlags::STALE);
         }
     }
 }
@@ -700,6 +722,7 @@ pub mod tests {
     }
     pub fn build_test_route(origin: RouteOrigin, distance: u8, metric: u32) -> Route {
         Route {
+            flags: RouteFlags::default(),
             origin,
             distance,
             metric,

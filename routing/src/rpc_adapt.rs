@@ -14,7 +14,7 @@ use crate::evpn::{RmacEntry, RmacStore};
 use crate::interfaces::iftablerw::IfTableReader;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::{FwAction, NhopKey};
-use crate::rib::vrf::{Route, RouteNhop, RouteOrigin, Vrf};
+use crate::rib::vrf::{Route, RouteFlags, RouteNhop, RouteOrigin, Vrf};
 
 use dplane_rpc::msg::{
     ForwardAction, IpRoute, NextHop, NextHopEncap, Rmac, RouteTableId, RouteType, VxlanEncap,
@@ -148,6 +148,7 @@ impl Route {
         };
 
         Route {
+            flags: RouteFlags::default(),
             origin,
             distance: r.distance,
             metric: r.metric,
