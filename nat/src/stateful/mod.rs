@@ -122,7 +122,11 @@ impl StatefulNat {
         }
     }
 
-    fn get_vrf_id(net: &Net, vni: Vni) -> VrfId {
+    fn get_src_vrf_id(net: &Net, vni: Vni) -> VrfId {
+        todo!()
+    }
+
+    fn get_dst_vrf_id(net: &Net, vni: Vni) -> VrfId {
         todo!()
     }
 
@@ -246,6 +250,7 @@ impl StatefulNat {
         &mut self,
         packet: &mut Packet<Buf>,
         tuple: &NatTuple<Ipv4Addr>,
+        dst_vrf_id: VrfId,
         total_bytes: u16,
     ) -> Option<()> {
         // Hot path: if we have a session, directly translate the address already
@@ -303,14 +308,15 @@ impl StatefulNat {
         // TODO: Check whether the packet is fragmented
         // TODO: Check whether we need protocol-aware processing
 
-        let vrf_id = Self::get_vrf_id(net, vni);
+        let src_vrf_id = Self::get_src_vrf_id(net, vni);
+        let dst_vrf_id = Self::get_dst_vrf_id(net, vni);
 
         match net {
             Net::Ipv4(_) => {
-                let Some(tuple) = Self::extract_tuple(net, vrf_id) else {
+                let Some(tuple) = Self::extract_tuple(net, src_vrf_id) else {
                     return;
                 };
-                self.translate_packet_v4::<Buf>(packet, &tuple, total_bytes);
+                self.translate_packet_v4::<Buf>(packet, &tuple, dst_vrf_id, total_bytes);
             }
             Net::Ipv6(_) => {
                 todo!()
