@@ -272,16 +272,19 @@ impl Rio {
     }
 
     /// Check the status of the CPI and react accordingly
-    pub(crate) fn cpi_status_check(&mut self, db: &RoutingDb) {
+    pub(crate) fn cpi_status_check(&mut self, db: &mut RoutingDb) {
         match self.cpistats.status {
             CpiStatus::NotConnected => {}
             CpiStatus::Connected => {}
             CpiStatus::Incompatible => {}
             CpiStatus::FrrRestarted => {
-                warn!("FRR appears to have restarted. Applying last config...");
+                warn!("FRR appears to have restarted!!!...");
+                db.vrftable.set_stale(true);
+                self.set_stale_timeout();
+                debug!("Will now re-apply the last config to FRR...");
                 self.frrmi.clear_applied_cfg(); /* we know Frr has no config */
                 self.reapply_frr_config(&db); /* request agent to apply last config */
-                self.cpistats.status.change(CpiStatus::Connected);
+                self.cpistats.status.change(CpiStatus::Connected); /* we now frr is connected */
             }
             CpiStatus::NeedRefresh => {
                 warn!("We appear to have restarted. Requesting refresh to FRR...");
@@ -355,7 +358,7 @@ pub fn start_rio(
                                 );
                             }
                         }
-                        rio.cpi_status_check(&db);
+                        rio.cpi_status_check(&mut db);
                     }
                     CLISOCK => {
                         while event.is_readable() {
