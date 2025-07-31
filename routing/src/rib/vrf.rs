@@ -650,6 +650,58 @@ impl Vrf {
             .iter_mut()
             .for_each(|(_, route)| route.set_stale(value));
     }
+
+    /////////////////////////////////////////////////////////////////////////
+    /// Remove all ipv4 routes marked as stale from a `Vrf`
+    /////////////////////////////////////////////////////////////////////////
+    fn remove_stale_routes_v4(&mut self, vrf0: Option<&Vrf>, rstore: &RmacStore) {
+        // collect all prefixes that contain stale routes. We need to first collect
+        // them and then delete to make the borrow-checker happy.
+        let prefixes: Vec<_> = self
+            .routesv4
+            .iter()
+            .filter_map(|(prefix, route)| {
+                if route.is_stale() {
+                    Some(*prefix)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        // delete the routes
+        for prefix in prefixes {
+            debug!("vrf {}: removing stale route to {}", self.name, prefix);
+            self.del_route(prefix.into(), vrf0, rstore);
+        }
+    }
+    /////////////////////////////////////////////////////////////////////////
+    /// Remove all ipv6 routes marked as stale from a `Vrf`
+    /////////////////////////////////////////////////////////////////////////
+    fn remove_stale_routes_v6(&mut self, vrf0: Option<&Vrf>, rstore: &RmacStore) {
+        let prefixes: Vec<_> = self
+            .routesv6
+            .iter()
+            .filter_map(|(prefix, route)| {
+                if route.is_stale() {
+                    Some(*prefix)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for prefix in prefixes {
+            debug!("vrf {}: removing stale route to {}..", self.name, prefix);
+            self.del_route(prefix.into(), vrf0, rstore);
+        }
+    }
+    /////////////////////////////////////////////////////////////////////////
+    /// Remove all the ipv4 & ipv6 routes marked as stale from a `Vrf`
+    /////////////////////////////////////////////////////////////////////////
+    pub fn remove_stale_routes(&mut self, vrf0: Option<&Vrf>, rstore: &RmacStore) {
+        debug!("Removing stale routes from vrf {}..", self.name);
+        self.remove_stale_routes_v4(vrf0, rstore);
+        self.remove_stale_routes_v6(vrf0, rstore);
+    }
 }
 
 #[cfg(test)]
