@@ -89,6 +89,13 @@ impl Route {
             self.flags.remove(RouteFlags::STALE);
         }
     }
+    pub fn is_preset_drop_route(&self) -> bool {
+        self.origin == RouteOrigin::Other
+            && self.s_nhops.len() == 1
+            && self.metric == 0
+            && self.distance == 0
+            && self.s_nhops[0].rc.key.fwaction == FwAction::Drop
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -288,14 +295,10 @@ impl Vrf {
                 let r2 = self
                     .get_route(Prefix::root_v6())
                     .unwrap_or_else(|| unreachable!());
-                // make sure the only route present for 0.0.0.0/ or ::0/0 is the
-                // route set by us
-                if (r1.origin == RouteOrigin::Other && r2.origin == RouteOrigin::Other)
-                    && r1.s_nhops.len() == 1
-                    && r2.s_nhops.len() == 1
-                    && r1.s_nhops[0].rc.key.fwaction == FwAction::Drop
-                    && r2.s_nhops[0].rc.key.fwaction == FwAction::Drop
-                {
+                // Mark as deleted if the only two routes are the 'drop' ones
+                // that we automatically set on VRF creation. If they aren't
+                // they should be deleted first.
+                if r1.is_preset_drop_route() && r2.is_preset_drop_route() {
                     self.set_status(VrfStatus::Deleted);
                 }
             }
@@ -645,9 +648,16 @@ impl Vrf {
     pub fn set_stale(&mut self, value: bool) {
         self.routesv4
             .iter_mut()
+            .filter(|(prefix, route)| {
+                **prefix != Ipv4Prefix::default() && !route.is_preset_drop_route()
+            })
             .for_each(|(_, route)| route.set_stale(value));
+
         self.routesv6
             .iter_mut()
+            .filter(|(prefix, route)| {
+                **prefix != Ipv6Prefix::default() && !route.is_preset_drop_route()
+            })
             .for_each(|(_, route)| route.set_stale(value));
     }
 
