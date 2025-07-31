@@ -20,7 +20,7 @@ use tracing::error;
 mod bridge;
 pub mod display;
 mod mtu;
-mod pci;
+mod physical;
 mod vrf;
 mod vtep;
 
@@ -29,7 +29,7 @@ pub use bridge::*;
 #[allow(unused_imports)] // re-export
 pub use mtu::*;
 #[allow(unused_imports)] // re-export
-pub use pci::*;
+pub use physical::*;
 #[allow(unused_imports)] // re-export
 pub use vrf::*;
 #[allow(unused_imports)] // re-export

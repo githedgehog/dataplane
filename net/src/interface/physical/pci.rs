@@ -7,8 +7,6 @@ use derive_builder::Builder;
 use multi_index_map::MultiIndexMap;
 use serde::{Deserialize, Serialize};
 
-pub mod switch;
-
 #[derive(
     Builder,
     Clone,
