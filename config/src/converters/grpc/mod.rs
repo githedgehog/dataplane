@@ -12,6 +12,7 @@ mod gateway_config;
 mod interface;
 mod overlay;
 mod peering;
+mod status;
 mod underlay;
 mod vpc;
 mod vrf;
@@ -28,6 +29,8 @@ pub use interface::*;
 pub use overlay::*;
 #[allow(unused)] // Remove if we do anything but implement traits
 pub use peering::*;
+#[allow(unused)] // Remove if we do anything but implement traits
+pub use status::*;
 #[allow(unused)] // Remove if we do anything but implement traits
 pub use underlay::*;
 #[allow(unused)] // Remove if we do anything but implement traits

@@ -15,7 +15,8 @@ use config::{GenId, GwConfig};
 // Import proto-generated types
 use gateway_config::{
     ConfigService, ConfigServiceServer, Error, GatewayConfig, GetConfigGenerationRequest,
-    GetConfigGenerationResponse, GetConfigRequest, UpdateConfigRequest, UpdateConfigResponse,
+    GetConfigGenerationResponse, GetConfigRequest, GetDataplaneStatusRequest, 
+    GetDataplaneStatusResponse, UpdateConfigRequest, UpdateConfigResponse,
 };
 
 /// Trait for configuration management
@@ -24,6 +25,7 @@ pub trait ConfigManager: Send + Sync {
     async fn get_current_config(&self) -> Result<GatewayConfig, String>;
     async fn get_generation(&self) -> Result<i64, String>;
     async fn apply_config(&self, config: GatewayConfig) -> Result<(), String>;
+    async fn get_dataplane_status(&self) -> Result<GetDataplaneStatusResponse, String>;
 }
 
 /// Implementation of the gRPC server
@@ -86,6 +88,21 @@ impl ConfigService for ConfigServiceImpl {
                 message: format!("Failed to apply configuration: {e}"),
             })),
         }
+    }
+
+    async fn get_dataplane_status(
+        &self,
+        _request: Request<GetDataplaneStatusRequest>,
+    ) -> Result<Response<GetDataplaneStatusResponse>, Status> {
+        debug!("Received request to get dataplane status");
+
+        let status_response = self
+            .config_manager
+            .get_dataplane_status()
+            .await
+            .map_err(|e| Status::internal(format!("Failed to get dataplane status: {e}")))?;
+
+        Ok(Response::new(status_response))
     }
 }
 
@@ -167,6 +184,32 @@ impl ConfigManager for BasicConfigManager {
         match response {
             ConfigResponse::ApplyConfig(result) => {
                 result.map_err(|e| format!("Failed to apply config: {e}"))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    async fn get_dataplane_status(&self) -> Result<GetDataplaneStatusResponse, String> {
+        debug!("Received request to get dataplane status");
+
+        // build a request to the config processor, send it and get the response
+        let (req, rx) = ConfigChannelRequest::new(ConfigRequest::GetDataplaneStatus);
+        self.channel_tx
+            .send(req)
+            .await
+            .map_err(|_| "Failure relaying request".to_string())?;
+        let response = rx
+            .await
+            .map_err(|_| "Failure receiving from config processor".to_string())?;
+        match response {
+            ConfigResponse::GetDataplaneStatus(status_result) => {
+                match status_result {
+                    Ok(internal_status) => {
+                        // Convert from internal dataplane status to gRPC response
+                        gateway_config::GetDataplaneStatusResponse::try_from(&*internal_status)
+                    }
+                    Err(e) => Err(format!("Failed to get dataplane status: {e}")),
+                }
             }
             _ => unreachable!(),
         }

@@ -3,6 +3,7 @@
 
 // !Configuration processor
 
+use core::option::Option::None;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -45,6 +46,7 @@ pub enum ConfigRequest {
     ApplyConfig(Box<GwConfig>),
     GetCurrentConfig,
     GetGeneration,
+    GetDataplaneStatus,
 }
 
 /// A response from the `ConfigProcessor`
@@ -53,6 +55,7 @@ pub enum ConfigResponse {
     ApplyConfig(ConfigResult),
     GetCurrentConfig(Box<Option<GwConfig>>),
     GetGeneration(Option<GenId>),
+    GetDataplaneStatus(Box<Option<GetDataplaneStatusResponse>>),
 }
 type ConfigResponseChannel = oneshot::Sender<ConfigResponse>;
 
@@ -229,6 +232,14 @@ impl ConfigProcessor {
         ConfigResponse::GetCurrentConfig(cfg)
     }
 
+    fn handle_get_dataplane_status(&self) -> ConfigResponse {
+        debug!("Handling get dataplane status request");
+
+        //TODO: Add logic to collect the dataplane status
+        // For now, we will just return an empty status
+        ConfigResponse::GetDataplaneStatus(Error::from("Not implemented yet").into())
+    }
+
     /// Run the configuration processor
     #[allow(unreachable_code)]
     pub async fn run(mut self) {
@@ -243,6 +254,10 @@ impl ConfigProcessor {
                         }
                         ConfigRequest::GetCurrentConfig => self.handle_get_config(),
                         ConfigRequest::GetGeneration => self.handle_get_generation(),
+                        ConfigRequest::GetDataplaneStatus => {
+                            let dp_status = self.config_db.handle_get_dataplane_status();
+                            ConfigResponse::GetDataplaneStatus(Box::new(dp_status))
+                        }
                     };
                     if req.reply_tx.send(response).is_err() {
                         warn!("Failed to send reply from config processor: receiver dropped?");

@@ -11,6 +11,7 @@
 pub mod device;
 pub mod interfaces;
 pub mod routing;
+pub mod dataplane_status;
 
 use derive_builder::Builder;
 
@@ -33,6 +34,7 @@ pub struct InternalConfig {
     pub vrfs: VrfConfigTable,
     pub plist_table: PrefixListTable,
     pub rmap_table: RouteMapTable,
+    pub dataplane_status: DataplaneSatatus,
 }
 
 impl InternalConfig {
@@ -50,6 +52,7 @@ impl InternalConfig {
             vrfs: VrfConfigTable::new(),
             plist_table: PrefixListTable::new(),
             rmap_table: RouteMapTable::new(),
+            dataplane_status: DataplaneSatatus::new(),
         }
     }
     pub fn set_vtep(&mut self, vtep: VtepConfig) {
