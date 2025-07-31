@@ -582,9 +582,16 @@ impl Vrf {
     pub fn iter_v4(&self) -> impl Iterator<Item = (&Ipv4Prefix, &Route)> {
         self.routesv4.iter()
     }
+    pub fn iter_mut_v4(&mut self) -> impl Iterator<Item = (&Ipv4Prefix, &mut Route)> {
+        self.routesv4.iter_mut()
+    }
     pub fn iter_v6(&self) -> impl Iterator<Item = (&Ipv6Prefix, &Route)> {
         self.routesv6.iter()
     }
+    pub fn iter_mut_v6(&mut self) -> impl Iterator<Item = (&Ipv6Prefix, &mut Route)> {
+        self.routesv6.iter_mut()
+    }
+
     pub fn filter_v4<'a>(
         &'a self,
         filter: &'a RouteV4Filter,
