@@ -318,28 +318,18 @@ impl VrfTable {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Refresh the fib groups for all non-default vrfs. This method
-    /// is ugly to make the borrow-checker happy. We first collect the
-    /// Ids of the non-default VRFs and then call Self::get_with_default_mut()
-    /// for every Id and the Id of the default VRF. This is so because
-    /// get_disjoint_mut() requires a const number of ids, but the number
-    /// of VRFs is non-const.
+    /// Refresh the fib groups for all non-default vrfs.
     //////////////////////////////////////////////////////////////////
+    #[allow(unsafe_code)]
     pub fn refresh_non_default_fibs(&mut self, rstore: &RmacStore) {
-        // collect the vrf ids for all non-default VRFs
-        let vrfids: Vec<VrfId> = self
-            .by_id
-            .iter()
-            .filter_map(|(vrfid, _)| if *vrfid != 0 { Some(vrfid) } else { None })
-            .cloned()
-            .collect();
-
-        // refresh each of the non-default vrfs collected
-        for vrfid in vrfids {
-            let (vrf, vrf0) = self
-                .get_with_default_mut(vrfid)
-                .unwrap_or_else(|_| unreachable!());
-            vrf.refresh_fib(rstore, Some(vrf0));
+        unsafe {
+            let table = self as *mut Self;
+            let vrf0 = (*table).get_default_vrf();
+            for vrf in self.values_mut() {
+                if vrf.vrfid != 0 {
+                    vrf.refresh_fib(rstore, Some(vrf0));
+                }
+            }
         }
     }
 }
