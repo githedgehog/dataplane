@@ -10,10 +10,12 @@ use crate::config::FrrConfig;
 use crate::cpi::{CpiStats, process_rx_data, rpc_send_control};
 use crate::ctl::{RouterCtlMsg, RouterCtlSender, handle_ctl_msg};
 use crate::errors::RouterError;
+use crate::evpn::RmacStore;
 use crate::fib::fibtable::FibTableWriter;
 use crate::frr::frrmi::{FrrErr, Frrmi, FrrmiRequest};
 use crate::interfaces::iftablerw::IfTableWriter;
 use crate::revent::{ROUTER_EVENTS, RouterEvent};
+use crate::rib::VrfTable;
 use crate::routingdb::RoutingDb;
 use crate::{atable::atablerw::AtableReader, cpi::CpiStatus};
 
@@ -304,6 +306,16 @@ impl Rio {
         let duration = Duration::from_secs(duration);
         self.stale_timeout = Instant::now().checked_add(duration);
     }
+    fn check_stale_timeout(&mut self, vrftable: &mut VrfTable, rstore: &RmacStore) {
+        if self
+            .stale_timeout
+            .take_if(|t| *t < Instant::now())
+            .is_some()
+        {
+            info!("Stale timeout expired");
+            vrftable.remove_stale_routes(rstore);
+        }
+    }
 }
 
 #[allow(clippy::missing_errors_doc)]
@@ -408,6 +420,9 @@ pub fn start_rio(
                     _ => {}
                 }
             }
+
+            /* check stale timeout. If expired, remove stale routes */
+            rio.check_stale_timeout(&mut db.vrftable, &db.rmac_store);
 
             /* handle control-channel messages */
             handle_ctl_msg(&mut rio, &mut db);
