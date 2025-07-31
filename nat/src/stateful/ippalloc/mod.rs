@@ -3,10 +3,9 @@
 
 //! Default IP and port allocator for stateful NAT
 
-use super::NatAllocator;
-use super::NatIp;
-use super::NatTuple;
 use super::allocator::{AllocationResult, AllocatorError};
+use super::port::NatPort;
+use super::{NatAllocator, NatIp, NatTuple};
 use net::ip::NextHeader;
 use routing::rib::vrf::VrfId;
 use std::collections::BTreeMap;
@@ -71,8 +70,6 @@ impl NatAllocator<port_alloc::AllocatedPort<Ipv4Addr>, port_alloc::AllocatedPort
         }
     }
 
-    // TODO: Update trait to 1) return a struct instead of complex Result/Option mix, and 2) return
-    // the allocations for the return path, too
     fn allocate_v4(
         &mut self,
         tuple: &NatTuple<Ipv4Addr>,
@@ -100,8 +97,46 @@ impl NatAllocator<port_alloc::AllocatedPort<Ipv4Addr>, port_alloc::AllocatedPort
             None => None,
         };
 
-        //Ok((src_mapping, dst_mapping))
-        todo!()
+        // TODO
+        let dst_vrf_id = 0;
+
+        let reverse_pool_src_opt = self.pools_src44.get_mut(&PoolTableKey::new(
+            tuple.next_header,
+            tuple.vrf_id,
+            tuple.src_ip,
+        ));
+        let reverse_pool_dst_opt = self.pools_dst44.get_mut(&PoolTableKey::new(
+            tuple.next_header,
+            tuple.vrf_id,
+            tuple.src_ip,
+        ));
+
+        let reverse_src_mapping = match reverse_pool_src_opt {
+            Some(pool_src) => Some(pool_src.reserve(
+                tuple.dst_ip,
+                // TODO: error handling
+                NatPort::new_checked(tuple.dst_port.unwrap()).unwrap(),
+            )?),
+            None => None,
+        };
+
+        let reverse_dst_mapping = match reverse_pool_dst_opt {
+            Some(pool_dst) => {
+                // TODO: error handling
+                Some(pool_dst.reserve(
+                    tuple.src_ip,
+                    NatPort::new_checked(tuple.src_port.unwrap()).unwrap(),
+                )?)
+            }
+            None => None,
+        };
+
+        Ok(AllocationResult {
+            src: src_mapping,
+            dst: dst_mapping,
+            return_src: reverse_src_mapping,
+            return_dst: reverse_dst_mapping,
+        })
     }
 
     fn allocate_v6(
@@ -131,8 +166,13 @@ impl NatAllocator<port_alloc::AllocatedPort<Ipv4Addr>, port_alloc::AllocatedPort
             None => None,
         };
 
-        //Ok((src_mapping, dst_mapping))
-        todo!()
+        Ok(AllocationResult {
+            src: src_mapping,
+            dst: dst_mapping,
+            // TODO
+            return_src: None,
+            return_dst: None,
+        })
     }
 }
 

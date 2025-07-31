@@ -62,7 +62,7 @@ impl<I: NatIp> PortAllocator<I> {
     fn cycle_blocks(&self) -> impl Iterator<Item = (usize, &AllocatorPortBlock)> {
         let offset = self
             .current_alloc_index
-            .load(std::sync::atomic::Ordering::SeqCst);
+            .load(std::sync::atomic::Ordering::Relaxed);
         self.blocks
             .iter()
             .cycle()
@@ -76,7 +76,9 @@ impl<I: NatIp> PortAllocator<I> {
     }
 
     pub fn has_free_ports(&self) -> bool {
-        self.usable_blocks.load(std::sync::atomic::Ordering::SeqCst) > 0
+        self.usable_blocks
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0
             || self.has_allocated_blocks_with_free_ports()
     }
 
@@ -94,8 +96,8 @@ impl<I: NatIp> PortAllocator<I> {
                         true,
                         false,
                         // TODO: Check these
-                        std::sync::atomic::Ordering::SeqCst,
-                        std::sync::atomic::Ordering::SeqCst,
+                        std::sync::atomic::Ordering::Relaxed,
+                        std::sync::atomic::Ordering::Relaxed,
                     )
                     .is_ok()
             })
@@ -112,10 +114,10 @@ impl<I: NatIp> PortAllocator<I> {
         self.thread_blocks.set(Some(index));
 
         self.current_alloc_index
-            .store(index, std::sync::atomic::Ordering::SeqCst);
+            .store(index, std::sync::atomic::Ordering::Relaxed);
 
         self.usable_blocks
-            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
 
         Ok(AllocatedPortBlock::new(ip, index, base_port_index))
     }

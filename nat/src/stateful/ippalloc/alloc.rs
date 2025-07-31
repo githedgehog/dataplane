@@ -4,6 +4,7 @@
 use super::port_alloc;
 use crate::stateful::NatIp;
 use crate::stateful::allocator::AllocatorError;
+use crate::stateful::port::NatPort;
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, VecDeque};
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -24,6 +25,7 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
             pool: NatPool {
                 bitmap: PoolBitmap::new(),
                 bitmap_mapping: BTreeMap::new(),
+                reverse_bitmap_mapping: BTreeMap::new(),
                 in_use: VecDeque::new(),
             }
             .into(),
@@ -53,13 +55,7 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
     fn allocate_new_ip_from_pool(&self) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
         let mut allocated_ips = self.pool.write().unwrap();
         let new_ip = allocated_ips.use_new_ip()?;
-        allocated_ips.add_in_use(&Arc::new(new_ip));
-
-        allocated_ips
-            .get_first()
-            .unwrap()
-            .upgrade()
-            .ok_or(AllocatorError::InternalIssue)
+        allocated_ips.add_in_use(&Arc::new(new_ip))
     }
 
     fn allocate_from_new_ip(&self) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
@@ -81,6 +77,19 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         }
 
         self.allocate_from_new_ip()
+    }
+
+    fn get_allocated_ip(&self, ip: I) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
+        self.pool.write().unwrap().reserve_from_pool(ip)
+    }
+
+    pub fn reserve(
+        &self,
+        ip: I,
+        port: NatPort,
+    ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
+        self.get_allocated_ip(ip)
+            .and_then(|allocated_ip| allocated_ip.reserve_port(port))
     }
 }
 
@@ -115,6 +124,14 @@ impl<I: NatIp> AllocatedIp<I> {
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
         self.port_allocator.allocate_port(self.clone())
     }
+
+    // XXX TODO
+    fn reserve_port(
+        self: Arc<Self>,
+        port: NatPort,
+    ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
+        todo!()
+    }
 }
 
 impl<I: NatIp> Drop for AllocatedIp<I> {
@@ -131,16 +148,25 @@ impl<I: NatIp> Drop for AllocatedIp<I> {
 struct NatPool<I: NatIpWithBitmap> {
     bitmap: PoolBitmap,
     bitmap_mapping: BTreeMap<u32, u128>,
+    reverse_bitmap_mapping: BTreeMap<u128, u32>,
     in_use: VecDeque<Weak<AllocatedIp<I>>>,
 }
 
 impl<I: NatIpWithBitmap> NatPool<I> {
-    fn add_in_use(&mut self, ip: &Arc<AllocatedIp<I>>) {
-        self.in_use.push_back(Arc::downgrade(ip));
+    fn get_first(&self) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
+        self.in_use
+            .front()
+            .unwrap()
+            .upgrade()
+            .ok_or(AllocatorError::InternalIssue)
     }
 
-    fn get_first(&self) -> Option<&Weak<AllocatedIp<I>>> {
-        self.in_use.front()
+    fn add_in_use(
+        &mut self,
+        ip: &Arc<AllocatedIp<I>>,
+    ) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
+        self.in_use.push_back(Arc::downgrade(ip));
+        self.get_first()
     }
 
     fn cleanup(&mut self) {
@@ -157,6 +183,33 @@ impl<I: NatIpWithBitmap> NatPool<I> {
 
         let ip = I::try_from_offset(offset, &self.bitmap_mapping)?;
         Ok(AllocatedIp::new(ip))
+    }
+
+    fn reserve_from_pool(&mut self, ip: I) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
+        let offset = I::try_to_offset(ip, &self.reverse_bitmap_mapping)?;
+        if self.bitmap.set_ip(offset) {
+            // The IP was free in the bitmap, allocate it now
+            return self.add_in_use(&Arc::new(AllocatedIp::new(ip)));
+        }
+
+        let ip_opt = self.ips_in_use().find(|weak_in_use| {
+            weak_in_use
+                .upgrade()
+                .is_some_and(|in_use| in_use.ip() == ip)
+        });
+        let Some(ip_weak) = ip_opt else {
+            // We didn't find the IP in the list of in-use IPs, but it was marked as allocated in
+            // the bitmap. Something's amiss.
+            return Err(AllocatorError::InternalIssue);
+        };
+        let Some(ip_arc) = ip_weak.upgrade() else {
+            // The IP was marked as allocated in the bitmap, but the weak reference no longer
+            // resolves. It should have been removed from the bitmap, something's amiss.
+            return Err(AllocatorError::InternalIssue);
+        };
+
+        // We found the allocated IP in the list of IPs in use, return it
+        Ok(ip_arc)
     }
 }
 
@@ -175,6 +228,10 @@ impl PoolBitmap {
         bitmap.remove(offset);
         Ok(offset)
     }
+
+    fn set_ip(&mut self, offset: u32) -> bool {
+        self.0.lock().unwrap().insert(offset)
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -189,7 +246,7 @@ pub(crate) trait NatIpWithBitmap: NatIp {
 
     fn try_to_offset(
         address: Self,
-        bitmap_mapping: &BTreeMap<u32, u128>,
+        bitmap_mapping: &BTreeMap<u128, u32>,
     ) -> Result<u32, AllocatorError>;
 }
 
@@ -203,7 +260,7 @@ impl NatIpWithBitmap for Ipv4Addr {
 
     fn try_to_offset(
         address: Self,
-        _bitmap_mapping: &BTreeMap<u32, u128>,
+        _bitmap_mapping: &BTreeMap<u128, u32>,
     ) -> Result<u32, AllocatorError> {
         Ok(u32::from(address))
     }
@@ -222,7 +279,7 @@ impl NatIpWithBitmap for Ipv6Addr {
 
     fn try_to_offset(
         address: Self,
-        bitmap_mapping: &BTreeMap<u32, u128>,
+        bitmap_mapping: &BTreeMap<u128, u32>,
     ) -> Result<u32, AllocatorError> {
         // Reverse operation of map_offset()
         map_address(address, bitmap_mapping)
@@ -252,7 +309,14 @@ fn map_offset(
 
 fn map_address(
     address: Ipv6Addr,
-    bitmap_mapping: &BTreeMap<u32, u128>,
+    bitmap_mapping: &BTreeMap<u128, u32>,
 ) -> Result<u32, AllocatorError> {
-    todo!()
+    let (prefix_start_bits, prefix_offset) = bitmap_mapping
+        .range(..=address.to_bits())
+        .next_back()
+        .ok_or(AllocatorError::InternalIssue)?;
+
+    Ok(prefix_offset
+        + u32::try_from(address.to_bits() - prefix_start_bits)
+            .map_err(|_| AllocatorError::InternalIssue)?)
 }
