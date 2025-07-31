@@ -14,7 +14,7 @@ use crate::frr::frrmi::{FrrAppliedConfig, Frrmi, FrrmiStats};
 use crate::rib::VrfTable;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
-use crate::rib::vrf::{Route, RouteOrigin, ShimNhop, Vrf, VrfStatus};
+use crate::rib::vrf::{Route, RouteFlags, RouteOrigin, ShimNhop, Vrf, VrfStatus};
 
 use crate::interfaces::iftable::IfTable;
 use crate::interfaces::interface::Attachment;
@@ -192,6 +192,14 @@ impl Display for ShimNhop {
         self.rc.fmt(f) // Nhop
     }
 }
+impl Display for RouteFlags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.contains(RouteFlags::STALE) {
+            write!(f, "s")?;
+        }
+        Ok(())
+    }
+}
 impl Display for Route {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "{} [{}/{}]", self.origin, self.distance, self.metric)?;
@@ -210,7 +218,7 @@ fn fmt_vrf_trie<P: IpPrefix, F: Fn(&(&P, &Route)) -> bool>(
 ) -> std::fmt::Result {
     Heading(format!("{show_string} routes ({})", trie.len())).fmt(f)?;
     for (prefix, route) in trie.iter() {
-        writeln!(f, "  {prefix:?} {route}")?;
+        writeln!(f, " {}  {prefix:?} {route}", route.flags)?;
     }
     Ok(())
 }
@@ -269,7 +277,7 @@ impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Route)) -> bool> Display for VrfViewV4<'_,
         fmt_vrf_oneline(&self.vrf, f)?;
         Heading(format!("Ipv4 routes ({total_routes})")).fmt(f)?;
         for (prefix, route) in rt_iter {
-            write!(f, "  {prefix:?} {route}")?;
+            write!(f, " {}  {prefix:?} {route}", route.flags)?;
             displayed += 1;
         }
         if displayed != total_routes {
@@ -303,7 +311,7 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Route)) -> bool> Display for VrfViewV6<'_,
         fmt_vrf_oneline(&self.vrf, f)?;
         Heading(format!("Ipv6 routes ({total_routes})")).fmt(f)?;
         for (prefix, route) in rt_iter {
-            write!(f, "  {prefix:?} {route}")?;
+            write!(f, " {}  {prefix:?} {route}", route.flags)?;
             displayed += 1;
         }
         if displayed != total_routes {
