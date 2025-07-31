@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 pub struct NetDevSimDevice {
     pub id: Id<Self, u32>,
 }
+
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 #[non_exhaustive]
