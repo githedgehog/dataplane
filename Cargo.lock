@@ -1014,6 +1014,7 @@ name = "dataplane-routing"
 version = "0.1.0"
 dependencies = [
  "ahash 0.8.10",
+ "bitflags 2.9.1",
  "bolero",
  "bytes",
  "chrono",
