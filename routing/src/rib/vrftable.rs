@@ -204,13 +204,12 @@ impl VrfTable {
     //////////////////////////////////////////////////////////////////
     /// Remove all of the VRFs with status `Deleted`
     //////////////////////////////////////////////////////////////////
-    #[cfg(test)]
     pub fn remove_deleted_vrfs(&mut self, iftablew: &mut IfTableWriter) {
         // collect the ids of the vrfs with status deleted
         let to_delete: Vec<VrfId> = self
             .by_id
             .values()
-            .filter_map(|vrf| (vrf.status == VrfStatus::Deleted).then_some(vrf.vrfid))
+            .filter_map(|vrf| vrf.can_be_deleted().then_some(vrf.vrfid))
             .collect();
 
         // delete them
