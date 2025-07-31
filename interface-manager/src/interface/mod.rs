@@ -160,6 +160,14 @@ impl Create for Manager<Interface> {
                 warn!("expected pci device missing: {requirement:#?}");
                 return Err(rtnetlink::Error::RequestFailed);
             }
+            InterfacePropertiesSpec::Tap => {
+                return TapDevice::open(&requirement.name)
+                    .map_err(|err| {
+                        warn!("failed to create tap device: {err:?}");
+                        rtnetlink::Error::RequestFailed
+                    })
+                    .await;
+            }
         };
         if let Some(mac) = requirement.mac {
             message
@@ -799,6 +807,9 @@ impl TryFromLinkMessage for Interface {
 
         match (kind, pci_netdev_builder.build()) {
             (Some(kind), Err(_)) => match kind {
+                InfoKind::Tun => {
+                    builder.properties(InterfaceProperties::Tap);
+                }
                 InfoKind::Bridge => match bridge_builder.build() {
                     Ok(props) => {
                         builder.properties(InterfaceProperties::Bridge(props));

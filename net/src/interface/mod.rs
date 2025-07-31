@@ -313,6 +313,8 @@ pub enum InterfaceProperties {
     Vrf(VrfProperties),
     /// Physical pci netdev properties
     Pci(PciNetdevProperties),
+    /// Tap device properties
+    Tap,
     /// Properties of something we don't currently support manipulating
     Other,
 }

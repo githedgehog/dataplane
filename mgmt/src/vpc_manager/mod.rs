@@ -325,9 +325,53 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
         let mut vteps = MultiIndexVtepPropertiesSpecMap::default();
         let mut associations = MultiIndexInterfaceAssociationSpecMap::default();
         for config in internal.vrfs.iter_by_tableid() {
-            if config.default {
-                trace!("skipping default config: {config:?}");
-                continue;
+            for iface in config.interfaces.values() {
+                match &iface.iftype {
+                    InterfaceType::Ethernet(eth) => {
+                        let mut tap = InterfaceSpecBuilder::default();
+                        match InterfaceName::try_from(iface.name.as_str()) {
+                            Ok(name) => {
+                                tap.name(name);
+                            }
+                            Err(e) => {
+                                error!("{e}");
+                                continue;
+                            }
+                        };
+                        match eth.mac.map(SourceMac::try_from) {
+                            Some(Ok(mac)) => {
+                                tap.mac(Some(mac));
+                            }
+                            None => {
+                                tap.mac(None);
+                            }
+                            Some(Err(e)) => {
+                                error!("{e}");
+                                continue;
+                            }
+                        };
+                        tap.properties(InterfacePropertiesSpec::Tap);
+                        tap.mtu(iface.mtu);
+                        tap.admin_state(AdminState::Up);
+                        match tap.build() {
+                            Ok(iface) => match interfaces.try_insert(iface) {
+                                Ok(added) => {
+                                    debug!("added proxy tap interface to spec: {added:?}");
+                                }
+                                Err(e) => {
+                                    error!("{e}");
+                                }
+                            },
+                            Err(e) => {
+                                error!("{e}");
+                                continue;
+                            }
+                        }
+                    }
+                    _ => {
+                        continue;
+                    }
+                }
             }
             let main_vtep = internal.vtep.as_ref().unwrap_or_else(|| unreachable!());
             let vtep_ip = match main_vtep.address {
@@ -559,11 +603,8 @@ mod contract {
                                 .unwrap();
                         }
                     }
-                    InterfacePropertiesSpec::Pci(_) => {
-                        if let Ok(rep) = requirements.interfaces.try_insert(interface) {
-                            pci_netdevs.push(rep.clone());
-                        }
-                    }
+                    InterfacePropertiesSpec::Tap
+                    | InterfacePropertiesSpec::Pci(_) => {}
                 }
             }
             if !bridges.is_empty() {

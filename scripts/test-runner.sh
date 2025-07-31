@@ -176,6 +176,7 @@ fi
   --mount "type=bind,source=${project_dir},target=${project_dir},readonly=true,bind-propagation=rprivate" \
   --mount "type=bind,source=${project_dir}/target,target=${project_dir}/target,readonly=false,bind-propagation=rprivate" \
   --mount "type=bind,source=$(get_docker_sock),target=$(get_docker_sock),readonly=false,bind-propagation=rprivate" \
+  --mount "type=bind,source=/dev/net/tun,target=/dev/net/tun,readonly=false,bind-propagation=rprivate" \
   --tmpfs "/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
   --tmpfs "/var/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
   --tmpfs "/tmp:nodev,noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
