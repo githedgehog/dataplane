@@ -87,6 +87,10 @@ where
         self.0.iter().map(|(p, v)| (&p.0, v))
     }
 
+    fn iter_mut(&mut self) -> impl Iterator<Item = (&P, &mut V)> {
+        self.0.iter_mut().map(|(p, v)| (&p.0, v))
+    }
+
     fn get<B>(&self, prefix: B) -> Option<&V>
     where
         B: Borrow<P>,
