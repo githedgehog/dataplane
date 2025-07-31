@@ -6,15 +6,15 @@
 use super::NatAllocator;
 use super::NatIp;
 use super::NatTuple;
-use super::allocator::AllocatorError;
-use crate::stateful::port::NatPort;
+use super::allocator::{AllocationResult, AllocatorError};
 use net::ip::NextHeader;
 use routing::rib::vrf::VrfId;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 mod alloc;
-mod port_alloc;
+// FIXME: Shoudln't be public
+pub mod port_alloc;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolTableKey<I: NatIp> {
@@ -59,7 +59,9 @@ pub struct NatDefaultAllocator {
     pools_dst66: PoolTable<Ipv6Addr, Ipv6Addr>,
 }
 
-impl NatAllocator for NatDefaultAllocator {
+impl NatAllocator<port_alloc::AllocatedPort<Ipv4Addr>, port_alloc::AllocatedPort<Ipv6Addr>>
+    for NatDefaultAllocator
+{
     fn new() -> Self {
         Self {
             pools_src44: PoolTable::new(),
@@ -74,7 +76,7 @@ impl NatAllocator for NatDefaultAllocator {
     fn allocate_v4(
         &mut self,
         tuple: &NatTuple<Ipv4Addr>,
-    ) -> Result<(Option<(Ipv4Addr, NatPort)>, Option<(Ipv4Addr, NatPort)>), AllocatorError> {
+    ) -> Result<AllocationResult<port_alloc::AllocatedPort<Ipv4Addr>>, AllocatorError> {
         Self::check_proto(tuple.next_header)?;
 
         let pool_src_opt = self.pools_src44.get_mut(&PoolTableKey::new(
@@ -105,7 +107,7 @@ impl NatAllocator for NatDefaultAllocator {
     fn allocate_v6(
         &mut self,
         tuple: &NatTuple<Ipv6Addr>,
-    ) -> Result<(Option<(Ipv6Addr, NatPort)>, Option<(Ipv6Addr, NatPort)>), AllocatorError> {
+    ) -> Result<AllocationResult<port_alloc::AllocatedPort<Ipv6Addr>>, AllocatorError> {
         Self::check_proto(tuple.next_header)?;
 
         let pool_src_opt = self.pools_src66.get_mut(&PoolTableKey::new(

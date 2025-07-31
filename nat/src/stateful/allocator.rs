@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use super::NatTuple;
-use super::port::{NatPort, NatPortError};
+use super::port::NatPortError;
 use net::ip::NextHeader;
 use std::fmt::Debug;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -23,15 +23,25 @@ pub enum AllocatorError {
     InternalIssue,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AllocationResult<T: Debug> {
+    pub src: Option<T>,
+    pub dst: Option<T>,
+}
+
 #[allow(clippy::type_complexity)]
-pub trait NatAllocator: Debug {
+pub trait NatAllocator<T, U>: Debug
+where
+    T: Debug,
+    U: Debug,
+{
     fn new() -> Self;
     fn allocate_v4(
         &mut self,
         tuple: &NatTuple<Ipv4Addr>,
-    ) -> Result<(Option<(Ipv4Addr, NatPort)>, Option<(Ipv4Addr, NatPort)>), AllocatorError>;
+    ) -> Result<AllocationResult<T>, AllocatorError>;
     fn allocate_v6(
         &mut self,
         tuple: &NatTuple<Ipv6Addr>,
-    ) -> Result<(Option<(Ipv6Addr, NatPort)>, Option<(Ipv6Addr, NatPort)>), AllocatorError>;
+    ) -> Result<AllocationResult<U>, AllocatorError>;
 }

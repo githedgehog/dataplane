@@ -9,8 +9,9 @@ mod ippalloc;
 mod port;
 pub mod sessions;
 
-use crate::stateful::allocator::NatAllocator;
+use crate::stateful::allocator::{AllocationResult, NatAllocator};
 use crate::stateful::ippalloc::NatDefaultAllocator;
+use crate::stateful::ippalloc::port_alloc::AllocatedPort;
 use crate::stateful::port::NatPort;
 use crate::stateful::sessions::{
     NatDefaultSession, NatDefaultSessionManager, NatSession, NatSessionManager, NatState,
@@ -268,6 +269,32 @@ impl StatefulNat {
         state.increment_bytes(total_bytes.into());
     }
 
+    // TODO: Change this function to store directly the AllocatedPort objects in session map
+    fn new_state_from_alloc<I: NatIp>(alloc: &AllocationResult<AllocatedPort<I>>) -> NatState {
+        let (target_src_addr, target_src_port) = match &alloc.src {
+            Some(alloc_ip_port) => (
+                Some(alloc_ip_port.ip().to_ip_addr()),
+                // TODO: We could have non-empty IP but empty port, e.g. ICMP (needs changing struct
+                // AllocatedPort to contain an Option; then remove "Some" here)
+                Some(alloc_ip_port.port()),
+            ),
+            None => (None, None),
+        };
+        let (target_dst_addr, target_dst_port) = match &alloc.dst {
+            Some(alloc_ip_port) => (
+                Some(alloc_ip_port.ip().to_ip_addr()),
+                Some(alloc_ip_port.port()),
+            ),
+            None => (None, None),
+        };
+        NatState::new(
+            target_src_addr,
+            target_dst_addr,
+            target_src_port,
+            target_dst_port,
+        )
+    }
+
     fn translate_packet_v4<Buf: PacketBufferMut>(
         &mut self,
         packet: &mut Packet<Buf>,
@@ -288,27 +315,12 @@ impl StatefulNat {
             return None;
         };
 
-        let (src_mapping, dst_mapping) = alloc;
-        if src_mapping.is_none() && dst_mapping.is_none() {
+        if alloc.src.is_none() && alloc.dst.is_none() {
             // No NAT for this tuple, leave the packet unchanged
             return None;
         }
 
-        let (target_src_addr, target_src_port) = match src_mapping {
-            Some((ip, port)) => (Some(ip.to_ip_addr()), Some(port)),
-            None => (None, None),
-        };
-        let (target_dst_addr, target_dst_port) = match dst_mapping {
-            Some((ip, port)) => (Some(ip.to_ip_addr()), Some(port)),
-            None => (None, None),
-        };
-
-        let mut new_state = NatState::new(
-            target_src_addr,
-            target_dst_addr,
-            target_src_port,
-            target_dst_port,
-        );
+        let mut new_state = Self::new_state_from_alloc(&alloc);
         Self::update_stats(&mut new_state, total_bytes);
         self.create_session_v4(tuple, new_state.clone()).ok()?;
         Self::stateful_translate::<Buf>(packet, &new_state, tuple.next_header);
