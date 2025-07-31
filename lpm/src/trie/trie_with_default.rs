@@ -80,6 +80,10 @@ impl<T: TrieMap<Value: Default> + TrieMapFactory<T>> TrieMap for TrieMapWithDefa
         self.0.iter()
     }
 
+    fn iter_mut(&mut self) -> impl Iterator<Item = (&Self::Prefix, &mut Self::Value)> {
+        self.0.iter_mut()
+    }
+
     fn get<B>(&self, prefix: B) -> Option<&Self::Value>
     where
         B: Borrow<Self::Prefix>,

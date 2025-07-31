@@ -41,6 +41,7 @@ pub trait TrieMap {
         B: Borrow<Self::Prefix>;
 
     fn iter(&self) -> impl Iterator<Item = (&Self::Prefix, &Self::Value)>;
+    fn iter_mut(&mut self) -> impl Iterator<Item = (&Self::Prefix, &mut Self::Value)>;
     fn is_empty(&self) -> bool;
 
     fn insert(&mut self, prefix: Self::Prefix, value: Self::Value) -> Option<Self::Value>;
