@@ -638,6 +638,18 @@ impl Vrf {
             }
         }
     }
+
+    /////////////////////////////////////////////////////////////////////////
+    /// Set/unset stale flag for all `Route`s in a `Vrf`
+    /////////////////////////////////////////////////////////////////////////
+    pub fn set_stale(&mut self, value: bool) {
+        self.routesv4
+            .iter_mut()
+            .for_each(|(_, route)| route.set_stale(value));
+        self.routesv6
+            .iter_mut()
+            .for_each(|(_, route)| route.set_stale(value));
+    }
 }
 
 #[cfg(test)]
