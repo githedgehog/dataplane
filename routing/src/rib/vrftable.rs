@@ -340,6 +340,26 @@ impl VrfTable {
         debug!("Marking all routes as stale..");
         self.by_id.values_mut().for_each(|vrf| vrf.set_stale(value));
     }
+    /////////////////////////////////////////////////////////////////////////
+    // Remove stale routes across all vrfs
+    /////////////////////////////////////////////////////////////////////////
+    #[allow(unsafe_code)]
+    pub fn remove_stale_routes(&mut self, rstore: &RmacStore) {
+        debug!("Removing stale routes..");
+        // remove stale routes from non-default VRF
+        unsafe {
+            let table = self as *mut Self;
+            let vrf0 = (*table).get_default_vrf();
+            for vrf in self.values_mut() {
+                if vrf.vrfid != 0 {
+                    vrf.remove_stale_routes(Some(vrf0), rstore);
+                }
+            }
+        }
+        // remove stale routes from default vrf
+        let vrf0 = self.get_default_vrf_mut();
+        vrf0.remove_stale_routes(None, rstore);
+    }
 }
 
 #[cfg(test)]
