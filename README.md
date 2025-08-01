@@ -254,8 +254,14 @@ depend on `mgmt`.
     └───────────────────────────┘
 ```
 
+## Workspace Dependency Graph
 
+![depgraph](./workspace-deps.svg)
 
+**Figure**: full workspace dependency graph. Note that tier-1 packages (like
+net) never depend on tier-2 packages (like nat).
+
+</figure>
 
 ## License
 
