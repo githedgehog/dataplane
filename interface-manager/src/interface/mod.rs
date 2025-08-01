@@ -11,7 +11,6 @@ mod tap;
 mod vrf;
 mod vtep;
 
-
 #[allow(unused_imports)] // re-export
 pub use association::*;
 #[allow(unused_imports)] // re-export
