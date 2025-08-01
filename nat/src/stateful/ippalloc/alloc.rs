@@ -20,20 +20,19 @@ pub struct IpAllocator<I: NatIpWithBitmap> {
 }
 
 impl<I: NatIpWithBitmap> IpAllocator<I> {
-    pub fn new() -> Self {
+    pub fn new(ip_allocator: Arc<IpAllocator<I>>) -> Self {
         Self {
             pool: NatPool {
                 bitmap: PoolBitmap::new(),
                 bitmap_mapping: BTreeMap::new(),
                 reverse_bitmap_mapping: BTreeMap::new(),
                 in_use: VecDeque::new(),
+                ip_allocator,
             }
             .into(),
         }
     }
-}
 
-impl<I: NatIpWithBitmap> IpAllocator<I> {
     fn reuse_allocated_ip(&self) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
         let allocated_ips = self.pool.read().unwrap();
         for ip_weak in allocated_ips.ips_in_use() {
@@ -89,7 +88,7 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         port: NatPort,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
         self.get_allocated_ip(ip)
-            .and_then(|allocated_ip| allocated_ip.reserve_port(port))
+            .and_then(|allocated_ip| allocated_ip.reserve_port_for_ip(port))
     }
 }
 
@@ -101,13 +100,15 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
 pub struct AllocatedIp<I: NatIp> {
     ip: I,
     port_allocator: port_alloc::PortAllocator<I>,
+    ip_allocator: Arc<IpAllocator<I>>,
 }
 
 impl<I: NatIp> AllocatedIp<I> {
-    fn new(ip: I) -> Self {
+    fn new(ip: I, ip_allocator: Arc<IpAllocator<I>>) -> Self {
         Self {
             ip,
             port_allocator: port_alloc::PortAllocator::new(),
+            ip_allocator,
         }
     }
 
@@ -119,18 +120,21 @@ impl<I: NatIp> AllocatedIp<I> {
         self.port_allocator.has_free_ports()
     }
 
+    pub(crate) fn deallocate_block_for_ip(self: Arc<Self>, index: usize) {
+        self.port_allocator.deallocate_block(index);
+    }
+
     fn allocate_port_for_ip(
         self: Arc<Self>,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
         self.port_allocator.allocate_port(self.clone())
     }
 
-    // XXX TODO
-    fn reserve_port(
+    fn reserve_port_for_ip(
         self: Arc<Self>,
         port: NatPort,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
-        todo!()
+        self.port_allocator.reserve_port(self.clone(), port)
     }
 }
 
@@ -150,6 +154,7 @@ struct NatPool<I: NatIpWithBitmap> {
     bitmap_mapping: BTreeMap<u32, u128>,
     reverse_bitmap_mapping: BTreeMap<u128, u32>,
     in_use: VecDeque<Weak<AllocatedIp<I>>>,
+    ip_allocator: Arc<IpAllocator<I>>,
 }
 
 impl<I: NatIpWithBitmap> NatPool<I> {
@@ -182,14 +187,14 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         let offset = self.bitmap.pop_ip()?;
 
         let ip = I::try_from_offset(offset, &self.bitmap_mapping)?;
-        Ok(AllocatedIp::new(ip))
+        Ok(AllocatedIp::new(ip, self.ip_allocator.clone()))
     }
 
     fn reserve_from_pool(&mut self, ip: I) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
         let offset = I::try_to_offset(ip, &self.reverse_bitmap_mapping)?;
         if self.bitmap.set_ip(offset) {
             // The IP was free in the bitmap, allocate it now
-            return self.add_in_use(&Arc::new(AllocatedIp::new(ip)));
+            return self.add_in_use(&Arc::new(AllocatedIp::new(ip, self.ip_allocator.clone())));
         }
 
         let ip_opt = self.ips_in_use().find(|weak_in_use| {
