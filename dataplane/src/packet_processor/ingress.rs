@@ -54,7 +54,7 @@ impl Ingress {
                     debug!("{nfi}: Packet is for VRF {vrfid}");
                     packet.get_meta_mut().vrf = Some(vrfid);
                 }
-                Some(Attachment::BD) => unimplemented!(),
+                Some(Attachment::BD) => unimplemented!(), // TODO: what is this?
                 None => {
                     warn!("{nfi}: Interface {} is detached", interface.name);
                     packet.done(DoneReason::InterfaceDetached);

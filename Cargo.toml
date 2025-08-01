@@ -7,6 +7,7 @@ members = [
 	"dpdk",
 	"dpdk-sys",
 	"dpdk-sysroot-helper",
+	"driver",
 	"errno",
 	"id",
 	"interface-manager",
@@ -31,7 +32,7 @@ config = { path = "./config", package = "dataplane-config" }
 dpdk = { path = "./dpdk", package = "dataplane-dpdk" }
 dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys" }
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpdk-sysroot-helper" }
-dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", version = "1.1.2"}
+dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", version = "1.1.2" }
 errno = { path = "./errno", package = "dataplane-errno" }
 gateway_config = { git = "https://github.com/githedgehog/gateway-proto", tag = "v0.12.0", version = "0.12.0" }
 id = { path = "./id", package = "dataplane-id" }
@@ -72,7 +73,7 @@ etherparse = { version = "0.18.2", default-features = false, features = [] }
 fixin = { git = "https://github.com/githedgehog/fixin", branch = "main" }
 futures = { version = "0.3.31", default-features = false, features = [] }
 hyper = { version = "1.6.0", default-features = false, features = ["http1", "server"] }
-hyper-util = { version = "0.1.16", features = ["tokio"]}
+hyper-util = { version = "0.1.16", features = ["tokio"] }
 ipnet = { version = "2.11.0", default-features = false, features = [] }
 left-right = { version = "0.11.5" }
 libc = { version = "1.0.0-alpha.1", default-features = false, features = [] }

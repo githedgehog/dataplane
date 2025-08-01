@@ -1,0 +1,9 @@
+[package]
+name = "dataplane-driver"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# internal
+net = { workspace = true }
+pipeline = { workspace = true }

@@ -765,7 +765,6 @@ dependencies = [
  "clap",
  "ctrlc",
  "dataplane-dpdk",
- "dataplane-id",
  "dataplane-mgmt",
  "dataplane-nat",
  "dataplane-net",
@@ -774,18 +773,10 @@ dependencies = [
  "dataplane-routing",
  "dataplane-stats",
  "dataplane-vpcmap",
- "dyn-iter",
- "hyper",
- "hyper-util",
  "metrics",
  "metrics-exporter-prometheus",
  "mio",
  "netdev",
- "once_cell",
- "ordermap",
- "parking_lot",
- "serde",
- "serde_yml",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -848,6 +839,14 @@ dependencies = [
 [[package]]
 name = "dataplane-dpdk-sysroot-helper"
 version = "0.0.1"
+
+[[package]]
+name = "dataplane-driver"
+version = "0.1.0"
+dependencies = [
+ "dataplane-net",
+ "dataplane-pipeline",
+]
 
 [[package]]
 name = "dataplane-errno"

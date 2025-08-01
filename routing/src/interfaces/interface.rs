@@ -70,13 +70,13 @@ pub enum IfState {
 #[derive(Debug, Clone)]
 pub enum Attachment {
     VRF(FibReader),
-    BD,
+    BD, // TODO: what is this?
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AttachConfig {
     VRF(VrfId),
-    BD,
+    BD, // TODO: what is this
 }
 
 /// An object representing the configuration for an [`Interface`]

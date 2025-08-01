@@ -5,11 +5,15 @@ edition = "2024"
 publish = false
 license = "Apache-2.0"
 
+[features]
+default = []
+test_buffer = ["net/test_buffer"]
+
 [dependencies]
 arc-swap = { workspace = true }
 dyn-iter = { workspace = true }
 id = { workspace = true }
-net = { workspace = true, features = ["test_buffer"] }
+net = { workspace = true }
 ordermap = { workspace = true, features = ["std"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
