@@ -509,3 +509,11 @@ coverage *args: \
   (cargo "llvm-cov" "report" "--html" "--output-dir=./target/nextest/coverage" "--profile=fuzz") \
   (cargo "llvm-cov" "report" "--json" "--output-path=./target/nextest/coverage/report.json" "--profile=fuzz") \
   (cargo "llvm-cov" "report" "--codecov" "--output-path=./target/nextest/coverage/codecov.json" "--profile=fuzz")
+
+
+# regenerate the dependency graph for the project
+[script]
+depgraph:
+  just cargo depgraph --exclude dataplane-test-utils,dataplane-dpdk-sysroot-helper  --workspace-only \
+    | sed 's/dataplane-//g' \
+    | dot -Grankdir=TD -Gsplines=polyline -Granksep=1.5 -Tsvg > workspace-deps.svg
