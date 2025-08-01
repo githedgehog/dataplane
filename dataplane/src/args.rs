@@ -96,9 +96,8 @@ impl CmdArgs {
         }
     }
 
-    #[allow(clippy::unused_self)]
-    pub fn kernel_params(&self) -> Vec<String> {
-        self.interface.clone()
+    pub fn kernel_params(&self) -> &Vec<String> {
+        &self.interface
     }
 
     pub fn eal_params(&self) -> Vec<String> {
