@@ -86,13 +86,13 @@ impl Display for PciNetdevProperties {
         match &self.switch_id {
             None => {}
             Some(switch_id) => {
-                write!(f, "switch-id: {switch_id}")?;
+                write!(f, "switch-id: {switch_id} ")?;
             }
         }
         match &self.port_name {
             None => {}
             Some(port_name) => {
-                write!(f, "port-name: {port_name}")?;
+                write!(f, "port-name: {port_name} ")?;
             }
         }
         write!(f, "parent-dev: {}", self.parent_dev)
@@ -106,6 +106,7 @@ impl Display for InterfaceProperties {
             InterfaceProperties::Vrf(vrf) => vrf.fmt(f),
             InterfaceProperties::Vtep(vtep) => vtep.fmt(f),
             InterfaceProperties::Pci(rep) => rep.fmt(f),
+            InterfaceProperties::Dummy | InterfaceProperties::Tap => "".fmt(f),
             InterfaceProperties::Other => write!(f, "other"),
         }
     }
@@ -114,9 +115,11 @@ impl Display for InterfaceProperties {
 fn ifproperty_to_str(properties: &InterfaceProperties) -> &'static str {
     match properties {
         InterfaceProperties::Bridge(_) => "bridge",
+        InterfaceProperties::Dummy => "dummy",
         InterfaceProperties::Vrf(_) => "vrf",
         InterfaceProperties::Vtep(_) => "vtep",
         InterfaceProperties::Pci(_) => "pci",
+        InterfaceProperties::Tap => "tap",
         InterfaceProperties::Other => "other",
     }
 }
