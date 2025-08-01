@@ -135,7 +135,7 @@ fn get_interface_ifindex(interfaces: &[Interface], name: &str) -> Option<Interfa
 /// Build a table of kernel interfaces to receive packets from (or send to).
 /// Interfaces of interest are indicated by --interface INTERFACE in the command line.
 /// Argument --interface ANY|any instructs the driver to capture on all interfaces.
-fn build_kif_table(args: impl IntoIterator<Item = impl AsRef<str> + Clone>) -> KifTable {
+fn build_kif_table(args: impl IntoIterator<Item = impl AsRef<str>>) -> KifTable {
     /* learn about existing kernel network interfaces. We need these to know their ifindex  */
     let interfaces = netdev::get_interfaces();
 
@@ -179,7 +179,7 @@ pub struct DriverKernel;
 impl DriverKernel {
     /// Starts the kernel driver
     pub fn start(
-        args: impl IntoIterator<Item = impl AsRef<str> + Clone>,
+        args: impl IntoIterator<Item = impl AsRef<str>>,
         setup_pipeline: impl FnOnce() -> DynPipeline<TestBuffer>,
     ) {
         let mut pipeline = setup_pipeline();
