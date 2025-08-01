@@ -233,7 +233,7 @@ impl DriverKernel {
 
     /// Tries to receive frames from the indicated interface and builds `Packet`s
     /// out of them. Returns a vector of [`Packet`]s
-    pub fn packet_recv(interface: &mut Kif) -> Vec<Packet<TestBuffer>> {
+    pub fn packet_recv(interface: &mut Kif) -> impl Iterator<Item = Packet<TestBuffer>> + use<> {
         let mut raw = [0u8; 2048];
         let mut pkts = Vec::with_capacity(10);
         while let Ok(bytes) = interface.sock.read(&mut raw) {
@@ -254,6 +254,6 @@ impl DriverKernel {
                 }
             }
         }
-        pkts
+        pkts.into_iter()
     }
 }
