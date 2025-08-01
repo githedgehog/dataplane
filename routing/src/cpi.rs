@@ -448,10 +448,13 @@ fn handle_notification(_csock: &RpcCachedSock, peer: &SocketAddr, _notif: &RpcNo
 fn handle_control(
     csock: &mut RpcCachedSock,
     peer: &SocketAddr,
-    _ctl: &RpcControl,
+    ctl: &RpcControl,
     stats: &mut CpiStats,
 ) {
     stats.control_rx += 1;
+    if ctl.refresh != 0 {
+        info!("CP acks reception of refresh request");
+    }
     rpc_send_control(csock, peer, false);
 }
 fn handle_rpc_msg(rio: &mut Rio, peer: &SocketAddr, msg: &RpcMsg, db: &mut RoutingDb) {
