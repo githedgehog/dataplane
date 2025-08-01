@@ -221,6 +221,25 @@ impl VrfTable {
     }
 
     //////////////////////////////////////////////////////////////////
+    /// Remove all of the VRFs with status `Deleting`
+    //////////////////////////////////////////////////////////////////
+    pub fn remove_deleting_vrfs(&mut self, iftablew: &mut IfTableWriter) {
+        // collect the ids of the vrfs with status deleting
+        let to_delete: Vec<VrfId> = self
+            .by_id
+            .values()
+            .filter_map(|vrf| vrf.is_deleting().then_some(vrf.vrfid))
+            .collect();
+
+        // delete them
+        for vrfid in &to_delete {
+            if let Err(e) = self.remove_vrf(*vrfid, iftablew) {
+                error!("Failed to delete vrf with id {vrfid}: {e}");
+            }
+        }
+    }
+
+    //////////////////////////////////////////////////////////////////
     /// Immutably access a [`Vrf`] from its id.
     //////////////////////////////////////////////////////////////////
     pub fn get_vrf(&self, vrfid: VrfId) -> Result<&Vrf, RouterError> {
