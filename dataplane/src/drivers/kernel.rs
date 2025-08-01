@@ -25,6 +25,7 @@ use std::{thread, time};
 
 use crate::CmdArgs;
 use net::buffer::test_buffer::TestBuffer;
+use net::interface::InterfaceIndex;
 use net::packet::Packet;
 use net::packet::{DoneReason, InterfaceId};
 use netdev::Interface;
@@ -33,17 +34,17 @@ use tracing::{debug, error, warn};
 
 /// Simple representation of a kernel interface.
 pub struct Kif {
-    ifindex: u32,          /* ifindex of interface */
-    token: Token,          /* token for polling */
-    name: String,          /* name of interface */
-    sock: RawPacketStream, /* packet socket */
-    raw_fd: RawFd,         /* raw desc of packet socket */
+    ifindex: InterfaceIndex, /* ifindex of interface */
+    token: Token,            /* token for polling */
+    name: String,            /* name of interface */
+    sock: RawPacketStream,   /* packet socket */
+    raw_fd: RawFd,           /* raw desc of packet socket */
 }
 impl Kif {
     /// Create a kernel interface entry. Each interface gets a [`Token`] assigned
     /// and a packet socket opened, which gets registered in a poller to detect
     /// activity.
-    fn new(ifindex: u32, name: &str, token: Token) -> Option<Self> {
+    fn new(ifindex: InterfaceIndex, name: &str, token: Token) -> Option<Self> {
         let Ok(mut sock) = RawPacketStream::new() else {
             error!("Failed to open raw sock for interface {name}");
             return None;
@@ -83,7 +84,7 @@ impl KifTable {
     }
     /// Add a kernel interface 'representor' to this table. For each interface, a packet socket
     /// is created and a poller [`Token`] assigned. Failures are simply logged.
-    pub fn add(&mut self, ifindex: u32, name: &str) {
+    pub fn add(&mut self, ifindex: InterfaceIndex, name: &str) {
         debug!("Adding interface '{name}'...");
         let token = Token(self.next_token);
         let interface = Kif::new(ifindex, name, token);
@@ -109,7 +110,7 @@ impl KifTable {
 
     /// Get a mutable refernce to the [`Kif`] with the indicated ifindex
     /// Todo: replace this linear search with a hash lookup
-    pub fn get_mut_by_index(&mut self, ifindex: u32) -> Option<&mut Kif> {
+    pub fn get_mut_by_index(&mut self, ifindex: InterfaceIndex) -> Option<&mut Kif> {
         self.by_token
             .values_mut()
             .find(|kif| kif.ifindex == ifindex)
@@ -117,11 +118,18 @@ impl KifTable {
 }
 
 /// Get the ifindex of the interface with the given name
-fn get_interface_ifindex(interfaces: &[Interface], name: &str) -> Option<u32> {
-    interfaces
-        .iter()
-        .position(|interface| interface.name == name)
-        .map(|pos| interfaces[pos].index)
+fn get_interface_ifindex(interfaces: &[Interface], name: &str) -> Option<InterfaceIndex> {
+    interfaces.iter().find_map(|interface| {
+        if interface.name == name {
+            InterfaceIndex::try_new(interface.index)
+                .map_err(|e| {
+                    error!("{}", e);
+                })
+                .ok()
+        } else {
+            None
+        }
+    })
 }
 
 /// Build a table of kernel interfaces to receive packets from (or send to).
@@ -145,7 +153,10 @@ fn build_kif_table(args: impl IntoIterator<Item = impl AsRef<str> + Clone>) -> K
     if ifnames.len() == 1 && ifnames[0].to_uppercase() == "ANY" {
         /* use all interfaces */
         for interface in &interfaces {
-            kiftable.add(interface.index, &interface.name);
+            kiftable.add(
+                InterfaceIndex::try_new(interface.index).unwrap_or_else(|e| unreachable!("{}", e)),
+                &interface.name,
+            );
         }
     } else {
         /* use only the interfaces specified in args */
@@ -194,7 +205,7 @@ impl DriverKernel {
                         let mut meta = pkt.get_meta_mut();
                         if let Some(oif) = &meta.oif {
                             /* lookup outgoing interface and xmit packet */
-                            if let Some(outgoing) = kiftable.get_mut_by_index(oif.get_id()) {
+                            if let Some(outgoing) = kiftable.get_mut_by_index(*oif) {
                                 match pkt.serialize() {
                                     Ok(out) => {
                                         debug!(
@@ -209,7 +220,7 @@ impl DriverKernel {
                                     }
                                 }
                             } else {
-                                warn!("Unable to find interface with ifindex {}", oif.get_id());
+                                warn!("Unable to find interface with ifindex {}", oif);
                             }
                         } else {
                             warn!("Outgoing interface not set for packet");
@@ -233,7 +244,7 @@ impl DriverKernel {
                 Ok(mut incoming) => {
                     /* set the iif id */
                     let mut meta = incoming.get_meta_mut();
-                    meta.iif = InterfaceId::new(interface.ifindex);
+                    meta.iif = Some(interface.ifindex);
                     pkts.push(incoming);
                 }
                 Err(e) => {

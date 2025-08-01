@@ -3,10 +3,9 @@
 
 //! State objects to keep adjacency information
 
-use crate::interfaces::interface::IfIndex;
 use ahash::RandomState;
-use dplane_rpc::msg::Ifindex;
 use net::eth::mac::Mac;
+use net::interface::InterfaceIndex;
 use std::collections::HashMap;
 use std::net::IpAddr;
 
@@ -14,14 +13,14 @@ use std::net::IpAddr;
 /// Object that represents an adjacency or ARP/ND entry
 pub struct Adjacency {
     address: IpAddr,
-    ifindex: IfIndex,
+    ifindex: InterfaceIndex,
     mac: Mac,
 }
 
 impl Adjacency {
     /// Create an [`Adjacency`] object
     #[must_use]
-    pub fn new(address: IpAddr, ifindex: IfIndex, mac: Mac) -> Self {
+    pub fn new(address: IpAddr, ifindex: InterfaceIndex, mac: Mac) -> Self {
         Self {
             address,
             ifindex,
@@ -30,7 +29,7 @@ impl Adjacency {
     }
     /// Get the Ifindex of an [`Adjacency`] object
     #[must_use]
-    pub fn get_ifindex(&self) -> Ifindex {
+    pub fn get_ifindex(&self) -> InterfaceIndex {
         self.ifindex
     }
 
@@ -49,7 +48,7 @@ impl Adjacency {
 
 /// A table of [`Adjacency`]ies
 #[derive(Default, Clone)]
-pub struct AdjacencyTable(HashMap<(IfIndex, IpAddr), Adjacency, RandomState>);
+pub struct AdjacencyTable(HashMap<(InterfaceIndex, IpAddr), Adjacency, RandomState>);
 
 impl AdjacencyTable {
     #[must_use]
@@ -64,7 +63,7 @@ impl AdjacencyTable {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
-    pub fn iter(&self) -> impl Iterator<Item = (&(IfIndex, IpAddr), &Adjacency)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&(InterfaceIndex, IpAddr), &Adjacency)> {
         self.0.iter()
     }
     pub fn values(&self) -> impl Iterator<Item = &Adjacency> {
@@ -74,11 +73,11 @@ impl AdjacencyTable {
         self.0
             .insert((adjacency.ifindex, adjacency.address), adjacency);
     }
-    pub fn del_adjacency(&mut self, address: IpAddr, ifindex: IfIndex) {
+    pub fn del_adjacency(&mut self, address: IpAddr, ifindex: InterfaceIndex) {
         self.0.remove(&(ifindex, address));
     }
     #[must_use]
-    pub fn get_adjacency(&self, address: IpAddr, ifindex: IfIndex) -> Option<&Adjacency> {
+    pub fn get_adjacency(&self, address: IpAddr, ifindex: InterfaceIndex) -> Option<&Adjacency> {
         self.0.get(&(ifindex, address))
     }
     pub fn clear(&mut self) {
@@ -89,25 +88,26 @@ impl AdjacencyTable {
 #[cfg(test)]
 #[rustfmt::skip]
 pub mod tests {
-    use super::*;
-    use crate::rib::vrf::tests::mk_addr;
+use super::*;
+use crate::rib::vrf::tests::mk_addr;
+use net::interface::InterfaceIndex;
 
     pub fn build_test_atable() -> AdjacencyTable {
         let mut atable = AdjacencyTable::new();
         {
             let ip = mk_addr("10.0.0.1");
             let mac = Mac::from([0x0, 0x0, 0x0, 0x0 ,0xaa, 0x1]);
-            atable.add_adjacency(Adjacency::new(ip, 2, mac));
+            atable.add_adjacency(Adjacency::new(ip, InterfaceIndex::try_new(2).unwrap(), mac));
         }
         {
             let ip = mk_addr("10.0.0.5");
             let mac = Mac::from([0x0, 0x0, 0x0, 0x0 ,0xaa, 0x5]);
-            atable.add_adjacency(Adjacency::new(ip, 3, mac));
+            atable.add_adjacency(Adjacency::new(ip, InterfaceIndex::try_new(3).unwrap(), mac));
         }
         {
             let ip = mk_addr("10.0.0.9");
             let mac = Mac::from([0x0, 0x0, 0x0, 0x0 ,0xaa, 0x9]);
-            atable.add_adjacency(Adjacency::new(ip, 4, mac ));
+            atable.add_adjacency(Adjacency::new(ip, InterfaceIndex::try_new(4).unwrap(), mac ));
         }
         atable
     }
@@ -118,11 +118,11 @@ pub mod tests {
         let ip = mk_addr("10.0.0.1");
         let mac = Mac::from([0x0, 0x0, 0x0, 0x0 ,0x0, 0x1]);
 
-        let a1 = Adjacency::new(ip, 10, mac);
+        let a1 = Adjacency::new(ip, InterfaceIndex::try_new(10).unwrap(), mac);
         atable.add_adjacency(a1);
-        assert_eq!(atable.get_adjacency(ip, 10).unwrap().mac, mac);
+        assert_eq!(atable.get_adjacency(ip, InterfaceIndex::try_new(10).unwrap()).unwrap().mac, mac);
 
-        atable.del_adjacency(ip, 10);
-        assert!(atable.get_adjacency(ip, 10).is_none());
+        atable.del_adjacency(ip, InterfaceIndex::try_new(10).unwrap());
+        assert!(atable.get_adjacency(ip, InterfaceIndex::try_new(10).unwrap()).is_none());
     }
 }

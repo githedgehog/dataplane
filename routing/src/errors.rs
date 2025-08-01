@@ -3,12 +3,13 @@
 
 //! The error results used by this library.
 
+use net::interface::InterfaceIndex;
 use thiserror::Error;
 
 #[derive(Error, Debug, PartialEq)]
 pub enum RouterError {
     #[error("No interface with ifindex {0}")]
-    NoSuchInterface(u32),
+    NoSuchInterface(InterfaceIndex),
 
     #[error("No such VRF")]
     NoSuchVrf,
@@ -23,7 +24,7 @@ pub enum RouterError {
     VniInvalid(u32),
 
     #[error("An interface with ifindex {0} already exists")]
-    InterfaceExists(u32),
+    InterfaceExists(InterfaceIndex),
 
     #[error("Invalid socket path '{0}'")]
     InvalidPath(String),

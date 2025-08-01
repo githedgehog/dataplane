@@ -3,6 +3,7 @@
 
 #![allow(missing_docs)] // TODO
 
+use crate::interface::InterfaceIndex;
 use crate::vxlan::Vni;
 use bitflags::bitflags;
 use std::collections::HashMap;
@@ -83,10 +84,10 @@ bitflags! {
 #[derive(Debug, Default, Clone)]
 pub struct PacketMeta {
     flags: MetaFlags,
-    pub iif: InterfaceId,             /* incoming interface - set early */
-    pub oif: Option<InterfaceId>,     /* outgoing interface - set late */
-    pub nh_addr: Option<IpAddr>,      /* IP address of next-hop */
-    pub vrf: Option<VrfId>,           /* for IP packet, the VRF to use to route it */
+    pub iif: Option<InterfaceIndex>, /* incoming interface - set early */
+    pub oif: Option<InterfaceIndex>, /* outgoing interface - set late */
+    pub nh_addr: Option<IpAddr>,     /* IP address of next-hop */
+    pub vrf: Option<VrfId>,          /* for IP packet, the VRF to use to route it */
     pub bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
     pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
     pub src_vni: Option<Vni>, /* the vni value of a received vxlan encap packet, if destined to gateway */

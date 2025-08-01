@@ -230,7 +230,12 @@ impl Display for BridgeDomain {
 impl Display for PacketMeta {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "  metadata:")?;
-        write!(f, "    iif: {}", self.iif.get_id())?;
+        match self.iif {
+            None => {}
+            Some(iif) => {
+                write!(f, "    iif: {iif}")?;
+            }
+        }
         fmt_opt(f, " oif", self.oif, true)?;
 
         writeln!(f, "    bcast: {}", self.is_l2bcast())?;

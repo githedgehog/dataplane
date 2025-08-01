@@ -12,6 +12,7 @@ use crate::rib::vrf::RouteOrigin;
 
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 
+use net::interface::InterfaceIndex;
 #[cfg(test)]
 use std::net::IpAddr;
 
@@ -24,7 +25,11 @@ impl Nhop {
     fn build_pkt_instructions(&self) -> Vec<PktInstruction> {
         let mut instructions = Vec::with_capacity(2);
         if self.key.origin == RouteOrigin::Local {
-            instructions.push(PktInstruction::Local(self.key.ifindex.unwrap_or(0)));
+            instructions.push(PktInstruction::Local(
+                self.key
+                    .ifindex
+                    .unwrap_or(InterfaceIndex::try_new(1).unwrap_or_else(|_| unreachable!())),
+            )); // TODO: why was 0 the default?  That doesn't make sense at all
             return instructions;
         }
         if self.key.fwaction == FwAction::Drop {

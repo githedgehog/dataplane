@@ -15,11 +15,12 @@ use net::{
 };
 
 use net::headers::TryEthMut;
+use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 
 use routing::interfaces::iftablerw::IfTableReader;
-use routing::interfaces::interface::{IfIndex, IfState, IfType, Interface};
+use routing::interfaces::interface::{IfState, IfType, Interface};
 use routing::{atable::atablerw::AtableReader, interfaces::iftable::IfTable};
 
 #[allow(unused)]
@@ -119,7 +120,7 @@ impl Egress {
         &self,
         packet: &mut Packet<Buf>,
         addr: IpAddr,
-        ifindex: IfIndex,
+        ifindex: InterfaceIndex,
     ) -> Option<DestinationMac> {
         let nfi = &self.name;
 
@@ -150,7 +151,7 @@ impl Egress {
 
     fn resolve_next_mac<Buf: PacketBufferMut>(
         &self,
-        ifindex: IfIndex,
+        ifindex: InterfaceIndex,
         packet: &mut Packet<Buf>,
     ) -> Option<DestinationMac> {
         let nfi = &self.name;
@@ -178,7 +179,6 @@ impl Egress {
         };
 
         /* resolve destination mac */
-        let oif = oif.get_id();
         let Some(dst_mac) = self.resolve_next_mac(oif, packet) else {
             // we could not figure out the destination MAC.
             // resolve_next_mac() already calls packet.done()
