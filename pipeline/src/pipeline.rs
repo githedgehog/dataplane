@@ -35,7 +35,6 @@ pub enum PipelineError {
 
 impl<Buf: PacketBufferMut> DynPipeline<Buf> {
     /// Create a [`DynPipeline`].
-    #[allow(unused)]
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -47,7 +46,6 @@ impl<Buf: PacketBufferMut> DynPipeline<Buf> {
     ///
     /// This method takes a [`NetworkFunction`] and adds it to the pipeline.
     ///
-    #[allow(unused)]
     #[must_use]
     pub fn add_stage<NF: NetworkFunction<Buf> + 'static>(self, nf: NF) -> Self {
         self.add_stage_dyn(nf_dyn(nf))
@@ -144,7 +142,6 @@ impl<Buf: PacketBufferMut> DynPipeline<Buf> {
     ///
     /// # See Also
     ///
-    #[allow(unused)]
     pub fn get_stage_by_id<T: NetworkFunction<Buf> + 'static>(
         &self,
         id: &StageId<Buf>,
@@ -159,7 +156,6 @@ impl<Buf: PacketBufferMut> DynPipeline<Buf> {
     ///
     /// # See Also
     ///
-    #[allow(unused)]
     #[must_use]
     pub fn get_stage_dyn_by_id<T: DynNetworkFunction<Buf>>(&self, id: &StageId<Buf>) -> Option<&T> {
         self.nfs
