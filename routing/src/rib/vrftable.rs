@@ -201,15 +201,15 @@ impl VrfTable {
         Ok(())
     }
 
-    //////////////////////////////////////////////////////////////////
-    /// Remove all of the VRFs with status `Deleted`
-    //////////////////////////////////////////////////////////////////
-    pub fn remove_deleted_vrfs(&mut self, iftablew: &mut IfTableWriter) {
+    ///////////////////////////////////////////////////////////////////////
+    /// Remove all of the VRFs for which the provided function returns true
+    ///////////////////////////////////////////////////////////////////////
+    fn remove_vrfs(&mut self, f: fn(&Vrf) -> bool, iftablew: &mut IfTableWriter) {
         // collect the ids of the vrfs with status deleted
         let to_delete: Vec<VrfId> = self
             .by_id
             .values()
-            .filter_map(|vrf| vrf.can_be_deleted().then_some(vrf.vrfid))
+            .filter_map(|vrf| f(vrf).then_some(vrf.vrfid))
             .collect();
 
         // delete them
@@ -218,6 +218,20 @@ impl VrfTable {
                 error!("Failed to delete vrf with id {vrfid}: {e}");
             }
         }
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Remove all of the VRFs with status `Deleted`
+    //////////////////////////////////////////////////////////////////
+    pub fn remove_deleted_vrfs(&mut self, iftablew: &mut IfTableWriter) {
+        self.remove_vrfs(Vrf::can_be_deleted, iftablew);
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Remove all of the VRFs with status `Deleting`
+    //////////////////////////////////////////////////////////////////
+    pub fn remove_deleting_vrfs(&mut self, iftablew: &mut IfTableWriter) {
+        self.remove_vrfs(Vrf::is_deleting, iftablew);
     }
 
     //////////////////////////////////////////////////////////////////
