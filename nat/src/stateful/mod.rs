@@ -37,13 +37,24 @@ pub enum StatefulNatError {
 }
 
 mod private {
+    use std::net::IpAddr;
+
     pub trait Sealed {}
+
+    pub trait Ip: Sealed + Into<IpAddr> {
+        type Header;
+    }
 }
-pub trait NatIp: private::Sealed + Debug + Clone + Copy + Eq + Ord + Hash {
+pub trait NatIp: private::Sealed + Debug {
     fn to_ip_addr(&self) -> IpAddr;
-    fn from_src_addr(net: &Net) -> Option<Self>;
-    fn from_dst_addr(net: &Net) -> Option<Self>;
+    fn from_src_addr(net: &Net) -> Option<Self>
+    where
+        Self: Sized;
+    fn from_dst_addr(net: &Net) -> Option<Self>
+    where
+        Self: Sized;
 }
+
 impl private::Sealed for Ipv4Addr {}
 impl private::Sealed for Ipv6Addr {}
 impl NatIp for Ipv4Addr {

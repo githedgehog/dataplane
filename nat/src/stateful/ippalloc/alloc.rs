@@ -7,6 +7,7 @@ use crate::stateful::allocator::AllocatorError;
 use crate::stateful::port::NatPort;
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, VecDeque};
+use std::fmt::Debug;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 
@@ -15,11 +16,11 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 ///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct IpAllocator<I: NatIpWithBitmap> {
+pub struct IpAllocator<I: NatIpWithBitmap + Debug> {
     pool: RwLock<NatPool<I>>,
 }
 
-impl<I: NatIpWithBitmap> IpAllocator<I> {
+impl<I: NatIpWithBitmap + Debug> IpAllocator<I> {
     pub fn new(ip_allocator: Arc<IpAllocator<I>>) -> Self {
         Self {
             pool: NatPool {
@@ -97,7 +98,7 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
 ///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct AllocatedIp<I: NatIp> {
+pub struct AllocatedIp<I: NatIp + Debug> {
     ip: I,
     port_allocator: port_alloc::PortAllocator<I>,
     ip_allocator: Arc<IpAllocator<I>>,
@@ -149,7 +150,7 @@ impl<I: NatIp> Drop for AllocatedIp<I> {
 ///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-struct NatPool<I: NatIpWithBitmap> {
+struct NatPool<I: NatIpWithBitmap + Debug> {
     bitmap: PoolBitmap,
     bitmap_mapping: BTreeMap<u32, u128>,
     reverse_bitmap_mapping: BTreeMap<u128, u32>,
@@ -243,14 +244,16 @@ impl PoolBitmap {
 // IP types
 ///////////////////////////////////////////////////////////////////////////////
 
-pub(crate) trait NatIpWithBitmap: NatIp {
+pub(crate) trait NatIpWithBitmap: NatIp + Debug {
     fn try_from_offset(
         offset: u32,
-        bitmap_mapping: &BTreeMap<u32, u128>,
-    ) -> Result<Self, AllocatorError>;
+        bitmap_mapping: &BTreeMap<u32, u128>, // shouldn't this be u8 in the key?
+    ) -> Result<Self, AllocatorError>
+    where
+        Self: Sized;
 
     fn try_to_offset(
-        address: Self,
+        &self, // why not take a `self`?
         bitmap_mapping: &BTreeMap<u128, u32>,
     ) -> Result<u32, AllocatorError>;
 }
@@ -263,11 +266,8 @@ impl NatIpWithBitmap for Ipv4Addr {
         Ok(Ipv4Addr::from(offset))
     }
 
-    fn try_to_offset(
-        address: Self,
-        _bitmap_mapping: &BTreeMap<u128, u32>,
-    ) -> Result<u32, AllocatorError> {
-        Ok(u32::from(address))
+    fn try_to_offset(&self, _bitmap_mapping: &BTreeMap<u128, u32>) -> Result<u32, AllocatorError> {
+        Ok(u32::from(self))
     }
 }
 
