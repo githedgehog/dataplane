@@ -183,7 +183,7 @@ impl Rio {
             frrmi,
             ctl_tx,
             ctl_rx,
-            cpistats: CpiStats::default(),
+            cpistats: CpiStats::new(),
         })
     }
     pub(crate) fn register(&self, token: Token, fd: i32, interests: Interest) {

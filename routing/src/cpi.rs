@@ -19,6 +19,7 @@ use dplane_rpc::{msg::*, socks::Pretty};
 use lpm::prefix::Prefix;
 use std::os::unix::net::SocketAddr;
 use std::process;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
@@ -60,6 +61,9 @@ impl CpiStatus {
 pub(crate) struct CpiStats {
     pub(crate) status: CpiStatus,
 
+    // sync token
+    pub(crate) synt: u64,
+
     // last reported pid (or some id u32)
     pub(crate) last_pid: Option<u32>,
 
@@ -88,7 +92,17 @@ pub(crate) struct CpiStats {
     // control - keepalives
     pub(crate) control_rx: u64,
 }
-
+impl CpiStats {
+    pub(crate) fn new() -> CpiStats {
+        Self {
+            synt: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("System time is wrong!")
+                .as_secs(),
+            ..Default::default()
+        }
+    }
+}
 fn build_connect_info(synt: u64) -> ConnectInfo {
     ConnectInfo {
         pid: process::id(),
@@ -414,7 +428,11 @@ fn handle_request(rio: &mut Rio, peer: &SocketAddr, req: &RpcRequest, db: &mut R
         Some(RpcObject::ConnectInfo(conninfo)) => match op {
             RpcOp::Connect => {
                 let res = conninfo.connect(&mut rio.cpistats, peer);
-                let synt = if res == RpcResultCode::Ok { 1 } else { 0 };
+                let synt = if res == RpcResultCode::Ok {
+                    rio.cpistats.synt
+                } else {
+                    0
+                };
                 response_object = Some(RpcObject::ConnectInfo(build_connect_info(synt)));
                 res
             }
