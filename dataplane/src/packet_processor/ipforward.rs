@@ -61,7 +61,7 @@ impl IpForwarder {
 
         /* get destination ip address */
         let Some(dst) = packet.ip_destination() else {
-            error!("{nfi}: Failed to get destination ip address for packet");
+            debug!("{nfi}: Failed to get destination ip address for packet");
             packet.done(DoneReason::InternalFailure);
             return;
         };
@@ -75,19 +75,19 @@ impl IpForwarder {
 
         /* Read-only access to the fib table */
         let Some(fibtr) = self.fibtr.enter() else {
-            error!("{nfi}: Unable to lookup fib for vrf {vrfid}");
+            debug!("{nfi}: Unable to lookup fib for vrf {vrfid}");
             packet.done(DoneReason::InternalFailure);
             return;
         };
         /* Lookup the fib which needs to be consulted */
         let Some(fibr) = fibtr.get_fib(&fibid) else {
-            error!("{nfi}: Unable to find fib with id {fibid} for vrf {vrfid}");
+            debug!("{nfi}: Unable to find fib with id {fibid} for vrf {vrfid}");
             packet.done(DoneReason::InternalFailure);
             return;
         };
         /* Read-only access to fib */
         let Some(fib) = fibr.enter() else {
-            error!("{nfi}: Unable to read from fib {fibid}");
+            debug!("{nfi}: Unable to read from fib {fibid}");
             packet.done(DoneReason::InternalFailure);
             return;
         };
@@ -101,14 +101,14 @@ impl IpForwarder {
             if !fibentry.is_iplocal() {
                 Self::decrement_ttl(packet, dst);
                 if packet.is_done() {
-                    warn!("TTL/Hop-count limit exceeded!");
+                    debug!("TTL/Hop-count limit exceeded!");
                     return;
                 }
             }
             /* execute instructions according to FIB */
             self.packet_exec_instructions(&fibtr, packet, fibentry, fib.get_vtep());
         } else {
-            error!("Could not get fib group for {prefix}. Will drop packet...");
+            debug!("Could not get fib group for {prefix}. Will drop packet...");
             packet.done(DoneReason::InternalFailure);
         }
     }
@@ -132,12 +132,12 @@ impl IpForwarder {
                 debug!("{nfi}: Packet comes with vni {vni}");
                 let fibid = FibId::from_vni(vni);
                 let Some(fib) = fibtable.get_fib(&fibid) else {
-                    error!("{nfi}: Failed to find fib {fibid} associated to vni {vni}");
+                    debug!("{nfi}: Failed to find fib {fibid} associated to vni {vni}");
                     packet.done(DoneReason::Unroutable);
                     return;
                 };
                 let Some(next_vrf) = fib.get_id().map(|id| id.as_u32()) else {
-                    error!("{nfi}: Failed to access fib {fibid} to determine vrf");
+                    debug!("{nfi}: Failed to access fib {fibid} to determine vrf");
                     packet.done(DoneReason::InternalFailure);
                     return;
                 };
@@ -151,7 +151,7 @@ impl IpForwarder {
                 packet.get_meta_mut().set_nat(true);
             }
             Some(Err(bad)) => {
-                warn!("The decapsulated packet is malformed!: {bad:?}");
+                debug!("The decapsulated packet is malformed!: {bad:#?}");
                 packet.done(DoneReason::Malformed);
             }
             None => {
@@ -259,7 +259,7 @@ impl IpForwarder {
         // build vxlan headers for encapsulation
         match Self::build_vxlan_headers(vxlan, vtep) {
             Err(e) => {
-                error!("{nfi}: Failed to build VxLAN headers: {e}");
+                warn!("{nfi}: Failed to build VxLAN headers: {e}");
                 packet.done(DoneReason::InternalFailure);
             }
             Ok(vxlan_headers) => match packet.vxlan_encap(&vxlan_headers) {
