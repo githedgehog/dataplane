@@ -6,13 +6,12 @@
 #![allow(clippy::similar_names)]
 
 use arrayvec::ArrayVec;
-use std::net::IpAddr;
-use tracing::{debug, error, trace, warn};
-
 use net::headers::{TryHeadersMut, TryIpv4Mut, TryIpv6Mut};
 use net::packet::{DoneReason, Packet};
 use net::{buffer::PacketBufferMut, checksum::Checksum};
 use pipeline::NetworkFunction;
+use std::net::IpAddr;
+use tracing::{debug, error, trace, warn};
 
 use routing::fib::fibobjects::{EgressObject, FibEntry, PktInstruction};
 use routing::fib::fibtable::FibTable;
@@ -388,6 +387,7 @@ impl IpForwarder {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
+    #[tracing::instrument(level = "trace", skip(self, input))]
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,

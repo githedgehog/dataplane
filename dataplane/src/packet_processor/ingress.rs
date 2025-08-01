@@ -19,7 +19,7 @@ use routing::interfaces::interface::{Attachment, IfState, IfType, Interface};
 use tracectl::trace_target;
 trace_target!("ingress", LevelFilter::WARN, &["pipeline"]);
 
-#[allow(unused)]
+#[derive(Debug)]
 pub struct Ingress {
     name: String,
     iftr: IfTableReader,
@@ -69,30 +69,39 @@ impl Ingress {
         }
     }
 
+    #[tracing::instrument(level = "trace")]
     fn interface_ingress_eth_non_local<Buf: PacketBufferMut>(
         &self,
-        _interface: &Interface,
+        interface: &Interface,
         dst_mac: Mac,
         packet: &mut Packet<Buf>,
     ) {
-        let nfi = self.name();
         /* Here we would check if the interface is part of some
         bridge domain. But we don't support bridging yet. */
-        trace!("{nfi}: Recvd frame for mac {dst_mac} (not for us)");
+        trace!(
+            "{nfi}: Recvd frame for mac {dst_mac} (not for us) (interface {ifname})",
+            nfi = self.name(),
+            ifname = interface.name
+        );
         packet.done(DoneReason::MacNotForUs);
     }
 
+    #[tracing::instrument(level = "trace")]
     fn interface_ingress_eth_bcast<Buf: PacketBufferMut>(
         &self,
-        _interface: &Interface,
+        interface: &Interface,
         packet: &mut Packet<Buf>,
     ) {
         let nfi = self.name();
         packet.get_meta_mut().set_l2bcast(true);
         packet.done(DoneReason::Unhandled);
-        warn!("{nfi}: Processing of broadcast ethernet frames is not supported");
+        warn!(
+            "{nfi}: Processing of broadcast ethernet frames is not supported (interface {ifname})",
+            ifname = interface.name
+        );
     }
 
+    #[tracing::instrument(level = "trace")]
     fn interface_ingress_eth<Buf: PacketBufferMut>(
         &self,
         interface: &Interface,
@@ -122,6 +131,7 @@ impl Ingress {
         }
     }
 
+    #[tracing::instrument(level = "trace")]
     fn interface_ingress<Buf: PacketBufferMut>(
         &self,
         interface: &Interface,
@@ -150,7 +160,6 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Ingress {
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        trace!("{}", self.name);
         input.filter_map(move |mut packet| {
             let nfi = self.name();
             if !packet.is_done() {
