@@ -123,7 +123,7 @@ fn get_interface_ifindex(interfaces: &[Interface], name: &str) -> Option<Interfa
         if interface.name == name {
             InterfaceIndex::try_new(interface.index)
                 .map_err(|e| {
-                    error!("{}", e);
+                    error!("{e}");
                 })
                 .ok()
         } else {
