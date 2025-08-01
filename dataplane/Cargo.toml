@@ -32,10 +32,10 @@ pkt-meta = { workspace = true }
 routing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_yml = { workspace = true }
-tokio = { workspace = true }
 stats = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["default"] }
+tracing-subscriber = { workspace = true, default-features = true }
 vpcmap = { workspace = true }
 
 [dev-dependencies]
