@@ -220,7 +220,19 @@ depend on `mgmt`.
     │                           │
     └───────────────────────────┘
 ```
- 
+
+>[!NOTE]
+> This graph is incomplete.  It simply illustrates the tier concept.
+
+<figure>
+
+![depgraph](./workspace-deps.svg)
+
+<figcaption>
+Full workspace dependency graph.  Note that tier-1 packages (like net) never depend on tier-2 packages (like nat).
+</figcaption>
+
+</figure>
 
 
 
