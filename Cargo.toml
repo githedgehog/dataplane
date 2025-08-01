@@ -98,7 +98,7 @@ serde_yml = { version = "0.0.12", default-features = false, features = [] }
 static_assertions = { version = "1.1.0", default-features = false, features = [] }
 strum = { version = "0.27.2", features = ["derive"] }
 thiserror = { version = "2.0.12", default-features = false, features = [] }
-tokio = { version = "1.47.0", default-features = false, features = [] }
+tokio = { version = "1.47.1", default-features = false, features = [] }
 tokio-stream = { version = "0.1.17", default-features = false, features = [] }
 tonic = { version = "0.14.0", default-features = false, features = ["transport", "codegen"] }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
