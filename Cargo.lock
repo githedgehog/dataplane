@@ -953,6 +953,8 @@ dependencies = [
  "dataplane-routing",
  "ipnet",
  "left-right",
+ "rand",
+ "roaring",
  "thiserror 2.0.12",
  "tracing",
  "tracing-test",
@@ -2600,6 +2602,12 @@ name = "regex-syntax"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
+
+[[package]]
+name = "roaring"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a728d3a68e1cf244b26b3fec3d045a6d69b7890eda1ba6ea451ea88889824e01"
 
 [[package]]
 name = "rtnetlink"
