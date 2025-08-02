@@ -13,8 +13,8 @@ use std::thread::ThreadId;
 
 #[derive(Debug)]
 struct AllocatorPortBlock {
-    base_port_idx: u8,
-    free: AtomicBool,
+    base_port_idx: u8, // TODO: I don't think we need this index.  Implicit data structure seems fine
+    free: AtomicBool,  // TODO: consider CachePadded here
 }
 
 impl AllocatorPortBlock {
@@ -32,15 +32,15 @@ impl AllocatorPortBlock {
 
 #[derive(Debug)]
 pub struct PortAllocator<I: NatIp> {
-    // Randomised base port numbers from 1024 to 65535, by increments of 256
+    // Randomized base port numbers from 1024 to 65,535, by increments of 256
     //
-    // FIXME: We only randomise port blocks at cration of the NatAllocIp, making it trivial to
+    // FIXME: We only randomise port blocks at creation of the NatAllocIp, making it trivial to
     // determine port order if the block is later reused.
     //
-    // FIXME: We need fake randomisation for tests
+    // FIXME: We need fake randomization for tests
     blocks: [AllocatorPortBlock; 252],
-    usable_blocks: AtomicU16,
-    current_alloc_index: AtomicUsize,
+    usable_blocks: AtomicU16,         // TODO: consider a CachePadded here
+    current_alloc_index: AtomicUsize, // TODO: consider a CachePadded here
     thread_blocks: ThreadPortMap,
     allocated_blocks: AllocatedPortBlockMap<I>,
 }
@@ -162,7 +162,7 @@ impl<I: NatIp> PortAllocator<I> {
     fn try_to_reserve_block(&self, port: NatPort) -> Result<(bool, usize), AllocatorError> {
         let (index, block) = self
             .cycle_blocks()
-            .find(|(_, block)| block.to_port_number() == (port.as_u16() % 256))
+            .find(|&(_, block)| block.to_port_number() == (port.as_u16() % 256))
             .ok_or(AllocatorError::InternalIssue)?;
 
         if block
@@ -252,7 +252,7 @@ impl<I: NatIp> AllocatedPortBlock<I> {
         self.usage_bitmap
             .lock()
             .unwrap()
-            .deallocate_port_from_bitmap(port.as_u16())
+            .deallocate((port.as_u16() & 0xFF) as u8)
             .map_err(|()| AllocatorError::InternalIssue)
     }
 
@@ -262,7 +262,7 @@ impl<I: NatIp> AllocatedPortBlock<I> {
             .lock()
             .unwrap()
             .allocate_port_from_bitmap()
-            .map_err(|()| AllocatorError::NoFreePort(self.base_port_idx))?;
+            .ok_or_else(|| AllocatorError::NoFreePort(self.base_port_idx))?;
 
         NatPort::new_checked(self.base_port_idx + bitmap_offset)
             .map_err(AllocatorError::PortAllocationFailed)
@@ -276,10 +276,11 @@ impl<I: NatIp> AllocatedPortBlock<I> {
         self.usage_bitmap
             .lock()
             .unwrap()
-            .reserve_port_from_bitmap(
-                port.as_u16()
-                    .checked_sub(self.base_port_idx)
-                    .ok_or(AllocatorError::InternalIssue)?,
+            .allocate(
+                #[allow(clippy::cast_possible_truncation)] // truncation intentional
+                {
+                    port.as_u16() as u8
+                },
             )
             .map_err(|()| AllocatorError::NoFreePort(port.as_u16()))?;
 
@@ -325,12 +326,17 @@ impl<I: NatIp> Drop for AllocatedPort<I> {
     }
 }
 
+// TODO: dpdk may not be a fan of this strategy.  Need to think about it
+// TODO: this may be a job for dashmap
+// TODO: this may be a job for sharded lock
+// TODO: this may be a job for slab
+// TODO: I don't understand the point of making the value side of the map an option
 #[derive(Debug)]
-struct ThreadPortMap(RwLock<HashMap<ThreadId, Option<usize>>>);
+struct ThreadPortMap(Arc<RwLock<HashMap<ThreadId, Option<usize>>>>);
 
 impl ThreadPortMap {
     fn new() -> Self {
-        Self(RwLock::new(HashMap::new()))
+        Self(Arc::new(RwLock::new(HashMap::new())))
     }
 
     fn get(&self) -> Option<usize> {
@@ -350,12 +356,16 @@ impl ThreadPortMap {
     }
 }
 
+// TODO: this may be a job for dashmap
+// TODO: this may be a job for sharded lock
+// TODO: this may be a job for slab
+// TODO: this may be a job for const generics
 #[derive(Debug)]
-struct AllocatedPortBlockMap<I: NatIp>(RwLock<HashMap<usize, Weak<AllocatedPortBlock<I>>>>);
+struct AllocatedPortBlockMap<I: NatIp>(Arc<RwLock<HashMap<usize, Weak<AllocatedPortBlock<I>>>>>);
 
 impl<I: NatIp> AllocatedPortBlockMap<I> {
     fn new() -> Self {
-        Self(RwLock::new(HashMap::new()))
+        Self(Arc::new(RwLock::new(HashMap::new())))
     }
 
     fn get_weak(&self, index: usize) -> Option<Weak<AllocatedPortBlock<I>>> {
@@ -420,45 +430,52 @@ impl Bitmap256 {
         self.first_half == u128::MAX && self.second_half == u128::MAX
     }
 
-    fn allocate_port_from_bitmap(&mut self) -> Result<u16, ()> {
+    fn allocate_port_from_bitmap(&mut self) -> Option<u16> {
         #[allow(clippy::cast_possible_truncation)] // max value is 128
         let ones = self.first_half.leading_ones() as u16;
         if ones < 128 {
             self.first_half |= 1 << ones;
-            return Ok(ones);
+            return Some(ones);
         }
 
         #[allow(clippy::cast_possible_truncation)] // max value is 128
         let ones = self.second_half.leading_ones() as u16;
         if ones < 128 {
             self.second_half |= 1 << ones;
-            return Ok(ones + 128);
+            return Some(ones + 128);
         }
 
         // Both halves are full
+        None
+    }
+
+    fn deallocate(&mut self, port: u8) -> Result<(), ()> {
+        if port < 128 {
+            if self.first_half & (1 << port) == 0 {
+                self.first_half &= !(1 << port);
+                return Ok(());
+            }
+        } else {
+            if self.second_half & (1 << (port - 128)) != 0 {
+                self.second_half &= !(1 << (port - 128));
+                return Ok(());
+            }
+        }
         Err(())
     }
 
-    fn set_bitmap_value(&mut self, port: u16, value: u128) -> Result<(), ()> {
+    fn allocate(&mut self, port: u8) -> Result<(), ()> {
         if port < 128 {
-            if self.first_half & (1 << port) == value {
+            if self.first_half & (1 << port) != 0 {
                 return Err(());
             }
-            self.first_half |= value << port;
+            self.first_half |= 1 << port;
         } else {
-            if self.second_half & (1 << (port - 128)) == value {
+            if self.second_half & (1 << (port - 128)) != 0 {
                 return Err(());
             }
-            self.second_half |= value << (port - 128);
+            self.second_half |= 1 << (port - 128);
         }
         Ok(())
-    }
-
-    fn deallocate_port_from_bitmap(&mut self, port: u16) -> Result<(), ()> {
-        self.set_bitmap_value(port, 0)
-    }
-
-    fn reserve_port_from_bitmap(&mut self, port: u16) -> Result<(), ()> {
-        self.set_bitmap_value(port, 1)
     }
 }

@@ -4,14 +4,17 @@
 #![allow(missing_docs)] // TODO
 
 use crate::vxlan::Vni;
+use arrayvec::ArrayVec;
 use bitflags::bitflags;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use tracing::error;
 
 /// Every VRF is univocally identified with a numerical VRF id
+#[deprecated = "use RouteTabelId instead"]
 pub type VrfId = u32;
 
+#[deprecated = "use InterfaceIndex instead"]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct InterfaceId(u32);
 #[allow(unused)]
@@ -26,6 +29,7 @@ impl InterfaceId {
     }
 }
 
+#[deprecated = "unused"]
 #[derive(Copy, Clone, Debug, Default)]
 pub struct BridgeDomain(u32);
 #[allow(unused)]
@@ -79,19 +83,23 @@ bitflags! {
     }
 }
 
-#[allow(unused)]
 #[derive(Debug, Default, Clone)]
 pub struct PacketMeta {
     flags: MetaFlags,
-    pub iif: InterfaceId,             /* incoming interface - set early */
-    pub oif: Option<InterfaceId>,     /* outgoing interface - set late */
-    pub nh_addr: Option<IpAddr>,      /* IP address of next-hop */
-    pub vrf: Option<VrfId>,           /* for IP packet, the VRF to use to route it */
+    pub iif: InterfaceId,         /* incoming interface - set early */
+    pub oif: Option<InterfaceId>, /* outgoing interface - set late */
+    pub nh_addr: Option<IpAddr>,  /* IP address of next-hop */
+    pub vrf: Option<VrfId>,       /* for IP packet, the VRF to use to route it */
+    /// TODO: what does this do
     pub bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
     pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
+    /// TODO: why is this not [`RouteTableId`]?
     pub src_vni: Option<Vni>, /* the vni value of a received vxlan encap packet, if destined to gateway */
+    /// TODO: why is this not the [`RouteTableId`]?
     pub dst_vni: Option<Vni>, /* the vni value of a vxlan packet re-encapsulated by the gateway */
+    op_log: ArrayVec<Op, 8 /* or whatever */>,
 }
+
 impl PacketMeta {
     #[must_use]
     pub(crate) fn new(keep: bool) -> Self {
@@ -123,6 +131,8 @@ impl PacketMeta {
     pub fn is_l2bcast(&self) -> bool {
         self.flags.contains(MetaFlags::IS_L2_BCAST)
     }
+
+    /// TODO: I don't understand why this exists.  WET code?
     pub fn set_l2bcast(&mut self, value: bool) {
         if value {
             self.flags.insert(MetaFlags::IS_L2_BCAST);

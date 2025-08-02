@@ -6,7 +6,8 @@ use super::port::NatPort;
 use crate::stateful::NatIp;
 use dashmap::DashMap;
 use dashmap::mapref::one::RefMut;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::hash::Hash;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
@@ -25,7 +26,7 @@ where
     fn insert_session_v4(
         &mut self,
         tuple: NatTuple<Ipv4Addr>,
-        state: NatState,
+        state: NatState<Ipv4Addr>,
     ) -> Result<(), SessionError>;
     fn remove_session_v4(&mut self, tuple: &NatTuple<Ipv4Addr>);
 
@@ -34,8 +35,8 @@ where
 
 #[derive(Debug, Clone)]
 pub struct NatDefaultSessionManager {
-    table_v4: DashMap<NatTuple<Ipv4Addr>, NatState>,
-    table_v6: DashMap<NatTuple<Ipv6Addr>, NatState>,
+    table_v4: DashMap<NatTuple<Ipv4Addr>, NatState<Ipv4Addr>>,
+    table_v6: DashMap<NatTuple<Ipv6Addr>, NatState<Ipv6Addr>>,
 }
 
 impl NatDefaultSessionManager {
@@ -86,7 +87,7 @@ impl<'a> NatSessionManager<'a, NatDefaultSession<'a, Ipv4Addr>> for NatDefaultSe
     fn insert_session_v4(
         &mut self,
         tuple: NatTuple<Ipv4Addr>,
-        state: NatState,
+        state: NatState<Ipv4Addr>,
     ) -> Result<(), SessionError> {
         // Return an error if the tuple already exists in the table
         self.table_v4
@@ -103,11 +104,25 @@ impl<'a> NatSessionManager<'a, NatDefaultSession<'a, Ipv4Addr>> for NatDefaultSe
     }
 }
 
+mod private {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    trait Sealed {}
+
+    pub trait Ip: Sealed + Copy {}
+
+    impl Sealed for Ipv4Addr {}
+    impl Sealed for Ipv6Addr {}
+
+    impl Ip for Ipv4Addr {}
+    impl Ip for Ipv6Addr {}
+}
+
 #[derive(Debug, Clone)]
-pub struct NatState {
+pub struct NatState<Ip: NatIp> {
     // Translation IP addresses and ports
-    target_src_addr: Option<IpAddr>,
-    target_dst_addr: Option<IpAddr>,
+    target_src_addr: Option<Ip>,
+    target_dst_addr: Option<Ip>,
     target_src_port: Option<NatPort>,
     target_dst_port: Option<NatPort>,
     // Flags for session management
@@ -120,13 +135,16 @@ pub struct NatState {
     bytes: u64,
     // ID associated to the entity that created this session, so we can clean up the session when
     // the entity is removed
-    originator: u64,
+    originator: u64, // TODO: why weak type here?  `Id` package?
 }
 
-impl NatState {
+impl<Ip> NatState<Ip>
+where
+    Ip: NatIp,
+{
     pub fn new(
-        target_src_addr: Option<IpAddr>,
-        target_dst_addr: Option<IpAddr>,
+        target_src_addr: Option<Ip>,
+        target_dst_addr: Option<Ip>,
         target_src_port: Option<NatPort>,
         target_dst_port: Option<NatPort>,
     ) -> Self {
@@ -143,14 +161,7 @@ impl NatState {
             originator: 0,
         }
     }
-    pub fn get_nat(
-        &self,
-    ) -> (
-        Option<IpAddr>,
-        Option<IpAddr>,
-        Option<NatPort>,
-        Option<NatPort>,
-    ) {
+    pub fn get_nat(&self) -> (Option<Ip>, Option<Ip>, Option<NatPort>, Option<NatPort>) {
         (
             self.target_src_addr,
             self.target_dst_addr,
@@ -178,13 +189,13 @@ impl NatState {
     }
 }
 
-pub trait NatSession {
-    fn get_state_mut(&mut self) -> Option<&mut NatState>;
+pub trait NatSession<Ip: NatIp = Ipv4Addr> {
+    fn get_state_mut(&mut self) -> Option<&mut NatState<Ip>>;
 }
 
 #[derive(Debug)]
-pub struct NatDefaultSession<'a, I: NatIp> {
-    dashmap_ref: Option<RefMut<'a, NatTuple<I>, NatState>>,
+pub struct NatDefaultSession<'a, Ip: NatIp + PartialEq + Eq + Hash> {
+    dashmap_ref: Option<RefMut<'a, NatTuple<Ip>, NatState<Ip>>>,
 }
 
 // Note that the generic parameter `I` is used to specify the type of IP address of THE TUPLES
@@ -192,8 +203,8 @@ pub struct NatDefaultSession<'a, I: NatIp> {
 // the session itself. This is because we use dashmap, and the lookup returns a reference to the
 // whole map entry, which includes the tuple and the state, and we make the dashmap_ref generic to
 // the Tuple<I>.
-impl<I: NatIp> NatSession for NatDefaultSession<'_, I> {
-    fn get_state_mut(&mut self) -> Option<&mut NatState> {
+impl<I: NatIp> NatSession<I> for NatDefaultSession<'_, I> {
+    fn get_state_mut(&mut self) -> Option<&mut NatState<I>> {
         self.dashmap_ref.as_mut().map(RefMut::value_mut)
     }
 }
@@ -203,11 +214,11 @@ mod tests {
     use super::*;
     use net::ip::NextHeader;
     use net::packet::VrfId;
-    use std::net::IpAddr;
+    use std::fmt::Debug;
     use std::str::FromStr;
 
-    fn addr(addr: &str) -> IpAddr {
-        IpAddr::from_str(addr).unwrap()
+    fn addr<Ip: FromStr<Err: Debug>>(addr: &str) -> Ip {
+        Ip::from_str(addr).unwrap()
     }
 
     fn addr_v4(addr: &str) -> Ipv4Addr {

@@ -11,6 +11,7 @@ pub enum NatPortError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
 pub struct NatPort(u16);
 
 impl NatPort {

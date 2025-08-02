@@ -15,22 +15,28 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 // Allocators
 ///////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug)]
+pub trait NatAllocator<I: NatIp> {
+    type Error;
+    fn allocate(&self) -> Result<port_alloc::AllocatedPort<I>, Self::Error>;
+    fn reserve(&self, ip: I, port: NatPort)
+    -> Result<port_alloc::AllocatedPort<I>, AllocatorError>;
+}
+
+#[derive(Debug, Clone)]
 pub struct IpAllocator<I: NatIpWithBitmap + Debug> {
-    pool: RwLock<NatPool<I>>,
+    pool: Arc<RwLock<NatPool<I>>>,
 }
 
 impl<I: NatIpWithBitmap + Debug> IpAllocator<I> {
-    pub fn new(ip_allocator: Arc<IpAllocator<I>>) -> Self {
+    pub fn new(ip_allocator: IpAllocator<I>) -> Self {
         Self {
-            pool: NatPool {
+            pool: Arc::new(RwLock::new(NatPool {
                 bitmap: PoolBitmap::new(),
                 bitmap_mapping: BTreeMap::new(),
                 reverse_bitmap_mapping: BTreeMap::new(),
-                in_use: VecDeque::new(),
+                in_use: VecDeque::with_capacity(252),
                 ip_allocator,
-            }
-            .into(),
+            })),
         }
     }
 
@@ -97,19 +103,19 @@ impl<I: NatIpWithBitmap + Debug> IpAllocator<I> {
 // Allocated components
 ///////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug)]
-pub struct AllocatedIp<I: NatIp + Debug> {
+#[derive(Debug, Clone)]
+pub struct AllocatedIp<I: NatIp> {
     ip: I,
     port_allocator: port_alloc::PortAllocator<I>,
-    ip_allocator: Arc<IpAllocator<I>>,
+    allocator: IpAllocator<I>,
 }
 
 impl<I: NatIp> AllocatedIp<I> {
-    fn new(ip: I, ip_allocator: Arc<IpAllocator<I>>) -> Self {
+    fn new(ip: I, allocator: IpAllocator<I>) -> Self {
         Self {
             ip,
             port_allocator: port_alloc::PortAllocator::new(),
-            ip_allocator,
+            allocator,
         }
     }
 
@@ -155,7 +161,7 @@ struct NatPool<I: NatIpWithBitmap + Debug> {
     bitmap_mapping: BTreeMap<u32, u128>,
     reverse_bitmap_mapping: BTreeMap<u128, u32>,
     in_use: VecDeque<Weak<AllocatedIp<I>>>,
-    ip_allocator: Arc<IpAllocator<I>>,
+    ip_allocator: IpAllocator<I>,
 }
 
 impl<I: NatIpWithBitmap> NatPool<I> {
@@ -179,8 +185,8 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         self.in_use.retain(|ip| ip.upgrade().is_some());
     }
 
-    fn ips_in_use(&self) -> impl Iterator<Item = &Weak<AllocatedIp<I>>> {
-        self.in_use.iter()
+    fn ips_in_use(&self) -> impl Iterator<Item = Weak<AllocatedIp<I>>> {
+        self.in_use.iter().cloned()
     }
 
     fn use_new_ip(&mut self) -> Result<AllocatedIp<I>, AllocatorError> {
@@ -192,7 +198,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
     }
 
     fn reserve_from_pool(&mut self, ip: I) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
-        let offset = I::try_to_offset(ip, &self.reverse_bitmap_mapping)?;
+        let offset = ip.try_to_offset(&self.reverse_bitmap_mapping)?;
         if self.bitmap.set_ip(offset) {
             // The IP was free in the bitmap, allocate it now
             return self.add_in_use(&Arc::new(AllocatedIp::new(ip, self.ip_allocator.clone())));
@@ -267,7 +273,7 @@ impl NatIpWithBitmap for Ipv4Addr {
     }
 
     fn try_to_offset(&self, _bitmap_mapping: &BTreeMap<u128, u32>) -> Result<u32, AllocatorError> {
-        Ok(u32::from(self))
+        Ok(u32::from(*self))
     }
 }
 
@@ -282,12 +288,9 @@ impl NatIpWithBitmap for Ipv6Addr {
         map_offset(offset, bitmap_mapping)
     }
 
-    fn try_to_offset(
-        address: Self,
-        bitmap_mapping: &BTreeMap<u128, u32>,
-    ) -> Result<u32, AllocatorError> {
+    fn try_to_offset(&self, bitmap_mapping: &BTreeMap<u128, u32>) -> Result<u32, AllocatorError> {
         // Reverse operation of map_offset()
-        map_address(address, bitmap_mapping)
+        map_address(*self, bitmap_mapping)
     }
 }
 

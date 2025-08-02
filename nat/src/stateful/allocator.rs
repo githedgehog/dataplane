@@ -24,7 +24,7 @@ pub enum AllocatorError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct AllocationResult<T: Debug> {
+pub struct AllocationResult<T> {
     pub src: Option<T>,
     pub dst: Option<T>,
     pub return_src: Option<T>,

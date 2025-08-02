@@ -45,7 +45,7 @@ mod private {
         type Header;
     }
 }
-pub trait NatIp: private::Sealed + Debug {
+pub trait NatIp: private::Sealed + Copy + PartialEq + Eq + Hash {
     fn to_ip_addr(&self) -> IpAddr;
     fn from_src_addr(net: &Net) -> Option<Self>
     where
@@ -100,10 +100,10 @@ impl NatIp for Ipv6Addr {
 pub struct NatTuple<I: NatIp> {
     src_ip: I,
     dst_ip: I,
-    src_port: Option<u16>,
-    dst_port: Option<u16>,
-    next_header: NextHeader,
-    vrf_id: VrfId,
+    src_port: Option<u16>, // TODO: consider making this NonZero for perf // TODO: consider proto phantom
+    dst_port: Option<u16>, // TODO: consider making this NonZero for perf // TODO: consider proto phantom
+    next_header: NextHeader, // TODO: Danger: next header is somewhat more complex than this makes it out.  What about extension headers?
+    vrf_id: VrfId,           // TODO: should be RouteTableId
 }
 
 impl<I: NatIp> NatTuple<I> {
@@ -182,7 +182,7 @@ impl StatefulNat {
     fn create_session_v4(
         &mut self,
         tuple: &NatTuple<Ipv4Addr>,
-        state: NatState,
+        state: NatState<Ipv4Addr>,
     ) -> Result<(), sessions::SessionError> {
         self.sessions.insert_session_v4(tuple.clone(), state)
     }
@@ -234,16 +234,20 @@ impl StatefulNat {
     }
 
     #[allow(clippy::unnecessary_wraps)]
-    fn stateful_translate<Buf: PacketBufferMut>(
+    fn stateful_translate<Ip: NatIp, Buf: PacketBufferMut>(
         packet: &mut Packet<Buf>,
-        state: &NatState,
+        state: &NatState<Ip>,
         next_header: NextHeader,
     ) -> Option<()> {
         let (target_src_addr, target_dst_addr, target_src_port, target_dst_port) = state.get_nat();
 
         let headers = packet.headers_mut();
         let net = headers.try_ip_mut()?;
-        match (net, target_src_addr, target_src_port) {
+        match (
+            net,
+            target_src_addr.map(|x| x.to_ip_addr()),
+            target_src_port,
+        ) {
             (Net::Ipv4(ip_hdr), Some(IpAddr::V4(target_src_ip)), Some(target_src_port)) => {
                 ip_hdr.set_source(UnicastIpv4Addr::new(target_src_ip).ok()?);
 
@@ -258,7 +262,11 @@ impl StatefulNat {
 
         let headers = packet.headers_mut();
         let net = headers.try_ip_mut()?;
-        match (net, target_dst_addr, target_dst_port) {
+        match (
+            net,
+            target_dst_addr.map(|x| x.to_ip_addr()),
+            target_dst_port,
+        ) {
             (Net::Ipv4(ip_hdr), Some(IpAddr::V4(target_dst_ip)), Some(target_dst_port)) => {
                 ip_hdr.set_destination(target_dst_ip);
 
@@ -273,16 +281,16 @@ impl StatefulNat {
         Some(())
     }
 
-    fn update_stats(state: &mut NatState, total_bytes: u16) {
-        state.increment_packets(1);
+    fn update_stats<Ip: NatIp>(state: &mut NatState<Ip>, total_bytes: u16) {
+        state.increment_packets(1); // TODO: why insist on updating at every packet?
         state.increment_bytes(total_bytes.into());
     }
 
     // TODO: Change this function to store directly the AllocatedPort objects in session map
-    fn new_state_from_alloc<I: NatIp>(alloc: &AllocationResult<AllocatedPort<I>>) -> NatState {
+    fn new_state_from_alloc<I: NatIp>(alloc: &AllocationResult<AllocatedPort<I>>) -> NatState<I> {
         let (target_src_addr, target_src_port) = match &alloc.src {
             Some(alloc_ip_port) => (
-                Some(alloc_ip_port.ip().to_ip_addr()),
+                Some(alloc_ip_port.ip()),
                 // TODO: We could have non-empty IP but empty port, e.g. ICMP (needs changing struct
                 // AllocatedPort to contain an Option; then remove "Some" here)
                 Some(alloc_ip_port.port()),
@@ -290,10 +298,7 @@ impl StatefulNat {
             None => (None, None),
         };
         let (target_dst_addr, target_dst_port) = match &alloc.dst {
-            Some(alloc_ip_port) => (
-                Some(alloc_ip_port.ip().to_ip_addr()),
-                Some(alloc_ip_port.port()),
-            ),
+            Some(alloc_ip_port) => (Some(alloc_ip_port.ip()), Some(alloc_ip_port.port())),
             None => (None, None),
         };
         NatState::new(
@@ -308,7 +313,7 @@ impl StatefulNat {
         tuple: &NatTuple<I>,
         alloc: &AllocationResult<AllocatedPort<I>>,
         peer_vrf_id: VrfId,
-    ) -> (NatTuple<I>, NatState) {
+    ) -> (NatTuple<I>, NatState<I>) {
         // Forward session:
         //   f.init:(src: a, dst: B) -> f.nated:(src: A, dst: b)
         //
@@ -348,8 +353,8 @@ impl StatefulNat {
         // session need to be registered with the allocator. Use the elements returned from the
         // allocator.
         let reverse_state = NatState::new(
-            alloc.return_src.as_ref().map(|p| p.ip().to_ip_addr()),
-            alloc.return_dst.as_ref().map(|p| p.ip().to_ip_addr()),
+            alloc.return_src.as_ref().map(|p| p.ip()),
+            alloc.return_dst.as_ref().map(|p| p.ip()),
             alloc.return_src.as_ref().map(AllocatedPort::port),
             alloc.return_dst.as_ref().map(AllocatedPort::port),
         );
@@ -365,7 +370,11 @@ impl StatefulNat {
     ) -> Option<()> {
         // Hot path: if we have a session, directly translate the address already
         if let Some(mut session) = self.lookup_session_v4_mut(tuple) {
-            Self::stateful_translate::<Buf>(packet, session.get_state_mut()?, tuple.next_header);
+            Self::stateful_translate::<Ipv4Addr, Buf>(
+                packet,
+                session.get_state_mut()?,
+                tuple.next_header,
+            );
             Self::update_stats(session.get_state_mut()?, total_bytes);
             return Some(());
         }
@@ -389,7 +398,7 @@ impl StatefulNat {
         self.create_session_v4(&reverse_tuple, reverse_state.clone())
             .ok()?;
 
-        Self::stateful_translate::<Buf>(packet, &new_state, tuple.next_header);
+        Self::stateful_translate::<Ipv4Addr, Buf>(packet, &new_state, tuple.next_header);
         Some(())
     }
 

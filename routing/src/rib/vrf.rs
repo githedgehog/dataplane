@@ -23,6 +23,7 @@ use net::route::RouteTableId;
 use net::vxlan::Vni;
 
 /// Every VRF is univocally identified with a numerical VRF id
+#[deprecated]
 pub type VrfId = u32;
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
