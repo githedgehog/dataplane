@@ -9,14 +9,14 @@ use tracing::{debug, trace, warn};
 
 use net::buffer::PacketBufferMut;
 use net::eth::mac::Mac;
-use net::headers::{TryEth, TryIpv4, TryIpv6};
+use net::headers::{TryEth, TryIp};
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 
 use routing::interfaces::iftablerw::IfTableReader;
 use routing::interfaces::interface::{Attachment, IfState, IfType, Interface};
 
-#[allow(unused)]
+#[derive(Debug)]
 pub struct Ingress {
     name: String,
     iftr: IfTableReader,
@@ -42,7 +42,7 @@ impl Ingress {
         packet: &mut Packet<Buf>,
     ) {
         let nfi = self.name();
-        if packet.try_ipv4().is_some() || packet.try_ipv6().is_some() {
+        if packet.try_ip().is_some() {
             match &interface.attachment {
                 Some(Attachment::VRF(fibr)) => {
                     let Some(vrfid) = fibr.get_id().map(|x| x.as_u32()) else {
@@ -66,30 +66,39 @@ impl Ingress {
         }
     }
 
+    #[tracing::instrument(level = "trace")]
     fn interface_ingress_eth_non_local<Buf: PacketBufferMut>(
         &self,
-        _interface: &Interface,
+        interface: &Interface,
         dst_mac: Mac,
         packet: &mut Packet<Buf>,
     ) {
-        let nfi = self.name();
         /* Here we would check if the interface is part of some
         bridge domain. But we don't support bridging yet. */
-        trace!("{nfi}: Recvd frame for mac {dst_mac} (not for us)");
+        trace!(
+            "{nfi}: Recvd frame for mac {dst_mac} (not for us) (interface {ifname})",
+            nfi = self.name(),
+            ifname = interface.name
+        );
         packet.done(DoneReason::MacNotForUs);
     }
 
+    #[tracing::instrument(level = "trace")]
     fn interface_ingress_eth_bcast<Buf: PacketBufferMut>(
         &self,
-        _interface: &Interface,
+        interface: &Interface,
         packet: &mut Packet<Buf>,
     ) {
         let nfi = self.name();
         packet.get_meta_mut().set_l2bcast(true);
         packet.done(DoneReason::Unhandled);
-        warn!("{nfi}: Processing of broadcast ethernet frames is not supported");
+        warn!(
+            "{nfi}: Processing of broadcast ethernet frames is not supported (interface {ifname})",
+            ifname = interface.name
+        );
     }
 
+    #[tracing::instrument(level = "trace")]
     fn interface_ingress_eth<Buf: PacketBufferMut>(
         &self,
         interface: &Interface,
@@ -119,6 +128,7 @@ impl Ingress {
         }
     }
 
+    #[tracing::instrument(level = "trace")]
     fn interface_ingress<Buf: PacketBufferMut>(
         &self,
         interface: &Interface,
@@ -142,21 +152,26 @@ impl Ingress {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Ingress {
+    #[tracing::instrument(level = "trace", skip(input))]
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        trace!("{}", self.name);
         input.filter_map(move |mut packet| {
             let nfi = self.name();
             if !packet.is_done() {
                 if let Some(iftable) = self.iftr.enter() {
-                    let iif = packet.get_meta().iif.get_id();
-                    if let Some(interface) = iftable.get_interface(iif) {
-                        self.interface_ingress(interface, &mut packet);
-                    } else {
-                        warn!("{nfi}: unknown incoming interface {iif}");
-                        packet.done(DoneReason::InterfaceUnknown);
+                    match packet.get_meta().iif {
+                        None => {}
+                        Some(iif) => match iftable.get_interface(iif) {
+                            None => {
+                                warn!("{nfi}: unknown incoming interface {iif}");
+                                packet.done(DoneReason::InterfaceUnknown);
+                            }
+                            Some(interface) => {
+                                self.interface_ingress(interface, &mut packet);
+                            }
+                        },
                     }
                 }
             }
