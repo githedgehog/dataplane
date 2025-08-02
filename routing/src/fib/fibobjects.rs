@@ -139,6 +139,10 @@ impl FibEntry {
             instructions: vec![instruction],
         }
     }
+    #[must_use]
+    pub fn drop_fibentry() -> Self {
+        Self::with_inst(PktInstruction::Drop)
+    }
     pub fn add(&mut self, instruction: PktInstruction) {
         self.instructions.push(instruction);
     }
@@ -213,5 +217,4 @@ pub enum PktInstruction {
     Local(IfIndex),       /* packet is destined to gw */
     Encap(Encapsulation), /* encapsulate the packet */
     Egress(EgressObject), /* send the packet over interface to some ip */
-    Nat,
 }

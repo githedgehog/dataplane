@@ -4,6 +4,8 @@
 //! Object definitions for (shared) routing next-hops. These
 //! refer to other objects like Encapsulation.
 
+#![allow(clippy::collapsible_if)]
+
 use super::encapsulation::Encapsulation;
 use super::vrf::{RouteOrigin, Vrf};
 use crate::evpn::RmacStore;
@@ -200,7 +202,7 @@ impl Nhop {
         let mut resolvers = Vec::new();
         debug!("Resolving {a} with vrf '{}'({})", vrf.name, vrf.vrfid);
         let (prefix, route) = vrf.lpm(a);
-        debug!("Address {a} resolves with route to {prefix}");
+        debug!("Address {a} resolves with route to {prefix}:");
         for nh in &route.s_nhops {
             if *nh.rc == *self {
                 error!(
@@ -208,12 +210,9 @@ impl Nhop {
                     nh.rc
                 );
             } else {
+                debug!(" -> {}", nh.rc);
                 resolvers.push(nh.rc.clone());
             }
-        }
-        debug!("Address {a} resolves to");
-        for resolver in &resolvers {
-            debug!(" -> {resolver}");
         }
         // update resolvers
         self.resolvers.replace(resolvers);
@@ -328,48 +327,18 @@ impl NhopStore {
 
     /////////////////////////////////////////////////////////////////////////////////////
     /// Declare that a next-hop is no longer of our interest. The nhop may be removed or
-    /// not, depending on whether there are other references to it. This function could
-    /// just be `self.map.remove()`. However, that would just remove an Rc<Nhop> from the
-    /// collection while other elements might have living references to it. We want the
-    /// store to be and exhaustive, in that it should contain only living nexthops and
-    /// all of them. I.e., no next-hop object should be alive outside of this collection.
-    /// So, we'll remove elements from this collection iff no one refers to them.
-    /// This should guarantee the uniqueness of next-hops and their referrals.
+    /// not, depending on whether there are other references to it. This method returns
+    /// true if the next-hop was removed and false otherwise.
     /////////////////////////////////////////////////////////////////////////////////////
-    pub(crate) fn del_nhop(&mut self, key: &NhopKey) {
+    pub(crate) fn del_nhop(&mut self, key: &NhopKey) -> bool {
         let target = Nhop::new_from_key(key);
-        let mut remove: bool = false;
-        #[allow(clippy::collapsible_if)]
         if let Some(existing) = self.0.get(&target) {
             if Rc::strong_count(existing) == 1 {
-                remove = true;
+                self.0.remove(&target);
+                return true;
             }
         }
-        if remove {
-            /* Nobody refers to this next-hop, so we're good to remove it. We could happily call
-               self.map.remove(): all the references to its resolvers will be gone too.
-               But those resolvers may get one less reference and may need to be purged too, and
-               by doing so, the next-hops used to resolve them ... So, we recourse. Nothing terribly
-               bad would happen if we didn't. In principle all next-hops should stay alive as long
-               as a route refers to them. This is just a sanity to protect against the race where a
-               route is removed but its next-hop remains alive due to a referral and then that referral
-               is gone, causing the next-hop to remain in the store.
-            */
-            if let Some(existing) = self.0.take(&target) {
-                /* N.B. this mutable borrow should be "safe" in spite of the recursion because
-                the only case where it wouldn't would be if borrow_xx() was called for the same
-                nhop, but that should happen if its refcount is 1 and we don't keep other refs around */
-                if let Ok(mut resolvers) = existing.resolvers.try_borrow_mut() {
-                    while let Some(r) = resolvers.pop() {
-                        let key = r.key.clone(); /* copy the key since we'll */
-                        drop(r); /* ....drop the Rc */
-                        self.del_nhop(&key);
-                    }
-                } else {
-                    error!("Try-borrow-mut failed on resolvers while deleting next-hop!");
-                }
-            }
-        }
+        false
     }
 
     //////////////////////////////////////////////////////////////////
@@ -379,7 +348,7 @@ impl NhopStore {
         self.0.iter()
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn flush_resolvers(&self) {
         for nhop in self.iter() {
             nhop.resolvers.borrow_mut().clear();
@@ -387,21 +356,24 @@ impl NhopStore {
             nhop.fibgroup.take();
         }
     }
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn resolve_nhop_instructions(&self, rstore: &RmacStore) {
         for nhop in self.iter() {
-            nhop.resolve_instructions(rstore);
+            nhop.build_nhop_instructions(rstore);
         }
     }
+    //////////////////////////////////////////////////////////////////
+    /// Lazily resolve all next-hops in this store.
+    //////////////////////////////////////////////////////////////////
     pub fn lazy_resolve_all(&self, vrf: &Vrf) {
-        for nhop in self.iter() {
-            nhop.lazy_resolve(vrf);
-        }
+        self.iter().for_each(|nhop| nhop.lazy_resolve(vrf));
     }
-    pub fn set_fibgroup_all(&self, rstore: &RmacStore) {
-        for nhop in self.iter() {
-            nhop.set_fibgroup(rstore);
-        }
+    //////////////////////////////////////////////////////////////////
+    /// Rebuild the fibgroup for every next-hop. This internally updates the next-hop.
+    /// Returns an iterator with only those next-hops whose fibgroup changed.
+    //////////////////////////////////////////////////////////////////
+    pub fn rebuild_fibgroups(&self, rstore: &RmacStore) -> impl Iterator<Item = &Rc<Nhop>> {
+        self.iter().filter(|nhop| nhop.set_fibgroup(rstore))
     }
 }
 
@@ -736,10 +708,6 @@ mod tests {
         /* Delete nexthop. Since it has no extra reference it should be gone */
         store.del_nhop(&key);
         assert!(!store.contains(&key));
-
-        /* ... and since it refers to all other next-hops (indirectly) and no
-        other next-hop does, all should be gone too */
-        assert_eq!(store.len(), 0);
     }
 
     #[test]

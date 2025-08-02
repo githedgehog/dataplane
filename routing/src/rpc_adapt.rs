@@ -198,7 +198,7 @@ impl Vrf {
         // N.B. route and next-hops are passed separately
         self.add_route_complete(&prefix, route, &nhops, vrf0, rstore);
     }
-    pub fn del_route_rpc(&mut self, iproute: &IpRoute) {
+    pub fn del_route_rpc(&mut self, iproute: &IpRoute, vrf0: Option<&Vrf>, rstore: &RmacStore) {
         let Ok(prefix) = Prefix::try_from((iproute.prefix, iproute.prefix_len)) else {
             error!(
                 "Failed to remove route from RPC!: bad prefix={} len={}",
@@ -206,6 +206,6 @@ impl Vrf {
             );
             return;
         };
-        self.del_route(prefix);
+        self.del_route(prefix, vrf0, rstore);
     }
 }

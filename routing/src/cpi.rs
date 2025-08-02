@@ -3,10 +3,8 @@
 
 //! Main processing functions of the Control-plane interface (CPI)
 
-use crate::evpn::{RmacEntry, RmacStore};
-use crate::fib::fibobjects::FibGroup;
+use crate::evpn::RmacEntry;
 use crate::revent::{ROUTER_EVENTS, RouterEvent, revent};
-use crate::rib::{Vrf, VrfTable};
 use crate::rio::Rio;
 use crate::routingdb::RoutingDb;
 use crate::rpc_adapt::is_evpn_route;
@@ -16,7 +14,6 @@ use chrono::{DateTime, Local};
 use dplane_rpc::socks::RpcCachedSock;
 use dplane_rpc::wire::*;
 use dplane_rpc::{msg::*, socks::Pretty};
-use lpm::prefix::Prefix;
 use std::os::unix::net::SocketAddr;
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -181,38 +178,14 @@ fn nonlocal_nhop(iproute: &IpRoute) -> bool {
     false
 }
 
-// Fixme(fredi): remove this
-fn update_vrf(vrf: &mut Vrf, rmac_store: &RmacStore) {
-    let updates = vrf.refresh_fib_updates(rmac_store, vrf);
-    if let Some(fibw) = &mut vrf.fibw {
-        updates.into_iter().for_each(|(prefix, fibgroup)| {
-            fibw.add_fibgroup(prefix, fibgroup, false);
-        });
-        fibw.publish();
-    }
-}
-
-// Fixme(fredi): remove this
-fn update_vrfs(vrftable: &mut VrfTable, rmac_store: &RmacStore) {
-    let vrf0 = vrftable.get_default_vrf_mut();
-    update_vrf(vrf0, rmac_store);
-    let vrf0 = vrftable.get_default_vrf();
-
-    let updates: Vec<(u32, Vec<(Prefix, FibGroup)>)> = vrftable
-        .values()
-        .filter(|vrf| vrf.vrfid != 0)
-        .map(|vrf| (vrf.vrfid, vrf.refresh_fib_updates(rmac_store, vrf0)))
-        .collect();
-
-    for (vrfid, updates) in &updates {
-        if let Ok(vrf) = vrftable.get_vrf_mut(*vrfid) {
-            if let Some(fibw) = &mut vrf.fibw {
-                updates.into_iter().for_each(|(prefix, fibgroup)| {
-                    fibw.add_fibgroup(*prefix, fibgroup.clone(), false); // avoid this clone
-                });
-                fibw.publish();
-            }
-        }
+fn on_vrf_lookup_fail(have_config: bool, vrfid: VrfId) -> RpcResultCode {
+    error!("Unable to find VRF with id {vrfid}!!");
+    if have_config {
+        RpcResultCode::Failure
+    } else {
+        // On, deletions, if we don't find VRF, that means that we don't have
+        // the route. So, treat this as a successful deletion to make frr happy.
+        RpcResultCode::Ok
     }
 }
 
@@ -236,29 +209,32 @@ impl RpcOperation for IpRoute {
                 return RpcResultCode::Failure;
             };
             vrf0.add_route_rpc(self, None, rmac_store, iftabler);
+            vrftable.refresh_non_default_fibs(rmac_store);
         }
         RpcResultCode::Ok
     }
     fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
+        let rmac_store = &db.rmac_store;
         let vrftable = &mut db.vrftable;
-        if let Ok(vrf) = vrftable.get_vrf_mut(self.vrfid) {
-            vrf.del_route_rpc(self);
+
+        if self.vrfid != 0 {
+            let Ok((vrf, vrf0)) = vrftable.get_with_default_mut(self.vrfid) else {
+                return on_vrf_lookup_fail(db.have_config(), self.vrfid);
+            };
+            vrf.del_route_rpc(self, Some(vrf0), rmac_store);
             if vrf.can_be_deleted() {
                 if let Err(e) = vrftable.remove_vrf(self.vrfid, &mut db.iftw) {
                     warn!("Failed to delete vrf {}: {e}", self.vrfid);
                 }
             }
-            RpcResultCode::Ok
         } else {
-            error!("Unable to find VRF with id {}", self.vrfid);
-            // if we did not find vrf, we don't have the route
-            // tell frr all is good
-            if !db.have_config() {
-                RpcResultCode::Ok
-            } else {
-                RpcResultCode::Failure
-            }
+            let Ok(vrf0) = vrftable.get_vrf_mut(self.vrfid) else {
+                return on_vrf_lookup_fail(db.have_config(), self.vrfid);
+            };
+            vrf0.del_route_rpc(self, None, rmac_store);
+            vrftable.refresh_non_default_fibs(rmac_store);
         }
+        RpcResultCode::Ok
     }
 }
 impl RpcOperation for Rmac {
@@ -414,17 +390,11 @@ fn handle_request(rio: &mut Rio, peer: &SocketAddr, req: &RpcRequest, db: &mut R
             RpcOp::Del => rmac.del(db),
             _ => RpcResultCode::InvalidRequest,
         },
-        Some(RpcObject::IpRoute(route)) => {
-            let res = match op {
-                RpcOp::Add | RpcOp::Update => route.add(db),
-                RpcOp::Del => route.del(db),
-                _ => RpcResultCode::InvalidRequest,
-            };
-            if route.vrfid == 0 {
-                update_vrfs(&mut db.vrftable, &db.rmac_store);
-            }
-            res
-        }
+        Some(RpcObject::IpRoute(route)) => match op {
+            RpcOp::Add | RpcOp::Update => route.add(db),
+            RpcOp::Del => route.del(db),
+            _ => RpcResultCode::InvalidRequest,
+        },
         Some(RpcObject::ConnectInfo(conninfo)) => match op {
             RpcOp::Connect => {
                 let res = conninfo.connect(&mut rio.cpistats, peer);

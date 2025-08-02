@@ -4,13 +4,16 @@
 //! Vrf table module that stores multiple vrfs. Every vrf is uniquely identified by a vrfid
 //! and optionally identified by a Vni. A vrf table always has a default vrf.
 
-#[cfg(test)]
-use super::vrf::VrfStatus;
-use super::vrf::{Vrf, VrfId};
+use crate::RouterError;
+use crate::evpn::RmacStore;
 use crate::fib::fibtable::FibTableWriter;
 use crate::fib::fibtype::FibId;
 use crate::interfaces::iftablerw::IfTableWriter;
-use crate::{errors::RouterError, rib::vrf::RouterVrfConfig};
+use crate::rib::vrf::{RouterVrfConfig, Vrf, VrfId};
+
+#[cfg(test)]
+use crate::rib::vrf::VrfStatus;
+
 use ahash::RandomState;
 use net::vxlan::Vni;
 use std::collections::HashMap;
@@ -199,7 +202,7 @@ impl VrfTable {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Remove all of the VRFs with status `Deleted``
+    /// Remove all of the VRFs with status `Deleted`
     //////////////////////////////////////////////////////////////////
     #[cfg(test)]
     pub fn remove_deleted_vrfs(&mut self, iftablew: &mut IfTableWriter) {
@@ -219,7 +222,7 @@ impl VrfTable {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Immutably access a VRF from its id.
+    /// Immutably access a [`Vrf`] from its id.
     //////////////////////////////////////////////////////////////////
     pub fn get_vrf(&self, vrfid: VrfId) -> Result<&Vrf, RouterError> {
         self.by_id.get(&vrfid).ok_or(RouterError::NoSuchVrf)
@@ -312,6 +315,22 @@ impl VrfTable {
     //////////////////////////////////////////////////////////////////
     pub fn contains(&self, vrfid: VrfId) -> bool {
         self.by_id.contains_key(&vrfid)
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Refresh the fib groups for all non-default vrfs.
+    //////////////////////////////////////////////////////////////////
+    #[allow(unsafe_code)]
+    pub fn refresh_non_default_fibs(&mut self, rstore: &RmacStore) {
+        unsafe {
+            let table = self as *mut Self;
+            let vrf0 = (*table).get_default_vrf();
+            for vrf in self.values_mut() {
+                if vrf.vrfid != 0 {
+                    vrf.refresh_fib(rstore, Some(vrf0));
+                }
+            }
+        }
     }
 }
 
@@ -657,11 +676,11 @@ mod tests {
             println!("{nhop}");
 
             // build fib entry for next-hop
-            let mut fibgroup = nhop.as_fib_entry_group();
-            println!("{fibgroup}");
+            //            let mut fibgroup = nhop.as_fib_entry_group();
+            //            println!("{fibgroup}");
 
-            fibgroup.resolve(&rmac_store);
-            println!("{fibgroup}");
+            //            fibgroup.resolve(&rmac_store);
+            //            println!("{fibgroup}");
         }
 
         {
@@ -671,11 +690,11 @@ mod tests {
             // we have to collect all fib entries
             let mut fibgroup = FibGroup::new();
             for nhop in route.s_nhops.iter() {
-                fibgroup.extend(&mut nhop.rc.as_fib_entry_group());
+                //                fibgroup.extend(&mut nhop.rc.as_fib_entry_group());
             }
 
-            fibgroup.resolve(&rmac_store);
-            println!("{fibgroup}");
+            //            fibgroup.resolve(&rmac_store);
+            //            println!("{fibgroup}");
         }
 
         {
@@ -685,10 +704,10 @@ mod tests {
             // we have to collect all fib entries
             let mut fibgroup = FibGroup::new();
             for nhop in route.s_nhops.iter() {
-                fibgroup.extend(&mut nhop.rc.as_fib_entry_group());
+                //               fibgroup.extend(&mut nhop.rc.as_fib_entry_group());
             }
 
-            fibgroup.resolve(&rmac_store);
+            //            fibgroup.resolve(&rmac_store);
             println!("{fibgroup}");
         }
     }
@@ -711,7 +730,7 @@ mod tests {
             let mut fibgroup = FibGroup::new();
             for nhop in route.s_nhops.iter() {
                 println!("next-hop is:\n {nhop}");
-                fibgroup.extend(&nhop.rc.as_fib_entry_group_lazy());
+                fibgroup.extend(&nhop.rc.build_nhop_fibgroup());
             }
             println!("Fib group is:\n {fibgroup}");
 
@@ -733,7 +752,7 @@ mod tests {
             let mut fibgroup = FibGroup::new();
             for nhop in route.s_nhops.iter() {
                 println!("next-hop is:\n {nhop}");
-                fibgroup.extend(&mut nhop.rc.as_fib_entry_group_lazy());
+                fibgroup.extend(&mut nhop.rc.build_nhop_fibgroup());
             }
             println!("Fib group is:\n {fibgroup}");
 
@@ -755,13 +774,13 @@ mod tests {
             // we have to collect all fib entries
             let mut fibgroup = FibGroup::new();
             for nhop in route.s_nhops.iter() {
-                fibgroup.extend(&mut nhop.rc.as_fib_entry_group_lazy());
+                fibgroup.extend(&mut nhop.rc.build_nhop_fibgroup());
             }
         }
         fib.purge();
         println!("{fib}");
         for nhop in vrf.nhstore.iter() {
-            let fibgroup = nhop.as_fib_entry_group_lazy();
+            let fibgroup = nhop.build_nhop_fibgroup();
             let _ = fib.add_group(fibgroup.clone());
         }
         println!("{fib}");
