@@ -23,7 +23,6 @@ use crate::interfaces::interface::{IfState, IfType, Interface};
 
 use crate::evpn::{RmacEntry, RmacStore, Vtep};
 use crate::pretty_utils::{Heading, line};
-use crate::testfib::TestFib;
 
 use chrono::DateTime;
 use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
@@ -625,17 +624,6 @@ impl Display for AdjacencyTable {
         fmt_adjacency_heading(f)?;
         for a in self.values() {
             writeln!(f, "{a}")?;
-        }
-        Ok(())
-    }
-}
-
-//========================= Test Fib ================================//
-impl Display for TestFib {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        Heading(format!("TestFib ({} entries)", self.len())).fmt(f)?;
-        for entry in self.iter() {
-            write!(f, " {entry}")?;
         }
         Ok(())
     }

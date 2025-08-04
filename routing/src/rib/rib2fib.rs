@@ -46,7 +46,6 @@ impl Nhop {
             let egress =
                 EgressObject::new(self.key.ifindex, self.key.address, self.key.ifname.clone());
             instructions.push(PktInstruction::Egress(egress));
-            return instructions;
         }
         instructions
     }
@@ -123,7 +122,7 @@ impl Nhop {
 impl VxlanEncapsulation {
     /// Resolve a Vxlan encapsulation object. The local vtep information is not used
     /// in this process. We only resolve the destination mac.
-    fn resolve(&mut self, rstore: &RmacStore) {
+    pub(crate) fn resolve(&mut self, rstore: &RmacStore) {
         self.dmac = rstore.get_rmac(self.vni, self.remote).map(|e| e.mac);
         if self.dmac.is_none() {
             warn!(

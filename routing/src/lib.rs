@@ -29,7 +29,6 @@ pub mod rio;
 mod router;
 pub mod routingdb;
 mod rpc_adapt;
-pub mod testfib;
 
 // re-exports
 pub use errors::RouterError;

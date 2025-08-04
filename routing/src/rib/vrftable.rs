@@ -337,15 +337,18 @@ impl VrfTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evpn::rmac::tests::build_sample_rmac_store;
-    use crate::fib::fibobjects::FibGroup;
+    use crate::fib::fibobjects::{EgressObject, PktInstruction};
     use crate::fib::fibtype::FibId;
-    use crate::interfaces::tests::build_test_iftable;
     use crate::interfaces::tests::build_test_iftable_left_right;
+    use crate::pretty_utils::Frame;
+    use crate::rib::encapsulation::Encapsulation;
     use crate::rib::vrf::tests::build_test_vrf_nhops_partially_resolved;
-    use crate::rib::vrf::tests::{build_test_vrf, mk_addr};
-    use crate::testfib::TestFib;
-    use std::sync::Arc;
+    use crate::rib::vrf::tests::{
+        build_test_vrf, init_test_vrf, mk_addr, mod_test_vrf_1, mod_test_vrf_2,
+    };
+    use crate::{
+        evpn::rmac::tests::build_sample_rmac_store, rib::encapsulation::VxlanEncapsulation,
+    };
     use tracing_test::traced_test;
 
     fn mk_vni(vni: u32) -> Vni {
@@ -663,137 +666,134 @@ mod tests {
         debug!("\n{vrftable}");
     }
 
-    #[test]
-    fn test_vrf_fibgroup() {
-        let vrf = build_test_vrf();
-        let rmac_store = build_sample_rmac_store();
-        let _iftable = build_test_iftable();
-
-        {
-            // do lpm just to get access to a next-hop object
-            let (_prefix, route) = vrf.lpm(mk_addr("192.168.0.1"));
-            let nhop = &route.s_nhops[0].rc;
+    fn show_fibgroups(vrf: &Vrf, destination: &str) {
+        let (_prefix, route) = vrf.lpm(mk_addr(destination));
+        println!("nhops to {destination} are");
+        for shim in route.s_nhops.iter() {
+            let nhop = &*shim.rc;
             println!("{nhop}");
-
-            // build fib entry for next-hop
-            //            let mut fibgroup = nhop.as_fib_entry_group();
-            //            println!("{fibgroup}");
-
-            //            fibgroup.resolve(&rmac_store);
-            //            println!("{fibgroup}");
         }
-
-        {
-            // do lpm just to get access several next-hop objects
-            let (_prefix, route) = vrf.lpm(mk_addr("8.0.0.1"));
-
-            // we have to collect all fib entries
-            let mut fibgroup = FibGroup::new();
-            for nhop in route.s_nhops.iter() {
-                //                fibgroup.extend(&mut nhop.rc.as_fib_entry_group());
-            }
-
-            //            fibgroup.resolve(&rmac_store);
-            //            println!("{fibgroup}");
-        }
-
-        {
-            // do lpm just to get access several next-hop objects
-            let (_prefix, route) = vrf.lpm(mk_addr("7.0.0.1"));
-
-            // we have to collect all fib entries
-            let mut fibgroup = FibGroup::new();
-            for nhop in route.s_nhops.iter() {
-                //               fibgroup.extend(&mut nhop.rc.as_fib_entry_group());
-            }
-
-            //            fibgroup.resolve(&rmac_store);
-            println!("{fibgroup}");
+        for shim in route.s_nhops.iter() {
+            let nhop = &*shim.rc;
+            let fibgroup = nhop.fibgroup.borrow().clone();
+            println!("fibgroup of nhop {nhop}:\n\n{fibgroup}");
         }
     }
 
-    fn do_test_vrf_fibgroup_lazy(vrf: Vrf) {
-        let rmac_store = build_sample_rmac_store();
-        let _iftable = build_test_iftable();
+    #[rustfmt::skip]
+    fn test_vrf_fibgroup(mut vrf: Vrf) {
+        let rstore = build_sample_rmac_store();
 
-        // resolve beforehand, offline, and once
-        vrf.nhstore.resolve_nhop_instructions(&rmac_store);
+        vrf.nhstore.lazy_resolve_all(&vrf);
+        vrf.nhstore.resolve_nhop_instructions(&rstore);
+        vrf.nhstore.rebuild_fibgroups(&rstore);
+        // vrf.refresh_fib(&rstore, None);
+        // refresh_fib() won't work because add_route() does not build the packet instructions
 
-        // create FIB
-        let mut fib = TestFib::new();
-
-        {
-            let (_prefix, route) = vrf.lpm(mk_addr("192.168.0.1"));
-
-            // build the fib groups for all next-hops (only one here)
-            // and merge them together in the same fib group
-            let mut fibgroup = FibGroup::new();
-            for nhop in route.s_nhops.iter() {
-                println!("next-hop is:\n {nhop}");
-                fibgroup.extend(&nhop.rc.build_nhop_fibgroup());
-            }
-            println!("Fib group is:\n {fibgroup}");
-
-            {
-                let _r1 = fib.add_group(fibgroup.clone());
-                let _r2 = fib.add_group(fibgroup.clone());
-                let _r3 = fib.add_group(fibgroup.clone());
-                let r4 = fib.add_group(fibgroup);
-                assert_eq!(Arc::strong_count(&r4), 5);
-            }
-            assert_eq!(fib.len(), 1);
-        }
-
-        {
-            let (_prefix, route) = vrf.lpm(mk_addr("192.168.1.1"));
-
-            // build the fib groups for all next-hops (only one here)
-            // and merge them together in the same fib group
-            let mut fibgroup = FibGroup::new();
-            for nhop in route.s_nhops.iter() {
-                println!("next-hop is:\n {nhop}");
-                fibgroup.extend(&mut nhop.rc.build_nhop_fibgroup());
-            }
-            println!("Fib group is:\n {fibgroup}");
-
-            let r1 = fib.add_group(fibgroup.clone());
-            assert_eq!(Arc::strong_count(&r1), 2);
-
-            println!("{fib}");
-
-            assert_eq!(fib.len(), 2);
-            fib.purge();
-            assert_eq!(fib.len(), 1);
-            println!("{fib}");
-        }
-
-        {
-            // do lpm just to get access several next-hop objects
-            let (_prefix, route) = vrf.lpm(mk_addr("7.0.0.1"));
-
-            // we have to collect all fib entries
-            let mut fibgroup = FibGroup::new();
-            for nhop in route.s_nhops.iter() {
-                fibgroup.extend(&mut nhop.rc.build_nhop_fibgroup());
+        print!("{}", Frame("Initial fibgroups".to_string()));
+        show_fibgroups(&vrf, "8.0.0.1");
+        show_fibgroups(&vrf, "8.0.0.2");
+        show_fibgroups(&vrf, "7.0.0.1");
+        show_fibgroups(&vrf, "192.168.0.1");
+        let destination = mk_addr("192.168.0.1");
+        let (_, route) = vrf.lpm(destination);
+        let fibgroup = route.s_nhops[0].rc.fibgroup.borrow().clone();
+        assert_eq!(fibgroup.len(), 4);
+        for (num, entry) in fibgroup.iter().enumerate() {
+            assert_eq!(entry.len(), 4);
+            let mut vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"));
+            vxlan.resolve(&rstore);
+            assert_eq!(entry.instructions[0], PktInstruction::Encap(Encapsulation::Vxlan(vxlan)));
+            assert_eq!(entry.instructions[1], PktInstruction::Encap(Encapsulation::Mpls(7000)));
+            match num {
+                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(1), Some(mk_addr("10.0.0.1")), None))),
+                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(2), Some(mk_addr("10.0.0.5")), None))),
+                2 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(2), Some(mk_addr("10.0.0.5")), None))),
+                3 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(3), Some(mk_addr("10.0.0.9")), None))),
+                _ => unreachable!(),
             }
         }
-        fib.purge();
-        println!("{fib}");
-        for nhop in vrf.nhstore.iter() {
-            let fibgroup = nhop.build_nhop_fibgroup();
-            let _ = fib.add_group(fibgroup.clone());
-        }
-        println!("{fib}");
-        //println!("{}", vrf.nhstore);
-    }
 
-    #[test]
-    fn test_vrf_fibgroup_lazy_1() {
-        do_test_vrf_fibgroup_lazy(build_test_vrf());
+        mod_test_vrf_1(&mut vrf);
+        vrf.refresh_fib(&rstore, None);
+        vrf.dump(Some("After removing path via 10.0.0.5"));
+
+        show_fibgroups(&vrf, "8.0.0.1");
+        show_fibgroups(&vrf, "8.0.0.2");
+        show_fibgroups(&vrf, "7.0.0.1");
+        show_fibgroups(&vrf, "192.168.0.1");
+
+        let (_, route) = vrf.lpm(destination);
+        let fibgroup = route.s_nhops[0].rc.fibgroup.borrow().clone();
+        assert_eq!(fibgroup.len(), 2);
+        for (num, entry) in fibgroup.iter().enumerate() {
+            assert_eq!(entry.len(), 4);
+            let mut vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"));
+            vxlan.resolve(&rstore);
+            assert_eq!(entry.instructions[0], PktInstruction::Encap(Encapsulation::Vxlan(vxlan)));
+            assert_eq!(entry.instructions[1], PktInstruction::Encap(Encapsulation::Mpls(7000)));
+            match num {
+                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(1), Some(mk_addr("10.0.0.1")), None))),
+                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(3), Some(mk_addr("10.0.0.9")), None))),
+                _ => unreachable!(),
+            }
+        }
+
+
+        mod_test_vrf_2(&mut vrf);
+        vrf.refresh_fib(&rstore, None);
+
+        show_fibgroups(&vrf, "8.0.0.1");
+        show_fibgroups(&vrf, "7.0.0.1");
+        show_fibgroups(&vrf, "192.168.0.1");
+
+        let (_, route) = vrf.lpm(destination);
+        let fibgroup = route.s_nhops[0].rc.fibgroup.borrow().clone();
+        assert_eq!(fibgroup.len(), 1);
+        for (num, entry) in fibgroup.iter().enumerate() {
+            assert_eq!(entry.len(), 4);
+            let mut vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"));
+            vxlan.resolve(&rstore);
+            assert_eq!(entry.instructions[0], PktInstruction::Encap(Encapsulation::Vxlan(vxlan)));
+            assert_eq!(entry.instructions[1], PktInstruction::Encap(Encapsulation::Mpls(7000)));
+            match num {
+                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(2), Some(mk_addr("10.0.0.5")), None))),
+                _ => unreachable!(),
+            }
+        }
+
+
+        init_test_vrf(&mut vrf);
+        vrf.refresh_fib(&rstore, None);
+        show_fibgroups(&vrf, "192.168.0.1");
+
+        let (_, route) = vrf.lpm(destination);
+        let fibgroup = route.s_nhops[0].rc.fibgroup.borrow().clone();
+        assert_eq!(fibgroup.len(), 4);
+        for (num, entry) in fibgroup.iter().enumerate() {
+            assert_eq!(entry.len(), 4);
+            let mut vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"));
+            vxlan.resolve(&rstore);
+            assert_eq!(entry.instructions[0], PktInstruction::Encap(Encapsulation::Vxlan(vxlan)));
+            assert_eq!(entry.instructions[1], PktInstruction::Encap(Encapsulation::Mpls(7000)));
+            match num {
+                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(1), Some(mk_addr("10.0.0.1")), None))),
+                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(2), Some(mk_addr("10.0.0.5")), None))),
+                2 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(2), Some(mk_addr("10.0.0.5")), None))),
+                3 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(3), Some(mk_addr("10.0.0.9")), None))),
+                _ => unreachable!(),
+            }
+        }
     }
 
     #[test]
-    fn test_vrf_fibgroup_lazy_2_nhops_partially_resolved() {
-        do_test_vrf_fibgroup_lazy(build_test_vrf_nhops_partially_resolved());
+    fn test_vrf_fibgroup_1() {
+        test_vrf_fibgroup(build_test_vrf());
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_vrf_fibgroup_2() {
+        test_vrf_fibgroup(build_test_vrf_nhops_partially_resolved());
     }
 }

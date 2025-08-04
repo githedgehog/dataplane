@@ -714,13 +714,30 @@ pub mod tests {
         let mut vrf = Vrf::new(&vrf_cfg);
         vrf.dump(Some("Initial (clean)"));
 
+        /* Add some connected route */
+        let prefix = Prefix::expect_from("10.0.0.0/24");
+        let route = build_test_route(RouteOrigin::Connected, 1, 10);
+        let nhop = build_test_nhop(None, Some(7), 0, None);
+        vrf.add_route(&prefix, route, &[nhop], None);
+        vrf.dump(Some("After adding connected route"));
+
         /* Add static default via 10.0.0.1 */
         let prefix: Prefix = Prefix::root_v4();
-        let route = build_test_route(RouteOrigin::Static, 1, 0);
+        let route = build_test_route(RouteOrigin::Static, 1, 123);
         let nhop = build_test_nhop(Some("10.0.0.1"), None, 0, None);
         vrf.add_route(&prefix, route, &[nhop], None);
 
-        assert_eq!(vrf.len_v4(), 1, "Should have replaced the default");
+        /* static default is added and resolves next-hop over connected route */
+        let route = vrf.get_route(prefix).unwrap();
+        assert_eq!(route.distance, 1);
+        assert_eq!(route.metric, 123);
+        assert_eq!(route.origin, RouteOrigin::Static);
+        let resolvers = &route.s_nhops;
+        assert_eq!(resolvers.len(), 1);
+        assert_eq!(resolvers[0].rc.key.fwaction, FwAction::Forward);
+        assert_eq!(resolvers[0].rc.key.address, Some(IpAddr::from_str("10.0.0.1").unwrap()));
+
+        assert_eq!(vrf.len_v4(), 2, "Should have replaced the default");
         vrf.dump(Some("With static IPv4 default non-drop route"));
 
         /* delete the static default. This should put back again a default route with action DROP */
@@ -735,16 +752,32 @@ pub mod tests {
         let rstore = RmacStore::new();
         let vrf_cfg = RouterVrfConfig::new(0, "default");
         let mut vrf = Vrf::new(&vrf_cfg);
-
         vrf.dump(Some("Initial (clean)"));
 
+        /* Add some connected route */
+        let prefix = Prefix::expect_from("2001::/80");
+        let route = build_test_route(RouteOrigin::Connected, 1, 10);
+        let nhop = build_test_nhop(None, Some(7), 0, None);
+        vrf.add_route(&prefix, route, &[nhop], None);
+        vrf.dump(Some("After adding connected route"));
+
         /* Add static default via 2001::1 */
-        let prefix: Prefix = Prefix::root_v4();
-        let route = build_test_route(RouteOrigin::Static, 1, 0);
+        let prefix: Prefix = Prefix::root_v6();
+        let route = build_test_route(RouteOrigin::Static, 1, 123);
         let nhop = build_test_nhop(Some("2001::1"), None, 0, None);
         vrf.add_route(&prefix, route, &[nhop], None);
 
-        assert_eq!(vrf.len_v6(), 1, "Should have replaced the default");
+        /* static default is added and resolves next-hop over connected route */
+        let route = vrf.get_route(prefix).unwrap();
+        assert_eq!(route.distance, 1);
+        assert_eq!(route.metric, 123);
+        assert_eq!(route.origin, RouteOrigin::Static);
+        let resolvers = &route.s_nhops;
+        assert_eq!(resolvers.len(), 1);
+        assert_eq!(resolvers[0].rc.key.fwaction, FwAction::Forward);
+        assert_eq!(resolvers[0].rc.key.address, Some(IpAddr::from_str("2001::1").unwrap()));
+
+        assert_eq!(vrf.len_v6(), 2, "Should have replaced the default");
         vrf.dump(Some("With static IPv6 default non-drop route"));
 
         /* delete the static default. This should put back again a default route with action DROP */
@@ -861,11 +894,43 @@ pub mod tests {
         }
     }
 
-    // build a sample VRF used for testing
-    pub fn build_test_vrf() -> Vrf {
-        let vrf_cfg = RouterVrfConfig::new(0, "default");
-        let mut vrf = Vrf::new(&vrf_cfg);
+    // modify the test vrf
+    pub fn mod_test_vrf_1(vrf: &mut Vrf) {
+        println!("{}", Frame("Removing paths via 10.0.0.5".to_string()));
+        {
+            let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
+            let n1 = build_test_nhop(Some("10.0.0.1"), None, 0, Some(Encapsulation::Mpls(8001)));
+            let prefix = Prefix::expect_from(("8.0.0.1", 32));
+            vrf.add_route(&prefix, route, &[n1], None);
+        }
+        {
+            let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
+            let n3 = build_test_nhop(Some("10.0.0.9"), None, 0, Some(Encapsulation::Mpls(8009)));
+            let prefix = Prefix::expect_from(("8.0.0.2", 32));
+            vrf.add_route(&prefix, route, &[n3], None);
+        }
+    }
 
+    // modify the test vrf
+    pub fn mod_test_vrf_2(vrf: &mut Vrf) {
+        println!("{}", Frame("Making 7.0.0.1 reachable only over 8.0.0.1 and 10.0.0.5".to_string()));
+        {
+            let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
+            let n2 = build_test_nhop(Some("10.0.0.5"), None, 0, Some(Encapsulation::Mpls(8005)));
+            let prefix = Prefix::expect_from(("8.0.0.1", 32));
+            vrf.add_route(&prefix, route, &[n2], None);
+        }
+        {
+            let route: Route = build_test_route(RouteOrigin::Bgp, 0, 1);
+            let n1 = build_test_nhop(Some("8.0.0.1"), None, 0, Some(Encapsulation::Mpls(7000)));
+            let prefix = Prefix::expect_from(("7.0.0.1", 32));
+            vrf.add_route(&prefix, route, &[n1], None);
+        }
+    }
+
+    // Initialize test vrf with test routes
+    pub fn init_test_vrf(vrf: &mut Vrf) {
+        println!("{}", Frame("Initializing VRF routes".to_string()));
         {
             let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
             let nhop = build_test_nhop(None, Some(1), 0, None);
@@ -911,8 +976,15 @@ pub mod tests {
             vrf.add_route(&prefix, route, &[n1, n2], None);
         }
 
-        add_vxlan_routes(&mut vrf, 5);
+        add_vxlan_routes(vrf, 5);
 
+    }
+
+    // build a sample VRF used for testing
+    pub fn build_test_vrf() -> Vrf {
+        let vrf_cfg = RouterVrfConfig::new(0, "default");
+        let mut vrf = Vrf::new(&vrf_cfg);
+        init_test_vrf(&mut vrf);
         vrf.dump(Some("VRF With next-hops lazily resolved on addition"));
         vrf
     }
@@ -923,17 +995,39 @@ pub mod tests {
         let mut vrf = Vrf::new(&vrf_cfg);
 
         {
+            let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
+            let nhop = build_test_nhop(None, Some(1), 0, None);
+            let prefix = Prefix::expect_from(("10.0.0.0", 30));
+            vrf.add_route(&prefix, route, &[nhop], None);
+        }
+
+        {
+            let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
+            let nhop = build_test_nhop(None, Some(2), 0, None);
+            let prefix = Prefix::expect_from(("10.0.0.4", 30));
+            vrf.add_route(&prefix, route, &[nhop], None);
+        }
+
+        {
+            let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
+            let nhop = build_test_nhop(None, Some(3), 0, None);
+            let prefix = Prefix::expect_from(("10.0.0.8", 30));
+            vrf.add_route(&prefix, route, &[nhop], None);
+        }
+
+
+        {
             let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
-            let n1 = build_test_nhop(Some("10.0.0.1"), Some(2), 0, Some(Encapsulation::Mpls(8001)));
-            let n2 = build_test_nhop(Some("10.0.0.5"), Some(3), 0, Some(Encapsulation::Mpls(8005)));
+            let n1 = build_test_nhop(Some("10.0.0.1"), Some(1), 0, Some(Encapsulation::Mpls(8001)));
+            let n2 = build_test_nhop(Some("10.0.0.5"), Some(2), 0, Some(Encapsulation::Mpls(8005)));
             let prefix = Prefix::expect_from(("8.0.0.1", 32));
             vrf.add_route(&prefix, route, &[n1, n2], None);
         }
 
         {
             let route: Route = build_test_route(RouteOrigin::Ospf, 0, 1);
-            let n2 = build_test_nhop(Some("10.0.0.5"), Some(3), 0, Some(Encapsulation::Mpls(8005)));
-            let n3 = build_test_nhop(Some("10.0.0.9"), Some(4), 0, Some(Encapsulation::Mpls(8009)));
+            let n2 = build_test_nhop(Some("10.0.0.5"), Some(2), 0, Some(Encapsulation::Mpls(8005)));
+            let n3 = build_test_nhop(Some("10.0.0.9"), Some(3), 0, Some(Encapsulation::Mpls(8009)));
             let prefix = Prefix::expect_from(("8.0.0.2", 32));
             vrf.add_route(&prefix, route, &[n2, n3], None);
         }
@@ -948,29 +1042,8 @@ pub mod tests {
 
         add_vxlan_routes(&mut vrf, 5);
 
-        vrf.dump(Some("VRF With next-hops with partially resolved nexthops, lazily resolved on addition"));
+        vrf.dump(Some("VRF with partially resolved nexthops, lazily resolved on addition"));
         vrf
     }
 
-
-    #[test]
-    fn test_vrf_lazy_nhop_resolution() {
-        let vrf = build_test_vrf();
-
-        let nhkey = NhopKey {
-            origin: RouteOrigin::default(),
-            address: Some(mk_addr("7.0.0.1")),
-            ifindex: None,
-            encap: Some(Encapsulation::Vxlan(VxlanEncapsulation::new(
-                Vni::new_checked(3000).expect("Should be ok"),
-                IpAddr::from_str("7.0.0.1").unwrap(),
-            ))),
-            fwaction: FwAction::default(),
-            ifname: None,
-        };
-
-        /* check how the next-hop has been resolved */
-        let _nhop = vrf.nhstore.get_nhop(&nhkey).expect("Should be there");
-        /* Todo: finish test */
-    }
 }
