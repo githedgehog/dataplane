@@ -33,6 +33,10 @@ impl<I: NatIp> IpAllocator<I> {
         }
     }
 
+    fn deallocate_ip(&self, ip: I) {
+        self.pool.write().unwrap().deallocate_from_pool(ip);
+    }
+
     fn reuse_allocated_ip(&self) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
         let allocated_ips = self.pool.read().unwrap();
         for ip_weak in allocated_ips.ips_in_use() {
@@ -140,7 +144,7 @@ impl<I: NatIp> AllocatedIp<I> {
 
 impl<I: NatIp> Drop for AllocatedIp<I> {
     fn drop(&mut self) {
-        todo!()
+        self.ip_allocator.deallocate_ip(self.ip);
     }
 }
 
@@ -196,13 +200,24 @@ impl<I: NatIp> NatPool<I> {
         }
     }
 
+    fn deallocate_from_pool(&mut self, ip: I) {
+        let offset = if std::mem::size_of::<I>() == std::mem::size_of::<Ipv6Addr>() {
+            ipv6_try_to_offset(ip, &self.reverse_bitmap_mapping).unwrap()
+        } else {
+            // IPv4
+            u32::try_from(ip.to_bits()).unwrap()
+        };
+        self.bitmap.set_ip_free(offset);
+    }
+
     fn reserve_from_pool(&mut self, ip: I) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
         let offset = if std::mem::size_of::<I>() == std::mem::size_of::<Ipv6Addr>() {
             ipv6_try_to_offset(ip, &self.reverse_bitmap_mapping)?
         } else {
+            // IPv4
             u32::try_from(ip.to_bits()).map_err(|_| AllocatorError::InternalIssue)?
         };
-        if self.bitmap.set_ip(offset) {
+        if self.bitmap.set_ip_allocated(offset) {
             // The IP was free in the bitmap, allocate it now
             return self.add_in_use(&Arc::new(AllocatedIp::new(ip, self.ip_allocator.clone())));
         }
@@ -244,8 +259,12 @@ impl PoolBitmap {
         Ok(offset)
     }
 
-    fn set_ip(&mut self, offset: u32) -> bool {
-        self.0.lock().unwrap().insert(offset)
+    fn set_ip_allocated(&mut self, index: u32) -> bool {
+        self.0.lock().unwrap().insert(index)
+    }
+
+    fn set_ip_free(&mut self, index: u32) -> bool {
+        self.0.lock().unwrap().remove(index)
     }
 }
 
