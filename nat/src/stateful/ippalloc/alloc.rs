@@ -22,13 +22,21 @@ pub trait NatAllocator<I: NatIp> {
     -> Result<port_alloc::AllocatedPort<I>, AllocatorError>;
 }
 
+pub trait IpAllocator<I: NatIp> {}
+
 #[derive(Debug, Clone)]
-pub struct IpAllocator<I: NatIpWithBitmap + Debug> {
+pub struct IpBitmapAllocator<I: NatIpWithBitmap + Debug> {
     pool: Arc<RwLock<NatPool<I>>>,
 }
 
-impl<I: NatIpWithBitmap + Debug> IpAllocator<I> {
-    pub fn new(ip_allocator: IpAllocator<I>) -> Self {
+impl<I> IpAllocator<I> for IpBitmapAllocator<I> where I: NatIp + NatIpWithBitmap {}
+
+trait SomethingPub {}
+
+impl<T> SomethingPub for T where T: NatIpWithBitmap {}
+
+impl<I: Debug> IpBitmapAllocator<I> {
+    pub fn new(ip_allocator: IpBitmapAllocator<I>) -> Self {
         Self {
             pool: Arc::new(RwLock::new(NatPool {
                 bitmap: PoolBitmap::new(),
@@ -104,14 +112,14 @@ impl<I: NatIpWithBitmap + Debug> IpAllocator<I> {
 ///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Clone)]
-pub struct AllocatedIp<I: NatIp> {
-    ip: I,
+pub struct AllocatedIp<I: NatIp, A: IpAllocator<I> = IpBitmapAllocator<I>> {
+    ip: Vec<I>,
     port_allocator: port_alloc::PortAllocator<I>,
-    allocator: IpAllocator<I>,
+    allocator: A,
 }
 
 impl<I: NatIp> AllocatedIp<I> {
-    fn new(ip: I, allocator: IpAllocator<I>) -> Self {
+    fn new(ip: I, allocator: IpBitmapAllocator<I>) -> Self {
         Self {
             ip,
             port_allocator: port_alloc::PortAllocator::new(),
@@ -156,12 +164,12 @@ impl<I: NatIp> Drop for AllocatedIp<I> {
 ///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-struct NatPool<I: NatIpWithBitmap + Debug> {
+struct NatPool<I: Debug> {
     bitmap: PoolBitmap,
     bitmap_mapping: BTreeMap<u32, u128>,
     reverse_bitmap_mapping: BTreeMap<u128, u32>,
     in_use: VecDeque<Weak<AllocatedIp<I>>>,
-    ip_allocator: IpAllocator<I>,
+    ip_allocator: IpBitmapAllocator<I>,
 }
 
 impl<I: NatIpWithBitmap> NatPool<I> {

@@ -30,7 +30,7 @@ impl<I: NatIp> PoolTableKey<I> {
 
 #[derive(Debug)]
 pub struct PoolTable<I: NatIp, J: alloc::NatIpWithBitmap>(
-    BTreeMap<PoolTableKey<I>, alloc::IpAllocator<J>>,
+    BTreeMap<PoolTableKey<I>, alloc::IpBitmapAllocator<J>>,
 );
 
 impl<I: NatIp, J: alloc::NatIpWithBitmap> PoolTable<I, J> {
@@ -38,7 +38,7 @@ impl<I: NatIp, J: alloc::NatIpWithBitmap> PoolTable<I, J> {
         Self(BTreeMap::new())
     }
 
-    fn get_mut(&mut self, key: &PoolTableKey<I>) -> Option<&mut alloc::IpAllocator<J>> {
+    fn get_mut(&mut self, key: &PoolTableKey<I>) -> Option<&mut alloc::IpBitmapAllocator<J>> {
         // We need to find the entry with the ID, and the prefix for the corresponding address.
         // Get the range of "lower" entries, the one with the address before ours is the prefix we
         // need, if the ID also matches.

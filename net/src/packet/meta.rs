@@ -97,7 +97,6 @@ pub struct PacketMeta {
     pub src_vni: Option<Vni>, /* the vni value of a received vxlan encap packet, if destined to gateway */
     /// TODO: why is this not the [`RouteTableId`]?
     pub dst_vni: Option<Vni>, /* the vni value of a vxlan packet re-encapsulated by the gateway */
-    op_log: ArrayVec<Op, 8 /* or whatever */>,
 }
 
 impl PacketMeta {

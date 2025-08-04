@@ -5,6 +5,7 @@ use super::alloc::AllocatedIp;
 use crate::stateful::NatIp;
 use crate::stateful::allocator::AllocatorError;
 use crate::stateful::port::NatPort;
+use crossbeam::utils::CachePadded;
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize};
