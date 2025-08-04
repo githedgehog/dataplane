@@ -47,6 +47,11 @@ impl<I: NatIp, J: NatIp> PoolTable<I, J> {
     }
 }
 
+type AllocationMapping<I> = (
+    Option<port_alloc::AllocatedPort<I>>,
+    Option<port_alloc::AllocatedPort<I>>,
+);
+
 #[allow(clippy::struct_field_names)]
 #[derive(Debug)]
 pub struct NatDefaultAllocator {
@@ -85,18 +90,7 @@ impl NatAllocator<port_alloc::AllocatedPort<Ipv4Addr>, port_alloc::AllocatedPort
             tuple.dst_ip,
         ));
 
-        let src_mapping = match pool_src_opt {
-            Some(pool_src) => Some(pool_src.allocate()?),
-            None => None,
-        };
-
-        let dst_mapping = match pool_dst_opt {
-            Some(pool_dst) => Some(pool_dst.allocate()?),
-            None => None,
-        };
-
-        // TODO
-        let dst_vrf_id = 0;
+        let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt)?;
 
         let reverse_pool_src_opt = self.pools_src44.get_mut(&PoolTableKey::new(
             tuple.next_header,
@@ -109,25 +103,8 @@ impl NatAllocator<port_alloc::AllocatedPort<Ipv4Addr>, port_alloc::AllocatedPort
             tuple.src_ip,
         ));
 
-        let reverse_src_mapping = match reverse_pool_src_opt {
-            Some(pool_src) => Some(pool_src.reserve(
-                tuple.dst_ip,
-                // TODO: error handling
-                NatPort::new_checked(tuple.dst_port.unwrap()).unwrap(),
-            )?),
-            None => None,
-        };
-
-        let reverse_dst_mapping = match reverse_pool_dst_opt {
-            Some(pool_dst) => {
-                // TODO: error handling
-                Some(pool_dst.reserve(
-                    tuple.src_ip,
-                    NatPort::new_checked(tuple.src_port.unwrap()).unwrap(),
-                )?)
-            }
-            None => None,
-        };
+        let (reverse_src_mapping, reverse_dst_mapping) =
+            Self::get_reverse_mapping(tuple, reverse_pool_src_opt, reverse_pool_dst_opt)?;
 
         Ok(AllocationResult {
             src: src_mapping,
@@ -154,22 +131,27 @@ impl NatAllocator<port_alloc::AllocatedPort<Ipv4Addr>, port_alloc::AllocatedPort
             tuple.dst_ip,
         ));
 
-        let src_mapping = match pool_src_opt {
-            Some(pool_src) => Some(pool_src.allocate()?),
-            None => None,
-        };
+        let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt)?;
 
-        let dst_mapping = match pool_dst_opt {
-            Some(pool_dst) => Some(pool_dst.allocate()?),
-            None => None,
-        };
+        let reverse_pool_src_opt = self.pools_src66.get_mut(&PoolTableKey::new(
+            tuple.next_header,
+            tuple.vrf_id,
+            tuple.src_ip,
+        ));
+        let reverse_pool_dst_opt = self.pools_dst66.get_mut(&PoolTableKey::new(
+            tuple.next_header,
+            tuple.vrf_id,
+            tuple.src_ip,
+        ));
+
+        let (reverse_src_mapping, reverse_dst_mapping) =
+            Self::get_reverse_mapping(tuple, reverse_pool_src_opt, reverse_pool_dst_opt)?;
 
         Ok(AllocationResult {
             src: src_mapping,
             dst: dst_mapping,
-            // TODO
-            return_src: None,
-            return_dst: None,
+            return_src: reverse_src_mapping,
+            return_dst: reverse_dst_mapping,
         })
     }
 }
@@ -193,6 +175,57 @@ impl NatDefaultAllocator {
             NextHeader::TCP | NextHeader::UDP => Ok(()),
             _ => Err(AllocatorError::UnsupportedProtocol(next_header)),
         }
+    }
+
+    fn get_mapping<I: NatIp>(
+        pool_src_opt: Option<&mut alloc::IpAllocator<I>>,
+        pool_dst_opt: Option<&mut alloc::IpAllocator<I>>,
+    ) -> Result<AllocationMapping<I>, AllocatorError> {
+        let src_mapping = match pool_src_opt {
+            Some(pool_src) => Some(pool_src.allocate()?),
+            None => None,
+        };
+
+        let dst_mapping = match pool_dst_opt {
+            Some(pool_dst) => Some(pool_dst.allocate()?),
+            None => None,
+        };
+
+        Ok((src_mapping, dst_mapping))
+    }
+
+    fn get_reverse_mapping<I: NatIp>(
+        tuple: &NatTuple<I>,
+        reverse_pool_src_opt: Option<&mut alloc::IpAllocator<I>>,
+        reverse_pool_dst_opt: Option<&mut alloc::IpAllocator<I>>,
+    ) -> Result<AllocationMapping<I>, AllocatorError> {
+        let reverse_src_mapping = match reverse_pool_src_opt {
+            Some(pool_src) => Some(pool_src.reserve(
+                tuple.dst_ip,
+                match tuple.dst_port {
+                    Some(port) => {
+                        NatPort::new_checked(port).map_err(|_| AllocatorError::InternalIssue)?
+                    }
+                    None => return Err(AllocatorError::PortNotFound),
+                },
+            )?),
+            None => None,
+        };
+
+        let reverse_dst_mapping = match reverse_pool_dst_opt {
+            Some(pool_dst) => Some(pool_dst.reserve(
+                tuple.src_ip,
+                match tuple.src_port {
+                    Some(port) => {
+                        NatPort::new_checked(port).map_err(|_| AllocatorError::InternalIssue)?
+                    }
+                    None => return Err(AllocatorError::PortNotFound),
+                },
+            )?),
+            None => None,
+        };
+
+        Ok((reverse_src_mapping, reverse_dst_mapping))
     }
 }
 
