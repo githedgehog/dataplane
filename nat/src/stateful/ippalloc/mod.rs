@@ -29,11 +29,9 @@ impl<I: NatIp> PoolTableKey<I> {
 }
 
 #[derive(Debug)]
-pub struct PoolTable<I: NatIp, J: alloc::NatIpWithBitmap>(
-    BTreeMap<PoolTableKey<I>, alloc::IpAllocator<J>>,
-);
+pub struct PoolTable<I: NatIp, J: NatIp>(BTreeMap<PoolTableKey<I>, alloc::IpAllocator<J>>);
 
-impl<I: NatIp, J: alloc::NatIpWithBitmap> PoolTable<I, J> {
+impl<I: NatIp, J: NatIp> PoolTable<I, J> {
     pub fn new() -> Self {
         Self(BTreeMap::new())
     }

@@ -7,7 +7,7 @@ use crate::stateful::allocator::AllocatorError;
 use crate::stateful::port::NatPort;
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, VecDeque};
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::Ipv6Addr;
 use std::sync::{Arc, Mutex, RwLock, Weak};
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -15,11 +15,11 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 ///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct IpAllocator<I: NatIpWithBitmap> {
+pub struct IpAllocator<I: NatIp> {
     pool: RwLock<NatPool<I>>,
 }
 
-impl<I: NatIpWithBitmap> IpAllocator<I> {
+impl<I: NatIp> IpAllocator<I> {
     pub fn new(ip_allocator: Arc<IpAllocator<I>>) -> Self {
         Self {
             pool: NatPool {
@@ -149,7 +149,7 @@ impl<I: NatIp> Drop for AllocatedIp<I> {
 ///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-struct NatPool<I: NatIpWithBitmap> {
+struct NatPool<I: NatIp> {
     bitmap: PoolBitmap,
     bitmap_mapping: BTreeMap<u32, u128>,
     reverse_bitmap_mapping: BTreeMap<u128, u32>,
@@ -157,7 +157,7 @@ struct NatPool<I: NatIpWithBitmap> {
     ip_allocator: Arc<IpAllocator<I>>,
 }
 
-impl<I: NatIpWithBitmap> NatPool<I> {
+impl<I: NatIp> NatPool<I> {
     fn get_first(&self) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
         self.in_use
             .front()
@@ -186,12 +186,22 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         // Retrieve the first available offset
         let offset = self.bitmap.pop_ip()?;
 
-        let ip = I::try_from_offset(offset, &self.bitmap_mapping)?;
-        Ok(AllocatedIp::new(ip, self.ip_allocator.clone()))
+        if std::mem::size_of::<I>() == std::mem::size_of::<Ipv6Addr>() {
+            let ip = ipv6_try_from_offset(offset, &self.bitmap_mapping)?;
+            Ok(AllocatedIp::new(ip, self.ip_allocator.clone()))
+        } else {
+            let ip =
+                I::try_from_bits(u128::from(offset)).map_err(|()| AllocatorError::InternalIssue)?;
+            Ok(AllocatedIp::new(ip, self.ip_allocator.clone()))
+        }
     }
 
     fn reserve_from_pool(&mut self, ip: I) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
-        let offset = I::try_to_offset(ip, &self.reverse_bitmap_mapping)?;
+        let offset = if std::mem::size_of::<I>() == std::mem::size_of::<Ipv6Addr>() {
+            ipv6_try_to_offset(ip, &self.reverse_bitmap_mapping)?
+        } else {
+            u32::try_from(ip.to_bits()).map_err(|_| AllocatorError::InternalIssue)?
+        };
         if self.bitmap.set_ip(offset) {
             // The IP was free in the bitmap, allocate it now
             return self.add_in_use(&Arc::new(AllocatedIp::new(ip, self.ip_allocator.clone())));
@@ -243,58 +253,28 @@ impl PoolBitmap {
 // IP types
 ///////////////////////////////////////////////////////////////////////////////
 
-pub(crate) trait NatIpWithBitmap: NatIp {
-    fn try_from_offset(
-        offset: u32,
-        bitmap_mapping: &BTreeMap<u32, u128>,
-    ) -> Result<Self, AllocatorError>;
-
-    fn try_to_offset(
-        address: Self,
-        bitmap_mapping: &BTreeMap<u128, u32>,
-    ) -> Result<u32, AllocatorError>;
-}
-
-impl NatIpWithBitmap for Ipv4Addr {
-    fn try_from_offset(
-        offset: u32,
-        _bitmap_mapping: &BTreeMap<u32, u128>,
-    ) -> Result<Self, AllocatorError> {
-        Ok(Ipv4Addr::from(offset))
-    }
-
-    fn try_to_offset(
-        address: Self,
-        _bitmap_mapping: &BTreeMap<u128, u32>,
-    ) -> Result<u32, AllocatorError> {
-        Ok(u32::from(address))
-    }
-}
-
-impl NatIpWithBitmap for Ipv6Addr {
-    fn try_from_offset(
-        offset: u32,
-        bitmap_mapping: &BTreeMap<u32, u128>,
-    ) -> Result<Self, AllocatorError> {
-        // For IPv6, the offset does not directly convert to an IP address because the bitmap space
-        // is lower than the IPv6 addressing space. Instead, we need to map the offset to the
-        // corresponding address within our list of prefixes.
-        map_offset(offset, bitmap_mapping)
-    }
-
-    fn try_to_offset(
-        address: Self,
-        bitmap_mapping: &BTreeMap<u128, u32>,
-    ) -> Result<u32, AllocatorError> {
-        // Reverse operation of map_offset()
-        map_address(address, bitmap_mapping)
-    }
-}
-
-fn map_offset(
+fn ipv6_try_from_offset<I: NatIp>(
     offset: u32,
     bitmap_mapping: &BTreeMap<u32, u128>,
-) -> Result<Ipv6Addr, AllocatorError> {
+) -> Result<I, AllocatorError> {
+    // For IPv6, the offset does not directly convert to an IP address because the bitmap space
+    // is lower than the IPv6 addressing space. Instead, we need to map the offset to the
+    // corresponding address within our list of prefixes.
+    map_offset(offset, bitmap_mapping)
+}
+
+fn ipv6_try_to_offset<I: NatIp>(
+    address: I,
+    bitmap_mapping: &BTreeMap<u128, u32>,
+) -> Result<u32, AllocatorError> {
+    // Reverse operation of map_offset()
+    map_address(address, bitmap_mapping)
+}
+
+fn map_offset<I: NatIp>(
+    offset: u32,
+    bitmap_mapping: &BTreeMap<u32, u128>,
+) -> Result<I, AllocatorError> {
     // Field bitmap_mapping is a BTreeMap that associates, to each given u32 offset, an IPv6
     // address, as a u128, corresponding to the network address of the corresponding prefix in
     // the list.
@@ -307,13 +287,12 @@ fn map_offset(
         .ok_or(AllocatorError::InternalIssue)?;
 
     // Generate the IPv6 address: prefix network address - prefix offset + address offset
-    Ok(Ipv6Addr::from(
-        prefix_start_bits + u128::from(offset - prefix_offset),
-    ))
+    I::try_from_bits(prefix_start_bits + u128::from(offset - prefix_offset))
+        .map_err(|()| AllocatorError::InternalIssue)
 }
 
-fn map_address(
-    address: Ipv6Addr,
+fn map_address<I: NatIp>(
+    address: I,
     bitmap_mapping: &BTreeMap<u128, u32>,
 ) -> Result<u32, AllocatorError> {
     let (prefix_start_bits, prefix_offset) = bitmap_mapping
