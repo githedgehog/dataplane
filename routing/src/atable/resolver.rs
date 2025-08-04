@@ -14,20 +14,25 @@ use netdev::Interface;
 use netdev::get_interfaces;
 use procfs::net::arp;
 
-use crate::atable::atablerw::AtableWriter;
-use net::eth::mac::Mac;
-use tracing::{debug, error, warn};
-
 use super::adjacency::Adjacency;
 use super::atablerw::AtableReader;
+use crate::atable::atablerw::AtableWriter;
+use net::eth::mac::Mac;
+use net::interface::InterfaceIndex;
+use tracing::{debug, error, warn};
 
 /// Util that returns the ifindex of the interface with the given name out of the slice of
 /// interfaces provided as argument.
-fn get_interface_ifindex(interfaces: &[Interface], name: &str) -> Option<u32> {
-    interfaces
-        .iter()
-        .position(|interface| interface.name == name)
-        .map(|pos| interfaces[pos].index)
+fn get_interface_ifindex(interfaces: &[Interface], name: &str) -> Option<InterfaceIndex> {
+    interfaces.iter().find_map(|interface| {
+        if interface.name == name {
+            InterfaceIndex::try_new(interface.index)
+                .map_err(|e| error!("{e}"))
+                .ok()
+        } else {
+            None
+        }
+    })
 }
 
 /// An object able to resolve ARP entries and update the adjacency table. The [`AtResolver`]

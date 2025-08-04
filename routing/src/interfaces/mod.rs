@@ -18,6 +18,7 @@ pub mod tests {
     };
     use crate::rib::vrf::{RouterVrfConfig, Vrf};
     use net::eth::mac::Mac;
+    use net::interface::InterfaceIndex;
     use net::vlan::Vid;
     use std::net::IpAddr;
     use std::str::FromStr;
@@ -27,13 +28,15 @@ pub mod tests {
         let mut iftable = IfTable::new();
 
         /* create loopback */
-        let mut lo = RouterInterfaceConfig::new("Loopback", 1);
+        let lo_idx = InterfaceIndex::try_new(1).unwrap();
+        let mut lo = RouterInterfaceConfig::new("Loopback", lo_idx);
         lo.set_admin_state(IfState::Up);
         lo.set_description("Main loopback interface");
         lo.set_iftype(IfType::Loopback);
 
         /* create Eth0 */
-        let mut eth0 = RouterInterfaceConfig::new("eth0", 2);
+        let eth0_idx = InterfaceIndex::try_new(2).unwrap();
+        let mut eth0 = RouterInterfaceConfig::new("eth0", eth0_idx);
         eth0.set_admin_state(IfState::Up);
         eth0.set_description("Uplink to the Moon");
         eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
@@ -41,7 +44,8 @@ pub mod tests {
         }));
 
         /* create Eth1 */
-        let mut eth1 = RouterInterfaceConfig::new("eth1", 3);
+        let eth1_idx = InterfaceIndex::try_new(3).unwrap();
+        let mut eth1 = RouterInterfaceConfig::new("eth1", eth1_idx);
         eth1.set_admin_state(IfState::Up);
         eth1.set_description("Downlink from Mars");
         eth1.set_iftype(IfType::Ethernet(IfDataEthernet {
@@ -49,7 +53,8 @@ pub mod tests {
         }));
 
         /* create Eth2 */
-        let mut eth2 = RouterInterfaceConfig::new("eth2", 4);
+        let eth2_idx = InterfaceIndex::try_new(4).unwrap();
+        let mut eth2 = RouterInterfaceConfig::new("eth2", eth2_idx);
         eth2.set_admin_state(IfState::Up);
         eth2.set_description("Downlink from Sun");
         eth2.set_iftype(IfType::Ethernet(IfDataEthernet {
@@ -57,7 +62,8 @@ pub mod tests {
         }));
 
         /* create vlan.100 */
-        let mut vlan100 = RouterInterfaceConfig::new("eth1.100", 5);
+        let vlan100_idx = InterfaceIndex::try_new(5).unwrap();
+        let mut vlan100 = RouterInterfaceConfig::new("eth1.100", vlan100_idx);
         vlan100.set_admin_state(IfState::Up);
         vlan100.set_description("External customer 1");
         vlan100.set_iftype(IfType::Dot1q(IfDataDot1q {
@@ -66,7 +72,8 @@ pub mod tests {
         }));
 
         /* create vlan.200 */
-        let mut vlan200 = RouterInterfaceConfig::new("eth1.200", 6);
+        let vlan200_idx = InterfaceIndex::try_new(6).unwrap();
+        let mut vlan200 = RouterInterfaceConfig::new("eth1.200", vlan200_idx);
         vlan200.set_admin_state(IfState::Up);
         vlan200.set_description("External customer 2");
         vlan200.set_iftype(IfType::Dot1q(IfDataDot1q {
@@ -114,15 +121,17 @@ pub mod tests {
         vrf.set_fibw(fibw);
 
         /* lookup interface with non-existent index */
-        let iface = iftable.get_interface(100);
+        let idx100 = InterfaceIndex::try_new(100).unwrap();
+        let iface = iftable.get_interface(idx100);
         assert!(iface.is_none());
 
         /* Lookup interface by ifindex 2 */
-        let iface = iftable.get_interface_mut(2);
+        let idx2 = InterfaceIndex::try_new(2).unwrap();
+        let iface = iftable.get_interface_mut(idx2);
         assert!(iface.is_some());
         let eth0 = iface.unwrap();
         assert_eq!(eth0.name, "eth0", "We should get eth0");
-        assert_eq!(eth0.ifindex, 2, "eth0 has ifindex 2");
+        assert_eq!(eth0.ifindex, idx2, "eth0 has ifindex 2");
 
         /* Add an ip address (the interface is in the iftable) */
         let address = IpAddr::from_str("10.0.0.1").expect("Bad address");
@@ -136,7 +145,8 @@ pub mod tests {
         let mut iftable = IfTable::new();
 
         /* create Eth0 */
-        let mut eth0 = RouterInterfaceConfig::new("eth0", 2);
+        let eth0_idx = InterfaceIndex::try_new(2).unwrap();
+        let mut eth0 = RouterInterfaceConfig::new("eth0", eth0_idx);
         eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
         }));
@@ -146,14 +156,14 @@ pub mod tests {
         assert_eq!(iftable.len(), 1, "Eth0 should be there");
 
         /* test get_mac */
-        let iface = iftable.get_interface(2).expect("Should be there");
+        let iface = iftable.get_interface(eth0_idx).expect("Should be there");
         assert_eq!(
             Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
             iface.get_mac().unwrap()
         );
 
         /* Add interface again -- idempotence */
-        let mut eth0 = RouterInterfaceConfig::new("eth0", 2);
+        let mut eth0 = RouterInterfaceConfig::new("eth0", eth0_idx);
         eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
         }));
@@ -162,7 +172,7 @@ pub mod tests {
         assert_eq!(iftable.len(), 1, "Only eth0 should be there");
 
         /* Delete eth0 by index */
-        iftable.del_interface(2);
+        iftable.del_interface(eth0_idx);
         assert_eq!(iftable.len(), 0, "No interface should be there");
     }
 }
