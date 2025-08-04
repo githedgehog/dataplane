@@ -356,7 +356,9 @@ impl NhopStore {
             nhop.fibgroup.take();
         }
     }
-    #[cfg(test)]
+    ///////////////////////////////////////////////////////////////////
+    /// Rebuild the instructions for each next-hop
+    ///////////////////////////////////////////////////////////////////
     pub fn resolve_nhop_instructions(&self, rstore: &RmacStore) {
         for nhop in self.iter() {
             nhop.build_nhop_instructions(rstore);
@@ -368,12 +370,16 @@ impl NhopStore {
     pub fn lazy_resolve_all(&self, vrf: &Vrf) {
         self.iter().for_each(|nhop| nhop.lazy_resolve(vrf));
     }
-    //////////////////////////////////////////////////////////////////
-    /// Rebuild the fibgroup for every next-hop. This internally updates the next-hop.
-    /// Returns an iterator with only those next-hops whose fibgroup changed.
-    //////////////////////////////////////////////////////////////////
-    pub fn rebuild_fibgroups(&self, rstore: &RmacStore) -> impl Iterator<Item = &Rc<Nhop>> {
-        self.iter().filter(|nhop| nhop.set_fibgroup(rstore))
+    ///////////////////////////////////////////////////////////////////
+    /// Rebuild the fibgroup for every next-hop. This method visits every next-hop and
+    /// rebuilds its fibgroup. It returns a vector with only those next-hops whose
+    /// fibgroup changed. We return a Vector and not an iterator to force the rebuild
+    /// of the fibgroups.
+    ///////////////////////////////////////////////////////////////////////////////////
+    pub fn rebuild_fibgroups(&self, rstore: &RmacStore) -> Vec<&Rc<Nhop>> {
+        self.iter()
+            .filter(|nhop| nhop.set_fibgroup(rstore))
+            .collect()
     }
 }
 

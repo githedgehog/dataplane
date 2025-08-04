@@ -379,7 +379,10 @@ impl Vrf {
         // resolve next-hops
         let rvrf = vrf0.unwrap_or(self);
         for shim in &route.s_nhops {
-            shim.rc.lazy_resolve(rvrf);
+            let refc = self.nhstore.get_nhop_rc_count(&shim.rc.key);
+            if refc == 2 {
+                shim.rc.lazy_resolve(rvrf);
+            }
         }
 
         // store route
@@ -396,10 +399,12 @@ impl Vrf {
     pub fn refresh_fib(&mut self, rstore: &RmacStore, resvrf: Option<&Vrf>) {
         let resvrf = resvrf.unwrap_or(self);
         self.nhstore.lazy_resolve_all(resvrf);
-
+        self.nhstore.resolve_nhop_instructions(rstore);
         let changed = self.nhstore.rebuild_fibgroups(rstore);
-        let mut count = 0;
+
+        // update fib
         if let Some(fibw) = &mut self.fibw {
+            let mut count = 0;
             for nhop in changed {
                 let fibgroup = &*nhop.fibgroup.borrow();
                 debug!("Updating fib group for nhop {}...", nhop.key);
@@ -427,6 +432,7 @@ impl Vrf {
         let rvrf = vrf0.unwrap_or(self);
         for shim in &route.s_nhops {
             let refc = self.nhstore.get_nhop_rc_count(&shim.rc.key);
+            shim.rc.build_nhop_instructions(rstore);
             if refc == 2 {
                 shim.rc.lazy_resolve(rvrf);
             }
