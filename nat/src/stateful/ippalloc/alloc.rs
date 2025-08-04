@@ -14,22 +14,24 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 // Allocators
 ///////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IpAllocator<I: NatIp> {
-    pool: RwLock<NatPool<I>>,
+    pool: Arc<RwLock<NatPool<I>>>,
 }
 
 impl<I: NatIp> IpAllocator<I> {
-    pub fn new(ip_allocator: Arc<IpAllocator<I>>) -> Self {
+    pub fn new(
+        ip_allocator: &IpAllocator<I>,
+        bitmap_mapping: BTreeMap<u32, u128>,
+        reverse_bitmap_mapping: BTreeMap<u128, u32>,
+    ) -> Self {
         Self {
-            pool: NatPool {
+            pool: Arc::new(RwLock::new(NatPool {
                 bitmap: PoolBitmap::new(),
-                bitmap_mapping: BTreeMap::new(),
-                reverse_bitmap_mapping: BTreeMap::new(),
+                bitmap_mapping,
+                reverse_bitmap_mapping,
                 in_use: VecDeque::new(),
-                ip_allocator,
-            }
-            .into(),
+            })),
         }
     }
 
@@ -57,7 +59,7 @@ impl<I: NatIp> IpAllocator<I> {
 
     fn allocate_new_ip_from_pool(&self) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
         let mut allocated_ips = self.pool.write().unwrap();
-        let new_ip = allocated_ips.use_new_ip()?;
+        let new_ip = allocated_ips.use_new_ip(self.clone())?;
         allocated_ips.add_in_use(&Arc::new(new_ip))
     }
 
@@ -83,7 +85,10 @@ impl<I: NatIp> IpAllocator<I> {
     }
 
     fn get_allocated_ip(&self, ip: I) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
-        self.pool.write().unwrap().reserve_from_pool(ip)
+        self.pool
+            .write()
+            .unwrap()
+            .reserve_from_pool(ip, self.clone())
     }
 
     pub fn reserve(
@@ -104,11 +109,11 @@ impl<I: NatIp> IpAllocator<I> {
 pub struct AllocatedIp<I: NatIp> {
     ip: I,
     port_allocator: port_alloc::PortAllocator<I>,
-    ip_allocator: Arc<IpAllocator<I>>,
+    ip_allocator: IpAllocator<I>,
 }
 
 impl<I: NatIp> AllocatedIp<I> {
-    fn new(ip: I, ip_allocator: Arc<IpAllocator<I>>) -> Self {
+    fn new(ip: I, ip_allocator: IpAllocator<I>) -> Self {
         Self {
             ip,
             port_allocator: port_alloc::PortAllocator::new(),
@@ -158,7 +163,6 @@ struct NatPool<I: NatIp> {
     bitmap_mapping: BTreeMap<u32, u128>,
     reverse_bitmap_mapping: BTreeMap<u128, u32>,
     in_use: VecDeque<Weak<AllocatedIp<I>>>,
-    ip_allocator: Arc<IpAllocator<I>>,
 }
 
 impl<I: NatIp> NatPool<I> {
@@ -186,17 +190,20 @@ impl<I: NatIp> NatPool<I> {
         self.in_use.iter()
     }
 
-    fn use_new_ip(&mut self) -> Result<AllocatedIp<I>, AllocatorError> {
+    fn use_new_ip(
+        &mut self,
+        ip_allocator: IpAllocator<I>,
+    ) -> Result<AllocatedIp<I>, AllocatorError> {
         // Retrieve the first available offset
         let offset = self.bitmap.pop_ip()?;
 
         if std::mem::size_of::<I>() == std::mem::size_of::<Ipv6Addr>() {
             let ip = ipv6_try_from_offset(offset, &self.bitmap_mapping)?;
-            Ok(AllocatedIp::new(ip, self.ip_allocator.clone()))
+            Ok(AllocatedIp::new(ip, ip_allocator))
         } else {
             let ip =
                 I::try_from_bits(u128::from(offset)).map_err(|()| AllocatorError::InternalIssue)?;
-            Ok(AllocatedIp::new(ip, self.ip_allocator.clone()))
+            Ok(AllocatedIp::new(ip, ip_allocator))
         }
     }
 
@@ -210,7 +217,11 @@ impl<I: NatIp> NatPool<I> {
         self.bitmap.set_ip_free(offset);
     }
 
-    fn reserve_from_pool(&mut self, ip: I) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
+    fn reserve_from_pool(
+        &mut self,
+        ip: I,
+        ip_allocator: IpAllocator<I>,
+    ) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
         let offset = if std::mem::size_of::<I>() == std::mem::size_of::<Ipv6Addr>() {
             ipv6_try_to_offset(ip, &self.reverse_bitmap_mapping)?
         } else {
@@ -219,7 +230,7 @@ impl<I: NatIp> NatPool<I> {
         };
         if self.bitmap.set_ip_allocated(offset) {
             // The IP was free in the bitmap, allocate it now
-            return self.add_in_use(&Arc::new(AllocatedIp::new(ip, self.ip_allocator.clone())));
+            return self.add_in_use(&Arc::new(AllocatedIp::new(ip, ip_allocator)));
         }
 
         let ip_opt = self.ips_in_use().find(|weak_in_use| {
