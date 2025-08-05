@@ -134,7 +134,7 @@ mod helper {
                 .truncate(false)
                 .open("/dev/net/tun")
                 .await?;
-            trace!("attempting to create tap device");
+            trace!("attempting to create tap device {name}");
             #[allow(unsafe_code, clippy::borrow_as_ptr)] // well-checked constraints
             let ret = unsafe { make_tap_device(tap_file.as_raw_fd(), &*self.request)? };
             if ret < 0 {
@@ -142,7 +142,7 @@ mod helper {
                 warn!("failed to create tap device {name}: {err}");
                 return Err(err);
             }
-            info!("created tap device");
+            info!("created tap device {name}");
             trace!("attempting to persist tap device");
             #[allow(unsafe_code, clippy::borrow_as_ptr)] // well-checked constraints
             let ret = unsafe { persist_tap_device(tap_file.as_raw_fd(), &*self.request)? };

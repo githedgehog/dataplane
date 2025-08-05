@@ -317,7 +317,7 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
                 match &iface.iftype {
                     InterfaceType::Ethernet(eth) => {
                         let mut tap = InterfaceSpecBuilder::default();
-                        match InterfaceName::try_from(iface.name.as_str()) {
+                        match InterfaceName::try_from(format!("{}-tap", iface.name.as_str())) {
                             Ok(name) => {
                                 tap.name(name);
                             }
