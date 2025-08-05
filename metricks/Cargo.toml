@@ -1,0 +1,15 @@
+[package]
+name = "dataplane-metricks"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# internal
+vpcmap = { workspace = true }
+
+# external
+derive_builder = { workspace = true }
+metrics = { workspace = true }
+multi_index_map = { workspace = true }
+serde = { workspace = true, default-features = true, features = ["derive", "rc"] }
+tracing = { workspace = true }

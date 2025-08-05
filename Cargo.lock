@@ -900,6 +900,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-metricks"
+version = "0.1.0"
+dependencies = [
+ "dataplane-vpcmap",
+ "derive_builder 0.20.2",
+ "metrics",
+ "multi_index_map",
+ "serde",
+ "tracing",
+]
+
+[[package]]
 name = "dataplane-mgmt"
 version = "0.1.0"
 dependencies = [

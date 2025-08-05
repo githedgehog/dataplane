@@ -15,12 +15,18 @@ use std::fmt::Display;
 use thiserror::Error;
 
 /// A dataplane-level discriminant to identify (traffic pertaining to) a Vpc
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub enum VpcDiscriminant {
     VNI(Vni),
 }
 impl VpcDiscriminant {
     pub fn from_vni(vni: Vni) -> Self {
+        Self::VNI(vni)
+    }
+}
+
+impl From<Vni> for VpcDiscriminant {
+    fn from(vni: Vni) -> Self {
         Self::VNI(vni)
     }
 }

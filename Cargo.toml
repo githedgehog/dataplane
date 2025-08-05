@@ -10,13 +10,15 @@ members = [
 	"errno",
 	"id",
 	"interface-manager",
+	"metricks",
 	"mgmt",
 	"nat",
 	"net",
 	"pipeline",
 	"pkt-meta",
 	"rekon",
-	"routing", "stats",
+	"routing",
+	"stats",
 	"test-utils",
 	"vpcmap",
 ]
@@ -37,6 +39,7 @@ gateway_config = { git = "https://github.com/githedgehog/gateway-proto", tag = "
 id = { path = "./id", package = "dataplane-id" }
 interface-manager = { path = "./interface-manager", package = "dataplane-interface-manager" }
 lpm = { path = "./lpm", package = "dataplane-lpm" }
+metricks = { path = "./metricks", package = "dataplane-metricks" }
 mgmt = { path = "./mgmt", package = "dataplane-mgmt" }
 nat = { path = "./nat", package = "dataplane-nat" }
 net = { path = "./net", package = "dataplane-net", features = ["test_buffer"] }
