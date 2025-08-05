@@ -281,6 +281,7 @@ impl Rio {
             CpiStatus::Incompatible => {}
             CpiStatus::FrrRestarted => {
                 warn!("FRR appears to have restarted!!!...");
+                db.vrftable.remove_deleting_vrfs(&mut db.iftw);
                 db.vrftable.set_stale(true);
                 self.set_stale_timeout();
                 debug!("Will now re-apply the last config to FRR...");
