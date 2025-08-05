@@ -59,6 +59,8 @@ pub trait IpPrefix: Debug + Clone + From<Self::Addr> + PartialEq {
 
     fn network(&self) -> Self::Addr;
 
+    fn last_address(&self) -> Self::Addr;
+
     fn len(&self) -> u8;
 }
 
@@ -127,6 +129,9 @@ impl IpPrefix for Ipv4Prefix {
 
     fn network(&self) -> Self::Addr {
         self.0.network()
+    }
+    fn last_address(&self) -> Self::Addr {
+        self.0.broadcast()
     }
     fn len(&self) -> u8 {
         self.0.prefix_len()
@@ -243,6 +248,9 @@ impl IpPrefix for Ipv6Prefix {
     }
     fn network(&self) -> Self::Addr {
         self.0.network()
+    }
+    fn last_address(&self) -> Self::Addr {
+        self.0.broadcast()
     }
     fn len(&self) -> u8 {
         self.0.prefix_len()
