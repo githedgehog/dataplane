@@ -5,6 +5,7 @@
 
 use derive_builder::Builder;
 use std::fmt::Display;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing::{debug, error};
 
@@ -25,6 +26,9 @@ use crate::rio::DEFAULT_FRR_AGENT_PATH;
 pub struct RouterParams {
     #[builder(setter(into), default = "router".to_string())]
     name: String,
+
+    #[builder(setter(into), default = "127.0.0.1:9000".parse().unwrap())]
+    pub metrics_addr: SocketAddr,
 
     #[builder(setter(into), default = DEFAULT_DP_UX_PATH.to_string().into())]
     pub cpi_sock_path: PathBuf,

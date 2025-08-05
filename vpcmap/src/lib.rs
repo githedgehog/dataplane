@@ -11,16 +11,30 @@
 #![deny(clippy::all, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use net::vxlan::Vni;
+use serde::Serialize;
 use std::fmt::Display;
 use thiserror::Error;
 
 /// A dataplane-level discriminant to identify (traffic pertaining to) a Vpc
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize)]
 pub enum VpcDiscriminant {
     VNI(Vni),
 }
+
+impl AsRef<VpcDiscriminant> for VpcDiscriminant {
+    fn as_ref(&self) -> &VpcDiscriminant {
+        self
+    }
+}
+
 impl VpcDiscriminant {
     pub fn from_vni(vni: Vni) -> Self {
+        Self::VNI(vni)
+    }
+}
+
+impl From<Vni> for VpcDiscriminant {
+    fn from(vni: Vni) -> Self {
         Self::VNI(vni)
     }
 }

@@ -8,7 +8,7 @@ license = "Apache-2.0"
 [dependencies]
 afpacket = { workspace = true }
 arrayvec = { workspace = true }
-axum = { workspace = true, features = ["http1", "json"] }
+axum = { workspace = true, features = ["http1", "tokio"] }
 axum-server = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "usage"] }
 ctrlc = { workspace = true, features = ["termination"] }
@@ -32,8 +32,8 @@ pkt-meta = { workspace = true }
 routing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_yml = { workspace = true }
-tokio = { workspace = true }
 stats = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["default"] }
 vpcmap = { workspace = true }

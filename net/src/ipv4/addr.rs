@@ -31,7 +31,7 @@ impl UnicastIpv4Addr {
     /// # Errors
     ///
     /// Returns the supplied address back in the [`Err`] case if it is not a unicast address.
-    pub fn new(ip: Ipv4Addr) -> Result<UnicastIpv4Addr, Ipv4Addr> {
+    pub const fn new(ip: Ipv4Addr) -> Result<UnicastIpv4Addr, Ipv4Addr> {
         if ip.is_multicast() {
             Err(ip)
         } else {

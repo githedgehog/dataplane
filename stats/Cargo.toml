@@ -6,9 +6,25 @@ publish = false
 license = "Apache-2.0"
 
 [dependencies]
-net = { workspace = true, features = ["test_buffer"] }
-left-right = { workspace = true }
-vpcmap = { workspace = true }
+# internal
+kanal = { workspace = true, features = ["async"] }
+net = { workspace = true, features = [] }
 pipeline = { workspace = true }
+vpcmap = { workspace = true }
+
+# external
+arrayvec = { workspace = true }
+chrono = { workspace = true }
+derive_builder = { workspace = true }
+hashbrown = { workspace = true, features = ["inline-more", "alloc", "default-hasher"] }
+left-right = { workspace = true }
+metrics = { workspace = true }
+multi_index_map = { workspace = true }
+oxidiviner = { workspace = true }
+rand = { workspace = true, features = ["std", "default"] }
+serde = { workspace = true, features = ["derive"] }
+small-map = { workspace = true, features = ["ahash"] }
+thiserror = { workspace = true }
 tracing = { workspace = true }
+yata = { workspace = true }
 

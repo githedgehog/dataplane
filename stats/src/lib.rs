@@ -2,8 +2,11 @@
 // Copyright Open Network Fabric Authors
 
 mod dpstats;
+mod register;
+mod spec;
+mod vpc;
 
-pub use dpstats::PacketStats;
-pub use dpstats::PacketStatsReader;
-pub use dpstats::PipelineStats;
-pub use dpstats::VpcMapName;
+pub use dpstats::*;
+pub use register::*;
+pub use spec::*;
+pub use vpc::*;

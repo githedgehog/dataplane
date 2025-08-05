@@ -4,7 +4,9 @@
 //! Mac address type and logic.
 
 use arrayvec::ArrayVec;
+use std::borrow::{Borrow, BorrowMut};
 use std::fmt::{Debug, Display, LowerHex, UpperHex};
+use std::str::FromStr;
 
 /// A [MAC Address] type.
 ///
@@ -36,9 +38,21 @@ impl AsRef<[u8; 6]> for Mac {
     }
 }
 
+impl Borrow<[u8; 6]> for Mac {
+    fn borrow(&self) -> &[u8; 6] {
+        self.as_ref()
+    }
+}
+
 impl AsMut<[u8; 6]> for Mac {
     fn as_mut(&mut self) -> &mut [u8; 6] {
         &mut self.0
+    }
+}
+
+impl BorrowMut<[u8; 6]> for Mac {
+    fn borrow_mut(&mut self) -> &mut [u8; 6] {
+        self.as_mut()
     }
 }
 
@@ -77,6 +91,14 @@ impl TryFrom<&str> for Mac {
         };
 
         Ok(Mac(octets))
+    }
+}
+
+impl FromStr for Mac {
+    type Err = MacFromStringError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Mac::try_from(s)
     }
 }
 
@@ -351,6 +373,14 @@ impl TryFrom<Mac> for SourceMac {
 
     fn try_from(value: Mac) -> Result<Self, Self::Error> {
         SourceMac::new(value)
+    }
+}
+
+impl TryFrom<Mac> for DestinationMac {
+    type Error = DestinationMacAddressError;
+
+    fn try_from(value: Mac) -> Result<Self, Self::Error> {
+        DestinationMac::new(value)
     }
 }
 
