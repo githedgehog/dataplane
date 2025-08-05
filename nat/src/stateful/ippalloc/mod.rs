@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 mod alloc;
+mod setup;
 // FIXME: Shoudln't be public
 pub mod port_alloc;
 
@@ -44,6 +45,10 @@ impl<I: NatIp, J: NatIp> PoolTable<I, J> {
             Some((k, v)) if k.id == key.id && k.protocol == key.protocol => Some(v),
             _ => None,
         }
+    }
+
+    pub fn add_entry(&mut self, key: PoolTableKey<I>, allocator: alloc::IpAllocator<J>) {
+        self.0.insert(key, allocator);
     }
 }
 

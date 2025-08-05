@@ -5,10 +5,11 @@ use super::port_alloc;
 use crate::stateful::NatIp;
 use crate::stateful::allocator::AllocatorError;
 use crate::stateful::port::NatPort;
+use lpm::prefix::{IpPrefix, Prefix};
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, VecDeque};
 use std::net::Ipv6Addr;
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, RwLock, Weak};
 
 ///////////////////////////////////////////////////////////////////////////////
 // Allocators
@@ -20,18 +21,9 @@ pub struct IpAllocator<I: NatIp> {
 }
 
 impl<I: NatIp> IpAllocator<I> {
-    pub fn new(
-        ip_allocator: &IpAllocator<I>,
-        bitmap_mapping: BTreeMap<u32, u128>,
-        reverse_bitmap_mapping: BTreeMap<u128, u32>,
-    ) -> Self {
+    pub(crate) fn new(pool: NatPool<I>) -> Self {
         Self {
-            pool: Arc::new(RwLock::new(NatPool {
-                bitmap: PoolBitmap::new(),
-                bitmap_mapping,
-                reverse_bitmap_mapping,
-                in_use: VecDeque::new(),
-            })),
+            pool: Arc::new(RwLock::new(pool)),
         }
     }
 
@@ -158,7 +150,7 @@ impl<I: NatIp> Drop for AllocatedIp<I> {
 ///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-struct NatPool<I: NatIp> {
+pub(crate) struct NatPool<I: NatIp> {
     bitmap: PoolBitmap,
     bitmap_mapping: BTreeMap<u32, u128>,
     reverse_bitmap_mapping: BTreeMap<u128, u32>,
@@ -166,6 +158,19 @@ struct NatPool<I: NatIp> {
 }
 
 impl<I: NatIp> NatPool<I> {
+    pub(crate) fn new(
+        bitmap: PoolBitmap,
+        bitmap_mapping: BTreeMap<u32, u128>,
+        reverse_bitmap_mapping: BTreeMap<u128, u32>,
+    ) -> Self {
+        Self {
+            bitmap,
+            bitmap_mapping,
+            reverse_bitmap_mapping,
+            in_use: VecDeque::new(),
+        }
+    }
+
     fn get_first(&self) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
         self.in_use
             .front()
@@ -254,28 +259,46 @@ impl<I: NatIp> NatPool<I> {
     }
 }
 
-// FIXME: No need for Mutex around bitmap if we're always under NatPool's RwLock
 #[derive(Debug)]
-struct PoolBitmap(Mutex<RoaringBitmap>);
+pub struct PoolBitmap(RoaringBitmap);
 
 impl PoolBitmap {
-    fn new() -> Self {
-        Self(Mutex::new(RoaringBitmap::new()))
+    pub fn new() -> Self {
+        Self(RoaringBitmap::new())
     }
 
     fn pop_ip(&mut self) -> Result<u32, AllocatorError> {
-        let mut bitmap = self.0.lock().unwrap();
-        let offset = bitmap.min().ok_or(AllocatorError::NoFreeIp)?;
-        bitmap.remove(offset);
+        let offset = self.0.min().ok_or(AllocatorError::NoFreeIp)?;
+        self.0.remove(offset);
         Ok(offset)
     }
 
     fn set_ip_allocated(&mut self, index: u32) -> bool {
-        self.0.lock().unwrap().insert(index)
+        self.0.remove(index)
     }
 
     fn set_ip_free(&mut self, index: u32) -> bool {
-        self.0.lock().unwrap().remove(index)
+        self.0.insert(index)
+    }
+
+    pub fn add_prefix(
+        &mut self,
+        prefix: &Prefix,
+        bitmap_mapping: &BTreeMap<u128, u32>,
+    ) -> Result<(), AllocatorError> {
+        match prefix {
+            Prefix::IPV4(p) => {
+                let start = p.network().to_bits();
+                let end = p.last_address().to_bits();
+                self.0.insert_range(start..=end);
+            }
+            Prefix::IPV6(p) => {
+                let start = map_address(p.network(), bitmap_mapping)?;
+                let end = map_address(p.last_address(), bitmap_mapping)?;
+                self.0.insert_range(start..=end);
+            }
+        }
+        Ok(())
     }
 }
 
