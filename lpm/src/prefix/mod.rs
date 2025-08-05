@@ -119,9 +119,8 @@ impl Prefix {
     #[must_use]
     pub fn size(&self) -> PrefixSize {
         match *self {
-            Prefix::IPV4(p) => PrefixSize::U128(2u128.pow(32 - u32::from(p.len()))),
-            Prefix::IPV6(p) if p.len() == 0 => PrefixSize::Ipv6MaxAddrs,
-            Prefix::IPV6(p) => PrefixSize::U128(2u128.pow(128 - u32::from(p.len()))),
+            Prefix::IPV4(p) => p.size(),
+            Prefix::IPV6(p) => p.size(),
         }
     }
 
