@@ -12,10 +12,9 @@ on:
         required: false
         default: false
   schedule:
-    # Check for updates at 3:18am every day.
-    # I avoid midnight because everyone uses midnight and
-    # I don't need to contribute to load spikes.
-    - cron: "18 3 * * *"
+    # Check for updates at 3:18 am every Monday
+    # (Avoid midnight so we don't contribute to load spikes)
+    - cron: "18 3 * * 1"
 
 concurrency:
   group: "${{ github.workflow }}:${{ github.ref }}"
