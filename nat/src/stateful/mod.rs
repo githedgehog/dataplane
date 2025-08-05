@@ -45,6 +45,7 @@ pub trait NatIp: private::Sealed + Debug + Clone + Copy + Eq + Ord + Hash {
     fn from_dst_addr(net: &Net) -> Option<Self>;
     fn to_bits(&self) -> u128;
     fn try_from_bits(bits: u128) -> Result<Self, ()>;
+    fn try_from_addr(addr: IpAddr) -> Result<Self, ()>;
 }
 impl private::Sealed for Ipv4Addr {}
 impl private::Sealed for Ipv6Addr {}
@@ -72,6 +73,13 @@ impl NatIp for Ipv4Addr {
     fn try_from_bits(bits: u128) -> Result<Self, ()> {
         Ok(Self::from(u32::try_from(bits).map_err(|_| ())?))
     }
+    fn try_from_addr(addr: IpAddr) -> Result<Self, ()> {
+        if let IpAddr::V4(addr) = addr {
+            Ok(addr)
+        } else {
+            Err(())
+        }
+    }
 }
 impl NatIp for Ipv6Addr {
     fn to_ip_addr(&self) -> IpAddr {
@@ -96,6 +104,13 @@ impl NatIp for Ipv6Addr {
     }
     fn try_from_bits(bits: u128) -> Result<Self, ()> {
         Ok(Self::from(bits))
+    }
+    fn try_from_addr(addr: IpAddr) -> Result<Self, ()> {
+        if let IpAddr::V6(addr) = addr {
+            Ok(addr)
+        } else {
+            Err(())
+        }
     }
 }
 
