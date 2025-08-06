@@ -635,6 +635,7 @@ impl Display for FibId {
         match self {
             FibId::Id(vrfid) => write!(f, "vrfid: {vrfid}")?,
             FibId::Vni(vni) => write!(f, "vni: {vni:?}")?,
+            FibId::Unset => write!(f, "Unset!")?,
         }
         Ok(())
     }
