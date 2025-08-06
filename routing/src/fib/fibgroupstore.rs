@@ -39,7 +39,7 @@ pub enum FibError {
     NoFibGroup(NhopKey),
 }
 
-#[derive(Clone, Default, Debug)]
+#[derive(Default, Debug)]
 pub(crate) struct FibGroupStore(HashMap<NhopKey, Rc<RefCell<FibGroup>>, RandomState>);
 
 impl FibGroupStore {
