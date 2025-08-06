@@ -27,6 +27,7 @@ use tracing::{debug, error, info, warn};
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 /// An id we use to idenfify a FIB
 pub enum FibId {
+    Unset,
     Id(VrfId),
     Vni(Vni),
 }
@@ -44,6 +45,7 @@ impl FibId {
         match self {
             FibId::Id(value) => *value,
             FibId::Vni(value) => value.as_u32(),
+            FibId::Unset => unreachable!(),
         }
     }
 }
