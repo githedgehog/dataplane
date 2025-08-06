@@ -64,7 +64,7 @@ impl FibGroupStore {
     ////////////////////////////////////////////////////////////////////////////////
     /// Add a `FibGroup` for a given `NhopKey` or replace it if it exists.
     ////////////////////////////////////////////////////////////////////////////////
-    pub(crate) fn add_mod_group(&mut self, key: &NhopKey, fibgroup: FibGroup) {
+    pub(super) fn add_mod_group(&mut self, key: &NhopKey, fibgroup: FibGroup) {
         if let Some(group) = &mut self.0.get(key) {
             unsafe {
                 *group.get() = fibgroup;
@@ -79,7 +79,7 @@ impl FibGroupStore {
     /// used by `FibRoutes` to point to the current `FibGroups`.
     ////////////////////////////////////////////////////////////////////////////////
     #[must_use]
-    pub(crate) fn get_ref(&self, key: &NhopKey) -> Option<Rc<UnsafeCell<FibGroup>>> {
+    fn get_ref(&self, key: &NhopKey) -> Option<Rc<UnsafeCell<FibGroup>>> {
         self.0.get(key).map(|group| Rc::clone(group))
     }
     #[must_use]
@@ -220,7 +220,7 @@ impl FibRoute {
     /// Creates a `FibRoute` with the `FibGroups` corresponding to a set of `NhopKey`s.
     /// Fails if it can't find a FibGroup for any of the `NhopKey`s.
     ///////////////////////////////////////////////////////////////////////////////////
-    pub(crate) fn from_nhopkeys(store: &FibGroupStore, keys: &[NhopKey]) -> Result<Self, FibError> {
+    pub(super) fn from_nhopkeys(store: &FibGroupStore, keys: &[NhopKey]) -> Result<Self, FibError> {
         let mut route = FibRoute::new();
         for key in keys {
             let fg_ref = store
