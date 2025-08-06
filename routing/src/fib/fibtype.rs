@@ -6,6 +6,7 @@
 #![allow(clippy::collapsible_if)]
 
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
+use std::cell::Ref;
 use std::net::IpAddr;
 
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
@@ -181,7 +182,7 @@ impl Fib {
     }
 
     /// Iterate over [`FibGroup`]s
-    pub fn group_iter(&self) -> impl Iterator<Item = &FibGroup> {
+    pub fn group_iter(&self) -> impl Iterator<Item = Ref<FibGroup>> {
         self.groupstore.values()
     }
 
@@ -225,7 +226,7 @@ impl Fib {
     /// computing a hash on the invariant header fields of the IP and L4 headers.
     #[must_use]
     #[allow(clippy::cast_possible_truncation)]
-    pub fn lpm_entry<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> Option<&FibEntry> {
+    pub fn lpm_entry<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> Option<Ref<FibEntry>> {
         let (_, entry) = self.lpm_entry_prefix(packet);
         entry
     }
@@ -235,7 +236,7 @@ impl Fib {
     pub fn lpm_entry_prefix<Buf: PacketBufferMut>(
         &self,
         packet: &Packet<Buf>,
-    ) -> (Prefix, Option<&FibEntry>) {
+    ) -> (Prefix, Option<Ref<FibEntry>>) {
         if let Some(destination) = packet.ip_destination() {
             let (prefix, route) = self.lpm_with_prefix(&destination);
             match route.len() {
@@ -269,9 +270,9 @@ enum FibChange {
 impl Absorb<FibChange> for Fib {
     fn absorb_first(&mut self, change: &mut FibChange, _: &Self) {
         match change {
-            FibChange::RegisterFibGroup((key, fibgroup)) => {
-                self.groupstore.add_mod_group(key, fibgroup.clone())
-            }
+            FibChange::RegisterFibGroup((key, fibgroup)) => unsafe {
+                self.groupstore.add_mod_group(key, fibgroup.clone());
+            },
             FibChange::UnregisterFibGroup(key) => {
                 self.groupstore.del(key);
             }
