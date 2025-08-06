@@ -50,7 +50,6 @@ impl FibId {
     }
 }
 
-#[derive(Clone)]
 pub struct Fib {
     id: FibId,
     routesv4: PrefixMapTrie<Ipv4Prefix, FibRoute>,
@@ -59,14 +58,10 @@ pub struct Fib {
     vtep: Vtep,
 }
 
-pub type FibRouteV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &FibRoute)) -> bool>;
-pub type FibRouteV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &FibRoute)) -> bool>;
-
-impl Fib {
-    #[must_use]
-    pub fn new(id: FibId) -> Self {
+impl Default for Fib {
+    fn default() -> Self {
         let mut fib = Self {
-            id,
+            id: FibId::Unset,
             routesv4: PrefixMapTrie::create(),
             routesv6: PrefixMapTrie::create(),
             groupstore: FibGroupStore::new(),
@@ -78,10 +73,23 @@ impl Fib {
         fib.add_fibroute(Prefix::root_v6(), route);
         fib
     }
+}
+
+pub type FibRouteV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &FibRoute)) -> bool>;
+pub type FibRouteV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &FibRoute)) -> bool>;
+
+impl Fib {
+    /// Set the [`FibId`] for this [`Fib`]
+    fn set_id(&mut self, id: FibId) {
+        self.id = id;
+    }
 
     #[must_use]
     /// Get the [`FibId`] for this [`Fib`]
     pub fn get_id(&self) -> FibId {
+        if self.id == FibId::Unset {
+            panic!("Hit fib with unset FibId!!");
+        }
         self.id
     }
 
@@ -134,7 +142,7 @@ impl Fib {
     }
 
     /// Set the [`Vtep`] for this [`Fib`]
-    pub fn set_vtep(&mut self, vtep: &Vtep) {
+    fn set_vtep(&mut self, vtep: &Vtep) {
         self.vtep = vtep.clone();
         let id = self.get_id();
         let ip = self
@@ -285,7 +293,9 @@ impl Absorb<FibChange> for Fib {
     }
     fn drop_first(self: Box<Self>) {}
     fn sync_with(&mut self, first: &Self) {
-        *self = first.clone();
+        assert!(self.id != FibId::Unset);
+        assert_eq!(self.id, first.id);
+        debug!("Internal LR state for fib {} is now synced", self.id);
     }
 }
 
@@ -294,7 +304,17 @@ impl FibWriter {
     /// create a fib, providing a writer and a reader
     #[must_use]
     pub fn new(id: FibId) -> (FibWriter, FibReader) {
-        let (w, r) = left_right::new_from_empty::<Fib, FibChange>(Fib::new(id));
+        let (mut w, r) = left_right::new::<Fib, FibChange>();
+        // Set the FibId in the read and write copies, created Fib::default() that sets it to FibId::Unset.
+        unsafe {
+            // It is safe to call raw_handle() and raw_write_handle() here
+            let fib_rcopy = r.raw_handle().unwrap_or_else(|| unreachable!()).as_mut();
+            let fib_wcopy = w.raw_write_handle().as_mut();
+            fib_rcopy.set_id(id);
+            fib_wcopy.set_id(id);
+            // this is needed to avoid needing to clone the fib
+            w.publish();
+        }
         (FibWriter(w), FibReader(r))
     }
     pub fn enter(&self) -> Option<ReadGuard<'_, Fib>> {
