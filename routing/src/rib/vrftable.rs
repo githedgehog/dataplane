@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use tracing::{debug, error};
 
 pub struct VrfTable {
-    by_id: HashMap<VrfId, Vrf, RandomState>,
+    by_id: HashMap<VrfId, Box<Vrf>, RandomState>,
     by_vni: HashMap<Vni, VrfId, RandomState>,
     fibtablew: FibTableWriter,
 }
@@ -77,7 +77,7 @@ impl VrfTable {
         vrf.set_fibw(fibw);
 
         /* store */
-        self.by_id.entry(vrfid).or_insert(vrf);
+        self.by_id.entry(vrfid).or_insert(Box::new(vrf));
         if let Some(vni) = config.vni {
             self.by_vni.entry(vni).insert_entry(vrfid);
         }
@@ -237,33 +237,34 @@ impl VrfTable {
     //////////////////////////////////////////////////////////////////
     /// Immutably access a [`Vrf`] from its id.
     //////////////////////////////////////////////////////////////////
-    pub fn get_vrf(&self, vrfid: VrfId) -> Result<&Vrf, RouterError> {
+    pub fn get_vrf(&self, vrfid: VrfId) -> Result<&Box<Vrf>, RouterError> {
         self.by_id.get(&vrfid).ok_or(RouterError::NoSuchVrf)
     }
 
+    #[allow(unused)]
     fn is_default_vrf(vrf: &Vrf) -> bool {
         vrf.vrfid == 0
     }
 
-    pub fn get_default_vrf(&self) -> &Vrf {
+    pub fn get_default_vrf(&self) -> &Box<Vrf> {
         self.by_id.get(&0_u32).unwrap_or_else(|| unreachable!())
     }
 
-    pub fn get_default_vrf_mut(&mut self) -> &mut Vrf {
+    pub fn get_default_vrf_mut(&mut self) -> &mut Box<Vrf> {
         self.by_id.get_mut(&0_u32).unwrap_or_else(|| unreachable!())
     }
 
     //////////////////////////////////////////////////////////////////
     /// Mutably access a VRF from its id.
     //////////////////////////////////////////////////////////////////
-    pub fn get_vrf_mut(&mut self, vrfid: VrfId) -> Result<&mut Vrf, RouterError> {
+    pub fn get_vrf_mut(&mut self, vrfid: VrfId) -> Result<&mut Box<Vrf>, RouterError> {
         self.by_id.get_mut(&vrfid).ok_or(RouterError::NoSuchVrf)
     }
 
     //////////////////////////////////////////////////////////////////
     /// Access a VRF from its vni.
     //////////////////////////////////////////////////////////////////
-    pub fn get_vrf_by_vni(&self, vni: Vni) -> Result<&Vrf, RouterError> {
+    pub fn get_vrf_by_vni(&self, vni: Vni) -> Result<&Box<Vrf>, RouterError> {
         let vrfid = self.by_vni.get(&vni).ok_or(RouterError::NoSuchVrf)?;
         self.get_vrf(*vrfid)
     }
@@ -302,30 +303,30 @@ impl VrfTable {
     //////////////////////////////////////////////////////////////////
     /// Iterate over all VRFs
     //////////////////////////////////////////////////////////////////
-    pub fn values(&self) -> impl Iterator<Item = &Vrf> {
+    pub fn values(&self) -> impl Iterator<Item = &Box<Vrf>> {
         self.by_id.values()
     }
 
     //////////////////////////////////////////////////////////////////
     /// Iterate mutably over all VRFs
     //////////////////////////////////////////////////////////////////
-    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Vrf> {
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Box<Vrf>> {
         self.by_id.values_mut()
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Get a Vec<&mut Vrf> of all VRFs except the default one
+    /// Provide a mutable iterator over the non-default `Vrf`s in this
+    /// table along with an immutable reference to the default `Vrf`.
     ///
     /// # Returns
     ///
-    /// A tuple of a Vec<&mut Vrf> of all VRFs except the default one and a
-    /// mutable reference to the default VRF.
+    /// A mutable iterator for all VRFs and an immutable reference to the
+    /// default VRF.
     ///
     /// # Examples
     /// ```ignore
     /// let (vrfs, vrf0) = self.values_mut_except_default();
     /// ```
-    ///
     /// # Panics
     ///
     /// Panics if the default VRF is not found.
@@ -337,29 +338,14 @@ impl VrfTable {
     /// let vrf0 = self.get_default_vrf();
     /// let mut vrfs = self.values_mut();
     /// ```
-    /// because `vrf0` will borrow `self` immutably and then we want to borrow
-    /// `self` mutably in `self.values_mut()`.  In fact, while the above code
-    /// looks correct, it is not as `values_mut()` can, in theory, resize
-    /// the underlying `self.by_id` data structure and invalidate the reference
-    /// to `vrf0`.
-    ///
-    /// This workaround kind of sucks because we have to traverse the list of all
-    /// vrfs to find the default VRF and then the caller will iterate over the
-    /// resulting Vec which we had to allocate.
-    ///
-    /// When `Iterator::partition_in_place` is stabilized, we can use that
-    /// instead and avoid the allocation of `Vec`, but we still have a double
-    /// traversal of the list of vrfs.
-    ///
-    /// Perhaps a solution here would be to lift the default VRF out of the
-    /// hash table and use it separately?
     //////////////////////////////////////////////////////////////////
-    fn values_mut_except_default(&mut self) -> (Vec<&mut Vrf>, &mut Vrf) {
-        let mut res: (Vec<_>, Vec<_>) = self
-            .values_mut()
-            .partition(|vrf| !Self::is_default_vrf(vrf));
-        let def_vrf = res.0.pop().expect("Default VRF should always be present");
-        (res.1, def_vrf)
+    fn values_mut_except_default(&mut self) -> (impl Iterator<Item = &mut Box<Vrf>>, &Vrf) {
+        let vrf0 = unsafe {
+            let table = self as *mut Self;
+            (*table).get_default_vrf().as_ref()
+        };
+        let vrfs = self.values_mut().filter(|vrf| vrf.vrfid != 0);
+        (vrfs, vrf0)
     }
 
     //////////////////////////////////////////////////////////////////
@@ -389,7 +375,7 @@ impl VrfTable {
     pub fn refresh_non_default_fibs(&mut self, rstore: &RmacStore) {
         let (vrfs, vrf0) = self.values_mut_except_default();
         for vrf in vrfs {
-            vrf.refresh_fib(rstore, Some(vrf0));
+            vrf.refresh_fib(rstore, Some(&vrf0));
         }
     }
 
@@ -409,11 +395,11 @@ impl VrfTable {
 
         // remove stale routes from non-default vrfs
         for vrf in vrfs {
-            vrf.remove_stale_routes(Some(vrf0), rstore);
+            vrf.remove_stale_routes(Some(&vrf0), rstore);
         }
 
         // remove stale routes from default vrf
-        vrf0.remove_stale_routes(None, rstore);
+        self.get_default_vrf_mut().remove_stale_routes(None, rstore);
     }
 }
 
