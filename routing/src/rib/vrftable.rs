@@ -237,8 +237,11 @@ impl VrfTable {
     //////////////////////////////////////////////////////////////////
     /// Immutably access a [`Vrf`] from its id.
     //////////////////////////////////////////////////////////////////
-    pub fn get_vrf(&self, vrfid: VrfId) -> Result<&Box<Vrf>, RouterError> {
-        self.by_id.get(&vrfid).ok_or(RouterError::NoSuchVrf)
+    pub fn get_vrf(&self, vrfid: VrfId) -> Result<&Vrf, RouterError> {
+        self.by_id
+            .get(&vrfid)
+            .map(|boxed| boxed.as_ref())
+            .ok_or(RouterError::NoSuchVrf)
     }
 
     #[allow(unused)]
@@ -246,25 +249,34 @@ impl VrfTable {
         vrf.vrfid == 0
     }
 
-    pub fn get_default_vrf(&self) -> &Box<Vrf> {
-        self.by_id.get(&0_u32).unwrap_or_else(|| unreachable!())
+    pub fn get_default_vrf(&self) -> &Vrf {
+        self.by_id
+            .get(&0_u32)
+            .unwrap_or_else(|| unreachable!())
+            .as_ref()
     }
 
-    pub fn get_default_vrf_mut(&mut self) -> &mut Box<Vrf> {
-        self.by_id.get_mut(&0_u32).unwrap_or_else(|| unreachable!())
+    pub fn get_default_vrf_mut(&mut self) -> &mut Vrf {
+        self.by_id
+            .get_mut(&0_u32)
+            .unwrap_or_else(|| unreachable!())
+            .as_mut()
     }
 
     //////////////////////////////////////////////////////////////////
     /// Mutably access a VRF from its id.
     //////////////////////////////////////////////////////////////////
-    pub fn get_vrf_mut(&mut self, vrfid: VrfId) -> Result<&mut Box<Vrf>, RouterError> {
-        self.by_id.get_mut(&vrfid).ok_or(RouterError::NoSuchVrf)
+    pub fn get_vrf_mut(&mut self, vrfid: VrfId) -> Result<&mut Vrf, RouterError> {
+        self.by_id
+            .get_mut(&vrfid)
+            .map(|boxed| boxed.as_mut())
+            .ok_or(RouterError::NoSuchVrf)
     }
 
     //////////////////////////////////////////////////////////////////
     /// Access a VRF from its vni.
     //////////////////////////////////////////////////////////////////
-    pub fn get_vrf_by_vni(&self, vni: Vni) -> Result<&Box<Vrf>, RouterError> {
+    pub fn get_vrf_by_vni(&self, vni: Vni) -> Result<&Vrf, RouterError> {
         let vrfid = self.by_vni.get(&vni).ok_or(RouterError::NoSuchVrf)?;
         self.get_vrf(*vrfid)
     }
@@ -303,15 +315,15 @@ impl VrfTable {
     //////////////////////////////////////////////////////////////////
     /// Iterate over all VRFs
     //////////////////////////////////////////////////////////////////
-    pub fn values(&self) -> impl Iterator<Item = &Box<Vrf>> {
-        self.by_id.values()
+    pub fn values(&self) -> impl Iterator<Item = &Vrf> {
+        self.by_id.values().map(|boxed| boxed.as_ref())
     }
 
     //////////////////////////////////////////////////////////////////
     /// Iterate mutably over all VRFs
     //////////////////////////////////////////////////////////////////
-    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Box<Vrf>> {
-        self.by_id.values_mut()
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Vrf> {
+        self.by_id.values_mut().map(|boxed| boxed.as_mut())
     }
 
     //////////////////////////////////////////////////////////////////
@@ -339,10 +351,10 @@ impl VrfTable {
     /// let mut vrfs = self.values_mut();
     /// ```
     //////////////////////////////////////////////////////////////////
-    fn values_mut_except_default(&mut self) -> (impl Iterator<Item = &mut Box<Vrf>>, &Vrf) {
+    fn values_mut_except_default(&mut self) -> (impl Iterator<Item = &mut Vrf>, &Vrf) {
         let vrf0 = unsafe {
             let table = self as *mut Self;
-            (*table).get_default_vrf().as_ref()
+            (*table).get_default_vrf()
         };
         let vrfs = self.values_mut().filter(|vrf| vrf.vrfid != 0);
         (vrfs, vrf0)
