@@ -202,7 +202,7 @@ impl<I: NatIp> NatSession for NatDefaultSession<'_, I> {
 mod tests {
     use super::*;
     use net::ip::NextHeader;
-    use net::packet::VrfId;
+    use net::vxlan::Vni;
     use std::net::IpAddr;
     use std::str::FromStr;
 
@@ -223,7 +223,8 @@ mod tests {
             None,
             None,
             NextHeader::UDP,
-            VrfId::from_str("1").unwrap(),
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
         );
         let state = NatState::new(
             Some(addr("10.0.0.1")),
@@ -266,7 +267,8 @@ mod tests {
             None,
             None,
             NextHeader::UDP,
-            VrfId::from_str("1").unwrap(),
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
         );
         let state = NatState::new(
             Some(addr("10.0.0.1")),

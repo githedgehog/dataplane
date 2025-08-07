@@ -52,7 +52,9 @@ impl<I: NatIp> IpAllocator<I> {
     fn allocate_new_ip_from_pool(&self) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
         let mut allocated_ips = self.pool.write().unwrap();
         let new_ip = allocated_ips.use_new_ip(self.clone())?;
-        allocated_ips.add_in_use(&Arc::new(new_ip))
+        let arc_ip = Arc::new(new_ip);
+        allocated_ips.add_in_use(&arc_ip);
+        Ok(arc_ip)
     }
 
     fn allocate_from_new_ip(&self) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
@@ -90,6 +92,12 @@ impl<I: NatIp> IpAllocator<I> {
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
         self.get_allocated_ip(ip)
             .and_then(|allocated_ip| allocated_ip.reserve_port_for_ip(port))
+    }
+
+    #[cfg(test)]
+    pub fn get_pool_clone_for_tests(&self) -> (RoaringBitmap, VecDeque<Weak<AllocatedIp<I>>>) {
+        let pool = self.pool.read().unwrap();
+        (pool.bitmap.0.clone(), pool.in_use.clone())
     }
 }
 
@@ -171,20 +179,8 @@ impl<I: NatIp> NatPool<I> {
         }
     }
 
-    fn get_first(&self) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
-        self.in_use
-            .front()
-            .unwrap()
-            .upgrade()
-            .ok_or(AllocatorError::InternalIssue)
-    }
-
-    fn add_in_use(
-        &mut self,
-        ip: &Arc<AllocatedIp<I>>,
-    ) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
+    fn add_in_use(&mut self, ip: &Arc<AllocatedIp<I>>) {
         self.in_use.push_back(Arc::downgrade(ip));
-        self.get_first()
     }
 
     fn cleanup(&mut self) {
@@ -206,8 +202,9 @@ impl<I: NatIp> NatPool<I> {
             let ip = ipv6_try_from_offset(offset, &self.bitmap_mapping)?;
             Ok(AllocatedIp::new(ip, ip_allocator))
         } else {
-            let ip =
-                I::try_from_bits(u128::from(offset)).map_err(|()| AllocatorError::InternalIssue)?;
+            let ip = I::try_from_bits(u128::from(offset)).map_err(|()| {
+                AllocatorError::InternalIssue("Failed to convert offset to IP".to_string())
+            })?;
             Ok(AllocatedIp::new(ip, ip_allocator))
         }
     }
@@ -231,11 +228,17 @@ impl<I: NatIp> NatPool<I> {
             ipv6_try_to_offset(ip, &self.reverse_bitmap_mapping)?
         } else {
             // IPv4
-            u32::try_from(ip.to_bits()).map_err(|_| AllocatorError::InternalIssue)?
+            u32::try_from(ip.to_bits()).map_err(|_| {
+                AllocatorError::InternalIssue("Failed to convert IP to offset".to_string())
+            })?
         };
+        println!("ip: {ip:?}, offset: {offset}");
+        println!("bitmap: {:?}", self.bitmap);
         if self.bitmap.set_ip_allocated(offset) {
             // The IP was free in the bitmap, allocate it now
-            return self.add_in_use(&Arc::new(AllocatedIp::new(ip, ip_allocator)));
+            let arc_ip = Arc::new(AllocatedIp::new(ip, ip_allocator));
+            self.add_in_use(&arc_ip);
+            return Ok(arc_ip);
         }
 
         let ip_opt = self.ips_in_use().find(|weak_in_use| {
@@ -246,12 +249,16 @@ impl<I: NatIp> NatPool<I> {
         let Some(ip_weak) = ip_opt else {
             // We didn't find the IP in the list of in-use IPs, but it was marked as allocated in
             // the bitmap. Something's amiss.
-            return Err(AllocatorError::InternalIssue);
+            return Err(AllocatorError::InternalIssue(
+                "IP allocated in bitmap but not found in list of in-use IPs".to_string(),
+            ));
         };
         let Some(ip_arc) = ip_weak.upgrade() else {
             // The IP was marked as allocated in the bitmap, but the weak reference no longer
             // resolves. It should have been removed from the bitmap, something's amiss.
-            return Err(AllocatorError::InternalIssue);
+            return Err(AllocatorError::InternalIssue(
+                "IP allocated in bitmap but weak reference does not resolve".to_string(),
+            ));
         };
 
         // We found the allocated IP in the list of IPs in use, return it
@@ -334,14 +341,17 @@ fn map_offset<I: NatIp>(
     // Here we lookup for the closest lower offset in the tree, which returns the network
     // address for the prefix start address and its offset, and we deduce the IPv6 address we're
     // looking for.
-    let (prefix_offset, prefix_start_bits) = bitmap_mapping
-        .range(..=offset)
-        .next_back()
-        .ok_or(AllocatorError::InternalIssue)?;
+    let (prefix_offset, prefix_start_bits) =
+        bitmap_mapping
+            .range(..=offset)
+            .next_back()
+            .ok_or(AllocatorError::InternalIssue(
+                "Failed to find offset in map for IPv6".to_string(),
+            ))?;
 
     // Generate the IPv6 address: prefix network address - prefix offset + address offset
     I::try_from_bits(prefix_start_bits + u128::from(offset - prefix_offset))
-        .map_err(|()| AllocatorError::InternalIssue)
+        .map_err(|()| AllocatorError::InternalIssue("Failed to convert offset to IPv6".to_string()))
 }
 
 fn map_address<I: NatIp>(
@@ -351,9 +361,12 @@ fn map_address<I: NatIp>(
     let (prefix_start_bits, prefix_offset) = bitmap_mapping
         .range(..=address.to_bits())
         .next_back()
-        .ok_or(AllocatorError::InternalIssue)?;
+        .ok_or(AllocatorError::InternalIssue(
+            "Failed to find prefix in map for IPv6".to_string(),
+        ))?;
 
     Ok(prefix_offset
-        + u32::try_from(address.to_bits() - prefix_start_bits)
-            .map_err(|_| AllocatorError::InternalIssue)?)
+        + u32::try_from(address.to_bits() - prefix_start_bits).map_err(|_| {
+            AllocatorError::InternalIssue("Failed to convert Ipv6 to offset".to_string())
+        })?)
 }

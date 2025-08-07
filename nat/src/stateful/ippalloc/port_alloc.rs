@@ -14,6 +14,7 @@ use std::thread::ThreadId;
 #[derive(Debug)]
 struct AllocatorPortBlock {
     base_port_idx: u8,
+    // Candidate for CachePadded
     free: AtomicBool,
 }
 
@@ -39,6 +40,7 @@ pub struct PortAllocator<I: NatIp> {
     //
     // FIXME: We need fake randomisation for tests
     blocks: [AllocatorPortBlock; 252],
+    // Candidates for CachePadded? Not sure, given that both atomics should be updated at the same time?
     usable_blocks: AtomicU16,
     current_alloc_index: AtomicUsize,
     thread_blocks: ThreadPortMap,
@@ -69,14 +71,10 @@ impl<I: NatIp> PortAllocator<I> {
             .load(std::sync::atomic::Ordering::Relaxed);
         self.blocks
             .iter()
+            .enumerate()
             .cycle()
             .skip(offset)
             .take(self.blocks.len())
-            .scan(offset, |index, block| {
-                let res_index = *index;
-                *index = (*index + 1) % self.blocks.len();
-                Some((res_index, block))
-            })
     }
 
     pub fn has_free_ports(&self) -> bool {
@@ -163,7 +161,9 @@ impl<I: NatIp> PortAllocator<I> {
         let (index, block) = self
             .cycle_blocks()
             .find(|(_, block)| block.to_port_number() == (port.as_u16() % 256))
-            .ok_or(AllocatorError::InternalIssue)?;
+            .ok_or(AllocatorError::InternalIssue(
+                "Failed to find block for port".to_string(),
+            ))?;
 
         if block
             .free
@@ -209,7 +209,9 @@ impl<I: NatIp> PortAllocator<I> {
             // Block was not free but is not in the list of allocated blocks either??
             // FIXME: This can legitimately happen if the block was released just after we checked
             // whether it was free. Do we need an additional lock around the PortAllocator?
-            .ok_or(AllocatorError::InternalIssue)
+            .ok_or(AllocatorError::InternalIssue(
+                "Block not free, although absent from list of allocated blocks".to_string(),
+            ))
     }
 
     pub fn reserve_port(
@@ -252,8 +254,12 @@ impl<I: NatIp> AllocatedPortBlock<I> {
         self.usage_bitmap
             .lock()
             .unwrap()
-            .deallocate_port_from_bitmap(port.as_u16())
-            .map_err(|()| AllocatorError::InternalIssue)
+            .deallocate_port_from_bitmap(port.as_u16().checked_sub(self.base_port_idx).ok_or(
+                AllocatorError::InternalIssue(
+                    "Subtraction overflow during port deallocation".to_string(),
+                ),
+            )?)
+            .map_err(|()| AllocatorError::InternalIssue("Failed to deallocate port".to_string()))
     }
 
     fn allocate_port_from_block(self: Arc<Self>) -> Result<AllocatedPort<I>, AllocatorError> {
@@ -276,11 +282,11 @@ impl<I: NatIp> AllocatedPortBlock<I> {
         self.usage_bitmap
             .lock()
             .unwrap()
-            .reserve_port_from_bitmap(
-                port.as_u16()
-                    .checked_sub(self.base_port_idx)
-                    .ok_or(AllocatorError::InternalIssue)?,
-            )
+            .reserve_port_from_bitmap(port.as_u16().checked_sub(self.base_port_idx).ok_or(
+                AllocatorError::InternalIssue(
+                    "Subtraction overflow during port reservation".to_string(),
+                ),
+            )?)
             .map_err(|()| AllocatorError::NoFreePort(port.as_u16()))?;
 
         Ok(AllocatedPort::new(port, self.clone()))
@@ -325,6 +331,9 @@ impl<I: NatIp> Drop for AllocatedPort<I> {
     }
 }
 
+// Notes: Daniel reported this struct may not play well with DPDK's thread management.
+// Also, other structures than a hashmap + lock may be better suited:
+// dashmap, sharded lock, slab.
 #[derive(Debug)]
 struct ThreadPortMap(RwLock<HashMap<ThreadId, Option<usize>>>);
 
@@ -350,6 +359,8 @@ impl ThreadPortMap {
     }
 }
 
+// Note: Other structures than a hashmap + lock may be better suited:
+// dashmap, sharded lock, slab, const generics?
 #[derive(Debug)]
 struct AllocatedPortBlockMap<I: NatIp>(RwLock<HashMap<usize, Weak<AllocatedPortBlock<I>>>>);
 
@@ -369,7 +380,9 @@ impl<I: NatIp> AllocatedPortBlockMap<I> {
     fn get(&self, index: usize) -> Result<Option<Arc<AllocatedPortBlock<I>>>, AllocatorError> {
         Ok(self
             .get_weak(index)
-            .ok_or(AllocatorError::InternalIssue)?
+            .ok_or(AllocatorError::InternalIssue(
+                "Weak reference for port block not found".to_string(),
+            ))?
             .upgrade()
             .or_else(|| {
                 self.remove(index);

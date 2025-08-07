@@ -3,11 +3,11 @@
 
 //! Default IP and port allocator for stateful NAT
 
+use super::NatVpcId;
 use super::allocator::{AllocationResult, AllocatorError};
 use super::port::NatPort;
 use super::{NatAllocator, NatIp, NatTuple};
 use net::ip::NextHeader;
-use routing::rib::vrf::VrfId;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -15,17 +15,32 @@ mod alloc;
 mod setup;
 // FIXME: Shoudln't be public
 pub mod port_alloc;
+mod test_alloc;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolTableKey<I: NatIp> {
     protocol: NextHeader,
-    id: VrfId,
+    src_id: NatVpcId,
+    dst_id: NatVpcId,
     dst: I,
+    dst_range_end: I,
 }
 
 impl<I: NatIp> PoolTableKey<I> {
-    pub fn new(protocol: NextHeader, id: VrfId, dst: I) -> Self {
-        Self { protocol, id, dst }
+    pub fn new(
+        protocol: NextHeader,
+        src_id: NatVpcId,
+        dst_id: NatVpcId,
+        dst: I,
+        dst_range_end: I,
+    ) -> Self {
+        Self {
+            protocol,
+            src_id,
+            dst_id,
+            dst,
+            dst_range_end,
+        }
     }
 }
 
@@ -42,7 +57,14 @@ impl<I: NatIp, J: NatIp> PoolTable<I, J> {
         // Get the range of "lower" entries, the one with the address before ours is the prefix we
         // need, if the ID also matches.
         match self.0.range_mut(..=key).next_back() {
-            Some((k, v)) if k.id == key.id && k.protocol == key.protocol => Some(v),
+            Some((k, v))
+                if k.dst_range_end >= key.dst
+                    && k.src_id == key.src_id
+                    && k.dst_id == key.dst_id
+                    && k.protocol == key.protocol =>
+            {
+                Some(v)
+            }
             _ => None,
         }
     }
@@ -86,27 +108,53 @@ impl NatAllocator<port_alloc::AllocatedPort<Ipv4Addr>, port_alloc::AllocatedPort
 
         let pool_src_opt = self.pools_src44.get_mut(&PoolTableKey::new(
             tuple.next_header,
-            tuple.vrf_id,
+            tuple.src_vpc_id,
+            tuple.dst_vpc_id,
             tuple.dst_ip,
+            Ipv4Addr::new(255, 255, 255, 255),
         ));
         let pool_dst_opt = self.pools_dst44.get_mut(&PoolTableKey::new(
             tuple.next_header,
-            tuple.vrf_id,
+            tuple.src_vpc_id,
+            tuple.dst_vpc_id,
             tuple.dst_ip,
+            Ipv4Addr::new(255, 255, 255, 255),
         ));
+        println!(
+            "Tuple: {tuple:?}, pool_src_opt: {pool_src_opt:?}, pool_dst_opt: {pool_dst_opt:?}"
+        );
 
         let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt)?;
 
-        let reverse_pool_src_opt = self.pools_src44.get_mut(&PoolTableKey::new(
-            tuple.next_header,
-            tuple.vrf_id,
-            tuple.src_ip,
-        ));
-        let reverse_pool_dst_opt = self.pools_dst44.get_mut(&PoolTableKey::new(
-            tuple.next_header,
-            tuple.vrf_id,
-            tuple.src_ip,
-        ));
+        // TODO: We should use the destination VRF ID?
+        let reverse_pool_src_opt = if let Some(mapping) = &src_mapping {
+            println!("src_mapping: {:?}", mapping.ip());
+            self.pools_src44.get_mut(&PoolTableKey::new(
+                tuple.next_header,
+                tuple.src_vpc_id,
+                tuple.dst_vpc_id,
+                mapping.ip(),
+                Ipv4Addr::new(255, 255, 255, 255),
+            ))
+        } else {
+            None
+        };
+
+        let reverse_pool_dst_opt = if let Some(mapping) = &dst_mapping {
+            println!("dst_mapping: {:?}", mapping.ip());
+            self.pools_dst44.get_mut(&PoolTableKey::new(
+                tuple.next_header,
+                tuple.src_vpc_id,
+                tuple.dst_vpc_id,
+                mapping.ip(),
+                Ipv4Addr::new(255, 255, 255, 255),
+            ))
+        } else {
+            None
+        };
+        println!(
+            "Tuple: {tuple:?}, reverse_pool_src_opt: {reverse_pool_src_opt:?}, reverse_pool_dst_opt: {reverse_pool_dst_opt:?}",
+        );
 
         let (reverse_src_mapping, reverse_dst_mapping) =
             Self::get_reverse_mapping(tuple, reverse_pool_src_opt, reverse_pool_dst_opt)?;
@@ -127,26 +175,34 @@ impl NatAllocator<port_alloc::AllocatedPort<Ipv4Addr>, port_alloc::AllocatedPort
 
         let pool_src_opt = self.pools_src66.get_mut(&PoolTableKey::new(
             tuple.next_header,
-            tuple.vrf_id,
+            tuple.src_vpc_id,
+            tuple.dst_vpc_id,
             tuple.dst_ip,
+            Ipv6Addr::new(255, 255, 255, 255, 255, 255, 255, 255),
         ));
         let pool_dst_opt = self.pools_dst66.get_mut(&PoolTableKey::new(
             tuple.next_header,
-            tuple.vrf_id,
+            tuple.src_vpc_id,
+            tuple.dst_vpc_id,
             tuple.dst_ip,
+            Ipv6Addr::new(255, 255, 255, 255, 255, 255, 255, 255),
         ));
 
         let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt)?;
 
         let reverse_pool_src_opt = self.pools_src66.get_mut(&PoolTableKey::new(
             tuple.next_header,
-            tuple.vrf_id,
+            tuple.src_vpc_id,
+            tuple.dst_vpc_id,
             tuple.src_ip,
+            Ipv6Addr::new(255, 255, 255, 255, 255, 255, 255, 255),
         ));
         let reverse_pool_dst_opt = self.pools_dst66.get_mut(&PoolTableKey::new(
             tuple.next_header,
-            tuple.vrf_id,
+            tuple.src_vpc_id,
+            tuple.dst_vpc_id,
             tuple.src_ip,
+            Ipv6Addr::new(255, 255, 255, 255, 255, 255, 255, 255),
         ));
 
         let (reverse_src_mapping, reverse_dst_mapping) =
@@ -162,19 +218,6 @@ impl NatAllocator<port_alloc::AllocatedPort<Ipv4Addr>, port_alloc::AllocatedPort
 }
 
 impl NatDefaultAllocator {
-    pub fn update(
-        &mut self,
-        pools_src44: PoolTable<Ipv4Addr, Ipv4Addr>,
-        pools_dst44: PoolTable<Ipv4Addr, Ipv4Addr>,
-        pools_src66: PoolTable<Ipv6Addr, Ipv6Addr>,
-        pools_dst66: PoolTable<Ipv6Addr, Ipv6Addr>,
-    ) {
-        self.pools_src44 = pools_src44;
-        self.pools_dst44 = pools_dst44;
-        self.pools_src66 = pools_src66;
-        self.pools_dst66 = pools_dst66;
-    }
-
     fn check_proto(next_header: NextHeader) -> Result<(), AllocatorError> {
         match next_header {
             NextHeader::TCP | NextHeader::UDP => Ok(()),
@@ -208,9 +251,9 @@ impl NatDefaultAllocator {
             Some(pool_src) => Some(pool_src.reserve(
                 tuple.dst_ip,
                 match tuple.dst_port {
-                    Some(port) => {
-                        NatPort::new_checked(port).map_err(|_| AllocatorError::InternalIssue)?
-                    }
+                    Some(port) => NatPort::new_checked(port).map_err(|_| {
+                        AllocatorError::InternalIssue("Invalid destination port number".to_string())
+                    })?,
                     None => return Err(AllocatorError::PortNotFound),
                 },
             )?),
@@ -221,9 +264,9 @@ impl NatDefaultAllocator {
             Some(pool_dst) => Some(pool_dst.reserve(
                 tuple.src_ip,
                 match tuple.src_port {
-                    Some(port) => {
-                        NatPort::new_checked(port).map_err(|_| AllocatorError::InternalIssue)?
-                    }
+                    Some(port) => NatPort::new_checked(port).map_err(|_| {
+                        AllocatorError::InternalIssue("Invalid source port number".to_string())
+                    })?,
                     None => return Err(AllocatorError::PortNotFound),
                 },
             )?),
@@ -237,50 +280,208 @@ impl NatDefaultAllocator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use net::vxlan::Vni;
 
     // Ensure that keys are sorted first by VRF ID, and then by IP address. This is essential to
     // make sure we can lookup for entries associated with prefixes for a given ID in the pool
     // tables.
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn test_key_order() {
-        let key1 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(1, 1, 1, 1));
-        let key2 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(1, 1, 1, 1));
+        let key1 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(1, 1, 1, 1),
+        );
+        let key2 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(1, 1, 1, 1),
+        );
         assert!(key1 == key2);
 
-        let key1 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(1, 1, 1, 1));
-        let key2 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(1, 1, 1, 2));
+        let key1 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(1, 1, 1, 1),
+        );
+        let key2 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(255, 255, 255, 255),
+        );
         assert!(key1 < key2);
 
-        let key1 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(2, 1, 1, 1));
-        let key2 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(1, 255, 255, 255));
+        let key1 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(1, 1, 1, 1),
+        );
+        let key2 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
+            Ipv4Addr::new(1, 1, 1, 2),
+            Ipv4Addr::new(255, 255, 255, 255),
+        );
+        assert!(key1 < key2);
+
+        let key1 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
+            Ipv4Addr::new(2, 1, 1, 1),
+            Ipv4Addr::new(1, 1, 1, 1),
+        );
+        let key2 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
+            Ipv4Addr::new(1, 255, 255, 255),
+            Ipv4Addr::new(255, 255, 255, 255),
+        );
         assert!(key1 > key2);
 
         // Mixing IDs
 
-        let key1 = PoolTableKey::new(NextHeader::TCP, 2, Ipv4Addr::new(1, 1, 1, 1));
-        let key2 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(1, 1, 1, 1));
+        let key1 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(2).unwrap(),
+            Vni::new_checked(3).unwrap(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(1, 1, 1, 1),
+        );
+        let key2 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(3).unwrap(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(255, 255, 255, 255),
+        );
         assert!(key1 > key2);
 
-        let key1 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(1, 1, 1, 1));
-        let key2 = PoolTableKey::new(NextHeader::TCP, 2, Ipv4Addr::new(1, 1, 1, 2));
+        let key1 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(3).unwrap(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(255, 255, 255, 255),
+        );
+        let key2 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(2).unwrap(),
+            Vni::new_checked(3).unwrap(),
+            Ipv4Addr::new(1, 1, 1, 2),
+            Ipv4Addr::new(1, 1, 1, 1),
+        );
         assert!(key1 < key2);
 
-        let key1 = PoolTableKey::new(NextHeader::TCP, 2, Ipv4Addr::new(1, 1, 1, 1));
-        let key2 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(2, 2, 2, 2));
+        let key1 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(2).unwrap(),
+            Vni::new_checked(3).unwrap(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(255, 255, 255, 255),
+        );
+        let key2 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(3).unwrap(),
+            Ipv4Addr::new(2, 2, 2, 2),
+            Ipv4Addr::new(1, 1, 1, 1),
+        );
         assert!(key1 > key2);
 
-        let key1 = PoolTableKey::new(NextHeader::TCP, 2, Ipv4Addr::new(1, 1, 1, 1));
-        let key2 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(255, 255, 255, 255));
+        let key1 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(2).unwrap(),
+            Vni::new_checked(3).unwrap(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(255, 255, 255, 255),
+        );
+        let key2 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(3).unwrap(),
+            Ipv4Addr::new(255, 255, 255, 255),
+            Ipv4Addr::new(1, 1, 1, 1),
+        );
         assert!(key1 > key2);
+
+        let key1 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(2).unwrap(),
+            Vni::new_checked(3).unwrap(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(1, 1, 1, 1),
+        );
+        let key2 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(4).unwrap(),
+            Ipv4Addr::new(255, 255, 255, 255),
+            Ipv4Addr::new(255, 255, 255, 255),
+        );
+        assert!(key1 > key2);
+
+        let key1 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(3).unwrap(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(255, 255, 255, 255),
+        );
+        let key2 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(4).unwrap(),
+            Ipv4Addr::new(255, 255, 255, 255),
+            Ipv4Addr::new(1, 1, 1, 1),
+        );
+        assert!(key1 < key2);
 
         // Mixing protocols
 
-        let key1 = PoolTableKey::new(NextHeader::TCP, 1, Ipv4Addr::new(1, 1, 1, 1));
-        let key2 = PoolTableKey::new(NextHeader::UDP, 1, Ipv4Addr::new(1, 1, 1, 1));
+        let key1 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(255, 255, 255, 255),
+        );
+        let key2 = PoolTableKey::new(
+            NextHeader::UDP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(255, 255, 255, 255),
+        );
         assert!(key1 < key2);
 
-        let key1 = PoolTableKey::new(NextHeader::TCP, 2, Ipv4Addr::new(2, 2, 2, 2));
-        let key2 = PoolTableKey::new(NextHeader::UDP, 1, Ipv4Addr::new(1, 1, 1, 1));
+        let key1 = PoolTableKey::new(
+            NextHeader::TCP,
+            Vni::new_checked(2).unwrap(),
+            Vni::new_checked(3).unwrap(),
+            Ipv4Addr::new(2, 2, 2, 2),
+            Ipv4Addr::new(255, 255, 255, 255),
+        );
+        let key2 = PoolTableKey::new(
+            NextHeader::UDP,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(1, 1, 1, 1),
+        );
         assert!(key1 < key2);
     }
 }

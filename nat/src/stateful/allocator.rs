@@ -19,8 +19,8 @@ pub enum AllocatorError {
     PortAllocationFailed(NatPortError),
     #[error("unsupported protocol: {0:?}")]
     UnsupportedProtocol(NextHeader),
-    #[error("internal issue")]
-    InternalIssue,
+    #[error("internal issue: {0}")]
+    InternalIssue(String),
     #[error("no port present for flow: NAT currently unsupported")]
     PortNotFound,
 }

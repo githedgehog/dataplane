@@ -25,7 +25,6 @@ use net::tcp::port::TcpPort;
 use net::udp::port::UdpPort;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
-use routing::rib::vrf::VrfId;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -46,6 +45,8 @@ pub trait NatIp: private::Sealed + Debug + Clone + Copy + Eq + Ord + Hash {
     fn to_bits(&self) -> u128;
     fn try_from_bits(bits: u128) -> Result<Self, ()>;
     fn try_from_addr(addr: IpAddr) -> Result<Self, ()>;
+    fn try_from_ipv4_addr(addr: Ipv4Addr) -> Result<Self, ()>;
+    fn try_from_ipv6_addr(addr: Ipv6Addr) -> Result<Self, ()>;
 }
 impl private::Sealed for Ipv4Addr {}
 impl private::Sealed for Ipv6Addr {}
@@ -80,6 +81,12 @@ impl NatIp for Ipv4Addr {
             Err(())
         }
     }
+    fn try_from_ipv4_addr(addr: Ipv4Addr) -> Result<Self, ()> {
+        Ok(addr)
+    }
+    fn try_from_ipv6_addr(addr: Ipv6Addr) -> Result<Self, ()> {
+        Err(())
+    }
 }
 impl NatIp for Ipv6Addr {
     fn to_ip_addr(&self) -> IpAddr {
@@ -112,7 +119,15 @@ impl NatIp for Ipv6Addr {
             Err(())
         }
     }
+    fn try_from_ipv4_addr(addr: Ipv4Addr) -> Result<Self, ()> {
+        Err(())
+    }
+    fn try_from_ipv6_addr(addr: Ipv6Addr) -> Result<Self, ()> {
+        Ok(addr)
+    }
 }
+
+type NatVpcId = Vni;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NatTuple<I: NatIp> {
@@ -121,7 +136,8 @@ pub struct NatTuple<I: NatIp> {
     src_port: Option<u16>,
     dst_port: Option<u16>,
     next_header: NextHeader,
-    vrf_id: VrfId,
+    src_vpc_id: NatVpcId,
+    dst_vpc_id: NatVpcId,
 }
 
 impl<I: NatIp> NatTuple<I> {
@@ -131,7 +147,8 @@ impl<I: NatIp> NatTuple<I> {
         src_port: Option<u16>,
         dst_port: Option<u16>,
         next_header: NextHeader,
-        vrf_id: VrfId,
+        src_vpc_id: NatVpcId,
+        dst_vpc_id: NatVpcId,
     ) -> Self {
         Self {
             src_ip,
@@ -139,7 +156,8 @@ impl<I: NatIp> NatTuple<I> {
             src_port,
             dst_port,
             next_header,
-            vrf_id,
+            src_vpc_id,
+            dst_vpc_id,
         }
     }
 }
@@ -163,15 +181,19 @@ impl StatefulNat {
         }
     }
 
-    fn get_src_vrf_id(net: &Net, vni: Vni) -> VrfId {
+    fn get_src_vpc_id(net: &Net, vni: Vni) -> NatVpcId {
         todo!()
     }
 
-    fn get_dst_vrf_id(net: &Net, vni: Vni) -> VrfId {
+    fn get_dst_vpc_id(net: &Net, vni: Vni) -> NatVpcId {
         todo!()
     }
 
-    fn extract_tuple<I: NatIp>(net: &Net, vrf_id: VrfId) -> Option<NatTuple<I>> {
+    fn extract_tuple<I: NatIp>(
+        net: &Net,
+        src_vpc_id: NatVpcId,
+        dst_vpc_id: NatVpcId,
+    ) -> Option<NatTuple<I>> {
         let src_ip = I::from_src_addr(net)?;
         let dst_ip = I::from_dst_addr(net)?;
         let next_header = net.next_header();
@@ -185,7 +207,8 @@ impl StatefulNat {
             src_port,
             dst_port,
             next_header,
-            vrf_id,
+            src_vpc_id,
+            dst_vpc_id,
         ))
     }
 
@@ -325,7 +348,8 @@ impl StatefulNat {
     fn new_reverse_session<I: NatIp>(
         tuple: &NatTuple<I>,
         alloc: &AllocationResult<AllocatedPort<I>>,
-        peer_vrf_id: VrfId,
+        src_vpc_id: NatVpcId,
+        dst_vpc_id: NatVpcId,
     ) -> (NatTuple<I>, NatState) {
         // Forward session:
         //   f.init:(src: a, dst: B) -> f.nated:(src: A, dst: b)
@@ -359,7 +383,8 @@ impl StatefulNat {
             alloc.dst.as_ref().map(|p| p.port().as_u16()),
             alloc.src.as_ref().map(|p| p.port().as_u16()),
             tuple.next_header,
-            peer_vrf_id,
+            dst_vpc_id,
+            src_vpc_id,
         );
 
         // Do not reuse information from forward tuple, because the IPs and ports for the reverse
@@ -378,7 +403,8 @@ impl StatefulNat {
         &mut self,
         packet: &mut Packet<Buf>,
         tuple: &NatTuple<Ipv4Addr>,
-        dst_vrf_id: VrfId,
+        src_vpc_id: NatVpcId,
+        dst_vpc_id: NatVpcId,
         total_bytes: u16,
     ) -> Option<()> {
         // Hot path: if we have a session, directly translate the address already
@@ -403,7 +429,8 @@ impl StatefulNat {
         Self::update_stats(&mut new_state, total_bytes);
         self.create_session_v4(tuple, new_state.clone()).ok()?;
 
-        let (reverse_tuple, reverse_state) = Self::new_reverse_session(tuple, &alloc, dst_vrf_id);
+        let (reverse_tuple, reverse_state) =
+            Self::new_reverse_session(tuple, &alloc, src_vpc_id, dst_vpc_id);
         self.create_session_v4(&reverse_tuple, reverse_state.clone())
             .ok()?;
 
@@ -426,15 +453,21 @@ impl StatefulNat {
         // TODO: Check whether the packet is fragmented
         // TODO: Check whether we need protocol-aware processing
 
-        let src_vrf_id = Self::get_src_vrf_id(net, vni);
-        let dst_vrf_id = Self::get_dst_vrf_id(net, vni);
+        let src_vpc_id = Self::get_src_vpc_id(net, vni);
+        let dst_vpc_id = Self::get_dst_vpc_id(net, vni);
 
         match net {
             Net::Ipv4(_) => {
-                let Some(tuple) = Self::extract_tuple(net, src_vrf_id) else {
+                let Some(tuple) = Self::extract_tuple(net, src_vpc_id, dst_vpc_id) else {
                     return;
                 };
-                self.translate_packet_v4::<Buf>(packet, &tuple, dst_vrf_id, total_bytes);
+                self.translate_packet_v4::<Buf>(
+                    packet,
+                    &tuple,
+                    src_vpc_id,
+                    dst_vpc_id,
+                    total_bytes,
+                );
             }
             Net::Ipv6(_) => {
                 todo!()
@@ -477,9 +510,15 @@ mod tests {
             None,
             None,
             NextHeader::new(255),
-            VrfId::from_str("1").unwrap(),
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
         );
-        let tuple = StatefulNat::extract_tuple(net, VrfId::from_str("1").unwrap()).unwrap();
+        let tuple = StatefulNat::extract_tuple(
+            net,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(tuple, ref_tuple);
     }
