@@ -5,10 +5,10 @@ use super::NatIpWithBitmap;
 use super::alloc::AllocatedIp;
 use crate::stateful::allocator::AllocatorError;
 use crate::stateful::port::NatPort;
+use concurrency::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize};
+use concurrency::sync::{Arc, Mutex, RwLock, Weak};
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize};
-use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::thread::ThreadId;
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -82,7 +82,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
     fn cycle_blocks(&self) -> impl Iterator<Item = (usize, &AllocatorPortBlock)> {
         let offset = self
             .current_alloc_index
-            .load(std::sync::atomic::Ordering::Relaxed);
+            .load(concurrency::sync::atomic::Ordering::Relaxed);
         self.blocks
             .iter()
             .enumerate()
@@ -93,7 +93,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
 
     pub fn has_free_ports(&self) -> bool {
         self.usable_blocks
-            .load(std::sync::atomic::Ordering::Relaxed)
+            .load(concurrency::sync::atomic::Ordering::Relaxed)
             > 0
             || self.has_allocated_blocks_with_free_ports()
     }
@@ -107,9 +107,9 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         // ordering for the atomic operations?
         self.blocks[index]
             .free
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+            .store(true, concurrency::sync::atomic::Ordering::Relaxed);
         self.usable_blocks
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            .fetch_add(1, concurrency::sync::atomic::Ordering::Relaxed);
     }
 
     fn has_allocated_blocks_with_free_ports(&self) -> bool {
@@ -125,8 +125,8 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
                     .compare_exchange(
                         true,
                         false,
-                        std::sync::atomic::Ordering::Relaxed,
-                        std::sync::atomic::Ordering::Relaxed,
+                        concurrency::sync::atomic::Ordering::Relaxed,
+                        concurrency::sync::atomic::Ordering::Relaxed,
                     )
                     .is_ok()
             })
@@ -143,10 +143,10 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         self.thread_blocks.set(Some(index));
 
         self.current_alloc_index
-            .store(index, std::sync::atomic::Ordering::Relaxed);
+            .store(index, concurrency::sync::atomic::Ordering::Relaxed);
 
         self.usable_blocks
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            .fetch_sub(1, concurrency::sync::atomic::Ordering::Relaxed);
 
         Ok(AllocatedPortBlock::new(ip, index, base_port_index))
     }
@@ -184,8 +184,8 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
             .compare_exchange(
                 true,
                 false,
-                std::sync::atomic::Ordering::Relaxed,
-                std::sync::atomic::Ordering::Relaxed,
+                concurrency::sync::atomic::Ordering::Relaxed,
+                concurrency::sync::atomic::Ordering::Relaxed,
             )
             .is_ok()
         {
@@ -202,7 +202,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         port: NatPort,
     ) -> Arc<AllocatedPortBlock<I>> {
         self.usable_blocks
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            .fetch_sub(1, concurrency::sync::atomic::Ordering::Relaxed);
         let block = Arc::new(AllocatedPortBlock::new(
             ip,
             index,

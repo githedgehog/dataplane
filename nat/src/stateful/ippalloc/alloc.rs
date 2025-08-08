@@ -5,10 +5,10 @@ use super::{NatIpWithBitmap, port_alloc};
 use crate::stateful::NatIp;
 use crate::stateful::allocator::AllocatorError;
 use crate::stateful::port::NatPort;
+use concurrency::sync::{Arc, RwLock, Weak};
 use lpm::prefix::{IpPrefix, Prefix};
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, RwLock, Weak};
 
 ///////////////////////////////////////////////////////////////////////////////
 // IpAllocator
