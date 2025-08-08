@@ -4,7 +4,7 @@
 use crate::processor::confbuild::namegen::VpcInterfacesNames;
 
 use config::InternalConfig;
-use config::internal::interfaces::interface::InterfaceType;
+use config::internal::interfaces::interface::{InterfaceConfigTable, InterfaceType};
 use config::internal::routing::evpn::VtepConfig;
 use derive_builder::Builder;
 use futures::TryStreamExt;
@@ -301,6 +301,58 @@ impl Vpc {
     }
 }
 
+/// Create an InterfaceSpec for an InterfaceConfig
+fn add_interface_specs(interfaces: &mut MultiIndexInterfaceSpecMap, ifaces: &InterfaceConfigTable) {
+    for iface in ifaces.values() {
+        match &iface.iftype {
+            InterfaceType::Ethernet(eth) => {
+                let mut tap = InterfaceSpecBuilder::default();
+                match InterfaceName::try_from(format!("{}-tap", iface.name.as_str())) {
+                    Ok(name) => {
+                        tap.name(name);
+                    }
+                    Err(e) => {
+                        error!("{e}");
+                        continue;
+                    }
+                };
+                match eth.mac.map(SourceMac::try_from) {
+                    Some(Ok(mac)) => {
+                        tap.mac(Some(mac));
+                    }
+                    None => {
+                        tap.mac(None);
+                    }
+                    Some(Err(e)) => {
+                        error!("{e}");
+                        continue;
+                    }
+                };
+                tap.properties(InterfacePropertiesSpec::Tap);
+                tap.mtu(iface.mtu);
+                tap.admin_state(AdminState::Up);
+                match tap.build() {
+                    Ok(iface) => match interfaces.try_insert(iface) {
+                        Ok(added) => {
+                            debug!("added proxy tap interface to spec: {added:?}");
+                        }
+                        Err(e) => {
+                            error!("{e}");
+                        }
+                    },
+                    Err(e) => {
+                        error!("{e}");
+                        continue;
+                    }
+                }
+            }
+            _ => {
+                continue;
+            }
+        }
+    }
+}
+
 // TODO: break up this method into smaller components
 impl TryFrom<&InternalConfig> for RequiredInformationBase {
     type Error = RequiredInformationBaseBuilderError;
@@ -312,55 +364,10 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
         let mut vrfs = MultiIndexVrfPropertiesSpecMap::default();
         let mut vteps = MultiIndexVtepPropertiesSpecMap::default();
         let mut associations = MultiIndexInterfaceAssociationSpecMap::default();
-        for vrfconfig in internal.vrfs.iter_by_tableid() {
-            for iface in vrfconfig.interfaces.values() {
-                match &iface.iftype {
-                    InterfaceType::Ethernet(eth) => {
-                        let mut tap = InterfaceSpecBuilder::default();
-                        match InterfaceName::try_from(format!("{}-tap", iface.name.as_str())) {
-                            Ok(name) => {
-                                tap.name(name);
-                            }
-                            Err(e) => {
-                                error!("{e}");
-                                continue;
-                            }
-                        };
-                        match eth.mac.map(SourceMac::try_from) {
-                            Some(Ok(mac)) => {
-                                tap.mac(Some(mac));
-                            }
-                            None => {
-                                tap.mac(None);
-                            }
-                            Some(Err(e)) => {
-                                error!("{e}");
-                                continue;
-                            }
-                        };
-                        tap.properties(InterfacePropertiesSpec::Tap);
-                        tap.mtu(iface.mtu);
-                        tap.admin_state(AdminState::Up);
-                        match tap.build() {
-                            Ok(iface) => match interfaces.try_insert(iface) {
-                                Ok(added) => {
-                                    debug!("added proxy tap interface to spec: {added:?}");
-                                }
-                                Err(e) => {
-                                    error!("{e}");
-                                }
-                            },
-                            Err(e) => {
-                                error!("{e}");
-                                continue;
-                            }
-                        }
-                    }
-                    _ => {
-                        continue;
-                    }
-                }
-            }
+
+        // non-default VRFs
+        for vrfconfig in internal.vrfs.iter_by_tableid().filter(|cfg| !cfg.default) {
+            add_interface_specs(&mut interfaces, &vrfconfig.interfaces);
             let main_vtep = internal.vtep.as_ref().unwrap_or_else(|| unreachable!());
             let vtep_ip = match main_vtep.address {
                 UnicastIpAddr::V4(vtep_ip) => vtep_ip,
@@ -376,7 +383,7 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
             vrf.controller(None);
             vrf.admin_state(AdminState::Up);
             match vrfconfig.tableid {
-                None => {}
+                None => unreachable!(),
                 Some(route_table_id) => {
                     debug!("route_table set for config: {vrfconfig:?}");
                     vrf.properties(InterfacePropertiesSpec::Vrf(VrfPropertiesSpec {
@@ -498,6 +505,14 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
                 }
             }
         }
+
+        // default VRF
+        let vrfconfig = internal
+            .vrfs
+            .default_vrf_config()
+            .unwrap_or_else(|| unreachable!());
+        add_interface_specs(&mut interfaces, &vrfconfig.interfaces);
+
         rb_builder.interfaces(interfaces);
         rb_builder.vteps(vteps);
         rb_builder.vrfs(vrfs);
