@@ -312,8 +312,8 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
         let mut vrfs = MultiIndexVrfPropertiesSpecMap::default();
         let mut vteps = MultiIndexVtepPropertiesSpecMap::default();
         let mut associations = MultiIndexInterfaceAssociationSpecMap::default();
-        for config in internal.vrfs.iter_by_tableid() {
-            for iface in config.interfaces.values() {
+        for vrfconfig in internal.vrfs.iter_by_tableid() {
+            for iface in vrfconfig.interfaces.values() {
                 match &iface.iftype {
                     InterfaceType::Ethernet(eth) => {
                         let mut tap = InterfaceSpecBuilder::default();
@@ -375,17 +375,17 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
             let mut bridge = InterfaceSpecBuilder::default();
             vrf.controller(None);
             vrf.admin_state(AdminState::Up);
-            match config.tableid {
+            match vrfconfig.tableid {
                 None => {}
                 Some(route_table_id) => {
-                    debug!("route_table set for config: {config:?}");
+                    debug!("route_table set for config: {vrfconfig:?}");
                     vrf.properties(InterfacePropertiesSpec::Vrf(VrfPropertiesSpec {
                         route_table_id,
                     }));
-                    match &config.vpc_id {
+                    match &vrfconfig.vpc_id {
                         None => {
-                            error!("no vpc_id set for config: {config:?}");
-                            panic!("no vpc_id set for config: {config:?}");
+                            error!("no vpc_id set for config: {vrfconfig:?}");
+                            panic!("no vpc_id set for config: {vrfconfig:?}");
                         }
                         Some(id) => {
                             vrf.name(id.vrf_name());
@@ -400,7 +400,7 @@ impl TryFrom<&InternalConfig> for RequiredInformationBase {
                         vlan_protocol: EthType::VLAN,
                     }));
                     vtep.properties(InterfacePropertiesSpec::Vtep(VtepPropertiesSpec {
-                        vni: config.vni.expect("vni not set"),
+                        vni: vrfconfig.vni.expect("vni not set"),
                         local: vtep_ip,
                         ttl: VtepConfig::TTL,
                         port: Vxlan::PORT,
