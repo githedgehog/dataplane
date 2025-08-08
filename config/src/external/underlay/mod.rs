@@ -26,7 +26,7 @@ impl Underlay {
     /// Get the vtep interface from the list of interfaces of the underlay vrf.
     /// One vtep interface should exist at the most. No vtep interface is a valid
     /// configuration if no VPCs are configured.
-    pub fn get_vtep_interface(&self) -> Result<Option<&InterfaceConfig>, ConfigError> {
+    fn get_vtep_interface(&self) -> Result<Option<&InterfaceConfig>, ConfigError> {
         let vteps: Vec<&InterfaceConfig> = self
             .vrf
             .interfaces
