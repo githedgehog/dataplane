@@ -3,6 +3,7 @@
 members = [
 	"cli",
 	"config",
+	"concurrency",
 	"dataplane",
 	"dpdk",
 	"dpdk-sys",
@@ -27,6 +28,7 @@ resolver = "3"
 
 # Internal
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
+concurrency = { path = "./concurrency", package = "dataplane-concurrency" }
 config = { path = "./config", package = "dataplane-config" }
 dpdk = { path = "./dpdk", package = "dataplane-dpdk" }
 dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys" }
@@ -77,6 +79,7 @@ ipnet = { version = "2.11.0", default-features = false, features = [] }
 left-right = { version = "0.11.5" }
 libc = { version = "1.0.0-alpha.1", default-features = false, features = [] }
 linux-raw-sys = { version = "0.10.0", default-features = false, features = [] }
+loom = { version = "0.7.2", default-features = false, features = [] }
 mac_address = { version = "1.1.8", default-features = false, features = [] }
 metrics = { version = "0.24.2", default-features = false, features = [] }
 metrics-exporter-prometheus = { version = "0.17.2", default-features = false, features = ["http-listener"] }
@@ -95,6 +98,7 @@ rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh
 rustyline = { version = "17.0.0", default-features = false, features = [] }
 serde = { version = "1.0.219", default-features = false, features = [] }
 serde_yml = { version = "0.0.12", default-features = false, features = [] }
+shuttle = { version = "0.8.1", default-features = false, features = [] }
 static_assertions = { version = "1.1.0", default-features = false, features = [] }
 strum = { version = "0.27.2", features = ["derive"] }
 thiserror = { version = "2.0.12", default-features = false, features = [] }
