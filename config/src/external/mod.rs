@@ -43,9 +43,8 @@ impl ExternalConfig {
         self.underlay.validate()?;
         self.overlay.validate()?;
 
-        // one vtep at the most -- but none is fine if have no VPCs
-        let vtep = self.underlay.get_vtep_interface()?;
-        if !self.overlay.vpc_table.is_empty() && vtep.is_none() {
+        // if there are vpcs configured, there MUST be a vtep configured
+        if !self.overlay.vpc_table.is_empty() && self.underlay.vtep.is_none() {
             return Err(ConfigError::MissingParameter(
                 "Vtep interface configuration",
             ));
