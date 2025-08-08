@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use super::NatIpWithBitmap;
 use super::alloc::AllocatedIp;
-use crate::stateful::NatIp;
 use crate::stateful::allocator::AllocatorError;
 use crate::stateful::port::NatPort;
 use rand::seq::SliceRandom;
@@ -10,6 +10,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::thread::ThreadId;
+
+///////////////////////////////////////////////////////////////////////////////
+// AllocatorPortBlock
+///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
 struct AllocatorPortBlock {
@@ -37,8 +41,12 @@ impl AllocatorPortBlock {
     }
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// PortAllocator
+///////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
-pub struct PortAllocator<I: NatIp> {
+pub struct PortAllocator<I: NatIpWithBitmap> {
     // Randomised base port numbers from 1024 to 65535, by increments of 256
     //
     // FIXME: We only randomise port blocks at cration of the NatAllocIp, making it trivial to
@@ -53,7 +61,7 @@ pub struct PortAllocator<I: NatIp> {
     allocated_blocks: AllocatedPortBlockMap<I>,
 }
 
-impl<I: NatIp> PortAllocator<I> {
+impl<I: NatIpWithBitmap> PortAllocator<I> {
     pub fn new() -> Self {
         let mut rng = rand::rng();
         // Skip ports 0 to 1023
@@ -234,15 +242,19 @@ impl<I: NatIp> PortAllocator<I> {
     }
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// AllocatedPortBlock
+///////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
-struct AllocatedPortBlock<I: NatIp> {
+pub(crate) struct AllocatedPortBlock<I: NatIpWithBitmap> {
     ip: Arc<AllocatedIp<I>>,
     base_port_idx: u16,
     index: usize,
     usage_bitmap: Mutex<Bitmap256>,
 }
 
-impl<I: NatIp> AllocatedPortBlock<I> {
+impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
     fn new(ip: Arc<AllocatedIp<I>>, index: usize, base_port_idx: u16) -> Self {
         Self {
             ip,
@@ -323,19 +335,23 @@ impl<I: NatIp> AllocatedPortBlock<I> {
     }
 }
 
-impl<I: NatIp> Drop for AllocatedPortBlock<I> {
+impl<I: NatIpWithBitmap> Drop for AllocatedPortBlock<I> {
     fn drop(&mut self) {
         self.ip.clone().deallocate_block_for_ip(self.index);
     }
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// AllocatedPort
+///////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
-pub struct AllocatedPort<I: NatIp> {
+pub struct AllocatedPort<I: NatIpWithBitmap> {
     port: NatPort,
     block_allocator: Arc<AllocatedPortBlock<I>>,
 }
 
-impl<I: NatIp> AllocatedPort<I> {
+impl<I: NatIpWithBitmap> AllocatedPort<I> {
     fn new(port: NatPort, block_allocator: Arc<AllocatedPortBlock<I>>) -> Self {
         Self {
             port,
@@ -352,7 +368,7 @@ impl<I: NatIp> AllocatedPort<I> {
     }
 }
 
-impl<I: NatIp> Drop for AllocatedPort<I> {
+impl<I: NatIpWithBitmap> Drop for AllocatedPort<I> {
     fn drop(&mut self) {
         let _ = self
             .block_allocator
@@ -360,6 +376,10 @@ impl<I: NatIp> Drop for AllocatedPort<I> {
             .deallocate_port_from_block(self.port);
     }
 }
+
+///////////////////////////////////////////////////////////////////////////////
+// ThreadPortMap
+///////////////////////////////////////////////////////////////////////////////
 
 // Notes: Daniel reported this struct may not play well with DPDK's thread management.
 // Also, other structures than a hashmap + lock may be better suited:
@@ -389,12 +409,18 @@ impl ThreadPortMap {
     }
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// AllocatedPortBlockMap
+///////////////////////////////////////////////////////////////////////////////
+
 // Note: Other structures than a hashmap + lock may be better suited:
 // dashmap, sharded lock, slab, const generics?
 #[derive(Debug)]
-struct AllocatedPortBlockMap<I: NatIp>(RwLock<HashMap<usize, Weak<AllocatedPortBlock<I>>>>);
+struct AllocatedPortBlockMap<I: NatIpWithBitmap>(
+    RwLock<HashMap<usize, Weak<AllocatedPortBlock<I>>>>,
+);
 
-impl<I: NatIp> AllocatedPortBlockMap<I> {
+impl<I: NatIpWithBitmap> AllocatedPortBlockMap<I> {
     fn new() -> Self {
         Self(RwLock::new(HashMap::new()))
     }
@@ -440,6 +466,10 @@ impl<I: NatIp> AllocatedPortBlockMap<I> {
             .upgrade()
     }
 }
+
+///////////////////////////////////////////////////////////////////////////////
+// Bitmap256
+///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Clone)]
 struct Bitmap256 {

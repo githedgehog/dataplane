@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use super::NatIpWithBitmap;
 use super::alloc::{IpAllocator, NatPool, PoolBitmap};
 use super::{NatDefaultAllocator, PoolTable, PoolTableKey};
 use crate::stateful::allocator::AllocatorError;
@@ -135,7 +136,7 @@ fn filter_v6_exposes(exposes: &[VpcExpose]) -> impl Iterator<Item = &VpcExpose> 
     })
 }
 
-fn update_src_nat_pool_generic<I: NatIp, J: NatIp>(
+fn update_src_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     table: &mut PoolTable<I, J>,
     expose: &VpcExpose,
     src_vpc_id: NatVpcId,
@@ -152,7 +153,7 @@ fn update_src_nat_pool_generic<I: NatIp, J: NatIp>(
     )
 }
 
-fn update_dst_nat_pool_generic<I: NatIp, J: NatIp>(
+fn update_dst_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     table: &mut PoolTable<I, J>,
     expose: &VpcExpose,
     src_vpc_id: NatVpcId,
@@ -169,7 +170,7 @@ fn update_dst_nat_pool_generic<I: NatIp, J: NatIp>(
     )
 }
 
-fn add_pool_entries<I: NatIp, J: NatIp>(
+fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     table: &mut PoolTable<I, J>,
     prefixes: &BTreeSet<Prefix>,
     target_prefixes: &BTreeSet<Prefix>,
@@ -184,7 +185,7 @@ fn add_pool_entries<I: NatIp, J: NatIp>(
     Ok(())
 }
 
-fn insert_per_proto_entries<I: NatIp, J: NatIp>(
+fn insert_per_proto_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     table: &mut PoolTable<I, J>,
     key: PoolTableKey<I>,
     allocator: &IpAllocator<J>,
@@ -198,7 +199,7 @@ fn insert_per_proto_entries<I: NatIp, J: NatIp>(
     table.add_entry(udp_key, allocator.clone());
 }
 
-fn ip_allocator_for_prefixes<J: NatIp>(
+fn ip_allocator_for_prefixes<J: NatIpWithBitmap>(
     prefixes: &BTreeSet<Prefix>,
 ) -> Result<IpAllocator<J>, AllocatorError> {
     let pool = create_natpool(prefixes)?;
@@ -206,7 +207,9 @@ fn ip_allocator_for_prefixes<J: NatIp>(
     Ok(allocator)
 }
 
-fn create_natpool<J: NatIp>(prefixes: &BTreeSet<Prefix>) -> Result<NatPool<J>, AllocatorError> {
+fn create_natpool<J: NatIpWithBitmap>(
+    prefixes: &BTreeSet<Prefix>,
+) -> Result<NatPool<J>, AllocatorError> {
     // Build mappings for IPv6 <-> u32 bitmap translation
     let (bitmap_mapping, reverse_bitmap_mapping) = create_ipv6_bitmap_mappings(prefixes)?;
 

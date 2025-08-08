@@ -6,12 +6,14 @@
 
 mod allocator;
 mod ippalloc;
+mod natip;
 mod port;
 pub mod sessions;
 
 use crate::stateful::allocator::{AllocationResult, NatAllocator};
-use crate::stateful::ippalloc::NatDefaultAllocator;
-use crate::stateful::ippalloc::port_alloc::AllocatedPort;
+use crate::stateful::ippalloc::AllocatedIpPort;
+use crate::stateful::ippalloc::{NatDefaultAllocator, NatIpWithBitmap};
+use crate::stateful::natip::NatIp;
 use crate::stateful::port::NatPort;
 use crate::stateful::sessions::{
     NatDefaultSession, NatDefaultSessionManager, NatSession, NatSessionManager, NatState,
@@ -27,104 +29,12 @@ use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StatefulNatError {
     #[error("invalid port {0}")]
     InvalidPort(u16),
-}
-
-mod private {
-    pub trait Sealed {}
-}
-pub trait NatIp: private::Sealed + Debug + Clone + Copy + Eq + Ord + Hash {
-    fn to_ip_addr(&self) -> IpAddr;
-    fn from_src_addr(net: &Net) -> Option<Self>;
-    fn from_dst_addr(net: &Net) -> Option<Self>;
-    fn to_bits(&self) -> u128;
-    fn try_from_bits(bits: u128) -> Result<Self, ()>;
-    fn try_from_addr(addr: IpAddr) -> Result<Self, ()>;
-    fn try_from_ipv4_addr(addr: Ipv4Addr) -> Result<Self, ()>;
-    fn try_from_ipv6_addr(addr: Ipv6Addr) -> Result<Self, ()>;
-}
-impl private::Sealed for Ipv4Addr {}
-impl private::Sealed for Ipv6Addr {}
-impl NatIp for Ipv4Addr {
-    fn to_ip_addr(&self) -> IpAddr {
-        IpAddr::V4(*self)
-    }
-    fn from_src_addr(net: &Net) -> Option<Self> {
-        if let IpAddr::V4(addr) = net.src_addr() {
-            Some(addr)
-        } else {
-            None
-        }
-    }
-    fn from_dst_addr(net: &Net) -> Option<Self> {
-        if let IpAddr::V4(addr) = net.dst_addr() {
-            Some(addr)
-        } else {
-            None
-        }
-    }
-    fn to_bits(&self) -> u128 {
-        u128::from(u32::from(*self))
-    }
-    fn try_from_bits(bits: u128) -> Result<Self, ()> {
-        Ok(Self::from(u32::try_from(bits).map_err(|_| ())?))
-    }
-    fn try_from_addr(addr: IpAddr) -> Result<Self, ()> {
-        if let IpAddr::V4(addr) = addr {
-            Ok(addr)
-        } else {
-            Err(())
-        }
-    }
-    fn try_from_ipv4_addr(addr: Ipv4Addr) -> Result<Self, ()> {
-        Ok(addr)
-    }
-    fn try_from_ipv6_addr(addr: Ipv6Addr) -> Result<Self, ()> {
-        Err(())
-    }
-}
-impl NatIp for Ipv6Addr {
-    fn to_ip_addr(&self) -> IpAddr {
-        IpAddr::V6(*self)
-    }
-    fn from_src_addr(net: &Net) -> Option<Self> {
-        if let IpAddr::V6(addr) = net.src_addr() {
-            Some(addr)
-        } else {
-            None
-        }
-    }
-    fn from_dst_addr(net: &Net) -> Option<Self> {
-        if let IpAddr::V6(addr) = net.dst_addr() {
-            Some(addr)
-        } else {
-            None
-        }
-    }
-    fn to_bits(&self) -> u128 {
-        u128::from(*self)
-    }
-    fn try_from_bits(bits: u128) -> Result<Self, ()> {
-        Ok(Self::from(bits))
-    }
-    fn try_from_addr(addr: IpAddr) -> Result<Self, ()> {
-        if let IpAddr::V6(addr) = addr {
-            Ok(addr)
-        } else {
-            Err(())
-        }
-    }
-    fn try_from_ipv4_addr(addr: Ipv4Addr) -> Result<Self, ()> {
-        Err(())
-    }
-    fn try_from_ipv6_addr(addr: Ipv6Addr) -> Result<Self, ()> {
-        Ok(addr)
-    }
 }
 
 type NatVpcId = Vni;
@@ -320,7 +230,9 @@ impl StatefulNat {
     }
 
     // TODO: Change this function to store directly the AllocatedPort objects in session map
-    fn new_state_from_alloc<I: NatIp>(alloc: &AllocationResult<AllocatedPort<I>>) -> NatState {
+    fn new_state_from_alloc<I: NatIpWithBitmap>(
+        alloc: &AllocationResult<AllocatedIpPort<I>>,
+    ) -> NatState {
         let (target_src_addr, target_src_port) = match &alloc.src {
             Some(alloc_ip_port) => (
                 Some(alloc_ip_port.ip().to_ip_addr()),
@@ -345,9 +257,9 @@ impl StatefulNat {
         )
     }
 
-    fn new_reverse_session<I: NatIp>(
+    fn new_reverse_session<I: NatIpWithBitmap>(
         tuple: &NatTuple<I>,
-        alloc: &AllocationResult<AllocatedPort<I>>,
+        alloc: &AllocationResult<AllocatedIpPort<I>>,
         src_vpc_id: NatVpcId,
         dst_vpc_id: NatVpcId,
     ) -> (NatTuple<I>, NatState) {
@@ -361,7 +273,7 @@ impl StatefulNat {
         // - tuple r.init = (src: f.nated.dst, dst: f.nated.src)
         // - mapping r.nated = (src: f.init.dst, dst: f.init.src)
 
-        let reverse_src = match alloc.dst.as_ref().map(AllocatedPort::ip) {
+        let reverse_src = match alloc.dst.as_ref().map(AllocatedIpPort::ip) {
             Some(ip) => ip,
             // No destination NAT for forward session:
             // f.init:(src: a, dst: b) -> f.nated:(src: A, dst: b)
@@ -372,7 +284,7 @@ impl StatefulNat {
             // Use destination IP from forward tuple.
             None => tuple.dst_ip,
         };
-        let reverse_dst = match alloc.src.as_ref().map(AllocatedPort::ip) {
+        let reverse_dst = match alloc.src.as_ref().map(AllocatedIpPort::ip) {
             Some(ip) => ip,
             None => tuple.src_ip,
         };
@@ -393,8 +305,8 @@ impl StatefulNat {
         let reverse_state = NatState::new(
             alloc.return_src.as_ref().map(|p| p.ip().to_ip_addr()),
             alloc.return_dst.as_ref().map(|p| p.ip().to_ip_addr()),
-            alloc.return_src.as_ref().map(AllocatedPort::port),
-            alloc.return_dst.as_ref().map(AllocatedPort::port),
+            alloc.return_src.as_ref().map(AllocatedIpPort::port),
+            alloc.return_dst.as_ref().map(AllocatedIpPort::port),
         );
         (reverse_tuple, reverse_state)
     }

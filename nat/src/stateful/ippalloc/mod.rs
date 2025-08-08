@@ -7,15 +7,20 @@ use super::NatVpcId;
 use super::allocator::{AllocationResult, AllocatorError};
 use super::port::NatPort;
 use super::{NatAllocator, NatIp, NatTuple};
+pub use crate::stateful::ippalloc::natipwithbitmap::NatIpWithBitmap;
 use net::ip::NextHeader;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 mod alloc;
+mod natipwithbitmap;
+mod port_alloc;
 mod setup;
-// FIXME: Shoudln't be public
-pub mod port_alloc;
 mod test_alloc;
+
+///////////////////////////////////////////////////////////////////////////////
+// PoolTableKey
+///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolTableKey<I: NatIp> {
@@ -44,10 +49,16 @@ impl<I: NatIp> PoolTableKey<I> {
     }
 }
 
-#[derive(Debug)]
-pub struct PoolTable<I: NatIp, J: NatIp>(BTreeMap<PoolTableKey<I>, alloc::IpAllocator<J>>);
+///////////////////////////////////////////////////////////////////////////////
+// PoolTable
+///////////////////////////////////////////////////////////////////////////////
 
-impl<I: NatIp, J: NatIp> PoolTable<I, J> {
+#[derive(Debug)]
+pub struct PoolTable<I: NatIpWithBitmap, J: NatIpWithBitmap>(
+    BTreeMap<PoolTableKey<I>, alloc::IpAllocator<J>>,
+);
+
+impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
     pub fn new() -> Self {
         Self(BTreeMap::new())
     }
@@ -74,10 +85,12 @@ impl<I: NatIp, J: NatIp> PoolTable<I, J> {
     }
 }
 
-type AllocationMapping<I> = (
-    Option<port_alloc::AllocatedPort<I>>,
-    Option<port_alloc::AllocatedPort<I>>,
-);
+///////////////////////////////////////////////////////////////////////////////
+// NatDefaultAllocator
+///////////////////////////////////////////////////////////////////////////////
+
+pub type AllocatedIpPort<I> = port_alloc::AllocatedPort<I>;
+type AllocationMapping<I> = (Option<AllocatedIpPort<I>>, Option<AllocatedIpPort<I>>);
 
 #[allow(clippy::struct_field_names)]
 #[derive(Debug)]
@@ -88,9 +101,7 @@ pub struct NatDefaultAllocator {
     pools_dst66: PoolTable<Ipv6Addr, Ipv6Addr>,
 }
 
-impl NatAllocator<port_alloc::AllocatedPort<Ipv4Addr>, port_alloc::AllocatedPort<Ipv6Addr>>
-    for NatDefaultAllocator
-{
+impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatDefaultAllocator {
     fn new() -> Self {
         Self {
             pools_src44: PoolTable::new(),
@@ -103,7 +114,7 @@ impl NatAllocator<port_alloc::AllocatedPort<Ipv4Addr>, port_alloc::AllocatedPort
     fn allocate_v4(
         &mut self,
         tuple: &NatTuple<Ipv4Addr>,
-    ) -> Result<AllocationResult<port_alloc::AllocatedPort<Ipv4Addr>>, AllocatorError> {
+    ) -> Result<AllocationResult<AllocatedIpPort<Ipv4Addr>>, AllocatorError> {
         Self::check_proto(tuple.next_header)?;
 
         let pool_src_opt = self.pools_src44.get_mut(&PoolTableKey::new(
@@ -161,7 +172,7 @@ impl NatAllocator<port_alloc::AllocatedPort<Ipv4Addr>, port_alloc::AllocatedPort
     fn allocate_v6(
         &mut self,
         tuple: &NatTuple<Ipv6Addr>,
-    ) -> Result<AllocationResult<port_alloc::AllocatedPort<Ipv6Addr>>, AllocatorError> {
+    ) -> Result<AllocationResult<AllocatedIpPort<Ipv6Addr>>, AllocatorError> {
         Self::check_proto(tuple.next_header)?;
 
         let pool_src_opt = self.pools_src66.get_mut(&PoolTableKey::new(
@@ -216,7 +227,7 @@ impl NatDefaultAllocator {
         }
     }
 
-    fn get_mapping<I: NatIp>(
+    fn get_mapping<I: NatIpWithBitmap>(
         pool_src_opt: Option<&mut alloc::IpAllocator<I>>,
         pool_dst_opt: Option<&mut alloc::IpAllocator<I>>,
     ) -> Result<AllocationMapping<I>, AllocatorError> {
@@ -233,7 +244,7 @@ impl NatDefaultAllocator {
         Ok((src_mapping, dst_mapping))
     }
 
-    fn get_reverse_mapping<I: NatIp>(
+    fn get_reverse_mapping<I: NatIpWithBitmap>(
         tuple: &NatTuple<I>,
         reverse_pool_src_opt: Option<&mut alloc::IpAllocator<I>>,
         reverse_pool_dst_opt: Option<&mut alloc::IpAllocator<I>>,
@@ -267,6 +278,10 @@ impl NatDefaultAllocator {
         Ok((reverse_src_mapping, reverse_dst_mapping))
     }
 }
+
+///////////////////////////////////////////////////////////////////////////////
+// Tests
+///////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {

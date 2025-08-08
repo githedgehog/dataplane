@@ -3,12 +3,14 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::stateful::NatTuple;
     use crate::stateful::allocator::{AllocationResult, NatAllocator};
     use crate::stateful::ippalloc::alloc::IpAllocator;
     use crate::stateful::ippalloc::port_alloc::AllocatedPort;
     use crate::stateful::ippalloc::setup::build_nat_allocator;
-    use crate::stateful::ippalloc::{NatDefaultAllocator, PoolTable, PoolTableKey};
-    use crate::stateful::{NatIp, NatTuple};
+    use crate::stateful::ippalloc::{
+        NatDefaultAllocator, NatIpWithBitmap, PoolTable, PoolTableKey,
+    };
     use config::ConfigError;
     use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
@@ -31,7 +33,7 @@ mod tests {
         Vni::new_checked(200).unwrap()
     }
 
-    fn print_allocation<I: NatIp>(allocation: &AllocationResult<AllocatedPort<I>>) {
+    fn print_allocation<I: NatIpWithBitmap>(allocation: &AllocationResult<AllocatedPort<I>>) {
         let format_ip_port = |ip_port: &Option<AllocatedPort<I>>| {
             if let Some(ip_port) = ip_port {
                 format!("{:?}:{:?}", ip_port.ip(), ip_port.port().as_u16())

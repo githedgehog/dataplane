@@ -1,26 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use super::port_alloc;
+use super::{NatIpWithBitmap, port_alloc};
 use crate::stateful::NatIp;
 use crate::stateful::allocator::AllocatorError;
 use crate::stateful::port::NatPort;
 use lpm::prefix::{IpPrefix, Prefix};
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, VecDeque};
-use std::net::Ipv6Addr;
 use std::sync::{Arc, RwLock, Weak};
 
 ///////////////////////////////////////////////////////////////////////////////
-// Allocators
+// IpAllocator
 ///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Clone)]
-pub struct IpAllocator<I: NatIp> {
+pub struct IpAllocator<I: NatIpWithBitmap> {
     pool: Arc<RwLock<NatPool<I>>>,
 }
 
-impl<I: NatIp> IpAllocator<I> {
+impl<I: NatIpWithBitmap> IpAllocator<I> {
     pub(crate) fn new(pool: NatPool<I>) -> Self {
         Self {
             pool: Arc::new(RwLock::new(pool)),
@@ -102,17 +101,17 @@ impl<I: NatIp> IpAllocator<I> {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Allocated components
+// AllocatedIp
 ///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct AllocatedIp<I: NatIp> {
+pub struct AllocatedIp<I: NatIpWithBitmap> {
     ip: I,
     port_allocator: port_alloc::PortAllocator<I>,
     ip_allocator: IpAllocator<I>,
 }
 
-impl<I: NatIp> AllocatedIp<I> {
+impl<I: NatIpWithBitmap> AllocatedIp<I> {
     fn new(ip: I, ip_allocator: IpAllocator<I>) -> Self {
         Self {
             ip,
@@ -147,25 +146,25 @@ impl<I: NatIp> AllocatedIp<I> {
     }
 }
 
-impl<I: NatIp> Drop for AllocatedIp<I> {
+impl<I: NatIpWithBitmap> Drop for AllocatedIp<I> {
     fn drop(&mut self) {
         self.ip_allocator.deallocate_ip(self.ip);
     }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Low-level map structures
+// NatPool
 ///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub(crate) struct NatPool<I: NatIp> {
+pub(crate) struct NatPool<I: NatIpWithBitmap> {
     bitmap: PoolBitmap,
     bitmap_mapping: BTreeMap<u32, u128>,
     reverse_bitmap_mapping: BTreeMap<u128, u32>,
     in_use: VecDeque<Weak<AllocatedIp<I>>>,
 }
 
-impl<I: NatIp> NatPool<I> {
+impl<I: NatIpWithBitmap> NatPool<I> {
     pub(crate) fn new(
         bitmap: PoolBitmap,
         bitmap_mapping: BTreeMap<u32, u128>,
@@ -198,24 +197,12 @@ impl<I: NatIp> NatPool<I> {
         // Retrieve the first available offset
         let offset = self.bitmap.pop_ip()?;
 
-        if std::mem::size_of::<I>() == std::mem::size_of::<Ipv6Addr>() {
-            let ip = ipv6_try_from_offset(offset, &self.bitmap_mapping)?;
-            Ok(AllocatedIp::new(ip, ip_allocator))
-        } else {
-            let ip = I::try_from_bits(u128::from(offset)).map_err(|()| {
-                AllocatorError::InternalIssue("Failed to convert offset to IP".to_string())
-            })?;
-            Ok(AllocatedIp::new(ip, ip_allocator))
-        }
+        let ip = I::try_from_offset(offset, &self.bitmap_mapping)?;
+        Ok(AllocatedIp::new(ip, ip_allocator))
     }
 
     fn deallocate_from_pool(&mut self, ip: I) {
-        let offset = if std::mem::size_of::<I>() == std::mem::size_of::<Ipv6Addr>() {
-            ipv6_try_to_offset(ip, &self.reverse_bitmap_mapping).unwrap()
-        } else {
-            // IPv4
-            u32::try_from(ip.to_bits()).unwrap()
-        };
+        let offset = I::try_to_offset(ip, &self.reverse_bitmap_mapping).unwrap();
         self.bitmap.set_ip_free(offset);
     }
 
@@ -224,14 +211,7 @@ impl<I: NatIp> NatPool<I> {
         ip: I,
         ip_allocator: IpAllocator<I>,
     ) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
-        let offset = if std::mem::size_of::<I>() == std::mem::size_of::<Ipv6Addr>() {
-            ipv6_try_to_offset(ip, &self.reverse_bitmap_mapping)?
-        } else {
-            // IPv4
-            u32::try_from(ip.to_bits()).map_err(|_| {
-                AllocatorError::InternalIssue("Failed to convert IP to offset".to_string())
-            })?
-        };
+        let offset = I::try_to_offset(ip, &self.reverse_bitmap_mapping)?;
         if self.bitmap.set_ip_allocated(offset) {
             // The IP was free in the bitmap, allocate it now
             let arc_ip = Arc::new(AllocatedIp::new(ip, ip_allocator));
@@ -263,6 +243,10 @@ impl<I: NatIp> NatPool<I> {
         Ok(ip_arc)
     }
 }
+
+///////////////////////////////////////////////////////////////////////////////
+// PoolBitmap
+///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
 pub struct PoolBitmap(RoaringBitmap);
@@ -308,28 +292,10 @@ impl PoolBitmap {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// IP types
+// IPv6 <-> u32-offset mapping functions
 ///////////////////////////////////////////////////////////////////////////////
 
-fn ipv6_try_from_offset<I: NatIp>(
-    offset: u32,
-    bitmap_mapping: &BTreeMap<u32, u128>,
-) -> Result<I, AllocatorError> {
-    // For IPv6, the offset does not directly convert to an IP address because the bitmap space
-    // is lower than the IPv6 addressing space. Instead, we need to map the offset to the
-    // corresponding address within our list of prefixes.
-    map_offset(offset, bitmap_mapping)
-}
-
-fn ipv6_try_to_offset<I: NatIp>(
-    address: I,
-    bitmap_mapping: &BTreeMap<u128, u32>,
-) -> Result<u32, AllocatorError> {
-    // Reverse operation of map_offset()
-    map_address(address, bitmap_mapping)
-}
-
-fn map_offset<I: NatIp>(
+pub(crate) fn map_offset<I: NatIp>(
     offset: u32,
     bitmap_mapping: &BTreeMap<u32, u128>,
 ) -> Result<I, AllocatorError> {
@@ -352,7 +318,7 @@ fn map_offset<I: NatIp>(
         .map_err(|()| AllocatorError::InternalIssue("Failed to convert offset to IPv6".to_string()))
 }
 
-fn map_address<I: NatIp>(
+pub(crate) fn map_address<I: NatIp>(
     address: I,
     bitmap_mapping: &BTreeMap<u128, u32>,
 ) -> Result<u32, AllocatorError> {
