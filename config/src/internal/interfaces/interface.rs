@@ -152,27 +152,6 @@ impl InterfaceConfig {
         if self.name.is_empty() {
             return Err(ConfigError::MissingIdentifier("interface name"));
         }
-
-        if let InterfaceType::Vtep(vtep) = &self.iftype {
-            if vtep.local.is_multicast() {
-                return Err(ConfigError::BadVtepLocalAddress(
-                    vtep.local.into(),
-                    "address is not unicast",
-                ));
-            }
-            match &vtep.mac {
-                Some(mac) => {
-                    if SourceMac::new(*mac).is_err() {
-                        return Err(ConfigError::BadVtepMacAddress(
-                            *mac,
-                            "mac address is not a valid source mac address",
-                        ));
-                    }
-                }
-                None => return Err(ConfigError::MissingParameter("VTEP MAC address")),
-            }
-        }
-
         Ok(())
     }
 }
