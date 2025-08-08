@@ -232,8 +232,6 @@ impl<I: NatIp> NatPool<I> {
                 AllocatorError::InternalIssue("Failed to convert IP to offset".to_string())
             })?
         };
-        println!("ip: {ip:?}, offset: {offset}");
-        println!("bitmap: {:?}", self.bitmap);
         if self.bitmap.set_ip_allocated(offset) {
             // The IP was free in the bitmap, allocate it now
             let arc_ip = Arc::new(AllocatedIp::new(ip, ip_allocator));

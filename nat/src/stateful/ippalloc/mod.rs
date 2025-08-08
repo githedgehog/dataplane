@@ -52,7 +52,7 @@ impl<I: NatIp, J: NatIp> PoolTable<I, J> {
         Self(BTreeMap::new())
     }
 
-    fn get_mut(&mut self, key: &PoolTableKey<I>) -> Option<&mut alloc::IpAllocator<J>> {
+    pub(crate) fn get_mut(&mut self, key: &PoolTableKey<I>) -> Option<&mut alloc::IpAllocator<J>> {
         // We need to find the entry with the ID, and the prefix for the corresponding address.
         // Get the range of "lower" entries, the one with the address before ours is the prefix we
         // need, if the ID also matches.
@@ -110,7 +110,7 @@ impl NatAllocator<port_alloc::AllocatedPort<Ipv4Addr>, port_alloc::AllocatedPort
             tuple.next_header,
             tuple.src_vpc_id,
             tuple.dst_vpc_id,
-            tuple.dst_ip,
+            tuple.src_ip,
             Ipv4Addr::new(255, 255, 255, 255),
         ));
         let pool_dst_opt = self.pools_dst44.get_mut(&PoolTableKey::new(
@@ -120,19 +120,14 @@ impl NatAllocator<port_alloc::AllocatedPort<Ipv4Addr>, port_alloc::AllocatedPort
             tuple.dst_ip,
             Ipv4Addr::new(255, 255, 255, 255),
         ));
-        println!(
-            "Tuple: {tuple:?}, pool_src_opt: {pool_src_opt:?}, pool_dst_opt: {pool_dst_opt:?}"
-        );
 
         let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt)?;
 
-        // TODO: We should use the destination VRF ID?
-        let reverse_pool_src_opt = if let Some(mapping) = &src_mapping {
-            println!("src_mapping: {:?}", mapping.ip());
+        let reverse_pool_src_opt = if let Some(mapping) = &dst_mapping {
             self.pools_src44.get_mut(&PoolTableKey::new(
                 tuple.next_header,
-                tuple.src_vpc_id,
                 tuple.dst_vpc_id,
+                tuple.src_vpc_id,
                 mapping.ip(),
                 Ipv4Addr::new(255, 255, 255, 255),
             ))
@@ -140,21 +135,17 @@ impl NatAllocator<port_alloc::AllocatedPort<Ipv4Addr>, port_alloc::AllocatedPort
             None
         };
 
-        let reverse_pool_dst_opt = if let Some(mapping) = &dst_mapping {
-            println!("dst_mapping: {:?}", mapping.ip());
+        let reverse_pool_dst_opt = if let Some(mapping) = &src_mapping {
             self.pools_dst44.get_mut(&PoolTableKey::new(
                 tuple.next_header,
-                tuple.src_vpc_id,
                 tuple.dst_vpc_id,
+                tuple.src_vpc_id,
                 mapping.ip(),
                 Ipv4Addr::new(255, 255, 255, 255),
             ))
         } else {
             None
         };
-        println!(
-            "Tuple: {tuple:?}, reverse_pool_src_opt: {reverse_pool_src_opt:?}, reverse_pool_dst_opt: {reverse_pool_dst_opt:?}",
-        );
 
         let (reverse_src_mapping, reverse_dst_mapping) =
             Self::get_reverse_mapping(tuple, reverse_pool_src_opt, reverse_pool_dst_opt)?;

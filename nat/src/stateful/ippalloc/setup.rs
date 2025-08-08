@@ -13,7 +13,6 @@ use lpm::prefix::{IpPrefix, Prefix};
 use net::ip::NextHeader;
 use net::vxlan::Vni;
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::{Ipv4Addr, Ipv6Addr};
 
 fn get_remote_vni(peering: &Peering, vpc_table: &VpcTable) -> Vni {
     vpc_table
@@ -46,118 +45,94 @@ impl NatDefaultAllocator {
         let new_peering = collapse_prefixes_peering(peering)
             .map_err(|e| AllocatorError::InternalIssue(e.to_string()))?;
 
-        let v4_local_exposes = filter_v4_exposes(&new_peering.local.exposes);
-        let v6_local_exposes = filter_v6_exposes(&new_peering.local.exposes);
-
-        let allocators_local_exposes =
-            ip_allocator_for_local_exposes(&v4_local_exposes, &v6_local_exposes)?;
-
         // Update table for source NAT
-        self.update_src_nat_pool_for_expose(
-            &v4_local_exposes,
-            &v6_local_exposes,
-            src_vpc_id,
-            dst_vpc_id,
-            &allocators_local_exposes,
-        )?;
-
-        let v4_remote_exposes = filter_v4_exposes(&new_peering.remote.exposes);
-        let v6_remote_exposes = filter_v6_exposes(&new_peering.remote.exposes);
-
-        let allocators_remote_exposes =
-            ip_allocator_for_remote_exposes(&v4_remote_exposes, &v6_remote_exposes)?;
+        self.update_src_nat_pool_for_expose(&new_peering, src_vpc_id, dst_vpc_id)?;
 
         // Update table for destination NAT
-        self.update_dst_nat_pool_for_expose(
-            &v4_remote_exposes,
-            &v6_remote_exposes,
-            src_vpc_id,
-            dst_vpc_id,
-            &allocators_remote_exposes,
-        )?;
+        self.update_dst_nat_pool_for_expose(&new_peering, src_vpc_id, dst_vpc_id)?;
 
         Ok(())
     }
 
     fn update_src_nat_pool_for_expose(
         &mut self,
-        v4_local_exposes: &Vec<&VpcExpose>,
-        v6_local_exposes: &Vec<&VpcExpose>,
+        peering: &Peering,
         src_vpc_id: NatVpcId,
         dst_vpc_id: NatVpcId,
-        allocators_local_exposes: &(IpAllocator<Ipv4Addr>, IpAllocator<Ipv6Addr>),
     ) -> Result<(), AllocatorError> {
-        v4_local_exposes.iter().try_for_each(|expose| {
+        filter_v4_exposes(&peering.local.exposes).try_for_each(|expose| {
+            let ip_allocator = ip_allocator_for_prefixes(&expose.as_range)?;
             update_src_nat_pool_generic(
                 &mut self.pools_src44,
                 expose,
                 src_vpc_id,
                 dst_vpc_id,
-                &allocators_local_exposes.0,
+                &ip_allocator,
             )
         })?;
-        v6_local_exposes.iter().try_for_each(|expose| {
+
+        filter_v6_exposes(&peering.local.exposes).try_for_each(|expose| {
+            let ip_allocator = ip_allocator_for_prefixes(&expose.as_range)?;
             update_src_nat_pool_generic(
                 &mut self.pools_src66,
                 expose,
                 src_vpc_id,
                 dst_vpc_id,
-                &allocators_local_exposes.1,
+                &ip_allocator,
             )
-        })
+        })?;
+
+        Ok(())
     }
 
     fn update_dst_nat_pool_for_expose(
         &mut self,
-        v4_remote_exposes: &Vec<&VpcExpose>,
-        v6_remote_exposes: &Vec<&VpcExpose>,
+        peering: &Peering,
         src_vpc_id: NatVpcId,
         dst_vpc_id: NatVpcId,
-        allocators_remote_exposes: &(IpAllocator<Ipv4Addr>, IpAllocator<Ipv6Addr>),
     ) -> Result<(), AllocatorError> {
-        v4_remote_exposes.iter().try_for_each(|expose| {
+        filter_v4_exposes(&peering.remote.exposes).try_for_each(|expose| {
+            let ip_allocator = ip_allocator_for_prefixes(&expose.ips)?;
             update_dst_nat_pool_generic(
                 &mut self.pools_dst44,
                 expose,
                 src_vpc_id,
                 dst_vpc_id,
-                &allocators_remote_exposes.0,
+                &ip_allocator,
             )
         })?;
-        v6_remote_exposes.iter().try_for_each(|expose| {
+
+        filter_v6_exposes(&peering.remote.exposes).try_for_each(|expose| {
+            let ip_allocator = ip_allocator_for_prefixes(&expose.ips)?;
             update_dst_nat_pool_generic(
                 &mut self.pools_dst66,
                 expose,
                 src_vpc_id,
                 dst_vpc_id,
-                &allocators_remote_exposes.1,
+                &ip_allocator,
             )
-        })
+        })?;
+
+        Ok(())
     }
 }
 
-fn filter_v4_exposes(exposes: &[VpcExpose]) -> Vec<&VpcExpose> {
-    exposes
-        .iter()
-        .filter(|e| {
-            matches!(
-                (e.ips.first(), e.as_range.first()),
-                (Some(Prefix::IPV4(_)), Some(Prefix::IPV4(_)))
-            )
-        })
-        .collect()
+fn filter_v4_exposes(exposes: &[VpcExpose]) -> impl Iterator<Item = &VpcExpose> {
+    exposes.iter().filter(|e| {
+        matches!(
+            (e.ips.first(), e.as_range.first()),
+            (Some(Prefix::IPV4(_)), Some(Prefix::IPV4(_)))
+        )
+    })
 }
 
-fn filter_v6_exposes(exposes: &[VpcExpose]) -> Vec<&VpcExpose> {
-    exposes
-        .iter()
-        .filter(|e| {
-            matches!(
-                (e.ips.first(), e.as_range.first()),
-                (Some(Prefix::IPV6(_)), Some(Prefix::IPV6(_)))
-            )
-        })
-        .collect()
+fn filter_v6_exposes(exposes: &[VpcExpose]) -> impl Iterator<Item = &VpcExpose> {
+    exposes.iter().filter(|e| {
+        matches!(
+            (e.ips.first(), e.as_range.first()),
+            (Some(Prefix::IPV6(_)), Some(Prefix::IPV6(_)))
+        )
+    })
 }
 
 fn update_src_nat_pool_generic<I: NatIp, J: NatIp>(
@@ -223,41 +198,15 @@ fn insert_per_proto_entries<I: NatIp, J: NatIp>(
     table.add_entry(udp_key, allocator.clone());
 }
 
-fn ip_allocator_for_local_exposes(
-    v4_exposes: &Vec<&VpcExpose>,
-    v6_exposes: &Vec<&VpcExpose>,
-) -> Result<(IpAllocator<Ipv4Addr>, IpAllocator<Ipv6Addr>), AllocatorError> {
-    let v4_prefixes = v4_exposes.iter().flat_map(|e| e.as_range.iter()).collect();
-    let v4_allocator = ip_allocator_for_prefixes(&v4_prefixes)?;
-
-    let v6_prefixes = v6_exposes.iter().flat_map(|e| e.as_range.iter()).collect();
-    let v6_allocator = ip_allocator_for_prefixes(&v6_prefixes)?;
-
-    Ok((v4_allocator, v6_allocator))
-}
-
-fn ip_allocator_for_remote_exposes(
-    v4_exposes: &Vec<&VpcExpose>,
-    v6_exposes: &Vec<&VpcExpose>,
-) -> Result<(IpAllocator<Ipv4Addr>, IpAllocator<Ipv6Addr>), AllocatorError> {
-    let v4_prefixes = v4_exposes.iter().flat_map(|e| e.ips.iter()).collect();
-    let v4_allocator = ip_allocator_for_prefixes(&v4_prefixes)?;
-
-    let v6_prefixes = v6_exposes.iter().flat_map(|e| e.ips.iter()).collect();
-    let v6_allocator = ip_allocator_for_prefixes(&v6_prefixes)?;
-
-    Ok((v4_allocator, v6_allocator))
-}
-
 fn ip_allocator_for_prefixes<J: NatIp>(
-    prefixes: &Vec<&Prefix>,
+    prefixes: &BTreeSet<Prefix>,
 ) -> Result<IpAllocator<J>, AllocatorError> {
     let pool = create_natpool(prefixes)?;
     let allocator = IpAllocator::new(pool);
     Ok(allocator)
 }
 
-fn create_natpool<J: NatIp>(prefixes: &Vec<&Prefix>) -> Result<NatPool<J>, AllocatorError> {
+fn create_natpool<J: NatIp>(prefixes: &BTreeSet<Prefix>) -> Result<NatPool<J>, AllocatorError> {
     // Build mappings for IPv6 <-> u32 bitmap translation
     let (bitmap_mapping, reverse_bitmap_mapping) = create_ipv6_bitmap_mappings(prefixes)?;
 
@@ -299,7 +248,7 @@ fn pool_table_key_for_expose<I: NatIp>(
 
 #[allow(clippy::type_complexity)]
 fn create_ipv6_bitmap_mappings(
-    prefixes: &Vec<&Prefix>,
+    prefixes: &BTreeSet<Prefix>,
 ) -> Result<(BTreeMap<u32, u128>, BTreeMap<u128, u32>), AllocatorError> {
     let mut bitmap_mapping = BTreeMap::new();
     let mut reverse_bitmap_mapping = BTreeMap::new();
