@@ -5,7 +5,7 @@ use std::fmt::{Debug, Display};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
-use crate::prefix::PrefixError;
+use crate::prefix::{PrefixError, PrefixSize};
 use ipnet::{Ipv4Net, Ipv6Net};
 use num_traits::{CheckedShr, PrimInt, Unsigned, Zero};
 
@@ -59,7 +59,11 @@ pub trait IpPrefix: Debug + Clone + From<Self::Addr> + PartialEq {
 
     fn network(&self) -> Self::Addr;
 
+    fn last_address(&self) -> Self::Addr;
+
     fn len(&self) -> u8;
+
+    fn size(&self) -> PrefixSize;
 }
 
 pub trait IpPrefixCovering<Other> {
@@ -128,8 +132,14 @@ impl IpPrefix for Ipv4Prefix {
     fn network(&self) -> Self::Addr {
         self.0.network()
     }
+    fn last_address(&self) -> Self::Addr {
+        self.0.broadcast()
+    }
     fn len(&self) -> u8 {
         self.0.prefix_len()
+    }
+    fn size(&self) -> PrefixSize {
+        PrefixSize::U128(2u128.pow(32 - u32::from(self.len())))
     }
 }
 
@@ -244,8 +254,18 @@ impl IpPrefix for Ipv6Prefix {
     fn network(&self) -> Self::Addr {
         self.0.network()
     }
+    fn last_address(&self) -> Self::Addr {
+        self.0.broadcast()
+    }
     fn len(&self) -> u8 {
         self.0.prefix_len()
+    }
+    fn size(&self) -> PrefixSize {
+        if self.len() == 0 {
+            PrefixSize::Ipv6MaxAddrs
+        } else {
+            PrefixSize::U128(2u128.pow(128 - u32::from(self.len())))
+        }
     }
 }
 

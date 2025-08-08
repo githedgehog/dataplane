@@ -7,12 +7,15 @@ license = "Apache-2.0"
 
 [dependencies]
 ahash = { workspace = true }
+concurrency = { workspace = true, features = [] }
 config = { workspace = true }
 dashmap = { workspace = true }
 left-right = { workspace = true }
 lpm = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
+rand = { workspace = true }
+roaring = { workspace = true }
 routing = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

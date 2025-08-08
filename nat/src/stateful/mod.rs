@@ -3,11 +3,18 @@
 
 #![allow(dead_code)]
 #![allow(unused_variables)]
-#![allow(unused_imports)]
 
 mod allocator;
+mod ippalloc;
+mod natip;
+mod port;
 pub mod sessions;
 
+use crate::stateful::allocator::{AllocationResult, NatAllocator};
+use crate::stateful::ippalloc::AllocatedIpPort;
+use crate::stateful::ippalloc::{NatDefaultAllocator, NatIpWithBitmap};
+use crate::stateful::natip::NatIp;
+use crate::stateful::port::NatPort;
 use crate::stateful::sessions::{
     NatDefaultSession, NatDefaultSessionManager, NatSession, NatSessionManager, NatState,
 };
@@ -20,74 +27,47 @@ use net::tcp::port::TcpPort;
 use net::udp::port::UdpPort;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
-use routing::rib::vrf::VrfId;
+use std::fmt::Debug;
 use std::hash::Hash;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr};
 
-mod private {
-    pub trait Sealed {}
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum StatefulNatError {
+    #[error("invalid port {0}")]
+    InvalidPort(u16),
 }
-pub trait NatIp: private::Sealed + Clone + Eq + Hash {
-    fn to_ip_addr(&self) -> IpAddr;
-    fn from_src_addr(net: &Net) -> Option<Self>;
-    fn from_dst_addr(net: &Net) -> Option<Self>;
-}
-impl private::Sealed for Ipv4Addr {}
-impl private::Sealed for Ipv6Addr {}
-impl NatIp for Ipv4Addr {
-    fn to_ip_addr(&self) -> IpAddr {
-        IpAddr::V4(*self)
-    }
-    fn from_src_addr(net: &Net) -> Option<Self> {
-        if let IpAddr::V4(addr) = net.src_addr() {
-            Some(addr)
-        } else {
-            None
-        }
-    }
-    fn from_dst_addr(net: &Net) -> Option<Self> {
-        if let IpAddr::V4(addr) = net.dst_addr() {
-            Some(addr)
-        } else {
-            None
-        }
-    }
-}
-impl NatIp for Ipv6Addr {
-    fn to_ip_addr(&self) -> IpAddr {
-        IpAddr::V6(*self)
-    }
-    fn from_src_addr(net: &Net) -> Option<Self> {
-        if let IpAddr::V6(addr) = net.src_addr() {
-            Some(addr)
-        } else {
-            None
-        }
-    }
-    fn from_dst_addr(net: &Net) -> Option<Self> {
-        if let IpAddr::V6(addr) = net.dst_addr() {
-            Some(addr)
-        } else {
-            None
-        }
-    }
-}
+
+type NatVpcId = Vni;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NatTuple<I: NatIp> {
     src_ip: I,
     dst_ip: I,
+    src_port: Option<u16>,
+    dst_port: Option<u16>,
     next_header: NextHeader,
-    vrf_id: VrfId,
+    src_vpc_id: NatVpcId,
+    dst_vpc_id: NatVpcId,
 }
 
 impl<I: NatIp> NatTuple<I> {
-    fn new(src_ip: I, dst_ip: I, next_header: NextHeader, vrf_id: VrfId) -> Self {
+    fn new(
+        src_ip: I,
+        dst_ip: I,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+        next_header: NextHeader,
+        src_vpc_id: NatVpcId,
+        dst_vpc_id: NatVpcId,
+    ) -> Self {
         Self {
             src_ip,
             dst_ip,
+            src_port,
+            dst_port,
             next_header,
-            vrf_id,
+            src_vpc_id,
+            dst_vpc_id,
         }
     }
 }
@@ -97,6 +77,7 @@ impl<I: NatIp> NatTuple<I> {
 #[derive(Debug)]
 pub struct StatefulNat {
     sessions: NatDefaultSessionManager,
+    allocator: NatDefaultAllocator,
 }
 
 #[allow(clippy::new_without_default)]
@@ -106,18 +87,39 @@ impl StatefulNat {
     pub fn new() -> Self {
         Self {
             sessions: NatDefaultSessionManager::new(),
+            allocator: NatDefaultAllocator::new(),
         }
     }
 
-    fn get_vrf_id(net: &Net, vni: Vni) -> VrfId {
+    fn get_src_vpc_id(net: &Net, vni: Vni) -> NatVpcId {
         todo!()
     }
 
-    fn extract_tuple<I: NatIp>(net: &Net, vrf_id: VrfId) -> Option<NatTuple<I>> {
+    fn get_dst_vpc_id(net: &Net, vni: Vni) -> NatVpcId {
+        todo!()
+    }
+
+    fn extract_tuple<I: NatIp>(
+        net: &Net,
+        src_vpc_id: NatVpcId,
+        dst_vpc_id: NatVpcId,
+    ) -> Option<NatTuple<I>> {
         let src_ip = I::from_src_addr(net)?;
         let dst_ip = I::from_dst_addr(net)?;
         let next_header = net.next_header();
-        Some(NatTuple::new(src_ip, dst_ip, next_header, vrf_id))
+        // FIXME
+        let src_port = None;
+        let dst_port = None;
+
+        Some(NatTuple::new(
+            src_ip,
+            dst_ip,
+            src_port,
+            dst_port,
+            next_header,
+            src_vpc_id,
+            dst_vpc_id,
+        ))
     }
 
     fn lookup_session_v4_mut(
@@ -134,54 +136,52 @@ impl StatefulNat {
         state: NatState,
     ) -> Result<(), sessions::SessionError> {
         self.sessions.insert_session_v4(tuple.clone(), state)
-
-        // TODO: Reverse session
-    }
-
-    fn find_nat_pool<I: NatIp>(
-        &self,
-        tuple: &NatTuple<I>,
-        vrf_id: VrfId,
-    ) -> Option<&dyn allocator::NatPool<I>> {
-        todo!()
     }
 
     fn set_source_port(
         transport: &mut Transport,
         next_header: NextHeader,
-        target_port: Option<allocator::NatPort>,
-    ) {
-        let Some(port) = target_port else {
-            return;
-        };
+        new_port: NatPort,
+    ) -> Result<(), StatefulNatError> {
         match (transport, next_header) {
             (Transport::Tcp(tcp), NextHeader::TCP) => {
-                tcp.set_source(TcpPort::try_from(port).unwrap());
+                tcp.set_source(
+                    TcpPort::try_from(new_port)
+                        .map_err(|_| StatefulNatError::InvalidPort(new_port.as_u16()))?,
+                );
             }
             (Transport::Udp(udp), NextHeader::UDP) => {
-                udp.set_source(UdpPort::try_from(port).unwrap());
+                udp.set_source(
+                    UdpPort::try_from(new_port)
+                        .map_err(|_| StatefulNatError::InvalidPort(new_port.as_u16()))?,
+                );
             }
             _ => {}
         }
+        Ok(())
     }
 
     fn set_destination_port(
         transport: &mut Transport,
         next_header: NextHeader,
-        target_port: Option<allocator::NatPort>,
-    ) {
-        let Some(port) = target_port else {
-            return;
-        };
+        target_port: NatPort,
+    ) -> Result<(), StatefulNatError> {
         match (transport, next_header) {
             (Transport::Tcp(tcp), NextHeader::TCP) => {
-                tcp.set_destination(TcpPort::try_from(port).unwrap());
+                tcp.set_destination(
+                    TcpPort::try_from(target_port)
+                        .map_err(|_| StatefulNatError::InvalidPort(target_port.as_u16()))?,
+                );
             }
             (Transport::Udp(udp), NextHeader::UDP) => {
-                udp.set_destination(UdpPort::try_from(port).unwrap());
+                udp.set_destination(
+                    UdpPort::try_from(target_port)
+                        .map_err(|_| StatefulNatError::InvalidPort(target_port.as_u16()))?,
+                );
             }
             _ => {}
         }
+        Ok(())
     }
 
     #[allow(clippy::unnecessary_wraps)]
@@ -190,24 +190,36 @@ impl StatefulNat {
         state: &NatState,
         next_header: NextHeader,
     ) -> Option<()> {
-        let headers = packet.headers_mut();
-        let net = headers.try_ip_mut()?;
         let (target_src_addr, target_dst_addr, target_src_port, target_dst_port) = state.get_nat();
 
-        match (net, target_src_addr, target_dst_addr) {
-            (Net::Ipv4(ip_hdr), IpAddr::V4(target_src_ip), IpAddr::V4(target_dst_ip)) => {
-                ip_hdr
-                    .set_source(UnicastIpv4Addr::new(target_src_ip).ok()?)
-                    .set_destination(target_dst_ip);
+        let headers = packet.headers_mut();
+        let net = headers.try_ip_mut()?;
+        match (net, target_src_addr, target_src_port) {
+            (Net::Ipv4(ip_hdr), Some(IpAddr::V4(target_src_ip)), Some(target_src_port)) => {
+                ip_hdr.set_source(UnicastIpv4Addr::new(target_src_ip).ok()?);
 
                 let transport = headers.try_transport_mut()?;
-                Self::set_source_port(transport, next_header, target_src_port);
-                Self::set_destination_port(transport, next_header, target_dst_port);
+                Self::set_source_port(transport, next_header, target_src_port).ok()?;
             }
-            (Net::Ipv6(ip_hdr), IpAddr::V6(target_src_ip), IpAddr::V6(target_dst_ip)) => {
+            (Net::Ipv6(ip_hdr), Some(IpAddr::V6(target_src_ip)), Some(target_src_port)) => {
                 todo!()
             }
-            (_, _, _) => return None,
+            (_, _, _) => {}
+        }
+
+        let headers = packet.headers_mut();
+        let net = headers.try_ip_mut()?;
+        match (net, target_dst_addr, target_dst_port) {
+            (Net::Ipv4(ip_hdr), Some(IpAddr::V4(target_dst_ip)), Some(target_dst_port)) => {
+                ip_hdr.set_destination(target_dst_ip);
+
+                let transport = headers.try_transport_mut()?;
+                Self::set_destination_port(transport, next_header, target_dst_port).ok()?;
+            }
+            (Net::Ipv6(ip_hdr), Some(IpAddr::V6(target_dst_ip)), Some(target_dst_port)) => {
+                todo!()
+            }
+            (_, _, _) => {}
         }
         Some(())
     }
@@ -217,10 +229,94 @@ impl StatefulNat {
         state.increment_bytes(total_bytes.into());
     }
 
+    // TODO: Change this function to store directly the AllocatedPort objects in session map
+    fn new_state_from_alloc<I: NatIpWithBitmap>(
+        alloc: &AllocationResult<AllocatedIpPort<I>>,
+    ) -> NatState {
+        let (target_src_addr, target_src_port) = match &alloc.src {
+            Some(alloc_ip_port) => (
+                Some(alloc_ip_port.ip().to_ip_addr()),
+                // TODO: We could have non-empty IP but empty port, e.g. ICMP (needs changing struct
+                // AllocatedPort to contain an Option; then remove "Some" here)
+                Some(alloc_ip_port.port()),
+            ),
+            None => (None, None),
+        };
+        let (target_dst_addr, target_dst_port) = match &alloc.dst {
+            Some(alloc_ip_port) => (
+                Some(alloc_ip_port.ip().to_ip_addr()),
+                Some(alloc_ip_port.port()),
+            ),
+            None => (None, None),
+        };
+        NatState::new(
+            target_src_addr,
+            target_dst_addr,
+            target_src_port,
+            target_dst_port,
+        )
+    }
+
+    fn new_reverse_session<I: NatIpWithBitmap>(
+        tuple: &NatTuple<I>,
+        alloc: &AllocationResult<AllocatedIpPort<I>>,
+        src_vpc_id: NatVpcId,
+        dst_vpc_id: NatVpcId,
+    ) -> (NatTuple<I>, NatState) {
+        // Forward session:
+        //   f.init:(src: a, dst: B) -> f.nated:(src: A, dst: b)
+        //
+        // We want to create the following session:
+        //   r.init:(src: b, dst: A) -> r.nated:(src: B, dst: a)
+        //
+        // So we want:
+        // - tuple r.init = (src: f.nated.dst, dst: f.nated.src)
+        // - mapping r.nated = (src: f.init.dst, dst: f.init.src)
+
+        let reverse_src = match alloc.dst.as_ref().map(AllocatedIpPort::ip) {
+            Some(ip) => ip,
+            // No destination NAT for forward session:
+            // f.init:(src: a, dst: b) -> f.nated:(src: A, dst: b)
+            //
+            // Reverse session will be:
+            // r.init:(src: b, dst: A) -> r.nated:(src: b, dst: a)
+            //
+            // Use destination IP from forward tuple.
+            None => tuple.dst_ip,
+        };
+        let reverse_dst = match alloc.src.as_ref().map(AllocatedIpPort::ip) {
+            Some(ip) => ip,
+            None => tuple.src_ip,
+        };
+
+        let reverse_tuple = NatTuple::new(
+            reverse_src,
+            reverse_dst,
+            alloc.dst.as_ref().map(|p| p.port().as_u16()),
+            alloc.src.as_ref().map(|p| p.port().as_u16()),
+            tuple.next_header,
+            dst_vpc_id,
+            src_vpc_id,
+        );
+
+        // Do not reuse information from forward tuple, because the IPs and ports for the reverse
+        // session need to be registered with the allocator. Use the elements returned from the
+        // allocator.
+        let reverse_state = NatState::new(
+            alloc.return_src.as_ref().map(|p| p.ip().to_ip_addr()),
+            alloc.return_dst.as_ref().map(|p| p.ip().to_ip_addr()),
+            alloc.return_src.as_ref().map(AllocatedIpPort::port),
+            alloc.return_dst.as_ref().map(AllocatedIpPort::port),
+        );
+        (reverse_tuple, reverse_state)
+    }
+
     fn translate_packet_v4<Buf: PacketBufferMut>(
         &mut self,
         packet: &mut Packet<Buf>,
         tuple: &NatTuple<Ipv4Addr>,
+        src_vpc_id: NatVpcId,
+        dst_vpc_id: NatVpcId,
         total_bytes: u16,
     ) -> Option<()> {
         // Hot path: if we have a session, directly translate the address already
@@ -231,23 +327,27 @@ impl StatefulNat {
         }
 
         // Else, if we need NAT for this packet, create a new session and translate the address
-        if let Some(pool) = self.find_nat_pool::<Ipv4Addr>(tuple, tuple.vrf_id) {
-            let (target_src_addr, target_dst_addr, target_src_port, target_dst_port) =
-                pool.allocate().ok()?;
-            let mut new_state = NatState::new(
-                target_src_addr.to_ip_addr(),
-                target_dst_addr.to_ip_addr(),
-                target_src_port,
-                target_dst_port,
-            );
-            Self::update_stats(&mut new_state, total_bytes);
-            self.create_session_v4(tuple, new_state.clone()).ok()?;
-            Self::stateful_translate::<Buf>(packet, &new_state, tuple.next_header);
-            return Some(());
+        let Ok(alloc) = self.allocator.allocate_v4(tuple) else {
+            // TODO: Log error, drop packet, update metrics
+            return None;
+        };
+
+        if alloc.src.is_none() && alloc.dst.is_none() {
+            // No NAT for this tuple, leave the packet unchanged
+            return None;
         }
 
-        // Else, just leave the packet unchanged
-        None
+        let mut new_state = Self::new_state_from_alloc(&alloc);
+        Self::update_stats(&mut new_state, total_bytes);
+        self.create_session_v4(tuple, new_state.clone()).ok()?;
+
+        let (reverse_tuple, reverse_state) =
+            Self::new_reverse_session(tuple, &alloc, src_vpc_id, dst_vpc_id);
+        self.create_session_v4(&reverse_tuple, reverse_state.clone())
+            .ok()?;
+
+        Self::stateful_translate::<Buf>(packet, &new_state, tuple.next_header);
+        Some(())
     }
 
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
@@ -265,14 +365,21 @@ impl StatefulNat {
         // TODO: Check whether the packet is fragmented
         // TODO: Check whether we need protocol-aware processing
 
-        let vrf_id = Self::get_vrf_id(net, vni);
+        let src_vpc_id = Self::get_src_vpc_id(net, vni);
+        let dst_vpc_id = Self::get_dst_vpc_id(net, vni);
 
         match net {
             Net::Ipv4(_) => {
-                let Some(tuple) = Self::extract_tuple(net, vrf_id) else {
+                let Some(tuple) = Self::extract_tuple(net, src_vpc_id, dst_vpc_id) else {
                     return;
                 };
-                self.translate_packet_v4::<Buf>(packet, &tuple, total_bytes);
+                self.translate_packet_v4::<Buf>(
+                    packet,
+                    &tuple,
+                    src_vpc_id,
+                    dst_vpc_id,
+                    total_bytes,
+                );
             }
             Net::Ipv6(_) => {
                 todo!()
@@ -295,7 +402,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatefulNat {
 
 #[cfg(test)]
 mod tests {
-    use super::allocator::NatPort;
+    use super::port::NatPort;
     use super::*;
     use net::packet::test_utils::build_test_ipv4_packet;
     use net::tcp::Tcp;
@@ -312,10 +419,18 @@ mod tests {
         let ref_tuple = NatTuple::new(
             Ipv4Addr::from_str("1.2.3.4").unwrap(),
             Ipv4Addr::from_str("5.6.7.8").unwrap(),
+            None,
+            None,
             NextHeader::new(255),
-            VrfId::from_str("1").unwrap(),
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
         );
-        let tuple = StatefulNat::extract_tuple(net, VrfId::from_str("1").unwrap()).unwrap();
+        let tuple = StatefulNat::extract_tuple(
+            net,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(tuple, ref_tuple);
     }
@@ -329,15 +444,15 @@ mod tests {
                 .clone(),
         );
         let next_header = NextHeader::TCP;
-        let target_port = Some(NatPort::new_checked(1234).expect("Invalid port"));
+        let target_port = NatPort::new_checked(1234).expect("Invalid port");
 
-        StatefulNat::set_source_port(&mut transport, next_header, target_port);
+        StatefulNat::set_source_port(&mut transport, next_header, target_port).unwrap();
         let Transport::Tcp(ref mut tcp) = transport else {
             unreachable!()
         };
         assert_eq!(tcp.source(), TcpPort::try_from(1234).unwrap());
 
-        StatefulNat::set_destination_port(&mut transport, next_header, target_port);
+        StatefulNat::set_destination_port(&mut transport, next_header, target_port).unwrap();
         let Transport::Tcp(ref mut tcp) = transport else {
             unreachable!()
         };
@@ -353,15 +468,15 @@ mod tests {
                 .clone(),
         );
         let next_header = NextHeader::UDP;
-        let target_port = Some(NatPort::new_checked(1234).expect("Invalid port"));
+        let target_port = NatPort::new_checked(1234).expect("Invalid port");
 
-        StatefulNat::set_source_port(&mut transport, next_header, target_port);
+        StatefulNat::set_source_port(&mut transport, next_header, target_port).unwrap();
         let Transport::Udp(ref mut udp) = transport else {
             unreachable!()
         };
         assert_eq!(udp.source(), UdpPort::try_from(1234).unwrap());
 
-        StatefulNat::set_destination_port(&mut transport, next_header, target_port);
+        StatefulNat::set_destination_port(&mut transport, next_header, target_port).unwrap();
         let Transport::Udp(ref mut udp) = transport else {
             unreachable!()
         };

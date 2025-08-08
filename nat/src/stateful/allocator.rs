@@ -1,83 +1,51 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use super::NatIp;
-use net::tcp::port::{TcpPort, TcpPortError};
-use net::udp::port::{UdpPort, UdpPortError};
-use std::collections::HashSet;
+use super::NatTuple;
+use super::port::NatPortError;
+use net::ip::NextHeader;
+use std::fmt::Debug;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum AllocatorError {
-    #[error("reserved port ({0})")]
-    ReservedPort(u16),
+    #[error("no free IP available")]
+    NoFreeIp,
+    #[error("failed to allocate port block")]
+    NoPortBlock,
+    #[error("no free port block available (base: {0})")]
+    NoFreePort(u16),
+    #[error("failed to allocate port: {0}")]
+    PortAllocationFailed(NatPortError),
+    #[error("unsupported protocol: {0:?}")]
+    UnsupportedProtocol(NextHeader),
+    #[error("internal issue: {0}")]
+    InternalIssue(String),
+    #[error("no port present for flow: NAT currently unsupported")]
+    PortNotFound,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NatPort(u16);
-
-impl NatPort {
-    const MIN: u16 = 1024 + 1;
-
-    pub fn new_checked(port: u16) -> Result<NatPort, AllocatorError> {
-        if port < Self::MIN {
-            return Err(AllocatorError::ReservedPort(port));
-        }
-        Ok(Self(port))
-    }
-
-    #[must_use]
-    pub fn as_u16(self) -> u16 {
-        self.0
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AllocationResult<T: Debug> {
+    pub src: Option<T>,
+    pub dst: Option<T>,
+    pub return_src: Option<T>,
+    pub return_dst: Option<T>,
 }
 
-impl TryFrom<TcpPort> for NatPort {
-    type Error = AllocatorError;
-
-    fn try_from(port: TcpPort) -> Result<Self, Self::Error> {
-        Self::new_checked(port.as_u16())
-    }
+#[allow(clippy::type_complexity)]
+pub trait NatAllocator<T, U>: Debug
+where
+    T: Debug,
+    U: Debug,
+{
+    fn new() -> Self;
+    fn allocate_v4(
+        &mut self,
+        tuple: &NatTuple<Ipv4Addr>,
+    ) -> Result<AllocationResult<T>, AllocatorError>;
+    fn allocate_v6(
+        &mut self,
+        tuple: &NatTuple<Ipv6Addr>,
+    ) -> Result<AllocationResult<U>, AllocatorError>;
 }
-
-impl TryFrom<NatPort> for TcpPort {
-    type Error = TcpPortError;
-
-    fn try_from(port: NatPort) -> Result<Self, Self::Error> {
-        TcpPort::new_checked(port.as_u16())
-    }
-}
-
-impl TryFrom<UdpPort> for NatPort {
-    type Error = AllocatorError;
-
-    fn try_from(port: UdpPort) -> Result<Self, Self::Error> {
-        Self::new_checked(port.as_u16())
-    }
-}
-
-impl TryFrom<NatPort> for UdpPort {
-    type Error = UdpPortError;
-
-    fn try_from(port: NatPort) -> Result<Self, Self::Error> {
-        UdpPort::new_checked(port.as_u16())
-    }
-}
-
-pub trait NatPool<I: NatIp> {
-    fn allocate(&self) -> Result<(I, I, Option<NatPort>, Option<NatPort>), AllocatorError>;
-}
-
-#[derive(Debug, Clone)]
-pub struct NatDefaultPool<I: NatIp> {
-    ips: HashSet<I>,
-    allocated: NatAllocations,
-}
-
-impl<I: NatIp> NatPool<I> for NatDefaultPool<I> {
-    fn allocate(&self) -> Result<(I, I, Option<NatPort>, Option<NatPort>), AllocatorError> {
-        todo!()
-    }
-}
-
-#[derive(Debug, Clone)]
-struct NatAllocations {}
