@@ -52,8 +52,8 @@ impl InternalConfig {
             rmap_table: RouteMapTable::new(),
         }
     }
-    pub fn set_vtep(&mut self, vtep: VtepConfig) {
-        self.vtep = Some(vtep);
+    pub fn set_vtep(&mut self, vtep: Option<VtepConfig>) {
+        self.vtep = vtep;
     }
     #[must_use]
     pub fn get_vtep(&self) -> &Option<VtepConfig> {
