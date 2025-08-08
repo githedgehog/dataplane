@@ -27,7 +27,10 @@ impl TryFrom<&gateway_config::Underlay> for Underlay {
         let vrf_config = VrfConfig::try_from(default_vrf)?;
 
         // Create Underlay with the VRF config
-        Ok(Underlay { vrf: vrf_config })
+        Ok(Underlay {
+            vrf: vrf_config,
+            vtep: None,
+        })
     }
 }
 
