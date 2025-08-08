@@ -408,7 +408,10 @@ mod tests {
         vrf_config.add_interface_config(vtep);
         let bgp = BgpConfig::new(1);
         vrf_config.set_bgp(bgp);
-        let underlay = Underlay { vrf: vrf_config };
+        let underlay = Underlay {
+            vrf: vrf_config,
+            vtep: None,
+        };
 
         let mut external_builder = ExternalConfigBuilder::default();
         external_builder.genid(1);

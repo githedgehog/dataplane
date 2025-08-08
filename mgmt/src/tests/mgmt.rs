@@ -303,7 +303,10 @@ pub mod test {
         let asn = 65000;
 
         let default_vrf = sample_config_default_vrf(asn, loopback, router_id);
-        Underlay { vrf: default_vrf }
+        Underlay {
+            vrf: default_vrf,
+            vtep: None,
+        }
     }
 
     /* build sample external config as it would be received via gRPC */
