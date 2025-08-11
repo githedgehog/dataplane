@@ -3,12 +3,13 @@
 
 #![allow(dead_code)]
 #![allow(unused_variables)]
-#![allow(unused_imports)]
 
 mod allocator;
+mod natip;
 mod port;
 pub mod sessions;
 
+use crate::stateful::natip::NatIp;
 use crate::stateful::sessions::{
     NatDefaultSession, NatDefaultSessionManager, NatSession, NatSessionManager, NatState,
 };
@@ -23,56 +24,7 @@ use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use routing::rib::vrf::VrfId;
 use std::hash::Hash;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-
-mod private {
-    pub trait Sealed {}
-}
-pub trait NatIp: private::Sealed + Clone + Eq + Hash {
-    fn to_ip_addr(&self) -> IpAddr;
-    fn from_src_addr(net: &Net) -> Option<Self>;
-    fn from_dst_addr(net: &Net) -> Option<Self>;
-}
-impl private::Sealed for Ipv4Addr {}
-impl private::Sealed for Ipv6Addr {}
-impl NatIp for Ipv4Addr {
-    fn to_ip_addr(&self) -> IpAddr {
-        IpAddr::V4(*self)
-    }
-    fn from_src_addr(net: &Net) -> Option<Self> {
-        if let IpAddr::V4(addr) = net.src_addr() {
-            Some(addr)
-        } else {
-            None
-        }
-    }
-    fn from_dst_addr(net: &Net) -> Option<Self> {
-        if let IpAddr::V4(addr) = net.dst_addr() {
-            Some(addr)
-        } else {
-            None
-        }
-    }
-}
-impl NatIp for Ipv6Addr {
-    fn to_ip_addr(&self) -> IpAddr {
-        IpAddr::V6(*self)
-    }
-    fn from_src_addr(net: &Net) -> Option<Self> {
-        if let IpAddr::V6(addr) = net.src_addr() {
-            Some(addr)
-        } else {
-            None
-        }
-    }
-    fn from_dst_addr(net: &Net) -> Option<Self> {
-        if let IpAddr::V6(addr) = net.dst_addr() {
-            Some(addr)
-        } else {
-            None
-        }
-    }
-}
+use std::net::{IpAddr, Ipv4Addr};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NatTuple<I: NatIp> {
