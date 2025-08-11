@@ -150,7 +150,6 @@ impl Create for Manager<Interface> {
                     ]))
                     .build()
             }
-            InterfacePropertiesSpec::Dummy => LinkDummy::new(requirement.name.as_ref()).build(),
             InterfacePropertiesSpec::Vtep(properties) => {
                 LinkVxlan::new(requirement.name.as_ref(), properties.vni.as_u32())
                     .set_info_data(InfoData::Vxlan(vec![
@@ -815,9 +814,6 @@ impl TryFromLinkMessage for Interface {
 
         match (kind, pci_netdev_builder.build()) {
             (Some(kind), Err(_)) => match kind {
-                InfoKind::Dummy => {
-                    builder.properties(InterfaceProperties::Dummy);
-                }
                 InfoKind::Tun => {
                     builder.properties(InterfaceProperties::Tap);
                 }

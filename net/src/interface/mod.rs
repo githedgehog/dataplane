@@ -307,8 +307,6 @@ impl Interface {
 pub enum InterfaceProperties {
     /// Properties of bridges
     Bridge(BridgeProperties),
-    /// Dummy interface properties
-    Dummy,
     /// Properties of VTEPs (vxlan devices)
     Vtep(VtepProperties),
     /// Properties of VRFs
