@@ -152,8 +152,7 @@ impl Observe for VpcManager<RequiredInformationBase> {
                 InterfaceProperties::Other
                 | InterfaceProperties::Tap
                 | InterfaceProperties::Pci(_)
-                | InterfaceProperties::Bridge(_)
-                | InterfaceProperties::Dummy => { /* nothing to index */ }
+                | InterfaceProperties::Bridge(_) => { /* nothing to index */ }
             }
         }
         for sliced in indexes_to_remove {
@@ -601,8 +600,7 @@ mod contract {
                                 .unwrap();
                         }
                     }
-                    InterfacePropertiesSpec::Tap
-                    | InterfacePropertiesSpec::Pci(_) => {}
+                    InterfacePropertiesSpec::Tap | InterfacePropertiesSpec::Pci(_) => {}
                 }
             }
             if !bridges.is_empty() {

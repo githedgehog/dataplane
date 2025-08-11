@@ -53,7 +53,7 @@ use rtnetlink::packet_route::link::{
     InfoBridge, InfoData, InfoKind, InfoVrf, InfoVxlan, LinkAttribute, LinkFlags, LinkInfo,
     LinkMessage, State,
 };
-use rtnetlink::{LinkBridge, LinkDummy, LinkUnspec, LinkVrf, LinkVxlan};
+use rtnetlink::{LinkBridge, LinkUnspec, LinkVrf, LinkVxlan};
 use serde::{Deserialize, Serialize};
 use std::num::NonZero;
 use tracing::{debug, error, warn};
