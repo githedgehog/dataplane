@@ -354,12 +354,12 @@ impl VrfTable {
     /// Perhaps a solution here would be to lift the default VRF out of the
     /// hash table and use it separately?
     //////////////////////////////////////////////////////////////////
-    fn values_mut_except_default(&mut self) -> (Vec<&mut Vrf>, &mut Vrf) {
-        let mut res: (Vec<_>, Vec<_>) = self
+    fn values_mut_except_default(&mut self) -> (impl Iterator<Item = &mut Vrf>, &mut Vrf) {
+        let (vrfs, mut vrf0): (Vec<_>, Vec<_>) = self
             .values_mut()
             .partition(|vrf| !Self::is_default_vrf(vrf));
-        let def_vrf = res.0.pop().expect("Default VRF should always be present");
-        (res.1, def_vrf)
+        let vrf0 = vrf0.pop().expect("Default VRF should always be present");
+        (vrfs.into_iter(), vrf0)
     }
 
     //////////////////////////////////////////////////////////////////
