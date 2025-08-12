@@ -50,7 +50,7 @@ jobs:
     steps:
       - name: "Checkout"
         if: "${{ !github.event.pull_request }}"
-        uses: "actions/checkout@v4"
+        uses: "actions/checkout@v5"
         with:
           persist-credentials: "false"
           fetch-depth: "0"
@@ -112,7 +112,7 @@ jobs:
         uses: "cargo-bins/cargo-binstall@v1.14.4"
 
       - name: "Checkout"
-        uses: "actions/checkout@v4"
+        uses: "actions/checkout@v5"
         with:
           persist-credentials: "false"
           fetch-depth: "0"

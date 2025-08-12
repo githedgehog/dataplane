@@ -47,7 +47,7 @@ jobs:
           cargo binstall -y just
           cargo binstall -y cargo-deny
       - name: "Checkout"
-        uses: "actions/checkout@v4"
+        uses: "actions/checkout@v5"
       - name: "refresh compile-env"
         run: |
           just --yes refresh-compile-env
