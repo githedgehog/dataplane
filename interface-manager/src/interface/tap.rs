@@ -224,7 +224,7 @@ impl TapDevice {
     ///
     /// # Errors
     ///
-    /// If the tap device cannot be opened or created, an io::Error is returned.
+    /// If the tap device cannot be opened or created, an `io::Error` is returned.
     #[cold]
     #[tracing::instrument(level = "info")]
     pub async fn open(name: &InterfaceName) -> Result<(), std::io::Error> {

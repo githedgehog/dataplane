@@ -102,6 +102,7 @@ impl IpPrefix for Ipv4Prefix {
     type Addr = Ipv4Addr;
     const MAX_LEN: u8 = 32;
 
+    #[allow(clippy::ip_constant)] // Ipv4Addr::UNSPECIFIED is not as clear, keep spelling 0.0.0.0
     const ROOT: Ipv4Prefix = Ipv4Prefix(match Ipv4Net::new(Ipv4Addr::new(0, 0, 0, 0), 0) {
         Ok(root) => root,
         Err(_) => {
@@ -223,6 +224,7 @@ impl IpPrefix for Ipv6Prefix {
     type Addr = Ipv6Addr;
     const MAX_LEN: u8 = 128;
 
+    #[allow(clippy::ip_constant)] // Ipv6Addr::UNSPECIFIED is not as clear, keep 0:0:0:0:0:0:0:0
     const ROOT: Ipv6Prefix = Ipv6Prefix(
         match Ipv6Net::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), 0) {
             Ok(root) => root,

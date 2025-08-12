@@ -72,10 +72,10 @@ fn build_router_interface_config(
     new.set_admin_state(status);
 
     // set mtu -- this is informational
-    if let Some(mtu) = kiface.mtu {
-        if let Ok(mtu) = Mtu::try_from(mtu) {
-            new.set_mtu(Some(mtu));
-        }
+    if let Some(mtu) = kiface.mtu
+        && let Ok(mtu) = Mtu::try_from(mtu)
+    {
+        new.set_mtu(Some(mtu));
     }
 
     // set properties -- this is needed for us to know macs

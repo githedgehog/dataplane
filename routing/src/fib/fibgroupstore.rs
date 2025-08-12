@@ -100,7 +100,7 @@ impl FibGroupStore {
         self.0.get(key).map(|group| Rc::clone(group))
     }
     #[must_use]
-    pub(crate) fn get(&self, key: &NhopKey) -> Option<Ref<FibGroup>> {
+    pub(crate) fn get(&self, key: &NhopKey) -> Option<Ref<'_, FibGroup>> {
         self.0.get(key).map(|group| group.borrow())
     }
     pub(crate) fn del(&mut self, key: &NhopKey) {
@@ -138,13 +138,13 @@ impl FibGroupStore {
     ////////////////////////////////////////////////////////////////////////////////////////////////////
     /// Iterate over the `FibGroups` in the store
     ////////////////////////////////////////////////////////////////////////////////////////////////////
-    pub(crate) fn values(&self) -> impl Iterator<Item = Ref<FibGroup>> {
+    pub(crate) fn values(&self) -> impl Iterator<Item = Ref<'_, FibGroup>> {
         self.0.values().map(|group| group.borrow())
     }
     ////////////////////////////////////////////////////////////////////////////////////////////////////
     /// Iterate over the `FibGroups` in the store
     ////////////////////////////////////////////////////////////////////////////////////////////////////
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&NhopKey, Ref<FibGroup>)> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&NhopKey, Ref<'_, FibGroup>)> {
         self.0.iter().map(|(key, group)| (key, group.borrow()))
     }
 }
@@ -167,7 +167,7 @@ impl FibRoute {
     #[must_use]
     #[cfg(test)]
     /// Get a reference to the `FibGroup` at the group-level index. This is only for testing.
-    pub(crate) fn get_fibgroup(&self, index: usize) -> Option<Ref<FibGroup>> {
+    pub(crate) fn get_fibgroup(&self, index: usize) -> Option<Ref<'_, FibGroup>> {
         if index < self.len() {
             unsafe { Some(self.0[index].borrow()) }
         } else {
@@ -209,7 +209,7 @@ impl FibRoute {
     /// 0 1 2 3 4 | 0 1 2 | 0 1 | 0  1  2  | real    entry indices within each group.
     ////////////////////////////////////////////////////////////////////////////////////////////////
     #[must_use]
-    pub(crate) fn get_fibentry(&self, index: usize) -> Option<Ref<FibEntry>> {
+    pub(crate) fn get_fibentry(&self, index: usize) -> Option<Ref<'_, FibEntry>> {
         let mut index = index;
         for g in self.0.iter() {
             let group = g.borrow();
@@ -224,7 +224,7 @@ impl FibRoute {
     ////////////////////////////////////////////////////////////////////////////////////////////////
     /// Provide iterator over the `FibGroups` that a `Fibroute` refers to
     ////////////////////////////////////////////////////////////////////////////////////////////////
-    pub(crate) fn iter(&self) -> impl Iterator<Item = Ref<FibGroup>> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = Ref<'_, FibGroup>> {
         self.0.iter().map(|group| group.borrow())
     }
 }

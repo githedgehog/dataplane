@@ -83,7 +83,7 @@ pub(crate) struct Writer<'buf> {
 }
 
 impl Reader<'_> {
-    pub(crate) fn new(buf: &[u8]) -> Result<Reader, IllegalBufferLength> {
+    pub(crate) fn new(buf: &[u8]) -> Result<Reader<'_>, IllegalBufferLength> {
         if buf.len() > u16::MAX as usize {
             return Err(IllegalBufferLength(buf.len()));
         }
@@ -128,7 +128,7 @@ impl Reader<'_> {
 }
 
 impl Writer<'_> {
-    pub(crate) fn new(buf: &mut [u8]) -> Result<Writer, IllegalBufferLength> {
+    pub(crate) fn new(buf: &mut [u8]) -> Result<Writer<'_>, IllegalBufferLength> {
         if buf.len() > u16::MAX as usize {
             return Err(IllegalBufferLength(buf.len()));
         }

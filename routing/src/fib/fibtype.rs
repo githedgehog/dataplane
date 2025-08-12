@@ -192,7 +192,7 @@ impl Fib {
     }
 
     /// Iterate over [`FibGroup`]s
-    pub fn group_iter(&self) -> impl Iterator<Item = Ref<FibGroup>> {
+    pub fn group_iter(&self) -> impl Iterator<Item = Ref<'_, FibGroup>> {
         self.groupstore.values()
     }
 
@@ -236,7 +236,10 @@ impl Fib {
     /// computing a hash on the invariant header fields of the IP and L4 headers.
     #[must_use]
     #[allow(clippy::cast_possible_truncation)]
-    pub fn lpm_entry<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> Option<Ref<FibEntry>> {
+    pub fn lpm_entry<Buf: PacketBufferMut>(
+        &self,
+        packet: &Packet<Buf>,
+    ) -> Option<Ref<'_, FibEntry>> {
         let (_, entry) = self.lpm_entry_prefix(packet);
         entry
     }
@@ -246,7 +249,7 @@ impl Fib {
     pub fn lpm_entry_prefix<Buf: PacketBufferMut>(
         &self,
         packet: &Packet<Buf>,
-    ) -> (Prefix, Option<Ref<FibEntry>>) {
+    ) -> (Prefix, Option<Ref<'_, FibEntry>>) {
         if let Some(destination) = packet.ip_destination() {
             let (prefix, route) = self.lpm_with_prefix(&destination);
             match route.len() {

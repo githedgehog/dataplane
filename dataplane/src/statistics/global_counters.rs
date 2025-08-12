@@ -138,32 +138,31 @@ pub fn sync_to_prometheus(packet_stats: &PacketStats) {
             .set(stats.tx_bytes as f64);
 
         // Calculate and set rates if we have previous data
-        if let Some(ref history) = *history_guard {
-            if let Some(prev_stats) = history.vpc_stats.get(vpc_name) {
-                if time_delta_secs > 0.0 {
-                    // Calculate RX rates
-                    let rx_pkts_rate =
-                        (stats.rx_pkts.saturating_sub(prev_stats.rx_pkts) as f64) / time_delta_secs;
-                    let rx_bytes_rate = (stats.rx_bytes.saturating_sub(prev_stats.rx_bytes) as f64)
-                        / time_delta_secs;
+        if let Some(ref history) = *history_guard
+            && let Some(prev_stats) = history.vpc_stats.get(vpc_name)
+            && time_delta_secs > 0.0
+        {
+            // Calculate RX rates
+            let rx_pkts_rate =
+                (stats.rx_pkts.saturating_sub(prev_stats.rx_pkts) as f64) / time_delta_secs;
+            let rx_bytes_rate =
+                (stats.rx_bytes.saturating_sub(prev_stats.rx_bytes) as f64) / time_delta_secs;
 
-                    // Calculate TX rates
-                    let tx_pkts_rate =
-                        (stats.tx_pkts.saturating_sub(prev_stats.tx_pkts) as f64) / time_delta_secs;
-                    let tx_bytes_rate = (stats.tx_bytes.saturating_sub(prev_stats.tx_bytes) as f64)
-                        / time_delta_secs;
+            // Calculate TX rates
+            let tx_pkts_rate =
+                (stats.tx_pkts.saturating_sub(prev_stats.tx_pkts) as f64) / time_delta_secs;
+            let tx_bytes_rate =
+                (stats.tx_bytes.saturating_sub(prev_stats.tx_bytes) as f64) / time_delta_secs;
 
-                    // Set rate gauges
-                    gauge!(VPC_PKTS_PER_SECOND, "vpc" => vpc_name.clone(), "direction" => "rx")
-                        .set(rx_pkts_rate);
-                    gauge!(VPC_BYTES_PER_SECOND, "vpc" => vpc_name.clone(), "direction" => "rx")
-                        .set(rx_bytes_rate);
-                    gauge!(VPC_PKTS_PER_SECOND, "vpc" => vpc_name.clone(), "direction" => "tx")
-                        .set(tx_pkts_rate);
-                    gauge!(VPC_BYTES_PER_SECOND, "vpc" => vpc_name.clone(), "direction" => "tx")
-                        .set(tx_bytes_rate);
-                }
-            }
+            // Set rate gauges
+            gauge!(VPC_PKTS_PER_SECOND, "vpc" => vpc_name.clone(), "direction" => "rx")
+                .set(rx_pkts_rate);
+            gauge!(VPC_BYTES_PER_SECOND, "vpc" => vpc_name.clone(), "direction" => "rx")
+                .set(rx_bytes_rate);
+            gauge!(VPC_PKTS_PER_SECOND, "vpc" => vpc_name.clone(), "direction" => "tx")
+                .set(tx_pkts_rate);
+            gauge!(VPC_BYTES_PER_SECOND, "vpc" => vpc_name.clone(), "direction" => "tx")
+                .set(tx_bytes_rate);
         }
     });
 
@@ -180,9 +179,9 @@ pub fn sync_to_prometheus(packet_stats: &PacketStats) {
         gauge!(PEERING_DROPPED_BYTES, "src" => src_vpc.clone(), "dst" => dst_vpc.clone()).set(stats.bytes_dropped as f64);
 
         // Calculate and set rates if we have previous data
-        if let Some(ref history) = *history_guard {
-            if let Some(prev_stats) = history.peering_stats.get(&peering_key) {
-                if time_delta_secs > 0.0 {
+        if let Some(ref history) = *history_guard
+            && let Some(prev_stats) = history.peering_stats.get(&peering_key)
+                && time_delta_secs > 0.0 {
                     let pkts_rate = (stats.pkts.saturating_sub(prev_stats.pkts) as f64) / time_delta_secs;
                     let bytes_rate = (stats.bytes.saturating_sub(prev_stats.bytes) as f64) / time_delta_secs;
                     let pkts_dropped_rate = (stats.pkts_dropped.saturating_sub(prev_stats.pkts_dropped) as f64) / time_delta_secs;
@@ -193,8 +192,6 @@ pub fn sync_to_prometheus(packet_stats: &PacketStats) {
                     gauge!(PEERING_DROPPED_PKTS_PER_SECOND, "src" => src_vpc.clone(), "dst" => dst_vpc.clone()).set(pkts_dropped_rate);
                     gauge!(PEERING_DROPPED_BYTES_PER_SECOND, "src" => src_vpc.clone(), "dst" => dst_vpc.clone()).set(bytes_dropped_rate);
                 }
-            }
-        }
     });
 
     // Update history with current values
