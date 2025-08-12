@@ -131,7 +131,10 @@ jobs:
 
       - name: "cargo deny check"
         run: |
-          just debug_justfile="${{matrix.debug_justfile}}" ${{matrix.profile.sterile}} cargo deny check
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            ${{matrix.profile.sterile}} cargo deny check
 
       - name: "push container"
         if: ${{ matrix.profile.sterile == 'sterile' && (matrix.profile.name == 'release' || matrix.profile.name == 'debug') }}
