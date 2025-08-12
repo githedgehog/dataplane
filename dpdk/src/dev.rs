@@ -576,7 +576,7 @@ impl BitXorAssign for TxOffload {
 /// Information about a DPDK ethernet device.
 ///
 /// This struct is a wrapper around the `rte_eth_dev_info` struct from DPDK.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct DevInfo {
     pub(crate) index: DevIndex,
     pub(crate) inner: rte_eth_dev_info,

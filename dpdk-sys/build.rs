@@ -41,7 +41,7 @@ fn bind(path: &Path, sysroot: &str) {
         .derive_copy(true)
         .derive_debug(true)
         .derive_default(true)
-        .derive_partialeq(true)
+        .derive_partialeq(false)
         .parse_callbacks(Box::new(Cb))
         .layout_tests(true)
         .default_enum_style(bindgen::EnumVariation::ModuleConsts)
