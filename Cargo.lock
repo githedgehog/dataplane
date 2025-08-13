@@ -1036,6 +1036,7 @@ version = "0.1.0"
 dependencies = [
  "bolero",
  "dashmap",
+ "dataplane-concurrency",
  "dataplane-config",
  "dataplane-lpm",
  "dataplane-net",
