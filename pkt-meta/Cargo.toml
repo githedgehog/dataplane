@@ -11,6 +11,7 @@ testing = []
 [dependencies]
 lpm = { workspace = true }
 config = { workspace = true }
+dashmap = { workspace = true, features = ["raw-api"] }
 left-right = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
