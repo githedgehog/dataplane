@@ -78,14 +78,10 @@ pub(crate) struct CmdArgs {
     #[arg(
         long,
         value_name = "Metrics Address and Port",
-        default_value = "127.0.0.1:9090",
-        help = "Bind address and port for Prometheus metrics HTTP endpoint (e.g., 127.0.0.1:9090, 0.0.0.0:8080)"
+        default_value_t = SocketAddr::from(([127, 0, 0, 1], 9090)),
+        help = "Bind address and port for Prometheus metrics HTTP endpoint"
     )]
-    metrics_address: String,
-
-    /// Disable Prometheus metrics server
-    #[arg(long, help = "Disable the Prometheus metrics HTTP endpoint")]
-    disable_metrics: bool,
+    metrics_address: SocketAddr,
 }
 
 impl CmdArgs {
@@ -190,28 +186,7 @@ impl CmdArgs {
     }
 
     /// Get the metrics bind address, returns None if metrics are disabled
-    pub fn metrics_address(&self) -> Option<Result<SocketAddr, String>> {
-        if self.disable_metrics {
-            None
-        } else {
-            Some(self.parse_metrics_address())
-        }
-    }
-
-    /// Parse the metrics address string into a socket address
-    fn parse_metrics_address(&self) -> Result<SocketAddr, String> {
+    pub fn metrics_address(&self) -> SocketAddr {
         self.metrics_address
-            .parse::<SocketAddr>()
-            .map_err(|e| format!("Invalid metrics address '{}': {}", self.metrics_address, e))
-    }
-
-    /// Check if metrics are enabled
-    pub fn metrics_enabled(&self) -> bool {
-        !self.disable_metrics
-    }
-
-    /// Get the raw metrics address string
-    pub fn metrics_address_string(&self) -> &str {
-        &self.metrics_address
     }
 }

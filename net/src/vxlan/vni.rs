@@ -73,7 +73,7 @@ impl Vni {
     /// # Errors
     ///
     /// Returns an [`InvalidVni`] error if the value is 0 or greater than [`Vni::MAX`].
-    pub fn new_checked(vni: u32) -> Result<Vni, InvalidVni> {
+    pub const fn new_checked(vni: u32) -> Result<Vni, InvalidVni> {
         match NonZero::<u32>::new(vni) {
             None => Err(InvalidVni::ReservedZero),
             _ if vni > Vni::MAX => Err(InvalidVni::TooLarge(vni)),
