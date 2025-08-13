@@ -4,3 +4,4 @@
 #![deny(clippy::all, clippy::pedantic)]
 
 pub mod dst_vpcd_lookup;
+pub mod flow_table;
