@@ -1040,6 +1040,7 @@ name = "dataplane-pkt-meta"
 version = "0.1.0"
 dependencies = [
  "bolero",
+ "dashmap",
  "dataplane-config",
  "dataplane-lpm",
  "dataplane-net",
