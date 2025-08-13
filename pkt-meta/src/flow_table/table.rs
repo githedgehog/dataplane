@@ -72,3 +72,28 @@ impl FlowTable {
         table.remove(flow_key)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[allow(unused_imports)]
+    use super::*;
+    use concurrency::concurrency_mode;
+
+    #[concurrency_mode(shuttle)]
+    #[test]
+    fn test_flow_table() {
+        let flow_table = FlowTable::new();
+    }
+
+    #[concurrency_mode(loom)]
+    #[test]
+    fn test_flow_table() {
+        let flow_table = FlowTable::new();
+    }
+
+    #[concurrency_mode(std)]
+    #[test]
+    fn test_flow_table() {
+        let flow_table = FlowTable::new();
+    }
+}

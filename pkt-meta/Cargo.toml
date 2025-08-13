@@ -6,6 +6,9 @@ publish = false
 license = "Apache-2.0"
 
 [features]
+shuttle = ["concurrency/shuttle"]
+loom = ["concurrency/loom"]
+std = []
 testing = []
 
 [dependencies]
