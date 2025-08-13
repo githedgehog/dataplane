@@ -4,6 +4,7 @@
 // SCRATCH
 
 mod dpstats;
+mod rate;
 mod register;
 mod spec;
 mod vpc;
