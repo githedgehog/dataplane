@@ -11,6 +11,7 @@ testing = []
 [dependencies]
 ahash = { workspace = true }
 lpm = { workspace = true }
+concurrency = { workspace = true }
 config = { workspace = true }
 dashmap = { workspace = true, features = ["raw-api"] }
 left-right = { workspace = true }
