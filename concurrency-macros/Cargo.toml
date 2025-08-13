@@ -1,0 +1,19 @@
+[package]
+name = "dataplane-concurrency-macros"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+proc-macro = true
+
+[features]
+loom = []
+shuttle = []
+silence_clippy = []
+
+[dependencies]
+syn = "2.0"
+quote = "1.0"
+proc-macro2 = "1.0"

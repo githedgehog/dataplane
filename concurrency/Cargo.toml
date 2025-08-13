@@ -6,9 +6,11 @@ publish = false
 license = "Apache-2.0"
 
 [features]
-loom = ["dep:loom"]
-shuttle = ["dep:shuttle"]
+loom = ["dep:loom", "concurrency-macros/loom"]
+shuttle = ["dep:shuttle", "concurrency-macros/shuttle"]
+silence_clippy = ["concurrency-macros/silence_clippy"] # Do not manually enable this feature, let --all-features do it for you
 
 [dependencies]
 loom = { workspace = true, optional = true, features = [] }
 shuttle = { workspace = true, optional = true, features = [] }
+concurrency-macros = { workspace = true, features = [] }

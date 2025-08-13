@@ -826,8 +826,18 @@ dependencies = [
 name = "dataplane-concurrency"
 version = "0.1.0"
 dependencies = [
+ "dataplane-concurrency-macros",
  "loom 0.7.2",
  "shuttle",
+]
+
+[[package]]
+name = "dataplane-concurrency-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.104",
 ]
 
 [[package]]

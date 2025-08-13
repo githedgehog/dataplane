@@ -4,6 +4,7 @@ members = [
 	"cli",
 	"config",
 	"concurrency",
+	"concurrency-macros",
 	"dataplane",
 	"dpdk",
 	"dpdk-sys",
@@ -29,6 +30,7 @@ resolver = "3"
 # Internal
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
 concurrency = { path = "./concurrency", package = "dataplane-concurrency" }
+concurrency-macros = { path = "./concurrency-macros", package = "dataplane-concurrency-macros" }
 config = { path = "./config", package = "dataplane-config" }
 dpdk = { path = "./dpdk", package = "dataplane-dpdk" }
 dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys" }
