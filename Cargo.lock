@@ -1042,6 +1042,7 @@ dependencies = [
  "ahash 0.8.10",
  "bolero",
  "dashmap",
+ "dataplane-concurrency",
  "dataplane-config",
  "dataplane-lpm",
  "dataplane-net",
