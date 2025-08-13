@@ -39,7 +39,7 @@ macro_rules! with_shuttle {
 ///     }
 /// }
 /// ```
-#[cfg(not(feature = "shuttle"))]
+#[cfg(any(not(feature = "shuttle"), feature = "silence_clippy"))]
 #[macro_export]
 macro_rules! with_shuttle {
     ($($item:item)*) => {};
@@ -78,12 +78,12 @@ macro_rules! with_loom {
 /// ```
 /// # use dataplane_concurrency::with_loom;
 /// with_loom! {
-///     fn only_compiled_with_std() {
+///     fn only_compiled_with_loom() {
 ///         // code here
 ///     }
 /// }
 /// ```
-#[cfg(not(feature = "loom"))]
+#[cfg(any(not(feature = "loom"), feature = "silence_clippy"))]
 #[macro_export]
 macro_rules! with_loom {
     ($($item:item)*) => {};
