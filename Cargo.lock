@@ -1057,6 +1057,7 @@ dependencies = [
  "dataplane-pipeline",
  "left-right",
  "priority-queue",
+ "shuttle",
  "thiserror 2.0.16",
  "thread_local",
  "tracing",

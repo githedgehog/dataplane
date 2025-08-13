@@ -6,11 +6,15 @@ publish = false
 license = "Apache-2.0"
 
 [features]
+shuttle = ["concurrency/shuttle"]
+std = []
 testing = []
+bolero = ["dep:bolero", "net/bolero"]
 
 [dependencies]
 ahash = { workspace = true }
 atomic-instant-full = { workspace = true }
+bolero = { workspace = true, optional = true }
 lpm = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
@@ -27,5 +31,6 @@ tracing = { workspace = true }
 [dev-dependencies]
 bolero = { workspace = true, default-features = false }
 lpm = { workspace = true, features = ["testing"] }
+net = { workspace = true, features = ["bolero"] }
 tracing-test = { workspace = true, features = [] }
-
+shuttle = { workspace = true }
