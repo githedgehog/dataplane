@@ -8,11 +8,14 @@
 use super::NatVpcId;
 use super::allocator::{AllocationResult, AllocatorError};
 use super::{NatAllocator, NatIp, NatTuple};
+use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
 use net::ip::NextHeader;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 mod alloc;
+mod natip_with_bitmap;
+mod port_alloc;
 
 ///////////////////////////////////////////////////////////////////////////////
 // PoolTableKey
@@ -50,9 +53,9 @@ impl<I: NatIp> PoolTableKey<I> {
 ///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-struct PoolTable<I: NatIp, J: NatIp>(BTreeMap<PoolTableKey<I>, alloc::IpAllocator<J>>);
+struct PoolTable<I: NatIp, J: NatIpWithBitmap>(BTreeMap<PoolTableKey<I>, alloc::IpAllocator<J>>);
 
-impl<I: NatIp, J: NatIp> PoolTable<I, J> {
+impl<I: NatIp, J: NatIpWithBitmap> PoolTable<I, J> {
     fn new() -> Self {
         Self(BTreeMap::new())
     }
@@ -84,7 +87,7 @@ impl<I: NatIp, J: NatIp> PoolTable<I, J> {
 ///////////////////////////////////////////////////////////////////////////////
 
 /// [`AllocatedIpPort`] is the public type for the object returned by our allocator.
-pub type AllocatedIpPort<I> = alloc::AllocatedPort<I>;
+pub type AllocatedIpPort<I> = port_alloc::AllocatedPort<I>;
 type AllocationMapping<I> = (Option<AllocatedIpPort<I>>, Option<AllocatedIpPort<I>>);
 
 /// [`NatDefaultAllocator`] is our default IP addresses and ports allocator for stateful NAT,
@@ -182,7 +185,7 @@ impl NatDefaultAllocator {
         }
     }
 
-    fn get_mapping<I: NatIp>(
+    fn get_mapping<I: NatIpWithBitmap>(
         pool_src_opt: Option<&alloc::IpAllocator<I>>,
         pool_dst_opt: Option<&alloc::IpAllocator<I>>,
     ) -> Result<AllocationMapping<I>, AllocatorError> {
