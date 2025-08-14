@@ -9,10 +9,10 @@
 //!
 //! See also the architecture diagram at the top of mod.rs.
 
-use super::natip_with_bitmap::NatIpWithBitmap;
-use super::port_alloc;
+use super::{NatIpWithBitmap, port_alloc};
 use crate::stateful::NatIp;
 use crate::stateful::allocator::AllocatorError;
+use crate::stateful::port::NatPort;
 use lpm::prefix::{IpPrefix, Prefix};
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, VecDeque};
@@ -90,6 +90,22 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
 
         self.allocate_from_new_ip()
     }
+
+    fn get_allocated_ip(&self, ip: I) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
+        self.pool
+            .write()
+            .unwrap()
+            .reserve_from_pool(ip, self.clone())
+    }
+
+    pub(crate) fn reserve(
+        &self,
+        ip: I,
+        port: NatPort,
+    ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
+        self.get_allocated_ip(ip)
+            .and_then(|allocated_ip| allocated_ip.reserve_port_for_ip(port))
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -132,6 +148,13 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
         self: Arc<Self>,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
         self.port_allocator.allocate_port(self.clone())
+    }
+
+    fn reserve_port_for_ip(
+        self: Arc<Self>,
+        port: NatPort,
+    ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
+        self.port_allocator.reserve_port(self.clone(), port)
     }
 }
 
@@ -196,6 +219,35 @@ impl<I: NatIpWithBitmap> NatPool<I> {
     fn deallocate_from_pool(&mut self, ip: I) {
         let offset = I::try_to_offset(ip, &self.reverse_bitmap_mapping).unwrap();
         self.bitmap.set_ip_free(offset);
+    }
+
+    fn reserve_from_pool(
+        &mut self,
+        ip: I,
+        ip_allocator: IpAllocator<I>,
+    ) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
+        let offset = I::try_to_offset(ip, &self.reverse_bitmap_mapping)?;
+
+        for ip_weak in self.ips_in_use() {
+            if let Some(ip_arc) = ip_weak.upgrade()
+                && ip_arc.ip() == ip
+            {
+                // We found the allocated IP in the list of IPs in use, return it
+                return Ok(ip_arc);
+            }
+        }
+
+        // Allocate the IP now.
+        //
+        // If the IP was already allocated in the bitmap, this is OK: it means that the IP was
+        // allocated in the past, it is no longer in used (because it is not in the list of in-use
+        // IPs), but we haven't deallocated from the bitmap yet (this happens when another thread
+        // drops an AllocatedIp and its reference count goes to 0, but it hasn't called the drop()
+        // function to remove the IP from the bitmap in that other thread yet).
+        let _ = self.bitmap.set_ip_allocated(offset);
+        let arc_ip = Arc::new(AllocatedIp::new(ip, ip_allocator));
+        self.add_in_use(&arc_ip);
+        Ok(arc_ip)
     }
 }
 

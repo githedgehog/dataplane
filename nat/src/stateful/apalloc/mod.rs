@@ -64,6 +64,7 @@
 
 use super::NatVpcId;
 use super::allocator::{AllocationResult, AllocatorError};
+use super::port::NatPort;
 use super::{NatAllocator, NatIp, NatTuple};
 use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
 use net::ip::NextHeader;
@@ -197,9 +198,42 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
         // Allocate IP and ports from pools, for source and destination NAT
         let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt)?;
 
+        // Now based on the previous allocation, we need to "reserve" IP and ports for the reverse
+        // path for the flow. First retrieve the relevant address pools.
+
+        let reverse_pool_src_opt = if let Some(mapping) = &dst_mapping {
+            self.pools_src44.get(&PoolTableKey::new(
+                tuple.next_header,
+                tuple.dst_vpc_id,
+                tuple.src_vpc_id,
+                mapping.ip(),
+                Ipv4Addr::new(255, 255, 255, 255),
+            ))
+        } else {
+            None
+        };
+
+        let reverse_pool_dst_opt = if let Some(mapping) = &src_mapping {
+            self.pools_dst44.get(&PoolTableKey::new(
+                tuple.next_header,
+                tuple.dst_vpc_id,
+                tuple.src_vpc_id,
+                mapping.ip(),
+                Ipv4Addr::new(255, 255, 255, 255),
+            ))
+        } else {
+            None
+        };
+
+        // Reserve IP and ports for the reverse path for the flow.
+        let (reverse_src_mapping, reverse_dst_mapping) =
+            Self::get_reverse_mapping(tuple, reverse_pool_src_opt, reverse_pool_dst_opt)?;
+
         Ok(AllocationResult {
             src: src_mapping,
             dst: dst_mapping,
+            return_src: reverse_src_mapping,
+            return_dst: reverse_dst_mapping,
         })
     }
 
@@ -227,9 +261,29 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
 
         let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt)?;
 
+        let reverse_pool_src_opt = self.pools_src66.get(&PoolTableKey::new(
+            tuple.next_header,
+            tuple.src_vpc_id,
+            tuple.dst_vpc_id,
+            tuple.src_ip,
+            Ipv6Addr::new(255, 255, 255, 255, 255, 255, 255, 255),
+        ));
+        let reverse_pool_dst_opt = self.pools_dst66.get(&PoolTableKey::new(
+            tuple.next_header,
+            tuple.src_vpc_id,
+            tuple.dst_vpc_id,
+            tuple.src_ip,
+            Ipv6Addr::new(255, 255, 255, 255, 255, 255, 255, 255),
+        ));
+
+        let (reverse_src_mapping, reverse_dst_mapping) =
+            Self::get_reverse_mapping(tuple, reverse_pool_src_opt, reverse_pool_dst_opt)?;
+
         Ok(AllocationResult {
             src: src_mapping,
             dst: dst_mapping,
+            return_src: reverse_src_mapping,
+            return_dst: reverse_dst_mapping,
         })
     }
 }
@@ -257,6 +311,40 @@ impl NatDefaultAllocator {
         };
 
         Ok((src_mapping, dst_mapping))
+    }
+
+    fn get_reverse_mapping<I: NatIpWithBitmap>(
+        tuple: &NatTuple<I>,
+        reverse_pool_src_opt: Option<&alloc::IpAllocator<I>>,
+        reverse_pool_dst_opt: Option<&alloc::IpAllocator<I>>,
+    ) -> Result<AllocationMapping<I>, AllocatorError> {
+        let reverse_src_mapping = match reverse_pool_src_opt {
+            Some(pool_src) => Some(pool_src.reserve(
+                tuple.dst_ip,
+                match tuple.dst_port {
+                    Some(port) => NatPort::new_checked(port).map_err(|_| {
+                        AllocatorError::InternalIssue("Invalid destination port number".to_string())
+                    })?,
+                    None => return Err(AllocatorError::PortNotFound),
+                },
+            )?),
+            None => None,
+        };
+
+        let reverse_dst_mapping = match reverse_pool_dst_opt {
+            Some(pool_dst) => Some(pool_dst.reserve(
+                tuple.src_ip,
+                match tuple.src_port {
+                    Some(port) => NatPort::new_checked(port).map_err(|_| {
+                        AllocatorError::InternalIssue("Invalid source port number".to_string())
+                    })?,
+                    None => return Err(AllocatorError::PortNotFound),
+                },
+            )?),
+            None => None,
+        };
+
+        Ok((reverse_src_mapping, reverse_dst_mapping))
     }
 }
 

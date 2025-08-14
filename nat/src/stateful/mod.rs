@@ -131,8 +131,6 @@ impl StatefulNat {
         state: NatState,
     ) -> Result<(), sessions::SessionError> {
         self.sessions.insert_session_v4(tuple.clone(), state)
-
-        // TODO: Reverse session
     }
 
     fn get_allocator<I: NatIp, J: NatIp>(&self) -> Option<allocator::TmpAllocator> {

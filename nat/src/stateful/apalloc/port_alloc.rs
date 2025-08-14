@@ -197,6 +197,79 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
             .insert(block.index, Arc::downgrade(&block));
         block.allocate_port_from_block()
     }
+
+    fn try_to_reserve_block(&self, port: NatPort) -> Result<(bool, usize), AllocatorError> {
+        let (index, block) = self
+            .cycle_blocks()
+            .find(|(_, block)| block.covers(port))
+            .ok_or(AllocatorError::InternalIssue(
+                "Failed to find block for port".to_string(),
+            ))?;
+
+        if block
+            .free
+            .compare_exchange(
+                true,
+                false,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            Ok((true, index))
+        } else {
+            // "false" means the block was already set to non-free
+            Ok((false, index))
+        }
+    }
+
+    fn allocate_block_for_reservation(
+        &self,
+        ip: Arc<AllocatedIp<I>>,
+        index: usize,
+        port: NatPort,
+    ) -> Result<Arc<AllocatedPortBlock<I>>, AllocatorError> {
+        self.usable_blocks
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        let block = Arc::new(AllocatedPortBlock::new(
+            ip,
+            index,
+            (port.as_u16() / 256) * 256, // port block base index, discard offset within block
+        )?);
+        self.allocated_blocks
+            .insert(block.index, Arc::downgrade(&block));
+        Ok(block)
+    }
+
+    fn find_block_for_port(
+        &self,
+        ip: Arc<AllocatedIp<I>>,
+        port: NatPort,
+    ) -> Result<Arc<AllocatedPortBlock<I>>, AllocatorError> {
+        let (block_was_free, index) = self.try_to_reserve_block(port)?;
+        if block_was_free {
+            return self.allocate_block_for_reservation(ip, index, port);
+        }
+        self.allocated_blocks
+            .search_for_block(port)
+            // Block was not free but is not in the list of allocated blocks either??
+            //
+            // FIXME: This can legitimately happen if the block was released just after we checked
+            // whether it was free? (Not observed in shuttle tests so far.) Do we need an additional
+            // lock around the PortAllocator?
+            .ok_or(AllocatorError::InternalIssue(
+                "Block not free, although absent from list of allocated blocks".to_string(),
+            ))
+    }
+
+    pub(crate) fn reserve_port(
+        &self,
+        ip: Arc<AllocatedIp<I>>,
+        port: NatPort,
+    ) -> Result<AllocatedPort<I>, AllocatorError> {
+        let block = self.find_block_for_port(ip, port)?;
+        block.reserve_port_from_block(port)
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -292,6 +365,30 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
         NatPort::new_checked(self.base_port_idx + bitmap_offset)
             .map_err(AllocatorError::PortAllocationFailed)
             .map(|port| AllocatedPort::new(port, self.clone()))
+    }
+
+    fn reserve_port_from_block(
+        self: Arc<Self>,
+        port: NatPort,
+    ) -> Result<AllocatedPort<I>, AllocatorError> {
+        self.usage_bitmap
+            .lock()
+            .unwrap()
+            .reserve_port_from_bitmap(
+                u8::try_from(port.as_u16().checked_sub(self.base_port_idx).ok_or(
+                    AllocatorError::InternalIssue(
+                        "Subtraction overflow during port reservation".to_string(),
+                    ),
+                )?)
+                .map_err(|_| {
+                    AllocatorError::InternalIssue(
+                        "Inconsistent base port index and port value".to_string(),
+                    )
+                })?,
+            )
+            .map_err(|()| AllocatorError::NoFreePort(port.as_u16()))?;
+
+        Ok(AllocatedPort::new(port, self.clone()))
     }
 }
 

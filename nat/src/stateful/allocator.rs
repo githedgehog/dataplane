@@ -34,11 +34,16 @@ pub enum AllocatorError {
 /// `AllocationResult` is a struct to represent the result of an allocation.
 ///
 /// It contains the allocated IP addresses and ports for both source and destination NAT for the
-/// packet forwarded.
+/// packet forwarded. In addition, it "reserves" IP addresses and ports for packets on the return
+/// path for this flow, and returns them so that the stateful NAT pipeline stage can update the flow
+/// table to prepare for the reply. It is necessary to "reserve" the IP and ports at this stage, to
+/// limit the risk of another flow accidentally getting the same resources assigned.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AllocationResult<T: Debug> {
     pub src: Option<T>,
     pub dst: Option<T>,
+    pub return_src: Option<T>,
+    pub return_dst: Option<T>,
 }
 
 /// `NatAllocator` is a trait to allocate IP addresses and ports for stateful NAT. The trait avoids
