@@ -2,6 +2,63 @@
 // Copyright Open Network Fabric Authors
 
 //! Apalloc: Address and port allocator for stateful NAT
+//!
+//! The allocator is safe to access concurrently between threads.
+//!
+//! Here is an attempt to visualize the allocator structure:
+//!
+//! ```text
+//! ┌───────────────────┐
+//! │NatDefaultAllocator├─────────────────────┬──────┬──────┐
+//! └────────┬──────────┘                     │      │      │
+//!          │                                │      │      │
+//! ┌────────▼────────┐         ┌─────────────▼──────▼──────▼───┐
+//! │PoolTable (src44)│         │PoolTable (src66, dst44, dst66)│
+//! └───────┬─────────┘         └───────────────────────────────┘
+//!         │
+//! ┌───────▼────┐  associates  ┌───────────┐
+//! │PoolTableKey┼──────────────►IpAllocator◄────────────────┐
+//! └────────────┘              └────┬──────┘                │
+//!                                  │                       │
+//!                             ┌────▼──┐                    │
+//!       ┌─────────────────────┤NatPool├───┐                │
+//!       │                     └───────┘   │                │
+//!       │                                 │                │
+//! ┌─────────────────┐           ┌─────────▼──────────┐     │
+//! │<collection>     │           │PoolBitmap          │     │
+//! │(weak references)│           │(map free addresses)│     │
+//! └─────────────────┘           └────────────────────┘     │
+//!       │                                                  │
+//! ┌─────▼─────┐                                            │
+//! │AllocatedIp│────────────────────────────────────────────┘
+//! └─▲─────────┘           back-reference, for deallocation
+//!   │       │
+//!   │ ┌─────▼───────┐
+//!   │ │PortAllocator│
+//!   │ └─────┬───────┘
+//!  *│       │
+//!   │ ┌─────▼───────────────┐           ┌─────────────────────┐
+//!   │ │AllocatedPortBlockMap├───────────►AllocatorPortBlock   │
+//!   │ │(weak references)    │           │(metadata for blocks)│
+//!   │ └─────────────────────┘           └─────────────────────┘
+//!   │       │
+//! ┌─┴───────▼────────┐              ┌──────────────────────────┐
+//! │AllocatedPortBlock├──────────────►Bitmap256                 │
+//! └─▲───────┬────────┘              │(map ports within a block)│
+//!  *│       │                       └──────────────────────────┘
+//! ┌─┴───────▼─────┐
+//! │┌─────────────┐│
+//! ││AllocatedPort││                           *: back references
+//! │└─────────────┘│
+//! └───────────────┘
+//! Returned object
+//! ```
+//!
+//! The [`AllocatedPort`](port_alloc::AllocatedPort) has a back-reference to [`AllocatedPortBlock`],
+//! to deallocate the ports when the [`AllocatedPort`](port_alloc::AllocatedPort) is dropped;
+//! [`AllocatedPortBlock`](port_alloc::AllocatedPortBlock) has a back reference to
+//! [`AllocatedIp`](alloc::AllocatedIp), and then the [`IpAllocator`](alloc::IpAllocator), to
+//! deallocate the IP address when they are dropped.
 
 #![allow(clippy::ip_constant)]
 

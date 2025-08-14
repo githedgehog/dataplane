@@ -39,6 +39,10 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         }
     }
 
+    fn deallocate_ip(&self, ip: I) {
+        self.pool.write().unwrap().deallocate_from_pool(ip);
+    }
+
     fn reuse_allocated_ip(&self) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
         let allocated_ips = self.pool.read().unwrap();
         for ip_weak in allocated_ips.ips_in_use() {
@@ -93,7 +97,9 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
 ///////////////////////////////////////////////////////////////////////////////
 
 /// An [`AllocatedIp`] is an IP address that has been allocated from a [`NatPool`]. It contains a
-/// [`PortAllocator`](port_alloc::PortAllocator), to further allocate ports for this IP address.
+/// [`PortAllocator`](port_alloc::PortAllocator), to further allocate ports for this IP address. It
+/// also contains a back reference to the parent [`IpAllocator`], to free up the IP address when it
+/// is dropped.
 #[derive(Debug)]
 pub(crate) struct AllocatedIp<I: NatIpWithBitmap> {
     ip: I,
@@ -118,10 +124,20 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
         self.port_allocator.has_free_ports()
     }
 
+    pub(crate) fn deallocate_block_for_ip(&self, index: usize) {
+        self.port_allocator.deallocate_block(index);
+    }
+
     fn allocate_port_for_ip(
         self: Arc<Self>,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
         self.port_allocator.allocate_port(self.clone())
+    }
+}
+
+impl<I: NatIpWithBitmap> Drop for AllocatedIp<I> {
+    fn drop(&mut self) {
+        self.ip_allocator.deallocate_ip(self.ip);
     }
 }
 
@@ -175,6 +191,11 @@ impl<I: NatIpWithBitmap> NatPool<I> {
 
         let ip = I::try_from_offset(offset, &self.bitmap_mapping)?;
         Ok(AllocatedIp::new(ip, ip_allocator))
+    }
+
+    fn deallocate_from_pool(&mut self, ip: I) {
+        let offset = I::try_to_offset(ip, &self.reverse_bitmap_mapping).unwrap();
+        self.bitmap.set_ip_free(offset);
     }
 }
 

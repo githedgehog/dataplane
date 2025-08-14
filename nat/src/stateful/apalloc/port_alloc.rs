@@ -118,6 +118,20 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
             || self.has_allocated_blocks_with_free_ports()
     }
 
+    pub(crate) fn deallocate_block(&self, index: usize) {
+        // Do not remove from self.allocated_blocks, as that is managed by the allocator when
+        // finding a weak reference that won't upgrade. Removing here would require an additional
+        // lookup in the list.
+        //
+        // TODO: Should we move usable_blocks and blocks into a lock-protected struct? Or adjust the
+        // ordering for the atomic operations?
+        self.blocks[index]
+            .free
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.usable_blocks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     fn has_allocated_blocks_with_free_ports(&self) -> bool {
         self.allocated_blocks.has_entries_with_free_ports()
     }
@@ -193,6 +207,9 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
 /// It serves as a finer-grained allocator for ports, within the represented port block, and
 /// contains a bitmap to that effect.
 ///
+/// It also contains a back reference to its parent [`AllocatedIp`], to deallocate the block when
+/// the [`AllocatedPortBlock`] is dropped.
+///
 /// Not to be confused with [`AllocatorPortBlock`], which represents the status (free or in use) for
 /// a block for a given IP address.
 #[derive(Debug)]
@@ -245,6 +262,25 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
             .is_some_and(|delta| delta < 256)
     }
 
+    fn deallocate_port_from_block(&self, port: NatPort) -> Result<(), AllocatorError> {
+        self.usage_bitmap
+            .lock()
+            .unwrap()
+            .deallocate_port_from_bitmap(
+                u8::try_from(port.as_u16().checked_sub(self.base_port_idx).ok_or(
+                    AllocatorError::InternalIssue(
+                        "Subtraction overflow during port deallocation".to_string(),
+                    ),
+                )?)
+                .map_err(|_| {
+                    AllocatorError::InternalIssue(
+                        "Inconsistent base port index and port value".to_string(),
+                    )
+                })?,
+            )
+            .map_err(|()| AllocatorError::InternalIssue("Failed to deallocate port".to_string()))
+    }
+
     fn allocate_port_from_block(self: Arc<Self>) -> Result<AllocatedPort<I>, AllocatorError> {
         let bitmap_offset = self
             .usage_bitmap
@@ -259,6 +295,12 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
     }
 }
 
+impl<I: NatIpWithBitmap> Drop for AllocatedPortBlock<I> {
+    fn drop(&mut self) {
+        self.ip.deallocate_block_for_ip(self.index);
+    }
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // AllocatedPort
 ///////////////////////////////////////////////////////////////////////////////
@@ -266,6 +308,9 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
 /// [`AllocatedPort`] not only represents an allocated port, but also the corresponding IP address,
 /// making it the final object resulting from the allocation process, and the one that the allocator
 /// returns.
+///
+/// It contains a back reference to its parent [`AllocatedPortBlock`], to deallocate the port when
+/// the [`AllocatedPort`] is dropped.
 #[derive(Debug)]
 pub struct AllocatedPort<I: NatIpWithBitmap> {
     port: NatPort,
@@ -286,6 +331,12 @@ impl<I: NatIpWithBitmap> AllocatedPort<I> {
 
     pub fn ip(&self) -> I {
         self.block_allocator.ip()
+    }
+}
+
+impl<I: NatIpWithBitmap> Drop for AllocatedPort<I> {
+    fn drop(&mut self) {
+        let _ = self.block_allocator.deallocate_port_from_block(self.port);
     }
 }
 
@@ -331,7 +382,8 @@ impl ThreadPortMap {
 
 /// [`AllocatedPortBlockMap`] is a thread-safe map of [`AllocatedPortBlock`]s. It is used to keep
 /// track of allocated port blocks. It contains weak references only, to avoid circular
-/// dependencies.
+/// dependencies. When a block gets dropped, its reference no longer resolves. Strong references to
+/// [`AllocatedPortBlock`]s are kept as back references by their children [`AllocatedPort`] objects.
 //
 // Note: Other structures than a hashmap + lock may be better suited:
 // dashmap, sharded lock, slab, const generics?
@@ -453,6 +505,10 @@ impl Bitmap256 {
             self.second_half |= value << (port_in_block - 128);
         }
         Ok(())
+    }
+
+    fn deallocate_port_from_bitmap(&mut self, port_in_block: u8) -> Result<(), ()> {
+        self.set_bitmap_value(port_in_block, 0)
     }
 
     fn reserve_port_from_bitmap(&mut self, port_in_block: u8) -> Result<(), ()> {
