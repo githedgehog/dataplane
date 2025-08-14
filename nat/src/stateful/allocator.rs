@@ -5,8 +5,6 @@
 
 use super::NatTuple;
 use super::port::NatPortError;
-use crate::stateful::natip::NatIp;
-use crate::stateful::port::NatPort;
 use net::ip::NextHeader;
 use std::fmt::Debug;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -67,43 +65,4 @@ where
     ) -> Result<AllocationResult<U>, AllocatorError>;
 
     // TODO: Should the method for building the allocator from a VpcTable be part of this trait?
-}
-
-// Temporary placeholder
-#[derive(Debug)]
-pub struct TmpAllocator {}
-
-impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for TmpAllocator {
-    fn new() -> Self {
-        Self {}
-    }
-
-    fn allocate_v4(
-        &self,
-        _tuple: &NatTuple<Ipv4Addr>,
-    ) -> Result<AllocationResult<AllocatedIpPort<Ipv4Addr>>, AllocatorError> {
-        todo!()
-    }
-
-    fn allocate_v6(
-        &self,
-        _tuple: &NatTuple<Ipv6Addr>,
-    ) -> Result<AllocationResult<AllocatedIpPort<Ipv6Addr>>, AllocatorError> {
-        todo!()
-    }
-}
-
-// Temporary placeholder
-#[derive(Debug)]
-pub struct AllocatedIpPort<I: NatIp> {
-    ip: I,
-}
-
-impl<I: NatIp> AllocatedIpPort<I> {
-    pub fn ip(&self) -> &I {
-        todo!()
-    }
-    pub fn port(&self) -> NatPort {
-        todo!()
-    }
 }

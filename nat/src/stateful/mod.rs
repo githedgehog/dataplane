@@ -11,6 +11,8 @@ mod port;
 pub mod sessions;
 
 use crate::stateful::allocator::{AllocationResult, NatAllocator};
+use crate::stateful::apalloc::AllocatedIpPort;
+use crate::stateful::apalloc::{NatDefaultAllocator, NatIpWithBitmap};
 use crate::stateful::natip::NatIp;
 use crate::stateful::port::NatPort;
 use crate::stateful::sessions::{
@@ -27,7 +29,7 @@ use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StatefulNatError {
@@ -75,6 +77,7 @@ impl<I: NatIp> NatTuple<I> {
 #[derive(Debug)]
 pub struct StatefulNat {
     sessions: NatDefaultSessionManager,
+    allocator: NatDefaultAllocator,
 }
 
 #[allow(clippy::new_without_default)]
@@ -84,6 +87,7 @@ impl StatefulNat {
     pub fn new() -> Self {
         Self {
             sessions: NatDefaultSessionManager::new(),
+            allocator: NatDefaultAllocator::new(),
         }
     }
 
@@ -131,10 +135,6 @@ impl StatefulNat {
         state: NatState,
     ) -> Result<(), sessions::SessionError> {
         self.sessions.insert_session_v4(tuple.clone(), state)
-    }
-
-    fn get_allocator<I: NatIp, J: NatIp>(&self) -> Option<allocator::TmpAllocator> {
-        todo!()
     }
 
     fn set_source_port(
@@ -229,8 +229,8 @@ impl StatefulNat {
     }
 
     // TODO: Change this function to store directly the AllocatedPort objects in session map
-    fn new_state_from_alloc<I: NatIp>(
-        alloc: &AllocationResult<allocator::AllocatedIpPort<I>>,
+    fn new_state_from_alloc<I: NatIpWithBitmap>(
+        alloc: &AllocationResult<AllocatedIpPort<I>>,
     ) -> NatState {
         let (target_src_addr, target_src_port) = match &alloc.src {
             Some(alloc_ip_port) => (
@@ -256,6 +256,60 @@ impl StatefulNat {
         )
     }
 
+    fn new_reverse_session<I: NatIpWithBitmap>(
+        tuple: &NatTuple<I>,
+        alloc: &AllocationResult<AllocatedIpPort<I>>,
+        src_vpc_id: NatVpcId,
+        dst_vpc_id: NatVpcId,
+    ) -> (NatTuple<I>, NatState) {
+        // Forward session:
+        //   f.init:(src: a, dst: B) -> f.nated:(src: A, dst: b)
+        //
+        // We want to create the following session:
+        //   r.init:(src: b, dst: A) -> r.nated:(src: B, dst: a)
+        //
+        // So we want:
+        // - tuple r.init = (src: f.nated.dst, dst: f.nated.src)
+        // - mapping r.nated = (src: f.init.dst, dst: f.init.src)
+
+        let reverse_src = match alloc.dst.as_ref().map(AllocatedIpPort::ip) {
+            Some(ip) => ip,
+            // No destination NAT for forward session:
+            // f.init:(src: a, dst: b) -> f.nated:(src: A, dst: b)
+            //
+            // Reverse session will be:
+            // r.init:(src: b, dst: A) -> r.nated:(src: b, dst: a)
+            //
+            // Use destination IP from forward tuple.
+            None => tuple.dst_ip,
+        };
+        let reverse_dst = match alloc.src.as_ref().map(AllocatedIpPort::ip) {
+            Some(ip) => ip,
+            None => tuple.src_ip,
+        };
+
+        let reverse_tuple = NatTuple::new(
+            reverse_src,
+            reverse_dst,
+            alloc.dst.as_ref().map(|p| p.port().as_u16()),
+            alloc.src.as_ref().map(|p| p.port().as_u16()),
+            tuple.next_header,
+            dst_vpc_id,
+            src_vpc_id,
+        );
+
+        // Do not reuse information from forward tuple, because the IPs and ports for the reverse
+        // session need to be registered with the allocator. Use the elements returned from the
+        // allocator.
+        let reverse_state = NatState::new(
+            alloc.return_src.as_ref().map(|p| p.ip().to_ip_addr()),
+            alloc.return_dst.as_ref().map(|p| p.ip().to_ip_addr()),
+            alloc.return_src.as_ref().map(AllocatedIpPort::port),
+            alloc.return_dst.as_ref().map(AllocatedIpPort::port),
+        );
+        (reverse_tuple, reverse_state)
+    }
+
     fn translate_packet_v4<Buf: PacketBufferMut>(
         &mut self,
         packet: &mut Packet<Buf>,
@@ -272,8 +326,7 @@ impl StatefulNat {
         }
 
         // Else, if we need NAT for this packet, create a new session and translate the address
-        let allocator = self.get_allocator::<Ipv4Addr, Ipv6Addr>().unwrap();
-        let Ok(alloc) = allocator.allocate_v4(tuple) else {
+        let Ok(alloc) = self.allocator.allocate_v4(tuple) else {
             // TODO: Log error, drop packet, update metrics
             return None;
         };
@@ -286,6 +339,11 @@ impl StatefulNat {
         let mut new_state = Self::new_state_from_alloc(&alloc);
         Self::update_stats(&mut new_state, total_bytes);
         self.create_session_v4(tuple, new_state.clone()).ok()?;
+
+        let (reverse_tuple, reverse_state) =
+            Self::new_reverse_session(tuple, &alloc, src_vpc_id, dst_vpc_id);
+        self.create_session_v4(&reverse_tuple, reverse_state.clone())
+            .ok()?;
 
         Self::stateful_translate::<Buf>(packet, &new_state, tuple.next_header);
         Some(())

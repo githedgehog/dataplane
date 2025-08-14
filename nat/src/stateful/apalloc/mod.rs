@@ -66,7 +66,7 @@ use super::NatVpcId;
 use super::allocator::{AllocationResult, AllocatorError};
 use super::port::NatPort;
 use super::{NatAllocator, NatIp, NatTuple};
-use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
+pub use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
 use net::ip::NextHeader;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -111,9 +111,11 @@ impl<I: NatIp> PoolTableKey<I> {
 ///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-struct PoolTable<I: NatIp, J: NatIpWithBitmap>(BTreeMap<PoolTableKey<I>, alloc::IpAllocator<J>>);
+struct PoolTable<I: NatIpWithBitmap, J: NatIpWithBitmap>(
+    BTreeMap<PoolTableKey<I>, alloc::IpAllocator<J>>,
+);
 
-impl<I: NatIp, J: NatIpWithBitmap> PoolTable<I, J> {
+impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
     fn new() -> Self {
         Self(BTreeMap::new())
     }
