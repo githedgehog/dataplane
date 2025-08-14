@@ -13,7 +13,7 @@
 //! This data structure is, therefore, NOT thread-safe. Thread-safety is achieved by wrapping
 //! this structure in left-right.
 //!
-//! Any modification of the FibGroupStore or the Rc<RefCell<FibGroup>>s it contains
+//! Any modification of the FibGroupStore or the `Rc<RefCell<FibGroup>>`s it contains
 //! must be done while holding a `left_right::WriteGuard` to the `Fib` that owns it.
 //!
 //! Any use of the `FibGroupStore` or the `Rc<RefCell<FibGroup>>`s it contains
