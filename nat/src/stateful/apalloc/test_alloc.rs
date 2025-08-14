@@ -406,4 +406,125 @@ mod tests_shuttle {
             100,
         );
     }
+
+    fn run_shuttle<F>(f: F)
+    where
+        F: Fn() + Sync + Send + 'static,
+    {
+        let mut config = shuttle::Config::new();
+        // Raise the stack size to avoid stack overflow in the coroutine. The default is 32 kB, but
+        // the allocator uses Atomics for all port blocks for each allocated IP address, and in
+        // shuttle an AtomicBool takes over 100 bytes in memory, for example.
+        //
+        // Raise to 1 MB stack.
+        config.stack_size = 1024 * 1024;
+        // One hundred iterations
+        let runner = shuttle::Runner::new(shuttle::scheduler::RandomScheduler::new(100), config);
+        runner.run(f);
+    }
+
+    // Run concurrent allocations for four different tuples (some of them sharing the same source
+    // and destination IP addresses) using shuttle's random scheduler, see if anything breaks.
+    #[test]
+    fn test_concurrent_allocations() {
+        run_shuttle(|| {
+            let tuple1 = NatTuple::new(
+                addr_v4("1.1.0.0"),
+                addr_v4("10.3.0.2"),
+                Some(1111),
+                Some(1112),
+                NextHeader::TCP,
+                vni1(),
+                vni2(),
+            );
+            let tuple2 = NatTuple::new(
+                addr_v4("2.0.1.3"),
+                addr_v4("10.4.1.1"),
+                Some(2222),
+                Some(2223),
+                NextHeader::TCP,
+                vni1(),
+                vni2(),
+            );
+            let tuple3 = NatTuple::new(
+                addr_v4("1.1.0.0"),
+                addr_v4("10.3.0.2"),
+                Some(3333),
+                Some(3334),
+                NextHeader::TCP,
+                vni1(),
+                vni2(),
+            );
+            let tuple4 = NatTuple::new(
+                addr_v4("1.1.0.0"),
+                addr_v4("10.3.0.3"),
+                Some(4444),
+                Some(4445),
+                NextHeader::TCP,
+                vni1(),
+                vni2(),
+            );
+
+            let allocator = build_allocator().unwrap();
+            let allocator_arc = Arc::new(allocator);
+            let allocator1 = allocator_arc.clone();
+            let allocator2 = allocator_arc.clone();
+            let allocator3 = allocator_arc.clone();
+            let allocator4 = allocator_arc.clone();
+
+            let mut handles = vec![];
+
+            handles.push(thread::spawn(move || {
+                let allocation1 = allocator1.allocate_v4(&tuple1);
+                let res = allocation1.unwrap();
+                assert!(res.src.is_some());
+                assert!(res.dst.is_some());
+                assert!(res.return_src.is_some());
+                assert!(res.return_dst.is_some());
+            }));
+            handles.push(thread::spawn(move || {
+                let allocation2 = allocator2.allocate_v4(&tuple2);
+                let res = allocation2.unwrap();
+                assert!(res.src.is_some());
+                assert!(res.dst.is_some());
+                assert!(res.return_src.is_some());
+                assert!(res.return_dst.is_some());
+            }));
+            handles.push(thread::spawn(move || {
+                let allocation3 = allocator3.allocate_v4(&tuple3);
+                let res = allocation3.unwrap();
+                assert!(res.src.is_some());
+                assert!(res.dst.is_some());
+                assert!(res.return_src.is_some());
+                assert!(res.return_dst.is_some());
+            }));
+            handles.push(thread::spawn(move || {
+                let allocation4 = allocator4.allocate_v4(&tuple4);
+                let res = allocation4.unwrap();
+                assert!(res.src.is_some());
+                assert!(res.dst.is_some());
+                assert!(res.return_src.is_some());
+                assert!(res.return_dst.is_some());
+            }));
+
+            let results: Vec<()> = handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect();
+
+            // All allocations got out of scope and dropped when the threads terminated.
+
+            let mut allocator_again = Arc::try_unwrap(allocator_arc).unwrap();
+            let (bitmap, in_use) = get_ip_allocator_v4(
+                &mut allocator_again.pools_src44,
+                vni1(),
+                vni2(),
+                NextHeader::TCP,
+                addr_v4("1.1.0.0"),
+            )
+            .get_pool_clone_for_tests();
+            assert_eq!(bitmap.len(), 3); // 3 IP addresses available to NAT 1.1.0.0
+            assert!(in_use.front().unwrap().upgrade().is_none()); // Weak references in list no longer resolve
+        });
+    }
 }
