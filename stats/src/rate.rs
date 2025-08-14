@@ -76,7 +76,7 @@ impl Derivative for SavitzkyGolayFilter<u64> {
         let step: f64 = self.step.as_micros() as f64 / 1_000_000.;
         if weighted_sum == 0 {
             const NORMALIZATION: f64 = 2.;
-            return Ok((data[3].saturating_sub(data[1])) as f64 / (NORMALIZATION * step));
+            return Ok(data[3].saturating_sub(data[1]) as f64 / (NORMALIZATION * step));
         }
         const NORMALIZATION: f64 = 12.;
         Ok(weighted_sum as f64 / (NORMALIZATION * step))
@@ -106,10 +106,9 @@ impl Derivative for SavitzkyGolayFilter<PacketAndByte<u64>> {
         if weighted_sum_bytes == 0 {
             const NORMALIZATION: f64 = 2.;
             return Ok(PacketAndByte {
-                packets: (data[3].packets.saturating_sub(data[1].packets)) as f64
+                packets: data[3].packets.saturating_sub(data[1].packets) as f64
                     / (NORMALIZATION * step),
-                bytes: (data[3].bytes.saturating_sub(data[1].bytes)) as f64
-                    / (NORMALIZATION * step),
+                bytes: data[3].bytes.saturating_sub(data[1].bytes) as f64 / (NORMALIZATION * step),
             });
         }
         let weighted_sum_packets = (8 * (data[3].packets.saturating_sub(data[1].packets)))
@@ -200,7 +199,7 @@ where
 
     fn derivative(&self) -> Result<Self::Output, Self::Error> {
         let mut out = TransmitSummary::new();
-        let mut items = self
+        let items = self
             .dst
             .iter()
             .map(|(&k, v)| {
@@ -270,7 +269,7 @@ impl From<SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummar
         let capacity_guess = value.data.iter().map(|map| map.len()).max().unwrap_or(0);
         let mut out = hashbrown::HashMap::with_capacity(capacity_guess + CAPACITY_PAD);
         value.data.iter().for_each(|map| {
-            map.iter().for_each(|(k, v)| {
+            map.iter().for_each(|(k, _)| {
                 if out.get(k).is_none() {
                     out.insert(
                         *k,
@@ -279,16 +278,13 @@ impl From<SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummar
                 }
             })
         });
-        let all_keys: hashbrown::HashSet<_> = out.keys().copied().collect();
         value
             .data
             .iter()
             .cycle()
             .skip(value.idx)
             .take(5)
-            .enumerate()
-            .for_each(|(idx, map)| {
-                let mut idx_keys: hashbrown::HashSet<_> = map.keys().copied().collect();
+            .for_each(|map| {
                 map.iter()
                     .for_each(|(from_key, from)| match out.get_mut(from_key) {
                         None => {
@@ -313,15 +309,13 @@ impl From<&SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSumma
         let capacity_guess = value.data.iter().map(|map| map.len()).max().unwrap_or(0);
         let mut out = hashbrown::HashMap::with_capacity(capacity_guess + CAPACITY_PAD);
         value.data.iter().for_each(|map| {
-            map.iter().for_each(|(k, v)| {
+            map.iter().for_each(|(k, _)| {
                 if out.get(k).is_none() {
                     out.insert(*k, TransmitSummary::<SavitzkyGolayFilter<u64>>::new());
                 }
             })
         });
-        let all_keys: hashbrown::HashSet<_> = out.keys().copied().collect();
         value.data.iter().enumerate().for_each(|(idx, map)| {
-            let mut idx_keys: hashbrown::HashSet<_> = map.keys().copied().collect();
             map.iter()
                 .for_each(|(from_key, from)| match out.get_mut(from_key) {
                     None => {
@@ -490,7 +484,7 @@ mod test {
         }
 
         let y: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<SavitzkyGolayFilter<u64>>> =
-            x.into();
+            (&x).into();
         let z = y.derivative().unwrap();
         println!("{z:#?}");
     }
@@ -504,7 +498,6 @@ mod test {
             .filter_map(|x| x.ok())
             .map(VpcDiscriminant::VNI)
             .collect();
-        let mut rng = 0;
         for i in 0u64..5 {
             let mut map = hashbrown::HashMap::new();
             for &src in &discs {
@@ -539,7 +532,6 @@ mod test {
             .filter_map(|x| x.ok())
             .map(VpcDiscriminant::VNI)
             .collect();
-        let mut rng = 0;
         for i in 0u64..5 {
             let mut map = hashbrown::HashMap::new();
             for &src in &discs {
@@ -556,7 +548,7 @@ mod test {
                         dst,
                         PacketAndByte {
                             packets: j * i,
-                            bytes: 1500 * i * j + rng,
+                            bytes: 1500 * i * j,
                         },
                     );
                 }
@@ -566,7 +558,7 @@ mod test {
         }
 
         let y: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<SavitzkyGolayFilter<u64>>> =
-            x.into();
+            (&x).into();
         let z = y
             .derivative()
             .unwrap()
@@ -594,7 +586,6 @@ mod test {
                     if idx == 125 || idx == 126 {
                         return;
                     }
-                    let VpcDiscriminant::VNI(x) = dst;
                     summary.dst.insert(dst, PacketAndByte { packets, bytes });
                 });
                 if idx == 125 || idx == 126 {
