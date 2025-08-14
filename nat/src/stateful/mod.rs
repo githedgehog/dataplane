@@ -2,7 +2,6 @@
 // Copyright Open Network Fabric Authors
 
 #![allow(dead_code)]
-#![allow(unused_variables)]
 
 mod allocator;
 mod apalloc;
@@ -22,6 +21,7 @@ use net::buffer::PacketBufferMut;
 use net::headers::{Net, Transport, TryHeadersMut, TryIp, TryIpMut, TryTransportMut};
 use net::ip::NextHeader;
 use net::ipv4::UnicastIpv4Addr;
+use net::ipv6::UnicastIpv6Addr;
 use net::packet::Packet;
 use net::tcp::port::TcpPort;
 use net::udp::port::UdpPort;
@@ -29,7 +29,7 @@ use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StatefulNatError {
@@ -129,12 +129,27 @@ impl StatefulNat {
         self.sessions.lookup_v4_mut(tuple)
     }
 
+    fn lookup_session_v6_mut(
+        &self,
+        tuple: &NatTuple<Ipv6Addr>,
+    ) -> Option<NatDefaultSession<'_, Ipv6Addr>> {
+        self.sessions.lookup_v6_mut(tuple)
+    }
+
     fn create_session_v4(
         &mut self,
         tuple: &NatTuple<Ipv4Addr>,
         state: NatState,
     ) -> Result<(), sessions::SessionError> {
         self.sessions.insert_session_v4(tuple.clone(), state)
+    }
+
+    fn create_session_v6(
+        &mut self,
+        tuple: &NatTuple<Ipv6Addr>,
+        state: NatState,
+    ) -> Result<(), sessions::SessionError> {
+        self.sessions.insert_session_v6(tuple.clone(), state)
     }
 
     fn set_source_port(
@@ -201,7 +216,10 @@ impl StatefulNat {
                 Self::set_source_port(transport, next_header, target_src_port).ok()?;
             }
             (Net::Ipv6(ip_hdr), Some(IpAddr::V6(target_src_ip)), Some(target_src_port)) => {
-                todo!()
+                ip_hdr.set_source(UnicastIpv6Addr::new(target_src_ip).ok()?);
+
+                let transport = headers.try_transport_mut()?;
+                Self::set_source_port(transport, next_header, target_src_port).ok()?;
             }
             (_, _, _) => {}
         }
@@ -216,7 +234,10 @@ impl StatefulNat {
                 Self::set_destination_port(transport, next_header, target_dst_port).ok()?;
             }
             (Net::Ipv6(ip_hdr), Some(IpAddr::V6(target_dst_ip)), Some(target_dst_port)) => {
-                todo!()
+                ip_hdr.set_destination(target_dst_ip);
+
+                let transport = headers.try_transport_mut()?;
+                Self::set_destination_port(transport, next_header, target_dst_port).ok()?;
             }
             (_, _, _) => {}
         }
@@ -349,6 +370,45 @@ impl StatefulNat {
         Some(())
     }
 
+    fn translate_packet_v6<Buf: PacketBufferMut>(
+        &mut self,
+        packet: &mut Packet<Buf>,
+        tuple: &NatTuple<Ipv6Addr>,
+        src_vpc_id: NatVpcId,
+        dst_vpc_id: NatVpcId,
+        total_bytes: u16,
+    ) -> Option<()> {
+        // Hot path: if we have a session, directly translate the address already
+        if let Some(mut session) = self.lookup_session_v6_mut(tuple) {
+            Self::stateful_translate::<Buf>(packet, session.get_state_mut()?, tuple.next_header);
+            Self::update_stats(session.get_state_mut()?, total_bytes);
+            return Some(());
+        }
+
+        // Else, if we need NAT for this packet, create a new session and translate the address
+        let Ok(alloc) = self.allocator.allocate_v6(tuple) else {
+            // TODO: Log error, drop packet, update metrics
+            return None;
+        };
+
+        if alloc.src.is_none() && alloc.dst.is_none() {
+            // No NAT for this tuple, leave the packet unchanged
+            return None;
+        }
+
+        let mut new_state = Self::new_state_from_alloc(&alloc);
+        Self::update_stats(&mut new_state, total_bytes);
+        self.create_session_v6(tuple, new_state.clone()).ok()?;
+
+        let (reverse_tuple, reverse_state) =
+            Self::new_reverse_session(tuple, &alloc, src_vpc_id, dst_vpc_id);
+        self.create_session_v6(&reverse_tuple, reverse_state.clone())
+            .ok()?;
+
+        Self::stateful_translate::<Buf>(packet, &new_state, tuple.next_header);
+        Some(())
+    }
+
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
     /// function that we pass to [`StatefulNat::process`] to iterate over packets.
     fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
@@ -381,7 +441,16 @@ impl StatefulNat {
                 );
             }
             Net::Ipv6(_) => {
-                todo!()
+                let Some(tuple) = Self::extract_tuple(net, src_vpc_id, dst_vpc_id) else {
+                    return;
+                };
+                self.translate_packet_v6::<Buf>(
+                    packet,
+                    &tuple,
+                    src_vpc_id,
+                    dst_vpc_id,
+                    total_bytes,
+                );
             }
         }
     }

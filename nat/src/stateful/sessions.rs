@@ -15,9 +15,10 @@ pub enum SessionError {
     DuplicateTuple,
 }
 
-pub trait NatSessionManager<'a, T>
+pub trait NatSessionManager<'a, T, U>
 where
     T: 'a + NatSession,
+    U: 'a + NatSession,
 {
     fn new() -> Self;
 
@@ -28,6 +29,14 @@ where
         state: NatState,
     ) -> Result<(), SessionError>;
     fn remove_session_v4(&mut self, tuple: &NatTuple<Ipv4Addr>);
+
+    fn lookup_v6_mut(&'a self, tuple: &NatTuple<Ipv6Addr>) -> Option<U>;
+    fn insert_session_v6(
+        &mut self,
+        tuple: NatTuple<Ipv6Addr>,
+        state: NatState,
+    ) -> Result<(), SessionError>;
+    fn remove_session_v6(&mut self, tuple: &NatTuple<Ipv6Addr>);
 
     fn start_gc(&self) -> Result<(), SessionError>;
 }
@@ -65,7 +74,9 @@ impl NatDefaultSessionManager {
     }
 }
 
-impl<'a> NatSessionManager<'a, NatDefaultSession<'a, Ipv4Addr>> for NatDefaultSessionManager {
+impl<'a> NatSessionManager<'a, NatDefaultSession<'a, Ipv4Addr>, NatDefaultSession<'a, Ipv6Addr>>
+    for NatDefaultSessionManager
+{
     fn new() -> Self {
         Self {
             table_v4: DashMap::new(),
@@ -96,6 +107,31 @@ impl<'a> NatSessionManager<'a, NatDefaultSession<'a, Ipv4Addr>> for NatDefaultSe
 
     fn remove_session_v4(&mut self, tuple: &NatTuple<Ipv4Addr>) {
         self.table_v4.remove(tuple);
+    }
+
+    fn lookup_v6_mut(
+        &'a self,
+        tuple: &NatTuple<Ipv6Addr>,
+    ) -> Option<NatDefaultSession<'a, Ipv6Addr>> {
+        let map_entry = self.table_v6.get_mut(tuple)?;
+        Some(NatDefaultSession {
+            dashmap_ref: Some(map_entry),
+        })
+    }
+
+    fn insert_session_v6(
+        &mut self,
+        tuple: NatTuple<Ipv6Addr>,
+        state: NatState,
+    ) -> Result<(), SessionError> {
+        // Return an error if the tuple already exists in the table
+        self.table_v6
+            .insert(tuple, state)
+            .map_or(Ok(()), |_| Err(SessionError::DuplicateTuple))
+    }
+
+    fn remove_session_v6(&mut self, tuple: &NatTuple<Ipv6Addr>) {
+        self.table_v6.remove(tuple);
     }
 
     fn start_gc(&self) -> Result<(), SessionError> {
