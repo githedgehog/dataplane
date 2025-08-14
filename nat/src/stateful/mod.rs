@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-#![allow(dead_code)]
-
 mod allocator;
 mod apalloc;
 mod natip;

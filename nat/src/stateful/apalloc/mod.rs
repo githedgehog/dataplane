@@ -74,6 +74,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 mod alloc;
 mod natip_with_bitmap;
 mod port_alloc;
+mod setup;
 
 ///////////////////////////////////////////////////////////////////////////////
 // PoolTableKey
