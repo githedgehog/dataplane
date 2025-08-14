@@ -23,7 +23,6 @@ use net::tcp::port::TcpPort;
 use net::udp::port::UdpPort;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
-use routing::rib::vrf::VrfId;
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -33,21 +32,31 @@ pub enum StatefulNatError {
     InvalidPort(u16),
 }
 
+type NatVpcId = Vni;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NatTuple<I: NatIp> {
     src_ip: I,
     dst_ip: I,
     next_header: NextHeader,
-    vrf_id: VrfId,
+    src_vpc_id: NatVpcId,
+    dst_vpc_id: NatVpcId,
 }
 
 impl<I: NatIp> NatTuple<I> {
-    fn new(src_ip: I, dst_ip: I, next_header: NextHeader, vrf_id: VrfId) -> Self {
+    fn new(
+        src_ip: I,
+        dst_ip: I,
+        next_header: NextHeader,
+        src_vpc_id: NatVpcId,
+        dst_vpc_id: NatVpcId,
+    ) -> Self {
         Self {
             src_ip,
             dst_ip,
             next_header,
-            vrf_id,
+            src_vpc_id,
+            dst_vpc_id,
         }
     }
 }
@@ -69,15 +78,29 @@ impl StatefulNat {
         }
     }
 
-    fn get_vrf_id(net: &Net, vni: Vni) -> VrfId {
-        todo!()
+    fn get_src_vpc_id(_net: &Net, vni: Vni) -> NatVpcId {
+        vni
     }
 
-    fn extract_tuple<I: NatIp>(net: &Net, vrf_id: VrfId) -> Option<NatTuple<I>> {
+    fn get_dst_vpc_id(_net: &Net, vni: Vni) -> NatVpcId {
+        vni
+    }
+
+    fn extract_tuple<I: NatIp>(
+        net: &Net,
+        src_vpc_id: NatVpcId,
+        dst_vpc_id: NatVpcId,
+    ) -> Option<NatTuple<I>> {
         let src_ip = I::from_src_addr(net)?;
         let dst_ip = I::from_dst_addr(net)?;
         let next_header = net.next_header();
-        Some(NatTuple::new(src_ip, dst_ip, next_header, vrf_id))
+        Some(NatTuple::new(
+            src_ip,
+            dst_ip,
+            next_header,
+            src_vpc_id,
+            dst_vpc_id,
+        ))
     }
 
     fn lookup_session_v4_mut(
@@ -101,7 +124,8 @@ impl StatefulNat {
     fn find_nat_pool<I: NatIp>(
         &self,
         tuple: &NatTuple<I>,
-        vrf_id: VrfId,
+        src_vpc_id: NatVpcId,
+        dst_vpc_id: NatVpcId,
     ) -> Option<&dyn allocator::NatPool<I>> {
         todo!()
     }
@@ -201,6 +225,8 @@ impl StatefulNat {
         &mut self,
         packet: &mut Packet<Buf>,
         tuple: &NatTuple<Ipv4Addr>,
+        src_vpc_id: NatVpcId,
+        dst_vpc_id: NatVpcId,
         total_bytes: u16,
     ) -> Option<()> {
         // Hot path: if we have a session, directly translate the address already
@@ -211,7 +237,7 @@ impl StatefulNat {
         }
 
         // Else, if we need NAT for this packet, create a new session and translate the address
-        let Some(pool) = self.find_nat_pool::<Ipv4Addr>(tuple, tuple.vrf_id) else {
+        let Some(pool) = self.find_nat_pool::<Ipv4Addr>(tuple, src_vpc_id, dst_vpc_id) else {
             // No pool, leave the packet unchanged
             return None;
         };
@@ -262,14 +288,21 @@ impl StatefulNat {
         // TODO: Check whether the packet is fragmented
         // TODO: Check whether we need protocol-aware processing
 
-        let vrf_id = Self::get_vrf_id(net, vni);
+        let src_vpc_id = Self::get_src_vpc_id(net, vni);
+        let dst_vpc_id = Self::get_dst_vpc_id(net, vni);
 
         match net {
             Net::Ipv4(_) => {
-                let Some(tuple) = Self::extract_tuple(net, vrf_id) else {
+                let Some(tuple) = Self::extract_tuple(net, src_vpc_id, dst_vpc_id) else {
                     return;
                 };
-                self.translate_packet_v4::<Buf>(packet, &tuple, total_bytes);
+                self.translate_packet_v4::<Buf>(
+                    packet,
+                    &tuple,
+                    src_vpc_id,
+                    dst_vpc_id,
+                    total_bytes,
+                );
             }
             Net::Ipv6(_) => {
                 todo!()
@@ -310,11 +343,16 @@ mod tests {
             Ipv4Addr::from_str("1.2.3.4").unwrap(),
             Ipv4Addr::from_str("5.6.7.8").unwrap(),
             NextHeader::new(255),
-            VrfId::from_str("1").unwrap(),
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
         );
-        let tuple = StatefulNat::extract_tuple(net, VrfId::from_str("1").unwrap()).unwrap();
+        let tuple = StatefulNat::extract_tuple(
+            net,
+            Vni::new_checked(1).unwrap(),
+            Vni::new_checked(2).unwrap(),
+        );
 
-        assert_eq!(tuple, ref_tuple);
+        assert_eq!(tuple, Some(ref_tuple));
     }
 
     #[test]
