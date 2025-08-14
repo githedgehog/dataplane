@@ -24,10 +24,11 @@ use net::tcp::port::TcpPort;
 use net::udp::port::UdpPort;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
+use std::fmt::Debug;
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StatefulNatError {
     #[error("invalid port {0}")]
     InvalidPort(u16),
@@ -123,7 +124,6 @@ impl StatefulNat {
         self.sessions.lookup_v4_mut(tuple)
     }
 
-    #[allow(clippy::needless_pass_by_value)]
     fn create_session_v4(
         &mut self,
         tuple: &NatTuple<Ipv4Addr>,
@@ -229,8 +229,32 @@ impl StatefulNat {
         state.increment_bytes(total_bytes.into());
     }
 
-    fn new_state_from_alloc(alloc: &AllocationResult<Ipv4Addr>) -> NatState {
-        todo!()
+    // TODO: Change this function to store directly the AllocatedPort objects in session map
+    fn new_state_from_alloc<I: NatIp>(
+        alloc: &AllocationResult<allocator::AllocatedIpPort<I>>,
+    ) -> NatState {
+        let (target_src_addr, target_src_port) = match &alloc.src {
+            Some(alloc_ip_port) => (
+                Some(alloc_ip_port.ip().to_ip_addr()),
+                // TODO: We could have non-empty IP but empty port, e.g. ICMP (needs changing struct
+                // AllocatedPort to contain an Option; then remove "Some" here)
+                Some(alloc_ip_port.port()),
+            ),
+            None => (None, None),
+        };
+        let (target_dst_addr, target_dst_port) = match &alloc.dst {
+            Some(alloc_ip_port) => (
+                Some(alloc_ip_port.ip().to_ip_addr()),
+                Some(alloc_ip_port.port()),
+            ),
+            None => (None, None),
+        };
+        NatState::new(
+            target_src_addr,
+            target_dst_addr,
+            target_src_port,
+            target_dst_port,
+        )
     }
 
     fn translate_packet_v4<Buf: PacketBufferMut>(
@@ -261,7 +285,6 @@ impl StatefulNat {
         }
 
         let mut new_state = Self::new_state_from_alloc(&alloc);
-
         Self::update_stats(&mut new_state, total_bytes);
         self.create_session_v4(tuple, new_state.clone()).ok()?;
 
@@ -348,9 +371,10 @@ mod tests {
             net,
             Vni::new_checked(1).unwrap(),
             Vni::new_checked(2).unwrap(),
-        );
+        )
+        .unwrap();
 
-        assert_eq!(tuple, Some(ref_tuple));
+        assert_eq!(tuple, ref_tuple);
     }
 
     #[test]
