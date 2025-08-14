@@ -38,6 +38,8 @@ type NatVpcId = Vni;
 pub struct NatTuple<I: NatIp> {
     src_ip: I,
     dst_ip: I,
+    src_port: Option<u16>,
+    dst_port: Option<u16>,
     next_header: NextHeader,
     src_vpc_id: NatVpcId,
     dst_vpc_id: NatVpcId,
@@ -47,6 +49,8 @@ impl<I: NatIp> NatTuple<I> {
     fn new(
         src_ip: I,
         dst_ip: I,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
         next_header: NextHeader,
         src_vpc_id: NatVpcId,
         dst_vpc_id: NatVpcId,
@@ -54,6 +58,8 @@ impl<I: NatIp> NatTuple<I> {
         Self {
             src_ip,
             dst_ip,
+            src_port,
+            dst_port,
             next_header,
             src_vpc_id,
             dst_vpc_id,
@@ -94,9 +100,15 @@ impl StatefulNat {
         let src_ip = I::from_src_addr(net)?;
         let dst_ip = I::from_dst_addr(net)?;
         let next_header = net.next_header();
+        // FIXME
+        let src_port = None;
+        let dst_port = None;
+
         Some(NatTuple::new(
             src_ip,
             dst_ip,
+            src_port,
+            dst_port,
             next_header,
             src_vpc_id,
             dst_vpc_id,
@@ -342,6 +354,8 @@ mod tests {
         let ref_tuple = NatTuple::new(
             Ipv4Addr::from_str("1.2.3.4").unwrap(),
             Ipv4Addr::from_str("5.6.7.8").unwrap(),
+            None,
+            None,
             NextHeader::new(255),
             Vni::new_checked(1).unwrap(),
             Vni::new_checked(2).unwrap(),

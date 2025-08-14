@@ -220,6 +220,8 @@ mod tests {
         let tuple = NatTuple::new(
             addr_v4("1.2.3.4"),
             addr_v4("5.6.7.8"),
+            None,
+            None,
             NextHeader::UDP,
             Vni::new_checked(1).unwrap(),
             Vni::new_checked(2).unwrap(),
@@ -262,6 +264,8 @@ mod tests {
         let tuple = NatTuple::new(
             addr_v4("1.2.3.4"),
             addr_v4("5.6.7.8"),
+            None,
+            None,
             NextHeader::UDP,
             Vni::new_checked(1).unwrap(),
             Vni::new_checked(2).unwrap(),
