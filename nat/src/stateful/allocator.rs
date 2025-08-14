@@ -24,4 +24,4 @@ impl<I: NatIp> NatPool<I> for NatDefaultPool<I> {
 }
 
 #[derive(Debug, Clone)]
-struct NatAllocations {}
+pub struct NatAllocations {}

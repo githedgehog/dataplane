@@ -233,6 +233,13 @@ impl StatefulNat {
         state.increment_bytes(total_bytes.into());
     }
 
+    #[allow(clippy::type_complexity)]
+    fn new_state_from_alloc(
+        alloc: &(Option<(Ipv4Addr, NatPort)>, Option<(Ipv4Addr, NatPort)>),
+    ) -> NatState {
+        todo!()
+    }
+
     fn translate_packet_v4<Buf: PacketBufferMut>(
         &mut self,
         packet: &mut Packet<Buf>,
@@ -258,29 +265,16 @@ impl StatefulNat {
             return None;
         };
 
-        let (src_mapping, dst_mapping) = alloc;
-        if src_mapping.is_none() && dst_mapping.is_none() {
+        if alloc.0.is_none() && alloc.1.is_none() {
             // No NAT for this tuple, leave the packet unchanged
             return None;
         }
 
-        let (target_src_addr, target_src_port) = match src_mapping {
-            Some((ip, port)) => (Some(ip.to_ip_addr()), Some(port)),
-            None => (None, None),
-        };
-        let (target_dst_addr, target_dst_port) = match dst_mapping {
-            Some((ip, port)) => (Some(ip.to_ip_addr()), Some(port)),
-            None => (None, None),
-        };
+        let mut new_state = Self::new_state_from_alloc(&alloc);
 
-        let mut new_state = NatState::new(
-            target_src_addr,
-            target_dst_addr,
-            target_src_port,
-            target_dst_port,
-        );
         Self::update_stats(&mut new_state, total_bytes);
         self.create_session_v4(tuple, new_state.clone()).ok()?;
+
         Self::stateful_translate::<Buf>(packet, &new_state, tuple.next_header);
         Some(())
     }
