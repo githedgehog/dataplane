@@ -9,6 +9,7 @@ mod natip;
 mod port;
 pub mod sessions;
 
+use crate::stateful::allocator::{AllocationResult, NatAllocator};
 use crate::stateful::natip::NatIp;
 use crate::stateful::port::NatPort;
 use crate::stateful::sessions::{
@@ -24,7 +25,7 @@ use net::udp::port::UdpPort;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use std::hash::Hash;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum StatefulNatError {
@@ -133,12 +134,7 @@ impl StatefulNat {
         // TODO: Reverse session
     }
 
-    fn find_nat_pool<I: NatIp>(
-        &self,
-        tuple: &NatTuple<I>,
-        src_vpc_id: NatVpcId,
-        dst_vpc_id: NatVpcId,
-    ) -> Option<&dyn allocator::NatPool<I>> {
+    fn get_allocator<I: NatIp, J: NatIp>(&self) -> Option<allocator::TmpAllocator> {
         todo!()
     }
 
@@ -233,10 +229,7 @@ impl StatefulNat {
         state.increment_bytes(total_bytes.into());
     }
 
-    #[allow(clippy::type_complexity)]
-    fn new_state_from_alloc(
-        alloc: &(Option<(Ipv4Addr, NatPort)>, Option<(Ipv4Addr, NatPort)>),
-    ) -> NatState {
+    fn new_state_from_alloc(alloc: &AllocationResult<Ipv4Addr>) -> NatState {
         todo!()
     }
 
@@ -256,16 +249,13 @@ impl StatefulNat {
         }
 
         // Else, if we need NAT for this packet, create a new session and translate the address
-        let Some(pool) = self.find_nat_pool::<Ipv4Addr>(tuple, src_vpc_id, dst_vpc_id) else {
-            // No pool, leave the packet unchanged
-            return None;
-        };
-        let Ok(alloc) = pool.allocate() else {
+        let allocator = self.get_allocator::<Ipv4Addr, Ipv6Addr>().unwrap();
+        let Ok(alloc) = allocator.allocate_v4(tuple) else {
             // TODO: Log error, drop packet, update metrics
             return None;
         };
 
-        if alloc.0.is_none() && alloc.1.is_none() {
+        if alloc.src.is_none() && alloc.dst.is_none() {
             // No NAT for this tuple, leave the packet unchanged
             return None;
         }
