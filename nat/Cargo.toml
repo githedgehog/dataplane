@@ -7,6 +7,7 @@ license = "Apache-2.0"
 
 [dependencies]
 ahash = { workspace = true }
+concurrency = { workspace = true, features = [] }
 config = { workspace = true }
 dashmap = { workspace = true }
 left-right = { workspace = true }
@@ -16,6 +17,7 @@ pipeline = { workspace = true }
 rand = { workspace = true }
 roaring = { workspace = true }
 routing = { workspace = true }
+shuttle = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
@@ -28,6 +30,7 @@ routing = { workspace = true, features = ["testing"] }
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
 ipnet = { workspace = true }
+shuttle = { workspace = true, features = [] }
 tracing-test = { workspace = true, features = [] }
 
 

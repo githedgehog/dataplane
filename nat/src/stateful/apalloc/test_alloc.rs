@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use concurrency::concurrency_mode;
+
 // This module does not contain tests, but helpers to build the context (VpcTable, allocator) used
 // by tests in other modules. These helpers are not to be used outside of tests.
 #[cfg(test)]
@@ -136,6 +138,7 @@ mod tests {
     use crate::stateful::NatTuple;
     use crate::stateful::allocator::NatAllocator;
     use crate::stateful::apalloc::PoolTableKey;
+    use concurrency::concurrency_mode;
     use net::ip::NextHeader;
 
     #[test]
@@ -325,5 +328,82 @@ mod tests {
         assert_eq!(bitmap.len(), 3); // 3 IP addresses available to NAT 1.1.0.0
         assert_eq!(in_use.len(), 1); // One weak reference still in the list
         assert!(in_use.front().unwrap().upgrade().is_none()); // But it no longer resolves
+    }
+
+    #[concurrency_mode(std)]
+    use std::{sync::Arc, thread};
+
+    #[concurrency_mode(shuttle)]
+    use shuttle::sync::{Arc, Mutex};
+
+    #[concurrency_mode(loom)]
+    use loom::sync::{Arc, Mutex};
+
+    // This test is NOT a shuttle test. It validates that a basic example with threads works with or
+    // without shuttle components (depending on how we compile), as a control test in case shuttle
+    // tests do not work. For example, it helped understand that memory usage for Atomics is
+    // different in shuttle than in std, and that just testing simple allocations as we do here was
+    // not broken - we just needed to increase stack memory for shuttle's runner.
+    #[concurrency_mode(std)]
+    #[test]
+    fn test_concurrent_allocations_without_shuttle() {
+        let tuple1 = NatTuple::new(
+            addr_v4("1.1.0.0"),
+            addr_v4("10.3.0.2"),
+            Some(1111),
+            Some(1112),
+            NextHeader::TCP,
+            vni1(),
+            vni2(),
+        );
+        let tuple2 = NatTuple::new(
+            addr_v4("2.0.1.3"),
+            addr_v4("10.4.1.1"),
+            Some(2222),
+            Some(2223),
+            NextHeader::TCP,
+            vni1(),
+            vni2(),
+        );
+
+        let allocator = build_allocator().unwrap();
+        let allocator1 = Arc::new(allocator);
+        let allocator2 = allocator1.clone();
+
+        thread::spawn(move || {
+            let _allocation1 = allocator1.allocate_v4(&tuple1).unwrap();
+        });
+        thread::spawn(move || {
+            let _allocation2 = allocator2.allocate_v4(&tuple2).unwrap();
+        });
+    }
+}
+
+#[concurrency_mode(shuttle)]
+mod tests_shuttle {
+    use super::context::*;
+    use crate::stateful::NatTuple;
+    use crate::stateful::allocator::NatAllocator;
+    use concurrency::concurrency_mode;
+    use net::ip::NextHeader;
+    use shuttle::sync::{Arc, Mutex};
+    use shuttle::thread;
+
+    #[should_panic(expected = "assertion `left == right` failed")]
+    #[test]
+    fn test_ensure_shuttle_works() {
+        shuttle::check_random(
+            || {
+                let lock = Arc::new(Mutex::new(0u64));
+                let lock2 = lock.clone();
+
+                thread::spawn(move || {
+                    *lock.lock().unwrap() = 1;
+                });
+
+                assert_eq!(0, *lock2.lock().unwrap());
+            },
+            100,
+        );
     }
 }
