@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+//! NAT port: a type to represent L4 ports usable in stateful NAT.
+
 use net::tcp::port::{TcpPort, TcpPortError};
 use net::udp::port::{UdpPort, UdpPortError};
+use std::num::NonZero;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum NatPortError {
@@ -10,22 +13,25 @@ pub enum NatPortError {
     ReservedPort(u16),
 }
 
+/// `NatPort` is a type to represent L4 ports usable in stateful NAT. In fact, it is just a wrapper
+/// around a non-zero `u16`.
+//
+// TODO: We may change this in the future. One suggestion was to use a regular u16, and encode the
+// "None" case with value 0 wherever we need to deal with Option(NatPort), to reduce the size in
+// memory from 3 to 2 bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NatPort(u16);
+pub struct NatPort(NonZero<u16>);
 
 impl NatPort {
-    const MIN: u16 = 1024 + 1;
-
     pub fn new_checked(port: u16) -> Result<NatPort, NatPortError> {
-        if port < Self::MIN {
-            return Err(NatPortError::ReservedPort(port));
-        }
-        Ok(Self(port))
+        NonZero::new(port).map_or(Err(NatPortError::ReservedPort(port)), |port| {
+            Ok(NatPort(port))
+        })
     }
 
     #[must_use]
     pub fn as_u16(self) -> u16 {
-        self.0
+        self.0.into()
     }
 }
 
