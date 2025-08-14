@@ -5,6 +5,7 @@
 #![allow(unused_variables)]
 
 mod allocator;
+mod apalloc;
 mod natip;
 mod port;
 pub mod sessions;
