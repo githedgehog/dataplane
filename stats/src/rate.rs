@@ -303,11 +303,11 @@ impl From<SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummar
     }
 }
 
-impl From<SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>>>
+impl From<&SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>>>
     for hashbrown::HashMap<VpcDiscriminant, TransmitSummary<SavitzkyGolayFilter<u64>>>
 {
     fn from(
-        value: SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>>,
+        value: &SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>>,
     ) -> Self {
         const CAPACITY_PAD: usize = 32;
         let capacity_guess = value.data.iter().map(|map| map.len()).max().unwrap_or(0);

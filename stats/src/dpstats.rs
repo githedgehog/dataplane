@@ -28,6 +28,7 @@ use std::{collections::HashMap, hash::Hash};
 use vpcmap::VpcDiscriminant;
 use vpcmap::map::VpcMapReader;
 
+use crate::rate::{Derivative, SavitzkyGolayFilter};
 use crate::{RegisteredVpcMetrics, Specification, VpcMetricsSpec};
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
 use net::buffer::PacketBufferMut;
@@ -56,6 +57,7 @@ impl VpcMapName {
 pub struct StatsCollector {
     metrics: RegisteredVpcMetrics,
     outstanding: VecDeque<BatchSummary<u64>>,
+    submitted: SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>>,
     vpcmap_r: VpcMapReader<VpcMapName>,
     updates: PacketStatsReader,
 }
@@ -87,11 +89,25 @@ impl StatsCollector {
         let stats = StatsCollector {
             metrics: stats,
             outstanding,
+            submitted: SavitzkyGolayFilter::new(TIME_TICK),
             vpcmap_r,
             updates,
         };
         let writer = PacketStatsWriter(s);
         (stats, writer)
+    }
+
+    fn refresh(&mut self) -> RegisteredVpcMetrics {
+        let spec = {
+            let guard = self.vpcmap_r.enter().unwrap();
+            VpcMetricsSpec::new(
+                guard
+                    .0
+                    .values()
+                    .map(|VpcMapName { disc, name }| (disc, name)),
+            )
+        };
+        spec.build()
     }
 
     #[tracing::instrument(level = "info", skip(self))]
@@ -123,6 +139,7 @@ impl StatsCollector {
     fn update(&mut self, update: MetricsUpdate) {
         {
             // find outstanding changes which line up with batch
+            self.metrics = self.refresh();
             let mut slices: Vec<_> = self
                 .outstanding
                 .iter_mut()
@@ -207,25 +224,24 @@ impl StatsCollector {
             .push_back(BatchSummary::with_start_and_capacity(
                 start, duration, capacity,
             ));
-        let total = concluded.vpc.into_iter().fold(
+        let total = concluded.vpc.iter().fold(
             PacketAndByte::default(),
-            |slice_total, (src, tx_summary)| {
-                let total =
-                    tx_summary
-                        .dst
-                        .iter()
-                        .fold(PacketAndByte::default(), |total, (dst, &stats)| {
-                            match self.metrics.peering.get(dst) {
-                                None => {
-                                    warn!("lost metrics for src {src} to dst {dst}");
-                                }
-                                Some(d) => {
-                                    d.tx.packet.count.metric.increment(stats.packets);
-                                    d.tx.byte.count.metric.increment(stats.bytes);
-                                }
-                            };
-                            total + stats
-                        });
+            |slice_total, (&src, tx_summary)| {
+                let total = tx_summary.dst.iter().fold(
+                    PacketAndByte::default(),
+                    |total, (&dst, &stats)| {
+                        match self.metrics.peering.get(&dst) {
+                            None => {
+                                warn!("lost metrics for src {src} to dst {dst}");
+                            }
+                            Some(d) => {
+                                d.rx.packet.count.metric.increment(stats.packets);
+                                d.rx.byte.count.metric.increment(stats.bytes);
+                            }
+                        };
+                        total + stats
+                    },
+                );
                 let Some(s) = self.metrics.peering.get(&src) else {
                     warn!("lost metrics for src: {src}");
                     return slice_total + total;
@@ -249,7 +265,49 @@ impl StatsCollector {
             .count
             .metric
             .increment(total.bytes);
-        // TODO: add in rx and drop
+        self.submitted.push(concluded.vpc);
+        let rates = match hashbrown::HashMap::<
+            VpcDiscriminant,
+            TransmitSummary<SavitzkyGolayFilter<u64>>,
+        >::from(&self.submitted)
+        .derivative()
+        {
+            Ok(rates) => rates,
+            Err(()) => {
+                error!("unknown rate calculation error");
+                return;
+            }
+        };
+        rates.iter().for_each(|(src, summary)| {
+            let total = summary
+                .dst
+                .iter()
+                .fold(PacketAndByte::default(), |total, (dst, stats)| {
+                    let Some(destination) = self.metrics.peering.get_mut(dst) else {
+                        debug!("lost dest: {dst}");
+                        return total + *stats;
+                    };
+                    let stats = PacketAndByte {
+                        packets: stats.packets,
+                        bytes: stats.bytes,
+                    };
+                    if stats.packets < 0.001 && stats.bytes < 0.001 {
+                        return total + stats;
+                    };
+                    destination.rx.packet.rate.metric.set(stats.packets);
+                    destination.rx.byte.rate.metric.set(stats.bytes);
+                    total + stats
+                });
+
+            let Some(s) = self.metrics.peering.get(&src) else {
+                warn!("lost metrics for src: {src}");
+                return;
+            };
+            s.tx.packet.rate.metric.set(total.packets);
+            s.tx.byte.rate.metric.set(total.bytes);
+        });
+
+        // TODO: add in drop metrics
     }
 }
 
@@ -316,7 +374,7 @@ impl<T> TransmitSummary<T> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BatchSummary<T> {
     pub start: Instant,
     pub planned_end: Instant,
@@ -326,7 +384,7 @@ pub struct BatchSummary<T> {
 #[derive(Debug)]
 pub struct MetricsUpdate {
     pub duration: Duration,
-    pub summary: BatchSummary<u64>,
+    pub summary: Box<BatchSummary<u64>>,
 }
 
 impl<T> BatchSummary<T> {
@@ -421,19 +479,17 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
         const CAPACITY_PAD: usize = 16;
         let time = Instant::now();
         if time > self.update.planned_end {
-            let mut batch = BatchSummary::with_capacity(
+            debug!("sending stats update");
+            let batch = Box::new(BatchSummary::with_capacity(
                 time + self.delivery_schedule,
                 self.update.vpc.len() + CAPACITY_PAD,
-            );
-            std::mem::swap(&mut batch, &mut self.update);
+            ));
             let duration = time.duration_since(self.update.start);
-            let update = MetricsUpdate {
-                duration,
-                summary: batch,
-            };
+            let summary = std::mem::replace(&mut self.update, batch);
+            let update = MetricsUpdate { duration, summary };
             match self.stats.0.try_send(update) {
                 Ok(true) => {
-                    trace!("sent stats update");
+                    debug!("sent stats update");
                 }
                 Ok(false) => {
                     warn!("metrics channel full! Some metrics lost");
@@ -488,6 +544,41 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
                 }
                 (None, None) => {
                     debug!("no source or dest discriminants for packet");
+                    debug!("just making something up");
+                    match self
+                        .update
+                        .vpc
+                        .get_mut(&VpcDiscriminant::VNI(Vni::new_checked(100).unwrap()))
+                    {
+                        None => {
+                            let mut summary = TransmitSummary::new();
+                            summary.dst.insert(
+                                VpcDiscriminant::VNI(Vni::new_checked(300).unwrap()),
+                                PacketAndByte {
+                                    packets: 1,
+                                    bytes: packet.total_len().into(),
+                                },
+                            );
+                            summary.drop.packets += 1;
+                            summary.drop.bytes += u64::from(packet.total_len());
+                            self.update.vpc.insert(
+                                VpcDiscriminant::VNI(Vni::new_checked(100).unwrap()),
+                                summary,
+                            );
+                        }
+                        Some(summary) => {
+                            let s = summary
+                                .dst
+                                .get_mut(&VpcDiscriminant::VNI(Vni::new_checked(300).unwrap()))
+                                .unwrap_or_else(|| {
+                                    panic!("missing destination discriminant for packet")
+                                });
+                            s.packets += 1;
+                            s.bytes += u64::from(packet.total_len());
+                            summary.drop.packets += 1;
+                            summary.drop.bytes += u64::from(packet.total_len());
+                        }
+                    }
                 }
             }
             packet.get_meta_mut().set_keep(false); /* no longer disable enforce */
@@ -754,7 +845,7 @@ mod test {
         }
 
         let y: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<SavitzkyGolayFilter<u64>>> =
-            x.into();
+            (&x).into();
         let z = y.derivative().unwrap();
         println!("{z:#?}");
     }
@@ -830,7 +921,7 @@ mod test {
         }
 
         let y: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<SavitzkyGolayFilter<u64>>> =
-            x.into();
+            (&x).into();
         let z = y
             .derivative()
             .unwrap()

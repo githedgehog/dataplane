@@ -3,6 +3,7 @@
 
 use crate::register::Registered;
 use crate::{MetricSpec, PacketAndByte, Register};
+use metrics::{Level, Unit};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use vpcmap::VpcDiscriminant;
@@ -26,8 +27,8 @@ impl CountAndRateSpec {
         let count_action = action.into();
         let rate_action = count_action.clone();
         CountAndRateSpec {
-            count: MetricSpec::new(count_id, count_action),
-            rate: MetricSpec::new(rate_id, rate_action),
+            count: MetricSpec::new(count_id, count_action, Unit::Count),
+            rate: MetricSpec::new(rate_id, rate_action, Unit::BitsPerSecond),
         }
     }
 }

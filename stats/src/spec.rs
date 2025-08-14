@@ -72,10 +72,10 @@ impl MetricSpec {
         MetricBuilder::default()
     }
 
-    pub fn new(id: impl AsRef<str>, action: impl AsRef<str>) -> MetricSpec {
+    pub fn new(id: impl AsRef<str>, action: impl AsRef<str>, unit: Unit) -> MetricSpec {
         MetricSpec {
             id: id.as_ref().to_string(),
-            unit: Unit::Count,
+            unit,
             level: Level::INFO,
             action: action.as_ref().to_string(),
             target: "".to_string(),
