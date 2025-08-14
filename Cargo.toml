@@ -96,6 +96,7 @@ parking_lot = { version = "0.12.4", default-features = false, features = [] }
 prefix-trie = { version = "0.8.1", default-features = false, features = [] }
 pretty_assertions = { version = "1.4.1", default-features = false, features = ["std"] }
 procfs = { version = "0.17.0", default-features = false, features = [] }
+rand = { version = "0.9.1", default-features = false, features = ["thread_rng"] }
 roaring = { version = "0.11.0", default-features = false, features = [] }
 rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions", default-features = false, features = [] }
 rustyline = { version = "17.0.0", default-features = false, features = [] }
