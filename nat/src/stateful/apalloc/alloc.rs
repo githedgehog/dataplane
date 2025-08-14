@@ -106,6 +106,13 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         self.get_allocated_ip(ip)
             .and_then(|allocated_ip| allocated_ip.reserve_port_for_ip(port))
     }
+
+    // Helper to access IpAllocator's internals for tests. Not to be used outside of tests.
+    #[cfg(test)]
+    pub fn get_pool_clone_for_tests(&self) -> (RoaringBitmap, VecDeque<Weak<AllocatedIp<I>>>) {
+        let pool = self.pool.read().unwrap();
+        (pool.bitmap.0.clone(), pool.in_use.clone())
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
