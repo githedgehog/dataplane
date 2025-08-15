@@ -131,11 +131,6 @@ impl MetricDescription for MetricSpec {
 // scratch to check api
 #[allow(unused)]
 fn scratch(pipeline: &RegisteredPipelineMetrics) {
-    pipeline.total.rx.byte.count.metric.increment(17);
-    pipeline.total.rx.byte.rate.metric.set(17);
-    pipeline.total.rx.packet.count.metric.increment(17);
-    pipeline.total.rx.packet.rate.metric.set(17);
-
     pipeline.total.tx.byte.count.metric.increment(17);
     pipeline.total.tx.byte.rate.metric.set(17);
     pipeline.total.tx.packet.count.metric.increment(17);
@@ -149,7 +144,7 @@ fn scratch(pipeline: &RegisteredPipelineMetrics) {
 
         vpc.peer(&VpcDiscriminant::VNI(1.try_into().unwrap()))
             .unwrap()
-            .rx
+            .tx
             .byte
             .count
             .metric

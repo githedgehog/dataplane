@@ -111,9 +111,7 @@ impl StatsCollector {
             let vpc_data: Vec<_> = guard
                 .0
                 .values()
-                .map(|VpcMapName { disc, name }| {
-                    (*disc, name.clone(), vec![("src".to_string(), name.clone())])
-                })
+                .map(|VpcMapName { disc, name }| (*disc, name.clone(), vec![]))
                 .collect();
             VpcMetricsSpec::new(vpc_data)
         };

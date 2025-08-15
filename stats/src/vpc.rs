@@ -86,33 +86,33 @@ impl Specification for PacketAndByteSpec {
 
 #[derive(Debug)]
 pub struct BasicActionSpec {
-    pub rx: PacketAndByteSpec,
+    // pub rx: PacketAndByteSpec,
     pub tx: PacketAndByteSpec,
 }
 
 #[derive(Debug, Serialize)]
 pub struct BasicAction<T> {
-    pub rx: PacketAndByte<T>,
+    // pub rx: PacketAndByte<T>,
     pub tx: PacketAndByte<T>,
 }
 
 impl BasicActionSpec {
     fn new(base_id: impl Into<String>, labels: Vec<(String, String)>) -> BasicActionSpec {
         let base_id = base_id.into();
-        let mut rx = labels.clone();
-        rx.push(("action".to_string(), "rx".to_string()));
-        let mut tx = labels.clone();
-        tx.push(("action".to_string(), "tx".to_string()));
+        // let mut rx = labels.clone();
+        // rx.push(("action".to_string(), "rx".to_string()));
+        // let mut tx = labels.clone();
+        // tx.push(("action".to_string(), "tx".to_string()));
         BasicActionSpec {
-            rx: PacketAndByteSpec::new(base_id.clone(), rx),
-            tx: PacketAndByteSpec::new(base_id, tx),
+            // rx: PacketAndByteSpec::new(base_id.clone(), rx),
+            tx: PacketAndByteSpec::new(base_id, labels),
         }
     }
 }
 
 #[derive(Debug, Serialize)]
 pub struct RegisteredBasicAction {
-    pub rx: RegisteredPacketAndByte,
+    // pub rx: RegisteredPacketAndByte,
     pub tx: RegisteredPacketAndByte,
 }
 
@@ -121,7 +121,7 @@ impl Specification for BasicActionSpec {
 
     fn build(self) -> RegisteredBasicAction {
         RegisteredBasicAction {
-            rx: self.rx.build(),
+            // rx: self.rx.build(),
             tx: self.tx.build(),
         }
     }
