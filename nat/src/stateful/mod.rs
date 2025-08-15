@@ -16,7 +16,7 @@ use crate::stateful::sessions::{
     NatDefaultSession, NatDefaultSessionManager, NatSession, NatSessionManager, NatState,
 };
 use net::buffer::PacketBufferMut;
-use net::headers::{Net, Transport, TryHeadersMut, TryIp, TryIpMut, TryTransportMut};
+use net::headers::{Net, Transport, TryHeadersMut, TryIp, TryIpMut, TryTransport, TryTransportMut};
 use net::ip::NextHeader;
 use net::ipv4::UnicastIpv4Addr;
 use net::ipv6::UnicastIpv6Addr;
@@ -97,17 +97,16 @@ impl StatefulNat {
         vni
     }
 
-    fn extract_tuple<I: NatIp>(
-        net: &Net,
+    fn extract_tuple<I: NatIp, Buf: PacketBufferMut>(
+        packet: &Packet<Buf>,
         src_vpc_id: NatVpcId,
         dst_vpc_id: NatVpcId,
     ) -> Option<NatTuple<I>> {
+        let net = packet.get_headers().try_ip()?;
         let src_ip = I::from_src_addr(net)?;
         let dst_ip = I::from_dst_addr(net)?;
         let next_header = net.next_header();
-        // FIXME
-        let src_port = None;
-        let dst_port = None;
+        let (src_port, dst_port) = Self::get_ports::<I, Buf>(packet);
 
         Some(NatTuple::new(
             src_ip,
@@ -118,6 +117,25 @@ impl StatefulNat {
             src_vpc_id,
             dst_vpc_id,
         ))
+    }
+
+    fn get_ports<I: NatIp, Buf: PacketBufferMut>(
+        packet: &Packet<Buf>,
+    ) -> (Option<u16>, Option<u16>) {
+        let Some(transport) = packet.get_headers().try_transport() else {
+            return (None, None);
+        };
+        match transport {
+            Transport::Tcp(tcp) => (
+                Some(tcp.source().as_u16()),
+                Some(tcp.destination().as_u16()),
+            ),
+            Transport::Udp(udp) => (
+                Some(udp.source().as_u16()),
+                Some(udp.destination().as_u16()),
+            ),
+            _ => (None, None),
+        }
     }
 
     fn lookup_session_v4_mut(
@@ -427,7 +445,7 @@ impl StatefulNat {
 
         match net {
             Net::Ipv4(_) => {
-                let Some(tuple) = Self::extract_tuple(net, src_vpc_id, dst_vpc_id) else {
+                let Some(tuple) = Self::extract_tuple(packet, src_vpc_id, dst_vpc_id) else {
                     return;
                 };
                 self.translate_packet_v4::<Buf>(
@@ -439,7 +457,7 @@ impl StatefulNat {
                 );
             }
             Net::Ipv6(_) => {
-                let Some(tuple) = Self::extract_tuple(net, src_vpc_id, dst_vpc_id) else {
+                let Some(tuple) = Self::extract_tuple(packet, src_vpc_id, dst_vpc_id) else {
                     return;
                 };
                 self.translate_packet_v6::<Buf>(
@@ -470,29 +488,33 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatefulNat {
 mod tests {
     use super::port::NatPort;
     use super::*;
-    use net::packet::test_utils::build_test_ipv4_packet;
+    use net::eth::mac::Mac;
+    use net::packet::test_utils::build_test_udp_ipv4_frame;
     use net::tcp::Tcp;
     use net::udp::Udp;
     use std::str::FromStr;
 
     #[test]
     fn test_tuple_extraction() {
-        let packet = build_test_ipv4_packet(u8::MAX).expect("Failed to build packet");
-        let net = packet
-            .get_headers()
-            .try_ip()
-            .expect("Failed to get IPv4 header");
+        let packet = build_test_udp_ipv4_frame(
+            Mac([0x2, 0, 0, 0, 0, 1]),
+            Mac([0x2, 0, 0, 0, 0, 2]),
+            "1.2.3.4",
+            "5.6.7.8",
+            9998,
+            443,
+        );
         let ref_tuple = NatTuple::new(
             Ipv4Addr::from_str("1.2.3.4").unwrap(),
             Ipv4Addr::from_str("5.6.7.8").unwrap(),
-            None,
-            None,
-            NextHeader::new(255),
+            Some(9998),
+            Some(443),
+            NextHeader::UDP,
             Vni::new_checked(1).unwrap(),
             Vni::new_checked(2).unwrap(),
         );
         let tuple = StatefulNat::extract_tuple(
-            net,
+            &packet,
             Vni::new_checked(1).unwrap(),
             Vni::new_checked(2).unwrap(),
         )
