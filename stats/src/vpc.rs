@@ -134,24 +134,30 @@ pub struct VpcMetricsSpec {
 
 impl VpcMetricsSpec {
     pub fn new(
-        names: impl Iterator<
-            Item = (
-                impl AsRef<VpcDiscriminant>,
-                impl Into<String>,
-                Vec<(String, String)>,
-            ),
-        >,
-    ) -> VpcMetricsSpec {
-        VpcMetricsSpec {
-            total: BasicActionSpec::new("pipeline", vec![]),
-            peering: names
-                .map(|(disc, name, mut labels)| {
-                    let name = name.into();
-                    labels.push(("dst".to_string(), name.clone()));
-                    (*disc.as_ref(), BasicActionSpec::new("vpc", labels))
-                })
-                .collect(),
-        }
+        vpc_data: Vec<(VpcDiscriminant, String, Vec<(String, String)>)>,
+    ) -> Vec<(VpcDiscriminant, VpcMetricsSpec)> {
+        vpc_data
+            .iter()
+            .map(|(src_disc, src_name, labels)| {
+                let mut total_labels = labels.clone();
+                total_labels.push(("total".to_string(), src_name.clone()));
+                (
+                    *src_disc,
+                    VpcMetricsSpec {
+                        total: BasicActionSpec::new("vpc", total_labels),
+                        peering: vpc_data
+                            .iter()
+                            .map(|(dst_disc, dst_name, labels)| {
+                                let mut labels = labels.clone();
+                                labels.push(("from".to_string(), src_name.clone()));
+                                labels.push(("to".to_string(), dst_name.clone()));
+                                (*dst_disc.as_ref(), BasicActionSpec::new("vpc", labels))
+                            })
+                            .collect(),
+                    },
+                )
+            })
+            .collect()
     }
 }
 
