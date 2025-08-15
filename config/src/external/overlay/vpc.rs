@@ -176,6 +176,13 @@ impl VpcTable {
             None => None,
         }
     }
+    /// Get the [`Vni`] of the remote [`Vpc`] for a given [`Peering`]
+    #[must_use]
+    pub fn get_remote_vni(&self, peering: &Peering) -> Vni {
+        self.get_vpc_by_vpcid(&peering.remote_id)
+            .unwrap_or_else(|| unreachable!())
+            .vni
+    }
 
     /// Iterate over [`Vpc`]s in a [`VpcTable`]
     pub fn values(&self) -> impl Iterator<Item = &Vpc> {

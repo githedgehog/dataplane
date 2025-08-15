@@ -12,16 +12,7 @@ use config::external::overlay::vpcpeering::VpcExpose;
 use config::utils::collapse_prefixes_peering;
 use lpm::prefix::{IpPrefix, Prefix};
 use net::ip::NextHeader;
-use net::vxlan::Vni;
 use std::collections::{BTreeMap, BTreeSet};
-
-// TODO: stateless NAT uses the same helper, we should likely make it a VpcTable method.
-fn get_remote_vni(peering: &Peering, vpc_table: &VpcTable) -> Vni {
-    vpc_table
-        .get_vpc_by_vpcid(&peering.remote_id)
-        .unwrap_or_else(|| unreachable!())
-        .vni
-}
 
 /// Build a [`NatDefaultAllocator`] from a [`VpcTable`]
 ///
@@ -40,7 +31,7 @@ pub fn build_nat_allocator(vpc_table: &VpcTable) -> Result<NatDefaultAllocator, 
     let mut allocator = NatDefaultAllocator::new();
     for vpc in vpc_table.values() {
         for peering in &vpc.peerings {
-            let dst_vni = get_remote_vni(peering, vpc_table);
+            let dst_vni = vpc_table.get_remote_vni(peering);
             allocator
                 .add_peering_addresses(peering, vpc.vni, dst_vni)
                 .map_err(|e| ConfigError::FailureApply(e.to_string()))?;

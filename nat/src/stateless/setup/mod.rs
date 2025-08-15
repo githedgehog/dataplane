@@ -99,20 +99,13 @@ impl PerVniTable {
     }
 }
 
-fn get_remote_vni(peering: &Peering, vpc_table: &VpcTable) -> Vni {
-    vpc_table
-        .get_vpc_by_vpcid(&peering.remote_id)
-        .unwrap_or_else(|| unreachable!())
-        .vni
-}
-
 /// Main function to build the NAT configuration (`NatTables`) for a given `Overlay` configuration.
 pub fn build_nat_configuration(vpc_table: &VpcTable) -> Result<NatTables, ConfigError> {
     let mut nat_tables = NatTables::new();
     for vpc in vpc_table.values() {
         let mut table = PerVniTable::new(vpc.vni);
         for peering in &vpc.peerings {
-            let dst_vni = get_remote_vni(peering, vpc_table);
+            let dst_vni = vpc_table.get_remote_vni(peering);
             table
                 .add_peering(peering, dst_vni)
                 .map_err(|e| ConfigError::FailureApply(e.to_string()))?;
