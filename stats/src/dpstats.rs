@@ -494,7 +494,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
                 }
             }
         }
-        input.filter_map(|mut packet| {
+        input.map(|mut packet| {
             let sdisc = packet.get_meta().src_vni.map(VpcDiscriminant::VNI);
             let ddisc = packet.get_meta().dst_vni.map(VpcDiscriminant::VNI);
             match (sdisc, ddisc) {
@@ -575,8 +575,9 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
                     }
                 }
             }
-            packet.get_meta_mut().set_keep(false); /* no longer disable enforce */
-            packet.enforce()
+            packet
+            // packet.get_meta_mut().set_keep(false); /* no longer disable enforce */
+            // packet.enforce()
         })
     }
 }
