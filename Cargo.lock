@@ -1048,6 +1048,7 @@ name = "dataplane-stats"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "bolero",
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-vpcmap",
@@ -1080,6 +1081,7 @@ name = "dataplane-vpcmap"
 version = "0.1.0"
 dependencies = [
  "ahash 0.8.10",
+ "bolero",
  "dataplane-net",
  "left-right",
  "serde",

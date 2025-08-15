@@ -17,6 +17,7 @@ use thiserror::Error;
 
 /// A dataplane-level discriminant to identify (traffic pertaining to) a Vpc
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize)]
+#[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 pub enum VpcDiscriminant {
     VNI(Vni),
 }

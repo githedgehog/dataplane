@@ -8,6 +8,10 @@ use std::hash::{BuildHasher, Hash};
 use std::time::Duration;
 use vpcmap::VpcDiscriminant;
 
+#[cfg(any(test, feature = "bolero"))]
+#[allow(unused_imports)]
+pub use self::contract::*;
+
 pub trait Derivative {
     type Error;
     type Output;
@@ -123,11 +127,11 @@ impl Derivative for SavitzkyGolayFilter<PacketAndByte<u64>> {
 impl TryFrom<&SavitzkyGolayFilter<TransmitSummary<u64>>>
     for TransmitSummary<SavitzkyGolayFilter<u64>>
 {
-    type Error = ();
+    type Error = DerivativeError;
 
     fn try_from(value: &SavitzkyGolayFilter<TransmitSummary<u64>>) -> Result<Self, Self::Error> {
         if value.data.len() != 5 {
-            return Err(());
+            return Err(DerivativeError::NotEnoughSamples(value.data.len()));
         }
         let values: Vec<_> = value
             .data
@@ -178,15 +182,15 @@ impl TryFrom<&SavitzkyGolayFilter<TransmitSummary<u64>>>
 }
 
 impl Derivative for SavitzkyGolayFilter<TransmitSummary<u64>> {
-    type Error = ();
+    type Error = DerivativeError;
     type Output = TransmitSummary<f64>;
 
     fn derivative(&self) -> Result<Self::Output, Self::Error> {
         if self.data.len() != 5 {
-            return Err(());
+            return Err(DerivativeError::NotEnoughSamples(self.data.len()));
         }
         let x = TransmitSummary::<SavitzkyGolayFilter<u64>>::try_from(self)?;
-        x.derivative().map_err(|_| ())
+        x.derivative()
     }
 }
 
@@ -353,262 +357,139 @@ impl From<&SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSumma
     }
 }
 
+#[cfg(any(test, feature = "bolero"))]
+mod contract {
+    use crate::rate::SavitzkyGolayFilter;
+    use crate::{PacketAndByte, TransmitSummary};
+    use bolero::{Driver, TypeGenerator};
+    use std::time::Duration;
+
+    impl TypeGenerator for SavitzkyGolayFilter<u64> {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let mut step = driver.produce()?;
+            if step == Duration::ZERO {
+                step += Duration::from_secs(1);
+            }
+            let mut filter = SavitzkyGolayFilter::new(step);
+            let entries: u8 = driver.produce::<u8>()? % 15;
+            let mut state = driver.produce::<u64>()? % (u64::MAX / 4);
+            for _ in 0..entries {
+                state += driver.produce::<u64>()? % (u64::MAX / 32);
+                filter.push(state);
+            }
+            Some(filter)
+        }
+    }
+
+    impl TypeGenerator for SavitzkyGolayFilter<PacketAndByte<u64>> {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let mut step = driver.produce()?;
+            if step == Duration::ZERO {
+                step += Duration::from_secs(1);
+            }
+            let mut filter = SavitzkyGolayFilter::new(step);
+            let entries: u8 = driver.produce::<u8>()? % 15;
+            let mut state = driver.produce::<PacketAndByte<u64>>()?;
+            state.packets %= u64::MAX / 4;
+            state.bytes %= u64::MAX / 4;
+            for _ in 0..entries {
+                state.packets += driver.produce::<u64>()? % (u64::MAX / 32);
+                state.bytes += driver.produce::<u64>()? % (u64::MAX / 32);
+                filter.push(state);
+            }
+            Some(filter)
+        }
+    }
+
+    impl TypeGenerator for SavitzkyGolayFilter<TransmitSummary<u64>> {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let mut step = driver.produce()?;
+            if step == Duration::ZERO {
+                step += Duration::from_secs(1);
+            }
+            let mut filter = SavitzkyGolayFilter::new(step);
+            let entries: u8 = driver.produce::<u8>()? % 15;
+            let mut state = driver.produce::<TransmitSummary<u64>>()?;
+            for _ in 0..entries {
+                filter.push(state.clone());
+                let update = driver.produce::<TransmitSummary<u64>>()?;
+                for (k, v) in update.dst {
+                    match state.dst.get_mut(&k) {
+                        None => {
+                            state.dst.insert(k, v);
+                        }
+                        Some(x) => {
+                            x.packets += v.packets;
+                            x.bytes += v.bytes;
+                        }
+                    }
+                }
+            }
+            Some(filter)
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
-    use crate::rate::{Derivative, SavitzkyGolayFilter};
-    use crate::{ExponentiallyWeightedMovingAverage, PacketAndByte, TransmitSummary};
+    use crate::rate::{Derivative, DerivativeError, SavitzkyGolayFilter};
+
+    use crate::{PacketAndByte, TransmitSummary};
     use net::vxlan::Vni;
     use rand::RngCore;
+    use rand::distr::weighted::Weight;
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
     use vpcmap::VpcDiscriminant;
 
     #[test]
-    fn test_derivative() {
-        let mut samples = SavitzkyGolayFilter::new(Duration::from_secs(1));
-        samples.push(PacketAndByte {
-            packets: 1,
-            bytes: 1,
-        });
-        samples.push(PacketAndByte {
-            packets: 2222,
-            bytes: 33333,
-        });
-        samples.push(PacketAndByte {
-            packets: 2225,
-            bytes: 33339,
-        });
-        samples.push(PacketAndByte {
-            packets: 2228,
-            bytes: 33383,
-        });
-        samples.push(PacketAndByte {
-            packets: 2228,
-            bytes: 33383,
-        });
-        samples.push(PacketAndByte {
-            packets: 999999,
-            bytes: 9999999,
-        });
-        let start = Instant::now();
-        let mut moving_average =
-            ExponentiallyWeightedMovingAverage::new(Duration::from_millis(500));
-        let derivative = samples.derivative().unwrap();
-        moving_average.update((start, derivative));
-        println!("derivative: {derivative:#?}");
-        println!("ewma: {:#?}", moving_average.get());
-        samples.push(PacketAndByte {
-            packets: 999999,
-            bytes: 9999999,
-        });
-        let derivative = samples.derivative().unwrap();
-        moving_average.update((start + Duration::from_secs(1), derivative));
-        println!("derivative: {derivative:#?}");
-        println!("ewma: {:#?}", moving_average.get());
-        samples.push(PacketAndByte {
-            packets: 999999,
-            bytes: 9999999,
-        });
-        let derivative = samples.derivative().unwrap();
-        moving_average.update((start + Duration::from_secs(2), derivative));
-        println!("derivative: {derivative:#?}");
-        println!("ewma: {:#?}", moving_average.get());
-        samples.push(PacketAndByte {
-            packets: 999999,
-            bytes: 9999999,
-        });
-        let derivative = samples.derivative().unwrap();
-        moving_average.update((start + Duration::from_secs(3), derivative));
-        println!("derivative: {derivative:#?}");
-        println!("ewma: {:#?}", moving_average.get());
-
-        samples.push(PacketAndByte {
-            packets: 999999,
-            bytes: 9999999,
-        });
-        samples.push(PacketAndByte {
-            packets: 999999,
-            bytes: 9999999,
-        });
-        samples.push(PacketAndByte {
-            packets: 999999,
-            bytes: 9999999,
-        });
-
-        let derivative = samples.derivative().unwrap();
-        moving_average.update((start + Duration::from_secs(4), derivative));
-        println!("derivative: {derivative:#?}");
-        println!("ewma: {:#?}", moving_average.get());
-
-        let derivative = samples.derivative().unwrap();
-        moving_average.update((start + Duration::from_secs(5), derivative));
-        println!("derivative: {derivative:#?}");
-        println!("ewma: {:#?}", moving_average.get());
-
-        let derivative = samples.derivative().unwrap();
-        moving_average.update((start + Duration::from_secs(6), derivative));
-        println!("derivative: {derivative:#?}");
-        println!("ewma: {:#?}", moving_average.get());
-    }
-
-    #[test]
-    fn test_derivative_filter_basic() {
-        let mut x = SavitzkyGolayFilter::new(Duration::from_secs(1));
-        let discs: Vec<_> = [1, 2, 3, 4, 5, 6]
-            .into_iter()
-            .map(Vni::new_checked)
-            .filter_map(|x| x.ok())
-            .map(VpcDiscriminant::VNI)
-            .collect();
-        let mut rng = 0;
-        for i in 0u64..5 {
-            rng += rand::rng().next_u64() % 10;
-            let mut map = hashbrown::HashMap::new();
-            for &src in &discs {
-                rng += rand::rng().next_u64() % 10;
-                let mut summary = TransmitSummary::new();
-                for (j, &dst) in discs.iter().enumerate() {
-                    rng += rand::rng().next_u64() % 10;
-                    let j = u64::try_from(j).unwrap();
-                    summary.dst.insert(
-                        dst,
-                        PacketAndByte {
-                            packets: j * i,
-                            bytes: 1500 * i * j + rng,
-                        },
-                    );
+    fn derivative_filter_basic() {
+        bolero::check!()
+            .with_type()
+            .for_each(|x: &SavitzkyGolayFilter<u64>| match x.derivative() {
+                Ok(x) => {
+                    assert!(x >= 0.0);
                 }
-                map.insert(src, summary);
-            }
-            x.push(map);
-        }
-
-        let y: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<SavitzkyGolayFilter<u64>>> =
-            (&x).into();
-        let z = y.derivative().unwrap();
-        println!("{z:#?}");
-    }
-
-    #[test]
-    fn test_derivative_filter_basic2() {
-        let mut x = SavitzkyGolayFilter::new(Duration::from_secs(1));
-        let discs: Vec<_> = [1, 2, 3, 4, 5, 6]
-            .into_iter()
-            .map(Vni::new_checked)
-            .filter_map(|x| x.ok())
-            .map(VpcDiscriminant::VNI)
-            .collect();
-        for i in 0u64..5 {
-            let mut map = hashbrown::HashMap::new();
-            for &src in &discs {
-                let mut summary = TransmitSummary::new();
-                for (j, &dst) in discs.iter().enumerate() {
-                    let j = u64::try_from(j).unwrap();
-                    summary.dst.insert(
-                        dst,
-                        PacketAndByte {
-                            packets: j * i,
-                            bytes: 1500 * i * j,
-                        },
-                    );
+                Err(DerivativeError::NotEnoughSamples(s)) => {
+                    assert_eq!(x.idx, s);
+                    assert!(s < 5);
                 }
-                map.insert(src, summary);
-            }
-            x.push(map);
-        }
-
-        let y: hashbrown::HashMap<VpcDiscriminant, SavitzkyGolayFilter<TransmitSummary<u64>>> =
-            x.into();
-        let z = y.derivative().unwrap();
-        println!("{z:#?}");
-    }
-
-    #[test]
-    fn test_derivative_filter_missing_sample_basic() {
-        let mut x = SavitzkyGolayFilter::new(Duration::from_secs(1));
-        let discs: Vec<_> = [1, 2]
-            .into_iter()
-            .map(Vni::new_checked)
-            .filter_map(|x| x.ok())
-            .map(VpcDiscriminant::VNI)
-            .collect();
-        for i in 0u64..5 {
-            let mut map = hashbrown::HashMap::new();
-            for &src in &discs {
-                let mut summary = TransmitSummary::new();
-                for (j, &dst) in discs.iter().enumerate() {
-                    if i == 3
-                        && src == VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())
-                        && (dst == VpcDiscriminant::VNI(Vni::new_checked(2).unwrap()))
-                    {
-                        continue;
-                    }
-                    let j = u64::try_from(j).unwrap();
-                    summary.dst.insert(
-                        dst,
-                        PacketAndByte {
-                            packets: j * i,
-                            bytes: 1500 * i * j,
-                        },
-                    );
-                }
-                map.insert(src, summary);
-            }
-            x.push(map);
-        }
-
-        let y: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<SavitzkyGolayFilter<u64>>> =
-            (&x).into();
-        let z = y
-            .derivative()
-            .unwrap()
-            .into_iter()
-            .collect::<BTreeMap<_, _>>();
-        println!("{z:#?}");
-    }
-
-    #[test]
-    fn more_real_test() {
-        let mut x: SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>> =
-            SavitzkyGolayFilter::new(Duration::from_secs(1));
-        let v = [
-            VpcDiscriminant::VNI(Vni::new_checked(1).unwrap()),
-            VpcDiscriminant::VNI(Vni::new_checked(2).unwrap()),
-            VpcDiscriminant::VNI(Vni::new_checked(3).unwrap()),
-            VpcDiscriminant::VNI(Vni::new_checked(4).unwrap()),
-        ];
-        let mut packets = 0;
-        let mut bytes = 0;
-        let mut sample = |idx: u64| {
-            v.map(|src| {
-                let mut summary = TransmitSummary::new();
-                v.iter().for_each(|&dst| {
-                    if idx == 125 || idx == 126 {
-                        return;
-                    }
-                    summary.dst.insert(dst, PacketAndByte { packets, bytes });
-                });
-                if idx == 125 || idx == 126 {
-                    return (src, summary);
-                }
-                packets += 20000 + idx;
-                bytes += 1500 * (2 * idx * idx * idx * idx + 1);
-                (src, summary)
             })
-            .into_iter()
-            .collect::<hashbrown::HashMap<_, _>>()
-        };
-        (0u64..138).for_each(|idx| {
-            x.push(sample(idx));
-            let y =
-                hashbrown::HashMap::<VpcDiscriminant, SavitzkyGolayFilter<TransmitSummary<u64>>>::from(
-                    x.clone(),
-                );
-            let z = y.derivative().unwrap();
-            if idx > 123 {
-                // println!("idx: {idx}: {x:#?}");
-                println!("idx: {idx}: {z:#?}");
-            }
-        });
+    }
+
+    #[test]
+    fn derivative_filter_basic_packet_and_byte() {
+        bolero::check!()
+            .with_type()
+            .for_each(
+                |x: &SavitzkyGolayFilter<PacketAndByte<u64>>| match x.derivative() {
+                    Ok(x) => {
+                        assert!(x.packets >= 0.0);
+                        assert!(x.bytes >= 0.0);
+                    }
+                    Err(DerivativeError::NotEnoughSamples(s)) => {
+                        assert_eq!(x.idx, s);
+                    }
+                },
+            )
+    }
+
+    #[test]
+    fn derivative_filter_transmit_summary() {
+        bolero::check!()
+            .with_type()
+            .for_each(
+                |x: &SavitzkyGolayFilter<TransmitSummary<u64>>| match x.derivative() {
+                    Ok(x) => {
+                        for (_, v) in x.dst.iter() {
+                            assert!(v.packets >= f64::ZERO);
+                            assert!(v.bytes >= f64::ZERO);
+                        }
+                    }
+                    Err(DerivativeError::NotEnoughSamples(s)) => {
+                        assert!(s < 5)
+                    }
+                },
+            )
     }
 }

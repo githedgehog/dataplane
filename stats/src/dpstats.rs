@@ -715,6 +715,82 @@ pub struct SplitCount {
     pub outside: u64,
 }
 
+#[cfg(any(test, feature = "bolero"))]
+mod contract {
+    use crate::{BatchSummary, PacketAndByte, TransmitSummary};
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
+    use small_map::ASmallMap;
+    use std::time::{Duration, Instant};
+    use vpcmap::VpcDiscriminant;
+
+    impl<T> TypeGenerator for PacketAndByte<T>
+    where
+        T: TypeGenerator,
+    {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            Some(PacketAndByte {
+                packets: driver.produce()?,
+                bytes: driver.produce()?,
+            })
+        }
+    }
+
+    impl<T> TypeGenerator for TransmitSummary<T>
+    where
+        T: TypeGenerator,
+    {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let mut summary = TransmitSummary {
+                drop: driver.produce()?,
+                dst: ASmallMap::default(),
+            };
+            let num_src = driver.produce::<u8>()? % 16;
+            for _ in 0..num_src {
+                summary.dst.insert(driver.produce()?, driver.produce()?);
+            }
+            Some(summary)
+        }
+    }
+
+    pub struct VpcDiscMap<T> {
+        _marker: std::marker::PhantomData<T>,
+    }
+
+    impl<T> ValueGenerator for VpcDiscMap<T>
+    where
+        T: TypeGenerator,
+    {
+        type Output = hashbrown::HashMap<VpcDiscriminant, T>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let mut map = hashbrown::HashMap::new();
+            let num_src = driver.produce::<u8>()? % 16;
+            for _ in 0..num_src {
+                map.insert(driver.produce()?, driver.produce()?);
+            }
+            Some(map)
+        }
+    }
+
+    impl<T> TypeGenerator for BatchSummary<T>
+    where
+        T: TypeGenerator,
+    {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let start = Instant::now() + Duration::from_millis(driver.produce()?);
+            let duration: Duration = driver.produce()?;
+            let mut vpc_gen = VpcDiscMap::<TransmitSummary<T>> {
+                _marker: std::marker::PhantomData,
+            };
+            Some(BatchSummary {
+                start,
+                planned_end: start + duration,
+                vpc: vpc_gen.generate(driver)?,
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::dpstats::{
@@ -729,254 +805,14 @@ mod test {
     use vpcmap::VpcDiscriminant;
 
     #[test]
-    fn test_derivative() {
-        let mut samples = SavitzkyGolayFilter::new(Duration::from_secs(1));
-        samples.push(PacketAndByte {
-            packets: 1,
-            bytes: 1,
-        });
-        samples.push(PacketAndByte {
-            packets: 2222,
-            bytes: 33333,
-        });
-        samples.push(PacketAndByte {
-            packets: 2225,
-            bytes: 33339,
-        });
-        samples.push(PacketAndByte {
-            packets: 2228,
-            bytes: 33383,
-        });
-        samples.push(PacketAndByte {
-            packets: 2228,
-            bytes: 33383,
-        });
-        samples.push(PacketAndByte {
-            packets: 999999,
-            bytes: 9999999,
-        });
-        let start = Instant::now();
-        let mut moving_average =
-            ExponentiallyWeightedMovingAverage::new(Duration::from_millis(500));
-        let derivative = samples.derivative().unwrap();
-        moving_average.update((start, derivative));
-        println!("derivative: {derivative:#?}");
-        println!("ewma: {:#?}", moving_average.get());
-        samples.push(PacketAndByte {
-            packets: 999999,
-            bytes: 9999999,
-        });
-        let derivative = samples.derivative().unwrap();
-        moving_average.update((start + Duration::from_secs(1), derivative));
-        println!("derivative: {derivative:#?}");
-        println!("ewma: {:#?}", moving_average.get());
-        samples.push(PacketAndByte {
-            packets: 999999,
-            bytes: 9999999,
-        });
-        let derivative = samples.derivative().unwrap();
-        moving_average.update((start + Duration::from_secs(2), derivative));
-        println!("derivative: {derivative:#?}");
-        println!("ewma: {:#?}", moving_average.get());
-        samples.push(PacketAndByte {
-            packets: 999999,
-            bytes: 9999999,
-        });
-        let derivative = samples.derivative().unwrap();
-        moving_average.update((start + Duration::from_secs(3), derivative));
-        println!("derivative: {derivative:#?}");
-        println!("ewma: {:#?}", moving_average.get());
-
-        samples.push(PacketAndByte {
-            packets: 999999,
-            bytes: 9999999,
-        });
-        samples.push(PacketAndByte {
-            packets: 999999,
-            bytes: 9999999,
-        });
-        samples.push(PacketAndByte {
-            packets: 999999,
-            bytes: 9999999,
-        });
-
-        let derivative = samples.derivative().unwrap();
-        moving_average.update((start + Duration::from_secs(4), derivative));
-        println!("derivative: {derivative:#?}");
-        println!("ewma: {:#?}", moving_average.get());
-
-        let derivative = samples.derivative().unwrap();
-        moving_average.update((start + Duration::from_secs(5), derivative));
-        println!("derivative: {derivative:#?}");
-        println!("ewma: {:#?}", moving_average.get());
-
-        let derivative = samples.derivative().unwrap();
-        moving_average.update((start + Duration::from_secs(6), derivative));
-        println!("derivative: {derivative:#?}");
-        println!("ewma: {:#?}", moving_average.get());
-    }
-
-    #[test]
-    fn test_derivative_filter_basic() {
-        let mut x = SavitzkyGolayFilter::new(Duration::from_secs(1));
-        let discs: Vec<_> = [1, 2, 3, 4, 5, 6]
-            .into_iter()
-            .map(Vni::new_checked)
-            .filter_map(|x| x.ok())
-            .map(VpcDiscriminant::VNI)
-            .collect();
-        let mut rng = 0;
-        for i in 0u64..5 {
-            rng += rand::rng().next_u64() % 10;
-            let mut map = hashbrown::HashMap::new();
-            for &src in &discs {
-                rng += rand::rng().next_u64() % 10;
-                let mut summary = TransmitSummary::new();
-                for (j, &dst) in discs.iter().enumerate() {
-                    rng += rand::rng().next_u64() % 10;
-                    let j = u64::try_from(j).unwrap();
-                    summary.dst.insert(
-                        dst,
-                        PacketAndByte {
-                            packets: j * i,
-                            bytes: 1500 * i * j + rng,
-                        },
-                    );
-                }
-                map.insert(src, summary);
-            }
-            x.push(map);
-        }
-
-        let y: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<SavitzkyGolayFilter<u64>>> =
-            (&x).into();
-        let z = y.derivative().unwrap();
-        println!("{z:#?}");
-    }
-
-    #[test]
-    fn test_derivative_filter_basic2() {
-        let mut x = SavitzkyGolayFilter::new(Duration::from_secs(1));
-        let discs: Vec<_> = [1, 2, 3, 4, 5, 6]
-            .into_iter()
-            .map(Vni::new_checked)
-            .filter_map(|x| x.ok())
-            .map(VpcDiscriminant::VNI)
-            .collect();
-        let mut rng = 0;
-        for i in 0u64..5 {
-            let mut map = hashbrown::HashMap::new();
-            for &src in &discs {
-                let mut summary = TransmitSummary::new();
-                for (j, &dst) in discs.iter().enumerate() {
-                    let j = u64::try_from(j).unwrap();
-                    summary.dst.insert(
-                        dst,
-                        PacketAndByte {
-                            packets: j * i,
-                            bytes: 1500 * i * j,
-                        },
-                    );
-                }
-                map.insert(src, summary);
-            }
-            x.push(map);
-        }
-
-        let y: hashbrown::HashMap<VpcDiscriminant, SavitzkyGolayFilter<TransmitSummary<u64>>> =
-            x.into();
-        let z = y.derivative().unwrap();
-        println!("{z:#?}");
-    }
-
-    #[test]
-    fn test_derivative_filter_missing_sample_basic() {
-        let mut x = SavitzkyGolayFilter::new(Duration::from_secs(1));
-        let discs: Vec<_> = [1, 2]
-            .into_iter()
-            .map(Vni::new_checked)
-            .filter_map(|x| x.ok())
-            .map(VpcDiscriminant::VNI)
-            .collect();
-        let mut rng = 0;
-        for i in 0u64..5 {
-            let mut map = hashbrown::HashMap::new();
-            for &src in &discs {
-                let mut summary = TransmitSummary::new();
-                for (j, &dst) in discs.iter().enumerate() {
-                    if i == 3
-                        && src == VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())
-                        && (dst == VpcDiscriminant::VNI(Vni::new_checked(2).unwrap()))
-                    {
-                        continue;
-                    }
-                    let j = u64::try_from(j).unwrap();
-                    summary.dst.insert(
-                        dst,
-                        PacketAndByte {
-                            packets: j * i,
-                            bytes: 1500 * i * j + rng,
-                        },
-                    );
-                }
-                map.insert(src, summary);
-            }
-            x.push(map);
-        }
-
-        let y: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<SavitzkyGolayFilter<u64>>> =
-            (&x).into();
-        let z = y
-            .derivative()
-            .unwrap()
-            .into_iter()
-            .collect::<BTreeMap<_, _>>();
-        println!("{z:#?}");
-    }
-
-    #[test]
-    fn more_real_test() {
-        let mut x: SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>> =
-            SavitzkyGolayFilter::new(Duration::from_secs(1));
-        let v = [
-            VpcDiscriminant::VNI(Vni::new_checked(1).unwrap()),
-            VpcDiscriminant::VNI(Vni::new_checked(2).unwrap()),
-            VpcDiscriminant::VNI(Vni::new_checked(3).unwrap()),
-            VpcDiscriminant::VNI(Vni::new_checked(4).unwrap()),
-        ];
-        let mut packets = 0;
-        let mut bytes = 0;
-        let mut sample = |idx: u64| {
-            v.map(|src| {
-                let mut summary = TransmitSummary::new();
-                v.iter().for_each(|&dst| {
-                    if idx == 125 || idx == 126 {
-                        return;
-                    }
-                    let VpcDiscriminant::VNI(x) = dst;
-                    summary.dst.insert(dst, PacketAndByte { packets, bytes });
-                });
-                if idx == 125 || idx == 126 {
-                    return (src, summary);
-                }
-                packets += 20000 + idx;
-                bytes += 1500 * (2 * idx * idx * idx * idx + 1);
-                (src, summary)
+    fn batch_summary() {
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .for_each(|mut batch: BatchSummary<u64>| {
+                batch.vpc.iter_mut().for_each(|(_, summary)| {
+                    summary.dst.iter().for_each(|(_, packet)| {});
+                })
             })
-            .into_iter()
-            .collect::<hashbrown::HashMap<_, _>>()
-        };
-        (0u64..138).for_each(|idx| {
-            x.push(sample(idx));
-            let y =
-                hashbrown::HashMap::<VpcDiscriminant, SavitzkyGolayFilter<TransmitSummary<u64>>>::from(
-                    x.clone(),
-                );
-            let z = y.derivative().unwrap();
-            if idx > 123 {
-                // println!("idx: {idx}: {x:#?}");
-                println!("idx: {idx}: {z:#?}");
-            }
-        });
     }
 }

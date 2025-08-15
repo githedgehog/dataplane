@@ -5,15 +5,20 @@ edition = "2024"
 publish = false
 license = "Apache-2.0"
 
+[features]
+default = []
+bolero = ["dep:bolero", "vpcmap/bolero", "net/bolero"]
+
 [dependencies]
 # internal
 kanal = { workspace = true, features = ["async"] }
-net = { workspace = true, features = [] }
+net = { workspace = true }
 pipeline = { workspace = true }
 vpcmap = { workspace = true }
 
 # external
 arrayvec = { workspace = true }
+bolero = { workspace = true, optional = true }
 derive_builder = { workspace = true }
 hashbrown = { workspace = true, features = ["inline-more", "alloc", "default-hasher"] }
 left-right = { workspace = true }
@@ -25,3 +30,7 @@ small-map = { workspace = true, features = ["ahash"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+bolero = { workspace = true }
+net = { workspace = true, features = ["bolero"] }
+vpcmap = { workspace = true, features = ["bolero"] }
