@@ -15,6 +15,7 @@ pub use self::contract::*;
 pub trait Derivative {
     type Error;
     type Output;
+    #[allow(unused)]
     fn derivative(&self) -> Result<Self::Output, Self::Error>;
 }
 
@@ -361,7 +362,7 @@ impl From<&SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSumma
 mod contract {
     use crate::rate::{Derivative, SavitzkyGolayFilter};
     use crate::{PacketAndByte, TransmitSummary};
-    use bolero::{Driver, TypeGenerator, ValueGenerator};
+    use bolero::{Driver, TypeGenerator};
     use std::fmt::Debug;
     use std::time::Duration;
 
@@ -491,12 +492,10 @@ mod test {
     use crate::rate::{Derivative, DerivativeComparer, DerivativeError, SavitzkyGolayFilter};
 
     use crate::{PacketAndByte, TransmitSummary};
-    use net::vxlan::Vni;
+
     use rand::distr::weighted::Weight;
-    use rand::{Rng, RngCore};
-    use std::collections::BTreeMap;
-    use std::time::{Duration, Instant};
-    use vpcmap::VpcDiscriminant;
+
+    use std::time::Duration;
 
     fn arbitrary_polynomial<const N: usize>() {
         const NANOS_PER_SEC: u128 = 1_000_000_000;

@@ -5,36 +5,21 @@
 //! Currently, it only includes `PacketDropStats`, but other type of statistics could
 //! be added like protocol breakdowns.
 
-#![allow(unused)]
-
 use net::packet::Packet;
-use net::packet::PacketDropStats;
-use net::packet::PacketMeta;
 use pipeline::NetworkFunction;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 
-use arrayvec::ArrayVec;
 use kanal::ReceiveError;
-use net::packet::DoneReason;
-use net::vxlan::Vni;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::hash::BuildHasher;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::thread::ThreadId;
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
-use std::{collections::HashMap, hash::Hash};
 use vpcmap::VpcDiscriminant;
 use vpcmap::map::VpcMapReader;
 
-use crate::rate::{Derivative, SavitzkyGolayFilter};
+use crate::rate::SavitzkyGolayFilter;
 use crate::{RegisteredVpcMetrics, Specification, VpcMetricsSpec};
-use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
 use net::buffer::PacketBufferMut;
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
-use small_map::{ASmallMap, SmallMap};
+use serde::Serialize;
+use small_map::SmallMap;
 use tracing::{debug, info};
 #[allow(unused)]
 use tracing::{error, trace, warn};
@@ -98,7 +83,7 @@ impl StatsCollector {
             .map(|(disc, spec)| (disc, spec.build()))
             .collect();
         let updates = PacketStatsReader(r);
-        let mut outstanding: VecDeque<_> = (0..10)
+        let outstanding: VecDeque<_> = (0..10)
             .scan(
                 BatchSummary::<u64>::new(Instant::now() + TIME_TICK),
                 |prior, _| Some(BatchSummary::new(prior.planned_end + TIME_TICK)),
@@ -177,46 +162,35 @@ impl StatsCollector {
                 })
                 .collect();
             update.summary.vpc.iter().for_each(|(src, summary)| {
-                let total =
-                    summary
-                        .dst
-                        .iter()
-                        .fold(PacketAndByte::default(), |total, (dst, stats)| {
-                            let Some(destination) = self.metrics.get_mut(dst) else {
-                                debug!("lost dest: {dst}");
-                                return total + *stats;
-                            };
-                            slices
-                                .iter_mut()
-                                .fold(PacketAndByte::default(), |total, batch| {
-                                    // TODO: this can be much more efficient
-                                    let SplitCount {
-                                        inside: packets, ..
-                                    } = batch.split_count(&update, stats.packets);
-                                    let SplitCount { inside: bytes, .. } =
-                                        batch.split_count(&update, stats.bytes);
-                                    let stats = PacketAndByte { packets, bytes };
-                                    if packets == 0 && bytes == 0 {
-                                        return total + stats;
-                                    }
-                                    match batch.vpc.get_mut(src) {
-                                        None => {
-                                            let mut tx_sumary = TransmitSummary::new();
-                                            tx_sumary.dst.insert(*dst, stats);
-                                            batch.vpc.insert(*src, tx_sumary);
-                                        }
-                                        Some(tx_summary) => match tx_summary.dst.get_mut(dst) {
-                                            None => {
-                                                tx_summary.dst.insert(*dst, stats);
-                                            }
-                                            Some(s) => {
-                                                *s += stats;
-                                            }
-                                        },
-                                    }
-                                    total + stats
-                                })
-                        });
+                summary.dst.iter().for_each(|(dst, stats)| {
+                    slices.iter_mut().for_each(|batch| {
+                        // TODO: this can be much more efficient
+                        let SplitCount {
+                            inside: packets, ..
+                        } = batch.split_count(&update, stats.packets);
+                        let SplitCount { inside: bytes, .. } =
+                            batch.split_count(&update, stats.bytes);
+                        let stats = PacketAndByte { packets, bytes };
+                        if packets == 0 && bytes == 0 {
+                            return;
+                        }
+                        match batch.vpc.get_mut(src) {
+                            None => {
+                                let mut tx_sumary = TransmitSummary::new();
+                                tx_sumary.dst.insert(*dst, stats);
+                                batch.vpc.insert(*src, tx_sumary);
+                            }
+                            Some(tx_summary) => match tx_summary.dst.get_mut(dst) {
+                                None => {
+                                    tx_summary.dst.insert(*dst, stats);
+                                }
+                                Some(s) => {
+                                    *s += stats;
+                                }
+                            },
+                        }
+                    })
+                });
             });
         }
         let current_time = Instant::now();
@@ -250,55 +224,40 @@ impl StatsCollector {
             .push_back(BatchSummary::with_start_and_capacity(
                 start, duration, capacity,
             ));
-        let total = concluded.vpc.iter().fold(
-            PacketAndByte::default(),
-            |slice_total, (&src, tx_summary)| {
-                let metrics = match self.metrics.get(&src) {
+        concluded.vpc.iter().for_each(|(&src, tx_summary)| {
+            let metrics = match self.metrics.get(&src) {
+                None => {
+                    warn!("lost metrics for src {src}");
+                    return;
+                }
+                Some(metrics) => metrics,
+            };
+            tx_summary
+                .dst
+                .iter()
+                .for_each(|(&dst, &stats)| match metrics.peering.get(&dst) {
                     None => {
-                        warn!("lost metrics for src {src}");
-                        return slice_total;
+                        warn!("lost metrics for src {src} to dst {dst}");
                     }
-                    Some(metrics) => metrics,
-                };
-                let total = tx_summary.dst.iter().fold(
-                    PacketAndByte::default(),
-                    |total, (&dst, &stats)| {
-                        match metrics.peering.get(&dst) {
-                            None => {
-                                warn!("lost metrics for src {src} to dst {dst}");
-                            }
-                            Some(action) => {
-                                action.tx.packet.count.metric.increment(stats.packets);
-                                action.tx.byte.count.metric.increment(stats.bytes);
-                            }
-                        }
-                        total + stats
-                    },
-                );
-                metrics
-                    .total
-                    .tx
-                    .packet
-                    .count
-                    .metric
-                    .increment(total.packets);
-                metrics.total.tx.byte.count.metric.increment(total.bytes);
-                slice_total + total
-            },
-        );
+                    Some(action) => {
+                        action.tx.packet.count.metric.increment(stats.packets);
+                        action.tx.byte.count.metric.increment(stats.bytes);
+                    }
+                });
+        });
         self.submitted.push(concluded.vpc);
-        let rates = match hashbrown::HashMap::<
-            VpcDiscriminant,
-            TransmitSummary<SavitzkyGolayFilter<u64>>,
-        >::from(&self.submitted)
-        .derivative()
-        {
-            Ok(rates) => rates,
-            Err(()) => {
-                error!("unknown rate calculation error");
-                return;
-            }
-        };
+        // let rates = match hashbrown::HashMap::<
+        //     VpcDiscriminant,
+        //     TransmitSummary<SavitzkyGolayFilter<u64>>,
+        // >::from(&self.submitted)
+        // .derivative()
+        // {
+        //     Ok(rates) => rates,
+        //     Err(()) => {
+        //         error!("unknown rate calculation error");
+        //         return;
+        //     }
+        // };
         // rates.iter().for_each(|(src, summary)| {
         //     let total = summary
         //         .dst
@@ -471,6 +430,7 @@ pub struct PacketStatsReader(kanal::Receiver<MetricsUpdate>);
 /// A `Stats` is a network function that collects packet statistics.
 #[derive(Debug)]
 pub struct Stats {
+    #[allow(unused)]
     name: String,
     update: Box<BatchSummary<u64>>,
     stats: PacketStatsWriter,
@@ -720,7 +680,7 @@ pub struct SplitCount {
 mod contract {
     use crate::{BatchSummary, PacketAndByte, TransmitSummary};
     use bolero::{Driver, TypeGenerator, ValueGenerator};
-    use small_map::{ASmallMap, SmallMap};
+    use small_map::SmallMap;
     use std::time::{Duration, Instant};
     use vpcmap::VpcDiscriminant;
 
@@ -780,7 +740,7 @@ mod contract {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
             let start = Instant::now() + Duration::from_millis(driver.produce()?);
             let duration: Duration = driver.produce()?;
-            let mut vpc_gen = VpcDiscMap::<TransmitSummary<T>> {
+            let vpc_gen = VpcDiscMap::<TransmitSummary<T>> {
                 _marker: std::marker::PhantomData,
             };
             Some(BatchSummary {
@@ -794,16 +754,8 @@ mod contract {
 
 #[cfg(test)]
 mod test {
-    use crate::dpstats::{
-        ExponentiallyWeightedMovingAverage, PacketAndByte, SplitCount, TimeSlice,
-    };
-    use crate::rate::{Derivative, SavitzkyGolayFilter};
-    use crate::{BatchSummary, MetricsUpdate, TransmitSummary, map};
-    use net::vxlan::Vni;
-    use rand::RngCore;
-    use std::collections::BTreeMap;
-    use std::time::{Duration, Instant};
-    use vpcmap::VpcDiscriminant;
+
+    use crate::BatchSummary;
 
     #[test]
     fn batch_summary() {
@@ -812,7 +764,7 @@ mod test {
             .cloned()
             .for_each(|mut batch: BatchSummary<u64>| {
                 batch.vpc.iter_mut().for_each(|(_, summary)| {
-                    summary.dst.iter().for_each(|(_, packet)| {});
+                    summary.dst.iter().for_each(|(_, _packet)| {});
                 })
             })
     }

@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::vpc::RegisteredPipelineMetrics;
 use derive_builder::Builder;
 use metrics::{Level, Unit};
 use multi_index_map::MultiIndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
-use vpcmap::VpcDiscriminant;
 
 pub trait MetricDescription {
     fn description(&self) -> &str;
