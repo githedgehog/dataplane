@@ -19,6 +19,7 @@ dashmap = { workspace = true, features = ["raw-api"] }
 left-right = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
+shuttle = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
