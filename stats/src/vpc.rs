@@ -105,7 +105,7 @@ impl BasicActionSpec {
         tx.push(("action".to_string(), "tx".to_string()));
         BasicActionSpec {
             rx: PacketAndByteSpec::new(base_id.clone(), rx),
-            tx: PacketAndByteSpec::new(base_id.clone(), tx),
+            tx: PacketAndByteSpec::new(base_id, tx),
         }
     }
 }
@@ -146,8 +146,9 @@ impl VpcMetricsSpec {
             total: BasicActionSpec::new("pipeline", vec![]),
             peering: names
                 .map(|(disc, name, mut labels)| {
-                    labels.push(("dst".to_string(), disc.as_ref().to_string()));
-                    (*disc.as_ref(), BasicActionSpec::new(name, labels))
+                    let name = name.into();
+                    labels.push(("dst".to_string(), name.clone()));
+                    (*disc.as_ref(), BasicActionSpec::new("vpc", labels))
                 })
                 .collect(),
         }
