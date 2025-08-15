@@ -3,7 +3,7 @@
 
 use crate::register::Registered;
 use crate::{MetricSpec, PacketAndByte, Register};
-use metrics::{Level, Unit};
+use metrics::Unit;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use vpcmap::VpcDiscriminant;
@@ -20,15 +20,13 @@ pub struct CountAndRateSpec {
 }
 
 impl CountAndRateSpec {
-    fn new(base_id: impl Into<String>, action: impl Into<String>) -> CountAndRateSpec {
+    fn new(base_id: impl Into<String>, labels: Vec<(String, String)>) -> CountAndRateSpec {
         let base_id = base_id.into();
         let count_id = base_id.clone() + "_count";
         let rate_id = base_id + "_rate";
-        let count_action = action.into();
-        let rate_action = count_action.clone();
         CountAndRateSpec {
-            count: MetricSpec::new(count_id, count_action, Unit::Count),
-            rate: MetricSpec::new(rate_id, rate_action, Unit::BitsPerSecond),
+            count: MetricSpec::new(count_id, Unit::Count, labels.clone()),
+            rate: MetricSpec::new(rate_id, Unit::BitsPerSecond, labels), // todo: bits or bytes?
         }
     }
 }
@@ -57,15 +55,14 @@ pub struct PacketAndByteSpec {
 }
 
 impl PacketAndByteSpec {
-    fn new(base_id: impl Into<String>, action: impl Into<String>) -> PacketAndByteSpec {
+    fn new(base_id: impl Into<String>, labels: Vec<(String, String)>) -> PacketAndByteSpec {
         let base_id = base_id.into();
         let packet_id = base_id.clone() + "_packet";
         let byte_id = base_id + "_byte";
-        let packet_action = action.into();
-        let byte_action = packet_action.clone();
+
         PacketAndByteSpec {
-            packet: CountAndRateSpec::new(packet_id, packet_action),
-            byte: CountAndRateSpec::new(byte_id, byte_action),
+            packet: CountAndRateSpec::new(packet_id, labels.clone()),
+            byte: CountAndRateSpec::new(byte_id, labels),
         }
     }
 }
@@ -100,13 +97,15 @@ pub struct BasicAction<T> {
 }
 
 impl BasicActionSpec {
-    fn new(base_id: impl Into<String>) -> BasicActionSpec {
+    fn new(base_id: impl Into<String>, labels: Vec<(String, String)>) -> BasicActionSpec {
         let base_id = base_id.into();
-        let rx_id = base_id.clone() + "_rx";
-        let tx_id = base_id + "_tx";
+        let mut rx = labels.clone();
+        rx.push(("action".to_string(), "rx".to_string()));
+        let mut tx = labels.clone();
+        tx.push(("action".to_string(), "tx".to_string()));
         BasicActionSpec {
-            rx: PacketAndByteSpec::new(rx_id, "rx"),
-            tx: PacketAndByteSpec::new(tx_id, "tx"),
+            rx: PacketAndByteSpec::new(base_id.clone(), rx),
+            tx: PacketAndByteSpec::new(base_id.clone(), tx),
         }
     }
 }
@@ -135,12 +134,21 @@ pub struct VpcMetricsSpec {
 
 impl VpcMetricsSpec {
     pub fn new(
-        names: impl Iterator<Item = (impl AsRef<VpcDiscriminant>, impl Into<String>)>,
+        names: impl Iterator<
+            Item = (
+                impl AsRef<VpcDiscriminant>,
+                impl Into<String>,
+                Vec<(String, String)>,
+            ),
+        >,
     ) -> VpcMetricsSpec {
         VpcMetricsSpec {
-            total: BasicActionSpec::new("pipeline"),
+            total: BasicActionSpec::new("pipeline", vec![]),
             peering: names
-                .map(|(disc, name)| (*disc.as_ref(), BasicActionSpec::new(name)))
+                .map(|(disc, name, mut labels)| {
+                    labels.push(("dst".to_string(), disc.as_ref().to_string()));
+                    (*disc.as_ref(), BasicActionSpec::new(name, labels))
+                })
                 .collect(),
         }
     }

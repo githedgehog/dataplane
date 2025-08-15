@@ -11,7 +11,6 @@ use std::fmt::Debug;
 use vpcmap::VpcDiscriminant;
 
 pub trait MetricDescription {
-    fn action(&self) -> &str;
     fn description(&self) -> &str;
     fn id(&self) -> &str;
     fn labels(&self) -> &BTreeMap<String, String>;
@@ -48,13 +47,6 @@ pub struct MetricSpec {
         default = "serdefix::empty_string"
     )]
     #[multi_index(ordered_non_unique)]
-    pub action: String,
-    #[builder(setter(into))]
-    #[serde(
-        skip_serializing_if = "String::is_empty",
-        default = "serdefix::empty_string"
-    )]
-    #[multi_index(ordered_non_unique)]
     pub target: String,
     #[builder(setter(into))]
     #[serde(
@@ -72,15 +64,14 @@ impl MetricSpec {
         MetricBuilder::default()
     }
 
-    pub fn new(id: impl AsRef<str>, action: impl AsRef<str>, unit: Unit) -> MetricSpec {
+    pub fn new(id: impl AsRef<str>, unit: Unit, labels: Vec<(String, String)>) -> MetricSpec {
         MetricSpec {
             id: id.as_ref().to_string(),
             unit,
             level: Level::INFO,
-            action: action.as_ref().to_string(),
             target: "".to_string(),
             description: "".to_string(),
-            labels: Default::default(),
+            labels: labels.into_iter().collect(),
         }
     }
 }
@@ -102,10 +93,6 @@ impl MetricSpec {
             .labels()
             .iter()
             .map(|(k, v)| metrics::Label::new(k.clone(), v.clone()))
-            .chain([metrics::Label::from(&(
-                "action".to_string(),
-                self.action().to_string(),
-            ))])
             .collect();
         metrics::Key::from_parts(self.id().to_string(), labels)
     }
@@ -116,10 +103,6 @@ impl MetricSpec {
 }
 
 impl MetricDescription for MetricSpec {
-    fn action(&self) -> &str {
-        &self.action
-    }
-
     fn description(&self) -> &str {
         &self.description
     }

@@ -71,12 +71,9 @@ impl StatsCollector {
         let (s, r) = kanal::bounded(Self::DEFAULT_CHANNEL_CAPACITY);
         let spec = {
             let guard = vpcmap_r.enter().unwrap();
-            VpcMetricsSpec::new(
-                guard
-                    .0
-                    .values()
-                    .map(|VpcMapName { disc, name }| (disc, name)),
-            )
+            VpcMetricsSpec::new(guard.0.values().map(|VpcMapName { disc, name }| {
+                (disc, name, vec![("src".to_string(), name.clone())])
+            }))
         };
         let stats = spec.build();
         let updates = PacketStatsReader(r);
@@ -100,12 +97,9 @@ impl StatsCollector {
     fn refresh(&mut self) -> RegisteredVpcMetrics {
         let spec = {
             let guard = self.vpcmap_r.enter().unwrap();
-            VpcMetricsSpec::new(
-                guard
-                    .0
-                    .values()
-                    .map(|VpcMapName { disc, name }| (disc, name)),
-            )
+            VpcMetricsSpec::new(guard.0.values().map(|VpcMapName { disc, name }| {
+                (disc, name, vec![("src".to_string(), name.clone())])
+            }))
         };
         spec.build()
     }

@@ -76,10 +76,6 @@ impl Register<metrics::Histogram> for MetricSpec {
 }
 
 impl<T> MetricDescription for Registered<T> {
-    fn action(&self) -> &str {
-        self.details.action()
-    }
-
     fn description(&self) -> &str {
         self.details.description()
     }
