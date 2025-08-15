@@ -71,15 +71,19 @@ impl StatsCollector {
         let (s, r) = kanal::bounded(Self::DEFAULT_CHANNEL_CAPACITY);
         let vpc_data = {
             let guard = vpcmap_r.enter().unwrap();
-            guard.0.values().map(|VpcMapName { disc, name }| {
-                (
-                    *disc,
-                    name.clone(),
-                    vec![("from".to_string(), name.clone())],
-                )
-            })
+            guard
+                .0
+                .values()
+                .map(|VpcMapName { disc, name }| {
+                    (
+                        *disc,
+                        name.clone(),
+                        vec![("from".to_string(), name.clone())],
+                    )
+                })
+                .collect()
         };
-        let metrics = VpcMetricsSpec::new(vpc_data.collect())
+        let metrics = VpcMetricsSpec::new(vpc_data)
             .into_iter()
             .map(|(disc, spec)| (disc, spec.build()))
             .collect();
@@ -101,7 +105,7 @@ impl StatsCollector {
         (stats, writer)
     }
 
-    fn refresh(&mut self) -> impl Iterator<Item = RegisteredVpcMetrics> {
+    fn refresh(&mut self) -> impl Iterator<Item = (VpcDiscriminant, RegisteredVpcMetrics)> {
         let spec = {
             let guard = self.vpcmap_r.enter().unwrap();
             let vpc_data: Vec<_> = guard
@@ -113,7 +117,7 @@ impl StatsCollector {
                 .collect();
             VpcMetricsSpec::new(vpc_data)
         };
-        spec.into_iter().map(|(_, spec)| spec.build())
+        spec.into_iter().map(|(disc, spec)| (disc, spec.build()))
     }
 
     #[tracing::instrument(level = "info", skip(self))]
@@ -145,7 +149,7 @@ impl StatsCollector {
     fn update(&mut self, update: MetricsUpdate) {
         {
             // find outstanding changes which line up with batch
-            self.metrics = self.refresh();
+            self.metrics = self.refresh().collect();
             let mut slices: Vec<_> = self
                 .outstanding
                 .iter_mut()
@@ -163,7 +167,7 @@ impl StatsCollector {
                         .dst
                         .iter()
                         .fold(PacketAndByte::default(), |total, (dst, stats)| {
-                            let Some(destination) = self.metrics.peering.get_mut(dst) else {
+                            let Some(destination) = self.metrics.get_mut(dst) else {
                                 debug!("lost dest: {dst}");
                                 return total + *stats;
                             };
@@ -233,44 +237,39 @@ impl StatsCollector {
         let total = concluded.vpc.iter().fold(
             PacketAndByte::default(),
             |slice_total, (&src, tx_summary)| {
+                let metrics = match self.metrics.get(&src) {
+                    None => {
+                        warn!("lost metrics for src {src}");
+                        return slice_total;
+                    }
+                    Some(metrics) => metrics,
+                };
                 let total = tx_summary.dst.iter().fold(
                     PacketAndByte::default(),
                     |total, (&dst, &stats)| {
-                        match self.metrics.peering.get(&dst) {
+                        match metrics.peering.get(&dst) {
                             None => {
                                 warn!("lost metrics for src {src} to dst {dst}");
                             }
-                            Some(d) => {
-                                d.rx.packet.count.metric.increment(stats.packets);
-                                d.rx.byte.count.metric.increment(stats.bytes);
+                            Some(action) => {
+                                action.tx.packet.count.metric.increment(stats.packets);
+                                action.tx.byte.count.metric.increment(stats.bytes);
                             }
-                        };
+                        }
                         total + stats
                     },
                 );
-                let Some(s) = self.metrics.peering.get(&src) else {
-                    warn!("lost metrics for src: {src}");
-                    return slice_total + total;
-                };
-                s.tx.packet.count.metric.increment(total.packets);
-                s.tx.byte.count.metric.increment(total.bytes);
+                metrics
+                    .total
+                    .tx
+                    .packet
+                    .count
+                    .metric
+                    .increment(total.packets);
+                metrics.total.tx.byte.count.metric.increment(total.bytes);
                 slice_total + total
             },
         );
-        self.metrics
-            .total
-            .tx
-            .packet
-            .count
-            .metric
-            .increment(total.packets);
-        self.metrics
-            .total
-            .tx
-            .byte
-            .count
-            .metric
-            .increment(total.bytes);
         self.submitted.push(concluded.vpc);
         let rates = match hashbrown::HashMap::<
             VpcDiscriminant,
@@ -284,34 +283,34 @@ impl StatsCollector {
                 return;
             }
         };
-        rates.iter().for_each(|(src, summary)| {
-            let total = summary
-                .dst
-                .iter()
-                .fold(PacketAndByte::default(), |total, (dst, stats)| {
-                    let Some(destination) = self.metrics.peering.get_mut(dst) else {
-                        debug!("lost dest: {dst}");
-                        return total + *stats;
-                    };
-                    let stats = PacketAndByte {
-                        packets: stats.packets,
-                        bytes: stats.bytes,
-                    };
-                    if stats.packets < 0.001 && stats.bytes < 0.001 {
-                        return total + stats;
-                    };
-                    destination.rx.packet.rate.metric.set(stats.packets);
-                    destination.rx.byte.rate.metric.set(stats.bytes);
-                    total + stats
-                });
-
-            let Some(s) = self.metrics.peering.get(&src) else {
-                warn!("lost metrics for src: {src}");
-                return;
-            };
-            s.tx.packet.rate.metric.set(total.packets);
-            s.tx.byte.rate.metric.set(total.bytes);
-        });
+        // rates.iter().for_each(|(src, summary)| {
+        //     let total = summary
+        //         .dst
+        //         .iter()
+        //         .fold(PacketAndByte::default(), |total, (dst, stats)| {
+        //             let Some(destination) = self.metrics.get_mut(dst) else {
+        //                 debug!("lost dest: {dst}");
+        //                 return total + *stats;
+        //             };
+        //             let stats = PacketAndByte {
+        //                 packets: stats.packets,
+        //                 bytes: stats.bytes,
+        //             };
+        //             if stats.packets < 0.001 && stats.bytes < 0.001 {
+        //                 return total + stats;
+        //             };
+        //             destination.tx.packet.rate.metric.set(stats.packets);
+        //             destination.tx.byte.rate.metric.set(stats.bytes);
+        //             total + stats
+        //         });
+        //
+        //     let Some(s) = self.metrics.peering.get(&src) else {
+        //         warn!("lost metrics for src: {src}");
+        //         return;
+        //     };
+        //     s.tx.packet.rate.metric.set(total.packets);
+        //     s.tx.byte.rate.metric.set(total.bytes);
+        // });
 
         // TODO: add in drop metrics
     }
