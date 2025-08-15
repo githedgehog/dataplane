@@ -53,12 +53,22 @@ impl VpcMapName {
     }
 }
 
+/// A `StatsCollector` is responsible for collecting and aggregating packet statistics for a
+/// collection of workers running packet processing pipelines on various threads.
 #[derive(Debug)]
 pub struct StatsCollector {
+    /// metrics maps known VpcDiscriminants to their metrics
     metrics: hashbrown::HashMap<VpcDiscriminant, RegisteredVpcMetrics>,
+    /// Outstanding (i.e., not yet submitted) batches.  These batches will eventually be collected
+    /// in to the `submitted` filter in order to calculate rates.
     outstanding: VecDeque<BatchSummary<u64>>,
+    /// Filter for batches which have been submitted to the `submitted` filter.  This filter is
+    /// used to calculate rates.
     submitted: SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>>,
+    /// Reader for the VPC map.  This reader is used to determine the VPCs which are currently
+    /// known to the system.
     vpcmap_r: VpcMapReader<VpcMapName>,
+    /// A MPSC channel receiver for collecting stats from other threads.
     updates: PacketStatsReader,
 }
 
@@ -105,6 +115,10 @@ impl StatsCollector {
         (stats, writer)
     }
 
+    /// Update the list of VPCs known to the stats collector.
+    ///
+    /// TODO: in a future version the update should be automatic based on some kind of channel
+    /// model.
     fn refresh(&mut self) -> impl Iterator<Item = (VpcDiscriminant, RegisteredVpcMetrics)> {
         let spec = {
             let guard = self.vpcmap_r.enter().unwrap();
@@ -118,6 +132,8 @@ impl StatsCollector {
         spec.into_iter().map(|(disc, spec)| (disc, spec.build()))
     }
 
+    /// Run the stats collector.  This method does not create a thread and will not return if
+    /// awaited.
     #[tracing::instrument(level = "info", skip(self))]
     pub async fn run(mut self) {
         info!("started stats update receiver");
@@ -143,6 +159,7 @@ impl StatsCollector {
         }
     }
 
+    /// Calculate updated stats and submit any expired entries to the rate filter.
     #[tracing::instrument(level = "trace")]
     fn update(&mut self, update: MetricsUpdate) {
         {
@@ -218,6 +235,7 @@ impl StatsCollector {
         }
     }
 
+    /// Submit a concluded set of stats for inclusion in rate calculations
     fn submit_expired(&mut self, concluded: BatchSummary<u64>) {
         const CAPACITY_PADDING: usize = 16;
         let capacity = self.vpcmap_r.enter().unwrap().0.len() + CAPACITY_PADDING;
@@ -314,6 +332,7 @@ impl StatsCollector {
     }
 }
 
+/// Associate a `T` for packet and bytes.  This is commonly used for counters and rates.
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Ord, PartialOrd, Serialize)]
 pub struct PacketAndByte<T = u64> {
     pub packets: T,
@@ -358,10 +377,14 @@ where
     }
 }
 
+/// A `TransmitSummary` is a summary of packets and bytes transmitted from a single VPC to a map of
+/// other VPCs.
+///
+/// This type is mostly expected to exist on a per-packet batch basis.
 #[derive(Debug, Default, Clone)]
 pub struct TransmitSummary<T> {
     pub drop: PacketAndByte<T>,
-    pub dst: ASmallMap<{ SMALL_MAP_CAPACITY }, VpcDiscriminant, PacketAndByte<T>>,
+    pub dst: SmallMap<{ SMALL_MAP_CAPACITY }, VpcDiscriminant, PacketAndByte<T>>,
 }
 
 const SMALL_MAP_CAPACITY: usize = 8;
@@ -377,13 +400,22 @@ impl<T> TransmitSummary<T> {
     }
 }
 
+/// This is basically a set of concluded `TransmitSummary`s for a collection of VPCs over a time
+/// window.
+///
 #[derive(Debug, Clone)]
 pub struct BatchSummary<T> {
+    /// The instant at which stats should begin being attributed to this batch.
     pub start: Instant,
+    /// This is the time at which the batch should be concluded.
+    /// Note that precise control over this time is not guaranteed.
     pub planned_end: Instant,
     vpc: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<T>>,
 }
 
+/// A `MetricsUpdate` is basically just a `BatchSummary` with a more precise duration associated
+/// to it.  This duration is calculated using the instant at which we _stop_ adding stats to this
+/// update.
 #[derive(Debug)]
 pub struct MetricsUpdate {
     pub duration: Duration,
@@ -426,12 +458,17 @@ impl<T> BatchSummary<T> {
     }
 }
 
+/// A `PacketStatsWriter` is a channel to which `MetricsUpdate`s can be sent.  This is used to
+/// aggregate packet statistics in a different thread.
 #[derive(Debug, Clone)]
 pub struct PacketStatsWriter(kanal::Sender<MetricsUpdate>);
 
+/// A `PacketStatsReader` is a channel from which `MetricsUpdate`s can be received.  This is used
+/// to aggregate packet statistics outside the worker threads.
 #[derive(Debug)]
 pub struct PacketStatsReader(kanal::Receiver<MetricsUpdate>);
 
+/// A `Stats` is a network function that collects packet statistics.
 #[derive(Debug)]
 pub struct Stats {
     name: String,
@@ -503,7 +540,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
                 }
             }
         }
-        input.map(|mut packet| {
+        input.filter_map(|mut packet| {
             let sdisc = packet.get_meta().src_vni.map(VpcDiscriminant::VNI);
             let ddisc = packet.get_meta().dst_vni.map(VpcDiscriminant::VNI);
             match (sdisc, ddisc) {
@@ -547,46 +584,10 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
                 }
                 (None, None) => {
                     debug!("no source or dest discriminants for packet");
-                    debug!("just making something up");
-                    match self
-                        .update
-                        .vpc
-                        .get_mut(&VpcDiscriminant::VNI(Vni::new_checked(100).unwrap()))
-                    {
-                        None => {
-                            let mut summary = TransmitSummary::new();
-                            summary.dst.insert(
-                                VpcDiscriminant::VNI(Vni::new_checked(300).unwrap()),
-                                PacketAndByte {
-                                    packets: 1,
-                                    bytes: packet.total_len().into(),
-                                },
-                            );
-                            summary.drop.packets += 1;
-                            summary.drop.bytes += u64::from(packet.total_len());
-                            self.update.vpc.insert(
-                                VpcDiscriminant::VNI(Vni::new_checked(100).unwrap()),
-                                summary,
-                            );
-                        }
-                        Some(summary) => {
-                            let s = summary
-                                .dst
-                                .get_mut(&VpcDiscriminant::VNI(Vni::new_checked(300).unwrap()))
-                                .unwrap_or_else(|| {
-                                    panic!("missing destination discriminant for packet")
-                                });
-                            s.packets += 1;
-                            s.bytes += u64::from(packet.total_len());
-                            summary.drop.packets += 1;
-                            summary.drop.bytes += u64::from(packet.total_len());
-                        }
-                    }
                 }
             }
-            packet
-            // packet.get_meta_mut().set_keep(false); /* no longer disable enforce */
-            // packet.enforce()
+            packet.get_meta_mut().set_keep(false); /* no longer disable enforce */
+            packet.enforce()
         })
     }
 }
@@ -719,7 +720,7 @@ pub struct SplitCount {
 mod contract {
     use crate::{BatchSummary, PacketAndByte, TransmitSummary};
     use bolero::{Driver, TypeGenerator, ValueGenerator};
-    use small_map::ASmallMap;
+    use small_map::{ASmallMap, SmallMap};
     use std::time::{Duration, Instant};
     use vpcmap::VpcDiscriminant;
 
@@ -742,7 +743,7 @@ mod contract {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
             let mut summary = TransmitSummary {
                 drop: driver.produce()?,
-                dst: ASmallMap::default(),
+                dst: SmallMap::default(),
             };
             let num_src = driver.produce::<u8>()? % 16;
             for _ in 0..num_src {
