@@ -128,37 +128,6 @@ impl MetricDescription for MetricSpec {
     }
 }
 
-// scratch to check api
-#[allow(unused)]
-fn scratch(pipeline: &RegisteredPipelineMetrics) {
-    pipeline.total.tx.byte.count.metric.increment(17);
-    pipeline.total.tx.byte.rate.metric.set(17);
-    pipeline.total.tx.packet.count.metric.increment(17);
-    pipeline.total.tx.packet.rate.metric.set(17);
-
-    pipeline.vpcs().for_each(|(&disc, vpc)| {
-        vpc.total.tx.byte.count.metric.increment(17);
-        vpc.total.tx.byte.rate.metric.set(17);
-        vpc.total.tx.packet.count.metric.increment(17);
-        vpc.total.tx.packet.rate.metric.set(17);
-
-        vpc.peer(&VpcDiscriminant::VNI(1.try_into().unwrap()))
-            .unwrap()
-            .tx
-            .byte
-            .count
-            .metric
-            .increment(17);
-
-        vpc.peers().for_each(|(&disc, peer)| {
-            peer.tx.byte.count.metric.increment(11);
-            peer.tx.byte.rate.metric.set(17);
-            peer.tx.packet.count.metric.increment(11);
-            peer.tx.packet.rate.metric.set(17);
-        });
-    });
-}
-
 mod serdefix {
     use metrics::Level;
     use serde::Deserialize;

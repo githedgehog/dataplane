@@ -359,9 +359,10 @@ impl From<&SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSumma
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
-    use crate::rate::SavitzkyGolayFilter;
+    use crate::rate::{Derivative, SavitzkyGolayFilter};
     use crate::{PacketAndByte, TransmitSummary};
-    use bolero::{Driver, TypeGenerator};
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
+    use std::fmt::Debug;
     use std::time::Duration;
 
     impl TypeGenerator for SavitzkyGolayFilter<u64> {
@@ -428,19 +429,171 @@ mod contract {
             Some(filter)
         }
     }
+
+    pub struct DerivativeComparer<F, D> {
+        pub f: F,
+        pub d: D,
+        pub step: Duration,
+    }
+
+    impl<F, D, Out> DerivativeComparer<F, D>
+    where
+        SavitzkyGolayFilter<Out>: Derivative<Error: Debug>,
+        <SavitzkyGolayFilter<Out> as Derivative>::Output: Clone
+            + std::ops::Sub<
+                <SavitzkyGolayFilter<Out> as Derivative>::Output,
+                Output = <SavitzkyGolayFilter<Out> as Derivative>::Output,
+            >,
+        F: 'static + Fn(Duration) -> Out,
+        F: 'static + Fn(Duration) -> Out,
+        D: 'static + Fn(Duration) -> <SavitzkyGolayFilter<Out> as Derivative>::Output,
+    {
+        pub fn compare(
+            &self,
+            x: Duration,
+        ) -> DerivativeComparison<<SavitzkyGolayFilter<Out> as Derivative>::Output> {
+            let mut out = SavitzkyGolayFilter::new(self.step);
+            for i in 0..5 {
+                out.push((self.f)(x + self.step * u32::try_from(i).unwrap()));
+            }
+            DerivativeComparison {
+                known: (self.d)(x + self.step * 2),
+                computed: out.derivative().unwrap(),
+            }
+        }
+    }
+
+    pub struct DerivativeComparison<T> {
+        pub known: T,
+        pub computed: T,
+    }
+
+    impl<T> DerivativeComparison<T> {
+        pub fn diff<U>(&self) -> U
+        where
+            T: Clone + std::ops::Sub<T, Output = U>,
+        {
+            self.known.clone() - self.computed.clone()
+        }
+
+        pub fn relative_error<U>(&self) -> U
+        where
+            T: Clone + std::ops::Sub<T, Output = U>,
+            U: std::ops::Div<T, Output = U>,
+        {
+            self.diff() / self.known.clone()
+        }
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::rate::{Derivative, DerivativeError, SavitzkyGolayFilter};
+    use crate::rate::{Derivative, DerivativeComparer, DerivativeError, SavitzkyGolayFilter};
 
     use crate::{PacketAndByte, TransmitSummary};
     use net::vxlan::Vni;
-    use rand::RngCore;
     use rand::distr::weighted::Weight;
+    use rand::{Rng, RngCore};
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
     use vpcmap::VpcDiscriminant;
+
+    fn arbitrary_polynomial<const N: usize>() {
+        const NANOS_PER_SEC: u128 = 1_000_000_000;
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .for_each(|(x, c): (Duration, [u64; N])| {
+                let x = if x < Duration::from_micros(1) {
+                    Duration::from_micros(1)
+                } else if x > Duration::from_secs(10) {
+                    Duration::from_secs(10)
+                } else {
+                    x
+                };
+                // we will get overflow errors if we don't clamp the slope
+                let c = c.map(|x| u128::from(x.clamp(0, 1_000)));
+                let basic = move |x: Duration| {
+                    let x = x.as_nanos() / NANOS_PER_SEC;
+                    u64::try_from(
+                        c.iter()
+                            .enumerate()
+                            .fold(0u128, |acc, (i, &c)| acc + c * x.pow(i as u32)),
+                    )
+                    .unwrap()
+                };
+                let basic_prime = move |x: Duration| {
+                    let x = x.as_nanos() / NANOS_PER_SEC;
+                    c.iter().enumerate().fold(0u128, |acc, (i, &c)| {
+                        if i == 0 {
+                            return acc;
+                        }
+                        acc + u128::try_from(i).unwrap() * c * x.pow(i as u32 - 1)
+                    }) as f64
+                };
+                let comparer = DerivativeComparer {
+                    f: basic,
+                    d: basic_prime,
+                    step: Duration::from_secs(1),
+                };
+                let comparison = comparer.compare(x);
+                if comparison.relative_error().is_nan() {
+                    assert!(comparison.diff() < 0.001);
+                    return;
+                }
+                assert!(comparison.relative_error() < 0.01);
+            })
+    }
+    #[test]
+    fn derivative_of_arbitrary_1() {
+        arbitrary_polynomial::<1>();
+    }
+    #[test]
+    fn derivative_of_arbitrary_2() {
+        arbitrary_polynomial::<2>();
+    }
+    #[test]
+    fn derivative_of_arbitrary_3() {
+        arbitrary_polynomial::<3>();
+    }
+    #[test]
+    fn derivative_of_arbitrary_4() {
+        arbitrary_polynomial::<4>();
+    }
+    #[test]
+    fn derivative_of_arbitrary_5() {
+        arbitrary_polynomial::<5>();
+    }
+    #[test]
+    fn derivative_of_arbitrary_6() {
+        arbitrary_polynomial::<6>();
+    }
+    #[test]
+    fn derivative_of_arbitrary_7() {
+        arbitrary_polynomial::<7>();
+    }
+    #[test]
+    fn derivative_of_arbitrary_8() {
+        arbitrary_polynomial::<8>();
+    }
+    #[test]
+    fn derivative_of_arbitrary_9() {
+        arbitrary_polynomial::<9>();
+    }
+    #[test]
+    fn derivative_of_arbitrary_10() {
+        arbitrary_polynomial::<10>();
+    }
+
+    #[test]
+    fn derivative_of_arbitrary_11() {
+        arbitrary_polynomial::<11>();
+    }
+
+    #[test]
+    fn derivative_of_arbitrary_12() {
+        arbitrary_polynomial::<12>();
+    }
 
     #[test]
     fn derivative_filter_basic() {
