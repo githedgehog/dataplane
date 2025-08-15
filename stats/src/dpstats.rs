@@ -55,7 +55,7 @@ impl VpcMapName {
 
 #[derive(Debug)]
 pub struct StatsCollector {
-    metrics: RegisteredVpcMetrics,
+    metrics: hashbrown::HashMap<VpcDiscriminant, RegisteredVpcMetrics>,
     outstanding: VecDeque<BatchSummary<u64>>,
     submitted: SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>>,
     vpcmap_r: VpcMapReader<VpcMapName>,
@@ -69,22 +69,20 @@ impl StatsCollector {
     pub fn new(vpcmap_r: VpcMapReader<VpcMapName>) -> (StatsCollector, PacketStatsWriter) {
         const TIME_TICK: Duration = Duration::from_secs(1);
         let (s, r) = kanal::bounded(Self::DEFAULT_CHANNEL_CAPACITY);
-        let spec = {
+        let vpc_data = {
             let guard = vpcmap_r.enter().unwrap();
-            let vpc_data: Vec<_> = guard
-                .0
-                .values()
-                .map(|VpcMapName { disc, name }| {
-                    (
-                        *disc,
-                        name.clone(),
-                        vec![("from".to_string(), name.clone())],
-                    )
-                })
-                .collect();
-            VpcMetricsSpec::new(vpc_data)
+            guard.0.values().map(|VpcMapName { disc, name }| {
+                (
+                    *disc,
+                    name.clone(),
+                    vec![("from".to_string(), name.clone())],
+                )
+            })
         };
-        let stats = spec.build();
+        let metrics = VpcMetricsSpec::new(vpc_data.collect())
+            .into_iter()
+            .map(|(disc, spec)| (disc, spec.build()))
+            .collect();
         let updates = PacketStatsReader(r);
         let mut outstanding: VecDeque<_> = (0..10)
             .scan(
@@ -93,7 +91,7 @@ impl StatsCollector {
             )
             .collect();
         let stats = StatsCollector {
-            metrics: stats,
+            metrics,
             outstanding,
             submitted: SavitzkyGolayFilter::new(TIME_TICK),
             vpcmap_r,
@@ -103,7 +101,7 @@ impl StatsCollector {
         (stats, writer)
     }
 
-    fn refresh(&mut self) -> RegisteredVpcMetrics {
+    fn refresh(&mut self) -> impl Iterator<Item = RegisteredVpcMetrics> {
         let spec = {
             let guard = self.vpcmap_r.enter().unwrap();
             let vpc_data: Vec<_> = guard
@@ -115,7 +113,7 @@ impl StatsCollector {
                 .collect();
             VpcMetricsSpec::new(vpc_data)
         };
-        spec.build()
+        spec.into_iter().map(|(_, spec)| spec.build())
     }
 
     #[tracing::instrument(level = "info", skip(self))]
