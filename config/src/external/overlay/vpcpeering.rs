@@ -148,19 +148,7 @@ impl VpcExpose {
             return Err(ConfigError::ExcludedAllPrefixes(self.clone()));
         }
 
-        // 5. Static NAT: Ensure that, if the list of publicly-exposed addresses is not empty, then
-        //    we have the same number of address on each side
-        //
-        // TODO: We need a way to disable this check (or move it elsewhere) when we add support
-        //       for stateful NAT.
-        if as_range_sizes > 0 && ips_sizes - nots_sizes != as_range_sizes - not_as_sizes {
-            return Err(ConfigError::MismatchedPrefixSizes(
-                ips_sizes - nots_sizes,
-                as_range_sizes - not_as_sizes,
-            ));
-        }
-
-        // 6. Forbid empty ips list if not is non-empty.
+        // 5. Forbid empty ips list if not is non-empty.
         //    Forbid empty as_range list if not_as is non-empty.
         //    These configurations are allowed by the user API, but we don't currently support them,
         //    so we reject them during validation.

@@ -20,7 +20,7 @@ use config::{ExternalConfig, GenId, GwConfig, InternalConfig};
 use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
 use nat::stateless::NatTablesWriter;
-use nat::stateless::setup::build_nat_configuration;
+use nat::stateless::setup::{build_nat_configuration, validate_nat_configuration};
 use pkt_meta::dst_vni_lookup::VniTablesWriter;
 use pkt_meta::dst_vni_lookup::setup::build_dst_vni_lookup_configuration;
 
@@ -362,6 +362,7 @@ fn update_stats_vpc_mappings(config: &GwConfig, vpcmapw: &mut VpcMapWriter<VpcMa
 
 /// Update the Nat tables for stateless NAT
 fn apply_nat_config(overlay: &Overlay, nattablesw: &mut NatTablesWriter) -> ConfigResult {
+    validate_nat_configuration(&overlay.vpc_table)?;
     let nat_table = build_nat_configuration(&overlay.vpc_table)?;
     nattablesw.update_nat_tables(nat_table);
     Ok(())

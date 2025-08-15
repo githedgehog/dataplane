@@ -10,17 +10,12 @@
 pub mod range_builder;
 pub mod tables;
 
-use crate::stateless::NatTableValue;
-use crate::stateless::NatTables;
-use crate::stateless::PerVniTable;
-
-use config::ConfigError;
-use config::external::overlay::vpc::Peering;
-use config::external::overlay::vpc::VpcTable;
+use crate::stateless::{NatTableValue, NatTables, PerVniTable};
+use config::external::overlay::vpc::{Peering, VpcTable};
 use config::external::overlay::vpcpeering::VpcExpose;
 use config::utils::{ConfigUtilError, collapse_prefixes_peering};
-
-use lpm::prefix::Prefix;
+use config::{ConfigError, ConfigResult};
+use lpm::prefix::{Prefix, PrefixSize};
 use net::vxlan::Vni;
 use std::collections::BTreeSet;
 
@@ -114,6 +109,43 @@ pub fn build_nat_configuration(vpc_table: &VpcTable) -> Result<NatTables, Config
     }
     Ok(nat_tables)
 }
+
+pub fn validate_nat_configuration(vpc_table: &VpcTable) -> ConfigResult {
+    for vpc in vpc_table.values() {
+        for peering in &vpc.peerings {
+            for manifest in [&peering.local, &peering.remote] {
+                for expose in &manifest.exposes {
+                    validate_nat_expose(expose)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_nat_expose(expose: &VpcExpose) -> ConfigResult {
+    fn prefixes_size(prefixes: &BTreeSet<Prefix>) -> PrefixSize {
+        prefixes.iter().map(Prefix::size).sum()
+    }
+    let ips_sizes = prefixes_size(&expose.ips);
+    let nots_sizes = prefixes_size(&expose.nots);
+    let as_range_sizes = prefixes_size(&expose.as_range);
+    let not_as_sizes = prefixes_size(&expose.not_as);
+
+    // Ensure that, if the list of publicly-exposed addresses is not empty, then we have the same
+    // number of addresses on each side
+    //
+    // Note: We shouldn't have subtraction overflows because we check that exclusion prefixes size
+    // was smaller than allowed prefixes size when validating the config.
+    if as_range_sizes > 0 && ips_sizes - nots_sizes != as_range_sizes - not_as_sizes {
+        return Err(ConfigError::MismatchedPrefixSizes(
+            ips_sizes - nots_sizes,
+            as_range_sizes - not_as_sizes,
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,5 +209,20 @@ mod tests {
         vni_table
             .add_peering(&peering, dst_vni)
             .expect("Failed to build NAT tables");
+    }
+
+    #[test]
+    fn test_validate_nat_expose() {
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .not("10.0.1.0/24".into())
+            .as_range("2.0.0.0/24".into());
+        assert_eq!(
+            validate_nat_expose(&expose),
+            Err(ConfigError::MismatchedPrefixSizes(
+                PrefixSize::U128(65536 - 256),
+                PrefixSize::U128(256)
+            ))
+        );
     }
 }

@@ -17,7 +17,7 @@ pub mod test {
     use crate::external::overlay::vpcpeering::VpcManifest;
     use crate::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
 
-    use lpm::prefix::{Prefix, PrefixSize};
+    use lpm::prefix::Prefix;
 
     /* Build sample manifests for a peering */
     fn build_manifest_vpc1() -> VpcManifest {
@@ -203,19 +203,6 @@ pub mod test {
         assert_eq!(
             expose.validate(),
             Err(ConfigError::ExcludedAllPrefixes(expose.clone()))
-        );
-
-        // Incorrect: mismatched prefix lists sizes
-        let expose = VpcExpose::empty()
-            .ip("10.0.0.0/16".into())
-            .not("10.0.1.0/24".into())
-            .as_range("2.0.0.0/24".into());
-        assert_eq!(
-            expose.validate(),
-            Err(ConfigError::MismatchedPrefixSizes(
-                PrefixSize::U128(65536 - 256),
-                PrefixSize::U128(256)
-            ))
         );
     }
 
