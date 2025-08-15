@@ -55,9 +55,9 @@ fn setup_routing_pipeline<Buf: PacketBufferMut>(
         .add_stage(dst_vni_lookup)
         .add_stage(stateless_nat)
         .add_stage(iprouter2)
+        .add_stage(stats)
         .add_stage(stage_egress)
         .add_stage(dumper2)
-        .add_stage(stats)
 }
 
 pub(crate) struct InternalSetup<Buf>
