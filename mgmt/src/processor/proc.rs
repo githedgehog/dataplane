@@ -362,7 +362,7 @@ fn update_stats_vpc_mappings(config: &GwConfig, vpcmapw: &mut VpcMapWriter<VpcMa
 
 /// Update the Nat tables for stateless NAT
 fn apply_nat_config(overlay: &Overlay, nattablesw: &mut NatTablesWriter) -> ConfigResult {
-    let nat_table = build_nat_configuration(overlay)?;
+    let nat_table = build_nat_configuration(&overlay.vpc_table)?;
     nattablesw.update_nat_tables(nat_table);
     Ok(())
 }

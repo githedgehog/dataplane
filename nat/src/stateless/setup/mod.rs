@@ -15,7 +15,6 @@ use crate::stateless::NatTables;
 use crate::stateless::PerVniTable;
 
 use config::ConfigError;
-use config::external::overlay::Overlay;
 use config::external::overlay::vpc::Peering;
 use config::external::overlay::vpc::VpcTable;
 use config::external::overlay::vpcpeering::VpcExpose;
@@ -108,12 +107,12 @@ fn get_remote_vni(peering: &Peering, vpc_table: &VpcTable) -> Vni {
 }
 
 /// Main function to build the NAT configuration (`NatTables`) for a given `Overlay` configuration.
-pub fn build_nat_configuration(overlay: &Overlay) -> Result<NatTables, ConfigError> {
+pub fn build_nat_configuration(vpc_table: &VpcTable) -> Result<NatTables, ConfigError> {
     let mut nat_tables = NatTables::new();
-    for vpc in overlay.vpc_table.values() {
+    for vpc in vpc_table.values() {
         let mut table = PerVniTable::new(vpc.vni);
         for peering in &vpc.peerings {
-            let dst_vni = get_remote_vni(peering, &overlay.vpc_table);
+            let dst_vni = get_remote_vni(peering, vpc_table);
             table
                 .add_peering(peering, dst_vni)
                 .map_err(|e| ConfigError::FailureApply(e.to_string()))?;

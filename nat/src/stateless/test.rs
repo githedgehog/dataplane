@@ -453,7 +453,7 @@ mod tests {
         let mut config = build_sample_config();
         config.validate().expect("Failed to validate config");
 
-        let nat_tables = build_nat_configuration(&config.external.overlay).unwrap();
+        let nat_tables = build_nat_configuration(&config.external.overlay.vpc_table).unwrap();
         println!("Nat tables: {:#?}", &nat_tables);
 
         let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
