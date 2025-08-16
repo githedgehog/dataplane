@@ -11,22 +11,29 @@ mod packet_processor;
 mod statistics; // Add statistics module
 
 use crate::args::{CmdArgs, Parser};
+use crate::packet_processor::start_router;
+use crate::statistics::MetricsServer;
 use drivers::dpdk::DriverDpdk;
 use drivers::kernel::DriverKernel;
+use mgmt::processor::launch::start_mgmt;
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
+use routing::RouterParamsBuilder;
+use tracing::metadata::Kind;
 #[allow(unused)]
 use tracing::{debug, error, info, warn};
+use tracing_loki::url::Url;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
-use crate::packet_processor::start_router;
-use crate::statistics::MetricsServer;
-use mgmt::processor::launch::start_mgmt;
-use routing::RouterParamsBuilder;
-
-fn init_logging() {
+fn init_logging() -> Result<tracing_loki::BackgroundTask, tracing_loki::Error> {
+    let (layer, loki) = tracing_loki::builder()
+        .label("science", "verb")?
+        .extra_field("pid", format!("{}", std::process::id()))?
+        .build_url(Url::parse("http://0.0.0.0:3100/logs").unwrap())?;
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_target(true)
@@ -34,7 +41,10 @@ fn init_logging() {
         .with_line_number(true)
         .with_thread_names(true)
         .with_env_filter(EnvFilter::new("debug,tonic=off,h2=off"))
+        .finish()
+        .with(layer)
         .init();
+    Ok(loki)
 }
 
 fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
@@ -56,7 +66,18 @@ fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
 }
 
 fn main() {
-    init_logging();
+    let loki = init_logging().unwrap();
+    let _loki_thread = std::thread::Builder::new()
+        .name("loki".to_string())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .enable_time()
+                .build()
+                .unwrap();
+            rt.block_on(loki);
+        })
+        .unwrap();
     info!("Starting gateway process...");
 
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();

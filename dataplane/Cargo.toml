@@ -37,6 +37,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["default"] }
 vpcmap = { workspace = true }
+tracing-loki = { version = "0.2.6", default-features = false, features = ["rustls", "compat-0-2-1"] }
 
 [dev-dependencies]
 net = { workspace = true, features = ["test_buffer"] }

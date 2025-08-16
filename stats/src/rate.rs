@@ -5,21 +5,75 @@ use crate::{PacketAndByte, TransmitSummary};
 use arrayvec::ArrayVec;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{BuildHasher, Hash};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tracing::error;
 use vpcmap::VpcDiscriminant;
 
 #[cfg(any(test, feature = "bolero"))]
 #[allow(unused_imports)]
 pub use self::contract::*;
 
+/// Abstract trait for computing the time rate of change of a function or series of data points.
 pub trait Derivative {
     type Error;
     type Output;
-    #[allow(unused)]
     fn derivative(&self) -> Result<Self::Output, Self::Error>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// A filter for computing the derivative of a series of data points.
+///
+/// This method uses the so-called 5-point stencil or [Savitzky-Golay filter](https://en.wikipedia.org/wiki/Savitzky%E2%80%93Golay_filter) formula for
+/// computing the derivative.
+///
+/// ## Theory
+///
+/// The definition of the derivative is:
+///
+/// $$
+/// f^{\prime}\\!\left(x\right) = \lim_{\Delta x \rightarrow 0} \frac{f\\!\left(x + \Delta x\right) - f\\!\left(x\right)}{\Delta x}
+/// $$
+///
+/// Thus, a finite difference approximation of the derivative is
+///
+/// $$
+/// f^{\prime}\\!\left(x\right) \approx \frac{f\\!\left(x + h\right) - f\\!\left(x\right)}{h}
+/// $$
+///
+/// Where \\(h\\) is the step size.
+///
+/// Now do a Taylor Series expansion about \\(h\\) to get the following equations (one for plus and
+/// one for minus).
+///
+/// $$
+/// f\\!\left(x \pm h\right) = f\\!\left(x\right) \pm h f^\prime\\!\left(x\right) + \frac{h^2}{2} f^{\prime\prime}\\!\left(x\right) \pm \frac{h^3}{6} f^{\prime\prime\prime}\\!\left(x\right) + O\\!\left(h^4\right)
+/// $$
+///
+/// Now subtract the minus equation from the plus equation to get the following:
+///
+/// $$
+/// f\\!\left(x + h\right) - f\\!\left(x - h\right) = 2 h f^\prime\\!\left(x\right) + \frac{h^3}{3} f^{\prime\prime}\\!\left(x\right) + O\\!\left(h^4\right)
+/// $$
+///
+/// We can get another data point by steping outwards by an addional \\(h\\) and then subtracting as before.
+///
+/// $$
+/// f\\!\left(x + 2h\right) - f\\!\left(x - 2h\right) = 4 h f^\prime\\!\left(x\right) + \frac{8 h^3}{3} f^{\prime\prime}\\!\left(x\right) + O\\!\left(h^4\right)
+/// $$
+///
+/// Combining the above equations we get,
+///
+/// $$
+/// 8 f\\!\left(x + h\right) - 8 f\\!\left(x - h\right) - f\\!\left(x + 2h\right) + f\\!\left(x - 2h\right) = 12 h f^{\prime}\\!\left(x\right) + O\\!\left(h^5\right)
+/// $$
+///
+/// Which can be rewritten as,
+///
+/// $$
+/// \boxed{
+/// f^{\prime}\\!\left(x\right) \approx \frac{8 \left\[f\\!\left(x + h\right) - f\\!\left(x - h\right)\right\] - \left\[f\\!\left(x + 2h\right) - f\\!\left(x - 2h\right)\right\]}{12 h}
+/// }
+/// $$
+#[derive(Debug)]
 pub struct SavitzkyGolayFilter<U> {
     step: Duration,
     idx: usize,
@@ -355,6 +409,58 @@ impl From<&SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSumma
                 })
         });
         out
+    }
+}
+
+pub struct ExponentiallyWeightedMovingAverage<T = f64> {
+    last: Option<(Instant, T)>,
+    tau: f64,
+}
+
+impl<T> ExponentiallyWeightedMovingAverage<T> {
+    pub fn new(tau: Duration) -> Self {
+        ExponentiallyWeightedMovingAverage {
+            last: None,
+            tau: tau.as_nanos() as f64 / 1_000_000_000.0,
+        }
+    }
+
+    pub fn get(&self) -> T
+    where
+        T: Default + Copy,
+    {
+        self.last.map(|(_, v)| v).unwrap_or_default()
+    }
+
+    pub fn update(&mut self, (time, data): (Instant, T)) -> T
+    where
+        T: Copy + std::ops::Mul<f64, Output = T> + std::ops::Add<Output = T>,
+    {
+        let Some((last_time, last_val)) = self.last else {
+            self.last = Some((time, data));
+            return data;
+        };
+        if last_time >= time {
+            if last_time > time {
+                error!(
+                    "exponentially weighted moving average moved backwards in time: invalidating average"
+                );
+                debug_assert!(last_time < time);
+            }
+            if last_time == time {
+                error!(
+                    "exponentially weighted moving average given same timestamp twice: invalidating average"
+                );
+                debug_assert!(last_time != time);
+            }
+            self.last = Some((time, data));
+            return data;
+        }
+        let time_step = (time - last_time).as_nanos() as f64 / 1_000_000_000.0;
+        let alpha = (-time_step / self.tau).exp();
+        let new_data = data * (1. - alpha) + last_val * alpha;
+        self.last = Some((time, new_data));
+        new_data
     }
 }
 

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 //
+
 //! Implements a packet stats sink.
-//! Currently, it only includes `PacketDropStats`, but other type of statistics could
-//! be added like protocol breakdowns.
 
 use net::packet::Packet;
 use pipeline::NetworkFunction;
@@ -50,7 +49,7 @@ pub struct StatsCollector {
     /// Filter for batches which have been submitted to the `submitted` filter.  This filter is
     /// used to calculate rates.
     submitted: SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>>,
-    /// Reader for the VPC map.  This reader is used to determine the VPCs which are currently
+    /// Reader for the VPC map.  This reader is used to determine the VPCs that are currently
     /// known to the system.
     vpcmap_r: VpcMapReader<VpcMapName>,
     /// A MPSC channel receiver for collecting stats from other threads.
@@ -117,7 +116,7 @@ impl StatsCollector {
         spec.into_iter().map(|(disc, spec)| (disc, spec.build()))
     }
 
-    /// Run the stats collector.  This method does not create a thread and will not return if
+    /// Run the collector.  This method does not create a thread and will not return if
     /// awaited.
     #[tracing::instrument(level = "info", skip(self))]
     pub async fn run(mut self) {
@@ -291,7 +290,6 @@ impl StatsCollector {
     }
 }
 
-/// Associate a `T` for packet and bytes.  This is commonly used for counters and rates.
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Ord, PartialOrd, Serialize)]
 pub struct PacketAndByte<T = u64> {
     pub packets: T,
@@ -549,58 +547,6 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
             packet.get_meta_mut().set_keep(false); /* no longer disable enforce */
             packet.enforce()
         })
-    }
-}
-
-pub struct ExponentiallyWeightedMovingAverage<T = f64> {
-    last: Option<(Instant, T)>,
-    tau: f64,
-}
-
-impl<T> ExponentiallyWeightedMovingAverage<T> {
-    pub fn new(tau: Duration) -> Self {
-        ExponentiallyWeightedMovingAverage {
-            last: None,
-            tau: tau.as_nanos() as f64 / 1_000_000_000.0,
-        }
-    }
-
-    pub fn get(&self) -> T
-    where
-        T: Default + Copy,
-    {
-        self.last.map(|(_, v)| v).unwrap_or_default()
-    }
-
-    pub fn update(&mut self, (time, data): (Instant, T)) -> T
-    where
-        T: Copy + std::ops::Mul<f64, Output = T> + std::ops::Add<Output = T>,
-    {
-        let Some((last_time, last_val)) = self.last else {
-            self.last = Some((time, data));
-            return data;
-        };
-        if last_time >= time {
-            if last_time > time {
-                error!(
-                    "exponentially weighted moving average moved backwards in time: invalidating average"
-                );
-                debug_assert!(last_time < time);
-            }
-            if last_time == time {
-                error!(
-                    "exponentially weighted moving average given same timestamp twice: invalidating average"
-                );
-                debug_assert!(last_time != time);
-            }
-            self.last = Some((time, data));
-            return data;
-        }
-        let time_step = (time - last_time).as_nanos() as f64 / 1_000_000_000.0;
-        let alpha = (-time_step / self.tau).exp();
-        let new_data = data * (1. - alpha) + last_val * alpha;
-        self.last = Some((time, new_data));
-        new_data
     }
 }
 
