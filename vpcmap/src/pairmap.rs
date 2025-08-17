@@ -69,20 +69,13 @@ impl<P: VpcPair + Clone> VpcPairMap<P> {
     pub fn new() -> Self {
         Self(HashMap::with_hasher(RandomState::with_seed(0)))
     }
-    #[cfg(test)]
     pub fn add(&mut self, entry: P) {
         let east = entry.get_east_disc();
         let west = entry.get_west_disc();
+        #[cfg(test)]
         if east == west {
             unreachable!("Bug: can't insert pair with identical discriminants");
         }
-        let rcpair = Rc::new(entry);
-        self.0.insert((east, west), rcpair.clone());
-        self.0.insert((west, east), rcpair);
-    }
-    pub fn add_unchecked(&mut self, entry: P) {
-        let east = entry.get_east_disc();
-        let west = entry.get_west_disc();
         let rcpair = Rc::new(entry);
         self.0.insert((east, west), rcpair.clone());
         self.0.insert((west, east), rcpair);
@@ -129,12 +122,11 @@ enum VpcPairMapChange<P: Clone + VpcPair> {
 impl<T: VpcPair + Clone> Absorb<VpcPairMapChange<T>> for VpcPairMap<T> {
     fn absorb_first(&mut self, change: &mut VpcPairMapChange<T>, _: &Self) {
         match change {
-            VpcPairMapChange::Add(entry) => self.add_unchecked(entry.clone()),
+            VpcPairMapChange::Add(entry) => self.add(entry.clone()),
             VpcPairMapChange::Del(east, west) => self.del(*east, *west),
             VpcPairMapChange::SetMap(new_map) => *self = new_map.clone(),
         }
     }
-    fn drop_first(self: Box<Self>) {}
     fn sync_with(&mut self, first: &Self) {
         *self = first.clone();
     }

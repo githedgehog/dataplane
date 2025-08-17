@@ -5,14 +5,20 @@ edition = "2024"
 publish = false
 license = "Apache-2.0"
 
+[features]
+default = []
+bolero = ["dep:bolero", "net/bolero"]
+
 
 [dependencies]
 ahash = { workspace = true }
+bolero = { workspace = true, optional = true }
 left-right = { workspace = true }
 net = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 
 [dev-dependencies]
-tracing-test = { workspace = true, features = [] }
+bolero = { workspace = true }
+net = { workspace = true, features = ["bolero"] }
 

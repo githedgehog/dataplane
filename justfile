@@ -155,7 +155,8 @@ cargo *args:
     if [ -z "${RUSTFLAGS:-}" ]; then
       declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
     fi
-    export RUSTDOCFLAGS="${RUSTFLAGS}"
+
+    export RUSTDOCFLAGS="${RUSTDOCFLAGS:-} ${RUSTFLAGS} --html-in-header $(pwd)/scripts/doc/custom-header.html"
     ./compile-env/bin/cargo "${extra_args[@]}"
 
 # Run the (very minimal) compile environment

@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-mod dpstats;
+// SCRATCH
 
-pub use dpstats::PacketStats;
-pub use dpstats::PacketStatsReader;
-pub use dpstats::PipelineStats;
-pub use dpstats::VpcMapName;
+mod dpstats;
+mod rate;
+mod register;
+mod spec;
+mod vpc;
+
+pub use dpstats::*;
+pub use rate::*;
+pub use register::*;
+pub use spec::*;
+pub use vpc::*;

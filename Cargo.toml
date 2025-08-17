@@ -18,7 +18,8 @@ members = [
 	"pipeline",
 	"pkt-meta",
 	"rekon",
-	"routing", "stats",
+	"routing",
+	"stats",
 	"test-utils",
 	"vpcmap",
 ]
@@ -35,7 +36,7 @@ config = { path = "./config", package = "dataplane-config" }
 dpdk = { path = "./dpdk", package = "dataplane-dpdk" }
 dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys" }
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpdk-sysroot-helper" }
-dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", version = "1.1.2"}
+dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", version = "1.1.2" }
 errno = { path = "./errno", package = "dataplane-errno" }
 gateway_config = { git = "https://github.com/githedgehog/gateway-proto", tag = "v0.12.0", version = "0.12.0" }
 id = { path = "./id", package = "dataplane-id" }
@@ -58,7 +59,7 @@ ahash = { git = "https://github.com/githedgehog/aHash", branch = "pr/daniel-nola
 arc-swap = { version = "1.7.1", default-features = false, features = [] }
 arrayvec = { version = "0.7.6", default-features = false, features = [] }
 async-trait = { version = "0.1.88", default-features = false, features = [] }
-axum = { version = "0.8.4", default-features = false, features = ["http1", "json"] }
+axum = { version = "0.8.4", default-features = false, features = [] }
 axum-server = { version = "0.7.2", default-features = false, features = [] }
 bindgen = { version = "0.72.0", default-features = false, features = [] }
 bitflags = { version = "2.9.1", default-features = false, features = [] }
@@ -75,9 +76,11 @@ dyn-iter = { version = "1.0.1", default-features = false, features = [] }
 etherparse = { version = "0.19.0", default-features = false, features = [] }
 fixin = { git = "https://github.com/githedgehog/fixin", branch = "main" }
 futures = { version = "0.3.31", default-features = false, features = [] }
+hashbrown = { version = "0.15.5", default-features = false, features = [] }
 hyper = { version = "1.6.0", default-features = false, features = ["http1", "server"] }
-hyper-util = { version = "0.1.16", features = ["tokio"]}
+hyper-util = { version = "0.1.16", features = ["tokio"] }
 ipnet = { version = "2.11.0", default-features = false, features = [] }
+kanal = { version = "0.1.1", default-features = false, features = [] }
 left-right = { version = "0.11.5" }
 libc = { version = "1.0.0-alpha.1", default-features = false, features = [] }
 linux-raw-sys = { version = "0.10.0", default-features = false, features = [] }
@@ -96,13 +99,14 @@ parking_lot = { version = "0.12.4", default-features = false, features = [] }
 prefix-trie = { version = "0.8.1", default-features = false, features = [] }
 pretty_assertions = { version = "1.4.1", default-features = false, features = ["std"] }
 procfs = { version = "0.17.0", default-features = false, features = [] }
-rand = { version = "0.9.1", default-features = false, features = ["thread_rng"] }
+rand = { version = "0.9.2", default-features = false, features = ["thread_rng"] }
 roaring = { version = "0.11.0", default-features = false, features = [] }
 rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions", default-features = false, features = [] }
 rustyline = { version = "17.0.0", default-features = false, features = [] }
 serde = { version = "1.0.219", default-features = false, features = [] }
 serde_yml = { version = "0.0.12", default-features = false, features = [] }
 shuttle = { version = "0.8.1", default-features = false, features = [] }
+small-map = { version = "0.1.3", default-features = false, features = [] }
 static_assertions = { version = "1.1.0", default-features = false, features = [] }
 strum = { version = "0.27.2", features = ["derive"] }
 thiserror = { version = "2.0.12", default-features = false, features = [] }

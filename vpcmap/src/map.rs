@@ -19,7 +19,7 @@ use std::clone::Clone;
 use std::collections::HashMap;
 
 #[derive(Clone, Default)]
-pub struct VpcMap<T: Clone>(HashMap<VpcDiscriminant, T, RandomState>);
+pub struct VpcMap<T: Clone>(pub HashMap<VpcDiscriminant, T, RandomState>);
 
 impl<T: Clone> VpcMap<T> {
     #[must_use]
@@ -76,7 +76,7 @@ impl<T: Clone> Absorb<VpcMapChange<T>> for VpcMap<T> {
 }
 
 pub struct VpcMapWriter<T: Clone>(WriteHandle<VpcMap<T>, VpcMapChange<T>>);
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct VpcMapReader<T: Clone>(ReadHandle<VpcMap<T>>);
 
 impl<T: Clone> VpcMapWriter<T> {
