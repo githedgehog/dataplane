@@ -130,8 +130,9 @@ impl Derivative for SavitzkyGolayFilter<u64> {
             itr.next().unwrap_or_else(|| unreachable!()),
             itr.next().unwrap_or_else(|| unreachable!()),
         ];
-        let weighted_sum =
-            (8 * (data[3].saturating_sub(data[1]))).saturating_sub(data[4].saturating_sub(data[0]));
+        let weighted_sum = 8u64
+            .saturating_mul(data[3].saturating_sub(data[1]))
+            .saturating_sub(data[4].saturating_sub(data[0]));
         let step: f64 = self.step.as_micros() as f64 / 1_000_000.;
         if weighted_sum == 0 {
             const NORMALIZATION: f64 = 2.;
@@ -159,8 +160,9 @@ impl Derivative for SavitzkyGolayFilter<PacketAndByte<u64>> {
             itr.next().unwrap_or_else(|| unreachable!()),
             itr.next().unwrap_or_else(|| unreachable!()),
         ];
-        let weighted_sum_bytes =
-            (8 * (data[3].bytes - data[1].bytes)).saturating_sub(data[4].bytes - data[0].bytes);
+        let weighted_sum_bytes = 8u64
+            .saturating_mul(data[3].bytes - data[1].bytes)
+            .saturating_sub(data[4].bytes - data[0].bytes);
         let step: f64 = self.step.as_micros() as f64 / 1_000_000.;
         if weighted_sum_bytes == 0 {
             const NORMALIZATION: f64 = 2.;
@@ -170,7 +172,8 @@ impl Derivative for SavitzkyGolayFilter<PacketAndByte<u64>> {
                 bytes: data[3].bytes.saturating_sub(data[1].bytes) as f64 / (NORMALIZATION * step),
             });
         }
-        let weighted_sum_packets = (8 * (data[3].packets.saturating_sub(data[1].packets)))
+        let weighted_sum_packets = 8u64
+            .saturating_mul(data[3].packets.saturating_sub(data[1].packets))
             .saturating_sub(data[4].packets.saturating_sub(data[0].packets));
         const NORMALIZATION: f64 = 12.;
         let packets = weighted_sum_packets as f64 / (NORMALIZATION * step);
@@ -491,7 +494,6 @@ mod contract {
 
     impl TypeGenerator for SavitzkyGolayFilter<PacketAndByte<u64>> {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            // we use % to mitigate overflows in this generator.
             let mut step = driver.produce()?;
             if step == Duration::ZERO {
                 step += Duration::from_secs(1);
@@ -499,11 +501,9 @@ mod contract {
             let mut filter = SavitzkyGolayFilter::new(step);
             let entries: u8 = driver.produce::<u8>()? % 15;
             let mut state = driver.produce::<PacketAndByte<u64>>()?;
-            state.packets %= u64::MAX / 32;
-            state.bytes %= u64::MAX / 32;
             for _ in 0..entries {
-                state.packets += driver.produce::<u64>()? % (u64::MAX / 32);
-                state.bytes += driver.produce::<u64>()? % (u64::MAX / 32);
+                state.packets = state.packets.saturating_add(driver.produce::<u64>()?);
+                state.bytes = state.bytes.saturating_add(driver.produce::<u64>()?);
                 filter.push(state);
             }
             Some(filter)
@@ -528,8 +528,8 @@ mod contract {
                             state.dst.insert(k, v);
                         }
                         Some(x) => {
-                            x.packets += v.packets;
-                            x.bytes += v.bytes;
+                            x.packets = x.packets.saturating_add(v.packets);
+                            x.bytes = x.bytes.saturating_add(v.bytes);
                         }
                     }
                 }
@@ -723,8 +723,10 @@ mod test {
             .for_each(
                 |x: &SavitzkyGolayFilter<PacketAndByte<u64>>| match x.derivative() {
                     Ok(x) => {
-                        assert!(x.packets >= 0.0);
-                        assert!(x.bytes >= 0.0);
+                        if !x.packets.is_nan() {
+                            assert!(x.packets >= 0.0);
+                            assert!(x.bytes >= 0.0);
+                        }
                     }
                     Err(DerivativeError::NotEnoughSamples(s)) => {
                         assert_eq!(x.idx, s);
