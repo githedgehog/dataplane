@@ -9,7 +9,7 @@ pub mod test {
     use nat::stateless::NatTablesWriter;
     use net::eth::mac::Mac;
     use net::interface::Mtu;
-    use pkt_meta::dst_vni_lookup::VniTablesWriter;
+    use pkt_meta::dst_vpcd_lookup::VpcDiscTablesWriter;
     use std::net::IpAddr;
     use std::net::Ipv4Addr;
     use std::str::FromStr;
@@ -385,7 +385,7 @@ pub mod test {
         let nattablesw = NatTablesWriter::new();
 
         /* crate VniTables for dst_vni_lookup */
-        let vnitablesw = VniTablesWriter::new();
+        let vnitablesw = VpcDiscTablesWriter::new();
 
         /* build config processor to test the processing of a config. The processor embeds the config database
         and has the frrmi. In this test, we don't use any channel to communicate the config. */

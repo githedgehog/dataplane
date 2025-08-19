@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::dst_vni_lookup::{DstVniLookupError, VniTable, VniTables};
+use crate::dst_vpcd_lookup::{DstVpcdLookupError, VpcDiscriminantTable, VpcDiscriminantTables};
 use config::ConfigError;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Peering, VpcTable};
 use config::utils::{ConfigUtilError, collapse_prefixes_peering};
+use net::packet::VpcDiscriminant;
 
 fn process_peering(
-    table: &mut VniTable,
+    table: &mut VpcDiscriminantTable,
     peering: &Peering,
     vpc_table: &VpcTable,
-) -> Result<(), DstVniLookupError> {
+) -> Result<(), DstVpcdLookupError> {
     let new_peering = collapse_prefixes_peering(peering).map_err(|e| match e {
         ConfigUtilError::SplitPrefixError(prefix) => {
-            DstVniLookupError::BuildError(prefix.to_string())
+            DstVpcdLookupError::BuildError(prefix.to_string())
         }
     })?;
 
@@ -27,7 +28,9 @@ fn process_peering(
     new_peering.remote.exposes.iter().for_each(|expose| {
         let remote_public_prefixes = expose.public_ips();
         for prefix in remote_public_prefixes {
-            table.dst_vnis.insert(*prefix, remote_vni);
+            table
+                .dst_vpcds
+                .insert(*prefix, VpcDiscriminant::VNI(remote_vni));
         }
     });
     Ok(())
@@ -38,15 +41,19 @@ fn process_peering(
 /// # Errors
 ///
 /// Returns an error if the configuration cannot be built.
-pub fn build_dst_vni_lookup_configuration(overlay: &Overlay) -> Result<VniTables, ConfigError> {
-    let mut vni_tables = VniTables::new();
+pub fn build_dst_vni_lookup_configuration(
+    overlay: &Overlay,
+) -> Result<VpcDiscriminantTables, ConfigError> {
+    let mut vni_tables = VpcDiscriminantTables::new();
     for vpc in overlay.vpc_table.values() {
-        let mut table = VniTable::new();
+        let mut table = VpcDiscriminantTable::new();
         for peering in &vpc.peerings {
             process_peering(&mut table, peering, &overlay.vpc_table)
                 .map_err(|e| ConfigError::FailureApply(e.to_string()))?;
         }
-        vni_tables.tables_by_vni.insert(vpc.vni, table);
+        vni_tables
+            .tables_by_discriminant
+            .insert(VpcDiscriminant::VNI(vpc.vni), table);
     }
     Ok(vni_tables)
 }
@@ -187,64 +194,68 @@ mod tests {
             result.err()
         );
 
-        let vni_tables = result.unwrap();
-        assert_eq!(vni_tables.tables_by_vni.len(), 2);
+        let vpcd_tables = result.unwrap();
+        assert_eq!(vpcd_tables.tables_by_discriminant.len(), 2);
         println!(
             "vni_tables: {:?}",
-            vni_tables.tables_by_vni.get(&vni1).unwrap().dst_vnis
+            vpcd_tables
+                .tables_by_discriminant
+                .get(&VpcDiscriminant::VNI(vni1))
+                .unwrap()
+                .dst_vpcds
         );
 
         //////////////////////
         // table for vni 1 (uses second expose block, ensures we look at them all)
         assert_eq!(
-            vni_tables
-                .tables_by_vni
-                .get(&vni1)
+            vpcd_tables
+                .tables_by_discriminant
+                .get(&VpcDiscriminant::VNI(vni1))
                 .unwrap()
-                .dst_vnis
+                .dst_vpcds
                 .lookup("5.5.5.1".parse::<IpAddr>().unwrap()),
-            Some((Prefix::from("5.5.0.0/17"), &vni2))
+            Some((Prefix::from("5.5.0.0/17"), &VpcDiscriminant::VNI(vni2)))
         );
 
         assert_eq!(
-            vni_tables
-                .tables_by_vni
-                .get(&vni1)
+            vpcd_tables
+                .tables_by_discriminant
+                .get(&VpcDiscriminant::VNI(vni1))
                 .unwrap()
-                .dst_vnis
+                .dst_vpcds
                 .lookup("5.6.0.1".parse::<IpAddr>().unwrap()),
             None
         );
 
         // Make sure dst VNI lookup for non-NAT stuff works
         assert_eq!(
-            vni_tables
-                .tables_by_vni
-                .get(&vni1)
+            vpcd_tables
+                .tables_by_discriminant
+                .get(&VpcDiscriminant::VNI(vni1))
                 .unwrap()
-                .dst_vnis
+                .dst_vpcds
                 .lookup("8.0.1.1".parse::<IpAddr>().unwrap()),
-            Some((Prefix::from("8.0.1.0/24"), &vni2))
+            Some((Prefix::from("8.0.1.0/24"), &VpcDiscriminant::VNI(vni2)))
         );
 
         //////////////////////
         // table for vni 2 (uses first expose block, ensures we look at them all)
         assert_eq!(
-            vni_tables
-                .tables_by_vni
-                .get(&vni2)
+            vpcd_tables
+                .tables_by_discriminant
+                .get(&VpcDiscriminant::VNI(vni2))
                 .unwrap()
-                .dst_vnis
+                .dst_vpcds
                 .lookup("2.2.0.1".parse::<IpAddr>().unwrap()),
-            Some((Prefix::from("2.2.0.0/24"), &vni1))
+            Some((Prefix::from("2.2.0.0/24"), &VpcDiscriminant::VNI(vni1)))
         );
 
         assert_eq!(
-            vni_tables
-                .tables_by_vni
-                .get(&vni2)
+            vpcd_tables
+                .tables_by_discriminant
+                .get(&VpcDiscriminant::VNI(vni2))
                 .unwrap()
-                .dst_vnis
+                .dst_vpcds
                 .lookup("2.2.2.1".parse::<IpAddr>().unwrap()),
             None
         );

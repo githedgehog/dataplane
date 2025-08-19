@@ -17,7 +17,7 @@ use tokio::{io, spawn};
 use tokio_stream::Stream;
 
 use nat::stateless::NatTablesWriter;
-use pkt_meta::dst_vni_lookup::VniTablesWriter;
+use pkt_meta::dst_vpcd_lookup::VpcDiscTablesWriter;
 use routing::ctl::RouterCtlSender;
 
 use crate::grpc::server::create_config_service;
@@ -171,7 +171,7 @@ pub fn start_mgmt(
     grpc_addr: GrpcAddress,
     router_ctl: RouterCtlSender,
     nattablew: NatTablesWriter,
-    vnitablesw: VniTablesWriter,
+    vpcdtablesw: VpcDiscTablesWriter,
     vpcmapw: VpcMapWriter<VpcMapName>,
 ) -> Result<std::thread::JoinHandle<()>, Error> {
     /* build server address from provided grpc address */
@@ -196,7 +196,7 @@ pub fn start_mgmt(
             /* block thread to run gRPC and configuration processor */
             rt.block_on(async {
                 let (processor, tx) =
-                    ConfigProcessor::new(router_ctl, vpcmapw, nattablew, vnitablesw);
+                    ConfigProcessor::new(router_ctl, vpcmapw, nattablew, vpcdtablesw);
                 spawn(async { processor.run().await });
 
                 // Start the appropriate server based on address type

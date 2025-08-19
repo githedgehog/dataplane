@@ -9,47 +9,46 @@ use lpm::trie::IpPrefixTrie;
 use net::buffer::PacketBufferMut;
 use net::headers::{TryHeaders, TryIp};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
-use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 
 pub mod setup;
 
 #[derive(thiserror::Error, Debug, Clone)]
-pub enum DstVniLookupError {
-    #[error("Error building dst_vni_lookup table: {0}")]
+pub enum DstVpcdLookupError {
+    #[error("Error building dst_vpcd_lookup table: {0}")]
     BuildError(String),
 }
 
 #[derive(Debug, Clone)]
-pub struct VniTables {
-    tables_by_vni: HashMap<Vni, VniTable>,
+pub struct VpcDiscriminantTables {
+    tables_by_discriminant: HashMap<VpcDiscriminant, VpcDiscriminantTable>,
 }
 
-impl VniTables {
+impl VpcDiscriminantTables {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            tables_by_vni: HashMap::new(),
+            tables_by_discriminant: HashMap::new(),
         }
     }
 }
 
-impl Default for VniTables {
+impl Default for VpcDiscriminantTables {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[derive(Debug)]
-enum VniTablesChange {
-    UpdateVniTables(VniTables),
+enum VpcDiscriminantTablesChange {
+    UpdateVpcDiscTables(VpcDiscriminantTables),
 }
 
-impl Absorb<VniTablesChange> for VniTables {
-    fn absorb_first(&mut self, change: &mut VniTablesChange, _: &Self) {
+impl Absorb<VpcDiscriminantTablesChange> for VpcDiscriminantTables {
+    fn absorb_first(&mut self, change: &mut VpcDiscriminantTablesChange, _: &Self) {
         match change {
-            VniTablesChange::UpdateVniTables(vni_tables) => {
-                *self = vni_tables.clone();
+            VpcDiscriminantTablesChange::UpdateVpcDiscTables(vpcd_tables) => {
+                *self = vpcd_tables.clone();
             }
         }
     }
@@ -60,59 +59,64 @@ impl Absorb<VniTablesChange> for VniTables {
 }
 
 #[derive(Debug)]
-pub struct VniTablesReader(ReadHandle<VniTables>);
-impl VniTablesReader {
-    fn enter(&self) -> Option<ReadGuard<'_, VniTables>> {
+pub struct VpcDiscTablesReader(ReadHandle<VpcDiscriminantTables>);
+impl VpcDiscTablesReader {
+    fn enter(&self) -> Option<ReadGuard<'_, VpcDiscriminantTables>> {
         self.0.enter()
     }
 }
 
 #[derive(Debug)]
-pub struct VniTablesWriter(WriteHandle<VniTables, VniTablesChange>);
-impl VniTablesWriter {
+pub struct VpcDiscTablesWriter(WriteHandle<VpcDiscriminantTables, VpcDiscriminantTablesChange>);
+impl VpcDiscTablesWriter {
     #[must_use]
     #[allow(clippy::new_without_default)]
-    pub fn new() -> VniTablesWriter {
-        let (w, _r) = new_from_empty::<VniTables, VniTablesChange>(VniTables::new());
-        VniTablesWriter(w)
+    pub fn new() -> VpcDiscTablesWriter {
+        let (w, _r) = new_from_empty::<VpcDiscriminantTables, VpcDiscriminantTablesChange>(
+            VpcDiscriminantTables::new(),
+        );
+        VpcDiscTablesWriter(w)
     }
     #[must_use]
-    pub fn get_reader(&self) -> VniTablesReader {
-        VniTablesReader(self.0.clone())
+    pub fn get_reader(&self) -> VpcDiscTablesReader {
+        VpcDiscTablesReader(self.0.clone())
     }
-    pub fn update_vni_tables(&mut self, vni_tables: VniTables) {
-        self.0.append(VniTablesChange::UpdateVniTables(vni_tables));
+    pub fn update_vpcd_tables(&mut self, vpcd_tables: VpcDiscriminantTables) {
+        self.0
+            .append(VpcDiscriminantTablesChange::UpdateVpcDiscTables(
+                vpcd_tables,
+            ));
         self.0.publish();
-        debug!("Updated tables for Destination VNI Lookup");
+        debug!("Updated tables for Destination vpcd Lookup");
     }
 }
 
 #[derive(Debug, Clone)]
-struct VniTable {
-    dst_vnis: IpPrefixTrie<Vni>,
+struct VpcDiscriminantTable {
+    dst_vpcds: IpPrefixTrie<VpcDiscriminant>,
 }
 
-impl VniTable {
+impl VpcDiscriminantTable {
     fn new() -> Self {
         Self {
-            dst_vnis: IpPrefixTrie::new(),
+            dst_vpcds: IpPrefixTrie::new(),
         }
     }
 }
 
-impl Default for VniTable {
+impl Default for VpcDiscriminantTable {
     fn default() -> Self {
         Self::new()
     }
 }
 
-pub struct DstVniLookup {
+pub struct DstVpcdLookup {
     name: String,
-    tablesr: VniTablesReader,
+    tablesr: VpcDiscTablesReader,
 }
 
-impl DstVniLookup {
-    pub fn new(name: &str, tablesr: VniTablesReader) -> Self {
+impl DstVpcdLookup {
+    pub fn new(name: &str, tablesr: VpcDiscTablesReader) -> Self {
         Self {
             name: name.to_string(),
             tablesr,
@@ -121,7 +125,7 @@ impl DstVniLookup {
 
     fn process_packet<Buf: PacketBufferMut>(
         &self,
-        tablesr: &ReadGuard<'_, VniTables>,
+        tablesr: &ReadGuard<'_, VpcDiscriminantTables>,
         packet: &mut Packet<Buf>,
     ) {
         if packet.meta.dst_vpcd.is_some() {
@@ -132,19 +136,19 @@ impl DstVniLookup {
             warn!("{}: No Ip headers, so no dst_vpcd to lookup", self.name);
             return;
         };
-        if let Some(VpcDiscriminant::VNI(src_vni)) = packet.meta.src_vpcd {
-            let vni_table = tablesr.tables_by_vni.get(&src_vni);
-            if let Some(vni_table) = vni_table {
-                let dst_vni = vni_table.dst_vnis.lookup(net.dst_addr());
-                if let Some((prefix, dst_vni)) = dst_vni {
+        if let Some(src_vpcd) = packet.meta.src_vpcd {
+            let vpcd_table = tablesr.tables_by_discriminant.get(&src_vpcd);
+            if let Some(vpcd_table) = vpcd_table {
+                let dst_vpcd = vpcd_table.dst_vpcds.lookup(net.dst_addr());
+                if let Some((prefix, dst_vpcd)) = dst_vpcd {
                     debug!(
-                        "{}: Tagging packet with dst_vni {dst_vni} using {prefix} using table for src_vni {src_vni}",
+                        "{}: Tagging packet with dst_vpcd {dst_vpcd} using {prefix} using table for src_vpcd {src_vpcd}",
                         self.name
                     );
-                    packet.meta.dst_vpcd = Some(VpcDiscriminant::VNI(*dst_vni));
+                    packet.meta.dst_vpcd = Some(*dst_vpcd);
                 } else {
                     debug!(
-                        "{}: no dst_vni found for {} in src_vni {src_vni}, marking packet as unroutable",
+                        "{}: no dst_vpcd found for {} in src_vpcd {src_vpcd}, marking packet as unroutable",
                         self.name,
                         net.dst_addr()
                     );
@@ -152,7 +156,7 @@ impl DstVniLookup {
                 }
             } else {
                 debug!(
-                    "{}: no vni table found for src_vni {src_vni} (dst_addr={})",
+                    "{}: no vpcd table found for src_vpcd {src_vpcd} (dst_addr={})",
                     self.name,
                     net.dst_addr()
                 );
@@ -162,7 +166,7 @@ impl DstVniLookup {
     }
 }
 
-impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DstVniLookup {
+impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DstVpcdLookup {
     #[allow(clippy::if_not_else)]
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
@@ -178,7 +182,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DstVniLookup {
                     self.process_packet(tablesr, &mut packet);
                 }
             } else {
-                error!("{}: failed to read vni tables", self.name);
+                error!("{}: failed to read vpcd tables", self.name);
                 packet.done(DoneReason::InternalFailure);
             }
             packet.enforce()
@@ -188,7 +192,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DstVniLookup {
 
 #[cfg(test)]
 mod test {
-    use super::{DstVniLookup, VniTable, VniTables, VniTablesWriter};
+    use super::{DstVpcdLookup, VpcDiscTablesWriter, VpcDiscriminantTable, VpcDiscriminantTables};
     use lpm::prefix::Prefix;
     use net::buffer::TestBuffer;
     use net::headers::{Net, TryHeadersMut, TryIpMut};
@@ -238,54 +242,58 @@ mod test {
         // Setup VNI tables
 
         // VNI 100
-        let mut vni_table_100 = VniTable::new();
-        let dst_vni_100_192_168_1_0_24 = vni101;
-        let dst_vni_100_192_168_0_0_16 = vni102;
-        vni_table_100
-            .dst_vnis
-            .insert(Prefix::from("192.168.1.0/24"), dst_vni_100_192_168_1_0_24);
-        vni_table_100
-            .dst_vnis
-            .insert(Prefix::from("192.168.0.0/16"), dst_vni_100_192_168_0_0_16);
-        vni_table_100.dst_vnis.insert(
+        let mut vpcd_table_100 = VpcDiscriminantTable::new();
+        let dst_vpcd_100_192_168_1_0_24 = VpcDiscriminant::VNI(vni101);
+        let dst_vpcd_100_192_168_0_0_16 = VpcDiscriminant::VNI(vni102);
+        vpcd_table_100
+            .dst_vpcds
+            .insert(Prefix::from("192.168.1.0/24"), dst_vpcd_100_192_168_1_0_24);
+        vpcd_table_100
+            .dst_vpcds
+            .insert(Prefix::from("192.168.0.0/16"), dst_vpcd_100_192_168_0_0_16);
+        vpcd_table_100.dst_vpcds.insert(
             Prefix::from("::192.168.1.0/120"),
-            dst_vni_100_192_168_1_0_24,
+            dst_vpcd_100_192_168_1_0_24,
         );
-        vni_table_100.dst_vnis.insert(
+        vpcd_table_100.dst_vpcds.insert(
             Prefix::from("::192.168.0.0/112"),
-            dst_vni_100_192_168_0_0_16,
+            dst_vpcd_100_192_168_0_0_16,
         );
 
         // VNI 200
-        let mut vni_table_200 = VniTable::new();
-        let dst_vni_200_192_168_2_0_24 = vni201;
-        let dst_vni_200_192_168_0_0_16 = vni202;
-        vni_table_200
-            .dst_vnis
-            .insert(Prefix::from("192.168.2.0/24"), dst_vni_200_192_168_2_0_24);
-        vni_table_200
-            .dst_vnis
-            .insert(Prefix::from("192.168.2.0/16"), dst_vni_200_192_168_0_0_16);
-        vni_table_200.dst_vnis.insert(
+        let mut vpcd_table_200 = VpcDiscriminantTable::new();
+        let dst_vpcd_200_192_168_2_0_24 = VpcDiscriminant::VNI(vni201);
+        let dst_vpcd_200_192_168_0_0_16 = VpcDiscriminant::VNI(vni202);
+        vpcd_table_200
+            .dst_vpcds
+            .insert(Prefix::from("192.168.2.0/24"), dst_vpcd_200_192_168_2_0_24);
+        vpcd_table_200
+            .dst_vpcds
+            .insert(Prefix::from("192.168.2.0/16"), dst_vpcd_200_192_168_0_0_16);
+        vpcd_table_200.dst_vpcds.insert(
             Prefix::from("::192.168.2.0/120"),
-            dst_vni_200_192_168_2_0_24,
+            dst_vpcd_200_192_168_2_0_24,
         );
-        vni_table_200.dst_vnis.insert(
+        vpcd_table_200.dst_vpcds.insert(
             Prefix::from("::192.168.0.0/112"),
-            dst_vni_200_192_168_0_0_16,
+            dst_vpcd_200_192_168_0_0_16,
         );
 
         ////////////////////////////
-        // Setup VNI tables writer
-        let mut vni_tables = VniTables::new();
-        vni_tables.tables_by_vni.insert(vni100, vni_table_100);
-        vni_tables.tables_by_vni.insert(vni200, vni_table_200);
-        let mut vnitablesw = VniTablesWriter::new();
-        vnitablesw.update_vni_tables(vni_tables);
+        // Setup VpcDiscriminant tables writer
+        let mut vpcd_tables = VpcDiscriminantTables::new();
+        vpcd_tables
+            .tables_by_discriminant
+            .insert(VpcDiscriminant::VNI(vni100), vpcd_table_100);
+        vpcd_tables
+            .tables_by_discriminant
+            .insert(VpcDiscriminant::VNI(vni200), vpcd_table_200);
+        let mut vpcd_tables_w = VpcDiscTablesWriter::new();
+        vpcd_tables_w.update_vpcd_tables(vpcd_tables);
 
         ////////////////////////////
-        // Setup DstVniLookup stage
-        let mut dst_vni_lookup = DstVniLookup::new("test", vnitablesw.get_reader());
+        // Setup DstVpcdLookup stage
+        let mut dst_vpcd_lookup = DstVpcdLookup::new("test", vpcd_tables_w.get_reader());
 
         ////////////////////////////
         // Test IPv4 packets
@@ -309,25 +317,16 @@ mod test {
             p_200_dst_addr_10_0_0_1,
             p_none_dst_addr,
         ];
-        let packets = dst_vni_lookup
+        let packets = dst_vpcd_lookup
             .process(packets_in.into_iter())
             .collect::<Vec<_>>();
 
         assert_eq!(packets.len(), 5);
-        assert_eq!(
-            packets[0].meta.dst_vpcd,
-            Some(VpcDiscriminant::VNI(dst_vni_100_192_168_1_0_24))
-        );
+        assert_eq!(packets[0].meta.dst_vpcd, Some(dst_vpcd_100_192_168_1_0_24));
         assert!(!packets[0].is_done());
-        assert_eq!(
-            packets[1].meta.dst_vpcd,
-            Some(VpcDiscriminant::VNI(dst_vni_100_192_168_0_0_16))
-        );
+        assert_eq!(packets[1].meta.dst_vpcd, Some(dst_vpcd_100_192_168_0_0_16));
         assert!(!packets[1].is_done());
-        assert_eq!(
-            packets[2].meta.dst_vpcd,
-            Some(VpcDiscriminant::VNI(dst_vni_200_192_168_2_0_24))
-        );
+        assert_eq!(packets[2].meta.dst_vpcd, Some(dst_vpcd_200_192_168_2_0_24));
         assert!(!packets[2].is_done());
         assert_eq!(packets[3].meta.dst_vpcd, None);
         assert_eq!(packets[3].get_done(), Some(DoneReason::Unroutable));
@@ -352,24 +351,15 @@ mod test {
             p_200_dst_addr_v6_192_168_2_1,
             p_200_dst_addr_v6_10_0_0_1,
         ];
-        let packets = dst_vni_lookup
+        let packets = dst_vpcd_lookup
             .process(packets_in.into_iter())
             .collect::<Vec<_>>();
         assert_eq!(packets.len(), 4);
-        assert_eq!(
-            packets[0].meta.dst_vpcd,
-            Some(VpcDiscriminant::VNI(dst_vni_100_192_168_1_0_24))
-        );
+        assert_eq!(packets[0].meta.dst_vpcd, Some(dst_vpcd_100_192_168_1_0_24));
         assert!(!packets[0].is_done());
-        assert_eq!(
-            packets[1].meta.dst_vpcd,
-            Some(VpcDiscriminant::VNI(dst_vni_100_192_168_0_0_16))
-        );
+        assert_eq!(packets[1].meta.dst_vpcd, Some(dst_vpcd_100_192_168_0_0_16));
         assert!(!packets[1].is_done());
-        assert_eq!(
-            packets[2].meta.dst_vpcd,
-            Some(VpcDiscriminant::VNI(dst_vni_200_192_168_2_0_24))
-        );
+        assert_eq!(packets[2].meta.dst_vpcd, Some(dst_vpcd_200_192_168_2_0_24));
         assert!(!packets[2].is_done());
         assert_eq!(packets[3].meta.dst_vpcd, None);
         assert_eq!(packets[3].get_done(), Some(DoneReason::Unroutable));

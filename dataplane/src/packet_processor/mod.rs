@@ -10,7 +10,7 @@ use super::packet_processor::egress::Egress;
 use super::packet_processor::ingress::Ingress;
 use super::packet_processor::ipforward::IpForwarder;
 
-use pkt_meta::dst_vni_lookup::{DstVniLookup, VniTablesReader, VniTablesWriter};
+use pkt_meta::dst_vpcd_lookup::{DstVpcdLookup, VpcDiscTablesReader, VpcDiscTablesWriter};
 
 use nat::StatelessNat;
 use nat::stateless::{NatTablesReader, NatTablesWriter};
@@ -36,11 +36,11 @@ fn setup_routing_pipeline<Buf: PacketBufferMut>(
     atreader: AtableReader,
     stats_writer: PacketStatsWriter,
     nattablesr: NatTablesReader,
-    vnitablesr: VniTablesReader,
+    vpcdtablesr: VpcDiscTablesReader,
 ) -> DynPipeline<Buf> {
     let stage_ingress = Ingress::new("Ingress", iftr.clone());
     let stage_egress = Egress::new("Egress", iftr, atreader);
-    let dst_vni_lookup = DstVniLookup::new("dst-vni-lookup", vnitablesr);
+    let dst_vpcd_lookup = DstVpcdLookup::new("dst-vni-lookup", vpcdtablesr);
     let iprouter1 = IpForwarder::new("IP-Forward-1", fibtr.clone());
     let iprouter2 = IpForwarder::new("IP-Forward-2", fibtr);
     let stateless_nat = StatelessNat::with_reader("stateless-NAT", nattablesr);
@@ -52,7 +52,7 @@ fn setup_routing_pipeline<Buf: PacketBufferMut>(
         .add_stage(dumper1)
         .add_stage(stage_ingress)
         .add_stage(iprouter1)
-        .add_stage(dst_vni_lookup)
+        .add_stage(dst_vpcd_lookup)
         .add_stage(stateless_nat)
         .add_stage(iprouter2)
         .add_stage(stats)
@@ -68,7 +68,7 @@ where
     pub pipeline: DynPipeline<Buf>,
     pub vpcmapw: VpcMapWriter<VpcMapName>,
     pub nattable: NatTablesWriter,
-    pub vnitablesw: VniTablesWriter,
+    pub vpcdtablesw: VpcDiscTablesWriter,
     pub stats: StatsCollector,
 }
 
@@ -77,7 +77,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     params: RouterParams,
 ) -> Result<InternalSetup<Buf>, RouterError> {
     let nattable = NatTablesWriter::new();
-    let vnitablesw = VniTablesWriter::new();
+    let vpcdtablesw = VpcDiscTablesWriter::new();
     let router = Router::new(params)?;
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
     let (stats, writer) = StatsCollector::new(vpcmapw.get_reader());
@@ -87,14 +87,14 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         router.get_atabler(),
         writer,
         nattable.get_reader(),
-        vnitablesw.get_reader(),
+        vpcdtablesw.get_reader(),
     );
     Ok(InternalSetup {
         router,
         pipeline,
         vpcmapw,
         nattable,
-        vnitablesw,
+        vpcdtablesw,
         stats,
     })
 }
