@@ -70,7 +70,7 @@ impl From<Vni> for VpcDiscriminant {
 impl Display for VpcDiscriminant {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            VpcDiscriminant::VNI(vni) => vni.fmt(f),
+            VpcDiscriminant::VNI(vni) => write!(f, "VNI({vni})"),
         }
     }
 }
