@@ -5,7 +5,9 @@
 
 use crate::vxlan::Vni;
 use bitflags::bitflags;
+use serde::Serialize;
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::net::IpAddr;
 use tracing::error;
 
@@ -37,6 +39,39 @@ impl BridgeDomain {
     #[must_use]
     pub fn with_id(id: u32) -> Self {
         Self(id)
+    }
+}
+
+/// A dataplane-level discriminant to identify (traffic pertaining to) a Vpc
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize)]
+#[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
+pub enum VpcDiscriminant {
+    VNI(Vni),
+}
+
+impl VpcDiscriminant {
+    #[must_use]
+    pub fn from_vni(vni: Vni) -> Self {
+        Self::VNI(vni)
+    }
+}
+impl AsRef<VpcDiscriminant> for VpcDiscriminant {
+    fn as_ref(&self) -> &VpcDiscriminant {
+        self
+    }
+}
+
+impl From<Vni> for VpcDiscriminant {
+    fn from(vni: Vni) -> Self {
+        Self::VNI(vni)
+    }
+}
+
+impl Display for VpcDiscriminant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VpcDiscriminant::VNI(vni) => vni.fmt(f),
+        }
     }
 }
 

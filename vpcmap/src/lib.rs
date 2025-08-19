@@ -10,42 +10,9 @@
 
 #![deny(clippy::all, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use net::vxlan::Vni;
-use serde::Serialize;
-use std::fmt::Display;
 use thiserror::Error;
 
-/// A dataplane-level discriminant to identify (traffic pertaining to) a Vpc
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize)]
-#[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
-pub enum VpcDiscriminant {
-    VNI(Vni),
-}
-
-impl AsRef<VpcDiscriminant> for VpcDiscriminant {
-    fn as_ref(&self) -> &VpcDiscriminant {
-        self
-    }
-}
-
-impl VpcDiscriminant {
-    pub fn from_vni(vni: Vni) -> Self {
-        Self::VNI(vni)
-    }
-}
-
-impl From<Vni> for VpcDiscriminant {
-    fn from(vni: Vni) -> Self {
-        Self::VNI(vni)
-    }
-}
-impl Display for VpcDiscriminant {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            VpcDiscriminant::VNI(vni) => vni.fmt(f),
-        }
-    }
-}
+pub use net::packet::VpcDiscriminant;
 
 /// The errors produced by the tables in this module
 #[derive(Error, Debug, PartialEq)]
