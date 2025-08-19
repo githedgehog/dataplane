@@ -12,7 +12,7 @@ use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ipv4::UnicastIpv4Addr;
 use net::ipv6::UnicastIpv6Addr;
-use net::packet::{DoneReason, Packet};
+use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use setup::tables::{NatTableValue, NatTables, PerVniTable};
@@ -230,14 +230,14 @@ impl StatelessNat {
         let nfi = self.name();
 
         /* get source VNI annotation */
-        let Some(src_vni) = packet.get_meta().src_vni else {
+        let Some(VpcDiscriminant::VNI(src_vni)) = packet.get_meta().src_vpcd else {
             warn!("{nfi}: Packet has no source VNI annotation!. Will drop...");
             packet.done(DoneReason::Unroutable);
             return;
         };
 
         /* get destination VNI annotation */
-        let Some(dst_vni) = packet.get_meta().dst_vni else {
+        let Some(VpcDiscriminant::VNI(dst_vni)) = packet.get_meta().dst_vpcd else {
             warn!("{nfi}: Packet has no destination VNI annotation!. Will drop...");
             packet.done(DoneReason::Unroutable);
             return;

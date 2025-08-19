@@ -118,14 +118,14 @@ bitflags! {
 #[derive(Debug, Default, Clone)]
 pub struct PacketMeta {
     flags: MetaFlags,
-    pub iif: InterfaceId,             /* incoming interface - set early */
-    pub oif: Option<InterfaceId>,     /* outgoing interface - set late */
-    pub nh_addr: Option<IpAddr>,      /* IP address of next-hop */
-    pub vrf: Option<VrfId>,           /* for IP packet, the VRF to use to route it */
-    pub bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
+    pub iif: InterfaceId,                  /* incoming interface - set early */
+    pub oif: Option<InterfaceId>,          /* outgoing interface - set late */
+    pub nh_addr: Option<IpAddr>,           /* IP address of next-hop */
+    pub vrf: Option<VrfId>,                /* for IP packet, the VRF to use to route it */
+    pub bridge: Option<BridgeDomain>,      /* the bridge domain to forward the packet to */
     pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
-    pub src_vni: Option<Vni>, /* the vni value of a received vxlan encap packet, if destined to gateway */
-    pub dst_vni: Option<Vni>, /* the vni value of a vxlan packet re-encapsulated by the gateway */
+    pub src_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a received encapsulated packet */
+    pub dst_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a packet to be (or already) re-encapsulated by the gateway */
 }
 impl PacketMeta {
     #[must_use]

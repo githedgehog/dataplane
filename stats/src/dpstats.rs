@@ -473,8 +473,8 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
             }
         }
         input.filter_map(|mut packet| {
-            let sdisc = packet.get_meta().src_vni.map(VpcDiscriminant::VNI);
-            let ddisc = packet.get_meta().dst_vni.map(VpcDiscriminant::VNI);
+            let sdisc = packet.get_meta().src_vpcd;
+            let ddisc = packet.get_meta().dst_vpcd;
             match (sdisc, ddisc) {
                 (Some(src), Some(dst)) => match self.update.vpc.get_mut(&src) {
                     None => {

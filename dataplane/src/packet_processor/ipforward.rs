@@ -31,6 +31,7 @@ use net::ipv4::Ipv4;
 use net::ipv4::UnicastIpv4Addr;
 use net::ipv6::Ipv6;
 use net::ipv6::UnicastIpv6Addr;
+use net::packet::VpcDiscriminant;
 use net::udp::UdpEncap;
 use net::vxlan::Vxlan;
 use net::vxlan::VxlanEncap;
@@ -53,7 +54,8 @@ impl IpForwarder {
     /// Forward a [`Packet`]
     fn forward_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>, vrfid: VrfId) {
         let nfi = &self.name;
-        let fibid = if let Some(dst_vni) = packet.get_meta().dst_vni {
+        let fibid = if let Some(dst_vpcd) = packet.get_meta().dst_vpcd {
+            let VpcDiscriminant::VNI(dst_vni) = dst_vpcd;
             FibId::from_vni(dst_vni)
         } else {
             FibId::from_vrfid(vrfid)
@@ -146,7 +148,7 @@ impl IpForwarder {
                 /* At this point decapsulation has already happened and `Packet` refers to
                 the innner packet. Annotate the incoming vni and the corresponding vrf to
                 make lookups from */
-                packet.get_meta_mut().src_vni = Some(vni);
+                packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni));
                 packet.get_meta_mut().vrf = Some(next_vrf);
                 packet.get_meta_mut().set_nat(true);
             }
@@ -274,7 +276,7 @@ impl IpForwarder {
                         .unwrap_or_else(|| unreachable!())
                         .vxlan_vni();
 
-                    packet.get_meta_mut().dst_vni = vni;
+                    packet.get_meta_mut().dst_vpcd = vni.map(VpcDiscriminant::VNI);
                 }
                 Err(e) => {
                     error!("{nfi}: Failed to ENCAPSULATE packet with VxLAN: {e}");

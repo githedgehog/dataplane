@@ -20,7 +20,7 @@ use net::headers::{Net, Transport, TryHeadersMut, TryIp, TryIpMut, TryTransport,
 use net::ip::NextHeader;
 use net::ipv4::UnicastIpv4Addr;
 use net::ipv6::UnicastIpv6Addr;
-use net::packet::Packet;
+use net::packet::{Packet, VpcDiscriminant};
 use net::tcp::port::TcpPort;
 use net::udp::port::UdpPort;
 use net::vxlan::Vni;
@@ -429,7 +429,7 @@ impl StatefulNat {
     /// function that we pass to [`StatefulNat::process`] to iterate over packets.
     fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
         // TODO: What if no VNI
-        let Some(vni) = packet.get_meta().src_vni else {
+        let Some(VpcDiscriminant::VNI(vni)) = packet.get_meta().src_vpcd else {
             return;
         };
         let Some(net) = packet.get_headers().try_ip() else {

@@ -8,7 +8,7 @@ use tracing::{debug, error, warn};
 use lpm::trie::IpPrefixTrie;
 use net::buffer::PacketBufferMut;
 use net::headers::{TryHeaders, TryIp};
-use net::packet::{DoneReason, Packet};
+use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 
@@ -124,15 +124,15 @@ impl DstVniLookup {
         tablesr: &ReadGuard<'_, VniTables>,
         packet: &mut Packet<Buf>,
     ) {
-        if packet.meta.dst_vni.is_some() {
-            debug!("{}: Packet already has dst_vni, skipping", self.name);
+        if packet.meta.dst_vpcd.is_some() {
+            debug!("{}: Packet already has dst_vpcd, skipping", self.name);
             return;
         }
         let Some(net) = packet.headers().try_ip() else {
-            warn!("{}: No Ip headers, so no dst_vni to lookup", self.name);
+            warn!("{}: No Ip headers, so no dst_vpcd to lookup", self.name);
             return;
         };
-        if let Some(src_vni) = packet.meta.src_vni {
+        if let Some(VpcDiscriminant::VNI(src_vni)) = packet.meta.src_vpcd {
             let vni_table = tablesr.tables_by_vni.get(&src_vni);
             if let Some(vni_table) = vni_table {
                 let dst_vni = vni_table.dst_vnis.lookup(net.dst_addr());
@@ -141,7 +141,7 @@ impl DstVniLookup {
                         "{}: Tagging packet with dst_vni {dst_vni} using {prefix} using table for src_vni {src_vni}",
                         self.name
                     );
-                    packet.meta.dst_vni = Some(*dst_vni);
+                    packet.meta.dst_vpcd = Some(VpcDiscriminant::VNI(*dst_vni));
                 } else {
                     debug!(
                         "{}: no dst_vni found for {} in src_vni {src_vni}, marking packet as unroutable",
@@ -195,7 +195,7 @@ mod test {
     use net::ipv4::addr::UnicastIpv4Addr;
     use net::ipv6::addr::UnicastIpv6Addr;
     use net::packet::test_utils::{build_test_ipv4_packet, build_test_ipv6_packet};
-    use net::packet::{DoneReason, Packet};
+    use net::packet::{DoneReason, Packet, VpcDiscriminant};
     use net::vxlan::Vni;
     use pipeline::NetworkFunction;
     use std::net::IpAddr;
@@ -218,7 +218,7 @@ mod test {
             IpAddr::V6(_) => build_test_ipv6_packet(100).unwrap(),
         };
         set_dst_addr(&mut ret, dst_addr);
-        ret.meta.src_vni = src_vni;
+        ret.meta.src_vpcd = src_vni.map(VpcDiscriminant::VNI);
         ret
     }
 
@@ -314,15 +314,24 @@ mod test {
             .collect::<Vec<_>>();
 
         assert_eq!(packets.len(), 5);
-        assert_eq!(packets[0].meta.dst_vni, Some(dst_vni_100_192_168_1_0_24));
+        assert_eq!(
+            packets[0].meta.dst_vpcd,
+            Some(VpcDiscriminant::VNI(dst_vni_100_192_168_1_0_24))
+        );
         assert!(!packets[0].is_done());
-        assert_eq!(packets[1].meta.dst_vni, Some(dst_vni_100_192_168_0_0_16));
+        assert_eq!(
+            packets[1].meta.dst_vpcd,
+            Some(VpcDiscriminant::VNI(dst_vni_100_192_168_0_0_16))
+        );
         assert!(!packets[1].is_done());
-        assert_eq!(packets[2].meta.dst_vni, Some(dst_vni_200_192_168_2_0_24));
+        assert_eq!(
+            packets[2].meta.dst_vpcd,
+            Some(VpcDiscriminant::VNI(dst_vni_200_192_168_2_0_24))
+        );
         assert!(!packets[2].is_done());
-        assert_eq!(packets[3].meta.dst_vni, None);
+        assert_eq!(packets[3].meta.dst_vpcd, None);
         assert_eq!(packets[3].get_done(), Some(DoneReason::Unroutable));
-        assert_eq!(packets[4].meta.dst_vni, None);
+        assert_eq!(packets[4].meta.dst_vpcd, None);
         assert_eq!(packets[4].get_done(), Some(DoneReason::Unroutable));
 
         ////////////////////////////
@@ -347,13 +356,22 @@ mod test {
             .process(packets_in.into_iter())
             .collect::<Vec<_>>();
         assert_eq!(packets.len(), 4);
-        assert_eq!(packets[0].meta.dst_vni, Some(dst_vni_100_192_168_1_0_24));
+        assert_eq!(
+            packets[0].meta.dst_vpcd,
+            Some(VpcDiscriminant::VNI(dst_vni_100_192_168_1_0_24))
+        );
         assert!(!packets[0].is_done());
-        assert_eq!(packets[1].meta.dst_vni, Some(dst_vni_100_192_168_0_0_16));
+        assert_eq!(
+            packets[1].meta.dst_vpcd,
+            Some(VpcDiscriminant::VNI(dst_vni_100_192_168_0_0_16))
+        );
         assert!(!packets[1].is_done());
-        assert_eq!(packets[2].meta.dst_vni, Some(dst_vni_200_192_168_2_0_24));
+        assert_eq!(
+            packets[2].meta.dst_vpcd,
+            Some(VpcDiscriminant::VNI(dst_vni_200_192_168_2_0_24))
+        );
         assert!(!packets[2].is_done());
-        assert_eq!(packets[3].meta.dst_vni, None);
+        assert_eq!(packets[3].meta.dst_vpcd, None);
         assert_eq!(packets[3].get_done(), Some(DoneReason::Unroutable));
     }
 }

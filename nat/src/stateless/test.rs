@@ -27,8 +27,8 @@ mod tests {
     use net::buffer::PacketBufferMut;
     use net::eth::mac::Mac;
     use net::headers::{TryHeadersMut, TryIpv4, TryIpv4Mut};
-    use net::packet::Packet;
     use net::packet::test_utils::build_test_ipv4_packet;
+    use net::packet::{Packet, VpcDiscriminant};
     use net::vxlan::Vni;
     use pipeline::NetworkFunction;
     use std::net::Ipv4Addr;
@@ -216,10 +216,10 @@ mod tests {
 
         let mut packet = build_test_ipv4_packet(u8::MAX).unwrap();
         let mut packet_reply = packet.clone();
-        packet.get_meta_mut().src_vni = Some(vni(100));
-        packet.get_meta_mut().dst_vni = Some(vni(200));
-        packet_reply.get_meta_mut().src_vni = Some(vni(200));
-        packet_reply.get_meta_mut().dst_vni = Some(vni(100));
+        packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(100)));
+        packet.get_meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(vni(200)));
+        packet_reply.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(200)));
+        packet_reply.get_meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(vni(100)));
         packet.get_meta_mut().set_nat(true);
         packet_reply.get_meta_mut().set_nat(true);
 
@@ -434,8 +434,8 @@ mod tests {
     ) -> (Ipv4Addr, Ipv4Addr) {
         let mut packet = build_test_ipv4_packet(u8::MAX).unwrap();
         packet.get_meta_mut().set_nat(true);
-        packet.get_meta_mut().src_vni = Some(src_vni);
-        packet.get_meta_mut().dst_vni = Some(dst_vni);
+        packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+        packet.get_meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
         set_addresses_v4(&mut packet, orig_src_ip, orig_dst_ip);
 
         let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();

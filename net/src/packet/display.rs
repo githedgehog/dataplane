@@ -234,8 +234,8 @@ impl Display for PacketMeta {
         fmt_opt(f, " oif", self.oif, true)?;
 
         writeln!(f, "    bcast: {}", self.is_l2bcast())?;
-        fmt_opt(f, "    src-vni", self.src_vni, false)?;
-        fmt_opt(f, "    dst-vni", self.dst_vni, true)?;
+        fmt_opt(f, "    src-vpcd", self.src_vpcd, false)?;
+        fmt_opt(f, "    dst-vpcd", self.dst_vpcd, true)?;
         writeln!(f, "    do-nat: {}", self.nat())?;
         fmt_opt(f, "    vrf", self.vrf, false)?;
         fmt_opt(f, "    bd", self.bridge, true)?;
