@@ -4,6 +4,7 @@
 
 //! Implements a packet stats sink.
 
+use crate::rate::Derivative;
 use net::packet::Packet;
 use pipeline::NetworkFunction;
 
@@ -257,7 +258,34 @@ impl StatsCollector {
         });
         self.submitted.push(concluded.vpc);
 
-        // TODO: add in rate calculations
+        let filters_by_src: hashbrown::HashMap<
+            VpcDiscriminant,
+            TransmitSummary<SavitzkyGolayFilter<u64>>,
+        > = (&self.submitted).into();
+        if let Ok(rates_by_src) =
+            <hashbrown::HashMap<_, TransmitSummary<SavitzkyGolayFilter<u64>>>>::derivative(
+                &filters_by_src,
+            )
+        {
+            rates_by_src.iter().for_each(|(&src, tx_summary)| {
+                let metrics = match self.metrics.get(&src) {
+                    None => {
+                        warn!("lost metrics for src {src}");
+                        return;
+                    }
+                    Some(metrics) => metrics,
+                };
+                tx_summary.dst.iter().for_each(|(dst, rate)| {
+                    if let Some(action) = metrics.peering.get(dst) {
+                        action.tx.packet.rate.metric.set(rate.packets);
+                        action.tx.byte.rate.metric.set(rate.bytes);
+                    } else {
+                        warn!("lost metrics for src {src} to dst {dst}");
+                    }
+                });
+            });
+        }
+
         // TODO: add in drop metrics
     }
 }
