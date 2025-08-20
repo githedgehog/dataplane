@@ -9,6 +9,7 @@ license = "Apache-2.0"
 testing = []
 
 [dependencies]
+ahash = { workspace = true }
 lpm = { workspace = true }
 config = { workspace = true }
 dashmap = { workspace = true, features = ["raw-api"] }
