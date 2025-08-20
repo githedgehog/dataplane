@@ -7,13 +7,13 @@ mod checksum;
 pub mod port;
 
 pub use checksum::*;
+pub use port::*;
 
 use crate::ipv4::Ipv4;
 use crate::ipv6::Ipv6;
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
 };
-use crate::udp::port::UdpPort;
 use crate::vxlan::{Vni, Vxlan};
 use etherparse::UdpHeader;
 use std::num::NonZero;
