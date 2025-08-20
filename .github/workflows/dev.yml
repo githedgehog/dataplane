@@ -284,7 +284,7 @@ jobs:
     with:
       skip: ${{ matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+hlab') || !matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+vlab') }}
       fabricatorref: master
-      prebuild: "just bump dataplane HEAD.x86_64-unknown-linux-gnu.debug.${{ github.event.pull_request.merge_commit_sha }}"
+      prebuild: "just bump dataplane HEAD.x86_64-unknown-linux-gnu.debug.${{ github.sha }}"
       fabricmode: ${{ matrix.fabricmode }}
       gateway: ${{ matrix.gateway }}
       includeonie: ${{ matrix.includeonie }}
