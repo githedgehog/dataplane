@@ -177,7 +177,7 @@ impl Derivative for SavitzkyGolayFilter<PacketAndByte<u64>> {
             .saturating_sub(data[4].packets.saturating_sub(data[0].packets));
         const NORMALIZATION: f64 = 12.;
         let packets = weighted_sum_packets as f64 / (NORMALIZATION * step);
-        let bytes = weighted_sum_packets as f64 / (NORMALIZATION * step);
+        let bytes = weighted_sum_bytes as f64 / (NORMALIZATION * step);
         Ok(PacketAndByte { packets, bytes })
     }
 }
