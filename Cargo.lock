@@ -1051,6 +1051,7 @@ dependencies = [
  "left-right",
  "priority-queue",
  "thiserror 2.0.16",
+ "thread_local",
  "tracing",
  "tracing-test",
 ]
