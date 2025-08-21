@@ -543,7 +543,7 @@ pub struct EthHeader {
 impl From<EthHeader> for dpdk_sys::rte_flow_item_eth {
     fn from(header: EthHeader) -> Self {
         let mut eth = dpdk_sys::rte_flow_item_eth::default();
-        eth.annon1.hdr = dpdk_sys::rte_ether_hdr {
+        eth.anon1.hdr = dpdk_sys::rte_ether_hdr {
             dst_addr: dpdk_sys::rte_ether_addr {
                 addr_bytes: header.dst.0,
             },
@@ -1011,11 +1011,11 @@ impl SetFlowField {
                     operation: FieldModificationOperation::Set as u32,
                     src: dpdk_sys::rte_flow_field_data {
                         field: FlowFieldId::Value as u32,
-                        annon1: dpdk_sys::rte_flow_field_data__bindgen_ty_1 { value },
+                        anon1: dpdk_sys::rte_flow_field_data__bindgen_ty_1 { value },
                     },
                     dst: dpdk_sys::rte_flow_field_data {
                         field: FlowFieldId::MacDst as u32,
-                        annon1: dpdk_sys::rte_flow_field_data__bindgen_ty_1::default(),
+                        anon1: dpdk_sys::rte_flow_field_data__bindgen_ty_1::default(),
                     },
                     width: size_of::<MacAddr>() as u32,
                 }

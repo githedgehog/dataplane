@@ -16,3 +16,6 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 net = { workspace = true, features = ["test_buffer"] }
+
+[build-dependencies]
+dpdk-sysroot-helper = { workspace = true }

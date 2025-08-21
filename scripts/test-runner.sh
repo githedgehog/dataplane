@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 # SPDX-License-Identifier: Apache-2.0
 # Copyright Open Network Fabric Authors
@@ -28,7 +28,6 @@
 # to document these requirements carefully).  I'm lookin' at you, future me :)
 
 set -euo pipefail
-
 
 get_docker_sock() {
   declare -r DOCKER_HOST="${DOCKER_HOST:-unix:///var/run/docker.sock}"
@@ -60,7 +59,7 @@ declare -r project_dir
 # Thus, we need to look it up on the "normal" PATH.  We don't have the official "normal" PATH available, so we check
 # the usual suspects to find sudo.
 declare SUDO
-SUDO="$(PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:${PATH}" which sudo)"
+SUDO="$(PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:/run/wrappers/bin:${PATH}" which sudo)"
 declare -r SUDO
 
 # Start with a basic check: we have no reason to assign caps to files we don't own or can't execute.
@@ -119,7 +118,7 @@ declare -ri SHOULD_WRAP
 # This is the list of capabilities to add to the test binary.
 # Note: do not add =e or =i to this setcap command!  We don't want privileged execution by default.
 # Note: if you adjust this list, then you also need to adjust the symmetric list given to the docker run command.
-declare -r CAPS='cap_net_raw,cap_sys_admin,cap_net_admin,cap_sys_rawio=p'
+declare -r CAPS='cap_net_raw,cap_sys_admin,cap_net_admin,cap_sys_rawio,cap_net_bind_service=p'
 
 if [ "${TEST_TYPE:-""}" = "FUZZ" ]; then
   # In this branch we are running full fuzz tests.
@@ -137,9 +136,10 @@ if [ "${TEST_TYPE:-""}" = "FUZZ" ]; then
   # contains the correct dynamic library.
   patchelf --replace-needed libstdc++.so.6 "$(readlink -e /lib/libstdc++.so.6)" "${test_exe}"
   # note: we don't need ${SUDO} here (i.e., we can resolve sudo via the $PATH) because this branch only ever happens
-  # when this script is being executed in the compile-env; the compile-env is the only place environment able to execute
+  # when this script is being executed in the compile-env; the compile-env is the only environment able to execute
   # the full fuzz tests.
-  sudo setcap "${CAPS}" "${test_exe}"
+  # sudo setcap "${CAPS}" "${test_exe}"
+  exit 2
   exec "${@}"
 elif [ "${SHOULD_WRAP}" -eq 0 ]; then
   # In this branch
@@ -155,13 +155,13 @@ fi
 # Instead, we are trying to run semi-privileged tests in a libc-container.
 # We still need to add capabilities to the test binary, but in this case we need to make sure we are using the
 # host system's sudo binary.
-"${SUDO}" setcap "${CAPS}" "${test_exe}"
+# "${SUDO}" setcap "${CAPS}" "${test_exe}"
+exit 1
 
 # Now we can run the docker container
 #
 # Notes about this command:
 # * Note that we mount everything we can as read-only
-# * --ipc=host and --pid=host are to allow debuggers to connect to the tests more easily.
 # * We mount $1 in case it is an IDE's helper runner.
 #   If not, then no harm has been done as $1 will be mounted by the project_dir mount anyway.
 # * We drop all caps and then add back just the caps we know we need.
@@ -172,11 +172,11 @@ fi
 "${SUDO}" --preserve-env docker run \
   --rm \
   --interactive \
-  --mount "type=bind,source=$(readlink -e "${1}"),target=$(readlink -e "${1}"),readonly=true,bind-propagation=rprivate" \
-  --mount "type=bind,source=${project_dir},target=${project_dir},readonly=true,bind-propagation=rprivate" \
-  --mount "type=bind,source=${project_dir}/target,target=${project_dir}/target,readonly=false,bind-propagation=rprivate" \
-  --mount "type=bind,source=$(get_docker_sock),target=$(get_docker_sock),readonly=false,bind-propagation=rprivate" \
-  --mount "type=bind,source=/dev/net/tun,target=/dev/net/tun,readonly=false,bind-propagation=rprivate" \
+  --mount "type=bind,source=$(readlink -e "${1}"),target=$(readlink -e "${1}"),readonly=true,bind-propagation=rprivate,bind-recursive=disabled" \
+  --mount "type=bind,source=${project_dir},target=${project_dir},readonly=true,bind-propagation=rprivate,bind-recursive=disabled" \
+  --mount "type=bind,source=${project_dir}/target,target=${project_dir}/target,readonly=false,bind-propagation=rprivate,bind-recursive=disabled" \
+  --mount "type=bind,source=$(get_docker_sock),target=$(get_docker_sock),readonly=false,bind-propagation=rprivate,bind-recursive=disabled" \
+  --mount "type=bind,source=/dev/net/tun,target=/dev/net/tun,readonly=false,bind-propagation=rprivate,bind-recursive=disabled" \
   --tmpfs "/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
   --tmpfs "/var/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
   --tmpfs "/tmp:nodev,noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
@@ -188,8 +188,6 @@ fi
   --workdir="${project_dir}" \
   --env DOCKER_HOST="unix://$(get_docker_sock)" \
   --net=none \
-  --ipc=host \
-  --pid=host \
   --cap-drop ALL \
   --cap-add NET_ADMIN \
   --cap-add NET_RAW \

@@ -20,3 +20,6 @@ bolero = { workspace = true, features = ["std"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[build-dependencies]
+dpdk-sysroot-helper = { workspace = true }

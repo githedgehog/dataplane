@@ -11,6 +11,7 @@ use tracing::debug;
 
 use crate::stateless::setup::tables::{NatTableValue, NatTables};
 
+#[derive(Debug)]
 enum NatTablesChange {
     UpdateNatTables(NatTables),
 }
@@ -29,10 +30,14 @@ impl Absorb<NatTablesChange> for NatTables {
     }
 }
 
+#[derive(Debug)]
 pub struct NatTablesWriter(WriteHandle<NatTables, NatTablesChange>);
+
 #[derive(Debug)]
 pub struct NatTablesReader(ReadHandle<NatTables>);
+
 impl NatTablesReader {
+    #[tracing::instrument(level = "debug")]
     pub fn enter(&self) -> Option<ReadGuard<'_, NatTables>> {
         self.0.enter()
     }
@@ -41,14 +46,17 @@ impl NatTablesReader {
 impl NatTablesWriter {
     #[must_use]
     #[allow(clippy::new_without_default)]
+    #[tracing::instrument(level = "info")]
     pub fn new() -> NatTablesWriter {
         let (w, r) = new_from_empty::<NatTables, NatTablesChange>(NatTables::new());
         NatTablesWriter(w)
     }
     #[must_use]
+    #[tracing::instrument(level = "debug")]
     pub fn get_reader(&self) -> NatTablesReader {
         NatTablesReader(self.0.clone())
     }
+    #[tracing::instrument(level = "debug")]
     pub fn update_nat_tables(&mut self, nat_tables: NatTables) {
         self.0.append(NatTablesChange::UpdateNatTables(nat_tables));
         self.0.publish();

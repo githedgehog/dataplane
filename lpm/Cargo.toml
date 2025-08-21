@@ -21,3 +21,5 @@ tracing = { workspace = true }
 bolero = { workspace = true, default-features = false }
 serde_yml = { workspace = true }
 
+[build-dependencies]
+dpdk-sysroot-helper = { workspace = true }

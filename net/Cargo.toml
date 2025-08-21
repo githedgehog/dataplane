@@ -32,5 +32,8 @@ bolero = { workspace = true, features = ["alloc", "arbitrary", "std"] }
 etherparse = { workspace = true, default-features = false, features = ["std"] }
 ordermap = { workspace = true }
 
+[build-dependencies]
+dpdk-sysroot-helper = { workspace = true }
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

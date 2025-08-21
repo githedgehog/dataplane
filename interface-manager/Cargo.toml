@@ -36,3 +36,5 @@ net = { workspace = true, features = ["bolero"] }
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
 
+[build-dependencies]
+dpdk-sysroot-helper = { workspace = true }

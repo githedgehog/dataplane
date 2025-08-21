@@ -38,3 +38,5 @@ lpm = { workspace = true, features = ["testing"] }
 serde_yml = { workspace = true }
 tracing-test = { workspace = true, features = [] }
 
+[build-dependencies]
+dpdk-sysroot-helper = { workspace = true }

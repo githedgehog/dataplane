@@ -11,6 +11,7 @@ use tracing::debug;
 
 /// Metadata associated to a gateway configuration
 #[derive(Clone, Debug)]
+#[must_use]
 pub struct GwConfigMeta {
     pub create_t: SystemTime,        /* time when config was built (received) */
     pub apply_t: Option<SystemTime>, /* last time when config was applied successfully */
@@ -18,11 +19,10 @@ pub struct GwConfigMeta {
     pub replacement: Option<GenId>,  /* Id of config that replaced this one */
     pub is_applied: bool,            /* True if the config is currently applied */
 }
+
 impl GwConfigMeta {
-    ////////////////////////////////////////////////////////////////////////////////
     /// Build config metadata. This is automatically built when creating a `GwConfig
-    ////////////////////////////////////////////////////////////////////////////////
-    #[must_use]
+    #[tracing::instrument(level = "info")]
     fn new() -> Self {
         Self {
             create_t: SystemTime::now(),
@@ -32,11 +32,11 @@ impl GwConfigMeta {
             is_applied: false,
         }
     }
-    ////////////////////////////////////////////////////////////////////////////////
+
     /// Set the state of this config. The management processor will always be responsible
     /// for setting this, regardless of how it stores the configurations. The metadata
     /// is included here in case other components needed some of its data.
-    ////////////////////////////////////////////////////////////////////////////////
+    #[tracing::instrument(level = "info")]
     pub fn set_state(&mut self, genid: GenId, value: bool, replacement: Option<GenId>) {
         if value {
             self.apply_t = Some(SystemTime::now());
@@ -53,6 +53,7 @@ impl GwConfigMeta {
 }
 
 #[derive(Clone, Debug)]
+#[must_use]
 pub struct GwConfig {
     pub meta: GwConfigMeta,               /* config metadata */
     pub external: ExternalConfig,         /* external config: received */
@@ -60,10 +61,8 @@ pub struct GwConfig {
 }
 
 impl GwConfig {
-    //////////////////////////////////////////////////////////////////
     /// Create a [`GwConfig`] object with a given [`ExternalConfig`].
-    //////////////////////////////////////////////////////////////////
-    #[must_use]
+    #[tracing::instrument(level = "info")]
     pub fn new(external: ExternalConfig) -> Self {
         Self {
             meta: GwConfigMeta::new(),
@@ -72,33 +71,28 @@ impl GwConfig {
         }
     }
 
-    //////////////////////////////////////////////////////////////////
     /// Create a blank [`GwConfig`] with an empty [`ExternalConfig`].
     /// Such a config has generation id 0
-    //////////////////////////////////////////////////////////////////
-    #[must_use]
+    #[tracing::instrument(level = "info")]
     pub fn blank() -> Self {
         Self::new(ExternalConfig::new())
     }
 
-    //////////////////////////////////////////////////////////////////
     /// Set an internal config object, once built.
-    //////////////////////////////////////////////////////////////////
+    #[tracing::instrument(level = "info")]
     pub fn set_internal_config(&mut self, internal: InternalConfig) {
         self.internal = Some(internal);
     }
 
-    //////////////////////////////////////////////////////////////////
     /// Return the [`GenId`] of a [`GwConfig`] object.
-    //////////////////////////////////////////////////////////////////
     #[must_use]
+    #[tracing::instrument(level = "trace")]
     pub fn genid(&self) -> GenId {
         self.external.genid
     }
 
-    //////////////////////////////////////////////////////////////////
     /// Validate a [`GwConfig`]. We only validate the external.
-    //////////////////////////////////////////////////////////////////
+    #[tracing::instrument(level = "info")]
     pub fn validate(&mut self) -> ConfigResult {
         debug!("Validating external config with genid {} ..", self.genid());
         self.external.validate()

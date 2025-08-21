@@ -35,7 +35,7 @@ serde_yml = { workspace = true }
 stats = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["default"] }
+tracing-subscriber = { workspace = true, features = ["default", "json", "serde_json"] }
 vpcmap = { workspace = true }
 
 [dev-dependencies]
@@ -44,3 +44,6 @@ routing = { workspace = true, features = ["testing"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(none)'] }
+
+[build-dependencies]
+dpdk-sysroot-helper = { workspace = true }

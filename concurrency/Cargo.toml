@@ -14,3 +14,6 @@ silence_clippy = ["concurrency-macros/silence_clippy"] # Do not manually enable 
 loom = { workspace = true, optional = true, features = [] }
 shuttle = { workspace = true, optional = true, features = [] }
 concurrency-macros = { workspace = true, features = [] }
+
+[build-dependencies]
+dpdk-sysroot-helper = { workspace = true }

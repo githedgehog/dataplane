@@ -503,17 +503,17 @@ impl Mbuf {
     #[tracing::instrument(level = "trace")]
     pub fn raw_data(&self) -> &[u8] {
         debug_assert!(
-            unsafe { self.raw.as_ref().annon1.annon1.nb_segs } == 1,
+            unsafe { self.raw.as_ref().anon1.anon1.nb_segs } == 1,
             "multi seg packets not properly supported yet"
         );
         let pkt_data_start = unsafe {
             (self.raw.as_ref().buf_addr as *const u8)
-                .offset(self.raw.as_ref().annon1.annon1.data_off as isize)
+                .offset(self.raw.as_ref().anon1.anon1.data_off as isize)
         };
         unsafe {
             core::slice::from_raw_parts(
                 pkt_data_start,
-                self.raw.as_ref().annon2.annon1.data_len as usize,
+                self.raw.as_ref().anon2.anon1.data_len as usize,
             )
         }
     }
@@ -524,19 +524,16 @@ impl Mbuf {
     #[tracing::instrument(level = "trace")]
     pub fn raw_data_mut(&mut self) -> &mut [u8] {
         unsafe {
-            if self.raw.as_ref().annon1.annon1.nb_segs > 1 {
+            if self.raw.as_ref().anon1.anon1.nb_segs > 1 {
                 error!("multi seg packets not supported yet");
             }
             let data_start = self
                 .raw
                 .as_mut()
                 .buf_addr
-                .offset(self.raw.as_ref().annon1.annon1.data_off as isize)
+                .offset(self.raw.as_ref().anon1.anon1.data_off as isize)
                 .cast::<u8>();
-            from_raw_parts_mut(
-                data_start,
-                self.raw.as_ref().annon2.annon1.data_len as usize,
-            )
+            from_raw_parts_mut(data_start, self.raw.as_ref().anon2.anon1.data_len as usize)
         }
     }
 

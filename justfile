@@ -18,30 +18,34 @@ dpdk_sys_commit := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT
 _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 
 # Set to FUZZ to run the full fuzzer in the fuzz recipe
+
+[private]
 _test_type := "DEFAULT"
 
 # comma delimited list of sanitizers to use with bolero
+
 sanitizers := "address,leak"
 
 # the tripple to compile for
+
 target := "x86_64-unknown-linux-gnu"
 
 # cargo build profile to use
+
 profile := "debug"
 [private]
 _container_repo := "ghcr.io/githedgehog/dataplane"
 
 # Docker images
+
 [private]
 _image_profile := if profile == "debug" { "debug" } else { "release" }
 [private]
 _dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
 [private]
 _dpdk_sys_container_tag := dpdk_sys_commit
-
 [private]
 _libc_container := _dpdk_sys_container_repo + "/libc-env:" + _dpdk_sys_container_tag + "." + _image_profile
-
 [private]
 _debug_env_container := _dpdk_sys_container_repo + "/debug-env:" + _dpdk_sys_container_tag + "." + _image_profile
 [private]
@@ -50,6 +54,7 @@ _compile_env_image_name := _dpdk_sys_container_repo + "/compile-env"
 _compile_env_container := _compile_env_image_name + ":" + _dpdk_sys_container_tag + "." + _image_profile
 
 # Base container for the dataplane build
+
 [private]
 _dataplane_base_container := if _image_profile == "release" { _libc_container } else { _debug_env_container }
 
@@ -129,7 +134,7 @@ cargo *args:
     # unfortunately passing RUSTFLAGS based on profile (rather than target or cfg)
     # is currently unstable (nightly builds only).
     {{ _just_debuggable_ }}
-    export PATH="$(pwd)/compile-env/bin:${PATH}"
+    export PATH="$(pwd)/compile-env/bin"
     declare -a args=({{ args }})
     declare -a extra_args=()
     for arg in "${args[@]}"; do
@@ -301,7 +306,7 @@ remove-compile-env:
 
 # refresh the compile-env (clear and restore)
 [script]
-refresh-compile-env: pull remove-compile-env create-compile-env
+refresh-compile-env: remove-compile-env create-compile-env
 
 # clean up (delete) old compile-env images from system
 [script]
@@ -343,36 +348,14 @@ fake-nix refake="":
     sudo ln -rs ./compile-env/nix /nix
 
 # Run a "sterile" command
-sterile *args: \
-  (cargo "clean") \
-  (compile-env "just" \
-    ("debug_justfile=" + debug_justfile) \
-    ("target=" + target) \
-    ("profile=" + profile) \
-    ("_test_type=" + _test_type) \
-    ("sanitizers=" + sanitizers) \
-    args \
-  )
+sterile *args: (cargo "clean") (compile-env "just" ("debug_justfile=" + debug_justfile) ("target=" + target) ("profile=" + profile) ("_test_type=" + _test_type) ("sanitizers=" + sanitizers) args)
 
 # Run the full fuzzer / property-checker on a bolero test. Args are forwarded to bolero
 [script]
 list-fuzz-tests *args: (cargo "bolero" "list" ("--sanitizer=" + sanitizers) "--build-std" "--profile=fuzz" args)
 
 # Run the full fuzzer / property-checker on a bolero test. Args are forwarded to bolero
-fuzz test timeout="-T 60sec" *args="--engine=libfuzzer --engine-args=-max_len=65536": ( \
-  compile-env \
-    "just" \
-    "_test_type=FUZZ" \
-    "cargo" \
-    "bolero" \
-    "test" \
-    test \
-    "--build-std" \
-    "--profile=fuzz" \
-    ("--sanitizer=" + sanitizers) \
-    timeout \
-    args \
-  )
+fuzz test timeout="-T 60sec" *args="--engine=libfuzzer --engine-args=-max_len=65536": (compile-env "just" "_test_type=FUZZ" "cargo" "bolero" "test" test "--build-std" "--profile=fuzz" ("--sanitizer=" + sanitizers) timeout args)
 
 # Run the full fuzzer / property-checker on a bolero test with the AFL fuzzer
 [script]
@@ -500,9 +483,4 @@ build-sweep start="main":
 
 # Run tests with code coverage.  Args will be forwarded to nextest
 [script]
-coverage *args: \
-  (cargo "llvm-cov" "clean" "--workspace") \
-  (cargo "llvm-cov" "--no-report" "--branch" "--remap-path-prefix" "nextest" "--cargo-profile=fuzz" args) \
-  (cargo "llvm-cov" "report" "--html" "--output-dir=./target/nextest/coverage" "--profile=fuzz") \
-  (cargo "llvm-cov" "report" "--json" "--output-path=./target/nextest/coverage/report.json" "--profile=fuzz") \
-  (cargo "llvm-cov" "report" "--codecov" "--output-path=./target/nextest/coverage/codecov.json" "--profile=fuzz")
+coverage *args: (cargo "llvm-cov" "clean" "--workspace") (cargo "llvm-cov" "--no-report" "--branch" "--remap-path-prefix" "nextest" "--cargo-profile=fuzz" args) (cargo "llvm-cov" "report" "--html" "--output-dir=./target/nextest/coverage" "--profile=fuzz") (cargo "llvm-cov" "report" "--json" "--output-path=./target/nextest/coverage/report.json" "--profile=fuzz") (cargo "llvm-cov" "report" "--codecov" "--output-path=./target/nextest/coverage/codecov.json" "--profile=fuzz")

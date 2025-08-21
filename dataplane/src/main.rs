@@ -22,16 +22,37 @@ use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
 use routing::RouterParamsBuilder;
 use tracing::{error, info};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Layer};
 
 fn init_logging() {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .with_target(true)
+    let formatter = tracing_subscriber::fmt::format()
+        .pretty()
+        .with_ansi(true)
         .with_thread_ids(true)
         .with_line_number(true)
         .with_thread_names(true)
-        .with_env_filter(EnvFilter::new("debug,tonic=off,h2=off"))
+        .with_target(true)
+        .with_file(true)
+        .with_level(true);
+
+    let logging_layer = tracing_subscriber::fmt::layer()
+        .pretty()
+        .with_ansi(true)
+        .with_thread_ids(true)
+        .with_line_number(true)
+        .with_thread_names(true)
+        .with_target(true)
+        .with_file(true)
+        .with_level(true)
+        .event_format(formatter)
+        .with_filter(EnvFilter::new("debug,h2=off"));
+
+    let (formatter, _) = tracing_subscriber::reload::Layer::new(logging_layer);
+
+    tracing_subscriber::registry::Registry::default()
+        .with(formatter)
         .init();
 }
 

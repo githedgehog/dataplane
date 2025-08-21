@@ -23,3 +23,5 @@ bolero = { workspace = true, default-features = false }
 lpm = { workspace = true, features = ["testing"] }
 tracing-test = { workspace = true, features = [] }
 
+[build-dependencies]
+dpdk-sysroot-helper = { workspace = true }

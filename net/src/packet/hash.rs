@@ -123,7 +123,7 @@ mod tests {
             let hash_value = hash_ip_packet(packet);
             vals.insert(u16::try_from(n).expect("Conversion failed"), hash_value);
         }
-        let mut file = File::create("artifacts/ahash_fingerprint.txt")
+        let mut file = File::create("net/artifacts/ahash_fingerprint.txt")
             .expect("Failed to open ahash fingerprint file");
         file.write_all(format!("{vals:#?}").as_bytes())
             .expect("Failed to write fingerprint");
@@ -147,7 +147,7 @@ mod tests {
             vals.insert(u16::try_from(n).expect("Conversion failed"), hash_value);
         }
         let fingerprint = format!("{vals:#?}");
-        let reference = fs::read_to_string("artifacts/ahash_fingerprint.txt")
+        let reference = fs::read_to_string("net/artifacts/ahash_fingerprint.txt")
             .expect("Missing fingerprint file");
         assert_eq!(fingerprint, reference);
     }

@@ -18,7 +18,7 @@ use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
 use std::clone::Clone;
 use std::collections::HashMap;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct VpcMap<T: Clone>(pub HashMap<VpcDiscriminant, T, RandomState>);
 
 impl<T: Clone> VpcMap<T> {
@@ -50,6 +50,7 @@ impl<T: Clone> VpcMap<T> {
     }
 }
 
+#[derive(Debug)]
 enum VpcMapChange<T: Clone> {
     Add(VpcDiscriminant, T),
     Del(VpcDiscriminant),
@@ -75,6 +76,7 @@ impl<T: Clone> Absorb<VpcMapChange<T>> for VpcMap<T> {
     }
 }
 
+#[derive(Debug)]
 pub struct VpcMapWriter<T: Clone>(WriteHandle<VpcMap<T>, VpcMapChange<T>>);
 #[derive(Clone, Debug)]
 pub struct VpcMapReader<T: Clone>(ReadHandle<VpcMap<T>>);

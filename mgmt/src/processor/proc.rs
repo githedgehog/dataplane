@@ -74,6 +74,7 @@ impl ConfigChannelRequest {
 /// A configuration processor entity. This is the RPC-independent entity responsible for
 /// accepting/rejecting configurations, storing them in the configuration database and
 /// applying them.
+#[derive(Debug)]
 pub(crate) struct ConfigProcessor {
     config_db: GwConfigDatabase,
     rx: mpsc::Receiver<ConfigChannelRequest>,
@@ -205,34 +206,35 @@ impl ConfigProcessor {
     }
 
     /// RPC handler: store and apply the provided config
+    #[tracing::instrument(level = "info")]
     async fn handle_apply_config(&mut self, config: GwConfig) -> ConfigResponse {
         let genid = config.genid();
-        debug!("━━━━━━ Handling apply configuration request. Genid {genid} ━━━━━━");
+        debug!("Handling apply configuration request. Genid {genid}");
         let result = self.process_incoming_config(config).await;
         debug!(
-            "━━━━━━ Completed configuration for Genid {genid}: {} ━━━━━━",
+            "Completed configuration for Genid {genid}: {}",
             stringify(&result)
         );
         ConfigResponse::ApplyConfig(result)
     }
 
     /// RPC handler: get current config generation id
+    #[tracing::instrument(level = "trace")]
     fn handle_get_generation(&self) -> ConfigResponse {
-        debug!("Handling get generation request");
         ConfigResponse::GetGeneration(self.config_db.get_current_gen())
     }
 
     /// RPC handler: get the currently applied config
+    #[tracing::instrument(level = "trace")]
     fn handle_get_config(&self) -> ConfigResponse {
-        debug!("Handling get running configuration request");
         let cfg = Box::new(self.config_db.get_current_config().cloned());
         ConfigResponse::GetCurrentConfig(cfg)
     }
 
     /// Run the configuration processor
-    #[allow(unreachable_code)]
+    #[tracing::instrument(level = "info")]
     pub async fn run(mut self) {
-        info!("Starting config processor...");
+        info!("starting config processor");
         loop {
             // receive config requests over channel from gRPC server
             match self.rx.recv().await {
@@ -269,7 +271,7 @@ impl VpcManager<RequiredInformationBase> {
             }
         };
 
-        debug!("Required information base for genid {genid} is:\n{rib:?}");
+        debug!("Required information base for genid {genid} is:\n{rib:#?}");
 
         let mut required_passes = 0;
         while !self

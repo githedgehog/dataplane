@@ -1,0 +1,49 @@
+[package]
+name = "dataplane-test-init"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[[bin]]
+name = "vm-init"
+path = "src/vm-init.rs"
+
+[[bin]]
+name = "container-init"
+path = "src/container-init.rs"
+
+[dependencies]
+# external
+
+
+[dependencies.tokio-vsock]
+version = "0.7.2"
+
+[dependencies.vsock]
+version = "0.5.1"
+
+[dependencies.kanal]
+version = "0.1.1"
+
+[dependencies.tokio]
+workspace = true
+features = ["rt", "process", "signal", "time", "macros", "fs", "sync", "net", "io-util"]
+
+[dependencies.nix]
+workspace = true
+default-features = false
+features = ["signal", "mount", "reboot", "fs"]
+
+[dependencies.tracing]
+workspace = true
+default-features = false
+features = []
+
+[dependencies.tracing-subscriber]
+workspace = true
+default-features = false
+features = ["fmt"]
+
+[build-dependencies.dpdk-sysroot-helper]
+workspace = true

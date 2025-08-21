@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing::{debug, error};
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(name = "Hedgehog Fabric Gateway dataplane")]
 #[command(version = "1.0")] // FIXME
 #[command(about = "A next-gen dataplane for next-gen fabric gateway", long_about = None)]

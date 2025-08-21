@@ -10,6 +10,6 @@ license = "Apache-2.0"
 doc = false
 
 [build-dependencies]
-bindgen = { workspace = true, features = ["runtime", "experimental"]}
+bindgen = { workspace = true, features = ["runtime", "experimental"] }
 doxygen-bindgen = { workspace = true }
 dpdk-sysroot-helper = { workspace = true }

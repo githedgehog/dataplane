@@ -220,9 +220,33 @@ depend on `mgmt`.
     │                           │
     └───────────────────────────┘
 ```
- 
 
+```mermaid
+graph TD
+    dataplane[dataplane]
+    mgmt[mgmt]:::tier3
+    nat[nat]:::tier2
+    routing[routing]:::tier2
+    net[net]:::tier1
+    lpm[lpm]:::tier1
+    pipeline[pipeline]:::tier1
+    config[config]:::tier1
 
+    dataplane --> mgmt
+    dataplane --> nat
+    dataplane --> net
+
+    mgmt --> nat
+    mgmt --> routing
+    mgmt --> config
+
+    nat --> net
+    nat --> lpm
+
+    routing --> config
+
+    net --> pipeline
+```
 
 ## License
 

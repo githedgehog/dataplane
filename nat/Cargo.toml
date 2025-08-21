@@ -39,3 +39,6 @@ tracing-test = { workspace = true, features = [] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(none)'] }
+
+[build-dependencies]
+dpdk-sysroot-helper = { workspace = true }

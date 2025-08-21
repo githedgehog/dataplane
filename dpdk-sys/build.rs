@@ -2,7 +2,6 @@
 // Copyright Open Network Fabric Authors
 
 use bindgen::callbacks::ParseCallbacks;
-use std::env;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -21,11 +20,11 @@ impl ParseCallbacks for Cb {
 }
 
 fn bind(path: &Path, sysroot: &str) {
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let out_path = PathBuf::from("generated");
     let static_fn_path = out_path.join("generated.h");
     bindgen::Builder::default()
         .header(format!("{sysroot}/include/dpdk_wrapper.h"))
-        .anon_fields_prefix("annon")
+        .anon_fields_prefix("anon")
         .use_core()
         .generate_comments(true)
         .clang_arg("-Wno-deprecated-declarations")
@@ -33,6 +32,7 @@ fn bind(path: &Path, sysroot: &str) {
         .wrap_static_fns(true)
         .wrap_static_fns_suffix("_w")
         .wrap_static_fns_path(static_fn_path)
+        .wrap_unsafe_ops(true)
         .array_pointers_in_arguments(false)
         .detect_include_paths(true)
         .prepend_enum_name(false)
@@ -43,6 +43,7 @@ fn bind(path: &Path, sysroot: &str) {
         .derive_default(true)
         .derive_partialeq(false)
         .parse_callbacks(Box::new(Cb))
+        .rust_edition(bindgen::RustEdition::Edition2024)
         .layout_tests(true)
         .default_enum_style(bindgen::EnumVariation::ModuleConsts)
         .blocklist_item("rte_atomic.*")
@@ -66,7 +67,7 @@ fn bind(path: &Path, sysroot: &str) {
 }
 
 fn main() {
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let out_path = PathBuf::from("generated");
     let sysroot = dpdk_sysroot_helper::get_sysroot();
 
     println!("cargo:rustc-link-arg=--sysroot={sysroot}");

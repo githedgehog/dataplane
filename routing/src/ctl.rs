@@ -52,6 +52,7 @@ pub enum RouterCtlMsg {
 }
 
 // An object to send control messages to the router
+#[derive(Debug)]
 pub struct RouterCtlSender(tokio::sync::mpsc::Sender<RouterCtlMsg>);
 impl RouterCtlSender {
     pub(crate) fn new(tx: Sender<RouterCtlMsg>) -> Self {

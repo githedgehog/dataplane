@@ -9,3 +9,9 @@ rustc = "compile-env/bin/rustc"
 
 [target.x86_64-unknown-linux-gnu]
 runner = ["scripts/test-runner.sh"]
+
+# hack for NixOS
+[target.'cfg(all(not(target_feature = "crt-static"), target_arch = "x86_64", target_env = "gnu", target_os = "linux"))']
+rustflags = [
+    "-Clink-arg=-Wl,-dynamic-linker=/lib64/ld-linux-x86-64.so.2",
+]

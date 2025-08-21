@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
-//
 
 //! Implements a packet stats sink.
 
@@ -20,7 +19,6 @@ use rand::RngCore;
 use serde::Serialize;
 use small_map::SmallMap;
 use tracing::{debug, info};
-#[allow(unused)]
 use tracing::{error, trace, warn};
 
 #[derive(Clone, Debug)]
@@ -123,106 +121,93 @@ impl StatsCollector {
     pub async fn run(mut self) {
         info!("started stats update receiver");
         loop {
-            trace!("waiting on metrics");
-            tokio::select! {
-                () = tokio::time::sleep(Self::TIME_TICK) => {
-                    info!("no stats received in window");
-                    self.update(None);
+            let delta = self.updates.0.as_async().recv().await;
+            match delta {
+                Ok(delta) => {
+                    trace!("received stats update: {delta:#?}");
+                    self.update(delta);
+                    self.submit_expired();
                 }
-                delta = self.updates.0.as_async().recv() => {
-                    match delta {
-                        Ok(delta) => {
-                            trace!("received stats update: {delta:#?}");
-                            self.update(Some(delta));
-                        },
-                        Err(err) => {
-                            match err {
-                                ReceiveError::Closed => {
-                                    error!("stats receiver closed!");
-                                    panic!("stats receiver closed");
-                                }
-                                ReceiveError::SendClosed => {
-                                    info!("all stats senders are closed");
-                                    return;
-                                }
-                            }
-                        }
+                Err(err) => match err {
+                    ReceiveError::Closed => {
+                        const MSG: &str = "stats receiver closed";
+                        error!(MSG);
+                        panic!("{MSG}");
                     }
-                }
+                    ReceiveError::SendClosed => {
+                        info!("all stats senders are closed");
+                        return;
+                    }
+                },
             }
         }
     }
 
     /// Calculate updated stats and submit any expired entries to the rate filter.
     #[tracing::instrument(level = "trace")]
-    fn update(&mut self, update: Option<MetricsUpdate>) {
-        if let Some(update) = update {
-            // find outstanding changes which line up with batch
-            self.metrics = self.refresh().collect();
-            let mut slices: Vec<_> = self
-                .outstanding
-                .iter_mut()
-                .filter_map(|batch| {
-                    if batch.planned_end > update.summary.start {
-                        Some(batch)
-                    } else {
-                        None
+    fn update(&mut self, update: MetricsUpdate) {
+        // find outstanding changes which line up with batch
+        self.metrics = self.refresh().collect();
+        let mut slices: Vec<_> = self
+            .outstanding
+            .iter_mut()
+            .filter_map(|batch| {
+                if batch.planned_end > update.summary.start {
+                    Some(batch)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        update.summary.vpc.iter().for_each(|(src, summary)| {
+            summary.dst.iter().for_each(|(dst, stats)| {
+                slices.iter_mut().for_each(|batch| {
+                    // TODO: this can be much more efficient
+                    let SplitCount {
+                        inside: packets, ..
+                    } = batch.split_count(&update, stats.packets);
+                    let SplitCount { inside: bytes, .. } = batch.split_count(&update, stats.bytes);
+                    let stats = PacketAndByte { packets, bytes };
+                    if packets == 0 && bytes == 0 {
+                        return;
+                    }
+                    match batch.vpc.get_mut(src) {
+                        None => {
+                            let mut tx_summary = TransmitSummary::new();
+                            tx_summary.dst.insert(*dst, stats);
+                            batch.vpc.insert(*src, tx_summary);
+                        }
+                        Some(tx_summary) => match tx_summary.dst.get_mut(dst) {
+                            None => {
+                                tx_summary.dst.insert(*dst, stats);
+                            }
+                            Some(s) => {
+                                *s += stats;
+                            }
+                        },
                     }
                 })
-                .collect();
-            update.summary.vpc.iter().for_each(|(src, summary)| {
-                summary.dst.iter().for_each(|(dst, stats)| {
-                    slices.iter_mut().for_each(|batch| {
-                        // TODO: this can be much more efficient
-                        let SplitCount {
-                            inside: packets, ..
-                        } = batch.split_count(&update, stats.packets);
-                        let SplitCount { inside: bytes, .. } =
-                            batch.split_count(&update, stats.bytes);
-                        let stats = PacketAndByte { packets, bytes };
-                        if packets == 0 && bytes == 0 {
-                            return;
-                        }
-                        match batch.vpc.get_mut(src) {
-                            None => {
-                                let mut tx_summary = TransmitSummary::new();
-                                tx_summary.dst.insert(*dst, stats);
-                                batch.vpc.insert(*src, tx_summary);
-                            }
-                            Some(tx_summary) => match tx_summary.dst.get_mut(dst) {
-                                None => {
-                                    tx_summary.dst.insert(*dst, stats);
-                                }
-                                Some(s) => {
-                                    *s += stats;
-                                }
-                            },
-                        }
-                    })
-                });
             });
-        }
-        let current_time = Instant::now();
-        let mut expired = self
-            .outstanding
-            .iter()
-            .filter(|&batch| batch.planned_end <= current_time)
-            .count();
-        while expired > 1 {
-            let concluded = self
-                .outstanding
-                .pop_front()
-                .unwrap_or_else(|| unreachable!());
-            expired -= 1;
-            self.submit_expired(concluded);
-        }
+        });
     }
 
     /// Submit a concluded set of stats for inclusion in rate calculations
     #[tracing::instrument(level = "trace")]
-    fn submit_expired(&mut self, concluded: BatchSummary<u64>) {
+    fn submit_expired(&mut self) {
         const CAPACITY_PADDING: usize = 16;
-        let capacity = self.vpcmap_r.enter().unwrap().0.len() + CAPACITY_PADDING;
+        let current_time = Instant::now();
+        let some_expired = self
+            .outstanding
+            .iter()
+            .any(|batch| batch.planned_end <= current_time);
+        let capacity = self.metrics.len() + CAPACITY_PADDING;
+        if !some_expired {
+            return;
+        }
+        let concluded = self
+            .outstanding
+            .pop_front()
+            .unwrap_or_else(|| unreachable!());
         let start = self
             .outstanding
             .iter()
@@ -256,7 +241,6 @@ impl StatsCollector {
                 });
         });
         self.submitted.push(concluded.vpc);
-
         // TODO: add in rate calculations
         // TODO: add in drop metrics
     }

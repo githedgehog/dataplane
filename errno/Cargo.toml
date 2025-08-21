@@ -8,3 +8,6 @@ license = "Apache-2.0"
 [dependencies]
 
 thiserror = { workspace = true }
+
+[build-dependencies]
+dpdk-sysroot-helper = { workspace = true }

@@ -1,0 +1,36 @@
+// Project tasks configuration. See https://zed.dev/docs/tasks for documentation.
+//
+// Example:
+[
+  {
+    "label": "build: debug",
+    "command": "just cargo build --profile=debug",
+    "use_new_terminal": true,
+    "hide": "on_success",
+    "show_summary": true,
+    "show_command": true,
+    "allow_concurrent_runs": false,
+    "reveal_target": "dock"
+  },
+  {
+    "label": "build: release",
+    "command": "just cargo build --profile=release",
+    "use_new_terminal": true,
+    "hide": "on_success",
+    "show_summary": true,
+    "show_command": true,
+    "allow_concurrent_runs": false,
+    "reveal_target": "dock"
+  },
+  {
+    "label": "build: fuzz",
+    "command": "just cargo build --profile=fuzz",
+    "use_new_terminal": true,
+    "args": [],
+    "hide": "on_success",
+    "show_summary": true,
+    "show_command": true,
+    "allow_concurrent_runs": false,
+    "reveal_target": "dock"
+  }
+]

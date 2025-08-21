@@ -1,0 +1,61 @@
+[package]
+name = "in-vm"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+# external
+gag = "1.0.0"
+linkme = { version = "0.3.33", default-features = false, features = [] }
+caps = "0.5.5"
+xattr = "1.5.1"
+cloud-hypervisor-client = "0.3.3"
+serde = { workspace = true, default-features = false, features = ["derive"] }
+tokio-stream.workspace = true
+tokio-util = { version = "0.7.16", features = ["codec"] }
+capctl = "0.2.4"
+
+[dependencies.serde_json]
+version = "1.0.143"
+default-features = false
+features = ["std"]
+
+[dependencies.tokio-vsock]
+version = "0.7.2"
+
+[dependencies.bollard]
+version = "0.19.2"
+
+[dependencies.tokio-serde]
+version = "0.9.0"
+features = ["json"]
+default-features = false
+
+[dependencies.command-fds]
+workspace = true
+features = ["tokio"]
+
+[dependencies.tokio]
+workspace = true
+features = ["rt", "process", "macros", "fs", "net", "time", "io-util", "net", "io-std"]
+
+[dependencies.nix]
+workspace = true
+default-features = false
+features = ["signal", "user"]
+
+[dependencies.tracing]
+workspace = true
+default-features = false
+features = []
+
+[dependencies.tracing-subscriber]
+workspace = true
+default-features = false
+features = ["fmt"]
+
+
+[build-dependencies.dpdk-sysroot-helper]
+workspace = true
