@@ -19,6 +19,7 @@ net = { workspace = true }
 pipeline = { workspace = true }
 priority-queue = { workspace = true }
 thiserror = { workspace = true }
+thread_local = { workspace = true }
 tracing = { workspace = true }
 
 
