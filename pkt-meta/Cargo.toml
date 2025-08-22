@@ -10,6 +10,7 @@ testing = []
 
 [dependencies]
 ahash = { workspace = true }
+atomic-instant-full = { workspace = true }
 lpm = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
