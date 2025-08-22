@@ -184,6 +184,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "atomic-instant-full"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db6541700e074cda41b1c6f98c2cae6cde819967bf142078f069cad85387cdbe"
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1041,6 +1047,7 @@ name = "dataplane-pkt-meta"
 version = "0.1.0"
 dependencies = [
  "ahash 0.8.10",
+ "atomic-instant-full",
  "bolero",
  "dashmap",
  "dataplane-concurrency",
