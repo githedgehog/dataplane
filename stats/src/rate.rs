@@ -204,13 +204,7 @@ impl TryFrom<&SavitzkyGolayFilter<TransmitSummary<u64>>>
             .flat_map(|x| x.dst.iter().map(|(&k, _)| k))
             .collect();
         let mut out = TransmitSummary::<SavitzkyGolayFilter<u64>>::new();
-        values
-            .iter()
-            .cycle()
-            .skip(value.idx)
-            .take(5)
-            .enumerate()
-            .for_each(|(idx, summary)| {
+        for (idx, summary) in values.iter().enumerate() {
                 all_keys
                     .iter()
                     .for_each(|&k| match (summary.dst.get(&k), out.dst.get_mut(&k)) {
@@ -234,7 +228,7 @@ impl TryFrom<&SavitzkyGolayFilter<TransmitSummary<u64>>>
                             // no data yet
                         }
                     });
-            });
+        }
         Ok(out)
     }
 }

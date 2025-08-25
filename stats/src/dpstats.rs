@@ -50,6 +50,7 @@ pub struct StatsCollector {
     /// Filter for batches which have been submitted to the `submitted` filter.  This filter is
     /// used to calculate rates.
     submitted: SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>>,
+    cumulative_totals: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>,
     /// Reader for the VPC map.  This reader is used to determine the VPCs that are currently
     /// known to the system.
     vpcmap_r: VpcMapReader<VpcMapName>,
@@ -93,6 +94,7 @@ impl StatsCollector {
             metrics,
             outstanding,
             submitted: SavitzkyGolayFilter::new(Self::TIME_TICK),
+            cumulative_totals: hashbrown::HashMap::new(),
             vpcmap_r,
             updates,
         };
@@ -256,7 +258,29 @@ impl StatsCollector {
                     }
                 });
         });
-        self.submitted.push(concluded.vpc);
+        //self.submitted.push(concluded.vpc);
+        for (&src, tx_summary) in concluded.vpc.iter() {
+            let totals = self
+                .cumulative_totals
+                .entry(src)
+                .or_insert_with(TransmitSummary::new);
+        
+            for (&dst, &stats) in tx_summary.dst.iter() {
+                match totals.dst.get_mut(&dst) {
+                    Some(entry) => {
+                        entry.packets = entry.packets.saturating_add(stats.packets);
+                        entry.bytes   = entry.bytes.saturating_add(stats.bytes);
+                    }
+                    None => {
+                        totals.dst.insert(dst, stats);
+                    }
+                }
+            }
+        }
+        
+        // Push the cumulative snapshot into the SG derivative filter
+        debug!("sg snapshot: {:?}", self.cumulative_totals);
+        self.submitted.push(self.cumulative_totals.clone());
 
         let filters_by_src: hashbrown::HashMap<
             VpcDiscriminant,
@@ -279,6 +303,7 @@ impl StatsCollector {
                     if let Some(action) = metrics.peering.get(dst) {
                         action.tx.packet.rate.metric.set(rate.packets);
                         action.tx.byte.rate.metric.set(rate.bytes);
+                        debug!("set rate for src {src} to dst {dst}: {:?}", rate);
                     } else {
                         warn!("lost metrics for src {src} to dst {dst}");
                     }
