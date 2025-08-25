@@ -4,6 +4,7 @@
 
 //! Implements a packet stats sink.
 
+use crate::rate::Derivative;
 use net::packet::Packet;
 use pipeline::NetworkFunction;
 
@@ -49,6 +50,7 @@ pub struct StatsCollector {
     /// Filter for batches which have been submitted to the `submitted` filter.  This filter is
     /// used to calculate rates.
     submitted: SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>>,
+    cumulative_totals: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>,
     /// Reader for the VPC map.  This reader is used to determine the VPCs that are currently
     /// known to the system.
     vpcmap_r: VpcMapReader<VpcMapName>,
@@ -92,6 +94,7 @@ impl StatsCollector {
             metrics,
             outstanding,
             submitted: SavitzkyGolayFilter::new(Self::TIME_TICK),
+            cumulative_totals: hashbrown::HashMap::new(),
             vpcmap_r,
             updates,
         };
@@ -255,9 +258,57 @@ impl StatsCollector {
                     }
                 });
         });
-        self.submitted.push(concluded.vpc);
+        //self.submitted.push(concluded.vpc);
+        for (&src, tx_summary) in concluded.vpc.iter() {
+            let totals = self
+                .cumulative_totals
+                .entry(src)
+                .or_insert_with(TransmitSummary::new);
+        
+            for (&dst, &stats) in tx_summary.dst.iter() {
+                match totals.dst.get_mut(&dst) {
+                    Some(entry) => {
+                        entry.packets = entry.packets.saturating_add(stats.packets);
+                        entry.bytes   = entry.bytes.saturating_add(stats.bytes);
+                    }
+                    None => {
+                        totals.dst.insert(dst, stats);
+                    }
+                }
+            }
+        }
+        
+        // Push the cumulative snapshot into the SG derivative filter
+        self.submitted.push(self.cumulative_totals.clone());
 
-        // TODO: add in rate calculations
+        let filters_by_src: hashbrown::HashMap<
+            VpcDiscriminant,
+            TransmitSummary<SavitzkyGolayFilter<u64>>,
+        > = (&self.submitted).into();
+        if let Ok(rates_by_src) =
+            <hashbrown::HashMap<_, TransmitSummary<SavitzkyGolayFilter<u64>>>>::derivative(
+                &filters_by_src,
+            )
+        {
+            rates_by_src.iter().for_each(|(&src, tx_summary)| {
+                let metrics = match self.metrics.get(&src) {
+                    None => {
+                        warn!("lost metrics for src {src}");
+                        return;
+                    }
+                    Some(metrics) => metrics,
+                };
+                tx_summary.dst.iter().for_each(|(dst, rate)| {
+                    if let Some(action) = metrics.peering.get(dst) {
+                        action.tx.packet.rate.metric.set(rate.packets);
+                        action.tx.byte.rate.metric.set(rate.bytes);
+                    } else {
+                        warn!("lost metrics for src {src} to dst {dst}");
+                    }
+                });
+            });
+        }
+
         // TODO: add in drop metrics
     }
 }
