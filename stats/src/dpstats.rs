@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
-//
-
-//! Implements a packet stats sink.
 
 use crate::rate::Derivative;
 use net::packet::Packet;
@@ -38,6 +35,18 @@ impl VpcMapName {
     }
 }
 
+/// Compute overlap in nanoseconds between [a_start, a_end] and [b_start, b_end].
+#[inline]
+fn overlap_nanos(a_start: Instant, a_end: Instant, b_start: Instant, b_end: Instant) -> u128 {
+    let start = if a_start > b_start { a_start } else { b_start };
+    let end = if a_end < b_end { a_end } else { b_end };
+    if end > start {
+        end.duration_since(start).as_nanos()
+    } else {
+        0
+    }
+}
+
 /// A `StatsCollector` is responsible for collecting and aggregating packet statistics for a
 /// collection of workers running packet processing pipelines on various threads.
 #[derive(Debug)]
@@ -50,6 +59,7 @@ pub struct StatsCollector {
     /// Filter for batches which have been submitted to the `submitted` filter.  This filter is
     /// used to calculate rates.
     submitted: SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>>,
+    /// Running cumulative totals used to produce monotonic series into the SG derivative filter.
     cumulative_totals: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>,
     /// Reader for the VPC map.  This reader is used to determine the VPCs that are currently
     /// known to the system.
@@ -173,38 +183,90 @@ impl StatsCollector {
                     }
                 })
                 .collect();
+
+            // Proportionally distribute each (src,dst) update across overlapping batches.
             update.summary.vpc.iter().for_each(|(src, summary)| {
                 summary.dst.iter().for_each(|(dst, stats)| {
-                    slices.iter_mut().for_each(|batch| {
-                        // TODO: this can be much more efficient
-                        let SplitCount {
-                            inside: packets, ..
-                        } = batch.split_count(&update, stats.packets);
-                        let SplitCount { inside: bytes, .. } =
-                            batch.split_count(&update, stats.bytes);
-                        let stats = PacketAndByte { packets, bytes };
-                        if packets == 0 && bytes == 0 {
-                            return;
+                    if stats.packets == 0 && stats.bytes == 0 {
+                        return;
+                    }
+
+                    let upd_start = update.summary.start;
+                    let upd_end = update.start() + update.duration;
+
+                    // Pre-compute overlaps with all candidate batch slices
+                    let overlaps: Vec<u128> = slices
+                        .iter()
+                        .map(|b| overlap_nanos(b.start, b.planned_end, upd_start, upd_end))
+                        .collect();
+                    let total_ov: u128 = overlaps.iter().copied().sum();
+                    if total_ov == 0 {
+                        return;
+                    }
+
+                    // Integer-safe split: give the remainder to the last overlapping bucket
+                    let mut rem_pkts = stats.packets;
+                    let mut rem_bytes = stats.bytes;
+
+                    let last_idx = overlaps
+                        .iter()
+                        .enumerate()
+                        .rfind(|&(_, &ov)| ov > 0)
+                        .map(|(i, _)| i);
+
+                    for (i, batch) in slices.iter_mut().enumerate() {
+                        let ov = overlaps[i];
+                        if ov == 0 {
+                            continue;
                         }
+
+                        let is_last = Some(i) == last_idx;
+
+                        let pkts_in = if is_last {
+                            rem_pkts
+                        } else {
+                            let v = ((stats.packets as u128) * ov / total_ov) as u64;
+                            rem_pkts = rem_pkts.saturating_sub(v);
+                            v
+                        };
+
+                        let bytes_in = if is_last {
+                            rem_bytes
+                        } else {
+                            let v = ((stats.bytes as u128) * ov / total_ov) as u64;
+                            rem_bytes = rem_bytes.saturating_sub(v);
+                            v
+                        };
+
+                        if pkts_in == 0 && bytes_in == 0 {
+                            continue;
+                        }
+
+                        let apportioned = PacketAndByte {
+                            packets: pkts_in,
+                            bytes: bytes_in,
+                        };
+
                         match batch.vpc.get_mut(src) {
                             None => {
                                 let mut tx_summary = TransmitSummary::new();
-                                tx_summary.dst.insert(*dst, stats);
+                                tx_summary.dst.insert(*dst, apportioned);
                                 batch.vpc.insert(*src, tx_summary);
                             }
                             Some(tx_summary) => match tx_summary.dst.get_mut(dst) {
                                 None => {
-                                    tx_summary.dst.insert(*dst, stats);
+                                    tx_summary.dst.insert(*dst, apportioned);
                                 }
                                 Some(s) => {
-                                    *s += stats;
+                                    *s += apportioned;
                                 }
                             },
                         }
-                    })
+                    }
                 });
             });
         }
+
         let current_time = Instant::now();
         let mut expired = self
             .outstanding
@@ -258,18 +320,19 @@ impl StatsCollector {
                     }
                 });
         });
-        //self.submitted.push(concluded.vpc);
+
+        // Update cumulative totals from the *concluded* batch (apportioned already)
         for (&src, tx_summary) in concluded.vpc.iter() {
             let totals = self
                 .cumulative_totals
                 .entry(src)
                 .or_insert_with(TransmitSummary::new);
-        
+
             for (&dst, &stats) in tx_summary.dst.iter() {
                 match totals.dst.get_mut(&dst) {
                     Some(entry) => {
                         entry.packets = entry.packets.saturating_add(stats.packets);
-                        entry.bytes   = entry.bytes.saturating_add(stats.bytes);
+                        entry.bytes = entry.bytes.saturating_add(stats.bytes);
                     }
                     None => {
                         totals.dst.insert(dst, stats);
@@ -277,7 +340,7 @@ impl StatsCollector {
                 }
             }
         }
-        
+
         // Push the cumulative snapshot into the SG derivative filter
         debug!("sg snapshot: {:?}", self.cumulative_totals);
         self.submitted.push(self.cumulative_totals.clone());

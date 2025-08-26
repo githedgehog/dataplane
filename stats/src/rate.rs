@@ -205,29 +205,29 @@ impl TryFrom<&SavitzkyGolayFilter<TransmitSummary<u64>>>
             .collect();
         let mut out = TransmitSummary::<SavitzkyGolayFilter<u64>>::new();
         for (idx, summary) in values.iter().enumerate() {
-                all_keys
-                    .iter()
-                    .for_each(|&k| match (summary.dst.get(&k), out.dst.get_mut(&k)) {
-                        (Some(count), Some(out)) => {
-                            out.packets.push(count.packets);
-                            out.bytes.push(count.bytes);
-                        }
-                        (Some(count), None) => {
-                            let mut packets = SavitzkyGolayFilter::new(value.step);
-                            let mut bytes = SavitzkyGolayFilter::new(value.step);
-                            packets.push(count.packets);
-                            bytes.push(count.bytes);
-                            out.dst.insert(k, PacketAndByte { packets, bytes });
-                        }
-                        (None, Some(out)) => {
-                            debug_assert!(idx != 0);
-                            out.packets.push(out.packets.data[out.packets.idx - 1]);
-                            out.bytes.push(out.bytes.data[out.bytes.idx - 1]);
-                        }
-                        (None, None) => {
-                            // no data yet
-                        }
-                    });
+            all_keys
+                .iter()
+                .for_each(|&k| match (summary.dst.get(&k), out.dst.get_mut(&k)) {
+                    (Some(count), Some(out)) => {
+                        out.packets.push(count.packets);
+                        out.bytes.push(count.bytes);
+                    }
+                    (Some(count), None) => {
+                        let mut packets = SavitzkyGolayFilter::new(value.step);
+                        let mut bytes = SavitzkyGolayFilter::new(value.step);
+                        packets.push(count.packets);
+                        bytes.push(count.bytes);
+                        out.dst.insert(k, PacketAndByte { packets, bytes });
+                    }
+                    (None, Some(out)) => {
+                        debug_assert!(idx != 0);
+                        out.packets.push(out.packets.data[out.packets.idx - 1]);
+                        out.bytes.push(out.bytes.data[out.bytes.idx - 1]);
+                    }
+                    (None, None) => {
+                        // no data yet
+                    }
+                });
         }
         Ok(out)
     }
