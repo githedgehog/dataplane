@@ -20,6 +20,21 @@ pub trait Derivative {
     fn derivative(&self) -> Result<Self::Output, Self::Error>;
 }
 
+/// A simple trait for computing a smoothed (denoised) value of a time series window.
+/// For Savitzky–Golay we use the 5-point (window=5) smoothing polynomial (order=2) coefficients.
+pub trait Smooth {
+    type Error;
+    type Output;
+    fn smooth(&self) -> Result<Self::Output, Self::Error>;
+}
+
+/// Allows smoothing a map of smootheable values (mirrors the HashMap <-> Derivative pattern).
+pub trait HashMapSmoothing {
+    type Error;
+    type Output;
+    fn smooth(&self) -> Result<Self::Output, Self::Error>;
+}
+
 /// A filter for computing the derivative of a series of data points.
 ///
 /// This method uses the so-called 5-point stencil or [Savitzky-Golay filter](https://en.wikipedia.org/wiki/Savitzky%E2%80%93Golay_filter) formula for
@@ -461,6 +476,139 @@ impl<T> ExponentiallyWeightedMovingAverage<T> {
     }
 }
 
+/* ---------------------- Smoothing implementations (SG 0th order) ---------------------- */
+
+impl Smooth for SavitzkyGolayFilter<u64> {
+    type Error = DerivativeError;
+    type Output = f64;
+
+    fn smooth(&self) -> Result<f64, DerivativeError> {
+        const SAMPLES: usize = 5;
+        const COEFFS: [i64; SAMPLES] = [-3, 12, 17, 12, -3]; // / 35
+        const DEN: f64 = 35.0;
+
+        let len = self.data.len();
+        if len < SAMPLES {
+            return Err(DerivativeError::NotEnoughSamples(len));
+        }
+        debug_assert!(len == SAMPLES);
+
+        let mut itr = self.data.iter().cycle().skip(self.idx).copied();
+        let data: [u64; SAMPLES] = [
+            itr.next().unwrap_or_else(|| unreachable!()),
+            itr.next().unwrap_or_else(|| unreachable!()),
+            itr.next().unwrap_or_else(|| unreachable!()),
+            itr.next().unwrap_or_else(|| unreachable!()),
+            itr.next().unwrap_or_else(|| unreachable!()),
+        ];
+
+        // Use signed accumulator to handle negative edge coefficients safely.
+        let acc: i128 = COEFFS
+            .iter()
+            .zip(data.iter())
+            .fold(0i128, |s, (&c, &v)| s + (c as i128) * (v as i128));
+
+        Ok((acc as f64) / DEN)
+    }
+}
+
+impl Smooth for SavitzkyGolayFilter<PacketAndByte<u64>> {
+    type Error = DerivativeError;
+    type Output = PacketAndByte<f64>;
+
+    fn smooth(&self) -> Result<Self::Output, DerivativeError> {
+        const SAMPLES: usize = 5;
+        const COEFFS: [i64; SAMPLES] = [-3, 12, 17, 12, -3]; // / 35
+        const DEN: f64 = 35.0;
+
+        let len = self.data.len();
+        if len < SAMPLES {
+            return Err(DerivativeError::NotEnoughSamples(len));
+        }
+
+        let mut itr = self.data.iter().cycle().skip(self.idx).copied();
+        let data: [PacketAndByte<u64>; SAMPLES] = [
+            itr.next().unwrap_or_else(|| unreachable!()),
+            itr.next().unwrap_or_else(|| unreachable!()),
+            itr.next().unwrap_or_else(|| unreachable!()),
+            itr.next().unwrap_or_else(|| unreachable!()),
+            itr.next().unwrap_or_else(|| unreachable!()),
+        ];
+
+        let acc_packets: i128 = COEFFS
+            .iter()
+            .zip(data.iter())
+            .fold(0i128, |s, (&c, v)| s + (c as i128) * (v.packets as i128));
+        let acc_bytes: i128 = COEFFS
+            .iter()
+            .zip(data.iter())
+            .fold(0i128, |s, (&c, v)| s + (c as i128) * (v.bytes as i128));
+
+        Ok(PacketAndByte {
+            packets: (acc_packets as f64) / DEN,
+            bytes: (acc_bytes as f64) / DEN,
+        })
+    }
+}
+
+impl Smooth for SavitzkyGolayFilter<TransmitSummary<u64>> {
+    type Error = DerivativeError;
+    type Output = TransmitSummary<f64>;
+
+    fn smooth(&self) -> Result<Self::Output, DerivativeError> {
+        if self.data.len() != 5 {
+            return Err(DerivativeError::NotEnoughSamples(self.data.len()));
+        }
+        // Convert to per-destination SG filters first, then smooth those.
+        let x = TransmitSummary::<SavitzkyGolayFilter<u64>>::try_from(self)?;
+        x.smooth()
+    }
+}
+
+impl<T> Smooth for TransmitSummary<SavitzkyGolayFilter<T>>
+where
+    SavitzkyGolayFilter<T>: Smooth<Output: Default, Error = DerivativeError>,
+{
+    type Error = DerivativeError;
+    type Output = TransmitSummary<<SavitzkyGolayFilter<T> as Smooth>::Output>;
+
+    fn smooth(&self) -> Result<Self::Output, Self::Error> {
+        let mut out = TransmitSummary::new();
+        let items = self
+            .dst
+            .iter()
+            .map(|(&k, v)| {
+                let packets = v.packets.smooth()?;
+                let bytes = v.bytes.smooth()?;
+                Ok((k, PacketAndByte { packets, bytes }))
+            })
+            .collect::<Result<Vec<_>, DerivativeError>>()?
+            .into_iter();
+
+        for (k, v) in items {
+            out.dst.insert(k, v);
+        }
+        Ok(out)
+    }
+}
+
+impl<K, V, S> HashMapSmoothing for hashbrown::HashMap<K, V, S>
+where
+    K: Hash + Eq + Clone,
+    V: Smooth,
+    S: BuildHasher,
+{
+    type Error = ();
+    type Output = hashbrown::HashMap<K, V::Output>;
+
+    fn smooth(&self) -> Result<Self::Output, Self::Error> {
+        Ok(self
+            .iter()
+            .filter_map(|(k, v)| Some((k.clone(), v.smooth().ok()?)))
+            .collect())
+    }
+}
+
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::rate::{Derivative, SavitzkyGolayFilter};
@@ -746,5 +894,151 @@ mod test {
                     }
                 },
             )
+    }
+
+    use crate::rate::Smooth;
+
+    #[test]
+    fn smoothing_constant_is_exact() {
+        let mut f = SavitzkyGolayFilter::new(Duration::from_secs(1));
+        for _ in 0..5 {
+            f.push(42);
+        }
+        let y = f.smooth().expect("enough samples");
+        assert!(
+            (y - 42.0).abs() < 1e-9,
+            "constant sequence should be preserved exactly (got {y})"
+        );
+    }
+
+    #[test]
+    fn smoothing_linear_is_exact() {
+        // Linear sequence: SG(5,2) smoothing is exact at the center.
+        // Feed in the order the filter consumes (same as derivative tests):
+        let seq = [94u64, 97, 100, 103, 106]; // center is 100
+        let mut f = SavitzkyGolayFilter::new(Duration::from_secs(1));
+        for v in seq {
+            f.push(v);
+        }
+        let y = f.smooth().expect("enough samples");
+        assert!(
+            (y - 100.0).abs() < 1e-9,
+            "linear center should be exact (got {y})"
+        );
+    }
+
+    #[test]
+    fn smoothing_reduces_impulse() {
+        // Impulse at center: [0, 0, 100, 0, 0]
+        // SG(5,2) output = 17*100/35 = 1700/35 ≈ 48.5714
+        let mut f = SavitzkyGolayFilter::new(Duration::from_secs(1));
+        for v in [0u64, 0, 100, 0, 0] {
+            f.push(v);
+        }
+        let y = f.smooth().expect("enough samples");
+        let expected = 1700.0 / 35.0;
+        assert!(
+            (y - expected).abs() < 1e-9,
+            "impulse smoothing mismatch: {y} != {expected}"
+        );
+        assert!(
+            y < 100.0 && y > 0.0,
+            "smoothing should attenuate the impulse"
+        );
+    }
+
+    #[test]
+    fn smoothing_monotone_step_is_between_neighbors() {
+        // Step: [10, 10, 10, 20, 20]  (center=10)
+        // y = (-3*10 + 12*10 + 17*10 + 12*20 - 3*20)/35 = 440/35 ≈ 12.5714
+        let mut f = SavitzkyGolayFilter::new(Duration::from_secs(1));
+        for v in [10u64, 10, 10, 20, 20] {
+            f.push(v);
+        }
+        let y = f.smooth().expect("enough samples");
+        let expected = 440.0 / 35.0;
+        assert!(
+            (y - expected).abs() < 1e-9,
+            "step smoothing mismatch: {y} != {expected}"
+        );
+        assert!(
+            (10.0..=20.0).contains(&y),
+            "smoothed value should lie within step bounds"
+        );
+    }
+
+    #[test]
+    fn smoothing_needs_enough_samples() {
+        let mut f = SavitzkyGolayFilter::new(Duration::from_secs(1));
+        // fewer than 5 samples should error
+        for v in [1u64, 2, 3, 4] {
+            f.push(v);
+            assert!(
+                f.smooth().is_err(),
+                "smoothing should require 5 samples (len < 5)"
+            );
+        }
+        f.push(5);
+        assert!(f.smooth().is_ok(), "now has enough samples (len == 5)");
+    }
+
+    #[test]
+    fn smoothing_random_is_finite_and_reasonable() {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(12345);
+        for _ in 0..100 {
+            let mut f = SavitzkyGolayFilter::new(Duration::from_millis(1000));
+            let mut maxv = 0u64;
+            for _ in 0..5 {
+                let v = rng.random_range::<u64, _>(0..1_000_000);
+                maxv = maxv.max(v);
+                f.push(v);
+            }
+            let y = f.smooth().expect("enough samples");
+            assert!(y.is_finite(), "smoothed value must be finite");
+            // Loose bound: result should be within a small multiple of the window max
+            assert!(y >= 0.0, "nonnegative inputs => nonnegative smoothing");
+            assert!(
+                y <= (maxv as f64) * 2.0 + 1.0,
+                "smoothed value seems unreasonably large: y={y}, max={maxv}"
+            );
+        }
+    }
+
+    #[test]
+    fn smoothing_packetandbyte_impulse() {
+        // Build a filter of PacketAndByte<u64> and smooth it.
+        let mut f = SavitzkyGolayFilter::new(Duration::from_secs(1));
+        // Packets impulse, bytes step-ish
+        let seq = [
+            PacketAndByte {
+                packets: 0,
+                bytes: 10,
+            },
+            PacketAndByte {
+                packets: 0,
+                bytes: 10,
+            },
+            PacketAndByte {
+                packets: 100,
+                bytes: 10,
+            },
+            PacketAndByte {
+                packets: 0,
+                bytes: 20,
+            },
+            PacketAndByte {
+                packets: 0,
+                bytes: 20,
+            },
+        ];
+        for v in seq {
+            f.push(v);
+        }
+        let out = f.smooth().expect("enough samples");
+        // packets expected ≈ 48.5714 (same impulse attenuation)
+        assert!((out.packets - (1700.0 / 35.0)).abs() < 1e-9);
+        // bytes expected = (-3*10 + 12*10 + 17*10 + 12*20 - 3*20)/35 = 440/35 ≈ 12.5714
+        assert!((out.bytes - (440.0 / 35.0)).abs() < 1e-9);
     }
 }

@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
+//
 
-use crate::rate::Derivative;
+//! Implements a packet stats sink.
+
+use crate::rate::{HashMapSmoothing, SavitzkyGolayFilter};
 use net::packet::Packet;
 use pipeline::NetworkFunction;
 
@@ -11,7 +14,6 @@ use std::time::{Duration, Instant};
 use vpcmap::VpcDiscriminant;
 use vpcmap::map::VpcMapReader;
 
-use crate::rate::SavitzkyGolayFilter;
 use crate::{RegisteredVpcMetrics, Specification, VpcMetricsSpec};
 use net::buffer::PacketBufferMut;
 use rand::RngCore;
@@ -40,11 +42,7 @@ impl VpcMapName {
 fn overlap_nanos(a_start: Instant, a_end: Instant, b_start: Instant, b_end: Instant) -> u128 {
     let start = if a_start > b_start { a_start } else { b_start };
     let end = if a_end < b_end { a_end } else { b_end };
-    if end > start {
-        end.duration_since(start).as_nanos()
-    } else {
-        0
-    }
+    end.duration_since(start).as_nanos()
 }
 
 /// A `StatsCollector` is responsible for collecting and aggregating packet statistics for a
@@ -54,13 +52,11 @@ pub struct StatsCollector {
     /// metrics maps known VpcDiscriminants to their metrics
     metrics: hashbrown::HashMap<VpcDiscriminant, RegisteredVpcMetrics>,
     /// Outstanding (i.e., not yet submitted) batches.  These batches will eventually be collected
-    /// in to the `submitted` filter in order to calculate rates.
+    /// in to the `submitted` filter in order to calculate smoothed rates.
     outstanding: VecDeque<BatchSummary<u64>>,
-    /// Filter for batches which have been submitted to the `submitted` filter.  This filter is
-    /// used to calculate rates.
+    /// Filter for batches which have been submitted; used to calculate smoothed pps/Bps.
+    /// We push *apportioned per-batch counts* here; with TIME_TICK=1s, smoothing(counts) ≈ smoothing(pps).
     submitted: SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>>,
-    /// Running cumulative totals used to produce monotonic series into the SG derivative filter.
-    cumulative_totals: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>,
     /// Reader for the VPC map.  This reader is used to determine the VPCs that are currently
     /// known to the system.
     vpcmap_r: VpcMapReader<VpcMapName>,
@@ -104,7 +100,6 @@ impl StatsCollector {
             metrics,
             outstanding,
             submitted: SavitzkyGolayFilter::new(Self::TIME_TICK),
-            cumulative_totals: hashbrown::HashMap::new(),
             vpcmap_r,
             updates,
         };
@@ -166,7 +161,7 @@ impl StatsCollector {
         }
     }
 
-    /// Calculate updated stats and submit any expired entries to the rate filter.
+    /// Calculate updated stats and submit any expired entries to the SG filter.
     #[tracing::instrument(level = "trace")]
     fn update(&mut self, update: Option<MetricsUpdate>) {
         if let Some(update) = update {
@@ -283,7 +278,7 @@ impl StatsCollector {
         }
     }
 
-    /// Submit a concluded set of stats for inclusion in rate calculations
+    /// Submit a concluded set of stats for inclusion in smoothing calculations
     #[tracing::instrument(level = "trace")]
     fn submit_expired(&mut self, concluded: BatchSummary<u64>) {
         const CAPACITY_PADDING: usize = 16;
@@ -294,11 +289,13 @@ impl StatsCollector {
             .last()
             .unwrap_or_else(|| unreachable!())
             .planned_end;
-        let duration = Duration::from_secs(1);
+        let duration = Self::TIME_TICK;
         self.outstanding
             .push_back(BatchSummary::with_start_and_capacity(
                 start, duration, capacity,
             ));
+
+        // Update raw packet/byte COUNTS for "total" metrics (monotonic counters)
         concluded.vpc.iter().for_each(|(&src, tx_summary)| {
             let metrics = match self.metrics.get(&src) {
                 None => {
@@ -321,40 +318,18 @@ impl StatsCollector {
                 });
         });
 
-        // Update cumulative totals from the *concluded* batch (apportioned already)
-        for (&src, tx_summary) in concluded.vpc.iter() {
-            let totals = self
-                .cumulative_totals
-                .entry(src)
-                .or_insert_with(TransmitSummary::new);
+        // Push this *apportioned per-batch* snapshot into the SG window.
+        // With TIME_TICK=1s, smoothing these counts ≈ smoothing pps/Bps directly.
+        self.submitted.push(concluded.vpc);
 
-            for (&dst, &stats) in tx_summary.dst.iter() {
-                match totals.dst.get_mut(&dst) {
-                    Some(entry) => {
-                        entry.packets = entry.packets.saturating_add(stats.packets);
-                        entry.bytes = entry.bytes.saturating_add(stats.bytes);
-                    }
-                    None => {
-                        totals.dst.insert(dst, stats);
-                    }
-                }
-            }
-        }
-
-        // Push the cumulative snapshot into the SG derivative filter
-        debug!("sg snapshot: {:?}", self.cumulative_totals);
-        self.submitted.push(self.cumulative_totals.clone());
-
+        // Build per-source filters and smooth.
         let filters_by_src: hashbrown::HashMap<
             VpcDiscriminant,
             TransmitSummary<SavitzkyGolayFilter<u64>>,
         > = (&self.submitted).into();
-        if let Ok(rates_by_src) =
-            <hashbrown::HashMap<_, TransmitSummary<SavitzkyGolayFilter<u64>>>>::derivative(
-                &filters_by_src,
-            )
-        {
-            rates_by_src.iter().for_each(|(&src, tx_summary)| {
+
+        if let Ok(smoothed_by_src) = filters_by_src.smooth() {
+            smoothed_by_src.iter().for_each(|(&src, tx_summary)| {
                 let metrics = match self.metrics.get(&src) {
                     None => {
                         warn!("lost metrics for src {src}");
@@ -364,14 +339,20 @@ impl StatsCollector {
                 };
                 tx_summary.dst.iter().for_each(|(dst, rate)| {
                     if let Some(action) = metrics.peering.get(dst) {
+                        // Smoothed packets-per-second / bytes-per-second (since tick=1s)
                         action.tx.packet.rate.metric.set(rate.packets);
                         action.tx.byte.rate.metric.set(rate.bytes);
-                        debug!("set rate for src {src} to dst {dst}: {:?}", rate);
+                        trace!(
+                            "smoothed rate src={:?} dst={:?}: pps={:.3} Bps={:.3}",
+                            src, dst, rate.packets, rate.bytes
+                        );
                     } else {
                         warn!("lost metrics for src {src} to dst {dst}");
                     }
                 });
             });
+        } else {
+            trace!("Not enough samples yet for smoothing");
         }
 
         // TODO: add in drop metrics
