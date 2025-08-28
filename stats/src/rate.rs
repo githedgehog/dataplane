@@ -20,6 +20,21 @@ pub trait Derivative {
     fn derivative(&self) -> Result<Self::Output, Self::Error>;
 }
 
+/// A simple trait for computing a smoothed (denoised) value of a time series window.
+/// For Savitzky–Golay we use the 5-point (window=5) smoothing polynomial (order=2) coefficients.
+pub trait Smooth {
+    type Error;
+    type Output;
+    fn smooth(&self) -> Result<Self::Output, Self::Error>;
+}
+
+/// Allows smoothing a map of smootheable values (mirrors the HashMap <-> Derivative pattern).
+pub trait HashMapSmoothing {
+    type Error;
+    type Output;
+    fn smooth(&self) -> Result<Self::Output, Self::Error>;
+}
+
 /// A filter for computing the derivative of a series of data points.
 ///
 /// This method uses the so-called 5-point stencil or [Savitzky-Golay filter](https://en.wikipedia.org/wiki/Savitzky%E2%80%93Golay_filter) formula for
@@ -458,6 +473,139 @@ impl<T> ExponentiallyWeightedMovingAverage<T> {
         let new_data = data * (1. - alpha) + last_val * alpha;
         self.last = Some((time, new_data));
         new_data
+    }
+}
+
+/* ---------------------- Smoothing implementations (SG 0th order) ---------------------- */
+
+impl Smooth for SavitzkyGolayFilter<u64> {
+    type Error = DerivativeError;
+    type Output = f64;
+
+    fn smooth(&self) -> Result<f64, DerivativeError> {
+        const SAMPLES: usize = 5;
+        const COEFFS: [i64; SAMPLES] = [-3, 12, 17, 12, -3]; // / 35
+        const DEN: f64 = 35.0;
+
+        let len = self.data.len();
+        if len < SAMPLES {
+            return Err(DerivativeError::NotEnoughSamples(len));
+        }
+        debug_assert!(len == SAMPLES);
+
+        let mut itr = self.data.iter().cycle().skip(self.idx).copied();
+        let data: [u64; SAMPLES] = [
+            itr.next().unwrap_or_else(|| unreachable!()),
+            itr.next().unwrap_or_else(|| unreachable!()),
+            itr.next().unwrap_or_else(|| unreachable!()),
+            itr.next().unwrap_or_else(|| unreachable!()),
+            itr.next().unwrap_or_else(|| unreachable!()),
+        ];
+
+        // Use signed accumulator to handle negative edge coefficients safely.
+        let acc: i128 = COEFFS
+            .iter()
+            .zip(data.iter())
+            .fold(0i128, |s, (&c, &v)| s + (c as i128) * (v as i128));
+
+        Ok((acc as f64) / DEN)
+    }
+}
+
+impl Smooth for SavitzkyGolayFilter<PacketAndByte<u64>> {
+    type Error = DerivativeError;
+    type Output = PacketAndByte<f64>;
+
+    fn smooth(&self) -> Result<Self::Output, DerivativeError> {
+        const SAMPLES: usize = 5;
+        const COEFFS: [i64; SAMPLES] = [-3, 12, 17, 12, -3]; // / 35
+        const DEN: f64 = 35.0;
+
+        let len = self.data.len();
+        if len < SAMPLES {
+            return Err(DerivativeError::NotEnoughSamples(len));
+        }
+
+        let mut itr = self.data.iter().cycle().skip(self.idx).copied();
+        let data: [PacketAndByte<u64>; SAMPLES] = [
+            itr.next().unwrap_or_else(|| unreachable!()),
+            itr.next().unwrap_or_else(|| unreachable!()),
+            itr.next().unwrap_or_else(|| unreachable!()),
+            itr.next().unwrap_or_else(|| unreachable!()),
+            itr.next().unwrap_or_else(|| unreachable!()),
+        ];
+
+        let acc_packets: i128 = COEFFS
+            .iter()
+            .zip(data.iter())
+            .fold(0i128, |s, (&c, v)| s + (c as i128) * (v.packets as i128));
+        let acc_bytes: i128 = COEFFS
+            .iter()
+            .zip(data.iter())
+            .fold(0i128, |s, (&c, v)| s + (c as i128) * (v.bytes as i128));
+
+        Ok(PacketAndByte {
+            packets: (acc_packets as f64) / DEN,
+            bytes: (acc_bytes as f64) / DEN,
+        })
+    }
+}
+
+impl Smooth for SavitzkyGolayFilter<TransmitSummary<u64>> {
+    type Error = DerivativeError;
+    type Output = TransmitSummary<f64>;
+
+    fn smooth(&self) -> Result<Self::Output, DerivativeError> {
+        if self.data.len() != 5 {
+            return Err(DerivativeError::NotEnoughSamples(self.data.len()));
+        }
+        // Convert to per-destination SG filters first, then smooth those.
+        let x = TransmitSummary::<SavitzkyGolayFilter<u64>>::try_from(self)?;
+        x.smooth()
+    }
+}
+
+impl<T> Smooth for TransmitSummary<SavitzkyGolayFilter<T>>
+where
+    SavitzkyGolayFilter<T>: Smooth<Output: Default, Error = DerivativeError>,
+{
+    type Error = DerivativeError;
+    type Output = TransmitSummary<<SavitzkyGolayFilter<T> as Smooth>::Output>;
+
+    fn smooth(&self) -> Result<Self::Output, Self::Error> {
+        let mut out = TransmitSummary::new();
+        let items = self
+            .dst
+            .iter()
+            .map(|(&k, v)| {
+                let packets = v.packets.smooth()?;
+                let bytes = v.bytes.smooth()?;
+                Ok((k, PacketAndByte { packets, bytes }))
+            })
+            .collect::<Result<Vec<_>, DerivativeError>>()?
+            .into_iter();
+
+        for (k, v) in items {
+            out.dst.insert(k, v);
+        }
+        Ok(out)
+    }
+}
+
+impl<K, V, S> HashMapSmoothing for hashbrown::HashMap<K, V, S>
+where
+    K: Hash + Eq + Clone,
+    V: Smooth,
+    S: BuildHasher,
+{
+    type Error = ();
+    type Output = hashbrown::HashMap<K, V::Output>;
+
+    fn smooth(&self) -> Result<Self::Output, Self::Error> {
+        Ok(self
+            .iter()
+            .filter_map(|(k, v)| Some((k.clone(), v.smooth().ok()?)))
+            .collect())
     }
 }
 
