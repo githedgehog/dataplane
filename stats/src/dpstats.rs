@@ -2,8 +2,7 @@
 // Copyright Open Network Fabric Authors
 //
 
-//! Implements a packet stats sink.
-
+use crate::rate::{HashMapSmoothing, SavitzkyGolayFilter};
 use net::packet::Packet;
 use pipeline::NetworkFunction;
 
@@ -13,7 +12,6 @@ use std::time::{Duration, Instant};
 use vpcmap::VpcDiscriminant;
 use vpcmap::map::VpcMapReader;
 
-use crate::rate::SavitzkyGolayFilter;
 use crate::{RegisteredVpcMetrics, Specification, VpcMetricsSpec};
 use net::buffer::PacketBufferMut;
 use rand::RngCore;
@@ -37,6 +35,18 @@ impl VpcMapName {
     }
 }
 
+/// Compute overlap in nanoseconds between [a_start, a_end] and [b_start, b_end].
+#[inline]
+fn overlap_nanos(a_start: Instant, a_end: Instant, b_start: Instant, b_end: Instant) -> u128 {
+    let start = if a_start > b_start { a_start } else { b_start };
+    let end = if a_end < b_end { a_end } else { b_end };
+    if end > start {
+        end.duration_since(start).as_nanos()
+    } else {
+        0
+    }
+}
+
 /// A `StatsCollector` is responsible for collecting and aggregating packet statistics for a
 /// collection of workers running packet processing pipelines on various threads.
 #[derive(Debug)]
@@ -44,10 +54,10 @@ pub struct StatsCollector {
     /// metrics maps known VpcDiscriminants to their metrics
     metrics: hashbrown::HashMap<VpcDiscriminant, RegisteredVpcMetrics>,
     /// Outstanding (i.e., not yet submitted) batches.  These batches will eventually be collected
-    /// in to the `submitted` filter in order to calculate rates.
+    /// in to the `submitted` filter in order to calculate smoothed rates.
     outstanding: VecDeque<BatchSummary<u64>>,
-    /// Filter for batches which have been submitted to the `submitted` filter.  This filter is
-    /// used to calculate rates.
+    /// Filter for batches which have been submitted; used to calculate smoothed pps/Bps.
+    /// We push *apportioned per-batch counts* here; with TIME_TICK=1s, smoothing(counts) ≈ smoothing(pps).
     submitted: SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>>,
     /// Reader for the VPC map.  This reader is used to determine the VPCs that are currently
     /// known to the system.
@@ -153,7 +163,7 @@ impl StatsCollector {
         }
     }
 
-    /// Calculate updated stats and submit any expired entries to the rate filter.
+    /// Calculate updated stats and submit any expired entries to the SG filter.
     #[tracing::instrument(level = "trace")]
     fn update(&mut self, update: Option<MetricsUpdate>) {
         if let Some(update) = update {
@@ -170,38 +180,90 @@ impl StatsCollector {
                     }
                 })
                 .collect();
+
+            // Proportionally distribute each (src,dst) update across overlapping batches.
             update.summary.vpc.iter().for_each(|(src, summary)| {
                 summary.dst.iter().for_each(|(dst, stats)| {
-                    slices.iter_mut().for_each(|batch| {
-                        // TODO: this can be much more efficient
-                        let SplitCount {
-                            inside: packets, ..
-                        } = batch.split_count(&update, stats.packets);
-                        let SplitCount { inside: bytes, .. } =
-                            batch.split_count(&update, stats.bytes);
-                        let stats = PacketAndByte { packets, bytes };
-                        if packets == 0 && bytes == 0 {
-                            return;
+                    if stats.packets == 0 && stats.bytes == 0 {
+                        return;
+                    }
+
+                    let upd_start = update.summary.start;
+                    let upd_end = update.start() + update.duration;
+
+                    // Pre-compute overlaps with all candidate batch slices
+                    let overlaps: Vec<u128> = slices
+                        .iter()
+                        .map(|b| overlap_nanos(b.start, b.planned_end, upd_start, upd_end))
+                        .collect();
+                    let total_ov: u128 = overlaps.iter().copied().sum();
+                    if total_ov == 0 {
+                        return;
+                    }
+
+                    // Integer-safe split: give the remainder to the last overlapping bucket
+                    let mut rem_pkts = stats.packets;
+                    let mut rem_bytes = stats.bytes;
+
+                    let last_idx = overlaps
+                        .iter()
+                        .enumerate()
+                        .rfind(|&(_, &ov)| ov > 0)
+                        .map(|(i, _)| i);
+
+                    for (i, batch) in slices.iter_mut().enumerate() {
+                        let ov = overlaps[i];
+                        if ov == 0 {
+                            continue;
                         }
+
+                        let is_last = Some(i) == last_idx;
+
+                        let pkts_in = if is_last {
+                            rem_pkts
+                        } else {
+                            let v = ((stats.packets as u128) * ov / total_ov) as u64;
+                            rem_pkts = rem_pkts.saturating_sub(v);
+                            v
+                        };
+
+                        let bytes_in = if is_last {
+                            rem_bytes
+                        } else {
+                            let v = ((stats.bytes as u128) * ov / total_ov) as u64;
+                            rem_bytes = rem_bytes.saturating_sub(v);
+                            v
+                        };
+
+                        if pkts_in == 0 && bytes_in == 0 {
+                            continue;
+                        }
+
+                        let apportioned = PacketAndByte {
+                            packets: pkts_in,
+                            bytes: bytes_in,
+                        };
+
                         match batch.vpc.get_mut(src) {
                             None => {
                                 let mut tx_summary = TransmitSummary::new();
-                                tx_summary.dst.insert(*dst, stats);
+                                tx_summary.dst.insert(*dst, apportioned);
                                 batch.vpc.insert(*src, tx_summary);
                             }
                             Some(tx_summary) => match tx_summary.dst.get_mut(dst) {
                                 None => {
-                                    tx_summary.dst.insert(*dst, stats);
+                                    tx_summary.dst.insert(*dst, apportioned);
                                 }
                                 Some(s) => {
-                                    *s += stats;
+                                    *s += apportioned;
                                 }
                             },
                         }
-                    })
+                    }
                 });
             });
         }
+
         let current_time = Instant::now();
         let mut expired = self
             .outstanding
@@ -218,7 +280,7 @@ impl StatsCollector {
         }
     }
 
-    /// Submit a concluded set of stats for inclusion in rate calculations
+    /// Submit a concluded set of stats for inclusion in smoothing calculations
     #[tracing::instrument(level = "trace")]
     fn submit_expired(&mut self, concluded: BatchSummary<u64>) {
         const CAPACITY_PADDING: usize = 16;
@@ -229,11 +291,13 @@ impl StatsCollector {
             .last()
             .unwrap_or_else(|| unreachable!())
             .planned_end;
-        let duration = Duration::from_secs(1);
+        let duration = Self::TIME_TICK;
         self.outstanding
             .push_back(BatchSummary::with_start_and_capacity(
                 start, duration, capacity,
             ));
+
+        // Update raw packet/byte COUNTS for “total” metrics (monotonic counters)
         concluded.vpc.iter().for_each(|(&src, tx_summary)| {
             let metrics = match self.metrics.get(&src) {
                 None => {
@@ -255,9 +319,44 @@ impl StatsCollector {
                     }
                 });
         });
+
+        // Push this *apportioned per-batch* snapshot into the SG window.
+        // With TIME_TICK=1s, smoothing these counts ≈ smoothing pps/Bps directly.
         self.submitted.push(concluded.vpc);
 
-        // TODO: add in rate calculations
+        // Build per-source filters and smooth.
+        let filters_by_src: hashbrown::HashMap<
+            VpcDiscriminant,
+            TransmitSummary<SavitzkyGolayFilter<u64>>,
+        > = (&self.submitted).into();
+
+        if let Ok(smoothed_by_src) = filters_by_src.smooth() {
+            smoothed_by_src.iter().for_each(|(&src, tx_summary)| {
+                let metrics = match self.metrics.get(&src) {
+                    None => {
+                        warn!("lost metrics for src {src}");
+                        return;
+                    }
+                    Some(metrics) => metrics,
+                };
+                tx_summary.dst.iter().for_each(|(dst, rate)| {
+                    if let Some(action) = metrics.peering.get(dst) {
+                        // Smoothed packets-per-second / bytes-per-second (since tick=1s)
+                        action.tx.packet.rate.metric.set(rate.packets);
+                        action.tx.byte.rate.metric.set(rate.bytes);
+                        trace!(
+                            "smoothed rate src={:?} dst={:?}: pps={:.3} Bps={:.3}",
+                            src, dst, rate.packets, rate.bytes
+                        );
+                    } else {
+                        warn!("lost metrics for src {src} to dst {dst}");
+                    }
+                });
+            });
+        } else {
+            trace!("Not enough samples yet for smoothing");
+        }
+
         // TODO: add in drop metrics
     }
 }
