@@ -102,7 +102,7 @@ procfs = { version = "0.18.0", default-features = false, features = [] }
 rand = { version = "0.9.2", default-features = false, features = ["thread_rng"] }
 roaring = { version = "0.11.2", default-features = false, features = [] }
 rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions", default-features = false, features = [] }
-rustyline = { version = "17.0.0", default-features = false, features = [] }
+rustyline = { version = "17.0.1", default-features = false, features = [] }
 serde = { version = "1.0.219", default-features = false, features = [] }
 serde_yml = { version = "0.0.12", default-features = false, features = [] }
 shuttle = { version = "0.8.1", default-features = false, features = [] }
