@@ -137,11 +137,6 @@ mod context {
 mod tests {
     use concurrency::concurrency_mode;
 
-    // This test is NOT a shuttle test. It validates that a basic example with threads works with or
-    // without shuttle components (depending on how we compile), as a control test in case shuttle
-    // tests do not work. For example, it helped understand that memory usage for Atomics is
-    // different in shuttle than in std, and that just testing simple allocations as we do here was
-    // not broken - we just needed to increase stack memory for shuttle's runner.
     #[concurrency_mode(std)]
     mod std_tests {
         use super::super::context::*;
@@ -341,6 +336,11 @@ mod tests {
             assert!(in_use.front().unwrap().upgrade().is_none()); // But it no longer resolves
         }
 
+        // This test is NOT a shuttle test. It validates that a basic example with threads works
+        // with or without shuttle components (depending on how we compile), as a control test in
+        // case shuttle tests do not work. For example, it helped understand that memory usage for
+        // Atomics is different in shuttle than in std, and that just testing simple allocations as
+        // we do here was not broken - we just needed to increase stack memory for shuttle's runner.
         #[test]
         fn test_concurrent_allocations_without_shuttle() {
             let tuple1 = NatTuple::new(
