@@ -58,7 +58,7 @@ afpacket = { version = "0.2.3", default-features = false, features = [] }
 ahash = { git = "https://github.com/githedgehog/aHash", branch = "pr/daniel-noland/bump-zero-copy", default-features = false, features = ["no-rng"] }
 arc-swap = { version = "1.7.1", default-features = false, features = [] }
 arrayvec = { version = "0.7.6", default-features = false, features = [] }
-async-trait = { version = "0.1.88", default-features = false, features = [] }
+async-trait = { version = "0.1.89", default-features = false, features = [] }
 axum = { version = "0.8.4", default-features = false, features = [] }
 axum-server = { version = "0.7.2", default-features = false, features = [] }
 bindgen = { version = "0.72.0", default-features = false, features = [] }
