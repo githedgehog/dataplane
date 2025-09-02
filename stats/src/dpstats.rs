@@ -127,31 +127,22 @@ impl StatsCollector {
         info!("started stats update receiver");
         loop {
             trace!("waiting on metrics");
-            tokio::select! {
-                () = tokio::time::sleep(Self::TIME_TICK) => {
-                    info!("no stats received in window");
-                    self.update(None);
+            let delta = self.updates.0.as_async().recv().await;
+            match delta {
+                Ok(delta) => {
+                    trace!("received stats update: {delta:#?}");
+                    self.update(Some(delta));
                 }
-                delta = self.updates.0.as_async().recv() => {
-                    match delta {
-                        Ok(delta) => {
-                            trace!("received stats update: {delta:#?}");
-                            self.update(Some(delta));
-                        },
-                        Err(err) => {
-                            match err {
-                                ReceiveError::Closed => {
-                                    error!("stats receiver closed!");
-                                    panic!("stats receiver closed");
-                                }
-                                ReceiveError::SendClosed => {
-                                    info!("all stats senders are closed");
-                                    return;
-                                }
-                            }
-                        }
+                Err(err) => match err {
+                    ReceiveError::Closed => {
+                        error!("stats receiver closed!");
+                        panic!("stats receiver closed");
                     }
-                }
+                    ReceiveError::SendClosed => {
+                        info!("all stats senders are closed");
+                        return;
+                    }
+                },
             }
         }
     }
@@ -264,12 +255,12 @@ impl StatsCollector {
                 .cumulative_totals
                 .entry(src)
                 .or_insert_with(TransmitSummary::new);
-        
+
             for (&dst, &stats) in tx_summary.dst.iter() {
                 match totals.dst.get_mut(&dst) {
                     Some(entry) => {
                         entry.packets = entry.packets.saturating_add(stats.packets);
-                        entry.bytes   = entry.bytes.saturating_add(stats.bytes);
+                        entry.bytes = entry.bytes.saturating_add(stats.bytes);
                     }
                     None => {
                         totals.dst.insert(dst, stats);
@@ -277,7 +268,7 @@ impl StatsCollector {
                 }
             }
         }
-        
+
         // Push the cumulative snapshot into the SG derivative filter
         debug!("sg snapshot: {:?}", self.cumulative_totals);
         self.submitted.push(self.cumulative_totals.clone());
