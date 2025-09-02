@@ -150,7 +150,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir --parent ./target/nextest
+          # Run tests. The resulting results.json is not a full JSON object but
+          # a list of JSON objects, one per line.
           if [ ${{ matrix.profile.name }} = "fuzz" ]; then
+            echo "::notice::Running fuzz tests"
             just \
               debug_justfile="${{matrix.debug_justfile}}" \
               profile=${{matrix.profile.name}} \
@@ -160,6 +163,7 @@ jobs:
                 --final-status-level=skip \
                 --message-format=libtest-json-plus > ./results.json
           else
+            echo "::notice::Running regular tests"
             just \
               debug_justfile="${{matrix.debug_justfile}}" \
               profile=${{matrix.profile.name}} \
@@ -168,7 +172,28 @@ jobs:
                 --cargo-profile=${{matrix.profile.name}} \
                 --status-level=none \
                 --final-status-level=skip \
-                --message-format=libtest-json-plus > ./results.json
+                --message-format=libtest-json-plus \
+                > ./results.json
+            echo "::notice::Running Shuttle tests"
+            # We need to rebuild using the shuttle feature. To avoid running
+            # all tests a second time, we filter to run only tests with pattern
+            # "shuttle" in their name (test function name, file name, or module
+            # name).
+            #
+            # IF YOUR SHUTTLE TESTS DO NOT HAVE "shuttle" IN THEIR NAME, THEY
+            # WILL NOT RUN.
+            just \
+              debug_justfile="${{matrix.debug_justfile}}" \
+              profile=${{matrix.profile.name}} \
+              target=x86_64-unknown-linux-gnu \
+              ${{matrix.profile.sterile}} cargo nextest run \
+                --cargo-profile=${{matrix.profile.name}} \
+                --status-level=none \
+                --final-status-level=none \
+                --message-format=libtest-json-plus \
+                --features shuttle \
+                shuttle \
+                >> ./results.json
           fi
           # look for any flakes (flakes have a #\\d+ match in their name field)
           jq \
