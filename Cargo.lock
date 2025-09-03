@@ -905,6 +905,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-flow-info"
+version = "0.1.0"
+dependencies = [
+ "atomic-instant-full",
+ "dataplane-concurrency",
+ "dataplane-net",
+ "thiserror 2.0.16",
+]
+
+[[package]]
 name = "dataplane-id"
 version = "0.1.0"
 dependencies = [
@@ -1047,11 +1057,11 @@ name = "dataplane-pkt-meta"
 version = "0.1.0"
 dependencies = [
  "ahash 0.8.10",
- "atomic-instant-full",
  "bolero",
  "dashmap",
  "dataplane-concurrency",
  "dataplane-config",
+ "dataplane-flow-info",
  "dataplane-lpm",
  "dataplane-net",
  "dataplane-pipeline",

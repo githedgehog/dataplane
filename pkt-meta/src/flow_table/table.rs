@@ -3,6 +3,7 @@
 
 use ahash::RandomState;
 use dashmap::DashMap;
+use flow_info::{FlowInfo, FlowStatus};
 use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -11,8 +12,8 @@ use tracing::{debug, error};
 
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
 
+use crate::flow_table::FlowKey;
 use crate::flow_table::thread_local_pq::{PQAction, ThreadLocalPriorityQueue};
-use crate::flow_table::{FlowInfo, FlowKey, FlowStatus};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FlowTableError {

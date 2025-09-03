@@ -13,12 +13,12 @@ bolero = ["dep:bolero", "net/bolero"]
 
 [dependencies]
 ahash = { workspace = true }
-atomic-instant-full = { workspace = true }
 bolero = { workspace = true, optional = true }
 lpm = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
 dashmap = { workspace = true, features = ["raw-api"] }
+flow-info = { workspace = true }
 left-right = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }

@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::fmt::Debug;
-use std::time::{Duration, Instant};
+#![deny(clippy::all, clippy::pedantic)]
+#![deny(rustdoc::all)]
+
+//! Flow information and related types for session tracking, for use with features such as stateful
+//! NAT or firewall.
+
+pub mod atomic_instant;
+
+pub use atomic_instant::AtomicInstant;
 
 use concurrency::sync::RwLock;
 use net::packet::VpcDiscriminant;
-
-use crate::flow_table::AtomicInstant;
-
+use std::fmt::Debug;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FlowInfoError {
