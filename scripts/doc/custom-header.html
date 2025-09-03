@@ -9,34 +9,34 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
 
 <script>
-	const katexStuff = () => {
-		document.addEventListener("DOMContentLoaded", () => {
-			for (const el of document.querySelectorAll("pre.language-math > code")) {
-				const p = document.createElement("p");
-				const outerSpan = document.createElement("span");
-				const newSpan = document.createElement("span");
-				newSpan.classList.add("katex-display");
-				katex.render(el.innerText, newSpan, {throwOnError: true, displayMode: true});
-				p.appendChild(outerSpan);
-				outerSpan.appendChild(newSpan);
-				el.parentNode.parentElement.replaceWith(p);
-			}
-			renderMathInElement(document.body, {
-				delimiters: [
-					{left: "$$", right: "$$", display: true},
-					{left: "$", right: "$", display: false},
-					{left: "$\`", right: "\`$", display: false},
-					{left: "\\(", right: "\\)", display: false},
-					{left: "\\begin{equation}", right: "\\end{equation}", display: true},
-					{left: "\\begin{align}", right: "\\end{align}", display: true},
-					{left: "\\begin{alignat}", right: "\\end{alignat}", display: true},
-					{left: "\\begin{gather}", right: "\\end{gather}", display: true},
-					{left: "\\begin{CD}", right: "\\end{CD}", display: true},
-					{left: "\\[", right: "\\]", display: true}
-				]
-			});
-		});
-	};
+  const katexStuff = () => {
+    document.addEventListener("DOMContentLoaded", () => {
+      for (const el of document.querySelectorAll("pre.language-math > code")) {
+        const p = document.createElement("p");
+        const outerSpan = document.createElement("span");
+        const newSpan = document.createElement("span");
+        newSpan.classList.add("katex-display");
+        katex.render(el.innerText, newSpan, {throwOnError: true, displayMode: true});
+        p.appendChild(outerSpan);
+        outerSpan.appendChild(newSpan);
+        el.parentNode.parentElement.replaceWith(p);
+      }
+      renderMathInElement(document.body, {
+        delimiters: [
+          {left: "$$", right: "$$", display: true},
+          {left: "$", right: "$", display: false},
+          {left: "$\`", right: "\`$", display: false},
+          {left: "\\(", right: "\\)", display: false},
+          {left: "\\begin{equation}", right: "\\end{equation}", display: true},
+          {left: "\\begin{align}", right: "\\end{align}", display: true},
+          {left: "\\begin{alignat}", right: "\\end{alignat}", display: true},
+          {left: "\\begin{gather}", right: "\\end{gather}", display: true},
+          {left: "\\begin{CD}", right: "\\end{CD}", display: true},
+          {left: "\\[", right: "\\]", display: true}
+        ]
+      });
+    });
+  };
 </script>
 
 <!-- To automatically render math in text elements, include the auto-render extension: -->
@@ -45,9 +45,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/mermaid@11.9.0/dist/mermaid.min.js"></script>
 <!-- sometimes the horizontal scrollbar is show if the margins on the math are not quite right -->
 <style>
-
-    .katex-display {
-        padding: 0.2em 0.2em;
-    }
+  .katex-display {
+    padding: 0.2em 0.2em;
+  }
 </style>
-

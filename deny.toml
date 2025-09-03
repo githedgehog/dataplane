@@ -74,7 +74,7 @@ allow = [
   "ZPL-2.0",
   "ZPL-2.1",
   "Zlib",
-  #	"AGPL-3.0", # Causes issues to some companies, such as Google. Deny for now.
+  # "AGPL-3.0", # Causes issues to some companies, such as Google. Deny for now.
   # "GPL-2.0", # rejected till we have a good case where we need them
   # "GPL-3.0", # rejected till we have a good case where we need them
 ]
@@ -89,8 +89,8 @@ exceptions = [
     # Each entry is the crate and version constraint, and its specific allow
     # list
     #{ allow = ["Zlib"], crate = "adler32" },
-  # mostly harmless
-#	{ allow = ["Unicode-DFS-2016"], crate = "unicode-ident" },
+    # mostly harmless
+    #{ allow = ["Unicode-DFS-2016"], crate = "unicode-ident" },
 ]
 
 # Some crates don't have (easily) machine readable licensing information,
