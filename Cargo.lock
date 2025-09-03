@@ -905,6 +905,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-flow-info"
+version = "0.1.0"
+dependencies = [
+ "atomic-instant-full",
+ "dataplane-concurrency",
+ "downcast-rs",
+ "thiserror 2.0.16",
+ "tracing",
+]
+
+[[package]]
 name = "dataplane-id"
 version = "0.1.0"
 dependencies = [
@@ -1047,11 +1058,11 @@ name = "dataplane-pkt-meta"
 version = "0.1.0"
 dependencies = [
  "ahash 0.8.10",
- "atomic-instant-full",
  "bolero",
  "dashmap",
  "dataplane-concurrency",
  "dataplane-config",
+ "dataplane-flow-info",
  "dataplane-lpm",
  "dataplane-net",
  "dataplane-pipeline",
@@ -1260,6 +1271,12 @@ dependencies = [
  "once_cell",
  "winapi",
 ]
+
+[[package]]
+name = "downcast-rs"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "117240f60069e65410b3ae1bb213295bd828f707b5bec6596a1afc8793ce0cbc"
 
 [[package]]
 name = "doxygen-bindgen"

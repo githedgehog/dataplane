@@ -5,9 +5,8 @@ use std::fmt::Debug;
 use std::time::{Duration, Instant};
 
 use concurrency::sync::RwLock;
-use net::packet::VpcDiscriminant;
 
-use crate::flow_table::AtomicInstant;
+use crate::{AtomicInstant, FlowInfoItem};
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -104,9 +103,11 @@ impl From<FlowStatus> for AtomicFlowStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct FlowInfoLocked {
-    pub dst_vpcd: Option<VpcDiscriminant>,
+    // We need this to use downcast because VpcDiscriminant is in net.
+    // We could avoid this indirection by moving Packet into its own crate.
+    pub dst_vpc_info: Option<Box<dyn FlowInfoItem>>,
 }
 
 #[derive(Debug)]
@@ -125,7 +126,7 @@ impl FlowInfo {
         Self {
             expires_at: AtomicInstant::new(expires_at),
             status: AtomicFlowStatus::from(FlowStatus::Active),
-            locked: RwLock::new(FlowInfoLocked { dst_vpcd: None }),
+            locked: RwLock::new(FlowInfoLocked { dst_vpc_info: None }),
         }
     }
 

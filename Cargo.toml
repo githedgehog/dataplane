@@ -10,6 +10,7 @@ members = [
     "dpdk-sys",
     "dpdk-sysroot-helper",
     "errno",
+    "flow-info",
     "id",
     "interface-manager",
     "mgmt",
@@ -38,6 +39,7 @@ dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys" }
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpdk-sysroot-helper" }
 dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", version = "1.1.2" }
 errno = { path = "./errno", package = "dataplane-errno" }
+flow-info = { path = "./flow-info", package = "dataplane-flow-info" }
 gateway_config = { git = "https://github.com/githedgehog/gateway-proto", tag = "v0.12.0", version = "0.12.0" }
 id = { path = "./id", package = "dataplane-id" }
 interface-manager = { path = "./interface-manager", package = "dataplane-interface-manager" }
@@ -72,6 +74,7 @@ clap = { version = "4.5.46", default-features = true, features = [] }
 ctrlc = { version = "3.4.7", default-features = false, features = [] }
 dashmap = { version = "6.1.0", default-features = false, features = [] }
 derive_builder = { version = "0.20.2", default-features = false, features = ["default", "std"] }
+downcast-rs = { version = "2.0.2", default-features = false, features = [] }
 doxygen-bindgen = { version = "0.1.3", default-features = false, features = [] }
 dyn-iter = { version = "1.0.1", default-features = false, features = [] }
 etherparse = { version = "0.19.0", default-features = false, features = [] }

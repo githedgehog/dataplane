@@ -277,6 +277,7 @@ mod tests {
 
     use concurrency::concurrency_mode;
     use concurrency::thread;
+    use flow_info::ExtractRef;
     use net::packet::VpcDiscriminant;
     use net::tcp::TcpPort;
     use net::vxlan::Vni;
@@ -307,15 +308,22 @@ mod tests {
 
             let flow_info = FlowInfo::new(five_seconds_from_now);
 
-            flow_info.locked.write().unwrap().dst_vpcd =
-                Some(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap()));
+            flow_info.locked.write().unwrap().dst_vpc_info =
+                Some(Box::new(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap())));
 
             flow_table.insert(flow_key, flow_info);
             let result = flow_table.remove(&flow_key).unwrap();
             assert!(result.0 == flow_key);
             assert_eq!(
-                result.1.locked.read().unwrap().dst_vpcd,
-                Some(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap()))
+                result
+                    .1
+                    .locked
+                    .read()
+                    .unwrap()
+                    .dst_vpc_info
+                    .extract_ref::<VpcDiscriminant>()
+                    .unwrap(),
+                &VpcDiscriminant::VNI(Vni::new_checked(2).unwrap())
             );
         }
 
@@ -638,27 +646,41 @@ mod tests {
 
                     handles.push(thread::spawn(move || {
                         let flow_info = FlowInfo::new(five_seconds_from_now);
-                        flow_info.locked.write().unwrap().dst_vpcd =
-                            Some(VpcDiscriminant::VNI(Vni::new_checked(3).unwrap()));
+                        flow_info.locked.write().unwrap().dst_vpc_info =
+                            Some(Box::new(VpcDiscriminant::VNI(Vni::new_checked(3).unwrap())));
                         flow_table_clone1.insert(flow_key1, flow_info);
                         let result = flow_table_clone1.remove(&flow_key1).unwrap();
                         assert!(result.0 == flow_key1);
                         assert_eq!(
-                            result.1.locked.read().unwrap().dst_vpcd,
-                            Some(VpcDiscriminant::VNI(Vni::new_checked(3).unwrap()))
+                            result
+                                .1
+                                .locked
+                                .read()
+                                .unwrap()
+                                .dst_vpc_info
+                                .extract_ref::<VpcDiscriminant>()
+                                .unwrap(),
+                            &VpcDiscriminant::VNI(Vni::new_checked(3).unwrap())
                         );
                     }));
 
                     handles.push(thread::spawn(move || {
                         let flow_info = FlowInfo::new(five_seconds_from_now);
-                        flow_info.locked.write().unwrap().dst_vpcd =
-                            Some(VpcDiscriminant::VNI(Vni::new_checked(4).unwrap()));
+                        flow_info.locked.write().unwrap().dst_vpc_info =
+                            Some(Box::new(VpcDiscriminant::VNI(Vni::new_checked(4).unwrap())));
                         flow_table_clone2.insert(flow_key2, flow_info);
                         let result = flow_table.remove(&flow_key2).unwrap();
                         assert!(result.0 == flow_key2);
                         assert_eq!(
-                            result.1.locked.read().unwrap().dst_vpcd,
-                            Some(VpcDiscriminant::VNI(Vni::new_checked(4).unwrap()))
+                            result
+                                .1
+                                .locked
+                                .read()
+                                .unwrap()
+                                .dst_vpc_info
+                                .extract_ref::<VpcDiscriminant>()
+                                .unwrap(),
+                            &VpcDiscriminant::VNI(Vni::new_checked(4).unwrap())
                         );
                     }));
 
