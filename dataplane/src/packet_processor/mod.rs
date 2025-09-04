@@ -68,7 +68,7 @@ where
     pub router: Router,
     pub pipeline: DynPipeline<Buf>,
     pub vpcmapw: VpcMapWriter<VpcMapName>,
-    pub nattable: NatTablesWriter,
+    pub nattablew: NatTablesWriter,
     pub natallocatorw: NatAllocatorWriter,
     pub vpcdtablesw: VpcDiscTablesWriter,
     pub stats: StatsCollector,
@@ -78,7 +78,7 @@ where
 pub(crate) fn start_router<Buf: PacketBufferMut>(
     params: RouterParams,
 ) -> Result<InternalSetup<Buf>, RouterError> {
-    let nattable = NatTablesWriter::new();
+    let nattablew = NatTablesWriter::new();
     let natallocatorw = NatAllocatorWriter::new();
     let vpcdtablesw = VpcDiscTablesWriter::new();
     let router = Router::new(params)?;
@@ -89,14 +89,14 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         router.get_fibtr(),
         router.get_atabler(),
         writer,
-        nattable.get_reader(),
+        nattablew.get_reader(),
         vpcdtablesw.get_reader(),
     );
     Ok(InternalSetup {
         router,
         pipeline,
         vpcmapw,
-        nattable,
+        nattablew,
         natallocatorw,
         vpcdtablesw,
         stats,
