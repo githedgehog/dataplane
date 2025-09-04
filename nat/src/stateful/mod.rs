@@ -2,10 +2,13 @@
 // Copyright Open Network Fabric Authors
 
 mod allocator;
+mod allocator_writer;
 pub mod apalloc;
 mod natip;
 mod port;
 pub mod sessions;
+
+pub use allocator_writer::NatAllocatorWriter;
 
 use crate::stateful::allocator::{AllocationResult, NatAllocator};
 use crate::stateful::apalloc::AllocatedIpPort;

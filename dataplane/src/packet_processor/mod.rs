@@ -13,6 +13,7 @@ use super::packet_processor::ipforward::IpForwarder;
 use pkt_meta::dst_vpcd_lookup::{DstVpcdLookup, VpcDiscTablesReader, VpcDiscTablesWriter};
 
 use nat::StatelessNat;
+use nat::stateful::NatAllocatorWriter;
 use nat::stateless::{NatTablesReader, NatTablesWriter};
 
 use net::buffer::PacketBufferMut;
@@ -68,6 +69,7 @@ where
     pub pipeline: DynPipeline<Buf>,
     pub vpcmapw: VpcMapWriter<VpcMapName>,
     pub nattable: NatTablesWriter,
+    pub natallocatorw: NatAllocatorWriter,
     pub vpcdtablesw: VpcDiscTablesWriter,
     pub stats: StatsCollector,
 }
@@ -77,6 +79,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     params: RouterParams,
 ) -> Result<InternalSetup<Buf>, RouterError> {
     let nattable = NatTablesWriter::new();
+    let natallocatorw = NatAllocatorWriter::new();
     let vpcdtablesw = VpcDiscTablesWriter::new();
     let router = Router::new(params)?;
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
@@ -94,6 +97,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         pipeline,
         vpcmapw,
         nattable,
+        natallocatorw,
         vpcdtablesw,
         stats,
     })

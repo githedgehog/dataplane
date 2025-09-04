@@ -20,6 +20,7 @@ use config::{ExternalConfig, GenId, GwConfig, InternalConfig};
 
 use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
+use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
 use nat::stateless::setup::{build_nat_configuration, validate_nat_configuration};
 use pkt_meta::dst_vpcd_lookup::VpcDiscTablesWriter;
@@ -82,6 +83,7 @@ pub(crate) struct ConfigProcessor {
     vpc_mgr: VpcManager<RequiredInformationBase>,
     vpcmapw: VpcMapWriter<VpcMapName>,
     nattablew: NatTablesWriter,
+    natallocatorw: NatAllocatorWriter,
     vnitablesw: VpcDiscTablesWriter,
 }
 
@@ -96,6 +98,7 @@ impl ConfigProcessor {
         router_ctl: RouterCtlSender,
         vpcmapw: VpcMapWriter<VpcMapName>,
         nattablew: NatTablesWriter,
+        natallocatorw: NatAllocatorWriter,
         vnitablesw: VpcDiscTablesWriter,
     ) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
@@ -116,6 +119,7 @@ impl ConfigProcessor {
             vpc_mgr,
             vpcmapw,
             nattablew,
+            natallocatorw,
             vnitablesw,
         };
         (processor, tx)
@@ -171,6 +175,7 @@ impl ConfigProcessor {
             &mut self.router_ctl,
             &mut self.vpcmapw,
             &mut self.nattablew,
+            &mut self.natallocatorw,
             &mut self.vnitablesw,
         )
         .await?;
@@ -199,6 +204,7 @@ impl ConfigProcessor {
                 &mut self.router_ctl,
                 &mut self.vpcmapw,
                 &mut self.nattablew,
+                &mut self.natallocatorw,
                 &mut self.vnitablesw,
             )
             .await;
@@ -381,6 +387,8 @@ fn apply_dst_vpcd_lookup_config(
     vpcdtablesw.update_vpcd_tables(vpcd_tables);
     Ok(())
 }
+
+#[allow(clippy::too_many_arguments)]
 /// Main function to apply a config
 async fn apply_gw_config(
     vpc_mgr: &VpcManager<RequiredInformationBase>,
@@ -389,6 +397,7 @@ async fn apply_gw_config(
     router_ctl: &mut RouterCtlSender,
     vpcmapw: &mut VpcMapWriter<VpcMapName>,
     nattablesw: &mut NatTablesWriter,
+    _natallocatorw: &mut NatAllocatorWriter,
     vpcdtablesw: &mut VpcDiscTablesWriter,
 ) -> ConfigResult {
     let genid = config.genid();

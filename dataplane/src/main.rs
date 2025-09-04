@@ -96,6 +96,7 @@ fn main() {
         grpc_addr,
         setup.router.get_ctl_tx(),
         setup.nattable,
+        setup.natallocatorw,
         setup.vpcdtablesw,
         setup.vpcmapw,
     )

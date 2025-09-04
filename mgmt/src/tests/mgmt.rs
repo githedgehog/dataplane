@@ -6,6 +6,7 @@
 pub mod test {
     use caps::Capability::CAP_NET_ADMIN;
     use lpm::prefix::Prefix;
+    use nat::stateful::NatAllocatorWriter;
     use nat::stateless::NatTablesWriter;
     use net::eth::mac::Mac;
     use net::interface::Mtu;
@@ -384,12 +385,16 @@ pub mod test {
         /* crate NatTables for stateless nat */
         let nattablesw = NatTablesWriter::new();
 
+        /* crate NatAllocator for stateful nat */
+        let natallocatorw = NatAllocatorWriter::new();
+
         /* crate VniTables for dst_vni_lookup */
         let vnitablesw = VpcDiscTablesWriter::new();
 
         /* build config processor to test the processing of a config. The processor embeds the config database
         and has the frrmi. In this test, we don't use any channel to communicate the config. */
-        let (mut processor, _sender) = ConfigProcessor::new(ctl, vpcmapw, nattablesw, vnitablesw);
+        let (mut processor, _sender) =
+            ConfigProcessor::new(ctl, vpcmapw, nattablesw, natallocatorw, vnitablesw);
 
         /* let the processor process the config */
         match processor.process_incoming_config(config).await {
