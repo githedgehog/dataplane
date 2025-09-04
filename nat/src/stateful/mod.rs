@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 mod allocator;
-mod apalloc;
+pub mod apalloc;
 mod natip;
 mod port;
 pub mod sessions;

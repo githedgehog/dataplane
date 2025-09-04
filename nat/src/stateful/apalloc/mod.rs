@@ -54,13 +54,15 @@
 //! Returned object
 //! ```
 //!
-//! The [`AllocatedPort`](port_alloc::AllocatedPort) has a back-reference to [`AllocatedPortBlock`],
-//! to deallocate the ports when the [`AllocatedPort`](port_alloc::AllocatedPort) is dropped;
+//! The [`AllocatedPort`](port_alloc::AllocatedPort) has a back-reference to
+//! [`AllocatedPortBlock`](port_alloc::AllocatedPortBlock), to deallocate the ports when the
+//! [`AllocatedPort`](port_alloc::AllocatedPort) is dropped;
 //! [`AllocatedPortBlock`](port_alloc::AllocatedPortBlock) has a back reference to
 //! [`AllocatedIp`](alloc::AllocatedIp), and then the [`IpAllocator`](alloc::IpAllocator), to
 //! deallocate the IP address when they are dropped.
 
 #![allow(clippy::ip_constant)]
+#![allow(rustdoc::private_intra_doc_links)]
 
 use super::NatVpcId;
 use super::allocator::{AllocationResult, AllocatorError};
