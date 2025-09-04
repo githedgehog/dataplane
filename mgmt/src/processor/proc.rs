@@ -14,6 +14,7 @@ use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver;
 
 use config::external::overlay::Overlay;
+use config::external::overlay::vpc::VpcTable;
 use config::{ConfigError, ConfigResult, stringify};
 use config::{ExternalConfig, GenId, GwConfig, InternalConfig};
 
@@ -361,9 +362,12 @@ fn update_stats_vpc_mappings(config: &GwConfig, vpcmapw: &mut VpcMapWriter<VpcMa
 }
 
 /// Update the Nat tables for stateless NAT
-fn apply_nat_config(overlay: &Overlay, nattablesw: &mut NatTablesWriter) -> ConfigResult {
-    validate_nat_configuration(&overlay.vpc_table)?;
-    let nat_table = build_nat_configuration(&overlay.vpc_table)?;
+fn apply_stateless_nat_config(
+    vpc_table: &VpcTable,
+    nattablesw: &mut NatTablesWriter,
+) -> ConfigResult {
+    validate_nat_configuration(vpc_table)?;
+    let nat_table = build_nat_configuration(vpc_table)?;
     nattablesw.update_nat_tables(nat_table);
     Ok(())
 }
@@ -417,8 +421,8 @@ async fn apply_gw_config(
     /* get vrf interfaces from kernel and build a hashmap keyed by name */
     let kernel_vrfs = vpc_mgr.get_kernel_vrfs().await?;
 
-    /* apply nat config */
-    apply_nat_config(&config.external.overlay, nattablesw)?;
+    /* apply stateless NAT config */
+    apply_stateless_nat_config(&config.external.overlay.vpc_table, nattablesw)?;
 
     /* apply dst_vpcd_lookup config */
     apply_dst_vpcd_lookup_config(&config.external.overlay, vpcdtablesw)?;

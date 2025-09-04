@@ -94,7 +94,7 @@ impl PerVniTable {
     }
 }
 
-/// Main function to build the NAT configuration (`NatTables`) for a given `Overlay` configuration.
+/// Main function to build the NAT configuration (`NatTables`) for a given `VpcTable`.
 pub fn build_nat_configuration(vpc_table: &VpcTable) -> Result<NatTables, ConfigError> {
     let mut nat_tables = NatTables::new();
     for vpc in vpc_table.values() {
