@@ -1029,6 +1029,8 @@ dependencies = [
  "arrayvec",
  "bitflags 2.9.3",
  "bolero",
+ "dataplane-concurrency",
+ "dataplane-flow-info",
  "dataplane-id",
  "derive_builder 0.20.2",
  "etherparse",

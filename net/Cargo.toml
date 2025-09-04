@@ -17,8 +17,10 @@ ahash = { workspace = true }
 arrayvec = { workspace = true, features = ["serde", "std"] }
 bitflags = { workspace = true }
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional = true }
+concurrency = { workspace = true }
 derive_builder = { workspace = true, features = ["alloc"] }
 etherparse = { workspace = true, features = ["std"] }
+flow-info = { workspace = true }
 linux-raw-sys = { workspace = true, features = ["std", "if_ether"] }
 multi_index_map = { workspace = true, default-features = false, features = ["serde"] }
 ordermap = { workspace = true, features = ["std"] }

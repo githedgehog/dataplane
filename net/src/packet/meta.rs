@@ -5,6 +5,8 @@
 
 use crate::vxlan::Vni;
 use bitflags::bitflags;
+use concurrency::sync::Arc;
+use flow_info::FlowInfo;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -126,6 +128,7 @@ pub struct PacketMeta {
     pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
     pub src_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a received encapsulated packet */
     pub dst_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a packet to be (or already) re-encapsulated by the gateway */
+    pub flow_info: Option<Arc<FlowInfo>>, /* flow specific information that can be looked up in the flow table */
 }
 impl PacketMeta {
     #[must_use]
@@ -134,10 +137,9 @@ impl PacketMeta {
         if keep {
             flags |= MetaFlags::KEEP;
         }
-        Self {
-            flags,
-            ..Default::default()
-        }
+        let mut ret = Self::default();
+        ret.flags = flags;
+        ret
     }
     #[must_use]
     pub fn nat(&self) -> bool {
