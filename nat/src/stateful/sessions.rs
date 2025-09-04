@@ -162,6 +162,7 @@ pub struct NatState {
 }
 
 impl NatState {
+    #[must_use]
     pub fn new(
         target_src_addr: Option<IpAddr>,
         target_dst_addr: Option<IpAddr>,
@@ -181,6 +182,7 @@ impl NatState {
             originator: 0,
         }
     }
+    #[must_use]
     pub fn get_nat(
         &self,
     ) -> (
@@ -202,9 +204,11 @@ impl NatState {
     pub fn set_closed_at(&mut self, closed_at: Instant) {
         self.closed_at = Some(closed_at);
     }
+    #[must_use]
     pub fn get_num_packets(&self) -> u64 {
         self.packets
     }
+    #[must_use]
     pub fn get_num_bytes(&self) -> u64 {
         self.bytes
     }
