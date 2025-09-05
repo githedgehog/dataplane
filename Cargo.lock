@@ -1003,6 +1003,7 @@ name = "dataplane-nat"
 version = "0.1.0"
 dependencies = [
  "ahash 0.8.10",
+ "arc-swap",
  "bolero",
  "dashmap",
  "dataplane-concurrency",

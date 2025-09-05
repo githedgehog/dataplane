@@ -9,9 +9,9 @@ use concurrency::concurrency_mode;
 // by tests in other modules. These helpers are not to be used outside of tests.
 mod context {
     use crate::stateful::allocator::AllocationResult;
+    use crate::stateful::allocator_writer::StatefulNatConfig;
     use crate::stateful::apalloc::alloc::IpAllocator;
     use crate::stateful::apalloc::port_alloc::AllocatedPort;
-    use crate::stateful::apalloc::setup::build_nat_allocator;
     use crate::stateful::apalloc::{NatDefaultAllocator, NatIpWithBitmap, PoolTable, PoolTableKey};
     use config::ConfigError;
     use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
@@ -132,7 +132,8 @@ mod context {
 
     pub fn build_allocator() -> Result<NatDefaultAllocator, ConfigError> {
         let vpc_table = build_context();
-        build_nat_allocator(&vpc_table)
+        let config = StatefulNatConfig::new(&vpc_table);
+        NatDefaultAllocator::build_nat_allocator(&config)
     }
 }
 

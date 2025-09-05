@@ -383,7 +383,7 @@ fn apply_stateful_nat_config(
     vpc_table: &VpcTable,
     natallocatorw: &mut NatAllocatorWriter,
 ) -> ConfigResult {
-    natallocatorw.update_allocator(vpc_table);
+    natallocatorw.update_allocator(vpc_table)?;
     Ok(())
 }
 

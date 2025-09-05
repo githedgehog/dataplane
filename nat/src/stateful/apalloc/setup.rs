@@ -5,42 +5,42 @@ use super::NatIpWithBitmap;
 use super::alloc::{IpAllocator, NatPool, PoolBitmap};
 use super::{NatDefaultAllocator, PoolTable, PoolTableKey};
 use crate::stateful::allocator::AllocatorError;
+use crate::stateful::allocator_writer::StatefulNatConfig;
 use crate::stateful::{NatAllocator, NatIp, NatVpcId};
 use config::ConfigError;
-use config::external::overlay::vpc::{Peering, VpcTable};
+use config::external::overlay::vpc::Peering;
 use config::external::overlay::vpcpeering::VpcExpose;
 use config::utils::collapse_prefixes_peering;
 use lpm::prefix::{IpPrefix, Prefix};
 use net::ip::NextHeader;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Build a [`NatDefaultAllocator`] from a [`VpcTable`]
-///
-/// # Returns
-///
-/// A [`NatDefaultAllocator`] that can be used to allocate NAT addresses, or a [`ConfigError`]
-/// if building the allocator fails.
-///
-/// # Errors
-///
-/// [`ConfigError::FailureApply`] if adding a peering fails.
-//
-// TODO: Call me maybe
-#[allow(dead_code)]
-pub fn build_nat_allocator(vpc_table: &VpcTable) -> Result<NatDefaultAllocator, ConfigError> {
-    let mut allocator = NatDefaultAllocator::new();
-    for vpc in vpc_table.values() {
-        for peering in &vpc.peerings {
-            let dst_vni = vpc_table.get_remote_vni(peering);
+impl NatDefaultAllocator {
+    /// Build a [`NatDefaultAllocator`] from information collected from a [`VpcTable`] object. This
+    /// information is passed as a [`StatefulNatConfig`].
+    ///
+    /// # Returns
+    ///
+    /// A [`NatDefaultAllocator`] that can be used to allocate NAT addresses, or a [`ConfigError`]
+    /// if building the allocator fails.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::FailureApply`] if adding a peering fails.
+    pub(crate) fn build_nat_allocator(config: &StatefulNatConfig) -> Result<Self, ConfigError> {
+        let mut allocator = NatDefaultAllocator::new();
+        for peering_data in config.iter() {
             allocator
-                .add_peering_addresses(peering, vpc.vni, dst_vni)
+                .add_peering_addresses(
+                    &peering_data.peering,
+                    peering_data.src_vpc_id,
+                    peering_data.dst_vpc_id,
+                )
                 .map_err(|e| ConfigError::FailureApply(e.to_string()))?;
         }
+        Ok(allocator)
     }
-    Ok(allocator)
-}
 
-impl NatDefaultAllocator {
     fn add_peering_addresses(
         &mut self,
         peering: &Peering,
