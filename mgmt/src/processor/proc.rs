@@ -378,6 +378,15 @@ fn apply_stateless_nat_config(
     Ok(())
 }
 
+/// Update the config for stateful NAT
+fn apply_stateful_nat_config(
+    vpc_table: &VpcTable,
+    natallocatorw: &mut NatAllocatorWriter,
+) -> ConfigResult {
+    natallocatorw.update_allocator(vpc_table);
+    Ok(())
+}
+
 /// Update the VNI tables for dst_vni_lookup
 fn apply_dst_vpcd_lookup_config(
     overlay: &Overlay,
@@ -397,7 +406,7 @@ async fn apply_gw_config(
     router_ctl: &mut RouterCtlSender,
     vpcmapw: &mut VpcMapWriter<VpcMapName>,
     nattablesw: &mut NatTablesWriter,
-    _natallocatorw: &mut NatAllocatorWriter,
+    natallocatorw: &mut NatAllocatorWriter,
     vpcdtablesw: &mut VpcDiscTablesWriter,
 ) -> ConfigResult {
     let genid = config.genid();
@@ -432,6 +441,9 @@ async fn apply_gw_config(
 
     /* apply stateless NAT config */
     apply_stateless_nat_config(&config.external.overlay.vpc_table, nattablesw)?;
+
+    /* apply stateful NAT config */
+    apply_stateful_nat_config(&config.external.overlay.vpc_table, natallocatorw)?;
 
     /* apply dst_vpcd_lookup config */
     apply_dst_vpcd_lookup_config(&config.external.overlay, vpcdtablesw)?;
