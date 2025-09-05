@@ -51,15 +51,15 @@ impl NatDefaultAllocator {
             .map_err(|e| AllocatorError::InternalIssue(e.to_string()))?;
 
         // Update table for source NAT
-        self.update_src_nat_pool_for_expose(&new_peering, src_vpc_id, dst_vpc_id)?;
+        self.build_src_nat_pool_for_expose(&new_peering, src_vpc_id, dst_vpc_id)?;
 
         // Update table for destination NAT
-        self.update_dst_nat_pool_for_expose(&new_peering, src_vpc_id, dst_vpc_id)?;
+        self.build_dst_nat_pool_for_expose(&new_peering, src_vpc_id, dst_vpc_id)?;
 
         Ok(())
     }
 
-    fn update_src_nat_pool_for_expose(
+    fn build_src_nat_pool_for_expose(
         &mut self,
         peering: &Peering,
         src_vpc_id: NatVpcId,
@@ -67,7 +67,7 @@ impl NatDefaultAllocator {
     ) -> Result<(), AllocatorError> {
         filter_v4_exposes(&peering.local.exposes).try_for_each(|expose| {
             let ip_allocator = ip_allocator_for_prefixes(&expose.as_range)?;
-            update_src_nat_pool_generic(
+            build_src_nat_pool_generic(
                 &mut self.pools_src44,
                 expose,
                 src_vpc_id,
@@ -78,7 +78,7 @@ impl NatDefaultAllocator {
 
         filter_v6_exposes(&peering.local.exposes).try_for_each(|expose| {
             let ip_allocator = ip_allocator_for_prefixes(&expose.as_range)?;
-            update_src_nat_pool_generic(
+            build_src_nat_pool_generic(
                 &mut self.pools_src66,
                 expose,
                 src_vpc_id,
@@ -90,7 +90,7 @@ impl NatDefaultAllocator {
         Ok(())
     }
 
-    fn update_dst_nat_pool_for_expose(
+    fn build_dst_nat_pool_for_expose(
         &mut self,
         peering: &Peering,
         src_vpc_id: NatVpcId,
@@ -98,7 +98,7 @@ impl NatDefaultAllocator {
     ) -> Result<(), AllocatorError> {
         filter_v4_exposes(&peering.remote.exposes).try_for_each(|expose| {
             let ip_allocator = ip_allocator_for_prefixes(&expose.ips)?;
-            update_dst_nat_pool_generic(
+            build_dst_nat_pool_generic(
                 &mut self.pools_dst44,
                 expose,
                 src_vpc_id,
@@ -109,7 +109,7 @@ impl NatDefaultAllocator {
 
         filter_v6_exposes(&peering.remote.exposes).try_for_each(|expose| {
             let ip_allocator = ip_allocator_for_prefixes(&expose.ips)?;
-            update_dst_nat_pool_generic(
+            build_dst_nat_pool_generic(
                 &mut self.pools_dst66,
                 expose,
                 src_vpc_id,
@@ -140,7 +140,7 @@ fn filter_v6_exposes(exposes: &[VpcExpose]) -> impl Iterator<Item = &VpcExpose> 
     })
 }
 
-fn update_src_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(
+fn build_src_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     table: &mut PoolTable<I, J>,
     expose: &VpcExpose,
     src_vpc_id: NatVpcId,
@@ -150,7 +150,7 @@ fn update_src_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     add_pool_entries(table, &expose.ips, src_vpc_id, dst_vpc_id, allocator)
 }
 
-fn update_dst_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(
+fn build_dst_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     table: &mut PoolTable<I, J>,
     expose: &VpcExpose,
     src_vpc_id: NatVpcId,
