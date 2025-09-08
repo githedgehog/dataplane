@@ -153,6 +153,7 @@ impl DstVpcdLookup {
         }
         let Some(net) = packet.headers().try_ip() else {
             warn!("{}: No Ip headers, so no dst_vpcd to lookup", self.name);
+            packet.done(DoneReason::NotIp);
             return;
         };
         if let Some(src_vpcd) = packet.meta.src_vpcd {
