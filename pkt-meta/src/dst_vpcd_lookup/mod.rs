@@ -147,41 +147,38 @@ impl DstVpcdLookup {
         tablesr: &ReadGuard<'_, VpcDiscriminantTables>,
         packet: &mut Packet<Buf>,
     ) {
+        let nfi = &self.name;
         if packet.meta.dst_vpcd.is_some() {
-            debug!("{}: Packet already has dst_vpcd, skipping", self.name);
+            debug!("{nfi}: Packet already has dst_vpcd: skipping");
             return;
         }
         let Some(net) = packet.headers().try_ip() else {
-            warn!("{}: No Ip headers, so no dst_vpcd to lookup", self.name);
+            warn!("{nfi}: Packet has no Ip headers: can't look up dst_vpcd");
             packet.done(DoneReason::NotIp);
             return;
         };
-        if let Some(src_vpcd) = packet.meta.src_vpcd {
-            let vpcd_table = tablesr.tables_by_discriminant.get(&src_vpcd);
-            if let Some(vpcd_table) = vpcd_table {
-                let dst_vpcd = vpcd_table.dst_vpcds.lookup(net.dst_addr());
-                if let Some((prefix, dst_vpcd)) = dst_vpcd {
-                    debug!(
-                        "{}: Tagging packet with dst_vpcd {dst_vpcd} using {prefix} using table for src_vpcd {src_vpcd}",
-                        self.name
-                    );
-                    packet.meta.dst_vpcd = Some(*dst_vpcd);
-                } else {
-                    debug!(
-                        "{}: no dst_vpcd found for {} in src_vpcd {src_vpcd}, marking packet as unroutable",
-                        self.name,
-                        net.dst_addr()
-                    );
-                    packet.done(DoneReason::Unroutable);
-                }
+        let Some(src_vpcd) = packet.meta.src_vpcd else {
+            warn!("{nfi}: Packet does not have src vpcd: marking as unroutable");
+            packet.done(DoneReason::Unroutable);
+            return;
+        };
+        let dst_ip = net.dst_addr();
+        if let Some(vpcd_table) = tablesr.tables_by_discriminant.get(&src_vpcd) {
+            let dst_vpcd = vpcd_table.dst_vpcds.lookup(dst_ip);
+            if let Some((prefix, dst_vpcd)) = dst_vpcd {
+                debug!(
+                    "{nfi}: Set packet dst_vpcd to {dst_vpcd} from src_vpcd:{src_vpcd}, prefix:{prefix}"
+                );
+                packet.meta.dst_vpcd = Some(*dst_vpcd);
             } else {
                 debug!(
-                    "{}: no vpcd table found for src_vpcd {src_vpcd} (dst_addr={})",
-                    self.name,
-                    net.dst_addr()
+                    "{nfi}: no dst_vpcd found for {dst_ip} in src_vpcd {src_vpcd}: marking packet as unroutable"
                 );
                 packet.done(DoneReason::Unroutable);
             }
+        } else {
+            debug!("{nfi}: no vpcd table found for src_vpcd {src_vpcd} (dst_addr={dst_ip})");
+            packet.done(DoneReason::Unroutable);
         }
     }
 }
