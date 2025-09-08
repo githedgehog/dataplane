@@ -92,7 +92,7 @@ impl FlowTable {
     ///
     /// # Returns
     ///
-    /// Returns the old Arc<FlowInfo> associated with the flow key, if any.
+    /// Returns the old `Arc<FlowInfo>` associated with the flow key, if any.
     ///
     /// # Panics
     ///
@@ -111,7 +111,7 @@ impl FlowTable {
     ///
     /// # Returns
     ///
-    /// Returns the old Arc<FlowInfo> associated with the flow key, if any.
+    /// Returns the old `Arc<FlowInfo>` associated with the flow key, if any.
     ///
     /// # Panics
     ///
