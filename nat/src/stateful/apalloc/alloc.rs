@@ -39,6 +39,14 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         }
     }
 
+    pub(crate) fn deep_clone(&self) -> Result<IpAllocator<I>, AllocatorError> {
+        let nat_pool = self
+            .pool
+            .read()
+            .map_err(|_| AllocatorError::InternalIssue("Failed to read pool".to_string()))?;
+        Ok(IpAllocator::new((*nat_pool).clone()))
+    }
+
     fn deallocate_ip(&self, ip: I) {
         self.pool.write().unwrap().deallocate_from_pool(ip);
     }
@@ -178,7 +186,7 @@ impl<I: NatIpWithBitmap> Drop for AllocatedIp<I> {
 /// A [`NatPool`] is a pool of IP addresses that can be allocated from. It contains a bitmap of
 /// available IP addresses, and a list of weak references to [`AllocatedIp`] objects representing
 /// the allocated IPs potentially available for use (if they still have free ports)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct NatPool<I: NatIpWithBitmap> {
     bitmap: PoolBitmap,
     bitmap_mapping: BTreeMap<u32, u128>,
@@ -264,7 +272,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
 
 /// A [`PoolBitmap`] is a bitmap of available IP addresses in a [`NatPool`]. It wraps around a
 /// [`RoaringBitmap`], and provides a few methods to manage the bitmap.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct PoolBitmap(RoaringBitmap);
 
 impl PoolBitmap {

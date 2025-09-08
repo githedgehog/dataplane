@@ -66,24 +66,28 @@ impl NatDefaultAllocator {
         dst_vpc_id: NatVpcId,
     ) -> Result<(), AllocatorError> {
         filter_v4_exposes(&peering.local.exposes).try_for_each(|expose| {
-            let ip_allocator = ip_allocator_for_prefixes(&expose.as_range)?;
+            let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.as_range)?;
+            let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
             build_src_nat_pool_generic(
                 &mut self.pools_src44,
                 expose,
                 src_vpc_id,
                 dst_vpc_id,
-                &ip_allocator,
+                &tcp_ip_allocator,
+                &udp_ip_allocator,
             )
         })?;
 
         filter_v6_exposes(&peering.local.exposes).try_for_each(|expose| {
-            let ip_allocator = ip_allocator_for_prefixes(&expose.as_range)?;
+            let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.as_range)?;
+            let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
             build_src_nat_pool_generic(
                 &mut self.pools_src66,
                 expose,
                 src_vpc_id,
                 dst_vpc_id,
-                &ip_allocator,
+                &tcp_ip_allocator,
+                &udp_ip_allocator,
             )
         })?;
 
@@ -97,24 +101,28 @@ impl NatDefaultAllocator {
         dst_vpc_id: NatVpcId,
     ) -> Result<(), AllocatorError> {
         filter_v4_exposes(&peering.remote.exposes).try_for_each(|expose| {
-            let ip_allocator = ip_allocator_for_prefixes(&expose.ips)?;
+            let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.ips)?;
+            let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
             build_dst_nat_pool_generic(
                 &mut self.pools_dst44,
                 expose,
                 src_vpc_id,
                 dst_vpc_id,
-                &ip_allocator,
+                &tcp_ip_allocator,
+                &udp_ip_allocator,
             )
         })?;
 
         filter_v6_exposes(&peering.remote.exposes).try_for_each(|expose| {
-            let ip_allocator = ip_allocator_for_prefixes(&expose.ips)?;
+            let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.ips)?;
+            let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
             build_dst_nat_pool_generic(
                 &mut self.pools_dst66,
                 expose,
                 src_vpc_id,
                 dst_vpc_id,
-                &ip_allocator,
+                &tcp_ip_allocator,
+                &udp_ip_allocator,
             )
         })?;
 
@@ -145,9 +153,17 @@ fn build_src_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     expose: &VpcExpose,
     src_vpc_id: NatVpcId,
     dst_vpc_id: NatVpcId,
-    allocator: &IpAllocator<J>,
+    tcp_allocator: &IpAllocator<J>,
+    udp_allocator: &IpAllocator<J>,
 ) -> Result<(), AllocatorError> {
-    add_pool_entries(table, &expose.ips, src_vpc_id, dst_vpc_id, allocator)
+    add_pool_entries(
+        table,
+        &expose.ips,
+        src_vpc_id,
+        dst_vpc_id,
+        tcp_allocator,
+        udp_allocator,
+    )
 }
 
 fn build_dst_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(
@@ -155,9 +171,17 @@ fn build_dst_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     expose: &VpcExpose,
     src_vpc_id: NatVpcId,
     dst_vpc_id: NatVpcId,
-    allocator: &IpAllocator<J>,
+    tcp_allocator: &IpAllocator<J>,
+    udp_allocator: &IpAllocator<J>,
 ) -> Result<(), AllocatorError> {
-    add_pool_entries(table, &expose.as_range, src_vpc_id, dst_vpc_id, allocator)
+    add_pool_entries(
+        table,
+        &expose.as_range,
+        src_vpc_id,
+        dst_vpc_id,
+        tcp_allocator,
+        udp_allocator,
+    )
 }
 
 fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
@@ -165,11 +189,12 @@ fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     prefixes: &BTreeSet<Prefix>,
     src_vpc_id: NatVpcId,
     dst_vpc_id: NatVpcId,
-    allocator: &IpAllocator<J>,
+    tcp_allocator: &IpAllocator<J>,
+    udp_allocator: &IpAllocator<J>,
 ) -> Result<(), AllocatorError> {
     for prefix in prefixes {
         let key = pool_table_key_for_expose(prefix, src_vpc_id, dst_vpc_id)?;
-        insert_per_proto_entries(table, key, allocator);
+        insert_per_proto_entries(table, key, tcp_allocator, udp_allocator);
     }
     Ok(())
 }
@@ -177,7 +202,8 @@ fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
 fn insert_per_proto_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     table: &mut PoolTable<I, J>,
     key: PoolTableKey<I>,
-    allocator: &IpAllocator<J>,
+    tcp_allocator: &IpAllocator<J>,
+    udp_allocator: &IpAllocator<J>,
 ) {
     // We insert twice the entry, once for TCP and once for UDP. Allocations for TCP do not affect
     // allocations for UDP, the space defined by the combination of IP addresses and L4 ports is
@@ -185,11 +211,11 @@ fn insert_per_proto_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
 
     let mut tcp_key = key.clone();
     tcp_key.protocol = NextHeader::TCP;
-    table.add_entry(tcp_key, allocator.clone());
+    table.add_entry(tcp_key, tcp_allocator.clone());
 
     let mut udp_key = key;
     udp_key.protocol = NextHeader::UDP;
-    table.add_entry(udp_key, allocator.clone());
+    table.add_entry(udp_key, udp_allocator.clone());
 }
 
 fn ip_allocator_for_prefixes<J: NatIpWithBitmap>(

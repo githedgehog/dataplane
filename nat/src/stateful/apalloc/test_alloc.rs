@@ -336,6 +336,108 @@ mod std_tests {
         assert!(in_use.front().unwrap().upgrade().is_none()); // But it no longer resolves
     }
 
+    #[test]
+    // Allocate an IP for a TCP packet, then for a UDP packet.
+    fn test_tcp_udp() {
+        let tcp_tuple = NatTuple::new(
+            addr_v4("1.1.0.0"),
+            addr_v4("10.3.0.2"),
+            Some(1234),
+            Some(5678),
+            NextHeader::TCP,
+            vni1(),
+            vni2(),
+        );
+        let udp_tuple = NatTuple::new(
+            addr_v4("1.1.0.0"),
+            addr_v4("10.3.0.2"),
+            Some(1234),
+            Some(5678),
+            NextHeader::UDP,
+            vni1(),
+            vni2(),
+        );
+
+        let mut allocator = build_allocator().unwrap();
+        let (bitmap, in_use) = get_ip_allocator_v4(
+            &mut allocator.pools_src44,
+            vni1(),
+            vni2(),
+            NextHeader::TCP,
+            addr_v4("1.1.0.0"),
+        )
+        .get_pool_clone_for_tests();
+        assert_eq!(bitmap.len(), 3); // 3 IP addresses available to NAT 1.1.0.0 (TCP)
+        assert_eq!(in_use.len(), 0); // None allocated yet
+
+        let (bitmap, in_use) = get_ip_allocator_v4(
+            &mut allocator.pools_src44,
+            vni1(),
+            vni2(),
+            NextHeader::UDP,
+            addr_v4("1.1.0.0"),
+        )
+        .get_pool_clone_for_tests();
+        assert_eq!(bitmap.len(), 3); // 3 free IP addresses left to NAT 1.1.0.0 (UDP)
+        assert_eq!(in_use.len(), 0); // None allocated yet
+
+        // Allocate for TCP
+        let tcp_allocation = allocator.allocate_v4(&tcp_tuple).unwrap();
+        print_allocation(&tcp_allocation);
+
+        // Check number of allocated IPs for TCP after we have allocated for TCP
+        let (bitmap, in_use) = get_ip_allocator_v4(
+            &mut allocator.pools_src44,
+            vni1(),
+            vni2(),
+            NextHeader::TCP,
+            addr_v4("1.1.0.0"),
+        )
+        .get_pool_clone_for_tests();
+        assert_eq!(bitmap.len(), 2); // 2 free IP addresses left to NAT 1.1.0.0 (TCP)
+        assert_eq!(in_use.len(), 1); // 1 allocated, in use
+
+        // Check number of allocated IPs for UDP after we have allocated for TCP
+        let (bitmap, in_use) = get_ip_allocator_v4(
+            &mut allocator.pools_src44,
+            vni1(),
+            vni2(),
+            NextHeader::UDP,
+            addr_v4("1.1.0.0"),
+        )
+        .get_pool_clone_for_tests();
+        assert_eq!(bitmap.len(), 3); // 3 free IP addresses left to NAT 1.1.0.0 (UDP)
+        assert_eq!(in_use.len(), 0); // None allocated yet
+
+        // Allocate for UDP
+        let udp_allocation = allocator.allocate_v4(&udp_tuple).unwrap();
+        print_allocation(&udp_allocation);
+
+        // Check number of allocated IPs for TCP after we have allocated for UDP
+        let (bitmap, in_use) = get_ip_allocator_v4(
+            &mut allocator.pools_src44,
+            vni1(),
+            vni2(),
+            NextHeader::TCP,
+            addr_v4("1.1.0.0"),
+        )
+        .get_pool_clone_for_tests();
+        assert_eq!(bitmap.len(), 2); // 2 free IP addresses left to NAT 1.1.0.0 (TCP)
+        assert_eq!(in_use.len(), 1); // 1 allocated, in use
+
+        // Check number of allocated IPs for UDP after we have allocated for UDP
+        let (bitmap, in_use) = get_ip_allocator_v4(
+            &mut allocator.pools_src44,
+            vni1(),
+            vni2(),
+            NextHeader::UDP,
+            addr_v4("1.1.0.0"),
+        )
+        .get_pool_clone_for_tests();
+        assert_eq!(bitmap.len(), 2); // 2 free IP addresses left to NAT 1.1.0.0 (UDP)
+        assert_eq!(in_use.len(), 1); // 1 allocated, in use
+    }
+
     // This test is NOT a shuttle test. It validates that a basic example with threads works
     // with or without shuttle components (depending on how we compile), as a control test in
     // case shuttle tests do not work. For example, it helped understand that memory usage for
