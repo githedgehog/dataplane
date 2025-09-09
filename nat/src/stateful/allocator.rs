@@ -49,7 +49,7 @@ pub struct AllocationResult<T: Debug> {
 /// alternative implementations of the allocator by implementing this trait and trivially replacing
 /// the allocator in use in the pipeline stage.
 #[allow(clippy::type_complexity)]
-pub trait NatAllocator<T, U>: Debug
+pub trait NatAllocator<T, U>: Debug + Sync + Send
 where
     T: Debug,
     U: Debug,
