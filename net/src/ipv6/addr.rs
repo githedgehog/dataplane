@@ -58,6 +58,14 @@ impl From<UnicastIpv6Addr> for Ipv6Addr {
     }
 }
 
+impl TryFrom<Ipv6Addr> for UnicastIpv6Addr {
+    type Error = Ipv6Addr;
+
+    fn try_from(value: Ipv6Addr) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
 impl TryFrom<IpAddr> for UnicastIpv6Addr {
     type Error = IpAddr;
     fn try_from(value: IpAddr) -> Result<Self, Self::Error> {
