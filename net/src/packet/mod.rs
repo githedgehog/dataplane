@@ -368,7 +368,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
 }
 
 #[cfg(any(test, feature = "bolero"))]
-mod contract {
+/// The fuzz testing contract for the `Packet` type
+pub mod contract {
     use crate::buffer::{GenerateTestBufferForHeaders, TestBuffer};
     use crate::headers::{CommonHeaders, Headers, Net};
     use crate::packet::Packet;
