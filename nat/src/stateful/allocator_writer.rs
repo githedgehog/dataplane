@@ -53,6 +53,11 @@ impl NatAllocatorWriter {
         }
     }
 
+    #[must_use]
+    pub fn get_reader(&self) -> NatAllocatorReader {
+        NatAllocatorReader(self.allocator.clone())
+    }
+
     pub fn update_allocator(&mut self, vpc_table: &VpcTable) -> Result<(), ConfigError> {
         let new_config = StatefulNatConfig::new(vpc_table);
 
@@ -91,5 +96,14 @@ impl NatAllocatorWriter {
 impl Default for NatAllocatorWriter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[derive(Debug)]
+pub struct NatAllocatorReader(Arc<ArcSwapOption<NatDefaultAllocator>>);
+
+impl NatAllocatorReader {
+    pub fn get(&self) -> Option<Arc<NatDefaultAllocator>> {
+        self.0.load().clone()
     }
 }

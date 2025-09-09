@@ -11,6 +11,7 @@ pub mod sessions;
 pub use allocator_writer::NatAllocatorWriter;
 
 use crate::stateful::allocator::{AllocationResult, NatAllocator};
+use crate::stateful::allocator_writer::NatAllocatorReader;
 use crate::stateful::apalloc::AllocatedIpPort;
 use crate::stateful::apalloc::{NatDefaultAllocator, NatIpWithBitmap};
 use crate::stateful::natip::NatIp;
@@ -78,17 +79,31 @@ impl<I: NatIp> NatTuple<I> {
 #[derive(Debug)]
 pub struct StatefulNat {
     sessions: NatDefaultSessionManager,
-    allocator: NatDefaultAllocator,
+    allocator: NatAllocatorReader,
 }
 
 #[allow(clippy::new_without_default)]
 impl StatefulNat {
     /// Creates a new [`StatefulNat`] processor.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new() -> (Self, NatAllocatorWriter) {
+        let allocator_writer = NatAllocatorWriter::new();
+        let allocator_reader = allocator_writer.get_reader();
+        (
+            Self {
+                sessions: NatDefaultSessionManager::new(),
+                allocator: allocator_reader,
+            },
+            allocator_writer,
+        )
+    }
+
+    /// Creates a new [`StatefulNat`] processor as `new()`, but uses the provided `NatAllocatorReader`.
+    #[must_use]
+    pub fn with_reader(allocator: NatAllocatorReader) -> Self {
         Self {
+            allocator,
             sessions: NatDefaultSessionManager::new(),
-            allocator: NatDefaultAllocator::new(),
         }
     }
 
@@ -365,8 +380,14 @@ impl StatefulNat {
             return Some(());
         }
 
+        let Some(allocator) = self.allocator.get() else {
+            // No allocator set
+            // TODO: Drop packet, update metrics
+            return None;
+        };
+
         // Else, if we need NAT for this packet, create a new session and translate the address
-        let Ok(alloc) = self.allocator.allocate_v4(tuple) else {
+        let Ok(alloc) = allocator.allocate_v4(tuple) else {
             // TODO: Log error, drop packet, update metrics
             return None;
         };
@@ -404,8 +425,14 @@ impl StatefulNat {
             return Some(());
         }
 
+        let Some(allocator) = self.allocator.get() else {
+            // No allocator set
+            // TODO: Drop packet, update metrics
+            return None;
+        };
+
         // Else, if we need NAT for this packet, create a new session and translate the address
-        let Ok(alloc) = self.allocator.allocate_v6(tuple) else {
+        let Ok(alloc) = allocator.allocate_v6(tuple) else {
             // TODO: Log error, drop packet, update metrics
             return None;
         };
