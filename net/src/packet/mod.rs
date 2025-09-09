@@ -31,7 +31,7 @@ pub use hash::*;
 pub use meta::*;
 use std::num::NonZero;
 
-mod utils;
+pub mod utils;
 
 /// A parsed (see [`Parse`]) ethernet packet.
 #[derive(Debug, Clone)]

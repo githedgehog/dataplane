@@ -12,19 +12,26 @@ use crate::eth::mac::{
 };
 use crate::headers::Net::{Ipv4, Ipv6};
 use crate::headers::{
-    Transport, TryEth, TryEthMut, TryIp, TryTcp, TryTransport, TryTransportMut, TryUdp,
+    Transport, TryEth, TryEthMut, TryIp, TryIpv4Mut, TryIpv6Mut, TryTcp, TryTransport,
+    TryTransportMut, TryUdp,
 };
-use crate::ip::NextHeader;
+use crate::ip::{NextHeader, UnicastIpAddr};
 use crate::packet::{Packet, PacketBufferMut};
 use crate::tcp::{Tcp, TcpPort};
 use crate::udp::{Udp, UdpPort};
 
+/// Errors which may occur when using packet utility methods
 #[derive(Debug, thiserror::Error)]
 pub enum PacketUtilError<'a> {
     #[error("invalid transport: {0}")]
+    /// This error is returned when the utility method is called with an incompatible transport header
     InvalidTransport(&'a Transport),
     #[error("no transport")]
+    /// This error is returned when the utility method is called with a packet that does not have a transport header
     NoTransport,
+    #[error("ip address version mismatch for address {0}")]
+    /// This error is returned when the utility method is called with an incompatible ip address type
+    IpVersionMismatch(IpAddr),
 }
 
 fn extract_tcp(transport: &mut Transport) -> Result<&mut Tcp, PacketUtilError<'_>> {
@@ -98,6 +105,54 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             Ipv4(ipv4) => IpAddr::V4(ipv4.destination()),
             Ipv6(ipv6) => IpAddr::V6(ipv6.destination()),
         })
+    }
+
+    /// Set the source ip address of an IPv4 / IPv6 [`Packet`]
+    ///
+    /// # Errors
+    ///
+    /// This method returns [`PacketUtilError::IpVersionMismatch`] if the packet does not match the ip address type
+    pub fn set_ip_source(&mut self, ip: UnicastIpAddr) -> Result<(), PacketUtilError<'_>> {
+        match ip {
+            UnicastIpAddr::V4(ipv4) => match self.try_ipv4_mut() {
+                Some(net) => {
+                    net.set_source(ipv4);
+                    Ok(())
+                }
+                None => Err(PacketUtilError::IpVersionMismatch(ip.into())),
+            },
+            UnicastIpAddr::V6(ipv6) => match self.try_ipv6_mut() {
+                Some(net) => {
+                    net.set_source(ipv6);
+                    Ok(())
+                }
+                None => Err(PacketUtilError::IpVersionMismatch(ip.into())),
+            },
+        }
+    }
+
+    /// Set the destination ip address of an IPv4 / IPv6 [`Packet`]
+    ///
+    /// # Errors
+    ///
+    /// This method returns [`PacketUtilError::IpVersionMismatch`] if the packet does not match the ip address type
+    pub fn set_ip_destination(&mut self, ip: IpAddr) -> Result<(), PacketUtilError<'_>> {
+        match ip {
+            IpAddr::V4(ip) => match self.try_ipv4_mut() {
+                Some(net) => {
+                    net.set_destination(ip);
+                    Ok(())
+                }
+                None => Err(PacketUtilError::IpVersionMismatch(ip.into())),
+            },
+            IpAddr::V6(ip) => match self.try_ipv6_mut() {
+                Some(net) => {
+                    net.set_destination(ip);
+                    Ok(())
+                }
+                None => Err(PacketUtilError::IpVersionMismatch(ip.into())),
+            },
+        }
     }
 
     /// Get the Ip protocol / next-header of an IPv4 / IPv6 [`Packet`]
@@ -228,10 +283,11 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::buffer::TestBuffer;
     use bolero::{Driver, ValueGenerator, check};
+    use std::net::{Ipv4Addr, Ipv6Addr};
     use std::num::NonZero;
 
+    use crate::buffer::TestBuffer;
     use crate::packet::contract::CommonPacket;
     use crate::tcp::TcpPort;
     use crate::udp::UdpPort;
@@ -245,6 +301,32 @@ mod tests {
             let src_port = driver.produce()?;
             let dst_port = driver.produce()?;
             Some((packet, src_port, dst_port))
+        }
+    }
+
+    use crate::headers::{TryHeaders, TryIpv6};
+    use crate::ipv4::UnicastIpv4Addr;
+    use crate::ipv6::UnicastIpv6Addr;
+
+    struct CommonPacketAndIps;
+    impl ValueGenerator for CommonPacketAndIps {
+        type Output = (Packet<TestBuffer>, UnicastIpAddr, IpAddr);
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let packet = CommonPacket.generate(driver)?;
+            let v6 = packet.headers().try_ipv6().is_some();
+            let (src_ip, dst_ip) = if v6 {
+                (
+                    driver.produce::<UnicastIpv6Addr>()?.into(),
+                    driver.produce::<Ipv6Addr>()?.into(),
+                )
+            } else {
+                (
+                    driver.produce::<UnicastIpv4Addr>()?.into(),
+                    driver.produce::<Ipv4Addr>()?.into(),
+                )
+            };
+            Some((packet, src_ip, dst_ip))
         }
     }
 
@@ -349,5 +431,28 @@ mod tests {
             });
         assert!(set_udp);
         assert!(set_tcp);
+    }
+
+    #[test]
+    fn test_ip_util_methods() {
+        let mut set_ipv4 = false;
+        let mut set_ipv6 = false;
+        check!()
+            .with_generator(CommonPacketAndIps)
+            .for_each(|(packet, src_ip, dst_ip)| {
+                let mut packet = packet.clone();
+                assert!(packet.set_ip_source(*src_ip).is_ok());
+                assert!(packet.set_ip_destination(*dst_ip).is_ok());
+                assert_eq!(packet.ip_source(), Some(src_ip.inner()));
+                assert_eq!(packet.ip_destination(), Some(*dst_ip));
+                if src_ip.inner().is_ipv4() || dst_ip.is_ipv4() {
+                    set_ipv4 = true;
+                }
+                if src_ip.inner().is_ipv6() || dst_ip.is_ipv6() {
+                    set_ipv6 = true;
+                }
+            });
+        assert!(set_ipv4);
+        assert!(set_ipv6);
     }
 }
