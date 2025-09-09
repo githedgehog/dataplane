@@ -4,9 +4,18 @@
 use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 
+use net::buffer::PacketBufferMut;
+use net::headers::{Transport, TryHeaders, TryIp, TryTransport};
+use net::packet::Packet;
 use net::packet::VpcDiscriminant;
 use net::tcp::TcpPort;
 use net::udp::UdpPort;
+
+#[derive(Debug, thiserror::Error)]
+pub enum FlowKeyError {
+    #[error("Flow key data not found in packet")]
+    NoFlowKeyData,
+}
 
 trait SrcLeqDst {
     fn src_leq_dst(&self) -> bool;
@@ -345,6 +354,112 @@ impl Hash for FlowKey {
     }
 }
 
+/// Wrapper to specify unidirectional `FlowKey` creation
+///
+/// Example:
+/// ```
+/// # use dataplane_pkt_meta::flow_table::FlowKey;
+/// # use dataplane_pkt_meta::flow_table::flow_key::{Uni};
+/// # use net::ip::NextHeader;
+/// # let packet = net::packet::test_utils::build_test_ipv4_packet_with_transport(100, Some(NextHeader::TCP)).unwrap();
+/// let flow_key = FlowKey::try_from(Uni(&packet));
+/// # assert!(flow_key.is_ok());
+/// ```
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct Uni<T>(pub T);
+
+/// Wrapper to specify bidirectional `FlowKey` creation
+///
+/// Example:
+/// ```
+/// # use dataplane_pkt_meta::flow_table::FlowKey;
+/// # use dataplane_pkt_meta::flow_table::flow_key::{Bidi};
+/// # use net::ip::NextHeader;
+/// # let packet = net::packet::test_utils::build_test_ipv4_packet_with_transport(100, Some(NextHeader::TCP)).unwrap();
+/// let flow_key = FlowKey::try_from(Bidi(&packet));
+/// # assert!(flow_key.is_ok());
+/// ```
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct Bidi<T>(pub T);
+
+fn flow_key_data_from_packet<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<FlowKeyData> {
+    let ip = packet.headers().try_ip()?;
+    let src_ip = ip.src_addr();
+    let dst_ip = ip.dst_addr();
+
+    let transport = packet.headers().try_transport()?;
+    let ip_proto_key = match transport {
+        Transport::Tcp(tcp) => IpProtoKey::Tcp(TcpProtoKey {
+            src_port: tcp.source(),
+            dst_port: tcp.destination(),
+        }),
+        Transport::Udp(udp) => IpProtoKey::Udp(UdpProtoKey {
+            src_port: udp.source(),
+            dst_port: udp.destination(),
+        }),
+        Transport::Icmp4(_icmp) => IpProtoKey::Icmp,
+        Transport::Icmp6(_icmp) => IpProtoKey::Icmp,
+        #[allow(unreachable_patterns)]
+        _ => return None,
+    };
+
+    let src_vpcd = packet.meta.src_vpcd;
+    let dst_vpcd = packet.meta.dst_vpcd;
+    Some(FlowKeyData::new(
+        src_vpcd,
+        src_ip,
+        dst_vpcd,
+        dst_ip,
+        ip_proto_key,
+    ))
+}
+
+impl<Buf: PacketBufferMut> TryFrom<Uni<&Packet<Buf>>> for FlowKey {
+    type Error = FlowKeyError;
+    fn try_from(packet: Uni<&Packet<Buf>>) -> Result<Self, Self::Error> {
+        let packet = packet.0;
+        let FlowKeyData {
+            src_vpcd,
+            src_ip,
+            dst_vpcd,
+            dst_ip,
+            proto_key_info,
+        } = flow_key_data_from_packet(packet).ok_or(FlowKeyError::NoFlowKeyData)?;
+
+        Ok(FlowKey::uni(
+            src_vpcd,
+            src_ip,
+            dst_vpcd,
+            dst_ip,
+            proto_key_info,
+        ))
+    }
+}
+
+impl<Buf: PacketBufferMut> TryFrom<Bidi<&Packet<Buf>>> for FlowKey {
+    type Error = FlowKeyError;
+    fn try_from(packet: Bidi<&Packet<Buf>>) -> Result<Self, Self::Error> {
+        let packet = packet.0;
+        let FlowKeyData {
+            src_vpcd,
+            src_ip,
+            dst_vpcd,
+            dst_ip,
+            proto_key_info,
+        } = flow_key_data_from_packet(packet).ok_or(FlowKeyError::NoFlowKeyData)?;
+
+        Ok(FlowKey::bidi(
+            src_vpcd,
+            src_ip,
+            dst_vpcd,
+            dst_ip,
+            proto_key_info,
+        ))
+    }
+}
+
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use super::{FlowKey, FlowKeyData, IpProtoKey, TcpProtoKey, UdpProtoKey};
@@ -432,7 +547,14 @@ mod contract {
 mod tests {
     use super::*;
     use ahash::AHasher;
-    use net::packet::VpcDiscriminant;
+    use bolero::{Driver, ValueGenerator};
+    use net::buffer::TestBuffer;
+    use net::headers::TryIpv6;
+    use net::ip::UnicastIpAddr;
+    use net::ipv4::addr::UnicastIpv4Addr;
+    use net::ipv6::addr::UnicastIpv6Addr;
+    use net::packet::contract::CommonPacket;
+    use net::packet::{Packet, VpcDiscriminant};
     use net::vxlan::Vni;
 
     #[test]
@@ -623,5 +745,114 @@ mod tests {
         flow_key.hash(&mut hash);
         reverse_flow_key.hash(&mut reverse_hash);
         assert_ne!(hash.finish(), reverse_hash.finish());
+    }
+
+    /// Set the packet fields based on the flow key
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the packet has a different transport protocol than the flow key.
+    /// It also panics if the packet IP address family does not match the flow key.
+    fn set_packet_fields(packet: &mut Packet<TestBuffer>, flow_key: &FlowKey) {
+        let flow_key_data = flow_key.data();
+        packet
+            .set_ip_source(flow_key_data.src_ip.try_into().unwrap())
+            .unwrap();
+        packet.set_ip_destination(flow_key_data.dst_ip).unwrap();
+        match flow_key_data.proto_key_info {
+            IpProtoKey::Tcp(tcp) => {
+                packet.set_tcp_source_port(tcp.src_port).unwrap();
+                packet.set_tcp_destination_port(tcp.dst_port).unwrap();
+            }
+            IpProtoKey::Udp(udp) => {
+                packet.set_udp_source_port(udp.src_port).unwrap();
+                packet.set_udp_destination_port(udp.dst_port).unwrap();
+            }
+            IpProtoKey::Icmp => {}
+        }
+    }
+
+    struct FlowKeyAndPacket;
+    impl ValueGenerator for FlowKeyAndPacket {
+        type Output = (Option<FlowKey>, Packet<TestBuffer>);
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let packet = CommonPacket.generate(driver)?;
+            let v6 = packet.headers().try_ipv6().is_some();
+            let bidi = driver.produce::<bool>()?;
+            let (src_ip, dst_ip) = if v6 {
+                (
+                    UnicastIpAddr::from(driver.produce::<UnicastIpv6Addr>()?).into(),
+                    UnicastIpAddr::from(driver.produce::<UnicastIpv6Addr>()?).into(),
+                )
+            } else {
+                (
+                    UnicastIpAddr::from(driver.produce::<UnicastIpv4Addr>()?).into(),
+                    UnicastIpAddr::from(driver.produce::<UnicastIpv4Addr>()?).into(),
+                )
+            };
+
+            let src_vpcd = packet.meta.src_vpcd;
+            let dst_vpcd = packet.meta.dst_vpcd;
+
+            let transport = packet.headers().try_transport()?;
+            let proto = match transport {
+                Transport::Tcp(_) => Some(IpProtoKey::Tcp(TcpProtoKey {
+                    src_port: driver.produce()?,
+                    dst_port: driver.produce()?,
+                })),
+                Transport::Udp(_) => Some(IpProtoKey::Udp(UdpProtoKey {
+                    src_port: driver.produce()?,
+                    dst_port: driver.produce()?,
+                })),
+                _ => return None,
+            };
+            if let Some(proto) = proto {
+                let (flow_key, mut packet) = if bidi {
+                    (
+                        FlowKey::bidi(src_vpcd, src_ip, dst_vpcd, dst_ip, proto),
+                        packet,
+                    )
+                } else {
+                    (
+                        FlowKey::uni(src_vpcd, src_ip, dst_vpcd, dst_ip, proto),
+                        packet,
+                    )
+                };
+                set_packet_fields(&mut packet, &flow_key);
+                Some((Some(flow_key), packet))
+            } else {
+                Some((None, packet))
+            }
+        }
+    }
+
+    #[test]
+    fn test_flow_key_data_from_packet() {
+        bolero::check!()
+            .with_generator(FlowKeyAndPacket)
+            .for_each(|(flow_key, packet)| match flow_key {
+                Some(FlowKey::Bidirectional(_)) => {
+                    let gen_flow_key = FlowKey::try_from(Bidi(packet)).unwrap();
+                    assert_eq!(
+                        gen_flow_key,
+                        flow_key.unwrap(),
+                        "Flow key mismatch: {gen_flow_key:#?} != {:#?}",
+                        flow_key.unwrap()
+                    );
+                }
+                Some(FlowKey::Unidirectional(_)) => {
+                    let gen_flow_key = FlowKey::try_from(Uni(packet)).unwrap();
+                    assert_eq!(
+                        gen_flow_key,
+                        flow_key.unwrap(),
+                        "Flow key mismatch: {gen_flow_key:#?} != {:#?}",
+                        flow_key.unwrap()
+                    );
+                }
+                None => {
+                    assert!(FlowKey::try_from(Uni(packet)).is_err());
+                    assert!(FlowKey::try_from(Bidi(packet)).is_err());
+                }
+            });
     }
 }
