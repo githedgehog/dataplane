@@ -24,6 +24,8 @@ use routing::RouterParamsBuilder;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
+const NUM_WORKERS: usize = 4;
+
 fn init_logging() {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
@@ -109,7 +111,7 @@ fn main() {
         }
         "kernel" => {
             info!("Using driver kernel...");
-            DriverKernel::start(args.kernel_params(), builder);
+            DriverKernel::start(args.kernel_params(), NUM_WORKERS, builder);
         }
         other => {
             error!("Unknown driver '{other}'. Aborting...");
