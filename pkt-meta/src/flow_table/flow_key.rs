@@ -350,6 +350,8 @@ mod contract {
     use super::{FlowKey, FlowKeyData, IpProtoKey, TcpProtoKey, UdpProtoKey};
     use bolero::{Driver, TypeGenerator};
     use net::ip::UnicastIpAddr;
+    use net::ipv4::addr::UnicastIpv4Addr;
+    use net::ipv6::addr::UnicastIpv6Addr;
 
     impl TypeGenerator for TcpProtoKey {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
@@ -389,8 +391,19 @@ mod contract {
         fn generate<D: bolero::Driver>(driver: &mut D) -> Option<Self> {
             let src_vpcd = driver.produce();
             let dst_vpcd = driver.produce();
-            let src_ip = driver.produce::<UnicastIpAddr>()?.into();
-            let dst_ip = driver.produce::<UnicastIpAddr>()?.into();
+            let v6 = driver.produce::<bool>()?;
+            // In theory, src_ip and dst_ip could have different versions, e.g., for NAT64, but we don't support that yet
+            let (src_ip, dst_ip) = if v6 {
+                (
+                    UnicastIpAddr::from(driver.produce::<UnicastIpv6Addr>()?).into(),
+                    UnicastIpAddr::from(driver.produce::<UnicastIpv6Addr>()?).into(),
+                )
+            } else {
+                (
+                    UnicastIpAddr::from(driver.produce::<UnicastIpv4Addr>()?).into(),
+                    UnicastIpAddr::from(driver.produce::<UnicastIpv4Addr>()?).into(),
+                )
+            };
             let proto_key_info = super::IpProtoKey::generate(driver)?;
             Some(FlowKeyData {
                 src_vpcd,
