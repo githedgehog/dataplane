@@ -107,12 +107,18 @@ impl StatefulNat {
         }
     }
 
-    fn get_src_vpc_id(_net: &Net, vni: Vni) -> NatVpcId {
-        vni
+    fn get_src_vpc_id<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<NatVpcId> {
+        match packet.get_meta().src_vpcd {
+            Some(VpcDiscriminant::VNI(vni)) => Some(vni),
+            _ => None,
+        }
     }
 
-    fn get_dst_vpc_id(_net: &Net, vni: Vni) -> NatVpcId {
-        vni
+    fn get_dst_vpc_id<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<NatVpcId> {
+        match packet.get_meta().dst_vpcd {
+            Some(VpcDiscriminant::VNI(vni)) => Some(vni),
+            _ => None,
+        }
     }
 
     fn extract_tuple<I: NatIp, Buf: PacketBufferMut>(
@@ -459,9 +465,13 @@ impl StatefulNat {
     /// function that we pass to [`StatefulNat::process`] to iterate over packets.
     fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
         // TODO: What if no VNI
-        let Some(VpcDiscriminant::VNI(vni)) = packet.get_meta().src_vpcd else {
+        let Some(src_vpc_id) = Self::get_src_vpc_id(packet) else {
             return;
         };
+        let Some(dst_vpc_id) = Self::get_dst_vpc_id(packet) else {
+            return;
+        };
+
         let Some(net) = packet.get_headers().try_ip() else {
             return;
         };
@@ -469,9 +479,6 @@ impl StatefulNat {
 
         // TODO: Check whether the packet is fragmented
         // TODO: Check whether we need protocol-aware processing
-
-        let src_vpc_id = Self::get_src_vpc_id(net, vni);
-        let dst_vpc_id = Self::get_dst_vpc_id(net, vni);
 
         match net {
             Net::Ipv4(_) => {
