@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 pub mod flow_key;
+pub mod nf_expirations;
 pub mod nf_lookup;
 pub mod table;
 mod thread_local_pq;
@@ -14,4 +15,5 @@ pub use table::FlowTable;
 
 pub use ::flow_info::atomic_instant::AtomicInstant;
 pub use ::flow_info::*;
+pub use nf_expirations::ExpirationsNF;
 pub use nf_lookup::LookupNF;
