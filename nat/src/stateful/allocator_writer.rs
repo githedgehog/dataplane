@@ -75,7 +75,10 @@ impl NatAllocatorWriter {
             return Ok(());
         }
 
-        Self::update_existing_allocator(old_allocator, &self.config, &new_config)?;
+        let new_allocator =
+            Self::update_existing_allocator(old_allocator, &self.config, &new_config)?;
+        // Swap allocators; the old one is dropped.
+        self.allocator.store(Some(Arc::new(new_allocator)));
         self.config = new_config;
         Ok(())
     }
@@ -87,9 +90,26 @@ impl NatAllocatorWriter {
     fn update_existing_allocator(
         _allocator: &NatDefaultAllocator,
         _old_config: &StatefulNatConfig,
-        _new_config: &StatefulNatConfig,
-    ) -> Result<(), ConfigError> {
-        todo!();
+        new_config: &StatefulNatConfig,
+    ) -> Result<NatDefaultAllocator, ConfigError> {
+        // TODO: Report state from old allocator to new allocator
+        //
+        // This means reporting all allocated IPs (and ports for these IPs) from the old allocator
+        // that remain valid in the new configuration to the new allocator (and discard the ones
+        // that are now invalid). This is required if we want to keep existing, valid connections open.
+        //
+        // It is not trivial to do, though, because it's difficult to do a meaningful "diff" between
+        // the two configurations or allocators' internal states. One allocated IP from the old
+        // allocator may still be available for NAT with the new configuration, but possibly for a
+        // different list of original prefixes. We can even have connections using some ports for a
+        // given allocated IP remaining valid, while others using other ports for the same IP become
+        // invalid.
+        //
+        // One "option" is to process all entries in the session table, look at the new
+        // configuration (or the new allocator entries) to see if they're still valid, and then
+        // report them to the new allocator. However, the old allocator keeps being updated during
+        // this process.
+        Self::build_new_allocator(new_config)
     }
 }
 
