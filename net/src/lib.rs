@@ -14,6 +14,7 @@
 )]
 #![allow(clippy::should_panic_without_expect)] // we panic in contract checks with simple unwrap()
 
+pub mod addr_parse_error;
 pub mod buffer;
 pub mod checksum;
 pub mod eth;

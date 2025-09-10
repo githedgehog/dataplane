@@ -8,6 +8,7 @@
 pub use contract::*;
 use std::fmt::{Debug, Display, Formatter};
 use std::net::{IpAddr, Ipv6Addr};
+use std::str::FromStr;
 
 /// A type representing the set of unicast ipv6 addresses.
 #[non_exhaustive]
@@ -76,6 +77,18 @@ impl TryFrom<IpAddr> for UnicastIpv6Addr {
     }
 }
 
+impl FromStr for UnicastIpv6Addr {
+    type Err = crate::addr_parse_error::AddrParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let std_addr = s
+            .parse::<Ipv6Addr>()
+            .map_err(crate::addr_parse_error::AddrParseError::StdAddrParseError)?;
+        Self::new(std_addr).map_err(|_| {
+            crate::addr_parse_error::AddrParseError::IpMulticastAddressNotAllowed(std_addr.into())
+        })
+    }
+}
+
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::ipv6::addr::UnicastIpv6Addr;
@@ -99,13 +112,40 @@ mod contract {
 
 #[cfg(test)]
 mod test {
-    use crate::ipv4::addr::UnicastIpv4Addr;
+    use crate::ipv6::addr::UnicastIpv6Addr;
 
     #[test]
     #[cfg_attr(kani, kani::proof)]
-    fn generated_unicast_ipv4_address_is_unicast() {
+    fn generated_unicast_ipv6_address_is_unicast() {
         bolero::check!()
             .with_type()
-            .for_each(|unicast: &UnicastIpv4Addr| assert!(!unicast.inner().is_multicast()));
+            .for_each(|unicast: &UnicastIpv6Addr| assert!(!unicast.inner().is_multicast()));
+    }
+
+    #[test]
+    fn parse_unicast_ipv6_address_from_string() {
+        let unicast_addr_str = "::1";
+        let multicast_addr_str = "ff00::1";
+
+        let unicast_addr = unicast_addr_str.parse::<UnicastIpv6Addr>().unwrap();
+        assert_eq!(unicast_addr.inner(), std::net::Ipv6Addr::LOCALHOST);
+
+        let multicast_addr = multicast_addr_str.parse::<UnicastIpv6Addr>();
+        assert!(multicast_addr.is_err());
+        let err = multicast_addr.err().unwrap();
+        assert!(
+            matches!(
+                err,
+                crate::addr_parse_error::AddrParseError::IpMulticastAddressNotAllowed(_)
+            ),
+            "Incorrect error type: {err:#?}"
+        );
+
+        let invalid_addr = "invalid".parse::<UnicastIpv6Addr>();
+        assert!(invalid_addr.is_err());
+        assert!(matches!(
+            invalid_addr.err().unwrap(),
+            crate::addr_parse_error::AddrParseError::StdAddrParseError(_)
+        ));
     }
 }

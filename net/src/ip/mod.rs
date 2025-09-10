@@ -8,6 +8,7 @@ use crate::ipv6::UnicastIpv6Addr;
 use etherparse::IpNumber;
 use std::fmt::{Debug, Display, Formatter};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::str::FromStr;
 
 /// Thin wrapper around [`IpNumber`]
 ///
@@ -155,6 +156,18 @@ impl TryFrom<Ipv6Addr> for UnicastIpAddr {
     }
 }
 
+impl FromStr for UnicastIpAddr {
+    type Err = crate::addr_parse_error::AddrParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let std_addr = s
+            .parse::<IpAddr>()
+            .map_err(crate::addr_parse_error::AddrParseError::StdAddrParseError)?;
+        std_addr
+            .try_into()
+            .map_err(crate::addr_parse_error::AddrParseError::IpMulticastAddressNotAllowed)
+    }
+}
+
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::ip::NextHeader;
@@ -172,7 +185,7 @@ mod tests {
     use crate::ip::UnicastIpAddr;
     use crate::ipv4::UnicastIpv4Addr;
     use crate::ipv6::UnicastIpv6Addr;
-    use std::net::IpAddr;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     #[test]
     fn generated_unicast_ip_address_is_unicast() {
@@ -228,5 +241,54 @@ mod tests {
                     assert_eq!(ip, IpAddr::from(unicast_ip));
                 }
             });
+    }
+
+    #[test]
+    fn parse_unicast_ipv4_address_from_string() {
+        let unicast_addr_str = "1.2.3.4";
+        let multicast_addr_str = "224.0.0.1";
+
+        let unicast_addr = unicast_addr_str.parse::<UnicastIpAddr>().unwrap();
+        assert_eq!(
+            unicast_addr.inner(),
+            IpAddr::from(Ipv4Addr::new(1, 2, 3, 4))
+        );
+
+        let multicast_addr = multicast_addr_str.parse::<UnicastIpAddr>();
+        assert!(multicast_addr.is_err());
+        assert!(matches!(
+            multicast_addr.err().unwrap(),
+            crate::addr_parse_error::AddrParseError::IpMulticastAddressNotAllowed(_)
+        ));
+
+        let invalid_addr = "invalid".parse::<UnicastIpAddr>();
+        assert!(invalid_addr.is_err());
+        assert!(matches!(
+            invalid_addr.err().unwrap(),
+            crate::addr_parse_error::AddrParseError::StdAddrParseError(_)
+        ));
+    }
+
+    #[test]
+    fn parse_unicast_ipv6_address_from_string() {
+        let unicast_addr_str = "::1";
+        let multicast_addr_str = "ff00::1";
+
+        let unicast_addr = unicast_addr_str.parse::<UnicastIpAddr>().unwrap();
+        assert_eq!(unicast_addr.inner(), IpAddr::from(Ipv6Addr::LOCALHOST));
+
+        let multicast_addr = multicast_addr_str.parse::<UnicastIpAddr>();
+        assert!(multicast_addr.is_err());
+        assert!(matches!(
+            multicast_addr.err().unwrap(),
+            crate::addr_parse_error::AddrParseError::IpMulticastAddressNotAllowed(_)
+        ));
+
+        let invalid_addr = "invalid".parse::<UnicastIpAddr>();
+        assert!(invalid_addr.is_err());
+        assert!(matches!(
+            invalid_addr.err().unwrap(),
+            crate::addr_parse_error::AddrParseError::StdAddrParseError(_)
+        ));
     }
 }
