@@ -134,7 +134,7 @@ impl StatsCollector {
             trace!("waiting on metrics");
             tokio::select! {
                 () = tokio::time::sleep(Self::TIME_TICK) => {
-                    info!("no stats received in window");
+                    trace!("no stats received in window");
                     self.update(None);
                 }
                 delta = self.updates.0.as_async().recv() => {
@@ -548,7 +548,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
         const CAPACITY_PAD: usize = 16;
         let time = Instant::now();
         if time > self.update.planned_end {
-            debug!("sending stats update");
+            trace!("sending stats update");
             let batch = Box::new(BatchSummary::with_capacity(
                 time + self.delivery_schedule,
                 self.update.vpc.len() + CAPACITY_PAD,
@@ -557,12 +557,8 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
             let summary = std::mem::replace(&mut self.update, batch);
             let update = MetricsUpdate { duration, summary };
             match self.stats.0.try_send(update) {
-                Ok(true) => {
-                    debug!("sent stats update");
-                }
-                Ok(false) => {
-                    warn!("metrics channel full! Some metrics lost");
-                }
+                Ok(true) => trace!("sent stats update"),
+                Ok(false) => warn!("metrics channel full! Some metrics lost"),
                 Err(err) => {
                     error!("{err}");
                     panic!("{err}");
@@ -602,17 +598,17 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
                     },
                 },
                 (None, Some(ddisc)) => {
-                    debug!(
+                    warn!(
                         "missing source discriminant for packet with dest discriminant: {ddisc:?}"
                     );
                 }
                 (Some(sdisc), None) => {
-                    debug!(
+                    trace!(
                         "missing dest discriminant for packet with source discriminant: {sdisc:?}"
                     );
                 }
                 (None, None) => {
-                    debug!("no source or dest discriminants for packet");
+                    trace!("no source or dest discriminants for packet");
                 }
             }
             packet.get_meta_mut().set_keep(false); /* no longer disable enforce */
