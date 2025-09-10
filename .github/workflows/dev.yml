@@ -285,7 +285,7 @@ jobs:
       - id: "docs"
         name: "run rustdoc"
         run: |
-          just \
+          RUSTDOCFLAGS="-D warnings" just \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
             target=x86_64-unknown-linux-gnu \
