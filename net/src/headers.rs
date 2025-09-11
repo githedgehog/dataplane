@@ -142,6 +142,15 @@ impl Transport {
             (Net::Ipv4(_), Transport::Icmp6(_)) => debug!("illegal: icmpv6 in ipv4"),
         }
     }
+
+    pub(crate) fn size(&self) -> NonZero<u16> {
+        match self {
+            Transport::Tcp(tcp) => tcp.size(),
+            Transport::Udp(udp) => udp.size(),
+            Transport::Icmp4(icmp4) => icmp4.size(),
+            Transport::Icmp6(icmpv6) => icmpv6.size(),
+        }
+    }
 }
 
 impl DeParse for Transport {
