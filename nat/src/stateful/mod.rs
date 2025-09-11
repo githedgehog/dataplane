@@ -7,6 +7,7 @@ pub mod apalloc;
 mod natip;
 mod port;
 pub mod sessions;
+mod test;
 
 pub use allocator_writer::NatAllocatorWriter;
 
