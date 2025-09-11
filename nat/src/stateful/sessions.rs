@@ -8,6 +8,8 @@ use super::port::NatPort;
 use crate::stateful::NatIp;
 use dashmap::DashMap;
 use dashmap::mapref::one::RefMut;
+use net::ip::NextHeader;
+use std::fmt::Display;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
@@ -237,6 +239,69 @@ pub struct NatDefaultSession<'a, I: NatIp> {
 impl<I: NatIp> NatSession for NatDefaultSession<'_, I> {
     fn get_state_mut(&mut self) -> Option<&mut NatState> {
         self.dashmap_ref.as_mut().map(RefMut::value_mut)
+    }
+}
+
+impl<I: NatIp> Display for NatTuple<I> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let proto = match self.next_header {
+            NextHeader::UDP => "UDP",
+            NextHeader::TCP => "TCP",
+            _ => "Other",
+        };
+        write!(
+            f,
+            "VPC {}>{} [{}] - {:?}:{} -> {:?}:{}",
+            self.src_vpc_id,
+            self.dst_vpc_id,
+            proto,
+            self.src_ip,
+            self.src_port.unwrap_or(0),
+            self.dst_ip,
+            self.dst_port.unwrap_or(0),
+        )?;
+        Ok(())
+    }
+}
+
+impl Display for NatState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "{:?}:{} -> {:?}:{}",
+            self.target_src_addr.unwrap_or(IpAddr::from([0, 0, 0, 0])),
+            self.target_src_port.map_or(0, NatPort::as_u16),
+            self.target_dst_addr.unwrap_or(IpAddr::from([0, 0, 0, 0])),
+            self.target_dst_port.map_or(0, NatPort::as_u16),
+        )
+    }
+}
+
+impl<I: NatIp> Display for NatDefaultSession<'_, I> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(ref entry) = self.dashmap_ref {
+            entry.key().fmt(f)?;
+            write!(f, " | ")?;
+            entry.value().fmt(f)
+        } else {
+            writeln!(f, "<Empty session>")
+        }
+    }
+}
+
+impl Display for NatDefaultSessionManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for entry in &self.table_v4 {
+            entry.key().fmt(f)?;
+            write!(f, " | ")?;
+            entry.value().fmt(f)?;
+        }
+        for entry in &self.table_v6 {
+            entry.key().fmt(f)?;
+            write!(f, " | ")?;
+            entry.value().fmt(f)?;
+        }
+        Ok(())
     }
 }
 
