@@ -333,27 +333,29 @@ impl StatefulNat {
         // - tuple r.init = (src: f.nated.dst, dst: f.nated.src)
         // - mapping r.nated = (src: f.init.dst, dst: f.init.src)
 
-        let reverse_src = match alloc.dst.as_ref().map(AllocatedIpPort::ip) {
-            Some(ip) => ip,
-            // No destination NAT for forward session:
-            // f.init:(src: a, dst: b) -> f.nated:(src: A, dst: b)
-            //
-            // Reverse session will be:
-            // r.init:(src: b, dst: A) -> r.nated:(src: b, dst: a)
-            //
-            // Use destination IP from forward tuple.
-            None => tuple.dst_ip,
-        };
-        let reverse_dst = match alloc.src.as_ref().map(AllocatedIpPort::ip) {
-            Some(ip) => ip,
-            None => tuple.src_ip,
-        };
+        let (reverse_src_addr, reverse_src_port) =
+            match alloc.dst.as_ref().map(|a| (a.ip(), a.port())) {
+                Some((ip, port)) => (ip, Some(port.as_u16())),
+                // No destination NAT for forward session:
+                // f.init:(src: a, dst: b) -> f.nated:(src: A, dst: b)
+                //
+                // Reverse session will be:
+                // r.init:(src: b, dst: A) -> r.nated:(src: b, dst: a)
+                //
+                // Use destination IP and port from forward tuple.
+                None => (tuple.dst_ip, tuple.dst_port),
+            };
+        let (reverse_dst_addr, reverse_dst_port) =
+            match alloc.src.as_ref().map(|a| (a.ip(), a.port())) {
+                Some((ip, port)) => (ip, Some(port.as_u16())),
+                None => (tuple.src_ip, tuple.src_port),
+            };
 
         let reverse_tuple = NatTuple::new(
-            reverse_src,
-            reverse_dst,
-            alloc.dst.as_ref().map(|p| p.port().as_u16()),
-            alloc.src.as_ref().map(|p| p.port().as_u16()),
+            reverse_src_addr,
+            reverse_dst_addr,
+            reverse_src_port,
+            reverse_dst_port,
             tuple.next_header,
             dst_vpc_id,
             src_vpc_id,
