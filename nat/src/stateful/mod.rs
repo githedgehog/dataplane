@@ -402,7 +402,7 @@ impl StatefulNat {
         src_vpc_id: NatVpcId,
         dst_vpc_id: NatVpcId,
         total_bytes: u16,
-    ) -> Result<(), StatefulNatError> {
+    ) -> Result<bool, StatefulNatError> {
         // Hot path: if we have a session, directly translate the address already
         if let Some(mut session) = self.lookup_session_v4_mut(tuple) {
             let Some(state) = session.get_state_mut() else {
@@ -411,7 +411,7 @@ impl StatefulNat {
             };
             Self::stateful_translate::<Buf>(packet, state, tuple.next_header);
             Self::update_stats(state, total_bytes);
-            return Ok(());
+            return Ok(true);
         }
 
         let Some(allocator) = self.allocator.get() else {
@@ -428,7 +428,7 @@ impl StatefulNat {
 
         if alloc.src.is_none() && alloc.dst.is_none() {
             // No NAT for this tuple, leave the packet unchanged - Do not drop it
-            return Ok(());
+            return Ok(false);
         }
 
         let mut new_state = Self::new_state_from_alloc(&alloc);
@@ -450,7 +450,7 @@ impl StatefulNat {
         }
 
         Self::stateful_translate::<Buf>(packet, &new_state, tuple.next_header);
-        Ok(())
+        Ok(true)
     }
 
     fn translate_packet_v6<Buf: PacketBufferMut>(
@@ -460,7 +460,7 @@ impl StatefulNat {
         src_vpc_id: NatVpcId,
         dst_vpc_id: NatVpcId,
         total_bytes: u16,
-    ) -> Result<(), StatefulNatError> {
+    ) -> Result<bool, StatefulNatError> {
         // Hot path: if we have a session, directly translate the address already
         if let Some(mut session) = self.lookup_session_v6_mut(tuple) {
             let Some(state) = session.get_state_mut() else {
@@ -469,7 +469,7 @@ impl StatefulNat {
             };
             Self::stateful_translate::<Buf>(packet, state, tuple.next_header);
             Self::update_stats(state, total_bytes);
-            return Ok(());
+            return Ok(true);
         }
 
         let Some(allocator) = self.allocator.get() else {
@@ -486,7 +486,7 @@ impl StatefulNat {
 
         if alloc.src.is_none() && alloc.dst.is_none() {
             // No NAT for this tuple, leave the packet unchanged - Do not drop it
-            return Ok(());
+            return Ok(false);
         }
 
         let mut new_state = Self::new_state_from_alloc(&alloc);
@@ -507,7 +507,7 @@ impl StatefulNat {
         }
 
         Self::stateful_translate::<Buf>(packet, &new_state, tuple.next_header);
-        Ok(())
+        Ok(true)
     }
 
     fn nat_packet<Buf: PacketBufferMut>(
@@ -515,7 +515,7 @@ impl StatefulNat {
         packet: &mut Packet<Buf>,
         src_vpc_id: NatVpcId,
         dst_vpc_id: NatVpcId,
-    ) -> Result<(), StatefulNatError> {
+    ) -> Result<bool, StatefulNatError> {
         let Some(net) = packet.get_headers().try_ip() else {
             return Err(StatefulNatError::BadIpHeader);
         };
@@ -554,12 +554,14 @@ impl StatefulNat {
         // TODO: Check whether the packet is fragmented
         // TODO: Check whether we need protocol-aware processing
 
-        #[allow(clippy::single_match)]
         match self.nat_packet(packet, src_vpc_id, dst_vpc_id) {
             Err(_e) => {
                 packet.done(DoneReason::NatFailure);
             }
-            Ok(()) => {}
+            Ok(true) => {
+                packet.get_meta_mut().set_checksum_refresh(true);
+            }
+            Ok(false) => {}
         }
     }
 }
