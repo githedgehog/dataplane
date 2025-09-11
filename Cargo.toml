@@ -87,7 +87,7 @@ ipnet = { version = "2.11.0", default-features = false, features = [] }
 kanal = { version = "0.1.1", default-features = false, features = [] }
 left-right = { version = "0.11.5" }
 libc = { version = "1.0.0-alpha.1", default-features = false, features = [] }
-linux-raw-sys = { version = "0.10.0", default-features = false, features = [] }
+linux-raw-sys = { version = "0.11.0", default-features = false, features = [] }
 loom = { version = "0.7.2", default-features = false, features = [] }
 mac_address = { version = "1.1.8", default-features = false, features = [] }
 metrics = { version = "0.24.2", default-features = false, features = [] }

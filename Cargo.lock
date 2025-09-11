@@ -1028,7 +1028,7 @@ dependencies = [
  "dataplane-id",
  "derive_builder 0.20.2",
  "etherparse",
- "linux-raw-sys 0.10.0",
+ "linux-raw-sys",
  "multi_index_map",
  "ordermap",
  "serde",
@@ -1922,12 +1922,6 @@ dependencies = [
  "anyhow",
  "version_check",
 ]
-
-[[package]]
-name = "linux-raw-sys"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13d6a630ed4f43c11056af8768c4773df2c43bc780b6d8a46de345c17236c562"
 
 [[package]]
 name = "linux-raw-sys"
@@ -2845,7 +2839,7 @@ dependencies = [
  "bitflags 2.9.4",
  "errno",
  "libc 0.2.175",
- "linux-raw-sys 0.11.0",
+ "linux-raw-sys",
  "windows-sys 0.52.0",
 ]
 
