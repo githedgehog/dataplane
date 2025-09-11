@@ -25,7 +25,7 @@ use net::headers::{Net, Transport, TryHeadersMut, TryIp, TryIpMut, TryTransport,
 use net::ip::NextHeader;
 use net::ipv4::UnicastIpv4Addr;
 use net::ipv6::UnicastIpv6Addr;
-use net::packet::{Packet, VpcDiscriminant};
+use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::tcp::port::TcpPort;
 use net::udp::port::UdpPort;
 use net::vxlan::Vni;
@@ -36,6 +36,18 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StatefulNatError {
+    #[error("failure to get IP header")]
+    BadIpHeader,
+    #[error("failure to extract tuple")]
+    TupleParseError,
+    #[error("no state found for existing session")]
+    NoState,
+    #[error("no allocator available")]
+    NoAllocator,
+    #[error("allocation failed")]
+    AllocationFailure,
+    #[error("session creation failed")]
+    SessionCreationFailure,
     #[error("invalid port {0}")]
     InvalidPort(u16),
 }
@@ -390,42 +402,55 @@ impl StatefulNat {
         src_vpc_id: NatVpcId,
         dst_vpc_id: NatVpcId,
         total_bytes: u16,
-    ) -> Option<()> {
+    ) -> Result<(), StatefulNatError> {
         // Hot path: if we have a session, directly translate the address already
         if let Some(mut session) = self.lookup_session_v4_mut(tuple) {
-            Self::stateful_translate::<Buf>(packet, session.get_state_mut()?, tuple.next_header);
-            Self::update_stats(session.get_state_mut()?, total_bytes);
-            return Some(());
+            let Some(state) = session.get_state_mut() else {
+                // We failed to retrieve the state from the session, we cannot NAT
+                return Err(StatefulNatError::NoState);
+            };
+            Self::stateful_translate::<Buf>(packet, state, tuple.next_header);
+            Self::update_stats(state, total_bytes);
+            return Ok(());
         }
 
         let Some(allocator) = self.allocator.get() else {
-            // No allocator set
-            // TODO: Drop packet, update metrics
-            return None;
+            // No allocator set - We refuse to process this packet if we don't have a way to tell
+            // whether it should be NAT-ed or not
+            return Err(StatefulNatError::NoAllocator);
         };
 
         // Else, if we need NAT for this packet, create a new session and translate the address
         let Ok(alloc) = allocator.allocate_v4(tuple) else {
-            // TODO: Log error, drop packet, update metrics
-            return None;
+            // NAT allocation failed for some reason
+            return Err(StatefulNatError::AllocationFailure);
         };
 
         if alloc.src.is_none() && alloc.dst.is_none() {
-            // No NAT for this tuple, leave the packet unchanged
-            return None;
+            // No NAT for this tuple, leave the packet unchanged - Do not drop it
+            return Ok(());
         }
 
         let mut new_state = Self::new_state_from_alloc(&alloc);
         Self::update_stats(&mut new_state, total_bytes);
-        self.create_session_v4(tuple, new_state.clone()).ok()?;
+        if self.create_session_v4(tuple, new_state.clone()).is_err() {
+            // We failed to create the relevant forward session
+            return Err(StatefulNatError::SessionCreationFailure);
+        }
 
         let (reverse_tuple, reverse_state) =
             Self::new_reverse_session(tuple, &alloc, src_vpc_id, dst_vpc_id);
-        self.create_session_v4(&reverse_tuple, reverse_state.clone())
-            .ok()?;
+        if self
+            .create_session_v4(&reverse_tuple, reverse_state.clone())
+            .is_err()
+        {
+            packet.done(DoneReason::NatFailure);
+            // We failed to create the relevant reverse session
+            return Err(StatefulNatError::SessionCreationFailure);
+        }
 
         Self::stateful_translate::<Buf>(packet, &new_state, tuple.next_header);
-        Some(())
+        Ok(())
     }
 
     fn translate_packet_v6<Buf: PacketBufferMut>(
@@ -435,42 +460,82 @@ impl StatefulNat {
         src_vpc_id: NatVpcId,
         dst_vpc_id: NatVpcId,
         total_bytes: u16,
-    ) -> Option<()> {
+    ) -> Result<(), StatefulNatError> {
         // Hot path: if we have a session, directly translate the address already
         if let Some(mut session) = self.lookup_session_v6_mut(tuple) {
-            Self::stateful_translate::<Buf>(packet, session.get_state_mut()?, tuple.next_header);
-            Self::update_stats(session.get_state_mut()?, total_bytes);
-            return Some(());
+            let Some(state) = session.get_state_mut() else {
+                // We failed to retrieve the state from the session, we cannot NAT
+                return Err(StatefulNatError::NoState);
+            };
+            Self::stateful_translate::<Buf>(packet, state, tuple.next_header);
+            Self::update_stats(state, total_bytes);
+            return Ok(());
         }
 
         let Some(allocator) = self.allocator.get() else {
-            // No allocator set
-            // TODO: Drop packet, update metrics
-            return None;
+            // No allocator set - We refuse to process this packet if we don't have a way to know
+            // whether it should be NAT-ed or not
+            return Err(StatefulNatError::NoAllocator);
         };
 
         // Else, if we need NAT for this packet, create a new session and translate the address
         let Ok(alloc) = allocator.allocate_v6(tuple) else {
-            // TODO: Log error, drop packet, update metrics
-            return None;
+            // NAT failed for some reason
+            return Err(StatefulNatError::AllocationFailure);
         };
 
         if alloc.src.is_none() && alloc.dst.is_none() {
-            // No NAT for this tuple, leave the packet unchanged
-            return None;
+            // No NAT for this tuple, leave the packet unchanged - Do not drop it
+            return Ok(());
         }
 
         let mut new_state = Self::new_state_from_alloc(&alloc);
         Self::update_stats(&mut new_state, total_bytes);
-        self.create_session_v6(tuple, new_state.clone()).ok()?;
+        if self.create_session_v6(tuple, new_state.clone()).is_err() {
+            // We failed to create the relevant forward session
+            return Err(StatefulNatError::SessionCreationFailure);
+        }
 
         let (reverse_tuple, reverse_state) =
             Self::new_reverse_session(tuple, &alloc, src_vpc_id, dst_vpc_id);
-        self.create_session_v6(&reverse_tuple, reverse_state.clone())
-            .ok()?;
+        if self
+            .create_session_v6(&reverse_tuple, reverse_state.clone())
+            .is_err()
+        {
+            // We failed to create the relevant reverse session
+            return Err(StatefulNatError::SessionCreationFailure);
+        }
 
         Self::stateful_translate::<Buf>(packet, &new_state, tuple.next_header);
-        Some(())
+        Ok(())
+    }
+
+    fn nat_packet<Buf: PacketBufferMut>(
+        &mut self,
+        packet: &mut Packet<Buf>,
+        src_vpc_id: NatVpcId,
+        dst_vpc_id: NatVpcId,
+    ) -> Result<(), StatefulNatError> {
+        let Some(net) = packet.get_headers().try_ip() else {
+            return Err(StatefulNatError::BadIpHeader);
+        };
+
+        let total_bytes = packet.total_len();
+
+        match net {
+            Net::Ipv4(_) => {
+                let Some(tuple) = Self::extract_tuple(packet, src_vpc_id, dst_vpc_id) else {
+                    return Err(StatefulNatError::TupleParseError);
+                };
+                self.translate_packet_v4::<Buf>(packet, &tuple, src_vpc_id, dst_vpc_id, total_bytes)
+            }
+            Net::Ipv6(_) => {
+                let Some(tuple) = Self::extract_tuple(packet, src_vpc_id, dst_vpc_id) else {
+                    return Err(StatefulNatError::TupleParseError);
+                };
+                self.translate_packet_v6::<Buf>(packet, &tuple, src_vpc_id, dst_vpc_id, total_bytes)
+            }
+        }
     }
 
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
@@ -478,45 +543,23 @@ impl StatefulNat {
     fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
         // TODO: What if no VNI
         let Some(src_vpc_id) = Self::get_src_vpc_id(packet) else {
+            packet.done(DoneReason::Unroutable);
             return;
         };
         let Some(dst_vpc_id) = Self::get_dst_vpc_id(packet) else {
+            packet.done(DoneReason::Unroutable);
             return;
         };
-
-        let Some(net) = packet.get_headers().try_ip() else {
-            return;
-        };
-        let total_bytes = packet.total_len();
 
         // TODO: Check whether the packet is fragmented
         // TODO: Check whether we need protocol-aware processing
 
-        match net {
-            Net::Ipv4(_) => {
-                let Some(tuple) = Self::extract_tuple(packet, src_vpc_id, dst_vpc_id) else {
-                    return;
-                };
-                self.translate_packet_v4::<Buf>(
-                    packet,
-                    &tuple,
-                    src_vpc_id,
-                    dst_vpc_id,
-                    total_bytes,
-                );
+        #[allow(clippy::single_match)]
+        match self.nat_packet(packet, src_vpc_id, dst_vpc_id) {
+            Err(_e) => {
+                packet.done(DoneReason::NatFailure);
             }
-            Net::Ipv6(_) => {
-                let Some(tuple) = Self::extract_tuple(packet, src_vpc_id, dst_vpc_id) else {
-                    return;
-                };
-                self.translate_packet_v6::<Buf>(
-                    packet,
-                    &tuple,
-                    src_vpc_id,
-                    dst_vpc_id,
-                    total_bytes,
-                );
-            }
+            Ok(()) => {}
         }
     }
 }
@@ -526,12 +569,12 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatefulNat {
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.map(|mut packet| {
+        input.filter_map(|mut packet| {
             // FIXME: See comment in stateless NAT's implementation
             if !packet.is_done() && packet.get_meta().nat() {
                 self.process_packet(&mut packet);
             }
-            packet
+            packet.enforce()
         })
     }
 }
