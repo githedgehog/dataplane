@@ -12,7 +12,7 @@ path = "bin/main.rs"
 [dependencies]
 colored = "3.0.0"
 bincode2 = "2.0.1"
-log = { version = "^0.4.27", features = ["serde"]}
+log = { version = "^0.4.28", features = ["serde"]}
 rustyline = { workspace = true , features = ["with-fuzzy", "custom-bindings"] }
 serde = {workspace = true, features = ["derive", "serde_derive"]}
 strum = { workspace = true }
