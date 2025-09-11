@@ -10,7 +10,10 @@ use super::packet_processor::egress::Egress;
 use super::packet_processor::ingress::Ingress;
 use super::packet_processor::ipforward::IpForwarder;
 
+use concurrency::sync::Arc;
+
 use pkt_meta::dst_vpcd_lookup::{DstVpcdLookup, VpcDiscTablesReader, VpcDiscTablesWriter};
+use pkt_meta::flow_table::{ExpirationsNF, FlowTable, LookupNF};
 
 use nat::StatelessNat;
 use nat::stateful::NatAllocatorWriter;
@@ -38,6 +41,7 @@ fn setup_routing_pipeline<Buf: PacketBufferMut>(
     stats_writer: PacketStatsWriter,
     nattablesr: NatTablesReader,
     vpcdtablesr: VpcDiscTablesReader,
+    flow_table: Arc<FlowTable>,
 ) -> DynPipeline<Buf> {
     let stage_ingress = Ingress::new("Ingress", iftr.clone());
     let stage_egress = Egress::new("Egress", iftr, atreader);
@@ -48,17 +52,21 @@ fn setup_routing_pipeline<Buf: PacketBufferMut>(
     let dumper1 = PacketDumper::new("pre-ingress", true, Some(PacketDumper::vxlan_or_icmp()));
     let dumper2 = PacketDumper::new("post-egress", true, Some(PacketDumper::vxlan_or_icmp()));
     let stats = Stats::new("stats", stats_writer);
+    let flow_lookup_nf = LookupNF::new(flow_table.clone());
+    let flow_expirations_nf = ExpirationsNF::new(flow_table);
 
     DynPipeline::new()
         .add_stage(dumper1)
         .add_stage(stage_ingress)
         .add_stage(iprouter1)
         .add_stage(dst_vpcd_lookup)
+        .add_stage(flow_lookup_nf)
         .add_stage(stateless_nat)
         .add_stage(iprouter2)
         .add_stage(stats)
         .add_stage(stage_egress)
         .add_stage(dumper2)
+        .add_stage(flow_expirations_nf)
 }
 
 pub(crate) struct InternalSetup<Buf>
@@ -84,6 +92,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let router = Router::new(params)?;
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
     let (stats, writer) = StatsCollector::new(vpcmapw.get_reader());
+    let flow_table = Arc::new(FlowTable::default());
     let pipeline = setup_routing_pipeline(
         router.get_iftabler(),
         router.get_fibtr(),
@@ -91,6 +100,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         writer,
         nattablew.get_reader(),
         vpcdtablesw.get_reader(),
+        flow_table,
     );
     Ok(InternalSetup {
         router,

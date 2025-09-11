@@ -794,6 +794,7 @@ dependencies = [
  "axum-server",
  "clap",
  "ctrlc",
+ "dataplane-concurrency",
  "dataplane-dpdk",
  "dataplane-id",
  "dataplane-mgmt",
