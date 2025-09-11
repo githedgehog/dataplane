@@ -459,9 +459,6 @@ mod tests {
         let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
         tablesw.update_nat_tables(nat_tables.clone());
 
-        // Template for other packets
-        let _pt = build_test_ipv4_packet(u8::MAX).unwrap();
-
         // No NAT
         let (orig_src, orig_dst) = (addr_v4("8.8.8.8"), addr_v4("9.9.9.9"));
         let (output_src, output_dst) =
