@@ -79,6 +79,7 @@ impl<I: NatIp> NatTuple<I> {
 /// packets to run source or destination Network Address Translation (NAT) on their IP addresses.
 #[derive(Debug)]
 pub struct StatefulNat {
+    name: String,
     sessions: NatDefaultSessionManager,
     allocator: NatAllocatorReader,
 }
@@ -87,11 +88,12 @@ pub struct StatefulNat {
 impl StatefulNat {
     /// Creates a new [`StatefulNat`] processor.
     #[must_use]
-    pub fn new() -> (Self, NatAllocatorWriter) {
+    pub fn new(name: &str) -> (Self, NatAllocatorWriter) {
         let allocator_writer = NatAllocatorWriter::new();
         let allocator_reader = allocator_writer.get_reader();
         (
             Self {
+                name: name.to_string(),
                 sessions: NatDefaultSessionManager::new(),
                 allocator: allocator_reader,
             },
@@ -101,11 +103,18 @@ impl StatefulNat {
 
     /// Creates a new [`StatefulNat`] processor as `new()`, but uses the provided `NatAllocatorReader`.
     #[must_use]
-    pub fn with_reader(allocator: NatAllocatorReader) -> Self {
+    pub fn with_reader(name: &str, allocator: NatAllocatorReader) -> Self {
         Self {
+            name: name.to_string(),
             allocator,
             sessions: NatDefaultSessionManager::new(),
         }
+    }
+
+    /// Get the name of this instance
+    #[must_use]
+    pub fn name(&self) -> &String {
+        &self.name
     }
 
     fn get_src_vpc_id<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<NatVpcId> {

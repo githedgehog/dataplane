@@ -280,7 +280,7 @@ mod tests {
         config.validate().unwrap();
 
         // Check that we can validate the allocator
-        let (mut nat, mut allocator) = StatefulNat::new();
+        let (mut nat, mut allocator) = StatefulNat::new("test-nat");
         allocator
             .update_allocator(&config.external.overlay.vpc_table)
             .unwrap();

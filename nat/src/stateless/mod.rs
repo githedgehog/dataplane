@@ -118,6 +118,7 @@ impl StatelessNat {
     }
 
     /// Get the name of this instance
+    #[must_use]
     pub fn name(&self) -> &String {
         &self.name
     }
