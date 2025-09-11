@@ -94,7 +94,7 @@ metrics = { version = "0.24.2", default-features = false, features = [] }
 metrics-exporter-prometheus = { version = "0.17.2", default-features = false, features = ["http-listener"] }
 mio = { version = "1.0.4", default-features = false, features = [] }
 multi_index_map = { version = "0.15.0", default-features = false, features = [] }
-netdev = { version = "0.37.1", default-features = false, features = [] }
+netdev = { version = "0.37.3", default-features = false, features = [] }
 nix = { version = "0.30.1", default-features = false, features = ["socket"] }
 num-traits = { version = "0.2.19", default-features = false, features = [] }
 once_cell = { version = "1.21.3", default-features = false, features = [] }
