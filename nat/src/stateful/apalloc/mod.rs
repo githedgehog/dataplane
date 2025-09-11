@@ -88,8 +88,8 @@ struct PoolTableKey<I: NatIp> {
     protocol: NextHeader,
     src_id: NatVpcId,
     dst_id: NatVpcId,
-    dst: I,
-    dst_range_end: I,
+    addr: I,
+    addr_range_end: I,
 }
 
 impl<I: NatIp> PoolTableKey<I> {
@@ -97,15 +97,15 @@ impl<I: NatIp> PoolTableKey<I> {
         protocol: NextHeader,
         src_id: NatVpcId,
         dst_id: NatVpcId,
-        dst: I,
-        dst_range_end: I,
+        addr: I,
+        addr_range_end: I,
     ) -> Self {
         Self {
             protocol,
             src_id,
             dst_id,
-            dst,
-            dst_range_end,
+            addr,
+            addr_range_end,
         }
     }
 }
@@ -130,7 +130,7 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
         // need, if the ID also matches.
         match self.0.range(..=key).next_back() {
             Some((k, v))
-                if k.dst_range_end >= key.dst
+                if k.addr_range_end >= key.addr
                     && k.src_id == key.src_id
                     && k.dst_id == key.dst_id
                     && k.protocol == key.protocol =>
@@ -139,6 +139,30 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
             }
             _ => None,
         }
+    }
+
+    fn get_entry(
+        &self,
+        protocol: NextHeader,
+        src_id: NatVpcId,
+        dst_id: NatVpcId,
+        addr: I,
+    ) -> Option<&alloc::IpAllocator<J>> {
+        let key = PoolTableKey::new(
+            protocol,
+            src_id,
+            dst_id,
+            addr,
+            // This field is not usually relevant for the lookup. The only case it's considered is
+            // when all other fields match exactly with the fields from a key in the PoolTable. To
+            // make sure we pick the entry in this case, we need to ensure the value is always
+            // greater or equal to the one of the key from the PoolTable. So we set it to the
+            // largest possible value.
+            I::try_from_bits(u128::MAX)
+                .or(I::try_from_bits(u32::MAX.into()))
+                .ok()?, // Cannot fail - IPv6 and IPv4 can always be built from u32::MAX
+        );
+        self.get(&key)
     }
 
     fn add_entry(&mut self, key: PoolTableKey<I>, allocator: alloc::IpAllocator<J>) {
@@ -185,21 +209,18 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
         Self::check_proto(tuple.next_header)?;
 
         // Get address pools for source and destination
-        let pool_src_opt = self.pools_src44.get(&PoolTableKey::new(
+        let pool_src_opt = self.pools_src44.get_entry(
             tuple.next_header,
             tuple.src_vpc_id,
             tuple.dst_vpc_id,
             tuple.src_ip,
-            // FIXME: This is ugly and will likely go away after reworking lookups from the PoolTable
-            Ipv4Addr::new(255, 255, 255, 255),
-        ));
-        let pool_dst_opt = self.pools_dst44.get(&PoolTableKey::new(
+        );
+        let pool_dst_opt = self.pools_dst44.get_entry(
             tuple.next_header,
             tuple.src_vpc_id,
             tuple.dst_vpc_id,
             tuple.dst_ip,
-            Ipv4Addr::new(255, 255, 255, 255),
-        ));
+        );
 
         // Allocate IP and ports from pools, for source and destination NAT
         let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt)?;
@@ -208,25 +229,23 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
         // path for the flow. First retrieve the relevant address pools.
 
         let reverse_pool_src_opt = if let Some(mapping) = &dst_mapping {
-            self.pools_src44.get(&PoolTableKey::new(
+            self.pools_src44.get_entry(
                 tuple.next_header,
                 tuple.dst_vpc_id,
                 tuple.src_vpc_id,
                 mapping.ip(),
-                Ipv4Addr::new(255, 255, 255, 255),
-            ))
+            )
         } else {
             None
         };
 
         let reverse_pool_dst_opt = if let Some(mapping) = &src_mapping {
-            self.pools_dst44.get(&PoolTableKey::new(
+            self.pools_dst44.get_entry(
                 tuple.next_header,
                 tuple.dst_vpc_id,
                 tuple.src_vpc_id,
                 mapping.ip(),
-                Ipv4Addr::new(255, 255, 255, 255),
-            ))
+            )
         } else {
             None
         };
@@ -250,37 +269,33 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv6Addr>>, AllocatorError> {
         Self::check_proto(tuple.next_header)?;
 
-        let pool_src_opt = self.pools_src66.get(&PoolTableKey::new(
+        let pool_src_opt = self.pools_src66.get_entry(
+            tuple.next_header,
+            tuple.src_vpc_id,
+            tuple.dst_vpc_id,
+            tuple.src_ip,
+        );
+        let pool_dst_opt = self.pools_dst66.get_entry(
             tuple.next_header,
             tuple.src_vpc_id,
             tuple.dst_vpc_id,
             tuple.dst_ip,
-            Ipv6Addr::new(255, 255, 255, 255, 255, 255, 255, 255),
-        ));
-        let pool_dst_opt = self.pools_dst66.get(&PoolTableKey::new(
-            tuple.next_header,
-            tuple.src_vpc_id,
-            tuple.dst_vpc_id,
-            tuple.dst_ip,
-            Ipv6Addr::new(255, 255, 255, 255, 255, 255, 255, 255),
-        ));
+        );
 
         let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt)?;
 
-        let reverse_pool_src_opt = self.pools_src66.get(&PoolTableKey::new(
+        let reverse_pool_src_opt = self.pools_src66.get_entry(
             tuple.next_header,
             tuple.src_vpc_id,
             tuple.dst_vpc_id,
             tuple.src_ip,
-            Ipv6Addr::new(255, 255, 255, 255, 255, 255, 255, 255),
-        ));
-        let reverse_pool_dst_opt = self.pools_dst66.get(&PoolTableKey::new(
+        );
+        let reverse_pool_dst_opt = self.pools_dst66.get_entry(
             tuple.next_header,
             tuple.src_vpc_id,
             tuple.dst_vpc_id,
-            tuple.src_ip,
-            Ipv6Addr::new(255, 255, 255, 255, 255, 255, 255, 255),
-        ));
+            tuple.dst_ip,
+        );
 
         let (reverse_src_mapping, reverse_dst_mapping) =
             Self::get_reverse_mapping(tuple, reverse_pool_src_opt, reverse_pool_dst_opt)?;
