@@ -280,6 +280,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatelessNat {
                 // fixme: ideally, we'd `enter` once for the whole batch. However,
                 // this requires boxing the closures, which may be worse than
                 // calling `enter` per packet? ... if not uglier
+                // (same thing for StatefulNat)
                 if let Some(tablesr) = &self.tablesr.enter() {
                     self.process_packet(tablesr, &mut packet);
                 } else {

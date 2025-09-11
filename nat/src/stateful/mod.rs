@@ -527,7 +527,10 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatefulNat {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.map(|mut packet| {
-            self.process_packet(&mut packet);
+            // FIXME: See comment in stateless NAT's implementation
+            if !packet.is_done() && packet.get_meta().nat() {
+                self.process_packet(&mut packet);
+            }
             packet
         })
     }
