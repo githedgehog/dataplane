@@ -767,7 +767,7 @@ impl TryFrom<&PrefixSize> for u128 {
 #[cfg(test)]
 mod tests {
     use crate::prefix::*;
-    use serde_yml;
+    use serde_yaml_ng;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[test]
@@ -876,9 +876,9 @@ mod tests {
         let prefix = Prefix::from(ipv4_pfx);
 
         // serialize prefix as YAML
-        let yaml = serde_yml::to_string(&prefix).unwrap();
-        assert_eq!(yaml, "!IPV4\naddress: '1.2.3.0'\nlength: 24\n");
-        let deserialized_yaml: Prefix = serde_yml::from_str(&yaml).unwrap();
+        let yaml = serde_yaml_ng::to_string(&prefix).unwrap();
+        assert_eq!(yaml, "!IPV4\naddress: 1.2.3.0\nlength: 24\n");
+        let deserialized_yaml: Prefix = serde_yaml_ng::from_str(&yaml).unwrap();
         assert_eq!(prefix, deserialized_yaml);
 
         let ipv6_addr: Ipv6Addr = "f00:baa::".parse().expect("Bad address");
@@ -886,9 +886,9 @@ mod tests {
         let prefix = Prefix::from(ipv6_pfx);
 
         // serialize prefix as YAML
-        let yaml = serde_yml::to_string(&prefix).unwrap();
+        let yaml = serde_yaml_ng::to_string(&prefix).unwrap();
         assert_eq!(yaml, "!IPV6\naddress: 'f00:baa::'\nlength: 64\n");
-        let deserialized_yaml: Prefix = serde_yml::from_str(&yaml).unwrap();
+        let deserialized_yaml: Prefix = serde_yaml_ng::from_str(&yaml).unwrap();
         assert_eq!(prefix, deserialized_yaml);
     }
 

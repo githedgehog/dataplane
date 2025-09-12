@@ -35,6 +35,5 @@ netdev = { workspace = true }
 [dev-dependencies]
 bolero = { workspace = true, default-features = false }
 lpm = { workspace = true, features = ["testing"] }
-serde_yml = { workspace = true }
 tracing-test = { workspace = true, features = [] }
 

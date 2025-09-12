@@ -32,7 +32,6 @@ pipeline = { workspace = true }
 pkt-meta = { workspace = true }
 routing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_yml = { workspace = true }
 stats = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
