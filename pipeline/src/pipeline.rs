@@ -196,6 +196,9 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DynPipeline<Buf> {
     }
 }
 
+#[allow(unsafe_code)]
+unsafe impl<Buf: PacketBufferMut> Send for DynPipeline<Buf> {}
+
 #[cfg(test)]
 mod test {
     use dyn_iter::IntoDynIterator;
