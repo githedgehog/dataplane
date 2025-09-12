@@ -6,7 +6,7 @@
 #![allow(unused)]
 
 use left_right::new_from_empty;
-use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
+use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 use tracing::debug;
 
 use crate::stateless::setup::tables::{NatTableValue, NatTables};
@@ -36,6 +36,19 @@ impl NatTablesReader {
     pub fn enter(&self) -> Option<ReadGuard<'_, NatTables>> {
         self.0.enter()
     }
+    #[must_use]
+    pub fn factory(&self) -> NatTablesReaderFactory {
+        NatTablesReaderFactory(self.0.factory())
+    }
+}
+
+#[derive(Debug)]
+pub struct NatTablesReaderFactory(ReadHandleFactory<NatTables>);
+impl NatTablesReaderFactory {
+    #[must_use]
+    pub fn handle(&self) -> NatTablesReader {
+        NatTablesReader(self.0.handle())
+    }
 }
 
 impl NatTablesWriter {
@@ -48,6 +61,10 @@ impl NatTablesWriter {
     #[must_use]
     pub fn get_reader(&self) -> NatTablesReader {
         NatTablesReader(self.0.clone())
+    }
+    #[must_use]
+    pub fn get_reader_factory(&self) -> NatTablesReaderFactory {
+        self.get_reader().factory()
     }
     pub fn update_nat_tables(&mut self, nat_tables: NatTables) {
         self.0.append(NatTablesChange::UpdateNatTables(nat_tables));
