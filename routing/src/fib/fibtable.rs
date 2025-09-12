@@ -124,6 +124,15 @@ impl FibTableWriter {
     }
 }
 
+#[derive(Debug)]
+pub struct FibTableReaderFactory(ReadHandleFactory<FibTable>);
+impl FibTableReaderFactory {
+    #[must_use]
+    pub fn handle(&self) -> FibTableReader {
+        FibTableReader(self.0.handle())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct FibTableReader(ReadHandle<FibTable>);
 impl FibTableReader {
@@ -131,8 +140,8 @@ impl FibTableReader {
     pub fn enter(&self) -> Option<ReadGuard<'_, FibTable>> {
         self.0.enter()
     }
-    pub fn factory(&self) -> ReadHandleFactory<FibTable> {
-        self.0.factory()
+    pub fn factory(&self) -> FibTableReaderFactory {
+        FibTableReaderFactory(self.0.factory())
     }
 }
 

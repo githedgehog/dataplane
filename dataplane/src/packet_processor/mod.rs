@@ -33,7 +33,7 @@ where
     Buf: PacketBufferMut,
 {
     pub router: Router,
-    pub pipeline: DynPipeline<Buf>,
+    pub pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
     pub vpcmapw: VpcMapWriter<VpcMapName>,
     pub nattablew: Option<NatTablesWriter>,
     pub natallocatorw: Option<NatAllocatorWriter>,
@@ -48,45 +48,50 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let nattablew = NatTablesWriter::new();
     let vpcdtablesw = VpcDiscTablesWriter::new();
     let router = Router::new(params)?;
-    let iftr = router.get_iftabler();
-    let fibtr = router.get_fibtr();
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
     let (stats, writer) = StatsCollector::new(vpcmapw.get_reader());
     let flow_table = Arc::new(FlowTable::default());
 
-    // Build network functions
+    let iftr_factory = router.get_iftabler_factory();
+    let fibtr_factory = router.get_fibtr_factory();
+    let vpcdtablesr_factory = vpcdtablesw.get_reader_factory();
+    let atabler_factory = router.get_atabler_factory();
+    let nattabler_factory = nattablew.get_reader_factory();
 
-    let stage_ingress = Ingress::new("Ingress", iftr.clone());
-    let stage_egress = Egress::new("Egress", iftr, router.get_atabler());
-    let dst_vpcd_lookup = DstVpcdLookup::new("dst-vni-lookup", vpcdtablesw.get_reader());
-    let iprouter1 = IpForwarder::new("IP-Forward-1", fibtr.clone());
-    let iprouter2 = IpForwarder::new("IP-Forward-2", fibtr);
-    let stateless_nat = StatelessNat::with_reader("stateless-NAT", nattablew.get_reader());
-    let dumper1 = PacketDumper::new("pre-ingress", true, Some(PacketDumper::vxlan_or_icmp()));
-    let dumper2 = PacketDumper::new("post-egress", true, Some(PacketDumper::vxlan_or_icmp()));
-    let stats_stage = Stats::new("stats", writer);
-    let flow_lookup_nf = LookupNF::new(flow_table.clone());
-    let flow_expirations_nf = ExpirationsNF::new(flow_table);
+    let pipeline_builder = move || {
+        // Build network functions
+        let stage_ingress = Ingress::new("Ingress", iftr_factory.handle());
+        let stage_egress = Egress::new("Egress", iftr_factory.handle(), atabler_factory.handle());
+        let dst_vpcd_lookup = DstVpcdLookup::new("dst-vni-lookup", vpcdtablesr_factory.handle());
+        let iprouter1 = IpForwarder::new("IP-Forward-1", fibtr_factory.handle());
+        let iprouter2 = IpForwarder::new("IP-Forward-2", fibtr_factory.handle());
+        let stateless_nat = StatelessNat::with_reader("stateless-NAT", nattabler_factory.handle());
+        let dumper1 = PacketDumper::new("pre-ingress", true, Some(PacketDumper::vxlan_or_icmp()));
+        let dumper2 = PacketDumper::new("post-egress", true, Some(PacketDumper::vxlan_or_icmp()));
+        let stats_stage = Stats::new("stats", writer.clone());
+        let flow_lookup_nf = LookupNF::new(flow_table.clone());
+        let flow_expirations_nf = ExpirationsNF::new(flow_table.clone());
 
-    // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
-    // hard-coded.
+        // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
+        // hard-coded.
 
-    let pipeline = DynPipeline::new()
-        .add_stage(dumper1)
-        .add_stage(stage_ingress)
-        .add_stage(iprouter1)
-        .add_stage(dst_vpcd_lookup)
-        .add_stage(flow_lookup_nf)
-        .add_stage(stateless_nat)
-        .add_stage(iprouter2)
-        .add_stage(stats_stage)
-        .add_stage(stage_egress)
-        .add_stage(dumper2)
-        .add_stage(flow_expirations_nf);
+        DynPipeline::new()
+            .add_stage(dumper1)
+            .add_stage(stage_ingress)
+            .add_stage(iprouter1)
+            .add_stage(dst_vpcd_lookup)
+            .add_stage(flow_lookup_nf)
+            .add_stage(stateless_nat)
+            .add_stage(iprouter2)
+            .add_stage(stats_stage)
+            .add_stage(stage_egress)
+            .add_stage(dumper2)
+            .add_stage(flow_expirations_nf)
+    };
 
     Ok(InternalSetup {
         router,
-        pipeline,
+        pipeline: Arc::new(pipeline_builder),
         vpcmapw,
         nattablew: Some(nattablew),
         natallocatorw: None, // Not instanciated, current pipeline does not use stateful NAT

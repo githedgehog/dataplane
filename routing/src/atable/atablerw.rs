@@ -3,7 +3,7 @@
 
 //! Adjacency table left-right
 
-use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
+use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 use std::net::IpAddr;
 
 use crate::atable::adjacency::{Adjacency, AdjacencyTable};
@@ -75,5 +75,17 @@ impl AtableReader {
     }
     pub fn enter(&self) -> Option<ReadGuard<'_, AdjacencyTable>> {
         self.0.enter()
+    }
+    pub fn factory(&self) -> AtableReaderFactory {
+        AtableReaderFactory(self.0.factory())
+    }
+}
+
+#[derive(Debug)]
+pub struct AtableReaderFactory(ReadHandleFactory<AdjacencyTable>);
+impl AtableReaderFactory {
+    #[must_use]
+    pub fn handle(&self) -> AtableReader {
+        AtableReader(self.0.handle())
     }
 }
