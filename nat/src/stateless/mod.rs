@@ -270,6 +270,10 @@ impl StatelessNat {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatelessNat {
+    fn replicate(&self) -> Self {
+        Self::with_reader(&self.name, self.tablesr.clone())
+    }
+
     #[allow(clippy::if_not_else)]
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,

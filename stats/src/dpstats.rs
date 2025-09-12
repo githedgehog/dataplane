@@ -538,6 +538,10 @@ impl Stats {
 
 // TODO: compute drop stats
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
+    fn replicate(&self) -> Self {
+        Self::new(&self.name, self.stats.clone())
+    }
+
     #[tracing::instrument(level = "trace", skip(self, input))]
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,

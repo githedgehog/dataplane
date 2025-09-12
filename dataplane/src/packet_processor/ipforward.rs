@@ -384,6 +384,10 @@ impl IpForwarder {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
+    fn replicate(&self) -> Self {
+        Self::new(&self.name, self.fibtr.clone())
+    }
+
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,

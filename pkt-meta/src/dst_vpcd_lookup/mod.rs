@@ -58,7 +58,7 @@ impl Absorb<VpcDiscriminantTablesChange> for VpcDiscriminantTables {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VpcDiscTablesReader(ReadHandle<VpcDiscriminantTables>);
 impl VpcDiscTablesReader {
     fn enter(&self) -> Option<ReadGuard<'_, VpcDiscriminantTables>> {
@@ -167,6 +167,9 @@ impl DstVpcdLookup {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DstVpcdLookup {
+    fn replicate(&self) -> Self {
+        Self::new(&self.name, self.tablesr.clone())
+    }
     #[allow(clippy::if_not_else)]
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,

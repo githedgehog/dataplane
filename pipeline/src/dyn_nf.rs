@@ -29,6 +29,9 @@ pub trait DynNetworkFunction<Buf: PacketBufferMut>: Any {
     /// type.  However, if you only have a dynamic iterator, you can use this method to process the
     /// packets.
     fn process_dyn<'a>(&'a mut self, input: DynIter<'a, Packet<Buf>>) -> DynIter<'a, Packet<Buf>>;
+
+    /// Replicate
+    fn replicate_dyn(&self) -> Box<dyn DynNetworkFunction<Buf>>;
 }
 
 pub(crate) struct DynNetworkFunctionImpl<Buf: PacketBufferMut, NF: NetworkFunction<Buf> + 'static> {
@@ -68,5 +71,8 @@ impl<Buf: PacketBufferMut, NF: NetworkFunction<Buf>> DynNetworkFunction<Buf>
 {
     fn process_dyn<'a>(&'a mut self, input: DynIter<'a, Packet<Buf>>) -> DynIter<'a, Packet<Buf>> {
         self.nf.process(input).into_dyn_iter()
+    }
+    fn replicate_dyn(&self) -> Box<dyn DynNetworkFunction<Buf>> {
+        nf_dyn(self.get_nf().replicate())
     }
 }

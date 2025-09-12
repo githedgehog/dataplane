@@ -142,6 +142,10 @@ impl Ingress {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Ingress {
+    fn replicate(&self) -> Self {
+        Self::new(&self.name, self.iftr.clone())
+    }
+
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,

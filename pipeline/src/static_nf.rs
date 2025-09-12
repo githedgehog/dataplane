@@ -23,6 +23,10 @@ pub trait NetworkFunction<Buf: PacketBufferMut> {
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a;
+
+    /// Replicate a network function object in order to be able to replicate a pipeline
+    #[must_use]
+    fn replicate(&self) -> Self;
 }
 
 struct StaticChainImpl<Buf: PacketBufferMut, NF1: NetworkFunction<Buf>, NF2: NetworkFunction<Buf>> {
@@ -39,6 +43,13 @@ impl<Buf: PacketBufferMut, NF1: NetworkFunction<Buf>, NF2: NetworkFunction<Buf>>
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         self.nf2.process(self.nf1.process(input))
+    }
+    fn replicate(&self) -> Self {
+        Self {
+            nf1: self.nf1.replicate(),
+            nf2: self.nf2.replicate(),
+            _marker: PhantomData,
+        }
     }
 }
 

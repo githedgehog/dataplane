@@ -567,6 +567,9 @@ impl StatefulNat {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatefulNat {
+    fn replicate(&self) -> Self {
+        Self::with_reader(&self.name, self.allocator.clone())
+    }
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,

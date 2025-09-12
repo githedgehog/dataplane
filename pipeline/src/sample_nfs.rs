@@ -28,6 +28,9 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for InspectHeaders {
             debug!("headers: {headers:?}", headers = packet.headers());
         })
     }
+    fn replicate(&self) -> Self {
+        InspectHeaders
+    }
 }
 
 /// Network function that dumps packets on the logging infrastructure.
@@ -122,6 +125,9 @@ impl<Buf: PacketBufferMut> PacketDumper<Buf> {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PacketDumper<Buf> {
+    fn replicate(&self) -> Self {
+        Self::new(&self.name, self.enabled(), None /* FIXME */)
+    }
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,
@@ -159,6 +165,9 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for BroadcastMacs {
             packet
         })
     }
+    fn replicate(&self) -> Self {
+        BroadcastMacs
+    }
 }
 
 /// Network function that decrements the TTL value of an IP packet.
@@ -168,6 +177,9 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for BroadcastMacs {
 pub struct DecrementTtl;
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DecrementTtl {
+    fn replicate(&self) -> Self {
+        DecrementTtl
+    }
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,
@@ -202,6 +214,9 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DecrementTtl {
 pub struct Passthrough;
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Passthrough {
+    fn replicate(&self) -> Self {
+        Passthrough
+    }
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,

@@ -175,6 +175,9 @@ impl<Buf: PacketBufferMut> DynNetworkFunction<Buf> for DynPipeline<Buf> {
             .fold(input, move |input, nf| nf.process_dyn(input))
             .into_dyn_iter()
     }
+    fn replicate_dyn(&self) -> Box<dyn DynNetworkFunction<Buf>> {
+        Box::new(self.replicate())
+    }
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DynPipeline<Buf> {
@@ -183,6 +186,13 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DynPipeline<Buf> {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> {
         self.process_dyn(input.into_dyn_iter())
+    }
+    fn replicate(&self) -> Self {
+        let mut replica = Self::new();
+        for stage in self.nfs.values() {
+            replica = replica.add_stage_dyn(stage.replicate_dyn());
+        }
+        replica
     }
 }
 
@@ -200,24 +210,67 @@ mod test {
     use net::packet::test_utils::build_test_ipv4_packet;
 
     type TestStageId = StageId<TestBuffer>;
+    const MAX_TTL: u8 = u8::MAX;
 
-    #[test]
-    fn long_dyn_pipeline() {
-        const MAX_TTL: u8 = u8::MAX;
-
+    // Build a pipeline with a certain number of stages
+    fn long_dyn_pipeline_build(num_stages: usize) -> DynPipeline<TestBuffer> {
         let mut pipeline = DynPipeline::new();
         let mut stages = DynStageGenerator::new();
-        let num_stages = 1000;
-
         for _ in 0..num_stages {
             pipeline = pipeline.add_stage_dyn(stages.next().unwrap());
         }
+        pipeline
+    }
+
+    #[test]
+    fn long_dyn_pipeline() {
+        let num_stages = 1000;
+        let mut pipeline = long_dyn_pipeline_build(num_stages);
 
         let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
         let packets_out: Vec<_> = pipeline.process(packets).collect();
 
         assert_eq!(packets_out.len(), 1);
 
+        let p0_out = &packets_out[0];
+        assert_eq!(
+            DestinationMac::new(Mac::BROADCAST).unwrap(),
+            p0_out.try_eth().unwrap().destination()
+        );
+        assert_eq!(
+            (MAX_TTL as usize) - DynStageGenerator::num_ttl_decs(num_stages),
+            p0_out.try_ipv4().unwrap().ttl() as usize
+        );
+    }
+
+    #[test]
+    fn long_dyn_pipeline_replicate() {
+        let num_stages = 1000;
+        let mut pipeline = long_dyn_pipeline_build(num_stages);
+        let mut replica = pipeline.replicate();
+
+        // process packets with original pipeline
+        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
+        let packets_out: Vec<_> = pipeline.process(packets).collect();
+        assert_eq!(packets_out.len(), 1);
+
+        // check that packets have been modified by pipeline as expected
+        let p0_out = &packets_out[0];
+        assert_eq!(
+            DestinationMac::new(Mac::BROADCAST).unwrap(),
+            p0_out.try_eth().unwrap().destination()
+        );
+        assert_eq!(
+            (MAX_TTL as usize) - DynStageGenerator::num_ttl_decs(num_stages),
+            p0_out.try_ipv4().unwrap().ttl() as usize
+        );
+
+        // process the same packets with the pipeline replica
+        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
+        let packets_out: Vec<_> = replica.process(packets).collect();
+        assert_eq!(packets_out.len(), 1);
+
+        // check that packets have been modified identically by both pipelines
         let p0_out = &packets_out[0];
         assert_eq!(
             DestinationMac::new(Mac::BROADCAST).unwrap(),

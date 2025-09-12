@@ -27,6 +27,9 @@ impl ExpirationsNF {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for ExpirationsNF {
+    fn replicate(&self) -> Self {
+        Self::new(self.flow_table.clone())
+    }
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,

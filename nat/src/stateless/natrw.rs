@@ -30,7 +30,7 @@ impl Absorb<NatTablesChange> for NatTables {
 }
 
 pub struct NatTablesWriter(WriteHandle<NatTables, NatTablesChange>);
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NatTablesReader(ReadHandle<NatTables>);
 impl NatTablesReader {
     pub fn enter(&self) -> Option<ReadGuard<'_, NatTables>> {

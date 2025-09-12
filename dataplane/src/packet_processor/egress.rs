@@ -196,6 +196,9 @@ impl Egress {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Egress {
+    fn replicate(&self) -> Self {
+        Self::new(&self.name, self.iftr.clone(), self.atabler.clone())
+    }
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,

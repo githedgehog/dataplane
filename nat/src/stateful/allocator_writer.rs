@@ -119,7 +119,7 @@ impl Default for NatAllocatorWriter {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NatAllocatorReader(Arc<ArcSwapOption<NatDefaultAllocator>>);
 
 impl NatAllocatorReader {
