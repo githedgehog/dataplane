@@ -397,6 +397,9 @@ pub struct Mbuf {
     marker: PhantomData<dpdk_sys::rte_mbuf>,
 }
 
+// dpdk_sys::rte_mbuf is Send but not Sync since it is a plain C pointer
+unsafe impl Send for Mbuf {}
+
 /// TODO: this is possibly poor optimization, we should try bulk dealloc if this slows us down
 /// TODO: we need to ensure that we don't call drop on Mbuf when they have been transmitted.
 ///       The transmit function automatically drops such mbufs and we don't want to double free.
