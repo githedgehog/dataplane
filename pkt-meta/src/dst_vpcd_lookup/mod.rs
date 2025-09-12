@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle, new_from_empty};
+use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle, new_from_empty};
 use std::collections::HashMap;
 use tracing::{debug, error, warn};
 
@@ -64,6 +64,20 @@ impl VpcDiscTablesReader {
     fn enter(&self) -> Option<ReadGuard<'_, VpcDiscriminantTables>> {
         self.0.enter()
     }
+
+    #[must_use]
+    pub fn factory(&self) -> VpcDiscTablesReaderFactory {
+        VpcDiscTablesReaderFactory(self.0.factory())
+    }
+}
+
+#[derive(Debug)]
+pub struct VpcDiscTablesReaderFactory(ReadHandleFactory<VpcDiscriminantTables>);
+impl VpcDiscTablesReaderFactory {
+    #[must_use]
+    pub fn handle(&self) -> VpcDiscTablesReader {
+        VpcDiscTablesReader(self.0.handle())
+    }
 }
 
 #[derive(Debug)]
@@ -81,6 +95,11 @@ impl VpcDiscTablesWriter {
     pub fn get_reader(&self) -> VpcDiscTablesReader {
         VpcDiscTablesReader(self.0.clone())
     }
+
+    pub fn get_reader_factory(&self) -> VpcDiscTablesReaderFactory {
+        self.get_reader().factory()
+    }
+
     pub fn update_vpcd_tables(&mut self, vpcd_tables: VpcDiscriminantTables) {
         self.0
             .append(VpcDiscriminantTablesChange::UpdateVpcDiscTables(
