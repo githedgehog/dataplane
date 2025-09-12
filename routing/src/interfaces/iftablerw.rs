@@ -8,7 +8,7 @@ use crate::fib::fibtype::FibId;
 use crate::fib::fibtype::FibReader;
 use crate::rib::vrf::VrfId;
 use crate::rib::vrftable::VrfTable;
-use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
+use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 
 use crate::interfaces::iftable::IfTable;
 use crate::interfaces::interface::{IfAddress, IfIndex, IfState, RouterInterfaceConfig};
@@ -183,6 +183,19 @@ impl IfTableReader {
     #[must_use]
     pub fn enter(&self) -> Option<ReadGuard<'_, IfTable>> {
         self.0.enter()
+    }
+    #[must_use]
+    pub fn factory(&self) -> IfTableReaderFactory {
+        IfTableReaderFactory(self.0.factory())
+    }
+}
+
+#[derive(Debug)]
+pub struct IfTableReaderFactory(ReadHandleFactory<IfTable>);
+impl IfTableReaderFactory {
+    #[must_use]
+    pub fn handle(&self) -> IfTableReader {
+        IfTableReader(self.0.handle())
     }
 }
 

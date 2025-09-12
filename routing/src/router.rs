@@ -9,12 +9,12 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing::{debug, error};
 
-use crate::atable::atablerw::AtableReader;
+use crate::atable::atablerw::{AtableReader, AtableReaderFactory};
 use crate::atable::resolver::AtResolver;
 use crate::ctl::RouterCtlSender;
 use crate::errors::RouterError;
-use crate::fib::fibtable::{FibTableReader, FibTableWriter};
-use crate::interfaces::iftablerw::{IfTableReader, IfTableWriter};
+use crate::fib::fibtable::{FibTableReader, FibTableReaderFactory, FibTableWriter};
+use crate::interfaces::iftablerw::{IfTableReader, IfTableReaderFactory, IfTableWriter};
 use crate::rio::{RioConf, RioHandle, start_rio};
 
 use crate::rio::DEFAULT_DP_UX_PATH;
@@ -139,13 +139,28 @@ impl Router {
     }
 
     #[must_use]
+    pub fn get_atabler_factory(&self) -> AtableReaderFactory {
+        self.resolver.get_reader().factory()
+    }
+
+    #[must_use]
     pub fn get_iftabler(&self) -> IfTableReader {
         self.iftr.clone()
     }
 
     #[must_use]
+    pub fn get_iftabler_factory(&self) -> IfTableReaderFactory {
+        self.iftr.factory()
+    }
+
+    #[must_use]
     pub fn get_fibtr(&self) -> FibTableReader {
         self.fibtr.clone()
+    }
+
+    #[must_use]
+    pub fn get_fibtr_factory(&self) -> FibTableReaderFactory {
+        self.fibtr.factory()
     }
 
     #[must_use]
