@@ -35,8 +35,8 @@ where
     pub router: Router,
     pub pipeline: DynPipeline<Buf>,
     pub vpcmapw: VpcMapWriter<VpcMapName>,
-    pub nattablew: NatTablesWriter,
-    pub natallocatorw: NatAllocatorWriter,
+    pub nattablew: Option<NatTablesWriter>,
+    pub natallocatorw: Option<NatAllocatorWriter>,
     pub vpcdtablesw: VpcDiscTablesWriter,
     pub stats: StatsCollector,
 }
@@ -46,7 +46,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     params: RouterParams,
 ) -> Result<InternalSetup<Buf>, RouterError> {
     let nattablew = NatTablesWriter::new();
-    let natallocatorw = NatAllocatorWriter::new();
     let vpcdtablesw = VpcDiscTablesWriter::new();
     let router = Router::new(params)?;
     let iftr = router.get_iftabler();
@@ -89,8 +88,8 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         router,
         pipeline,
         vpcmapw,
-        nattablew,
-        natallocatorw,
+        nattablew: Some(nattablew),
+        natallocatorw: None, // Not instanciated, current pipeline does not use stateful NAT
         vpcdtablesw,
         stats,
     })
