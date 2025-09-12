@@ -89,7 +89,7 @@ fn main() {
     let setup = start_router(config).expect("failed to start router");
     MetricsServer::new(args.metrics_address(), setup.stats);
     /* pipeline builder */
-    let builder = move || setup.pipeline;
+    let builder = setup.pipeline;
 
     /* start management */
     start_mgmt(

@@ -13,6 +13,9 @@
 )]
 
 use afpacket::sync::RawPacketStream;
+
+use concurrency::sync::Arc;
+
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 use std::collections::HashMap;
@@ -167,11 +170,19 @@ fn build_kif_table(args: impl IntoIterator<Item = impl AsRef<str> + Clone>) -> K
 pub struct DriverKernel;
 impl DriverKernel {
     /// Starts the kernel driver
+    // After doing the thread spawning, this should allow should not be needed anymore
+    #[allow(clippy::needless_pass_by_value)]
     pub fn start(
         args: impl IntoIterator<Item = impl AsRef<str> + Clone>,
-        setup_pipeline: impl FnOnce() -> DynPipeline<TestBuffer>,
+        setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
     ) {
         let mut pipeline = setup_pipeline();
+
+        // Spawn threads in this function, e.g.,
+        // let thandle = concurrency::thread::spawn(move || {
+        //     let mut pipeline = setup_pipeline();
+        //     ...
+        // });
 
         /* build kernel interface table from interfaces available and cmd line args */
         let mut kiftable = build_kif_table(args);
