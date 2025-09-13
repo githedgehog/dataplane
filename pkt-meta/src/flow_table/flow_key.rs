@@ -190,6 +190,31 @@ impl FlowKeyData {
     }
 
     #[must_use]
+    pub fn src_vpcd(&self) -> Option<VpcDiscriminant> {
+        self.src_vpcd
+    }
+
+    #[must_use]
+    pub fn dst_vpcd(&self) -> Option<VpcDiscriminant> {
+        self.dst_vpcd
+    }
+
+    #[must_use]
+    pub fn src_ip(&self) -> &IpAddr {
+        &self.src_ip
+    }
+
+    #[must_use]
+    pub fn dst_ip(&self) -> &IpAddr {
+        &self.dst_ip
+    }
+
+    #[must_use]
+    pub fn proto_key_info(&self) -> &IpProtoKey {
+        &self.proto_key_info
+    }
+
+    #[must_use]
     fn symmetric_eq(&self, other: &Self) -> bool {
         // Straightforward comparison
         let src_to_src = self.src_vpcd == other.src_vpcd
