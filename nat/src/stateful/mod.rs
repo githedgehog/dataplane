@@ -17,11 +17,11 @@ use crate::stateful::apalloc::AllocatedIpPort;
 use crate::stateful::apalloc::{NatDefaultAllocator, NatIpWithBitmap};
 use crate::stateful::natip::NatIp;
 use crate::stateful::port::NatPort;
-use crate::stateful::sessions::{
-    NatDefaultSession, NatDefaultSessionManager, NatSession, NatSessionManager, NatState,
-};
+use crate::stateful::sessions::NatState;
+use concurrency::sync::Arc;
+use flow_info::{ExtractRef, FlowInfo};
 use net::buffer::PacketBufferMut;
-use net::headers::{Net, Transport, TryHeadersMut, TryIp, TryIpMut, TryTransport, TryTransportMut};
+use net::headers::{Net, Transport, TryHeadersMut, TryIp, TryIpMut, TryTransportMut};
 use net::ip::NextHeader;
 use net::ipv4::UnicastIpv4Addr;
 use net::ipv6::UnicastIpv6Addr;
@@ -30,9 +30,12 @@ use net::tcp::port::TcpPort;
 use net::udp::port::UdpPort;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
+use pkt_meta::flow_table::flow_key::Uni;
+use pkt_meta::flow_table::{FlowKey, FlowKeyData, FlowTable, IpProtoKey, TcpProtoKey, UdpProtoKey};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::time::Instant;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StatefulNatError {
@@ -92,7 +95,7 @@ impl<I: NatIp> NatTuple<I> {
 #[derive(Debug)]
 pub struct StatefulNat {
     name: String,
-    sessions: NatDefaultSessionManager,
+    sessions: Arc<FlowTable>,
     allocator: NatAllocatorReader,
 }
 
@@ -106,7 +109,7 @@ impl StatefulNat {
         (
             Self {
                 name: name.to_string(),
-                sessions: NatDefaultSessionManager::new(),
+                sessions: Arc::new(FlowTable::default()),
                 allocator: allocator_reader,
             },
             allocator_writer,
@@ -118,8 +121,8 @@ impl StatefulNat {
     pub fn with_reader(name: &str, allocator: NatAllocatorReader) -> Self {
         Self {
             name: name.to_string(),
+            sessions: Arc::new(FlowTable::default()),
             allocator,
-            sessions: NatDefaultSessionManager::new(),
         }
     }
 
@@ -127,6 +130,13 @@ impl StatefulNat {
     #[must_use]
     pub fn name(&self) -> &String {
         &self.name
+    }
+
+    #[cfg(test)]
+    /// Get session table
+    #[must_use]
+    pub fn sessions(&self) -> &FlowTable {
+        &self.sessions
     }
 
     fn get_src_vpc_id<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<NatVpcId> {
@@ -148,11 +158,27 @@ impl StatefulNat {
         src_vpc_id: NatVpcId,
         dst_vpc_id: NatVpcId,
     ) -> Option<NatTuple<I>> {
-        let net = packet.get_headers().try_ip()?;
-        let src_ip = I::from_src_addr(net)?;
-        let dst_ip = I::from_dst_addr(net)?;
-        let next_header = net.next_header();
-        let (src_port, dst_port) = Self::get_ports::<I, Buf>(packet);
+        let FlowKey::Unidirectional(flow_key) = FlowKey::try_from(Uni(packet)).ok()? else {
+            // We never generate a Bidirectional flow key from a Unidirectional packet
+            unreachable!()
+        };
+
+        let (next_header, src_port, dst_port) = match flow_key.proto_key_info() {
+            IpProtoKey::Tcp(TcpProtoKey { src_port, dst_port }) => (
+                NextHeader::TCP,
+                Some(src_port.as_u16()),
+                Some(dst_port.as_u16()),
+            ),
+            IpProtoKey::Udp(UdpProtoKey { src_port, dst_port }) => (
+                NextHeader::UDP,
+                Some(src_port.as_u16()),
+                Some(dst_port.as_u16()),
+            ),
+            IpProtoKey::Icmp => (NextHeader::ICMP, None, None),
+        };
+
+        let src_ip = I::try_from_addr(*flow_key.src_ip()).ok()?;
+        let dst_ip = I::try_from_addr(*flow_key.dst_ip()).ok()?;
 
         Some(NatTuple::new(
             src_ip,
@@ -165,53 +191,40 @@ impl StatefulNat {
         ))
     }
 
-    fn get_ports<I: NatIp, Buf: PacketBufferMut>(
-        packet: &Packet<Buf>,
-    ) -> (Option<u16>, Option<u16>) {
-        let Some(transport) = packet.get_headers().try_transport() else {
-            return (None, None);
+    fn lookup_session<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> Option<NatState> {
+        let flow_info = packet.get_meta_mut().flow_info.as_mut()?;
+        let value = flow_info.locked.read().unwrap();
+        let state = value.nat_state.as_ref()?.extract_ref::<NatState>();
+        Some(state?.clone())
+    }
+
+    fn create_session<I: NatIp>(&mut self, tuple: &NatTuple<I>, state: NatState) -> Result<(), ()> {
+        let proto_key = match (tuple.next_header, tuple.src_port, tuple.dst_port) {
+            (NextHeader::TCP, Some(src_port), Some(dst_port)) => IpProtoKey::Tcp(TcpProtoKey {
+                src_port: TcpPort::new_checked(src_port).map_err(|_| ())?,
+                dst_port: TcpPort::new_checked(dst_port).map_err(|_| ())?,
+            }),
+            (NextHeader::UDP, Some(src_port), Some(dst_port)) => IpProtoKey::Udp(UdpProtoKey {
+                src_port: UdpPort::new_checked(src_port).map_err(|_| ())?,
+                dst_port: UdpPort::new_checked(dst_port).map_err(|_| ())?,
+            }),
+            _ => {
+                return Err(());
+            }
         };
-        match transport {
-            Transport::Tcp(tcp) => (
-                Some(tcp.source().as_u16()),
-                Some(tcp.destination().as_u16()),
-            ),
-            Transport::Udp(udp) => (
-                Some(udp.source().as_u16()),
-                Some(udp.destination().as_u16()),
-            ),
-            _ => (None, None),
-        }
-    }
 
-    fn lookup_session_v4_mut(
-        &self,
-        tuple: &NatTuple<Ipv4Addr>,
-    ) -> Option<NatDefaultSession<'_, Ipv4Addr>> {
-        self.sessions.lookup_v4_mut(tuple)
-    }
+        let flow_key = FlowKey::Unidirectional(FlowKeyData::new(
+            Some(VpcDiscriminant::from_vni(tuple.src_vpc_id)),
+            tuple.src_ip.to_ip_addr(),
+            Some(VpcDiscriminant::from_vni(tuple.dst_vpc_id)),
+            tuple.dst_ip.to_ip_addr(),
+            proto_key,
+        ));
+        let flow_info = FlowInfo::new(Instant::now());
+        flow_info.locked.write().unwrap().nat_state = Some(Box::new(state));
 
-    fn lookup_session_v6_mut(
-        &self,
-        tuple: &NatTuple<Ipv6Addr>,
-    ) -> Option<NatDefaultSession<'_, Ipv6Addr>> {
-        self.sessions.lookup_v6_mut(tuple)
-    }
-
-    fn create_session_v4(
-        &mut self,
-        tuple: &NatTuple<Ipv4Addr>,
-        state: NatState,
-    ) -> Result<(), sessions::SessionError> {
-        self.sessions.insert_session_v4(tuple.clone(), state)
-    }
-
-    fn create_session_v6(
-        &mut self,
-        tuple: &NatTuple<Ipv6Addr>,
-        state: NatState,
-    ) -> Result<(), sessions::SessionError> {
-        self.sessions.insert_session_v6(tuple.clone(), state)
+        self.sessions.insert(flow_key, flow_info);
+        Ok(())
     }
 
     fn set_source_port(
@@ -404,13 +417,9 @@ impl StatefulNat {
         total_bytes: u16,
     ) -> Result<bool, StatefulNatError> {
         // Hot path: if we have a session, directly translate the address already
-        if let Some(mut session) = self.lookup_session_v4_mut(tuple) {
-            let Some(state) = session.get_state_mut() else {
-                // We failed to retrieve the state from the session, we cannot NAT
-                return Err(StatefulNatError::NoState);
-            };
-            Self::stateful_translate::<Buf>(packet, state, tuple.next_header);
-            Self::update_stats(state, total_bytes);
+        if let Some(state) = Self::lookup_session(packet) {
+            Self::stateful_translate::<Buf>(packet, &state, tuple.next_header);
+            //Self::update_stats(&state, total_bytes); // FIXME
             return Ok(true);
         }
 
@@ -433,7 +442,7 @@ impl StatefulNat {
 
         let mut new_state = Self::new_state_from_alloc(&alloc);
         Self::update_stats(&mut new_state, total_bytes);
-        if self.create_session_v4(tuple, new_state.clone()).is_err() {
+        if self.create_session(tuple, new_state.clone()).is_err() {
             // We failed to create the relevant forward session
             return Err(StatefulNatError::SessionCreationFailure);
         }
@@ -441,7 +450,7 @@ impl StatefulNat {
         let (reverse_tuple, reverse_state) =
             Self::new_reverse_session(tuple, &alloc, src_vpc_id, dst_vpc_id);
         if self
-            .create_session_v4(&reverse_tuple, reverse_state.clone())
+            .create_session(&reverse_tuple, reverse_state.clone())
             .is_err()
         {
             packet.done(DoneReason::NatFailure);
@@ -462,13 +471,9 @@ impl StatefulNat {
         total_bytes: u16,
     ) -> Result<bool, StatefulNatError> {
         // Hot path: if we have a session, directly translate the address already
-        if let Some(mut session) = self.lookup_session_v6_mut(tuple) {
-            let Some(state) = session.get_state_mut() else {
-                // We failed to retrieve the state from the session, we cannot NAT
-                return Err(StatefulNatError::NoState);
-            };
-            Self::stateful_translate::<Buf>(packet, state, tuple.next_header);
-            Self::update_stats(state, total_bytes);
+        if let Some(state) = Self::lookup_session(packet) {
+            Self::stateful_translate::<Buf>(packet, &state, tuple.next_header);
+            // Self::update_stats(state, total_bytes); // FIXME
             return Ok(true);
         }
 
@@ -491,7 +496,7 @@ impl StatefulNat {
 
         let mut new_state = Self::new_state_from_alloc(&alloc);
         Self::update_stats(&mut new_state, total_bytes);
-        if self.create_session_v6(tuple, new_state.clone()).is_err() {
+        if self.create_session(tuple, new_state.clone()).is_err() {
             // We failed to create the relevant forward session
             return Err(StatefulNatError::SessionCreationFailure);
         }
@@ -499,7 +504,7 @@ impl StatefulNat {
         let (reverse_tuple, reverse_state) =
             Self::new_reverse_session(tuple, &alloc, src_vpc_id, dst_vpc_id);
         if self
-            .create_session_v6(&reverse_tuple, reverse_state.clone())
+            .create_session(&reverse_tuple, reverse_state.clone())
             .is_err()
         {
             // We failed to create the relevant reverse session

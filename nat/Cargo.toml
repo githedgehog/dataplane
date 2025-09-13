@@ -14,10 +14,12 @@ arc-swap = { workspace = true }
 concurrency = { workspace = true, features = [] }
 config = { workspace = true }
 dashmap = { workspace = true }
+flow-info = { workspace = true }
 left-right = { workspace = true }
 lpm = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
+pkt-meta = { workspace = true }
 rand = { workspace = true }
 roaring = { workspace = true }
 routing = { workspace = true }
