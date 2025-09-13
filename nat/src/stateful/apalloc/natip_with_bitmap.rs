@@ -5,9 +5,11 @@
 //! bitmap-based NAT allocator requires this trait to be implementated for the type parameters
 //! (`Ipv4Addr` and `Ipv6Addr`) that it works with.
 
-use super::super::NatIp;
-use super::super::allocator::AllocatorError;
+use super::super::allocator::{AllocationResult, AllocatorError, NatAllocator};
+use super::super::{NatIp, NatTuple};
+use super::AllocatedIpPort;
 use crate::stateful::apalloc::alloc::{map_address, map_offset};
+use concurrency::sync::Arc;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -24,6 +26,12 @@ pub trait NatIpWithBitmap: NatIp {
         address: Self,
         bitmap_mapping: &BTreeMap<u128, u32>,
     ) -> Result<u32, AllocatorError>;
+
+    // Allocate a new IP address from the allocator
+    fn allocate<A: NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>>>(
+        allocator: Arc<A>,
+        tuple: &NatTuple<Self>,
+    ) -> Result<AllocationResult<AllocatedIpPort<Self>>, AllocatorError>;
 }
 
 impl NatIpWithBitmap for Ipv4Addr {
@@ -39,6 +47,13 @@ impl NatIpWithBitmap for Ipv4Addr {
         _bitmap_mapping: &BTreeMap<u128, u32>,
     ) -> Result<u32, AllocatorError> {
         Ok(u32::from(address))
+    }
+
+    fn allocate<A: NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>>>(
+        allocator: Arc<A>,
+        tuple: &NatTuple<Self>,
+    ) -> Result<AllocationResult<AllocatedIpPort<Self>>, AllocatorError> {
+        allocator.allocate_v4(tuple)
     }
 }
 
@@ -61,5 +76,12 @@ impl NatIpWithBitmap for Ipv6Addr {
     ) -> Result<u32, AllocatorError> {
         // Reverse operation of map_offset()
         map_address(address, bitmap_mapping)
+    }
+
+    fn allocate<A: NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>>>(
+        allocator: Arc<A>,
+        tuple: &NatTuple<Self>,
+    ) -> Result<AllocationResult<AllocatedIpPort<Self>>, AllocatorError> {
+        allocator.allocate_v6(tuple)
     }
 }

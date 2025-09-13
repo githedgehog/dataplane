@@ -164,11 +164,11 @@ impl HashDst for IpProtoKey {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
 pub struct FlowKeyData {
-    src_vpcd: Option<VpcDiscriminant>,
-    dst_vpcd: Option<VpcDiscriminant>, // If None, the dst_vpcd is ambiguous and the flow table is needed to resolve it
-    src_ip: IpAddr,
-    dst_ip: IpAddr,
-    proto_key_info: IpProtoKey,
+    pub src_vpcd: Option<VpcDiscriminant>,
+    pub dst_vpcd: Option<VpcDiscriminant>, // If None, the dst_vpcd is ambiguous and the flow table is needed to resolve it
+    pub src_ip: IpAddr,
+    pub dst_ip: IpAddr,
+    pub proto_key_info: IpProtoKey,
 }
 
 impl FlowKeyData {

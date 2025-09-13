@@ -70,6 +70,7 @@ where
 {
 }
 
+#[derive(Debug)]
 pub(crate) struct ThreadLocalPriorityQueue<K, V>
 where
     K: Send + Hash + PartialEq + Eq,
