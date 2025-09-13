@@ -13,7 +13,6 @@ ahash = { workspace = true }
 arc-swap = { workspace = true }
 concurrency = { workspace = true, features = [] }
 config = { workspace = true }
-dashmap = { workspace = true }
 flow-info = { workspace = true }
 left-right = { workspace = true }
 lpm = { workspace = true }
@@ -22,7 +21,6 @@ pipeline = { workspace = true }
 pkt-meta = { workspace = true }
 rand = { workspace = true }
 roaring = { workspace = true }
-routing = { workspace = true }
 shuttle = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -31,14 +29,11 @@ tracing = { workspace = true }
 # internal
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero"] }
-routing = { workspace = true, features = ["testing"] }
 
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
-ipnet = { workspace = true }
 shuttle = { workspace = true, features = [] }
 tracing-test = { workspace = true, features = [] }
-
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(none)'] }
