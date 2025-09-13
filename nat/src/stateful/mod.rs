@@ -403,10 +403,10 @@ impl StatefulNat {
         (reverse_tuple, reverse_state)
     }
 
-    fn translate_packet_v4<Buf: PacketBufferMut>(
+    fn translate_packet<Buf: PacketBufferMut, I: NatIpWithBitmap>(
         &mut self,
         packet: &mut Packet<Buf>,
-        tuple: &NatTuple<Ipv4Addr>,
+        tuple: &NatTuple<I>,
         src_vpc_id: NatVpcId,
         dst_vpc_id: NatVpcId,
     ) -> Result<bool, StatefulNatError> {
@@ -424,7 +424,7 @@ impl StatefulNat {
         };
 
         // Else, if we need NAT for this packet, create a new session and translate the address
-        let Ok(alloc) = allocator.allocate_v4(tuple) else {
+        let Ok(alloc) = I::allocate(allocator, tuple) else {
             // NAT allocation failed for some reason
             return Err(StatefulNatError::AllocationFailure);
         };
@@ -455,57 +455,6 @@ impl StatefulNat {
         Ok(true)
     }
 
-    fn translate_packet_v6<Buf: PacketBufferMut>(
-        &mut self,
-        packet: &mut Packet<Buf>,
-        tuple: &NatTuple<Ipv6Addr>,
-        src_vpc_id: NatVpcId,
-        dst_vpc_id: NatVpcId,
-    ) -> Result<bool, StatefulNatError> {
-        // Hot path: if we have a session, directly translate the address already
-        if let Some(state) = Self::lookup_session(packet) {
-            Self::stateful_translate::<Buf>(packet, &state, tuple.next_header);
-            // Self::update_stats(state, total_bytes); // FIXME
-            return Ok(true);
-        }
-
-        let Some(allocator) = self.allocator.get() else {
-            // No allocator set - We refuse to process this packet if we don't have a way to know
-            // whether it should be NAT-ed or not
-            return Err(StatefulNatError::NoAllocator);
-        };
-
-        // Else, if we need NAT for this packet, create a new session and translate the address
-        let Ok(alloc) = allocator.allocate_v6(tuple) else {
-            // NAT failed for some reason
-            return Err(StatefulNatError::AllocationFailure);
-        };
-
-        if alloc.src.is_none() && alloc.dst.is_none() {
-            // No NAT for this tuple, leave the packet unchanged - Do not drop it
-            return Ok(false);
-        }
-
-        let new_state = Self::new_state_from_alloc(&alloc);
-        if self.create_session(tuple, new_state.clone()).is_err() {
-            // We failed to create the relevant forward session
-            return Err(StatefulNatError::SessionCreationFailure);
-        }
-
-        let (reverse_tuple, reverse_state) =
-            Self::new_reverse_session(tuple, &alloc, src_vpc_id, dst_vpc_id);
-        if self
-            .create_session(&reverse_tuple, reverse_state.clone())
-            .is_err()
-        {
-            // We failed to create the relevant reverse session
-            return Err(StatefulNatError::SessionCreationFailure);
-        }
-
-        Self::stateful_translate::<Buf>(packet, &new_state, tuple.next_header);
-        Ok(true)
-    }
-
     fn nat_packet<Buf: PacketBufferMut>(
         &mut self,
         packet: &mut Packet<Buf>,
@@ -518,16 +467,14 @@ impl StatefulNat {
 
         match net {
             Net::Ipv4(_) => {
-                let Some(tuple) = Self::extract_tuple(packet, src_vpc_id, dst_vpc_id) else {
-                    return Err(StatefulNatError::TupleParseError);
-                };
-                self.translate_packet_v4::<Buf>(packet, &tuple, src_vpc_id, dst_vpc_id)
+                let tuple = Self::extract_tuple(packet, src_vpc_id, dst_vpc_id)
+                    .ok_or(StatefulNatError::TupleParseError)?;
+                self.translate_packet::<Buf, Ipv4Addr>(packet, &tuple, src_vpc_id, dst_vpc_id)
             }
             Net::Ipv6(_) => {
-                let Some(tuple) = Self::extract_tuple(packet, src_vpc_id, dst_vpc_id) else {
-                    return Err(StatefulNatError::TupleParseError);
-                };
-                self.translate_packet_v6::<Buf>(packet, &tuple, src_vpc_id, dst_vpc_id)
+                let tuple = Self::extract_tuple(packet, src_vpc_id, dst_vpc_id)
+                    .ok_or(StatefulNatError::TupleParseError)?;
+                self.translate_packet::<Buf, Ipv6Addr>(packet, &tuple, src_vpc_id, dst_vpc_id)
             }
         }
     }
