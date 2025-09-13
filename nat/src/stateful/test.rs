@@ -20,13 +20,15 @@ mod tests {
 
     use crate::StatefulNat;
 
-    use net::buffer::TestBuffer;
+    use net::buffer::{PacketBufferMut, TestBuffer};
     use net::eth::mac::Mac;
     use net::headers::{TryIpv4, TryUdp};
     use net::packet::test_utils::build_test_udp_ipv4_frame;
     use net::packet::{Packet, VpcDiscriminant};
     use net::vxlan::Vni;
     use pipeline::NetworkFunction;
+    use pkt_meta::flow_table::flow_key::Uni;
+    use pkt_meta::flow_table::{FlowKey, FlowTable};
     use std::net::Ipv4Addr;
     use std::str::FromStr;
     use tracing_test::traced_test;
@@ -260,6 +262,8 @@ mod tests {
         packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
         packet.get_meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
 
+        flow_lookup(nat.sessions(), &mut packet);
+
         let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
         let hdr_out = packets_out[0].try_ipv4().unwrap();
         let udp_out = packets_out[0].try_udp().unwrap();
@@ -270,6 +274,17 @@ mod tests {
             udp_out.source().into(),
             udp_out.destination().into(),
         )
+    }
+
+    fn flow_lookup<Buf: PacketBufferMut>(flow_table: &FlowTable, packet: &mut Packet<Buf>) {
+        fn get_flow_key<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> FlowKey {
+            FlowKey::try_from(Uni(packet)).unwrap()
+        }
+
+        let flow_key = get_flow_key(packet);
+        if let Some(flow_info) = flow_table.lookup(&flow_key) {
+            packet.meta.flow_info = Some(flow_info);
+        }
     }
 
     #[test]
