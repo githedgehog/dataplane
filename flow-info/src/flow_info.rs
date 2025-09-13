@@ -103,11 +103,16 @@ impl From<FlowStatus> for AtomicFlowStatus {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct FlowInfoLocked {
-    // We need this to use downcast because VpcDiscriminant is in net.
-    // We could avoid this indirection by moving Packet into its own crate.
+    // We need this to use downcast because objects used in this function (such as VpcDiscriminant)
+    // are in other crates (such as "net"). We could avoid this indirection by moving Packet into
+    // its own crate.
+
+    // Destination VPC information
     pub dst_vpc_info: Option<Box<dyn FlowInfoItem>>,
+    // State information for stateful NAT
+    pub nat_state: Option<Box<dyn FlowInfoItem>>,
 }
 
 #[derive(Debug)]
@@ -126,7 +131,7 @@ impl FlowInfo {
         Self {
             expires_at: AtomicInstant::new(expires_at),
             status: AtomicFlowStatus::from(FlowStatus::Active),
-            locked: RwLock::new(FlowInfoLocked { dst_vpc_info: None }),
+            locked: RwLock::new(FlowInfoLocked::default()),
         }
     }
 
