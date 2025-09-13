@@ -23,6 +23,7 @@ pub enum FlowTableError {
 type PriorityQueue = ThreadLocalPriorityQueue<FlowKey, Arc<FlowInfo>>;
 type Table = DashMap<FlowKey, Weak<FlowInfo>, RandomState>;
 
+#[derive(Debug)]
 pub struct FlowTable {
     // TODO(mvachhar) move this to a cross beam sharded lock
     pub(crate) table: RwLock<Table>,
