@@ -319,11 +319,6 @@ impl StatefulNat {
         Some(())
     }
 
-    fn update_stats(state: &mut NatState, total_bytes: u16) {
-        state.increment_packets(1);
-        state.increment_bytes(total_bytes.into());
-    }
-
     // TODO: Change this function to store directly the AllocatedPort objects in session map
     fn new_state_from_alloc<I: NatIpWithBitmap>(
         alloc: &AllocationResult<AllocatedIpPort<I>>,
@@ -414,7 +409,6 @@ impl StatefulNat {
         tuple: &NatTuple<Ipv4Addr>,
         src_vpc_id: NatVpcId,
         dst_vpc_id: NatVpcId,
-        total_bytes: u16,
     ) -> Result<bool, StatefulNatError> {
         // Hot path: if we have a session, directly translate the address already
         if let Some(state) = Self::lookup_session(packet) {
@@ -440,8 +434,7 @@ impl StatefulNat {
             return Ok(false);
         }
 
-        let mut new_state = Self::new_state_from_alloc(&alloc);
-        Self::update_stats(&mut new_state, total_bytes);
+        let new_state = Self::new_state_from_alloc(&alloc);
         if self.create_session(tuple, new_state.clone()).is_err() {
             // We failed to create the relevant forward session
             return Err(StatefulNatError::SessionCreationFailure);
@@ -468,7 +461,6 @@ impl StatefulNat {
         tuple: &NatTuple<Ipv6Addr>,
         src_vpc_id: NatVpcId,
         dst_vpc_id: NatVpcId,
-        total_bytes: u16,
     ) -> Result<bool, StatefulNatError> {
         // Hot path: if we have a session, directly translate the address already
         if let Some(state) = Self::lookup_session(packet) {
@@ -494,8 +486,7 @@ impl StatefulNat {
             return Ok(false);
         }
 
-        let mut new_state = Self::new_state_from_alloc(&alloc);
-        Self::update_stats(&mut new_state, total_bytes);
+        let new_state = Self::new_state_from_alloc(&alloc);
         if self.create_session(tuple, new_state.clone()).is_err() {
             // We failed to create the relevant forward session
             return Err(StatefulNatError::SessionCreationFailure);
@@ -525,20 +516,18 @@ impl StatefulNat {
             return Err(StatefulNatError::BadIpHeader);
         };
 
-        let total_bytes = packet.total_len();
-
         match net {
             Net::Ipv4(_) => {
                 let Some(tuple) = Self::extract_tuple(packet, src_vpc_id, dst_vpc_id) else {
                     return Err(StatefulNatError::TupleParseError);
                 };
-                self.translate_packet_v4::<Buf>(packet, &tuple, src_vpc_id, dst_vpc_id, total_bytes)
+                self.translate_packet_v4::<Buf>(packet, &tuple, src_vpc_id, dst_vpc_id)
             }
             Net::Ipv6(_) => {
                 let Some(tuple) = Self::extract_tuple(packet, src_vpc_id, dst_vpc_id) else {
                     return Err(StatefulNatError::TupleParseError);
                 };
-                self.translate_packet_v6::<Buf>(packet, &tuple, src_vpc_id, dst_vpc_id, total_bytes)
+                self.translate_packet_v6::<Buf>(packet, &tuple, src_vpc_id, dst_vpc_id)
             }
         }
     }
