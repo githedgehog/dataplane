@@ -35,7 +35,7 @@ use pkt_meta::flow_table::{FlowKey, FlowKeyData, FlowTable, IpProtoKey, TcpProto
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StatefulNatError {
@@ -88,6 +88,12 @@ impl<I: NatIp> NatTuple<I> {
             dst_vpc_id,
         }
     }
+}
+
+const SESSION_TIMEOUT: Duration = Duration::from_secs(60 * 60); // one hour
+
+fn session_timeout_time() -> Instant {
+    Instant::now() + SESSION_TIMEOUT
 }
 
 /// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`StatefulNat`] processes
@@ -194,8 +200,9 @@ impl StatefulNat {
     fn lookup_session<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> Option<NatState> {
         let flow_info = packet.get_meta_mut().flow_info.as_mut()?;
         let value = flow_info.locked.read().unwrap();
-        let state = value.nat_state.as_ref()?.extract_ref::<NatState>();
-        Some(state?.clone())
+        let state = value.nat_state.as_ref()?.extract_ref::<NatState>()?;
+        flow_info.extend_expiry(SESSION_TIMEOUT).ok()?;
+        Some(state.clone())
     }
 
     fn create_session<I: NatIp>(&mut self, tuple: &NatTuple<I>, state: NatState) -> Result<(), ()> {
@@ -220,7 +227,7 @@ impl StatefulNat {
             tuple.dst_ip.to_ip_addr(),
             proto_key,
         ));
-        let flow_info = FlowInfo::new(Instant::now());
+        let flow_info = FlowInfo::new(session_timeout_time());
         flow_info.locked.write().unwrap().nat_state = Some(Box::new(state));
 
         self.sessions.insert(flow_key, flow_info);
@@ -413,7 +420,6 @@ impl StatefulNat {
         // Hot path: if we have a session, directly translate the address already
         if let Some(state) = Self::lookup_session(packet) {
             Self::stateful_translate::<Buf>(packet, &state, tuple.next_header);
-            //Self::update_stats(&state, total_bytes); // FIXME
             return Ok(true);
         }
 
