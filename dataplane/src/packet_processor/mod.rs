@@ -73,7 +73,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         let flow_expirations_nf = ExpirationsNF::new(flow_table.clone());
 
         // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
-        // hard-coded.
+        // hard-coded. In any pipeline, the Stats and ExpirationsNF stages should go last
 
         DynPipeline::new()
             .add_stage(dumper1)
@@ -83,10 +83,10 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             .add_stage(flow_lookup_nf)
             .add_stage(stateless_nat)
             .add_stage(iprouter2)
-            .add_stage(stats_stage)
             .add_stage(stage_egress)
             .add_stage(dumper2)
             .add_stage(flow_expirations_nf)
+            .add_stage(stats_stage)
     };
 
     Ok(InternalSetup {
