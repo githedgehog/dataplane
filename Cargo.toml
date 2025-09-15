@@ -23,6 +23,7 @@ members = [
     "stats",
     "test-utils",
     "vpcmap",
+    "tracectl",
 ]
 
 resolver = "3"
@@ -54,6 +55,7 @@ routing = { path = "./routing", package = "dataplane-routing" }
 stats = { path = "./stats", package = "dataplane-stats" }
 test-utils = { path = "./test-utils", package = "dataplane-test-utils" }
 vpcmap = { path = "./vpcmap", package = "dataplane-vpcmap" }
+tracectl = { path = "./tracectl", package = "dataplane-tracectl" }
 
 # External
 afpacket = { version = "0.2.3", default-features = false, features = [] }
