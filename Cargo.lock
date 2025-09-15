@@ -1254,6 +1254,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-tracectl"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "dataplane-vpcmap"
 version = "0.1.0"
 dependencies = [
