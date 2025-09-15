@@ -30,6 +30,13 @@ jobs:
   cargo-upgrades:
     runs-on: "lab"
     steps:
+      # Use a GitHub App token so that the generated PR can trigger CI
+      - name: "Generate GitHub App token"
+        id: "app-token"
+        uses: "actions/create-github-app-token@v2"
+        with:
+          app-id: "${{ secrets.DP_APP_ID }}"
+          private-key: "${{ secrets.DP_PRIVATE_KEY }}"
       - name: "install rust"
         uses: "dtolnay/rust-toolchain@stable"
       - name: "install ansi2txt"
@@ -129,6 +136,7 @@ jobs:
       - name: "Create Pull Request"
         uses: "peter-evans/create-pull-request@v7"
         with:
+          token: "${{ steps.app-token.outputs.token }}"
           branch: "bump/cargo-upgrades"
           title: "bump(cargo)!: :rocket: upgrades available"
           labels: |
