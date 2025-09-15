@@ -3,7 +3,10 @@
 
 //! Crate to control tracing dynamically at runtime
 
-#[cfg(test)]
-mod tests {
+pub mod control;
+pub mod display;
+pub mod targets;
 
-}
+// re-exports
+pub use control::TracingControl;
+pub use control::get_trace_ctl;
