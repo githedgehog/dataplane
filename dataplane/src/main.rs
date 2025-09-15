@@ -8,21 +8,29 @@
 mod args;
 mod drivers;
 mod packet_processor;
-mod statistics; // Add statistics module
+mod statistics;
 
 use crate::args::{CmdArgs, Parser};
 use crate::packet_processor::start_router;
 use crate::statistics::MetricsServer;
+
 use drivers::dpdk::DriverDpdk;
 use drivers::kernel::DriverKernel;
+
 use mgmt::processor::launch::start_mgmt;
+
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
+
 use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
+
 use routing::RouterParamsBuilder;
+
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
+
+const DP_WORKERS: usize = 4; // TBD: TESTING, will remove it soon
 
 fn init_logging() {
     tracing_subscriber::fmt()
@@ -38,11 +46,7 @@ fn init_logging() {
 fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
     let pipeline = DynPipeline::new();
     if false {
-        /* replace false by true to try filters and write your own */
-        let custom_filter = |_packet: &Packet<Buf>| -> bool {
-            /* your own filter here */
-            true
-        };
+        let custom_filter = |_packet: &Packet<Buf>| -> bool { true };
         pipeline.add_stage(PacketDumper::new(
             "default",
             true,
@@ -64,6 +68,7 @@ fn main() {
     /* parse cmd line args */
     let args = CmdArgs::parse();
 
+    // grpc address
     let grpc_addr = match args.get_grpc_address() {
         Ok(addr) => addr,
         Err(e) => {
@@ -84,12 +89,13 @@ fn main() {
         panic!("Bad router configuration");
     };
 
-    // start the router and build a pipeline. `start_router` returns `InternalSetup` object
-    // that we deconstruct here to feed different components.
+    // start the router; returns control-plane handles and a pipeline factory (Arc<... Fn() -> DynPipeline<_> >)
     let setup = start_router(config).expect("failed to start router");
+
     MetricsServer::new(args.metrics_address(), setup.stats);
+
     /* pipeline builder */
-    let builder = setup.pipeline;
+    let pipeline_factory = setup.pipeline;
 
     /* start management */
     start_mgmt(
@@ -110,7 +116,7 @@ fn main() {
         }
         "kernel" => {
             info!("Using driver kernel...");
-            DriverKernel::start(args.kernel_params(), builder);
+            DriverKernel::start(args.kernel_params(), DP_WORKERS, pipeline_factory);
         }
         other => {
             error!("Unknown driver '{other}'. Aborting...");
