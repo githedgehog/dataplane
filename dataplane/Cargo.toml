@@ -12,6 +12,7 @@ axum = { workspace = true, features = ["http1", "tokio"] }
 axum-server = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "usage"] }
 concurrency = { workspace = true }
+crossbeam-channel = { workspace = true }
 ctrlc = { workspace = true, features = ["termination"] }
 dpdk = { workspace = true }
 dyn-iter = { workspace = true }
