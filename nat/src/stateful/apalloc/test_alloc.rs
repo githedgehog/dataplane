@@ -44,13 +44,11 @@ mod context {
     pub fn vni2() -> Vni {
         Vni::new_checked(200).unwrap()
     }
-    #[allow(clippy::unnecessary_wraps)]
-    pub fn vpcd1() -> Option<VpcDiscriminant> {
-        Some(VpcDiscriminant::from_vni(vni1()))
+    pub fn vpcd1() -> VpcDiscriminant {
+        VpcDiscriminant::from_vni(vni1())
     }
-    #[allow(clippy::unnecessary_wraps)]
-    pub fn vpcd2() -> Option<VpcDiscriminant> {
-        Some(VpcDiscriminant::from_vni(vni2()))
+    pub fn vpcd2() -> VpcDiscriminant {
+        VpcDiscriminant::from_vni(vni2())
     }
 
     pub fn tcp_proto_key(src_port: u16, dst_port: u16) -> IpProtoKey {
@@ -84,15 +82,15 @@ mod context {
 
     pub fn get_ip_allocator_v4(
         pool: &mut PoolTable<Ipv4Addr, Ipv4Addr>,
-        src_vni: Vni,
-        dst_vni: Vni,
+        src_vpcd: VpcDiscriminant,
+        dst_vpcd: VpcDiscriminant,
         protocol: NextHeader,
         src_ip: Ipv4Addr,
     ) -> &IpAllocator<Ipv4Addr> {
         pool.get(&PoolTableKey::new(
             protocol,
-            src_vni,
-            dst_vni,
+            src_vpcd,
+            dst_vpcd,
             src_ip,
             Ipv4Addr::from_str("255.255.255.255").unwrap(),
         ))
@@ -175,7 +173,6 @@ mod std_tests {
     use concurrency::sync::Arc;
     use concurrency::thread;
     use net::ip::NextHeader;
-    use net::packet::VpcDiscriminant;
     use pkt_meta::flow_table::FlowKey;
 
     #[test]
@@ -197,8 +194,8 @@ mod std_tests {
                 .pools_src44
                 .0
                 .keys()
-                .all(|k| (k.src_id == vni1() && k.dst_id == vni2())
-                    || (k.src_id == vni2() && k.dst_id == vni1()))
+                .all(|k| (k.src_id == vpcd1() && k.dst_id == vpcd2())
+                    || (k.src_id == vpcd2() && k.dst_id == vpcd1()))
         );
         // One entry for each ".ip()" from the VPCExpose objects,
         // after exclusion ranges have been applied
@@ -226,8 +223,8 @@ mod std_tests {
                 .pools_dst44
                 .0
                 .keys()
-                .all(|k| (k.src_id == vni1() && k.dst_id == vni2())
-                    || (k.src_id == vni2() && k.dst_id == vni1()))
+                .all(|k| (k.src_id == vpcd1() && k.dst_id == vpcd2())
+                    || (k.src_id == vpcd2() && k.dst_id == vpcd1()))
         );
         // One entry for each ".as_range()" from the VPCExpose objects,
         // after exclusion ranges have been applied
@@ -257,8 +254,8 @@ mod std_tests {
             .pools_src44
             .get(&PoolTableKey::new(
                 NextHeader::TCP,
-                vni1(),
-                vni2(),
+                vpcd1(),
+                vpcd2(),
                 addr_v4("1.1.0.0"),
                 addr_v4("255.255.255.255"),
             ))
@@ -273,8 +270,8 @@ mod std_tests {
             .pools_dst44
             .get(&PoolTableKey::new(
                 NextHeader::TCP,
-                vni1(),
-                vni2(),
+                vpcd1(),
+                vpcd2(),
                 addr_v4("10.3.0.0"),
                 addr_v4("255.255.255.255"),
             ))
@@ -292,9 +289,9 @@ mod std_tests {
     #[test]
     fn test_allocate() {
         let tuple = FlowKey::uni(
-            vpcd1(),
+            Some(vpcd1()),
             ipaddr("1.1.0.0"),
-            vpcd2(),
+            Some(vpcd2()),
             ipaddr("10.3.0.2"),
             tcp_proto_key(1234, 5678),
         );
@@ -302,8 +299,8 @@ mod std_tests {
         let mut allocator = build_allocator().unwrap();
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vni1(),
-            vni2(),
+            vpcd1(),
+            vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
         )
@@ -340,8 +337,8 @@ mod std_tests {
 
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vni1(),
-            vni2(),
+            vpcd1(),
+            vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
         )
@@ -354,8 +351,8 @@ mod std_tests {
 
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vni1(),
-            vni2(),
+            vpcd1(),
+            vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
         )
@@ -369,16 +366,16 @@ mod std_tests {
     // Allocate an IP for a TCP packet, then for a UDP packet.
     fn test_tcp_udp() {
         let tcp_flow_key = FlowKey::uni(
-            Some(VpcDiscriminant::from_vni(vni1())),
+            Some(vpcd1()),
             ipaddr("1.1.0.0"),
-            Some(VpcDiscriminant::from_vni(vni2())),
+            Some(vpcd2()),
             ipaddr("10.3.0.2"),
             tcp_proto_key(1234, 5678),
         );
         let udp_flow_key = FlowKey::uni(
-            vpcd1(),
+            Some(vpcd1()),
             ipaddr("1.1.0.0"),
-            vpcd2(),
+            Some(vpcd2()),
             ipaddr("10.3.0.2"),
             udp_proto_key(1234, 5678),
         );
@@ -386,8 +383,8 @@ mod std_tests {
         let mut allocator = build_allocator().unwrap();
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vni1(),
-            vni2(),
+            vpcd1(),
+            vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
         )
@@ -397,8 +394,8 @@ mod std_tests {
 
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vni1(),
-            vni2(),
+            vpcd1(),
+            vpcd2(),
             NextHeader::UDP,
             addr_v4("1.1.0.0"),
         )
@@ -413,8 +410,8 @@ mod std_tests {
         // Check number of allocated IPs for TCP after we have allocated for TCP
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vni1(),
-            vni2(),
+            vpcd1(),
+            vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
         )
@@ -425,8 +422,8 @@ mod std_tests {
         // Check number of allocated IPs for UDP after we have allocated for TCP
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vni1(),
-            vni2(),
+            vpcd1(),
+            vpcd2(),
             NextHeader::UDP,
             addr_v4("1.1.0.0"),
         )
@@ -441,8 +438,8 @@ mod std_tests {
         // Check number of allocated IPs for TCP after we have allocated for UDP
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vni1(),
-            vni2(),
+            vpcd1(),
+            vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
         )
@@ -453,8 +450,8 @@ mod std_tests {
         // Check number of allocated IPs for UDP after we have allocated for UDP
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vni1(),
-            vni2(),
+            vpcd1(),
+            vpcd2(),
             NextHeader::UDP,
             addr_v4("1.1.0.0"),
         )
@@ -471,16 +468,16 @@ mod std_tests {
     #[test]
     fn test_concurrent_allocations_without_shuttle() {
         let flow_key1 = FlowKey::uni(
-            vpcd1(),
+            Some(vpcd1()),
             ipaddr("1.1.0.0"),
-            vpcd2(),
+            Some(vpcd2()),
             ipaddr("10.3.0.2"),
             tcp_proto_key(1111, 1112),
         );
         let flow_key2 = FlowKey::uni(
-            vpcd1(),
+            Some(vpcd1()),
             ipaddr("2.0.1.3"),
-            vpcd2(),
+            Some(vpcd2()),
             ipaddr("10.4.1.1"),
             tcp_proto_key(2222, 2223),
         );
@@ -547,30 +544,30 @@ mod tests_shuttle {
     fn test_concurrent_allocations() {
         run_shuttle(|| {
             let flow_key1 = FlowKey::uni(
-                vpcd1(),
+                Some(vpcd1()),
                 ipaddr("1.1.0.0"),
-                vpcd2(),
+                Some(vpcd2()),
                 ipaddr("10.3.0.2"),
                 tcp_proto_key(1111, 1112),
             );
             let flow_key2 = FlowKey::uni(
-                vpcd1(),
+                Some(vpcd1()),
                 ipaddr("2.0.1.3"),
-                vpcd2(),
+                Some(vpcd2()),
                 ipaddr("10.4.1.1"),
                 tcp_proto_key(2222, 2223),
             );
             let flow_key3 = FlowKey::uni(
-                vpcd1(),
+                Some(vpcd1()),
                 ipaddr("1.1.0.0"),
-                vpcd2(),
+                Some(vpcd2()),
                 ipaddr("10.3.0.2"),
                 tcp_proto_key(3333, 3334),
             );
             let flow_key4 = FlowKey::uni(
-                vpcd1(),
+                Some(vpcd1()),
                 ipaddr("1.1.0.0"),
-                vpcd2(),
+                Some(vpcd2()),
                 ipaddr("10.3.0.3"),
                 tcp_proto_key(4444, 4445),
             );
@@ -627,8 +624,8 @@ mod tests_shuttle {
             let mut allocator_again = Arc::try_unwrap(allocator_arc).unwrap();
             let (bitmap, in_use) = get_ip_allocator_v4(
                 &mut allocator_again.pools_src44,
-                vni1(),
-                vni2(),
+                vpcd1(),
+                vpcd2(),
                 NextHeader::TCP,
                 addr_v4("1.1.0.0"),
             )

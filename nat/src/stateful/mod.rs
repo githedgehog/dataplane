@@ -28,7 +28,6 @@ use net::ipv6::UnicastIpv6Addr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::tcp::port::TcpPort;
 use net::udp::port::UdpPort;
-use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use pkt_meta::flow_table::flow_key::Uni;
 use pkt_meta::flow_table::{FlowKey, FlowTable, IpProtoKey, TcpProtoKey, UdpProtoKey};
@@ -51,8 +50,6 @@ pub enum StatefulNatError {
     #[error("invalid port {0}")]
     InvalidPort(u16),
 }
-
-type NatVpcId = Vni;
 
 const SESSION_TIMEOUT: Duration = Duration::from_secs(60 * 60); // one hour
 
@@ -117,18 +114,12 @@ impl StatefulNat {
         &self.sessions
     }
 
-    fn get_src_vpc_id<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<NatVpcId> {
-        match packet.get_meta().src_vpcd {
-            Some(VpcDiscriminant::VNI(vni)) => Some(vni),
-            _ => None,
-        }
+    fn get_src_vpc_id<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<VpcDiscriminant> {
+        packet.get_meta().src_vpcd
     }
 
-    fn get_dst_vpc_id<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<NatVpcId> {
-        match packet.get_meta().dst_vpcd {
-            Some(VpcDiscriminant::VNI(vni)) => Some(vni),
-            _ => None,
-        }
+    fn get_dst_vpc_id<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<VpcDiscriminant> {
+        packet.get_meta().dst_vpcd
     }
 
     fn extract_flow_key<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<FlowKey> {
@@ -273,8 +264,8 @@ impl StatefulNat {
     fn new_reverse_session<I: NatIpWithBitmap>(
         flow_key: &FlowKey,
         alloc: &AllocationResult<AllocatedIpPort<I>>,
-        src_vpc_id: NatVpcId,
-        dst_vpc_id: NatVpcId,
+        src_vpc_id: VpcDiscriminant,
+        dst_vpc_id: VpcDiscriminant,
     ) -> (FlowKey, NatState) {
         // Forward session:
         //   f.init:(src: a, dst: B) -> f.nated:(src: A, dst: b)
@@ -333,9 +324,9 @@ impl StatefulNat {
         };
 
         let reverse_flow_key = FlowKey::uni(
-            Some(VpcDiscriminant::VNI(dst_vpc_id)), // FIXME: Use discriminants everywhere
+            Some(dst_vpc_id),
             reverse_src_addr,
-            Some(VpcDiscriminant::VNI(src_vpc_id)),
+            Some(src_vpc_id),
             reverse_dst_addr,
             reverse_proto_key,
         );
@@ -356,8 +347,8 @@ impl StatefulNat {
         &mut self,
         packet: &mut Packet<Buf>,
         flow_key: &FlowKey,
-        src_vpc_id: NatVpcId,
-        dst_vpc_id: NatVpcId,
+        src_vpc_id: VpcDiscriminant,
+        dst_vpc_id: VpcDiscriminant,
     ) -> Result<bool, StatefulNatError> {
         let next_header = get_next_header(flow_key);
 
@@ -398,8 +389,8 @@ impl StatefulNat {
     fn nat_packet<Buf: PacketBufferMut>(
         &mut self,
         packet: &mut Packet<Buf>,
-        src_vpc_id: NatVpcId,
-        dst_vpc_id: NatVpcId,
+        src_vpc_id: VpcDiscriminant,
+        dst_vpc_id: VpcDiscriminant,
     ) -> Result<bool, StatefulNatError> {
         let Some(net) = packet.get_headers().try_ip() else {
             return Err(StatefulNatError::BadIpHeader);

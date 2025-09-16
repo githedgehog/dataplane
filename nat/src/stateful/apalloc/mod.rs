@@ -65,11 +65,12 @@
 #![allow(rustdoc::private_intra_doc_links)]
 
 use super::allocator::{AllocationResult, AllocatorError};
+use super::get_next_header;
 use super::port::NatPort;
 use super::{NatAllocator, NatIp};
-use super::{NatVpcId, get_next_header};
 pub use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
 use net::ip::NextHeader;
+use net::packet::VpcDiscriminant;
 use pkt_meta::flow_table::FlowKey;
 use pkt_meta::flow_table::IpProtoKey;
 use std::collections::BTreeMap;
@@ -88,8 +89,8 @@ mod test_alloc;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct PoolTableKey<I: NatIp> {
     protocol: NextHeader,
-    src_id: NatVpcId,
-    dst_id: NatVpcId,
+    src_id: VpcDiscriminant,
+    dst_id: VpcDiscriminant,
     addr: I,
     addr_range_end: I,
 }
@@ -97,8 +98,8 @@ struct PoolTableKey<I: NatIp> {
 impl<I: NatIp> PoolTableKey<I> {
     fn new(
         protocol: NextHeader,
-        src_id: NatVpcId,
-        dst_id: NatVpcId,
+        src_id: VpcDiscriminant,
+        dst_id: VpcDiscriminant,
         addr: I,
         addr_range_end: I,
     ) -> Self {
@@ -146,8 +147,8 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
     fn get_entry(
         &self,
         protocol: NextHeader,
-        src_id: NatVpcId,
-        dst_id: NatVpcId,
+        src_id: VpcDiscriminant,
+        dst_id: VpcDiscriminant,
         addr: I,
     ) -> Option<&alloc::IpAllocator<J>> {
         let key = PoolTableKey::new(
@@ -210,19 +211,7 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv4Addr>>, AllocatorError> {
         let next_header = get_next_header(flow_key);
         Self::check_proto(next_header)?;
-
-        let src_vpc_id = flow_key
-            .data()
-            .src_vpcd()
-            .ok_or(AllocatorError::MissingDiscriminant)?
-            .try_into()
-            .map_err(|()| AllocatorError::UnsupportedDiscriminant)?;
-        let dst_vpc_id = flow_key
-            .data()
-            .dst_vpcd()
-            .ok_or(AllocatorError::MissingDiscriminant)?
-            .try_into()
-            .map_err(|()| AllocatorError::UnsupportedDiscriminant)?;
+        let (src_vpc_id, dst_vpc_id) = Self::check_and_get_discriminants(flow_key)?;
 
         // Get address pools for source and destination
         let pool_src_opt = self.pools_src44.get_entry(
@@ -285,19 +274,7 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv6Addr>>, AllocatorError> {
         let next_header = get_next_header(flow_key);
         Self::check_proto(next_header)?;
-
-        let src_vpc_id = flow_key
-            .data()
-            .src_vpcd()
-            .ok_or(AllocatorError::MissingDiscriminant)?
-            .try_into()
-            .map_err(|()| AllocatorError::UnsupportedDiscriminant)?;
-        let dst_vpc_id = flow_key
-            .data()
-            .dst_vpcd()
-            .ok_or(AllocatorError::MissingDiscriminant)?
-            .try_into()
-            .map_err(|()| AllocatorError::UnsupportedDiscriminant)?;
+        let (src_vpc_id, dst_vpc_id) = Self::check_and_get_discriminants(flow_key)?;
 
         let pool_src_opt = self.pools_src66.get_entry(
             next_header,
@@ -352,6 +329,26 @@ impl NatDefaultAllocator {
         match next_header {
             NextHeader::TCP | NextHeader::UDP => Ok(()),
             _ => Err(AllocatorError::UnsupportedProtocol(next_header)),
+        }
+    }
+
+    fn check_and_get_discriminants(
+        flow_key: &FlowKey,
+    ) -> Result<(VpcDiscriminant, VpcDiscriminant), AllocatorError> {
+        let src_vpc_id = flow_key
+            .data()
+            .src_vpcd()
+            .ok_or(AllocatorError::MissingDiscriminant)?;
+        let dst_vpc_id = flow_key
+            .data()
+            .dst_vpcd()
+            .ok_or(AllocatorError::MissingDiscriminant)?;
+
+        // We only support VNIs at the moment
+        #[allow(unreachable_patterns)]
+        match (src_vpc_id, dst_vpc_id) {
+            (VpcDiscriminant::VNI(_), VpcDiscriminant::VNI(_)) => Ok((src_vpc_id, dst_vpc_id)),
+            _ => Err(AllocatorError::UnsupportedDiscriminant),
         }
     }
 
@@ -438,6 +435,22 @@ mod tests {
     use super::*;
     use net::vxlan::Vni;
 
+    fn vpcd(vpc_id: u32) -> VpcDiscriminant {
+        VpcDiscriminant::VNI(Vni::new_checked(vpc_id).unwrap())
+    }
+    fn vpcd1() -> VpcDiscriminant {
+        vpcd(1)
+    }
+    fn vpcd2() -> VpcDiscriminant {
+        vpcd(2)
+    }
+    fn vpcd3() -> VpcDiscriminant {
+        vpcd(3)
+    }
+    fn vpcd4() -> VpcDiscriminant {
+        vpcd(4)
+    }
+
     // Ensure that keys are sorted first by L4 protocol type, then by VPC IDs, and then by IP
     // address. This is essential to make sure we can lookup for entries associated with prefixes
     // for a given ID in the pool tables.
@@ -446,15 +459,15 @@ mod tests {
     fn test_key_order() {
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(2).unwrap(),
+            vpcd1(),
+            vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(2).unwrap(),
+            vpcd1(),
+            vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );
@@ -462,15 +475,15 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(2).unwrap(),
+            vpcd1(),
+            vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(2).unwrap(),
+            vpcd1(),
+            vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(255, 255, 255, 255),
         );
@@ -478,15 +491,15 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(2).unwrap(),
+            vpcd1(),
+            vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(2).unwrap(),
+            vpcd1(),
+            vpcd2(),
             Ipv4Addr::new(1, 1, 1, 2),
             Ipv4Addr::new(255, 255, 255, 255),
         );
@@ -494,15 +507,15 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(2).unwrap(),
+            vpcd1(),
+            vpcd2(),
             Ipv4Addr::new(2, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(2).unwrap(),
+            vpcd1(),
+            vpcd2(),
             Ipv4Addr::new(1, 255, 255, 255),
             Ipv4Addr::new(255, 255, 255, 255),
         );
@@ -512,15 +525,15 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(2).unwrap(),
-            Vni::new_checked(3).unwrap(),
+            vpcd2(),
+            vpcd3(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(3).unwrap(),
+            vpcd1(),
+            vpcd3(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(255, 255, 255, 255),
         );
@@ -528,15 +541,15 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(3).unwrap(),
+            vpcd1(),
+            vpcd3(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(255, 255, 255, 255),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(2).unwrap(),
-            Vni::new_checked(3).unwrap(),
+            vpcd2(),
+            vpcd3(),
             Ipv4Addr::new(1, 1, 1, 2),
             Ipv4Addr::new(1, 1, 1, 1),
         );
@@ -544,15 +557,15 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(2).unwrap(),
-            Vni::new_checked(3).unwrap(),
+            vpcd2(),
+            vpcd3(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(255, 255, 255, 255),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(3).unwrap(),
+            vpcd1(),
+            vpcd3(),
             Ipv4Addr::new(2, 2, 2, 2),
             Ipv4Addr::new(1, 1, 1, 1),
         );
@@ -560,15 +573,15 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(2).unwrap(),
-            Vni::new_checked(3).unwrap(),
+            vpcd2(),
+            vpcd3(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(255, 255, 255, 255),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(3).unwrap(),
+            vpcd1(),
+            vpcd3(),
             Ipv4Addr::new(255, 255, 255, 255),
             Ipv4Addr::new(1, 1, 1, 1),
         );
@@ -576,15 +589,15 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(2).unwrap(),
-            Vni::new_checked(3).unwrap(),
+            vpcd2(),
+            vpcd3(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(4).unwrap(),
+            vpcd1(),
+            vpcd4(),
             Ipv4Addr::new(255, 255, 255, 255),
             Ipv4Addr::new(255, 255, 255, 255),
         );
@@ -592,15 +605,15 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(3).unwrap(),
+            vpcd1(),
+            vpcd3(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(255, 255, 255, 255),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(4).unwrap(),
+            vpcd1(),
+            vpcd4(),
             Ipv4Addr::new(255, 255, 255, 255),
             Ipv4Addr::new(1, 1, 1, 1),
         );
@@ -610,15 +623,15 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(2).unwrap(),
+            vpcd1(),
+            vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(255, 255, 255, 255),
         );
         let key2 = PoolTableKey::new(
             NextHeader::UDP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(2).unwrap(),
+            vpcd1(),
+            vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(255, 255, 255, 255),
         );
@@ -626,15 +639,15 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            Vni::new_checked(2).unwrap(),
-            Vni::new_checked(3).unwrap(),
+            vpcd2(),
+            vpcd3(),
             Ipv4Addr::new(2, 2, 2, 2),
             Ipv4Addr::new(255, 255, 255, 255),
         );
         let key2 = PoolTableKey::new(
             NextHeader::UDP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(2).unwrap(),
+            vpcd1(),
+            vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );

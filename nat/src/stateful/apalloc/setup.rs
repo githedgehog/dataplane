@@ -6,13 +6,14 @@ use super::alloc::{IpAllocator, NatPool, PoolBitmap};
 use super::{NatDefaultAllocator, PoolTable, PoolTableKey};
 use crate::stateful::allocator::AllocatorError;
 use crate::stateful::allocator_writer::StatefulNatConfig;
-use crate::stateful::{NatAllocator, NatIp, NatVpcId};
+use crate::stateful::{NatAllocator, NatIp};
 use config::ConfigError;
 use config::external::overlay::vpc::Peering;
 use config::external::overlay::vpcpeering::VpcExpose;
 use config::utils::collapse_prefixes_peering;
 use lpm::prefix::{IpPrefix, Prefix};
 use net::ip::NextHeader;
+use net::packet::VpcDiscriminant;
 use std::collections::{BTreeMap, BTreeSet};
 
 impl NatDefaultAllocator {
@@ -44,8 +45,8 @@ impl NatDefaultAllocator {
     fn add_peering_addresses(
         &mut self,
         peering: &Peering,
-        src_vpc_id: NatVpcId,
-        dst_vpc_id: NatVpcId,
+        src_vpc_id: VpcDiscriminant,
+        dst_vpc_id: VpcDiscriminant,
     ) -> Result<(), AllocatorError> {
         let new_peering = collapse_prefixes_peering(peering)
             .map_err(|e| AllocatorError::InternalIssue(e.to_string()))?;
@@ -62,8 +63,8 @@ impl NatDefaultAllocator {
     fn build_src_nat_pool_for_expose(
         &mut self,
         peering: &Peering,
-        src_vpc_id: NatVpcId,
-        dst_vpc_id: NatVpcId,
+        src_vpc_id: VpcDiscriminant,
+        dst_vpc_id: VpcDiscriminant,
     ) -> Result<(), AllocatorError> {
         filter_v4_exposes(&peering.local.exposes).try_for_each(|expose| {
             let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.as_range)?;
@@ -97,8 +98,8 @@ impl NatDefaultAllocator {
     fn build_dst_nat_pool_for_expose(
         &mut self,
         peering: &Peering,
-        src_vpc_id: NatVpcId,
-        dst_vpc_id: NatVpcId,
+        src_vpc_id: VpcDiscriminant,
+        dst_vpc_id: VpcDiscriminant,
     ) -> Result<(), AllocatorError> {
         filter_v4_exposes(&peering.remote.exposes).try_for_each(|expose| {
             let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.ips)?;
@@ -151,8 +152,8 @@ fn filter_v6_exposes(exposes: &[VpcExpose]) -> impl Iterator<Item = &VpcExpose> 
 fn build_src_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     table: &mut PoolTable<I, J>,
     expose: &VpcExpose,
-    src_vpc_id: NatVpcId,
-    dst_vpc_id: NatVpcId,
+    src_vpc_id: VpcDiscriminant,
+    dst_vpc_id: VpcDiscriminant,
     tcp_allocator: &IpAllocator<J>,
     udp_allocator: &IpAllocator<J>,
 ) -> Result<(), AllocatorError> {
@@ -169,8 +170,8 @@ fn build_src_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(
 fn build_dst_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     table: &mut PoolTable<I, J>,
     expose: &VpcExpose,
-    src_vpc_id: NatVpcId,
-    dst_vpc_id: NatVpcId,
+    src_vpc_id: VpcDiscriminant,
+    dst_vpc_id: VpcDiscriminant,
     tcp_allocator: &IpAllocator<J>,
     udp_allocator: &IpAllocator<J>,
 ) -> Result<(), AllocatorError> {
@@ -187,8 +188,8 @@ fn build_dst_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(
 fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     table: &mut PoolTable<I, J>,
     prefixes: &BTreeSet<Prefix>,
-    src_vpc_id: NatVpcId,
-    dst_vpc_id: NatVpcId,
+    src_vpc_id: VpcDiscriminant,
+    dst_vpc_id: VpcDiscriminant,
     tcp_allocator: &IpAllocator<J>,
     udp_allocator: &IpAllocator<J>,
 ) -> Result<(), AllocatorError> {
@@ -243,8 +244,8 @@ fn create_natpool<J: NatIpWithBitmap>(
 
 fn pool_table_key_for_expose<I: NatIp>(
     prefix: &Prefix,
-    src_vpc_id: NatVpcId,
-    dst_vpc_id: NatVpcId,
+    src_vpc_id: VpcDiscriminant,
+    dst_vpc_id: VpcDiscriminant,
 ) -> Result<PoolTableKey<I>, AllocatorError> {
     Ok(PoolTableKey::new(
         NextHeader::TCP,

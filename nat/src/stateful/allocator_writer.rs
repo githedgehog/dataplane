@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::stateful::{NatDefaultAllocator, NatVpcId};
+use crate::stateful::NatDefaultAllocator;
 use arc_swap::ArcSwapOption;
 use config::ConfigError;
 use config::external::overlay::vpc::Peering;
 use config::external::overlay::vpc::VpcTable;
+use net::packet::VpcDiscriminant;
 use std::sync::Arc;
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct StatefulNatPeering {
-    pub(crate) src_vpc_id: NatVpcId,
-    pub(crate) dst_vpc_id: NatVpcId,
+    pub(crate) src_vpc_id: VpcDiscriminant,
+    pub(crate) dst_vpc_id: VpcDiscriminant,
     pub(crate) peering: Peering,
 }
 
@@ -24,8 +25,8 @@ impl StatefulNatConfig {
         for vpc in vpc_table.values() {
             for peering in &vpc.peerings {
                 config.push(StatefulNatPeering {
-                    src_vpc_id: vpc.vni,
-                    dst_vpc_id: vpc_table.get_remote_vni(peering),
+                    src_vpc_id: VpcDiscriminant::from_vni(vpc.vni),
+                    dst_vpc_id: VpcDiscriminant::from_vni(vpc_table.get_remote_vni(peering)),
                     peering: peering.clone(),
                 });
             }
