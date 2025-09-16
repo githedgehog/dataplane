@@ -69,6 +69,16 @@ impl From<Vni> for VpcDiscriminant {
     }
 }
 
+impl TryFrom<VpcDiscriminant> for Vni {
+    type Error = ();
+
+    fn try_from(value: VpcDiscriminant) -> Result<Self, Self::Error> {
+        match value {
+            VpcDiscriminant::VNI(vni) => Ok(vni),
+        }
+    }
+}
+
 impl Display for VpcDiscriminant {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
