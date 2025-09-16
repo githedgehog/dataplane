@@ -6,7 +6,6 @@ mod allocator_writer;
 pub mod apalloc;
 mod natip;
 mod port;
-pub mod sessions;
 mod test;
 
 pub use allocator_writer::NatAllocatorWriter;
@@ -17,7 +16,6 @@ use crate::stateful::apalloc::AllocatedIpPort;
 use crate::stateful::apalloc::{NatDefaultAllocator, NatIpWithBitmap};
 use crate::stateful::natip::NatIp;
 use crate::stateful::port::NatPort;
-use crate::stateful::sessions::NatState;
 use concurrency::sync::Arc;
 use flow_info::{ExtractRef, FlowInfo};
 use net::buffer::PacketBufferMut;
@@ -63,6 +61,14 @@ fn get_next_header(flow_key: &FlowKey) -> NextHeader {
         IpProtoKey::Udp(_) => NextHeader::UDP,
         IpProtoKey::Icmp => NextHeader::ICMP,
     }
+}
+
+#[derive(Debug, Clone)]
+struct NatState {
+    src_addr: Option<IpAddr>,
+    dst_addr: Option<IpAddr>,
+    src_port: Option<NatPort>,
+    dst_port: Option<NatPort>,
 }
 
 /// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`StatefulNat`] processes
@@ -193,7 +199,12 @@ impl StatefulNat {
         state: &NatState,
         next_header: NextHeader,
     ) -> Option<()> {
-        let (target_src_addr, target_dst_addr, target_src_port, target_dst_port) = state.get_nat();
+        let (target_src_addr, target_dst_addr, target_src_port, target_dst_port) = (
+            state.src_addr,
+            state.dst_addr,
+            state.src_port,
+            state.dst_port,
+        );
 
         let headers = packet.headers_mut();
         let net = headers.try_ip_mut()?;
@@ -253,12 +264,12 @@ impl StatefulNat {
             ),
             None => (None, None),
         };
-        NatState::new(
-            target_src_addr,
-            target_dst_addr,
-            target_src_port,
-            target_dst_port,
-        )
+        NatState {
+            src_addr: target_src_addr,
+            dst_addr: target_dst_addr,
+            src_port: target_src_port,
+            dst_port: target_dst_port,
+        }
     }
 
     fn new_reverse_session<I: NatIpWithBitmap>(
@@ -334,12 +345,12 @@ impl StatefulNat {
         // Do not reuse information from forward tuple, because the IPs and ports for the reverse
         // session need to be registered with the allocator. Use the elements returned from the
         // allocator.
-        let reverse_state = NatState::new(
-            alloc.return_src.as_ref().map(|p| p.ip().to_ip_addr()),
-            alloc.return_dst.as_ref().map(|p| p.ip().to_ip_addr()),
-            alloc.return_src.as_ref().map(AllocatedIpPort::port),
-            alloc.return_dst.as_ref().map(AllocatedIpPort::port),
-        );
+        let reverse_state = NatState {
+            src_addr: alloc.return_src.as_ref().map(|p| p.ip().to_ip_addr()),
+            dst_addr: alloc.return_dst.as_ref().map(|p| p.ip().to_ip_addr()),
+            src_port: alloc.return_src.as_ref().map(AllocatedIpPort::port),
+            dst_port: alloc.return_dst.as_ref().map(AllocatedIpPort::port),
+        };
         (reverse_flow_key, reverse_state)
     }
 
