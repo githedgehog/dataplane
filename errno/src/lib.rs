@@ -1635,3 +1635,40 @@ impl ErrorCode {
         Self::parse_i32(val.into())
     }
 }
+
+#[cfg(test)]
+mod test {
+    use n_vm::in_vm;
+
+    #[test]
+    #[in_vm]
+    fn science() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut net_dir = tokio::fs::read_dir("/sys/class/net").await.unwrap();
+            loop {
+                let Some(entry) = net_dir.next_entry().await.unwrap() else {
+                    break;
+                };
+                println!("entry: {:?}", entry);
+            }
+            let mut pci_dir = tokio::fs::read_dir("/sys/bus/pci/devices").await.unwrap();
+            loop {
+                let Some(entry) = pci_dir.next_entry().await.unwrap() else {
+                    break;
+                };
+                println!("entry: {:?}", entry);
+            }
+        });
+        panic!("oh no");
+    }
+
+    #[test]
+    #[in_vm]
+    fn two_science() {
+        assert_eq!(2 + 2, 4);
+    }
+}

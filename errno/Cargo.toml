@@ -9,5 +9,12 @@ license = "Apache-2.0"
 
 thiserror = { workspace = true }
 
+
 [build-dependencies]
 dpdk-sysroot-helper = { workspace = true }
+
+[dev-dependencies]
+n-vm = { workspace = true }
+tokio = { workspace = true, default-features = false, features = ["rt", "process", "macros", "fs", "net", "time", "io-util", "net", "io-std"] }
+tracing-subscriber = { workspace = true, default-features = false, features = ["fmt"] }
+tracing = { workspace = true, default-features = false, features = [] }
