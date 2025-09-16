@@ -209,12 +209,29 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
         &self,
         flow_key: &FlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv4Addr>>, AllocatorError> {
+        Self::allocate_from_tables(flow_key, &self.pools_src44, &self.pools_dst44)
+    }
+
+    fn allocate_v6(
+        &self,
+        flow_key: &FlowKey,
+    ) -> Result<AllocationResult<AllocatedIpPort<Ipv6Addr>>, AllocatorError> {
+        Self::allocate_from_tables(flow_key, &self.pools_src66, &self.pools_dst66)
+    }
+}
+
+impl NatDefaultAllocator {
+    fn allocate_from_tables<I: NatIpWithBitmap>(
+        flow_key: &FlowKey,
+        pools_src: &PoolTable<I, I>,
+        pools_dst: &PoolTable<I, I>,
+    ) -> Result<AllocationResult<AllocatedIpPort<I>>, AllocatorError> {
         let next_header = get_next_header(flow_key);
         Self::check_proto(next_header)?;
         let (src_vpc_id, dst_vpc_id) = Self::check_and_get_discriminants(flow_key)?;
 
         // Get address pools for source and destination
-        let pool_src_opt = self.pools_src44.get_entry(
+        let pool_src_opt = pools_src.get_entry(
             next_header,
             src_vpc_id,
             dst_vpc_id,
@@ -224,7 +241,7 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
                 )
             })?,
         );
-        let pool_dst_opt = self.pools_dst44.get_entry(
+        let pool_dst_opt = pools_dst.get_entry(
             next_header,
             src_vpc_id,
             dst_vpc_id,
@@ -242,15 +259,13 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
         // path for the flow. First retrieve the relevant address pools.
 
         let reverse_pool_src_opt = if let Some(mapping) = &dst_mapping {
-            self.pools_src44
-                .get_entry(next_header, dst_vpc_id, src_vpc_id, mapping.ip())
+            pools_src.get_entry(next_header, dst_vpc_id, src_vpc_id, mapping.ip())
         } else {
             None
         };
 
         let reverse_pool_dst_opt = if let Some(mapping) = &src_mapping {
-            self.pools_dst44
-                .get_entry(next_header, dst_vpc_id, src_vpc_id, mapping.ip())
+            pools_dst.get_entry(next_header, dst_vpc_id, src_vpc_id, mapping.ip())
         } else {
             None
         };
@@ -267,64 +282,6 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
         })
     }
 
-    // See allocate_v4 for comments.
-    fn allocate_v6(
-        &self,
-        flow_key: &FlowKey,
-    ) -> Result<AllocationResult<AllocatedIpPort<Ipv6Addr>>, AllocatorError> {
-        let next_header = get_next_header(flow_key);
-        Self::check_proto(next_header)?;
-        let (src_vpc_id, dst_vpc_id) = Self::check_and_get_discriminants(flow_key)?;
-
-        let pool_src_opt = self.pools_src66.get_entry(
-            next_header,
-            src_vpc_id,
-            dst_vpc_id,
-            NatIp::try_from_addr(*flow_key.data().src_ip()).map_err(|()| {
-                AllocatorError::InternalIssue(
-                    "Failed to convert IP address to Ipv6Addr".to_string(),
-                )
-            })?,
-        );
-        let pool_dst_opt = self.pools_dst66.get_entry(
-            next_header,
-            src_vpc_id,
-            dst_vpc_id,
-            NatIp::try_from_addr(*flow_key.data().dst_ip()).map_err(|()| {
-                AllocatorError::InternalIssue(
-                    "Failed to convert IP address to Ipv6Addr".to_string(),
-                )
-            })?,
-        );
-
-        let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt)?;
-
-        let reverse_pool_src_opt = if let Some(mapping) = &dst_mapping {
-            self.pools_src66
-                .get_entry(next_header, dst_vpc_id, src_vpc_id, mapping.ip())
-        } else {
-            None
-        };
-        let reverse_pool_dst_opt = if let Some(mapping) = &src_mapping {
-            self.pools_dst66
-                .get_entry(next_header, dst_vpc_id, src_vpc_id, mapping.ip())
-        } else {
-            None
-        };
-
-        let (reverse_src_mapping, reverse_dst_mapping) =
-            Self::get_reverse_mapping(flow_key, reverse_pool_src_opt, reverse_pool_dst_opt)?;
-
-        Ok(AllocationResult {
-            src: src_mapping,
-            dst: dst_mapping,
-            return_src: reverse_src_mapping,
-            return_dst: reverse_dst_mapping,
-        })
-    }
-}
-
-impl NatDefaultAllocator {
     fn check_proto(next_header: NextHeader) -> Result<(), AllocatorError> {
         match next_header {
             NextHeader::TCP | NextHeader::UDP => Ok(()),
