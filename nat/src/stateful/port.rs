@@ -66,3 +66,9 @@ impl TryFrom<NatPort> for UdpPort {
         UdpPort::new_checked(port.as_u16())
     }
 }
+
+impl From<NatPort> for NonZero<u16> {
+    fn from(port: NatPort) -> Self {
+        port.0
+    }
+}

@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use super::NatTuple;
 use super::port::NatPort;
-use crate::stateful::NatIp;
-use net::ip::NextHeader;
 use std::fmt::Display;
 use std::net::IpAddr;
 
@@ -48,28 +45,6 @@ impl NatState {
             self.target_src_port,
             self.target_dst_port,
         )
-    }
-}
-
-impl<I: NatIp> Display for NatTuple<I> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let proto = match self.next_header {
-            NextHeader::UDP => "UDP",
-            NextHeader::TCP => "TCP",
-            _ => "Other",
-        };
-        write!(
-            f,
-            "VPC {}>{} [{}] - {:?}:{} -> {:?}:{}",
-            self.src_vpc_id,
-            self.dst_vpc_id,
-            proto,
-            self.src_ip,
-            self.src_port.unwrap_or(0),
-            self.dst_ip,
-            self.dst_port.unwrap_or(0),
-        )?;
-        Ok(())
     }
 }
 

@@ -31,9 +31,8 @@ use net::udp::port::UdpPort;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use pkt_meta::flow_table::flow_key::Uni;
-use pkt_meta::flow_table::{FlowKey, FlowKeyData, FlowTable, IpProtoKey, TcpProtoKey, UdpProtoKey};
+use pkt_meta::flow_table::{FlowKey, FlowTable, IpProtoKey, TcpProtoKey, UdpProtoKey};
 use std::fmt::Debug;
-use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
@@ -49,51 +48,24 @@ pub enum StatefulNatError {
     NoAllocator,
     #[error("allocation failed")]
     AllocationFailure,
-    #[error("session creation failed")]
-    SessionCreationFailure,
     #[error("invalid port {0}")]
     InvalidPort(u16),
 }
 
 type NatVpcId = Vni;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct NatTuple<I: NatIp> {
-    src_ip: I,
-    dst_ip: I,
-    src_port: Option<u16>,
-    dst_port: Option<u16>,
-    next_header: NextHeader,
-    src_vpc_id: NatVpcId,
-    dst_vpc_id: NatVpcId,
-}
-
-impl<I: NatIp> NatTuple<I> {
-    fn new(
-        src_ip: I,
-        dst_ip: I,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
-        next_header: NextHeader,
-        src_vpc_id: NatVpcId,
-        dst_vpc_id: NatVpcId,
-    ) -> Self {
-        Self {
-            src_ip,
-            dst_ip,
-            src_port,
-            dst_port,
-            next_header,
-            src_vpc_id,
-            dst_vpc_id,
-        }
-    }
-}
-
 const SESSION_TIMEOUT: Duration = Duration::from_secs(60 * 60); // one hour
 
 fn session_timeout_time() -> Instant {
     Instant::now() + SESSION_TIMEOUT
+}
+
+fn get_next_header(flow_key: &FlowKey) -> NextHeader {
+    match flow_key.data().proto_key_info() {
+        IpProtoKey::Tcp(_) => NextHeader::TCP,
+        IpProtoKey::Udp(_) => NextHeader::UDP,
+        IpProtoKey::Icmp => NextHeader::ICMP,
+    }
 }
 
 /// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`StatefulNat`] processes
@@ -159,42 +131,8 @@ impl StatefulNat {
         }
     }
 
-    fn extract_tuple<I: NatIp, Buf: PacketBufferMut>(
-        packet: &Packet<Buf>,
-        src_vpc_id: NatVpcId,
-        dst_vpc_id: NatVpcId,
-    ) -> Option<NatTuple<I>> {
-        let FlowKey::Unidirectional(flow_key) = FlowKey::try_from(Uni(packet)).ok()? else {
-            // We never generate a Bidirectional flow key from a Unidirectional packet
-            unreachable!()
-        };
-
-        let (next_header, src_port, dst_port) = match flow_key.proto_key_info() {
-            IpProtoKey::Tcp(TcpProtoKey { src_port, dst_port }) => (
-                NextHeader::TCP,
-                Some(src_port.as_u16()),
-                Some(dst_port.as_u16()),
-            ),
-            IpProtoKey::Udp(UdpProtoKey { src_port, dst_port }) => (
-                NextHeader::UDP,
-                Some(src_port.as_u16()),
-                Some(dst_port.as_u16()),
-            ),
-            IpProtoKey::Icmp => (NextHeader::ICMP, None, None),
-        };
-
-        let src_ip = I::try_from_addr(*flow_key.src_ip()).ok()?;
-        let dst_ip = I::try_from_addr(*flow_key.dst_ip()).ok()?;
-
-        Some(NatTuple::new(
-            src_ip,
-            dst_ip,
-            src_port,
-            dst_port,
-            next_header,
-            src_vpc_id,
-            dst_vpc_id,
-        ))
+    fn extract_flow_key<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<FlowKey> {
+        FlowKey::try_from(Uni(packet)).ok()
     }
 
     fn lookup_session<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> Option<NatState> {
@@ -205,33 +143,11 @@ impl StatefulNat {
         Some(state.clone())
     }
 
-    fn create_session<I: NatIp>(&mut self, tuple: &NatTuple<I>, state: NatState) -> Result<(), ()> {
-        let proto_key = match (tuple.next_header, tuple.src_port, tuple.dst_port) {
-            (NextHeader::TCP, Some(src_port), Some(dst_port)) => IpProtoKey::Tcp(TcpProtoKey {
-                src_port: TcpPort::new_checked(src_port).map_err(|_| ())?,
-                dst_port: TcpPort::new_checked(dst_port).map_err(|_| ())?,
-            }),
-            (NextHeader::UDP, Some(src_port), Some(dst_port)) => IpProtoKey::Udp(UdpProtoKey {
-                src_port: UdpPort::new_checked(src_port).map_err(|_| ())?,
-                dst_port: UdpPort::new_checked(dst_port).map_err(|_| ())?,
-            }),
-            _ => {
-                return Err(());
-            }
-        };
-
-        let flow_key = FlowKey::Unidirectional(FlowKeyData::new(
-            Some(VpcDiscriminant::from_vni(tuple.src_vpc_id)),
-            tuple.src_ip.to_ip_addr(),
-            Some(VpcDiscriminant::from_vni(tuple.dst_vpc_id)),
-            tuple.dst_ip.to_ip_addr(),
-            proto_key,
-        ));
+    fn create_session(&mut self, flow_key: &FlowKey, state: NatState) {
         let flow_info = FlowInfo::new(session_timeout_time());
         flow_info.locked.write().unwrap().nat_state = Some(Box::new(state));
 
-        self.sessions.insert(flow_key, flow_info);
-        Ok(())
+        self.sessions.insert(*flow_key, flow_info);
     }
 
     fn set_source_port(
@@ -355,11 +271,11 @@ impl StatefulNat {
     }
 
     fn new_reverse_session<I: NatIpWithBitmap>(
-        tuple: &NatTuple<I>,
+        flow_key: &FlowKey,
         alloc: &AllocationResult<AllocatedIpPort<I>>,
         src_vpc_id: NatVpcId,
         dst_vpc_id: NatVpcId,
-    ) -> (NatTuple<I>, NatState) {
+    ) -> (FlowKey, NatState) {
         // Forward session:
         //   f.init:(src: a, dst: B) -> f.nated:(src: A, dst: b)
         //
@@ -370,9 +286,9 @@ impl StatefulNat {
         // - tuple r.init = (src: f.nated.dst, dst: f.nated.src)
         // - mapping r.nated = (src: f.init.dst, dst: f.init.src)
 
-        let (reverse_src_addr, reverse_src_port) =
+        let (reverse_src_addr, allocated_src_port_to_use) =
             match alloc.dst.as_ref().map(|a| (a.ip(), a.port())) {
-                Some((ip, port)) => (ip, Some(port.as_u16())),
+                Some((ip, port)) => (ip.to_ip_addr(), Some(port)),
                 // No destination NAT for forward session:
                 // f.init:(src: a, dst: b) -> f.nated:(src: A, dst: b)
                 //
@@ -380,22 +296,48 @@ impl StatefulNat {
                 // r.init:(src: b, dst: A) -> r.nated:(src: b, dst: a)
                 //
                 // Use destination IP and port from forward tuple.
-                None => (tuple.dst_ip, tuple.dst_port),
+                None => (*flow_key.data().dst_ip(), None),
             };
-        let (reverse_dst_addr, reverse_dst_port) =
+        let (reverse_dst_addr, allocated_dst_port_to_use) =
             match alloc.src.as_ref().map(|a| (a.ip(), a.port())) {
-                Some((ip, port)) => (ip, Some(port.as_u16())),
-                None => (tuple.src_ip, tuple.src_port),
+                Some((ip, port)) => (ip.to_ip_addr(), Some(port)),
+                None => (*flow_key.data().src_ip(), None),
             };
 
-        let reverse_tuple = NatTuple::new(
+        let reverse_proto_key = match flow_key.data().proto_key_info() {
+            IpProtoKey::Tcp(key) => IpProtoKey::Tcp(TcpProtoKey {
+                src_port: if let Some(allocated_src_port) = allocated_src_port_to_use {
+                    TcpPort::new(allocated_src_port.into())
+                } else {
+                    key.dst_port
+                },
+                dst_port: if let Some(allocated_dst_port) = allocated_dst_port_to_use {
+                    TcpPort::new(allocated_dst_port.into())
+                } else {
+                    key.src_port
+                },
+            }),
+            IpProtoKey::Udp(key) => IpProtoKey::Udp(UdpProtoKey {
+                src_port: if let Some(allocated_src_port) = allocated_src_port_to_use {
+                    UdpPort::new(allocated_src_port.into())
+                } else {
+                    key.dst_port
+                },
+                dst_port: if let Some(allocated_dst_port) = allocated_dst_port_to_use {
+                    UdpPort::new(allocated_dst_port.into())
+                } else {
+                    key.src_port
+                },
+            }),
+            IpProtoKey::Icmp => IpProtoKey::Icmp,
+        };
+
+        let reverse_flow_key = FlowKey::uni(
+            Some(VpcDiscriminant::VNI(dst_vpc_id)), // FIXME: Use discriminants everywhere
             reverse_src_addr,
+            Some(VpcDiscriminant::VNI(src_vpc_id)),
             reverse_dst_addr,
-            reverse_src_port,
-            reverse_dst_port,
-            tuple.next_header,
-            dst_vpc_id,
-            src_vpc_id,
+            reverse_proto_key,
         );
 
         // Do not reuse information from forward tuple, because the IPs and ports for the reverse
@@ -407,19 +349,21 @@ impl StatefulNat {
             alloc.return_src.as_ref().map(AllocatedIpPort::port),
             alloc.return_dst.as_ref().map(AllocatedIpPort::port),
         );
-        (reverse_tuple, reverse_state)
+        (reverse_flow_key, reverse_state)
     }
 
     fn translate_packet<Buf: PacketBufferMut, I: NatIpWithBitmap>(
         &mut self,
         packet: &mut Packet<Buf>,
-        tuple: &NatTuple<I>,
+        flow_key: &FlowKey,
         src_vpc_id: NatVpcId,
         dst_vpc_id: NatVpcId,
     ) -> Result<bool, StatefulNatError> {
+        let next_header = get_next_header(flow_key);
+
         // Hot path: if we have a session, directly translate the address already
         if let Some(state) = Self::lookup_session(packet) {
-            Self::stateful_translate::<Buf>(packet, &state, tuple.next_header);
+            Self::stateful_translate::<Buf>(packet, &state, next_header);
             return Ok(true);
         }
 
@@ -430,7 +374,7 @@ impl StatefulNat {
         };
 
         // Else, if we need NAT for this packet, create a new session and translate the address
-        let Ok(alloc) = I::allocate(allocator, tuple) else {
+        let Ok(alloc) = I::allocate(allocator, flow_key) else {
             // NAT allocation failed for some reason
             return Err(StatefulNatError::AllocationFailure);
         };
@@ -441,23 +385,13 @@ impl StatefulNat {
         }
 
         let new_state = Self::new_state_from_alloc(&alloc);
-        if self.create_session(tuple, new_state.clone()).is_err() {
-            // We failed to create the relevant forward session
-            return Err(StatefulNatError::SessionCreationFailure);
-        }
+        self.create_session(flow_key, new_state.clone());
 
         let (reverse_tuple, reverse_state) =
-            Self::new_reverse_session(tuple, &alloc, src_vpc_id, dst_vpc_id);
-        if self
-            .create_session(&reverse_tuple, reverse_state.clone())
-            .is_err()
-        {
-            packet.done(DoneReason::NatFailure);
-            // We failed to create the relevant reverse session
-            return Err(StatefulNatError::SessionCreationFailure);
-        }
+            Self::new_reverse_session(flow_key, &alloc, src_vpc_id, dst_vpc_id);
+        self.create_session(&reverse_tuple, reverse_state.clone());
 
-        Self::stateful_translate::<Buf>(packet, &new_state, tuple.next_header);
+        Self::stateful_translate::<Buf>(packet, &new_state, next_header);
         Ok(true)
     }
 
@@ -473,14 +407,14 @@ impl StatefulNat {
 
         match net {
             Net::Ipv4(_) => {
-                let tuple = Self::extract_tuple(packet, src_vpc_id, dst_vpc_id)
-                    .ok_or(StatefulNatError::TupleParseError)?;
-                self.translate_packet::<Buf, Ipv4Addr>(packet, &tuple, src_vpc_id, dst_vpc_id)
+                let flow_key =
+                    Self::extract_flow_key(packet).ok_or(StatefulNatError::TupleParseError)?;
+                self.translate_packet::<Buf, Ipv4Addr>(packet, &flow_key, src_vpc_id, dst_vpc_id)
             }
             Net::Ipv6(_) => {
-                let tuple = Self::extract_tuple(packet, src_vpc_id, dst_vpc_id)
-                    .ok_or(StatefulNatError::TupleParseError)?;
-                self.translate_packet::<Buf, Ipv6Addr>(packet, &tuple, src_vpc_id, dst_vpc_id)
+                let flow_key =
+                    Self::extract_flow_key(packet).ok_or(StatefulNatError::TupleParseError)?;
+                self.translate_packet::<Buf, Ipv6Addr>(packet, &flow_key, src_vpc_id, dst_vpc_id)
             }
         }
     }
@@ -532,40 +466,8 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatefulNat {
 mod tests {
     use super::port::NatPort;
     use super::*;
-    use net::eth::mac::Mac;
-    use net::packet::test_utils::build_test_udp_ipv4_frame;
     use net::tcp::Tcp;
     use net::udp::Udp;
-    use std::str::FromStr;
-
-    #[test]
-    fn test_tuple_extraction() {
-        let packet = build_test_udp_ipv4_frame(
-            Mac([0x2, 0, 0, 0, 0, 1]),
-            Mac([0x2, 0, 0, 0, 0, 2]),
-            "1.2.3.4",
-            "5.6.7.8",
-            9998,
-            443,
-        );
-        let ref_tuple = NatTuple::new(
-            Ipv4Addr::from_str("1.2.3.4").unwrap(),
-            Ipv4Addr::from_str("5.6.7.8").unwrap(),
-            Some(9998),
-            Some(443),
-            NextHeader::UDP,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(2).unwrap(),
-        );
-        let tuple = StatefulNat::extract_tuple(
-            &packet,
-            Vni::new_checked(1).unwrap(),
-            Vni::new_checked(2).unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(tuple, ref_tuple);
-    }
 
     #[test]
     fn test_set_tcp_ports() {

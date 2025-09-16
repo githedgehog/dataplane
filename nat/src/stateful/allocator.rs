@@ -3,11 +3,10 @@
 
 //! NAT allocator trait: a trait to build allocators to manage IP addresses and ports for stateful NAT.
 
-use super::NatTuple;
 use super::port::NatPortError;
 use net::ip::NextHeader;
+use pkt_meta::flow_table::FlowKey;
 use std::fmt::Debug;
-use std::net::{Ipv4Addr, Ipv6Addr};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum AllocatorError {
@@ -23,6 +22,10 @@ pub enum AllocatorError {
     UnsupportedProtocol(NextHeader),
     #[error("no port present for flow: NAT currently unsupported")]
     PortNotFound,
+    #[error("missing VPC discriminant")]
+    MissingDiscriminant,
+    #[error("unsupported VPC discriminant type")]
+    UnsupportedDiscriminant,
     // Something has gone wrong, but user input or packet input are not responsible.
     // We hit an implementation bug.
     #[error("internal issue: {0}")]
@@ -55,14 +58,8 @@ where
     U: Debug,
 {
     fn new() -> Self;
-    fn allocate_v4(
-        &self,
-        tuple: &NatTuple<Ipv4Addr>,
-    ) -> Result<AllocationResult<T>, AllocatorError>;
-    fn allocate_v6(
-        &self,
-        tuple: &NatTuple<Ipv6Addr>,
-    ) -> Result<AllocationResult<U>, AllocatorError>;
+    fn allocate_v4(&self, flow_key: &FlowKey) -> Result<AllocationResult<T>, AllocatorError>;
+    fn allocate_v6(&self, flow_key: &FlowKey) -> Result<AllocationResult<U>, AllocatorError>;
 
     // TODO: Should the method for building the allocator from a VpcTable be part of this trait?
 }

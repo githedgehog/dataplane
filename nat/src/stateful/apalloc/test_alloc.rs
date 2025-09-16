@@ -17,8 +17,12 @@ mod context {
     use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use net::ip::NextHeader;
+    use net::packet::VpcDiscriminant;
+    use net::tcp::TcpPort;
+    use net::udp::UdpPort;
     use net::vxlan::Vni;
-    use std::net::Ipv4Addr;
+    use pkt_meta::flow_table::{IpProtoKey, TcpProtoKey, UdpProtoKey};
+    use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
 
     #[allow(unused)]
@@ -29,12 +33,38 @@ mod context {
     pub fn addr_v4_bits(ip: &str) -> u32 {
         addr_v4(ip).to_bits()
     }
+    #[allow(unused)]
+    pub fn ipaddr(ip: &str) -> IpAddr {
+        IpAddr::from_str(ip).unwrap()
+    }
 
     pub fn vni1() -> Vni {
         Vni::new_checked(100).unwrap()
     }
     pub fn vni2() -> Vni {
         Vni::new_checked(200).unwrap()
+    }
+    #[allow(clippy::unnecessary_wraps)]
+    pub fn vpcd1() -> Option<VpcDiscriminant> {
+        Some(VpcDiscriminant::from_vni(vni1()))
+    }
+    #[allow(clippy::unnecessary_wraps)]
+    pub fn vpcd2() -> Option<VpcDiscriminant> {
+        Some(VpcDiscriminant::from_vni(vni2()))
+    }
+
+    pub fn tcp_proto_key(src_port: u16, dst_port: u16) -> IpProtoKey {
+        IpProtoKey::Tcp(TcpProtoKey {
+            src_port: TcpPort::new_checked(src_port).unwrap(),
+            dst_port: TcpPort::new_checked(dst_port).unwrap(),
+        })
+    }
+    #[allow(unused)]
+    pub fn udp_proto_key(src_port: u16, dst_port: u16) -> IpProtoKey {
+        IpProtoKey::Udp(UdpProtoKey {
+            src_port: UdpPort::new_checked(src_port).unwrap(),
+            dst_port: UdpPort::new_checked(dst_port).unwrap(),
+        })
     }
 
     #[allow(unused)]
@@ -140,12 +170,13 @@ mod context {
 #[concurrency_mode(std)]
 mod std_tests {
     use super::context::*;
-    use crate::stateful::NatTuple;
     use crate::stateful::allocator::NatAllocator;
     use crate::stateful::apalloc::PoolTableKey;
     use concurrency::sync::Arc;
     use concurrency::thread;
     use net::ip::NextHeader;
+    use net::packet::VpcDiscriminant;
+    use pkt_meta::flow_table::FlowKey;
 
     #[test]
     fn test_build_allocator() {
@@ -260,14 +291,12 @@ mod std_tests {
     // objects are dropped.
     #[test]
     fn test_allocate() {
-        let tuple = NatTuple::new(
-            addr_v4("1.1.0.0"),
-            addr_v4("10.3.0.2"),
-            Some(1234),
-            Some(5678),
-            NextHeader::TCP,
-            vni1(),
-            vni2(),
+        let tuple = FlowKey::uni(
+            vpcd1(),
+            ipaddr("1.1.0.0"),
+            vpcd2(),
+            ipaddr("10.3.0.2"),
+            tcp_proto_key(1234, 5678),
         );
 
         let mut allocator = build_allocator().unwrap();
@@ -339,23 +368,19 @@ mod std_tests {
     #[test]
     // Allocate an IP for a TCP packet, then for a UDP packet.
     fn test_tcp_udp() {
-        let tcp_tuple = NatTuple::new(
-            addr_v4("1.1.0.0"),
-            addr_v4("10.3.0.2"),
-            Some(1234),
-            Some(5678),
-            NextHeader::TCP,
-            vni1(),
-            vni2(),
+        let tcp_flow_key = FlowKey::uni(
+            Some(VpcDiscriminant::from_vni(vni1())),
+            ipaddr("1.1.0.0"),
+            Some(VpcDiscriminant::from_vni(vni2())),
+            ipaddr("10.3.0.2"),
+            tcp_proto_key(1234, 5678),
         );
-        let udp_tuple = NatTuple::new(
-            addr_v4("1.1.0.0"),
-            addr_v4("10.3.0.2"),
-            Some(1234),
-            Some(5678),
-            NextHeader::UDP,
-            vni1(),
-            vni2(),
+        let udp_flow_key = FlowKey::uni(
+            vpcd1(),
+            ipaddr("1.1.0.0"),
+            vpcd2(),
+            ipaddr("10.3.0.2"),
+            udp_proto_key(1234, 5678),
         );
 
         let mut allocator = build_allocator().unwrap();
@@ -382,7 +407,7 @@ mod std_tests {
         assert_eq!(in_use.len(), 0); // None allocated yet
 
         // Allocate for TCP
-        let tcp_allocation = allocator.allocate_v4(&tcp_tuple).unwrap();
+        let tcp_allocation = allocator.allocate_v4(&tcp_flow_key).unwrap();
         print_allocation(&tcp_allocation);
 
         // Check number of allocated IPs for TCP after we have allocated for TCP
@@ -410,7 +435,7 @@ mod std_tests {
         assert_eq!(in_use.len(), 0); // None allocated yet
 
         // Allocate for UDP
-        let udp_allocation = allocator.allocate_v4(&udp_tuple).unwrap();
+        let udp_allocation = allocator.allocate_v4(&udp_flow_key).unwrap();
         print_allocation(&udp_allocation);
 
         // Check number of allocated IPs for TCP after we have allocated for UDP
@@ -445,23 +470,19 @@ mod std_tests {
     // we do here was not broken - we just needed to increase stack memory for shuttle's runner.
     #[test]
     fn test_concurrent_allocations_without_shuttle() {
-        let tuple1 = NatTuple::new(
-            addr_v4("1.1.0.0"),
-            addr_v4("10.3.0.2"),
-            Some(1111),
-            Some(1112),
-            NextHeader::TCP,
-            vni1(),
-            vni2(),
+        let flow_key1 = FlowKey::uni(
+            vpcd1(),
+            ipaddr("1.1.0.0"),
+            vpcd2(),
+            ipaddr("10.3.0.2"),
+            tcp_proto_key(1111, 1112),
         );
-        let tuple2 = NatTuple::new(
-            addr_v4("2.0.1.3"),
-            addr_v4("10.4.1.1"),
-            Some(2222),
-            Some(2223),
-            NextHeader::TCP,
-            vni1(),
-            vni2(),
+        let flow_key2 = FlowKey::uni(
+            vpcd1(),
+            ipaddr("2.0.1.3"),
+            vpcd2(),
+            ipaddr("10.4.1.1"),
+            tcp_proto_key(2222, 2223),
         );
 
         let allocator = build_allocator().unwrap();
@@ -469,10 +490,10 @@ mod std_tests {
         let allocator2 = allocator1.clone();
 
         thread::spawn(move || {
-            let _allocation1 = allocator1.allocate_v4(&tuple1).unwrap();
+            let _allocation1 = allocator1.allocate_v4(&flow_key1).unwrap();
         });
         thread::spawn(move || {
-            let _allocation2 = allocator2.allocate_v4(&tuple2).unwrap();
+            let _allocation2 = allocator2.allocate_v4(&flow_key2).unwrap();
         });
     }
 }
@@ -480,9 +501,9 @@ mod std_tests {
 #[concurrency_mode(shuttle)]
 mod tests_shuttle {
     use super::context::*;
-    use crate::stateful::NatTuple;
     use crate::stateful::allocator::NatAllocator;
     use net::ip::NextHeader;
+    use pkt_meta::flow_table::FlowKey;
     use shuttle::sync::{Arc, Mutex};
     use shuttle::thread;
 
@@ -525,41 +546,33 @@ mod tests_shuttle {
     #[test]
     fn test_concurrent_allocations() {
         run_shuttle(|| {
-            let tuple1 = NatTuple::new(
-                addr_v4("1.1.0.0"),
-                addr_v4("10.3.0.2"),
-                Some(1111),
-                Some(1112),
-                NextHeader::TCP,
-                vni1(),
-                vni2(),
+            let flow_key1 = FlowKey::uni(
+                vpcd1(),
+                ipaddr("1.1.0.0"),
+                vpcd2(),
+                ipaddr("10.3.0.2"),
+                tcp_proto_key(1111, 1112),
             );
-            let tuple2 = NatTuple::new(
-                addr_v4("2.0.1.3"),
-                addr_v4("10.4.1.1"),
-                Some(2222),
-                Some(2223),
-                NextHeader::TCP,
-                vni1(),
-                vni2(),
+            let flow_key2 = FlowKey::uni(
+                vpcd1(),
+                ipaddr("2.0.1.3"),
+                vpcd2(),
+                ipaddr("10.4.1.1"),
+                tcp_proto_key(2222, 2223),
             );
-            let tuple3 = NatTuple::new(
-                addr_v4("1.1.0.0"),
-                addr_v4("10.3.0.2"),
-                Some(3333),
-                Some(3334),
-                NextHeader::TCP,
-                vni1(),
-                vni2(),
+            let flow_key3 = FlowKey::uni(
+                vpcd1(),
+                ipaddr("1.1.0.0"),
+                vpcd2(),
+                ipaddr("10.3.0.2"),
+                tcp_proto_key(3333, 3334),
             );
-            let tuple4 = NatTuple::new(
-                addr_v4("1.1.0.0"),
-                addr_v4("10.3.0.3"),
-                Some(4444),
-                Some(4445),
-                NextHeader::TCP,
-                vni1(),
-                vni2(),
+            let flow_key4 = FlowKey::uni(
+                vpcd1(),
+                ipaddr("1.1.0.0"),
+                vpcd2(),
+                ipaddr("10.3.0.3"),
+                tcp_proto_key(4444, 4445),
             );
 
             let allocator = build_allocator().unwrap();
@@ -572,7 +585,7 @@ mod tests_shuttle {
             let mut handles = vec![];
 
             handles.push(thread::spawn(move || {
-                let allocation1 = allocator1.allocate_v4(&tuple1);
+                let allocation1 = allocator1.allocate_v4(&flow_key1);
                 let res = allocation1.unwrap();
                 assert!(res.src.is_some());
                 assert!(res.dst.is_some());
@@ -580,7 +593,7 @@ mod tests_shuttle {
                 assert!(res.return_dst.is_some());
             }));
             handles.push(thread::spawn(move || {
-                let allocation2 = allocator2.allocate_v4(&tuple2);
+                let allocation2 = allocator2.allocate_v4(&flow_key2);
                 let res = allocation2.unwrap();
                 assert!(res.src.is_some());
                 assert!(res.dst.is_some());
@@ -588,7 +601,7 @@ mod tests_shuttle {
                 assert!(res.return_dst.is_some());
             }));
             handles.push(thread::spawn(move || {
-                let allocation3 = allocator3.allocate_v4(&tuple3);
+                let allocation3 = allocator3.allocate_v4(&flow_key3);
                 let res = allocation3.unwrap();
                 assert!(res.src.is_some());
                 assert!(res.dst.is_some());
@@ -596,7 +609,7 @@ mod tests_shuttle {
                 assert!(res.return_dst.is_some());
             }));
             handles.push(thread::spawn(move || {
-                let allocation4 = allocator4.allocate_v4(&tuple4);
+                let allocation4 = allocator4.allocate_v4(&flow_key4);
                 let res = allocation4.unwrap();
                 assert!(res.src.is_some());
                 assert!(res.dst.is_some());

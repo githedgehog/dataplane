@@ -64,12 +64,14 @@
 #![allow(clippy::ip_constant)]
 #![allow(rustdoc::private_intra_doc_links)]
 
-use super::NatVpcId;
 use super::allocator::{AllocationResult, AllocatorError};
 use super::port::NatPort;
-use super::{NatAllocator, NatIp, NatTuple};
+use super::{NatAllocator, NatIp};
+use super::{NatVpcId, get_next_header};
 pub use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
 use net::ip::NextHeader;
+use pkt_meta::flow_table::FlowKey;
+use pkt_meta::flow_table::IpProtoKey;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -204,22 +206,44 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
 
     fn allocate_v4(
         &self,
-        tuple: &NatTuple<Ipv4Addr>,
+        flow_key: &FlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv4Addr>>, AllocatorError> {
-        Self::check_proto(tuple.next_header)?;
+        let next_header = get_next_header(flow_key);
+        Self::check_proto(next_header)?;
+
+        let src_vpc_id = flow_key
+            .data()
+            .src_vpcd()
+            .ok_or(AllocatorError::MissingDiscriminant)?
+            .try_into()
+            .map_err(|()| AllocatorError::UnsupportedDiscriminant)?;
+        let dst_vpc_id = flow_key
+            .data()
+            .dst_vpcd()
+            .ok_or(AllocatorError::MissingDiscriminant)?
+            .try_into()
+            .map_err(|()| AllocatorError::UnsupportedDiscriminant)?;
 
         // Get address pools for source and destination
         let pool_src_opt = self.pools_src44.get_entry(
-            tuple.next_header,
-            tuple.src_vpc_id,
-            tuple.dst_vpc_id,
-            tuple.src_ip,
+            next_header,
+            src_vpc_id,
+            dst_vpc_id,
+            NatIp::try_from_addr(*flow_key.data().src_ip()).map_err(|()| {
+                AllocatorError::InternalIssue(
+                    "Failed to convert IP address to Ipv4Addr".to_string(),
+                )
+            })?,
         );
         let pool_dst_opt = self.pools_dst44.get_entry(
-            tuple.next_header,
-            tuple.src_vpc_id,
-            tuple.dst_vpc_id,
-            tuple.dst_ip,
+            next_header,
+            src_vpc_id,
+            dst_vpc_id,
+            NatIp::try_from_addr(*flow_key.data().dst_ip()).map_err(|()| {
+                AllocatorError::InternalIssue(
+                    "Failed to convert IP address to Ipv4Addr".to_string(),
+                )
+            })?,
         );
 
         // Allocate IP and ports from pools, for source and destination NAT
@@ -229,30 +253,22 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
         // path for the flow. First retrieve the relevant address pools.
 
         let reverse_pool_src_opt = if let Some(mapping) = &dst_mapping {
-            self.pools_src44.get_entry(
-                tuple.next_header,
-                tuple.dst_vpc_id,
-                tuple.src_vpc_id,
-                mapping.ip(),
-            )
+            self.pools_src44
+                .get_entry(next_header, dst_vpc_id, src_vpc_id, mapping.ip())
         } else {
             None
         };
 
         let reverse_pool_dst_opt = if let Some(mapping) = &src_mapping {
-            self.pools_dst44.get_entry(
-                tuple.next_header,
-                tuple.dst_vpc_id,
-                tuple.src_vpc_id,
-                mapping.ip(),
-            )
+            self.pools_dst44
+                .get_entry(next_header, dst_vpc_id, src_vpc_id, mapping.ip())
         } else {
             None
         };
 
         // Reserve IP and ports for the reverse path for the flow.
         let (reverse_src_mapping, reverse_dst_mapping) =
-            Self::get_reverse_mapping(tuple, reverse_pool_src_opt, reverse_pool_dst_opt)?;
+            Self::get_reverse_mapping(flow_key, reverse_pool_src_opt, reverse_pool_dst_opt)?;
 
         Ok(AllocationResult {
             src: src_mapping,
@@ -265,40 +281,62 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
     // See allocate_v4 for comments.
     fn allocate_v6(
         &self,
-        tuple: &NatTuple<Ipv6Addr>,
+        flow_key: &FlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv6Addr>>, AllocatorError> {
-        Self::check_proto(tuple.next_header)?;
+        let next_header = get_next_header(flow_key);
+        Self::check_proto(next_header)?;
+
+        let src_vpc_id = flow_key
+            .data()
+            .src_vpcd()
+            .ok_or(AllocatorError::MissingDiscriminant)?
+            .try_into()
+            .map_err(|()| AllocatorError::UnsupportedDiscriminant)?;
+        let dst_vpc_id = flow_key
+            .data()
+            .dst_vpcd()
+            .ok_or(AllocatorError::MissingDiscriminant)?
+            .try_into()
+            .map_err(|()| AllocatorError::UnsupportedDiscriminant)?;
 
         let pool_src_opt = self.pools_src66.get_entry(
-            tuple.next_header,
-            tuple.src_vpc_id,
-            tuple.dst_vpc_id,
-            tuple.src_ip,
+            next_header,
+            src_vpc_id,
+            dst_vpc_id,
+            NatIp::try_from_addr(*flow_key.data().src_ip()).map_err(|()| {
+                AllocatorError::InternalIssue(
+                    "Failed to convert IP address to Ipv6Addr".to_string(),
+                )
+            })?,
         );
         let pool_dst_opt = self.pools_dst66.get_entry(
-            tuple.next_header,
-            tuple.src_vpc_id,
-            tuple.dst_vpc_id,
-            tuple.dst_ip,
+            next_header,
+            src_vpc_id,
+            dst_vpc_id,
+            NatIp::try_from_addr(*flow_key.data().dst_ip()).map_err(|()| {
+                AllocatorError::InternalIssue(
+                    "Failed to convert IP address to Ipv6Addr".to_string(),
+                )
+            })?,
         );
 
         let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt)?;
 
-        let reverse_pool_src_opt = self.pools_src66.get_entry(
-            tuple.next_header,
-            tuple.src_vpc_id,
-            tuple.dst_vpc_id,
-            tuple.src_ip,
-        );
-        let reverse_pool_dst_opt = self.pools_dst66.get_entry(
-            tuple.next_header,
-            tuple.src_vpc_id,
-            tuple.dst_vpc_id,
-            tuple.dst_ip,
-        );
+        let reverse_pool_src_opt = if let Some(mapping) = &dst_mapping {
+            self.pools_src66
+                .get_entry(next_header, dst_vpc_id, src_vpc_id, mapping.ip())
+        } else {
+            None
+        };
+        let reverse_pool_dst_opt = if let Some(mapping) = &src_mapping {
+            self.pools_dst66
+                .get_entry(next_header, dst_vpc_id, src_vpc_id, mapping.ip())
+        } else {
+            None
+        };
 
         let (reverse_src_mapping, reverse_dst_mapping) =
-            Self::get_reverse_mapping(tuple, reverse_pool_src_opt, reverse_pool_dst_opt)?;
+            Self::get_reverse_mapping(flow_key, reverse_pool_src_opt, reverse_pool_dst_opt)?;
 
         Ok(AllocationResult {
             src: src_mapping,
@@ -335,33 +373,55 @@ impl NatDefaultAllocator {
     }
 
     fn get_reverse_mapping<I: NatIpWithBitmap>(
-        tuple: &NatTuple<I>,
+        flow_key: &FlowKey,
         reverse_pool_src_opt: Option<&alloc::IpAllocator<I>>,
         reverse_pool_dst_opt: Option<&alloc::IpAllocator<I>>,
     ) -> Result<AllocationMapping<I>, AllocatorError> {
         let reverse_src_mapping = match reverse_pool_src_opt {
-            Some(pool_src) => Some(pool_src.reserve(
-                tuple.dst_ip,
-                match tuple.dst_port {
-                    Some(port) => NatPort::new_checked(port).map_err(|_| {
-                        AllocatorError::InternalIssue("Invalid destination port number".to_string())
+            Some(pool_src) => {
+                let reverse_src_port_number = match flow_key.data().proto_key_info() {
+                    IpProtoKey::Tcp(tcp) => tcp.dst_port.into(),
+                    IpProtoKey::Udp(udp) => udp.dst_port.into(),
+                    IpProtoKey::Icmp => return Err(AllocatorError::PortNotFound),
+                };
+                let reserve_src_port_number = NatPort::new_checked(reverse_src_port_number)
+                    .map_err(|_| {
+                        AllocatorError::InternalIssue("Invalid source port number".to_string())
+                    })?;
+
+                Some(pool_src.reserve(
+                    NatIp::try_from_addr(*flow_key.data().dst_ip()).map_err(|()| {
+                        AllocatorError::InternalIssue(
+                            "Failed to convert IP address to Ipv4Addr".to_string(),
+                        )
                     })?,
-                    None => return Err(AllocatorError::PortNotFound),
-                },
-            )?),
+                    reserve_src_port_number,
+                )?)
+            }
             None => None,
         };
 
         let reverse_dst_mapping = match reverse_pool_dst_opt {
-            Some(pool_dst) => Some(pool_dst.reserve(
-                tuple.src_ip,
-                match tuple.src_port {
-                    Some(port) => NatPort::new_checked(port).map_err(|_| {
-                        AllocatorError::InternalIssue("Invalid source port number".to_string())
+            Some(pool_dst) => {
+                let reverse_dst_port_number = match flow_key.data().proto_key_info() {
+                    IpProtoKey::Tcp(tcp) => tcp.src_port.into(),
+                    IpProtoKey::Udp(udp) => udp.src_port.into(),
+                    IpProtoKey::Icmp => return Err(AllocatorError::PortNotFound),
+                };
+                let reserve_dst_port_number = NatPort::new_checked(reverse_dst_port_number)
+                    .map_err(|_| {
+                        AllocatorError::InternalIssue("Invalid destination port number".to_string())
+                    })?;
+
+                Some(pool_dst.reserve(
+                    NatIp::try_from_addr(*flow_key.data().src_ip()).map_err(|()| {
+                        AllocatorError::InternalIssue(
+                            "Failed to convert IP address to Ipv4Addr".to_string(),
+                        )
                     })?,
-                    None => return Err(AllocatorError::PortNotFound),
-                },
-            )?),
+                    reserve_dst_port_number,
+                )?)
+            }
             None => None,
         };
 

@@ -5,11 +5,12 @@
 //! bitmap-based NAT allocator requires this trait to be implementated for the type parameters
 //! (`Ipv4Addr` and `Ipv6Addr`) that it works with.
 
+use super::super::NatIp;
 use super::super::allocator::{AllocationResult, AllocatorError, NatAllocator};
-use super::super::{NatIp, NatTuple};
 use super::AllocatedIpPort;
 use crate::stateful::apalloc::alloc::{map_address, map_offset};
 use concurrency::sync::Arc;
+use pkt_meta::flow_table::FlowKey;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -30,7 +31,7 @@ pub trait NatIpWithBitmap: NatIp {
     // Allocate a new IP address from the allocator
     fn allocate<A: NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>>>(
         allocator: Arc<A>,
-        tuple: &NatTuple<Self>,
+        flow_key: &FlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Self>>, AllocatorError>;
 }
 
@@ -51,9 +52,9 @@ impl NatIpWithBitmap for Ipv4Addr {
 
     fn allocate<A: NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>>>(
         allocator: Arc<A>,
-        tuple: &NatTuple<Self>,
+        flow_key: &FlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Self>>, AllocatorError> {
-        allocator.allocate_v4(tuple)
+        allocator.allocate_v4(flow_key)
     }
 }
 
@@ -80,8 +81,8 @@ impl NatIpWithBitmap for Ipv6Addr {
 
     fn allocate<A: NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>>>(
         allocator: Arc<A>,
-        tuple: &NatTuple<Self>,
+        flow_key: &FlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Self>>, AllocatorError> {
-        allocator.allocate_v6(tuple)
+        allocator.allocate_v6(flow_key)
     }
 }
