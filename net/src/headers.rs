@@ -9,7 +9,7 @@ use crate::eth::ethtype::EthType;
 use crate::eth::{Eth, EthError};
 use crate::icmp4::Icmp4;
 use crate::icmp6::{Icmp6, Icmp6ChecksumPayload};
-use crate::ip::NextHeader;
+use crate::ip::{NextHeader, UnicastIpAddr};
 use crate::ip_auth::IpAuth;
 use crate::ipv4::Ipv4;
 use crate::ipv6::{Ipv6, Ipv6Ext};
@@ -46,6 +46,12 @@ pub struct Headers {
     pub udp_encap: Option<UdpEncap>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum NetError {
+    #[error("invalid IP version")]
+    InvalidIpVersion,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Net {
     Ipv4(Ipv4),
@@ -72,6 +78,36 @@ impl Net {
             Net::Ipv4(ip) => ip.protocol().into(),
             Net::Ipv6(ip) => ip.next_header(),
         }
+    }
+
+    pub fn try_set_source(&mut self, addr: UnicastIpAddr) -> Result<(), NetError> {
+        match (self, addr) {
+            (Net::Ipv4(ip), UnicastIpAddr::V4(addr)) => {
+                ip.set_source(addr);
+            }
+            (Net::Ipv6(ip), UnicastIpAddr::V6(addr)) => {
+                ip.set_source(addr);
+            }
+            _ => {
+                return Err(NetError::InvalidIpVersion);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn try_set_destination(&mut self, addr: IpAddr) -> Result<(), NetError> {
+        match (self, addr) {
+            (Net::Ipv4(ip), IpAddr::V4(addr)) => {
+                ip.set_destination(addr);
+            }
+            (Net::Ipv6(ip), IpAddr::V6(addr)) => {
+                ip.set_destination(addr);
+            }
+            _ => {
+                return Err(NetError::InvalidIpVersion);
+            }
+        }
+        Ok(())
     }
 }
 

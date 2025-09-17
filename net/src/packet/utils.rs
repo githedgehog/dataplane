@@ -12,8 +12,7 @@ use crate::eth::mac::{
 };
 use crate::headers::Net::{Ipv4, Ipv6};
 use crate::headers::{
-    Transport, TryEth, TryEthMut, TryIp, TryIpv4Mut, TryIpv6Mut, TryTcp, TryTransport,
-    TryTransportMut, TryUdp,
+    Transport, TryEth, TryEthMut, TryIp, TryIpMut, TryTcp, TryTransport, TryTransportMut, TryUdp,
 };
 use crate::ip::{NextHeader, UnicastIpAddr};
 use crate::packet::{Packet, PacketBufferMut};
@@ -26,6 +25,9 @@ pub enum PacketUtilError<'a> {
     #[error("invalid transport: {0}")]
     /// This error is returned when the utility method is called with an incompatible transport header
     InvalidTransport(&'a Transport),
+    #[error("no ip")]
+    /// This error is returned when the utility method is called with a packet that does not have an IP header
+    NoIp,
     #[error("no transport")]
     /// This error is returned when the utility method is called with a packet that does not have a transport header
     NoTransport,
@@ -111,48 +113,24 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     ///
     /// # Errors
     ///
-    /// This method returns [`PacketUtilError::IpVersionMismatch`] if the packet does not match the ip address type
+    /// * [`PacketUtilError::NoIp`]: if the packet does not have an IP header.
+    /// * [`PacketUtilError::IpVersionMismatch`]: if the packet does not match the IP address type.
     pub fn set_ip_source(&mut self, ip: UnicastIpAddr) -> Result<(), PacketUtilError<'_>> {
-        match ip {
-            UnicastIpAddr::V4(ipv4) => match self.try_ipv4_mut() {
-                Some(net) => {
-                    net.set_source(ipv4);
-                    Ok(())
-                }
-                None => Err(PacketUtilError::IpVersionMismatch(ip.into())),
-            },
-            UnicastIpAddr::V6(ipv6) => match self.try_ipv6_mut() {
-                Some(net) => {
-                    net.set_source(ipv6);
-                    Ok(())
-                }
-                None => Err(PacketUtilError::IpVersionMismatch(ip.into())),
-            },
-        }
+        let net = self.try_ip_mut().ok_or(PacketUtilError::NoIp)?;
+        net.try_set_source(ip)
+            .map_err(|_| PacketUtilError::IpVersionMismatch(ip.into()))
     }
 
     /// Set the destination ip address of an IPv4 / IPv6 [`Packet`]
     ///
     /// # Errors
     ///
-    /// This method returns [`PacketUtilError::IpVersionMismatch`] if the packet does not match the ip address type
+    /// * [`PacketUtilError::NoIp`]: if the packet does not have an IP header.
+    /// * [`PacketUtilError::IpVersionMismatch`]: if the packet does not match the IP address type.
     pub fn set_ip_destination(&mut self, ip: IpAddr) -> Result<(), PacketUtilError<'_>> {
-        match ip {
-            IpAddr::V4(ip) => match self.try_ipv4_mut() {
-                Some(net) => {
-                    net.set_destination(ip);
-                    Ok(())
-                }
-                None => Err(PacketUtilError::IpVersionMismatch(ip.into())),
-            },
-            IpAddr::V6(ip) => match self.try_ipv6_mut() {
-                Some(net) => {
-                    net.set_destination(ip);
-                    Ok(())
-                }
-                None => Err(PacketUtilError::IpVersionMismatch(ip.into())),
-            },
-        }
+        let net = self.try_ip_mut().ok_or(PacketUtilError::NoIp)?;
+        net.try_set_destination(ip)
+            .map_err(|_| PacketUtilError::IpVersionMismatch(ip))
     }
 
     /// Get the Ip protocol / next-header of an IPv4 / IPv6 [`Packet`]

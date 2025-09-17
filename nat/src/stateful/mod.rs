@@ -21,8 +21,6 @@ use flow_info::{ExtractRef, FlowInfo};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, Transport, TryHeadersMut, TryIp, TryIpMut, TryTransportMut};
 use net::ip::NextHeader;
-use net::ipv4::UnicastIpv4Addr;
-use net::ipv6::UnicastIpv6Addr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::tcp::port::TcpPort;
 use net::udp::port::UdpPort;
@@ -205,41 +203,22 @@ impl StatefulNat {
             state.src_port,
             state.dst_port,
         );
-
         let headers = packet.headers_mut();
+
         let net = headers.try_ip_mut()?;
-        match (net, target_src_addr, target_src_port) {
-            (Net::Ipv4(ip_hdr), Some(IpAddr::V4(target_src_ip)), Some(target_src_port)) => {
-                ip_hdr.set_source(UnicastIpv4Addr::new(target_src_ip).ok()?);
+        if let (Some(target_src_ip), Some(target_src_port)) = (target_src_addr, target_src_port) {
+            net.try_set_source(target_src_ip.try_into().ok()?).ok()?;
 
-                let transport = headers.try_transport_mut()?;
-                Self::set_source_port(transport, next_header, target_src_port).ok()?;
-            }
-            (Net::Ipv6(ip_hdr), Some(IpAddr::V6(target_src_ip)), Some(target_src_port)) => {
-                ip_hdr.set_source(UnicastIpv6Addr::new(target_src_ip).ok()?);
-
-                let transport = headers.try_transport_mut()?;
-                Self::set_source_port(transport, next_header, target_src_port).ok()?;
-            }
-            (_, _, _) => {}
+            let transport = headers.try_transport_mut()?;
+            Self::set_source_port(transport, next_header, target_src_port).ok()?;
         }
 
-        let headers = packet.headers_mut();
         let net = headers.try_ip_mut()?;
-        match (net, target_dst_addr, target_dst_port) {
-            (Net::Ipv4(ip_hdr), Some(IpAddr::V4(target_dst_ip)), Some(target_dst_port)) => {
-                ip_hdr.set_destination(target_dst_ip);
+        if let (Some(target_dst_ip), Some(target_dst_port)) = (target_dst_addr, target_dst_port) {
+            net.try_set_destination(target_dst_ip).ok()?;
 
-                let transport = headers.try_transport_mut()?;
-                Self::set_destination_port(transport, next_header, target_dst_port).ok()?;
-            }
-            (Net::Ipv6(ip_hdr), Some(IpAddr::V6(target_dst_ip)), Some(target_dst_port)) => {
-                ip_hdr.set_destination(target_dst_ip);
-
-                let transport = headers.try_transport_mut()?;
-                Self::set_destination_port(transport, next_header, target_dst_port).ok()?;
-            }
-            (_, _, _) => {}
+            let transport = headers.try_transport_mut()?;
+            Self::set_destination_port(transport, next_header, target_dst_port).ok()?;
         }
         Some(())
     }
