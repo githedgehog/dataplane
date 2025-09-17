@@ -367,15 +367,12 @@ impl StatefulNat {
             return Err(StatefulNatError::BadIpHeader);
         };
 
+        let flow_key = Self::extract_flow_key(packet).ok_or(StatefulNatError::TupleParseError)?;
         match net {
             Net::Ipv4(_) => {
-                let flow_key =
-                    Self::extract_flow_key(packet).ok_or(StatefulNatError::TupleParseError)?;
                 self.translate_packet::<Buf, Ipv4Addr>(packet, &flow_key, src_vpc_id, dst_vpc_id)
             }
             Net::Ipv6(_) => {
-                let flow_key =
-                    Self::extract_flow_key(packet).ok_or(StatefulNatError::TupleParseError)?;
                 self.translate_packet::<Buf, Ipv6Addr>(packet, &flow_key, src_vpc_id, dst_vpc_id)
             }
         }
