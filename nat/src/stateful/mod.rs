@@ -35,6 +35,8 @@ use std::time::{Duration, Instant};
 pub enum StatefulNatError {
     #[error("failure to get IP header")]
     BadIpHeader,
+    #[error("failure to get transport header")]
+    BadTransportHeader,
     #[error("failure to extract tuple")]
     TupleParseError,
     #[error("no state found for existing session")]
@@ -43,6 +45,10 @@ pub enum StatefulNatError {
     NoAllocator,
     #[error("allocation failed")]
     AllocationFailure,
+    #[error("invalid IP version")]
+    InvalidIpVersion,
+    #[error("IP address {0} is not unicast")]
+    NotUnicast(IpAddr),
     #[error("invalid port {0}")]
     InvalidPort(u16),
 }
@@ -196,7 +202,7 @@ impl StatefulNat {
         packet: &mut Packet<Buf>,
         state: &NatState,
         next_header: NextHeader,
-    ) -> Option<()> {
+    ) -> Result<(), StatefulNatError> {
         let (target_src_addr, target_dst_addr, target_src_port, target_dst_port) = (
             state.src_addr,
             state.dst_addr,
@@ -205,22 +211,32 @@ impl StatefulNat {
         );
         let headers = packet.headers_mut();
 
-        let net = headers.try_ip_mut()?;
+        let net = headers.try_ip_mut().ok_or(StatefulNatError::BadIpHeader)?;
         if let (Some(target_src_ip), Some(target_src_port)) = (target_src_addr, target_src_port) {
-            net.try_set_source(target_src_ip.try_into().ok()?).ok()?;
+            net.try_set_source(
+                target_src_ip
+                    .try_into()
+                    .map_err(|_| StatefulNatError::NotUnicast(target_src_ip))?,
+            )
+            .map_err(|_| StatefulNatError::InvalidIpVersion)?;
 
-            let transport = headers.try_transport_mut()?;
-            Self::set_source_port(transport, next_header, target_src_port).ok()?;
+            let transport = headers
+                .try_transport_mut()
+                .ok_or(StatefulNatError::BadTransportHeader)?;
+            Self::set_source_port(transport, next_header, target_src_port)?;
         }
 
-        let net = headers.try_ip_mut()?;
+        let net = headers.try_ip_mut().ok_or(StatefulNatError::BadIpHeader)?;
         if let (Some(target_dst_ip), Some(target_dst_port)) = (target_dst_addr, target_dst_port) {
-            net.try_set_destination(target_dst_ip).ok()?;
+            net.try_set_destination(target_dst_ip)
+                .map_err(|_| StatefulNatError::InvalidIpVersion)?;
 
-            let transport = headers.try_transport_mut()?;
-            Self::set_destination_port(transport, next_header, target_dst_port).ok()?;
+            let transport = headers
+                .try_transport_mut()
+                .ok_or(StatefulNatError::BadTransportHeader)?;
+            Self::set_destination_port(transport, next_header, target_dst_port)?;
         }
-        Some(())
+        Ok(())
     }
 
     // TODO: Change this function to store directly the AllocatedPort objects in session map
@@ -344,7 +360,7 @@ impl StatefulNat {
 
         // Hot path: if we have a session, directly translate the address already
         if let Some(state) = Self::lookup_session(packet) {
-            Self::stateful_translate::<Buf>(packet, &state, next_header);
+            Self::stateful_translate::<Buf>(packet, &state, next_header)?;
             return Ok(true);
         }
 
@@ -372,7 +388,7 @@ impl StatefulNat {
             Self::new_reverse_session(flow_key, &alloc, src_vpc_id, dst_vpc_id);
         self.create_session(&reverse_tuple, reverse_state.clone());
 
-        Self::stateful_translate::<Buf>(packet, &new_state, next_header);
+        Self::stateful_translate::<Buf>(packet, &new_state, next_header)?;
         Ok(true)
     }
 
