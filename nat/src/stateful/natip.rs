@@ -16,7 +16,9 @@ mod private {
 }
 
 /// `NatIp` is a sealed trait to represent either IPv4 or IPv6.
-pub trait NatIp: private::Sealed + Debug + Clone + Copy + Eq + Ord + Hash {
+pub trait NatIp:
+    private::Sealed + Debug + Clone + Copy + Eq + Ord + Hash + Send + Sync + 'static
+{
     // Convert to `IpAddr` object
     fn to_ip_addr(&self) -> IpAddr;
 
