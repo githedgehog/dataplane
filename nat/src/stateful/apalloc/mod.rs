@@ -65,7 +65,6 @@
 #![allow(rustdoc::private_intra_doc_links)]
 
 use super::allocator::{AllocationResult, AllocatorError};
-use super::get_next_header;
 use super::port::NatPort;
 use super::{NatAllocator, NatIp};
 pub use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
@@ -226,7 +225,7 @@ impl NatDefaultAllocator {
         pools_src: &PoolTable<I, I>,
         pools_dst: &PoolTable<I, I>,
     ) -> Result<AllocationResult<AllocatedIpPort<I>>, AllocatorError> {
-        let next_header = get_next_header(flow_key);
+        let next_header = Self::get_next_header(flow_key);
         Self::check_proto(next_header)?;
         let (src_vpc_id, dst_vpc_id) = Self::check_and_get_discriminants(flow_key)?;
 
@@ -286,6 +285,14 @@ impl NatDefaultAllocator {
         match next_header {
             NextHeader::TCP | NextHeader::UDP => Ok(()),
             _ => Err(AllocatorError::UnsupportedProtocol(next_header)),
+        }
+    }
+
+    fn get_next_header(flow_key: &FlowKey) -> NextHeader {
+        match flow_key.data().proto_key_info() {
+            IpProtoKey::Tcp(_) => NextHeader::TCP,
+            IpProtoKey::Udp(_) => NextHeader::UDP,
+            IpProtoKey::Icmp => NextHeader::ICMP,
         }
     }
 
