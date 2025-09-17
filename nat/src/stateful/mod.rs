@@ -68,7 +68,7 @@ fn get_next_header(flow_key: &FlowKey) -> NextHeader {
 }
 
 #[derive(Debug, Clone)]
-struct NatState {
+struct NatTranslationData {
     src_addr: Option<IpAddr>,
     dst_addr: Option<IpAddr>,
     src_port: Option<NatPort>,
@@ -136,15 +136,20 @@ impl StatefulNat {
         FlowKey::try_from(Uni(packet)).ok()
     }
 
-    fn lookup_session<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> Option<NatState> {
+    fn lookup_session<Buf: PacketBufferMut>(
+        packet: &mut Packet<Buf>,
+    ) -> Option<NatTranslationData> {
         let flow_info = packet.get_meta_mut().flow_info.as_mut()?;
         let value = flow_info.locked.read().unwrap();
-        let state = value.nat_state.as_ref()?.extract_ref::<NatState>()?;
+        let state = value
+            .nat_state
+            .as_ref()?
+            .extract_ref::<NatTranslationData>()?;
         flow_info.extend_expiry(SESSION_TIMEOUT).ok()?;
         Some(state.clone())
     }
 
-    fn create_session(&mut self, flow_key: &FlowKey, state: NatState) {
+    fn create_session(&mut self, flow_key: &FlowKey, state: NatTranslationData) {
         let flow_info = FlowInfo::new(session_timeout_time());
         flow_info.locked.write().unwrap().nat_state = Some(Box::new(state));
 
@@ -200,7 +205,7 @@ impl StatefulNat {
     #[allow(clippy::unnecessary_wraps)]
     fn stateful_translate<Buf: PacketBufferMut>(
         packet: &mut Packet<Buf>,
-        state: &NatState,
+        state: &NatTranslationData,
         next_header: NextHeader,
     ) -> Result<(), StatefulNatError> {
         let (target_src_addr, target_dst_addr, target_src_port, target_dst_port) = (
@@ -242,7 +247,7 @@ impl StatefulNat {
     // TODO: Change this function to store directly the AllocatedPort objects in session map
     fn new_state_from_alloc<I: NatIpWithBitmap>(
         alloc: &AllocationResult<AllocatedIpPort<I>>,
-    ) -> NatState {
+    ) -> NatTranslationData {
         let (target_src_addr, target_src_port) = match &alloc.src {
             Some(alloc_ip_port) => (
                 Some(alloc_ip_port.ip().to_ip_addr()),
@@ -259,7 +264,7 @@ impl StatefulNat {
             ),
             None => (None, None),
         };
-        NatState {
+        NatTranslationData {
             src_addr: target_src_addr,
             dst_addr: target_dst_addr,
             src_port: target_src_port,
@@ -272,7 +277,7 @@ impl StatefulNat {
         alloc: &AllocationResult<AllocatedIpPort<I>>,
         src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
-    ) -> (FlowKey, NatState) {
+    ) -> (FlowKey, NatTranslationData) {
         // Forward session:
         //   f.init:(src: a, dst: B) -> f.nated:(src: A, dst: b)
         //
@@ -340,7 +345,7 @@ impl StatefulNat {
         // Do not reuse information from forward tuple, because the IPs and ports for the reverse
         // session need to be registered with the allocator. Use the elements returned from the
         // allocator.
-        let reverse_state = NatState {
+        let reverse_state = NatTranslationData {
             src_addr: alloc.return_src.as_ref().map(|p| p.ip().to_ip_addr()),
             dst_addr: alloc.return_dst.as_ref().map(|p| p.ip().to_ip_addr()),
             src_port: alloc.return_src.as_ref().map(AllocatedIpPort::port),
