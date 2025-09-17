@@ -38,8 +38,6 @@ pub enum StatefulNatError {
     BadTransportHeader,
     #[error("failure to extract tuple")]
     TupleParseError,
-    #[error("no state found for existing session")]
-    NoState,
     #[error("no allocator available")]
     NoAllocator,
     #[error("allocation failed")]
