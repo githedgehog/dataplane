@@ -25,7 +25,7 @@ use net::tcp::port::TcpPort;
 use net::udp::port::UdpPort;
 use pipeline::NetworkFunction;
 use pkt_meta::flow_table::flow_key::Uni;
-use pkt_meta::flow_table::{FlowKey, FlowTable, IpProtoKey, TcpProtoKey, UdpProtoKey};
+use pkt_meta::flow_table::{FlowKey, FlowTable};
 use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
@@ -266,7 +266,7 @@ impl StatefulNat {
         alloc: &AllocationResult<AllocatedIpPort<I>>,
         src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
-    ) -> FlowKey {
+    ) -> Result<FlowKey, StatefulNatError> {
         // Forward session:
         //   f.init:(src: a, dst: B) -> f.nated:(src: A, dst: b)
         //
@@ -295,41 +295,27 @@ impl StatefulNat {
                 None => (*flow_key.data().src_ip(), None),
             };
 
-        let reverse_proto_key = match flow_key.data().proto_key_info() {
-            IpProtoKey::Tcp(key) => IpProtoKey::Tcp(TcpProtoKey {
-                src_port: if let Some(allocated_src_port) = allocated_src_port_to_use {
-                    TcpPort::new(allocated_src_port.into())
-                } else {
-                    key.dst_port
-                },
-                dst_port: if let Some(allocated_dst_port) = allocated_dst_port_to_use {
-                    TcpPort::new(allocated_dst_port.into())
-                } else {
-                    key.src_port
-                },
-            }),
-            IpProtoKey::Udp(key) => IpProtoKey::Udp(UdpProtoKey {
-                src_port: if let Some(allocated_src_port) = allocated_src_port_to_use {
-                    UdpPort::new(allocated_src_port.into())
-                } else {
-                    key.dst_port
-                },
-                dst_port: if let Some(allocated_dst_port) = allocated_dst_port_to_use {
-                    UdpPort::new(allocated_dst_port.into())
-                } else {
-                    key.src_port
-                },
-            }),
-            IpProtoKey::Icmp => IpProtoKey::Icmp,
-        };
+        // Reverse the forward protocol key...
+        let mut reverse_proto_key = flow_key.data().proto_key_info().reverse();
+        // ... but adjust ports as necessary (use allocated ports for the reverse session)
+        if let Some(src_port) = allocated_src_port_to_use {
+            reverse_proto_key
+                .try_set_src_port(src_port.into())
+                .map_err(|_| StatefulNatError::InvalidPort(src_port.as_u16()))?;
+        }
+        if let Some(dst_port) = allocated_dst_port_to_use {
+            reverse_proto_key
+                .try_set_dst_port(dst_port.into())
+                .map_err(|_| StatefulNatError::InvalidPort(dst_port.as_u16()))?;
+        }
 
-        FlowKey::uni(
+        Ok(FlowKey::uni(
             Some(dst_vpc_id),
             reverse_src_addr,
             Some(src_vpc_id),
             reverse_dst_addr,
             reverse_proto_key,
-        )
+        ))
     }
 
     fn translate_packet<Buf: PacketBufferMut, I: NatIpWithBitmap>(
@@ -362,7 +348,7 @@ impl StatefulNat {
         }
 
         let translation_info = Self::get_translation_info(&alloc.src, &alloc.dst);
-        let reverse_flow_key = Self::new_reverse_session(flow_key, &alloc, src_vpc_id, dst_vpc_id);
+        let reverse_flow_key = Self::new_reverse_session(flow_key, &alloc, src_vpc_id, dst_vpc_id)?;
         let (forward_state, reverse_state) = Self::new_states_from_alloc(alloc);
 
         self.create_session(flow_key, forward_state);

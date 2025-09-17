@@ -3,6 +3,7 @@
 
 use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
+use std::num::NonZero;
 
 use net::buffer::PacketBufferMut;
 use net::headers::{Transport, TryHeaders, TryIp, TryTransport};
@@ -114,6 +115,12 @@ impl PartialEq for UdpProtoKey {
     }
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, PartialOrd, Ord, thiserror::Error)]
+pub enum IpProtoKeyError {
+    #[error("Type does not use ports")]
+    NoPortsForType,
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
 pub enum IpProtoKey {
     Tcp(TcpProtoKey),
@@ -129,6 +136,36 @@ impl IpProtoKey {
             IpProtoKey::Udp(udp) => IpProtoKey::Udp(udp.reverse()),
             IpProtoKey::Icmp => IpProtoKey::Icmp,
         }
+    }
+
+    /// Sets the source port of the flow key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IpProtoKeyError::NoPortsForType`] if the [`IpProtoKey`] enum value does not have a
+    /// source port.
+    pub fn try_set_src_port(&mut self, port: NonZero<u16>) -> Result<(), IpProtoKeyError> {
+        match self {
+            IpProtoKey::Tcp(tcp) => tcp.src_port = TcpPort::new(port),
+            IpProtoKey::Udp(udp) => udp.src_port = UdpPort::new(port),
+            IpProtoKey::Icmp => return Err(IpProtoKeyError::NoPortsForType),
+        }
+        Ok(())
+    }
+
+    /// Sets the destination port of the flow key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IpProtoKeyError::NoPortsForType`] if the [`IpProtoKey`] enum value does not have a
+    /// destination port.
+    pub fn try_set_dst_port(&mut self, port: NonZero<u16>) -> Result<(), IpProtoKeyError> {
+        match self {
+            IpProtoKey::Tcp(tcp) => tcp.dst_port = TcpPort::new(port),
+            IpProtoKey::Udp(udp) => udp.dst_port = UdpPort::new(port),
+            IpProtoKey::Icmp => return Err(IpProtoKeyError::NoPortsForType),
+        }
+        Ok(())
     }
 }
 
