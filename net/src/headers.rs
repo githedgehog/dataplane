@@ -17,8 +17,8 @@ use crate::parse::{
     DeParse, DeParseError, IllegalBufferLength, IntoNonZeroUSize, LengthError, Parse, ParseError,
     ParsePayload, ParsePayloadWith, Reader, Writer,
 };
-use crate::tcp::{Tcp, TcpChecksumPayload};
-use crate::udp::{Udp, UdpChecksumPayload, UdpEncap};
+use crate::tcp::{Tcp, TcpChecksumPayload, TcpPort};
+use crate::udp::{Udp, UdpChecksumPayload, UdpEncap, UdpPort};
 use crate::vlan::{Pcp, Vid, Vlan};
 use crate::vxlan::Vxlan;
 use arrayvec::ArrayVec;
@@ -135,6 +135,12 @@ pub enum NetExt {
     Ipv6Ext(Ipv6Ext),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TransportError {
+    #[error("transport protocol does not use ports")]
+    UnsupportedPort,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Transport {
     Tcp(Tcp),
@@ -186,6 +192,46 @@ impl Transport {
             Transport::Icmp4(icmp4) => icmp4.size(),
             Transport::Icmp6(icmpv6) => icmpv6.size(),
         }
+    }
+
+    /// Sets the source port of the transport header.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError::UnsupportedPort`] if the transport protocol does not use ports.
+    pub fn try_set_source(&mut self, port: NonZero<u16>) -> Result<(), TransportError> {
+        match self {
+            Transport::Tcp(tcp) => {
+                tcp.set_source(TcpPort::new(port));
+            }
+            Transport::Udp(udp) => {
+                udp.set_source(UdpPort::new(port));
+            }
+            _ => {
+                return Err(TransportError::UnsupportedPort);
+            }
+        }
+        Ok(())
+    }
+
+    /// Sets the destination port of the transport header.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError::UnsupportedPort`] if the transport protocol does not use ports.
+    pub fn try_set_destination(&mut self, port: NonZero<u16>) -> Result<(), TransportError> {
+        match self {
+            Transport::Tcp(tcp) => {
+                tcp.set_destination(TcpPort::new(port));
+            }
+            Transport::Udp(udp) => {
+                udp.set_destination(UdpPort::new(port));
+            }
+            _ => {
+                return Err(TransportError::UnsupportedPort);
+            }
+        }
+        Ok(())
     }
 }
 

@@ -19,10 +19,8 @@ use crate::stateful::port::NatPort;
 use concurrency::sync::Arc;
 use flow_info::{ExtractRef, FlowInfo};
 use net::buffer::PacketBufferMut;
-use net::headers::{Net, Transport, TryHeadersMut, TryIp, TryIpMut, TryTransportMut};
+use net::headers::{Net, TryHeadersMut, TryIp, TryIpMut, TryTransportMut};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
-use net::tcp::port::TcpPort;
-use net::udp::port::UdpPort;
 use pipeline::NetworkFunction;
 use pkt_meta::flow_table::flow_key::Uni;
 use pkt_meta::flow_table::{FlowKey, FlowTable};
@@ -149,50 +147,6 @@ impl StatefulNat {
         self.sessions.insert(*flow_key, flow_info);
     }
 
-    fn set_source_port(
-        transport: &mut Transport,
-        new_port: NatPort,
-    ) -> Result<(), StatefulNatError> {
-        match transport {
-            Transport::Tcp(tcp) => {
-                tcp.set_source(
-                    TcpPort::try_from(new_port)
-                        .map_err(|_| StatefulNatError::InvalidPort(new_port.as_u16()))?,
-                );
-            }
-            Transport::Udp(udp) => {
-                udp.set_source(
-                    UdpPort::try_from(new_port)
-                        .map_err(|_| StatefulNatError::InvalidPort(new_port.as_u16()))?,
-                );
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn set_destination_port(
-        transport: &mut Transport,
-        target_port: NatPort,
-    ) -> Result<(), StatefulNatError> {
-        match transport {
-            Transport::Tcp(tcp) => {
-                tcp.set_destination(
-                    TcpPort::try_from(target_port)
-                        .map_err(|_| StatefulNatError::InvalidPort(target_port.as_u16()))?,
-                );
-            }
-            Transport::Udp(udp) => {
-                udp.set_destination(
-                    UdpPort::try_from(target_port)
-                        .map_err(|_| StatefulNatError::InvalidPort(target_port.as_u16()))?,
-                );
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
     #[allow(clippy::unnecessary_wraps)]
     fn stateful_translate<Buf: PacketBufferMut>(
         packet: &mut Packet<Buf>,
@@ -215,10 +169,11 @@ impl StatefulNat {
             )
             .map_err(|_| StatefulNatError::InvalidIpVersion)?;
 
-            let transport = headers
+            headers
                 .try_transport_mut()
-                .ok_or(StatefulNatError::BadTransportHeader)?;
-            Self::set_source_port(transport, target_src_port)?;
+                .ok_or(StatefulNatError::BadTransportHeader)?
+                .try_set_source(target_src_port.into())
+                .map_err(|_| StatefulNatError::BadTransportHeader)?;
         }
 
         let net = headers.try_ip_mut().ok_or(StatefulNatError::BadIpHeader)?;
@@ -226,10 +181,11 @@ impl StatefulNat {
             net.try_set_destination(target_dst_ip)
                 .map_err(|_| StatefulNatError::InvalidIpVersion)?;
 
-            let transport = headers
+            headers
                 .try_transport_mut()
-                .ok_or(StatefulNatError::BadTransportHeader)?;
-            Self::set_destination_port(transport, target_dst_port)?;
+                .ok_or(StatefulNatError::BadTransportHeader)?
+                .try_set_destination(target_dst_port.into())
+                .map_err(|_| StatefulNatError::BadTransportHeader)?;
         }
         Ok(())
     }
@@ -424,9 +380,11 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatefulNat {
 #[cfg(test)]
 mod tests {
     use super::port::NatPort;
-    use super::*;
+    use net::headers::Transport;
     use net::tcp::Tcp;
+    use net::tcp::port::TcpPort;
     use net::udp::Udp;
+    use net::udp::port::UdpPort;
 
     #[test]
     fn test_set_tcp_ports() {
@@ -438,13 +396,13 @@ mod tests {
         );
         let target_port = NatPort::new_checked(1234).expect("Invalid port");
 
-        StatefulNat::set_source_port(&mut transport, target_port).unwrap();
+        transport.try_set_source(target_port.into()).unwrap();
         let Transport::Tcp(ref mut tcp) = transport else {
             unreachable!()
         };
         assert_eq!(tcp.source(), TcpPort::try_from(1234).unwrap());
 
-        StatefulNat::set_destination_port(&mut transport, target_port).unwrap();
+        transport.try_set_destination(target_port.into()).unwrap();
         let Transport::Tcp(ref mut tcp) = transport else {
             unreachable!()
         };
@@ -461,13 +419,13 @@ mod tests {
         );
         let target_port = NatPort::new_checked(1234).expect("Invalid port");
 
-        StatefulNat::set_source_port(&mut transport, target_port).unwrap();
+        transport.try_set_source(target_port.into()).unwrap();
         let Transport::Udp(ref mut udp) = transport else {
             unreachable!()
         };
         assert_eq!(udp.source(), UdpPort::try_from(1234).unwrap());
 
-        StatefulNat::set_destination_port(&mut transport, target_port).unwrap();
+        transport.try_set_destination(target_port.into()).unwrap();
         let Transport::Udp(ref mut udp) = transport else {
             unreachable!()
         };
