@@ -167,7 +167,7 @@ fi
 #   Critically, it _does not_ give us these capabilities by default (i.e., they aren't in our effective set) because
 #   the above setcap command has enumerated exactly what our defaults should be.
 # * If you adjust the list of --cap-add arguments, then you need to adjust the CAPS env var as well.
-"${SUDO}" --preserve-env docker run \
+docker run \
   --rm \
   --interactive \
   --mount "type=bind,source=$(readlink -e "${1}"),target=$(readlink -e "${1}"),readonly=true,bind-propagation=rprivate" \
