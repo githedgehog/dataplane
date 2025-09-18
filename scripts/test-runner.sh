@@ -100,7 +100,7 @@ check_if_reasonable "${test_exe}"
 source "${script_dir}/dpdk-sys.env"
 
 declare -ra WRAPPED_TEST_SUITES=(
-  "dataplane"
+  #"dataplane"
   "dataplane-interface-manager"
   "dataplane-mgmt"
   "integration-fixtures"
