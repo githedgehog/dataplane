@@ -196,6 +196,9 @@ compile-env *args:
       --mount "type=bind,source=${CARGO_TARGET_DIR},destination=${CARGO_TARGET_DIR}" \
       --mount "type=bind,source={{ DOCKER_SOCK }},destination={{ DOCKER_SOCK }}" \
       --user "$(id -u):$(id -g)" \
+      --device "/dev/kvm" \
+      --device "/dev/vhost-net" \
+      --device "/dev/vhost-vsock" \
       --cap-drop ALL \
       --cap-add SETUID `# needed for sudo in test-runner` \
       --cap-add SETGID `# needed for sudo in test-runner` \
