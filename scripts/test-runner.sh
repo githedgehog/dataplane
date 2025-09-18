@@ -60,7 +60,7 @@ declare -r project_dir
 # Thus, we need to look it up on the "normal" PATH.  We don't have the official "normal" PATH available, so we check
 # the usual suspects to find sudo.
 declare SUDO
-SUDO="$(PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:${PATH}" which sudo)"
+SUDO="$(PATH="/run/wrappers/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:${PATH}" which sudo)"
 declare -r SUDO
 
 # Start with a basic check: we have no reason to assign caps to files we don't own or can't execute.
@@ -149,7 +149,6 @@ elif [ "${SHOULD_WRAP}" -eq 0 ]; then
   # We can just run it directly and be done.
   exec "${@}"
 fi
-
 
 # If we reached this point then we aren't using the full fuzz test setup.
 # Instead, we are trying to run semi-privileged tests in a libc-container.
