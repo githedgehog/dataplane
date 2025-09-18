@@ -118,7 +118,7 @@ declare -ri SHOULD_WRAP
 # This is the list of capabilities to add to the test binary.
 # Note: do not add =e or =i to this setcap command!  We don't want privileged execution by default.
 # Note: if you adjust this list, then you also need to adjust the symmetric list given to the docker run command.
-declare -r CAPS='cap_net_raw,cap_sys_admin,cap_net_admin,cap_sys_rawio=p'
+declare -r CAPS='cap_net_admin,cap_net_raw,cap_sys_admin,cap_sys_rawio=p'
 
 if [ "${TEST_TYPE:-""}" = "FUZZ" ]; then
   # In this branch we are running full fuzz tests.
