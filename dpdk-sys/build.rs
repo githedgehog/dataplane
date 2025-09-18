@@ -78,6 +78,9 @@ fn main() {
     let depends = [
         "dpdk_wrapper",
         "rte_net_mlx5",
+        "rte_net_virtio",
+        "rte_net_vhost",
+        "rte_net_e1000",
         "rte_common_mlx5",
         "rte_ethdev",
         "rte_bus_auxiliary",
