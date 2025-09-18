@@ -11,7 +11,12 @@ no-default-features = false
 feature-depth = 1
 
 [advisories]
-ignore = ["RUSTSEC-2024-0436"]
+ignore = [
+    "RUSTSEC-2024-0436",
+    # this relates to the use of abandoned "safemem" crate in cloud-hypervisor.
+    # Since cloud-hypervisor is only a dev-dependency, we can safely ignore this.
+    "RUSTSEC-2023-0081",
+]
 
 [licenses]
 unused-allowed-license = "allow"

@@ -114,8 +114,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends just
 
-      - name: "set up compile-env"
+      - name: "set up build environment"
         run: |
+          docker run --privileged --rm busybox:latest sh -c "echo 512 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages && cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
+          docker pull ghcr.io/githedgehog/testn/n-vm:0.0.5
           just --yes \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
