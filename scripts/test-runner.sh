@@ -103,7 +103,6 @@ declare -ra WRAPPED_TEST_SUITES=(
   #"dataplane"
   "dataplane-interface-manager"
   "dataplane-mgmt"
-  "integration-fixtures"
 )
 
 declare -i SHOULD_WRAP=0
