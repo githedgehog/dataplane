@@ -186,8 +186,6 @@ docker run \
   --workdir="${project_dir}" \
   --env DOCKER_HOST="unix://$(get_docker_sock)" \
   --net=none \
-  --ipc=host \
-  --pid=host \
   --cap-drop ALL \
   --cap-add NET_ADMIN \
   --cap-add NET_RAW \
