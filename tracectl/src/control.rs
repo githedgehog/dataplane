@@ -11,12 +11,12 @@ use std::sync::{Arc, Mutex, Once};
 
 use crate::targets::TRACING_TARGETS;
 use crate::trace_target;
-use tracing::{info, debug, warn};
+use tracing::{debug, info, warn};
 use tracing_subscriber::{EnvFilter, Registry, filter::LevelFilter, prelude::*, reload};
 
 trace_target!(LevelFilter::INFO, &["tracectl"]);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TargetCfg {
     pub(crate) target: &'static str,
     pub(crate) level: LevelFilter,
@@ -167,6 +167,16 @@ impl TracingControl {
         }
         map.into_iter()
     }
+    pub fn get_target(&self, target: &str) -> Option<TargetCfg> {
+        self.db.lock().unwrap().targets.get(target).cloned()
+    }
+    pub fn get_target_all(&self) -> impl Iterator<Item = TargetCfg> {
+        self.db.lock().unwrap().targets.clone().into_values()
+    }
+    pub fn get_targets_by_tag(&self, tag: &str) -> impl Iterator<Item = TargetCfg> {
+        self.db.lock().unwrap().targets.clone().into_values().filter(move |t| t.tags.contains(&tag))
+    }
+
     pub fn dump(&self) {
         let db = self.db.lock().unwrap();
         info!("{db}");
@@ -213,7 +223,10 @@ mod tests {
     fn test_init() {
         TracingControl::init();
         let tctl = get_trace_ctl();
-        info!("The current loglevel is {}", tctl.get_default_level());
+        info!(
+            "The current default loglevel is {}",
+            tctl.get_default_level()
+        );
     }
 
     #[test]
@@ -270,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_auto_register_macro() {
-        // declare automatically-named target declaration
+        // declare implicitly-named target
         trace_target!(LevelFilter::ERROR, &["macro-auto"]);
 
         // declare custom targets
@@ -307,6 +320,7 @@ mod tests {
 
     #[test]
     fn test_targeted_macro() {
+        // this test is just to check builds
         use crate::tinfo;
         const TARGET: &str = "MY-TARGET";
         trace_target!(TARGET, LevelFilter::TRACE, &["targeted-macro"]);
@@ -318,5 +332,23 @@ mod tests {
             "hello",
             54
         );
+    }
+
+    #[test]
+    fn test_change_target_level() {
+        const TARGET: &str = "change-target-level";
+        trace_target!(TARGET, LevelFilter::TRACE, &[TARGET]);
+
+        let tctl = get_trace_ctl();
+        assert!(tctl.db.lock().unwrap().targets.contains_key(TARGET));
+        let target = tctl.get_target(TARGET).expect("Should be found");
+        assert_eq!(target.level, LevelFilter::TRACE);
+
+        tctl.set_tag_level(TARGET, LevelFilter::WARN);
+        let updated = tctl.get_target(TARGET).expect("Should be found");
+        assert_eq!(updated.level, LevelFilter::WARN);
+
+        let mut targets = tctl.get_targets_by_tag(TARGET);
+        assert_eq!(targets.next().unwrap().target, TARGET);
     }
 }
