@@ -5,14 +5,22 @@
 
 #![allow(unused)]
 
-use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::sync::{Arc, Mutex, Once};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::Hash,
+};
 
-use crate::targets::TRACING_TARGETS;
 use crate::trace_target;
-use tracing::{debug, info, warn};
-use tracing_subscriber::{EnvFilter, Registry, filter::LevelFilter, prelude::*, reload};
+use crate::{display::TargetCfgDbByTag, targets::TRACING_TARGETS};
+use tracing::{debug, error, info, warn};
+use tracing_subscriber::{
+    EnvFilter, Registry,
+    filter::{LevelFilter, targets},
+    prelude::*,
+    reload,
+};
 
 trace_target!(LevelFilter::INFO, &["tracectl"]);
 
@@ -36,18 +44,38 @@ impl TargetCfg {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Tag {
+    pub(crate) tag: &'static str,
+    pub(crate) targets: HashSet<&'static str>,
+}
+impl Tag {
+    fn new(tag: &'static str, target: &'static str) -> Self {
+        let mut targets = HashSet::with_capacity(1);
+        targets.insert(target);
+        Self { tag, targets }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct TargetCfgDb {
     pub(crate) level: LevelFilter,
     pub(crate) targets: HashMap<&'static str, TargetCfg>,
+    pub(crate) tags: HashMap<&'static str, Tag>,
 }
 
 impl TargetCfgDb {
     fn new(level: LevelFilter) -> Self {
-        Self {
+        let mut db = Self {
             level,
             targets: HashMap::new(),
+            tags: HashMap::new(),
+        };
+        // load link-time-learnt targets
+        for target in TRACING_TARGETS {
+            db.register(target.target, target.level, target.tags);
         }
+        db
     }
     fn register(
         &mut self,
@@ -56,9 +84,16 @@ impl TargetCfgDb {
         tags: &'static [&'static str],
     ) {
         debug!("Registering target {target} level={level} tags={tags:?}");
-        let unit = TargetCfg::new(target, level, tags);
-        if let Some(exist) = self.targets.insert(target, unit) {
+        let tconfig = TargetCfg::new(target, level, tags);
+        if let Some(exist) = self.targets.insert(target, tconfig) {
             warn!("Target {} has been multiply defined!", exist.target);
+        }
+        for tag in tags {
+            if let Some(tag) = self.tags.get_mut(tag) {
+                tag.targets.insert(target);
+            } else {
+                self.tags.insert(tag, Tag::new(tag, target));
+            }
         }
     }
 
@@ -75,15 +110,14 @@ impl TargetCfgDb {
 #[derive(Debug)]
 pub struct TracingControl {
     db: Arc<Mutex<TargetCfgDb>>,
-    reload_handle: Arc<reload::Handle<EnvFilter, Registry>>,
+    reload_filter: Arc<reload::Handle<EnvFilter, Registry>>,
 }
 impl TracingControl {
     fn new() -> Self {
         let mut db = TargetCfgDb::new(LevelFilter::INFO);
-        for t in TRACING_TARGETS {
-            db.register(t.target, t.level, t.tags);
-        }
+        let (filter, reload_filter) = reload::Layer::new(db.env_filter());
 
+        // formatting layer
         let fmt_layer = tracing_subscriber::fmt::layer()
             .with_line_number(true)
             .with_target(true)
@@ -91,19 +125,26 @@ impl TracingControl {
             .with_thread_names(true)
             .with_level(true);
 
-        let (filter, reload_handle) = reload::Layer::new(db.env_filter());
+        use tracing_subscriber::fmt::Layer;
+        use tracing_subscriber::layer::Layered;
 
-        let subscriber = Registry::default().with(filter).with(fmt_layer);
-        tracing::subscriber::set_global_default(subscriber).expect("Failed to set subscriber");
+        let (fmt_layer, reload_fmt) = reload::Layer::new(fmt_layer);
 
-        info!("Initialized tracing control. Log level is {}", db.level);
+        // we should not be initializing the subscriber here, but that's fine atm
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt_layer)
+            .try_init()
+            .expect("Failed to initialize tracing subscriber");
+
         Self {
             db: Arc::new(Mutex::new(db)),
-            reload_handle: Arc::new(reload_handle),
+            reload_filter: Arc::new(reload_filter),
+            //reload_fmt: Arc::new(reload_fmt),
         }
     }
     fn reload(&self, filter: EnvFilter) {
-        self.reload_handle.reload(filter);
+        self.reload_filter.reload(filter);
     }
 }
 
@@ -126,16 +167,23 @@ impl TracingControl {
         get_trace_ctl();
     }
     pub fn set_tag_level(&self, tag: &str, level: LevelFilter) {
-        let mut changed = false;
+        //must go first to avoid deadlock
+        let targets = self.get_targets_by_tag(tag);
+
         let mut db = self.db.lock().unwrap();
-        for unit in db.targets.values_mut() {
-            if unit.tags.contains(&tag) && unit.level != level {
-                changed = true;
-                unit.level = level;
+        let mut changed = false;
+        for target in targets {
+            if let Some(t) = db.targets.get_mut(target) {
+                if t.level != level {
+                    t.level = level;
+                    changed = true;
+                }
+            } else {
+                error!("No target '{target}' exists. This is a bug");
             }
         }
         if changed {
-            info!("Set log level for {tag} to {level}");
+            info!("Set log level for tag '{tag}' to {level}");
             self.reload(db.env_filter());
         }
     }
@@ -158,14 +206,8 @@ impl TracingControl {
             self.reload(db.env_filter());
         }
     }
-    pub fn get_tags(&self) -> impl Iterator<Item = &'static str> {
-        let mut map = HashSet::new();
-        for target in TRACING_TARGETS {
-            target.tags.iter().for_each(|tag| {
-                map.insert(*tag);
-            });
-        }
-        map.into_iter()
+    pub fn get_tags(&self) -> impl Iterator<Item = Tag> {
+        self.db.lock().unwrap().tags.clone().into_values()
     }
     pub fn get_target(&self, target: &str) -> Option<TargetCfg> {
         self.db.lock().unwrap().targets.get(target).cloned()
@@ -173,10 +215,20 @@ impl TracingControl {
     pub fn get_target_all(&self) -> impl Iterator<Item = TargetCfg> {
         self.db.lock().unwrap().targets.clone().into_values()
     }
-    pub fn get_targets_by_tag(&self, tag: &str) -> impl Iterator<Item = TargetCfg> {
-        self.db.lock().unwrap().targets.clone().into_values().filter(move |t| t.tags.contains(&tag))
+    pub fn get_targets_by_tag(&self, tag: &str) -> impl Iterator<Item = &'static str> {
+        let db = self.db.lock().unwrap();
+        let targets: Vec<_> = if let Some(tag) = db.tags.get(tag) {
+            tag.targets.iter().cloned().collect()
+        } else {
+            vec![]
+        };
+        targets.into_iter()
     }
-
+    pub fn dump_targets_by_tag(&self) {
+        let db = self.db.lock().unwrap();
+        let sorted = TargetCfgDbByTag(&db);
+        info!("{sorted}");
+    }
     pub fn dump(&self) {
         let db = self.db.lock().unwrap();
         info!("{db}");
@@ -185,7 +237,7 @@ impl TracingControl {
 
 #[cfg(test)]
 mod tests {
-    use crate::control::{TargetCfg, TracingControl, get_trace_ctl};
+    use crate::control::{Tag, TargetCfg, TracingControl, get_trace_ctl};
     use tracing::Level;
     use tracing::level_filters::LevelFilter;
     use tracing::{debug, error, event, info, trace, warn};
@@ -313,7 +365,7 @@ mod tests {
         // this is declared after the checks
         trace_target!("target-4", LevelFilter::OFF, &["target-4"]);
 
-        let tags: Vec<&'static str> = tctl.get_tags().collect();
+        let tags: Vec<Tag> = tctl.get_tags().collect();
         println!("{tags:#?}");
         println!("{}", tctl.db.lock().unwrap());
     }
@@ -349,6 +401,6 @@ mod tests {
         assert_eq!(updated.level, LevelFilter::WARN);
 
         let mut targets = tctl.get_targets_by_tag(TARGET);
-        assert_eq!(targets.next().unwrap().target, TARGET);
+        assert_eq!(targets.next().unwrap(), TARGET);
     }
 }
