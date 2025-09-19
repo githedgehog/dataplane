@@ -44,10 +44,15 @@ pub(crate) struct TargetCfgDb {
 
 impl TargetCfgDb {
     fn new(level: LevelFilter) -> Self {
-        Self {
+        let mut db = Self {
             level,
             targets: HashMap::new(),
+        };
+        // load link-time-learnt targets
+        for t in TRACING_TARGETS {
+            db.register(t.target, t.level, t.tags);
         }
+        db
     }
     fn register(
         &mut self,
@@ -75,15 +80,16 @@ impl TargetCfgDb {
 #[derive(Debug)]
 pub struct TracingControl {
     db: Arc<Mutex<TargetCfgDb>>,
-    reload_handle: Arc<reload::Handle<EnvFilter, Registry>>,
+    reload_filter: Arc<reload::Handle<EnvFilter, Registry>>,
+    // reload_fmt: Arc<reload::Handle<Layer<Layered<reload::Layer<EnvFilter, Registry>, Registry>>>>,
+    //do we want to reload the formatting layer?
 }
 impl TracingControl {
     fn new() -> Self {
         let mut db = TargetCfgDb::new(LevelFilter::INFO);
-        for t in TRACING_TARGETS {
-            db.register(t.target, t.level, t.tags);
-        }
+        let (filter, reload_filter) = reload::Layer::new(db.env_filter());
 
+        // formatting layer
         let fmt_layer = tracing_subscriber::fmt::layer()
             .with_line_number(true)
             .with_target(true)
@@ -91,19 +97,26 @@ impl TracingControl {
             .with_thread_names(true)
             .with_level(true);
 
-        let (filter, reload_handle) = reload::Layer::new(db.env_filter());
+        use tracing_subscriber::fmt::Layer;
+        use tracing_subscriber::layer::Layered;
 
-        let subscriber = Registry::default().with(filter).with(fmt_layer);
-        tracing::subscriber::set_global_default(subscriber).expect("Failed to set subscriber");
+        let (fmt_layer, reload_fmt) = reload::Layer::new(fmt_layer);
 
-        info!("Initialized tracing control. Log level is {}", db.level);
+        // we should not be initializing the subscriber here, but that's fine atm
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt_layer)
+            .try_init()
+            .expect("Failed to initialize tracing subscriber");
+
         Self {
             db: Arc::new(Mutex::new(db)),
-            reload_handle: Arc::new(reload_handle),
+            reload_filter: Arc::new(reload_filter),
+            //reload_fmt: Arc::new(reload_fmt),
         }
     }
     fn reload(&self, filter: EnvFilter) {
-        self.reload_handle.reload(filter);
+        self.reload_filter.reload(filter);
     }
 }
 
@@ -174,7 +187,13 @@ impl TracingControl {
         self.db.lock().unwrap().targets.clone().into_values()
     }
     pub fn get_targets_by_tag(&self, tag: &str) -> impl Iterator<Item = TargetCfg> {
-        self.db.lock().unwrap().targets.clone().into_values().filter(move |t| t.tags.contains(&tag))
+        self.db
+            .lock()
+            .unwrap()
+            .targets
+            .clone()
+            .into_values()
+            .filter(move |t| t.tags.contains(&tag))
     }
 
     pub fn dump(&self) {

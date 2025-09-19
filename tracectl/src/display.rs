@@ -31,7 +31,10 @@ impl Display for TargetCfg {
 impl Display for TargetCfgDb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f)?;
-        writeln!(f, "                            ──────── Tracing configuration ────────")?;
+        writeln!(
+            f,
+            "                            ──────── Tracing configuration ────────"
+        )?;
         fmt_target_heading(f)?;
         self.targets.values().for_each(|unit| {
             let _ = writeln!(f, "{unit}");
