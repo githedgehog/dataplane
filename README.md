@@ -133,10 +133,13 @@ just cargo test --profile=release
 
 This covers basic testing and building of dataplane, but [there is more to testing dataplane](./testing.md).
 
-## VSCode Setup
+## IDE Setup
 
-Because this repository uses a custom sysroot with custom libraries and binaries, you need to make sure rust-analyzer is aware of the sysroot and runs the correct cargo binary.
-To do this, add the following to your `.vscode/settings.json` file:
+Because this repository uses a custom sysroot with custom libraries and binaries, you need to set up your environment accordingly.
+Here are the suggested configurations for various IDEs:
+
+### VSCode Setup
+Add the following to your `.vscode/settings.json` file:
 
 ```json
 {
@@ -168,6 +171,36 @@ To do this, add the following to your `.vscode/settings.json` file:
     "editor.defaultFormatter": "rust-lang.rust-analyzer",
     "editor.formatOnSave": true
 },
+```
+
+### Zed Setup
+
+Save the following to the `.zed/settings.json` file:
+
+```json
+{
+  "languages": {
+    "Rust": {
+      "formatter": "language_server",
+      "format_on_save": "on"
+    }
+  },
+  "lsp": {
+    "rust-analyzer": {
+      "binary": {
+        "path": "<absolute path to dataplane directory>/compile-env/bin/rust-analyzer",
+        "env": {
+          "PATH": "<absolute path to dataplane directory>/compile-env/bin"
+        }
+      },
+      "initialization_options": {
+        "check": {
+          "command": "clippy"
+        }
+      }
+    }
+  }
+}
 ```
 
 ## Code organization
@@ -220,7 +253,7 @@ depend on `mgmt`.
     │                           │
     └───────────────────────────┘
 ```
- 
+
 
 
 
