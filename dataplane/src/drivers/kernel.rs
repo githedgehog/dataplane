@@ -281,6 +281,14 @@ impl DriverKernel {
             }
         };
 
+        let num_worker_chans = to_workers.len();
+        assert!(num_worker_chans != 0, "No worker channels available!");
+        if num_worker_chans != num_workers {
+            warn!(
+                "Number of to_worker channels ({num_worker_chans}) does not match number of workers ({num_workers})"
+            );
+        }
+
         let poll_timeout = Some(Duration::from_millis(2));
 
         // Dispatcher loop: drain processed packets, poll RX, parse+shard, TX results.
@@ -341,7 +349,7 @@ impl DriverKernel {
                 if let Some(interface) = kiftable.get_mut(event.token()) {
                     let pkts = Self::packet_recv(interface);
                     for pkt in pkts {
-                        let idx = Self::compute_worker_idx(&pkt, num_workers);
+                        let idx = Self::compute_worker_idx(&pkt, num_worker_chans);
                         let target = idx;
                         // best-effort delivery; if full, drop (bounded channel is the backpressure)
                         if to_workers[target].try_send(pkt).is_err() {
