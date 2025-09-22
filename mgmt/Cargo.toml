@@ -28,6 +28,7 @@ pkt-meta = { workspace = true }
 rekon = { workspace = true }
 routing = { workspace = true }
 stats = { workspace = true }
+tracectl = { workspace = true }
 vpcmap = { workspace = true }
 
 
@@ -39,6 +40,7 @@ caps = { workspace = true, default-features = false, features = [] }
 chrono = { workspace = true }
 derive_builder = { workspace = true, default-features = false, features = ["default"] }
 futures = { workspace = true, features = ["default"] }
+linkme = { workspace = true }
 multi_index_map = { workspace = true, features = ["serde"] }
 netdev = { workspace = true }
 rtnetlink = { workspace = true, features = ["default", "tokio"] }

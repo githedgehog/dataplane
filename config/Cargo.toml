@@ -10,9 +10,11 @@ license = "Apache-2.0"
 gateway_config = { workspace = true }
 net = { workspace = true }
 lpm = { workspace = true }
+tracectl = { workspace = true }
 
 # external
 derive_builder = { workspace = true, default-features = false, features = ["default"] }
+linkme = { workspace = true }
 multi_index_map = { workspace = true, features = ["serde"] }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }

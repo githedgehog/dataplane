@@ -21,6 +21,7 @@ bolero = { workspace = true, optional = true }
 derive_builder = { workspace = true }
 hashbrown = { workspace = true, features = ["inline-more", "alloc", "default-hasher"] }
 kanal = { workspace = true, features = ["async"] }
+linkme = { workspace = true }
 metrics = { workspace = true }
 multi_index_map = { workspace = true }
 rand = { workspace = true, features = ["std"] }
@@ -28,6 +29,7 @@ serde = { workspace = true, features = ["derive"] }
 small-map = { workspace = true, features = [] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time", "macros"] }
+tracectl = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

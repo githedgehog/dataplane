@@ -9,9 +9,11 @@ license = "Apache-2.0"
 arc-swap = { workspace = true }
 dyn-iter = { workspace = true }
 id = { workspace = true }
+linkme = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
 ordermap = { workspace = true, features = ["std"] }
 thiserror = { workspace = true }
+tracectl = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

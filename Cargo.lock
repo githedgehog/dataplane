@@ -693,7 +693,7 @@ version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fde0e0ec90c9dfb3b4b1a0891a7dcd0e2bffde2f7efed5fe7c9bb00e5bfb915e"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -974,9 +974,11 @@ dependencies = [
  "dataplane-lpm",
  "dataplane-net",
  "dataplane-pipeline",
+ "dataplane-tracectl",
  "derive_builder 0.20.2",
  "gateway_config",
  "ipnet",
+ "linkme",
  "multi_index_map",
  "pretty_assertions",
  "thiserror 2.0.16",
@@ -1023,7 +1025,9 @@ version = "0.1.0"
 dependencies = [
  "atomic-instant-full",
  "dataplane-concurrency",
+ "dataplane-tracectl",
  "downcast-rs",
+ "linkme",
  "thiserror 2.0.16",
  "tracing",
 ]
@@ -1044,6 +1048,7 @@ dependencies = [
  "bolero",
  "dataplane-net",
  "dataplane-rekon",
+ "dataplane-tracectl",
  "derive_builder 0.20.2",
  "futures",
  "libc 1.0.0-alpha.1",
@@ -1062,7 +1067,9 @@ name = "dataplane-lpm"
 version = "0.1.0"
 dependencies = [
  "bolero",
+ "dataplane-tracectl",
  "ipnet",
+ "linkme",
  "num-traits",
  "prefix-trie",
  "serde",
@@ -1092,12 +1099,14 @@ dependencies = [
  "dataplane-routing",
  "dataplane-stats",
  "dataplane-test-utils",
+ "dataplane-tracectl",
  "dataplane-vpcmap",
  "derive_builder 0.20.2",
  "fixin",
  "futures",
  "gateway_config",
  "ipnet",
+ "linkme",
  "multi_index_map",
  "netdev",
  "pretty_assertions",
@@ -1125,7 +1134,9 @@ dependencies = [
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-pkt-meta",
+ "dataplane-tracectl",
  "left-right",
+ "linkme",
  "rand 0.9.2",
  "roaring",
  "shuttle",
@@ -1145,8 +1156,10 @@ dependencies = [
  "dataplane-concurrency",
  "dataplane-flow-info",
  "dataplane-id",
+ "dataplane-tracectl",
  "derive_builder 0.20.2",
  "etherparse",
+ "linkme",
  "linux-raw-sys",
  "multi_index_map",
  "ordermap",
@@ -1162,7 +1175,9 @@ dependencies = [
  "arc-swap",
  "dataplane-id",
  "dataplane-net",
+ "dataplane-tracectl",
  "dyn-iter",
+ "linkme",
  "ordermap",
  "thiserror 2.0.16",
  "tracing",
@@ -1181,8 +1196,10 @@ dependencies = [
  "dataplane-lpm",
  "dataplane-net",
  "dataplane-pipeline",
+ "dataplane-tracectl",
  "etherparse",
  "left-right",
+ "linkme",
  "priority-queue",
  "shuttle",
  "thiserror 2.0.16",
@@ -1208,10 +1225,12 @@ dependencies = [
  "dataplane-config",
  "dataplane-lpm",
  "dataplane-net",
+ "dataplane-tracectl",
  "derive_builder 0.20.2",
  "dplane-rpc",
  "ipnet",
  "left-right",
+ "linkme",
  "mac_address",
  "mio",
  "netdev",
@@ -1231,10 +1250,12 @@ dependencies = [
  "bolero",
  "dataplane-net",
  "dataplane-pipeline",
+ "dataplane-tracectl",
  "dataplane-vpcmap",
  "derive_builder 0.20.2",
  "hashbrown 0.16.0",
  "kanal",
+ "linkme",
  "metrics",
  "multi_index_map",
  "rand 0.9.2",
@@ -1289,12 +1310,12 @@ dependencies = [
 
 [[package]]
 name = "deranged"
-version = "0.5.3"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d630bccd429a5bb5a64b5e94f693bfc48c9f8566418fda4c494cc94f911f87cc"
+checksum = "a41953f86f8a05768a6cda24def994fd2f424b04ec5c719cf89989779f199071"
 dependencies = [
  "powerfmt",
- "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -2169,7 +2190,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b0f83760fb341a774ed326568e19f5a863af4a952def8c39f9ab92fd95b88e5"
 dependencies = [
  "equivalent",
- "hashbrown 0.15.5",
+ "hashbrown 0.16.0",
  "serde",
  "serde_core",
 ]
@@ -2226,9 +2247,9 @@ checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
 
 [[package]]
 name = "js-sys"
-version = "0.3.80"
+version = "0.3.81"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "852f13bec5eba4ba9afbeb93fd7c13fe56147f055939ae21c43a29a0ecb2702e"
+checksum = "ec48937a97411dcb524a265206ccd4c90bb711fca92b2792c407f268825b9305"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
@@ -2396,9 +2417,9 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "memchr"
-version = "2.7.5"
+version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32a282da65faaf38286cf3be983213fcf1d2e2a58700e808f83f4ea9a4804bc0"
+checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
 
 [[package]]
 name = "memoffset"
@@ -3223,9 +3244,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.11.2"
+version = "1.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23d7fd106d8c02486a8d64e778353d1cffe08ce79ac2e82f540c86d0facf6912"
+checksum = "8b5288124840bee7b386bc413c487869b360b2b4ec421ea56425128692f2a82c"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -3235,9 +3256,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.10"
+version = "0.4.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b9458fa0bfeeac22b5ca447c63aaf45f28439a709ccd244698632f9aa6394d6"
+checksum = "833eb9ce86d40ef33cb1306d8accf7bc8ec2bfea4355cbdebb3df68b40925cad"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -4410,9 +4431,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.103"
+version = "0.2.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab10a69fbd0a177f5f649ad4d8d3305499c42bab9aef2f7ff592d0ec8f833819"
+checksum = "c1da10c01ae9f1ae40cbfac0bac3b1e724b320abfcf52229f80b547c0d250e2d"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -4423,9 +4444,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-backend"
-version = "0.2.103"
+version = "0.2.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bb702423545a6007bbc368fde243ba47ca275e549c8a28617f56f6ba53b1d1c"
+checksum = "671c9a5a66f49d8a47345ab942e2cb93c7d1d0339065d4f8139c486121b43b19"
 dependencies = [
  "bumpalo",
  "log",
@@ -4437,9 +4458,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.103"
+version = "0.2.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc65f4f411d91494355917b605e1480033152658d71f722a90647f56a70c88a0"
+checksum = "7ca60477e4c59f5f2986c50191cd972e3a50d8a95603bc9434501cf156a9a119"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -4447,9 +4468,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.103"
+version = "0.2.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffc003a991398a8ee604a401e194b6b3a39677b3173d6e74495eb51b82e99a32"
+checksum = "9f07d2f20d4da7b26400c9f4a0511e6e0345b040694e8a75bd41d578fa4421d7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4460,18 +4481,18 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.103"
+version = "0.2.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "293c37f4efa430ca14db3721dfbe48d8c33308096bd44d80ebaa775ab71ba1cf"
+checksum = "bad67dc8b2a1a6e5448428adec4c3e84c43e561d8c9ee8a9e5aabeb193ec41d1"
 dependencies = [
  "unicode-ident",
 ]
 
 [[package]]
 name = "web-sys"
-version = "0.3.80"
+version = "0.3.81"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbe734895e869dc429d78c4b433f8d17d95f8d05317440b4fad5ab2d33e596dc"
+checksum = "9367c417a924a74cae129e6a2ae3b47fabb1f8995595ab474029da749a8be120"
 dependencies = [
  "js-sys",
  "wasm-bindgen",

@@ -21,11 +21,13 @@ dashmap = { workspace = true, features = ["raw-api"] }
 etherparse = { workspace = true }
 flow-info = { workspace = true }
 left-right = { workspace = true }
+linkme = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
 priority-queue = { workspace = true }
 thiserror = { workspace = true }
 thread_local = { workspace = true }
+tracectl = { workspace = true }
 tracing = { workspace = true }
 
 

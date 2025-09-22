@@ -9,20 +9,25 @@ license = "Apache-2.0"
 testing = []
 
 [dependencies]
+# internal
+cli = { workspace = true }
+config = { workspace = true }
+dplane-rpc = { workspace = true }
+lpm = { workspace = true }
+net = { workspace = true }
+tracectl = { workspace = true }
+
+# external
 ahash = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true, features = ["serde"] }
 chrono = { workspace = true, features = ["clock"] }
-cli = { workspace = true }
-config = { workspace = true }
 derive_builder = { workspace = true, features = ["default", "std"] }
-dplane-rpc = { workspace = true }
-lpm = { workspace = true }
 ipnet = { workspace = true }
 left-right = { workspace = true }
+linkme = { workspace = true }
 mac_address= { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
-net = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync"] }

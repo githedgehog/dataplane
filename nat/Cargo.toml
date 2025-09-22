@@ -15,6 +15,7 @@ concurrency = { workspace = true, features = [] }
 config = { workspace = true }
 flow-info = { workspace = true }
 left-right = { workspace = true }
+linkme = { workspace = true }
 lpm = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
@@ -23,6 +24,7 @@ rand = { workspace = true }
 roaring = { workspace = true }
 shuttle = { workspace = true, optional = true }
 thiserror = { workspace = true }
+tracectl = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
