@@ -41,7 +41,7 @@ pub(crate) struct CmdArgs {
     #[arg(
         long,
         value_name = "N",
-        help = "Number of worker threads for the kernel driver (defaults to be one worker)"
+        help = "Number of worker threads for the kernel driver (defaults to one worker)"
     )]
     num_workers: Option<usize>,
 
@@ -102,15 +102,13 @@ impl CmdArgs {
 
     /// Number of worker threads to use for the kernel driver.
     /// Falls back to 1 if not specified or invalid.
-    pub fn num_workers(&self) -> usize {
+    pub fn kernel_num_workers(&self) -> usize {
         match self.num_workers {
             Some(n) if n > 0 => n,
             _ => 1,
         }
     }
-
-    #[allow(clippy::unused_self)]
-    pub fn kernel_params(&self) -> Vec<String> {
+    pub fn kernel_interfaces(&self) -> Vec<String> {
         self.interface.clone()
     }
 

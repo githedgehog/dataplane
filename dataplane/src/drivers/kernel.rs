@@ -33,7 +33,7 @@ use net::buffer::test_buffer::TestBuffer;
 use net::packet::{InterfaceId, Packet};
 use netdev::Interface;
 use pipeline::{DynPipeline, NetworkFunction};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 // Flow-key based symmetric hashing
 use pkt_meta::flow_table::flow_key::{Bidi, FlowKey};
@@ -208,14 +208,13 @@ impl DriverKernel {
     ///   - `Vec<Sender<Packet<TestBuffer>>>` one sender per worker (dispatcher -> worker)
     ///   - `Receiver<Packet<TestBuffer>>` a single queue for processed packets (worker -> dispatcher)
     fn spawn_workers(
-        workers: usize,
+        num_workers: usize,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
     ) -> io::Result<WorkerChans> {
-        let w = workers.max(1);
         let (tx_from_workers, rx_from_workers) = chan::bounded::<Packet<TestBuffer>>(4096);
-        let mut to_workers = Vec::with_capacity(w);
-
-        for wid in 0..w {
+        let mut to_workers = Vec::with_capacity(num_workers);
+        info!("Spawning {num_workers} workers");
+        for wid in 0..num_workers {
             let (tx_to_worker, rx_to_worker) = chan::bounded::<Packet<TestBuffer>>(8192);
             to_workers.push(tx_to_worker);
 
@@ -261,7 +260,7 @@ impl DriverKernel {
     /// - `setup_pipeline`: factory returning a **fresh** `DynPipeline<TestBuffer>` per worker
     pub fn start(
         args: impl IntoIterator<Item = impl AsRef<str> + Clone>,
-        workers: usize,
+        num_workers: usize,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
     ) {
         // Prepare interfaces/poller
@@ -274,14 +273,14 @@ impl DriverKernel {
         };
 
         // Spawn workers
-        let (to_workers, from_workers) = match Self::spawn_workers(workers, setup_pipeline) {
+        let (to_workers, from_workers) = match Self::spawn_workers(num_workers, setup_pipeline) {
             Ok(chans) => chans,
             Err(e) => {
                 error!("Failed to start workers: {e}");
                 return;
             }
         };
-        let buckets = to_workers.len().max(1);
+
         let poll_timeout = Some(Duration::from_millis(2));
 
         // Dispatcher loop: drain processed packets, poll RX, parse+shard, TX results.
@@ -342,7 +341,7 @@ impl DriverKernel {
                 if let Some(interface) = kiftable.get_mut(event.token()) {
                     let pkts = Self::packet_recv(interface);
                     for pkt in pkts {
-                        let idx = Self::compute_worker_idx(&pkt, buckets);
+                        let idx = Self::compute_worker_idx(&pkt, num_workers);
                         let target = idx;
                         // best-effort delivery; if full, drop (bounded channel is the backpressure)
                         if to_workers[target].try_send(pkt).is_err() {

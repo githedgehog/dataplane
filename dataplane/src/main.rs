@@ -112,9 +112,12 @@ fn main() {
             DriverDpdk::start(args.eal_params(), &setup_pipeline);
         }
         "kernel" => {
-            let workers = args.num_workers();
-            info!("Using driver kernel with {workers} worker(s)...");
-            DriverKernel::start(args.kernel_params(), workers, &pipeline_factory);
+            info!("Using driver kernel...");
+            DriverKernel::start(
+                args.kernel_interfaces(),
+                args.kernel_num_workers(),
+                &pipeline_factory,
+            );
         }
         other => {
             error!("Unknown driver '{other}'. Aborting...");
