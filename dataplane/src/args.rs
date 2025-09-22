@@ -41,9 +41,10 @@ pub(crate) struct CmdArgs {
     #[arg(
         long,
         value_name = "N",
-        help = "Number of worker threads for the kernel driver (defaults to one worker)"
+        default_value_t = 1,
+        help = "Number of worker threads for the kernel driver"
     )]
-    num_workers: Option<usize>,
+    num_workers: usize,
 
     /// gRPC server address (IP:PORT for TCP or path for UNIX socket)
     #[arg(
@@ -103,10 +104,7 @@ impl CmdArgs {
     /// Number of worker threads to use for the kernel driver.
     /// Falls back to 1 if not specified or invalid.
     pub fn kernel_num_workers(&self) -> usize {
-        match self.num_workers {
-            Some(n) if n > 0 => n,
-            _ => 1,
-        }
+        self.num_workers
     }
     pub fn kernel_interfaces(&self) -> Vec<String> {
         self.interface.clone()
