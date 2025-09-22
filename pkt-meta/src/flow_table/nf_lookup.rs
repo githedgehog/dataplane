@@ -13,6 +13,9 @@ use pipeline::NetworkFunction;
 
 use crate::flow_table::{FlowKey, FlowTable};
 
+use tracectl::trace_target;
+trace_target!("flow-lookup", LevelFilter::INFO, &["pipeline"]);
+
 pub struct LookupNF {
     flow_table: Arc<FlowTable>,
 }

@@ -16,6 +16,9 @@ use pipeline::NetworkFunction;
 use routing::interfaces::iftablerw::IfTableReader;
 use routing::interfaces::interface::{Attachment, IfState, IfType, Interface};
 
+use tracectl::trace_target;
+trace_target!("ingress", LevelFilter::WARN, &["pipeline"]);
+
 #[allow(unused)]
 pub struct Ingress {
     name: String,

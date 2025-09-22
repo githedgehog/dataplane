@@ -22,6 +22,9 @@ use thiserror::Error;
 #[allow(unused)]
 use tracing::{debug, error, warn};
 
+use tracectl::trace_target;
+trace_target!("stateless-nat", LevelFilter::INFO, &["nat", "pipeline"]);
+
 #[derive(Error, Debug, PartialEq)]
 enum NatError {
     #[error("Unsupported NAT translation")]

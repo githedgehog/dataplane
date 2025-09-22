@@ -14,3 +14,6 @@ pub use rate::*;
 pub use register::*;
 pub use spec::*;
 pub use vpc::*;
+
+use tracectl::trace_target;
+trace_target!("dp-stats", LevelFilter::WARN, &[]);

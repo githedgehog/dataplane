@@ -13,6 +13,9 @@ use pipeline::NetworkFunction;
 
 pub mod setup;
 
+use tracectl::trace_target;
+trace_target!("vpc-routing", LevelFilter::INFO, &["pipeline"]);
+
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum DstVpcdLookupError {
     #[error("Error building dst_vpcd_lookup table: {0}")]

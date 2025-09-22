@@ -36,6 +36,9 @@ use net::udp::UdpEncap;
 use net::vxlan::Vxlan;
 use net::vxlan::VxlanEncap;
 
+use tracectl::trace_target;
+trace_target!("ip-forward", LevelFilter::WARN, &["pipeline"]);
+
 pub struct IpForwarder {
     name: String,
     fibtr: FibTableReader,

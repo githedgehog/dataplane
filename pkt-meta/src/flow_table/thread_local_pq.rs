@@ -13,6 +13,13 @@ use priority_queue::PriorityQueue;
 use thread_local::ThreadLocal;
 use tracing::debug;
 
+use tracectl::trace_target;
+trace_target!(
+    "flow-table-pq",
+    LevelFilter::INFO,
+    &["flow-expiration", "pipeline"]
+);
+
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Priority(Instant);

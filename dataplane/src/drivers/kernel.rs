@@ -39,6 +39,9 @@ use tracing::{debug, error, info, warn};
 // Flow-key based symmetric hashing
 use pkt_meta::flow_table::flow_key::{Bidi, FlowKey};
 
+use tracectl::trace_target;
+trace_target!("kernel-driver", LevelFilter::ERROR, &["driver"]);
+
 type WorkerTx = chan::Sender<Box<Packet<TestBuffer>>>;
 type WorkerRx = chan::Receiver<Box<Packet<TestBuffer>>>;
 type WorkerChans = (Vec<WorkerTx>, WorkerRx);

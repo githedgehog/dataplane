@@ -28,6 +28,9 @@ use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
+use tracectl::trace_target;
+trace_target!("stateful-nat", LevelFilter::INFO, &["nat", "pipeline"]);
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StatefulNatError {
     #[error("failure to get IP header")]

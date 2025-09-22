@@ -22,6 +22,9 @@ use routing::interfaces::iftablerw::IfTableReader;
 use routing::interfaces::interface::{IfIndex, IfState, IfType, Interface};
 use routing::{atable::atablerw::AtableReader, interfaces::iftable::IfTable};
 
+use tracectl::trace_target;
+trace_target!("egress", LevelFilter::WARN, &["pipeline"]);
+
 #[allow(unused)]
 pub struct Egress {
     name: String,

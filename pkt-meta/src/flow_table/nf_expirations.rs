@@ -10,6 +10,9 @@ use pipeline::NetworkFunction;
 
 use crate::flow_table::FlowTable;
 
+use tracectl::trace_target;
+trace_target!("flow-expiration", LevelFilter::INFO, &["pipeline"]);
+
 /// Network Function that reap expired entries from the flow table for the current thread.
 ///
 /// Note: This only reaps expired entries on the priority queue for the current thread.
