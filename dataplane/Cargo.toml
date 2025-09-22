@@ -19,6 +19,7 @@ dyn-iter = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 id = { workspace = true }
+linkme = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 mgmt = { workspace = true }
@@ -37,6 +38,7 @@ stats = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["default"] }
+tracectl = { workspace = true }
 vpcmap = { workspace = true }
 
 [dev-dependencies]

@@ -26,19 +26,16 @@ use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
 
 use routing::RouterParamsBuilder;
+use tracectl::{custom_target, get_trace_ctl, trace_target};
 
-use tracing::{error, info};
-use tracing_subscriber::EnvFilter;
+use tracing::{error, info, level_filters::LevelFilter};
 
+trace_target!("dataplane", LevelFilter::DEBUG, &[]);
 fn init_logging() {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .with_target(true)
-        .with_thread_ids(true)
-        .with_line_number(true)
-        .with_thread_names(true)
-        .with_env_filter(EnvFilter::new("debug,tonic=off,h2=off"))
-        .init();
+    let tctl = get_trace_ctl();
+    tctl.set_default_level(LevelFilter::DEBUG);
+    custom_target!("tonic", LevelFilter::ERROR, &[]);
+    custom_target!("h2", LevelFilter::ERROR, &[]);
 }
 
 fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
