@@ -10,3 +10,4 @@ pub mod targets;
 // re-exports
 pub use control::TracingControl;
 pub use control::get_trace_ctl;
+pub use tracing_subscriber::filter::LevelFilter;

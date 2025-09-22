@@ -13,7 +13,7 @@ pub static TRACING_TARGETS: [TargetCfg];
 macro_rules! trace_target_deps {
     () => {
         use linkme::distributed_slice;
-        use tracing_subscriber::filter::LevelFilter;
+        use $crate::LevelFilter;
         use $crate::control::TargetCfg;
         use $crate::targets::TRACING_TARGETS;
     };
