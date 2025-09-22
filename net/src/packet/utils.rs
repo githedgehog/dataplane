@@ -14,6 +14,7 @@ use crate::headers::Net::{Ipv4, Ipv6};
 use crate::headers::{
     Transport, TryEth, TryEthMut, TryIp, TryIpMut, TryTcp, TryTransport, TryTransportMut, TryUdp,
 };
+use crate::icmp4::Icmp4;
 use crate::ip::{NextHeader, UnicastIpAddr};
 use crate::packet::{Packet, PacketBufferMut};
 use crate::tcp::{Tcp, TcpPort};
@@ -34,6 +35,9 @@ pub enum PacketUtilError<'a> {
     #[error("ip address version mismatch for address {0}")]
     /// This error is returned when the utility method is called with an incompatible ip address type
     IpVersionMismatch(IpAddr),
+    #[error("invalid ICMP type")]
+    /// This error is returned when the utility method is called with an incompatible ICMP type for the required operation
+    InvalidIcmpType,
 }
 
 fn extract_tcp(transport: &mut Transport) -> Result<&mut Tcp, PacketUtilError<'_>> {
@@ -46,6 +50,13 @@ fn extract_tcp(transport: &mut Transport) -> Result<&mut Tcp, PacketUtilError<'_
 fn extract_udp(transport: &mut Transport) -> Result<&mut Udp, PacketUtilError<'_>> {
     match transport {
         Transport::Udp(udp) => Ok(udp),
+        _ => Err(PacketUtilError::InvalidTransport(transport)),
+    }
+}
+
+fn extract_icmp_v4(transport: &mut Transport) -> Result<&mut Icmp4, PacketUtilError<'_>> {
+    match transport {
+        Transport::Icmp4(icmp) => Ok(icmp),
         _ => Err(PacketUtilError::InvalidTransport(transport)),
     }
 }
@@ -254,6 +265,38 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         self.modify_transport(extract_udp, |udp| {
             udp.set_destination(port);
             Ok(())
+        })
+    }
+
+    /// Set identifier for ICMP v4 Query Message
+    ///
+    /// # Errors
+    ///
+    /// * [`PacketUtilError::InvalidTransport`]: if the packet does not have an ICMP header
+    /// * [`PacketUtilError::InvalidIcmpType`]: if the header is not for an ICMP Query Message
+    pub fn set_icmp_v4_query_identifier(&'_ mut self, id: u16) -> Result<(), PacketUtilError<'_>> {
+        self.modify_transport(extract_icmp_v4, |icmp| {
+            icmp.try_set_identifier(id)
+                .map_err(|_| PacketUtilError::InvalidIcmpType)
+        })
+    }
+
+    /// Set embedded packet data for ICMP v4 Error Message
+    ///
+    /// # Errors
+    ///
+    /// * [`PacketUtilError::InvalidTransport`]: if the packet does not have an ICMP header
+    /// * [`PacketUtilError::InvalidIcmpType`]: if the header is not for an ICMP Error Message
+    pub fn set_icmp_v4_error_message_data(
+        &'_ mut self,
+        src_addr: &IpAddr,
+        dst_addr: &IpAddr,
+        src_port: u16,
+        dst_port: u16,
+    ) -> Result<(), PacketUtilError<'_>> {
+        self.modify_transport(extract_icmp_v4, |icmp| {
+            icmp.try_set_inner_packet_data(src_addr, dst_addr, src_port, dst_port)
+                .map_err(|_| PacketUtilError::InvalidIcmpType)
         })
     }
 }

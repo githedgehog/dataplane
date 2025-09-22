@@ -292,7 +292,7 @@ impl NatDefaultAllocator {
         match flow_key.data().proto_key_info() {
             IpProtoKey::Tcp(_) => NextHeader::TCP,
             IpProtoKey::Udp(_) => NextHeader::UDP,
-            IpProtoKey::Icmp => NextHeader::ICMP,
+            IpProtoKey::Icmp(_) => NextHeader::ICMP,
         }
     }
 
@@ -343,7 +343,7 @@ impl NatDefaultAllocator {
                 let reverse_src_port_number = match flow_key.data().proto_key_info() {
                     IpProtoKey::Tcp(tcp) => tcp.dst_port.into(),
                     IpProtoKey::Udp(udp) => udp.dst_port.into(),
-                    IpProtoKey::Icmp => return Err(AllocatorError::PortNotFound),
+                    IpProtoKey::Icmp(_) => return Err(AllocatorError::PortNotFound),
                 };
                 let reserve_src_port_number = NatPort::new_checked(reverse_src_port_number)
                     .map_err(|_| {
@@ -367,7 +367,7 @@ impl NatDefaultAllocator {
                 let reverse_dst_port_number = match flow_key.data().proto_key_info() {
                     IpProtoKey::Tcp(tcp) => tcp.src_port.into(),
                     IpProtoKey::Udp(udp) => udp.src_port.into(),
-                    IpProtoKey::Icmp => return Err(AllocatorError::PortNotFound),
+                    IpProtoKey::Icmp(_) => return Err(AllocatorError::PortNotFound),
                 };
                 let reserve_dst_port_number = NatPort::new_checked(reverse_dst_port_number)
                     .map_err(|_| {

@@ -5,8 +5,11 @@ use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::num::NonZero;
 
+use etherparse::Icmpv4Type;
 use net::buffer::PacketBufferMut;
 use net::headers::{Transport, TryHeaders, TryIp, TryTransport};
+use net::icmp4::Icmp4;
+use net::icmp6::Icmp6;
 use net::packet::Packet;
 use net::packet::VpcDiscriminant;
 use net::tcp::TcpPort;
@@ -115,6 +118,91 @@ impl PartialEq for UdpProtoKey {
     }
 }
 
+type IcmpIdentifier = u16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum InnerIpProtoKey {
+    Tcp(TcpProtoKey),
+    Udp(UdpProtoKey),
+}
+
+impl InnerIpProtoKey {
+    #[must_use]
+    pub fn reverse(&self) -> Self {
+        match self {
+            InnerIpProtoKey::Tcp(tcp) => InnerIpProtoKey::Tcp(tcp.reverse()),
+            InnerIpProtoKey::Udp(udp) => InnerIpProtoKey::Udp(udp.reverse()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EmbeddedPacketData {
+    src_ip: IpAddr,
+    dst_ip: IpAddr,
+    proto_key_info: InnerIpProtoKey,
+}
+
+impl EmbeddedPacketData {
+    pub fn from_packet<Buf: PacketBufferMut>(_packet: &Packet<Buf>) -> Self {
+        todo!()
+    }
+    #[must_use]
+    pub fn src_ip(&self) -> &IpAddr {
+        &self.src_ip
+    }
+    #[must_use]
+    pub fn dst_ip(&self) -> &IpAddr {
+        &self.dst_ip
+    }
+    #[must_use]
+    pub fn proto_key_info(&self) -> &InnerIpProtoKey {
+        &self.proto_key_info
+    }
+    #[must_use]
+    pub fn reverse(&self) -> Self {
+        Self {
+            src_ip: self.dst_ip,
+            dst_ip: self.src_ip,
+            proto_key_info: self.proto_key_info.reverse(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum IcmpProtoKey {
+    QueryMsgData(IcmpIdentifier),
+    ErrorMsgData(Option<EmbeddedPacketData>),
+}
+
+impl IcmpProtoKey {
+    pub fn new_icmp_v4<Buf: PacketBufferMut>(packet: &Packet<Buf>, icmp: &Icmp4) -> Self {
+        match icmp.icmp_type() {
+            Icmpv4Type::EchoRequest(echo_header) | Icmpv4Type::EchoReply(echo_header) => {
+                IcmpProtoKey::QueryMsgData(echo_header.id)
+            }
+            Icmpv4Type::TimeExceeded(_) | Icmpv4Type::DestinationUnreachable(_) => {
+                IcmpProtoKey::ErrorMsgData(Some(EmbeddedPacketData::from_packet(packet)))
+            }
+            _ => unimplemented!(),
+        }
+    }
+
+    pub fn new_icmp_v6<Buf: PacketBufferMut>(_packet: &Packet<Buf>, _icmp: &Icmp6) -> Self {
+        todo!()
+    }
+
+    #[must_use]
+    pub fn reverse(&self) -> Self {
+        match self {
+            IcmpProtoKey::QueryMsgData(id) => IcmpProtoKey::QueryMsgData(*id),
+            IcmpProtoKey::ErrorMsgData(inner) => {
+                IcmpProtoKey::ErrorMsgData(inner.as_ref().map(EmbeddedPacketData::reverse))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, PartialOrd, Ord, thiserror::Error)]
 pub enum IpProtoKeyError {
     #[error("Type does not use ports")]
@@ -125,7 +213,7 @@ pub enum IpProtoKeyError {
 pub enum IpProtoKey {
     Tcp(TcpProtoKey),
     Udp(UdpProtoKey),
-    Icmp, // TODO(mvachhar): add icmp key information, varies by message type :(
+    Icmp(IcmpProtoKey),
 }
 
 impl IpProtoKey {
@@ -134,7 +222,7 @@ impl IpProtoKey {
         match self {
             IpProtoKey::Tcp(tcp) => IpProtoKey::Tcp(tcp.reverse()),
             IpProtoKey::Udp(udp) => IpProtoKey::Udp(udp.reverse()),
-            IpProtoKey::Icmp => IpProtoKey::Icmp,
+            IpProtoKey::Icmp(icmp) => IpProtoKey::Icmp(icmp.reverse()),
         }
     }
 
@@ -148,7 +236,7 @@ impl IpProtoKey {
         match self {
             IpProtoKey::Tcp(tcp) => tcp.src_port = TcpPort::new(port),
             IpProtoKey::Udp(udp) => udp.src_port = UdpPort::new(port),
-            IpProtoKey::Icmp => return Err(IpProtoKeyError::NoPortsForType),
+            IpProtoKey::Icmp(_) => return Err(IpProtoKeyError::NoPortsForType),
         }
         Ok(())
     }
@@ -163,7 +251,7 @@ impl IpProtoKey {
         match self {
             IpProtoKey::Tcp(tcp) => tcp.dst_port = TcpPort::new(port),
             IpProtoKey::Udp(udp) => udp.dst_port = UdpPort::new(port),
-            IpProtoKey::Icmp => return Err(IpProtoKeyError::NoPortsForType),
+            IpProtoKey::Icmp(_) => return Err(IpProtoKeyError::NoPortsForType),
         }
         Ok(())
     }
@@ -174,7 +262,7 @@ impl SrcLeqDst for IpProtoKey {
         match self {
             IpProtoKey::Tcp(tcp) => tcp.src_leq_dst(),
             IpProtoKey::Udp(udp) => udp.src_leq_dst(),
-            IpProtoKey::Icmp => true,
+            IpProtoKey::Icmp(_) => true,
         }
     }
 }
@@ -184,7 +272,7 @@ impl HashSrc for IpProtoKey {
         match self {
             IpProtoKey::Tcp(tcp) => tcp.hash_src(state),
             IpProtoKey::Udp(udp) => udp.hash_src(state),
-            IpProtoKey::Icmp => (),
+            IpProtoKey::Icmp(_) => (),
         }
     }
 }
@@ -194,7 +282,7 @@ impl HashDst for IpProtoKey {
         match self {
             IpProtoKey::Tcp(tcp) => tcp.hash_dst(state),
             IpProtoKey::Udp(udp) => udp.hash_dst(state),
-            IpProtoKey::Icmp => (),
+            IpProtoKey::Icmp(_) => (),
         }
     }
 }
@@ -461,8 +549,8 @@ fn flow_key_data_from_packet<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Opti
             src_port: udp.source(),
             dst_port: udp.destination(),
         }),
-        Transport::Icmp4(_icmp) => IpProtoKey::Icmp,
-        Transport::Icmp6(_icmp) => IpProtoKey::Icmp,
+        Transport::Icmp4(icmp) => IpProtoKey::Icmp(IcmpProtoKey::new_icmp_v4(packet, icmp)),
+        Transport::Icmp6(icmp) => IpProtoKey::Icmp(IcmpProtoKey::new_icmp_v6(packet, icmp)),
         #[allow(unreachable_patterns)]
         _ => return None,
     };
@@ -524,7 +612,10 @@ impl<Buf: PacketBufferMut> TryFrom<Bidi<&Packet<Buf>>> for FlowKey {
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
-    use super::{FlowKey, FlowKeyData, IpProtoKey, TcpProtoKey, UdpProtoKey};
+    use super::{
+        EmbeddedPacketData, FlowKey, FlowKeyData, IcmpProtoKey, InnerIpProtoKey, IpProtoKey,
+        TcpProtoKey, UdpProtoKey,
+    };
     use bolero::{Driver, TypeGenerator};
     use net::ip::UnicastIpAddr;
     use net::ipv4::addr::UnicastIpv4Addr;
@@ -546,6 +637,49 @@ mod contract {
         }
     }
 
+    impl TypeGenerator for InnerIpProtoKey {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let variant = driver.produce::<u8>()?;
+            if variant % 2 == 0 {
+                let tcp = TcpProtoKey::generate(driver)?;
+                Some(InnerIpProtoKey::Tcp(tcp))
+            } else {
+                let udp = UdpProtoKey::generate(driver)?;
+                Some(InnerIpProtoKey::Udp(udp))
+            }
+        }
+    }
+
+    impl TypeGenerator for EmbeddedPacketData {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let src_ip = driver.produce()?;
+            let dst_ip = driver.produce()?;
+            let proto_key_info = InnerIpProtoKey::generate(driver)?;
+            Some(EmbeddedPacketData {
+                src_ip,
+                dst_ip,
+                proto_key_info,
+            })
+        }
+    }
+
+    impl TypeGenerator for IcmpProtoKey {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let variant = driver.produce::<u8>()?;
+            if variant % 2 == 0 {
+                let id = driver.produce()?;
+                Some(IcmpProtoKey::QueryMsgData(id))
+            } else {
+                let variant = driver.produce::<u8>()?;
+                let inner = match variant % 2 {
+                    0 => None,
+                    _ => Some(EmbeddedPacketData::generate(driver)?),
+                };
+                Some(IcmpProtoKey::ErrorMsgData(inner))
+            }
+        }
+    }
+
     impl TypeGenerator for IpProtoKey {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
             // Pick a variant at random
@@ -559,7 +693,10 @@ mod contract {
                     let udp = UdpProtoKey::generate(driver)?;
                     Some(IpProtoKey::Udp(udp))
                 }
-                _ => Some(IpProtoKey::Icmp),
+                _ => {
+                    let icmp = IcmpProtoKey::generate(driver)?;
+                    Some(IpProtoKey::Icmp(icmp))
+                }
             }
         }
     }
@@ -830,7 +967,30 @@ mod tests {
                 packet.set_udp_source_port(udp.src_port).unwrap();
                 packet.set_udp_destination_port(udp.dst_port).unwrap();
             }
-            IpProtoKey::Icmp => {}
+            IpProtoKey::Icmp(icmp) => match icmp {
+                IcmpProtoKey::QueryMsgData(id) => {
+                    packet.set_icmp_v4_query_identifier(id).unwrap();
+                }
+                IcmpProtoKey::ErrorMsgData(Some(data)) => {
+                    let (src_port, dst_port) = match data.proto_key_info() {
+                        InnerIpProtoKey::Tcp(tcp) => {
+                            (tcp.src_port().as_u16(), tcp.dst_port().as_u16())
+                        }
+                        InnerIpProtoKey::Udp(udp) => {
+                            (udp.src_port().as_u16(), udp.dst_port().as_u16())
+                        }
+                    };
+                    packet
+                        .set_icmp_v4_error_message_data(
+                            data.src_ip(),
+                            data.dst_ip(),
+                            src_port,
+                            dst_port,
+                        )
+                        .unwrap();
+                }
+                IcmpProtoKey::ErrorMsgData(None) => {}
+            },
         }
     }
 

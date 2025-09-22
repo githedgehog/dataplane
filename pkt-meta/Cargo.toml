@@ -18,6 +18,7 @@ lpm = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
 dashmap = { workspace = true, features = ["raw-api"] }
+etherparse = { workspace = true }
 flow-info = { workspace = true }
 left-right = { workspace = true }
 net = { workspace = true }

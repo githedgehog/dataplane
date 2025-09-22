@@ -12,11 +12,19 @@ mod checksum;
 
 pub use checksum::*;
 
-use std::num::NonZero;
+use std::{net::IpAddr, num::NonZero};
 
 #[allow(unused_imports)] // re-export
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
+
+/// Errors which may occur when using ICMP v4 methods
+#[derive(Debug, thiserror::Error)]
+pub enum Icmp4Error {
+    /// The ICMP type does not allow setting an identifier.
+    #[error("Invalid ICMP type")]
+    InvalidIcmpType,
+}
 
 /// An `ICMPv4` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +41,83 @@ impl Icmp4 {
     #[must_use]
     pub const fn icmp_type_mut(&mut self) -> &mut Icmpv4Type {
         &mut self.0.icmp_type
+    }
+
+    /// Returns true if the ICMP type is a query message
+    #[must_use]
+    pub fn is_query_message(&self) -> bool {
+        // List all types to make it sure we catch any new addition to the enum
+        match self.icmp_type() {
+            Icmpv4Type::EchoRequest(_)
+            | Icmpv4Type::EchoReply(_)
+            | Icmpv4Type::TimestampReply(_)
+            | Icmpv4Type::TimestampRequest(_) => true,
+            Icmpv4Type::Unknown { .. }
+            | Icmpv4Type::DestinationUnreachable(_)
+            | Icmpv4Type::Redirect(_)
+            | Icmpv4Type::TimeExceeded(_)
+            | Icmpv4Type::ParameterProblem(_) => false,
+        }
+    }
+
+    /// Returns true if the ICMP type is an error message
+    #[must_use]
+    pub fn is_error_message(&self) -> bool {
+        // List all types to make it sure we catch any new addition to the enum
+        match self.icmp_type() {
+            Icmpv4Type::DestinationUnreachable(_)
+            | Icmpv4Type::Redirect(_)
+            | Icmpv4Type::TimeExceeded(_)
+            | Icmpv4Type::ParameterProblem(_) => true,
+            Icmpv4Type::Unknown { .. }
+            | Icmpv4Type::EchoRequest(_)
+            | Icmpv4Type::EchoReply(_)
+            | Icmpv4Type::TimestampReply(_)
+            | Icmpv4Type::TimestampRequest(_) => false,
+        }
+    }
+
+    /// Set the identifier field value
+    ///
+    /// # Errors
+    ///
+    /// This method returns [`Icmp4Error::InvalidIcmpType`] if the ICMP type does not allow setting an identifier.
+    pub fn try_set_identifier(&mut self, id: u16) -> Result<(), Icmp4Error> {
+        match self.icmp_type_mut() {
+            Icmpv4Type::EchoRequest(msg) | Icmpv4Type::EchoReply(msg) => {
+                msg.id = id;
+                Ok(())
+            }
+            Icmpv4Type::TimestampReply(msg) | Icmpv4Type::TimestampRequest(msg) => {
+                msg.id = id;
+                Ok(())
+            }
+            _ => Err(Icmp4Error::InvalidIcmpType),
+        }
+    }
+
+    /// Set the inner packet data for ICMP v4 Error Message
+    ///
+    /// # Errors
+    ///
+    /// * [`Icmp4Error::InvalidIcmpType`]: if the ICMP type does not allow setting an inner packet
+    ///   data
+    pub fn try_set_inner_packet_data(
+        &mut self,
+        _src_addr: &IpAddr,
+        _dst_addr: &IpAddr,
+        _src_port: u16,
+        _dst_port: u16,
+    ) -> Result<(), Icmp4Error> {
+        match self.icmp_type_mut() {
+            Icmpv4Type::DestinationUnreachable(_)
+            | Icmpv4Type::Redirect(_)
+            | Icmpv4Type::TimeExceeded(_)
+            | Icmpv4Type::ParameterProblem(_) => {
+                todo!()
+            }
+            _ => Err(Icmp4Error::InvalidIcmpType),
+        }
     }
 
     /// Create a new `Icmp4` with the given icmp type.

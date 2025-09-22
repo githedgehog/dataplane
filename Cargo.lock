@@ -1179,6 +1179,7 @@ dependencies = [
  "dataplane-lpm",
  "dataplane-net",
  "dataplane-pipeline",
+ "etherparse",
  "left-right",
  "priority-queue",
  "shuttle",
