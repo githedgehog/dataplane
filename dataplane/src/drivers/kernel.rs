@@ -196,23 +196,41 @@ fn single_worker(
 
     let handle_res = thread_builder.spawn(move || {
         let mut pipeline = setup();
-        // Prefer while-let over loop+match (clippy::while_let_loop)
-        while let Ok(pkt) = rx_from_control.recv() {
+
+        loop {
+            // Block waiting for the first packet
+            let first_packet_result = rx_from_control.recv();
+            let Ok(first_packet) = first_packet_result else {
+                first_packet_result
+                    .inspect_err(|e| error!("Error receiving first packet on worker {id}: {e}"));
+                // Tx side is likely gone, exit worker
+                return;
+            };
+
             tracing::debug!(
                 worker = id,
                 thread = %thread::current().name().unwrap_or("unnamed"),
-                pkt_len = pkt.total_len(),
-                "processing packet"
+                "processing packets"
             );
-            // feed single packet iterator through the worker's pipeline
-            // TODO: Add packet batching support
-            for out_pkt in pipeline.process(std::iter::once(*pkt)) {
+
+            // Try to receive everything else that is in the buffer
+            let packets = std::iter::once(first_packet).chain(rx_from_control.try_iter());
+
+            let mut count = 0;
+            for out_pkt in pipeline.process(packets.map(|pkt| *pkt)) {
                 // backpressure via bounded channel
                 if tx_to_control.send(Box::new(out_pkt)).is_err() {
                     // dispatcher gone; exit the thread
                     return;
                 }
+                count += 1;
             }
+
+            tracing::debug!(
+                worker = id,
+                thread = %thread::current().name().unwrap_or("unnamed"),
+                "processed {count} packets"
+            );
         }
     })?;
     Ok(tx_to_worker)
