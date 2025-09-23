@@ -334,7 +334,7 @@ impl DriverKernel {
                         Some(_keep) => {
                             // Packet is not marked for drop by the pipeline (Delivered/None/keep=true),
                             // but we still can't TX without an oif; drop here.
-                            debug!(
+                            error!(
                                 "No oif in packet meta; enforce() => keep/Delivered; dropping here"
                             );
                         }
