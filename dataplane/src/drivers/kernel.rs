@@ -184,6 +184,39 @@ fn build_kif_table(
 ///  * dispatcher serializes & transmits on the chosen outgoing interface
 pub struct DriverKernel;
 
+fn single_worker(
+    id: usize,
+    thread_builder: std::thread::Builder,
+    tx_to_control: chan::Sender<Packet<TestBuffer>>,
+    setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
+) -> Result<chan::Sender<Packet<TestBuffer>>, std::io::Error> {
+    let (tx_to_worker, rx_from_control) = chan::bounded::<Packet<TestBuffer>>(4096);
+    let setup = setup_pipeline.clone();
+
+    let handle_res = thread_builder.spawn(move || {
+        let mut pipeline = setup();
+        // Prefer while-let over loop+match (clippy::while_let_loop)
+        while let Ok(pkt) = rx_from_control.recv() {
+            tracing::debug!(
+                worker = id,
+                thread = %std::thread::current().name().unwrap_or("unnamed"),
+                pkt_len = pkt.total_len(),
+                "processing packet"
+            );
+            // feed single packet iterator through the worker's pipeline
+            // TODO: Add packet batching support
+            for out_pkt in pipeline.process(std::iter::once(pkt)) {
+                // backpressure via bounded channel
+                if tx_to_control.send(out_pkt).is_err() {
+                    // dispatcher gone; exit the thread
+                    return;
+                }
+            }
+        }
+    })?;
+    Ok(tx_to_worker)
+}
+
 #[allow(clippy::cast_possible_truncation)]
 impl DriverKernel {
     /// Compute a **symmetric** worker index for a parsed `Packet` using a bidirectional flow key.
@@ -211,43 +244,20 @@ impl DriverKernel {
         num_workers: usize,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
     ) -> io::Result<WorkerChans> {
-        let (tx_from_workers, rx_from_workers) = chan::bounded::<Packet<TestBuffer>>(4096);
+        let (tx_to_control, rx_from_workers) = chan::bounded::<Packet<TestBuffer>>(4096);
         let mut to_workers = Vec::with_capacity(num_workers);
         info!("Spawning {num_workers} workers");
         for wid in 0..num_workers {
-            let (tx_to_worker, rx_to_worker) = chan::bounded::<Packet<TestBuffer>>(8192);
-            to_workers.push(tx_to_worker);
-
-            let tx_out = tx_from_workers.clone();
-            let setup = setup_pipeline.clone();
-
             let builder = std::thread::Builder::new().name(format!("dp-worker-{wid}"));
-            let handle_res = builder.spawn(move || {
-                let mut pipeline = setup();
-                // Prefer while-let over loop+match (clippy::while_let_loop)
-                while let Ok(pkt) = rx_to_worker.recv() {
-                    tracing::debug!(
-                        worker = wid,
-                        thread = %std::thread::current().name().unwrap_or("unnamed"),
-                        pkt_len = pkt.total_len(),
-                        "processing packet"
-                    );
-                    // feed single packet iterator through the worker's pipeline
-                    // TODO: Add packet batching support
-                    for out_pkt in pipeline.process(std::iter::once(pkt)) {
-                        // backpressure via bounded channel
-                        if tx_out.send(out_pkt).is_err() {
-                            // dispatcher gone; exit the thread
-                            return;
-                        }
+            let tx_to_worker =
+                match single_worker(wid, builder, tx_to_control.clone(), setup_pipeline) {
+                    Ok(tx_to_worker) => tx_to_worker,
+                    Err(e) => {
+                        error!("Failed to spawn worker {wid}: {e}");
+                        return Err(io::Error::other("worker spawn failed"));
                     }
-                }
-            });
-
-            if let Err(e) = handle_res {
-                error!("Failed to spawn worker {wid}: {e}");
-                return Err(io::Error::other("worker spawn failed"));
-            }
+                };
+            to_workers.push(tx_to_worker);
         }
 
         Ok((to_workers, rx_from_workers))
