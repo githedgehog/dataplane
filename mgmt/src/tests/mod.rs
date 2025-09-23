@@ -3,4 +3,5 @@
 
 //! Mgmt tests
 
+#[cfg(test)]
 mod mgmt;

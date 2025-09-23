@@ -12,4 +12,8 @@ pub mod processor;
 /* VPC manager */
 pub mod vpc_manager;
 
+#[cfg(test)]
 mod tests;
+
+use tracectl::trace_target;
+trace_target!("mgmt", LevelFilter::DEBUG, &["management"]);

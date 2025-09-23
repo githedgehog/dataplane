@@ -32,3 +32,6 @@ pub use errors::{ConfigError, ConfigResult, stringify}; // re-export
 pub use external::{ExternalConfig, GenId}; // re-export
 pub use gwconfig::{GwConfig, GwConfigMeta}; // re-export
 pub use internal::InternalConfig; // re-export
+
+use tracectl::trace_target;
+trace_target!("mgmt", LevelFilter::DEBUG, &["management"]);
