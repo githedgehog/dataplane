@@ -46,8 +46,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends ansi2txt
       - name: "install binstall"
-        run: |
-          cargo install cargo-binstall
+        uses: "cargo-bins/cargo-binstall@v1"
       - name: "install upgrade tools"
         run: |
           cargo binstall -y cargo-edit # required to make `cargo upgrade` edit the Cargo.toml file
