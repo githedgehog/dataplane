@@ -3,47 +3,46 @@
 
 //! Tracing runtime control.
 
-#![allow(unused)]
-
-use std::fmt::Display;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, Once};
-use std::{
-    collections::{HashMap, HashSet},
-    hash::Hash,
-};
-
-use crate::trace_target;
-use crate::{display::TargetCfgDbByTag, targets::TRACING_TARGETS};
+#[allow(unused)]
 use tracing::{debug, error, info, warn};
-use tracing_subscriber::{
-    EnvFilter, Registry,
-    filter::{LevelFilter, targets},
-    prelude::*,
-    reload,
-};
+use tracing_subscriber::{EnvFilter, Registry, filter::LevelFilter, prelude::*, reload};
 
-trace_target!(LevelFilter::INFO, &["tracectl"]);
+use crate::{display::TargetCfgDbByTag, targets::TRACING_TARGETS, trace_target};
+
+trace_target!("tracectl", LevelFilter::INFO, &[]);
 
 #[derive(Debug, Clone)]
 pub struct TargetCfg {
     pub(crate) target: &'static str,
+    pub(crate) name: &'static str,
     pub(crate) level: LevelFilter,
-    pub(crate) tags: &'static [&'static str],
+    pub(crate) tags: Vec<&'static str>,
+    pub(crate) custom: bool,
 }
 impl TargetCfg {
-    pub const fn new(
+    fn new(
         target: &'static str,
+        name: &'static str,
         level: LevelFilter,
         tags: &'static [&'static str],
+        custom: bool,
     ) -> Self {
+        // add name as tag if it is not there
+        let mut tags = tags.to_vec();
+        if !tags.contains(&name) {
+            tags.push(name);
+        }
         Self {
             target,
+            name,
             level,
             tags,
+            custom,
         }
     }
 }
-
 #[derive(Debug, Clone)]
 pub struct Tag {
     pub(crate) tag: &'static str,
@@ -73,22 +72,31 @@ impl TargetCfgDb {
         };
         // load link-time-learnt targets
         for target in TRACING_TARGETS {
-            db.register(target.target, target.level, target.tags);
+            db.register(
+                target.target,
+                target.name,
+                target.level,
+                target.tags,
+                target.custom,
+            );
         }
         db
     }
     fn register(
         &mut self,
         target: &'static str,
+        name: &'static str,
         level: LevelFilter,
         tags: &'static [&'static str],
+        custom: bool,
     ) {
-        debug!("Registering target {target} level={level} tags={tags:?}");
-        let tconfig = TargetCfg::new(target, level, tags);
+        let tconfig = TargetCfg::new(target, name, level, tags, custom);
+        let tags = tconfig.tags.clone();
+
         if let Some(exist) = self.targets.insert(target, tconfig) {
             warn!("Target {} has been multiply defined!", exist.target);
         }
-        for tag in tags {
+        for tag in &tags {
             if let Some(tag) = self.tags.get_mut(tag) {
                 tag.targets.insert(target);
             } else {
@@ -96,14 +104,35 @@ impl TargetCfgDb {
             }
         }
     }
-
     fn env_filter(&self) -> EnvFilter {
         let mut f = EnvFilter::new(self.level.to_string());
-        for unit in self.targets.values() {
-            let directive = format!("{}={}", unit.target, unit.level);
+        for target in self.targets.values() {
+            let directive = format!("{}={}", target.target, target.level);
             f = f.add_directive(directive.parse().unwrap());
         }
         f
+    }
+    pub fn tag_targets_mut(&mut self, tag: &str) -> impl Iterator<Item = &mut TargetCfg> {
+        let targets: Vec<_> = if let Some(tag) = self.tags.get(tag) {
+            self.targets
+                .values_mut()
+                .filter(|target| tag.targets.contains(target.target))
+                .collect()
+        } else {
+            vec![]
+        };
+        targets.into_iter()
+    }
+    pub fn tag_targets(&self, tag: &str) -> impl Iterator<Item = &TargetCfg> {
+        let targets: Vec<_> = if let Some(tag) = self.tags.get(tag) {
+            self.targets
+                .values()
+                .filter(|target| tag.targets.contains(target.target))
+                .collect()
+        } else {
+            vec![]
+        };
+        targets.into_iter()
     }
 }
 
@@ -114,7 +143,7 @@ pub struct TracingControl {
 }
 impl TracingControl {
     fn new() -> Self {
-        let mut db = TargetCfgDb::new(LevelFilter::INFO);
+        let db = TargetCfgDb::new(LevelFilter::INFO);
         let (filter, reload_filter) = reload::Layer::new(db.env_filter());
 
         // formatting layer
@@ -124,11 +153,6 @@ impl TracingControl {
             .with_thread_ids(false)
             .with_thread_names(true)
             .with_level(true);
-
-        use tracing_subscriber::fmt::Layer;
-        use tracing_subscriber::layer::Layered;
-
-        let (fmt_layer, reload_fmt) = reload::Layer::new(fmt_layer);
 
         // we should not be initializing the subscriber here, but that's fine atm
         tracing_subscriber::registry()
@@ -140,11 +164,27 @@ impl TracingControl {
         Self {
             db: Arc::new(Mutex::new(db)),
             reload_filter: Arc::new(reload_filter),
-            //reload_fmt: Arc::new(reload_fmt),
         }
     }
     fn reload(&self, filter: EnvFilter) {
-        self.reload_filter.reload(filter);
+        if let Err(e) = self.reload_filter.reload(filter) {
+            error!("Failed to reload tracing filter: {e}");
+        }
+    }
+    /// We make this private to promote the usage of macros to declare targets
+    #[allow(unused)]
+    fn register(
+        &self,
+        target: &'static str,
+        name: &'static str,
+        level: LevelFilter,
+        tags: &'static [&'static str],
+        custom: bool,
+    ) {
+        if let Ok(mut db) = self.db.lock() {
+            db.register(target, name, level, tags, custom);
+            self.reload(db.env_filter());
+        }
     }
 }
 
@@ -167,25 +207,18 @@ impl TracingControl {
         get_trace_ctl();
     }
     pub fn set_tag_level(&self, tag: &str, level: LevelFilter) {
-        //must go first to avoid deadlock
-        let targets = self.get_targets_by_tag(tag);
-
         let mut db = self.db.lock().unwrap();
-        let mut changed = false;
-        for target in targets {
-            if let Some(t) = db.targets.get_mut(target) {
-                if t.level != level {
-                    t.level = level;
-                    changed = true;
-                }
-            } else {
-                error!("No target '{target}' exists. This is a bug");
+        let mut changed = 0;
+        for target in db.tag_targets_mut(tag) {
+            if target.level != level {
+                target.level = level;
+                changed += 1;
             }
         }
-        if changed {
-            info!("Set log level for tag '{tag}' to {level}");
+        if changed > 0 {
             self.reload(db.env_filter());
         }
+        info!("Changed log level for tag '{tag}' to {level}. Targets changed: {changed}");
     }
     pub fn set_default_level(&self, level: LevelFilter) {
         if let Ok(mut db) = self.db.lock()
@@ -200,14 +233,13 @@ impl TracingControl {
         let db = self.db.lock().unwrap();
         db.level
     }
-    pub fn register(&self, path: &'static str, level: LevelFilter, tags: &'static [&'static str]) {
-        if let Ok(mut db) = self.db.lock() {
-            db.register(path, level, tags);
-            self.reload(db.env_filter());
-        }
-    }
+
+    /// All of the following are to lookup the database or log it
     pub fn get_tags(&self) -> impl Iterator<Item = Tag> {
         self.db.lock().unwrap().tags.clone().into_values()
+    }
+    pub fn get_tag(&self, tag: &str) -> Option<Tag> {
+        self.db.lock().unwrap().tags.get(tag).cloned()
     }
     pub fn get_target(&self, target: &str) -> Option<TargetCfg> {
         self.db.lock().unwrap().targets.get(target).cloned()
@@ -215,14 +247,12 @@ impl TracingControl {
     pub fn get_target_all(&self) -> impl Iterator<Item = TargetCfg> {
         self.db.lock().unwrap().targets.clone().into_values()
     }
-    pub fn get_targets_by_tag(&self, tag: &str) -> impl Iterator<Item = &'static str> {
+    pub fn get_targets_by_tag(&self, tag: &str) -> impl Iterator<Item = TargetCfg> {
         let db = self.db.lock().unwrap();
-        let targets: Vec<_> = if let Some(tag) = db.tags.get(tag) {
-            tag.targets.iter().cloned().collect()
-        } else {
-            vec![]
-        };
-        targets.into_iter()
+        db.tag_targets(tag)
+            .map(|x| (*x).clone())
+            .collect::<Vec<_>>()
+            .into_iter()
     }
     pub fn dump_targets_by_tag(&self) {
         let db = self.db.lock().unwrap();
@@ -237,10 +267,10 @@ impl TracingControl {
 
 #[cfg(test)]
 mod tests {
-    use crate::control::{Tag, TargetCfg, TracingControl, get_trace_ctl};
-    use tracing::Level;
-    use tracing::level_filters::LevelFilter;
-    use tracing::{debug, error, event, info, trace, warn};
+    use crate::control::{Tag, TracingControl, get_trace_ctl};
+    use crate::targets::TRACING_TARGETS;
+    use crate::{LevelFilter, custom_target, trace_target};
+    use tracing::{debug, error, info, trace, warn};
 
     const TARGET_1: &str = "my-target-1";
     const TARGET_2: &str = "my-target-2";
@@ -279,20 +309,24 @@ mod tests {
             "The current default loglevel is {}",
             tctl.get_default_level()
         );
+        println!("{:#?}", tctl.db.lock().unwrap());
     }
 
     #[test]
     fn test_target_levels() {
         println!();
         let tctl = get_trace_ctl();
-        tctl.register(TARGET_1, LevelFilter::TRACE, &[TARGET_1]);
-        tctl.register(TARGET_2, LevelFilter::DEBUG, &[TARGET_2]);
-        tctl.register(TARGET_3, LevelFilter::INFO, &[TARGET_3]);
-        println!("{}", tctl.db.lock().unwrap());
+        tctl.register(TARGET_1, TARGET_1, LevelFilter::TRACE, &[], true);
+        tctl.register(TARGET_2, TARGET_2, LevelFilter::DEBUG, &[], true);
+        tctl.register(TARGET_3, TARGET_3, LevelFilter::INFO, &[], true);
+        tctl.dump();
+        tctl.dump_targets_by_tag();
 
         log_target1();
         log_target2();
         log_target3();
+
+        println!(" === Changing log-levels ===");
 
         tctl.set_tag_level(TARGET_1, LevelFilter::OFF);
         tctl.set_tag_level(TARGET_2, LevelFilter::WARN);
@@ -301,47 +335,29 @@ mod tests {
         log_target1();
         log_target2();
         log_target3();
+
+        tctl.dump();
     }
 
-    #[test]
-    fn test_silent() {
-        println!();
-        let tctl = get_trace_ctl();
-        tctl.set_default_level(LevelFilter::OFF);
-
-        log_target1();
-        log_target2();
-        log_target3();
-
-        tctl.register(TARGET_1, LevelFilter::ERROR, &[TARGET_1]);
-        tctl.register(TARGET_2, LevelFilter::ERROR, &[TARGET_2]);
-        tctl.register(TARGET_3, LevelFilter::ERROR, &[TARGET_3]);
-
-        log_target1();
-        log_target2();
-        log_target3();
-    }
-
-    use crate::targets::TRACING_TARGETS;
-    use crate::trace_target;
-
+    #[allow(unused)]
     fn some_function1() {
-        trace_target!("func1", LevelFilter::ERROR, &["function1"]);
+        custom_target!("func1", LevelFilter::ERROR, &["function1"]);
     }
+    #[allow(unused)]
     fn some_function2() {
         // this won't be registered since the module is already registered
-        trace_target!(LevelFilter::OFF, &["function2"]);
+        trace_target!("foo", LevelFilter::OFF, &["function2"]);
     }
 
     #[test]
     fn test_auto_register_macro() {
         // declare implicitly-named target
-        trace_target!(LevelFilter::ERROR, &["macro-auto"]);
+        trace_target!("macro-auto", LevelFilter::ERROR, &[]);
 
         // declare custom targets
-        trace_target!("target-1", LevelFilter::ERROR, &["target-1"]);
-        trace_target!("target-2", LevelFilter::WARN, &["target-2", "macro-custom"]);
-        trace_target!("target-3", LevelFilter::OFF, &["macro-custom"]);
+        custom_target!("target-1", LevelFilter::ERROR, &[]);
+        custom_target!("target-2", LevelFilter::WARN, &[]);
+        custom_target!("target-3", LevelFilter::OFF, &[]);
 
         // Target presence in static shared slice, even for targets declared later
         // This is linkme collecting them all at build/link time
@@ -363,11 +379,12 @@ mod tests {
         assert!(tctl.db.lock().unwrap().targets.contains_key("func1"));
 
         // this is declared after the checks
-        trace_target!("target-4", LevelFilter::OFF, &["target-4"]);
+        custom_target!("target-4", LevelFilter::OFF, &["target-4"]);
 
         let tags: Vec<Tag> = tctl.get_tags().collect();
         println!("{tags:#?}");
-        println!("{}", tctl.db.lock().unwrap());
+        tctl.dump();
+        tctl.dump_targets_by_tag();
     }
 
     #[test]
@@ -375,8 +392,8 @@ mod tests {
         // this test is just to check builds
         use crate::tinfo;
         const TARGET: &str = "MY-TARGET";
-        trace_target!(TARGET, LevelFilter::TRACE, &["targeted-macro"]);
-        let tctl = get_trace_ctl();
+        custom_target!(TARGET, LevelFilter::TRACE, &[]);
+        let _tctl = get_trace_ctl();
 
         tinfo!(
             TARGET,
@@ -389,7 +406,7 @@ mod tests {
     #[test]
     fn test_change_target_level() {
         const TARGET: &str = "change-target-level";
-        trace_target!(TARGET, LevelFilter::TRACE, &[TARGET]);
+        custom_target!(TARGET, LevelFilter::TRACE, &[]);
 
         let tctl = get_trace_ctl();
         assert!(tctl.db.lock().unwrap().targets.contains_key(TARGET));
@@ -401,6 +418,41 @@ mod tests {
         assert_eq!(updated.level, LevelFilter::WARN);
 
         let mut targets = tctl.get_targets_by_tag(TARGET);
-        assert_eq!(targets.next().unwrap(), TARGET);
+        assert_eq!(targets.next().unwrap().target, TARGET);
+    }
+
+    #[test]
+    fn test_change_tag_level() {
+        let tctl = get_trace_ctl();
+
+        const TAG: &str = "common-tag";
+        const T1: &str = "t1";
+        const T2: &str = "t2";
+        const T3: &str = "t3";
+        const T4: &str = "t4";
+
+        custom_target!(T1, LevelFilter::DEBUG, &[TAG]);
+        custom_target!(T2, LevelFilter::ERROR, &[TAG]);
+        custom_target!(T3, LevelFilter::WARN, &[TAG]);
+        custom_target!(T4, LevelFilter::INFO, &[TAG]);
+
+        assert!(tctl.get_tag(TAG).is_some());
+        let targets: Vec<_> = tctl.get_targets_by_tag(TAG).map(|t| t.target).collect();
+        assert!(targets.contains(&T1));
+        assert!(targets.contains(&T2));
+        assert!(targets.contains(&T3));
+        assert!(targets.contains(&T4));
+
+        assert_eq!(tctl.get_target(T1).unwrap().level, LevelFilter::DEBUG);
+        assert_eq!(tctl.get_target(T2).unwrap().level, LevelFilter::ERROR);
+        assert_eq!(tctl.get_target(T3).unwrap().level, LevelFilter::WARN);
+        assert_eq!(tctl.get_target(T4).unwrap().level, LevelFilter::INFO);
+
+        tctl.set_tag_level(TAG, LevelFilter::OFF);
+
+        assert_eq!(tctl.get_target(T1).unwrap().level, LevelFilter::OFF);
+        assert_eq!(tctl.get_target(T2).unwrap().level, LevelFilter::OFF);
+        assert_eq!(tctl.get_target(T3).unwrap().level, LevelFilter::OFF);
+        assert_eq!(tctl.get_target(T4).unwrap().level, LevelFilter::OFF);
     }
 }

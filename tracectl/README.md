@@ -8,7 +8,7 @@
 * However, we currently (mis)use a single hard-coded EnvFilter, without exploiting its flexibility: pretty much all logs are either disabled or governed by a single log-level set at compile time.
 
 Ideally, we would be able to change traces' log levels (or even enable/disable them) selectively for the distinct subsystems, at runtime.
-Run-time adjustment of the maximum log-level can be achieved by the EnvFilter object and its reloading capabilities. The EnvFilter allows adjusting log-levels for each *target*. Targets exist for *events* and *spans*. Think of targets as scopes where traces belong or are sent to: when some trace like `info!("Hey")` is added to the code, a target is implicitly created and automatically named, by default, based on the path of the module/submodule where the log resides in the source code (this is done using the `module_path!()` built-in). Knowing target identifiers is needed to adjust their log-level. This can be problematic in the dataplane implementation since the code is spread in distinct crates: we'd like to control the verbosity of targets defined across all crates in a **centralized** fashion; however, keeping some "target database" may not be easy because, if we use the implicit path-based identifiers, the targets in such a database may accidentally get out-of-sync if crates get internally re-organized. For instance, a trace emitted within some `sStateful` submodule within the `nat` crate may use an automatic target of `nat::stateful`. If the nat crate happened to be re-organized or some of the modules renamed, the target ids may become, say,  `cgnat::modes::stateful`. This would require the database of targets to be updated and replace `nat::stateful` by `cgnat::modes::stateful`. Some way to get stable identifiers for automatic targets is needed.
+Run-time adjustment of the log-level can be achieved by the EnvFilter object and its reloading capabilities. The EnvFilter allows adjusting log-levels for each *target*. Targets exist for *events* and *spans*. Think of targets as scopes where traces belong or are sent to: when some trace like `info!("Hey")` is added to the code, a target is implicitly created and automatically named, by default, based on the path of the module/submodule where the log resides in the source code (this is done using the `module_path!()` built-in). Knowing target identifiers is needed to adjust their log-level. This can be problematic in the dataplane implementation since the code is spread across distinct crates: we'd like to control the verbosity of targets across all crates in a **centralized** fashion; however, keeping some "target database" may not be easy because, if we use the implicit path-based identifiers, the targets in such a database may accidentally get out-of-sync if crates get internally re-organized. For instance, a trace emitted within some `sStateful` submodule within the `nat` crate may use an implicit target of `nat::stateful`. If the nat crate happened to be re-organized or some of the modules renamed, the target ids may become, say,  `cgnat::modes::stateful`. This would require the database of targets to be updated and replace `nat::stateful` by `cgnat::modes::stateful`. Some way to get stable identifiers for implicitly-named targets is needed.
 
 One option would be to explicitly set the target names in all the member crates. That would solve the issue of the database becoming out-of-sync on crate reorganization. However, that would not solve the problem of populating the target database in the first place: any time a crate defined a new target, we'd still need to update the database to add it. This may be solved by letting the participating crates register their targets in the database. However, such as solution is inconvenient if done at run-time: how would crates declare their targets? Would there need to be an initialization routine per crate? Who would call that?
 
@@ -21,10 +21,15 @@ This crate exists to solve the above issues allowing:
 
 ## Usage model and requirements
 * This crate cannot (nor should) understand trace semantics. Trace/log semantics and their relations must be provided by the crates defining them.
-* Crates *register* their targets of interest (the targets whose log-level is desired to be dynamically adjusted) by *declaring* them, along with their initial, default log level and the associated **tags**. Tags serve two purposes. First, they act as stable identifiers to refer to targets independently of their name; e.g. in an API. Second, a target may be associated with multiple tags. This allows controlling multiple targets simultaneously. For instance, in a packet pipeline, each network functions (NF) may emit logs to a distinct target; e.g. a  NAT NF may have a target labeled as *nat*. This may allow enabling / disabling NAT-related debug logs at runtime, while only emitting warnings or errors in production. If, in addition, the NAT (and rest of NFs) are associated with some tag *pipeline*, one may be able to enable / disable the logs (or restrict them to, say, up to INFO) in all of the NFs composing the pipeline.
+* Crates *register* their targets of interest (the targets whose log-level is to be dynamically adjusted) by *declaring* them, along with their initial, default log level, a stable *name* and optional **tags**. Tags serve two purposes. First, they act as stable identifiers to refer to targets independently of their path; e.g. in an API. Second, a target may be associated with multiple tags. This allows controlling multiple targets simultaneously.
+
+For instance, in a packet pipeline, each network function (NF) may emit logs to a distinct target; e.g. a  NAT NF may have a target labeled as *nat*. This may allow enabling / disabling NAT-related debug logs at runtime, while only emitting warnings or errors in production. If, in addition, the NAT (and rest of NFs) are associated with some tag *pipeline*, one may be able to enable / disable the logs (or restrict them to, say, up to INFO) in all of the NFs composing the pipeline.
 So, the takeaway is that tags represent **sets of targets** and a target can be member of an arbitrary number of sets.
 * Tags are implemented as strings since each crate should be able to define them and having a custom type (e.g. some *enum* in a centralized crate, like this one) would entail needing to update that crate every time some other crate required a new tag.
 * However, if a tag is to be shared by distinct crates, the consistency of that needs to be enforced outside of this crate.
+
+**Note:** The *name* of a target is its main identifier and is automatically treated as a *tag*. Therefore, registered targets always have at least one tag to control them.
+
 
 ## Implementation
 This implementation has about 3 pieces:
@@ -34,47 +39,48 @@ This implementation has about 3 pieces:
 
 # Usage
 
-## Target registration (how to declare targets in crates)
+## Target configuration and registration (how to declare targets in crates)
 
 ### Implicit targets
-Registering implicit targets is straightforward. We just need to declare the target in the module with macro `trace_target!` to associate it with a tag and set the initial log-level.
-
+Targets are implicitly created by macros like `info!()`, with a path that defaults to `module_path!()`. In order to be able to control the verbosity of those targets, these need to be *registered*. Registering such implicit targets is straightforward. We just need to declare the target in the module with macro `trace_target!` to associate it with a *name*, the initial log-level and additional, optional tags.
 
 ```rust
 // import trace_target! macro to register targets
 use tracectl::trace_target;
 
-// declare target within the current module
-trace_target!(LevelFilter::ERROR, &["mytarget1"]);
+// declare target within the current module with name mytarget1 and additional tag "some-other-tag"
+trace_target!("mytarget1", LevelFilter::ERROR, &["some-other-tag"]);
 ```
+
+**Note**: the *name* of a target (`"mytarget1"` above) needs not be specified in the array of tags and will be automatically added.
 
 ### Custom targets
 
 Placing a `trace_target!` stanza in each module/submodule should make all traces in a crate controllable via tag(s).
 We may, however, need more control within a module/submodule and be able to govern log levels at a higher granularity.
-This can be achieved by declaring a *custom* target. A custom target (a target with an explicitly-set identifier) can be declared by specifying its name in the first argument to `trace_target!` as
+This can be achieved by declaring *custom* targets. Registering a custom target --a target with an explicitly-set identifier-- can be done similarly as
 
 ```rust
-trace_target!("custom-target", LevelFilter::ERROR, &["my-feature"]);
+custom_target!("my-custom-target", LevelFilter::ERROR, &["my-feature"]);
 ```
 
-Emitting logs to target `"custom-target"`, can be done with the extant macros indicating the target as a key-value:
+The above simply registers a configuration for a target called `"my-custom-target"`. However that will do nothing if the target does not exist. For such a target to exist, some logs (events/spans) should refer to it. In order to emit logs within some custom target, the existing macros can be used, specifying the target as a key-value:
 ```rust
-info!(target:"custom-target", "This is a log");
+info!(target:"my-custom-target", "This is a log");
 ```
 
 In order to make the above less verbose, this crate defines new macros (`terror, twarn, tinfo, tdebug` and `ttrace`) which allow you to write, instead:
 ```rust
-tinfo!("custom-target", "This is a log");
+tinfo!("my-custom-target", "This is a log");
 ```
 
 So, a consistent way of defining custom targets within a module may be:
 
 ```rust
-const T1: &'static str = "my-target1";
-const T2: &'static str = "my-target2";
-trace_target!(T1, LevelFilter::ERROR, &[T1, "my-feature"]);
-trace_target!(T2, LevelFilter::WARN, &[T2, "my-feature"]);
+const T1: &str = "my-target1";
+const T2: &str = "my-target2";
+custom_target!(T1, LevelFilter::ERROR, &["my-feature"]);
+custom_target!(T2, LevelFilter::WARN, &["my-feature"]);
 
 fn some_function(...) {
   if bug {
@@ -97,15 +103,24 @@ impl BAR {
 
 ```
 
-Note that we provide a distinct/unique tag to each target as well as a common one (`"my-feature"`).
-This allows controlling each target independently, or jointly.
+With the above, each target gets a unique *name* (equal to the target name) and a common tag.
+So, every target is controlled by 2 tags: a dedicated one and `"my-feature"`.
 
 With the initial target log-levels in the example, only the first two logs would be emitted.
 
+### Third-party crate targets
+The dataplane uses third-party crates that emit logs themselves (e.g. *tonic* or *h2*), whose source code we don't want to modify.
+The solution to control their log-levels is to declare a *custom* target configuration **elsewhere** as
+
+```rust
+custom_target!("tonic", LevelFilter::ERROR, &["third-party"])
+```
+... where `"tonic"` may be used to control all logs in the crate and `"third-party"` be a shared tag to control all third-party crates.
+Additional custom targets could be created for the crate's modules, but that would require knowing the internal organization of the crate and such configs could get out of sync. Using a single target config with the name of the crate should guarantee that the configuration is in sync, which suffices in our case since we may use those target configs to mute all logs or limit them to just errors.
 
 ## Notes
 * Using custom targets has implications on log formatting, depending on how the formatting layer is configured, since target names may be displayed.
-* Targets may be declared *without* tags. That makes it not possible to change them dynamically, which is useful in some cases. E.g. we may never want the traces emitted by *this* crate to be adjustable.
+* Targets may be declared *without* tags: they will always get one equal to their *name*.
 * The way the target registration works, targets may be declared in any place in the code; even within functions. The recommendation is, however, to place them at the beginning of each source code file.
 * The way the Envfilters are built by this crate, if an (implicit) target is not registered (i.e. no `trace_target!()` is explicitly set) in some module/submodule, its log-level will be that of the nearest ancestor in the hierarchy. If no ancestor target is explicitly registered, the log-level will be governed by the *default*.
 This means that `trace_target!()` *needs not be added in every source code file*. The rule of thumb should be: if you believe that some set of debug logs are worth being governed separately (e.g. because they are generally verbose and usually not needed, but may be worth enabling at run-time), then declare their target. Else, don't.
@@ -140,13 +155,7 @@ The tracing controller also allows setting the desired default log-level as:
 get_trace_ctl().set_default_level(LevelFilter::ERROR);
 ```
 
-### Controlling third-party crate targets
-The dataplane uses third-party crates that emit logs themselves (e.g. *tonic* or *h2*). Since we can't use the 'automatic' target registry based on `trace_target!` in those crates, we may control those by directly invoking the controller methods as
 
-```rust
-get_trace_ctl().register("tonic", LevelFilter::ERROR, &["tonic", "third-party"]);
-```
-... where tag `"tonic"` may be the tag to control the crate and `"third-party"` be a shared tag to control all of the targets in third-party crates. In most cases, this may be used to mute/disable logs or limit them to just errors.
 
 ### Checking targets, tags and levels
 The tracing controller has several other methods to:
