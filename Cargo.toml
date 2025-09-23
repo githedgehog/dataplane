@@ -99,7 +99,7 @@ netdev = { version = "0.37.3", default-features = false, features = [] }
 nix = { version = "0.30.1", default-features = false, features = ["socket"] }
 num-traits = { version = "0.2.19", default-features = false, features = [] }
 once_cell = { version = "1.21.3", default-features = false, features = [] }
-ordermap = { version = "0.5.10", default-features = false, features = [] }
+ordermap = { version = "0.5.12", default-features = false, features = [] }
 parking_lot = { version = "0.12.4", default-features = false, features = [] }
 prefix-trie = { version = "0.8.1", default-features = false, features = [] }
 pretty_assertions = { version = "1.4.1", default-features = false, features = ["std"] }
