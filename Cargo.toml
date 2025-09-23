@@ -83,7 +83,7 @@ fixin = { git = "https://github.com/githedgehog/fixin", branch = "main" }
 futures = { version = "0.3.31", default-features = false, features = [] }
 hashbrown = { version = "0.16.0", default-features = false, features = [] }
 hyper = { version = "1.7.0", default-features = false, features = ["http1", "server"] }
-hyper-util = { version = "0.1.16", features = ["tokio"] }
+hyper-util = { version = "0.1.17", features = ["tokio"] }
 ipnet = { version = "2.11.0", default-features = false, features = [] }
 kanal = { version = "0.1.1", default-features = false, features = [] }
 left-right = { version = "0.11.5" }
