@@ -39,8 +39,8 @@ use tracing::{debug, error, info, warn};
 // Flow-key based symmetric hashing
 use pkt_meta::flow_table::flow_key::{Bidi, FlowKey};
 
-type WorkerTx = chan::Sender<Packet<TestBuffer>>;
-type WorkerRx = chan::Receiver<Packet<TestBuffer>>;
+type WorkerTx = chan::Sender<Box<Packet<TestBuffer>>>;
+type WorkerRx = chan::Receiver<Box<Packet<TestBuffer>>>;
 type WorkerChans = (Vec<WorkerTx>, WorkerRx);
 
 /// Simple representation of a kernel interface.
@@ -188,10 +188,10 @@ pub struct DriverKernel;
 fn single_worker(
     id: usize,
     thread_builder: thread::Builder,
-    tx_to_control: chan::Sender<Packet<TestBuffer>>,
+    tx_to_control: WorkerTx,
     setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
-) -> Result<chan::Sender<Packet<TestBuffer>>, std::io::Error> {
-    let (tx_to_worker, rx_from_control) = chan::bounded::<Packet<TestBuffer>>(4096);
+) -> Result<WorkerTx, std::io::Error> {
+    let (tx_to_worker, rx_from_control) = chan::bounded::<Box<Packet<TestBuffer>>>(4096);
     let setup = setup_pipeline.clone();
 
     let handle_res = thread_builder.spawn(move || {
@@ -206,9 +206,9 @@ fn single_worker(
             );
             // feed single packet iterator through the worker's pipeline
             // TODO: Add packet batching support
-            for out_pkt in pipeline.process(std::iter::once(pkt)) {
+            for out_pkt in pipeline.process(std::iter::once(*pkt)) {
                 // backpressure via bounded channel
-                if tx_to_control.send(out_pkt).is_err() {
+                if tx_to_control.send(Box::new(out_pkt)).is_err() {
                     // dispatcher gone; exit the thread
                     return;
                 }
@@ -245,7 +245,7 @@ impl DriverKernel {
         num_workers: usize,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
     ) -> io::Result<WorkerChans> {
-        let (tx_to_control, rx_from_workers) = chan::bounded::<Packet<TestBuffer>>(4096);
+        let (tx_to_control, rx_from_workers) = chan::bounded::<Box<Packet<TestBuffer>>>(4096);
         let mut to_workers = Vec::with_capacity(num_workers);
         info!("Spawning {num_workers} workers");
         for wid in 0..num_workers {
@@ -353,31 +353,36 @@ impl DriverKernel {
             }
 
             // 3) For readable interfaces, pull frames, parse to Packet<TestBuffer>, shard to workers
-            for event in &events {
-                if !event.is_readable() {
-                    continue;
+            Self::recv_packets(&mut kiftable, &events).for_each(|pkt| {
+                let target = Self::compute_worker_idx(&pkt, num_worker_chans);
+                if to_workers[target].try_send(pkt).is_err() {
+                    // queue full => soft drop
+                    // FIXME(mvachhar): this is bad, we need to increment drop stats here, but how?
+                    // FIXME(mvachhar): We need to backpressure the NIC without starving other workers, how do we do that?
+                    warn!("Worker {target} queue full: dropping packet");
+                } else {
+                    debug!(worker = target, "dispatched packet to worker");
                 }
-                if let Some(interface) = kiftable.get_mut(event.token()) {
-                    let pkts = Self::packet_recv(interface);
-                    for pkt in pkts {
-                        let idx = Self::compute_worker_idx(&pkt, num_worker_chans);
-                        let target = idx;
-                        // best-effort delivery; if full, drop (bounded channel is the backpressure)
-                        if to_workers[target].try_send(pkt).is_err() {
-                            // queue full => soft drop
-                            warn!("Worker {} queue full: dropping packet", target);
-                        } else {
-                            debug!(worker = target, "dispatched packet to worker");
-                        }
-                    }
-                }
-            }
+            });
         }
+    }
+
+    pub fn recv_packets(
+        kiftable: &mut KifTable,
+        events: &mio::Events,
+    ) -> impl Iterator<Item = Box<Packet<TestBuffer>>> {
+        events
+            .iter()
+            .filter(|e| e.is_readable())
+            .map(mio::event::Event::token)
+            .filter_map(|token| kiftable.get_mut(token).map(Self::packet_recv))
+            .flatten()
     }
 
     /// Tries to receive frames from the indicated interface and builds `Packet`s
     /// out of them. Returns a vector of [`Packet`]s.
-    pub fn packet_recv(interface: &mut Kif) -> Vec<Packet<TestBuffer>> {
+    #[allow(clippy::vec_box)] // We want to avoid Packet moves, so allow Vec<Box<_>> to be sure
+    pub fn packet_recv(interface: &mut Kif) -> Vec<Box<Packet<TestBuffer>>> {
         let mut raw = [0u8; 2048];
         let mut pkts = Vec::with_capacity(32);
         loop {
@@ -389,7 +394,7 @@ impl DriverKernel {
                     match Packet::new(buf) {
                         Ok(mut incoming) => {
                             incoming.get_meta_mut().iif = InterfaceId::new(interface.ifindex);
-                            pkts.push(incoming);
+                            pkts.push(Box::new(incoming));
                         }
                         Err(e) => {
                             // Parsing errors happen; avoid logspam for loopback
