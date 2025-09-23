@@ -21,6 +21,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
 
+use tracectl::trace_target;
+trace_target!("cpi", LevelFilter::DEBUG, &["routing-full"]);
+
 pub(crate) const CPI_STATS_SIZE: usize = RpcResultCode::RpcResultCodeMax as usize;
 #[derive(Default)]
 pub(crate) struct StatsRow(pub(crate) [u64; CPI_STATS_SIZE]);

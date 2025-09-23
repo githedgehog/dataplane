@@ -17,6 +17,9 @@ use config::GenId;
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
 
+use tracectl::trace_target;
+trace_target!("frrmi", LevelFilter::DEBUG, &["routing-full"]);
+
 #[derive(Error, Debug)]
 pub(crate) enum FrrErr {
     #[error("No connection to frr-agent exists")]

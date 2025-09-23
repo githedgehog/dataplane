@@ -24,6 +24,9 @@ use std::rc::Rc;
 use std::str::FromStr;
 use tracing::{debug, error};
 
+use tracectl::trace_target;
+trace_target!("next-hops", LevelFilter::WARN, &["routing-full"]);
+
 #[derive(Debug)]
 /// A collection of unique next-hops. Next-hops are identified by a next-hop key
 /// that can contain an address, ifindex and encapsulation.

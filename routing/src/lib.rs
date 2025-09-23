@@ -33,3 +33,7 @@ mod rpc_adapt;
 // re-exports
 pub use errors::RouterError;
 pub use router::{Router, RouterParams, RouterParamsBuilder};
+
+// crate-wide target
+use tracectl::trace_target;
+trace_target!("routing", LevelFilter::DEBUG, &["routing-full"]);
