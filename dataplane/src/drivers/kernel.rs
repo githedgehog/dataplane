@@ -15,6 +15,7 @@
 use afpacket::sync::RawPacketStream;
 
 use concurrency::sync::Arc;
+use concurrency::thread;
 
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
@@ -186,7 +187,7 @@ pub struct DriverKernel;
 
 fn single_worker(
     id: usize,
-    thread_builder: std::thread::Builder,
+    thread_builder: thread::Builder,
     tx_to_control: chan::Sender<Packet<TestBuffer>>,
     setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
 ) -> Result<chan::Sender<Packet<TestBuffer>>, std::io::Error> {
@@ -199,7 +200,7 @@ fn single_worker(
         while let Ok(pkt) = rx_from_control.recv() {
             tracing::debug!(
                 worker = id,
-                thread = %std::thread::current().name().unwrap_or("unnamed"),
+                thread = %thread::current().name().unwrap_or("unnamed"),
                 pkt_len = pkt.total_len(),
                 "processing packet"
             );
@@ -248,7 +249,7 @@ impl DriverKernel {
         let mut to_workers = Vec::with_capacity(num_workers);
         info!("Spawning {num_workers} workers");
         for wid in 0..num_workers {
-            let builder = std::thread::Builder::new().name(format!("dp-worker-{wid}"));
+            let builder = thread::Builder::new().name(format!("dp-worker-{wid}"));
             let tx_to_worker =
                 match single_worker(wid, builder, tx_to_control.clone(), setup_pipeline) {
                     Ok(tx_to_worker) => tx_to_worker,
