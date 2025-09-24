@@ -4,6 +4,7 @@
 //! Tracing runtime control.
 
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use std::sync::{Arc, Mutex, Once};
 #[allow(unused)]
 use tracing::{debug, error, info, warn};
@@ -234,6 +235,30 @@ impl TracingControl {
         db.level
     }
 
+    /// Parse a string made of comma-separated tag=level, where level=off,error,warn,info,debug,trace
+    fn parse_tracing_config(input: &str) -> Result<HashMap<String, LevelFilter>, String> {
+        let mut result = HashMap::new();
+
+        for item in input.split(',') {
+            let item = item.trim();
+            if let Some((tag, level)) = item.split_once('=') {
+                let level = LevelFilter::from_str(level.trim())
+                    .map_err(|e| format!("invalid level {}: {}", level.trim(), e))?;
+                result.insert(tag.trim().to_string(), level);
+            } else {
+                return Err("Invalid syntax: it should be tag=loglevel".to_string());
+            }
+        }
+        Ok(result)
+    }
+    pub fn setup_from_string(&self, input: &str) -> Result<(), String> {
+        let config = Self::parse_tracing_config(input)?;
+        for (tag, level) in config.iter() {
+            self.set_tag_level(tag, *level);
+        }
+        Ok(())
+    }
+
     /// All of the following are to lookup the database or log it
     pub fn get_tags(&self) -> impl Iterator<Item = Tag> {
         self.db.lock().unwrap().tags.clone().into_values()
@@ -454,5 +479,33 @@ mod tests {
         assert_eq!(tctl.get_target(T2).unwrap().level, LevelFilter::OFF);
         assert_eq!(tctl.get_target(T3).unwrap().level, LevelFilter::OFF);
         assert_eq!(tctl.get_target(T4).unwrap().level, LevelFilter::OFF);
+    }
+
+    #[test]
+    fn test_setup_from_string() {
+        let tctl = get_trace_ctl();
+        tctl.set_tag_level("common-tag", LevelFilter::INFO);
+        tctl.set_tag_level("MY-TARGET", LevelFilter::INFO);
+        tctl.set_tag_level("target-4", LevelFilter::INFO);
+        tctl.dump_targets_by_tag();
+
+        // update from string
+        tctl.setup_from_string("common-tag=off,MY-TARGET=warn, target-4=error")
+            .unwrap();
+
+        // check
+        tctl.dump_targets_by_tag();
+        tctl.get_targets_by_tag("common-tag")
+            .for_each(|t| assert_eq!(t.level, LevelFilter::OFF));
+        tctl.get_targets_by_tag("MY-TARGET")
+            .for_each(|t| assert_eq!(t.level, LevelFilter::WARN));
+        tctl.get_targets_by_tag("target-4")
+            .for_each(|t| assert_eq!(t.level, LevelFilter::ERROR));
+
+        // fail if level is bad
+        assert!(tctl.setup_from_string("common-tag=bad").is_err());
+
+        // fail if no level is given
+        assert!(tctl.setup_from_string("common-tag=error, foo").is_err());
     }
 }
