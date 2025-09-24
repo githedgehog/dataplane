@@ -42,9 +42,10 @@ pub(crate) struct CmdArgs {
         long,
         value_name = "N",
         default_value_t = 1,
+        value_parser = clap::value_parser!(u16).range(1..=64),
         help = "Number of worker threads for the kernel driver"
     )]
-    num_workers: usize,
+    num_workers: u16,
 
     /// gRPC server address (IP:PORT for TCP or path for UNIX socket)
     #[arg(
@@ -101,10 +102,8 @@ impl CmdArgs {
         }
     }
 
-    /// Number of worker threads to use for the kernel driver.
-    /// Falls back to 1 if not specified or invalid.
     pub fn kernel_num_workers(&self) -> usize {
-        self.num_workers
+        self.num_workers.into()
     }
     pub fn kernel_interfaces(&self) -> Vec<String> {
         self.interface.clone()
