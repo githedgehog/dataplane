@@ -173,23 +173,29 @@ impl EmbeddedPacketData {
 pub enum IcmpProtoKey {
     QueryMsgData(IcmpIdentifier),
     ErrorMsgData(Option<EmbeddedPacketData>),
+    Unsupported,
 }
 
 impl IcmpProtoKey {
-    pub fn new_icmp_v4<Buf: PacketBufferMut>(packet: &Packet<Buf>, icmp: &Icmp4) -> Self {
+    pub fn new_icmp_v4<Buf: PacketBufferMut>(_packet: &Packet<Buf>, icmp: &Icmp4) -> Self {
         match icmp.icmp_type() {
             Icmpv4Type::EchoRequest(echo_header) | Icmpv4Type::EchoReply(echo_header) => {
                 IcmpProtoKey::QueryMsgData(echo_header.id)
             }
             Icmpv4Type::TimeExceeded(_) | Icmpv4Type::DestinationUnreachable(_) => {
-                IcmpProtoKey::ErrorMsgData(Some(EmbeddedPacketData::from_packet(packet)))
+                // IcmpProtoKey::ErrorMsgData(Some(EmbeddedPacketData::from_packet(packet)))
+                IcmpProtoKey::ErrorMsgData(None) // FIXME - from_packet() is not implemented yet
             }
-            _ => unimplemented!(),
+            _ => IcmpProtoKey::Unsupported,
         }
     }
 
-    pub fn new_icmp_v6<Buf: PacketBufferMut>(_packet: &Packet<Buf>, _icmp: &Icmp6) -> Self {
-        todo!()
+    pub fn new_icmp_v6<Buf: PacketBufferMut>(_packet: &Packet<Buf>, icmp: &Icmp6) -> Self {
+        #[allow(clippy::match_single_binding)]
+        match icmp.icmp_type() {
+            // FIXME - Add basic support for ICMPv6
+            _ => IcmpProtoKey::Unsupported,
+        }
     }
 
     #[must_use]
@@ -199,6 +205,7 @@ impl IcmpProtoKey {
             IcmpProtoKey::ErrorMsgData(inner) => {
                 IcmpProtoKey::ErrorMsgData(inner.as_ref().map(EmbeddedPacketData::reverse))
             }
+            IcmpProtoKey::Unsupported => IcmpProtoKey::Unsupported,
         }
     }
 }
@@ -666,16 +673,20 @@ mod contract {
     impl TypeGenerator for IcmpProtoKey {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
             let variant = driver.produce::<u8>()?;
-            if variant % 2 == 0 {
-                let id = driver.produce()?;
-                Some(IcmpProtoKey::QueryMsgData(id))
-            } else {
-                let variant = driver.produce::<u8>()?;
-                let inner = match variant % 2 {
-                    0 => None,
-                    _ => Some(EmbeddedPacketData::generate(driver)?),
-                };
-                Some(IcmpProtoKey::ErrorMsgData(inner))
+            match variant % 3 {
+                0 => {
+                    let id = driver.produce()?;
+                    Some(IcmpProtoKey::QueryMsgData(id))
+                }
+                1 => {
+                    let variant = driver.produce::<u8>()?;
+                    let inner = match variant % 2 {
+                        0 => None,
+                        _ => Some(EmbeddedPacketData::generate(driver)?),
+                    };
+                    Some(IcmpProtoKey::ErrorMsgData(inner))
+                }
+                _ => Some(IcmpProtoKey::Unsupported),
             }
         }
     }
@@ -989,7 +1000,7 @@ mod tests {
                         )
                         .unwrap();
                 }
-                IcmpProtoKey::ErrorMsgData(None) => {}
+                IcmpProtoKey::ErrorMsgData(None) | IcmpProtoKey::Unsupported => {}
             },
         }
     }
