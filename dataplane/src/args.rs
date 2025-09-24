@@ -43,7 +43,7 @@ pub(crate) struct CmdArgs {
         value_name = "N",
         default_value_t = 1,
         value_parser = clap::value_parser!(u16).range(1..=64),
-        help = "Number of worker threads for the kernel driver"
+        help = "Number of worker threads for the kernel driver in [1..64]"
     )]
     num_workers: u16,
 
@@ -92,6 +92,27 @@ pub(crate) struct CmdArgs {
         help = "Bind address and port for Prometheus metrics HTTP endpoint"
     )]
     metrics_address: SocketAddr,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Show the available tracing tags and exit"
+    )]
+    show_tracing_tags: bool,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Show configurable tracing targets and exit"
+    )]
+    show_tracing_targets: bool,
+
+    #[arg(
+        long,
+        value_name = "tracing configuration",
+        help = "Tracing config string as comma-separated sequence of tag=level, with level one in [off,error,warn,info,debug,trace]"
+    )]
+    tracing: Option<String>,
 }
 
 impl CmdArgs {
@@ -100,6 +121,16 @@ impl CmdArgs {
             None => "dpdk",
             Some(name) => name,
         }
+    }
+
+    pub fn show_tracing_tags(&self) -> bool {
+        self.show_tracing_tags
+    }
+    pub fn show_tracing_targets(&self) -> bool {
+        self.show_tracing_targets
+    }
+    pub fn tracing(&self) -> Option<&String> {
+        self.tracing.as_ref()
     }
 
     pub fn kernel_num_workers(&self) -> usize {

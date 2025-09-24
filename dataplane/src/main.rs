@@ -53,15 +53,30 @@ fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
 }
 
 fn main() {
+    /* parse cmd line args */
+    let args = CmdArgs::parse();
+    if let Some(tracing) = args.tracing()
+        && let Err(e) = get_trace_ctl().setup_from_string(tracing)
+    {
+        error!("Invalid tracing configuration: {e}");
+        panic!("Invalid tracing configuration: {e}");
+    }
+    if args.show_tracing_tags() {
+        get_trace_ctl().dump_targets_by_tag();
+        std::process::exit(0);
+    }
+    if args.show_tracing_targets() {
+        get_trace_ctl().dump();
+        std::process::exit(0);
+    }
+
+    /* initialize logging */
     init_logging();
     info!("Starting gateway process...");
 
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
     ctrlc::set_handler(move || stop_tx.send(()).expect("Error sending SIGINT signal"))
         .expect("failed to set SIGINT handler");
-
-    /* parse cmd line args */
-    let args = CmdArgs::parse();
 
     let grpc_addr = match args.get_grpc_address() {
         Ok(addr) => addr,
