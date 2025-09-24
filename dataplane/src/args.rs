@@ -110,7 +110,10 @@ pub(crate) struct CmdArgs {
     #[arg(
         long,
         value_name = "tracing configuration",
-        help = "Tracing config string as comma-separated sequence of tag=level, with level one in [off,error,warn,info,debug,trace]"
+        help = "Tracing config string as comma-separated sequence of tag=level, with level one in [off,error,warn,info,debug,trace].
+Passing default=level sets the default log-level.
+Passing all=level allows setting the log-level of all targets to level.
+E.g. default=error,all=info,nat=debug will set the default target to error, and all the registered targets to info, but enable debug for nat"
     )]
     tracing: Option<String>,
 }

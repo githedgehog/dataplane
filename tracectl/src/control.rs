@@ -221,6 +221,13 @@ impl TracingControl {
         }
         info!("Changed log level for tag '{tag}' to {level}. Targets changed: {changed}");
     }
+    pub fn set_level_all(&self, level: LevelFilter) {
+        let mut db = self.db.lock().unwrap();
+        for target in db.targets.values_mut() {
+            target.level = level;
+        }
+        self.reload(db.env_filter());
+    }
     pub fn set_default_level(&self, level: LevelFilter) {
         if let Ok(mut db) = self.db.lock()
             && db.level != level
@@ -253,6 +260,19 @@ impl TracingControl {
     }
     pub fn setup_from_string(&self, input: &str) -> Result<(), String> {
         let config = Self::parse_tracing_config(input)?;
+
+        // if input has default=level, set the default
+        if let Some(level) = config.get("default") {
+            self.set_default_level(*level);
+        }
+
+        // if input has all=level, set the log-level for all targets to level
+        if let Some(level) = config.get("all") {
+            self.set_level_all(*level);
+        }
+
+        // even if we set the level to all, allow overriding here.
+        // this allows configs like default=error,all=info,nat=debug
         for (tag, level) in config.iter() {
             self.set_tag_level(tag, *level);
         }
