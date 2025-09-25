@@ -132,6 +132,14 @@ store-success-output = true
 # <description> element.
 store-failure-output = true
 
+[test-groups]
+vm = { max-threads = 1 }
+
 # [[profile.default.overrides]]
 # filter = 'test(flaky test name here)'
 # retries = 3
+
+[[profile.default.overrides]]
+filter = 'package(dataplane)'
+platform = 'cfg(unix)'
+test-group = 'vm'
