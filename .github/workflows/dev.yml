@@ -10,12 +10,12 @@
 name: "dev.yml"
 
 on:
-  pull_request: { }
+  pull_request: {}
   push:
     branches:
       - "main"
   merge_group:
-    types: [ "checks_requested" ]
+    types: ["checks_requested"]
   workflow_dispatch:
     inputs:
       debug_enabled:
@@ -64,7 +64,7 @@ jobs:
               - '.github/workflows/dev.yml'
 
   check:
-    needs: [ check_changes ]
+    needs: [check_changes]
     if: "${{ needs.check_changes.outputs.devfiles == 'true' }}"
     permissions:
       checks: "write"
@@ -116,8 +116,8 @@ jobs:
 
       - name: "set up build environment"
         run: |
-          docker run --privileged --rm busybox:latest sh -c "echo 512 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages && cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
-          docker pull ghcr.io/githedgehog/testn/n-vm:0.0.5
+          docker run --privileged --rm busybox:latest sh -c "echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages && cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
+          docker pull ghcr.io/githedgehog/testn/n-vm:v0.0.6
           just --yes \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
@@ -193,11 +193,11 @@ jobs:
           # look for any flakes (flakes have a #\\d+ match in their name field)
           jq \
             --raw-output \
-            --slurp '.[] | select(.type == "test" and (.name | test(".*#\\d+"))) | ( .name | split("#") ) | 
+            --slurp '.[] | select(.type == "test" and (.name | test(".*#\\d+"))) | ( .name | split("#") ) |
                      [.[0], (.[1] | tonumber)] | @csv
           ' ./results.json > ./target/nextest/flakes.csv
           if [ -s ./target/nextest/flakes.csv ]; then
-            { 
+            {
               echo "FLAKY_TESTS<<EOF"
               echo -e "### :warning: Flaky tests (${{matrix.profile.name}} - ${{matrix.profile.sterile}})\n";
               echo "| test | retries |"
@@ -215,8 +215,8 @@ jobs:
           fail_ci_if_error: true
           files: ./target/nextest/default/junit.xml
           report_type: "test_results"
-          disable_search: 'true'
-          use_oidc: 'true'
+          disable_search: "true"
+          use_oidc: "true"
           verbose: true
           flags: "${{matrix.profile.name}}-${{ matrix.profile.sterile || 'developer' }}"
 
@@ -227,8 +227,8 @@ jobs:
           fail_ci_if_error: true
           files: ./target/nextest/coverage/codecov.json
           report_type: "coverage"
-          disable_search: 'true'
-          use_oidc: 'true'
+          disable_search: "true"
+          use_oidc: "true"
           verbose: true
           flags: "${{matrix.profile.name}}-${{ matrix.profile.sterile || 'developer' }}"
 
@@ -240,7 +240,7 @@ jobs:
         if: ${{ always() }}
         with:
           header: "flakes_${{matrix.profile.name}}_${{matrix.profile.sterile}}"
-          ignore_empty: 'true'
+          ignore_empty: "true"
           message: |
             ${{ env.FLAKY_TESTS }}
 
@@ -248,28 +248,28 @@ jobs:
         uses: "mikepenz/action-junit-report@v5"
         if: "${{ always() }}"
         with:
-          annotate_notice: 'false'
-          annotate_only: 'false'
-          check_annotations: 'true'
-          check_retries: 'false'
-          comment: 'false'
-          detailed_summary: 'true'
-          fail_on_failure: 'false'
-          fail_on_parse_error: 'true'
-          flaky_summary: 'true'
-          include_empty_in_summary: 'true'
-          include_passed: 'true'
-          include_time_in_summary: 'true'
-          report_paths: 'target/nextest/default/*junit.xml'
-          require_passed_tests: 'true'
-          require_tests: 'true'
-          simplified_summary: 'true'
-          truncate_stack_traces: 'false'
-          group_reports: 'true'
+          annotate_notice: "false"
+          annotate_only: "false"
+          check_annotations: "true"
+          check_retries: "false"
+          comment: "false"
+          detailed_summary: "true"
+          fail_on_failure: "false"
+          fail_on_parse_error: "true"
+          flaky_summary: "true"
+          include_empty_in_summary: "true"
+          include_passed: "true"
+          include_time_in_summary: "true"
+          report_paths: "target/nextest/default/*junit.xml"
+          require_passed_tests: "true"
+          require_tests: "true"
+          simplified_summary: "true"
+          truncate_stack_traces: "false"
+          group_reports: "true"
           check_name: "test-report-${{matrix.profile.name}}-sterile:${{matrix.profile.sterile == 'sterile'}}"
-          skip_success_summary: 'false'
-          job_summary: 'true'
-          verbose_summary: 'false'
+          skip_success_summary: "false"
+          job_summary: "true"
+          verbose_summary: "false"
 
       - id: "clippy"
         name: "run clippy"
