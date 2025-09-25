@@ -113,6 +113,18 @@ impl TargetCfgDb {
         }
         f
     }
+    /// Generate a config as a string that would provide the current tracing configurations.
+    /// Note: multiple distinct configs may provide the same configuration, given that a target
+    /// may be configured by distinct tags. The following is the simplest implementation that
+    /// does not attempt to group targets by common tags.
+    pub fn as_config_string(&self) -> String {
+        let mut out = String::new();
+        out += format!("default={}", self.level).as_str();
+        for target in self.targets.values() {
+            out += format!(",{}={}", target.name, target.level).as_str();
+        }
+        out
+    }
     pub fn tag_targets_mut(&mut self, tag: &str) -> impl Iterator<Item = &mut TargetCfg> {
         let targets: Vec<_> = if let Some(tag) = self.tags.get(tag) {
             self.targets
@@ -307,6 +319,9 @@ impl TracingControl {
     pub fn dump(&self) {
         let db = self.db.lock().unwrap();
         info!("{db}");
+    }
+    pub fn as_config_string(&self) -> String {
+        self.db.lock().unwrap().as_config_string()
     }
 }
 

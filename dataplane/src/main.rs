@@ -52,9 +52,7 @@ fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
     }
 }
 
-fn main() {
-    /* parse cmd line args */
-    let args = CmdArgs::parse();
+fn process_tracing_cmds(args: &CmdArgs) {
     if let Some(tracing) = args.tracing()
         && let Err(e) = get_trace_ctl().setup_from_string(tracing)
     {
@@ -69,9 +67,17 @@ fn main() {
         get_trace_ctl().dump();
         std::process::exit(0);
     }
+    if args.tracing_config_generate() {
+        println!("{}", get_trace_ctl().as_config_string());
+        std::process::exit(0);
+    }
+}
 
-    /* initialize logging */
+fn main() {
     init_logging();
+    let args = CmdArgs::parse();
+    process_tracing_cmds(&args);
+
     info!("Starting gateway process...");
 
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();

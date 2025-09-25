@@ -16,6 +16,7 @@ use tracing::{debug, error};
 #[command(name = "Hedgehog Fabric Gateway dataplane")]
 #[command(version = "1.0")] // FIXME
 #[command(about = "A next-gen dataplane for next-gen fabric gateway", long_about = None)]
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct CmdArgs {
     #[arg(long, value_name = "core-id used as main", default_value_t = 2)]
     main_lcore: u8,
@@ -107,6 +108,9 @@ pub(crate) struct CmdArgs {
     )]
     show_tracing_targets: bool,
 
+    #[arg(long, help = "generate tracing configuration as a string and exit")]
+    tracing_config_generate: bool,
+
     #[arg(
         long,
         value_name = "tracing configuration",
@@ -131,6 +135,9 @@ impl CmdArgs {
     }
     pub fn show_tracing_targets(&self) -> bool {
         self.show_tracing_targets
+    }
+    pub fn tracing_config_generate(&self) -> bool {
+        self.tracing_config_generate
     }
     pub fn tracing(&self) -> Option<&String> {
         self.tracing.as_ref()
