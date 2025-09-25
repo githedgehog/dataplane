@@ -7,6 +7,9 @@ use stats::StatsCollector;
 use std::thread::JoinHandle;
 use tracing::{error, info};
 
+use tracectl::trace_target;
+trace_target!("stats-server", LevelFilter::INFO, &[]);
+
 /// Simple Prometheus metrics handler
 pub struct PrometheusHandler {
     handle: PrometheusHandle,
