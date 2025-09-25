@@ -40,6 +40,8 @@ use tracing::{debug, error, info, warn};
 use pkt_meta::flow_table::flow_key::{Bidi, FlowKey};
 
 use tracectl::trace_target;
+
+use crate::drivers::tokio_util::run_in_tokio_runtime;
 trace_target!("kernel-driver", LevelFilter::ERROR, &["driver"]);
 
 type WorkerTx = chan::Sender<Box<Packet<TestBuffer>>>;
@@ -199,42 +201,44 @@ fn single_worker(
 
     let handle_res = thread_builder.spawn(move || {
         let mut pipeline = setup();
-
-        loop {
-            // Block waiting for the first packet
-            let first_packet_result = rx_from_control.recv();
-            let Ok(first_packet) = first_packet_result else {
-                first_packet_result
-                    .inspect_err(|e| error!("Error receiving first packet on worker {id}: {e}"));
-                // Tx side is likely gone, exit worker
-                return;
-            };
-
-            tracing::debug!(
-                worker = id,
-                thread = %thread::current().name().unwrap_or("unnamed"),
-                "processing packets"
-            );
-
-            // Try to receive everything else that is in the buffer
-            let packets = std::iter::once(first_packet).chain(rx_from_control.try_iter());
-
-            let mut count = 0;
-            for out_pkt in pipeline.process(packets.map(|pkt| *pkt)) {
-                // backpressure via bounded channel
-                if tx_to_control.send(Box::new(out_pkt)).is_err() {
-                    // dispatcher gone; exit the thread
+        run_in_tokio_runtime(async || {
+            loop {
+                // Block waiting for the first packet
+                let first_packet_result = rx_from_control.recv();
+                let Ok(first_packet) = first_packet_result else {
+                    first_packet_result.inspect_err(|e| {
+                        error!("Error receiving first packet on worker {id}: {e}");
+                    });
+                    // Tx side is likely gone, exit worker
                     return;
-                }
-                count += 1;
-            }
+                };
 
-            tracing::debug!(
-                worker = id,
-                thread = %thread::current().name().unwrap_or("unnamed"),
-                "processed {count} packets"
-            );
-        }
+                tracing::debug!(
+                    worker = id,
+                    thread = %thread::current().name().unwrap_or("unnamed"),
+                    "processing packets"
+                );
+
+                // Try to receive everything else that is in the buffer
+                let packets = std::iter::once(first_packet).chain(rx_from_control.try_iter());
+
+                let mut count = 0;
+                for out_pkt in pipeline.process(packets.map(|pkt| *pkt)) {
+                    // backpressure via bounded channel
+                    if tx_to_control.send(Box::new(out_pkt)).is_err() {
+                        // dispatcher gone; exit the thread
+                        return;
+                    }
+                    count += 1;
+                }
+
+                tracing::debug!(
+                    worker = id,
+                    thread = %thread::current().name().unwrap_or("unnamed"),
+                    "processed {count} packets"
+                );
+            }
+        });
     })?;
     Ok(tx_to_worker)
 }
