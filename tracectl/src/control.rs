@@ -3,7 +3,8 @@
 
 //! Tracing runtime control.
 
-use std::collections::{HashMap, HashSet};
+use ordermap::OrderMap;
+use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, Once};
 #[allow(unused)]
@@ -60,16 +61,16 @@ impl Tag {
 #[derive(Debug)]
 pub(crate) struct TargetCfgDb {
     pub(crate) level: LevelFilter,
-    pub(crate) targets: HashMap<&'static str, TargetCfg>,
-    pub(crate) tags: HashMap<&'static str, Tag>,
+    pub(crate) targets: OrderMap<&'static str, TargetCfg>,
+    pub(crate) tags: OrderMap<&'static str, Tag>,
 }
 
 impl TargetCfgDb {
     fn new(level: LevelFilter) -> Self {
         let mut db = Self {
             level,
-            targets: HashMap::new(),
-            tags: HashMap::new(),
+            targets: OrderMap::new(),
+            tags: OrderMap::new(),
         };
         // load link-time-learnt targets
         for target in TRACING_TARGETS {
@@ -255,8 +256,8 @@ impl TracingControl {
     }
 
     /// Parse a string made of comma-separated tag=level, where level=off,error,warn,info,debug,trace
-    fn parse_tracing_config(input: &str) -> Result<HashMap<String, LevelFilter>, String> {
-        let mut result = HashMap::new();
+    fn parse_tracing_config(input: &str) -> Result<OrderMap<String, LevelFilter>, String> {
+        let mut result = OrderMap::new();
 
         for item in input.split(',') {
             let item = item.trim();

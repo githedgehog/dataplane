@@ -1282,6 +1282,7 @@ name = "dataplane-tracectl"
 version = "0.1.0"
 dependencies = [
  "linkme",
+ "ordermap",
  "tracing",
  "tracing-subscriber",
 ]
