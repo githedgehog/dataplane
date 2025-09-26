@@ -92,7 +92,7 @@ jobs:
           - "${{ inputs.debug_justfile || false }}"
     name: "${{matrix.profile.name}} ${{matrix.profile.sterile}}"
     runs-on: "lab"
-    timeout-minutes: 45
+    timeout-minutes: 300
     steps:
       - name: "login to ghcr.io"
         uses: "docker/login-action@v3"
@@ -116,7 +116,7 @@ jobs:
 
       - name: "set up build environment"
         run: |
-          docker run --privileged --rm busybox:latest sh -c "echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages && cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
+          docker run --privileged --rm busybox:latest sh -c "echo 2048 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages && cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
           docker pull ghcr.io/githedgehog/testn/n-vm:v0.0.6
           just --yes \
             debug_justfile="${{matrix.debug_justfile}}" \
@@ -160,9 +160,9 @@ jobs:
           else
             echo "::notice::Running regular tests"
             if [ -z ${{matrix.profile.sterile}} ]; then
-              attempts=50
+              attempts=300
             else
-              attempts=5
+              attempts=1
             fi
             for attempt in $(seq ${attempts}); do
               just \
@@ -174,7 +174,7 @@ jobs:
                   --status-level=none \
                   --final-status-level=skip \
                   --message-format=libtest-json-plus \
-                  > ./results.json
+                  >> ./results.json
             done
             echo "::notice::Running Shuttle tests"
             # We need to rebuild using the shuttle feature. To avoid running
