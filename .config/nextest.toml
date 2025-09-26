@@ -141,5 +141,5 @@ vm = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = 'package(dataplane)'
-platform = 'cfg(unix)'
 test-group = 'vm'
+retries = 3
