@@ -519,19 +519,29 @@ mod tests {
 
     #[test]
     fn test_setup_from_string() {
+        const COMMON: &str = "common-tag-2";
+        const T11: &str = "t11";
+        const T22: &str = "t22";
+        const T33: &str = "t33";
+        const T44: &str = "t44";
+        custom_target!(T11, LevelFilter::DEBUG, &[COMMON]);
+        custom_target!(T22, LevelFilter::ERROR, &[COMMON]);
+        custom_target!(T33, LevelFilter::WARN, &[COMMON]);
+        custom_target!(T44, LevelFilter::INFO, &[COMMON]);
+
         let tctl = get_trace_ctl();
-        tctl.set_tag_level("common-tag", LevelFilter::INFO);
+        tctl.set_tag_level(COMMON, LevelFilter::INFO);
         tctl.set_tag_level("MY-TARGET", LevelFilter::INFO);
         tctl.set_tag_level("target-4", LevelFilter::INFO);
         tctl.dump_targets_by_tag();
 
         // update from string
-        tctl.setup_from_string("common-tag=off,MY-TARGET=warn, target-4=error")
+        tctl.setup_from_string("common-tag-2=off,MY-TARGET=warn, target-4=error")
             .unwrap();
 
         // check
         tctl.dump_targets_by_tag();
-        tctl.get_targets_by_tag("common-tag")
+        tctl.get_targets_by_tag(COMMON)
             .for_each(|t| assert_eq!(t.level, LevelFilter::OFF));
         tctl.get_targets_by_tag("MY-TARGET")
             .for_each(|t| assert_eq!(t.level, LevelFilter::WARN));
@@ -539,9 +549,9 @@ mod tests {
             .for_each(|t| assert_eq!(t.level, LevelFilter::ERROR));
 
         // fail if level is bad
-        assert!(tctl.setup_from_string("common-tag=bad").is_err());
+        assert!(tctl.setup_from_string("common-tag-2=bad").is_err());
 
         // fail if no level is given
-        assert!(tctl.setup_from_string("common-tag=error, foo").is_err());
+        assert!(tctl.setup_from_string("common-tag-2=error, foo").is_err());
     }
 }
