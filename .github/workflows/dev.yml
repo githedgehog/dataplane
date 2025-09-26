@@ -116,7 +116,11 @@ jobs:
 
       - name: "set up build environment"
         run: |
-          docker run --privileged --rm busybox:latest sh -c "echo 2048 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages && cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
+          REQUIRED_HUGEPAGES=1024
+          HUGEPAGES_PATH=/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+          OVERCOMMIT_HUGEPAGES_PATH=/sys/kernel/mm/hugepages/hugepages-2048kB/nr_overcommit_hugepages
+          docker run --privileged --rm busybox:latest sh -c "echo $((8 * REQUIRED_HUGEPAGES)) > $OVERCOMMIT_HUGEPAGES_PATH"
+          docker run --privileged --rm busybox:latest sh -c "echo $((3 * REQUIRED_HUGEPAGES)) > $HUGEPAGES_PATH"
           docker pull ghcr.io/githedgehog/testn/n-vm:v0.0.6
           just --yes \
             debug_justfile="${{matrix.debug_justfile}}" \
