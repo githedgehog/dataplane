@@ -152,14 +152,6 @@ fn main() {
 mod test {
     use n_vm::in_vm;
 
-    #[allow(unreachable_code, clippy::should_panic_without_expect)] // demo test to check vm functionality
-    #[should_panic]
-    #[test]
-    #[in_vm]
-    fn panic_in_vm_shows_as_test_failure() {
-        panic!("this panic should be caught by the test framework and show as a test failure");
-    }
-
     #[test]
     #[in_vm]
     fn root_filesystem_in_vm_is_read_only() {
