@@ -126,6 +126,7 @@ impl TargetCfgDb {
         }
         out
     }
+    #[allow(unused)]
     pub fn tag_targets_mut(&mut self, tag: &str) -> impl Iterator<Item = &mut TargetCfg> {
         let targets: Vec<_> = if let Some(tag) = self.tags.get(tag) {
             self.targets
@@ -148,9 +149,31 @@ impl TargetCfgDb {
         };
         targets.into_iter()
     }
+    pub fn set_level_all(&mut self, level: LevelFilter) {
+        for target in self.targets.values_mut() {
+            target.level = level;
+        }
+    }
+    pub fn set_tag_level(&mut self, tag: &str, level: LevelFilter) -> Result<u32, String> {
+        let tag = self
+            .tags
+            .get(tag)
+            .ok_or_else(|| format!("Unknown tag {tag}"))?;
+        let mut changed: u32 = 0;
+        for target in self
+            .targets
+            .values_mut()
+            .filter(|target| tag.targets.contains(target.name))
+        {
+            if target.level != level {
+                target.level = level;
+                changed += 1;
+            }
+        }
+        Ok(changed)
+    }
 }
 
-#[derive(Debug)]
 pub struct TracingControl {
     db: Arc<Mutex<TargetCfgDb>>,
     reload_filter: Arc<reload::Handle<EnvFilter, Registry>>,
@@ -185,8 +208,7 @@ impl TracingControl {
             error!("Failed to reload tracing filter: {e}");
         }
     }
-    /// We make this private to promote the usage of macros to declare targets
-    #[allow(unused)]
+    #[cfg(test)]
     fn register(
         &self,
         target: &'static str,
@@ -220,42 +242,34 @@ impl TracingControl {
     pub fn init() {
         get_trace_ctl();
     }
-    pub fn set_tag_level(&self, tag: &str, level: LevelFilter) {
+    pub fn set_tag_level(&self, tag: &str, level: LevelFilter) -> Result<(), String> {
         let mut db = self.db.lock().unwrap();
-        let mut changed = 0;
-        for target in db.tag_targets_mut(tag) {
-            if target.level != level {
-                target.level = level;
-                changed += 1;
-            }
-        }
+        let changed = db.set_tag_level(tag, level)?;
         if changed > 0 {
             self.reload(db.env_filter());
         }
         info!("Changed log level for tag '{tag}' to {level}. Targets changed: {changed}");
+        Ok(())
     }
     pub fn set_level_all(&self, level: LevelFilter) {
         let mut db = self.db.lock().unwrap();
-        for target in db.targets.values_mut() {
-            target.level = level;
-        }
+        db.set_level_all(level);
         self.reload(db.env_filter());
     }
     pub fn set_default_level(&self, level: LevelFilter) {
         if let Ok(mut db) = self.db.lock()
             && db.level != level
         {
+            info!("Changing default log-level from {} to {level}", db.level);
             db.level = level;
-            info!("Set default log level to {level}");
             self.reload(db.env_filter());
         }
     }
     pub fn get_default_level(&self) -> LevelFilter {
-        let db = self.db.lock().unwrap();
-        db.level
+        self.db.lock().unwrap().level
     }
 
-    /// Parse a string made of comma-separated tag=level, where level=off,error,warn,info,debug,trace
+    /// Parse a string made of comma-separated tag=level; level = [off,error,warn,info,debug,trace]
     fn parse_tracing_config(input: &str) -> Result<OrderMap<String, LevelFilter>, String> {
         let mut result = OrderMap::new();
 
@@ -287,7 +301,7 @@ impl TracingControl {
         // even if we set the level to all, allow overriding here.
         // this allows configs like default=error,all=info,nat=debug
         for (tag, level) in config.iter() {
-            self.set_tag_level(tag, *level);
+            self.set_tag_level(tag, *level)?;
         }
         Ok(())
     }
@@ -331,36 +345,14 @@ mod tests {
     use crate::control::{Tag, TracingControl, get_trace_ctl};
     use crate::targets::TRACING_TARGETS;
     use crate::{LevelFilter, custom_target, trace_target};
+    use tracing::Level;
+    use tracing::event_enabled;
+    #[allow(unused)]
     use tracing::{debug, error, info, trace, warn};
 
     const TARGET_1: &str = "my-target-1";
     const TARGET_2: &str = "my-target-2";
     const TARGET_3: &str = "my-target-3";
-
-    fn log_target1() {
-        println!("logging from target {TARGET_1}");
-        error!(target: TARGET_1, "This is an ERROR log");
-        warn!(target: TARGET_1,  "This is a WARN log");
-        info!(target: TARGET_1,  "This is an INFO log");
-        debug!(target: TARGET_1, "This is a DEBUG log");
-        trace!(target: TARGET_1, "This is a TRACE log");
-    }
-    fn log_target2() {
-        println!("logging from target {TARGET_2}");
-        error!(target: TARGET_2, "This is an ERROR log");
-        warn!(target: TARGET_2,  "This is a WARN log");
-        info!(target: TARGET_2,  "This is an INFO log");
-        debug!(target: TARGET_2, "This is a DEBUG log");
-        trace!(target: TARGET_2, "This is a TRACE log");
-    }
-    fn log_target3() {
-        println!("logging from target {TARGET_3}");
-        error!(target: TARGET_3, "This is an ERROR log");
-        warn!(target: TARGET_3,  "This is a WARN log");
-        info!(target: TARGET_3,  "This is an INFO log");
-        debug!(target: TARGET_3, "This is a DEBUG log");
-        trace!(target: TARGET_3, "This is a TRACE log");
-    }
 
     #[test]
     fn test_init() {
@@ -383,19 +375,53 @@ mod tests {
         tctl.dump();
         tctl.dump_targets_by_tag();
 
-        log_target1();
-        log_target2();
-        log_target3();
+        // target 1 : TRACE
+        assert!(event_enabled!(target: TARGET_1, Level::ERROR));
+        assert!(event_enabled!(target: TARGET_1, Level::WARN));
+        assert!(event_enabled!(target: TARGET_1, Level::INFO));
+        assert!(event_enabled!(target: TARGET_1, Level::DEBUG));
+        assert!(event_enabled!(target: TARGET_1, Level::TRACE));
 
-        println!(" === Changing log-levels ===");
+        // target 2 : DEBUG
+        assert!(event_enabled!(target: TARGET_2, Level::ERROR));
+        assert!(event_enabled!(target: TARGET_2, Level::WARN));
+        assert!(event_enabled!(target: TARGET_2, Level::INFO));
+        assert!(event_enabled!(target: TARGET_2, Level::DEBUG));
+        assert!(!event_enabled!(target: TARGET_2, Level::TRACE));
 
-        tctl.set_tag_level(TARGET_1, LevelFilter::OFF);
-        tctl.set_tag_level(TARGET_2, LevelFilter::WARN);
-        tctl.set_tag_level(TARGET_3, LevelFilter::ERROR);
+        // target 3 : INFO
+        assert!(event_enabled!(target: TARGET_3, Level::ERROR));
+        assert!(event_enabled!(target: TARGET_3, Level::WARN));
+        assert!(event_enabled!(target: TARGET_3, Level::INFO));
+        assert!(!event_enabled!(target: TARGET_3, Level::DEBUG));
+        assert!(!event_enabled!(target: TARGET_3, Level::TRACE));
 
-        log_target1();
-        log_target2();
-        log_target3();
+        println!(" ====== Changing log-levels ===== ");
+
+        tctl.set_tag_level(TARGET_1, LevelFilter::OFF).unwrap();
+        tctl.set_tag_level(TARGET_2, LevelFilter::WARN).unwrap();
+        tctl.set_tag_level(TARGET_3, LevelFilter::ERROR).unwrap();
+
+        // target 1 : OFF
+        assert!(!event_enabled!(target: TARGET_1, Level::ERROR));
+        assert!(!event_enabled!(target: TARGET_1, Level::WARN));
+        assert!(!event_enabled!(target: TARGET_1, Level::INFO));
+        assert!(!event_enabled!(target: TARGET_1, Level::DEBUG));
+        assert!(!event_enabled!(target: TARGET_1, Level::TRACE));
+
+        // target 2 : WARN
+        assert!(event_enabled!(target: TARGET_2, Level::ERROR));
+        assert!(event_enabled!(target: TARGET_2, Level::WARN));
+        assert!(!event_enabled!(target: TARGET_2, Level::INFO));
+        assert!(!event_enabled!(target: TARGET_2, Level::DEBUG));
+        assert!(!event_enabled!(target: TARGET_2, Level::TRACE));
+
+        // target 3 : ERROR
+        assert!(event_enabled!(target: TARGET_3, Level::ERROR));
+        assert!(!event_enabled!(target: TARGET_3, Level::WARN));
+        assert!(!event_enabled!(target: TARGET_3, Level::INFO));
+        assert!(!event_enabled!(target: TARGET_3, Level::DEBUG));
+        assert!(!event_enabled!(target: TARGET_3, Level::TRACE));
 
         tctl.dump();
     }
@@ -407,6 +433,7 @@ mod tests {
     #[allow(unused)]
     fn some_function2() {
         // this won't be registered since the module is already registered
+        // we don't panic but issue a warning at the moment
         trace_target!("foo", LevelFilter::OFF, &["function2"]);
     }
 
@@ -474,7 +501,7 @@ mod tests {
         let target = tctl.get_target(TARGET).expect("Should be found");
         assert_eq!(target.level, LevelFilter::TRACE);
 
-        tctl.set_tag_level(TARGET, LevelFilter::WARN);
+        tctl.set_tag_level(TARGET, LevelFilter::WARN).unwrap();
         let updated = tctl.get_target(TARGET).expect("Should be found");
         assert_eq!(updated.level, LevelFilter::WARN);
 
@@ -509,7 +536,7 @@ mod tests {
         assert_eq!(tctl.get_target(T3).unwrap().level, LevelFilter::WARN);
         assert_eq!(tctl.get_target(T4).unwrap().level, LevelFilter::INFO);
 
-        tctl.set_tag_level(TAG, LevelFilter::OFF);
+        tctl.set_tag_level(TAG, LevelFilter::OFF).unwrap();
 
         assert_eq!(tctl.get_target(T1).unwrap().level, LevelFilter::OFF);
         assert_eq!(tctl.get_target(T2).unwrap().level, LevelFilter::OFF);
@@ -530,16 +557,16 @@ mod tests {
         custom_target!(T44, LevelFilter::INFO, &[COMMON]);
 
         let tctl = get_trace_ctl();
-        tctl.set_tag_level(COMMON, LevelFilter::INFO);
-        tctl.set_tag_level("MY-TARGET", LevelFilter::INFO);
-        tctl.set_tag_level("target-4", LevelFilter::INFO);
+        tctl.set_tag_level(COMMON, LevelFilter::INFO).unwrap();
+        tctl.set_tag_level("MY-TARGET", LevelFilter::INFO).unwrap();
+        tctl.set_tag_level("target-4", LevelFilter::INFO).unwrap();
         tctl.dump_targets_by_tag();
 
-        // update from string
+        // update tracing configuration from string
         tctl.setup_from_string("common-tag-2=off,MY-TARGET=warn, target-4=error")
             .unwrap();
 
-        // check
+        // check if database has been updated
         tctl.dump_targets_by_tag();
         tctl.get_targets_by_tag(COMMON)
             .for_each(|t| assert_eq!(t.level, LevelFilter::OFF));
@@ -548,10 +575,20 @@ mod tests {
         tctl.get_targets_by_tag("target-4")
             .for_each(|t| assert_eq!(t.level, LevelFilter::ERROR));
 
+        // were the changes enforced?
+        assert!(!event_enabled!(target: T11, Level::ERROR));
+        assert!(event_enabled!(target: "MY-TARGET", Level::WARN));
+        assert!(!event_enabled!(target: "MY-TARGET", Level::DEBUG));
+        assert!(event_enabled!(target: "target-4", Level::ERROR));
+        assert!(!event_enabled!(target: "target-4", Level::WARN));
+
         // fail if level is bad
         assert!(tctl.setup_from_string("common-tag-2=bad").is_err());
 
         // fail if no level is given
         assert!(tctl.setup_from_string("common-tag-2=error, foo").is_err());
+
+        // fail if tag is not known
+        assert!(tctl.setup_from_string("unknown-tag=error").is_err());
     }
 }
