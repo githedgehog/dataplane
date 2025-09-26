@@ -17,6 +17,8 @@ use afpacket::sync::RawPacketStream;
 use concurrency::sync::Arc;
 use concurrency::thread;
 
+use tokio::sync::mpsc as chan;
+
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 
@@ -25,8 +27,6 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
 use std::time::Duration;
 
-use crossbeam_channel as chan;
-
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -34,7 +34,7 @@ use net::buffer::test_buffer::TestBuffer;
 use net::packet::{InterfaceId, Packet};
 use netdev::Interface;
 use pipeline::{DynPipeline, NetworkFunction};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 // Flow-key based symmetric hashing
 use pkt_meta::flow_table::flow_key::{Bidi, FlowKey};
@@ -196,36 +196,33 @@ fn single_worker(
     tx_to_control: WorkerTx,
     setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
 ) -> Result<WorkerTx, std::io::Error> {
-    let (tx_to_worker, rx_from_control) = chan::bounded::<Box<Packet<TestBuffer>>>(4096);
+    let (tx_to_worker, mut rx_from_control) = chan::channel::<Box<Packet<TestBuffer>>>(4096);
     let setup = setup_pipeline.clone();
 
     let handle_res = thread_builder.spawn(move || {
         let mut pipeline = setup();
         run_in_tokio_runtime(async || {
             loop {
-                // Block waiting for the first packet
-                let first_packet_result = rx_from_control.recv();
-                let Ok(first_packet) = first_packet_result else {
-                    first_packet_result.inspect_err(|e| {
-                        error!("Error receiving first packet on worker {id}: {e}");
-                    });
-                    // Tx side is likely gone, exit worker
-                    return;
-                };
-
                 tracing::debug!(
                     worker = id,
                     thread = %thread::current().name().unwrap_or("unnamed"),
-                    "processing packets"
+                    "awaiting packets"
                 );
 
+                let mut packets_vec = Vec::new();
+                let pkt_count = rx_from_control.recv_many(&mut packets_vec, 1024).await;
+                if (pkt_count == 0) {
+                    trace!(worker = id, thread = %thread::current().name().unwrap_or("unnamed"), "sender closed, exiting");
+                    return; // The sender closed so no more packets can ever be received
+                }
+
                 // Try to receive everything else that is in the buffer
-                let packets = std::iter::once(first_packet).chain(rx_from_control.try_iter());
+                let packets = packets_vec.into_iter();
 
                 let mut count = 0;
                 for out_pkt in pipeline.process(packets.map(|pkt| *pkt)) {
                     // backpressure via bounded channel
-                    if tx_to_control.send(Box::new(out_pkt)).is_err() {
+                    if tx_to_control.send(Box::new(out_pkt)).await.is_err() {
                         // dispatcher gone; exit the thread
                         return;
                     }
@@ -270,7 +267,7 @@ impl DriverKernel {
         num_workers: usize,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
     ) -> io::Result<WorkerChans> {
-        let (tx_to_control, rx_from_workers) = chan::bounded::<Box<Packet<TestBuffer>>>(4096);
+        let (tx_to_control, rx_from_workers) = chan::channel::<Box<Packet<TestBuffer>>>(4096);
         let mut to_workers = Vec::with_capacity(num_workers);
         info!("Spawning {num_workers} workers");
         for wid in 0..num_workers {
@@ -309,7 +306,8 @@ impl DriverKernel {
         };
 
         // Spawn workers
-        let (to_workers, from_workers) = match Self::spawn_workers(num_workers, setup_pipeline) {
+        let (to_workers, mut from_workers) = match Self::spawn_workers(num_workers, setup_pipeline)
+        {
             Ok(chans) => chans,
             Err(e) => {
                 error!("Failed to start workers: {e}");
@@ -380,13 +378,20 @@ impl DriverKernel {
             // 3) For readable interfaces, pull frames, parse to Packet<TestBuffer>, shard to workers
             Self::recv_packets(&mut kiftable, &events).for_each(|pkt| {
                 let target = Self::compute_worker_idx(&pkt, num_worker_chans);
-                if to_workers[target].try_send(pkt).is_err() {
-                    // queue full => soft drop
-                    // FIXME(mvachhar): this is bad, we need to increment drop stats here, but how?
-                    // FIXME(mvachhar): We need to backpressure the NIC without starving other workers, how do we do that?
-                    warn!("Worker {target} queue full: dropping packet");
+                if let Err(e) = to_workers[target].try_send(pkt) {
+                    match e {
+                        chan::error::TrySendError::Full(_) => {
+                            // queue full => soft drop
+                            // FIXME(mvachhar): this is bad, we need to increment drop stats here, but how?
+                            // FIXME(mvachhar): We need to backpressure the NIC without starving other workers, how do we do that?
+                            warn!("Worker {target} queue full: dropping packet");
+                        }
+                        chan::error::TrySendError::Closed(_) => {
+                            error!("Worker {target} channel closed: dropping packet");
+                        }
+                    }
                 } else {
-                    debug!(worker = target, "dispatched packet to worker");
+                    trace!(worker = target, "dispatched packet to worker");
                 }
             });
         }

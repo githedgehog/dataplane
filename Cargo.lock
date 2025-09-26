@@ -902,7 +902,6 @@ dependencies = [
  "axum",
  "axum-server",
  "clap",
- "crossbeam-channel",
  "ctrlc",
  "dataplane-concurrency",
  "dataplane-dpdk",
