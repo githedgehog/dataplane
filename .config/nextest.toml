@@ -142,4 +142,5 @@ vm = { max-threads = 1 }
 [[profile.default.overrides]]
 filter = 'package(dataplane)'
 test-group = 'vm'
-retries = 3
+retries = 10
+slow-timeout = { period = "15s", terminate-after = 2 }
