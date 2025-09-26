@@ -84,10 +84,10 @@ jobs:
             sterile: "sterile"
           - name: "fuzz"
             sterile: "sterile"
-          #- name: "release"
-          #  sterile: ""
-          #- name: "fuzz"
-          #  sterile: ""
+          - name: "release"
+            sterile: ""
+          - name: "fuzz"
+            sterile: ""
         debug_justfile:
           - "${{ inputs.debug_justfile || false }}"
     name: "${{matrix.profile.name}} ${{matrix.profile.sterile}}"
@@ -159,16 +159,23 @@ jobs:
                 --message-format=libtest-json-plus > ./results.json
           else
             echo "::notice::Running regular tests"
-            just \
-              debug_justfile="${{matrix.debug_justfile}}" \
-              profile=${{matrix.profile.name}} \
-              target=x86_64-unknown-linux-gnu \
-              ${{matrix.profile.sterile}} cargo nextest run \
-                --cargo-profile=${{matrix.profile.name}} \
-                --status-level=none \
-                --final-status-level=skip \
-                --message-format=libtest-json-plus \
-                > ./results.json
+            if [ -z ${{matrix.profile.sterile}} ]; then
+              attempts=50
+            else
+              attempts=5
+            fi
+            for attempt in $(seq ${attempts}); do
+              just \
+                debug_justfile="${{matrix.debug_justfile}}" \
+                profile=${{matrix.profile.name}} \
+                target=x86_64-unknown-linux-gnu \
+                ${{matrix.profile.sterile}} cargo nextest run \
+                  --cargo-profile=${{matrix.profile.name}} \
+                  --status-level=none \
+                  --final-status-level=skip \
+                  --message-format=libtest-json-plus \
+                  > ./results.json
+            done
             echo "::notice::Running Shuttle tests"
             # We need to rebuild using the shuttle feature. To avoid running
             # all tests a second time, we filter to run only tests with pattern
