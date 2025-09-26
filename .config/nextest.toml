@@ -132,8 +132,8 @@ store-success-output = true
 # <description> element.
 store-failure-output = true
 
-[test-groups]
-vm = { max-threads = 1 }
+[test-groups.vm]
+max-threads = 3
 
 # [[profile.default.overrides]]
 # filter = 'test(flaky test name here)'
@@ -142,5 +142,5 @@ vm = { max-threads = 1 }
 [[profile.default.overrides]]
 filter = 'package(dataplane)'
 test-group = 'vm'
-retries = 10
+retries = 2
 slow-timeout = { period = "15s", terminate-after = 2 }
