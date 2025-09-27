@@ -28,6 +28,11 @@ on:
         description: "enable to see debug statements from just recipes"
         required: false
         default: false
+      with_vlab:
+        type: "boolean"
+        description: "enable vlab tests"
+        required: true
+        default: false
       vlab_test_type:
         type: "choice"
         description: |
@@ -318,7 +323,7 @@ jobs:
 
     uses: githedgehog/fabricator/.github/workflows/run-vlab.yaml@master
     with:
-      #skip: ${{ matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+hlab') || !matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+vlab') }}
+      skip: ${{ inputs.with_vlab || matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+hlab') || !matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+vlab') }}
       fabricatorref: master
       prebuild: |
         just bump dataplane HEAD.x86_64-unknown-linux-gnu.${{ inputs.vlab_test_type == '' && 'debug' || inputs.vlab_test_type }}.${{ github.sha }}
