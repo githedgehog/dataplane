@@ -28,6 +28,15 @@ on:
         description: "enable to see debug statements from just recipes"
         required: false
         default: false
+      vlab_test_type:
+        type: "choice"
+        description: |
+          Choose "release" to run vlab tests with release compiles for dataplane, frr, and other supporting containers.
+        options:
+          - "debug"
+          - "release"
+        required: false
+        default: "debug"
       vlab_dpdk_sys_commit:
         type: "string"
         description: |
@@ -312,9 +321,9 @@ jobs:
       skip: ${{ matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+hlab') || !matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+vlab') }}
       fabricatorref: master
       prebuild: |
-        just bump dataplane HEAD.x86_64-unknown-linux-gnu.debug.${{ github.sha }}
+        just bump dataplane HEAD.x86_64-unknown-linux-gnu.${{ inputs.vlab_test_type }}.${{ github.sha }}
         if [ -n ${{inputs.vlab_dpdk_sys_commit }} ]; then
-          just bump frr ${{ inputs.vlab_dpdk_sys_commit }}.debug
+          just bump frr ${{ inputs.vlab_dpdk_sys_commit }}.${{ inputs.vlab_test_type }}
         fi
       fabricmode: ${{ matrix.fabricmode }}
       gateway: ${{ matrix.gateway }}
