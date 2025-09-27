@@ -133,7 +133,7 @@ jobs:
       - name: "set up build environment"
         run: |
           docker run --privileged --rm busybox:latest sh -c "echo 512 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages && cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
-          docker pull ghcr.io/githedgehog/testn/n-vm:0.0.5
+          docker pull ghcr.io/githedgehog/testn/n-vm:v0.0.6
           just --yes \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
@@ -310,7 +310,7 @@ jobs:
           limit-access-to-actor: true
 
   vlab:
-    if: "${{ needs.check_changes.outputs.devfiles == 'true' }}"
+    if: "${{ needs.check_changes.outputs.devfiles == 'true' || inputs.vlab_dpdk_sys_commit }}"
     needs:
       - check
 
@@ -321,9 +321,9 @@ jobs:
       skip: ${{ matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+hlab') || !matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+vlab') }}
       fabricatorref: master
       prebuild: |
-        just bump dataplane HEAD.x86_64-unknown-linux-gnu.${{ inputs.vlab_test_type }}.${{ github.sha }}
+        just bump dataplane HEAD.x86_64-unknown-linux-gnu.${{ inputs.vlab_test_type == '' && 'debug' || inputs.vlab_test_type }}.${{ github.sha }}
         if [ -n ${{inputs.vlab_dpdk_sys_commit }} ]; then
-          just bump frr ${{ inputs.vlab_dpdk_sys_commit }}.${{ inputs.vlab_test_type }}
+          just bump frr ${{ inputs.vlab_dpdk_sys_commit }}.${{ inputs.vlab_test_type == '' && 'debug' || inputs.vlab_test_type }}
         fi
       fabricmode: ${{ matrix.fabricmode }}
       gateway: ${{ matrix.gateway }}

@@ -2543,8 +2543,8 @@ dependencies = [
 
 [[package]]
 name = "n-vm"
-version = "0.0.5"
-source = "git+https://github.com/githedgehog/testn.git?branch=main#c1f048c81f8cee4d2884b3e3d314d6d2546a7eac"
+version = "0.0.6"
+source = "git+https://github.com/githedgehog/testn.git?branch=pr%2Fdaniel-noland%2Fv0.0.6#9cdd8d4dce684521a02e73e7dec0abc68cf2b65e"
 dependencies = [
  "bollard",
  "capctl",
@@ -2565,8 +2565,8 @@ dependencies = [
 
 [[package]]
 name = "n-vm-macros"
-version = "0.0.5"
-source = "git+https://github.com/githedgehog/testn.git?branch=main#c1f048c81f8cee4d2884b3e3d314d6d2546a7eac"
+version = "0.0.6"
+source = "git+https://github.com/githedgehog/testn.git?branch=pr%2Fdaniel-noland%2Fv0.0.6#9cdd8d4dce684521a02e73e7dec0abc68cf2b65e"
 dependencies = [
  "proc-macro2",
  "quote",
