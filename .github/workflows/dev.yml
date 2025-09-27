@@ -318,7 +318,7 @@ jobs:
 
     uses: githedgehog/fabricator/.github/workflows/run-vlab.yaml@master
     with:
-      skip: ${{ matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+hlab') || !matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+vlab') }}
+      #skip: ${{ matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+hlab') || !matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+vlab') }}
       fabricatorref: master
       prebuild: |
         just bump dataplane HEAD.x86_64-unknown-linux-gnu.${{ inputs.vlab_test_type == '' && 'debug' || inputs.vlab_test_type }}.${{ github.sha }}
