@@ -28,6 +28,13 @@ on:
         description: "enable to see debug statements from just recipes"
         required: false
         default: false
+      vlab_dpdk_sys_commit:
+        type: "string"
+        description: |
+          The git sha dpdk-sys build you wish to test aginst.
+          This affects support the image tag of support containers like frr.
+        required: false
+        default: ""
 
 concurrency:
   group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.event.after || github.event.merge_group && github.run_id }}"
@@ -306,7 +313,9 @@ jobs:
       fabricatorref: master
       prebuild: |
         just bump dataplane HEAD.x86_64-unknown-linux-gnu.debug.${{ github.sha }}
-        just bump frr 3c8aef15389957e68c5ca4cf0dbc3d01b759aa92.debug
+        if [ -n ${{inputs.vlab_dpdk_sys_commit }} ]; then
+          just bump frr ${{ inputs.vlab_dpdk_sys_commit }}.debug
+        fi
       fabricmode: ${{ matrix.fabricmode }}
       gateway: ${{ matrix.gateway }}
       includeonie: ${{ matrix.includeonie }}
