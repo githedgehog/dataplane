@@ -1,6 +1,7 @@
 name: "vlab-test.yml"
 
 on:
+  pull_request_review_comment: {}
   workflow_dispatch:
     inputs:
       dpdk-sys-commit:
