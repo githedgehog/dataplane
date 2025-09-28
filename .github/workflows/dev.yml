@@ -42,13 +42,6 @@ on:
           - "release"
         required: false
         default: "debug"
-      vlab_dpdk_sys_commit:
-        type: "string"
-        description: |
-          The git sha dpdk-sys build you wish to test aginst.
-          This affects support the image tag of support containers like frr.
-        required: false
-        default: ""
 
 concurrency:
   group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.event.after || github.event.merge_group && github.run_id }}"
