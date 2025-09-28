@@ -12,7 +12,7 @@ on:
         type: "string"
         description: "git sha of dpdk sys commit to use (picks frr)"
         required: true
-        default: "f103ff894538b59aa16f666d351b93a1bd257e3d.debug"
+        default: "f103ff894538b59aa16f666d351b93a1bd257e3d.release"
 
 jobs:
   vlab:
@@ -36,7 +36,7 @@ jobs:
           - false
         image:
           - dataplane: "${{ inputs.dataplane_image || 'pr-daniel-noland-bump.x86_64-unknown-linux-gnu.release.8a53c0e04327ed5f64ea927ebf5d3cfd6c901851' }}"
-            frr: "${{ inputs.frr_image || '3c8aef15389957e68c5ca4cf0dbc3d01b759aa92.release' }}"
+            frr: "${{ inputs.frr_image || '3c8aef15389957e68c5ca4cf0dbc3d01b759aa92.debug' }}"
 
     with:
       fabricatorref: master
