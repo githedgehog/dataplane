@@ -12,7 +12,7 @@ on:
         type: "string"
         description: "git sha of dpdk sys commit to use (picks frr)"
         required: true
-        default: "f103ff894538b59aa16f666d351b93a1bd257e3d.release"
+        default: "f103ff894538b59aa16f666d351b93a1bd257e3d.debug"
 
 jobs:
   vlab:
