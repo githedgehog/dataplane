@@ -53,7 +53,7 @@ impl Display for TargetCfgDb {
         write!(
             f,
             "{}",
-            format_args!(TARGET_FMT!(), "", "(default)", "", self.level, "--")
+            format_args!(TARGET_FMT!(), "", "(default)", "", self.default, "--")
         )
     }
 }
