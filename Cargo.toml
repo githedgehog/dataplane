@@ -119,7 +119,7 @@ small-map = { version = "0.1.3", default-features = false, features = [] }
 static_assertions = { version = "1.1.0", default-features = false, features = [] }
 strum = { version = "0.27.2", features = ["derive"] }
 n-vm = { git = "https://github.com/githedgehog/testn.git", branch = "main", default-features = false, features = [], package = "n-vm" }
-thiserror = { version = "2.0.16", default-features = false, features = [] }
+thiserror = { version = "2.0.17", default-features = false, features = [] }
 thread_local = { version = "1.1.9", default-features = false, features = [] }
 tokio = { version = "1.47.1", default-features = false, features = [] }
 tokio-stream = { version = "0.1.17", default-features = false, features = [] }
