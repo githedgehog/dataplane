@@ -1,3 +1,5 @@
+**.profraw
+**/__fuzz__/**
 **/result*/**
 **/target/**
 /.bin/**
@@ -6,7 +8,5 @@
 /compile-env
 /compile-env/**
 /dev-env-template/**
-/dpdk-sys/dpdk_wrapper-precompile.h*
 /dpdk-sys/.macro_eval.c
-**/__fuzz__/**
-**.profraw
+/dpdk-sys/dpdk_wrapper-precompile.h*
