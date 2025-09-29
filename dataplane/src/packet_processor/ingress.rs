@@ -9,7 +9,7 @@ use tracing::{debug, trace, warn};
 
 use net::buffer::PacketBufferMut;
 use net::eth::mac::Mac;
-use net::headers::{TryEth, TryIpv4, TryIpv6};
+use net::headers::{TryEth, TryIp};
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 
@@ -45,7 +45,7 @@ impl Ingress {
         packet: &mut Packet<Buf>,
     ) {
         let nfi = self.name();
-        if packet.try_ipv4().is_some() || packet.try_ipv6().is_some() {
+        if packet.try_ip().is_some() {
             match &interface.attachment {
                 Some(Attachment::VRF(fibr)) => {
                     let Some(vrfid) = fibr.get_id().map(|x| x.as_u32()) else {
