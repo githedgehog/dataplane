@@ -16,6 +16,7 @@ tracectl = { workspace = true }
 derive_builder = { workspace = true, default-features = false, features = ["default"] }
 linkme = { workspace = true }
 multi_index_map = { workspace = true, features = ["serde"] }
+ordermap = { workspace = true, features = ["std"] }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 tracing-test = { workspace = true }

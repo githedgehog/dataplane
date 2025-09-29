@@ -977,6 +977,7 @@ dependencies = [
  "ipnet",
  "linkme",
  "multi_index_map",
+ "ordermap",
  "pretty_assertions",
  "thiserror 2.0.17",
  "tracing",
@@ -1280,7 +1281,7 @@ version = "0.1.0"
 dependencies = [
  "linkme",
  "ordermap",
- "thiserror 2.0.16",
+ "thiserror 2.0.17",
  "tracing",
  "tracing-subscriber",
 ]

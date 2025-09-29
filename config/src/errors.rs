@@ -79,6 +79,10 @@ pub enum ConfigError {
     InvalidMaskLength(String),
     #[error("Invalid configuration: {0}")]
     Invalid(String),
+
+    // tracing
+    #[error("Failed to set tracing configuration: {0}")]
+    Tracing(#[from] tracectl::TraceCtlError),
 }
 
 /// Result-like type for configurations
