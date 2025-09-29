@@ -23,7 +23,13 @@ impl Nhop {
     fn build_pkt_instructions(&self, rstore: &RmacStore) -> Vec<PktInstruction> {
         let mut instructions = Vec::with_capacity(2);
         if self.key.origin == RouteOrigin::Local {
-            instructions.push(PktInstruction::Local(self.key.ifindex.unwrap_or(0)));
+            match self.key.ifindex {
+                Some(if_index) => instructions.push(PktInstruction::Local(if_index)),
+                None => {
+                    warn!("packet is locally destined but has no target interface index: dropping");
+                    instructions.push(PktInstruction::Drop);
+                }
+            };
             return instructions;
         }
         if self.key.fwaction == FwAction::Drop {

@@ -5,8 +5,8 @@
 
 use net::vxlan::Vni;
 
-use crate::interfaces::interface::IfIndex;
 use crate::rib::encapsulation::Encapsulation;
+use net::interface::InterfaceIndex;
 use std::net::IpAddr;
 
 #[derive(Debug, Default, Clone, Ord, PartialOrd, Eq, PartialEq)]
@@ -14,14 +14,18 @@ use std::net::IpAddr;
 /// has to be sent and, optionally, a next-hop ip address. If
 /// no address is provided, ND/ARP is required.
 pub struct EgressObject {
-    pub(crate) ifindex: Option<IfIndex>,
+    pub(crate) ifindex: Option<InterfaceIndex>,
     pub(crate) address: Option<IpAddr>,
     pub(crate) ifname: Option<String>,
 }
 
 impl EgressObject {
     #[must_use]
-    pub fn new(ifindex: Option<IfIndex>, address: Option<IpAddr>, ifname: Option<String>) -> Self {
+    pub fn new(
+        ifindex: Option<InterfaceIndex>,
+        address: Option<IpAddr>,
+        ifname: Option<String>,
+    ) -> Self {
         Self {
             ifindex,
             address,
@@ -29,7 +33,7 @@ impl EgressObject {
         }
     }
     #[must_use]
-    pub fn ifindex(&self) -> &Option<IfIndex> {
+    pub fn ifindex(&self) -> &Option<InterfaceIndex> {
         &self.ifindex
     }
     #[must_use]
@@ -214,7 +218,7 @@ impl FibEntry {
 pub enum PktInstruction {
     #[default]
     Drop, /* drop the packet */
-    Local(IfIndex),       /* packet is destined to gw */
-    Encap(Encapsulation), /* encapsulate the packet */
-    Egress(EgressObject), /* send the packet over interface to some ip */
+    Local(InterfaceIndex), /* packet is destined to gw */
+    Encap(Encapsulation),  /* encapsulate the packet */
+    Egress(EgressObject),  /* send the packet over interface to some ip */
 }

@@ -77,6 +77,8 @@ pub enum ConfigError {
     InvalidIpAddress(String),
     #[error("Invalid mask length in interface address: {0}")]
     InvalidMaskLength(String),
+    #[error("Invalid configuration: {0}")]
+    Invalid(String),
 }
 
 /// Result-like type for configurations

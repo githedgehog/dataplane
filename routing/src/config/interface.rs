@@ -3,13 +3,12 @@
 
 //! Router interface configuration
 
-#[allow(unused)]
-use tracing::debug;
-
 use crate::RouterError;
 use crate::config::RouterConfig;
 use crate::interfaces::iftable::IfTable;
-use crate::interfaces::interface::IfIndex;
+use net::interface::InterfaceIndex;
+#[allow(unused)]
+use tracing::debug;
 
 use crate::interfaces::iftablerw::IfTableWriter;
 use crate::interfaces::interface::{AttachConfig, Attachment};
@@ -20,8 +19,8 @@ use crate::rib::VrfTable;
 ///////////////////////////////////////////////////////////////////////////////////////
 pub(crate) struct ReconfigInterfacePlan {
     #[allow(unused)]
-    to_keep: Vec<IfIndex>, /* interfaces to keep as is */
-    to_delete: Vec<IfIndex>,               /* interfaces to delete */
+    to_keep: Vec<InterfaceIndex>, /* interfaces to keep as is */
+    to_delete: Vec<InterfaceIndex>,        /* interfaces to delete */
     to_modify: Vec<RouterInterfaceConfig>, /* interfaces to change */
     to_add: Vec<RouterInterfaceConfig>,    /* interfaces to add */
 }
@@ -32,8 +31,8 @@ impl ReconfigInterfacePlan {
     ///////////////////////////////////////////////////////////////////////////////////
     #[must_use]
     pub(crate) fn generate(config: &RouterConfig, iftable: &IfTable) -> Self {
-        let mut to_delete: Vec<IfIndex> = vec![];
-        let mut to_keep: Vec<IfIndex> = vec![];
+        let mut to_delete: Vec<InterfaceIndex> = vec![];
+        let mut to_keep: Vec<InterfaceIndex> = vec![];
         let mut to_modify: Vec<RouterInterfaceConfig> = vec![];
         let mut to_add: Vec<RouterInterfaceConfig> = vec![];
 

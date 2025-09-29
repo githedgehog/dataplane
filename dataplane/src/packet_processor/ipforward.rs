@@ -10,7 +10,7 @@ use std::net::IpAddr;
 use tracing::{debug, error, trace, warn};
 
 use net::headers::{TryHeadersMut, TryIpv4Mut, TryIpv6Mut};
-use net::packet::{DoneReason, InterfaceId, Packet};
+use net::packet::{DoneReason, Packet};
 use net::{buffer::PacketBufferMut, checksum::Checksum};
 use pipeline::NetworkFunction;
 
@@ -20,12 +20,12 @@ use routing::fib::fibtable::FibTableReader;
 use routing::fib::fibtype::FibId;
 
 use routing::evpn::Vtep;
-use routing::interfaces::interface::IfIndex;
 use routing::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use routing::rib::vrf::VrfId;
 
 use net::headers::Headers;
 use net::headers::Net;
+use net::interface::InterfaceIndex;
 use net::ip::NextHeader;
 use net::ipv4::Ipv4;
 use net::ipv4::UnicastIpv4Addr;
@@ -123,7 +123,7 @@ impl IpForwarder {
         &self,
         packet: &mut Packet<Buf>,
         fibtable: &FibTable,
-        _ifindex: IfIndex, /* we get it from metadata */
+        _ifindex: InterfaceIndex, /* we get it from metadata */
     ) {
         let nfi = &self.name;
 
@@ -313,7 +313,7 @@ impl IpForwarder {
     ) {
         let meta = packet.get_meta_mut();
         if let Some(ifindex) = egress.ifindex() {
-            meta.oif = Some(InterfaceId::new(*ifindex));
+            meta.oif = Some(*ifindex);
         }
         if let Some(addr) = egress.address() {
             meta.nh_addr = Some(*addr);

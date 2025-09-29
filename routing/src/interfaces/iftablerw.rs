@@ -6,24 +6,25 @@
 use crate::errors::RouterError;
 use crate::fib::fibtype::FibId;
 use crate::fib::fibtype::FibReader;
+use crate::interfaces::iftable::IfTable;
+use crate::interfaces::interface::{IfAddress, IfState, RouterInterfaceConfig};
 use crate::rib::vrf::VrfId;
 use crate::rib::vrftable::VrfTable;
-use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
-
-use crate::interfaces::iftable::IfTable;
-use crate::interfaces::interface::{IfAddress, IfIndex, IfState, RouterInterfaceConfig};
+use left_right::ReadHandleFactory;
+use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
+use net::interface::InterfaceIndex;
 
 enum IfTableChange {
     Add(RouterInterfaceConfig),
     Mod(RouterInterfaceConfig),
-    Del(IfIndex),
-    Attach((IfIndex, FibReader)),
-    Detach(IfIndex),
+    Del(InterfaceIndex),
+    Attach((InterfaceIndex, FibReader)),
+    Detach(InterfaceIndex),
     DetachFromVrf(FibId),
-    AddIpAddress((IfIndex, IfAddress)),
-    DelIpAddress((IfIndex, IfAddress)),
-    UpdateOpState((IfIndex, IfState)),
-    UpdateAdmState((IfIndex, IfState)),
+    AddIpAddress((InterfaceIndex, IfAddress)),
+    DelIpAddress((InterfaceIndex, IfAddress)),
+    UpdateOpState((InterfaceIndex, IfState)),
+    UpdateAdmState((InterfaceIndex, IfState)),
 }
 impl Absorb<IfTableChange> for IfTable {
     fn absorb_first(&mut self, change: &mut IfTableChange, _: &Self) {
@@ -99,26 +100,26 @@ impl IfTableWriter {
         self.0.publish();
         Ok(())
     }
-    pub fn del_interface(&mut self, ifindex: IfIndex) {
+    pub fn del_interface(&mut self, ifindex: InterfaceIndex) {
         self.0.append(IfTableChange::Del(ifindex));
         self.0.publish();
     }
-    pub fn add_ip_address(&mut self, ifindex: IfIndex, ifaddr: IfAddress) {
+    pub fn add_ip_address(&mut self, ifindex: InterfaceIndex, ifaddr: IfAddress) {
         self.0
             .append(IfTableChange::AddIpAddress((ifindex, ifaddr)));
         self.0.publish();
     }
-    pub fn del_ip_address(&mut self, ifindex: IfIndex, ifaddr: IfAddress) {
+    pub fn del_ip_address(&mut self, ifindex: InterfaceIndex, ifaddr: IfAddress) {
         self.0
             .append(IfTableChange::DelIpAddress((ifindex, ifaddr)));
         self.0.publish();
     }
-    pub fn set_iface_oper_state(&mut self, ifindex: IfIndex, state: IfState) {
+    pub fn set_iface_oper_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
         self.0
             .append(IfTableChange::UpdateOpState((ifindex, state)));
         self.0.publish();
     }
-    pub fn set_iface_admin_state(&mut self, ifindex: IfIndex, state: IfState) {
+    pub fn set_iface_admin_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
         self.0
             .append(IfTableChange::UpdateAdmState((ifindex, state)));
         self.0.publish();
@@ -134,7 +135,7 @@ impl IfTableWriter {
 
     fn interface_attach_check(
         &mut self,
-        ifindex: IfIndex,
+        ifindex: InterfaceIndex,
         vrfid: VrfId,
         vrftable: &VrfTable,
     ) -> Result<FibReader, RouterError> {
@@ -154,7 +155,7 @@ impl IfTableWriter {
     /// Fails if the interface is not found
     pub fn attach_interface_to_vrf(
         &mut self,
-        ifindex: IfIndex,
+        ifindex: InterfaceIndex,
         vrfid: VrfId,
         vrftable: &VrfTable,
     ) -> Result<(), RouterError> {
@@ -163,7 +164,7 @@ impl IfTableWriter {
         self.0.publish();
         Ok(())
     }
-    pub fn detach_interface(&mut self, ifindex: IfIndex) {
+    pub fn detach_interface(&mut self, ifindex: InterfaceIndex) {
         self.0.append(IfTableChange::Detach(ifindex));
         self.0.publish();
     }

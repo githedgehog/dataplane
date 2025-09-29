@@ -724,9 +724,10 @@ impl Vrf {
 #[cfg(test)]
 #[rustfmt::skip]
 pub mod tests {
+    use net::interface::InterfaceIndex;
+
     use super::*;
     use std::str::FromStr;
-    use crate::interfaces::interface::IfIndex;
     use crate::rib::vrf::VrfId;
     use crate::rib::nexthop::{FwAction, NhopKey};
     use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
@@ -794,14 +795,14 @@ pub mod tests {
 
     pub fn build_test_nhop(
         address: Option<&str>,
-        ifindex: Option<IfIndex>,
+        ifindex: Option<u32>,
         vrfid: VrfId,
         encap: Option<Encapsulation>,
     ) -> RouteNhop {
         let key = NhopKey::new(
             RouteOrigin::default(),
             address.map(mk_addr),
-            ifindex, encap,FwAction::Forward, None);
+            ifindex.map(|i| InterfaceIndex::try_new(i).unwrap()), encap,FwAction::Forward, None);
 
         RouteNhop {
             vrfid,
@@ -922,8 +923,8 @@ pub mod tests {
             assert_eq!(best.metric, route.metric);
             assert_eq!(best.origin, route.origin);
             assert_eq!(best.s_nhops.len(), 2);
-            assert!(best.s_nhops.iter().any(|s| s.rc.key.address == Some(mk_addr("10.0.0.1")) && s.rc.key.ifindex == Some(1)));
-            assert!(best.s_nhops.iter().any(|s| s.rc.key.address == Some(mk_addr("10.0.0.2")) && s.rc.key.ifindex == Some(2)));
+            assert!(best.s_nhops.iter().any(|s| s.rc.key.address == Some(mk_addr("10.0.0.1")) && s.rc.key.ifindex == Some(InterfaceIndex::try_new(1).unwrap())));
+            assert!(best.s_nhops.iter().any(|s| s.rc.key.address == Some(mk_addr("10.0.0.2")) && s.rc.key.ifindex == Some(InterfaceIndex::try_new(2).unwrap())));
         }
         assert_eq!(vrf.len_v4(),  (1 + num_routes) as usize, "There must be default + the ones added");
         assert_eq!(vrf.nhstore.len(), 3usize,"There is drop + 2 nexthops shared by all routes");

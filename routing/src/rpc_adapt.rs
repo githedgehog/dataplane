@@ -21,6 +21,7 @@ use dplane_rpc::msg::{
 };
 use lpm::prefix::Prefix;
 use net::eth::mac::Mac;
+use net::interface::InterfaceIndex;
 use net::vxlan::Vni;
 use std::net::{IpAddr, Ipv4Addr};
 use tracing::{error, warn};
@@ -96,12 +97,22 @@ impl TryFrom<&Rmac> for RmacEntry {
 }
 
 impl RouteNhop {
+    #[tracing::instrument(level = "debug")]
     fn from_rpc_nhop(
         nh: &NextHop,
         origin: RouteOrigin,
         iftabler: &IfTableReader,
     ) -> Result<Self, RouterError> {
-        let mut ifindex = nh.ifindex;
+        let mut ifindex = nh
+            .ifindex
+            .map(|i| match InterfaceIndex::try_new(i) {
+                Ok(idx) => Ok(idx),
+                Err(e) => {
+                    error!("unable to build route next hop: {e}");
+                    return Err(RouterError::Internal("0 is not a valid interface index"));
+                }
+            })
+            .transpose()?;
         let encap = match &nh.encap {
             Some(e) => {
                 let mut enc = Encapsulation::try_from(e)?;
@@ -119,7 +130,6 @@ impl RouteNhop {
         // lookup interface name
         let ifname = match ifindex {
             None => None,
-            Some(0) => None,
             Some(k) => iftabler
                 .enter()
                 .map(|iftable| iftable.get_interface(k).map(|iface| iface.name.to_owned()))

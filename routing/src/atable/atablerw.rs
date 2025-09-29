@@ -3,15 +3,14 @@
 
 //! Adjacency table left-right
 
-use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
-use std::net::IpAddr;
-
 use crate::atable::adjacency::{Adjacency, AdjacencyTable};
-use crate::interfaces::interface::IfIndex;
+use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
+use net::interface::InterfaceIndex;
+use std::net::IpAddr;
 
 enum AtableChange {
     Add(Adjacency),
-    Del((IpAddr, IfIndex)),
+    Del((IpAddr, InterfaceIndex)),
     Clear,
 }
 
@@ -50,7 +49,7 @@ impl AtableWriter {
             self.0.publish();
         }
     }
-    pub fn del_adjacency(&mut self, address: IpAddr, ifindex: IfIndex, publish: bool) {
+    pub fn del_adjacency(&mut self, address: IpAddr, ifindex: InterfaceIndex, publish: bool) {
         self.0.append(AtableChange::Del((address, ifindex)));
         if publish {
             self.0.publish();

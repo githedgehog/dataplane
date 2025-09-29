@@ -18,6 +18,7 @@ use std::os::unix::net::SocketAddr;
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use net::interface::InterfaceIndex;
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
 
@@ -264,13 +265,27 @@ impl RpcOperation for Rmac {
 impl RpcOperation for IfAddress {
     type ObjectStore = RoutingDb;
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
+        let ifindex = match InterfaceIndex::try_new(self.ifindex) {
+            Ok(idx) => idx,
+            Err(e) => {
+                error!("unable to add interface address: {e}");
+                return RpcResultCode::InvalidRequest;
+            }
+        };
         db.iftw
-            .add_ip_address(self.ifindex, (self.address, self.mask_len));
+            .add_ip_address(ifindex, (self.address, self.mask_len));
         RpcResultCode::Ok
     }
     fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
+        let ifindex = match InterfaceIndex::try_new(self.ifindex) {
+            Ok(idx) => idx,
+            Err(e) => {
+                error!("unable to remove interface address: {e}");
+                return RpcResultCode::InvalidRequest;
+            }
+        };
         db.iftw
-            .del_ip_address(self.ifindex, (self.address, self.mask_len));
+            .del_ip_address(ifindex, (self.address, self.mask_len));
         RpcResultCode::Ok
     }
 }

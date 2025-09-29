@@ -18,6 +18,7 @@ use std::hash::Hash;
 use std::net::IpAddr;
 use std::option::Option;
 
+use net::interface::InterfaceIndex;
 use std::cell::RefCell;
 use std::rc::Rc;
 #[cfg(test)]
@@ -56,7 +57,7 @@ pub enum FwAction {
 pub struct NhopKey {
     pub origin: RouteOrigin,
     pub address: Option<IpAddr>,
-    pub ifindex: Option<u32>,
+    pub ifindex: Option<InterfaceIndex>,
     pub encap: Option<Encapsulation>,
     pub fwaction: FwAction,
     pub ifname: Option<String>,
@@ -70,7 +71,7 @@ impl NhopKey {
     pub fn new(
         origin: RouteOrigin,
         address: Option<IpAddr>,
-        ifindex: Option<u32>,
+        ifindex: Option<InterfaceIndex>,
         encap: Option<Encapsulation>,
         fwaction: FwAction,
         ifname: Option<String>,
@@ -104,7 +105,7 @@ impl NhopKey {
     }
     #[cfg(test)]
     #[must_use]
-    pub fn with_addr_ifindex(address: &IpAddr, ifindex: u32) -> Self {
+    pub fn with_addr_ifindex(address: &IpAddr, ifindex: InterfaceIndex) -> Self {
         Self {
             address: Some(*address),
             ifindex: Some(ifindex),
@@ -121,7 +122,7 @@ impl NhopKey {
     }
     #[cfg(test)]
     #[must_use]
-    pub fn with_ifindex(ifindex: u32) -> Self {
+    pub fn with_ifindex(ifindex: InterfaceIndex) -> Self {
         Self {
             ifindex: Some(ifindex),
             ..Default::default()
@@ -486,9 +487,9 @@ mod tests {
         let n2_k = NhopKey::expect_from("10.0.2.1");
         let n3_k = NhopKey::expect_from("10.0.3.1");
 
-        let i1_k = NhopKey::with_ifindex(1);
-        let i2_k = NhopKey::with_ifindex(2);
-        let i3_k = NhopKey::with_ifindex(3);
+        let i1_k = NhopKey::with_ifindex(InterfaceIndex::try_new(1).unwrap());
+        let i2_k = NhopKey::with_ifindex(InterfaceIndex::try_new(2).unwrap());
+        let i3_k = NhopKey::with_ifindex(InterfaceIndex::try_new(3).unwrap());
 
         /* Add some next-hops and references */
         {
@@ -531,7 +532,7 @@ mod tests {
     fn test_nhop_store_shared_resolvers() {
         let mut store = NhopStore::new();
 
-        let i1_k = NhopKey::with_ifindex(1);
+        let i1_k = NhopKey::with_ifindex(InterfaceIndex::try_new(1).unwrap());
 
         let n1_k = NhopKey::expect_from("11.0.0.1");
         let n2_k = NhopKey::expect_from("11.0.0.2");
@@ -574,7 +575,7 @@ mod tests {
     fn test_nhop_store_flush_resolvers() {
         let mut store = NhopStore::new();
 
-        let i1_k = NhopKey::with_ifindex(1);
+        let i1_k = NhopKey::with_ifindex(InterfaceIndex::try_new(1).unwrap());
 
         let n1_k = NhopKey::expect_from("11.0.0.1");
         let n2_k = NhopKey::expect_from("11.0.0.2");
@@ -601,9 +602,9 @@ mod tests {
         let mut store = NhopStore::new();
 
         /* add "interface" next-hops */
-        let i1 = store.add_nhop(&NhopKey::with_ifindex(1));
-        let i2 = store.add_nhop(&NhopKey::with_ifindex(2));
-        let i3 = store.add_nhop(&NhopKey::with_ifindex(3));
+        let i1 = store.add_nhop(&NhopKey::with_ifindex(InterfaceIndex::try_new(1).unwrap()));
+        let i2 = store.add_nhop(&NhopKey::with_ifindex(InterfaceIndex::try_new(2).unwrap()));
+        let i3 = store.add_nhop(&NhopKey::with_ifindex(InterfaceIndex::try_new(3).unwrap()));
 
         /* add "adjacent" nexthops */
         let a1 = store.add_nhop(&NhopKey::expect_from("10.0.0.1"));
@@ -642,15 +643,15 @@ mod tests {
         /* add "adjacent" nexthops with interface resolved */
         let a1 = store.add_nhop(&NhopKey::with_addr_ifindex(
             &("10.0.0.1".parse().unwrap()),
-            1,
+            InterfaceIndex::try_new(1).unwrap(),
         ));
         let a2 = store.add_nhop(&NhopKey::with_addr_ifindex(
             &("10.0.0.5".parse().unwrap()),
-            2,
+            InterfaceIndex::try_new(2).unwrap(),
         ));
         let a3 = store.add_nhop(&NhopKey::with_addr_ifindex(
             &("10.0.0.9".parse().unwrap()),
-            3,
+            InterfaceIndex::try_new(3).unwrap(),
         ));
 
         // add "non-adjacent" nexthops

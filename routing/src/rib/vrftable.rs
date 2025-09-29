@@ -18,7 +18,6 @@ use ahash::RandomState;
 use net::vxlan::Vni;
 use std::collections::HashMap;
 
-#[allow(unused)]
 use tracing::{debug, error};
 
 pub struct VrfTable {
@@ -425,13 +424,14 @@ mod tests {
     use crate::interfaces::tests::build_test_iftable_left_right;
     use crate::pretty_utils::Frame;
     use crate::rib::encapsulation::Encapsulation;
-    use crate::rib::vrf::tests::build_test_vrf_nhops_partially_resolved;
+    use crate::rib::vrf::tests::{build_test_vrf, mk_addr};
     use crate::rib::vrf::tests::{
-        build_test_vrf, init_test_vrf, mk_addr, mod_test_vrf_1, mod_test_vrf_2,
+        build_test_vrf_nhops_partially_resolved, init_test_vrf, mod_test_vrf_1, mod_test_vrf_2,
     };
     use crate::{
         evpn::rmac::tests::build_sample_rmac_store, rib::encapsulation::VxlanEncapsulation,
     };
+    use net::interface::InterfaceIndex;
     use tracing_test::traced_test;
 
     fn mk_vni(vni: u32) -> Vni {
@@ -516,44 +516,48 @@ mod tests {
 
         /* Attach eth0 */
         let vrfid = 2;
+        let idx2 = InterfaceIndex::try_new(2).unwrap();
         debug!("━━━━━━━━ Test: Attach eth0 to vrf {vrfid}");
-        iftw.attach_interface_to_vrf(2, vrfid, &vrftable)
+        iftw.attach_interface_to_vrf(idx2, vrfid, &vrftable)
             .expect("Should succeed");
         let ift = iftr.enter().unwrap();
-        let eth0 = ift.get_interface(2).expect("Should find interface");
+        let eth0 = ift.get_interface(idx2).expect("Should find interface");
         assert!(eth0.is_attached_to_fib(FibId::Id(vrfid)));
         println!("{}", *ift);
         drop(ift);
 
         /* Attach eth1 */
         let vrfid = 2;
+        let idx3 = InterfaceIndex::try_new(3).unwrap();
         debug!("━━━━━━━━ Test: Attach eth1 to vrf {vrfid}");
-        iftw.attach_interface_to_vrf(3, vrfid, &vrftable)
+        iftw.attach_interface_to_vrf(idx3, vrfid, &vrftable)
             .expect("Should succeed");
         let ift = iftr.enter().unwrap();
-        let eth1 = ift.get_interface(3).expect("Should find interface");
+        let eth1 = ift.get_interface(idx3).expect("Should find interface");
         assert!(eth1.is_attached_to_fib(FibId::Id(vrfid)));
         println!("{}", *ift);
         drop(ift);
 
         /* Attach vlan100 */
         let vrfid = 1;
+        let idx4 = InterfaceIndex::try_new(4).unwrap();
         debug!("━━━━━━━━ Test: Attach eth2 to vrf {vrfid}");
-        iftw.attach_interface_to_vrf(4, vrfid, &vrftable)
+        iftw.attach_interface_to_vrf(idx4, vrfid, &vrftable)
             .expect("Should succeed");
         let ift = iftr.enter().unwrap();
-        let eth2 = ift.get_interface(4).expect("Should find interface");
+        let eth2 = ift.get_interface(idx4).expect("Should find interface");
         assert!(eth2.is_attached_to_fib(FibId::Id(vrfid)));
         println!("{}", *ift);
         drop(ift);
 
         /* Attach vlan200 */
         let vrfid = 1;
+        let idx5 = InterfaceIndex::try_new(5).unwrap();
         debug!("━━━━━━━━ Test: Attach eth1.100 to vrf {vrfid}");
-        iftw.attach_interface_to_vrf(5, vrfid, &vrftable)
+        iftw.attach_interface_to_vrf(idx5, vrfid, &vrftable)
             .expect("Should succeed");
         let ift = iftr.enter().unwrap();
-        let iface = ift.get_interface(5).expect("Should find interface");
+        let iface = ift.get_interface(idx5).expect("Should find interface");
         assert!(iface.is_attached_to_fib(FibId::Id(vrfid)));
         println!("{}", *ift);
         drop(ift);
@@ -571,10 +575,10 @@ mod tests {
         );
         println!("{vrftable}");
         let ift = iftr.enter().unwrap();
-        let iface = ift.get_interface(4).expect("Should be there");
+        let iface = ift.get_interface(idx4).expect("Should be there");
         assert!(!iface.is_attached_to_fib(FibId::Id(vrfid)));
         assert!(iface.attachment.is_none());
-        let iface = ift.get_interface(5).expect("Should be there");
+        let iface = ift.get_interface(idx5).expect("Should be there");
         assert!(!iface.is_attached_to_fib(FibId::Id(vrfid)));
         assert!(iface.attachment.is_none());
         println!("{}", *ift);
@@ -603,10 +607,10 @@ mod tests {
                 .is_err_and(|e| e == RouterError::NoSuchVrf)
         );
         let ift = iftr.enter().unwrap();
-        let eth0 = ift.get_interface(2).expect("Should be there");
+        let eth0 = ift.get_interface(idx2).expect("Should be there");
         assert!(!eth0.is_attached_to_fib(FibId::Id(vrfid)));
         assert!(eth0.attachment.is_none());
-        let eth1 = ift.get_interface(3).expect("Should be there");
+        let eth1 = ift.get_interface(idx3).expect("Should be there");
         assert!(!eth1.is_attached_to_fib(FibId::Id(vrfid)));
         assert!(eth1.attachment.is_none());
         println!("{}", *ift);
@@ -709,17 +713,18 @@ mod tests {
         assert_eq!(vrftable.len(), 2); // default is always there
 
         debug!("━━━━Test: Get interface from iftable");
+        let idx = InterfaceIndex::try_new(2).unwrap();
         if let Some(iftable) = iftr.enter() {
-            let iface = iftable.get_interface(2).expect("Should be there");
+            let iface = iftable.get_interface(idx).expect("Should be there");
             assert_eq!(iface.name, "eth0");
             debug!("\n{}", *iftable);
         }
 
         debug!("━━━━Test: Attach interface to vrf");
-        iftw.attach_interface_to_vrf(2, vrfid, &vrftable)
+        iftw.attach_interface_to_vrf(idx, vrfid, &vrftable)
             .expect("Should succeed");
         if let Some(iftable) = iftr.enter() {
-            let iface = iftable.get_interface(2).expect("Should be there");
+            let iface = iftable.get_interface(idx).expect("Should be there");
             assert!(iface.attachment.is_some());
             debug!("\n{}", *iftable);
         }
@@ -742,7 +747,7 @@ mod tests {
             assert_eq!(fibtable.len(), 1);
         }
         if let Some(iftable) = iftr.enter() {
-            let iface = iftable.get_interface(2).expect("Should be there");
+            let iface = iftable.get_interface(idx).expect("Should be there");
             assert!(iface.attachment.is_none(), "Should have been detached");
         }
 
@@ -789,10 +794,10 @@ mod tests {
             assert_eq!(entry.instructions[0], PktInstruction::Encap(Encapsulation::Vxlan(vxlan)));
             assert_eq!(entry.instructions[1], PktInstruction::Encap(Encapsulation::Mpls(7000)));
             match num {
-                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(1), Some(mk_addr("10.0.0.1")), None))),
-                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(2), Some(mk_addr("10.0.0.5")), None))),
-                2 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(2), Some(mk_addr("10.0.0.5")), None))),
-                3 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(3), Some(mk_addr("10.0.0.9")), None))),
+                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1")), None))),
+                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5")), None))),
+                2 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5")), None))),
+                3 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(3).ok(), Some(mk_addr("10.0.0.9")), None))),
                 _ => unreachable!(),
             }
         }
@@ -816,8 +821,8 @@ mod tests {
             assert_eq!(entry.instructions[0], PktInstruction::Encap(Encapsulation::Vxlan(vxlan)));
             assert_eq!(entry.instructions[1], PktInstruction::Encap(Encapsulation::Mpls(7000)));
             match num {
-                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(1), Some(mk_addr("10.0.0.1")), None))),
-                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(3), Some(mk_addr("10.0.0.9")), None))),
+                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1")), None))),
+                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(3).ok(), Some(mk_addr("10.0.0.9")), None))),
                 _ => unreachable!(),
             }
         }
@@ -840,7 +845,7 @@ mod tests {
             assert_eq!(entry.instructions[0], PktInstruction::Encap(Encapsulation::Vxlan(vxlan)));
             assert_eq!(entry.instructions[1], PktInstruction::Encap(Encapsulation::Mpls(7000)));
             match num {
-                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(2), Some(mk_addr("10.0.0.5")), None))),
+                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5")), None))),
                 _ => unreachable!(),
             }
         }
@@ -860,10 +865,10 @@ mod tests {
             assert_eq!(entry.instructions[0], PktInstruction::Encap(Encapsulation::Vxlan(vxlan)));
             assert_eq!(entry.instructions[1], PktInstruction::Encap(Encapsulation::Mpls(7000)));
             match num {
-                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(1), Some(mk_addr("10.0.0.1")), None))),
-                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(2), Some(mk_addr("10.0.0.5")), None))),
-                2 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(2), Some(mk_addr("10.0.0.5")), None))),
-                3 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(Some(3), Some(mk_addr("10.0.0.9")), None))),
+                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1")), None))),
+                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5")), None))),
+                2 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5")), None))),
+                3 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(3).ok(), Some(mk_addr("10.0.0.9")), None))),
                 _ => unreachable!(),
             }
         }

@@ -12,7 +12,7 @@ use crate::processor::confbuild::namegen::VpcInterfacesNames;
 use std::collections::HashMap;
 use tracing::{debug, error};
 
-use net::interface::{Interface, InterfaceName, Mtu};
+use net::interface::{Interface, InterfaceIndex, InterfaceName, Mtu};
 use routing::interfaces::interface::{AttachConfig, IfDataEthernet, IfState, IfType};
 
 use config::internal::interfaces::interface::InterfaceConfig;
@@ -61,7 +61,15 @@ fn build_router_interface_config(
     vrfid: VrfId,
 ) -> Result<RouterInterfaceConfig, ConfigError> {
     let name = kiface.name.as_str();
-    let mut new = RouterInterfaceConfig::new(name, kiface.index);
+    let ifindex = match InterfaceIndex::try_new(kiface.index) {
+        Ok(ifindex) => ifindex,
+        Err(err) => {
+            let msg = format!("{err}");
+            error!("failed to build router interface: {err}");
+            return Err(ConfigError::Invalid(msg));
+        }
+    };
+    let mut new = RouterInterfaceConfig::new(name, ifindex);
 
     // set admin status -- currently from oper
     let status = if kiface.is_up() {

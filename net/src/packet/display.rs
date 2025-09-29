@@ -14,7 +14,9 @@ use crate::udp::{Udp, UdpEncap};
 
 use crate::buffer::PacketBufferMut;
 use crate::checksum::Checksum;
-use crate::packet::{BridgeDomain, DoneReason, InterfaceId, InvalidPacket, Packet, PacketMeta};
+#[allow(deprecated)]
+use crate::packet::InterfaceId;
+use crate::packet::{BridgeDomain, DoneReason, InvalidPacket, Packet, PacketMeta};
 use std::fmt::{Display, Formatter};
 
 impl Display for Eth {
@@ -217,6 +219,7 @@ fn fmt_opt<T: Display>(
         }
     }
 }
+#[allow(deprecated)]
 impl Display for InterfaceId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.get_id())
@@ -230,7 +233,14 @@ impl Display for BridgeDomain {
 impl Display for PacketMeta {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "  metadata:")?;
-        write!(f, "    iif: {}", self.iif.get_id())?;
+        match self.iif {
+            None => {
+                write!(f, "    iif: None")?;
+            }
+            Some(iif) => {
+                write!(f, "    iif: {iif}")?;
+            }
+        }
         fmt_opt(f, " oif", self.oif, true)?;
 
         writeln!(f, "    bcast: {}", self.is_l2bcast())?;

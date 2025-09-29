@@ -249,6 +249,8 @@ impl FibRoute {
 
 #[cfg(test)]
 pub mod tests {
+    use net::interface::InterfaceIndex;
+
     use crate::fib::fibgroupstore::{FibError, FibGroupStore, FibRoute};
     use crate::fib::fibobjects::EgressObject;
     use crate::fib::fibobjects::FibEntry;
@@ -263,8 +265,11 @@ pub mod tests {
     fn build_fib_entry_egress(ifindex: u32, address: &str, ifname: &str) -> FibEntry {
         let addr = Some(IpAddr::from_str(address).unwrap());
         let ifname = Some(ifname.to_string());
-        let ifindex = Some(ifindex);
-        let inst = PktInstruction::Egress(EgressObject::new(ifindex, addr, ifname));
+        let inst = PktInstruction::Egress(EgressObject::new(
+            InterfaceIndex::try_new(ifindex).ok(),
+            addr,
+            ifname,
+        ));
         FibEntry::with_inst(inst)
     }
     // builds fibgroup with a single entry

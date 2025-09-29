@@ -3,6 +3,7 @@
 
 #![allow(missing_docs)] // TODO
 
+use crate::interface::InterfaceIndex;
 use crate::vxlan::Vni;
 use bitflags::bitflags;
 use concurrency::sync::Arc;
@@ -16,9 +17,10 @@ use tracing::error;
 /// Every VRF is univocally identified with a numerical VRF id
 pub type VrfId = u32;
 
+#[deprecated = "use InterfaceIndex from net"]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct InterfaceId(u32);
-#[allow(unused)]
+#[allow(deprecated)]
 impl InterfaceId {
     #[must_use]
     pub fn new(val: u32) -> Self {
@@ -130,11 +132,11 @@ bitflags! {
 #[derive(Debug, Default, Clone)]
 pub struct PacketMeta {
     flags: MetaFlags,
-    pub iif: InterfaceId,                  /* incoming interface - set early */
-    pub oif: Option<InterfaceId>,          /* outgoing interface - set late */
-    pub nh_addr: Option<IpAddr>,           /* IP address of next-hop */
-    pub vrf: Option<VrfId>,                /* for IP packet, the VRF to use to route it */
-    pub bridge: Option<BridgeDomain>,      /* the bridge domain to forward the packet to */
+    pub iif: Option<InterfaceIndex>, /* incoming interface - set early */
+    pub oif: Option<InterfaceIndex>, /* outgoing interface - set late */
+    pub nh_addr: Option<IpAddr>,     /* IP address of next-hop */
+    pub vrf: Option<VrfId>,          /* for IP packet, the VRF to use to route it */
+    pub bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
     pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
     pub src_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a received encapsulated packet */
     pub dst_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a packet to be (or already) re-encapsulated by the gateway */

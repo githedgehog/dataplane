@@ -8,7 +8,7 @@
 use crate::fib::fibtype::{FibId, FibReader};
 use crate::rib::vrf::VrfId;
 use net::eth::mac::Mac;
-use net::interface::Mtu;
+use net::interface::{InterfaceIndex, Mtu};
 use net::vlan::Vid;
 use std::net::IpAddr;
 
@@ -16,9 +16,6 @@ use std::collections::HashSet;
 
 #[allow(unused)]
 use tracing::{debug, error, info};
-
-/// A type to uniquely identify a network interface
-pub type IfIndex = u32;
 
 /// An Ipv4 or Ipv6 address and mask configured on an interface
 pub type IfAddress = (IpAddr, u8);
@@ -85,16 +82,16 @@ pub enum AttachConfig {
 /// An object representing the configuration for an [`Interface`]
 #[derive(Clone, Debug, PartialEq)]
 pub struct RouterInterfaceConfig {
-    pub ifindex: IfIndex,                 /* ifindex of kernel interface (key) */
-    pub name: String,                     /* name of interface */
-    pub description: Option<String>,      /* description - informational */
-    pub iftype: IfType,                   /* type of interface */
-    pub admin_state: IfState,             /* admin state */
+    pub ifindex: InterfaceIndex,     /* ifindex of kernel interface (key) */
+    pub name: String,                /* name of interface */
+    pub description: Option<String>, /* description - informational */
+    pub iftype: IfType,              /* type of interface */
+    pub admin_state: IfState,        /* admin state */
     pub attach_cfg: Option<AttachConfig>, /* attach config */
     pub mtu: Option<Mtu>,
 }
 impl RouterInterfaceConfig {
-    pub fn new(name: &str, ifindex: IfIndex) -> Self {
+    pub fn new(name: &str, ifindex: InterfaceIndex) -> Self {
         Self {
             ifindex,
             name: name.to_owned(),
@@ -130,7 +127,7 @@ impl RouterInterfaceConfig {
 pub struct Interface {
     pub name: String,
     pub description: Option<String>,
-    pub ifindex: IfIndex,
+    pub ifindex: InterfaceIndex,
     pub iftype: IfType,
     pub admin_state: IfState,
     pub mtu: Option<Mtu>,

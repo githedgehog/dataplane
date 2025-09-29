@@ -9,20 +9,19 @@ mod interface;
 mod vrf;
 mod vtep;
 
-use config::GenId;
-use net::vxlan::Vni;
-use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::format;
-use tracing::{debug, error};
-
 use crate::RouterError;
 use crate::evpn::Vtep;
 use crate::interfaces::iftable::IfTable;
-use crate::interfaces::interface::IfIndex;
 use crate::interfaces::interface::RouterInterfaceConfig;
 use crate::rib::VrfTable;
 use crate::rib::vrf::{RouterVrfConfig, VrfId};
 use crate::routingdb::RoutingDb;
+use config::GenId;
+use net::interface::InterfaceIndex;
+use net::vxlan::Vni;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::format;
+use tracing::{debug, error};
 
 use crate::config::interface::ReconfigInterfacePlan;
 use crate::config::vrf::ReconfigVrfPlan;
@@ -37,7 +36,7 @@ pub type FrrConfig = String;
 pub struct RouterConfig {
     genid: GenId,
     vrfs: BTreeMap<VrfId, RouterVrfConfig>,
-    interfaces: BTreeMap<IfIndex, RouterInterfaceConfig>,
+    interfaces: BTreeMap<InterfaceIndex, RouterInterfaceConfig>,
     vtep: Option<Vtep>,
     frr_cfg: Option<FrrConfig>,
 }
@@ -126,7 +125,7 @@ impl RouterConfig {
     /// Get the config for an interface with a given [`IfIndex`]
     //////////////////////////////////////////////////////////////////////////////////
     #[must_use]
-    fn get_interface(&self, ifindex: IfIndex) -> Option<&RouterInterfaceConfig> {
+    fn get_interface(&self, ifindex: InterfaceIndex) -> Option<&RouterInterfaceConfig> {
         self.interfaces.get(&ifindex)
     }
 
@@ -135,7 +134,7 @@ impl RouterConfig {
     //////////////////////////////////////////////////////////////////////////////////
     #[cfg(test)]
     #[must_use]
-    fn get_interface_mut(&mut self, ifindex: IfIndex) -> Option<&mut RouterInterfaceConfig> {
+    fn get_interface_mut(&mut self, ifindex: InterfaceIndex) -> Option<&mut RouterInterfaceConfig> {
         self.interfaces.get_mut(&ifindex)
     }
 
@@ -237,7 +236,8 @@ mod tests {
     use tracing::debug;
     use net::{route::RouteTableId, vxlan::Vni};
     use net::eth::mac::Mac;
-    use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::{AttachConfig, RouterInterfaceConfig}, rib::vrf::RouterVrfConfig};
+use net::interface::InterfaceIndex;
+use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::{AttachConfig, RouterInterfaceConfig}, rib::vrf::RouterVrfConfig};
     use crate::interfaces::interface::IfState;
     use crate::interfaces::interface::IfType;
     use crate::interfaces::interface::IfDataEthernet;
@@ -282,13 +282,15 @@ mod tests {
 
     }
     fn add_router_interface_configs(config: &mut RouterConfig) {
-        let mut ifconfig = RouterInterfaceConfig::new("Loopback", 1);
+        let lo_idx = InterfaceIndex::try_new(1).unwrap();
+        let mut ifconfig = RouterInterfaceConfig::new("Loopback", lo_idx);
         ifconfig.set_description("main loopback interface");
         ifconfig.set_iftype(IfType::Loopback);
         ifconfig.set_admin_state(IfState::Up);
         config.add_interface(ifconfig);
 
-        let mut ifconfig = RouterInterfaceConfig::new("Eth0", 10);
+        let eth0_idx = InterfaceIndex::try_new(10).unwrap();
+        let mut ifconfig = RouterInterfaceConfig::new("Eth0", eth0_idx);
         ifconfig.set_description("Interface to Spine-1");
         ifconfig.set_admin_state(IfState::Up);
         ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
@@ -297,7 +299,8 @@ mod tests {
         ifconfig.set_attach_cfg(Some(AttachConfig::VRF(100)));
         config.add_interface(ifconfig);
 
-        let mut ifconfig = RouterInterfaceConfig::new("Eth1", 11);
+        let eth1_idx = InterfaceIndex::try_new(11).unwrap();
+        let mut ifconfig = RouterInterfaceConfig::new("Eth1", eth1_idx);
         ifconfig.set_description("Interface to Spine-2");
         ifconfig.set_admin_state(IfState::Up);
         ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
@@ -436,7 +439,8 @@ mod tests {
 
         debug!("━━━━━━━━ Test: Change interface name, mac, admin state and attach it to another vrf");
         config.genid = 6;
-        let ifconfig = config.get_interface_mut(10).expect("Should find config");
+        let idx = InterfaceIndex::try_new(10).unwrap();
+        let ifconfig = config.get_interface_mut(idx).expect("Should find config");
         ifconfig.set_name("CHANGED-NAME");
         ifconfig.set_description("Interface with changed config");
         ifconfig.set_admin_state(IfState::Down);
@@ -448,7 +452,7 @@ mod tests {
 
         debug!("━━━━━━━━ Test: Detach interface");
         config.genid = 7;
-        let ifconfig = config.get_interface_mut(10).expect("Should find config");
+        let ifconfig = config.get_interface_mut(idx).expect("Should find config");
         ifconfig.set_attach_cfg(None);
         test_apply_config(&config, &mut db).expect("Should succeed");
     }

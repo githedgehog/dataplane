@@ -31,7 +31,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use net::buffer::test_buffer::TestBuffer;
-use net::packet::{InterfaceId, Packet};
+use net::interface::InterfaceIndex;
+use net::packet::{DoneReason, Packet};
 use netdev::Interface;
 use pipeline::{DynPipeline, NetworkFunction};
 use tracing::{debug, error, info, trace, warn};
@@ -50,18 +51,18 @@ type WorkerChans = (Vec<WorkerTx>, WorkerRx);
 
 /// Simple representation of a kernel interface.
 pub struct Kif {
-    ifindex: u32,          /* ifindex of interface */
-    token: Token,          /* token for polling */
-    name: String,          /* name of interface */
-    sock: RawPacketStream, /* packet socket */
-    raw_fd: RawFd,         /* raw desc of packet socket */
+    ifindex: InterfaceIndex, /* ifindex of interface */
+    token: Token,            /* token for polling */
+    name: String,            /* name of interface */
+    sock: RawPacketStream,   /* packet socket */
+    raw_fd: RawFd,           /* raw desc of packet socket */
 }
 
 impl Kif {
     /// Create a kernel interface entry. Each interface gets a [`Token`] assigned
     /// and a packet socket opened, which gets registered in a poller to detect
     /// activity.
-    fn new(ifindex: u32, name: &str, token: Token) -> io::Result<Self> {
+    fn new(ifindex: InterfaceIndex, name: &str, token: Token) -> io::Result<Self> {
         let mut sock = RawPacketStream::new().map_err(|e| {
             error!("Failed to open raw sock for interface {name}: {e}");
             e
@@ -101,7 +102,7 @@ impl KifTable {
     }
     /// Add a kernel interface 'representor' to this table. For each interface, a packet socket
     /// is created and a poller [`Token`] assigned.
-    pub fn add(&mut self, ifindex: u32, name: &str) -> io::Result<()> {
+    pub fn add(&mut self, ifindex: InterfaceIndex, name: &str) -> io::Result<()> {
         debug!("Adding interface '{name}'...");
         let token = Token(self.next_token);
         let interface = Kif::new(ifindex, name, token)?;
@@ -122,9 +123,9 @@ impl KifTable {
         self.by_token.get_mut(&token)
     }
 
-    /// Get a mutable reference to the [`Kif`] with the indicated ifindex.
-    /// TODO: replace this linear search with a hash lookup if needed.
-    pub fn get_mut_by_index(&mut self, ifindex: u32) -> Option<&mut Kif> {
+    /// Get a mutable reference to the [`Kif`] with the indicated ifindex
+    /// Todo: replace this linear search with a hash lookup
+    pub fn get_mut_by_index(&mut self, ifindex: InterfaceIndex) -> Option<&mut Kif> {
         self.by_token
             .values_mut()
             .find(|kif| kif.ifindex == ifindex)
@@ -132,11 +133,11 @@ impl KifTable {
 }
 
 /// Get the ifindex of the interface with the given name.
-fn get_interface_ifindex(interfaces: &[Interface], name: &str) -> Option<u32> {
+fn get_interface_ifindex(interfaces: &[Interface], name: &str) -> Option<InterfaceIndex> {
     interfaces
         .iter()
         .position(|interface| interface.name == name)
-        .map(|pos| interfaces[pos].index)
+        .and_then(|pos| InterfaceIndex::try_new(interfaces[pos].index).ok())
 }
 
 /// Build a table of kernel interfaces to receive packets from (or send to).
@@ -162,7 +163,15 @@ fn build_kif_table(
     if ifnames.len() == 1 && ifnames[0].eq_ignore_ascii_case("ANY") {
         /* use all interfaces */
         for interface in &interfaces {
-            if let Err(e) = kiftable.add(interface.index, &interface.name) {
+            let if_index = match InterfaceIndex::try_new(interface.index) {
+                Ok(if_index) => if_index,
+                Err(e) => match e {
+                    net::interface::InterfaceIndexError::Zero => {
+                        return Err(io::Error::new(io::ErrorKind::InvalidData, e));
+                    }
+                },
+            };
+            if let Err(e) = kiftable.add(if_index, &interface.name) {
                 error!("Skipping interface '{}': {e}", interface.name);
             }
         }
@@ -331,7 +340,7 @@ impl DriverKernel {
             // 1) Drain processed packets coming back from workers, serialize + TX
             while let Ok(mut pkt) = from_workers.try_recv() {
                 // choose outgoing interface from meta
-                let oif_id_opt = pkt.get_meta().oif.as_ref().map(InterfaceId::get_id);
+                let oif_id_opt = pkt.get_meta().oif;
                 if let Some(oif_id) = oif_id_opt {
                     if let Some(outgoing) = kiftable.get_mut_by_index(oif_id) {
                         match pkt.serialize() {
@@ -423,7 +432,7 @@ impl DriverKernel {
                     let buf = TestBuffer::from_raw_data(&raw[..bytes]);
                     match Packet::new(buf) {
                         Ok(mut incoming) => {
-                            incoming.get_meta_mut().iif = InterfaceId::new(interface.ifindex);
+                            incoming.get_meta_mut().iif = Some(interface.ifindex);
                             pkts.push(Box::new(incoming));
                         }
                         Err(e) => {

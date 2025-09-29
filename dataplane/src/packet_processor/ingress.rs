@@ -154,12 +154,19 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Ingress {
             let nfi = self.name();
             if !packet.is_done() {
                 if let Some(iftable) = self.iftr.enter() {
-                    let iif = packet.get_meta().iif.get_id();
-                    if let Some(interface) = iftable.get_interface(iif) {
-                        self.interface_ingress(interface, &mut packet);
-                    } else {
-                        warn!("{nfi}: unknown incoming interface {iif}");
-                        packet.done(DoneReason::InterfaceUnknown);
+                    match packet.get_meta().iif {
+                        None => {
+                            warn!("no incoming interface for packet");
+                        }
+                        Some(iif) => match iftable.get_interface(iif) {
+                            None => {
+                                warn!("{nfi}: unknown incoming interface {iif}");
+                                packet.done(DoneReason::InterfaceUnknown);
+                            }
+                            Some(interface) => {
+                                self.interface_ingress(interface, &mut packet);
+                            }
+                        },
                     }
                 }
             }

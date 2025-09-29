@@ -14,20 +14,29 @@ use netdev::Interface;
 use netdev::get_interfaces;
 use procfs::net::arp;
 
-use crate::atable::atablerw::AtableWriter;
-use net::eth::mac::Mac;
-use tracing::{debug, error, warn};
-
 use super::adjacency::Adjacency;
 use super::atablerw::AtableReader;
+use crate::atable::atablerw::AtableWriter;
+use net::eth::mac::Mac;
+use net::interface::{InterfaceIndex, InterfaceIndexError};
+use tracing::{debug, error, warn};
 
 /// Util that returns the ifindex of the interface with the given name out of the slice of
 /// interfaces provided as argument.
-fn get_interface_ifindex(interfaces: &[Interface], name: &str) -> Option<u32> {
+fn get_interface_ifindex(
+    interfaces: &[Interface],
+    name: &str,
+) -> Result<Option<InterfaceIndex>, InterfaceIndexError> {
     interfaces
         .iter()
-        .position(|interface| interface.name == name)
-        .map(|pos| interfaces[pos].index)
+        .find_map(|interface| {
+            if interface.name == name {
+                Some(InterfaceIndex::try_new(interface.index))
+            } else {
+                None
+            }
+        })
+        .transpose()
 }
 
 /// An object able to resolve ARP entries and update the adjacency table. The [`AtResolver`]
@@ -106,13 +115,23 @@ impl AtResolver {
         if let Ok(arptable) = arp() {
             let adjs = arptable.iter().filter_map(|entry| {
                 if let Some(mac) = entry.hw_address {
-                    if let Some(ifindex) = get_interface_ifindex(&interfaces, &entry.device) {
-                        let adj =
-                            Adjacency::new(IpAddr::V4(entry.ip_address), ifindex, Mac::from(mac));
-                        Some(adj)
-                    } else {
-                        warn!("Unable to find Ifindex of {0}", entry.device);
-                        None
+                    match get_interface_ifindex(&interfaces, &entry.device) {
+                        Ok(Some(ifindex)) => {
+                            let adj = Adjacency::new(
+                                IpAddr::V4(entry.ip_address),
+                                ifindex,
+                                Mac::from(mac),
+                            );
+                            Some(adj)
+                        }
+                        Ok(None) => {
+                            warn!("Unable to find Ifindex of {0}", entry.device);
+                            None
+                        }
+                        Err(e) => {
+                            error!("error refreshing ARP/ND table: {e}");
+                            None
+                        }
                     }
                 } else {
                     None
