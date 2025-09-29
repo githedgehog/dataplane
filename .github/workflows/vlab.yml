@@ -61,4 +61,4 @@ jobs:
       vpcmode: ${{ matrix.vpcmode }}
       releasetest: false
       hybrid: ${{ matrix.hybrid }}
-      tmate: true
+      debug: true
