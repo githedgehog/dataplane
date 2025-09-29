@@ -3,6 +3,7 @@
 /.bin/**
 /.vscode/**
 /artifact/**
+/compile-env
 /compile-env/**
 /dev-env-template/**
 /dpdk-sys/dpdk_wrapper-precompile.h*
