@@ -56,6 +56,8 @@ jobs:
         uses: "actions/checkout@v5"
       - name: "refresh compile-env"
         run: |
+          docker run --privileged --rm busybox:latest sh -c "echo 512 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages && cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
+          docker pull ghcr.io/githedgehog/testn/n-vm:0.0.6
           just --yes refresh-compile-env
           just --yes fake-nix
       - name: "deny check (pre)"
