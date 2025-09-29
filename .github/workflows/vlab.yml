@@ -2,7 +2,9 @@ name: "vlab.yml"
 
 on:
   pull_request: {}
-  push: {}
+  push:
+    branches:
+      - pr/daniel-noland/bump
   workflow_dispatch:
     inputs:
       fabricatorref:
