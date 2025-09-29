@@ -10,8 +10,8 @@ use crate::ip_auth::IpAuth;
 pub use crate::ipv6::addr::UnicastIpv6Addr;
 use crate::ipv6::flow_label::FlowLabel;
 use crate::parse::{
-    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload,
-    ParsePayloadWith, ParseWith, Reader,
+    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParseHeader,
+    ParsePayload, ParsePayloadWith, ParseWith, Reader,
 };
 use crate::tcp::Tcp;
 use crate::udp::Udp;
@@ -262,49 +262,51 @@ pub(crate) enum Ipv6Next {
     Ipv6Ext(Ipv6Ext),
 }
 
+impl From<Tcp> for Ipv6Next {
+    fn from(value: Tcp) -> Self {
+        Ipv6Next::Tcp(value)
+    }
+}
+
+impl From<Udp> for Ipv6Next {
+    fn from(value: Udp) -> Self {
+        Ipv6Next::Udp(value)
+    }
+}
+
+impl From<Icmp6> for Ipv6Next {
+    fn from(value: Icmp6) -> Self {
+        Ipv6Next::Icmp6(value)
+    }
+}
+
+impl From<IpAuth> for Ipv6Next {
+    fn from(value: IpAuth) -> Self {
+        Ipv6Next::IpAuth(value)
+    }
+}
+
+impl From<Ipv6Ext> for Ipv6Next {
+    fn from(value: Ipv6Ext) -> Self {
+        Ipv6Next::Ipv6Ext(value)
+    }
+}
+
 impl ParsePayload for Ipv6 {
     type Next = Ipv6Next;
 
     fn parse_payload(&self, cursor: &mut Reader) -> Option<Self::Next> {
         match self.0.next_header {
-            IpNumber::TCP => cursor
-                .parse::<Tcp>()
-                .map_err(|e| {
-                    debug!("failed to parse tcp: {e:?}");
-                })
-                .map(|(val, _)| Ipv6Next::Tcp(val))
-                .ok(),
-            IpNumber::UDP => cursor
-                .parse::<Udp>()
-                .map_err(|e| {
-                    debug!("failed to parse udp: {e:?}");
-                })
-                .map(|(val, _)| Ipv6Next::Udp(val))
-                .ok(),
-            IpNumber::IPV6_ICMP => cursor
-                .parse::<Icmp6>()
-                .map_err(|e| {
-                    debug!("failed to parse icmp6: {e:?}");
-                })
-                .map(|(val, _)| Ipv6Next::Icmp6(val))
-                .ok(),
-            IpNumber::AUTHENTICATION_HEADER => cursor
-                .parse::<IpAuth>()
-                .map_err(|e| {
-                    debug!("failed to parse IpAuth: {e:?}");
-                })
-                .map(|(val, _)| Ipv6Next::IpAuth(val))
-                .ok(),
+            IpNumber::TCP => cursor.parse_header::<Tcp, Ipv6Next>(),
+            IpNumber::UDP => cursor.parse_header::<Udp, Ipv6Next>(),
+            IpNumber::IPV6_ICMP => cursor.parse_header::<Icmp6, Ipv6Next>(),
+            IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<IpAuth, Ipv6Next>(),
             IpNumber::IPV6_HEADER_HOP_BY_HOP
             | IpNumber::IPV6_ROUTE_HEADER
             | IpNumber::IPV6_FRAGMENTATION_HEADER
-            | IpNumber::IPV6_DESTINATION_OPTIONS => cursor
-                .parse_with::<Ipv6Ext>(self.0.next_header)
-                .map_err(|e| {
-                    debug!("failed to parse ipv6 extension header: {e:?}");
-                })
-                .map(|(val, _)| Self::Next::Ipv6Ext(val))
-                .ok(),
+            | IpNumber::IPV6_DESTINATION_OPTIONS => {
+                cursor.parse_header_with::<Ipv6Ext, Ipv6Next>(self.0.next_header)
+            }
             _ => {
                 trace!("unsupported protocol: {:?}", self.0.next_header);
                 None
@@ -356,6 +358,36 @@ pub(crate) enum Ipv6ExtNext {
     Ipv6Ext(Ipv6Ext),
 }
 
+impl From<Tcp> for Ipv6ExtNext {
+    fn from(value: Tcp) -> Self {
+        Ipv6ExtNext::Tcp(value)
+    }
+}
+
+impl From<Udp> for Ipv6ExtNext {
+    fn from(value: Udp) -> Self {
+        Ipv6ExtNext::Udp(value)
+    }
+}
+
+impl From<Icmp6> for Ipv6ExtNext {
+    fn from(value: Icmp6) -> Self {
+        Ipv6ExtNext::Icmp6(value)
+    }
+}
+
+impl From<IpAuth> for Ipv6ExtNext {
+    fn from(value: IpAuth) -> Self {
+        Ipv6ExtNext::IpAuth(value)
+    }
+}
+
+impl From<Ipv6Ext> for Ipv6ExtNext {
+    fn from(value: Ipv6Ext) -> Self {
+        Ipv6ExtNext::Ipv6Ext(value)
+    }
+}
+
 impl From<Ipv6Next> for Header {
     fn from(value: Ipv6Next) -> Self {
         match value {
@@ -387,47 +419,19 @@ impl ParsePayloadWith for Ipv6Ext {
             .map_err(|e| debug!("failed to parse: {e:?}"))
             .ok()?;
         match next_header {
-            TCP => cursor
-                .parse::<Tcp>()
-                .map_err(|e| {
-                    debug!("failed to parse tcp: {e:?}");
-                })
-                .map(|(val, _)| Self::Next::Tcp(val))
-                .ok(),
-            UDP => cursor
-                .parse::<Udp>()
-                .map_err(|e| {
-                    debug!("failed to parse udp: {e:?}");
-                })
-                .map(|(val, _)| Self::Next::Udp(val))
-                .ok(),
-            IPV6_ICMP => cursor
-                .parse::<Icmp6>()
-                .map_err(|e| {
-                    debug!("failed to parse icmp4: {e:?}");
-                })
-                .map(|(val, _)| Self::Next::Icmp6(val))
-                .ok(),
+            TCP => cursor.parse_header::<Tcp, Ipv6ExtNext>(),
+            UDP => cursor.parse_header::<Udp, Ipv6ExtNext>(),
+            IPV6_ICMP => cursor.parse_header::<Icmp6, Ipv6ExtNext>(),
             AUTHENTICATION_HEADER => {
                 debug!("nested ip auth header");
-                cursor
-                    .parse::<IpAuth>()
-                    .map_err(|e| {
-                        debug!("failed to parse ip auth header: {e:?}");
-                    })
-                    .map(|(val, _)| Self::Next::IpAuth(val))
-                    .ok()
+                cursor.parse_header::<IpAuth, Ipv6ExtNext>()
             }
             IPV6_HEADER_HOP_BY_HOP
             | IPV6_ROUTE_HEADER
             | IPV6_FRAGMENTATION_HEADER
-            | IPV6_DESTINATION_OPTIONS => cursor
-                .parse_with::<Ipv6Ext>(next_header)
-                .map_err(|e| {
-                    debug!("failed to parse ipv6 extension header: {e:?}");
-                })
-                .map(|(val, _)| Self::Next::Ipv6Ext(val))
-                .ok(),
+            | IPV6_DESTINATION_OPTIONS => {
+                cursor.parse_header_with::<Ipv6Ext, Ipv6ExtNext>(next_header)
+            }
             _ => {
                 trace!("unsupported protocol: {next_header:?}");
                 None

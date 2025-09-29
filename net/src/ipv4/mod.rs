@@ -12,14 +12,15 @@ use crate::ipv4::dscp::Dscp;
 use crate::ipv4::ecn::Ecn;
 use crate::ipv4::frag_offset::FragOffset;
 use crate::parse::{
-    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
+    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParseHeader,
+    ParsePayload, Reader,
 };
 use crate::tcp::Tcp;
 use crate::udp::Udp;
 use etherparse::{IpDscp, IpEcn, IpFragOffset, IpNumber, Ipv4Header};
 use std::net::Ipv4Addr;
 use std::num::NonZero;
-use tracing::{debug, trace};
+use tracing::trace;
 
 pub mod addr;
 pub mod dscp;
@@ -361,39 +362,39 @@ pub(crate) enum Ipv4Next {
     IpAuth(IpAuth),
 }
 
+impl From<Tcp> for Ipv4Next {
+    fn from(value: Tcp) -> Self {
+        Ipv4Next::Tcp(value)
+    }
+}
+
+impl From<Udp> for Ipv4Next {
+    fn from(value: Udp) -> Self {
+        Ipv4Next::Udp(value)
+    }
+}
+
+impl From<Icmp4> for Ipv4Next {
+    fn from(value: Icmp4) -> Self {
+        Ipv4Next::Icmp4(value)
+    }
+}
+
+impl From<IpAuth> for Ipv4Next {
+    fn from(value: IpAuth) -> Self {
+        Ipv4Next::IpAuth(value)
+    }
+}
+
 impl ParsePayload for Ipv4 {
     type Next = Ipv4Next;
 
     fn parse_payload(&self, cursor: &mut Reader) -> Option<Self::Next> {
         match self.0.protocol {
-            IpNumber::TCP => cursor
-                .parse::<Tcp>()
-                .map_err(|e| {
-                    debug!("failed to parse tcp: {e:?}");
-                })
-                .map(|(val, _)| Ipv4Next::Tcp(val))
-                .ok(),
-            IpNumber::UDP => cursor
-                .parse::<Udp>()
-                .map_err(|e| {
-                    debug!("failed to parse udp: {e:?}");
-                })
-                .map(|(val, _)| Ipv4Next::Udp(val))
-                .ok(),
-            IpNumber::ICMP => cursor
-                .parse::<Icmp4>()
-                .map_err(|e| {
-                    debug!("failed to parse icmp4: {e:?}");
-                })
-                .map(|(val, _)| Ipv4Next::Icmp4(val))
-                .ok(),
-            IpNumber::AUTHENTICATION_HEADER => cursor
-                .parse::<IpAuth>()
-                .map_err(|e| {
-                    debug!("failed to parse IpAuth: {e:?}");
-                })
-                .map(|(val, _)| Ipv4Next::IpAuth(val))
-                .ok(),
+            IpNumber::TCP => cursor.parse_header::<Tcp, Ipv4Next>(),
+            IpNumber::UDP => cursor.parse_header::<Udp, Ipv4Next>(),
+            IpNumber::ICMP => cursor.parse_header::<Icmp4, Ipv4Next>(),
+            IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<IpAuth, Ipv4Next>(),
             _ => {
                 trace!("unsupported protocol: {:?}", self.0.protocol);
                 None

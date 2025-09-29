@@ -6,7 +6,7 @@
 use crate::headers::Header;
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
-use crate::parse::{Parse, ParseError, ParsePayload, Reader};
+use crate::parse::{Parse, ParseError, ParseHeader, ParsePayload, Reader};
 use crate::tcp::Tcp;
 use crate::udp::Udp;
 use etherparse::{IpAuthHeader, IpNumber};
@@ -50,48 +50,48 @@ pub(crate) enum IpAuthNext {
     IpAuth(IpAuth),
 }
 
+impl From<Tcp> for IpAuthNext {
+    fn from(value: Tcp) -> Self {
+        IpAuthNext::Tcp(value)
+    }
+}
+
+impl From<Udp> for IpAuthNext {
+    fn from(value: Udp) -> Self {
+        IpAuthNext::Udp(value)
+    }
+}
+
+impl From<Icmp4> for IpAuthNext {
+    fn from(value: Icmp4) -> Self {
+        IpAuthNext::Icmp4(value)
+    }
+}
+
+impl From<Icmp6> for IpAuthNext {
+    fn from(value: Icmp6) -> Self {
+        IpAuthNext::Icmp6(value)
+    }
+}
+
+impl From<IpAuth> for IpAuthNext {
+    fn from(value: IpAuth) -> Self {
+        IpAuthNext::IpAuth(value)
+    }
+}
+
 impl ParsePayload for IpAuth {
     type Next = IpAuthNext;
 
     fn parse_payload(&self, cursor: &mut Reader) -> Option<Self::Next> {
         match self.0.next_header {
-            IpNumber::TCP => cursor
-                .parse::<Tcp>()
-                .map_err(|e| {
-                    debug!("failed to parse tcp: {e:?}");
-                })
-                .map(|(val, _)| Self::Next::Tcp(val))
-                .ok(),
-            IpNumber::UDP => cursor
-                .parse::<Udp>()
-                .map_err(|e| {
-                    debug!("failed to parse udp: {e:?}");
-                })
-                .map(|(val, _)| Self::Next::Udp(val))
-                .ok(),
-            IpNumber::ICMP => cursor
-                .parse::<Icmp4>()
-                .map_err(|e| {
-                    debug!("failed to parse icmp4: {e:?}");
-                })
-                .map(|(val, _)| Self::Next::Icmp4(val))
-                .ok(),
-            IpNumber::IPV6_ICMP => cursor
-                .parse::<Icmp6>()
-                .map_err(|e| {
-                    debug!("failed to parse icmp6: {e:?}");
-                })
-                .map(|(val, _)| Self::Next::Icmp6(val))
-                .ok(),
+            IpNumber::TCP => cursor.parse_header::<Tcp, IpAuthNext>(),
+            IpNumber::UDP => cursor.parse_header::<Udp, IpAuthNext>(),
+            IpNumber::ICMP => cursor.parse_header::<Icmp4, IpAuthNext>(),
+            IpNumber::IPV6_ICMP => cursor.parse_header::<Icmp6, IpAuthNext>(),
             IpNumber::AUTHENTICATION_HEADER => {
                 debug!("nested ip auth header");
-                cursor
-                    .parse::<IpAuth>()
-                    .map_err(|e| {
-                        debug!("failed to parse ip auth header: {e:?}");
-                    })
-                    .map(|(val, _)| Self::Next::IpAuth(val))
-                    .ok()
+                cursor.parse_header::<IpAuth, IpAuthNext>()
             }
             _ => {
                 trace!("unsupported protocol: {:?}", self.0.next_header);
