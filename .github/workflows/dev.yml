@@ -10,7 +10,7 @@
 name: "dev.yml"
 
 on:
-  pull_request: {}
+  #pull_request: {} # temp deactivate
   push:
     branches:
       - "main"
