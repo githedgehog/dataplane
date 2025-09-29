@@ -21,7 +21,7 @@ on:
         type: "string"
         description: "tag of the dpdk-sys built frr image to use"
         required: true
-        default: "7c45af7c234826eec19a69f1b662ad3185a62d5e.debug"
+        default: "dirty.d5fe9e47b8e999eb98b27219b3b3398470182083.debug"
 
 jobs:
   vlab:
@@ -47,7 +47,7 @@ jobs:
           - false
         image:
           - dataplane: "${{ inputs.dataplane_image || 'main.debug' }}"
-            frr: "${{ inputs.frr_image || '7c45af7c234826eec19a69f1b662ad3185a62d5e.debug' }}"
+            frr: "${{ inputs.frr_image || 'dirty.d5fe9e47b8e999eb98b27219b3b3398470182083.debug' }}"
 
     with:
       fabricatorref: ${{ matrix.fabricatorref }}
