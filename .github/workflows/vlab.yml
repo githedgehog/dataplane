@@ -2,6 +2,7 @@ name: "vlab.yml"
 
 on:
   pull_request: {}
+  push: {}
   workflow_dispatch:
     inputs:
       fabricatorref:
