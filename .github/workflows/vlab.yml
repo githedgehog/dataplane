@@ -11,12 +11,12 @@ on:
         type: "string"
         description: "the fabricator git ref to use as the basis of this test"
         required: true
-        default: "master"
+        default: "pr/daniel-noland/tmate-hack"
       dataplane_image:
         type: "string"
         description: "tag of the dataplane image to use"
         required: true
-        default: "pr-daniel-noland-bump.x86_64-unknown-linux-gnu.debug.8a53c0e04327ed5f64ea927ebf5d3cfd6c901851"
+        default: "main.debug"
       frr_image:
         type: "string"
         description: "tag of the dpdk-sys built frr image to use"
@@ -26,12 +26,12 @@ on:
 jobs:
   vlab:
     name: "${{ matrix.image.frr }}-${{ matrix.image.dataplane }}"
-    uses: githedgehog/fabricator/.github/workflows/run-vlab.yaml@master
+    uses: githedgehog/fabricator/.github/workflows/run-vlab.yaml@pr/daniel-noland/tmate-hack
     strategy:
       fail-fast: false
       matrix:
         fabricatorref:
-          - ${{ inputs.fabricatorref || 'master' }}
+          - ${{ inputs.fabricatorref || 'pr/daniel-noland/tmate-hack' }}
         fabricmode:
           - "spine-leaf"
         gateway:
@@ -46,7 +46,7 @@ jobs:
         hybrid:
           - false
         image:
-          - dataplane: "${{ inputs.dataplane_image || 'pr-daniel-noland-bump.x86_64-unknown-linux-gnu.debug.8a53c0e04327ed5f64ea927ebf5d3cfd6c901851' }}"
+          - dataplane: "${{ inputs.dataplane_image || 'main.debug' }}"
             frr: "${{ inputs.frr_image || '7c45af7c234826eec19a69f1b662ad3185a62d5e.debug' }}"
 
     with:
