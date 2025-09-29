@@ -1,6 +1,6 @@
 # Hedgehog Dataplane
-[![FOSSA Status](https://app.fossa.com/api/projects/custom%2B43661%2Fgithub.com%2Fgithedgehog%2Fdataplane.svg?type=shield)](https://app.fossa.com/projects/custom%2B43661%2Fgithub.com%2Fgithedgehog%2Fdataplane?ref=badge_shield)
 
+[![FOSSA Status](https://app.fossa.com/api/projects/custom%2B43661%2Fgithub.com%2Fgithedgehog%2Fdataplane.svg?type=shield)](https://app.fossa.com/projects/custom%2B43661%2Fgithub.com%2Fgithedgehog%2Fdataplane?ref=badge_shield)
 
 This repository contains the Dataplane for [Hedgehog's Open Network
 Fabric][fabric-docs]. This component acts as a gateway between different VPCs
@@ -19,13 +19,13 @@ managed by the Fabric, or to communicate with endpoints outside of the Fabric.
 - Bash (you very likely have this)
 - [Docker][docker] (install through your package manager)
 - Cargo / Rust (install via [`rustup`][rustup])
-
-  * :warning: You need a recent version of rust (1.86.0 or better) to build the project.
+  - :warning: You need a recent version of rust (1.86.0 or better) to build the project.
 
     ```bash
     rustup update
     ```
-  * :warning: You need to install (at least) the glibc target to use the default builds.
+
+  - :warning: You need to install (at least) the glibc target to use the default builds.
 
     ```bash
     rustup target add x86_64-unknown-linux-gnu
@@ -139,6 +139,7 @@ Because this repository uses a custom sysroot with custom libraries and binaries
 Here are the suggested configurations for various IDEs:
 
 ### VSCode Setup
+
 Add the following to your `.vscode/settings.json` file:
 
 ```json
@@ -166,6 +167,7 @@ To do this, add the following to your `.vscode/settings.json` file:
 
 Finally, you want to format code using rust analyzer, and to format on save to make sure your code is always formatted.
 To do this, add the following to your `.vscode/settings.json` file:
+
 ```json
 "[rust]": {
     "editor.defaultFormatter": "rust-lang.rust-analyzer",
@@ -215,17 +217,18 @@ There is a set of low-level infrastructure crates (tier-1) with limited internal
 The tier-1 set of crates includes: `net`, `pipeline`, `lpm` or `config`. Note that some of those refer to the others (e.g. `net` is a dependency of `pipeline`).
 
 A second tier of crates use the prior set to add extended functionalities. These include `nat` or `routing`. These crates may have `config` as
-dependency, but not vice-versa. I.e. in general, tier-n can only have as  dependencies, crates in tier-k, k<=n.
-Finally, crate `mgmt` (tier-3) may make use of any the internal crates (tier-1 and tier-2). No  no other crate other than `dataplane` (tier-4) should
+dependency, but not vice-versa. I.e. in general, tier-n can only have as dependencies, crates in tier-k, k<=n.
+Finally, crate `mgmt` (tier-3) may make use of any the internal crates (tier-1 and tier-2). No other crate (other than
+`dataplane`) (tier-4) should
 depend on `mgmt`.
 
 ### Dependency cheat-sheet
- * No crate should ever depend on `dataplane`.
- * No crate except `dataplane` should depend on `mgmt`.
- * Crate `config` should never depend on tier-2 crates (e.g. `nat` or `routing`).
- * The general rule is that a tier-n crate can only have as dependencies crates in tier-k, k<=n.
- * In other words, in a graphical representation as below, dependency arrows can never go upwards.
 
+- No crate should ever depend on `dataplane`.
+- No crate except `dataplane` should depend on `mgmt`.
+- Crate `config` should never depend on tier-2 crates (e.g. `nat` or `routing`).
+- The general rule is that a tier-n crate can only have as dependencies crates in tier-k, k<=n.
+- In other words, in a graphical representation as below, dependency arrows can never go upwards.
 
 ```
      ┌─────────────────────────────────┐
