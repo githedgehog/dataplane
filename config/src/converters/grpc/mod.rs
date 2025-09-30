@@ -41,6 +41,7 @@ pub use vrf::*;
 #[cfg(test)]
 mod test {
     use gateway_config::GatewayConfig;
+    use gateway_config::config::TracingConfig as ApiTracingConfig;
     use pretty_assertions::assert_eq;
 
     use crate::converters::grpc::convert_gateway_config_from_grpc_with_defaults;
@@ -99,6 +100,23 @@ mod test {
             });
     }
 
+    // Helper function to create a test ApiTracingConfig
+    fn create_tracing_config() -> ApiTracingConfig {
+        ApiTracingConfig {
+            default: 4,
+            taglevel: [
+                ("tag0".to_string(), 0),
+                ("tag1".to_string(), 1),
+                ("tag2".to_string(), 2),
+                ("tag3".to_string(), 3),
+                ("tag4".to_string(), 4),
+            ]
+            .iter()
+            .cloned()
+            .collect(),
+        }
+    }
+
     // Helper function to create a test GatewayConfig
     #[allow(clippy::too_many_lines)]
     fn create_test_gateway_config() -> GatewayConfig {
@@ -108,7 +126,7 @@ mod test {
             hostname: "test-gateway".to_string(),
             ports: Vec::new(),
             eal: None,
-            tracing: None,
+            tracing: Some(create_tracing_config()),
         };
 
         // Create interfaces for VRF
@@ -320,13 +338,15 @@ mod test {
 
     #[test]
     fn test_tryfrom_conversions() {
+        let tracing = create_tracing_config();
+
         // Create test data with specific components
         let device = gateway_config::Device {
             driver: 0, // Kernel
             hostname: "test-device".to_string(),
             ports: Vec::new(),
             eal: None,
-            tracing: None,
+            tracing: Some(tracing.clone()),
         };
 
         let interface = gateway_config::Interface {
@@ -360,6 +380,7 @@ mod test {
         // Verify round trip conversion
         assert_eq!(device_back.hostname, device.hostname);
         assert_eq!(device_back.driver, device.driver);
+        assert_eq!(device_back.tracing.as_ref().unwrap(), &tracing);
 
         // Test InterfaceConfig TryFrom
         let interface_config_result = InterfaceConfig::try_from(&interface);
