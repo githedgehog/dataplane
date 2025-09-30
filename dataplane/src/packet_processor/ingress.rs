@@ -49,7 +49,7 @@ impl Ingress {
             match &interface.attachment {
                 Some(Attachment::VRF(fibr)) => {
                     let Some(vrfid) = fibr.get_id().map(|x| x.as_u32()) else {
-                        /* we may ocassionaly not be able to enter a fib on reconfigs */
+                        /* we may occasionally not be able to enter a fib on reconfigs */
                         warn!("Failed to access fib on ingress!");
                         packet.done(DoneReason::Unroutable);
                         return;
