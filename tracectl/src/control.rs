@@ -405,6 +405,14 @@ impl TracingControl {
     pub fn check_tags(&self, tags: &[&str]) -> Result<(), TraceCtlError> {
         self.db.lock().unwrap().check_tags(tags)
     }
+    pub fn as_string(&self) -> String {
+        let db = self.db.lock().unwrap();
+        db.to_string()
+    }
+    pub fn as_string_by_tag(&self) -> String {
+        let db = self.db.lock().unwrap();
+        TargetCfgDbByTag(&db).to_string()
+    }
 }
 
 #[cfg(test)]
