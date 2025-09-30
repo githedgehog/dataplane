@@ -3,10 +3,6 @@
 
 //! Device settings
 
-#![allow(unused)]
-
-use tracing::Level;
-
 #[derive(Clone, Debug, Default)]
 
 pub struct DpdkPortConfig {}
@@ -24,7 +20,6 @@ pub enum PacketDriver {
 #[derive(Clone, Debug)]
 pub struct DeviceSettings {
     pub hostname: String,
-    pub loglevel: Level,
     pub driver: PacketDriver,
 }
 
@@ -33,14 +28,8 @@ impl DeviceSettings {
     pub fn new(hostname: &str) -> Self {
         Self {
             hostname: hostname.to_owned(),
-            loglevel: Level::ERROR,
             driver: PacketDriver::DPDK(DpdkPortConfig::default()),
         }
-    }
-    #[must_use]
-    pub fn set_loglevel(mut self, loglevel: Level) -> Self {
-        self.loglevel = loglevel;
-        self
     }
     #[must_use]
     pub fn set_packet_driver(mut self, driver: PacketDriver) -> Self {

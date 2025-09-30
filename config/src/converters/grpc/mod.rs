@@ -12,6 +12,7 @@ mod gateway_config;
 mod interface;
 mod overlay;
 mod peering;
+mod tracecfg;
 mod underlay;
 mod vpc;
 mod vrf;
@@ -28,6 +29,8 @@ pub use interface::*;
 pub use overlay::*;
 #[allow(unused)] // Remove if we do anything but implement traits
 pub use peering::*;
+#[allow(unused)] // Remove if we do anything but implement traits
+pub use tracecfg::*;
 #[allow(unused)] // Remove if we do anything but implement traits
 pub use underlay::*;
 #[allow(unused)] // Remove if we do anything but implement traits
@@ -101,11 +104,11 @@ mod test {
     fn create_test_gateway_config() -> GatewayConfig {
         // Create device
         let device = gateway_config::Device {
-            driver: 0,   // Kernel
-            loglevel: 2, // INFO
+            driver: 0, // Kernel
             hostname: "test-gateway".to_string(),
             ports: Vec::new(),
             eal: None,
+            tracing: None,
         };
 
         // Create interfaces for VRF
@@ -319,11 +322,11 @@ mod test {
     fn test_tryfrom_conversions() {
         // Create test data with specific components
         let device = gateway_config::Device {
-            driver: 0,   // Kernel
-            loglevel: 2, // INFO
+            driver: 0, // Kernel
             hostname: "test-device".to_string(),
             ports: Vec::new(),
             eal: None,
+            tracing: None,
         };
 
         let interface = gateway_config::Interface {
@@ -357,7 +360,6 @@ mod test {
         // Verify round trip conversion
         assert_eq!(device_back.hostname, device.hostname);
         assert_eq!(device_back.driver, device.driver);
-        assert_eq!(device_back.loglevel, device.loglevel);
 
         // Test InterfaceConfig TryFrom
         let interface_config_result = InterfaceConfig::try_from(&interface);

@@ -15,7 +15,7 @@ pub mod test {
     use std::net::Ipv4Addr;
     use std::str::FromStr;
     use test_utils::with_caps;
-    use tracing::{Level, error};
+    use tracing::error;
     use tracing_test::traced_test;
 
     use config::external::ExternalConfigBuilder;
@@ -145,7 +145,6 @@ pub mod test {
     fn sample_device_config() -> DeviceConfig {
         /* device settings */
         let settings = DeviceSettings::new("GW1")
-            .set_loglevel(Level::DEBUG)
             .set_packet_driver(PacketDriver::Kernel(KernelPacketConfig {}));
 
         /* device config */
