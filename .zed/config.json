@@ -1,0 +1,9 @@
+{
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "command": "just cargo clippy"
+      }
+    }
+  }
+}

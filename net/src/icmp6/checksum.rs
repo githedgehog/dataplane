@@ -72,7 +72,7 @@ impl<'a> Icmp6ChecksumPayload<'a> {
     ///
     /// # Safety
     ///
-    /// It is undefined behavior of the payload length to be greater than the maximum allowed by
+    /// It is undefined behavior for the payload length to be greater than the maximum allowed by
     /// the [`Icmp6`] header (2^32 bytes - 8 bytes for the header itself).
     ///
     /// This is a very unlikely event, and as such is only checked if debug assertions are enabled.
