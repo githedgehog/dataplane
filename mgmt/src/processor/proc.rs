@@ -16,7 +16,7 @@ use tokio::sync::oneshot::Receiver;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::VpcTable;
 use config::{ConfigError, ConfigResult, stringify};
-use config::{ExternalConfig, GenId, GwConfig, InternalConfig};
+use config::{DeviceConfig, ExternalConfig, GenId, GwConfig, InternalConfig};
 
 use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
@@ -31,6 +31,7 @@ use crate::processor::gwconfigdb::GwConfigDatabase;
 
 use crate::vpc_manager::{RequiredInformationBase, VpcManager};
 use rekon::{Observe, Reconcile};
+use tracectl::get_trace_ctl;
 use tracing::{debug, error, info, warn};
 
 use net::interface::display::MultiIndexInterfaceMapView;
@@ -411,6 +412,20 @@ fn apply_dst_vpcd_lookup_config(
     Ok(())
 }
 
+fn apply_device_config(device: &DeviceConfig) -> ConfigResult {
+    // apply tracing config
+    if let Some(tracing) = &device.tracing {
+        get_trace_ctl().reconfigure(
+            Some(tracing.default),
+            tracing
+                .tags
+                .iter()
+                .map(|(tag, level)| (tag.as_str(), *level)),
+        )?;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Main function to apply a config
 async fn apply_gw_config(
@@ -432,6 +447,9 @@ async fn apply_gw_config(
             "No internal config was built".to_string(),
         ));
     };
+
+    /* apply device config */
+    apply_device_config(&config.external.device)?;
 
     if genid == ExternalConfig::BLANK_GENID {
         /* apply config with VPC manager */
