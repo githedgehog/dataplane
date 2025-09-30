@@ -145,6 +145,7 @@ impl Ingress {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Ingress {
+    #[tracing::instrument(level = "trace", skip(self, input))]
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,
