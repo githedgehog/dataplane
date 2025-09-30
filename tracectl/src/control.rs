@@ -378,15 +378,6 @@ impl TracingControl {
             .collect::<Vec<_>>()
             .into_iter()
     }
-    pub fn dump_targets_by_tag(&self) {
-        let db = self.db.lock().unwrap();
-        let sorted = TargetCfgDbByTag(&db);
-        info!("{sorted}");
-    }
-    pub fn dump(&self) {
-        let db = self.db.lock().unwrap();
-        info!("{db}");
-    }
     pub fn as_config_string(&self) -> String {
         self.db.lock().unwrap().as_config_string()
     }
@@ -412,6 +403,17 @@ impl TracingControl {
     pub fn as_string_by_tag(&self) -> String {
         let db = self.db.lock().unwrap();
         TargetCfgDbByTag(&db).to_string()
+    }
+    #[cfg(test)]
+    pub fn dump_targets_by_tag(&self) {
+        let db = self.db.lock().unwrap();
+        let sorted = TargetCfgDbByTag(&db);
+        info!("{sorted}");
+    }
+    #[cfg(test)]
+    pub fn dump(&self) {
+        let db = self.db.lock().unwrap();
+        info!("{db}");
     }
 }
 

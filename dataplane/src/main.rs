@@ -60,11 +60,11 @@ fn process_tracing_cmds(args: &CmdArgs) {
         panic!("Invalid tracing configuration: {e}");
     }
     if args.show_tracing_tags() {
-        get_trace_ctl().dump_targets_by_tag();
+        println!("{}", get_trace_ctl().as_string_by_tag());
         std::process::exit(0);
     }
     if args.show_tracing_targets() {
-        get_trace_ctl().dump();
+        println!("{}", get_trace_ctl().as_string());
         std::process::exit(0);
     }
     if args.tracing_config_generate() {
