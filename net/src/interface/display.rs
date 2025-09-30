@@ -160,11 +160,14 @@ impl Display for MultiIndexInterfaceMap {
     }
 }
 
+/// A view into a [`MultiIndexInterfaceMap`] that filters interfaces based on a predicate.
 pub struct MultiIndexInterfaceMapView<'a, F>
 where
     F: Fn(&Interface) -> bool,
 {
+    /// The map to view.
     pub map: &'a MultiIndexInterfaceMap,
+    /// The filter predicate.
     pub filter: &'a F,
 }
 

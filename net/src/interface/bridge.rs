@@ -40,6 +40,9 @@ mod contracts {
     use crate::interface::BridgeProperties;
     use bolero::{Driver, TypeGenerator, ValueGenerator};
 
+    /// A [`ValueGenerator`] for [`BridgeProperties`].
+    ///
+    /// This type will only produce [`BridgeProperties`] which should be accepted by the linux kernel.
     pub struct ValidBridgeProperties;
 
     impl ValueGenerator for ValidBridgeProperties {

@@ -51,6 +51,7 @@ pub struct NetDevSimPort {
 #[multi_index_derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 pub struct NetDevSimProperties {
+    /// A single port within a simulated network device.
     #[multi_index(ordered_unique)]
     pub port: NetDevSimPort,
 }

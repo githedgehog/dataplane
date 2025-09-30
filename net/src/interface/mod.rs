@@ -36,6 +36,7 @@ pub use vrf::*;
 pub use vtep::*;
 
 #[cfg(any(test, feature = "bolero"))]
+#[allow(unused_imports)] // re-export
 pub use contract::*;
 
 /// A network interface id (also known as ifindex in linux).
@@ -61,6 +62,7 @@ impl Display for InterfaceIndex {
     }
 }
 
+/// Errors which can occur when parsing an [`InterfaceIndex`]
 #[derive(Debug, thiserror::Error)]
 pub enum InterfaceIndexError {
     /// The provided value was zero.
@@ -353,8 +355,6 @@ mod contract {
         }
     }
 
-    pub struct LegalInterfaceName;
-
     impl TypeGenerator for InterfaceName {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
             const NUM_LEGAL_CHARS: u8 = 65;
@@ -411,7 +411,7 @@ mod contract {
 }
 
 #[cfg(test)]
-pub mod test {
+mod test {
     use super::*;
 
     #[test]

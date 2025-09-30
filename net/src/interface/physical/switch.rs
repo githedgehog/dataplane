@@ -1,18 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+//! This module provides the [`SwitchId`] type and associated error types for switchdev devices.
+
 use arrayvec::ArrayVec;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display, Formatter, LowerHex};
 
+/// A unique identifier for a switchdev device.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
 #[repr(transparent)]
 pub struct SwitchId(ArrayVec<u8, { SwitchId::MAX_LEN }>);
 
+/// An error that can occur when parsing a [`SwitchId`].
 #[derive(thiserror::Error, Debug)]
 pub enum SwitchIdError {
+    /// The [`SwitchId`] is empty.
     #[error("SwitchId is empty")]
     Empty,
+    /// The [`SwitchId`] is too long.
     #[error("Maximum length of an ESwitchId is {MAX} bytes, received {0} bytes", MAX = SwitchId::MAX_LEN)]
     InvalidLength(usize),
 }

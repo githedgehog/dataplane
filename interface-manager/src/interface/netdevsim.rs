@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
+#![cfg(feature = "netdevsim")]
 
 use derive_builder::Builder;
 use multi_index_map::MultiIndexMap;
 use net::interface::NetDevSimPort;
 use serde::{Deserialize, Serialize};
 
+/// A specification for a NetDevSim interface.
 #[derive(
     Builder,
     Clone,

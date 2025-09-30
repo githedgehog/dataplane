@@ -95,6 +95,7 @@ impl ops::Sub<u32> for Mtu {
     }
 }
 
+/// Errors which may result from parsing an invalid raw [`Mtu`] value.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, thiserror::Error)]
 pub enum MtuError {
     /// The MTU is not within the valid range.
@@ -119,7 +120,7 @@ mod contract {
 }
 
 #[cfg(test)]
-pub mod test {
+mod test {
     use super::*;
 
     #[test]

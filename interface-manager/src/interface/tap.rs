@@ -38,9 +38,9 @@ mod helper {
     /// This is a validated type around a value which is regrettably fragile.
     ///
     /// 1. Passed directly to the kernel.
-    /// 2. By a privileged thread.
-    /// 3. In an ioctl.
-    /// 4. By an implicitly null terminated pointer.
+    /// 2. by a privileged thread.
+    /// 3. by an ioctl.
+    /// 4. in an implicitly null terminated buffer.
     ///
     /// As a result, strict checks are in place to ensure memory integrity.
     ///
@@ -57,9 +57,9 @@ mod helper {
     /// This is a validated type around a value which is regrettably fragile.
     ///
     /// 1. Passed directly to the kernel.
-    /// 2. By a privileged thread.
-    /// 3. In an ioctl.
-    /// 4. By an implicitly null terminated pointer.
+    /// 2. by a privileged thread.
+    /// 3. by an ioctl.
+    /// 4. in an implicitly null terminated buffer.
     ///
     /// As a result, strict checks are in place to ensure memory integrity.
     #[derive(Debug)]
