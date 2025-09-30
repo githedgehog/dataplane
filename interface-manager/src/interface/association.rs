@@ -6,14 +6,13 @@ use multi_index_map::MultiIndexMap;
 use net::interface::InterfaceName;
 use serde::{Deserialize, Serialize};
 
-#[cfg(doc)]
-use net::interface::Interface;
-
 /// An "observed" association (or lack of same) of one network interface with another.
 ///
 /// For example, putting a VTEP in a bridge, or a bridge in a VRF.
 ///
 /// This type is currently empty, as interface associations are observed by way of [`Interface`].
+///
+/// [`Interface`]: net::interface::Interface
 #[non_exhaustive]
 pub struct InterfaceAssociation;
 
