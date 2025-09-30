@@ -4,6 +4,7 @@
 //! Display implementations
 
 use crate::control::{TargetCfg, TargetCfgDb};
+use crate::targets::TRACING_TAG_ALL;
 use std::fmt::Display;
 
 macro_rules! TARGET_FMT {
@@ -67,9 +68,14 @@ impl Display for TargetCfgDbByTag<'_> {
         let db = self.0;
         fmt_target_heading(f)?;
 
-        // show tags that have more than one target to make this compact.
-        // the names of the targets that appear are also tags
-        for tag in db.tags.values().filter(|t| t.targets.len() > 1) {
+        // show tags that have more than one target to make this more compact.
+        // (target names are valid tags and need not be repeated; also, don't show
+        // the "all" tag since all others are included).
+        for tag in db
+            .tags
+            .values()
+            .filter(|t| t.targets.len() > 1 && t.tag != TRACING_TAG_ALL)
+        {
             writeln!(f, " {}:", tag.tag)?;
             let targets = db.tag_targets(tag.tag);
             for target in targets {

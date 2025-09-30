@@ -106,3 +106,6 @@ macro_rules! ttrace {
         tracing::trace!(target: $target, $($args)*)
     };
 }
+
+pub(super) const TRACING_TAG_ALL: &str = "all";
+custom_target!(TRACING_TAG_ALL, LevelFilter::DEBUG, &[]);

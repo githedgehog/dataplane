@@ -13,7 +13,7 @@ use tracing::{debug, error, info, warn};
 use tracing_subscriber::{EnvFilter, Registry, filter::LevelFilter, prelude::*, reload};
 
 use crate::display::TargetCfgDbByTag;
-use crate::targets::TRACING_TARGETS;
+use crate::targets::{TRACING_TAG_ALL, TRACING_TARGETS};
 use crate::trace_target;
 trace_target!("tracectl", LevelFilter::INFO, &[]);
 
@@ -45,6 +45,10 @@ impl TargetCfg {
         let mut tags = tags.to_vec();
         if !tags.contains(&name) {
             tags.push(name);
+        }
+        // always add tag "all" (except to target "all")
+        if name != TRACING_TAG_ALL {
+            tags.push(TRACING_TAG_ALL);
         }
         Self {
             target,
@@ -159,11 +163,6 @@ impl TargetCfgDb {
         };
         targets.into_iter()
     }
-    pub fn set_level_all(&mut self, level: LevelFilter) {
-        for target in self.targets.values_mut() {
-            target.level = level;
-        }
-    }
     pub fn set_tag_level(&mut self, tag: &str, level: LevelFilter) -> Result<u32, TraceCtlError> {
         let tag = self
             .tags
@@ -174,7 +173,7 @@ impl TargetCfgDb {
         for target in self
             .targets
             .values_mut()
-            .filter(|target| tag.targets.contains(target.name))
+            .filter(|target| tag.targets.contains(target.target))
         {
             if target.level != level {
                 target.level = level;
@@ -303,11 +302,6 @@ impl TracingControl {
         info!("Changed log level for tag '{tag}' to {level}. Targets changed: {changed}");
         Ok(())
     }
-    pub fn set_level_all(&self, level: LevelFilter) {
-        let mut db = self.db.lock().unwrap();
-        db.set_level_all(level);
-        self.reload(db.env_filter());
-    }
     pub fn set_default_level(&self, level: LevelFilter) {
         if let Ok(mut db) = self.db.lock()
             && db.default != level
@@ -345,14 +339,9 @@ impl TracingControl {
             self.set_default_level(*level);
         }
 
-        // if input has all=level, set the log-level for all targets to level
-        if let Some(level) = config.get("all") {
-            self.set_level_all(*level);
-        }
-
-        // even if we set the level to all, allow overriding here.
-        // this allows configs like default=error,all=info,nat=debug
-        for (tag, level) in config.iter() {
+        // This is meant to be called from the cmd line. Unlike in reconfigure(),
+        // we take into account ordering here
+        for (tag, level) in config.iter().filter(|(tag, _)| *tag != "default") {
             self.set_tag_level(tag, *level).map_err(|e| e.to_string())?;
         }
         Ok(())
