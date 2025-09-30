@@ -7,7 +7,7 @@ publish = false
 
 [features]
 default = []
-netdevsim = []
+netdevsim = ["net/netdevsim"]
 bolero = ["dep:bolero", "net/bolero"]
 
 [dependencies]
@@ -32,8 +32,7 @@ tracing = { workspace = true, features = ["attributes"] }
 
 [dev-dependencies]
 # internal
-net = { workspace = true, features = ["bolero"] }
+net = { workspace = true, features = ["bolero", "netdevsim"] }
 
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
-

@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 //! Definition of [`Headers`] and related methods and types.
-#![allow(missing_docs, clippy::pedantic)] // temporary
+#![allow(missing_docs)] // temporary
 
 use crate::checksum::Checksum;
 use crate::eth::ethtype::EthType;
@@ -59,6 +59,8 @@ pub enum Net {
 }
 
 impl Net {
+    /// Returns the destination address of the network header.
+    #[must_use]
     pub fn dst_addr(&self) -> IpAddr {
         match self {
             Net::Ipv4(ip) => IpAddr::V4(ip.destination()),
@@ -66,6 +68,8 @@ impl Net {
         }
     }
 
+    /// Returns the source address of the network header.
+    #[must_use]
     pub fn src_addr(&self) -> IpAddr {
         match self {
             Net::Ipv4(ip) => IpAddr::V4(ip.source().inner()),
@@ -73,6 +77,8 @@ impl Net {
         }
     }
 
+    /// Returns the next header.
+    #[must_use]
     pub fn next_header(&self) -> NextHeader {
         match self {
             Net::Ipv4(ip) => ip.protocol().into(),
@@ -80,6 +86,12 @@ impl Net {
         }
     }
 
+    /// Try to set the source address of the network header.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provided address is not of the same IP version as
+    /// the header.
     pub fn try_set_source(&mut self, addr: UnicastIpAddr) -> Result<(), NetError> {
         match (self, addr) {
             (Net::Ipv4(ip), UnicastIpAddr::V4(addr)) => {
@@ -95,6 +107,12 @@ impl Net {
         Ok(())
     }
 
+    /// Try to set the destination address of the network header.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provided address is not of the same IP version as
+    /// the header.
     pub fn try_set_destination(&mut self, addr: IpAddr) -> Result<(), NetError> {
         match (self, addr) {
             (Net::Ipv4(ip), IpAddr::V4(addr)) => {
@@ -367,9 +385,10 @@ impl Parse for Headers {
 impl DeParse for Headers {
     type Error = ();
 
+    #[allow(clippy::similar_names)]
     fn size(&self) -> NonZero<u16> {
         // TODO(blocking): Deal with ip{v4,v6} extensions
-        let eth = self.eth.as_ref().map(|x| x.size().get()).unwrap_or(0);
+        let eth = self.eth.as_ref().map_or(0, |x| x.size().get());
         let vlan = self.vlan.iter().map(|v| v.size().get()).sum::<u16>();
         let net = match self.net {
             None => {
@@ -466,12 +485,13 @@ pub enum PushVlanError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PopVlanError {
-    #[error("can't push vlan without an ethernet header")]
+    #[error("can't pop vlan without an ethernet header")]
     NoEthernetHeader,
 }
 
 impl Headers {
     /// Create a new [`Headers`] with the supplied `Eth` header.
+    #[must_use]
     pub fn new() -> Headers {
         Headers::default()
     }
@@ -512,6 +532,11 @@ impl Headers {
     ///
     /// This method will ensure that the `eth` field has its [`EthType`] adjusted to
     /// [`EthType::VLAN`] if there are no [`Vlan`]s on the stack at the time this method was called.
+    ///
+    /// # Errors
+    ///
+    /// * Returns [`PushVlanError::NoEthernetHeader`] if there is no ethernet header on this packet.
+    /// * Returns [`PushVlanError::TooManyVlans`] if there are already too many VLANs on the stack.
     pub fn push_vlan(&mut self, vid: Vid) -> Result<(), PushVlanError> {
         if self.vlan.len() >= MAX_VLANS {
             return Err(PushVlanError::TooManyVlans);
@@ -536,6 +561,10 @@ impl Headers {
     /// preserve the structure.
     ///
     /// If `None` is returned, the [`Headers`] is not modified.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PopVlanError::NoEthernetHeader`] if there is no ethernet header.
     pub fn pop_vlan(&mut self) -> Result<Option<Vlan>, PopVlanError> {
         match &mut self.eth {
             None => Err(PopVlanError::NoEthernetHeader),
@@ -554,13 +583,13 @@ impl Headers {
         let is_vxlan = self.try_vxlan_mut().is_some();
         match &mut self.net {
             None => {
-                trace!("no network header: can't update checksum")
+                trace!("no network header: can't update checksum");
             }
             Some(net) => {
                 net.update_checksum();
                 match &mut self.transport {
                     None => {
-                        trace!("no transport header: can't update checksum")
+                        trace!("no transport header: can't update checksum");
                     }
                     Some(transport) => {
                         if !is_vxlan {
