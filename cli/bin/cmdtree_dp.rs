@@ -217,6 +217,16 @@ fn cmd_show_kernel() -> Node {
     root += Node::new("interfaces").desc("Kernel interface status");
     root
 }
+fn cmd_show_tracing() -> Node {
+    let mut root = Node::new("tracing");
+    root += Node::new("targets")
+        .desc("Show tracing target configuration")
+        .action(CliAction::ShowTracingTargets as u16);
+    root += Node::new("tag-groups")
+        .desc("Show tracing targets organized by tag groups")
+        .action(CliAction::ShowTracingTagGroups as u16);
+    root
+}
 fn cmd_show() -> Node {
     let mut root: Node = Node::new("show");
     root += cmd_show_router();
@@ -226,6 +236,7 @@ fn cmd_show() -> Node {
     root += cmd_show_routing();
     root += cmd_show_dpdk();
     root += cmd_show_kernel();
+    root += cmd_show_tracing();
     root
 }
 fn cmd_loglevel() -> Node {

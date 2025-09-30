@@ -129,6 +129,8 @@ pub enum CliAction {
     Help,
     Quit,
 
+    ShowTracingTargets,
+    ShowTracingTagGroups,
     SetLoglevel,
 
     // cpi
