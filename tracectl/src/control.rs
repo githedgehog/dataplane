@@ -80,9 +80,10 @@ pub(crate) struct TargetCfgDb {
 }
 
 impl TargetCfgDb {
-    fn new(level: LevelFilter) -> Self {
+    const DEFAULT_DEFAULT_LOGLEVEL: LevelFilter = LevelFilter::INFO;
+    fn new() -> Self {
         let mut db = Self {
-            default: level,
+            default: Self::DEFAULT_DEFAULT_LOGLEVEL,
             targets: OrderMap::new(),
             tags: OrderMap::new(),
         };
@@ -97,6 +98,9 @@ impl TargetCfgDb {
             );
         }
         db
+    }
+    fn reset(&mut self) {
+        *self = TargetCfgDb::new();
     }
     fn register(
         &mut self,
@@ -195,6 +199,7 @@ impl TargetCfgDb {
         default: Option<LevelFilter>,
         tag_config: impl Iterator<Item = (&'a str, LevelFilter)>,
     ) -> Result<u32, TraceCtlError> {
+        self.reset();
         let mut changed: u32 = 0;
         let mut map: OrderMap<&'static str, LevelFilter> = OrderMap::new();
         for (tag, level) in tag_config {
@@ -231,7 +236,7 @@ pub struct TracingControl {
 }
 impl TracingControl {
     fn new() -> Self {
-        let db = TargetCfgDb::new(LevelFilter::INFO);
+        let db = TargetCfgDb::new();
         let (filter, reload_filter) = reload::Layer::new(db.env_filter());
 
         // formatting layer
