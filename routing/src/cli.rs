@@ -21,7 +21,7 @@ use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, CliSerialize, 
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
 use std::os::unix::net::SocketAddr;
-use tracing::{debug, error};
+use tracing::{error, trace};
 
 use tracectl::{get_trace_ctl, trace_target};
 trace_target!("cli", LevelFilter::OFF, &[]);
@@ -473,7 +473,7 @@ pub(crate) fn handle_cli_request(
     request: CliRequest,
     db: &RoutingDb,
 ) {
-    debug!("Got cli request: {request:#?} from {peer:?}");
+    trace!("Got cli request: {request:#?} from {peer:?}");
 
     let cliresponse = do_handle_cli_request(request.clone(), db, rio)
         .unwrap_or_else(|e| CliResponse::from_request_fail(request, e));
@@ -487,7 +487,7 @@ pub(crate) fn handle_cli_request(
     let response_len = (response.len() as u64).to_ne_bytes();
     let _ = rio.clisock.send_to_addr(&response_len, peer); // FIXME
     match rio.clisock.send_to_addr(&response, peer) {
-        Ok(len) => debug!("Sent cli response ({len} octets)"),
+        Ok(len) => trace!("Sent cli response ({len} octets)"),
         Err(e) => error!("Failure sending CLI response: {e}"),
     }
 }
