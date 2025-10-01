@@ -410,6 +410,7 @@ mod tests {
     use crate::control::{Tag, TracingControl, get_trace_ctl};
     use crate::targets::TRACING_TARGETS;
     use crate::{LevelFilter, custom_target, trace_target};
+    use serial_test::serial;
     use tracing::Level;
     use tracing::event_enabled;
     #[allow(unused)]
@@ -420,6 +421,7 @@ mod tests {
     const TARGET_3: &str = "my-target-3";
 
     #[test]
+    #[serial]
     fn test_init() {
         TracingControl::init();
         let tctl = get_trace_ctl();
@@ -431,6 +433,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_target_levels() {
         println!();
         let tctl = get_trace_ctl();
@@ -503,6 +506,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_auto_register_macro() {
         // declare implicitly-named target
         trace_target!("macro-auto", LevelFilter::ERROR, &[]);
@@ -541,6 +545,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_targeted_macro() {
         // this test is just to check builds
         use crate::tinfo;
@@ -557,6 +562,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_change_target_level() {
         const TARGET: &str = "change-target-level";
         custom_target!(TARGET, LevelFilter::TRACE, &[]);
@@ -575,6 +581,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_change_tag_level() {
         let tctl = get_trace_ctl();
 
@@ -610,6 +617,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_setup_from_string() {
         const COMMON: &str = "common-tag-2";
         const T11: &str = "t11";
@@ -660,6 +668,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_overlapping_tags() {
         const T1: &str = "tag1";
         const T2: &str = "tag2";
