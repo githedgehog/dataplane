@@ -263,7 +263,7 @@ impl StatelessNat {
             Ok(modified) => {
                 if modified {
                     packet.get_meta_mut().set_checksum_refresh(true);
-                    debug!("{nfi}: Packet was NAT'ed:\n{packet}");
+                    debug!("{nfi}: Packet was NAT'ed");
                 } else {
                     debug!("{nfi}: No NAT translation needed");
                 }
