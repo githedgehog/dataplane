@@ -14,7 +14,12 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use tracectl::custom_target;
+use tracectl::tdebug;
 use tracing::{debug, trace};
+
+const PKT_DUMP_TARGET: &str = "pkt-dump";
+custom_target!(PKT_DUMP_TARGET, LevelFilter::OFF, &["pipeline"]);
 
 /// Network function that uses [`debug!`] to print the parsed packet headers.
 pub struct InspectHeaders;
@@ -131,7 +136,13 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PacketDumper<Buf> {
         input.inspect(move |packet| {
             // if there is no filter, dump the packet. If there is, let it decide.
             if enabled && filter.as_ref().map_or_else(|| true, |x| x.deref()(packet)) {
-                debug!("@{}, packet ({})\n{}", self.name, self.count, packet);
+                tdebug!(
+                    PKT_DUMP_TARGET,
+                    "@{}, packet ({})\n{}",
+                    self.name,
+                    self.count,
+                    packet
+                );
                 self.count += 1;
             }
         })
