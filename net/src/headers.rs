@@ -15,7 +15,7 @@ use crate::ipv4::Ipv4;
 use crate::ipv6::{Ipv6, Ipv6Ext};
 use crate::parse::{
     DeParse, DeParseError, IllegalBufferLength, IntoNonZeroUSize, LengthError, Parse, ParseError,
-    ParsePayload, ParsePayloadWith, Reader, Writer,
+    ParsePayload, Reader, Writer,
 };
 use crate::tcp::{Tcp, TcpChecksumPayload, TcpPort};
 use crate::udp::{Udp, UdpChecksumPayload, UdpEncap, UdpPort};
@@ -285,7 +285,7 @@ impl ParsePayload for Header {
             IpAuth(auth) => auth.parse_payload(cursor).map(Header::from),
             IpV6Ext(ext) => {
                 if let Ipv6(ipv6) = self {
-                    ext.parse_payload_with(&ipv6.next_header(), cursor)
+                    ext.parse_payload(ipv6.next_header(), cursor)
                         .map(Header::from)
                 } else {
                     debug!("ipv6 extension header outside ipv6 header");

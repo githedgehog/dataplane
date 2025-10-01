@@ -8,9 +8,7 @@
 mod encap;
 mod vni;
 
-use crate::parse::{
-    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
-};
+use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError};
 use crate::udp::port::UdpPort;
 use core::num::NonZero;
 pub use encap::{VxlanEncap, VxlanEncapError};
@@ -144,16 +142,6 @@ impl DeParse for Vxlan {
         buf[3..=6].copy_from_slice(&vni_bytes);
         buf[7] = 0;
         Ok(Vxlan::MIN_LENGTH)
-    }
-}
-
-impl ParsePayload for Vxlan {
-    type Next = ();
-
-    /// We don't currently support parsing below the Vxlan layer
-    /// (you would instead call [`Packet::parse`] on the rest of the buffer)
-    fn parse_payload(&self, _cursor: &mut Reader) -> Option<Self::Next> {
-        None
     }
 }
 

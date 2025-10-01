@@ -12,7 +12,7 @@ pub use port::*;
 use crate::ipv4::Ipv4;
 use crate::ipv6::Ipv6;
 use crate::parse::{
-    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
+    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, Reader,
 };
 use crate::vxlan::{Vni, Vxlan};
 use etherparse::UdpHeader;
@@ -148,6 +148,28 @@ impl Udp {
             .expect("unreasonable payload")
             .into()
     }
+
+    /// Parse the payload of the UDP packet
+    ///
+    /// # Returns
+    ///
+    /// * `Some(UdpEncap)`: the payload for a UDP-encapsulated packet.
+    /// * `None` otherwise.
+    pub(crate) fn parse_payload(&self, cursor: &mut Reader) -> Option<UdpEncap> {
+        match self.destination() {
+            Vxlan::PORT => {
+                let (vxlan, _) = match cursor.parse::<Vxlan>() {
+                    Ok((vxlan, consumed)) => (vxlan, consumed),
+                    Err(e) => {
+                        debug!("vxlan parse error: {e:?}");
+                        return None;
+                    }
+                };
+                Some(UdpEncap::Vxlan(vxlan))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Errors which may occur when parsing a UDP header
@@ -212,26 +234,6 @@ impl DeParse for Udp {
         }
         buf[..self.size().into_non_zero_usize().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
-    }
-}
-
-impl ParsePayload for Udp {
-    type Next = UdpEncap;
-
-    fn parse_payload(&self, cursor: &mut Reader) -> Option<UdpEncap> {
-        match self.destination() {
-            Vxlan::PORT => {
-                let (vxlan, _) = match cursor.parse::<Vxlan>() {
-                    Ok((vxlan, consumed)) => (vxlan, consumed),
-                    Err(e) => {
-                        debug!("vxlan parse error: {e:?}");
-                        return None;
-                    }
-                };
-                Some(UdpEncap::Vxlan(vxlan))
-            }
-            _ => None,
-        }
     }
 }
 

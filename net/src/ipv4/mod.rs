@@ -12,8 +12,7 @@ use crate::ipv4::dscp::Dscp;
 use crate::ipv4::ecn::Ecn;
 use crate::ipv4::frag_offset::FragOffset;
 use crate::parse::{
-    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParseHeader,
-    ParsePayload, Reader,
+    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParseHeader, Reader,
 };
 use crate::tcp::Tcp;
 use crate::udp::Udp;
@@ -288,6 +287,25 @@ impl Ipv4 {
             }),
         }
     }
+
+    /// Parse the payload of the ipv4 packet.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(Ipv4Next)` if the payload is a supported protocol
+    /// * `None` if the payload is not a supported protocol
+    pub(crate) fn parse_payload(&self, cursor: &mut Reader) -> Option<Ipv4Next> {
+        match self.0.protocol {
+            IpNumber::TCP => cursor.parse_header::<Tcp, Ipv4Next>(),
+            IpNumber::UDP => cursor.parse_header::<Udp, Ipv4Next>(),
+            IpNumber::ICMP => cursor.parse_header::<Icmp4, Ipv4Next>(),
+            IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<IpAuth, Ipv4Next>(),
+            _ => {
+                trace!("unsupported protocol: {:?}", self.0.protocol);
+                None
+            }
+        }
+    }
 }
 
 /// Error which is triggered when decrementing the TTL which is already zero.
@@ -383,23 +401,6 @@ impl From<Icmp4> for Ipv4Next {
 impl From<IpAuth> for Ipv4Next {
     fn from(value: IpAuth) -> Self {
         Ipv4Next::IpAuth(value)
-    }
-}
-
-impl ParsePayload for Ipv4 {
-    type Next = Ipv4Next;
-
-    fn parse_payload(&self, cursor: &mut Reader) -> Option<Self::Next> {
-        match self.0.protocol {
-            IpNumber::TCP => cursor.parse_header::<Tcp, Ipv4Next>(),
-            IpNumber::UDP => cursor.parse_header::<Udp, Ipv4Next>(),
-            IpNumber::ICMP => cursor.parse_header::<Icmp4, Ipv4Next>(),
-            IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<IpAuth, Ipv4Next>(),
-            _ => {
-                trace!("unsupported protocol: {:?}", self.0.protocol);
-                None
-            }
-        }
     }
 }
 
