@@ -3,9 +3,7 @@
 
 //! `ICMPv4` header type and logic.
 
-use crate::parse::{
-    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
-};
+use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError};
 use etherparse::{Icmpv4Header, Icmpv4Type};
 
 mod checksum;
@@ -176,15 +174,6 @@ impl DeParse for Icmp4 {
         }
         buf[..self.size().into_non_zero_usize().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
-    }
-}
-
-impl ParsePayload for Icmp4 {
-    type Next = ();
-
-    /// We don't currently support parsing below the Icmp4 layer
-    fn parse_payload(&self, _cursor: &mut Reader) -> Option<Self::Next> {
-        None
     }
 }
 

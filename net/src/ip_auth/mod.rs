@@ -6,7 +6,7 @@
 use crate::headers::Header;
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
-use crate::parse::{Parse, ParseError, ParseHeader, ParsePayload, Reader};
+use crate::parse::{Parse, ParseError, ParseHeader, Reader};
 use crate::tcp::Tcp;
 use crate::udp::Udp;
 use etherparse::{IpAuthHeader, IpNumber};
@@ -18,6 +18,31 @@ use tracing::{debug, trace};
 /// This may appear in IPv4 and IPv6 headers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IpAuth(Box<IpAuthHeader>);
+
+impl IpAuth {
+    /// Parse the payload of the IP authentication header.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(IpAuthNext)`: the parsed next header, if supported.
+    /// * `None`: if parsing the next header is not supported.
+    pub(crate) fn parse_payload(&self, cursor: &mut Reader) -> Option<IpAuthNext> {
+        match self.0.next_header {
+            IpNumber::TCP => cursor.parse_header::<Tcp, IpAuthNext>(),
+            IpNumber::UDP => cursor.parse_header::<Udp, IpAuthNext>(),
+            IpNumber::ICMP => cursor.parse_header::<Icmp4, IpAuthNext>(),
+            IpNumber::IPV6_ICMP => cursor.parse_header::<Icmp6, IpAuthNext>(),
+            IpNumber::AUTHENTICATION_HEADER => {
+                debug!("nested ip auth header");
+                cursor.parse_header::<IpAuth, IpAuthNext>()
+            }
+            _ => {
+                trace!("unsupported protocol: {:?}", self.0.next_header);
+                None
+            }
+        }
+    }
+}
 
 impl Parse for IpAuth {
     type Error = etherparse::err::ip_auth::HeaderSliceError;
@@ -77,27 +102,6 @@ impl From<Icmp6> for IpAuthNext {
 impl From<IpAuth> for IpAuthNext {
     fn from(value: IpAuth) -> Self {
         IpAuthNext::IpAuth(value)
-    }
-}
-
-impl ParsePayload for IpAuth {
-    type Next = IpAuthNext;
-
-    fn parse_payload(&self, cursor: &mut Reader) -> Option<Self::Next> {
-        match self.0.next_header {
-            IpNumber::TCP => cursor.parse_header::<Tcp, IpAuthNext>(),
-            IpNumber::UDP => cursor.parse_header::<Udp, IpAuthNext>(),
-            IpNumber::ICMP => cursor.parse_header::<Icmp4, IpAuthNext>(),
-            IpNumber::IPV6_ICMP => cursor.parse_header::<Icmp6, IpAuthNext>(),
-            IpNumber::AUTHENTICATION_HEADER => {
-                debug!("nested ip auth header");
-                cursor.parse_header::<IpAuth, IpAuthNext>()
-            }
-            _ => {
-                trace!("unsupported protocol: {:?}", self.0.next_header);
-                None
-            }
-        }
     }
 }
 

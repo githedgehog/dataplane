@@ -11,7 +11,7 @@ pub use crate::ipv6::addr::UnicastIpv6Addr;
 use crate::ipv6::flow_label::FlowLabel;
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParseHeader,
-    ParsePayload, ParsePayloadWith, ParseWith, Reader,
+    ParseWith, Reader,
 };
 use crate::tcp::Tcp;
 use crate::udp::Udp;
@@ -184,6 +184,31 @@ impl Ipv6 {
         self.0.next_header = next_header.0;
         self
     }
+
+    /// Parse the payload of this header.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(Ipv6Next)` variant if the payload was successfully parsed as a next header.
+    /// * `None` if the next header is not supported.
+    pub(crate) fn parse_payload(&self, cursor: &mut Reader) -> Option<Ipv6Next> {
+        match self.0.next_header {
+            IpNumber::TCP => cursor.parse_header::<Tcp, Ipv6Next>(),
+            IpNumber::UDP => cursor.parse_header::<Udp, Ipv6Next>(),
+            IpNumber::IPV6_ICMP => cursor.parse_header::<Icmp6, Ipv6Next>(),
+            IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<IpAuth, Ipv6Next>(),
+            IpNumber::IPV6_HEADER_HOP_BY_HOP
+            | IpNumber::IPV6_ROUTE_HEADER
+            | IpNumber::IPV6_FRAGMENTATION_HEADER
+            | IpNumber::IPV6_DESTINATION_OPTIONS => {
+                cursor.parse_header_with::<Ipv6Ext, Ipv6Next>(self.0.next_header)
+            }
+            _ => {
+                trace!("unsupported protocol: {:?}", self.0.next_header);
+                None
+            }
+        }
+    }
 }
 
 /// An error which occurs if you attempt to decrement the hop limit of an [`Ipv6`] header when the
@@ -292,29 +317,6 @@ impl From<Ipv6Ext> for Ipv6Next {
     }
 }
 
-impl ParsePayload for Ipv6 {
-    type Next = Ipv6Next;
-
-    fn parse_payload(&self, cursor: &mut Reader) -> Option<Self::Next> {
-        match self.0.next_header {
-            IpNumber::TCP => cursor.parse_header::<Tcp, Ipv6Next>(),
-            IpNumber::UDP => cursor.parse_header::<Udp, Ipv6Next>(),
-            IpNumber::IPV6_ICMP => cursor.parse_header::<Icmp6, Ipv6Next>(),
-            IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<IpAuth, Ipv6Next>(),
-            IpNumber::IPV6_HEADER_HOP_BY_HOP
-            | IpNumber::IPV6_ROUTE_HEADER
-            | IpNumber::IPV6_FRAGMENTATION_HEADER
-            | IpNumber::IPV6_DESTINATION_OPTIONS => {
-                cursor.parse_header_with::<Ipv6Ext, Ipv6Next>(self.0.next_header)
-            }
-            _ => {
-                trace!("unsupported protocol: {:?}", self.0.next_header);
-                None
-            }
-        }
-    }
-}
-
 /// An IPv6 extension header.
 ///
 /// TODO: break this into multiple types (one per each header type).
@@ -347,6 +349,49 @@ impl ParseWith for Ipv6Ext {
         let consumed =
             NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
         Ok((Self { inner }, consumed))
+    }
+}
+
+impl Ipv6Ext {
+    /// Parse the payload of this extension header.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(Ipv6ExtNext)` variant if the payload was successfully parsed as a next header.
+    /// * `None` if the next header is not supported.
+    pub(crate) fn parse_payload(
+        &self,
+        first_ip_number: NextHeader,
+        cursor: &mut Reader,
+    ) -> Option<Ipv6ExtNext> {
+        use etherparse::ip_number::{
+            AUTHENTICATION_HEADER, IPV6_DESTINATION_OPTIONS, IPV6_FRAGMENTATION_HEADER,
+            IPV6_HEADER_HOP_BY_HOP, IPV6_ICMP, IPV6_ROUTE_HEADER, TCP, UDP,
+        };
+        let next_header = self
+            .inner
+            .next_header(first_ip_number.inner())
+            .map_err(|e| debug!("failed to parse: {e:?}"))
+            .ok()?;
+        match next_header {
+            TCP => cursor.parse_header::<Tcp, Ipv6ExtNext>(),
+            UDP => cursor.parse_header::<Udp, Ipv6ExtNext>(),
+            IPV6_ICMP => cursor.parse_header::<Icmp6, Ipv6ExtNext>(),
+            AUTHENTICATION_HEADER => {
+                debug!("nested ip auth header");
+                cursor.parse_header::<IpAuth, Ipv6ExtNext>()
+            }
+            IPV6_HEADER_HOP_BY_HOP
+            | IPV6_ROUTE_HEADER
+            | IPV6_FRAGMENTATION_HEADER
+            | IPV6_DESTINATION_OPTIONS => {
+                cursor.parse_header_with::<Ipv6Ext, Ipv6ExtNext>(next_header)
+            }
+            _ => {
+                trace!("unsupported protocol: {next_header:?}");
+                None
+            }
+        }
     }
 }
 
@@ -396,46 +441,6 @@ impl From<Ipv6Next> for Header {
             Ipv6Next::Icmp6(x) => Header::Icmp6(x),
             Ipv6Next::IpAuth(x) => Header::IpAuth(x),
             Ipv6Next::Ipv6Ext(x) => Header::IpV6Ext(x),
-        }
-    }
-}
-
-impl ParsePayloadWith for Ipv6Ext {
-    type Param = NextHeader;
-    type Next = Ipv6ExtNext;
-
-    fn parse_payload_with(
-        &self,
-        first_ip_number: &NextHeader,
-        cursor: &mut Reader,
-    ) -> Option<Self::Next> {
-        use etherparse::ip_number::{
-            AUTHENTICATION_HEADER, IPV6_DESTINATION_OPTIONS, IPV6_FRAGMENTATION_HEADER,
-            IPV6_HEADER_HOP_BY_HOP, IPV6_ICMP, IPV6_ROUTE_HEADER, TCP, UDP,
-        };
-        let next_header = self
-            .inner
-            .next_header(first_ip_number.inner())
-            .map_err(|e| debug!("failed to parse: {e:?}"))
-            .ok()?;
-        match next_header {
-            TCP => cursor.parse_header::<Tcp, Ipv6ExtNext>(),
-            UDP => cursor.parse_header::<Udp, Ipv6ExtNext>(),
-            IPV6_ICMP => cursor.parse_header::<Icmp6, Ipv6ExtNext>(),
-            AUTHENTICATION_HEADER => {
-                debug!("nested ip auth header");
-                cursor.parse_header::<IpAuth, Ipv6ExtNext>()
-            }
-            IPV6_HEADER_HOP_BY_HOP
-            | IPV6_ROUTE_HEADER
-            | IPV6_FRAGMENTATION_HEADER
-            | IPV6_DESTINATION_OPTIONS => {
-                cursor.parse_header_with::<Ipv6Ext, Ipv6ExtNext>(next_header)
-            }
-            _ => {
-                trace!("unsupported protocol: {next_header:?}");
-                None
-            }
         }
     }
 }
