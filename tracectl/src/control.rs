@@ -4,9 +4,9 @@
 //! Tracing runtime control.
 
 use ordermap::OrderMap;
-use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, Once};
+use std::{collections::HashSet, sync::MutexGuard};
 use thiserror::Error;
 #[allow(unused)]
 use tracing::{debug, error, info, warn};
@@ -19,10 +19,16 @@ trace_target!("tracectl", LevelFilter::INFO, &[]);
 
 #[derive(Debug, Error, PartialEq)]
 pub enum TraceCtlError {
-    #[error("Reload tracing failure")]
-    ReloadFailure,
+    #[error("Reload tracing failure: {0}")]
+    ReloadFailure(String),
     #[error("Unknown tag {0}")]
     UnknownTag(String),
+    #[error("Lock failure: {0}")]
+    LockFailure(String),
+    #[error("Invalid tracing config syntax")]
+    InvalidSyntax,
+    #[error("Invalid loglevel: {0}")]
+    InvalidLogLevel(String),
 }
 
 #[derive(Debug, Clone)]
@@ -136,7 +142,7 @@ impl TargetCfgDb {
     /// Note: multiple distinct configs may provide the same configuration, given that a target
     /// may be configured by distinct tags. The following is the simplest implementation that
     /// does not attempt to group targets by common tags.
-    pub fn as_config_string(&self) -> String {
+    fn as_config_string(&self) -> String {
         let mut out = String::new();
         out += format!("default={}", self.default).as_str();
         for target in self.targets.values() {
@@ -144,19 +150,7 @@ impl TargetCfgDb {
         }
         out
     }
-    #[allow(unused)]
-    pub fn tag_targets_mut(&mut self, tag: &str) -> impl Iterator<Item = &mut TargetCfg> {
-        let targets: Vec<_> = if let Some(tag) = self.tags.get(tag) {
-            self.targets
-                .values_mut()
-                .filter(|target| tag.targets.contains(target.target))
-                .collect()
-        } else {
-            vec![]
-        };
-        targets.into_iter()
-    }
-    pub fn tag_targets(&self, tag: &str) -> impl Iterator<Item = &TargetCfg> {
+    pub(crate) fn tag_targets(&self, tag: &str) -> impl Iterator<Item = &TargetCfg> {
         let targets: Vec<_> = if let Some(tag) = self.tags.get(tag) {
             self.targets
                 .values()
@@ -167,7 +161,7 @@ impl TargetCfgDb {
         };
         targets.into_iter()
     }
-    pub fn set_tag_level(&mut self, tag: &str, level: LevelFilter) -> Result<u32, TraceCtlError> {
+    fn set_tag_level(&mut self, tag: &str, level: LevelFilter) -> Result<u32, TraceCtlError> {
         let tag = self
             .tags
             .get(tag)
@@ -194,7 +188,7 @@ impl TargetCfgDb {
         }
         Ok(())
     }
-    pub fn reconfigure<'a>(
+    fn reconfigure<'a>(
         &mut self,
         default: Option<LevelFilter>,
         tag_config: impl Iterator<Item = (&'a str, LevelFilter)>,
@@ -202,9 +196,9 @@ impl TargetCfgDb {
         self.reset();
         let mut changed: u32 = 0;
         let mut map: OrderMap<&'static str, LevelFilter> = OrderMap::new();
-        for (tag, level) in tag_config {
-            let Some(tag) = self.tags.get(tag) else {
-                return Err(TraceCtlError::UnknownTag(tag.to_string()));
+        for (tagname, level) in tag_config {
+            let Some(tag) = self.tags.get(tagname) else {
+                return Err(TraceCtlError::UnknownTag(tagname.to_string()));
             };
             for target in &tag.targets {
                 let e = map.entry(target).or_insert(level);
@@ -224,7 +218,10 @@ impl TargetCfgDb {
             }
         }
         if let Some(level) = default {
-            self.default = level;
+            if self.default != level {
+                self.default = level;
+                changed += 1;
+            }
         }
         Ok(changed)
     }
@@ -259,10 +256,16 @@ impl TracingControl {
             reload_filter: Arc::new(reload_filter),
         }
     }
-    fn reload(&self, filter: EnvFilter) {
-        if let Err(e) = self.reload_filter.reload(filter) {
-            error!("Failed to reload tracing filter: {e}");
-        }
+    /// This method should remain private and never be used other than from methods of `TracingControl`
+    fn lock(&self) -> Result<MutexGuard<'_, TargetCfgDb>, TraceCtlError> {
+        self.db
+            .lock()
+            .map_err(|e| TraceCtlError::LockFailure(e.to_string()))
+    }
+    fn reload(&self, filter: EnvFilter) -> Result<(), TraceCtlError> {
+        self.reload_filter
+            .reload(filter)
+            .map_err(|e| TraceCtlError::ReloadFailure(e.to_string()))
     }
     #[cfg(test)]
     fn register(
@@ -273,10 +276,9 @@ impl TracingControl {
         tags: &'static [&'static str],
         custom: bool,
     ) {
-        if let Ok(mut db) = self.db.lock() {
-            db.register(target, name, level, tags, custom);
-            self.reload(db.env_filter());
-        }
+        let mut db = self.lock().unwrap();
+        db.register(target, name, level, tags, custom);
+        self.reload(db.env_filter()).unwrap();
     }
 }
 
@@ -298,73 +300,74 @@ impl TracingControl {
     pub fn init() {
         get_trace_ctl();
     }
-    pub fn set_tag_level(&self, tag: &str, level: LevelFilter) -> Result<(), TraceCtlError> {
-        let mut db = self.db.lock().unwrap();
+    fn set_tag_level(&self, tag: &str, level: LevelFilter) -> Result<(), TraceCtlError> {
+        let mut db = self.lock()?;
         let changed = db.set_tag_level(tag, level)?;
         if changed > 0 {
-            self.reload(db.env_filter());
+            self.reload(db.env_filter())?;
         }
         info!("Changed log level for tag '{tag}' to {level}. Targets changed: {changed}");
         Ok(())
     }
-    pub fn set_default_level(&self, level: LevelFilter) {
-        if let Ok(mut db) = self.db.lock()
-            && db.default != level
-        {
+    pub fn set_default_level(&self, level: LevelFilter) -> Result<(), TraceCtlError> {
+        let mut db = self.lock()?;
+        if db.default != level {
             info!("Changing default log-level from {} to {level}", db.default);
             db.default = level;
-            self.reload(db.env_filter());
+            self.reload(db.env_filter())?;
         }
+        Ok(())
     }
-    pub fn get_default_level(&self) -> LevelFilter {
-        self.db.lock().unwrap().default
+    pub fn get_default_level(&self) -> Result<LevelFilter, TraceCtlError> {
+        let db = self.lock()?;
+        Ok(db.default)
     }
 
     /// Parse a string made of comma-separated tag=level; level = [off,error,warn,info,debug,trace]
-    fn parse_tracing_config(input: &str) -> Result<OrderMap<String, LevelFilter>, String> {
+    fn parse_tracing_config(input: &str) -> Result<OrderMap<String, LevelFilter>, TraceCtlError> {
         let mut result = OrderMap::new();
 
         for item in input.split(',') {
             let item = item.trim();
             if let Some((tag, level)) = item.split_once('=') {
-                let level = LevelFilter::from_str(level.trim())
-                    .map_err(|e| format!("invalid level {}: {}", level.trim(), e))?;
+                let level = LevelFilter::from_str(level.trim()).map_err(|e| {
+                    TraceCtlError::InvalidLogLevel(format!("invalid level {}: {}", level.trim(), e))
+                })?;
                 result.insert(tag.trim().to_string(), level);
             } else {
-                return Err("Invalid syntax: it should be tag=loglevel".to_string());
+                return Err(TraceCtlError::InvalidSyntax);
             }
         }
         Ok(result)
     }
-    pub fn setup_from_string(&self, input: &str) -> Result<(), String> {
+    /// Setup the tracing configuration from an input string. This is meant to be called from the cmd line.
+    /// Unlike reconfigure(), target levels are set in order, the latest ones overriding the prior.
+    pub fn setup_from_string(&self, input: &str) -> Result<(), TraceCtlError> {
         let config = Self::parse_tracing_config(input)?;
 
         // if input has default=level, set the default
         if let Some(level) = config.get("default") {
-            self.set_default_level(*level);
+            self.set_default_level(*level)?;
         }
-
-        // This is meant to be called from the cmd line. Unlike in reconfigure(),
-        // we take into account ordering here
         for (tag, level) in config.iter().filter(|(tag, _)| *tag != "default") {
-            self.set_tag_level(tag, *level).map_err(|e| e.to_string())?;
+            self.set_tag_level(tag, *level)?;
         }
         Ok(())
     }
 
-    /// All of the following are to lookup the database or log it
+    #[cfg(test)]
     pub fn get_tags(&self) -> impl Iterator<Item = Tag> {
         self.db.lock().unwrap().tags.clone().into_values()
     }
+    #[cfg(test)]
     pub fn get_tag(&self, tag: &str) -> Option<Tag> {
         self.db.lock().unwrap().tags.get(tag).cloned()
     }
+    #[cfg(test)]
     pub fn get_target(&self, target: &str) -> Option<TargetCfg> {
         self.db.lock().unwrap().targets.get(target).cloned()
     }
-    pub fn get_target_all(&self) -> impl Iterator<Item = TargetCfg> {
-        self.db.lock().unwrap().targets.clone().into_values()
-    }
+    #[cfg(test)]
     pub fn get_targets_by_tag(&self, tag: &str) -> impl Iterator<Item = TargetCfg> {
         let db = self.db.lock().unwrap();
         db.tag_targets(tag)
@@ -372,42 +375,33 @@ impl TracingControl {
             .collect::<Vec<_>>()
             .into_iter()
     }
-    pub fn as_config_string(&self) -> String {
-        self.db.lock().unwrap().as_config_string()
+    pub fn as_config_string(&self) -> Result<String, TraceCtlError> {
+        Ok(self.lock()?.as_config_string())
     }
+    /// Main method to reconfigure tracing
     pub fn reconfigure<'a>(
         &self,
         default: Option<LevelFilter>,
         tag_config: impl Iterator<Item = (&'a str, LevelFilter)>,
     ) -> Result<(), TraceCtlError> {
-        let mut db = self.db.lock().unwrap();
-        db.reconfigure(default, tag_config)?;
-        self.reload_filter
-            .reload(db.env_filter())
-            .map_err(|_| TraceCtlError::ReloadFailure)?;
+        let mut db = self.lock()?;
+        let changed = db.reconfigure(default, tag_config)?;
+        if changed > 0 {
+            self.reload_filter
+                .reload(db.env_filter())
+                .map_err(|e| TraceCtlError::ReloadFailure(e.to_string()))?;
+        }
         Ok(())
     }
     pub fn check_tags(&self, tags: &[&str]) -> Result<(), TraceCtlError> {
-        self.db.lock().unwrap().check_tags(tags)
+        self.lock()?.check_tags(tags)
     }
-    pub fn as_string(&self) -> String {
-        let db = self.db.lock().unwrap();
-        db.to_string()
+    pub fn as_string(&self) -> Result<String, TraceCtlError> {
+        Ok(self.lock()?.to_string())
     }
-    pub fn as_string_by_tag(&self) -> String {
-        let db = self.db.lock().unwrap();
-        TargetCfgDbByTag(&db).to_string()
-    }
-    #[cfg(test)]
-    pub fn dump_targets_by_tag(&self) {
-        let db = self.db.lock().unwrap();
-        let sorted = TargetCfgDbByTag(&db);
-        info!("{sorted}");
-    }
-    #[cfg(test)]
-    pub fn dump(&self) {
-        let db = self.db.lock().unwrap();
-        info!("{db}");
+    pub fn as_string_by_tag(&self) -> Result<String, TraceCtlError> {
+        let db = self.lock()?;
+        Ok(TargetCfgDbByTag(&db).to_string())
     }
 }
 
@@ -431,7 +425,7 @@ mod tests {
         let tctl = get_trace_ctl();
         info!(
             "The current default loglevel is {}",
-            tctl.get_default_level()
+            tctl.get_default_level().unwrap()
         );
         println!("{:#?}", tctl.db.lock().unwrap());
     }
@@ -443,8 +437,8 @@ mod tests {
         tctl.register(TARGET_1, TARGET_1, LevelFilter::TRACE, &[], true);
         tctl.register(TARGET_2, TARGET_2, LevelFilter::DEBUG, &[], true);
         tctl.register(TARGET_3, TARGET_3, LevelFilter::INFO, &[], true);
-        tctl.dump();
-        tctl.dump_targets_by_tag();
+        println!("{}", tctl.as_string().unwrap());
+        println!("{}", tctl.as_string_by_tag().unwrap());
 
         // target 1 : TRACE
         assert!(event_enabled!(target: TARGET_1, Level::ERROR));
@@ -494,7 +488,7 @@ mod tests {
         assert!(!event_enabled!(target: TARGET_3, Level::DEBUG));
         assert!(!event_enabled!(target: TARGET_3, Level::TRACE));
 
-        tctl.dump();
+        println!("{}", tctl.as_string().unwrap());
     }
 
     #[allow(unused)]
@@ -542,8 +536,8 @@ mod tests {
 
         let tags: Vec<Tag> = tctl.get_tags().collect();
         println!("{tags:#?}");
-        tctl.dump();
-        tctl.dump_targets_by_tag();
+        println!("{}", tctl.as_string().unwrap());
+        println!("{}", tctl.as_string_by_tag().unwrap());
     }
 
     #[test]
@@ -631,18 +625,20 @@ mod tests {
         tctl.set_tag_level(COMMON, LevelFilter::INFO).unwrap();
         tctl.set_tag_level("MY-TARGET", LevelFilter::INFO).unwrap();
         tctl.set_tag_level("target-4", LevelFilter::INFO).unwrap();
-        tctl.dump_targets_by_tag();
+        println!("{}", tctl.as_string_by_tag().unwrap());
 
         // update tracing configuration from string
         tctl.setup_from_string("common-tag-2=off,MY-TARGET=warn, target-4=error")
             .unwrap();
 
         // check if database has been updated
-        tctl.dump_targets_by_tag();
+        println!("{}", tctl.as_string_by_tag().unwrap());
         tctl.get_targets_by_tag(COMMON)
             .for_each(|t| assert_eq!(t.level, LevelFilter::OFF));
+
         tctl.get_targets_by_tag("MY-TARGET")
             .for_each(|t| assert_eq!(t.level, LevelFilter::WARN));
+
         tctl.get_targets_by_tag("target-4")
             .for_each(|t| assert_eq!(t.level, LevelFilter::ERROR));
 

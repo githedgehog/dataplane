@@ -31,11 +31,13 @@ use tracectl::{custom_target, get_trace_ctl, trace_target};
 use tracing::{error, info, level_filters::LevelFilter};
 
 trace_target!("dataplane", LevelFilter::DEBUG, &[]);
+custom_target!("tonic", LevelFilter::ERROR, &[]);
+custom_target!("h2", LevelFilter::ERROR, &[]);
+
 fn init_logging() {
     let tctl = get_trace_ctl();
-    tctl.set_default_level(LevelFilter::DEBUG);
-    custom_target!("tonic", LevelFilter::ERROR, &[]);
-    custom_target!("h2", LevelFilter::ERROR, &[]);
+    tctl.set_default_level(LevelFilter::DEBUG)
+        .expect("Setting default loglevel failed");
 }
 
 fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
@@ -60,15 +62,24 @@ fn process_tracing_cmds(args: &CmdArgs) {
         panic!("Invalid tracing configuration: {e}");
     }
     if args.show_tracing_tags() {
-        println!("{}", get_trace_ctl().as_string_by_tag());
+        let out = get_trace_ctl()
+            .as_string_by_tag()
+            .unwrap_or_else(|e| e.to_string());
+        println!("{out}");
         std::process::exit(0);
     }
     if args.show_tracing_targets() {
-        println!("{}", get_trace_ctl().as_string());
+        let out = get_trace_ctl()
+            .as_string()
+            .unwrap_or_else(|e| e.to_string());
+        println!("{out}");
         std::process::exit(0);
     }
     if args.tracing_config_generate() {
-        println!("{}", get_trace_ctl().as_config_string());
+        let out = get_trace_ctl()
+            .as_config_string()
+            .unwrap_or_else(|e| e.to_string());
+        println!("{out}");
         std::process::exit(0);
     }
 }

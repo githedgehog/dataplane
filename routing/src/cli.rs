@@ -368,13 +368,14 @@ fn do_handle_cli_request(
     let cpi_s = &rio.cpistats;
     let frrmi = &rio.frrmi;
     let response = match request.action {
-        CliAction::ShowTracingTargets => {
-            CliResponse::from_request_ok(request, format!("\n {}", get_trace_ctl().as_string()))
-        }
-        CliAction::ShowTracingTagGroups => CliResponse::from_request_ok(
-            request,
-            format!("\n {}", get_trace_ctl().as_string_by_tag()),
-        ),
+        CliAction::ShowTracingTargets => match get_trace_ctl().as_string() {
+            Ok(out) => CliResponse::from_request_ok(request, format!("\n {out}")),
+            Err(_) => CliResponse::from_request_fail(request, CliError::InternalError),
+        },
+        CliAction::ShowTracingTagGroups => match get_trace_ctl().as_string_by_tag() {
+            Ok(out) => CliResponse::from_request_ok(request, format!("\n {out}")),
+            Err(_) => CliResponse::from_request_fail(request, CliError::InternalError),
+        },
         CliAction::ShowCpiStats => CliResponse::from_request_ok(request, format!("\n {cpi_s}")),
         CliAction::ShowFrrmiStats => CliResponse::from_request_ok(request, format!("\n{frrmi}")),
         CliAction::ShowFrrmiLastConfig => match frrmi.get_applied_cfg() {
