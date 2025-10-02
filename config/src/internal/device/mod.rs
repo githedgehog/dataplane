@@ -38,7 +38,9 @@ impl DeviceConfig {
             return Err(ConfigError::MissingIdentifier("Device hostname"));
         }
         if let Some(tracing) = &self.tracing {
-            tracing.validate()?;
+            // DISABLE validation since the set of available tags
+            // is not burnt in the gRPC protobuf schema.
+            // tracing.validate()?;
         }
         Ok(())
     }
