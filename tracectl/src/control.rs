@@ -124,11 +124,12 @@ pub(crate) struct TargetCfgDb {
     pub(crate) tags: OrderMap<&'static str, Tag>,
 }
 
+pub const DEFAULT_DEFAULT_LOGLEVEL: LevelFilter = LevelFilter::INFO;
+
 impl TargetCfgDb {
-    const DEFAULT_DEFAULT_LOGLEVEL: LevelFilter = LevelFilter::INFO;
     fn new() -> Self {
         let mut db = Self {
-            default: Self::DEFAULT_DEFAULT_LOGLEVEL,
+            default: DEFAULT_DEFAULT_LOGLEVEL,
             targets: OrderMap::new(),
             tags: OrderMap::new(),
         };

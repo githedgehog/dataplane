@@ -13,10 +13,10 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver;
 
-use config::external::overlay::Overlay;
 use config::external::overlay::vpc::VpcTable;
 use config::{ConfigError, ConfigResult, stringify};
 use config::{DeviceConfig, ExternalConfig, GenId, GwConfig, InternalConfig};
+use config::{external::overlay::Overlay, internal::device::tracecfg::TracingConfig};
 
 use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
@@ -412,17 +412,24 @@ fn apply_dst_vpcd_lookup_config(
     Ok(())
 }
 
+fn apply_tracing_config(tracing: &Option<TracingConfig>) -> ConfigResult {
+    // Apply tracing config if provided. Otherwise, apply an empty/default config.
+    // The trace controller will map reset the configuration to the preset one and apply no change.
+    // This is needed to allow empty configurations (e.g. tracing config removals)
+    let default = TracingConfig::default();
+    let tracing = tracing.as_ref().unwrap_or(&default);
+    get_trace_ctl().reconfigure(
+        Some(tracing.default),
+        tracing
+            .tags
+            .iter()
+            .map(|(tag, level)| (tag.as_str(), *level)),
+    )?;
+    Ok(())
+}
+
 fn apply_device_config(device: &DeviceConfig) -> ConfigResult {
-    // apply tracing config
-    if let Some(tracing) = &device.tracing {
-        get_trace_ctl().reconfigure(
-            Some(tracing.default),
-            tracing
-                .tags
-                .iter()
-                .map(|(tag, level)| (tag.as_str(), *level)),
-        )?;
-    }
+    apply_tracing_config(&device.tracing)?;
     Ok(())
 }
 

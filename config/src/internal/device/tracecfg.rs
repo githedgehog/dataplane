@@ -7,6 +7,7 @@
 
 use crate::ConfigResult;
 use ordermap::OrderMap;
+use tracectl::DEFAULT_DEFAULT_LOGLEVEL;
 use tracectl::{LevelFilter, get_trace_ctl};
 use tracing::debug;
 
@@ -14,6 +15,14 @@ use tracing::debug;
 pub struct TracingConfig {
     pub default: LevelFilter,
     pub tags: OrderMap<String, LevelFilter>,
+}
+impl Default for TracingConfig {
+    fn default() -> Self {
+        Self {
+            default: DEFAULT_DEFAULT_LOGLEVEL,
+            tags: OrderMap::new(),
+        }
+    }
 }
 impl TracingConfig {
     #[must_use]
