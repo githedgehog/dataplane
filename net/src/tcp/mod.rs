@@ -301,13 +301,13 @@ impl Tcp {
 
 /// Errors which can occur when attempting to parse arbitrary bytes into a [`Tcp`] header.
 #[derive(Debug, thiserror::Error)]
-pub enum TcpError {
+pub enum TcpParseError {
     /// Zero is not legal as a source port.
     #[error("zero source port")]
     ZeroSourcePort,
     /// Zero is not legal as a destination port.
     #[error("zero dest port")]
-    ZeroDestPort,
+    ZeroDestinationPort,
     /// Valid tcp headers have data offsets which are at least large enough to include the header
     /// itself.
     #[error("data offset too small: {0}")]
@@ -315,7 +315,7 @@ pub enum TcpError {
 }
 
 impl Parse for Tcp {
-    type Error = TcpError;
+    type Error = TcpParseError;
 
     fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
         if buf.len() > u16::MAX as usize {
@@ -328,7 +328,7 @@ impl Parse for Tcp {
             }),
             HeaderSliceError::Content(content) => match content {
                 HeaderError::DataOffsetTooSmall { data_offset } => {
-                    ParseError::Invalid(TcpError::DataOffsetTooSmall(data_offset))
+                    ParseError::Invalid(TcpParseError::DataOffsetTooSmall(data_offset))
                 }
             },
         })?;
@@ -342,10 +342,10 @@ impl Parse for Tcp {
         let consumed =
             NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
         if inner.source_port == 0 {
-            return Err(ParseError::Invalid(TcpError::ZeroSourcePort));
+            return Err(ParseError::Invalid(TcpParseError::ZeroSourcePort));
         }
         if inner.destination_port == 0 {
-            return Err(ParseError::Invalid(TcpError::ZeroDestPort));
+            return Err(ParseError::Invalid(TcpParseError::ZeroDestinationPort));
         }
         let parsed = Self(inner);
         Ok((parsed, consumed))
