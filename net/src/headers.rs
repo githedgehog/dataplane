@@ -9,6 +9,7 @@ use crate::eth::ethtype::EthType;
 use crate::eth::{Eth, EthError};
 use crate::icmp4::Icmp4;
 use crate::icmp6::{Icmp6, Icmp6ChecksumPayload};
+use crate::impl_from_for_enum;
 use crate::ip::{NextHeader, UnicastIpAddr};
 use crate::ip_auth::IpAuth;
 use crate::ipv4::Ipv4;
@@ -916,29 +917,20 @@ impl TryVxlanMut for Headers {
     }
 }
 
-impl From<Eth> for Header {
-    fn from(value: Eth) -> Self {
-        Header::Eth(value)
-    }
-}
-
-impl From<Vlan> for Header {
-    fn from(value: Vlan) -> Self {
-        Header::Vlan(value)
-    }
-}
-
-impl From<Ipv4> for Header {
-    fn from(value: Ipv4) -> Self {
-        Header::Ipv4(value)
-    }
-}
-
-impl From<Ipv6> for Header {
-    fn from(value: Ipv6) -> Self {
-        Header::Ipv6(value)
-    }
-}
+impl_from_for_enum![
+    Header,
+    Eth(Eth),
+    Vlan(Vlan),
+    Ipv4(Ipv4),
+    Ipv6(Ipv6),
+    Tcp(Tcp),
+    Udp(Udp),
+    Icmp4(Icmp4),
+    Icmp6(Icmp6),
+    IpAuth(IpAuth),
+    IpV6Ext(Ipv6Ext),
+    Encap(UdpEncap),
+];
 
 impl From<Net> for Header {
     fn from(value: Net) -> Self {
@@ -946,42 +938,6 @@ impl From<Net> for Header {
             Net::Ipv4(ip) => Header::from(ip),
             Net::Ipv6(ip) => Header::from(ip),
         }
-    }
-}
-
-impl From<IpAuth> for Header {
-    fn from(value: IpAuth) -> Self {
-        Header::IpAuth(value)
-    }
-}
-
-impl From<Ipv6Ext> for Header {
-    fn from(value: Ipv6Ext) -> Self {
-        Header::IpV6Ext(value)
-    }
-}
-
-impl From<Udp> for Header {
-    fn from(value: Udp) -> Self {
-        Header::Udp(value)
-    }
-}
-
-impl From<Tcp> for Header {
-    fn from(value: Tcp) -> Self {
-        Header::Tcp(value)
-    }
-}
-
-impl From<Icmp4> for Header {
-    fn from(value: Icmp4) -> Self {
-        Header::Icmp4(value)
-    }
-}
-
-impl From<Icmp6> for Header {
-    fn from(value: Icmp6) -> Self {
-        Header::Icmp6(value)
     }
 }
 
@@ -999,12 +955,6 @@ impl From<Transport> for Header {
 impl From<Vxlan> for Header {
     fn from(value: Vxlan) -> Self {
         Header::Encap(UdpEncap::Vxlan(value))
-    }
-}
-
-impl From<UdpEncap> for Header {
-    fn from(value: UdpEncap) -> Self {
-        Header::Encap(value)
     }
 }
 

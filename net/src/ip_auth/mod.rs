@@ -6,6 +6,7 @@
 use crate::headers::Header;
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
+use crate::impl_from_for_enum;
 use crate::parse::{Parse, ParseError, ParseHeader, Reader};
 use crate::tcp::Tcp;
 use crate::udp::Udp;
@@ -75,35 +76,14 @@ pub(crate) enum IpAuthNext {
     IpAuth(IpAuth),
 }
 
-impl From<Tcp> for IpAuthNext {
-    fn from(value: Tcp) -> Self {
-        IpAuthNext::Tcp(value)
-    }
-}
-
-impl From<Udp> for IpAuthNext {
-    fn from(value: Udp) -> Self {
-        IpAuthNext::Udp(value)
-    }
-}
-
-impl From<Icmp4> for IpAuthNext {
-    fn from(value: Icmp4) -> Self {
-        IpAuthNext::Icmp4(value)
-    }
-}
-
-impl From<Icmp6> for IpAuthNext {
-    fn from(value: Icmp6) -> Self {
-        IpAuthNext::Icmp6(value)
-    }
-}
-
-impl From<IpAuth> for IpAuthNext {
-    fn from(value: IpAuth) -> Self {
-        IpAuthNext::IpAuth(value)
-    }
-}
+impl_from_for_enum![
+    IpAuthNext,
+    Tcp(Tcp),
+    Udp(Udp),
+    Icmp4(Icmp4),
+    Icmp6(Icmp6),
+    IpAuth(IpAuth)
+];
 
 impl From<IpAuthNext> for Header {
     fn from(value: IpAuthNext) -> Self {

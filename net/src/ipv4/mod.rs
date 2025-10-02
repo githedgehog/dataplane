@@ -5,6 +5,7 @@
 
 use crate::headers::Header;
 use crate::icmp4::Icmp4;
+use crate::impl_from_for_enum;
 use crate::ip::NextHeader;
 use crate::ip_auth::IpAuth;
 pub use crate::ipv4::addr::UnicastIpv4Addr;
@@ -380,29 +381,7 @@ pub(crate) enum Ipv4Next {
     IpAuth(IpAuth),
 }
 
-impl From<Tcp> for Ipv4Next {
-    fn from(value: Tcp) -> Self {
-        Ipv4Next::Tcp(value)
-    }
-}
-
-impl From<Udp> for Ipv4Next {
-    fn from(value: Udp) -> Self {
-        Ipv4Next::Udp(value)
-    }
-}
-
-impl From<Icmp4> for Ipv4Next {
-    fn from(value: Icmp4) -> Self {
-        Ipv4Next::Icmp4(value)
-    }
-}
-
-impl From<IpAuth> for Ipv4Next {
-    fn from(value: IpAuth) -> Self {
-        Ipv4Next::IpAuth(value)
-    }
-}
+impl_from_for_enum![Ipv4Next, Tcp(Tcp), Udp(Udp), Icmp4(Icmp4), IpAuth(IpAuth)];
 
 impl From<Ipv4Next> for Header {
     fn from(value: Ipv4Next) -> Self {

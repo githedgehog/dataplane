@@ -79,6 +79,44 @@ impl ParseHeader for Reader<'_> {
     }
 }
 
+// Trait ParseHeader above requires its second generic parameter to implement From<T>, leading in
+// many implementations of the From trait for the multiple variants of enum objects. Let's make it
+// less verbose with a dedicated macro. Usage:
+//
+//     // Let's consider an enum:
+//     enum Foo {
+//         Bar(Bar),
+//         Baz(Foobarbaz),
+//     }
+//
+//     // Calling the macro such as this:
+//     impl_from_for_enum!(Foo, Bar(Bar), Baz(Foobarbaz));
+//
+//     // ... comes down to implementing all of the following:
+//     impl From<Bar> for Foo {
+//         fn from(value: Bar) -> Self {
+//             Foo::Bar(value)
+//         }
+//     }
+//     impl From<Foobarbaz> for Foo {
+//         fn from(value: Foobarbaz) -> Self {
+//             Foo::Baz(value)
+//         }
+//     }
+#[macro_export]
+macro_rules! impl_from_for_enum {
+    ($target:ty, $($variant:ident($ty:ty)),* $(,)?) => {
+        $(
+            impl From<$ty> for $target {
+                fn from(value: $ty) -> Self {
+                    <$target>::$variant(value)
+                }
+            }
+
+        )*
+    };
+}
+
 #[derive(thiserror::Error, Debug)]
 #[error("Maximum legal packet buffer size is 2^16 (requested {0})")]
 pub struct IllegalBufferLength(pub usize);

@@ -5,6 +5,7 @@
 
 use crate::headers::Header;
 use crate::icmp6::Icmp6;
+use crate::impl_from_for_enum;
 use crate::ip::NextHeader;
 use crate::ip_auth::IpAuth;
 pub use crate::ipv6::addr::UnicastIpv6Addr;
@@ -287,35 +288,14 @@ pub(crate) enum Ipv6Next {
     Ipv6Ext(Ipv6Ext),
 }
 
-impl From<Tcp> for Ipv6Next {
-    fn from(value: Tcp) -> Self {
-        Ipv6Next::Tcp(value)
-    }
-}
-
-impl From<Udp> for Ipv6Next {
-    fn from(value: Udp) -> Self {
-        Ipv6Next::Udp(value)
-    }
-}
-
-impl From<Icmp6> for Ipv6Next {
-    fn from(value: Icmp6) -> Self {
-        Ipv6Next::Icmp6(value)
-    }
-}
-
-impl From<IpAuth> for Ipv6Next {
-    fn from(value: IpAuth) -> Self {
-        Ipv6Next::IpAuth(value)
-    }
-}
-
-impl From<Ipv6Ext> for Ipv6Next {
-    fn from(value: Ipv6Ext) -> Self {
-        Ipv6Next::Ipv6Ext(value)
-    }
-}
+impl_from_for_enum![
+    Ipv6Next,
+    Tcp(Tcp),
+    Udp(Udp),
+    Icmp6(Icmp6),
+    IpAuth(IpAuth),
+    Ipv6Ext(Ipv6Ext)
+];
 
 /// An IPv6 extension header.
 ///
@@ -403,35 +383,14 @@ pub(crate) enum Ipv6ExtNext {
     Ipv6Ext(Ipv6Ext),
 }
 
-impl From<Tcp> for Ipv6ExtNext {
-    fn from(value: Tcp) -> Self {
-        Ipv6ExtNext::Tcp(value)
-    }
-}
-
-impl From<Udp> for Ipv6ExtNext {
-    fn from(value: Udp) -> Self {
-        Ipv6ExtNext::Udp(value)
-    }
-}
-
-impl From<Icmp6> for Ipv6ExtNext {
-    fn from(value: Icmp6) -> Self {
-        Ipv6ExtNext::Icmp6(value)
-    }
-}
-
-impl From<IpAuth> for Ipv6ExtNext {
-    fn from(value: IpAuth) -> Self {
-        Ipv6ExtNext::IpAuth(value)
-    }
-}
-
-impl From<Ipv6Ext> for Ipv6ExtNext {
-    fn from(value: Ipv6Ext) -> Self {
-        Ipv6ExtNext::Ipv6Ext(value)
-    }
-}
+impl_from_for_enum![
+    Ipv6ExtNext,
+    Tcp(Tcp),
+    Udp(Udp),
+    Icmp6(Icmp6),
+    IpAuth(IpAuth),
+    Ipv6Ext(Ipv6Ext)
+];
 
 impl From<Ipv6Next> for Header {
     fn from(value: Ipv6Next) -> Self {
