@@ -3,13 +3,15 @@
 
 //! `ICMPv4` header type and logic.
 
-use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError};
-use etherparse::{Icmpv4Header, Icmpv4Type};
-
 mod checksum;
 
 pub use checksum::*;
 
+use crate::headers::{EmbeddedHeaders, EmbeddedIpVersion};
+use crate::parse::{
+    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParseWith, Reader,
+};
+use etherparse::{Icmpv4Header, Icmpv4Type};
 use std::{net::IpAddr, num::NonZero};
 
 #[allow(unused_imports)] // re-export
@@ -126,6 +128,16 @@ impl Icmp4 {
             icmp_type,
             checksum: 0,
         })
+    }
+
+    pub(crate) fn parse_payload(&self, cursor: &mut Reader) -> Option<EmbeddedHeaders> {
+        if !self.is_error_message() {
+            return None;
+        }
+        let (headers, consumed) =
+            EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, cursor.inner).ok()?;
+        cursor.consume(consumed).ok()?;
+        Some(headers)
     }
 }
 

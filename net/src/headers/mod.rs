@@ -300,8 +300,10 @@ impl ParsePayload for Header {
                     None
                 }
             }
+            Icmp4(icmp4) => icmp4.parse_payload(cursor).map(Header::from),
+            Icmp6(icmp6) => icmp6.parse_payload(cursor).map(Header::from),
             Udp(udp) => udp.parse_payload(cursor).map(Header::from),
-            Encap(_) | Tcp(_) | Icmp4(_) | Icmp6(_) | EmbeddedIp(_) => None,
+            Encap(_) | Tcp(_) | EmbeddedIp(_) => None,
         }
     }
 }
