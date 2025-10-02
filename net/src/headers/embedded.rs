@@ -8,8 +8,8 @@ use crate::ip_auth::IpAuth;
 use crate::ipv4::Ipv4;
 use crate::ipv6::{Ipv6, Ipv6Ext};
 use crate::parse::{
-    DeParse, DeParseError, IllegalBufferLength, LengthError, ParseError, ParseHeader, ParsePayload,
-    ParseWith, Reader,
+    DeParse, DeParseError, IllegalBufferLength, IntoNonZeroUSize, LengthError, ParseError,
+    ParseHeader, ParsePayload, ParseWith, Reader, Writer,
 };
 use crate::tcp::TruncatedTcp;
 use crate::udp::TruncatedUdp;
@@ -107,11 +107,60 @@ impl DeParse for EmbeddedHeaders {
     type Error = ();
 
     fn size(&self) -> NonZero<u16> {
-        todo!()
+        // TODO(blocking): Deal with ip{v4,v6} extensions
+        let net = match self.net {
+            None => 0,
+            Some(ref n) => n.size().get(),
+        };
+        let transport = match self.transport {
+            None => 0,
+            Some(ref t) => t.size().get(),
+        };
+        NonZero::new(net + transport).unwrap_or_else(|| unreachable!())
     }
 
-    fn deparse(&self, _buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
-        todo!()
+    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
+        // TODO(blocking): Deal with ip{v4,v6} extensions
+        let len = buf.len();
+        if len < self.size().into_non_zero_usize().get() {
+            return Err(DeParseError::Length(LengthError {
+                expected: self.size().into_non_zero_usize(),
+                actual: len,
+            }));
+        }
+        let mut cursor = Writer::new(buf)
+            .map_err(|IllegalBufferLength(len)| DeParseError::BufferTooLong(len))?;
+        match self.net {
+            None => {
+                #[allow(clippy::cast_possible_truncation)] // length bounded on cursor creation
+                return Ok(
+                    NonZero::new((cursor.inner.len() - cursor.remaining as usize) as u16)
+                        .unwrap_or_else(|| unreachable!()),
+                );
+            }
+            Some(ref net) => {
+                cursor.write(net)?;
+            }
+        }
+
+        match self.transport {
+            None => {
+                #[allow(clippy::cast_possible_truncation)] // length bounded on cursor creation
+                return Ok(
+                    NonZero::new((cursor.inner.len() - cursor.remaining as usize) as u16)
+                        .unwrap_or_else(|| unreachable!()),
+                );
+            }
+            Some(ref transport) => {
+                cursor.write(transport)?;
+            }
+        }
+
+        #[allow(clippy::cast_possible_truncation)] // length bounded on cursor creation
+        Ok(
+            NonZero::new((cursor.inner.len() - cursor.remaining as usize) as u16)
+                .unwrap_or_else(|| unreachable!()),
+        )
     }
 }
 
@@ -149,4 +198,22 @@ impl_from_for_enum![
 enum EmbeddedTransport {
     Tcp(TruncatedTcp),
     Udp(TruncatedUdp),
+}
+
+impl DeParse for EmbeddedTransport {
+    type Error = ();
+
+    fn size(&self) -> NonZero<u16> {
+        match self {
+            EmbeddedTransport::Tcp(tcp) => tcp.size(),
+            EmbeddedTransport::Udp(udp) => udp.size(),
+        }
+    }
+
+    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
+        match self {
+            EmbeddedTransport::Tcp(tcp) => tcp.deparse(buf),
+            EmbeddedTransport::Udp(udp) => udp.deparse(buf),
+        }
+    }
 }
