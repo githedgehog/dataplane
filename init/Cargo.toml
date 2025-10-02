@@ -1,0 +1,31 @@
+[package]
+name = "dataplane-init"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[dependencies]
+# internal
+id = { workspace = true }
+net = { workspace = true }
+
+# external
+hwlocality = { workspace = true, features = ["hwloc-latest"] }
+strum = { workspace = true, features = ["derive"] }
+strum_macros = { workspace = true, features = [] }
+tokio = { workspace = true, features = ["fs", "macros", "rt"] }
+tracing = { workspace = true, features = ["attributes"] }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+# internal
+net = { workspace = true, features = ["bolero"] }
+
+# external
+
+[build-dependencies]
+# internal
+dpdk-sysroot-helper = { workspace = true }
+
+# external
