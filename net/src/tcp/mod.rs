@@ -5,9 +5,11 @@
 
 mod checksum;
 pub mod port;
+mod truncated;
 
 pub use checksum::*;
 pub use port::*;
+pub use truncated::*;
 
 use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError};
 use etherparse::TcpHeader;

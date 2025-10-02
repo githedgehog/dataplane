@@ -5,9 +5,11 @@
 
 mod checksum;
 pub mod port;
+mod truncated;
 
 pub use checksum::*;
 pub use port::*;
+pub use truncated::*;
 
 use crate::ipv4::Ipv4;
 use crate::ipv6::Ipv6;
