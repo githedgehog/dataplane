@@ -129,7 +129,6 @@ impl DeParse for TruncatedTcpHeader {
     }
 }
 
-#[allow(unused)]
 /// A TCP header, possibly truncated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TruncatedTcp {

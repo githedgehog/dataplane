@@ -32,6 +32,9 @@ use tracing::{debug, error, trace};
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
+mod embedded;
+pub use embedded::*;
+
 const MAX_VLANS: usize = 4;
 const MAX_NET_EXTENSIONS: usize = 2;
 
@@ -45,6 +48,7 @@ pub struct Headers {
     pub net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
     pub transport: Option<Transport>,
     pub udp_encap: Option<UdpEncap>,
+    pub embedded_ip: Option<EmbeddedHeaders>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -271,13 +275,16 @@ pub enum Header {
     IpAuth(IpAuth),
     IpV6Ext(Ipv6Ext), // TODO: break out nested enum.  Nesting is counter productive here
     Encap(UdpEncap),
+    EmbeddedIp(EmbeddedHeaders),
 }
 
 impl ParsePayload for Header {
     type Next = Header;
 
     fn parse_payload(&self, cursor: &mut Reader) -> Option<Header> {
-        use Header::{Encap, Eth, Icmp4, Icmp6, IpAuth, IpV6Ext, Ipv4, Ipv6, Tcp, Udp, Vlan};
+        use Header::{
+            EmbeddedIp, Encap, Eth, Icmp4, Icmp6, IpAuth, IpV6Ext, Ipv4, Ipv6, Tcp, Udp, Vlan,
+        };
         match self {
             Eth(eth) => eth.parse_payload(cursor).map(Header::from),
             Vlan(vlan) => vlan.parse_payload(cursor).map(Header::from),
@@ -294,7 +301,7 @@ impl ParsePayload for Header {
                 }
             }
             Udp(udp) => udp.parse_payload(cursor).map(Header::from),
-            Encap(_) | Tcp(_) | Icmp4(_) | Icmp6(_) => None,
+            Encap(_) | Tcp(_) | Icmp4(_) | Icmp6(_) | EmbeddedIp(_) => None,
         }
     }
 }
@@ -313,6 +320,7 @@ impl Parse for Headers {
             vlan: ArrayVec::default(),
             net_ext: ArrayVec::default(),
             udp_encap: None,
+            embedded_ip: None,
         };
         let mut prior = Header::Eth(eth);
         loop {
@@ -347,6 +355,7 @@ impl Parse for Headers {
                         break;
                     }
                 }
+                Header::EmbeddedIp(embedded) => this.embedded_ip = Some(embedded),
             }
             match header {
                 None => {
@@ -449,6 +458,20 @@ impl DeParse for Headers {
                 cursor.write(vxlan)?;
             }
         }
+
+        match self.embedded_ip {
+            None => {
+                #[allow(clippy::cast_possible_truncation)] // length bounded on cursor creation
+                return Ok(
+                    NonZero::new((cursor.inner.len() - cursor.remaining as usize) as u16)
+                        .unwrap_or_else(|| unreachable!()),
+                );
+            }
+            Some(ref embedded_ip) => {
+                cursor.write(embedded_ip)?;
+            }
+        }
+
         #[allow(clippy::cast_possible_truncation)] // length bounded on cursor creation
         Ok(
             NonZero::new((cursor.inner.len() - cursor.remaining as usize) as u16)
@@ -930,6 +953,7 @@ impl_from_for_enum![
     IpAuth(IpAuth),
     IpV6Ext(Ipv6Ext),
     Encap(UdpEncap),
+    EmbeddedIp(EmbeddedHeaders),
 ];
 
 impl From<Net> for Header {
@@ -1293,6 +1317,7 @@ mod contract {
                                 net_ext: Default::default(),
                                 transport: Some(Transport::Tcp(tcp)),
                                 udp_encap: None,
+                                embedded_ip: None,
                             };
                             Some(headers)
                         }
@@ -1311,6 +1336,7 @@ mod contract {
                                 net_ext: Default::default(),
                                 transport: Some(Transport::Udp(udp)),
                                 udp_encap,
+                                embedded_ip: None,
                             };
                             Some(headers)
                         }
@@ -1323,6 +1349,7 @@ mod contract {
                                 net_ext: Default::default(),
                                 transport: Some(Transport::Icmp4(icmp)),
                                 udp_encap: None,
+                                embedded_ip: None,
                             };
                             Some(headers)
                         }
@@ -1342,6 +1369,7 @@ mod contract {
                                 net_ext: Default::default(),
                                 transport: Some(Transport::Tcp(tcp)),
                                 udp_encap: None,
+                                embedded_ip: None,
                             };
                             Some(headers)
                         }
@@ -1360,6 +1388,7 @@ mod contract {
                                 net_ext: Default::default(),
                                 transport: Some(Transport::Udp(udp)),
                                 udp_encap,
+                                embedded_ip: None,
                             };
                             Some(headers)
                         }
@@ -1372,6 +1401,7 @@ mod contract {
                                 net_ext: Default::default(),
                                 transport: Some(Transport::Icmp6(icmp6)),
                                 udp_encap: None,
+                                embedded_ip: None,
                             };
                             Some(headers)
                         }

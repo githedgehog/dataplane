@@ -129,7 +129,6 @@ impl DeParse for TruncatedUdpHeader {
     }
 }
 
-#[allow(unused)]
 /// A UDP header, possibly truncated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TruncatedUdp {
