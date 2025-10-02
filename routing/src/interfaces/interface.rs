@@ -70,7 +70,7 @@ pub enum IfState {
     Up = 2,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum Attachment {
     VRF(FibReader),
     BD,
@@ -125,7 +125,7 @@ impl RouterInterfaceConfig {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 /// An object representing a network interface and its state
 pub struct Interface {
     pub name: String,
