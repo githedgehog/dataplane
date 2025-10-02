@@ -152,7 +152,7 @@ impl Reader<'_> {
         })
     }
 
-    fn consume(&mut self, n: NonZero<u16>) -> Result<(), LengthError> {
+    pub(crate) fn consume(&mut self, n: NonZero<u16>) -> Result<(), LengthError> {
         if n.get() > self.remaining {
             return Err(LengthError {
                 expected: n.into_non_zero_usize(),
