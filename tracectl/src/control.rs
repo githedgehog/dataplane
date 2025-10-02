@@ -295,12 +295,13 @@ impl TracingControl {
             .with_level(true);
 
         // we should not be initializing the subscriber here, but that's fine atm
-        tracing_subscriber::registry()
+        if let Err(e) = tracing_subscriber::registry()
             .with(filter)
             .with(fmt_layer)
             .try_init()
-            .expect("Failed to initialize tracing subscriber");
-
+        {
+            println!("Failed to set global tracing subscriber: {e} !!");
+        }
         Self {
             db: Arc::new(Mutex::new(db)),
             reload_filter: Arc::new(reload_filter),
