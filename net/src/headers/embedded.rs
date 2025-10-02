@@ -16,6 +16,7 @@ use crate::udp::TruncatedUdp;
 use arrayvec::ArrayVec;
 use core::fmt::Debug;
 use std::num::NonZero;
+use tracing::debug;
 
 pub enum EmbeddedIpVersion {
     Ipv4,
@@ -179,8 +180,29 @@ pub(crate) enum EmbeddedHeader {
 impl ParsePayload for EmbeddedHeader {
     type Next = EmbeddedHeader;
 
-    fn parse_payload(&self, _cursor: &mut Reader) -> Option<EmbeddedHeader> {
-        todo!()
+    fn parse_payload(&self, cursor: &mut Reader) -> Option<EmbeddedHeader> {
+        use EmbeddedHeader::{IpAuth, IpV6Ext, Ipv4, Ipv6, Tcp, Udp};
+        match self {
+            Ipv4(ipv4) => ipv4
+                .parse_embedded_payload(cursor)
+                .map(EmbeddedHeader::from),
+            Ipv6(ipv6) => ipv6
+                .parse_embedded_payload(cursor)
+                .map(EmbeddedHeader::from),
+            IpAuth(auth) => auth
+                .parse_embedded_payload(cursor)
+                .map(EmbeddedHeader::from),
+            IpV6Ext(ext) => {
+                if let Ipv6(ipv6) = self {
+                    ext.parse_embedded_payload(ipv6.next_header(), cursor)
+                        .map(EmbeddedHeader::from)
+                } else {
+                    debug!("ipv6 extension header outside ipv6 header");
+                    None
+                }
+            }
+            Tcp(_) | Udp(_) => None,
+        }
     }
 }
 

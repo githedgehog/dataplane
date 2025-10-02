@@ -3,13 +3,13 @@
 
 //! IP authentication header type and logic.
 
-use crate::headers::Header;
+use crate::headers::{EmbeddedHeader, Header};
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
 use crate::impl_from_for_enum;
 use crate::parse::{Parse, ParseError, ParseHeader, Reader};
-use crate::tcp::Tcp;
-use crate::udp::Udp;
+use crate::tcp::{Tcp, TruncatedTcp};
+use crate::udp::{TruncatedUdp, Udp};
 use etherparse::{IpAuthHeader, IpNumber};
 use std::num::NonZero;
 use tracing::{debug, trace};
@@ -36,6 +36,27 @@ impl IpAuth {
             IpNumber::AUTHENTICATION_HEADER => {
                 debug!("nested ip auth header");
                 cursor.parse_header::<IpAuth, IpAuthNext>()
+            }
+            _ => {
+                trace!("unsupported protocol: {:?}", self.0.next_header);
+                None
+            }
+        }
+    }
+
+    /// Parse the payload of the IP authentication header embedded in an ICMP Error message.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(EmbeddedIpAuthNext)`: the parsed next header, if supported.
+    /// * `None`: if parsing the next header is not supported.
+    pub(crate) fn parse_embedded_payload(&self, cursor: &mut Reader) -> Option<EmbeddedIpAuthNext> {
+        match self.0.next_header {
+            IpNumber::TCP => cursor.parse_header::<TruncatedTcp, EmbeddedIpAuthNext>(),
+            IpNumber::UDP => cursor.parse_header::<TruncatedUdp, EmbeddedIpAuthNext>(),
+            IpNumber::AUTHENTICATION_HEADER => {
+                debug!("nested ip auth header");
+                cursor.parse_header::<IpAuth, EmbeddedIpAuthNext>()
             }
             _ => {
                 trace!("unsupported protocol: {:?}", self.0.next_header);
@@ -93,6 +114,29 @@ impl From<IpAuthNext> for Header {
             IpAuthNext::Icmp4(x) => Header::Icmp4(x),
             IpAuthNext::Icmp6(x) => Header::Icmp6(x),
             IpAuthNext::IpAuth(x) => Header::IpAuth(x),
+        }
+    }
+}
+
+pub(crate) enum EmbeddedIpAuthNext {
+    Tcp(TruncatedTcp),
+    Udp(TruncatedUdp),
+    IpAuth(IpAuth),
+}
+
+impl_from_for_enum![
+    EmbeddedIpAuthNext,
+    Tcp(TruncatedTcp),
+    Udp(TruncatedUdp),
+    IpAuth(IpAuth)
+];
+
+impl From<EmbeddedIpAuthNext> for EmbeddedHeader {
+    fn from(value: EmbeddedIpAuthNext) -> Self {
+        match value {
+            EmbeddedIpAuthNext::Tcp(x) => EmbeddedHeader::Tcp(x),
+            EmbeddedIpAuthNext::Udp(x) => EmbeddedHeader::Udp(x),
+            EmbeddedIpAuthNext::IpAuth(x) => EmbeddedHeader::IpAuth(x),
         }
     }
 }

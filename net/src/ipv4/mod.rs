@@ -3,7 +3,7 @@
 
 //! Ipv4 Address type and manipulation
 
-use crate::headers::Header;
+use crate::headers::{EmbeddedHeader, Header};
 use crate::icmp4::Icmp4;
 use crate::impl_from_for_enum;
 use crate::ip::NextHeader;
@@ -15,8 +15,8 @@ use crate::ipv4::frag_offset::FragOffset;
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParseHeader, Reader,
 };
-use crate::tcp::Tcp;
-use crate::udp::Udp;
+use crate::tcp::{Tcp, TruncatedTcp};
+use crate::udp::{TruncatedUdp, Udp};
 use etherparse::{IpDscp, IpEcn, IpFragOffset, IpNumber, Ipv4Header};
 use std::net::Ipv4Addr;
 use std::num::NonZero;
@@ -307,6 +307,24 @@ impl Ipv4 {
             }
         }
     }
+
+    /// Parse the payload of an IPv4 packet embedded in an ICMP Error message.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(EmbeddedIpv4Next)` if the payload is a supported protocol
+    /// * `None` if the payload is not a supported protocol
+    pub(crate) fn parse_embedded_payload(&self, cursor: &mut Reader) -> Option<EmbeddedIpv4Next> {
+        match self.0.protocol {
+            IpNumber::TCP => cursor.parse_header::<TruncatedTcp, EmbeddedIpv4Next>(),
+            IpNumber::UDP => cursor.parse_header::<TruncatedUdp, EmbeddedIpv4Next>(),
+            IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<IpAuth, EmbeddedIpv4Next>(),
+            _ => {
+                trace!("unsupported protocol: {:?}", self.0.protocol);
+                None
+            }
+        }
+    }
 }
 
 /// Error which is triggered when decrementing the TTL which is already zero.
@@ -390,6 +408,29 @@ impl From<Ipv4Next> for Header {
             Ipv4Next::Udp(x) => Header::Udp(x),
             Ipv4Next::Icmp4(x) => Header::Icmp4(x),
             Ipv4Next::IpAuth(x) => Header::IpAuth(x),
+        }
+    }
+}
+
+pub(crate) enum EmbeddedIpv4Next {
+    Tcp(TruncatedTcp),
+    Udp(TruncatedUdp),
+    IpAuth(IpAuth),
+}
+
+impl_from_for_enum![
+    EmbeddedIpv4Next,
+    Tcp(TruncatedTcp),
+    Udp(TruncatedUdp),
+    IpAuth(IpAuth)
+];
+
+impl From<EmbeddedIpv4Next> for EmbeddedHeader {
+    fn from(value: EmbeddedIpv4Next) -> Self {
+        match value {
+            EmbeddedIpv4Next::Tcp(x) => EmbeddedHeader::Tcp(x),
+            EmbeddedIpv4Next::Udp(x) => EmbeddedHeader::Udp(x),
+            EmbeddedIpv4Next::IpAuth(x) => EmbeddedHeader::IpAuth(x),
         }
     }
 }

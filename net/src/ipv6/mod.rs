@@ -3,7 +3,7 @@
 
 //! Ipv6 Address type and manipulation
 
-use crate::headers::Header;
+use crate::headers::{EmbeddedHeader, Header};
 use crate::icmp6::Icmp6;
 use crate::impl_from_for_enum;
 use crate::ip::NextHeader;
@@ -14,8 +14,8 @@ use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParseHeader,
     ParseWith, Reader,
 };
-use crate::tcp::Tcp;
-use crate::udp::Udp;
+use crate::tcp::{Tcp, TruncatedTcp};
+use crate::udp::{TruncatedUdp, Udp};
 use etherparse::{IpNumber, Ipv6Extensions, Ipv6Header};
 use std::net::Ipv6Addr;
 use std::num::NonZero;
@@ -210,6 +210,30 @@ impl Ipv6 {
             }
         }
     }
+
+    /// Parse the payload of an IPv6 packet embedded in an ICMP Error message.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(EmbeddedIpv6Next)` variant if the payload was successfully parsed as a next header.
+    /// * `None` if the next header is not supported.
+    pub(crate) fn parse_embedded_payload(&self, cursor: &mut Reader) -> Option<EmbeddedIpv6Next> {
+        match self.0.next_header {
+            IpNumber::TCP => cursor.parse_header::<TruncatedTcp, EmbeddedIpv6Next>(),
+            IpNumber::UDP => cursor.parse_header::<TruncatedUdp, EmbeddedIpv6Next>(),
+            IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<IpAuth, EmbeddedIpv6Next>(),
+            IpNumber::IPV6_HEADER_HOP_BY_HOP
+            | IpNumber::IPV6_ROUTE_HEADER
+            | IpNumber::IPV6_FRAGMENTATION_HEADER
+            | IpNumber::IPV6_DESTINATION_OPTIONS => {
+                cursor.parse_header_with::<Ipv6Ext, EmbeddedIpv6Next>(self.0.next_header)
+            }
+            _ => {
+                trace!("unsupported protocol: {:?}", self.0.next_header);
+                None
+            }
+        }
+    }
 }
 
 /// An error which occurs if you attempt to decrement the hop limit of an [`Ipv6`] header when the
@@ -297,6 +321,21 @@ impl_from_for_enum![
     Ipv6Ext(Ipv6Ext)
 ];
 
+pub(crate) enum EmbeddedIpv6Next {
+    Tcp(TruncatedTcp),
+    Udp(TruncatedUdp),
+    IpAuth(IpAuth),
+    Ipv6Ext(Ipv6Ext),
+}
+
+impl_from_for_enum![
+    EmbeddedIpv6Next,
+    Tcp(TruncatedTcp),
+    Udp(TruncatedUdp),
+    IpAuth(IpAuth),
+    Ipv6Ext(Ipv6Ext)
+];
+
 /// An IPv6 extension header.
 ///
 /// TODO: break this into multiple types (one per each header type).
@@ -373,6 +412,46 @@ impl Ipv6Ext {
             }
         }
     }
+
+    /// Parse the payload of an IPv6 extension header embedded in an ICMP Error message.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(EmbeddedIpv6ExtNext)` variant if the payload was successfully parsed as a next header.
+    /// * `None` if the next header is not supported.
+    pub(crate) fn parse_embedded_payload(
+        &self,
+        first_ip_number: NextHeader,
+        cursor: &mut Reader,
+    ) -> Option<EmbeddedIpv6ExtNext> {
+        use etherparse::ip_number::{
+            AUTHENTICATION_HEADER, IPV6_DESTINATION_OPTIONS, IPV6_FRAGMENTATION_HEADER,
+            IPV6_HEADER_HOP_BY_HOP, IPV6_ROUTE_HEADER, TCP, UDP,
+        };
+        let next_header = self
+            .inner
+            .next_header(first_ip_number.inner())
+            .map_err(|e| debug!("failed to parse: {e:?}"))
+            .ok()?;
+        match next_header {
+            TCP => cursor.parse_header::<TruncatedTcp, EmbeddedIpv6ExtNext>(),
+            UDP => cursor.parse_header::<TruncatedUdp, EmbeddedIpv6ExtNext>(),
+            AUTHENTICATION_HEADER => {
+                debug!("nested ip auth header");
+                cursor.parse_header::<IpAuth, EmbeddedIpv6ExtNext>()
+            }
+            IPV6_HEADER_HOP_BY_HOP
+            | IPV6_ROUTE_HEADER
+            | IPV6_FRAGMENTATION_HEADER
+            | IPV6_DESTINATION_OPTIONS => {
+                cursor.parse_header_with::<Ipv6Ext, EmbeddedIpv6ExtNext>(next_header)
+            }
+            _ => {
+                trace!("unsupported protocol: {next_header:?}");
+                None
+            }
+        }
+    }
 }
 
 pub(crate) enum Ipv6ExtNext {
@@ -412,6 +491,43 @@ impl From<Ipv6ExtNext> for Header {
             Ipv6ExtNext::Icmp6(x) => Header::Icmp6(x),
             Ipv6ExtNext::IpAuth(x) => Header::IpAuth(x),
             Ipv6ExtNext::Ipv6Ext(x) => Header::IpV6Ext(x),
+        }
+    }
+}
+
+pub(crate) enum EmbeddedIpv6ExtNext {
+    Tcp(TruncatedTcp),
+    Udp(TruncatedUdp),
+    IpAuth(IpAuth),
+    Ipv6Ext(Ipv6Ext),
+}
+
+impl_from_for_enum![
+    EmbeddedIpv6ExtNext,
+    Tcp(TruncatedTcp),
+    Udp(TruncatedUdp),
+    IpAuth(IpAuth),
+    Ipv6Ext(Ipv6Ext)
+];
+
+impl From<EmbeddedIpv6Next> for EmbeddedHeader {
+    fn from(value: EmbeddedIpv6Next) -> Self {
+        match value {
+            EmbeddedIpv6Next::Tcp(x) => EmbeddedHeader::Tcp(x),
+            EmbeddedIpv6Next::Udp(x) => EmbeddedHeader::Udp(x),
+            EmbeddedIpv6Next::IpAuth(x) => EmbeddedHeader::IpAuth(x),
+            EmbeddedIpv6Next::Ipv6Ext(x) => EmbeddedHeader::IpV6Ext(x),
+        }
+    }
+}
+
+impl From<EmbeddedIpv6ExtNext> for EmbeddedHeader {
+    fn from(value: EmbeddedIpv6ExtNext) -> Self {
+        match value {
+            EmbeddedIpv6ExtNext::Tcp(x) => EmbeddedHeader::Tcp(x),
+            EmbeddedIpv6ExtNext::Udp(x) => EmbeddedHeader::Udp(x),
+            EmbeddedIpv6ExtNext::IpAuth(x) => EmbeddedHeader::IpAuth(x),
+            EmbeddedIpv6ExtNext::Ipv6Ext(x) => EmbeddedHeader::IpV6Ext(x),
         }
     }
 }
