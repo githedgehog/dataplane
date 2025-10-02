@@ -84,10 +84,24 @@ impl Tag {
 trait Resolver {
     fn resolve<'a>(&self, a: &'a ResolvedTarget, b: &'a ResolvedTarget) -> &'a ResolvedTarget;
 }
+#[allow(unused)]
 struct ResolveByLevel;
 impl Resolver for ResolveByLevel {
     fn resolve<'a>(&self, a: &'a ResolvedTarget, b: &'a ResolvedTarget) -> &'a ResolvedTarget {
         if b.level > a.level { b } else { a }
+    }
+}
+#[allow(unused)]
+struct ResolveByTagSize;
+impl Resolver for ResolveByTagSize {
+    fn resolve<'a>(&self, a: &'a ResolvedTarget, b: &'a ResolvedTarget) -> &'a ResolvedTarget {
+        if a.tagsize < b.tagsize {
+            a
+        } else if a.tagsize == b.tagsize {
+            if b.level > a.level { b } else { a }
+        } else {
+            b
+        }
     }
 }
 
