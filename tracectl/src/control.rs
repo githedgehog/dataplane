@@ -473,6 +473,24 @@ mod tests {
     #[allow(unused)]
     use tracing::{debug, error, info, trace, warn};
 
+    macro_rules! check_level {
+        ($target:expr) => {{
+            if event_enabled!(target: $target, Level::TRACE) {
+                LevelFilter::TRACE
+            } else if event_enabled!(target: $target, Level::DEBUG) {
+                LevelFilter::DEBUG
+            } else if event_enabled!(target: $target, Level::INFO) {
+                LevelFilter::INFO
+            } else if event_enabled!(target: $target, Level::WARN) {
+                LevelFilter::WARN
+            } else if event_enabled!(target: $target, Level::ERROR) {
+                LevelFilter::ERROR
+            } else {
+                LevelFilter::OFF
+            }
+        }};
+    }
+
     const TARGET_1: &str = "my-target-1";
     const TARGET_2: &str = "my-target-2";
     const TARGET_3: &str = "my-target-3";
@@ -500,26 +518,9 @@ mod tests {
         println!("{}", tctl.as_string().unwrap());
         println!("{}", tctl.as_string_by_tag().unwrap());
 
-        // target 1 : TRACE
-        assert!(event_enabled!(target: TARGET_1, Level::ERROR));
-        assert!(event_enabled!(target: TARGET_1, Level::WARN));
-        assert!(event_enabled!(target: TARGET_1, Level::INFO));
-        assert!(event_enabled!(target: TARGET_1, Level::DEBUG));
-        assert!(event_enabled!(target: TARGET_1, Level::TRACE));
-
-        // target 2 : DEBUG
-        assert!(event_enabled!(target: TARGET_2, Level::ERROR));
-        assert!(event_enabled!(target: TARGET_2, Level::WARN));
-        assert!(event_enabled!(target: TARGET_2, Level::INFO));
-        assert!(event_enabled!(target: TARGET_2, Level::DEBUG));
-        assert!(!event_enabled!(target: TARGET_2, Level::TRACE));
-
-        // target 3 : INFO
-        assert!(event_enabled!(target: TARGET_3, Level::ERROR));
-        assert!(event_enabled!(target: TARGET_3, Level::WARN));
-        assert!(event_enabled!(target: TARGET_3, Level::INFO));
-        assert!(!event_enabled!(target: TARGET_3, Level::DEBUG));
-        assert!(!event_enabled!(target: TARGET_3, Level::TRACE));
+        assert_eq!(check_level!(TARGET_1), LevelFilter::TRACE);
+        assert_eq!(check_level!(TARGET_2), LevelFilter::DEBUG);
+        assert_eq!(check_level!(TARGET_3), LevelFilter::INFO);
 
         println!(" ====== Changing log-levels ===== ");
 
@@ -527,26 +528,9 @@ mod tests {
         tctl.set_tag_level(TARGET_2, LevelFilter::WARN).unwrap();
         tctl.set_tag_level(TARGET_3, LevelFilter::ERROR).unwrap();
 
-        // target 1 : OFF
-        assert!(!event_enabled!(target: TARGET_1, Level::ERROR));
-        assert!(!event_enabled!(target: TARGET_1, Level::WARN));
-        assert!(!event_enabled!(target: TARGET_1, Level::INFO));
-        assert!(!event_enabled!(target: TARGET_1, Level::DEBUG));
-        assert!(!event_enabled!(target: TARGET_1, Level::TRACE));
-
-        // target 2 : WARN
-        assert!(event_enabled!(target: TARGET_2, Level::ERROR));
-        assert!(event_enabled!(target: TARGET_2, Level::WARN));
-        assert!(!event_enabled!(target: TARGET_2, Level::INFO));
-        assert!(!event_enabled!(target: TARGET_2, Level::DEBUG));
-        assert!(!event_enabled!(target: TARGET_2, Level::TRACE));
-
-        // target 3 : ERROR
-        assert!(event_enabled!(target: TARGET_3, Level::ERROR));
-        assert!(!event_enabled!(target: TARGET_3, Level::WARN));
-        assert!(!event_enabled!(target: TARGET_3, Level::INFO));
-        assert!(!event_enabled!(target: TARGET_3, Level::DEBUG));
-        assert!(!event_enabled!(target: TARGET_3, Level::TRACE));
+        assert_eq!(check_level!(TARGET_1), LevelFilter::OFF);
+        assert_eq!(check_level!(TARGET_2), LevelFilter::WARN);
+        assert_eq!(check_level!(TARGET_3), LevelFilter::ERROR);
 
         println!("{}", tctl.as_string().unwrap());
     }
@@ -708,11 +692,9 @@ mod tests {
             .for_each(|t| assert_eq!(t.level, LevelFilter::ERROR));
 
         // were the changes enforced?
-        assert!(!event_enabled!(target: T11, Level::ERROR));
-        assert!(event_enabled!(target: "MY-TARGET", Level::WARN));
-        assert!(!event_enabled!(target: "MY-TARGET", Level::DEBUG));
-        assert!(event_enabled!(target: "target-4", Level::ERROR));
-        assert!(!event_enabled!(target: "target-4", Level::WARN));
+        assert_eq!(check_level!(T11), LevelFilter::OFF);
+        assert_eq!(check_level!("MY-TARGET"), LevelFilter::WARN);
+        assert_eq!(check_level!("target-4"), LevelFilter::ERROR);
 
         // fail if level is bad
         assert!(tctl.setup_from_string("common-tag-2=bad").is_err());
@@ -749,10 +731,10 @@ mod tests {
             [(T1, LevelFilter::OFF), (T2, LevelFilter::DEBUG)].into_iter(),
         )
         .unwrap();
-        assert!(event_enabled!(target: X1, Level::DEBUG));
-        assert!(!event_enabled!(target: X2, Level::ERROR));
-        assert!(event_enabled!(target: X3, Level::DEBUG));
-        assert!(event_enabled!(target: X4, Level::DEBUG));
+        assert_eq!(check_level!(X1), LevelFilter::DEBUG);
+        assert_eq!(check_level!(X2), LevelFilter::OFF);
+        assert_eq!(check_level!(X3), LevelFilter::DEBUG);
+        assert_eq!(check_level!(X4), LevelFilter::DEBUG);
 
         tctl.reconfigure(
             None,
@@ -764,11 +746,10 @@ mod tests {
             .into_iter(),
         )
         .unwrap();
-        assert!(event_enabled!(target: X1, Level::WARN));
-        assert!(event_enabled!(target: X2, Level::WARN));
-        assert!(!event_enabled!(target: X2, Level::INFO));
-        assert!(event_enabled!(target: X3, Level::ERROR));
-        assert!(!event_enabled!(target: X3, Level::WARN));
-        assert!(event_enabled!(target: X4, Level::DEBUG));
+
+        assert_eq!(check_level!(X1), LevelFilter::WARN);
+        assert_eq!(check_level!(X2), LevelFilter::WARN);
+        assert_eq!(check_level!(X3), LevelFilter::ERROR);
+        assert_eq!(check_level!(X4), LevelFilter::DEBUG);
     }
 }
