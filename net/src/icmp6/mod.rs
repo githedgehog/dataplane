@@ -65,13 +65,35 @@ impl Icmp6 {
         })
     }
 
+    fn payload_length(&self, buf: &[u8]) -> usize {
+        // See RFC 4884.
+        match self.icmp_type() {
+            Icmpv6Type::DestinationUnreachable(_)
+            | Icmpv6Type::TimeExceeded(_)
+            | Icmpv6Type::ParameterProblem(_) => {
+                let payload_length = buf[3];
+                payload_length as usize * 8
+            }
+            _ => 0,
+        }
+    }
+
     pub(crate) fn parse_payload(&self, cursor: &mut Reader) -> Option<EmbeddedHeaders> {
         if !self.is_error_message() {
             return None;
         }
-        let (headers, consumed) =
+        let (mut headers, consumed) =
             EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv6, cursor.inner).ok()?;
         cursor.consume(consumed).ok()?;
+
+        // Mark whether the payload of the embedded IP packet is full
+        headers.check_full_payload(
+            &cursor.inner[cursor.inner.len() - cursor.remaining as usize..],
+            cursor.remaining as usize,
+            consumed.get() as usize,
+            self.payload_length(cursor.inner),
+        );
+
         Some(headers)
     }
 }
