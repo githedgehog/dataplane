@@ -76,6 +76,31 @@ impl Tag {
         targets.insert(target);
         Self { tag, targets }
     }
+    fn size(&self) -> usize {
+        self.targets.len()
+    }
+}
+
+trait Resolver {
+    fn resolve<'a>(&self, a: &'a ResolvedTarget, b: &'a ResolvedTarget) -> &'a ResolvedTarget;
+}
+struct ResolveByLevel;
+impl Resolver for ResolveByLevel {
+    fn resolve<'a>(&self, a: &'a ResolvedTarget, b: &'a ResolvedTarget) -> &'a ResolvedTarget {
+        if b.level > a.level { b } else { a }
+    }
+}
+
+#[derive(Copy, Clone)]
+#[allow(unused)]
+struct ResolvedTarget {
+    level: LevelFilter,
+    tagsize: usize,
+}
+impl ResolvedTarget {
+    fn new(level: LevelFilter, tagsize: usize) -> Self {
+        Self { level, tagsize }
+    }
 }
 
 #[derive(Debug)]
@@ -188,40 +213,50 @@ impl TargetCfgDb {
         }
         Ok(())
     }
+
     fn reconfigure<'a>(
         &mut self,
         default: Option<LevelFilter>,
         tag_config: impl Iterator<Item = (&'a str, LevelFilter)>,
+        resolver: &dyn Resolver,
     ) -> Result<u32, TraceCtlError> {
         self.reset();
+
+        // build a pre-configurartion where we resolve target levels through a resolver
         let mut changed: u32 = 0;
-        let mut map: OrderMap<&'static str, LevelFilter> = OrderMap::new();
+        let mut map: OrderMap<&'static str, ResolvedTarget> = OrderMap::new();
         for (tagname, level) in tag_config {
-            let Some(tag) = self.tags.get(tagname) else {
-                return Err(TraceCtlError::UnknownTag(tagname.to_string()));
-            };
-            for target in &tag.targets {
-                let e = map.entry(target).or_insert(level);
-                if *e < level {
-                    *e = level;
+            if let Some(tag) = self.tags.get(tagname) {
+                for target in &tag.targets {
+                    let new = ResolvedTarget::new(level, tag.size());
+                    let e = map.entry(target).or_insert(new);
+                    *e = *resolver.resolve(e, &new);
                 }
+            } else {
+                warn!("Unknown tag {tagname}");
             }
         }
-        for (target, level) in map.iter() {
+
+        // Update the internal database of targets according to the resolved preconfig
+        // The internal database only understands targets and loglevels.
+        for (targetname, resolved) in map.iter() {
             let target = self
                 .targets
-                .get_mut(target)
+                .get_mut(targetname)
                 .unwrap_or_else(|| unreachable!());
-            if target.level != *level {
-                target.level = *level;
+
+            if target.level != resolved.level {
+                target.level = resolved.level;
                 changed += 1;
             }
         }
-        if let Some(level) = default {
-            if self.default != level {
-                self.default = level;
-                changed += 1;
-            }
+
+        // update the default loglevel if provided
+        if let Some(level) = default
+            && self.default != level
+        {
+            self.default = level;
+            changed += 1;
         }
         Ok(changed)
     }
@@ -378,20 +413,28 @@ impl TracingControl {
     pub fn as_config_string(&self) -> Result<String, TraceCtlError> {
         Ok(self.lock()?.as_config_string())
     }
-    /// Main method to reconfigure tracing
-    pub fn reconfigure<'a>(
+    fn reconfigure_internal<'a>(
         &self,
         default: Option<LevelFilter>,
         tag_config: impl Iterator<Item = (&'a str, LevelFilter)>,
+        resolver: &dyn Resolver,
     ) -> Result<(), TraceCtlError> {
         let mut db = self.lock()?;
-        let changed = db.reconfigure(default, tag_config)?;
+        let changed = db.reconfigure(default, tag_config, resolver)?;
         if changed > 0 {
             self.reload_filter
                 .reload(db.env_filter())
                 .map_err(|e| TraceCtlError::ReloadFailure(e.to_string()))?;
         }
         Ok(())
+    }
+    /// Main method to reconfigure tracing
+    pub fn reconfigure<'a>(
+        &self,
+        default: Option<LevelFilter>,
+        tag_config: impl Iterator<Item = (&'a str, LevelFilter)>,
+    ) -> Result<(), TraceCtlError> {
+        self.reconfigure_internal(default, tag_config, &ResolveByLevel)
     }
     pub fn check_tags(&self, tags: &[&str]) -> Result<(), TraceCtlError> {
         self.lock()?.check_tags(tags)
