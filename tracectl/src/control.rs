@@ -448,7 +448,8 @@ impl TracingControl {
         default: Option<LevelFilter>,
         tag_config: impl Iterator<Item = (&'a str, LevelFilter)>,
     ) -> Result<(), TraceCtlError> {
-        self.reconfigure_internal(default, tag_config, &ResolveByLevel)
+        //self.reconfigure_internal(default, tag_config, &ResolveByLevel)
+        self.reconfigure_internal(default, tag_config, &ResolveByTagSize)
     }
     pub fn check_tags(&self, tags: &[&str]) -> Result<(), TraceCtlError> {
         self.lock()?.check_tags(tags)
@@ -751,5 +752,66 @@ mod tests {
         assert_eq!(check_level!(X2), LevelFilter::WARN);
         assert_eq!(check_level!(X3), LevelFilter::ERROR);
         assert_eq!(check_level!(X4), LevelFilter::DEBUG);
+    }
+
+    #[test]
+    #[serial]
+    fn test_overlapping_tags_resolve_bytagsize() {
+        let tctl = get_trace_ctl();
+
+        const T1: &str = "otag1";
+        const T2: &str = "otag2";
+        const T3: &str = "otag3";
+
+        const Y1: &str = "y1";
+        const Y2: &str = "y2";
+        const Y3: &str = "y3";
+        const Y4: &str = "y4";
+
+        custom_target!(Y1, LevelFilter::OFF, &[T1, T2, T3]);
+        custom_target!(Y2, LevelFilter::OFF, &[T1, T3]);
+        custom_target!(Y3, LevelFilter::OFF, &[T2]);
+        custom_target!(Y4, LevelFilter::OFF, &[T2, T1]);
+
+        tctl.reconfigure(None, [(T1, LevelFilter::ERROR)].into_iter())
+            .unwrap();
+
+        tctl.get_targets_by_tag(T1)
+            .for_each(|t| assert_eq!(t.level, LevelFilter::ERROR));
+
+        tctl.reconfigure(
+            None,
+            [
+                (T1, LevelFilter::OFF),
+                (T2, LevelFilter::DEBUG),
+                (T3, LevelFilter::ERROR),
+                (Y2, LevelFilter::TRACE),
+                (Y3, LevelFilter::OFF),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+
+        assert_eq!(check_level!(Y1), LevelFilter::ERROR);
+        assert_eq!(check_level!(Y2), LevelFilter::TRACE);
+        assert_eq!(check_level!(Y3), LevelFilter::OFF);
+        assert_eq!(check_level!(Y4), LevelFilter::DEBUG);
+
+        tctl.reconfigure(
+            None,
+            [
+                (T1, LevelFilter::INFO),
+                (T2, LevelFilter::DEBUG),
+                (T3, LevelFilter::ERROR),
+                (Y3, LevelFilter::ERROR),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+
+        assert_eq!(check_level!(Y1), LevelFilter::ERROR);
+        assert_eq!(check_level!(Y2), LevelFilter::ERROR);
+        assert_eq!(check_level!(Y3), LevelFilter::ERROR);
+        assert_eq!(check_level!(Y4), LevelFilter::DEBUG);
     }
 }
