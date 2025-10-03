@@ -372,3 +372,583 @@ impl DeParse for EmbeddedTransport {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::{DeParse, ParseWith};
+    use etherparse::{IpNumber, Ipv4Header, Ipv6Header, UdpHeader};
+
+    // Test helper functions
+
+    fn create_truncated_ipv4_tcp_packet() -> Vec<u8> {
+        // Create a minimal IPv4 + TCP packet (truncated TCP with just ports)
+        let mut ipv4_header = Ipv4Header::new(
+            8,  // payload length (8 bytes of TCP)
+            64, // ttl
+            IpNumber::TCP,
+            [192, 168, 1, 1],
+            [192, 168, 1, 2],
+        )
+        .unwrap();
+        ipv4_header.header_checksum = ipv4_header.calc_header_checksum();
+
+        let mut buf = Vec::new();
+        ipv4_header.write(&mut buf).unwrap();
+
+        // Add TCP source and dest ports (minimal 4 bytes for truncated header)
+        buf.extend_from_slice(&80u16.to_be_bytes()); // source port
+        buf.extend_from_slice(&443u16.to_be_bytes()); // dest port
+        // Add 4 more bytes to make 8 bytes total
+        buf.extend_from_slice(&[0u8; 4]);
+
+        buf
+    }
+
+    fn create_full_ipv4_udp_packet() -> Vec<u8> {
+        // Create a minimal IPv4 + UDP packet
+        let mut ipv4_header = Ipv4Header::new(
+            8,  // payload length (8 bytes of UDP)
+            64, // ttl
+            IpNumber::UDP,
+            [192, 168, 1, 1],
+            [192, 168, 1, 2],
+        )
+        .unwrap();
+        ipv4_header.header_checksum = ipv4_header.calc_header_checksum();
+
+        let mut buf = Vec::new();
+        ipv4_header.write(&mut buf).unwrap();
+
+        // Add full UDP header (8 bytes)
+        let udp_header = UdpHeader {
+            source_port: 53,
+            destination_port: 53,
+            length: 8,
+            checksum: 0,
+        };
+        udp_header.write(&mut buf).unwrap();
+
+        buf
+    }
+
+    // Create a minimal IPv6 + TCP packet (truncated TCP with just ports)
+    fn create_truncated_ipv6_tcp_packet() -> Vec<u8> {
+        let ipv6_header = Ipv6Header {
+            traffic_class: 0,
+            flow_label: 0.try_into().unwrap(),
+            payload_length: 8, // Just TCP ports + 4 bytes
+            next_header: IpNumber::TCP,
+            hop_limit: 64,
+            source: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            destination: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+        };
+
+        let mut buf = Vec::new();
+        ipv6_header.write(&mut buf).unwrap();
+
+        // Add TCP source and dest ports (minimal 4 bytes for truncated header)
+        buf.extend_from_slice(&80u16.to_be_bytes()); // source port
+        buf.extend_from_slice(&443u16.to_be_bytes()); // dest port
+        // Add 4 more bytes
+        buf.extend_from_slice(&[0u8; 4]);
+
+        buf
+    }
+
+    // Create a minimal IPv6 + UDP packet
+    fn create_full_ipv6_udp_packet() -> Vec<u8> {
+        let ipv6_header = Ipv6Header {
+            traffic_class: 0,
+            flow_label: 0.try_into().unwrap(),
+            payload_length: 8, // Just UDP header
+            next_header: IpNumber::UDP,
+            hop_limit: 64,
+            source: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            destination: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+        };
+
+        let mut buf = Vec::new();
+        ipv6_header.write(&mut buf).unwrap();
+
+        let udp_header = UdpHeader {
+            source_port: 53,
+            destination_port: 53,
+            length: 8,
+            checksum: 0,
+        };
+        udp_header.write(&mut buf).unwrap();
+
+        buf
+    }
+
+    // Create IPv4 + full TCP header + 80 bytes payload
+    fn create_full_ipv4_tcp_packet_with_payload() -> Vec<u8> {
+        let mut ipv4_header = Ipv4Header::new(
+            100, // payload length (20 bytes TCP + 80 bytes payload)
+            64,  // ttl
+            IpNumber::TCP,
+            [192, 168, 1, 1],
+            [192, 168, 1, 2],
+        )
+        .unwrap();
+        ipv4_header.header_checksum = ipv4_header.calc_header_checksum();
+
+        let mut buf = Vec::new();
+        ipv4_header.write(&mut buf).unwrap();
+
+        // Add full TCP header (20 bytes minimum)
+        let tcp_header = etherparse::TcpHeader::new(80, 443, 1000, 0);
+        tcp_header.write(&mut buf).unwrap();
+
+        // Add 80 bytes fake payload
+        buf.extend_from_slice(&[1u8; 80]);
+
+        buf
+    }
+
+    // Basic parsing, deparsing checks
+
+    #[test]
+    fn test_parse_ipv4_with_truncated_tcp() {
+        let buf = create_truncated_ipv4_tcp_packet();
+
+        let result = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf);
+        assert!(
+            result.is_ok(),
+            "Failed to parse IPv4 with truncated TCP: {:?}",
+            result.err()
+        );
+
+        let (headers, consumed) = result.unwrap();
+        assert!(headers.net.is_some());
+        assert!(headers.transport.is_some());
+        assert_eq!(consumed.get(), buf.len() as u16);
+    }
+
+    #[test]
+    fn test_parse_ipv4_with_full_udp() {
+        let buf = create_full_ipv4_udp_packet();
+
+        let result = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf);
+        assert!(
+            result.is_ok(),
+            "Failed to parse IPv4 with full UDP: {:?}",
+            result.err()
+        );
+
+        let (headers, consumed) = result.unwrap();
+        assert!(headers.net.is_some());
+        assert!(headers.transport.is_some());
+        assert_eq!(consumed.get(), buf.len() as u16);
+    }
+
+    #[test]
+    fn test_parse_ipv6_with_truncated_tcp() {
+        let buf = create_truncated_ipv6_tcp_packet();
+
+        let result = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv6, &buf);
+        assert!(
+            result.is_ok(),
+            "Failed to parse IPv6 with truncated TCP: {:?}",
+            result.err()
+        );
+
+        let (headers, consumed) = result.unwrap();
+        assert!(headers.net.is_some());
+        assert!(headers.transport.is_some());
+        assert_eq!(consumed.get(), buf.len() as u16);
+    }
+
+    #[test]
+    fn test_parse_ipv6_with_full_udp() {
+        let buf = create_full_ipv6_udp_packet();
+
+        let result = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv6, &buf);
+        assert!(
+            result.is_ok(),
+            "Failed to parse IPv6 with full UDP: {:?}",
+            result.err()
+        );
+
+        let (headers, consumed) = result.unwrap();
+        assert!(headers.net.is_some());
+        assert!(headers.transport.is_some());
+        assert_eq!(consumed.get(), buf.len() as u16);
+    }
+
+    #[test]
+    fn test_deparse_roundtrip_ipv4_tcp() {
+        let buf = create_truncated_ipv4_tcp_packet();
+
+        let (headers, _) = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf).unwrap();
+
+        let mut out_buf = vec![0u8; 100];
+        let written = headers.deparse(&mut out_buf).unwrap();
+
+        assert_eq!(written.get() as usize, buf.len());
+        assert_eq!(&out_buf[..buf.len()], &buf[..]);
+    }
+
+    #[test]
+    fn test_deparse_roundtrip_ipv4_udp() {
+        let buf = create_full_ipv4_udp_packet();
+
+        let (headers, _) = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf).unwrap();
+
+        let mut out_buf = vec![0u8; 100];
+        let written = headers.deparse(&mut out_buf).unwrap();
+
+        assert_eq!(written.get() as usize, buf.len());
+        assert_eq!(&out_buf[..buf.len()], &buf[..]);
+    }
+
+    #[test]
+    fn test_deparse_roundtrip_ipv6_tcp() {
+        let buf = create_truncated_ipv6_tcp_packet();
+
+        let (headers, _) = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv6, &buf).unwrap();
+
+        let mut out_buf = vec![0u8; 100];
+        let written = headers.deparse(&mut out_buf).unwrap();
+
+        assert_eq!(written.get() as usize, buf.len());
+        assert_eq!(&out_buf[..buf.len()], &buf[..]);
+    }
+
+    #[test]
+    fn test_deparse_roundtrip_ipv6_udp() {
+        let buf = create_full_ipv6_udp_packet();
+
+        let (headers, _) = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv6, &buf).unwrap();
+
+        let mut out_buf = vec![0u8; 100];
+        let written = headers.deparse(&mut out_buf).unwrap();
+
+        assert_eq!(written.get() as usize, buf.len());
+        assert_eq!(&out_buf[..buf.len()], &buf[..]);
+    }
+
+    // Edge cases
+
+    #[test]
+    fn test_parse_ipv4_only_no_transport() {
+        // Create IPv4 header with no payload
+        let mut ipv4_header = Ipv4Header::new(
+            20, // total_len (just IPv4 header)
+            64, // ttl
+            IpNumber::TCP,
+            [192, 168, 1, 1],
+            [192, 168, 1, 2],
+        )
+        .unwrap();
+        ipv4_header.header_checksum = ipv4_header.calc_header_checksum();
+
+        let mut buf = Vec::new();
+        ipv4_header.write(&mut buf).unwrap();
+
+        let result = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf);
+        assert!(result.is_ok());
+
+        let (headers, _) = result.unwrap();
+        assert!(headers.net.is_some());
+        assert!(headers.transport.is_none()); // No transport layer
+    }
+
+    #[test]
+    fn test_parse_ipv6_only_no_transport() {
+        // Create IPv6 header with no payload
+        let ipv6_header = Ipv6Header {
+            traffic_class: 0,
+            flow_label: 0.try_into().unwrap(),
+            payload_length: 0, // No payload
+            next_header: IpNumber::TCP,
+            hop_limit: 64,
+            source: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            destination: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+        };
+
+        let mut buf = Vec::new();
+        ipv6_header.write(&mut buf).unwrap();
+
+        let result = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv6, &buf);
+        assert!(result.is_ok());
+
+        let (headers, _) = result.unwrap();
+        assert!(headers.net.is_some());
+        assert!(headers.transport.is_none()); // No transport layer
+    }
+
+    #[test]
+    fn test_parse_too_short_buffer() {
+        // Buffer too short to contain even an IPv4 header
+        let buf = vec![0u8; 10];
+
+        let result = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_empty_buffer() {
+        let buf = vec![];
+
+        let result = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_size_calculation_ipv4_tcp() {
+        let buf = create_truncated_ipv4_tcp_packet();
+        let (headers, _) = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf).unwrap();
+
+        let size = headers.size();
+        assert_eq!(size.get() as usize, buf.len());
+    }
+
+    #[test]
+    fn test_size_calculation_ipv4_udp() {
+        let buf = create_full_ipv4_udp_packet();
+        let (headers, _) = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf).unwrap();
+
+        let size = headers.size();
+        assert_eq!(size.get() as usize, buf.len());
+    }
+
+    #[test]
+    fn test_size_calculation_ipv6_tcp() {
+        let buf = create_truncated_ipv6_tcp_packet();
+        let (headers, _) = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv6, &buf).unwrap();
+
+        let size = headers.size();
+        assert_eq!(size.get() as usize, buf.len());
+    }
+
+    #[test]
+    fn test_deparse_buffer_too_small() {
+        let buf = create_truncated_ipv4_tcp_packet();
+        let (headers, _) = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf).unwrap();
+
+        let mut small_buf = vec![0u8; 10]; // Too small
+        let result = headers.deparse(&mut small_buf);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_default_embedded_headers() {
+        let headers = EmbeddedHeaders::default();
+
+        assert!(headers.net.is_none());
+        assert!(headers.transport.is_none());
+        assert!(!headers.is_full_payload());
+    }
+
+    #[test]
+    fn test_clone_embedded_headers() {
+        let buf = create_truncated_ipv4_tcp_packet();
+        let (headers, _) = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf).unwrap();
+
+        let cloned = headers.clone();
+
+        assert_eq!(headers, cloned);
+    }
+
+    #[test]
+    fn test_parse_ipv4_with_minimal_tcp_ports_only() {
+        // Create IPv4 + just 4 bytes of TCP (source and dest ports only)
+        let mut ipv4_header = Ipv4Header::new(
+            24, // total_len (20 IPv4 + 4 bytes TCP ports)
+            64, // ttl
+            IpNumber::TCP,
+            [192, 168, 1, 1],
+            [192, 168, 1, 2],
+        )
+        .unwrap();
+        ipv4_header.header_checksum = ipv4_header.calc_header_checksum();
+
+        let mut buf = Vec::new();
+        ipv4_header.write(&mut buf).unwrap();
+
+        // Add only TCP source and dest ports (4 bytes minimum)
+        buf.extend_from_slice(&80u16.to_be_bytes()); // source port
+        buf.extend_from_slice(&443u16.to_be_bytes()); // dest port
+
+        let result = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf);
+        assert!(result.is_ok());
+
+        let (headers, _) = result.unwrap();
+        assert!(headers.net.is_some());
+        assert!(headers.transport.is_some());
+    }
+
+    #[test]
+    fn test_parse_ipv4_with_less_than_4_bytes_tcp() {
+        // Create IPv4 + less than 4 bytes (should fail to parse transport)
+        let mut ipv4_header = Ipv4Header::new(
+            22, // total_len (20 IPv4 + 2 bytes - not enough for TCP)
+            64, // ttl
+            IpNumber::TCP,
+            [192, 168, 1, 1],
+            [192, 168, 1, 2],
+        )
+        .unwrap();
+        ipv4_header.header_checksum = ipv4_header.calc_header_checksum();
+
+        let mut buf = Vec::new();
+        ipv4_header.write(&mut buf).unwrap();
+
+        // Add only 2 bytes (not enough for truncated TCP)
+        buf.extend_from_slice(&[0u8; 2]);
+
+        let result = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf);
+        assert!(result.is_ok());
+
+        let (headers, _) = result.unwrap();
+        assert!(headers.net.is_some());
+        assert!(headers.transport.is_none()); // Should fail to parse transport
+    }
+
+    // Checking whether payload is full
+
+    #[test]
+    fn test_check_full_payload_with_no_transport() {
+        let mut headers = EmbeddedHeaders::default();
+        let buf = vec![0u8; 100];
+
+        headers.check_full_payload(&buf, 100, 20, 0);
+
+        assert!(!headers.is_full_payload());
+    }
+
+    #[test]
+    fn test_check_full_payload_with_partial_tcp_header() {
+        let buf = create_truncated_ipv4_tcp_packet();
+        let (mut headers, consumed) =
+            EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf).unwrap();
+
+        // With truncated TCP, full_payload should be false
+        headers.check_full_payload(&buf, buf.len(), consumed.get() as usize, 0);
+
+        // Since we only have 8 bytes of TCP (truncated), this should be false
+        assert!(!headers.is_full_payload());
+    }
+
+    #[test]
+    fn test_check_full_payload_incomplete_packet() {
+        let buf = create_full_ipv4_tcp_packet_with_payload();
+        let (mut headers, consumed) =
+            EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf).unwrap();
+
+        // Pass a smaller remaining size to simulate incomplete packet
+        headers.check_full_payload(&buf, buf.len() - 10, consumed.get() as usize, 0);
+
+        // Should be false because remaining doesn't match full_packet_size
+        assert!(!headers.is_full_payload());
+    }
+
+    #[test]
+    fn test_check_full_payload_with_icmp_extensions() {
+        let mut buf = create_full_ipv4_tcp_packet_with_payload();
+
+        // We need to pad on a 32-bit word boundary. We have 120 bytes (20 for the IP header, 20 for
+        // the TCP header, 80 for the payload), add 8 to reach 128 bytes.
+        buf.extend_from_slice(&[0u8; 8]);
+        let icmp_payload_length = buf.len();
+
+        // Add fake extension trailers
+        buf.extend_from_slice(&[0x55u8; 32]);
+        buf.extend_from_slice(&[0xffu8; 32]);
+
+        let (mut headers, consumed) =
+            EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf).unwrap();
+
+        headers.check_full_payload(
+            &buf,
+            buf.len(),
+            consumed.get() as usize,
+            icmp_payload_length,
+        );
+
+        // Should be true because we have the full payload, as indicated by the length of the ICMP
+        // payload
+        assert!(headers.is_full_payload());
+
+        // Try again by passing a smaller value for the ICMP payload length, not a multiple of 32
+        headers.check_full_payload(
+            &buf,
+            buf.len(),
+            consumed.get() as usize,
+            icmp_payload_length - 1,
+        );
+        assert!(!headers.is_full_payload());
+
+        // Try again with a value too small for the ICMP payload length: a valid payload size, but
+        // the padding area does not contain zeroed bytes
+        headers.check_full_payload(
+            &buf,
+            buf.len(),
+            consumed.get() as usize,
+            icmp_payload_length - 32,
+        );
+        assert!(!headers.is_full_payload());
+
+        // Try again with a value too large for the ICMP payload length
+        headers.check_full_payload(
+            &buf,
+            buf.len(),
+            consumed.get() as usize,
+            icmp_payload_length + 32,
+        );
+        assert!(!headers.is_full_payload());
+    }
+
+    #[test]
+    fn test_check_full_payload_ipv6_jumbogram() {
+        // Create IPv6 header with payload_length = 0 (jumbogram)
+        let ipv6_header = Ipv6Header {
+            traffic_class: 0,
+            flow_label: 0.try_into().unwrap(),
+            payload_length: 0, // Jumbogram indicator
+            next_header: IpNumber::TCP,
+            hop_limit: 64,
+            source: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            destination: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+        };
+
+        let mut buf = Vec::new();
+        ipv6_header.write(&mut buf).unwrap();
+
+        // Add full TCP header
+        let tcp_header = etherparse::TcpHeader::new(80, 443, 1000, 0);
+        tcp_header.write(&mut buf).unwrap();
+
+        let (mut headers, consumed) =
+            EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv6, &buf).unwrap();
+
+        // Jumbogram should result in full_payload = false
+        headers.check_full_payload(&buf, buf.len(), consumed.get() as usize, 0);
+
+        assert!(!headers.is_full_payload());
+    }
+
+    #[test]
+    fn test_check_full_payload_size_mismatch() {
+        let buf = create_full_ipv4_tcp_packet_with_payload();
+        let (mut headers, consumed) =
+            EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf).unwrap();
+
+        // Pass wrong remaining size
+        headers.check_full_payload(&buf, buf.len() - 10, consumed.get() as usize, 0);
+
+        assert!(!headers.is_full_payload());
+    }
+
+    #[test]
+    fn test_is_full_payload_initial_state() {
+        let buf = create_truncated_ipv4_tcp_packet();
+        let (headers, _) = EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf).unwrap();
+
+        // Before calling check_full_payload, should be false
+        assert!(!headers.is_full_payload());
+    }
+}
