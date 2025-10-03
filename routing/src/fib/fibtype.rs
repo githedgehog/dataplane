@@ -26,7 +26,7 @@ use crate::rib::nexthop::NhopKey;
 use crate::rib::vrf::VrfId;
 
 #[allow(unused)]
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 #[derive(Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 /// A type used to access a [`Fib`] or to identify it.
@@ -282,7 +282,7 @@ impl Fib {
                 1 => (prefix, route.get_fibentry(0)),
                 k => {
                     let entry_index = packet.packet_hash_ecmp(0, (k - 1) as u8);
-                    debug!("Selected FibEntry {entry_index}/{k} to forward packet");
+                    trace!("Selected FibEntry {entry_index}/{k} to forward packet");
                     (prefix, route.get_fibentry(entry_index as usize))
                 }
             }
