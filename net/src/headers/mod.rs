@@ -9,13 +9,14 @@ use crate::eth::ethtype::EthType;
 use crate::eth::{Eth, EthError};
 use crate::icmp4::Icmp4;
 use crate::icmp6::{Icmp6, Icmp6ChecksumPayload};
+use crate::impl_from_for_enum;
 use crate::ip::{NextHeader, UnicastIpAddr};
 use crate::ip_auth::IpAuth;
 use crate::ipv4::Ipv4;
 use crate::ipv6::{Ipv6, Ipv6Ext};
 use crate::parse::{
     DeParse, DeParseError, IllegalBufferLength, IntoNonZeroUSize, LengthError, Parse, ParseError,
-    ParsePayload, ParsePayloadWith, Reader, Writer,
+    ParsePayload, Reader, Writer,
 };
 use crate::tcp::{Tcp, TcpChecksumPayload, TcpPort};
 use crate::udp::{Udp, UdpChecksumPayload, UdpEncap, UdpPort};
@@ -31,6 +32,9 @@ use tracing::{debug, error, trace};
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
+mod embedded;
+pub use embedded::*;
+
 const MAX_VLANS: usize = 4;
 const MAX_NET_EXTENSIONS: usize = 2;
 
@@ -44,6 +48,7 @@ pub struct Headers {
     pub net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
     pub transport: Option<Transport>,
     pub udp_encap: Option<UdpEncap>,
+    pub embedded_ip: Option<EmbeddedHeaders>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -270,13 +275,16 @@ pub enum Header {
     IpAuth(IpAuth),
     IpV6Ext(Ipv6Ext), // TODO: break out nested enum.  Nesting is counter productive here
     Encap(UdpEncap),
+    EmbeddedIp(EmbeddedHeaders),
 }
 
 impl ParsePayload for Header {
     type Next = Header;
 
     fn parse_payload(&self, cursor: &mut Reader) -> Option<Header> {
-        use Header::{Encap, Eth, Icmp4, Icmp6, IpAuth, IpV6Ext, Ipv4, Ipv6, Tcp, Udp, Vlan};
+        use Header::{
+            EmbeddedIp, Encap, Eth, Icmp4, Icmp6, IpAuth, IpV6Ext, Ipv4, Ipv6, Tcp, Udp, Vlan,
+        };
         match self {
             Eth(eth) => eth.parse_payload(cursor).map(Header::from),
             Vlan(vlan) => vlan.parse_payload(cursor).map(Header::from),
@@ -285,15 +293,17 @@ impl ParsePayload for Header {
             IpAuth(auth) => auth.parse_payload(cursor).map(Header::from),
             IpV6Ext(ext) => {
                 if let Ipv6(ipv6) = self {
-                    ext.parse_payload_with(&ipv6.next_header(), cursor)
+                    ext.parse_payload(ipv6.next_header(), cursor)
                         .map(Header::from)
                 } else {
                     debug!("ipv6 extension header outside ipv6 header");
                     None
                 }
             }
+            Icmp4(icmp4) => icmp4.parse_payload(cursor).map(Header::from),
+            Icmp6(icmp6) => icmp6.parse_payload(cursor).map(Header::from),
             Udp(udp) => udp.parse_payload(cursor).map(Header::from),
-            Encap(_) | Tcp(_) | Icmp4(_) | Icmp6(_) => None,
+            Encap(_) | Tcp(_) | EmbeddedIp(_) => None,
         }
     }
 }
@@ -312,6 +322,7 @@ impl Parse for Headers {
             vlan: ArrayVec::default(),
             net_ext: ArrayVec::default(),
             udp_encap: None,
+            embedded_ip: None,
         };
         let mut prior = Header::Eth(eth);
         loop {
@@ -346,6 +357,7 @@ impl Parse for Headers {
                         break;
                     }
                 }
+                Header::EmbeddedIp(embedded) => this.embedded_ip = Some(embedded),
             }
             match header {
                 None => {
@@ -448,6 +460,20 @@ impl DeParse for Headers {
                 cursor.write(vxlan)?;
             }
         }
+
+        match self.embedded_ip {
+            None => {
+                #[allow(clippy::cast_possible_truncation)] // length bounded on cursor creation
+                return Ok(
+                    NonZero::new((cursor.inner.len() - cursor.remaining as usize) as u16)
+                        .unwrap_or_else(|| unreachable!()),
+                );
+            }
+            Some(ref embedded_ip) => {
+                cursor.write(embedded_ip)?;
+            }
+        }
+
         #[allow(clippy::cast_possible_truncation)] // length bounded on cursor creation
         Ok(
             NonZero::new((cursor.inner.len() - cursor.remaining as usize) as u16)
@@ -916,29 +942,21 @@ impl TryVxlanMut for Headers {
     }
 }
 
-impl From<Eth> for Header {
-    fn from(value: Eth) -> Self {
-        Header::Eth(value)
-    }
-}
-
-impl From<Vlan> for Header {
-    fn from(value: Vlan) -> Self {
-        Header::Vlan(value)
-    }
-}
-
-impl From<Ipv4> for Header {
-    fn from(value: Ipv4) -> Self {
-        Header::Ipv4(value)
-    }
-}
-
-impl From<Ipv6> for Header {
-    fn from(value: Ipv6) -> Self {
-        Header::Ipv6(value)
-    }
-}
+impl_from_for_enum!(
+    Header,
+    Eth(Eth),
+    Vlan(Vlan),
+    Ipv4(Ipv4),
+    Ipv6(Ipv6),
+    Tcp(Tcp),
+    Udp(Udp),
+    Icmp4(Icmp4),
+    Icmp6(Icmp6),
+    IpAuth(IpAuth),
+    IpV6Ext(Ipv6Ext),
+    Encap(UdpEncap),
+    EmbeddedIp(EmbeddedHeaders),
+);
 
 impl From<Net> for Header {
     fn from(value: Net) -> Self {
@@ -946,42 +964,6 @@ impl From<Net> for Header {
             Net::Ipv4(ip) => Header::from(ip),
             Net::Ipv6(ip) => Header::from(ip),
         }
-    }
-}
-
-impl From<IpAuth> for Header {
-    fn from(value: IpAuth) -> Self {
-        Header::IpAuth(value)
-    }
-}
-
-impl From<Ipv6Ext> for Header {
-    fn from(value: Ipv6Ext) -> Self {
-        Header::IpV6Ext(value)
-    }
-}
-
-impl From<Udp> for Header {
-    fn from(value: Udp) -> Self {
-        Header::Udp(value)
-    }
-}
-
-impl From<Tcp> for Header {
-    fn from(value: Tcp) -> Self {
-        Header::Tcp(value)
-    }
-}
-
-impl From<Icmp4> for Header {
-    fn from(value: Icmp4) -> Self {
-        Header::Icmp4(value)
-    }
-}
-
-impl From<Icmp6> for Header {
-    fn from(value: Icmp6) -> Self {
-        Header::Icmp6(value)
     }
 }
 
@@ -999,12 +981,6 @@ impl From<Transport> for Header {
 impl From<Vxlan> for Header {
     fn from(value: Vxlan) -> Self {
         Header::Encap(UdpEncap::Vxlan(value))
-    }
-}
-
-impl From<UdpEncap> for Header {
-    fn from(value: UdpEncap) -> Self {
-        Header::Encap(value)
     }
 }
 
@@ -1343,6 +1319,7 @@ mod contract {
                                 net_ext: Default::default(),
                                 transport: Some(Transport::Tcp(tcp)),
                                 udp_encap: None,
+                                embedded_ip: None,
                             };
                             Some(headers)
                         }
@@ -1361,6 +1338,7 @@ mod contract {
                                 net_ext: Default::default(),
                                 transport: Some(Transport::Udp(udp)),
                                 udp_encap,
+                                embedded_ip: None,
                             };
                             Some(headers)
                         }
@@ -1373,6 +1351,7 @@ mod contract {
                                 net_ext: Default::default(),
                                 transport: Some(Transport::Icmp4(icmp)),
                                 udp_encap: None,
+                                embedded_ip: None,
                             };
                             Some(headers)
                         }
@@ -1392,6 +1371,7 @@ mod contract {
                                 net_ext: Default::default(),
                                 transport: Some(Transport::Tcp(tcp)),
                                 udp_encap: None,
+                                embedded_ip: None,
                             };
                             Some(headers)
                         }
@@ -1410,6 +1390,7 @@ mod contract {
                                 net_ext: Default::default(),
                                 transport: Some(Transport::Udp(udp)),
                                 udp_encap,
+                                embedded_ip: None,
                             };
                             Some(headers)
                         }
@@ -1422,6 +1403,7 @@ mod contract {
                                 net_ext: Default::default(),
                                 transport: Some(Transport::Icmp6(icmp6)),
                                 udp_encap: None,
+                                embedded_ip: None,
                             };
                             Some(headers)
                         }

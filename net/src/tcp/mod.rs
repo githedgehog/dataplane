@@ -5,13 +5,13 @@
 
 mod checksum;
 pub mod port;
+mod truncated;
 
 pub use checksum::*;
 pub use port::*;
+pub use truncated::*;
 
-use crate::parse::{
-    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
-};
+use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError};
 use etherparse::TcpHeader;
 use etherparse::err::tcp::{HeaderError, HeaderSliceError};
 use std::num::NonZero;
@@ -303,13 +303,13 @@ impl Tcp {
 
 /// Errors which can occur when attempting to parse arbitrary bytes into a [`Tcp`] header.
 #[derive(Debug, thiserror::Error)]
-pub enum TcpError {
+pub enum TcpParseError {
     /// Zero is not legal as a source port.
     #[error("zero source port")]
     ZeroSourcePort,
     /// Zero is not legal as a destination port.
     #[error("zero dest port")]
-    ZeroDestPort,
+    ZeroDestinationPort,
     /// Valid tcp headers have data offsets which are at least large enough to include the header
     /// itself.
     #[error("data offset too small: {0}")]
@@ -317,7 +317,7 @@ pub enum TcpError {
 }
 
 impl Parse for Tcp {
-    type Error = TcpError;
+    type Error = TcpParseError;
 
     fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
         if buf.len() > u16::MAX as usize {
@@ -330,7 +330,7 @@ impl Parse for Tcp {
             }),
             HeaderSliceError::Content(content) => match content {
                 HeaderError::DataOffsetTooSmall { data_offset } => {
-                    ParseError::Invalid(TcpError::DataOffsetTooSmall(data_offset))
+                    ParseError::Invalid(TcpParseError::DataOffsetTooSmall(data_offset))
                 }
             },
         })?;
@@ -344,10 +344,10 @@ impl Parse for Tcp {
         let consumed =
             NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
         if inner.source_port == 0 {
-            return Err(ParseError::Invalid(TcpError::ZeroSourcePort));
+            return Err(ParseError::Invalid(TcpParseError::ZeroSourcePort));
         }
         if inner.destination_port == 0 {
-            return Err(ParseError::Invalid(TcpError::ZeroDestPort));
+            return Err(ParseError::Invalid(TcpParseError::ZeroDestinationPort));
         }
         let parsed = Self(inner);
         Ok((parsed, consumed))
@@ -372,15 +372,6 @@ impl DeParse for Tcp {
         }
         buf[..self.size().into_non_zero_usize().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
-    }
-}
-
-impl ParsePayload for Tcp {
-    type Next = ();
-
-    /// We don't currently support parsing below the TCP layer
-    fn parse_payload(&self, _cursor: &mut Reader) -> Option<Self::Next> {
-        None
     }
 }
 

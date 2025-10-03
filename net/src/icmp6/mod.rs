@@ -7,8 +7,9 @@ mod checksum;
 
 pub use checksum::*;
 
+use crate::headers::{EmbeddedHeaders, EmbeddedIpVersion};
 use crate::parse::{
-    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
+    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParseWith, Reader,
 };
 use etherparse::{Icmpv6Header, Icmpv6Type};
 use std::num::NonZero;
@@ -33,6 +34,26 @@ impl Icmp6 {
         &mut self.0.icmp_type
     }
 
+    /// Returns true if the ICMP type is an error message
+    #[must_use]
+    pub fn is_error_message(&self) -> bool {
+        // List all types to make it sure we catch any new addition to the enum
+        match self.icmp_type() {
+            Icmpv6Type::DestinationUnreachable(_)
+            | Icmpv6Type::PacketTooBig { .. }
+            | Icmpv6Type::TimeExceeded(_)
+            | Icmpv6Type::ParameterProblem(_) => true,
+            Icmpv6Type::Unknown { .. }
+            | Icmpv6Type::EchoRequest(_)
+            | Icmpv6Type::EchoReply(_)
+            | Icmpv6Type::RouterSolicitation
+            | Icmpv6Type::RouterAdvertisement(_)
+            | Icmpv6Type::NeighborSolicitation
+            | Icmpv6Type::NeighborAdvertisement(_)
+            | Icmpv6Type::Redirect => false,
+        }
+    }
+
     /// Creates a new `Icmp6` with the given type.
     ///
     /// The checksum will be set to zero.
@@ -42,6 +63,38 @@ impl Icmp6 {
             icmp_type,
             checksum: 0,
         })
+    }
+
+    fn payload_length(&self, buf: &[u8]) -> usize {
+        // See RFC 4884.
+        match self.icmp_type() {
+            Icmpv6Type::DestinationUnreachable(_)
+            | Icmpv6Type::TimeExceeded(_)
+            | Icmpv6Type::ParameterProblem(_) => {
+                let payload_length = buf[3];
+                payload_length as usize * 8
+            }
+            _ => 0,
+        }
+    }
+
+    pub(crate) fn parse_payload(&self, cursor: &mut Reader) -> Option<EmbeddedHeaders> {
+        if !self.is_error_message() {
+            return None;
+        }
+        let (mut headers, consumed) =
+            EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv6, cursor.inner).ok()?;
+        cursor.consume(consumed).ok()?;
+
+        // Mark whether the payload of the embedded IP packet is full
+        headers.check_full_payload(
+            &cursor.inner[cursor.inner.len() - cursor.remaining as usize..],
+            cursor.remaining as usize,
+            consumed.get() as usize,
+            self.payload_length(cursor.inner),
+        );
+
+        Some(headers)
     }
 }
 
@@ -69,15 +122,6 @@ impl Parse for Icmp6 {
         let consumed =
             NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
         Ok((Self(inner), consumed))
-    }
-}
-
-impl ParsePayload for Icmp6 {
-    type Next = ();
-
-    /// We don't currently support parsing below the `Icmp6` layer
-    fn parse_payload(&self, _cursor: &mut Reader) -> Option<Self::Next> {
-        None
     }
 }
 

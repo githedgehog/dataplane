@@ -11,7 +11,7 @@ use core::fmt::{Debug, Display, Formatter};
 use crate::eth::ethtype::EthType;
 use crate::eth::{EthNext, parse_from_ethertype};
 use crate::parse::{
-    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParsePayload, Reader,
+    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, Reader,
 };
 use core::num::NonZero;
 use etherparse::{SingleVlanHeader, VlanId, VlanPcp};
@@ -312,6 +312,16 @@ impl Vlan {
         self.0.ether_type = eth_type.0;
         self
     }
+
+    /// Parse the payload of this vlan header.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(EthNext)` if the payload is a known Ethertype.
+    /// * `None` if the payload is an unknown Ethertype.
+    pub(crate) fn parse_payload(&self, cursor: &mut Reader) -> Option<EthNext> {
+        parse_from_ethertype(self.0.ether_type, cursor)
+    }
 }
 
 impl Parse for Vlan {
@@ -361,14 +371,6 @@ impl DeParse for Vlan {
         }
         buf[..self.size().into_non_zero_usize().get()].copy_from_slice(&self.0.to_bytes());
         Ok(self.size())
-    }
-}
-
-impl ParsePayload for Vlan {
-    type Next = EthNext;
-
-    fn parse_payload(&self, cursor: &mut Reader) -> Option<EthNext> {
-        parse_from_ethertype(self.0.ether_type, cursor)
     }
 }
 

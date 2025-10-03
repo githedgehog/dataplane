@@ -55,12 +55,6 @@ pub(crate) trait ParsePayload {
     fn parse_payload(&self, cursor: &mut Reader) -> Option<Self::Next>;
 }
 
-pub(crate) trait ParsePayloadWith {
-    type Param;
-    type Next;
-    fn parse_payload_with(&self, param: &Self::Param, cursor: &mut Reader) -> Option<Self::Next>;
-}
-
 pub trait ParseHeader {
     fn parse_header<T: Parse, O: From<T>>(&mut self) -> Option<O>;
     fn parse_header_with<T: ParseWith, O: From<T>>(&mut self, param: T::Param) -> Option<O>;
@@ -83,6 +77,43 @@ impl ParseHeader for Reader<'_> {
             .map(|v| O::from(v.0))
             .ok()
     }
+}
+
+// Trait ParseHeader above requires its second generic parameter to implement From<T>, leading in
+// many implementations of the From trait for the multiple variants of enum objects. Let's make it
+// less verbose with a dedicated macro. Usage:
+//
+//     // Let's consider an enum:
+//     enum Foo {
+//         Bar(Bar),
+//         Baz(Foobarbaz),
+//     }
+//
+//     // Calling the macro such as this:
+//     impl_from_for_enum!(Foo, Bar(Bar), Baz(Foobarbaz));
+//
+//     // ... comes down to implementing all of the following:
+//     impl From<Bar> for Foo {
+//         fn from(value: Bar) -> Self {
+//             Foo::Bar(value)
+//         }
+//     }
+//     impl From<Foobarbaz> for Foo {
+//         fn from(value: Foobarbaz) -> Self {
+//             Foo::Baz(value)
+//         }
+//     }
+#[macro_export]
+macro_rules! impl_from_for_enum {
+    ($target:ty, $($variant:ident($ty:ty)),* $(,)?) => {
+        $(
+            impl From<$ty> for $target {
+                fn from(value: $ty) -> Self {
+                    <$target>::$variant(value)
+                }
+            }
+        )*
+    };
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -120,7 +151,7 @@ impl Reader<'_> {
         })
     }
 
-    fn consume(&mut self, n: NonZero<u16>) -> Result<(), LengthError> {
+    pub(crate) fn consume(&mut self, n: NonZero<u16>) -> Result<(), LengthError> {
         if n.get() > self.remaining {
             return Err(LengthError {
                 expected: n.into_non_zero_usize(),

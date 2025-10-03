@@ -13,7 +13,7 @@ use crate::eth::mac::{
 use crate::headers::Header;
 use crate::ipv4::Ipv4;
 use crate::ipv6::Ipv6;
-use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, ParsePayload, Reader};
+use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError, Reader};
 use crate::vlan::Vlan;
 use etherparse::{EtherType, Ethernet2Header};
 use std::num::NonZero;
@@ -95,6 +95,16 @@ impl Eth {
     pub(crate) fn set_ether_type(&mut self, ether_type: EthType) -> &mut Self {
         self.0.ether_type = ether_type.0;
         self
+    }
+
+    /// Parse the payload of the ethernet header.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(EthNext)` variant if the payload is successfully parsed.
+    /// * `None` if the payload is not a known Ethernet type.
+    pub(crate) fn parse_payload(&self, cursor: &mut Reader) -> Option<EthNext> {
+        parse_from_ethertype(self.0.ether_type, cursor)
     }
 }
 
@@ -202,13 +212,6 @@ pub(crate) enum EthNext {
     Vlan(Vlan),
     Ipv4(Ipv4),
     Ipv6(Ipv6),
-}
-
-impl ParsePayload for Eth {
-    type Next = EthNext;
-    fn parse_payload(&self, cursor: &mut Reader) -> Option<EthNext> {
-        parse_from_ethertype(self.0.ether_type, cursor)
-    }
 }
 
 impl From<EthNext> for Header {
