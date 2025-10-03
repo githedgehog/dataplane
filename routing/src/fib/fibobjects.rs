@@ -84,6 +84,11 @@ impl FibGroup {
             entries: vec![entry],
         }
     }
+    #[must_use]
+    pub(crate) fn drop_fibgroup() -> FibGroup {
+        FibGroup::with_entry(FibEntry::drop_fibentry())
+    }
+
     /// Add a [`FibEntry`] to a [`FibGroup`]
     pub fn add(&mut self, entry: FibEntry) {
         self.entries.push(entry);

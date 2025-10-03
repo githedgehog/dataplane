@@ -4,7 +4,7 @@
 //! Rib to fib route processor
 
 #[allow(unused)]
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 use crate::evpn::RmacStore;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
@@ -108,18 +108,18 @@ impl Nhop {
     pub(crate) fn set_fibgroup(&self, rstore: &RmacStore) -> bool {
         // determine nhop pkt instructions. This is independent of the routing table
         self.build_nhop_instructions(rstore);
+
         // build the fibgroup for a next-hop. This requires the nhop to be resolved
         // and its resolvers too, and that these have packet instructions up to date
         let fibgroup = self.build_nhop_fibgroup();
-        let changed = fibgroup != *self.fibgroup.borrow();
+        let changed = fibgroup != *(self.fibgroup.borrow());
         if changed {
-            // FIXME(fredi): we need a way of enabling these logs at runtime
-            //debug!("Fibgroup for nhop {self}\nchanged!");
-            //debug!("\nold:\n{}", self.fibgroup.borrow());
-            //debug!("\nnew:\n{}", fibgroup);
+            trace!("Fibgroup for nhop {self}\nchanged. Will replace..");
+            trace!("\nold:\n{}", self.fibgroup.borrow());
+            trace!("\nnew:\n{}", fibgroup);
             self.fibgroup.replace(fibgroup);
         } else {
-            //debug!("Fibgroup for nhop {self} did NOT change");
+            trace!("Fibgroup for nhop {self} did NOT change");
         }
         changed
     }

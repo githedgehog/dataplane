@@ -20,8 +20,6 @@
 //! must be done while holding a `left_right::ReadGuard` or `left_right::WriteGuard` to
 //! the `Fib` that owns it.
 
-#![allow(unused)]
-
 use crate::fib::fibobjects::{FibEntry, FibGroup};
 use crate::rib::nexthop::NhopKey;
 use ahash::RandomState;
@@ -39,7 +37,7 @@ pub enum FibError {
     NoFibGroup(NhopKey),
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct FibGroupStore(HashMap<NhopKey, Rc<RefCell<FibGroup>>, RandomState>);
 
 impl FibGroupStore {
@@ -49,7 +47,7 @@ impl FibGroupStore {
         unsafe {
             // This is safe because we have exclusive access to the store we just created
             // so no one else can have a reference to any Rc's it contains
-            store.add_mod_group(&NhopKey::with_drop(), Self::drop_fibgroup());
+            store.add_mod_group(&NhopKey::with_drop(), FibGroup::drop_fibgroup());
         }
         store
     }
@@ -57,10 +55,6 @@ impl FibGroupStore {
     #[allow(clippy::len_without_is_empty)]
     pub(crate) fn len(&self) -> usize {
         self.0.len()
-    }
-    #[must_use]
-    fn drop_fibgroup() -> FibGroup {
-        FibGroup::with_entry(FibEntry::drop_fibentry())
     }
     #[must_use]
     /// get an Rc for the drop `Fibgroup`. The drop fibgroup is unique.
@@ -99,6 +93,7 @@ impl FibGroupStore {
     fn get_ref(&self, key: &NhopKey) -> Option<Rc<RefCell<FibGroup>>> {
         self.0.get(key).map(|group| Rc::clone(group))
     }
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn get(&self, key: &NhopKey) -> Option<Ref<'_, FibGroup>> {
         self.0.get(key).map(|group| group.borrow())
@@ -141,9 +136,11 @@ impl FibGroupStore {
     pub(crate) fn values(&self) -> impl Iterator<Item = Ref<'_, FibGroup>> {
         self.0.values().map(|group| group.borrow())
     }
+
     ////////////////////////////////////////////////////////////////////////////////////////////////////
     /// Iterate over the `FibGroups` in the store
     ////////////////////////////////////////////////////////////////////////////////////////////////////
+    #[cfg(test)]
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&NhopKey, Ref<'_, FibGroup>)> {
         self.0.iter().map(|(key, group)| (key, group.borrow()))
     }
@@ -160,19 +157,11 @@ impl FibRoute {
     pub fn with_fibgroup(fg_ref: Rc<RefCell<FibGroup>>) -> Self {
         Self(vec![fg_ref])
     }
+
+    #[cfg(test)]
     /// Add a reference to a `FibGroup` to a `FibRoute`
     pub(crate) fn add_fibgroup_ref(&mut self, fg_ref: Rc<RefCell<FibGroup>>) {
         self.0.push(fg_ref);
-    }
-    #[must_use]
-    #[cfg(test)]
-    /// Get a reference to the `FibGroup` at the group-level index. This is only for testing.
-    pub(crate) fn get_fibgroup(&self, index: usize) -> Option<Ref<'_, FibGroup>> {
-        if index < self.len() {
-            unsafe { Some(self.0[index].borrow()) }
-        } else {
-            None
-        }
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -272,7 +261,7 @@ pub mod tests {
         ));
         FibEntry::with_inst(inst)
     }
-    // builds fibgroup with a single entry
+    // builds a fibgroup with several entries
     fn build_fibgroup(entries: &[FibEntry]) -> FibGroup {
         let mut fibgroup = FibGroup::new();
         fibgroup.entries.extend_from_slice(entries);
@@ -298,11 +287,12 @@ pub mod tests {
 
         {
             // retrieve the fibgrop from the store from its key
+            // (scoped since we mutate the store later on)
             let stored = store.get(&nhkey).unwrap();
             assert_eq!(stored.len(), 1);
             assert_eq!(stored.entries[0].len(), 1);
             assert_eq!(stored.entries[0], entry);
-            println!("{stored:#?}");
+            println!("{stored}");
         }
 
         // create fibroute to have a shared ref to that fibgroup
@@ -311,6 +301,7 @@ pub mod tests {
         assert_eq!(fibroute.0.len(), 1);
         assert_eq!(fibroute.len(), 1);
 
+        // create a second fibroute object sharing the same fibgroup
         let mut fibroute2 = FibRoute::new();
         fibroute2.add_fibgroup_ref(store.get_ref(&nhkey).unwrap());
 
@@ -326,11 +317,12 @@ pub mod tests {
         let found2 = fibroute2.get_fibentry(0).unwrap();
         assert_eq!(*found1, *found2);
         assert_eq!(*found1, entry2);
-        println!("hit:\n{found1}");
+
+        println!("updated fibgroup entry:\n{found1}");
     }
 
     #[test]
-    fn test_multi_fibgroup_route_entry_selection() {
+    fn test_fibgroup_multigroup_route_entry_selection() {
         // create multiple fib entries
         let e1 = build_fib_entry_egress(1, "10.0.1.1", "eth1");
         let e2 = build_fib_entry_egress(2, "10.0.2.1", "eth2");
@@ -347,7 +339,7 @@ pub mod tests {
         let g3 = build_fibgroup(&[e7.clone()]);
         let g4 = build_fibgroup(&[e8.clone()]);
 
-        // create a dummy nhop key whose contents do not matter other than for storing each fibgroup
+        // create dummy nhop keys whose contents do not matter other than for storing each fibgroup
         let key1 = NhopKey::with_address(&IpAddr::from_str("8.0.0.1").unwrap());
         let key2 = NhopKey::with_address(&IpAddr::from_str("8.0.0.2").unwrap());
         let key3 = NhopKey::with_address(&IpAddr::from_str("8.0.0.3").unwrap());
@@ -379,14 +371,16 @@ pub mod tests {
         assert_eq!(fibroute.len(), g1.len() + g2.len() + g3.len() + g4.len());
 
         // select one entry in the fibroute by index and check that it is correct
-        assert_eq!(fibroute.get_fibentry(0).map(|e| e.clone()), Some(e1));
-        assert_eq!(fibroute.get_fibentry(1).map(|e| e.clone()), Some(e2));
-        assert_eq!(fibroute.get_fibentry(2).map(|e| e.clone()), Some(e3));
-        assert_eq!(fibroute.get_fibentry(3).map(|e| e.clone()), Some(e4));
-        assert_eq!(fibroute.get_fibentry(4).map(|e| e.clone()), Some(e5));
-        assert_eq!(fibroute.get_fibentry(5).map(|e| e.clone()), Some(e6));
-        assert_eq!(fibroute.get_fibentry(6).map(|e| e.clone()), Some(e7));
-        assert_eq!(fibroute.get_fibentry(7).map(|e| e.clone()), Some(e8));
+        // this route has all of the fibgroups
+        assert_eq!(&*fibroute.get_fibentry(0).unwrap(), &e1);
+        assert_eq!(&*fibroute.get_fibentry(0).unwrap(), &e1);
+        assert_eq!(&*fibroute.get_fibentry(1).unwrap(), &e2);
+        assert_eq!(&*fibroute.get_fibentry(2).unwrap(), &e3);
+        assert_eq!(&*fibroute.get_fibentry(3).unwrap(), &e4);
+        assert_eq!(&*fibroute.get_fibentry(4).unwrap(), &e5);
+        assert_eq!(&*fibroute.get_fibentry(5).unwrap(), &e6);
+        assert_eq!(&*fibroute.get_fibentry(6).unwrap(), &e7);
+        assert_eq!(&*fibroute.get_fibentry(7).unwrap(), &e8);
         assert!(fibroute.get_fibentry(8).is_none());
 
         // attempt to remove fibgroups: none should be removed from the store
@@ -466,8 +460,9 @@ pub mod tests {
 
         // Attempt to create a Fibroute with a key for which no fibgroup exists: should fail
         let key = NhopKey::with_address(&IpAddr::from_str("9.0.0.1").unwrap());
-        let fibroute = FibRoute::from_nhopkeys(&store, &[key1, key2, key]);
-        assert!(matches!(fibroute, Err(FibError::NoFibGroup(ref key))));
+        println!("Creating fibroute from non-registered nhop key {key}...");
+        let fibroute = FibRoute::from_nhopkeys(&store, &[key1, key2, key.clone()]);
         println!("{fibroute:#?}");
+        assert!(fibroute.is_err_and(|e| e == FibError::NoFibGroup(key)));
     }
 }
