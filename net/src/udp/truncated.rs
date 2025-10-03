@@ -184,3 +184,33 @@ impl DeParse for TruncatedUdp {
         }
     }
 }
+
+#[cfg(any(test, feature = "bolero"))]
+mod contract {
+    use super::TruncatedUdp;
+    use bolero::{Driver, TypeGenerator};
+
+    impl TypeGenerator for TruncatedUdp {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            // Generate either full or partial UDP header
+            let udp = if driver.produce::<bool>()? {
+                TruncatedUdp::FullHeader(driver.produce()?)
+            } else {
+                let source_port = driver.produce()?;
+                let dest_port = driver.produce()?;
+                // We can have up to 3 extra byte for the header, in addition to the 4 bytes for
+                // the ports. Beyond that, we'd have at least 8 bytes and that would make our
+                // header a full UDP header.
+                let extra_bytes: Vec<u8> = driver.produce::<[u8; 3]>()?
+                    [..driver.produce::<u8>()? as usize % 3] // 0-3 bytes, total 4-7 bytes
+                    .to_vec();
+                TruncatedUdp::PartialHeader(crate::udp::TruncatedUdpHeader::new(
+                    source_port,
+                    dest_port,
+                    extra_bytes,
+                ))
+            };
+            Some(udp)
+        }
+    }
+}

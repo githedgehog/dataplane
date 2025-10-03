@@ -18,6 +18,9 @@ use core::fmt::Debug;
 use std::num::NonZero;
 use tracing::debug;
 
+#[cfg(any(test, feature = "bolero"))]
+pub use contract::*;
+
 pub enum EmbeddedIpVersion {
     Ipv4,
     Ipv6,
@@ -950,5 +953,99 @@ mod tests {
 
         // Before calling check_full_payload, should be false
         assert!(!headers.is_full_payload());
+    }
+}
+
+#[cfg(any(test, feature = "bolero"))]
+mod contract {
+    use super::*;
+    use crate::headers::Net;
+    use crate::ipv4;
+    use crate::ipv6;
+    use crate::tcp::TruncatedTcp;
+    use crate::udp::TruncatedUdp;
+    use bolero::{Driver, ValueGenerator};
+
+    pub struct CommonEmbeddedHeaders;
+
+    impl ValueGenerator for CommonEmbeddedHeaders {
+        type Output = EmbeddedHeaders;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let (ipv4_next_header, ipv6_next_header, transport) = match driver.produce::<bool>()? {
+                true => (
+                    ipv4::CommonNextHeader::Tcp,
+                    ipv6::CommonNextHeader::Tcp,
+                    EmbeddedTransport::Tcp(driver.produce::<TruncatedTcp>()?),
+                ),
+                false => (
+                    ipv4::CommonNextHeader::Udp,
+                    ipv6::CommonNextHeader::Udp,
+                    EmbeddedTransport::Udp(driver.produce::<TruncatedUdp>()?),
+                ),
+            };
+
+            let is_ipv4 = driver.produce::<bool>()?;
+            if is_ipv4 {
+                let ipv4 = ipv4::GenWithNextHeader(ipv4_next_header.into()).generate(driver)?;
+                let headers = EmbeddedHeaders {
+                    net: Some(Net::Ipv4(ipv4)),
+                    transport: Some(transport),
+                    ..Default::default()
+                };
+                Some(headers)
+            } else {
+                let ipv6 = ipv6::GenWithNextHeader(ipv6_next_header.into()).generate(driver)?;
+                let headers = EmbeddedHeaders {
+                    net: Some(Net::Ipv6(ipv6)),
+                    transport: Some(transport),
+                    ..Default::default()
+                };
+                Some(headers)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_fuzzing {
+    use super::contract::CommonEmbeddedHeaders;
+    use super::*;
+    use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, ParseError, ParseWith};
+
+    fn parse_back_test(headers: &EmbeddedHeaders, ip_version: EmbeddedIpVersion) {
+        let mut buffer = [0_u8; 256];
+        let bytes_written =
+            match headers.deparse(&mut buffer[..headers.size().into_non_zero_usize().get()]) {
+                Ok(written) => written,
+                Err(DeParseError::Length(e)) => unreachable!("{e:?}", e = e),
+                Err(DeParseError::Invalid(e)) => unreachable!("{e:?}", e = e),
+                Err(DeParseError::BufferTooLong(_)) => unreachable!(),
+            };
+        let (parsed, bytes_parsed) = match EmbeddedHeaders::parse_with(
+            ip_version,
+            &buffer[..bytes_written.into_non_zero_usize().get()],
+        ) {
+            Ok(k) => k,
+            Err(ParseError::Length(e)) => unreachable!("{e:?}", e = e),
+            Err(ParseError::Invalid(e)) => unreachable!("{e:?}", e = e),
+            Err(ParseError::BufferTooLong(_)) => unreachable!(),
+        };
+        assert_eq!(headers.net, parsed.net);
+        assert_eq!(headers.transport, parsed.transport);
+        assert_eq!(bytes_parsed, headers.size());
+    }
+
+    #[test]
+    fn parse_back_common() {
+        bolero::check!()
+            .with_generator(CommonEmbeddedHeaders)
+            .for_each(|headers: &EmbeddedHeaders| match &headers.net {
+                Some(Net::Ipv4(_)) => parse_back_test(headers, EmbeddedIpVersion::Ipv4),
+                Some(Net::Ipv6(_)) => parse_back_test(headers, EmbeddedIpVersion::Ipv6),
+                None => {
+                    unreachable!()
+                }
+            })
     }
 }
