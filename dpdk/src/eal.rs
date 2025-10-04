@@ -26,10 +26,12 @@ pub struct Eal {
     ///
     /// You can find memory services here, including memory pools and mem buffers.
     pub mem: mem::Manager,
+
     /// The device manager.
     ///
     /// You can find ethernet device services here.
     pub dev: dev::Manager,
+
     /// Socket manager.
     ///
     /// You can find socket services here.
@@ -139,15 +141,13 @@ pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
             lcore: lcore::Manager::init(),
         }
     };
-    // Shift to the DPDK allocator
-    RteAllocator::mark_initialized();
     eal
 }
 
 impl Eal {
     /// Returns `true` if the [`Eal`] is using the PCI bus.
     ///
-    /// This is mostly a safe wrapper around [`dpdk_sys::rte_eal_has_pci`]
+    /// This is a safe wrapper around [`dpdk_sys::rte_eal_has_pci`]
     /// which simply converts the return value to a [`bool`] instead of a [`c_int`].
     #[cold]
     #[tracing::instrument(level = "trace", skip(self), ret)]
@@ -170,6 +170,31 @@ impl Eal {
             dpdk_sys::rte_exit(1, c"Failed to convert exit message to CString".as_ptr())
         });
         unsafe { dpdk_sys::rte_exit(1, message_cstring.as_ptr()) }
+    }
+
+    /// Exits the DPDK application with an error message based on the provided error number.
+    ///
+    /// This function never returns as it exits the application.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the error message cannot be converted to a `CString`.
+    #[cold]
+    pub fn fatal_errno(errno: EalErrno) -> ! {
+        debug_assert!(errno.0 != 0, "incorrect call to fatal_errno");
+        let ret_msg = unsafe { dpdk_sys::rte_strerror(errno.0) };
+        let ret_msg = unsafe { CStr::from_ptr(ret_msg) };
+        let ret_msg = ret_msg.to_str().unwrap_or_else(|err| {
+            error!("Failed to convert error message to string: {}", err);
+            unsafe {
+                dpdk_sys::rte_exit(
+                    errno.0,
+                    c"Failed to convert error message to string".as_ptr(),
+                )
+            }
+        });
+        error!("Fatal error: {ret_msg}");
+        unsafe { dpdk_sys::rte_exit(errno.0, c"Fatal error".as_ptr()) }
     }
 
     /// Get the DPDK `rte_errno` and parse it as an [`errno::ErrorCode`].
@@ -198,12 +223,10 @@ impl Drop for Eal {
     fn drop(&mut self) {
         info!("waiting on EAL threads");
         unsafe { dpdk_sys::rte_eal_mp_wait_lcore() };
-        info!("Closing EAL");
+        info!("closing EAL");
         let ret = unsafe { dpdk_sys::rte_eal_cleanup() };
         if ret != 0 {
-            let panic_msg = format!("Failed to cleanup EAL: error {ret}");
-            error!("{panic_msg}");
-            panic!("{panic_msg}");
+            Eal::fatal_errno(EalErrno(ret));
         }
     }
 }
@@ -213,15 +236,11 @@ impl Drop for Eal {
 pub struct EalErrno(c_int);
 
 impl EalErrno {
-    #[allow(clippy::expect_used)]
     #[inline]
-    pub fn assert(ret: c_int) {
+    pub(crate) fn assert(ret: c_int) {
         if ret == 0 {
             return;
         }
-        let ret_msg = unsafe { dpdk_sys::rte_strerror(ret) };
-        let ret_msg = unsafe { CStr::from_ptr(ret_msg) };
-        let ret_msg = ret_msg.to_str().expect("dpdk message is not valid unicode");
-        Eal::fatal_error(ret_msg)
+        Eal::fatal_errno(EalErrno(ret))
     }
 }

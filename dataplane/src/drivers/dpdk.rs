@@ -5,7 +5,7 @@
 
 #![allow(unused)]
 
-use dpdk::dev::{Dev, TxOffloadConfig};
+use dpdk::dev::{Dev, RxOffload, TxOffloadConfig};
 use dpdk::eal::Eal;
 use dpdk::lcore::{LCoreId, WorkerThread};
 use dpdk::mem::{Mbuf, Pool, PoolConfig, PoolParams, RteAllocator};
@@ -25,25 +25,18 @@ use pipeline::{self, DynPipeline, NetworkFunction};
 static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();
  */
 
-fn init_eal(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
-    let rte = eal::init(args);
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .with_target(true)
-        .with_thread_ids(true)
-        .with_line_number(true)
-        .with_thread_names(true)
-        .init();
-    rte
-}
-
+#[tracing::instrument(level = "info")]
 fn init_devices(eal: &Eal) -> Vec<Dev> {
+    error!("number of devices available: {}", eal.dev.num_devices());
+    // eal.dev
+    //     .iter()
+    //     .for_each(|dev| info!("device found: {dev:#?}"));
     eal.dev
         .iter()
         .map(|dev| {
             let config = dev::DevConfig {
-                num_rx_queues: 2,
-                num_tx_queues: 2,
+                num_rx_queues: 4,
+                num_tx_queues: 4,
                 num_hairpin_queues: 0,
                 rx_offloads: None,
                 tx_offloads: Some(TxOffloadConfig::default()),
@@ -61,7 +54,7 @@ fn init_devices(eal: &Eal) -> Vec<Dev> {
                 let rx_queue_config = RxQueueConfig {
                     dev: dev.info.index(),
                     queue_index: RxQueueIndex(u16::try_from(i).unwrap()),
-                    num_descriptors: 2048,
+                    num_descriptors: 512,
                     socket_preference: socket::Preference::LCore(lcore_id),
                     offloads: dev.info.rx_offload_caps(),
                     pool: Pool::new_pkt_pool(
@@ -135,9 +128,10 @@ impl DriverDpdk {
     pub fn start(
         args: impl IntoIterator<Item = impl AsRef<str>>,
         setup_pipeline: &(impl Sync + Fn() -> DynPipeline<Mbuf>),
-    ) {
-        let eal = init_eal(args);
+    ) -> Vec<Dev> {
+        let eal = eal::init(args);
         let devices = init_devices(&eal);
         start_rte_workers(&devices, setup_pipeline);
+        devices
     }
 }

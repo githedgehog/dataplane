@@ -1,6 +1,5 @@
-use hwlocality::topology::builder::TypeFilter;
-use net::pci::{self, PciEbdf};
-use std::{os, str::FromStr};
+use net::pci::PciEbdf;
+use std::str::FromStr;
 use tracing::error;
 
 pub struct PciNic {

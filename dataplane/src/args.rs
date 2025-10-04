@@ -162,7 +162,7 @@ impl CmdArgs {
         out.push(
             self.lcores
                 .clone()
-                .map_or_else(|| "2-4".to_owned(), |lcores| lcores.clone()),
+                .map_or_else(|| "2".to_owned(), |lcores| lcores.clone()),
         );
 
         /* IOVA mode */
@@ -181,12 +181,6 @@ impl CmdArgs {
         for a in &self.allow {
             out.push("--allow".to_string());
             out.push(a.to_owned());
-        }
-
-        // To be removed
-        if self.allow.is_empty() {
-            out.push("--allow".to_string());
-            out.push("0000:01:00.0,dv_flow_en=1".to_string());
         }
 
         /* --log-level */

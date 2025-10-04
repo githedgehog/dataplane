@@ -145,7 +145,7 @@ impl Pool {
 
     #[must_use]
     pub fn alloc_bulk(&self, num: usize) -> Vec<Mbuf> {
-        // SAFETY: we should never have any null ptrs come back if ret passes check
+        // SAFETY: we should never have any null pointers come back if ret passes check
         let mut mbufs: Vec<Mbuf> = (0..num)
             .map(|_| unsafe { transmute(null_mut::<dpdk_sys::rte_mbuf>()) })
             .collect();
@@ -211,15 +211,15 @@ impl PoolInner {
 unsafe impl Send for PoolInner {}
 unsafe impl Sync for PoolInner {}
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// As yet unchecked parameters for a memory pool.
 ///
 /// TODO: implement validity checking logic.
 /// TODO: attach units to fields as helpful.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolParams {
     /// The number of elements in the mbuf pool.
     /// The optimum size (in terms of memory usage) for a mempool is when n is a power of two minus
-    /// one: <var>n</var> = 2<sup>q</sup> - 1
+    /// one: $n = 2^q - 1$
     pub size: u32,
     /// Size of the per-core object cache.
     pub cache_size: u32,
@@ -267,8 +267,8 @@ pub enum InvalidMemPoolName {
     ContainsNullBytes(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 /// Ways in which a memory pool config can be invalid.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidMemPoolConfig {
     /// The name of the pool is illegal.
     InvalidName(InvalidMemPoolName),
@@ -507,7 +507,7 @@ impl Mbuf {
     pub fn raw_data(&self) -> &[u8] {
         debug_assert!(
             unsafe { self.raw.as_ref().annon1.annon1.nb_segs } == 1,
-            "multi seg packets not properly supported yet"
+            "multi segment packets not properly supported yet"
         );
         let pkt_data_start = unsafe {
             (self.raw.as_ref().buf_addr as *const u8)
@@ -521,14 +521,14 @@ impl Mbuf {
         }
     }
 
-    // TODO: deal with multi seg packets
+    // TODO: deal with multi segment packets
     /// Get a mutable ref to the raw data of an Mbuf (usually the binary contents of a packet).
     #[must_use]
     #[tracing::instrument(level = "trace")]
     pub fn raw_data_mut(&mut self) -> &mut [u8] {
         unsafe {
             if self.raw.as_ref().annon1.annon1.nb_segs > 1 {
-                error!("multi seg packets not supported yet");
+                error!("multi segment packets not supported yet");
             }
             let data_start = self
                 .raw

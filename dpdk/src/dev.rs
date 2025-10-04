@@ -35,8 +35,7 @@ pub(crate) mod rx_queue_defaults {
 /// This is a transparent newtype around `u16` to provide type safety and prevent accidental misuse.
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-// TODO: inner value should be `pub(crate)`
-pub struct DevIndex(pub u16);
+pub struct DevIndex(pub(crate) u16);
 
 impl Display for DevIndex {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
@@ -153,6 +152,7 @@ impl DevIndex {
     ///   (statically ensured).
     /// * This function may panic if DPDK returns an unexpected (undocumented) error code after
     ///   failing to determine the socket id.
+    #[tracing::instrument(level = "trace", ret)]
     pub fn socket_id(&self) -> Result<SocketId, ErrorCode> {
         let socket_id = unsafe { rte_eth_dev_socket_id(self.as_u16()) };
         if socket_id == -1 {
@@ -290,15 +290,15 @@ impl DevConfig {
     }
 }
 
+/// Transmit offload flags for ethernet devices.
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-/// Transmit offload flags for ethernet devices.
 pub struct TxOffload(u64);
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Receive offload flags for ethernet devices.
-pub struct RxOffload(u64);
+pub struct RxOffload(pub u64);
 
 impl From<TxOffload> for u64 {
     fn from(value: TxOffload) -> Self {
@@ -324,13 +324,13 @@ impl From<u64> for RxOffload {
     }
 }
 
-#[non_exhaustive]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Verbose configuration for transmit offloads.
 ///
 /// This struct is mostly for coherent reporting on network cards.
 ///
 /// TODO: fill in remaining offload types from `rte_ethdev.h`
+#[non_exhaustive]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TxOffloadConfig {
     /// GENEVE tunnel segmentation offload.
     pub geneve_tnl_tso: bool,
@@ -599,8 +599,6 @@ impl Iterator for DevIterator {
     fn next(&mut self) -> Option<DevInfo> {
         let cursor = self.cursor;
 
-        debug!("Checking port {cursor}");
-
         let port_id =
             unsafe { rte_eth_find_next_owned_by(cursor.as_u16(), u64::from(RTE_ETH_DEV_NO_OWNER)) };
 
@@ -608,6 +606,8 @@ impl Iterator for DevIterator {
         if port_id >= u64::from(RTE_MAX_ETHPORTS) {
             return None;
         }
+
+        debug!("Checking port {cursor}");
 
         // For whatever reason, DPDK can't decide if port_id is `u16` or `u64`.
         self.cursor = DevIndex(port_id as u16 + 1);

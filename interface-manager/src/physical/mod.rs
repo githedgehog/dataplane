@@ -10,63 +10,68 @@ use hwlocality::object::attributes::{
 };
 use hwlocality::object::types::OSDeviceType;
 use id::Id;
+use num_traits::FromPrimitive;
 use pci_ids::{Device, FromId, Vendor};
-use pci_info::{PciDevice, PciEnumerator};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::{Display, Formatter};
-use std::hash::Hasher;
 use std::num::NonZero;
 
 #[derive(
     Clone,
+    Copy,
     Debug,
-    Deserialize,
     Eq,
     Hash,
     Ord,
     PartialEq,
     PartialOrd,
-    Serialize,
     num_derive::FromPrimitive,
     num_derive::ToPrimitive,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+    serde::Deserialize,
+    serde::Serialize,
 )]
+#[serde(transparent)]
 #[repr(transparent)]
 pub struct VendorId(u16);
 
 #[derive(
     Clone,
+    Copy,
     Debug,
-    Deserialize,
     Eq,
     Hash,
     Ord,
     PartialEq,
     PartialOrd,
-    Serialize,
     num_derive::FromPrimitive,
     num_derive::ToPrimitive,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+    serde::Deserialize,
+    serde::Serialize,
 )]
 #[repr(transparent)]
+#[serde(transparent)]
 pub struct DeviceId(u16);
 
-/// # Errors
-///
-/// TODO
-///
-/// # Panics
-///
-/// TODO
-pub fn walk_pci() -> impl Iterator<Item = PciDevice> {
-    pci_info::default_pci_enumerator()
-        .unwrap()
-        .enumerate_pci()
-        .unwrap()
-        .into_iter()
-        .filter_map(Result::ok)
-}
-
-#[derive(Debug, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+    serde::Deserialize,
+    serde::Serialize,
+)]
 pub struct NumaNodeAttributes {
     local_memory: Option<NonZero<u64>>,
     page_types: BTreeSet<MemoryPageType>,
@@ -81,7 +86,22 @@ impl<'a> From<NUMANodeAttributes<'a>> for NumaNodeAttributes {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+    serde::Deserialize,
+    serde::Serialize,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, PartialOrd, Ord)))]
 pub struct MemoryPageType {
     size: NonZero<u64>,
     count: u64,
@@ -96,44 +116,47 @@ impl From<hwlocality::object::attributes::MemoryPageType> for MemoryPageType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(try_from = "&str", into = "String")]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+    serde::Deserialize,
+    serde::Serialize,
+    strum::Display,
+    strum::EnumIs,
+    strum::EnumString,
+    strum::FromRepr,
+    strum::IntoStaticStr,
+)]
+#[serde(try_from = "&str", into = "&'static str")]
+#[strum(serialize_all = "lowercase")]
 pub enum CacheType {
     /// Unified cache
     Unified,
     /// Data cache
     Data,
-    /// Instruction cache (filtered out by default)
+    /// Instruction cache
     Instruction,
 }
 
 impl From<CacheType> for String {
     fn from(value: CacheType) -> Self {
-        match value {
-            CacheType::Unified => "unified",
-            CacheType::Data => "data",
-            CacheType::Instruction => "instruction",
-        }
-        .to_string()
+        let value: &'static str = value.into();
+        value.to_string()
     }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[error("invalid cache type: {0:?}")]
 pub struct InvalidCacheType(String);
-
-impl<'a> TryFrom<&'a str> for CacheType {
-    type Error = InvalidCacheType;
-
-    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
-        Ok(match value {
-            "unified" => CacheType::Unified,
-            "data" => CacheType::Data,
-            "instruction" => CacheType::Instruction,
-            x => Err(InvalidCacheType(x.to_string()))?,
-        })
-    }
-}
 
 impl TryFrom<hwlocality::object::types::CacheType> for CacheType {
     type Error = InvalidCacheType;
@@ -148,7 +171,21 @@ impl TryFrom<hwlocality::object::types::CacheType> for CacheType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+    serde::Deserialize,
+    serde::Serialize,
+)]
 pub struct CacheAttributes {
     cache_type: CacheType,
     size: NonZero<u64>,
@@ -176,7 +213,22 @@ impl TryFrom<hwlocality::object::attributes::CacheAttributes> for CacheAttribute
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+    serde::Deserialize,
+    serde::Serialize,
+)]
+#[serde(transparent)]
 pub struct GroupAttributes {
     depth: usize,
 }
@@ -189,7 +241,20 @@ impl From<hwlocality::object::attributes::GroupAttributes> for GroupAttributes {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+    serde::Deserialize,
+    serde::Serialize,
+)]
 pub struct PciDeviceAttributes {
     vendor_name: Option<String>,
     device_name: Option<String>,
@@ -208,17 +273,189 @@ pub struct PciDeviceAttributes {
     link_speed: String,
 }
 
+pub mod pci_address {
+
+    #[derive(
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+        num_derive::FromPrimitive,
+        num_derive::ToPrimitive,
+        rkyv::Archive,
+        rkyv::Deserialize,
+        rkyv::Serialize,
+        serde::Deserialize,
+        serde::Serialize,
+    )]
+    #[serde(transparent)]
+    #[repr(transparent)]
+    pub struct Domain(u16);
+
+    impl std::fmt::Display for Domain {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{:04x}", self.0)
+        }
+    }
+
+    #[derive(
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+        num_derive::FromPrimitive,
+        num_derive::ToPrimitive,
+        rkyv::Archive,
+        rkyv::Deserialize,
+        rkyv::Serialize,
+        serde::Deserialize,
+        serde::Serialize,
+    )]
+    #[serde(transparent)]
+    #[repr(transparent)]
+    pub struct Bus(u8);
+
+    impl std::fmt::Display for Bus {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{:02x}", self.0)
+        }
+    }
+
+    #[derive(
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+        num_derive::ToPrimitive,
+        rkyv::Archive,
+        rkyv::Deserialize,
+        rkyv::Serialize,
+        serde::Deserialize,
+        serde::Serialize,
+    )]
+    #[serde(transparent)]
+    #[repr(transparent)]
+    pub struct Device(u8);
+
+    impl std::fmt::Display for Device {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{:02x}", self.0)
+        }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum InvalidDevice {
+        #[error("Device ID maximum is 5 bits: {0} is too large")]
+        TooLarge(u8),
+    }
+
+    impl TryFrom<u8> for Device {
+        type Error = InvalidDevice;
+
+        fn try_from(value: u8) -> Result<Self, Self::Error> {
+            if value > 0x1F {
+                Err(InvalidDevice::TooLarge(value))
+            } else {
+                Ok(Self(value))
+            }
+        }
+    }
+
+    #[derive(
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+        num_derive::ToPrimitive,
+        rkyv::Archive,
+        rkyv::Deserialize,
+        rkyv::Serialize,
+        serde::Deserialize,
+        serde::Serialize,
+    )]
+    #[serde(transparent)]
+    #[repr(transparent)]
+    pub struct Function(u8);
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum InvalidFunction {
+        #[error("Function number maximum is 3 bits (0-7): {0} is too large")]
+        TooLarge(u8),
+    }
+
+    impl std::fmt::Display for Function {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{:02x}", self.0)
+        }
+    }
+
+    impl TryFrom<u8> for Function {
+        type Error = InvalidFunction;
+
+        fn try_from(value: u8) -> Result<Self, Self::Error> {
+            if value > 7 {
+                Err(InvalidFunction::TooLarge(value))
+            } else {
+                Ok(Function(value))
+            }
+        }
+    }
+
+    #[derive(
+        Clone,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+        rkyv::Archive,
+        rkyv::Deserialize,
+        rkyv::Serialize,
+        serde::Deserialize,
+        serde::Serialize,
+    )]
+    pub struct PciAddress {
+        pub domain: Domain,
+        pub bus: Bus,
+        pub device: Device,
+        pub function: Function,
+    }
+
+    impl std::fmt::Display for PciAddress {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "{:04x}:{:02x}:{:02x}.{:1x}",
+                self.domain, self.bus, self.device, self.function
+            )
+        }
+    }
+}
+
 impl From<PCIDeviceAttributes> for PciDeviceAttributes {
     fn from(value: PCIDeviceAttributes) -> Self {
         Self {
             vendor_name: Vendor::from_id(value.vendor_id()).map(|x| x.name().to_string()),
             device_name: Device::from_vid_pid(value.vendor_id(), value.device_id())
                 .map(|x| x.name().to_string()),
-            vendor_id: value.vendor_id(),
-            device_id: value.device_id(),
+            vendor_id: VendorId::from_u16(value.vendor_id()).unwrap(),
+            device_id: DeviceId::from_u16(value.device_id()).unwrap(),
             revision: value.revision(),
-            subvendor_id: value.subvendor_id(),
-            subdevice_id: value.subdevice_id(),
+            subvendor_id: VendorId::from_u16(value.subvendor_id()).unwrap(),
+            subdevice_id: DeviceId::from_u16(value.subdevice_id()).unwrap(),
             sub_vendor_name: Vendor::from_id(value.subvendor_id()).map(|x| x.name().to_string()),
             sub_device_name: Device::from_vid_pid(value.subvendor_id(), value.subdevice_id())
                 .map(|x| x.name().to_string()),
@@ -232,7 +469,26 @@ impl From<PCIDeviceAttributes> for PciDeviceAttributes {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+    serde::Deserialize,
+    serde::Serialize,
+    strum::Display,
+    strum::EnumIs,
+    strum::EnumString,
+    strum::FromRepr,
+    strum::IntoStaticStr,
+)]
 #[serde(tag = "type")]
 pub enum BridgeType {
     Pci,
@@ -272,7 +528,20 @@ impl TryFrom<hwlocality::object::types::BridgeType> for BridgeType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+    serde::Deserialize,
+    serde::Serialize,
+)]
 pub struct BridgeAttributes {
     upstream_type: BridgeType,
     downstream_type: BridgeType,
@@ -295,7 +564,22 @@ impl TryFrom<hwlocality::object::attributes::BridgeAttributes> for BridgeAttribu
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+    serde::Deserialize,
+    serde::Serialize,
+    strum::Display,
+    strum::EnumIs,
+)]
 #[serde(tag = "type")]
 pub enum NodeAttributes {
     NumaNode(NumaNodeAttributes),
@@ -306,13 +590,38 @@ pub enum NodeAttributes {
     OsDevice(OsDeviceAttributes),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+    serde::Deserialize,
+    serde::Serialize,
+)]
+#[rkyv(serialize_bounds(
+    __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+    __S::Error: rkyv::rancor::Source,
+))]
+#[rkyv(deserialize_bounds(__D::Error: rkyv::rancor::Source))]
+#[rkyv(bytecheck(
+    bounds(
+        __C: rkyv::validation::ArchiveContext,
+        __C::Error: rkyv::rancor::Source,
+    )
+))]
 pub struct Node {
     physical_index: Id<Node, u64>,
     #[serde(rename = "type")]
     type_: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     subtype: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     os_index: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
@@ -321,17 +630,29 @@ pub struct Node {
     #[serde(skip_serializing_if = "Option::is_none")]
     attributes: Option<NodeAttributes>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[rkyv(omit_bounds)]
     children: Vec<Node>,
 }
 
-impl std::hash::Hash for Node {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.physical_index.hash(state);
-        self.type_.hash(state);
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+    serde::Deserialize,
+    serde::Serialize,
+    strum::IntoStaticStr,
+    strum::Display,
+    strum::EnumIs,
+    strum::EnumString,
+)]
+#[strum(serialize_all = "lowercase")]
 #[serde(tag = "type")]
 pub enum OsDeviceType {
     Storage,
@@ -345,50 +666,25 @@ pub enum OsDeviceType {
 
 impl From<OsDeviceType> for String {
     fn from(value: OsDeviceType) -> Self {
-        match value {
-            OsDeviceType::Storage => "storage".to_string(),
-            OsDeviceType::Gpu => "gpu".to_string(),
-            OsDeviceType::Network => "network".to_string(),
-            OsDeviceType::OpenFabrics => "openfabrics".to_string(),
-            OsDeviceType::Dma => "dma".to_string(),
-            OsDeviceType::CoProcessor => "coprocessor".to_string(),
-            OsDeviceType::Memory => "memory".to_string(),
-        }
+        let x: &'static str = value.into();
+        x.into()
     }
 }
 
-impl TryFrom<String> for OsDeviceType {
-    type Error = ();
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Ok(match value.as_str() {
-            "storage" => OsDeviceType::Storage,
-            "gpu" => OsDeviceType::Gpu,
-            "network" => OsDeviceType::Network,
-            "openfabrics" => OsDeviceType::OpenFabrics,
-            "dma" => OsDeviceType::Dma,
-            "coprocessor" => OsDeviceType::CoProcessor,
-            "memory" => OsDeviceType::Memory,
-            _ => Err(())?,
-        })
-    }
-}
-
-impl Display for OsDeviceType {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            OsDeviceType::Storage => write!(f, "storage"),
-            OsDeviceType::Gpu => write!(f, "gpu"),
-            OsDeviceType::Network => write!(f, "network"),
-            OsDeviceType::OpenFabrics => write!(f, "openfabrics"),
-            OsDeviceType::Dma => write!(f, "dma"),
-            OsDeviceType::CoProcessor => write!(f, "coprocessor"),
-            OsDeviceType::Memory => write!(f, "memory"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+    serde::Deserialize,
+    serde::Serialize,
+)]
 pub struct OsDeviceAttributes {
     pub device_type: OsDeviceType,
 }
@@ -409,10 +705,6 @@ impl TryFrom<OSDeviceType> for OsDeviceType {
     }
 }
 
-pub struct OsDevice {
-    pub device_type: OSDeviceType,
-}
-
 impl TryFrom<OSDeviceAttributes> for OsDeviceAttributes {
     type Error = ();
 
@@ -430,15 +722,15 @@ impl TryFrom<ObjectAttributes<'_>> for NodeAttributes {
         Ok(match value {
             ObjectAttributes::NUMANode(&x) => Self::NumaNode(x.into()),
             ObjectAttributes::Cache(&x) => Self::Cache(x.try_into().map_err(|_| {
-                println!("failed to convert cache attributes");
+                eprintln!("failed to convert cache attributes");
             })?),
             ObjectAttributes::Group(&x) => Self::Group(x.into()),
             ObjectAttributes::PCIDevice(&x) => Self::Pci(x.into()),
             ObjectAttributes::Bridge(&x) => Self::Bridge(x.try_into().map_err(|_| {
-                println!("failed to convert bridge attributes");
+                eprintln!("failed to convert bridge attributes");
             })?),
             ObjectAttributes::OSDevice(&x) => Self::OsDevice(x.try_into().map_err(|_| {
-                println!("failed to convert os device attributes");
+                eprintln!("failed to convert os device attributes");
             })?),
         })
     }
@@ -472,7 +764,7 @@ impl<'a> From<&'a TopologyObject> for Node {
 
 #[cfg(test)]
 mod test {
-    use crate::physical::{Node, walk_pci};
+    use crate::physical::Node;
     use caps::Capability::{CAP_NET_ADMIN, CAP_SYS_ADMIN, CAP_SYS_RAWIO};
     use fixin::wrap;
     use hwlocality::Topology;
@@ -482,114 +774,9 @@ mod test {
     use hwlocality::object::types::ObjectType;
     use hwlocality::topology::builder::{BuildFlags, TypeFilter};
     use pci_ids::{Device, FromId, Vendor};
-    use pci_info::PciInfo;
     use std::collections::BTreeMap;
-    use std::fs;
+    use std::io::Write;
     use test_utils::with_caps;
-
-    #[test]
-    // #[wrap(with_caps([CAP_SYS_RAWIO]))]
-    fn walk_pci_test() {
-        walk_pci().for_each(|pci_device| println!("{pci_device:#?}"));
-    }
-
-    #[test]
-    #[wrap(with_caps([CAP_SYS_ADMIN]))]
-    fn pci_test() {
-        // Enumerate the devices on the PCI bus using the default
-        // enumerator for the current platform. The `unwrap()` panics if
-        // the enumeration fatally fails.
-        let info = PciInfo::enumerate_pci().unwrap();
-
-        // Print out some properties of the enumerated devices.
-        // Note that the collection contains both devices and errors
-        // as the enumeration of PCI devices can fail entirely (in which
-        // case `PciInfo::enumerate_pci()` would return error) or
-        // partially (in which case an error would be inserted in the
-        // result).
-        info.iter().filter_map(Result::ok).for_each(|pci_device| {
-            if let (Ok(Some(sub_vendor)), Ok(Some(sub_device))) = (
-                pci_device.subsystem_vendor_id(),
-                pci_device.subsystem_device_id(),
-            ) {
-                let sub_vendor = match Vendor::from_id(sub_vendor) {
-                    None => {
-                        return;
-                    }
-                    Some(vendor) => vendor,
-                };
-                let device = match Device::from_vid_pid(sub_vendor.id(), sub_device) {
-                    None => {
-                        println!(
-                            "sub device: {}, {:#x}, location: {:?}, driver: {:?}",
-                            sub_vendor.name(),
-                            sub_device,
-                            pci_device.location(),
-                            pci_device.os_driver().unwrap()
-                        );
-                        return;
-                    }
-                    Some(device) => device,
-                };
-                println!("\nvendor: {}", device.vendor().name());
-                println!("device name: {}", device.name());
-                println!(
-                    "sub device: {}, {:#x}, location: {:?}, driver: {:?}",
-                    sub_vendor.name(),
-                    sub_device,
-                    pci_device.location(),
-                    pci_device.os_driver().unwrap()
-                );
-            }
-            let device = match Device::from_vid_pid(pci_device.vendor_id(), pci_device.device_id())
-            {
-                None => {
-                    println!(
-                        "Unknown device: {:#x}:{:#x}, location: {:?}, driver: {:?}",
-                        pci_device.vendor_id(),
-                        pci_device.device_id(),
-                        pci_device.location(),
-                        pci_device.os_driver().unwrap()
-                    );
-                    let location = match pci_device.location() {
-                        Ok(location) => location,
-                        Err(err) => {
-                            eprintln!("{err}");
-                            return;
-                        }
-                    };
-
-                    match fs::read_link(format!("/sys/bus/pci/devices/{location}/physfn")) {
-                        Ok(physfn) => {
-                            println!(
-                                "location: {}, physfn: {}",
-                                location,
-                                physfn
-                                    .strip_prefix("../")
-                                    .unwrap()
-                                    .as_os_str()
-                                    .to_string_lossy()
-                            );
-                        }
-                        Err(_) => {
-                            return;
-                        }
-                    }
-                    return;
-                }
-                Some(device) => device,
-            };
-            println!("\nvendor: {}", device.vendor().name());
-            println!("device name: {}", device.name());
-            println!(
-                "device: {:#x}:{:#x}, location, {:?}, driver: {:?}\n",
-                pci_device.vendor_id(),
-                pci_device.device_id(),
-                pci_device.location(),
-                pci_device.os_driver().unwrap()
-            );
-        });
-    }
 
     #[test]
     #[wrap(with_caps([CAP_SYS_ADMIN]))]
@@ -681,26 +868,16 @@ mod test {
             .unwrap()
             .build()
             .unwrap();
-        // let topology = Topology::new().unwrap();
         let features = topology.feature_support();
         println!("*** Features: {features:#?}");
         println!("*** flags: {:#?}", topology.build_flags());
 
         println!("*** Topology tree");
-        let system = print_children2(topology.root_object());
-        println!("{}", serde_yml::to_string(&system).unwrap());
-        // print_children(
-        //     topology.root_object(),
-        //     0,
-        //
-        // for bridge in topology.bridges() {
-        //     println!("*** io device {bridge}");
-        //     print_children(bridge);
-        // }
-    }
-
-    fn print_children2(obj: &TopologyObject) -> Node {
-        Node::from(obj)
+        let system = Node::from(topology.root_object());
+        let mut hardware_file = std::fs::File::create("hardware.yml").unwrap();
+        hardware_file
+            .write_all(serde_yaml_ng::to_string(&system).unwrap().as_bytes())
+            .unwrap();
     }
 
     fn print_children(obj: &TopologyObject, depth: usize) {

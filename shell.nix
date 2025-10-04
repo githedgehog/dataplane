@@ -1,11 +1,11 @@
 {
   pkgs ? import <nixpkgs> { },
 }:
-(pkgs.buildFHSEnv {
-  name = "dataplane-shell";
-  targetPkgs =
-    pkgs:
-    (with pkgs; [
+(pkgs.mkShell {
+  # name = "dataplane-shell";
+  buildInputs = (
+    with pkgs;
+    [
       # dev tools
       bash
       direnv
@@ -13,5 +13,6 @@
       nil
       nixd
       wget
-    ]);
-}).env
+    ]
+  );
+})
