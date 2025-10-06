@@ -2,3 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 #![doc = include_str!("README.md")]
+
+/// PCI domain (segment) representation.
+pub mod domain;
+
