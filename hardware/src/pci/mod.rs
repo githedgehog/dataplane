@@ -3,6 +3,8 @@
 
 #![doc = include_str!("README.md")]
 
+/// PCI bus representation.
+pub mod bus;
 /// PCI domain (segment) representation.
 pub mod domain;
 
