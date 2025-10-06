@@ -1,0 +1,48 @@
+[package]
+name = "dataplane-hardware"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "hardware scan and report library"
+
+[features]
+default = []
+# Enables property testing / fuzzing support for testing.
+bolero = ["dep:bolero"]
+# Enables hardware topology scanning using the `hwlocality` crate.
+scan = ["dep:hwlocality", "dep:pci-ids"]
+# Adds serialization support for all types using serde.
+serde = ["dep:serde", "id/serde"]
+
+[dependencies]
+# internal
+id = { workspace = true, features = ["rkyv"] }
+
+# external
+bolero = { workspace = true, optional = true, features = ["alloc"] }
+capctl = { workspace = true, features = [] }
+hwlocality = { workspace = true, optional = true, features = ["hwloc-latest"] }
+num-derive = { workspace = true, features = [] }
+num-traits = { workspace = true, features = [] }
+pci-ids = { workspace = true, optional = true, features = [] }
+rkyv = { workspace = true, features = ["std", "default"] }
+serde = { workspace = true, optional = true, features = ["std"] }
+strum = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+# internal
+id = { workspace = true, features = ["serde", "rkyv"] }
+fixin = { workspace = true, features = [] }
+test-utils = { workspace = true, features = [] }
+
+# external
+bolero = { workspace = true, features = ["alloc"] }
+hwlocality = { workspace = true, features = ["hwloc-latest"] }
+pci-ids = { workspace = true, features = [] }
+serde = { workspace = true, features = ["std"] }
+serde_yaml_ng = { workspace = true, features = [] }
+
+[build-dependencies]
+dpdk-sysroot-helper = { workspace = true }
