@@ -17,6 +17,8 @@ pub mod device;
 pub mod domain;
 /// PCI function numbers.
 pub mod function;
+/// PCI vendor IDs.
+pub mod vendor;
 
 /// Attributes for a PCI device.
 ///
