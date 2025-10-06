@@ -251,8 +251,8 @@ mod tests {
         dport: u16,
     ) -> (Ipv4Addr, Ipv4Addr, u16, u16) {
         let mut packet: Packet<TestBuffer> = build_test_udp_ipv4_frame(
-            Mac([0x2, 0, 0, 0, 0, 1]),
-            Mac([0x2, 0, 0, 0, 0, 2]),
+            "02:00:00:00:00:01",
+            "02:00:00:00:00:02",
             src_ip,
             dst_ip,
             sport,
