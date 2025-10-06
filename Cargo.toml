@@ -2,9 +2,9 @@
 
 members = [
     "cli",
-    "config",
     "concurrency",
     "concurrency-macros",
+    "config",
     "dataplane",
     "dpdk",
     "dpdk-sys",
@@ -22,8 +22,8 @@ members = [
     "routing",
     "stats",
     "test-utils",
-    "vpcmap",
     "tracectl",
+    "vpcmap",
 ]
 
 resolver = "3"
