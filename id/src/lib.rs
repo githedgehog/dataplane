@@ -104,7 +104,12 @@ pub use contract::*;
 /// [UUID]: https://en.wikipedia.org/wiki/Universally_unique_identifier
 #[cfg_attr(feature = "serde", allow(clippy::unsafe_derive_deserialize))] // not used in deserialize method
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Serialize, rkyv::Deserialize, rkyv::Archive)
+)]
 #[repr(transparent)]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Id<T: ?Sized, U = Uuid>(U, PhantomData<T>);
 
 impl<T, U> Copy for Id<T, U> where U: Copy {}

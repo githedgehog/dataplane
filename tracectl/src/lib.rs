@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Crate to control tracing dynamically at runtime
+#![doc = include_str!("../README.md")]
 
 pub mod control;
 pub mod display;

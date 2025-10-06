@@ -7,7 +7,6 @@ license = "Apache-2.0"
 
 [dependencies]
 # internal
-gateway_config = { workspace = true }
 net = { workspace = true }
 lpm = { workspace = true }
 tracectl = { workspace = true }
@@ -20,6 +19,9 @@ ordermap = { workspace = true, features = ["std"] }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 tracing-test = { workspace = true }
+
+[dependencies.gateway_config]
+workspace = true
 
 [dev-dependencies]
 # internal

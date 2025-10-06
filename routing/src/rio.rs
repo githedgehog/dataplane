@@ -69,9 +69,9 @@ impl RioHandle {
     }
 }
 
-pub const DEFAULT_DP_UX_PATH: &str = "/var/run/frr/hh/dataplane.sock";
-pub const DEFAULT_DP_UX_PATH_CLI: &str = "/var/run/dataplane/cli.sock";
-pub const DEFAULT_FRR_AGENT_PATH: &str = "/var/run/frr/frr-agent.sock";
+pub const DEFAULT_DP_UX_PATH: &str = "/run/user/0/dataplane.sock";
+pub const DEFAULT_DP_UX_PATH_CLI: &str = "/run/user/0/cli.sock";
+pub const DEFAULT_FRR_AGENT_PATH: &str = "/run/user/0/frr-agent.sock";
 
 pub struct RioConf {
     pub cpi_sock_path: Option<String>,

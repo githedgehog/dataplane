@@ -1,0 +1,33 @@
+---
+title: Proposed start up sequence
+---
+flowchart TD
+  start
+  check_mem_fd["memory file descriptor?"]
+  init_early_tracing["init tracing (early)"]
+  init_tracing["init tracing"]
+
+  start --> check_mem_fd
+  check_mem_fd -- missing --> init_early_tracing --> check_cmd_args
+  check_cmd_args -- valid? --> find_nics
+
+  find_nics -- found? --> nic_state_check
+
+  nic_state_check -- ready --> isolate_cores
+  nic_state_check -- "not ready" --> configure_nics
+
+  configure_nics -- success? --> isolate_cores
+
+  isolate_cores --> create_mem_fd
+
+  create_mem_fd --> write_config_to_memfd
+
+  write_config_to_memfd --> exec_self
+
+  check_mem_fd -- found --> eal_init
+
+  eal_init -- success --> init_tracing
+  eal_init -- failure --> panic
+
+  init_tracing --> main_lcore
+  main_lcore

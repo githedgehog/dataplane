@@ -69,7 +69,7 @@ pub trait Checksum {
         match ret.validate_checksum(payload) {
             Ok(_) => {}
             Err(err) => {
-                panic!(
+                unreachable!(
                     "checksum implementation is faulty: expected: {expected:?}, actual: {actual:?}",
                     expected = err.expected,
                     actual = err.actual

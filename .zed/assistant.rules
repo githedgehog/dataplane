@@ -1,0 +1,255 @@
+# Zed AI Assistant Rules Configuration
+# This file defines constraints and suggestions for the AI agent when working in this codebase
+
+[general]
+# Core behavioral guidelines
+prefer_explicit_over_implicit = true
+require_error_handling = true
+max_function_length = 50
+max_file_length = 500
+prefer_composition_over_inheritance = true
+
+[code_style]
+# Language-specific formatting preferences
+indent_style = "spaces"
+indent_size = 4
+max_line_length = 100
+trailing_comma = "always"
+quote_style = "double"
+
+[rust]
+# Rust-specific rules
+always_use_result_type = true
+prefer_iterators_over_loops = true
+avoid_unwrap = true
+require_safety_comments = true
+clippy_level = "pedantic"
+
+# Preferred error handling pattern
+error_handling = """
+Use the `anyhow` crate for application errors.
+Use `thiserror` for library errors.
+Always provide context with `.context()` or `.with_context()`.
+"""
+
+# Module organization
+module_structure = """
+- Keep modules focused and single-purpose
+- Prefer many small modules over few large ones
+- Use `mod.rs` only for re-exports
+- Place tests in separate test modules
+"""
+
+[security]
+# Security constraints
+forbid_patterns = [
+    "std::mem::transmute",
+    "unsafe \\{[^}]*\\}",  # Warn on unsafe blocks
+    "println!\\(.*password.*\\)",  # No password logging
+    "todo!()",  # No todos in production code
+    "dbg!()",   # No debug macros in production
+]
+
+require_validation = [
+    "user_input",
+    "network_data",
+    "file_paths",
+    "sql_queries",
+]
+
+secrets_handling = """
+Never hardcode secrets, API keys, or passwords.
+Use environment variables or secure vaults.
+Mark sensitive data with appropriate types.
+"""
+
+[testing]
+# Testing requirements
+minimum_coverage = 80
+require_tests_for = [
+    "public_api",
+    "error_conditions",
+    "edge_cases",
+    "concurrent_operations",
+]
+
+test_naming = "snake_case_describing_behavior"
+prefer_property_tests = true
+mock_external_services = true
+
+[documentation]
+# Documentation standards
+require_doc_comments = [
+    "public_functions",
+    "public_structs",
+    "public_modules",
+    "complex_algorithms",
+]
+
+doc_style = """
+Use /// for item documentation
+Use //! for module documentation
+Include examples in doc comments
+Document panics, errors, and safety requirements
+"""
+
+example_required_for = [
+    "public_api",
+    "complex_functions",
+]
+
+[performance]
+# Performance guidelines
+avoid_allocations_in_loops = true
+prefer_stack_over_heap = true
+benchmark_critical_paths = true
+prefer_const_generics = true
+
+optimization_hints = """
+- Use `&str` instead of `String` when possible
+- Prefer `Vec::with_capacity` when size is known
+- Use `SmallVec` for small collections
+- Consider `Cow` for potentially borrowed data
+"""
+
+[dependencies]
+# Dependency management
+allowed_licenses = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+]
+
+preferred_crates = {
+    "async_runtime" = "tokio",
+    "serialization" = "serde",
+    "http_client" = "reqwest",
+    "cli_parsing" = "clap",
+    "logging" = "tracing",
+}
+
+forbidden_crates = [
+    "openssl",  # Use rustls instead
+    "chrono",   # Use time crate instead
+]
+
+[ai_behavior]
+# Specific AI assistant behaviors
+always_explain_changes = true
+suggest_alternatives = true
+warn_on_breaking_changes = true
+auto_fix_clippy_warnings = true
+preserve_existing_style = true
+
+# Context awareness
+consider_context = [
+    "surrounding_code",
+    "project_conventions",
+    "existing_patterns",
+    "performance_implications",
+]
+
+# Response patterns
+response_style = """
+- Be concise but thorough
+- Explain trade-offs when relevant
+- Suggest best practices
+- Provide examples when helpful
+- Link to relevant documentation
+"""
+
+[project_specific]
+# Project-specific patterns and conventions
+namespace = "hedgehog::dataplane"
+error_prefix = "HedgehogError"
+
+nat_rules = """
+When working with NAT rules:
+- Always validate IP ranges
+- Ensure no overlapping rules
+- Check for IPv4/IPv6 compatibility
+- Use appropriate error types
+"""
+
+required_traits = [
+    "Debug",
+    "Clone",
+    "Send",
+    "Sync",
+]
+
+[refactoring]
+# Refactoring suggestions
+suggest_refactor_when = [
+    "duplicate_code > 10_lines",
+    "cyclomatic_complexity > 10",
+    "function_parameters > 5",
+    "nested_depth > 3",
+]
+
+prefer_patterns = [
+    "builder_pattern_for_complex_types",
+    "factory_pattern_for_object_creation",
+    "strategy_pattern_for_algorithms",
+]
+
+[forbidden]
+# Explicitly forbidden patterns
+never_use = [
+    "global_mutable_state",
+    "panic_in_library_code",
+    "blocking_io_in_async_context",
+    "recursive_mutexes",
+]
+
+[suggestions]
+# Proactive suggestions
+suggest_on_new_file = [
+    "add_copyright_header",
+    "add_module_documentation",
+    "consider_test_module",
+]
+
+suggest_on_error_handling = [
+    "use_error_chain",
+    "add_context_information",
+    "consider_recovery_strategy",
+]
+
+[code_generation]
+# Templates for code generation
+file_header = """
+// Copyright (c) 2024 Hedgehog
+// SPDX-License-Identifier: Apache-2.0
+"""
+
+test_template = """
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_{function_name}() {
+        // Arrange
+        // Act
+        // Assert
+    }
+}
+"""
+
+[review_checklist]
+# Automated review checklist
+before_commit = [
+    "run_cargo_fmt",
+    "run_cargo_clippy",
+    "run_cargo_test",
+    "check_documentation",
+    "verify_no_todos",
+]
+
+pr_requirements = [
+    "descriptive_commit_messages",
+    "updated_changelog",
+    "test_coverage",
+    "documentation_updates",
+]

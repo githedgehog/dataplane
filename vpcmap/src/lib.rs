@@ -3,7 +3,7 @@
 
 //! A library to keep generic Vpc mappings and pairs of mappings.
 //! This crate contains two types of tables allowing to store arbitrary data
-//! for a VPC discriminant or a pair of them. A Vpc discriminant is a value
+//! for a VPC discriminant or a pair of them. A VPC discriminant is a value
 //! that allows associating a packet to a VPC. In the simplest case, it is a
 //! VxLAN Vni, but it could be an MPLS label, the id of a sub-interface or
 //! some packet meta-data.

@@ -10,6 +10,7 @@
       bash
       direnv
       just
+      mermaid-cli.out
       nil
       nixd
       wget

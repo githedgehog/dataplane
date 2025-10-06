@@ -21,6 +21,8 @@ use std::sync::Arc;
 pub mod interface;
 pub mod tc;
 
+// pub mod physical;
+
 use rtnetlink::Handle;
 
 /// `Manager` is the primary entry point to interface reconciliation logic.

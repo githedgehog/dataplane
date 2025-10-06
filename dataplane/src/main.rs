@@ -118,21 +118,21 @@ fn main() {
     // start the router; returns control-plane handles and a pipeline factory (Arc<... Fn() -> DynPipeline<_> >)
     let setup = start_router(config).expect("failed to start router");
 
-    MetricsServer::new(args.metrics_address(), setup.stats);
+    // MetricsServer::new(args.metrics_address(), setup.stats);
 
     /* pipeline builder */
     let pipeline_factory = setup.pipeline;
 
     /* start management */
-    start_mgmt(
-        grpc_addr,
-        setup.router.get_ctl_tx(),
-        setup.nattablew,
-        setup.natallocatorw,
-        setup.vpcdtablesw,
-        setup.vpcmapw,
-    )
-    .expect("Failed to start gRPC server");
+    // start_mgmt(
+    //     grpc_addr,
+    //     setup.router.get_ctl_tx(),
+    //     setup.nattablew,
+    //     setup.natallocatorw,
+    //     setup.vpcdtablesw,
+    //     setup.vpcmapw,
+    // )
+    // .expect("Failed to start gRPC server");
 
     /* start driver with the provided pipeline builder */
     match args.get_driver_name() {
@@ -181,4 +181,8 @@ mod test {
     fn tmp_filesystem_in_vm_is_read_write() {
         std::fs::File::create_new("/tmp/some.file").unwrap();
     }
+
+    #[test]
+    #[in_vm]
+    fn main_test() {}
 }
