@@ -13,3 +13,14 @@ PCI devices are identified by a hierarchical addressing scheme:
 - **Function**: The function number within the device
 
 Together these form a PCI address like `0000:03:00.0`
+
+```mermaid
+---
+title: PCI address format
+---
+packet
++16: "domain"
++8: "bus"
++5: "device"
++3: "function"
+```
