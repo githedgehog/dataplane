@@ -7,6 +7,8 @@ use crate::pci::address::PciAddress;
 
 /// PCI addressing components and parsing.
 pub mod address;
+/// PCI bridge types and attributes.
+pub mod bridge;
 /// PCI bus representation.
 pub mod bus;
 /// PCI device IDs and related types.
