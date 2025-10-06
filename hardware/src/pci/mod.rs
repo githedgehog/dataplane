@@ -3,7 +3,7 @@
 
 #![doc = include_str!("README.md")]
 
-use crate::pci::address::PciAddress;
+use crate::pci::{address::PciAddress, device::DeviceId, vendor::VendorId};
 
 /// PCI addressing components and parsing.
 pub mod address;
@@ -75,4 +75,36 @@ impl PciDeviceAttributes {
     pub fn link_speed(&self) -> &str {
         &self.link_speed
     }
+}
+
+/// Description of a PCI device including vendor and device information.
+///
+/// This struct contains both the numeric IDs and optional human-readable
+/// names for PCI devices. The names are typically resolved from the PCI ID
+/// database when available.
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+)]
+#[cfg_attr(
+    any(test, feature = "serde"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
+pub struct PciDeviceDescription {
+    /// The PCI vendor ID.
+    pub vendor_id: VendorId,
+    /// Human-readable vendor name, if known.
+    pub vendor_name: Option<String>,
+    /// The PCI device ID.
+    pub device_id: DeviceId,
+    /// Human-readable device name, if known.
+    pub device_name: Option<String>,
 }
