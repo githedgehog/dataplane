@@ -8,6 +8,7 @@ use std::num::NonZero;
 
 pub mod group;
 pub mod mem;
+pub mod os;
 
 /// A non-zero byte count used throughout the crate for memory sizes.
 ///
