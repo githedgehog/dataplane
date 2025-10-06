@@ -35,7 +35,7 @@ pub use contract::*;
 mod embedded;
 pub use embedded::*;
 
-const MAX_VLANS: usize = 4;
+pub(crate) const MAX_VLANS: usize = 4;
 const MAX_NET_EXTENSIONS: usize = 2;
 
 // TODO: remove `pub` from all fields

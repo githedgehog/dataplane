@@ -11,6 +11,7 @@ use crate::ipv4::Ipv4;
 use crate::ipv6::Ipv6;
 use crate::tcp::Tcp;
 use crate::udp::{Udp, UdpEncap};
+use crate::vlan::Vlan;
 
 use crate::buffer::PacketBufferMut;
 use crate::checksum::Checksum;
@@ -30,6 +31,19 @@ impl Display for Eth {
         )
     }
 }
+impl Display for Vlan {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "  vlan: pcp:{} dei:{:?} vid:{} ({:?})",
+            self.pcp().to_u8(),
+            self.dei(),
+            self.vid().as_u16(),
+            self.inner_ethtype(),
+        )?;
+        Ok(())
+    }
+}
 impl Display for Ipv4 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(
@@ -41,11 +55,12 @@ impl Display for Ipv4 {
         )?;
         writeln!(
             f,
-            "        header-length: {} total-length: {} identification: {} frag-offset: {}",
+            "        header-length: {} total-length: {} identification: {} frag-offset: {} checksum: {}",
             self.header_len(),
             self.total_len(),
             self.identification(),
-            self.fragment_offset()
+            self.fragment_offset(),
+            self.checksum().unwrap_or_else(|| unreachable!()),
         )?;
         writeln!(
             f,
@@ -184,6 +199,9 @@ impl Display for Headers {
         if let Some(eth) = &self.eth {
             write!(f, "{eth}")?;
         }
+        for vlan in &self.vlan {
+            write!(f, "{vlan}")?;
+        }
         if let Some(net) = &self.net {
             write!(f, "{net}")?;
         }
@@ -306,10 +324,29 @@ fn fmt_packet_buf<Buf: PacketBufferMut>(f: &mut Formatter<'_>, payload: &Buf) ->
     )
 }
 
+fn fmt_packet_buf_ok<Buf: PacketBufferMut>(
+    f: &mut Formatter<'_>,
+    packet: &Packet<Buf>,
+) -> std::fmt::Result {
+    let payload = packet.payload();
+
+    writeln!(f, "{:─<width$}", "─", width = 100)?;
+    write!(f, "{}", dump_hex(payload.as_ref(), 32))?;
+    writeln!(f, "{:─<width$}", "─", width = 100)?;
+    writeln!(
+        f,
+        "total-len: {} payload-len: {}  headroom: {} tailroom: {}",
+        packet.total_len(),
+        payload.as_ref().len(),
+        payload.headroom(),
+        payload.tailroom()
+    )
+}
+
 /* ============= Packet ================ */
 impl<Buf: PacketBufferMut> Display for Packet<Buf> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        fmt_packet_buf(f, self.payload())?;
+        fmt_packet_buf_ok(f, self)?;
         write!(f, "headers: {}", self.get_headers())?;
         write!(f, "{}", self.get_meta())?;
         Ok(())

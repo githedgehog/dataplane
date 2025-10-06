@@ -6,7 +6,8 @@
     clippy::expect_used,
     clippy::panic,
     clippy::missing_panics_doc,
-    clippy::missing_errors_doc
+    clippy::missing_errors_doc,
+    unsafe_code
 )]
 #![allow(clippy::double_must_use)]
 #![allow(missing_docs)]
@@ -15,6 +16,7 @@ use crate::buffer::TestBuffer;
 use crate::eth::Eth;
 use crate::eth::ethtype::EthType;
 use crate::eth::mac::{DestinationMac, Mac, SourceMac};
+use crate::headers::MAX_VLANS;
 use crate::headers::{HeadersBuilder, Net, Transport};
 use crate::ip::NextHeader;
 use crate::ipv4::Ipv4;
@@ -25,9 +27,231 @@ use crate::packet::{InvalidPacket, Packet};
 use crate::parse::DeParse;
 use crate::tcp::Tcp;
 use crate::udp::Udp;
+use crate::vlan::Vlan;
+use crate::vlan::{Pcp, Vid};
+
+use arrayvec::ArrayVec;
+use etherparse::IpNumber;
 use std::default::Default;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::num::NonZero;
 use std::str::FromStr;
+
+pub struct TestPacket {
+    ttl: u8,
+    vlanids: ArrayVec<u16, MAX_VLANS>,
+    src_mac: String,
+    dst_mac: String,
+    src_ip: String,
+    dst_ip: String,
+    proto: u8,
+    sport: u16, /* source port: ignored if transport is not UDP/TCP */
+    dport: u16, /* dest port: ignored if transport is not UDP/TCP */
+    data: Vec<u8>,
+}
+impl Default for TestPacket {
+    fn default() -> Self {
+        Self {
+            ttl: 64,
+            vlanids: ArrayVec::new(),
+            src_mac: "02:00:00:00:00:01".to_string(),
+            dst_mac: "02:00:00:00:00:02".to_string(),
+            src_ip: "1.2.3.4".to_string(),
+            dst_ip: "5,6,7,8".to_string(),
+            proto: 17,
+            sport: 123,
+            dport: 456,
+            data: vec![],
+        }
+    }
+}
+impl TestPacket {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn ttl(mut self, value: u8) -> Self {
+        self.ttl = value;
+        self
+    }
+    pub fn src_mac(mut self, value: &str) -> Self {
+        self.src_mac = value.to_owned();
+        self
+    }
+    pub fn dst_mac(mut self, value: &str) -> Self {
+        self.dst_mac = value.to_owned();
+        self
+    }
+    pub fn vlan(mut self, value: u16) -> Self {
+        if !self.vlanids.is_empty() {
+            panic!("Only one vlan is currently supported");
+        }
+        self.vlanids.push(value);
+        self
+    }
+    pub fn src_ip(mut self, value: &str) -> Self {
+        self.src_ip = value.to_owned();
+        self
+    }
+    pub fn dst_ip(mut self, value: &str) -> Self {
+        self.dst_ip = value.to_owned();
+        self
+    }
+    pub fn proto(mut self, value: u8) -> Self {
+        self.proto = value;
+        self
+    }
+    pub fn sport(mut self, value: u16) -> Self {
+        self.sport = value;
+        self
+    }
+    pub fn dport(mut self, value: u16) -> Self {
+        self.dport = value;
+        self
+    }
+    pub fn set_data(mut self, data: &[u8]) -> Self {
+        self.data = data.to_vec();
+        self
+    }
+    pub fn data_len(&self) -> u16 {
+        self.data.len() as u16
+    }
+    pub fn build(&self) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+        let transport_type = NextHeader::from(IpNumber::from(self.proto));
+        let mut headers = HeadersBuilder::default();
+        let mut transport = match transport_type {
+            NextHeader::TCP => {
+                let mut tcp = Tcp::default();
+                tcp.set_source(self.sport.try_into().expect("Bad tcp source port"));
+                tcp.set_destination(self.dport.try_into().expect("Bad tcp dst port"));
+                tcp.set_syn(true);
+                tcp.set_sequence_number(1);
+                Some(Transport::Tcp(tcp))
+            }
+            NextHeader::UDP => {
+                let mut udp = Udp::default();
+                udp.set_source(self.sport.try_into().expect("Bad udp source port"));
+                udp.set_destination(self.dport.try_into().expect("Bad udp dst port"));
+                unsafe {
+                    udp.set_length(NonZero::new(8 + self.data_len()).expect("Bad udp length"));
+                }
+                Some(Transport::Udp(udp))
+            }
+            _ => None,
+        };
+
+        // ============== ethernet ================= //
+        let smac = Mac::try_from(self.src_mac.as_str()).expect("bad src mac");
+        let dmac = Mac::try_from(self.dst_mac.as_str()).expect("bad dst mac");
+        let ether_type = if self.vlanids.is_empty() {
+            EthType::IPV4
+        } else {
+            EthType::VLAN
+        };
+        let eth = Eth::new(
+            SourceMac::new(smac).unwrap(),
+            DestinationMac::new(dmac).unwrap(),
+            ether_type,
+        );
+
+        // ============== vlan ================= //
+        let vlans: ArrayVec<_, MAX_VLANS> = self
+            .vlanids
+            .iter()
+            .map(|vlanids| {
+                let mut vlan = Vlan::new(
+                    Vid::new(*vlanids).unwrap(),
+                    EthType::IPV4,
+                    Pcp::new(0).unwrap(),
+                    false,
+                );
+                vlan.set_inner_ethtype(EthType::IPV4);
+                vlan
+            })
+            .collect();
+
+        // ============== IPv4 ================= //
+        let mut ipv4 = Ipv4::default();
+        let sip = Ipv4Addr::from_str(self.src_ip.as_str()).expect("Bad src ip");
+        let dip = Ipv4Addr::from_str(self.dst_ip.as_str()).expect("Bad dst ip");
+
+        ipv4.set_source(UnicastIpv4Addr::new(sip).unwrap());
+        ipv4.set_destination(dip);
+        ipv4.set_ttl(self.ttl);
+
+        // ============== Transport ================= //
+        if let Some(transport) = transport.as_ref() {
+            ipv4.set_payload_len(transport.size().get() + self.data_len())
+                .unwrap();
+            ipv4.set_next_header(transport_type);
+        }
+
+        let mut net = Net::Ipv4(ipv4);
+        net.update_checksum();
+        if let Some(transport) = transport.as_mut() {
+            transport.update_checksum(&net, None, &self.data);
+        }
+
+        // build headers
+        headers.eth(Some(eth));
+        headers.net(Some(net));
+        headers.vlan(vlans);
+        headers.transport(transport);
+        let headers = headers.build().unwrap();
+
+        // prepare buffer
+        let headers_size = headers.size().get() as usize;
+        let onwire = vec![0; headers_size + self.data_len() as usize];
+        let mut buffer = TestBuffer::from_raw_data(&onwire);
+        let len = headers.deparse(buffer.as_mut()).unwrap().get() as usize;
+        buffer.as_mut()[len..len + self.data_len() as usize].copy_from_slice(&self.data);
+        let buffer_clone = buffer.clone();
+
+        let new = Packet::new(buffer_clone).unwrap();
+        let new_clone = new.clone();
+
+        let serialized_buff = new.serialize().unwrap();
+        assert_eq!(buffer.as_ref(), serialized_buff.as_ref());
+        Ok(new_clone)
+    }
+}
+
+#[cfg(test)]
+pub mod playground {
+    use std::u8;
+
+    use crate::packet::test_utils::TestPacket;
+
+    #[test]
+    fn packet_playground() {
+        let mut data = vec![];
+        for n in 0..4 as usize {
+            let value = (n & u8::MAX as usize) as u8;
+            data.push(value);
+        }
+        println!("{data:?}");
+
+        let packet = TestPacket::new()
+            .ttl(64)
+            .vlan(100)
+            .src_ip("4.4.4.4")
+            .dst_ip("8.8.8.8")
+            .proto(17)
+            .dport(53)
+            .set_data(data.as_slice())
+            .build()
+            .unwrap();
+
+        println!("{packet}");
+    }
+
+    use crate::packet::test_utils::build_test_ipv4_packet;
+    #[test]
+    fn packet_util() {
+        let packet = build_test_ipv4_packet(u8::MAX).unwrap();
+
+        println!("{packet}")
+    }
+}
 
 /// Builds a test ipv4 packet with the optional provided fields.
 ///
@@ -116,7 +340,6 @@ fn test_ipv4_packet_builder(
     }
 
     let net = Net::Ipv4(ipv4);
-
     if let Some(transport) = transport.as_mut() {
         transport.update_checksum(&net, None, []);
     }

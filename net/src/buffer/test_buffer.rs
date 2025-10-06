@@ -79,6 +79,11 @@ impl TestBuffer {
             tailroom: TestBuffer::TAILROOM,
         }
     }
+
+    /// The overall capacity of a buffer
+    pub fn capacity(&self) -> usize {
+        self.buffer.len()
+    }
 }
 
 impl Default for TestBuffer {
