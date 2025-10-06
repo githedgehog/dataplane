@@ -5,6 +5,8 @@
 
 /// PCI bus representation.
 pub mod bus;
+/// PCI device IDs and related types.
+pub mod device;
 /// PCI domain (segment) representation.
 pub mod domain;
 
