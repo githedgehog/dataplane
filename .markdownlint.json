@@ -1,0 +1,31 @@
+{
+  "code-block-style": {
+    "style": "fenced"
+  },
+  "code-fence-style": {
+    "style": "backtick"
+  },
+  "emphasis-style": {
+    "allow_asterisk": true,
+    "allow_underscore": true
+  },
+  "line-length": {
+    "strict": false,
+    "line_length": 120,
+    "code_blocks": false
+  },
+  "link-image-style": {
+    "collapsed": true,
+    "shortcut": true,
+    "url_inline": true
+  },
+  "no-duplicate-heading": {
+    "siblings_only": true
+  },
+  "strong-style": {
+    "style": "asterisk"
+  },
+  "ul-style": {
+    "style": "dash"
+  }
+}
