@@ -9,4 +9,5 @@ pub mod bus;
 pub mod device;
 /// PCI domain (segment) representation.
 pub mod domain;
-
+/// PCI function numbers.
+pub mod function;
