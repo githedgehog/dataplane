@@ -40,6 +40,10 @@ use crate::pci::{
     function::{Function, FunctionParseError},
 };
 
+#[cfg(any(test, feature = "scan"))]
+#[allow(unused_imports)] // re-export
+pub use self::scan::*;
+
 /// A PCI device address in the standard format.
 ///
 /// Represents a complete PCI address with all four components:
@@ -393,5 +397,248 @@ mod contract {
                 function: driver.produce()?,
             })
         }
+    }
+}
+
+#[cfg(any(test, feature = "scan"))]
+mod scan {
+    use hwlocality::object::attributes::PCIDeviceAttributes;
+    use pci_ids::FromId;
+
+    use crate::pci::{
+        PciDeviceAttributes, PciDeviceDescription,
+        address::PciAddress,
+        bus::Bus,
+        device::{Device, DeviceId},
+        domain::Domain,
+        function::Function,
+        vendor::VendorId,
+    };
+
+    impl From<PCIDeviceAttributes> for PciDeviceAttributes {
+        fn from(value: PCIDeviceAttributes) -> Self {
+            let address = PciAddress {
+                domain: Domain::from(value.domain()),
+                bus: Bus::from(value.bus_id()),
+                device: {
+                    match Device::try_from(value.bus_device()) {
+                        Ok(device) => device,
+                        Err(err) => {
+                            unreachable!("invalid device value; hwloc internal error: {err}")
+                        }
+                    }
+                },
+                function: {
+                    match Function::try_from(value.function()) {
+                        Ok(function) => function,
+                        Err(err) => {
+                            unreachable!("invalid function value; hwloc internal error: {err}")
+                        }
+                    }
+                },
+            };
+            PciDeviceAttributes {
+                address,
+                revision: value.revision(),
+                device_description: {
+                    let vendor_id = value.vendor_id();
+                    let device_id = value.device_id();
+                    PciDeviceDescription {
+                        // NOTE: this method is only called at dataplane startup where panic is still acceptable.
+                        // Attempting to start the dataplane afeter we have been given expressly illegal values
+                        // regarding the hardware layout is much more unwise than crashing.
+                        //
+                        // For example, we have no idea what will happen if we start unbinding devices from kernel
+                        // drivers when the device data we are working with is clearly wrong.
+                        vendor_id: match VendorId::new(vendor_id) {
+                            Ok(vendor_id) => vendor_id,
+                            Err(err) => {
+                                panic!("expressly invalid hardware configuration found: {err}")
+                            }
+                        },
+                        vendor_name: pci_ids::Vendor::from_id(vendor_id)
+                            .map(|x| x.name().to_string()),
+                        device_id: DeviceId::new(device_id),
+                        device_name: pci_ids::Device::from_vid_pid(vendor_id, device_id)
+                            .map(|x| x.name().to_string()),
+                    }
+                },
+                sub_device_description: {
+                    let vendor_id = value.subvendor_id();
+                    let device_id = value.subdevice_id();
+                    PciDeviceDescription {
+                        // NOTE: this method is only called at dataplane startup where panic is still acceptable.
+                        // Attempting to start the dataplane afeter we have been given expressly illegal values
+                        // regarding the hardware layout is much more unwise than crashing.
+                        //
+                        // For example, we have no idea what will happen if we start unbinding devices from kernel
+                        // drivers when the device data we are working with is clearly wrong.
+                        vendor_id: match VendorId::new(vendor_id) {
+                            Ok(vendor_id) => vendor_id,
+                            Err(err) => {
+                                panic!("expressly invalid hardware configuration found: {err}")
+                            }
+                        },
+                        vendor_name: pci_ids::Vendor::from_id(vendor_id)
+                            .map(|x| x.name().to_string()),
+                        device_id: DeviceId::new(device_id),
+                        device_name: pci_ids::Device::from_vid_pid(vendor_id, device_id)
+                            .map(|x| x.name().to_string()),
+                    }
+                },
+                link_speed: value.link_speed().to_string(),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::pci::address::{PciAddress, PciEbdfError, PciEbdfString};
+
+    fn validity_checks(s: impl AsRef<str>) {
+        let s = s.as_ref();
+        assert!(s.is_ascii());
+        let split: Vec<_> = s.split(':').collect();
+        assert_eq!(split.len(), 3);
+        assert_eq!(split[0].len(), 4);
+        assert_eq!(split[1].len(), 2);
+        assert_eq!(split[2].len(), 4);
+        assert!(split[0].chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(split[1].chars().all(|c| c.is_ascii_hexdigit()));
+        let split: Vec<_> = split[2].split('.').collect();
+        assert_eq!(split.len(), 2);
+        assert_eq!(split[0].len(), 2);
+        assert_eq!(split[1].len(), 1);
+        assert!(split[0].chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(split[1].chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn basic_parse() {
+        let s = "0000:00:03.0";
+        validity_checks(s);
+        let _ = PciEbdfString::try_new(s).unwrap();
+    }
+
+    #[test]
+    fn basic_parse_invalid() {
+        let s = "0000:00:0x3.0";
+        let _ = PciEbdfString::try_new(s).unwrap_err();
+    }
+
+    #[test]
+    fn parse_arbitrary_string() {
+        bolero::check!().with_type().for_each(|x: &String| {
+            match PciEbdfString::try_new(x.clone()) {
+                Ok(pci_ebdf) => {
+                    assert_eq!(pci_ebdf.0, *x);
+                    validity_checks(x);
+                }
+                Err(PciEbdfError::InvalidFormat(s)) => {
+                    assert_eq!(&s, x);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn parse_valid() {
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .for_each(|x: PciEbdfString| {
+                validity_checks(&x.0);
+                match PciEbdfString::try_new(x.0.clone()) {
+                    Ok(pci_ebdf) => {
+                        assert_eq!(pci_ebdf.0, x.0);
+                        validity_checks(pci_ebdf.0);
+                    }
+                    Err(PciEbdfError::InvalidFormat(invalid)) => {
+                        unreachable!("Invalid PCI Ebdf string {}", invalid)
+                    }
+                }
+            });
+    }
+
+    #[cfg(false)] // test currently skipped, only here to show intent for next PR
+    #[test]
+    fn print_children_test() {
+        use hwlocality::Topology;
+        use hwlocality::object::types::ObjectType;
+        use hwlocality::topology::builder::{BuildFlags, TypeFilter};
+        use std::io::Write;
+
+        use crate::Node;
+        let topology = Topology::builder()
+            .with_type_filter(ObjectType::Bridge, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::PCIDevice, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::OSDevice, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::Machine, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::Core, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::Die, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::L1Cache, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::L2Cache, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::L3Cache, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::L4Cache, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::L5Cache, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::MemCache, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::Misc, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::NUMANode, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::PU, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::Package, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::L1ICache, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::L2ICache, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::L3ICache, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::L4Cache, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::L5Cache, TypeFilter::KeepAll)
+            .unwrap()
+            .with_type_filter(ObjectType::Group, TypeFilter::KeepStructure)
+            .unwrap()
+            .with_flags(BuildFlags::INCLUDE_DISALLOWED)
+            .unwrap()
+            .build()
+            .unwrap();
+        let system = Node::from(topology.root_object());
+        let mut hardware_file = std::fs::File::create("hardware.yml").unwrap();
+        hardware_file
+            .write_all(serde_yaml_ng::to_string(&system).unwrap().as_bytes())
+            .unwrap();
+    }
+
+    #[test]
+    fn parse_back() {
+        bolero::check!().with_type().for_each(|x: &PciAddress| {
+            let back = PciAddress::try_from(x.to_string()).unwrap();
+            assert_eq!(x, &back);
+        });
+    }
+
+    #[test]
+    fn parse_valid_ebdf() {
+        bolero::check!().with_type().for_each(|x: &PciEbdfString| {
+            let y = PciEbdfString::from(PciAddress::from(x.clone()));
+            assert_eq!(x, &y);
+        });
     }
 }

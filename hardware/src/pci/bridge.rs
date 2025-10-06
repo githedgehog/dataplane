@@ -164,3 +164,49 @@ impl BridgeAttributes {
         self.upstream_attributes.as_ref()
     }
 }
+
+/// Hardware scanning integration for bridges.
+#[cfg(any(test, feature = "scan"))]
+mod scan {
+    #[allow(clippy::wildcard_imports)] // transparently re-exported above
+    use super::*;
+    use hwlocality::object::attributes::UpstreamAttributes;
+
+    impl TryFrom<hwlocality::object::attributes::BridgeAttributes> for BridgeAttributes {
+        type Error = ();
+
+        /// Attempts to convert from hwlocality's [`hwlocality::object::attributes::BridgeAttributes`].
+        ///
+        /// # Errors
+        ///
+        /// Returns `Err(())` if the bridge type cannot be converted.
+        fn try_from(
+            value: hwlocality::object::attributes::BridgeAttributes,
+        ) -> Result<Self, Self::Error> {
+            Ok(Self {
+                upstream_type: value.upstream_type().try_into()?,
+                downstream_type: value.downstream_type().try_into()?,
+                upstream_attributes: value
+                    .upstream_attributes()
+                    .map(|UpstreamAttributes::PCI(&p)| p.into()),
+            })
+        }
+    }
+
+    impl TryFrom<hwlocality::object::types::BridgeType> for BridgeType {
+        type Error = ();
+
+        /// Attempts to convert from hwlocality's [`hwlocality::object::types::BridgeType`].
+        ///
+        /// # Errors
+        ///
+        /// Returns `Err(())` if the bridge type is unknown.
+        fn try_from(value: hwlocality::object::types::BridgeType) -> Result<Self, Self::Error> {
+            Ok(match value {
+                hwlocality::object::types::BridgeType::PCI => BridgeType::Pci,
+                hwlocality::object::types::BridgeType::Host => BridgeType::Host,
+                hwlocality::object::types::BridgeType::Unknown(_) => Err(())?,
+            })
+        }
+    }
+}

@@ -30,6 +30,7 @@ rkyv = { workspace = true, features = ["std", "default"] }
 serde = { workspace = true, optional = true, features = ["std"] }
 strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true, features = ["std"] }
+tracing = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 # internal

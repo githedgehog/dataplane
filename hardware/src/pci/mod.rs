@@ -57,23 +57,55 @@ pub mod vendor;
 pub struct PciDeviceAttributes {
     address: PciAddress,
     revision: u8,
+    #[cfg_attr(any(test, feature = "serde"), serde(rename = "device"))]
+    device_description: PciDeviceDescription,
+    #[cfg_attr(any(test, feature = "serde"), serde(rename = "sub_device"))]
+    sub_device_description: PciDeviceDescription,
     link_speed: String,
 }
 
 impl PciDeviceAttributes {
     /// Returns the PCI address of this device.
+    #[must_use]
     pub fn address(&self) -> PciAddress {
         self.address
     }
 
     /// Returns the revision number of this device.
+    #[must_use]
     pub fn revision(&self) -> u8 {
         self.revision
     }
 
+    /// Returns the main device description (vendor and device IDs).
+    #[must_use]
+    pub fn device_description(&self) -> &PciDeviceDescription {
+        &self.device_description
+    }
+
+    /// Returns the subsystem device description.
+    #[must_use]
+    pub fn sub_device_description(&self) -> &PciDeviceDescription {
+        &self.sub_device_description
+    }
+
+    #[allow(clippy::doc_markdown)] // phrasing intentional
     /// Returns the PCIe link speed as a string (e.g., "8.0 GT/s").
+    #[must_use]
     pub fn link_speed(&self) -> &str {
         &self.link_speed
+    }
+
+    /// Returns the vendor ID of this device.
+    #[must_use]
+    pub fn vendor_id(&self) -> VendorId {
+        self.device_description.vendor_id
+    }
+
+    /// Returns the device ID of this device.
+    #[must_use]
+    pub fn device_id(&self) -> DeviceId {
+        self.device_description.device_id
     }
 }
 

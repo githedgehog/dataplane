@@ -67,6 +67,7 @@ impl GroupAttributes {
 /// Hardware scanning integration for groups.
 #[cfg(any(test, feature = "scan"))]
 mod scan {
+    #[allow(clippy::wildcard_imports)] // transparently re-exported above
     use super::*;
 
     impl From<hwlocality::object::attributes::GroupAttributes> for GroupAttributes {

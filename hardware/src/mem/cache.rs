@@ -125,6 +125,7 @@ impl CacheAttributes {
 mod scan {
     use num_traits::ToPrimitive;
 
+    #[allow(clippy::wildcard_imports)] // transparently re-exported above
     use super::*;
 
     impl TryFrom<hwlocality::object::attributes::CacheAttributes> for CacheAttributes {
