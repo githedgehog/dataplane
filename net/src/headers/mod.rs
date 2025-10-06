@@ -1417,6 +1417,8 @@ mod contract {
 #[cfg(any(test, kani))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // fine to unwarp in tests
 mod test {
+    use std::net::Ipv4Addr;
+
     use crate::headers::Headers;
     use crate::headers::contract::CommonHeaders;
     use crate::icmp4::Icmp4Checksum;
@@ -1424,7 +1426,7 @@ mod test {
 
     use super::*;
     use crate::icmp6::{Icmp6Checksum, Icmp6ChecksumPayload};
-    use crate::ipv4::Ipv4Checksum;
+    use crate::ipv4::{Ipv4Checksum, UnicastIpv4Addr};
     use crate::tcp::{TcpChecksum, TcpChecksumPayload};
     use crate::udp::{UdpChecksum, UdpChecksumPayload};
 
@@ -1715,6 +1717,58 @@ mod test {
                     .validate_checksum(&Icmp6ChecksumPayload::new(src.inner(), dst, &[1]))
                     .expect_err("expected invalid checksum");
             }
+        }
+
+        // Check incremental updates
+        match &mut headers.transport {
+            None => {}
+            Some(Transport::Udp(transport)) => {
+                let net = headers.net.clone().unwrap();
+                let old_value = transport.source().into();
+                let new_value = 235;
+                transport.set_source(UdpPort::new_checked(new_value).unwrap());
+                let new_checksum =
+                    transport.increment_update_checksum(transport.checksum(), old_value, new_value);
+                transport.set_checksum(new_checksum);
+
+                transport
+                    .validate_checksum(&UdpChecksumPayload::new(&net, &[]))
+                    .expect("expected valid checksum");
+            }
+            Some(Transport::Tcp(transport)) => {
+                let net = headers.net.clone().unwrap();
+                let old_value = transport.destination().into();
+                let new_value = 116;
+                transport.set_destination(TcpPort::new_checked(new_value).unwrap());
+                let new_checksum =
+                    transport.increment_update_checksum(transport.checksum(), old_value, new_value);
+                transport.set_checksum(new_checksum);
+
+                transport
+                    .validate_checksum(&TcpChecksumPayload::new(&net, &[]))
+                    .expect("expected valid checksum");
+            }
+            Some(Transport::Icmp4(_)) => {
+                let net = headers.net.clone().unwrap();
+                match net {
+                    Net::Ipv4(mut ipv4) => {
+                        let old_value = ipv4.source().inner().into();
+                        let new_value = 0x10_20_30_40; // 16.32.48.64
+                        let new_ip = UnicastIpv4Addr::try_from(Ipv4Addr::from(new_value)).unwrap();
+                        ipv4.set_source(new_ip);
+                        let new_checksum = ipv4.increment_update_checksum_32bit(
+                            ipv4.checksum(),
+                            old_value,
+                            new_value,
+                        );
+                        ipv4.set_checksum(new_checksum);
+                        ipv4.validate_checksum(&())
+                            .expect("expected valid checksum");
+                    }
+                    Net::Ipv6(_) => panic!("unexpected ipv6"),
+                };
+            }
+            Some(Transport::Icmp6(_)) => {}
         }
     }
 
