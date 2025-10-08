@@ -77,18 +77,19 @@ impl TryFrom<&VpcExpose> for gateway_config::Expose {
             ips.push(gateway_config::PeeringIPs { rule: Some(rule) });
         }
 
-        // Convert AS inclusion rules
-        for prefix in &expose.as_range {
-            let rule = gateway_config::peering_as::Rule::Cidr(prefix.to_string());
-            as_rules.push(gateway_config::PeeringAs { rule: Some(rule) });
-        }
+        if let Some(nat) = expose.nat.as_ref() {
+            // Convert AS inclusion rules
+            for prefix in &nat.as_range {
+                let rule = gateway_config::peering_as::Rule::Cidr(prefix.to_string());
+                as_rules.push(gateway_config::PeeringAs { rule: Some(rule) });
+            }
 
-        // Convert AS exclusion rules
-        for prefix in &expose.not_as {
-            let rule = gateway_config::peering_as::Rule::Not(prefix.to_string());
-            as_rules.push(gateway_config::PeeringAs { rule: Some(rule) });
+            // Convert AS exclusion rules
+            for prefix in &nat.not_as {
+                let rule = gateway_config::peering_as::Rule::Not(prefix.to_string());
+                as_rules.push(gateway_config::PeeringAs { rule: Some(rule) });
+            }
         }
-
         Ok(gateway_config::Expose {
             ips,
             r#as: as_rules,

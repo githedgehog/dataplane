@@ -23,11 +23,14 @@ pub fn collapse_prefixes_peering(peering: &Peering) -> Result<Peering, ConfigUti
         .chain(&mut clone.remote.exposes.iter_mut())
     {
         let ips = collapse_prefix_lists(&expose.ips, &expose.nots)?;
-        let as_range = collapse_prefix_lists(&expose.as_range, &expose.not_as)?;
         expose.ips = ips;
-        expose.as_range = as_range;
         expose.nots = BTreeSet::new();
-        expose.not_as = BTreeSet::new();
+
+        if let Some(nat) = expose.nat.as_mut() {
+            let as_range = collapse_prefix_lists(&nat.as_range, &nat.not_as)?;
+            nat.as_range = as_range;
+            nat.not_as = BTreeSet::new();
+        }
     }
     Ok(clone)
 }
