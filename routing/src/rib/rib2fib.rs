@@ -103,7 +103,8 @@ impl Nhop {
     }
 
     //////////////////////////////////////////////////////////////////////
-    /// Determine instructions for a next-hop and build its fibgroup
+    /// Determine instructions for a next-hop and build its `FibGroup`.
+    /// Returns true if the `Fibgroup` associated to a next-hop changed.
     //////////////////////////////////////////////////////////////////////
     pub(crate) fn set_fibgroup(&self, rstore: &RmacStore) -> bool {
         // determine nhop pkt instructions. This is independent of the routing table
