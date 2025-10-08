@@ -43,20 +43,22 @@ impl Display for VpcExpose {
 
         writeln!(f)?;
 
-        if !self.as_range.is_empty() {
-            write!(f, "{SEP}       as:")?;
-            self.as_range.iter().for_each(|x| {
-                let _ = write!(f, " {x}");
-            });
-            carriage = true;
-        }
+        if let Some(nat) = self.nat.as_ref() {
+            if !nat.as_range.is_empty() {
+                write!(f, "{SEP}       as:")?;
+                nat.as_range.iter().for_each(|x| {
+                    let _ = write!(f, " {x}");
+                });
+                carriage = true;
+            }
 
-        if !self.not_as.is_empty() {
-            write!(f, ", excluding")?;
-            self.not_as.iter().for_each(|x| {
-                let _ = write!(f, " {x}");
-            });
-            carriage = true;
+            if !nat.not_as.is_empty() {
+                write!(f, ", excluding")?;
+                nat.not_as.iter().for_each(|x| {
+                    let _ = write!(f, " {x}");
+                });
+                carriage = true;
+            }
         }
         if carriage { writeln!(f) } else { Ok(()) }
     }

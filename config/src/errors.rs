@@ -59,13 +59,13 @@ pub enum ConfigError {
 
     // Peering and VpcExpose validation
     #[error("All prefixes are excluded in VpcExpose: {0}")]
-    ExcludedAllPrefixes(VpcExpose),
+    ExcludedAllPrefixes(Box<VpcExpose>),
     #[error("Exclusion prefix {0} not contained within existing allowed prefix")]
     OutOfRangeExclusionPrefix(Prefix),
     #[error("VPC prefixes overlap: {0} and {1}")]
     OverlappingPrefixes(Prefix, Prefix),
     #[error("Inconsistent IP version in VpcExpose: {0}")]
-    InconsistentIpVersion(VpcExpose),
+    InconsistentIpVersion(Box<VpcExpose>),
     // NAT-specific
     #[error("Mismatched prefixes sizes for static NAT: {0:?} and {1:?}")]
     MismatchedPrefixSizes(PrefixSize, PrefixSize),

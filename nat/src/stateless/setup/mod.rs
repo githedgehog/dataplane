@@ -39,13 +39,13 @@ fn generate_nat_values<'a>(
 fn generate_public_values(
     expose: &VpcExpose,
 ) -> impl Iterator<Item = Result<NatTableValue, NatPeeringError>> {
-    generate_nat_values(&expose.ips, &expose.as_range)
+    generate_nat_values(&expose.ips, expose.as_range_or_empty())
 }
 
 fn generate_private_values(
     expose: &VpcExpose,
 ) -> impl Iterator<Item = Result<NatTableValue, NatPeeringError>> {
-    generate_nat_values(&expose.as_range, &expose.ips)
+    generate_nat_values(expose.as_range_or_empty(), &expose.ips)
 }
 
 impl PerVniTable {
@@ -64,7 +64,7 @@ impl PerVniTable {
         })?;
 
         new_peering.local.exposes.iter().try_for_each(|expose| {
-            if expose.as_range.is_empty() {
+            if expose.as_range_or_empty().is_empty() {
                 // Nothing to do for source NAT, get out of here
                 return Ok(());
             }
@@ -129,8 +129,8 @@ fn validate_nat_expose(expose: &VpcExpose) -> ConfigResult {
     }
     let ips_sizes = prefixes_size(&expose.ips);
     let nots_sizes = prefixes_size(&expose.nots);
-    let as_range_sizes = prefixes_size(&expose.as_range);
-    let not_as_sizes = prefixes_size(&expose.not_as);
+    let as_range_sizes = prefixes_size(expose.as_range_or_empty());
+    let not_as_sizes = prefixes_size(expose.not_as_or_empty());
 
     // Ensure that, if the list of publicly-exposed addresses is not empty, then we have the same
     // number of addresses on each side

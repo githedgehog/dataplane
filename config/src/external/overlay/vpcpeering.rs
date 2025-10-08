@@ -7,17 +7,81 @@ use lpm::prefix::{Prefix, PrefixSize};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::ops::Bound::{Excluded, Unbounded};
+use std::time::Duration;
 use tracing::debug;
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VpcExposeStatelessNat;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VpcExposeStatefulNat {
+    pub idle_timeout: Duration,
+}
+
+impl Default for VpcExposeStatefulNat {
+    fn default() -> Self {
+        VpcExposeStatefulNat {
+            idle_timeout: Duration::from_secs(120),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum VpcExposeNatConfig {
+    Stateful(VpcExposeStatefulNat),
+    Stateless(VpcExposeStatelessNat),
+}
+
+impl Default for VpcExposeNatConfig {
+    fn default() -> Self {
+        #[allow(clippy::default_constructed_unit_structs)]
+        VpcExposeNatConfig::Stateless(VpcExposeStatelessNat::default())
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VpcExposeNat {
+    pub as_range: BTreeSet<Prefix>,
+    pub not_as: BTreeSet<Prefix>,
+    pub config: VpcExposeNatConfig,
+}
+
+fn empty_btreeset() -> &'static BTreeSet<Prefix> {
+    static EMPTY_SET: std::sync::LazyLock<BTreeSet<Prefix>> =
+        std::sync::LazyLock::new(BTreeSet::new);
+    &EMPTY_SET
+}
 
 use crate::{ConfigError, ConfigResult};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExpose {
     pub ips: BTreeSet<Prefix>,
     pub nots: BTreeSet<Prefix>,
-    pub as_range: BTreeSet<Prefix>,
-    pub not_as: BTreeSet<Prefix>,
+    pub nat: Option<VpcExposeNat>,
 }
 impl VpcExpose {
+    #[must_use]
+    pub fn make_nat(mut self) -> Self {
+        if self.nat.is_none() {
+            self.nat = Some(VpcExposeNat::default());
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn as_range_or_empty(&self) -> &BTreeSet<Prefix> {
+        self.nat
+            .as_ref()
+            .map_or(empty_btreeset(), |nat| &nat.as_range)
+    }
+
+    #[must_use]
+    pub fn not_as_or_empty(&self) -> &BTreeSet<Prefix> {
+        self.nat
+            .as_ref()
+            .map_or(empty_btreeset(), |nat| &nat.not_as)
+    }
+
     #[must_use]
     pub fn empty() -> Self {
         Self::default()
@@ -33,14 +97,22 @@ impl VpcExpose {
         self
     }
     #[must_use]
-    pub fn as_range(mut self, prefix: Prefix) -> Self {
-        self.as_range.insert(prefix);
-        self
+    pub fn as_range(self, prefix: Prefix) -> Self {
+        let mut ret = self.make_nat();
+        let Some(nat) = ret.nat.as_mut() else {
+            unreachable!()
+        };
+        nat.as_range.insert(prefix);
+        ret
     }
     #[must_use]
-    pub fn not_as(mut self, prefix: Prefix) -> Self {
-        self.not_as.insert(prefix);
-        self
+    pub fn not_as(self, prefix: Prefix) -> Self {
+        let mut ret = self.make_nat();
+        let Some(nat) = ret.nat.as_mut() else {
+            unreachable!()
+        };
+        nat.not_as.insert(prefix);
+        ret
     }
     #[must_use]
     pub fn has_host_prefixes(&self) -> bool {
@@ -51,24 +123,33 @@ impl VpcExpose {
     // for the VpcExpose.
     #[must_use]
     pub fn public_ips(&self) -> &BTreeSet<Prefix> {
-        if self.as_range.is_empty() {
+        let Some(nat) = self.nat.as_ref() else {
+            return &self.ips;
+        };
+        if nat.as_range.is_empty() {
             &self.ips
         } else {
-            &self.as_range
+            &nat.as_range
         }
     }
     // Same as public_ips, but returns the list of excluded prefixes
     #[must_use]
     pub fn public_excludes(&self) -> &BTreeSet<Prefix> {
-        if self.as_range.is_empty() {
+        let Some(nat) = self.nat.as_ref() else {
+            return &self.nots;
+        };
+        if nat.as_range.is_empty() {
             &self.nots
         } else {
-            &self.not_as
+            &nat.not_as
         }
     }
     #[must_use]
     pub fn is_natted(&self) -> bool {
-        !self.as_range.is_empty()
+        let Some(nat) = self.nat.as_ref() else {
+            return false;
+        };
+        !nat.as_range.is_empty()
     }
 
     /// Validate the [`VpcExpose`]:
@@ -92,7 +173,13 @@ impl VpcExpose {
         //       considerations might be required to validate independently the IPv4 and the IPv6
         //       prefixes and exclusion prefixes in the rest of this function.
         let mut is_ipv4_opt = None;
-        for prefixes in [&self.ips, &self.nots, &self.as_range, &self.not_as] {
+        let prefix_sets = [
+            &self.ips,
+            &self.nots,
+            self.as_range_or_empty(),
+            self.not_as_or_empty(),
+        ];
+        for prefixes in prefix_sets {
             if prefixes.iter().any(|p| {
                 if let Some(is_ipv4) = is_ipv4_opt {
                     p.is_ipv4() != is_ipv4
@@ -101,12 +188,12 @@ impl VpcExpose {
                     false
                 }
             }) {
-                return Err(ConfigError::InconsistentIpVersion(self.clone()));
+                return Err(ConfigError::InconsistentIpVersion(Box::new(self.clone())));
             }
         }
 
         // 2. Check that items in prefix lists of each kind don't overlap
-        for prefixes in [&self.ips, &self.nots, &self.as_range, &self.not_as] {
+        for prefixes in prefix_sets {
             for prefix in prefixes {
                 // Loop over the remaining prefixes in the tree
                 for other_prefix in prefixes.range((Excluded(prefix), Unbounded)) {
@@ -119,7 +206,10 @@ impl VpcExpose {
 
         // 3. Ensure all exclusion prefixes are contained within existing allowed prefixes,
         // unless the list of allowed prefixes is empty.
-        for (prefixes, excludes) in [(&self.ips, &self.nots), (&self.as_range, &self.not_as)] {
+        for (prefixes, excludes) in [
+            (prefix_sets[0], prefix_sets[1]),
+            (prefix_sets[2], prefix_sets[3]),
+        ] {
             if prefixes.is_empty() {
                 continue;
             }
@@ -139,13 +229,13 @@ impl VpcExpose {
         let ips_sizes = prefixes_size(&self.ips);
         let nots_sizes = prefixes_size(&self.nots);
         if ips_sizes > 0 && ips_sizes <= nots_sizes {
-            return Err(ConfigError::ExcludedAllPrefixes(self.clone()));
+            return Err(ConfigError::ExcludedAllPrefixes(Box::new(self.clone())));
         }
+        let as_range_sizes = prefixes_size(self.as_range_or_empty());
+        let not_as_sizes = prefixes_size(self.not_as_or_empty());
 
-        let as_range_sizes = prefixes_size(&self.as_range);
-        let not_as_sizes = prefixes_size(&self.not_as);
         if as_range_sizes > 0 && as_range_sizes <= not_as_sizes {
-            return Err(ConfigError::ExcludedAllPrefixes(self.clone()));
+            return Err(ConfigError::ExcludedAllPrefixes(Box::new(self.clone())));
         }
 
         // 5. Forbid empty ips list if not is non-empty.
@@ -158,12 +248,11 @@ impl VpcExpose {
                 "Empty 'ips' with non-empty 'nots' is currently not supported",
             ));
         }
-        if !self.not_as.is_empty() && self.as_range.is_empty() {
+        if self.as_range_or_empty().is_empty() && !self.not_as_or_empty().is_empty() {
             return Err(ConfigError::Forbidden(
                 "Empty 'as_range' with non-empty 'not_as' is currently not supported",
             ));
         }
-
         Ok(())
     }
 }

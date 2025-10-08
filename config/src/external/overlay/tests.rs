@@ -144,7 +144,7 @@ pub mod test {
             .as_range("2::/64".into());
         assert_eq!(
             expose.validate(),
-            Err(ConfigError::InconsistentIpVersion(expose.clone()))
+            Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
         );
 
         // Incorrect: mixed IP versions
@@ -153,7 +153,7 @@ pub mod test {
             .as_range("1::/112".into());
         assert_eq!(
             expose.validate(),
-            Err(ConfigError::InconsistentIpVersion(expose.clone()))
+            Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
         );
 
         // Incorrect: mixed IP versions
@@ -164,7 +164,7 @@ pub mod test {
             .not_as("2::/120".into());
         assert_eq!(
             expose.validate(),
-            Err(ConfigError::InconsistentIpVersion(expose.clone()))
+            Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
         );
 
         // Incorrect: prefix overlapping
@@ -202,7 +202,7 @@ pub mod test {
             .not_as("2.0.128.0/17".into());
         assert_eq!(
             expose.validate(),
-            Err(ConfigError::ExcludedAllPrefixes(expose.clone()))
+            Err(ConfigError::ExcludedAllPrefixes(Box::new(expose.clone())))
         );
     }
 
