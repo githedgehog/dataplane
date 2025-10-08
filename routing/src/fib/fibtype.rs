@@ -123,11 +123,17 @@ impl Fib {
 
     /// Add a [`FibRoute`]
     fn build_add_fibroute(&mut self, prefix: Prefix, keys: &[NhopKey]) {
-        let Ok(route) = FibRoute::from_nhopkeys(&self.groupstore, keys) else {
-            error!("Failed to build fibroute for keys {keys:#?}");
+        if keys.is_empty() {
+            error!("Rejecting fibroute creation: no keys provided");
             return;
-        };
-        self.add_fibroute(prefix, route);
+        }
+        match FibRoute::from_nhopkeys(&self.groupstore, keys) {
+            Ok(route) => {
+                debug_assert!(route.len() > 0);
+                self.add_fibroute(prefix, route);
+            }
+            Err(e) => error!("Failed to build fibroute for keys {keys:#?}: {e}"),
+        }
     }
 
     /// Delete the [`FibRoute`] for a prefix
@@ -254,33 +260,24 @@ impl Fib {
     /// However, instead of returning the entire [`FibRoute`], returns a single [`FibEntry`] out of
     /// those in the `FibGroup`s that make up the [`FibRoute`]. The entry selected is chosen by
     /// computing a hash on the invariant header fields of the IP and L4 headers.
-    #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
-    pub fn lpm_entry<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> Option<&FibEntry> {
-        let (_, entry) = self.lpm_entry_prefix(packet);
-        entry
-    }
-
-    /// Same as `lpm_entry` but reporting prefix
     #[allow(clippy::cast_possible_truncation)]
     pub fn lpm_entry_prefix<Buf: PacketBufferMut>(
         &self,
         packet: &Packet<Buf>,
-    ) -> (Prefix, Option<&FibEntry>) {
+    ) -> (Prefix, &FibEntry) {
         if let Some(destination) = packet.ip_destination() {
             let (prefix, route) = self.lpm_with_prefix(&destination);
-            match route.len() {
-                0 => {
-                    warn!("Can't forward packet: no route to {prefix}. This is a bug.");
-                    (prefix, None)
-                }
-                1 => (prefix, route.get_fibentry(0)),
-                k => {
-                    let entry_index = packet.packet_hash_ecmp(0, (k - 1) as u8);
-                    trace!("Selected FibEntry {entry_index}/{k} to forward packet");
-                    (prefix, route.get_fibentry(entry_index as usize))
-                }
+            let num_entries = route.len();
+            if num_entries == 0 {
+                let bad = "Warning, hit route without fibgroups/entries. This is a bug.";
+                warn!("{bad}");
+                panic!("{bad}");
             }
+            let mut entry_index = 0;
+            if num_entries > 1 {
+                entry_index = packet.packet_hash_ecmp(0, (num_entries - 1) as u8);
+            }
+            (prefix, route.get_fibentry(entry_index as usize))
         } else {
             error!("Failed to get destination IP address!");
             unreachable!()
@@ -300,9 +297,9 @@ enum FibChange {
 impl Absorb<FibChange> for Fib {
     fn absorb_first(&mut self, change: &mut FibChange, _: &Self) {
         match change {
-            FibChange::RegisterFibGroup((key, fibgroup)) => unsafe {
+            FibChange::RegisterFibGroup((key, fibgroup)) => {
                 self.groupstore.add_mod_group(key, fibgroup.clone());
-            },
+            }
             FibChange::UnregisterFibGroup(key) => {
                 self.groupstore.del(key);
             }
@@ -358,6 +355,10 @@ impl FibWriter {
         }
     }
     pub fn add_fibroute(&mut self, prefix: Prefix, keys: Vec<NhopKey>, publish: bool) {
+        if keys.is_empty() {
+            error!("Rejected route to prefix {prefix}: no next-hop keys provided");
+            return;
+        }
         self.0.append(FibChange::AddFibRoute((prefix, keys)));
         if publish {
             self.0.publish();
@@ -412,6 +413,52 @@ impl FibReader {
     #[must_use]
     pub fn factory(&self) -> FibReaderFactory {
         FibReaderFactory(self.0.factory())
+    }
+
+    /// Get a reference to the `FibRoute` best matching address `destination`
+    /// Return value: this method may only return None if the `FibReader` cannot
+    /// be entered, which should only occur if the `FibWriter` has been dropped.
+    ///
+    /// Safety: the `FibRoute` reference returned will remain valid and immutable
+    /// as long as the returned `ReadGuard` is alive.
+    pub fn lpm_route(&self, destination: IpAddr) -> Option<ReadGuard<'_, FibRoute>> {
+        self.enter()
+            .map(|guard| ReadGuard::map(guard, |fib| fib.lpm(&destination)))
+    }
+
+    /// Same as `FibReader::lpm_route`, but reporting the longest `Prefix` matched.
+    /// Notes: no prefix will be returned if we fail to "enter" in the fib.
+    pub fn lpm_route_with_prefix(
+        &self,
+        destination: IpAddr,
+    ) -> Option<(Prefix, ReadGuard<'_, FibRoute>)> {
+        let mut prefix = Prefix::root_v4();
+        let guarded_route = self.enter().map(|guard| {
+            ReadGuard::map(guard, |fib| {
+                let (hit, route) = fib.lpm_with_prefix(&destination);
+                prefix = hit;
+                route
+            })
+        });
+        guarded_route.map(|guarded_route| (prefix, guarded_route))
+    }
+
+    /// Similar to `FibReader::lpm_route_with_prefix()`, but receing a `Packet` and selecting
+    /// a `FibEntry` based on a hash of the packet if more than one FibEntries could be used to
+    /// forward the packet
+    pub fn lpm_entry_prefix<Buf: PacketBufferMut>(
+        &self,
+        packet: &Packet<Buf>,
+    ) -> Option<(Prefix, ReadGuard<'_, FibEntry>)> {
+        let mut prefix = Prefix::root_v4();
+        let guarded_entry = self.0.enter().map(|guard| {
+            ReadGuard::map(guard, |fib| {
+                let (hit, entry) = fib.lpm_entry_prefix(packet);
+                prefix = hit;
+                entry
+            })
+        });
+        guarded_entry.map(|guarded_entry| (prefix, guarded_entry))
     }
 }
 
