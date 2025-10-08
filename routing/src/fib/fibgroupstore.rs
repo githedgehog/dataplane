@@ -127,7 +127,8 @@ impl FibGroupStore {
         self.0.retain(|key, group| {
             let keep = Rc::strong_count(group) > 1 || key == &NhopKey::with_drop();
             if !keep {
-                debug!("Will purge fibgroup for nhop '{key}'");
+                #[cfg(not(test))]
+                debug!("Purging fibgroup for nhop '{key}'");
             }
             keep
         });
