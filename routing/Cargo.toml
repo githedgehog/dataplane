@@ -41,5 +41,6 @@ netdev = { workspace = true }
 [dev-dependencies]
 bolero = { workspace = true, default-features = false }
 lpm = { workspace = true, features = ["testing"] }
+rand = { workspace = true, default-features = false, features = ["thread_rng"] }
 tracing-test = { workspace = true, features = [] }
 

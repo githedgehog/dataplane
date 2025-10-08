@@ -7,6 +7,7 @@ pub mod fibgroupstore;
 pub mod fibobjects;
 pub mod fibtable;
 pub mod fibtype;
+mod test;
 
 use tracectl::trace_target;
 trace_target!("fib", LevelFilter::WARN, &["pipeline"]);
