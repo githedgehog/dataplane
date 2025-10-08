@@ -10,6 +10,7 @@ use net::interface::InterfaceIndex;
 use std::net::IpAddr;
 
 #[derive(Debug, Default, Clone, Ord, PartialOrd, Eq, PartialEq)]
+#[cfg_attr(test, derive(Hash))]
 /// An `EgressObject` indicates the interface over which a packet
 /// has to be sent and, optionally, a next-hop ip address. If
 /// no address is provided, ND/ARP is required.
@@ -129,6 +130,8 @@ impl FibGroup {
 }
 
 #[derive(Debug, Default, Clone, Ord, PartialOrd, Eq, PartialEq)]
+#[cfg_attr(test, derive(Hash))]
+
 /// A Fib entry is made of a sequence of [`PktInstruction`] s to be executed for an IP packet
 /// in order to forward it.
 pub struct FibEntry {
@@ -218,6 +221,7 @@ impl FibEntry {
 }
 
 #[derive(Clone, Default, Debug, Ord, PartialOrd, Eq, PartialEq)]
+#[cfg_attr(test, derive(Hash))]
 #[allow(unused)]
 /// A `PktInstruction` represents an action to be performed by the packet processor on a packet.
 pub enum PktInstruction {
