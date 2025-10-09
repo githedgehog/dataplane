@@ -1,0 +1,31 @@
+[package]
+name = "dataplane-init"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[dependencies]
+# internal
+hardware = { workspace = true, features = ["serde", "scan"] }
+id = { workspace = true }
+
+# external
+nix = { workspace = true, features = ["mount", "fs"] }
+procfs = { workspace = true, features = [] }
+strum = { workspace = true, features = ["derive"] }
+strum_macros = { workspace = true, features = [] }
+thiserror = { workspace = true }
+tracing = { workspace = true, features = ["attributes"] }
+tracing-subscriber = { workspace = true, features = ["fmt"] }
+
+[dev-dependencies]
+# internal
+
+# external
+
+[build-dependencies]
+# internal
+dpdk-sysroot-helper = { workspace = true }
+
+# external

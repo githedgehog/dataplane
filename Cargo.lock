@@ -1087,6 +1087,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-init"
+version = "0.1.0"
+dependencies = [
+ "dataplane-dpdk-sysroot-helper",
+ "dataplane-hardware",
+ "dataplane-id",
+ "nix 0.30.1",
+ "procfs",
+ "strum",
+ "strum_macros",
+ "thiserror 2.0.17",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "dataplane-interface-manager"
 version = "0.0.1"
 dependencies = [
