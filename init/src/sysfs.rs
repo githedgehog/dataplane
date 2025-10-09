@@ -10,8 +10,13 @@
 
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::InitErr;
+
+/// We manipulate paths under sysfs, but, for the sake of safety, we also determine where sysfs is
+/// actually mounted before we start messing with directories.
+pub(crate) static SYSFS: OnceLock<SysfsPath> = OnceLock::new();
 
 /// Path which is promised to
 ///

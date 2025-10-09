@@ -8,6 +8,10 @@ pub mod sysfs;
 
 use std::path::PathBuf;
 
+use tracing::{error, info};
+
+use crate::sysfs::{SYSFS, SysfsPath};
+
 /// Errors which might occur during dataplane system initialization
 #[derive(Debug, thiserror::Error)]
 pub enum InitErr {
@@ -38,11 +42,49 @@ pub enum InitErr {
     SysfsPathIsNotValidUtf8,
 }
 
-fn main() {
+/// Process setup helper function.
+///
+/// Fills out the [`SYSFS`] [`std::sync::OnceLock`].
+///
+/// # Panics
+///
+/// - Panics if this process is unable to read the list of mounted filesystems.
+/// - Panics if the [`SYSFS`] [`std::sync::OnceLock`] cannot be initialized.
+fn setup() {
     tracing_subscriber::fmt()
         .with_ansi(false)
         .with_file(true)
         .with_level(true)
         .with_line_number(true)
         .init();
+    let sysfs_mounts: Vec<_> = procfs::mounts()
+        .unwrap() // acceptable panic: if we can't find /sys then this process will never work
+        .into_iter()
+        .filter(|mount| mount.fs_vfstype == "sysfs")
+        .collect();
+    let sysfs_path = if sysfs_mounts.is_empty() {
+        panic!("sysfs is not mounted: unable to initialize dataplane");
+    } else if sysfs_mounts.len() > 1 {
+        const MSG_PREFIX: &str =
+            "suspicious configuration found: sysfs is mounted at more than one location.";
+        let message = format!("{MSG_PREFIX}. Filesystems found at {sysfs_mounts:#?}");
+        error!("{message}");
+        panic!("{message}");
+    } else {
+        sysfs_mounts[0].fs_file.clone()
+    };
+    #[allow(clippy::unwrap_used)] // failure to find here is completely fatal
+    let sysfs_root = SysfsPath::new(&sysfs_path).unwrap();
+    info!("found sysfs filesystem at {sysfs_root}");
+    match SYSFS.set(sysfs_root) {
+        Ok(()) => (),
+        Err(_) => {
+            unreachable!("called setup function twice in one process!");
+        }
+    }
+}
+
+fn main() -> Result<(), InitErr> {
+    setup();
+    Ok(())
 }
