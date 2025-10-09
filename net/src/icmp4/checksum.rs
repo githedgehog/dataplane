@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! TCP checksum type and methods
+//! `ICMPv4` checksum type and methods
 
 use crate::checksum::Checksum;
 use crate::icmp4::Icmp4;
