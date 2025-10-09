@@ -602,14 +602,6 @@ impl Headers {
 
 // Eth traits
 
-pub trait WithEth {
-    fn eth(&self) -> &Eth;
-}
-
-pub trait WithEthMut {
-    fn eth_mut(&mut self) -> &mut Eth;
-}
-
 pub trait TryEth {
     fn try_eth(&self) -> Option<&Eth>;
 }
@@ -631,14 +623,6 @@ impl TryEthMut for Headers {
 }
 
 // Ipv4 traits
-
-pub trait WithIpv4 {
-    fn ipv4(&self) -> &Ipv4;
-}
-
-pub trait WithIpv4Mut {
-    fn ipv4_mut(&mut self) -> &mut Ipv4;
-}
 
 pub trait TryIpv4 {
     fn try_ipv4(&self) -> Option<&Ipv4>;
@@ -668,14 +652,6 @@ impl TryIpv4Mut for Headers {
 
 // Ipv6 traits
 
-pub trait WithIpv6 {
-    fn ipv6(&self) -> &Ipv6;
-}
-
-pub trait WithIpv6Mut {
-    fn ipv6_mut(&mut self) -> &mut Ipv6;
-}
-
 pub trait TryIpv6 {
     fn try_ipv6(&self) -> Option<&Ipv6>;
 }
@@ -704,14 +680,6 @@ impl TryIpv6Mut for Headers {
 
 // IP version-agnostic traits
 
-pub trait WithIp {
-    fn ip(&self) -> &Net;
-}
-
-pub trait WithIpMut {
-    fn ip_mut(&mut self) -> &mut Net;
-}
-
 pub trait TryIp {
     fn try_ip(&self) -> Option<&Net>;
 }
@@ -733,14 +701,6 @@ impl TryIpMut for Headers {
 }
 
 // Tcp traits
-
-pub trait WithTcp {
-    fn tcp(&self) -> &Tcp;
-}
-
-pub trait WithTcpMut {
-    fn tcp_mut(&mut self) -> &mut Tcp;
-}
 
 pub trait TryTcp {
     fn try_tcp(&self) -> Option<&Tcp>;
@@ -770,14 +730,6 @@ impl TryTcpMut for Headers {
 
 // UDP traits
 
-pub trait WithUdp {
-    fn udp(&self) -> &Udp;
-}
-
-pub trait WithUdpMut {
-    fn udp_mut(&mut self) -> &mut Udp;
-}
-
 pub trait TryUdp {
     fn try_udp(&self) -> Option<&Udp>;
 }
@@ -805,14 +757,6 @@ impl TryUdpMut for Headers {
 }
 
 // Icmp traits
-
-pub trait WithIcmp {
-    fn icmp(&self) -> &Icmp4;
-}
-
-pub trait WithIcmpMut {
-    fn icmp_mut(&mut self) -> &mut Icmp4;
-}
 
 pub trait TryIcmp {
     fn try_icmp(&self) -> Option<&Icmp4>;
@@ -842,14 +786,6 @@ impl TryIcmpMut for Headers {
 
 // ICMP6 traits
 
-pub trait WithIcmp6 {
-    fn icmp6(&self) -> &Icmp6;
-}
-
-pub trait WithIcmp6Mut {
-    fn icmp6_mut(&mut self) -> &mut Icmp6;
-}
-
 pub trait TryIcmp6 {
     fn try_icmp6(&self) -> Option<&Icmp6>;
 }
@@ -878,14 +814,6 @@ impl TryIcmp6Mut for Headers {
 
 // Generic Transport traits
 
-pub trait WithTransport {
-    fn transport(&self) -> &Transport;
-}
-
-pub trait WithTransportMut {
-    fn transport_mut(&mut self) -> &mut Transport;
-}
-
 pub trait TryTransport {
     fn try_transport(&self) -> Option<&Transport>;
 }
@@ -907,14 +835,6 @@ impl TryTransportMut for Headers {
 }
 
 // Vxlan traits
-
-pub trait WithVxlan {
-    fn vxlan(&self) -> &Vxlan;
-}
-
-pub trait WithVxlanMut {
-    fn vxlan_mut(&mut self) -> &mut Vxlan;
-}
 
 pub trait TryVxlan {
     fn try_vxlan(&self) -> Option<&Vxlan>;
