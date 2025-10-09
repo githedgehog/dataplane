@@ -4,13 +4,17 @@
 #![doc = include_str!("../README.md")]
 #![deny(clippy::pedantic, missing_docs)]
 
+pub mod nic;
 pub mod sysfs;
 
 use std::path::PathBuf;
 
 use tracing::{error, info};
 
-use crate::sysfs::{SYSFS, SysfsPath};
+use crate::{
+    nic::PciDriver,
+    sysfs::{SYSFS, SysfsPath},
+};
 
 /// Errors which might occur during dataplane system initialization
 #[derive(Debug, thiserror::Error)]
@@ -40,6 +44,9 @@ pub enum InitErr {
     /// recovery from this type of low level operating system malfunction.
     #[error("path under sysfs is not a valid UTF-8 string")]
     SysfsPathIsNotValidUtf8,
+    /// Error indicating that a required kernel driver is missing.
+    #[error("missing needed driver {0}")]
+    DriverMissing(PciDriver),
 }
 
 /// Process setup helper function.
