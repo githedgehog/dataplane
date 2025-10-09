@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use ::gateway_config::google;
 use gateway_config::config as gateway_config;
+
 use std::convert::TryFrom;
 
-use crate::external::overlay::vpcpeering::VpcExpose;
+use crate::external::overlay::vpcpeering::{
+    VpcExpose, VpcExposeNatConfig, VpcExposeStatefulNat, VpcExposeStatelessNat,
+};
 use lpm::prefix::{Prefix, PrefixString};
 
 impl TryFrom<&gateway_config::Expose> for VpcExpose {
@@ -54,6 +58,30 @@ impl TryFrom<&gateway_config::Expose> for VpcExpose {
             }
         }
 
+        if !expose.r#as.is_empty() {
+            vpc_expose = vpc_expose.make_nat();
+            if let (Some(grpc_nat), Some(nat)) = (expose.nat.as_ref(), vpc_expose.nat.as_mut()) {
+                #[allow(clippy::default_constructed_unit_structs)]
+                match grpc_nat {
+                    gateway_config::expose::Nat::Stateless(_) => {
+                        nat.config =
+                            VpcExposeNatConfig::Stateless(VpcExposeStatelessNat::default());
+                    }
+                    gateway_config::expose::Nat::Stateful(grpc_s) => {
+                        nat.config = VpcExposeNatConfig::Stateful(VpcExposeStatefulNat {
+                            idle_timeout: grpc_s
+                                .idle_timeout
+                                .ok_or("stateful nat requires idle_timeout, got None".to_string())
+                                .and_then(|t| {
+                                    std::time::Duration::try_from(t)
+                                        .map_err(|e| format!("Invalid duration: {e}"))
+                                })?,
+                        });
+                    }
+                }
+            }
+        }
+
         Ok(vpc_expose)
     }
 }
@@ -77,7 +105,7 @@ impl TryFrom<&VpcExpose> for gateway_config::Expose {
             ips.push(gateway_config::PeeringIPs { rule: Some(rule) });
         }
 
-        if let Some(nat) = expose.nat.as_ref() {
+        let nat = if let Some(nat) = expose.nat.as_ref() {
             // Convert AS inclusion rules
             for prefix in &nat.as_range {
                 let rule = gateway_config::peering_as::Rule::Cidr(prefix.to_string());
@@ -89,10 +117,28 @@ impl TryFrom<&VpcExpose> for gateway_config::Expose {
                 let rule = gateway_config::peering_as::Rule::Not(prefix.to_string());
                 as_rules.push(gateway_config::PeeringAs { rule: Some(rule) });
             }
-        }
+
+            match &nat.config {
+                VpcExposeNatConfig::Stateful(config) => {
+                    let idle_timeout = google::protobuf::Duration::try_from(config.idle_timeout)
+                        .map_err(|e| format!("Unable to convert stateful nat idle timeout: {e}"))?;
+                    Some(gateway_config::expose::Nat::Stateful(
+                        gateway_config::PeeringStatefulNat {
+                            idle_timeout: Some(idle_timeout),
+                        },
+                    ))
+                }
+                VpcExposeNatConfig::Stateless(_) => Some(gateway_config::expose::Nat::Stateless(
+                    gateway_config::PeeringStatelessNat {},
+                )),
+            }
+        } else {
+            None
+        };
         Ok(gateway_config::Expose {
             ips,
             r#as: as_rules,
+            nat,
         })
     }
 }
