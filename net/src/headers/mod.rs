@@ -754,18 +754,18 @@ impl TryUdpMut for Headers {
     }
 }
 
-// Icmp traits
+// ICMPv4 traits
 
-pub trait TryIcmp {
-    fn try_icmp(&self) -> Option<&Icmp4>;
+pub trait TryIcmp4 {
+    fn try_icmp4(&self) -> Option<&Icmp4>;
 }
 
-pub trait TryIcmpMut {
-    fn try_icmp_mut(&mut self) -> Option<&mut Icmp4>;
+pub trait TryIcmp4Mut {
+    fn try_icmp4_mut(&mut self) -> Option<&mut Icmp4>;
 }
 
-impl TryIcmp for Headers {
-    fn try_icmp(&self) -> Option<&Icmp4> {
+impl TryIcmp4 for Headers {
+    fn try_icmp4(&self) -> Option<&Icmp4> {
         match &self.transport {
             Some(Transport::Icmp4(header)) => Some(header),
             _ => None,
@@ -773,8 +773,8 @@ impl TryIcmp for Headers {
     }
 }
 
-impl TryIcmpMut for Headers {
-    fn try_icmp_mut(&mut self) -> Option<&mut Icmp4> {
+impl TryIcmp4Mut for Headers {
+    fn try_icmp4_mut(&mut self) -> Option<&mut Icmp4> {
         match &mut self.transport {
             Some(Transport::Icmp4(header)) => Some(header),
             _ => None,
@@ -910,7 +910,7 @@ pub trait AbstractHeaders:
     + TryIp
     + TryTcp
     + TryUdp
-    + TryIcmp
+    + TryIcmp4
     + TryIcmp6
     + TryTransport
     + TryVxlan
@@ -926,7 +926,7 @@ impl<T> AbstractHeaders for T where
         + TryIp
         + TryTcp
         + TryUdp
-        + TryIcmp
+        + TryIcmp4
         + TryIcmp6
         + TryTransport
         + TryVxlan
@@ -942,7 +942,7 @@ pub trait AbstractHeadersMut:
     + TryIpMut
     + TryTcpMut
     + TryUdpMut
-    + TryIcmpMut
+    + TryIcmp4Mut
     + TryIcmp6Mut
     + TryTransportMut
     + TryVxlanMut
@@ -957,7 +957,7 @@ impl<T> AbstractHeadersMut for T where
         + TryIpMut
         + TryTcpMut
         + TryUdpMut
-        + TryIcmpMut
+        + TryIcmp4Mut
         + TryIcmp6Mut
         + TryTransportMut
         + TryVxlanMut
@@ -1026,12 +1026,12 @@ where
     }
 }
 
-impl<T> TryIcmp for T
+impl<T> TryIcmp4 for T
 where
     T: TryHeaders,
 {
-    fn try_icmp(&self) -> Option<&Icmp4> {
-        self.headers().try_icmp()
+    fn try_icmp4(&self) -> Option<&Icmp4> {
+        self.headers().try_icmp4()
     }
 }
 
@@ -1116,12 +1116,12 @@ where
     }
 }
 
-impl<T> TryIcmpMut for T
+impl<T> TryIcmp4Mut for T
 where
     T: TryHeadersMut,
 {
-    fn try_icmp_mut(&mut self) -> Option<&mut Icmp4> {
-        self.headers_mut().try_icmp_mut()
+    fn try_icmp4_mut(&mut self) -> Option<&mut Icmp4> {
+        self.headers_mut().try_icmp4_mut()
     }
 }
 

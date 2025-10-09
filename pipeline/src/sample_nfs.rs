@@ -5,7 +5,7 @@ use crate::NetworkFunction;
 use arc_swap::ArcSwapOption;
 use net::buffer::PacketBufferMut;
 use net::eth::mac::{DestinationMac, Mac};
-use net::headers::TryIcmp;
+use net::headers::TryIcmp4;
 use net::headers::TryUdp;
 use net::headers::{TryEthMut, TryHeaders, TryIpv4Mut, TryIpv6Mut};
 use net::packet::Packet;
@@ -81,7 +81,7 @@ impl<Buf: PacketBufferMut> PacketDumper<Buf> {
     pub fn vxlan_or_icmp() -> DumperFilter<Buf> {
         // TODO: fix this
         let filter = |packet: &Packet<Buf>| -> bool {
-            packet.try_icmp().is_some() || {
+            packet.try_icmp4().is_some() || {
                 let Some(udp) = &packet.try_udp() else {
                     return false;
                 };
@@ -94,7 +94,7 @@ impl<Buf: PacketBufferMut> PacketDumper<Buf> {
     /// Sample filter that allows only ICMP traffic
     #[must_use]
     pub fn icmp_only() -> DumperFilter<Buf> {
-        let filter = |packet: &Packet<Buf>| -> bool { packet.try_icmp().is_some() };
+        let filter = |packet: &Packet<Buf>| -> bool { packet.try_icmp4().is_some() };
         Box::new(filter)
     }
 
