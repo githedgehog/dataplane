@@ -132,7 +132,9 @@ impl DeParse for TruncatedUdpHeader {
 /// A UDP header, possibly truncated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TruncatedUdp {
+    // A full UDP header, whether payload is full or not
     FullHeader(Udp),
+    // A truncated UDP header (< 8 bytes)
     PartialHeader(TruncatedUdpHeader),
 }
 

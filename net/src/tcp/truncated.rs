@@ -132,7 +132,9 @@ impl DeParse for TruncatedTcpHeader {
 /// A TCP header, possibly truncated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TruncatedTcp {
+    // A full TCP header, whether payload is full or not
     FullHeader(Tcp),
+    // A truncated TCP header (< 20 bytes)
     PartialHeader(TruncatedTcpHeader),
 }
 
