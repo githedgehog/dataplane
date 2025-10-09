@@ -2691,30 +2691,19 @@ dependencies = [
 
 [[package]]
 name = "netdev"
-version = "0.37.3"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "daa1e3eaf125c54c21e6221df12dd2a0a682784a068782dd564c836c0f281b6d"
+checksum = "8cf6c752ad33c2f5c18d42d1af9e84c4f8d4ad41dd2cfcc9dd5a24ac7f838e3d"
 dependencies = [
  "dlopen2",
  "ipnet",
  "libc 0.2.176",
- "netlink-packet-core 0.7.0",
- "netlink-packet-route 0.22.0",
+ "netlink-packet-core",
+ "netlink-packet-route 0.25.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "netlink-sys",
  "once_cell",
  "system-configuration",
  "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "netlink-packet-core"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72724faf704479d67b388da142b186f916188505e7e0b26719019c525882eda4"
-dependencies = [
- "anyhow",
- "byteorder",
- "netlink-packet-utils 0.5.2",
 ]
 
 [[package]]
@@ -2728,17 +2717,14 @@ dependencies = [
 
 [[package]]
 name = "netlink-packet-route"
-version = "0.22.0"
+version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc0e7987b28514adf555dc1f9a5c30dfc3e50750bbaffb1aec41ca7b23dcd8e4"
+checksum = "3ec2f5b6839be2a19d7fa5aab5bc444380f6311c2b693551cb80f45caaa7b5ef"
 dependencies = [
- "anyhow",
  "bitflags 2.9.4",
- "byteorder",
  "libc 0.2.176",
  "log",
- "netlink-packet-core 0.7.0",
- "netlink-packet-utils 0.5.2",
+ "netlink-packet-core",
 ]
 
 [[package]]
@@ -2749,19 +2735,7 @@ dependencies = [
  "bitflags 2.9.4",
  "libc 0.2.176",
  "log",
- "netlink-packet-core 0.8.1",
-]
-
-[[package]]
-name = "netlink-packet-utils"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ede8a08c71ad5a95cdd0e4e52facd37190977039a4704eb82a283f713747d34"
-dependencies = [
- "anyhow",
- "byteorder",
- "paste",
- "thiserror 1.0.69",
+ "netlink-packet-core",
 ]
 
 [[package]]
@@ -2784,7 +2758,7 @@ dependencies = [
  "bytes",
  "futures",
  "log",
- "netlink-packet-core 0.8.1",
+ "netlink-packet-core",
  "netlink-sys",
  "thiserror 2.0.17",
 ]
@@ -3545,9 +3519,9 @@ source = "git+https://github.com/githedgehog/rtnetlink.git?branch=hh%2Ftc-action
 dependencies = [
  "futures",
  "log",
- "netlink-packet-core 0.8.1",
- "netlink-packet-route 0.25.1",
- "netlink-packet-utils 0.6.0",
+ "netlink-packet-core",
+ "netlink-packet-route 0.25.1 (git+https://github.com/githedgehog/netlink-packet-route.git?branch=pr%2Fdaniel-noland%2Fswing3)",
+ "netlink-packet-utils",
  "netlink-proto",
  "netlink-sys",
  "nix 0.30.1",

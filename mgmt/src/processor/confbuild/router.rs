@@ -5,7 +5,7 @@
 
 use netdev::Interface as NetDevInterface;
 use netdev::get_interfaces;
-use netdev::interface::InterfaceType;
+use netdev::prelude::*;
 
 use crate::processor::confbuild::namegen::VpcInterfacesNames;
 
