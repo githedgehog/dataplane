@@ -13,6 +13,7 @@ use tracing::{error, info};
 
 use crate::{
     nic::PciDriver,
+    nic::{BindToVfioPci, PciNic},
     sysfs::{SYSFS, SysfsPath},
 };
 
@@ -92,5 +93,13 @@ fn setup() -> Result<(), InitErr> {
 
 fn main() -> Result<(), InitErr> {
     setup()?;
+    // TODO: proper argument parsing
+    // -- hack add a real command line parser
+    let mut args = std::env::args().skip(1);
+    // -- end hack
+    // TODO: fix unwraps in the next PR.  These can't be properly addressed before the arg parser is done.
+    let address = hardware::pci::address::PciAddress::try_from(args.next().unwrap()).unwrap();
+    let mut device = PciNic::new(address)?;
+    device.bind_to_vfio_pci()?;
     Ok(())
 }
