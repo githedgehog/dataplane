@@ -575,26 +575,24 @@ impl Headers {
 
     /// update the checksums of the headers
     pub(crate) fn update_checksums(&mut self, payload: impl AsRef<[u8]>) {
-        let is_vxlan = self.try_vxlan_mut().is_some();
-        match &mut self.net {
-            None => {
-                trace!("no network header: can't update checksum")
-            }
-            Some(net) => {
-                net.update_checksum();
-                match &mut self.transport {
-                    None => {
-                        trace!("no transport header: can't update checksum")
-                    }
-                    Some(transport) => {
-                        if !is_vxlan {
-                            // only recompute checksum if it is not vxlan
-                            transport.update_checksum(net, payload.as_ref());
-                        }
-                    }
-                }
-            }
+        let is_vxlan = self.try_vxlan().is_some();
+
+        let Some(net) = self.net.as_mut() else {
+            trace!("no network header: can't update checksum");
+            return;
+        };
+        net.update_checksum();
+
+        if is_vxlan {
+            // Only recompute checksum if it is not VXLAN
+            return;
         }
+
+        let Some(transport) = self.transport.as_mut() else {
+            trace!("no transport header: can't update checksum");
+            return;
+        };
+        transport.update_checksum(net, payload.as_ref());
     }
 }
 
