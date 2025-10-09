@@ -4,6 +4,8 @@
 #![doc = include_str!("../README.md")]
 #![deny(clippy::pedantic, missing_docs)]
 
+pub mod sysfs;
+
 use std::path::PathBuf;
 
 /// Errors which might occur during dataplane system initialization
