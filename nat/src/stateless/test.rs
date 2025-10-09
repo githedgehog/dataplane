@@ -26,7 +26,7 @@ mod tests {
 
     use net::buffer::PacketBufferMut;
     use net::eth::mac::Mac;
-    use net::headers::{TryHeadersMut, TryIpv4, TryIpv4Mut};
+    use net::headers::{TryHeaders, TryHeadersMut, TryIpv4, TryIpv4Mut};
     use net::packet::test_utils::build_test_ipv4_packet;
     use net::packet::{Packet, VpcDiscriminant};
     use net::vxlan::Vni;
@@ -45,7 +45,7 @@ mod tests {
 
     fn get_src_ip_v4<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Ipv4Addr {
         packet
-            .get_headers()
+            .headers()
             .try_ipv4()
             .expect("Failed to get IPv4 header")
             .source()
@@ -54,7 +54,7 @@ mod tests {
 
     fn get_dst_ip_v4<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Ipv4Addr {
         packet
-            .get_headers()
+            .headers()
             .try_ipv4()
             .expect("Failed to get IPv4 header")
             .destination()

@@ -19,7 +19,7 @@ use crate::stateful::port::NatPort;
 use concurrency::sync::Arc;
 use flow_info::{ExtractRef, FlowInfo};
 use net::buffer::PacketBufferMut;
-use net::headers::{Net, TryHeadersMut, TryIp, TryIpMut, TryTransportMut};
+use net::headers::{Net, TryHeaders, TryHeadersMut, TryIp, TryIpMut, TryTransportMut};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::NetworkFunction;
 use pkt_meta::flow_table::flow_key::Uni;
@@ -322,7 +322,7 @@ impl StatefulNat {
         src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<bool, StatefulNatError> {
-        let Some(net) = packet.get_headers().try_ip() else {
+        let Some(net) = packet.headers().try_ip() else {
             return Err(StatefulNatError::BadIpHeader);
         };
 

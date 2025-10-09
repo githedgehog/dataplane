@@ -338,11 +338,6 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         self.meta.done
     }
 
-    /// Get a reference to the headers of this `Packet`
-    pub fn get_headers(&self) -> &Headers {
-        &self.headers
-    }
-
     /// Get an immutable reference to the metadata of this `Packet`
     pub fn get_meta(&self) -> &PacketMeta {
         &self.meta
@@ -364,6 +359,11 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             Some(DoneReason::Delivered) | None => Some(self),
             Some(_) => None,
         }
+    }
+
+    /// Get a reference to the headers of this `Packet`
+    pub(crate) fn get_headers(&self) -> &Headers {
+        &self.headers
     }
 }
 
