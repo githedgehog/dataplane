@@ -36,4 +36,11 @@ pub enum InitErr {
     SysfsPathIsNotValidUtf8,
 }
 
-fn main() {}
+fn main() {
+    tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_file(true)
+        .with_level(true)
+        .with_line_number(true)
+        .init();
+}
