@@ -16,7 +16,7 @@ use crate::ipv4::Ipv4;
 use crate::ipv6::{Ipv6, Ipv6Ext};
 use crate::parse::{
     DeParse, DeParseError, IllegalBufferLength, IntoNonZeroUSize, LengthError, Parse, ParseError,
-    ParsePayload, Reader, Writer,
+    Reader, Writer,
 };
 use crate::tcp::{Tcp, TcpChecksumPayload, TcpPort};
 use crate::udp::{Udp, UdpChecksumPayload, UdpEncap, UdpPort};
@@ -278,9 +278,7 @@ pub enum Header {
     EmbeddedIp(EmbeddedHeaders),
 }
 
-impl ParsePayload for Header {
-    type Next = Header;
-
+impl Header {
     fn parse_payload(&self, cursor: &mut Reader) -> Option<Header> {
         use Header::{
             EmbeddedIp, Encap, Eth, Icmp4, Icmp6, IpAuth, IpV6Ext, Ipv4, Ipv6, Tcp, Udp, Vlan,

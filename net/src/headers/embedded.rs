@@ -9,7 +9,7 @@ use crate::ipv4::Ipv4;
 use crate::ipv6::{Ipv6, Ipv6Ext};
 use crate::parse::{
     DeParse, DeParseError, IllegalBufferLength, IntoNonZeroUSize, LengthError, ParseError,
-    ParseHeader, ParsePayload, ParseWith, Reader, Writer,
+    ParseHeader, ParseWith, Reader, Writer,
 };
 use crate::tcp::TruncatedTcp;
 use crate::udp::TruncatedUdp;
@@ -313,9 +313,7 @@ pub(crate) enum EmbeddedHeader {
     IpV6Ext(Ipv6Ext), // TODO: break out nested enum.  Nesting is counter productive here
 }
 
-impl ParsePayload for EmbeddedHeader {
-    type Next = EmbeddedHeader;
-
+impl EmbeddedHeader {
     fn parse_payload(&self, cursor: &mut Reader) -> Option<EmbeddedHeader> {
         use EmbeddedHeader::{IpAuth, IpV6Ext, Ipv4, Ipv6, Tcp, Udp};
         match self {

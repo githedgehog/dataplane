@@ -50,11 +50,6 @@ pub trait ParseWith {
         Self: Sized;
 }
 
-pub(crate) trait ParsePayload {
-    type Next;
-    fn parse_payload(&self, cursor: &mut Reader) -> Option<Self::Next>;
-}
-
 pub trait ParseHeader {
     fn parse_header<T: Parse, O: From<T>>(&mut self) -> Option<O>;
     fn parse_header_with<T: ParseWith, O: From<T>>(&mut self, param: T::Param) -> Option<O>;
