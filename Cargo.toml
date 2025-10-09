@@ -13,6 +13,7 @@ members = [
     "flow-info",
     "hardware",
     "id",
+    "init",
     "interface-manager",
     "mgmt",
     "nat",
@@ -45,6 +46,7 @@ flow-info = { path = "./flow-info", package = "dataplane-flow-info" }
 gateway_config = { git = "https://github.com/githedgehog/gateway-proto", tag = "v0.14.0", version = "0.14.0"}
 hardware = { path = "./hardware", package = "dataplane-hardware" }
 id = { path = "./id", package = "dataplane-id" }
+init = { path = "./init", package = "dataplane-init" }
 interface-manager = { path = "./interface-manager", package = "dataplane-interface-manager" }
 lpm = { path = "./lpm", package = "dataplane-lpm" }
 mgmt = { path = "./mgmt", package = "dataplane-mgmt" }
