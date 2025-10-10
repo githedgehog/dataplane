@@ -37,7 +37,7 @@ pub struct EmbeddedHeaders {
     net: Option<Net>,
     net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
     transport: Option<EmbeddedTransport>,
-    full_payload: bool,
+    full_payload_length: Option<u16>,
 }
 
 impl EmbeddedHeaders {
@@ -53,7 +53,11 @@ impl EmbeddedHeaders {
     }
 
     pub fn is_full_payload(&self) -> bool {
-        self.full_payload
+        self.full_payload_length.is_some()
+    }
+
+    pub fn payload_length(&self) -> Option<u16> {
+        self.full_payload_length
     }
 
     pub fn check_full_payload(
@@ -63,7 +67,7 @@ impl EmbeddedHeaders {
         headers_size: usize,
         icmp_length: usize,
     ) {
-        self.full_payload = false;
+        self.full_payload_length = None;
 
         match &mut self.transport {
             None
@@ -130,7 +134,13 @@ impl EmbeddedHeaders {
             return;
         };
 
-        let full_packet_size = size_ip_headers + ip_payload_length;
+        if transport_header_length > ip_payload_length {
+            // Transport header is too large to fit within the IP payload size we retrieved from the
+            // headers, something is wrong
+            return;
+        }
+        let full_packet_length = size_ip_headers + ip_payload_length;
+        let transport_payload_length = ip_payload_length - transport_header_length;
 
         if icmp_length > 0 {
             // ICMP message may optionally contain the length of the embedded piece of the original
@@ -141,7 +151,7 @@ impl EmbeddedHeaders {
             // datagram" field.
             match self.net {
                 Some(Net::Ipv4(_)) => {
-                    if icmp_length < full_packet_size {
+                    if icmp_length < full_packet_length {
                         // The embedded message is shorter than the original packet
                         return;
                     }
@@ -150,14 +160,17 @@ impl EmbeddedHeaders {
                         // of 32? Something's wrong
                         return;
                     }
-                    let padding_length = icmp_length - full_packet_size;
+                    let padding_length = icmp_length - full_packet_length;
                     // ICMPv4: Padding is on 32-bit boundaries
-                    self.full_payload = padding_length < 32
-                        && buf[full_packet_size..icmp_length].iter().all(|b| *b == 0);
+                    if padding_length < 32
+                        && buf[full_packet_length..icmp_length].iter().all(|b| *b == 0)
+                    {
+                        self.full_payload_length = Some(transport_payload_length as u16);
+                    }
                     return;
                 }
                 Some(Net::Ipv6(_)) => {
-                    if icmp_length < full_packet_size {
+                    if icmp_length < full_packet_length {
                         // The embedded message is shorter than the original packet
                         return;
                     }
@@ -166,10 +179,13 @@ impl EmbeddedHeaders {
                         // of 64? Something's wrong
                         return;
                     }
-                    let padding_length = icmp_length - full_packet_size;
+                    let padding_length = icmp_length - full_packet_length;
                     // ICMPv6: Padding is on 64-bit boundaries
-                    self.full_payload = padding_length < 64
-                        && buf[full_packet_size..icmp_length].iter().all(|b| *b == 0);
+                    if padding_length < 64
+                        && buf[full_packet_length..icmp_length].iter().all(|b| *b == 0)
+                    {
+                        self.full_payload_length = Some(transport_payload_length as u16);
+                    }
                     return;
                 }
                 None => {
@@ -179,7 +195,9 @@ impl EmbeddedHeaders {
         }
 
         // Check that the full headers + payload are present
-        self.full_payload = full_packet_size == remaining;
+        if full_packet_length == remaining {
+            self.full_payload_length = Some(transport_payload_length as u16);
+        }
     }
 }
 
@@ -1104,6 +1122,7 @@ mod tests {
         assert!(headers.net.is_none());
         assert!(headers.transport.is_none());
         assert!(!headers.is_full_payload());
+        assert!(headers.payload_length().is_none());
     }
 
     #[test]
@@ -1235,6 +1254,7 @@ mod tests {
         // Should be true because we have the full payload, as indicated by the length of the ICMP
         // payload
         assert!(headers.is_full_payload());
+        assert_eq!(headers.payload_length(), Some(80));
 
         // Try again by passing a smaller value for the ICMP payload length, not a multiple of 32
         headers.check_full_payload(
