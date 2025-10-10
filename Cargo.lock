@@ -1112,6 +1112,7 @@ dependencies = [
 name = "dataplane-left-right-tlcache"
 version = "0.1.0"
 dependencies = [
+ "ahash 0.8.10",
  "left-right",
 ]
 
