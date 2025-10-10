@@ -21,8 +21,19 @@
 //! - The total number of available (not excluded) private addresses used in an "Expose" object must
 //!   be equal to the total number of publicly exposed addresses in this object.
 
+mod port;
 pub mod stateful;
 pub mod stateless;
 
+pub use port::NatPort;
 pub use stateful::StatefulNat;
 pub use stateless::StatelessNat;
+use std::net::IpAddr;
+
+#[derive(Debug, Clone)]
+struct NatTranslationData {
+    src_addr: Option<IpAddr>,
+    dst_addr: Option<IpAddr>,
+    src_port: Option<NatPort>,
+    dst_port: Option<NatPort>,
+}
