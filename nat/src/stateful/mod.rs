@@ -5,17 +5,16 @@ mod allocator;
 mod allocator_writer;
 pub mod apalloc;
 mod natip;
-mod port;
 mod test;
 
 pub use allocator_writer::NatAllocatorWriter;
 
+use super::NatTranslationData;
 use crate::stateful::allocator::{AllocationResult, NatAllocator};
 use crate::stateful::allocator_writer::NatAllocatorReader;
 use crate::stateful::apalloc::AllocatedIpPort;
 use crate::stateful::apalloc::{NatDefaultAllocator, NatIpWithBitmap};
 use crate::stateful::natip::NatIp;
-use crate::stateful::port::NatPort;
 use concurrency::sync::Arc;
 use flow_info::{ExtractRef, FlowInfo};
 use net::buffer::PacketBufferMut;
@@ -55,14 +54,6 @@ const SESSION_TIMEOUT: Duration = Duration::from_secs(60 * 60); // one hour
 
 fn session_timeout_time() -> Instant {
     Instant::now() + SESSION_TIMEOUT
-}
-
-#[derive(Debug, Clone)]
-struct NatTranslationData {
-    src_addr: Option<IpAddr>,
-    dst_addr: Option<IpAddr>,
-    src_port: Option<NatPort>,
-    dst_port: Option<NatPort>,
 }
 
 #[derive(Debug)]
@@ -382,7 +373,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatefulNat {
 
 #[cfg(test)]
 mod tests {
-    use super::port::NatPort;
+    use crate::NatPort;
     use net::headers::Transport;
     use net::tcp::Tcp;
     use net::tcp::port::TcpPort;
