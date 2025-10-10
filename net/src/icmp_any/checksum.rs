@@ -1,0 +1,223 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
+//! ICMP (v4/v6) checksum type and methods
+
+use super::{IcmpAny, IcmpAnyMut};
+use crate::checksum::Checksum;
+use crate::headers::Net;
+use crate::icmp4::Icmp4Checksum;
+use crate::icmp6::{Icmp6Checksum, Icmp6ChecksumPayload};
+use core::fmt::{Display, Formatter};
+use std::fmt::Debug;
+
+/// An ICMP [checksum]
+///
+/// [checksum]: https://en.wikipedia.org/wiki/Internet_Control_Message_Protocol#Header
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
+pub struct IcmpAnyChecksum(pub(crate) u16);
+
+impl Display for IcmpAnyChecksum {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:#06X}", self.0)
+    }
+}
+
+impl IcmpAnyChecksum {
+    /// Map a raw value to a [`IcmpAnyChecksum`]
+    #[must_use]
+    pub const fn new(raw: u16) -> IcmpAnyChecksum {
+        IcmpAnyChecksum(raw)
+    }
+}
+
+impl AsRef<u16> for IcmpAnyChecksum {
+    fn as_ref(&self) -> &u16 {
+        &self.0
+    }
+}
+
+impl AsMut<u16> for IcmpAnyChecksum {
+    fn as_mut(&mut self) -> &mut u16 {
+        &mut self.0
+    }
+}
+
+impl From<u16> for IcmpAnyChecksum {
+    fn from(raw: u16) -> Self {
+        Self::new(raw)
+    }
+}
+
+impl From<IcmpAnyChecksum> for u16 {
+    fn from(checksum: IcmpAnyChecksum) -> Self {
+        checksum.0
+    }
+}
+
+impl From<Icmp4Checksum> for IcmpAnyChecksum {
+    fn from(checksum: Icmp4Checksum) -> Self {
+        Self::new(checksum.0)
+    }
+}
+
+impl From<Icmp6Checksum> for IcmpAnyChecksum {
+    fn from(checksum: Icmp6Checksum) -> Self {
+        Self::new(checksum.0)
+    }
+}
+
+/// The payload over which to compute and validate [`IcmpAny`] checksums.
+pub enum IcmpAnyChecksumPayload<'a> {
+    /// Payload for [`IcmpAny::V4`]
+    V4(&'a [u8]),
+    /// Payload for [`IcmpAny::V6`]
+    V6(Icmp6ChecksumPayload<'a>),
+}
+
+impl<'a> IcmpAnyChecksumPayload<'a> {
+    /// Create a new [`IcmpAnyChecksumPayload`] from a [`Net`] header and provided payload.
+    #[must_use]
+    pub fn from_net<'b>(net: &'b Net, payload: &'a [u8]) -> Self {
+        match net {
+            Net::Ipv4(_) => IcmpAnyChecksumPayload::V4(payload),
+            Net::Ipv6(ipv6) => {
+                let source = ipv6.source().into();
+                let destination = ipv6.destination();
+                IcmpAnyChecksumPayload::V6(Icmp6ChecksumPayload::new(source, destination, payload))
+            }
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum IcmpAnyError {
+    #[error("object is immutable")]
+    Immutable,
+    #[error("payload type mismatch")]
+    WrongPayloadType,
+}
+
+impl Checksum for IcmpAny<'_> {
+    type Error = IcmpAnyError;
+    type Payload<'a>
+        = IcmpAnyChecksumPayload<'a>
+    where
+        Self: 'a;
+    type Checksum = IcmpAnyChecksum;
+
+    /// Get the [`IcmpAny`] checksum of the header
+    ///
+    /// # Returns
+    ///
+    /// Always returns `Some`.
+    fn checksum(&self) -> Option<IcmpAnyChecksum> {
+        match self {
+            IcmpAny::V4(v4) => Some(IcmpAnyChecksum::from(v4.checksum()?)),
+            IcmpAny::V6(v6) => Some(IcmpAnyChecksum::from(v6.checksum()?)),
+        }
+    }
+
+    /// Compute the icmp header's checksum based on the supplied payload.
+    ///
+    /// This method _does not_ update the checksum field.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `IcmpAnyError::WrongPayloadType` if the payload type does not match the
+    /// [`IcmpAny`] variant.
+    fn compute_checksum(
+        &self,
+        payload: &IcmpAnyChecksumPayload<'_>,
+    ) -> Result<IcmpAnyChecksum, IcmpAnyError> {
+        match (self, payload) {
+            (IcmpAny::V4(v4), IcmpAnyChecksumPayload::V4(payload)) => Ok(IcmpAnyChecksum::from(
+                v4.compute_checksum(payload)
+                    .unwrap_or_else(|()| unreachable!()), // IPv4 checksum computation never fails
+            )),
+            (IcmpAny::V6(v6), IcmpAnyChecksumPayload::V6(payload)) => Ok(IcmpAnyChecksum::from(
+                v6.compute_checksum(payload)
+                    .unwrap_or_else(|()| unreachable!()), // IPv6 checksum computation never fails
+            )),
+            _ => Err(IcmpAnyError::WrongPayloadType),
+        }
+    }
+
+    /// The pointers in [`IcmpAny`] are not mutable, we cannot implement
+    /// [`set_checksum()`](Checksum::set_checksum) correctly for this type.
+    ///
+    /// # Errors
+    ///
+    /// Always returns `IcmpAnyError::Immutable`.
+    fn set_checksum(&mut self, _checksum: IcmpAnyChecksum) -> Result<&mut Self, IcmpAnyError> {
+        Err(IcmpAnyError::Immutable)
+    }
+}
+
+impl Checksum for IcmpAnyMut<'_> {
+    type Error = IcmpAnyError;
+    type Payload<'a>
+        = IcmpAnyChecksumPayload<'a>
+    where
+        Self: 'a;
+    type Checksum = IcmpAnyChecksum;
+
+    /// Get the [`IcmpAny`] checksum of the header
+    ///
+    /// # Returns
+    ///
+    /// Always returns `Some`.
+    fn checksum(&self) -> Option<IcmpAnyChecksum> {
+        match self {
+            IcmpAnyMut::V4(v4) => Some(IcmpAnyChecksum::from(v4.checksum()?)),
+            IcmpAnyMut::V6(v6) => Some(IcmpAnyChecksum::from(v6.checksum()?)),
+        }
+    }
+
+    /// Compute the ICMP header's checksum based on the supplied payload.
+    ///
+    /// This method _does not_ update the checksum field.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `IcmpAnyError::WrongPayloadType` if the payload type does not match the
+    /// [`IcmpAnyMut`] variant.
+    fn compute_checksum(
+        &self,
+        payload: &IcmpAnyChecksumPayload<'_>,
+    ) -> Result<IcmpAnyChecksum, IcmpAnyError> {
+        match (self, payload) {
+            (IcmpAnyMut::V4(v4), IcmpAnyChecksumPayload::V4(payload)) => Ok(IcmpAnyChecksum::from(
+                v4.compute_checksum(payload)
+                    .unwrap_or_else(|()| unreachable!()), // IPv4 checksum computation never fails
+            )),
+            (IcmpAnyMut::V6(v6), IcmpAnyChecksumPayload::V6(payload)) => Ok(IcmpAnyChecksum::from(
+                v6.compute_checksum(payload)
+                    .unwrap_or_else(|()| unreachable!()), // IPv6 checksum computation never fails
+            )),
+            _ => Err(IcmpAnyError::WrongPayloadType),
+        }
+    }
+
+    /// Set the checksum field of the header
+    ///
+    /// # Errors
+    ///
+    /// This method never fails.
+    fn set_checksum(&mut self, checksum: IcmpAnyChecksum) -> Result<&mut Self, IcmpAnyError> {
+        match self {
+            IcmpAnyMut::V4(icmp4) => {
+                icmp4
+                    .set_checksum(Icmp4Checksum(checksum.0))
+                    .unwrap_or_else(|()| unreachable!()); // IPv4 checksum computation never fails
+            }
+            IcmpAnyMut::V6(icmp6) => {
+                icmp6
+                    .set_checksum(Icmp6Checksum(checksum.0))
+                    .unwrap_or_else(|()| unreachable!()); // IPv6 checksum computation never fails
+            }
+        }
+        Ok(self)
+    }
+}
