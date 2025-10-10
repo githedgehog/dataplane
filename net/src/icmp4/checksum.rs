@@ -56,24 +56,37 @@ impl From<Icmp4Checksum> for u16 {
 }
 
 impl Checksum for Icmp4 {
+    type Error = ();
     type Payload<'a> = [u8];
     type Checksum = Icmp4Checksum;
 
     /// Get the [`Icmp4`] checksum of the header
-    fn checksum(&self) -> Icmp4Checksum {
-        Icmp4Checksum(self.0.checksum)
+    ///
+    /// # Returns
+    ///
+    /// Always returns `Some`.
+    fn checksum(&self) -> Option<Icmp4Checksum> {
+        Some(Icmp4Checksum(self.0.checksum))
     }
 
     /// Compute the icmp v4 header's checksum based on the supplied payload.
     ///
     /// This method _does not_ update the checksum field.
-    fn compute_checksum(&self, payload: &[u8]) -> Icmp4Checksum {
-        Icmp4Checksum(self.0.icmp_type.calc_checksum(payload))
+    ///
+    /// # Errors
+    ///
+    /// Always returns `Ok`.
+    fn compute_checksum(&self, payload: &[u8]) -> Result<Icmp4Checksum, Self::Error> {
+        Ok(Icmp4Checksum(self.0.icmp_type.calc_checksum(payload)))
     }
 
     /// Set the checksum field of the header
-    fn set_checksum(&mut self, checksum: Icmp4Checksum) -> &mut Self {
+    ///
+    /// # Errors
+    ///
+    /// Always returns `Ok`.
+    fn set_checksum(&mut self, checksum: Icmp4Checksum) -> Result<&mut Self, Self::Error> {
         self.0.checksum = checksum.0;
-        self
+        Ok(self)
     }
 }

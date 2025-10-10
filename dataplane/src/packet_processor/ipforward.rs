@@ -257,7 +257,8 @@ impl IpForwarder {
         if packet.get_meta().checksum_refresh() {
             packet.update_checksums();
         } else if let Some(ipv4) = packet.headers_mut().try_ipv4_mut() {
-            ipv4.update_checksum(&());
+            ipv4.update_checksum(&())
+                .unwrap_or_else(|()| unreachable!()); // IPv4 checksum update never fails
         } else {
             unreachable!()
         }

@@ -227,7 +227,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         }
 
         // the VXLAN spec says that the checksum SHOULD be zero
-        udp.set_checksum(UdpChecksum::ZERO);
+        udp.set_checksum(UdpChecksum::ZERO)
+            .unwrap_or_else(|()| unreachable!()); // setting UDP checksum never fails
 
         let mut headers = params.headers().clone();
         headers.transport = Some(Transport::Udp(udp));
@@ -240,7 +241,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             Some(Net::Ipv4(ipv4)) => {
                 ipv4.set_payload_len(udp_len.get())
                     .unwrap_or_else(|e| unreachable!("{:?}", e));
-                ipv4.update_checksum(&());
+                ipv4.update_checksum(&())
+                    .unwrap_or_else(|()| unreachable!()); // updating IPv4 checksum never fails
             }
         }
         self.headers = headers;

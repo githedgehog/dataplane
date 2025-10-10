@@ -79,7 +79,11 @@ impl Display for Icmp4 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "  ICMP:")?;
         writeln!(f, "        icmp-type: {:?}", self.icmp_type())?;
-        writeln!(f, "        checksum: {}", self.checksum())?;
+        writeln!(
+            f,
+            "        checksum: {}",
+            self.checksum().unwrap_or_else(|| unreachable!())
+        )?;
         Ok(())
     }
 }
@@ -97,7 +101,7 @@ impl Display for Udp {
             self.source().as_u16(),
             self.destination().as_u16(),
             self.length(),
-            self.checksum()
+            self.checksum().unwrap_or_else(|| unreachable!())
         )
     }
 }
@@ -149,7 +153,7 @@ impl Display for Tcp {
             "        header-len: {} data-offset: {} checksum: {} urg-pointer: {}",
             self.header_len(),
             self.data_offset(),
-            self.checksum(),
+            self.checksum().unwrap_or_else(|| unreachable!()),
             self.urgent_pointer(),
         )
     }
