@@ -63,6 +63,7 @@ words = [
     "oom",
     "osdevice",
     "pci",
+    "pcieport",
     "pktmbuf",
     "pmd",
     "programmatically",
