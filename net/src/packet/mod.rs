@@ -17,7 +17,8 @@ use crate::buffer::{Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart}
 use crate::eth::Eth;
 use crate::eth::EthError;
 use crate::headers::{
-    AbstractHeaders, AbstractHeadersMut, Headers, Net, Transport, TryHeaders, TryHeadersMut,
+    AbstractEmbeddedHeaders, AbstractEmbeddedHeadersMut, AbstractHeaders, AbstractHeadersMut,
+    Headers, Net, Transport, TryEmbeddedHeaders, TryEmbeddedHeadersMut, TryHeaders, TryHeadersMut,
     TryIpMut, TryVxlan,
 };
 use crate::parse::{DeParse, Parse, ParseError};
@@ -282,6 +283,18 @@ impl<Buf: PacketBufferMut> TryHeaders for Packet<Buf> {
 impl<Buf: PacketBufferMut> TryHeadersMut for Packet<Buf> {
     fn headers_mut(&mut self) -> &mut impl AbstractHeadersMut {
         &mut self.headers
+    }
+}
+
+impl<Buf: PacketBufferMut> TryEmbeddedHeaders for Packet<Buf> {
+    fn embedded_headers(&self) -> Option<&impl AbstractEmbeddedHeaders> {
+        self.headers.embedded_ip.as_ref()
+    }
+}
+
+impl<Buf: PacketBufferMut> TryEmbeddedHeadersMut for Packet<Buf> {
+    fn embedded_headers_mut(&mut self) -> Option<&mut impl AbstractEmbeddedHeadersMut> {
+        self.headers.embedded_ip.as_mut()
     }
 }
 
