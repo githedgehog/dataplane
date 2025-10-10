@@ -9,6 +9,10 @@ use std::fmt::Debug;
 ///
 /// This trait is used to calculate and manipulate checksums in various headers.
 pub trait Checksum {
+    /// The error type for the header.
+    ///
+    /// This is used to represent the error type in case of failure.
+    type Error;
     /// The payload type for the header.
     ///
     /// This is used to calculate the checksum.
@@ -21,10 +25,18 @@ pub trait Checksum {
     type Checksum: Eq + Copy + Sized + Debug + From<u16> + Into<u16>;
 
     /// Get the checksum value from the header
-    fn checksum(&self) -> Self::Checksum;
+    ///
+    /// # Returns
+    ///
+    /// Returns `None` if the checksum is not present.
+    fn checksum(&self) -> Option<Self::Checksum>;
 
     /// Compute the checksum value from the header and payload
-    fn compute_checksum(&self, payload: &Self::Payload<'_>) -> Self::Checksum;
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ChecksumError`] if checksum computation fails.
+    fn compute_checksum(&self, payload: &Self::Payload<'_>) -> Result<Self::Checksum, Self::Error>;
 
     /// Set the checksum value in the header.
     ///
@@ -37,23 +49,33 @@ pub trait Checksum {
     /// "Normal" input should never cause this trait to panic, but truly exceptional conditions
     /// such as wildly out of the ordinary MTU values (e.g., 2^32) may not be possible to handle
     /// without a panic.
-    fn set_checksum(&mut self, checksum: Self::Checksum) -> &mut Self;
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ChecksumError`] if checksum computation fails or if the checksum is invalid.
+    fn set_checksum(&mut self, checksum: Self::Checksum) -> Result<&mut Self, Self::Error>;
 
     /// Validate the checksum value in the header.
     ///
     /// # Errors
     ///
-    /// Returns a [`ChecksumError`] if the checksum is invalid.
+    /// Returns a [`ChecksumError`] if checksum computation fails or if the checksum is invalid.
     fn validate_checksum(
         &self,
         payload: &Self::Payload<'_>,
     ) -> Result<Self::Checksum, ChecksumError<Self>> {
-        let expected = self.compute_checksum(payload);
-        let actual = self.checksum();
+        let checksum_result = self.compute_checksum(payload);
+        let expected = match checksum_result {
+            Ok(checksum) => checksum,
+            Err(error) => return Err(ChecksumError::Compute { error }),
+        };
+        let Some(actual) = self.checksum() else {
+            return Err(ChecksumError::NotPresent);
+        };
         if expected == actual {
             Ok(expected)
         } else {
-            Err(ChecksumError { expected, actual })
+            Err(ChecksumError::Mismatch { expected, actual })
         }
     }
 
@@ -62,21 +84,30 @@ pub trait Checksum {
     /// The post-condition of this function is that the checksum is valid.
     /// I.e., the `validate_checksum` function will not return an `Err` variant when given the same
     /// value for `payload` as was passed into this function.
-    fn update_checksum(&mut self, payload: &Self::Payload<'_>) -> &mut Self {
-        let ret = self.set_checksum(self.compute_checksum(payload));
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ChecksumError`] if checksum computation fails, if setting the checksum fails,
+    /// or if the checksum is invalid.
+    fn update_checksum(&mut self, payload: &Self::Payload<'_>) -> Result<&mut Self, Self::Error> {
+        let ret = self.set_checksum(self.compute_checksum(payload)?)?;
         #[cfg(debug_assertions)]
         #[allow(clippy::panic)] // this is basically a debug_assert
         match ret.validate_checksum(payload) {
             Ok(_) => {}
-            Err(err) => {
+            Err(ChecksumError::Mismatch { expected, actual }) => {
                 panic!(
                     "checksum implementation is faulty: expected: {expected:?}, actual: {actual:?}",
-                    expected = err.expected,
-                    actual = err.actual
                 );
             }
+            Err(ChecksumError::Compute { error }) => {
+                return Err(error);
+            }
+            Err(ChecksumError::NotPresent) => {
+                unreachable!() // We managed to compute the checksum at the beginning of the function
+            }
         }
-        ret
+        Ok(ret)
     }
 
     /// Perform an incremental update of the checksum in the header, to account for the change of a
@@ -158,10 +189,24 @@ pub trait Checksum {
 
 /// An error resulting from a checksum mismatch.
 #[derive(Debug, thiserror::Error)]
-#[error("checksum mismatch: expected {expected:?}, actual {actual:?}")]
-pub struct ChecksumError<T: Checksum + ?Sized> {
-    expected: T::Checksum,
-    actual: T::Checksum,
+pub enum ChecksumError<T: Checksum + ?Sized> {
+    /// The checksum in the header does not match the computed checksum.
+    #[error("checksum mismatch: expected {expected:?}, actual {actual:?}")]
+    Mismatch {
+        /// The expected (computed) checksum.
+        expected: T::Checksum,
+        /// The actual checksum in the header.
+        actual: T::Checksum,
+    },
+    /// The checksum computation failed.
+    #[error("checksum computation failed: {error:?}")]
+    Compute {
+        /// The error that occurred during checksum computation.
+        error: T::Error,
+    },
+    /// The checksum is not present in the header.
+    #[error("checksum not present")]
+    NotPresent,
 }
 
 #[cfg(test)]
@@ -174,23 +219,24 @@ mod tests {
         let mut ipv4 = ipv4.clone();
 
         // Set and validate checksum
-        ipv4.update_checksum(&());
+        ipv4.update_checksum(&()).expect("update checksum failed");
         ipv4.validate_checksum(&())
             .expect("expected valid checksum after initial update");
 
         // Update 16-bit "total length" field
-        let checksum = ipv4.checksum();
+        let checksum = ipv4.checksum().unwrap();
         let old_value = ipv4.0.total_len;
         ipv4.0.total_len = new_len_value;
 
         // Update and validate checksum
         let new_checksum = ipv4.increment_update_checksum(checksum, old_value, new_len_value);
-        ipv4.set_checksum(new_checksum);
+        ipv4.set_checksum(new_checksum)
+            .expect("set checksum failed");
         ipv4.validate_checksum(&())
             .expect("expected valid checksum after total length field change");
 
         // Update 32-bit destination address
-        let checksum = ipv4.checksum();
+        let checksum = ipv4.checksum().unwrap();
         let old_value = ipv4.destination().into();
         let new_ip = Ipv4Addr::from(new_addr_value);
         ipv4.set_destination(new_ip);
@@ -198,7 +244,8 @@ mod tests {
         // Update and validate checksum
         let new_checksum =
             ipv4.increment_update_checksum_32bit(checksum, old_value, new_addr_value);
-        ipv4.set_checksum(new_checksum);
+        ipv4.set_checksum(new_checksum)
+            .expect("set checksum failed");
         ipv4.validate_checksum(&())
             .expect("expected valid checksum after destination address change");
     }

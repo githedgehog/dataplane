@@ -377,6 +377,7 @@ mod contract {
                 .set_source(u.produce()?)
                 .set_destination(u.produce()?)
                 .set_checksum(u.produce()?)
+                .unwrap_or_else(|()| unreachable!())
                 .set_sequence_number(u.produce()?)
                 .set_ack(u.produce()?)
                 .set_ack_number(u.produce()?)

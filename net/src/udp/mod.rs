@@ -253,7 +253,7 @@ mod contract {
             let mut header = Udp(UdpHeader::default());
             header.set_source(u.produce()?);
             header.set_destination(u.produce()?);
-            header.set_checksum(u.produce()?);
+            header.set_checksum(u.produce()?).ok()?;
             let length = u.produce::<u16>()?;
             match length {
                 #[allow(unsafe_code)] // trivially safe const-eval
@@ -407,7 +407,9 @@ mod test {
                     source.set_length(target.length());
                 }
                 assert_eq!(source.length(), target.length());
-                source.set_checksum(target.checksum());
+                source
+                    .set_checksum(target.checksum().unwrap_or_else(|| unreachable!()))
+                    .unwrap_or_else(|()| unreachable!());
                 assert_eq!(source.checksum(), target.checksum());
                 assert_eq!(source, target);
                 let mut source_bytes = [0u8; MIN_LENGTH_USIZE];

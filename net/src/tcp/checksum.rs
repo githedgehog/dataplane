@@ -71,25 +71,45 @@ impl<'a> TcpChecksumPayload<'a> {
 }
 
 impl Checksum for Tcp {
+    type Error = ();
     type Payload<'a>
         = TcpChecksumPayload<'a>
     where
         Self: 'a;
     type Checksum = TcpChecksum;
 
-    fn checksum(&self) -> Self::Checksum {
-        TcpChecksum(self.0.checksum)
+    /// Get the [`Tcp`] checksum of the header
+    ///
+    /// # Returns
+    ///
+    /// Always returns `Some`.
+    fn checksum(&self) -> Option<Self::Checksum> {
+        Some(TcpChecksum(self.0.checksum))
     }
 
-    fn compute_checksum(&self, payload: &Self::Payload<'_>) -> Self::Checksum {
+    /// Compute the TCP header's checksum based on the supplied payload.
+    ///
+    /// This method _does not_ update the checksum field.
+    ///
+    /// # Errors
+    ///
+    /// Always returns `Ok`.
+    fn compute_checksum(&self, payload: &Self::Payload<'_>) -> Result<Self::Checksum, Self::Error> {
         match payload.net {
-            Net::Ipv4(ip) => self.compute_checksum_ipv4(ip, payload.contents),
-            Net::Ipv6(ip) => self.compute_checksum_ipv6(ip, payload.contents),
+            Net::Ipv4(ip) => Ok(self.compute_checksum_ipv4(ip, payload.contents)),
+            Net::Ipv6(ip) => Ok(self.compute_checksum_ipv6(ip, payload.contents)),
         }
     }
 
-    fn set_checksum(&mut self, checksum: Self::Checksum) -> &mut Self {
+    /// Set the checksum field of the header.
+    ///
+    /// The validity of the checksum is not checked.
+    ///
+    /// # Errors
+    ///
+    /// Always returns `Ok`.
+    fn set_checksum(&mut self, checksum: Self::Checksum) -> Result<&mut Self, Self::Error> {
         self.0.checksum = checksum.0;
-        self
+        Ok(self)
     }
 }

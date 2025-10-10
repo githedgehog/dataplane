@@ -91,31 +91,47 @@ impl<'a> Icmp6ChecksumPayload<'a> {
 }
 
 impl Checksum for Icmp6 {
+    type Error = ();
     type Payload<'a> = Icmp6ChecksumPayload<'a>;
     type Checksum = Icmp6Checksum;
 
     /// Get the [`Icmp6`] checksum of the header
-    fn checksum(&self) -> Icmp6Checksum {
-        Icmp6Checksum(self.0.checksum)
+    ///
+    /// # Returns
+    ///
+    /// Always returns `Some`.
+    fn checksum(&self) -> Option<Icmp6Checksum> {
+        Some(Icmp6Checksum(self.0.checksum))
     }
 
     /// Compute the icmp v6 header's checksum based on the supplied payload.
     ///
     /// This method _does not_ update the checksum field.
-    fn compute_checksum(&self, payload: &Icmp6ChecksumPayload) -> Icmp6Checksum {
-        Icmp6Checksum(
+    ///
+    /// # Errors
+    ///
+    /// Always returns `Ok`.
+    fn compute_checksum(
+        &self,
+        payload: &Icmp6ChecksumPayload,
+    ) -> Result<Icmp6Checksum, Self::Error> {
+        Ok(Icmp6Checksum(
             self.0
                 .icmp_type
                 .calc_checksum(payload.src.octets(), payload.dst.octets(), payload.contents)
                 .unwrap_or_else(|e| unreachable!("{:?}", e)),
-        )
+        ))
     }
 
     /// Set the checksum field of the header.
     ///
     /// The validity of the checksum is not checked.
-    fn set_checksum(&mut self, checksum: Icmp6Checksum) -> &mut Self {
+    ///
+    /// # Errors
+    ///
+    /// Always returns `Ok`.
+    fn set_checksum(&mut self, checksum: Icmp6Checksum) -> Result<&mut Self, Self::Error> {
         self.0.checksum = checksum.0;
-        self
+        Ok(self)
     }
 }

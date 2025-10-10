@@ -158,7 +158,7 @@ impl Net {
     pub(crate) fn update_checksum(&mut self) {
         match self {
             Net::Ipv4(ip) => {
-                ip.update_checksum(&());
+                ip.update_checksum(&()).unwrap_or_else(|()| unreachable!()); // Updating IPv4 checksum never fails
             }
             Net::Ipv6(_) => {}
         }
@@ -169,20 +169,26 @@ impl Transport {
     pub(crate) fn update_checksum(&mut self, net: &Net, payload: impl AsRef<[u8]>) {
         match (net, self) {
             (net, Transport::Tcp(tcp)) => {
-                tcp.update_checksum(&TcpChecksumPayload::new(net, payload.as_ref()));
+                tcp.update_checksum(&TcpChecksumPayload::new(net, payload.as_ref()))
+                    .unwrap_or_else(|()| unreachable!()); // Updating TCP checksum never fails
             }
             (net, Transport::Udp(udp)) => {
-                udp.update_checksum(&UdpChecksumPayload::new(net, payload.as_ref()));
+                udp.update_checksum(&UdpChecksumPayload::new(net, payload.as_ref()))
+                    .unwrap_or_else(|()| unreachable!()); // Updating UDP checksum never fails
             }
             (Net::Ipv4(_), Transport::Icmp4(icmp4)) => {
-                icmp4.update_checksum(payload.as_ref());
+                icmp4
+                    .update_checksum(payload.as_ref())
+                    .unwrap_or_else(|()| unreachable!()); // Updating ICMPv4 checksum never fails
             }
             (Net::Ipv6(ip), Transport::Icmp6(icmpv6)) => {
-                icmpv6.update_checksum(&Icmp6ChecksumPayload::new(
-                    ip.source().inner(),
-                    ip.destination(),
-                    payload.as_ref(),
-                ));
+                icmpv6
+                    .update_checksum(&Icmp6ChecksumPayload::new(
+                        ip.source().inner(),
+                        ip.destination(),
+                        payload.as_ref(),
+                    ))
+                    .unwrap_or_else(|()| unreachable!()); // Updating ICMPv6 checksum never fails
             }
             // TODO: statically ensure that this is unreachable
             (Net::Ipv6(_), Transport::Icmp4(_)) => debug!("illegal: icmpv4 in ipv6"),
@@ -1410,6 +1416,7 @@ mod test {
         pub(super) fn ipv4(next_header: NextHeader) -> Ipv4 {
             let mut ipv4 = Ipv4::default();
             ipv4.set_checksum(0x1234.into())
+                .unwrap()
                 .set_ecn(Ecn::new(0b11).unwrap())
                 .set_dscp(Dscp::MAX)
                 .set_source(UnicastIpv4Addr::new(Ipv4Addr::new(192, 168, 1, 1)).unwrap())
@@ -1437,7 +1444,8 @@ mod test {
                 .set_destination(456.try_into().unwrap())
                 .set_syn(true)
                 .set_sequence_number(1)
-                .set_checksum(1234.into());
+                .set_checksum(1234.into())
+                .unwrap();
             tcp
         }
 
@@ -1445,21 +1453,22 @@ mod test {
             let mut udp = Udp::default();
             udp.set_source(123.try_into().unwrap())
                 .set_destination(456.try_into().unwrap())
-                .set_checksum(1234.into());
+                .set_checksum(1234.into())
+                .unwrap();
             udp
         }
 
         pub(super) fn icmp4() -> Icmp4 {
             let mut icmp4 =
                 Icmp4::with_type(Icmpv4Type::EchoRequest(IcmpEchoHeader { id: 18, seq: 2 }));
-            icmp4.set_checksum(1234.into());
+            icmp4.set_checksum(1234.into()).unwrap();
             icmp4
         }
 
         pub(super) fn icmp6() -> Icmp6 {
             let mut icmp6 =
                 Icmp6::with_type(Icmpv6Type::EchoRequest(IcmpEchoHeader { id: 18, seq: 2 }));
-            icmp6.set_checksum(1234.into());
+            icmp6.set_checksum(1234.into()).unwrap();
             icmp6
         }
 
@@ -1643,9 +1652,12 @@ mod test {
                 let old_value = transport.source().into();
                 let new_value = 235;
                 transport.set_source(UdpPort::new_checked(new_value).unwrap());
-                let new_checksum =
-                    transport.increment_update_checksum(transport.checksum(), old_value, new_value);
-                transport.set_checksum(new_checksum);
+                let new_checksum = transport.increment_update_checksum(
+                    transport.checksum().unwrap(),
+                    old_value,
+                    new_value,
+                );
+                transport.set_checksum(new_checksum).unwrap();
 
                 transport
                     .validate_checksum(&UdpChecksumPayload::new(&net, &[]))
@@ -1656,9 +1668,12 @@ mod test {
                 let old_value = transport.destination().into();
                 let new_value = 116;
                 transport.set_destination(TcpPort::new_checked(new_value).unwrap());
-                let new_checksum =
-                    transport.increment_update_checksum(transport.checksum(), old_value, new_value);
-                transport.set_checksum(new_checksum);
+                let new_checksum = transport.increment_update_checksum(
+                    transport.checksum().unwrap(),
+                    old_value,
+                    new_value,
+                );
+                transport.set_checksum(new_checksum).unwrap();
 
                 transport
                     .validate_checksum(&TcpChecksumPayload::new(&net, &[]))
@@ -1673,11 +1688,11 @@ mod test {
                         let new_ip = UnicastIpv4Addr::try_from(Ipv4Addr::from(new_value)).unwrap();
                         ipv4.set_source(new_ip);
                         let new_checksum = ipv4.increment_update_checksum_32bit(
-                            ipv4.checksum(),
+                            ipv4.checksum().unwrap(),
                             old_value,
                             new_value,
                         );
-                        ipv4.set_checksum(new_checksum);
+                        ipv4.set_checksum(new_checksum).unwrap();
                         ipv4.validate_checksum(&())
                             .expect("expected valid checksum");
                     }
@@ -1753,11 +1768,11 @@ mod test {
             match &headers.net {
                 Some(net) => match net {
                     Net::Ipv4(ipv4) => {
-                        assert_eq!(ipv4.checksum(), comparison.good_ipv4);
+                        assert_eq!(ipv4.checksum().unwrap(), comparison.good_ipv4);
                         ipv4.validate_checksum(&()).unwrap();
                         match &headers.transport {
                             Some(Transport::Tcp(tcp)) => {
-                                assert_eq!(tcp.checksum(), comparison.good_tcp);
+                                assert_eq!(tcp.checksum().unwrap(), comparison.good_tcp);
                                 let payload = TcpChecksumPayload::new(net, comparison.payload);
                                 tcp.validate_checksum(&payload).unwrap();
                             }
@@ -1806,11 +1821,11 @@ mod test {
             match &headers.net {
                 Some(net) => match net {
                     Net::Ipv4(ipv4) => {
-                        assert_eq!(ipv4.checksum(), comparison.good_ipv4);
+                        assert_eq!(ipv4.checksum().unwrap(), comparison.good_ipv4);
                         ipv4.validate_checksum(&()).unwrap();
                         match &headers.transport {
                             Some(Transport::Udp(udp)) => {
-                                assert_eq!(udp.checksum(), comparison.good_udp);
+                                assert_eq!(udp.checksum().unwrap(), comparison.good_udp);
                                 let payload = UdpChecksumPayload::new(net, comparison.payload);
                                 udp.validate_checksum(&payload).unwrap();
                             }
@@ -1859,11 +1874,11 @@ mod test {
             match &headers.net {
                 Some(net) => {
                     if let Net::Ipv4(ipv4) = net {
-                        assert_eq!(ipv4.checksum(), comparison.good_ipv4);
+                        assert_eq!(ipv4.checksum().unwrap(), comparison.good_ipv4);
                         ipv4.validate_checksum(&()).unwrap();
                         match &headers.transport {
                             Some(Transport::Icmp4(icmp)) => {
-                                assert_eq!(icmp.checksum(), comparison.good_icmp);
+                                assert_eq!(icmp.checksum().unwrap(), comparison.good_icmp);
                                 icmp.validate_checksum(comparison.payload).unwrap();
                             }
                             _ => unreachable!(),
@@ -1906,7 +1921,7 @@ mod test {
             headers.update_checksums(comparison.payload);
             match (headers.net, headers.transport) {
                 (Some(net), Some(Transport::Tcp(tcp))) => {
-                    assert_eq!(tcp.checksum(), comparison.good_tcp);
+                    assert_eq!(tcp.checksum().unwrap(), comparison.good_tcp);
                     let payload = TcpChecksumPayload::new(&net, comparison.payload);
                     tcp.validate_checksum(&payload).unwrap();
                 }
@@ -1944,7 +1959,7 @@ mod test {
             headers.update_checksums(comparison.payload);
             match (headers.net, headers.transport) {
                 (Some(net), Some(Transport::Udp(udp))) => {
-                    assert_eq!(udp.checksum(), comparison.good_udp);
+                    assert_eq!(udp.checksum().unwrap(), comparison.good_udp);
                     let payload = UdpChecksumPayload::new(&net, comparison.payload);
                     udp.validate_checksum(&payload).unwrap();
                 }
@@ -1982,7 +1997,7 @@ mod test {
             headers.update_checksums(comparison.payload);
             match (headers.net, headers.transport) {
                 (Some(Net::Ipv6(ipv6)), Some(Transport::Icmp6(icmp))) => {
-                    assert_eq!(icmp.checksum(), comparison.good_icmp);
+                    assert_eq!(icmp.checksum().unwrap(), comparison.good_icmp);
                     let payload = Icmp6ChecksumPayload::new(
                         ipv6.source().inner(),
                         ipv6.destination(),
