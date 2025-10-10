@@ -95,12 +95,6 @@ impl Tcp {
         NonZero::new(self.0.header_len()).unwrap_or_else(|| unreachable!())
     }
 
-    /// get the checksum of the header as a `u16`
-    #[must_use]
-    pub const fn checksum(&self) -> TcpChecksum {
-        TcpChecksum::new(self.0.checksum)
-    }
-
     /// Get the sequence number of the header.
     #[must_use]
     pub const fn sequence_number(&self) -> u32 {
@@ -268,12 +262,6 @@ impl Tcp {
         self
     }
 
-    /// Set the checksum
-    pub fn set_checksum(&mut self, checksum: TcpChecksum) -> &mut Self {
-        self.0.checksum = checksum.0;
-        self
-    }
-
     /// Set the sequence number
     ///
     /// # Note
@@ -377,6 +365,7 @@ impl DeParse for Tcp {
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
+    use crate::checksum::Checksum;
     use crate::tcp::Tcp;
     use bolero::{Driver, TypeGenerator};
     use etherparse::TcpHeader;
@@ -407,6 +396,7 @@ mod contract {
 
 #[cfg(test)]
 mod test {
+    use crate::checksum::Checksum;
     use crate::parse::{DeParse, IntoNonZeroUSize, Parse, ParseError};
     use crate::tcp::Tcp;
 
