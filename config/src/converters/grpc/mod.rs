@@ -266,11 +266,17 @@ mod test {
         let vpc1_expose = gateway_config::Expose {
             ips: vec![include_ip],
             r#as: vec![include_as],
+            nat: Some(gateway_config::config::expose::Nat::Stateless(
+                gateway_config::config::PeeringStatelessNat {},
+            )),
         };
 
         let vpc2_expose = gateway_config::Expose {
             ips: vec![exclude_ip],
             r#as: vec![exclude_as],
+            nat: Some(gateway_config::config::expose::Nat::Stateless(
+                gateway_config::config::PeeringStatelessNat {},
+            )),
         };
 
         // Create PeeringEntryFor

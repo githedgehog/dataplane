@@ -67,7 +67,7 @@ impl NatDefaultAllocator {
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<(), AllocatorError> {
         filter_v4_exposes(&peering.local.exposes).try_for_each(|expose| {
-            let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.as_range)?;
+            let tcp_ip_allocator = ip_allocator_for_prefixes(expose.as_range_or_empty())?;
             let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
             build_src_nat_pool_generic(
                 &mut self.pools_src44,
@@ -80,7 +80,7 @@ impl NatDefaultAllocator {
         })?;
 
         filter_v6_exposes(&peering.local.exposes).try_for_each(|expose| {
-            let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.as_range)?;
+            let tcp_ip_allocator = ip_allocator_for_prefixes(expose.as_range_or_empty())?;
             let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
             build_src_nat_pool_generic(
                 &mut self.pools_src66,
@@ -134,7 +134,7 @@ impl NatDefaultAllocator {
 fn filter_v4_exposes(exposes: &[VpcExpose]) -> impl Iterator<Item = &VpcExpose> {
     exposes.iter().filter(|e| {
         matches!(
-            (e.ips.first(), e.as_range.first()),
+            (e.ips.first(), e.as_range_or_empty().first()),
             (Some(Prefix::IPV4(_)), Some(Prefix::IPV4(_)))
         )
     })
@@ -143,7 +143,7 @@ fn filter_v4_exposes(exposes: &[VpcExpose]) -> impl Iterator<Item = &VpcExpose> 
 fn filter_v6_exposes(exposes: &[VpcExpose]) -> impl Iterator<Item = &VpcExpose> {
     exposes.iter().filter(|e| {
         matches!(
-            (e.ips.first(), e.as_range.first()),
+            (e.ips.first(), e.as_range_or_empty().first()),
             (Some(Prefix::IPV6(_)), Some(Prefix::IPV6(_)))
         )
     })
@@ -177,7 +177,7 @@ fn build_dst_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(
 ) -> Result<(), AllocatorError> {
     add_pool_entries(
         table,
-        &expose.as_range,
+        expose.as_range_or_empty(),
         src_vpc_id,
         dst_vpc_id,
         tcp_allocator,
