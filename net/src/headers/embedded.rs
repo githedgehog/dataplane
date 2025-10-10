@@ -41,6 +41,17 @@ pub struct EmbeddedHeaders {
 }
 
 impl EmbeddedHeaders {
+    fn net_headers_len(&self) -> u16 {
+        self.net.as_ref().map(|net| net.size().get()).unwrap_or(0)
+    }
+
+    fn transport_headers_len(&self) -> u16 {
+        self.transport
+            .as_ref()
+            .map(|transport| transport.size().get())
+            .unwrap_or(0)
+    }
+
     pub fn is_full_payload(&self) -> bool {
         self.full_payload
     }
@@ -245,15 +256,8 @@ impl DeParse for EmbeddedHeaders {
 
     fn size(&self) -> NonZero<u16> {
         // TODO(blocking): Deal with ip{v4,v6} extensions
-        let net = match self.net {
-            None => 0,
-            Some(ref n) => n.size().get(),
-        };
-        let transport = match self.transport {
-            None => 0,
-            Some(ref t) => t.size().get(),
-        };
-        NonZero::new(net + transport).unwrap_or_else(|| unreachable!())
+        NonZero::new(self.net_headers_len() + self.transport_headers_len())
+            .unwrap_or_else(|| unreachable!())
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
