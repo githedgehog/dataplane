@@ -90,3 +90,9 @@ impl TryFrom<u16> for UdpPort {
         Self::new_checked(value)
     }
 }
+
+impl From<UdpPort> for NonZero<u16> {
+    fn from(port: UdpPort) -> Self {
+        port.0
+    }
+}

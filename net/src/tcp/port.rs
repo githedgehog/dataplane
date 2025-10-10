@@ -88,3 +88,9 @@ impl TryFrom<u16> for TcpPort {
         Self::new_checked(value)
     }
 }
+
+impl From<TcpPort> for NonZero<u16> {
+    fn from(port: TcpPort) -> Self {
+        port.0
+    }
+}

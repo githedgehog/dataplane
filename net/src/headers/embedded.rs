@@ -11,8 +11,8 @@ use crate::parse::{
     DeParse, DeParseError, IllegalBufferLength, IntoNonZeroUSize, LengthError, ParseError,
     ParseHeader, ParseWith, Reader, Writer,
 };
-use crate::tcp::TruncatedTcp;
-use crate::udp::TruncatedUdp;
+use crate::tcp::{TcpPort, TruncatedTcp};
+use crate::udp::{TruncatedUdp, UdpPort};
 use arrayvec::ArrayVec;
 use core::fmt::Debug;
 use std::num::NonZero;
@@ -358,6 +358,44 @@ impl_from_for_enum![
 pub enum EmbeddedTransport {
     Tcp(TruncatedTcp),
     Udp(TruncatedUdp),
+}
+
+impl EmbeddedTransport {
+    pub fn source(&self) -> NonZero<u16> {
+        match self {
+            EmbeddedTransport::Tcp(tcp) => tcp.source().into(),
+            EmbeddedTransport::Udp(udp) => udp.source().into(),
+        }
+    }
+
+    pub fn destination(&self) -> NonZero<u16> {
+        match self {
+            EmbeddedTransport::Tcp(tcp) => tcp.destination().into(),
+            EmbeddedTransport::Udp(udp) => udp.destination().into(),
+        }
+    }
+
+    pub fn set_source(&mut self, port: NonZero<u16>) {
+        match self {
+            EmbeddedTransport::Tcp(tcp) => {
+                tcp.set_source(TcpPort::new(port));
+            }
+            EmbeddedTransport::Udp(udp) => {
+                udp.set_source(UdpPort::new(port));
+            }
+        }
+    }
+
+    pub fn set_destination(&mut self, port: NonZero<u16>) {
+        match self {
+            EmbeddedTransport::Tcp(tcp) => {
+                tcp.set_destination(TcpPort::new(port));
+            }
+            EmbeddedTransport::Udp(udp) => {
+                udp.set_destination(UdpPort::new(port));
+            }
+        }
+    }
 }
 
 impl DeParse for EmbeddedTransport {

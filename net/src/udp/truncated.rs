@@ -138,6 +138,50 @@ pub enum TruncatedUdp {
     PartialHeader(TruncatedUdpHeader),
 }
 
+impl TruncatedUdp {
+    /// Get the source port
+    #[must_use]
+    pub const fn source(&self) -> UdpPort {
+        match self {
+            TruncatedUdp::FullHeader(udp) => udp.source(),
+            TruncatedUdp::PartialHeader(udp) => udp.source(),
+        }
+    }
+
+    /// Set the source port
+    pub fn set_source(&mut self, port: UdpPort) {
+        match self {
+            TruncatedUdp::FullHeader(udp) => {
+                udp.set_source(port);
+            }
+            TruncatedUdp::PartialHeader(udp) => {
+                udp.set_source(port);
+            }
+        }
+    }
+
+    /// Get the destination port
+    #[must_use]
+    pub const fn destination(&self) -> UdpPort {
+        match self {
+            TruncatedUdp::FullHeader(udp) => udp.destination(),
+            TruncatedUdp::PartialHeader(udp) => udp.destination(),
+        }
+    }
+
+    /// Set the destination port
+    pub fn set_destination(&mut self, port: UdpPort) {
+        match self {
+            TruncatedUdp::FullHeader(udp) => {
+                udp.set_destination(port);
+            }
+            TruncatedUdp::PartialHeader(udp) => {
+                udp.set_destination(port);
+            }
+        }
+    }
+}
+
 /// Errors which can occur when attempting to parse arbitrary bytes into a `TruncatedUdp` header.
 #[derive(Debug, thiserror::Error)]
 pub enum TruncatedUdpError {
