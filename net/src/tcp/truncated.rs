@@ -138,6 +138,50 @@ pub enum TruncatedTcp {
     PartialHeader(TruncatedTcpHeader),
 }
 
+impl TruncatedTcp {
+    /// Get the source port
+    #[must_use]
+    pub const fn source(&self) -> TcpPort {
+        match self {
+            TruncatedTcp::FullHeader(tcp) => tcp.source(),
+            TruncatedTcp::PartialHeader(tcp) => tcp.source(),
+        }
+    }
+
+    /// Set the source port
+    pub fn set_source(&mut self, port: TcpPort) {
+        match self {
+            TruncatedTcp::FullHeader(tcp) => {
+                tcp.set_source(port);
+            }
+            TruncatedTcp::PartialHeader(tcp) => {
+                tcp.set_source(port);
+            }
+        }
+    }
+
+    /// Get the destination port
+    #[must_use]
+    pub const fn destination(&self) -> TcpPort {
+        match self {
+            TruncatedTcp::FullHeader(tcp) => tcp.destination(),
+            TruncatedTcp::PartialHeader(tcp) => tcp.destination(),
+        }
+    }
+
+    /// Set the destination port
+    pub fn set_destination(&mut self, port: TcpPort) {
+        match self {
+            TruncatedTcp::FullHeader(tcp) => {
+                tcp.set_destination(port);
+            }
+            TruncatedTcp::PartialHeader(tcp) => {
+                tcp.set_destination(port);
+            }
+        }
+    }
+}
+
 /// Errors which can occur when attempting to parse arbitrary bytes into a `TruncatedTcp` header.
 #[derive(Debug, thiserror::Error)]
 pub enum TruncatedTcpError {
