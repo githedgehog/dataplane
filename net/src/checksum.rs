@@ -188,7 +188,7 @@ pub trait Checksum {
 }
 
 /// An error resulting from a checksum mismatch.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ChecksumError<T: Checksum + ?Sized> {
     /// The checksum in the header does not match the computed checksum.
     #[error("checksum mismatch: expected {expected:?}, actual {actual:?}")]

@@ -12,7 +12,7 @@ mod checksum;
 pub use checksum::*;
 
 /// Error type for [`IcmpAny`] and [`IcmpAnyMut`]
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum IcmpAnyError {
     /// The transport layer is not `ICMPv4` or `ICMPv6`
     #[error("this transport layer is neither ICMPv4 nor ICMPv6")]
