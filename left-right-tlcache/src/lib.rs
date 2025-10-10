@@ -28,6 +28,7 @@
 //!
 //! Note: providers must be Sync since the thread-local caches for distinct threads will poll them.
 
+use ahash::RandomState;
 use left_right::{ReadHandle, ReadHandleFactory};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -53,7 +54,7 @@ pub enum ReadHandleCacheError<K> {
 }
 
 pub struct ReadHandleCache<K: Hash + Eq, T> {
-    handles: RefCell<HashMap<K, Rc<ReadHandle<T>>>>,
+    handles: RefCell<HashMap<K, Rc<ReadHandle<T>>, RandomState>>,
 }
 impl<K, T> ReadHandleCache<K, T>
 where
@@ -62,7 +63,7 @@ where
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
-            handles: RefCell::new(HashMap::new()),
+            handles: RefCell::new(HashMap::with_hasher(RandomState::with_seed(0))),
         }
     }
     pub fn get_reader(
