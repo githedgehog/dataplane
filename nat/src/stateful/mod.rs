@@ -7,22 +7,24 @@ pub mod apalloc;
 mod natip;
 mod test;
 
-pub use allocator_writer::NatAllocatorWriter;
-
 use super::NatTranslationData;
+use crate::icmp_error_msg::{
+    IcmpErrorMsgError, stateful_translate_icmp_inner, validate_checksums_icmp,
+};
 use crate::stateful::allocator::{AllocationResult, NatAllocator};
 use crate::stateful::allocator_writer::NatAllocatorReader;
 use crate::stateful::apalloc::AllocatedIpPort;
 use crate::stateful::apalloc::{NatDefaultAllocator, NatIpWithBitmap};
 use crate::stateful::natip::NatIp;
+pub use allocator_writer::NatAllocatorWriter;
 use concurrency::sync::Arc;
 use flow_info::{ExtractRef, FlowInfo};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryHeaders, TryHeadersMut, TryIp, TryIpMut, TryTransportMut};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::NetworkFunction;
-use pkt_meta::flow_table::flow_key::Uni;
-use pkt_meta::flow_table::{FlowKey, FlowTable};
+use pkt_meta::flow_table::flow_key::{IcmpProtoKey, Uni};
+use pkt_meta::flow_table::{FlowKey, FlowKeyData, FlowTable, IpProtoKey};
 use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
@@ -48,6 +50,10 @@ pub enum StatefulNatError {
     NotUnicast(IpAddr),
     #[error("invalid port {0}")]
     InvalidPort(u16),
+    #[error("no session found")]
+    NoSession,
+    #[error("failed to translate ICMP inner packet: {0}")]
+    IcmpErrorMsg(IcmpErrorMsgError),
 }
 
 const SESSION_TIMEOUT: Duration = Duration::from_secs(60 * 60); // one hour
@@ -268,6 +274,70 @@ impl StatefulNat {
         ))
     }
 
+    fn lookup_session_icmp_inner<I: NatIpWithBitmap>(
+        &self,
+        flow_key: &FlowKey,
+    ) -> Option<NatTranslationData> {
+        let IpProtoKey::Icmp(IcmpProtoKey::ErrorMsgData(Some(embedded_packet_data))) =
+            flow_key.data().proto_key_info()
+        else {
+            // No ICMP Error message data, no translation needed
+            return None;
+        };
+
+        // Do we need to swap source and destination when building the FlowKey?
+        //
+        // 1. Original IP packet is sent: a -> B.
+        // 2. Original IP packet is NAT-ed: A -> b.
+        //    This creates a session table entry matching a -> B, and the reverse entry matching b -> A.
+        // 3. Some router on the path, after the NAT we've done, generates an ICMP Error message and
+        //    embeds a copy of the IP packet at that time: A -> b
+        // 4. Session table lookup: we have no entry matching A -> b, we need to look for b -> A
+        //
+        // So we do need to swap source and destination. Same applies to VPC discriminants.
+        let inner_flow_key = FlowKey::Unidirectional(FlowKeyData::new(
+            flow_key.data().dst_vpcd(),     // Source VPC discriminant
+            *embedded_packet_data.dst_ip(), // Source IP address: embedded destination IP address
+            flow_key.data().src_vpcd(),     // Destination VPC discriminant
+            *embedded_packet_data.src_ip(), // Destination IP address: embedded source IP address
+            (*embedded_packet_data.proto_key_info()).into(),
+        ));
+
+        let flow_info = self.sessions.lookup(&inner_flow_key)?;
+        let value = flow_info.locked.read().unwrap();
+        let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
+
+        let translation_data = Self::get_translation_info(&state.src_alloc, &state.dst_alloc);
+        Some(translation_data)
+    }
+
+    fn translate_icmp_inner_packet_if_any<Buf: PacketBufferMut, I: NatIpWithBitmap>(
+        &self,
+        packet: &mut Packet<Buf>,
+        flow_key: &FlowKey,
+    ) -> Result<(), StatefulNatError> {
+        match validate_checksums_icmp(packet) {
+            Err(e) => return Err(StatefulNatError::IcmpErrorMsg(e)), // Error, drop packet
+            Ok(false) => return Ok(()),                              // No translation needed
+            Ok(true) => {}                                           // Translation needed, carry on
+        }
+
+        let Some(state) = self.lookup_session_icmp_inner::<I>(flow_key) else {
+            // From REQ-4 and REQ-5 from RFC 5508, "NAT Behavioral Requirements for ICMP":
+            //
+            //    If a NAT device receives an ICMP Error packet from an external realm, and the NAT
+            //    device does not have an active mapping for the embedded payload, the NAT SHOULD
+            //    silently drop the ICMP Error packet.
+            //
+            //    If a NAT device receives an ICMP Error packet from the private realm, and the NAT
+            //    does not have an active mapping for the embedded payload, the NAT SHOULD silently
+            //    drop the ICMP Error packet.
+            return Err(StatefulNatError::NoSession);
+        };
+
+        stateful_translate_icmp_inner::<Buf>(packet, &state).map_err(StatefulNatError::IcmpErrorMsg)
+    }
+
     fn translate_packet<Buf: PacketBufferMut, I: NatIpWithBitmap>(
         &mut self,
         packet: &mut Packet<Buf>,
@@ -277,6 +347,7 @@ impl StatefulNat {
     ) -> Result<bool, StatefulNatError> {
         // Hot path: if we have a session, directly translate the address already
         if let Some(state) = Self::lookup_session::<I, Buf>(packet) {
+            self.translate_icmp_inner_packet_if_any::<Buf, I>(packet, flow_key)?;
             return Self::stateful_translate::<Buf>(packet, &state).and(Ok(true));
         }
 
@@ -296,6 +367,8 @@ impl StatefulNat {
             // No NAT for this tuple, leave the packet unchanged - Do not drop it
             return Ok(false);
         }
+
+        self.translate_icmp_inner_packet_if_any::<Buf, I>(packet, flow_key)?;
 
         let translation_info = Self::get_translation_info(&alloc.src, &alloc.dst);
         let reverse_flow_key = Self::new_reverse_session(flow_key, &alloc, src_vpc_id, dst_vpc_id)?;

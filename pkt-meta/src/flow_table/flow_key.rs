@@ -136,6 +136,15 @@ impl InnerIpProtoKey {
     }
 }
 
+impl From<InnerIpProtoKey> for IpProtoKey {
+    fn from(value: InnerIpProtoKey) -> Self {
+        match value {
+            InnerIpProtoKey::Tcp(tcp) => IpProtoKey::Tcp(tcp),
+            InnerIpProtoKey::Udp(udp) => IpProtoKey::Udp(udp),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EmbeddedPacketData {
     src_ip: IpAddr,
