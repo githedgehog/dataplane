@@ -14,6 +14,7 @@ members = [
     "hardware",
     "id",
     "interface-manager",
+    "left-right-tlcache",
     "mgmt",
     "nat",
     "net",
@@ -46,6 +47,7 @@ gateway_config = { git = "https://github.com/githedgehog/gateway-proto", tag = "
 hardware = { path = "./hardware", package = "dataplane-hardware" }
 id = { path = "./id", package = "dataplane-id" }
 interface-manager = { path = "./interface-manager", package = "dataplane-interface-manager" }
+left-right-tlcache = { path = "./left-right-tlcache", package = "dataplane-left-right-tlcache" }
 lpm = { path = "./lpm", package = "dataplane-lpm" }
 mgmt = { path = "./mgmt", package = "dataplane-mgmt" }
 nat = { path = "./nat", package = "dataplane-nat" }
