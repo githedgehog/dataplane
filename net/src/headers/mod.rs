@@ -402,7 +402,12 @@ impl DeParse for Headers {
             None => 0,
             Some(UdpEncap::Vxlan(vxlan)) => vxlan.size().get(),
         };
-        NonZero::new(eth + vlan + net + transport + encap).unwrap_or_else(|| unreachable!())
+        let embedded_ip = self
+            .embedded_ip
+            .as_ref()
+            .map_or(0, |embedded_header| embedded_header.size().get());
+        NonZero::new(eth + vlan + net + transport + encap + embedded_ip)
+            .unwrap_or_else(|| unreachable!())
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
