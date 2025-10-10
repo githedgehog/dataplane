@@ -355,7 +355,7 @@ impl_from_for_enum![
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum EmbeddedTransport {
+pub enum EmbeddedTransport {
     Tcp(TruncatedTcp),
     Udp(TruncatedUdp),
 }
@@ -375,6 +375,326 @@ impl DeParse for EmbeddedTransport {
             EmbeddedTransport::Tcp(tcp) => tcp.deparse(buf),
             EmbeddedTransport::Udp(udp) => udp.deparse(buf),
         }
+    }
+}
+
+// AbstractEmbeddedHeaders, AbstractEmbeddedHeadersMut, and related traits
+
+// IPv4 traits
+
+pub trait TryInnerIpv4 {
+    fn try_inner_ipv4(&self) -> Option<&Ipv4>;
+}
+
+pub trait TryInnerIpv4Mut {
+    fn try_inner_ipv4_mut(&mut self) -> Option<&mut Ipv4>;
+}
+
+impl TryInnerIpv4 for EmbeddedHeaders {
+    fn try_inner_ipv4(&self) -> Option<&Ipv4> {
+        match &self.net {
+            Some(Net::Ipv4(header)) => Some(header),
+            _ => None,
+        }
+    }
+}
+
+impl TryInnerIpv4Mut for EmbeddedHeaders {
+    fn try_inner_ipv4_mut(&mut self) -> Option<&mut Ipv4> {
+        match &mut self.net {
+            Some(Net::Ipv4(header)) => Some(header),
+            _ => None,
+        }
+    }
+}
+
+// IPv6 traits
+
+pub trait TryInnerIpv6 {
+    fn try_inner_ipv6(&self) -> Option<&Ipv6>;
+}
+
+pub trait TryInnerIpv6Mut {
+    fn try_inner_ipv6_mut(&mut self) -> Option<&mut Ipv6>;
+}
+
+impl TryInnerIpv6 for EmbeddedHeaders {
+    fn try_inner_ipv6(&self) -> Option<&Ipv6> {
+        match &self.net {
+            Some(Net::Ipv6(header)) => Some(header),
+            _ => None,
+        }
+    }
+}
+
+impl TryInnerIpv6Mut for EmbeddedHeaders {
+    fn try_inner_ipv6_mut(&mut self) -> Option<&mut Ipv6> {
+        match &mut self.net {
+            Some(Net::Ipv6(header)) => Some(header),
+            _ => None,
+        }
+    }
+}
+
+// IP version-agnostic traits
+
+pub trait TryInnerIp {
+    fn try_inner_ip(&self) -> Option<&Net>;
+}
+
+pub trait TryInnerIpMut {
+    fn try_inner_ip_mut(&mut self) -> Option<&mut Net>;
+}
+
+impl TryInnerIp for EmbeddedHeaders {
+    fn try_inner_ip(&self) -> Option<&Net> {
+        self.net.as_ref()
+    }
+}
+
+impl TryInnerIpMut for EmbeddedHeaders {
+    fn try_inner_ip_mut(&mut self) -> Option<&mut Net> {
+        self.net.as_mut()
+    }
+}
+
+// TCP traits
+
+pub trait TryTruncatedTcp {
+    fn try_truncated_tcp(&self) -> Option<&TruncatedTcp>;
+}
+
+pub trait TryTruncatedTcpMut {
+    fn try_truncated_tcp_mut(&mut self) -> Option<&mut TruncatedTcp>;
+}
+
+impl TryTruncatedTcp for EmbeddedHeaders {
+    fn try_truncated_tcp(&self) -> Option<&TruncatedTcp> {
+        match &self.transport {
+            Some(EmbeddedTransport::Tcp(header)) => Some(header),
+            _ => None,
+        }
+    }
+}
+
+impl TryTruncatedTcpMut for EmbeddedHeaders {
+    fn try_truncated_tcp_mut(&mut self) -> Option<&mut TruncatedTcp> {
+        match &mut self.transport {
+            Some(EmbeddedTransport::Tcp(header)) => Some(header),
+            _ => None,
+        }
+    }
+}
+
+// UDP traits
+
+pub trait TryTruncatedUdp {
+    fn try_truncated_udp(&self) -> Option<&TruncatedUdp>;
+}
+
+pub trait TryTruncatedUdpMut {
+    fn try_truncated_udp_mut(&mut self) -> Option<&mut TruncatedUdp>;
+}
+
+impl TryTruncatedUdp for EmbeddedHeaders {
+    fn try_truncated_udp(&self) -> Option<&TruncatedUdp> {
+        match &self.transport {
+            Some(EmbeddedTransport::Udp(header)) => Some(header),
+            _ => None,
+        }
+    }
+}
+
+impl TryTruncatedUdpMut for EmbeddedHeaders {
+    fn try_truncated_udp_mut(&mut self) -> Option<&mut TruncatedUdp> {
+        match &mut self.transport {
+            Some(EmbeddedTransport::Udp(header)) => Some(header),
+            _ => None,
+        }
+    }
+}
+
+// Generic Transport traits
+
+pub trait TryEmbeddedTransport {
+    fn try_embedded_transport(&self) -> Option<&EmbeddedTransport>;
+}
+
+pub trait TryEmbeddedTransportMut {
+    fn try_embedded_transport_mut(&mut self) -> Option<&mut EmbeddedTransport>;
+}
+
+impl TryEmbeddedTransport for EmbeddedHeaders {
+    fn try_embedded_transport(&self) -> Option<&EmbeddedTransport> {
+        self.transport.as_ref()
+    }
+}
+
+impl TryEmbeddedTransportMut for EmbeddedHeaders {
+    fn try_embedded_transport_mut(&mut self) -> Option<&mut EmbeddedTransport> {
+        self.transport.as_mut()
+    }
+}
+
+pub trait AbstractEmbeddedHeaders:
+    Debug
+    + TryInnerIpv4
+    + TryInnerIpv6
+    + TryInnerIp
+    + TryTruncatedTcp
+    + TryTruncatedUdp
+    + TryEmbeddedTransport
+    + DeParse
+{
+}
+
+impl<T> AbstractEmbeddedHeaders for T where
+    T: Debug
+        + TryInnerIpv4
+        + TryInnerIpv6
+        + TryInnerIp
+        + TryTruncatedTcp
+        + TryTruncatedUdp
+        + TryEmbeddedTransport
+        + DeParse
+{
+}
+
+pub trait AbstractEmbeddedHeadersMut:
+    AbstractEmbeddedHeaders
+    + TryInnerIpv4Mut
+    + TryInnerIpv6Mut
+    + TryInnerIpMut
+    + TryTruncatedTcpMut
+    + TryTruncatedUdpMut
+    + TryEmbeddedTransportMut
+{
+}
+
+impl<T> AbstractEmbeddedHeadersMut for T where
+    T: AbstractEmbeddedHeaders
+        + TryInnerIpv4Mut
+        + TryInnerIpv6Mut
+        + TryInnerIpMut
+        + TryTruncatedTcpMut
+        + TryTruncatedUdpMut
+        + TryEmbeddedTransportMut
+{
+}
+
+pub trait TryEmbeddedHeaders {
+    fn embedded_headers(&self) -> Option<&impl AbstractEmbeddedHeaders>;
+}
+
+pub trait TryEmbeddedHeadersMut {
+    fn embedded_headers_mut(&mut self) -> Option<&mut impl AbstractEmbeddedHeadersMut>;
+}
+
+impl<T> TryInnerIpv4 for T
+where
+    T: TryEmbeddedHeaders,
+{
+    fn try_inner_ipv4(&self) -> Option<&Ipv4> {
+        self.embedded_headers()?.try_inner_ipv4()
+    }
+}
+
+impl<T> TryInnerIpv6 for T
+where
+    T: TryEmbeddedHeaders,
+{
+    fn try_inner_ipv6(&self) -> Option<&Ipv6> {
+        self.embedded_headers()?.try_inner_ipv6()
+    }
+}
+
+impl<T> TryInnerIp for T
+where
+    T: TryEmbeddedHeaders,
+{
+    fn try_inner_ip(&self) -> Option<&Net> {
+        self.embedded_headers()?.try_inner_ip()
+    }
+}
+
+impl<T> TryTruncatedTcp for T
+where
+    T: TryEmbeddedHeaders,
+{
+    fn try_truncated_tcp(&self) -> Option<&TruncatedTcp> {
+        self.embedded_headers()?.try_truncated_tcp()
+    }
+}
+
+impl<T> TryTruncatedUdp for T
+where
+    T: TryEmbeddedHeaders,
+{
+    fn try_truncated_udp(&self) -> Option<&TruncatedUdp> {
+        self.embedded_headers()?.try_truncated_udp()
+    }
+}
+
+impl<T> TryEmbeddedTransport for T
+where
+    T: TryEmbeddedHeaders,
+{
+    fn try_embedded_transport(&self) -> Option<&EmbeddedTransport> {
+        self.embedded_headers()?.try_embedded_transport()
+    }
+}
+
+impl<T> TryInnerIpv4Mut for T
+where
+    T: TryEmbeddedHeadersMut,
+{
+    fn try_inner_ipv4_mut(&mut self) -> Option<&mut Ipv4> {
+        self.embedded_headers_mut()?.try_inner_ipv4_mut()
+    }
+}
+
+impl<T> TryInnerIpv6Mut for T
+where
+    T: TryEmbeddedHeadersMut,
+{
+    fn try_inner_ipv6_mut(&mut self) -> Option<&mut Ipv6> {
+        self.embedded_headers_mut()?.try_inner_ipv6_mut()
+    }
+}
+
+impl<T> TryInnerIpMut for T
+where
+    T: TryEmbeddedHeadersMut,
+{
+    fn try_inner_ip_mut(&mut self) -> Option<&mut Net> {
+        self.embedded_headers_mut()?.try_inner_ip_mut()
+    }
+}
+
+impl<T> TryTruncatedTcpMut for T
+where
+    T: TryEmbeddedHeadersMut,
+{
+    fn try_truncated_tcp_mut(&mut self) -> Option<&mut TruncatedTcp> {
+        self.embedded_headers_mut()?.try_truncated_tcp_mut()
+    }
+}
+
+impl<T> TryTruncatedUdpMut for T
+where
+    T: TryEmbeddedHeadersMut,
+{
+    fn try_truncated_udp_mut(&mut self) -> Option<&mut TruncatedUdp> {
+        self.embedded_headers_mut()?.try_truncated_udp_mut()
+    }
+}
+
+impl<T> TryEmbeddedTransportMut for T
+where
+    T: TryEmbeddedHeadersMut,
+{
+    fn try_embedded_transport_mut(&mut self) -> Option<&mut EmbeddedTransport> {
+        self.embedded_headers_mut()?.try_embedded_transport_mut()
     }
 }
 
