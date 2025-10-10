@@ -5,7 +5,7 @@
 
 use crate::checksum::Checksum;
 use crate::headers::Net;
-use crate::udp::Udp;
+use crate::udp::{TruncatedUdp, Udp};
 use core::fmt::{Display, Formatter};
 use std::fmt::Debug;
 
@@ -117,5 +117,76 @@ impl Checksum for Udp {
     fn set_checksum(&mut self, checksum: Self::Checksum) -> Result<&mut Self, Self::Error> {
         self.0.checksum = checksum.0;
         Ok(self)
+    }
+}
+
+/// Errors which can occur when attempting to compute a UDP checksum for a truncated UDP header.
+#[derive(Debug, thiserror::Error)]
+pub enum TruncatedUdpChecksumError {
+    /// The header is truncated, checksum operations are not available.
+    #[error("header is truncated")]
+    Truncated,
+}
+
+impl Checksum for TruncatedUdp {
+    type Error = TruncatedUdpChecksumError;
+    type Payload<'a>
+        = UdpChecksumPayload<'a>
+    where
+        Self: 'a;
+    type Checksum = UdpChecksum;
+
+    /// Get the [`Udp`] checksum of the header
+    ///
+    /// # Returns
+    ///
+    /// * `Some` if the header is a full header
+    /// * `None` if the header is a truncated header
+    fn checksum(&self) -> Option<Self::Checksum> {
+        match self {
+            TruncatedUdp::FullHeader(udp) => udp.checksum(),
+            TruncatedUdp::PartialHeader(_) => None,
+        }
+    }
+
+    /// Compute the UDP header's checksum based on the supplied payload.
+    ///
+    /// This method _does not_ update the checksum field.
+    ///
+    /// # Errors
+    ///
+    /// * [`TruncatedUdpChecksumError::Truncated`] if the header is a truncated header
+    ///
+    /// <div class="warning">
+    /// If the header is full, we perform the computation although there is no guarantee that the
+    /// UDP _payload_ is full. It is the responsibility of the caller to ensure that the UDP payload
+    /// is full, _and_ that the payload passed as an argument is exempt from ICMP Extension
+    /// Structures and padding.
+    /// </div>
+    fn compute_checksum(&self, payload: &Self::Payload<'_>) -> Result<Self::Checksum, Self::Error> {
+        match self {
+            TruncatedUdp::FullHeader(udp) => Ok(udp
+                .compute_checksum(payload)
+                .unwrap_or_else(|()| unreachable!())), // UDP checksum computation never fails
+            TruncatedUdp::PartialHeader(_) => Err(TruncatedUdpChecksumError::Truncated),
+        }
+    }
+
+    /// Set the checksum field of the header.
+    ///
+    /// The validity of the checksum is not checked.
+    ///
+    /// # Errors
+    ///
+    /// * [`TruncatedUdpChecksumError::Truncated`] if the header is a truncated header
+    fn set_checksum(&mut self, checksum: Self::Checksum) -> Result<&mut Self, Self::Error> {
+        match self {
+            TruncatedUdp::FullHeader(udp) => {
+                udp.set_checksum(checksum)
+                    .unwrap_or_else(|()| unreachable!()); // Setting the UDP checksum never fails
+                Ok(self)
+            }
+            TruncatedUdp::PartialHeader(_) => Err(TruncatedUdpChecksumError::Truncated),
+        }
     }
 }

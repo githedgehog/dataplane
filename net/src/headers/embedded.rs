@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use crate::checksum::Checksum;
 use crate::eth::EthError;
 use crate::headers::{MAX_NET_EXTENSIONS, Net, NetExt};
 use crate::impl_from_for_enum;
@@ -11,8 +12,8 @@ use crate::parse::{
     DeParse, DeParseError, IllegalBufferLength, IntoNonZeroUSize, LengthError, ParseError,
     ParseHeader, ParseWith, Reader, Writer,
 };
-use crate::tcp::{TcpPort, TruncatedTcp};
-use crate::udp::{TruncatedUdp, UdpPort};
+use crate::tcp::{TcpChecksum, TcpPort, TruncatedTcp};
+use crate::udp::{TruncatedUdp, UdpChecksum, UdpPort};
 use arrayvec::ArrayVec;
 use core::fmt::Debug;
 use std::num::NonZero;
@@ -411,6 +412,34 @@ impl EmbeddedTransport {
             }
             EmbeddedTransport::Udp(udp) => {
                 udp.set_destination(UdpPort::new(port));
+            }
+        }
+    }
+
+    pub fn checksum(&self) -> Option<u16> {
+        match self {
+            EmbeddedTransport::Tcp(tcp) => tcp.checksum().map(u16::from),
+            EmbeddedTransport::Udp(udp) => udp.checksum().map(u16::from),
+        }
+    }
+
+    pub fn update_checksum(&mut self, current_checksum: u16, old_value: u16, new_value: u16) {
+        match self {
+            EmbeddedTransport::Tcp(tcp) => {
+                // Silently ignore errors if transport header is truncated
+                let _ = tcp.increment_update_checksum(
+                    TcpChecksum::new(current_checksum),
+                    old_value,
+                    new_value,
+                );
+            }
+            EmbeddedTransport::Udp(udp) => {
+                // Silently ignore errors if transport header is truncated
+                let _ = udp.increment_update_checksum(
+                    UdpChecksum::new(current_checksum),
+                    old_value,
+                    new_value,
+                );
             }
         }
     }

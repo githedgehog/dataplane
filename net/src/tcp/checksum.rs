@@ -5,7 +5,7 @@
 
 use crate::checksum::Checksum;
 use crate::headers::Net;
-use crate::tcp::Tcp;
+use crate::tcp::{Tcp, TruncatedTcp};
 use core::fmt::{Display, Formatter};
 use std::fmt::Debug;
 
@@ -111,5 +111,79 @@ impl Checksum for Tcp {
     fn set_checksum(&mut self, checksum: Self::Checksum) -> Result<&mut Self, Self::Error> {
         self.0.checksum = checksum.0;
         Ok(self)
+    }
+}
+
+/// Errors which can occur when attempting to compute a TCP checksum for a truncated TCP header.
+#[derive(Debug, thiserror::Error)]
+pub enum TruncatedTcpChecksumError {
+    /// The header is truncated, checksum operations are not available.
+    #[error("header is truncated")]
+    Truncated,
+}
+
+impl Checksum for TruncatedTcp {
+    type Error = TruncatedTcpChecksumError;
+    type Payload<'a>
+        = TcpChecksumPayload<'a>
+    where
+        Self: 'a;
+    type Checksum = TcpChecksum;
+
+    /// Get the [`Tcp`] checksum of the header
+    ///
+    /// # Returns
+    ///
+    /// * `Some` if the header is a full header. The TCP payload may be truncated, so it may be
+    ///   impossible to compute the checksum.
+    /// * `None` if the header is a truncated header. Note that the checksum may be present in the
+    ///   truncated header, but given that the header is truncated, it is irrelevant because there
+    ///   is no way to validate it, so we return `None` in that case.
+    fn checksum(&self) -> Option<Self::Checksum> {
+        match self {
+            TruncatedTcp::FullHeader(tcp) => tcp.checksum(),
+            TruncatedTcp::PartialHeader(_) => None,
+        }
+    }
+
+    /// Compute the TCP header's checksum based on the supplied payload.
+    ///
+    /// This method _does not_ update the checksum field.
+    ///
+    /// # Errors
+    ///
+    /// * [`TruncatedTcpChecksumError::Truncated`] if the header is a truncated header
+    ///
+    /// <div class="warning">
+    /// If the header is full, we perform the computation although there is no guarantee that the
+    /// TCP _payload_ is full. It is the responsibility of the caller to ensure that the TCP payload
+    /// is full, _and_ that the payload passed as an argument is exempt from ICMP Extension
+    /// Structures and padding.
+    /// </div>
+    fn compute_checksum(&self, payload: &Self::Payload<'_>) -> Result<Self::Checksum, Self::Error> {
+        match self {
+            TruncatedTcp::FullHeader(tcp) => Ok(tcp
+                .compute_checksum(payload)
+                .unwrap_or_else(|()| unreachable!())), // TCP checksum computation never fails
+            TruncatedTcp::PartialHeader(_) => Err(TruncatedTcpChecksumError::Truncated),
+        }
+    }
+
+    /// Set the checksum field of the header.
+    ///
+    /// The validity of the checksum is not checked.
+    ///
+    /// # Errors
+    ///
+    /// * [`TruncatedTcpChecksumError::Truncated`] if the header is a truncated header
+    fn set_checksum(&mut self, checksum: Self::Checksum) -> Result<&mut Self, Self::Error> {
+        match self {
+            TruncatedTcp::FullHeader(tcp) => {
+                tcp.set_checksum(checksum)
+                    .unwrap_or_else(|()| unreachable!()); // Setting the TCP checksum never fails
+                Ok(self)
+            }
+            TruncatedTcp::PartialHeader(_) => Err(TruncatedTcpChecksumError::Truncated),
+        }
     }
 }
