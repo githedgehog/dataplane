@@ -5,7 +5,8 @@
 
 #![allow(clippy::collapsible_if)]
 
-use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
+use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
+
 use std::cell::Ref;
 use std::net::IpAddr;
 
@@ -379,5 +380,18 @@ impl FibReader {
     }
     pub fn get_id(&self) -> Option<FibId> {
         self.0.enter().map(|fib| fib.get_id())
+    }
+    #[must_use]
+    pub fn factory(&self) -> FibReaderFactory {
+        FibReaderFactory(self.0.factory())
+    }
+}
+
+pub struct FibReaderFactory(ReadHandleFactory<Fib>);
+
+impl FibReaderFactory {
+    #[must_use]
+    pub fn handle(&self) -> FibReader {
+        FibReader(self.0.handle())
     }
 }
