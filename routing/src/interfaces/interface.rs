@@ -5,7 +5,7 @@
 
 #![allow(clippy::collapsible_if)]
 
-use crate::fib::fibtype::{FibId, FibReader};
+use crate::fib::fibtype::{FibKey, FibReader};
 use crate::rib::vrf::VrfId;
 use net::eth::mac::Mac;
 use net::interface::{InterfaceIndex, Mtu};
@@ -210,7 +210,7 @@ impl Interface {
     /// Tell if an [`Interface`] is attached to a Fib with the given Id
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn is_attached_to_fib(&self, fibid: FibId) -> bool {
+    pub fn is_attached_to_fib(&self, fibid: FibKey) -> bool {
         if let Some(Attachment::VRF(fibr)) = &self.attachment {
             fibr.get_id() == Some(fibid)
         } else {
@@ -221,7 +221,7 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Detach an [`Interface`] from VRF if the associated fib has the given id
     //////////////////////////////////////////////////////////////////
-    pub fn detach_from_fib(&mut self, fibid: FibId) {
+    pub fn detach_from_fib(&mut self, fibid: FibKey) {
         self.attachment.take_if(|attachment| {
             if let Attachment::VRF(fibr) = &attachment {
                 if fibr.get_id() == Some(fibid) {

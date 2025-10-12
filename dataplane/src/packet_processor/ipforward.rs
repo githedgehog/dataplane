@@ -16,7 +16,7 @@ use tracing::{debug, error, trace, warn};
 use routing::fib::fibobjects::{EgressObject, FibEntry, PktInstruction};
 use routing::fib::fibtable::FibTable;
 use routing::fib::fibtable::FibTableReader;
-use routing::fib::fibtype::FibId;
+use routing::fib::fibtype::FibKey;
 
 use routing::evpn::Vtep;
 use routing::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
@@ -56,11 +56,11 @@ impl IpForwarder {
     /// Forward a [`Packet`]
     fn forward_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>, vrfid: VrfId) {
         let nfi = &self.name;
-        let fibid = if let Some(dst_vpcd) = packet.get_meta().dst_vpcd {
+        let fibkey = if let Some(dst_vpcd) = packet.get_meta().dst_vpcd {
             let VpcDiscriminant::VNI(dst_vni) = dst_vpcd;
-            FibId::from_vni(dst_vni)
+            FibKey::from_vni(dst_vni)
         } else {
-            FibId::from_vrfid(vrfid)
+            FibKey::from_vrfid(vrfid)
         };
 
         /* get destination ip address */
@@ -84,21 +84,21 @@ impl IpForwarder {
             return;
         };
         /* Lookup the fib which needs to be consulted */
-        let Some(fibr) = fibtr.get_fib(&fibid) else {
-            warn!("{nfi}: Unable to find fib with id {fibid} for vrf {vrfid}");
+        let Some(fibr) = fibtr.get_fib(&fibkey) else {
+            warn!("{nfi}: Unable to find fib with id {fibkey} for vrf {vrfid}");
             packet.done(DoneReason::InternalFailure);
             return;
         };
         /* Read-only access to fib */
         let Some(fib) = fibr.enter() else {
-            warn!("{nfi}: Unable to read from fib {fibid}");
+            warn!("{nfi}: Unable to read from fib {fibkey}");
             packet.done(DoneReason::InternalFailure);
             return;
         };
         /* Perform lookup in the fib */
         let (prefix, fibentry) = fib.lpm_entry_prefix(packet);
         if let Some(fibentry) = &fibentry {
-            debug!("{nfi}: Packet hits prefix {prefix} in fib {fibid}");
+            debug!("{nfi}: Packet hits prefix {prefix} in fib {fibkey}");
             debug!("{nfi}: Entry is:\n{fibentry}");
 
             /* decrement packet TTL, unless the packet is for us */
@@ -134,7 +134,7 @@ impl IpForwarder {
                 let vni = vxlan.vni();
                 debug!("{nfi}: DECAPSULATED vxlan packet:\n {packet}");
                 debug!("{nfi}: Packet comes with vni {vni}");
-                let fibid = FibId::from_vni(vni);
+                let fibid = FibKey::from_vni(vni);
                 let Some(fib) = fibtable.get_fib(&fibid) else {
                     error!("{nfi}: Failed to find fib {fibid} associated to vni {vni}");
                     packet.done(DoneReason::Unroutable);
