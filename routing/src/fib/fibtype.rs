@@ -8,6 +8,7 @@
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 
 use std::cell::Ref;
+use std::hash::Hash;
 use std::net::IpAddr;
 
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
@@ -25,8 +26,7 @@ use crate::rib::vrf::VrfId;
 #[allow(unused)]
 use tracing::{debug, error, info, warn};
 
-#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
-
+#[derive(Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 /// A type used to access a [`Fib`] or to identify it.
 /// As an identifier, only the variant `FibKey::Id` is allowed.
 pub enum FibKey {
@@ -60,7 +60,15 @@ pub struct Fib {
     groupstore: FibGroupStore,
     vtep: Vtep,
 }
-
+impl Hash for Fib {
+    // We implement explicitly `std::hash::Hash` for `Fib` instead of deriving it because:
+    //  - this avoids the need to implement/derive it for all internal components
+    //  - it is actually not possible to do so since some types are defined externally (prefixes)
+    //  - the Id suffices to identify them and the implementation is possibly faster.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
 impl Default for Fib {
     fn default() -> Self {
         let mut fib = Self {
@@ -375,6 +383,7 @@ impl FibWriter {
 }
 
 #[derive(Clone, Debug)]
+#[repr(transparent)]
 pub struct FibReader(ReadHandle<Fib>);
 impl FibReader {
     #[must_use]
@@ -393,7 +402,7 @@ impl FibReader {
     }
 }
 #[derive(Debug, Clone)]
-pub struct FibReaderFactory(ReadHandleFactory<Fib>);
+pub struct FibReaderFactory(pub(crate) ReadHandleFactory<Fib>);
 
 impl FibReaderFactory {
     #[must_use]
