@@ -8,7 +8,7 @@ use crate::cpi::{CpiStats, CpiStatus, StatsRow};
 use crate::fib::fibgroupstore::FibRoute;
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::fib::fibtable::FibTable;
-use crate::fib::fibtype::{Fib, FibId};
+use crate::fib::fibtype::{Fib, FibKey};
 use crate::frr::frrmi::{FrrAppliedConfig, Frrmi, FrrmiStats};
 
 use crate::rib::VrfTable;
@@ -638,12 +638,12 @@ impl Display for AdjacencyTable {
 }
 
 //========================= Fib ================================//
-impl Display for FibId {
+impl Display for FibKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
-            FibId::Id(vrfid) => write!(f, "vrfid: {vrfid}")?,
-            FibId::Vni(vni) => write!(f, "vni: {vni:?}")?,
-            FibId::Unset => write!(f, "Unset!")?,
+            FibKey::Id(vrfid) => write!(f, "vrfid: {vrfid}")?,
+            FibKey::Vni(vni) => write!(f, "vni: {vni:?}")?,
+            FibKey::Unset => write!(f, "Unset!")?,
         }
         Ok(())
     }
@@ -700,7 +700,7 @@ impl Display for FibRoute {
 
 fn fmt_fib_trie<P: IpPrefix, F: Fn(&(&P, &FibRoute)) -> bool>(
     f: &mut std::fmt::Formatter<'_>,
-    fibid: FibId,
+    fibid: FibKey,
     show_string: &str,
     trie: &PrefixMapTrie<P, FibRoute>,
     group_filter: F,
@@ -726,7 +726,7 @@ impl Display for Fib {
 impl Display for FibTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         Heading(format!(" Fib Table ({} fibs)", self.len())).fmt(f)?;
-        for (_fibid, fibr) in self.iter() {
+        for fibr in self.values().map(|f| f.handle()) {
             if let Some(fib) = fibr.enter() {
                 write!(f, "{}", *fib)?;
             }
