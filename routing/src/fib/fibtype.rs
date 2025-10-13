@@ -401,6 +401,15 @@ impl FibReader {
         FibReaderFactory(self.0.factory())
     }
 }
+
+// make FibReader a zero-cost wrap of ReadHandle<Fib>
+impl AsRef<FibReader> for ReadHandle<Fib> {
+    #[inline]
+    fn as_ref(&self) -> &FibReader {
+        unsafe { &*(self as *const ReadHandle<Fib> as *const FibReader) }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FibReaderFactory(pub(crate) ReadHandleFactory<Fib>);
 
