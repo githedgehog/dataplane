@@ -8,3 +8,4 @@ license = "Apache-2.0"
 [dependencies]
 left-right = { workspace = true }
 ahash = { workspace = true }
+thiserror = { workspace = true }
