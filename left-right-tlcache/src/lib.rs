@@ -24,6 +24,7 @@
 //!
 //! The use of this type requires:
 //!   - implementing trait `ReadHandleProvider` to provide `ReadHandle<T>` 's based on some key value.
+//!   - implementing trait `Identity` for T in `ReadHandle<T>`
 //!   - declaring a thread-local `ReadHandleCache` object
 //!
 //! Note: providers must be Sync since the thread-local caches for distinct threads will poll them.
@@ -46,6 +47,18 @@ pub trait ReadHandleProvider: Sync {
     /// unique per thread. There should be no performance penalty of offering factories instead of read handles
     /// since factory::handle() is identical to rhandle::clone()
     fn get_factory(&self, key: &Self::Key) -> Option<&ReadHandleFactory<Self::Data>>;
+
+    /// Ask the provider about the identity of T for the `ReadHandle<T>` accessible via some key.
+    /// This is needed for the cache to be able to invalidate entries that point to `ReadHandle<T>`'s
+    /// for T's that should no longer be accessed by that key.
+    fn get_identity(&self, key: &Self::Key) -> Option<Self::Key>;
+}
+
+/// Trait to determine the real identity of a `T` wrapped in left-right. That is,
+/// the identity of `T` in a `ReadHandle<T>`. This is needed to invalidate cache entries
+/// with keys that are alias of their identity.
+pub trait Identity<K> {
+    fn identity(&self) -> K;
 }
 
 #[derive(Debug, PartialEq, Error)]
@@ -56,12 +69,46 @@ pub enum ReadHandleCacheError<K> {
     NotAccessible(K),
 }
 
-pub struct ReadHandleCache<K: Hash + Eq, T> {
-    handles: RefCell<HashMap<K, Rc<ReadHandle<T>>, RandomState>>,
+/// An entry in a thread-local `ReadHandleCache<K,T>` to hold a `ReadHandle<T>`
+/// along with its identity, which may match the key to find it or not.
+struct ReadHandleEntry<T, K> {
+    rhandle: Rc<ReadHandle<T>>,
+    identity: K,
+}
+impl<T: Identity<K>, K: PartialEq> ReadHandleEntry<T, K> {
+    fn new(identity: K, rhandle: Rc<ReadHandle<T>>) -> Self {
+        Self { rhandle, identity }
+    }
+    fn is_valid(&self, key: &K, provider: &impl ReadHandleProvider<Data = T, Key = K>) -> bool {
+        if self.rhandle.was_dropped() {
+            return false;
+        }
+        if *key == self.identity {
+            return true;
+        }
+        if self.version == provider.get_version() {
+            return true;
+        }
+        let Some(identity) = provider.get_identity(key) else {
+            return false;
+        };
+        if self.identity != identity {
+            return false;
+        }
+        match self.rhandle.enter() {
+            Some(t) => t.identity() == identity,
+            None => false,
+        }
+    }
+}
+
+pub struct ReadHandleCache<K: Hash + Eq + Clone, T> {
+    handles: RefCell<HashMap<K, ReadHandleEntry<T, K>, RandomState>>,
 }
 impl<K, T> ReadHandleCache<K, T>
 where
     K: Hash + Eq + Clone,
+    T: Identity<K>,
 {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
@@ -78,37 +125,31 @@ where
             let mut map = local.handles.borrow_mut();
 
             // cache has a valid handle for that key
-            if let Some(rhandle) = map.get(&key)
-                && !rhandle.was_dropped()
+            if let Some(entry) = map.get(&key)
+                && entry.is_valid(&key, provider)
             {
-                return Ok(Rc::clone(rhandle));
+                return Ok(Rc::clone(&entry.rhandle));
             }
 
-            // Either we've found a handle but was invalid or we did not find it.
-            // In either case, request a fresh handle to the provider, which may:
-            //    1) fail to provide one with that key
-            //    2) provide a valid one
-            //    3) provide an invalid one (e.g. if the `WriteHandle<T>` was dropped).
-            // We don't require providers to provide good readhandles/factories, nor
-            // want to return invalid handles to callers, so we validate them too.
-            // A valid readhandle is one where, at least now, can be 'entered'.
-
             let result = {
+                // get a factory for the key from the provider and build a fresh handle from it
                 let fresh = provider
                     .get_factory(&key)
                     .map(|factory| factory.handle())
                     .ok_or_else(|| ReadHandleCacheError::NotFound(key.clone()))?;
 
-                if fresh.was_dropped() {
-                    Err(ReadHandleCacheError::NotAccessible(key.clone()))
-                } else {
-                    let fresh = Rc::new(fresh);
-                    map.entry(key.clone())
-                        .and_modify(|e| *e = Rc::clone(&fresh))
-                        .or_insert_with(|| Rc::clone(&fresh));
+                // get master identity
+                let identity = fresh
+                    .enter()
+                    .ok_or_else(|| ReadHandleCacheError::NotAccessible(key.clone()))?
+                    .as_ref()
+                    .identity();
 
-                    Ok(fresh)
-                }
+                // store a new entry locally with a handle, its identity and the key
+                let rhandle = Rc::new(fresh);
+                let entry = ReadHandleEntry::new(identity, Rc::clone(&rhandle));
+                map.insert(key.clone(), entry);
+                Ok(rhandle)
             };
             if result.is_err() {
                 // clean-up cache on failure
@@ -126,8 +167,12 @@ where
 /// use left_right::{ReadHandle, ReadHandleFactory};
 /// use dataplane_left_right_tlcache::make_thread_local_readhandle_cache;
 /// use dataplane_left_right_tlcache::ReadHandleCache;
+/// use dataplane_left_right_tlcache::Identity;
 ///
 /// struct LeftRightWrappedType;
+/// impl Identity<u32> for LeftRightWrappedType {
+///     fn identity(&self) -> u32 {0}
+/// }
 ///
 /// make_thread_local_readhandle_cache!(MYCACHE, u32, LeftRightWrappedType);
 /// ```
