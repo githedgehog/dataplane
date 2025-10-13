@@ -1280,6 +1280,7 @@ dependencies = [
  "chrono",
  "dataplane-cli",
  "dataplane-config",
+ "dataplane-left-right-tlcache",
  "dataplane-lpm",
  "dataplane-net",
  "dataplane-tracectl",

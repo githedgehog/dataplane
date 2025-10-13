@@ -6,6 +6,7 @@
 #![allow(clippy::collapsible_if)]
 
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
+use left_right_tlcache::Identity;
 
 use std::cell::Ref;
 use std::hash::Hash;
@@ -67,6 +68,11 @@ impl Hash for Fib {
     //  - the Id suffices to identify them and the implementation is possibly faster.
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.id.hash(state);
+    }
+}
+impl Identity<FibKey> for Fib {
+    fn identity(&self) -> FibKey {
+        self.get_id()
     }
 }
 impl Default for Fib {
