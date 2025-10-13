@@ -13,6 +13,7 @@ testing = []
 cli = { workspace = true }
 config = { workspace = true }
 dplane-rpc = { workspace = true }
+left-right-tlcache = { workspace = true }
 lpm = { workspace = true }
 net = { workspace = true }
 tracectl = { workspace = true }
