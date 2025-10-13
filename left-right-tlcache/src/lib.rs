@@ -35,6 +35,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::rc::Rc;
 use std::thread::LocalKey;
+use thiserror::Error;
 
 pub trait ReadHandleProvider: Sync {
     type Data;
@@ -47,9 +48,11 @@ pub trait ReadHandleProvider: Sync {
     fn get_factory(&self, key: &Self::Key) -> Option<&ReadHandleFactory<Self::Data>>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Error)]
 pub enum ReadHandleCacheError<K> {
+    #[error("Reader not found for key {0}")]
     NotFound(K),
+    #[error("Reader for key {0} is not accessible")]
     NotAccessible(K),
 }
 
