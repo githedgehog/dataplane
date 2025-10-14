@@ -152,8 +152,14 @@ where
                     .get_factory(&key)
                     .ok_or_else(|| ReadHandleCacheError::NotFound(key.clone()))?;
 
+                // obtain handle but don't store it nor return it if there is no writer / data
+                let rhandle = factory.handle();
+                if rhandle.was_dropped() {
+                    return Err(ReadHandleCacheError::NotAccessible(key.clone()));
+                }
+
                 // store a new entry locally with a handle, its identity and version, for the given key
-                let rhandle = Rc::new(factory.handle());
+                let rhandle = Rc::new(rhandle);
                 let entry = ReadHandleEntry::new(identity.clone(), Rc::clone(&rhandle), version);
                 map.insert(key.clone(), entry);
 
