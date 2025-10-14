@@ -145,41 +145,36 @@ where
                 return Ok(Rc::clone(&entry.rhandle));
             }
 
-            let result = {
-                // get a factory for the key from the provider to build a fresh handle from it
-                // provider returns identity of object and version for entry invalidation
-                let (factory, identity, version) = provider
-                    .get_factory(&key)
-                    .ok_or_else(|| ReadHandleCacheError::NotFound(key.clone()))?;
-
-                // obtain handle but don't store it nor return it if there is no writer / data
-                let rhandle = factory.handle();
-                if rhandle.was_dropped() {
-                    return Err(ReadHandleCacheError::NotAccessible(key.clone()));
-                }
-
-                // store a new entry locally with a handle, its identity and version, for the given key
-                let rhandle = Rc::new(rhandle);
-                let entry = ReadHandleEntry::new(identity.clone(), Rc::clone(&rhandle), version);
-                map.insert(key.clone(), entry);
-
-                // if the querying key is not the identity, update entry for key = identity. This helps in consistency
-                // and avoids having duplicate readhandles for the same T, which should expedite checks with many read handles
-                // if T's are accessed by multiple keys.
-                if key != identity {
-                    map.remove(&identity);
-                    map.insert(
-                        identity.clone(),
-                        ReadHandleEntry::new(identity, Rc::clone(&rhandle), version),
-                    );
-                }
-                Ok(rhandle)
-            };
-            if result.is_err() {
-                // clean-up cache on failure
+            // get a factory for the key from the provider to build a fresh handle from it
+            // provider returns identity of object and version for entry invalidation
+            let (factory, identity, version) = provider.get_factory(&key).ok_or_else(|| {
                 map.remove(&key);
+                ReadHandleCacheError::NotFound(key.clone())
+            })?;
+
+            // obtain handle but don't store it nor return it if there is no writer / data
+            let rhandle = factory.handle();
+            if rhandle.was_dropped() {
+                // can remove element with key, but also all which point to the same identity
+                map.retain(|_key, entry| entry.identity != identity);
+                return Err(ReadHandleCacheError::NotAccessible(key.clone()));
             }
-            result
+
+            // store a new entry locally with a handle, its identity and version, for the given key
+            let rhandle = Rc::new(rhandle);
+            let entry = ReadHandleEntry::new(identity.clone(), Rc::clone(&rhandle), version);
+            map.insert(key.clone(), entry);
+
+            // if the querying key is not the identity, update entry for key = identity. This helps in consistency
+            // and avoids having duplicate readhandles for the same T, which should expedite checks with many read handles
+            // if T's are accessed by multiple keys.
+            if key != identity {
+                map.insert(
+                    identity.clone(),
+                    ReadHandleEntry::new(identity, Rc::clone(&rhandle), version),
+                );
+            }
+            Ok(rhandle)
         })
     }
 }
