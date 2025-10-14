@@ -157,6 +157,16 @@ where
                 let entry = ReadHandleEntry::new(identity.clone(), Rc::clone(&rhandle), version);
                 map.insert(key.clone(), entry);
 
+                // if the querying key is not the identity, update entry for key = identity. This helps in consistency
+                // and avoids having duplicate readhandles for the same T, which should expedite checks with many read handles
+                // if T's are accessed by multiple keys.
+                if key != identity {
+                    map.remove(&identity);
+                    map.insert(
+                        identity.clone(),
+                        ReadHandleEntry::new(identity, Rc::clone(&rhandle), version),
+                    );
+                }
                 Ok(rhandle)
             };
             if result.is_err() {
