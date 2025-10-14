@@ -9,3 +9,6 @@ license = "Apache-2.0"
 left-right = { workspace = true }
 ahash = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+serial_test = { workspace = true }
