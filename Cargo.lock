@@ -715,7 +715,7 @@ version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fde0e0ec90c9dfb3b4b1a0891a7dcd0e2bffde2f7efed5fe7c9bb00e5bfb915e"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2675,8 +2675,8 @@ dependencies = [
 
 [[package]]
 name = "n-vm"
-version = "0.0.6"
-source = "git+https://github.com/githedgehog/testn.git?branch=main#ca0239b7cdf5279c5697726bc677dff1adddedea"
+version = "0.0.7"
+source = "git+https://github.com/githedgehog/testn.git?tag=v0.0.7#6ad6ade27dc9ed4cc49bb9e27f782afdca60d014"
 dependencies = [
  "bollard",
  "capctl",
@@ -2697,8 +2697,8 @@ dependencies = [
 
 [[package]]
 name = "n-vm-macros"
-version = "0.0.6"
-source = "git+https://github.com/githedgehog/testn.git?branch=main#ca0239b7cdf5279c5697726bc677dff1adddedea"
+version = "0.0.7"
+source = "git+https://github.com/githedgehog/testn.git?tag=v0.0.7#6ad6ade27dc9ed4cc49bb9e27f782afdca60d014"
 dependencies = [
  "proc-macro2",
  "quote",
