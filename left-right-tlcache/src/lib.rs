@@ -46,12 +46,20 @@ pub trait ReadHandleProvider: Sync {
     /// to give us factories as that shields us from buggy providers returning ReadHandles that are not
     /// unique per thread. There should be no performance penalty of offering factories instead of read handles
     /// since factory::handle() is identical to rhandle::clone()
-    fn get_factory(&self, key: &Self::Key) -> Option<&ReadHandleFactory<Self::Data>>;
+    #[allow(clippy::type_complexity)]
+    fn get_factory(
+        &self,
+        key: &Self::Key,
+    ) -> Option<(&ReadHandleFactory<Self::Data>, Self::Key, u64)>;
 
     /// Ask the provider about the identity of T for the `ReadHandle<T>` accessible via some key.
     /// This is needed for the cache to be able to invalidate entries that point to `ReadHandle<T>`'s
     /// for T's that should no longer be accessed by that key.
     fn get_identity(&self, key: &Self::Key) -> Option<Self::Key>;
+
+    /// Get version. Provider should promise to provide a distinct value (e.g. monotonically increasing)
+    /// anytime there's a change in the collection of read handles / factories it owns.
+    fn get_version(&self) -> u64;
 }
 
 /// Trait to determine the real identity of a `T` wrapped in left-right. That is,
@@ -74,10 +82,15 @@ pub enum ReadHandleCacheError<K> {
 struct ReadHandleEntry<T, K> {
     rhandle: Rc<ReadHandle<T>>,
     identity: K,
+    version: u64,
 }
 impl<T: Identity<K>, K: PartialEq> ReadHandleEntry<T, K> {
-    fn new(identity: K, rhandle: Rc<ReadHandle<T>>) -> Self {
-        Self { rhandle, identity }
+    fn new(identity: K, rhandle: Rc<ReadHandle<T>>, version: u64) -> Self {
+        Self {
+            rhandle,
+            identity,
+            version,
+        }
     }
     fn is_valid(&self, key: &K, provider: &impl ReadHandleProvider<Data = T, Key = K>) -> bool {
         if self.rhandle.was_dropped() {
@@ -95,6 +108,7 @@ impl<T: Identity<K>, K: PartialEq> ReadHandleEntry<T, K> {
         if self.identity != identity {
             return false;
         }
+        // this is just extra sanity
         match self.rhandle.enter() {
             Some(t) => t.identity() == identity,
             None => false,
@@ -132,22 +146,25 @@ where
             }
 
             let result = {
+                // get version (*)
+                let version = provider.get_version();
+
                 // get a factory for the key from the provider and build a fresh handle from it
                 let fresh = provider
                     .get_factory(&key)
                     .map(|factory| factory.handle())
                     .ok_or_else(|| ReadHandleCacheError::NotFound(key.clone()))?;
 
-                // get master identity
+                // get identity
                 let identity = fresh
                     .enter()
                     .ok_or_else(|| ReadHandleCacheError::NotAccessible(key.clone()))?
                     .as_ref()
                     .identity();
 
-                // store a new entry locally with a handle, its identity and the key
+                // store a new entry locally with a handle, its identity and version, for the given key
                 let rhandle = Rc::new(fresh);
-                let entry = ReadHandleEntry::new(identity, Rc::clone(&rhandle));
+                let entry = ReadHandleEntry::new(identity, Rc::clone(&rhandle), version);
                 map.insert(key.clone(), entry);
                 Ok(rhandle)
             };
@@ -158,6 +175,10 @@ where
             result
         })
     }
+    // (*) This code does not guarantee that between the call of version() and get_factory(), the underlying collection of
+    // handles owned by the provider hasn't changed. This is fine if we call get_version() first: we may get the latest handle
+    // with an older version. The next access to the reader will heal this, at the cost of building a new read-handle. A quick
+    // solution would be for get_factory to return (identity, version, factory).
 }
 
 /// Create a thread-local `ReadHandleCache` with a given name, to access
