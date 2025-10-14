@@ -233,30 +233,34 @@ impl DeParse for TruncatedUdp {
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
-    use super::TruncatedUdp;
+    use super::{TruncatedUdp, Udp};
+    use crate::parse::{DeParse, Parse};
     use bolero::{Driver, TypeGenerator};
 
     impl TypeGenerator for TruncatedUdp {
+        // Generate either full or partial UDP header
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            // Generate either full or partial UDP header
-            let udp = if driver.produce::<bool>()? {
-                TruncatedUdp::FullHeader(driver.produce()?)
+            let full_header = TruncatedUdp::FullHeader(driver.produce()?);
+            if driver.produce::<bool>()? {
+                Some(full_header)
             } else {
-                let source_port = driver.produce()?;
-                let dest_port = driver.produce()?;
+                let mut buffer = driver.produce::<[u8; Udp::MIN_LENGTH.get() as usize]>()?;
+                #[allow(clippy::unwrap_used)] // We want to catch errors when deparsing, if any
+                full_header.deparse(&mut buffer).unwrap();
+
                 // We can have up to 3 extra byte for the header, in addition to the 4 bytes for
                 // the ports. Beyond that, we'd have at least 8 bytes and that would make our
                 // header a full UDP header.
-                let extra_bytes: Vec<u8> = driver.produce::<[u8; 3]>()?
-                    [..driver.produce::<u8>()? as usize % 3] // 0-3 bytes, total 4-7 bytes
-                    .to_vec();
-                TruncatedUdp::PartialHeader(crate::udp::TruncatedUdpHeader::new(
-                    source_port,
-                    dest_port,
-                    extra_bytes,
-                ))
-            };
-            Some(udp)
+                let size = driver.produce::<u8>()? % 4 + 4;
+                let truncated_buffer = &buffer[..size as usize];
+                #[allow(clippy::unwrap_used)] // We want to catch errors when parsing, if any
+                let udp = crate::udp::TruncatedUdpHeader::parse(truncated_buffer)
+                    .ok()
+                    .unwrap()
+                    .0;
+
+                Some(TruncatedUdp::PartialHeader(udp))
+            }
         }
     }
 }

@@ -233,30 +233,34 @@ impl DeParse for TruncatedTcp {
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
-    use super::TruncatedTcp;
+    use super::{Tcp, TruncatedTcp};
+    use crate::parse::{DeParse, Parse};
     use bolero::{Driver, TypeGenerator};
 
     impl TypeGenerator for TruncatedTcp {
+        // Generate either full or partial TCP header
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            // Generate either full or partial TCP header
-            let tcp = if driver.produce::<bool>()? {
-                TruncatedTcp::FullHeader(driver.produce()?)
+            let full_header = TruncatedTcp::FullHeader(driver.produce()?);
+            if driver.produce::<bool>()? {
+                Some(full_header)
             } else {
-                let source_port = driver.produce()?;
-                let dest_port = driver.produce()?;
+                let mut buffer = driver.produce::<[u8; Tcp::MIN_LENGTH.get() as usize]>()?;
+                #[allow(clippy::unwrap_used)] // We want to catch errors when deparsing, if any
+                full_header.deparse(&mut buffer).unwrap();
+
                 // We can have up to 15 extra bytes for the header, in addition to the 4 bytes for
                 // the ports. Beyond that, we'd have at least 20 bytes and that would make our
                 // header a full TCP header.
-                let extra_bytes: Vec<u8> = driver.produce::<[u8; 15]>()?
-                    [..driver.produce::<u8>()? as usize % 15] // 0-15 bytes, total 4-19 bytes
-                    .to_vec();
-                TruncatedTcp::PartialHeader(crate::tcp::TruncatedTcpHeader::new(
-                    source_port,
-                    dest_port,
-                    extra_bytes,
-                ))
-            };
-            Some(tcp)
+                let size = driver.produce::<u8>()? % 16 + 4;
+                let truncated_buffer = &buffer[..size as usize];
+                #[allow(clippy::unwrap_used)] // We want to catch errors when parsing, if any
+                let tcp = crate::tcp::TruncatedTcpHeader::parse(truncated_buffer)
+                    .ok()
+                    .unwrap()
+                    .0;
+
+                Some(TruncatedTcp::PartialHeader(tcp))
+            }
         }
     }
 }
