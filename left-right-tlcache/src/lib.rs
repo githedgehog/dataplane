@@ -146,26 +146,17 @@ where
             }
 
             let result = {
-                // get version (*)
-                let version = provider.get_version();
-
-                // get a factory for the key from the provider and build a fresh handle from it
-                let fresh = provider
+                // get a factory for the key from the provider to build a fresh handle from it
+                // provider returns identity of object and version for entry invalidation
+                let (factory, identity, version) = provider
                     .get_factory(&key)
-                    .map(|factory| factory.handle())
                     .ok_or_else(|| ReadHandleCacheError::NotFound(key.clone()))?;
 
-                // get identity
-                let identity = fresh
-                    .enter()
-                    .ok_or_else(|| ReadHandleCacheError::NotAccessible(key.clone()))?
-                    .as_ref()
-                    .identity();
-
                 // store a new entry locally with a handle, its identity and version, for the given key
-                let rhandle = Rc::new(fresh);
-                let entry = ReadHandleEntry::new(identity, Rc::clone(&rhandle), version);
+                let rhandle = Rc::new(factory.handle());
+                let entry = ReadHandleEntry::new(identity.clone(), Rc::clone(&rhandle), version);
                 map.insert(key.clone(), entry);
+
                 Ok(rhandle)
             };
             if result.is_err() {
@@ -175,10 +166,6 @@ where
             result
         })
     }
-    // (*) This code does not guarantee that between the call of version() and get_factory(), the underlying collection of
-    // handles owned by the provider hasn't changed. This is fine if we call get_version() first: we may get the latest handle
-    // with an older version. The next access to the reader will heal this, at the cost of building a new read-handle. A quick
-    // solution would be for get_factory to return (identity, version, factory).
 }
 
 /// Create a thread-local `ReadHandleCache` with a given name, to access
