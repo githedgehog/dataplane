@@ -177,6 +177,12 @@ where
             Ok(rhandle)
         })
     }
+
+    pub fn purge(thread_local: &'static LocalKey<Self>) {
+        thread_local.with(|local| {
+            local.handles.borrow_mut().clear();
+        });
+    }
 }
 
 /// Create a thread-local `ReadHandleCache` with a given name, to access
