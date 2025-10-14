@@ -386,9 +386,26 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
 /// The fuzz testing contract for the `Packet` type
 pub mod contract {
     use crate::buffer::{GenerateTestBufferForHeaders, TestBuffer};
-    use crate::headers::{CommonHeaders, Headers, Net};
+    use crate::eth::GenWithEthType;
+    use crate::eth::ethtype::CommonEthType;
+    use crate::headers::{
+        CommonHeaders, EmbeddedHeaders, EmbeddedTransport, Headers, Net, Transport,
+        TryEmbeddedTransport, TryTransport,
+    };
+    use crate::icmp4::{
+        Icmp4EmbeddedHeadersGenerator, Icmp4ErrorMsgGenerator, Icmp4ExtensionStructures,
+    };
+    use crate::icmp6::{
+        Icmp6EmbeddedHeadersGenerator, Icmp6ErrorMsgGenerator, Icmp6ExtensionStructures,
+    };
+    use crate::ip::NextHeader;
+    use crate::ipv4;
+    use crate::ipv6;
     use crate::packet::Packet;
     use crate::parse::DeParse;
+    use crate::tcp::TruncatedTcp;
+    use crate::udp::TruncatedUdp;
+    use arrayvec::ArrayVec;
     use bolero::{Driver, TypeGenerator, ValueGenerator};
 
     impl TypeGenerator for Packet<TestBuffer> {
@@ -420,6 +437,244 @@ pub mod contract {
             let test_buffer = GenerateTestBufferForHeaders::new(headers).generate(driver)?;
 
             Packet::new(test_buffer).ok()
+        }
+    }
+
+    enum IcmpExtensionStructures {
+        V4(Icmp4ExtensionStructures),
+        V6(Icmp6ExtensionStructures),
+    }
+
+    impl IcmpExtensionStructures {
+        fn size(&self) -> usize {
+            match self {
+                IcmpExtensionStructures::V4(v4) => v4.size().get() as usize,
+                IcmpExtensionStructures::V6(v6) => v6.size().get() as usize,
+            }
+        }
+    }
+
+    /// Common ICMP Error message generator
+    pub struct IcmpErrorMsg;
+
+    impl ValueGenerator for IcmpErrorMsg {
+        type Output = Packet<TestBuffer>;
+
+        // Note: We intentionally don't set checksums. Call the relevant functions on headers of the
+        // generated packet if desired.
+        #[allow(clippy::too_many_lines)]
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            // Generate headers
+
+            let common_eth_type: CommonEthType = driver.produce()?;
+            let eth = GenWithEthType(common_eth_type.into()).generate(driver)?;
+            let mut headers = match common_eth_type {
+                CommonEthType::Ipv4 => {
+                    let ipv4 = ipv4::GenWithNextHeader(NextHeader::ICMP).generate(driver)?;
+                    let error_msg_generator = Icmp4ErrorMsgGenerator;
+                    let icmp4 = error_msg_generator.generate(driver)?;
+                    let inner_ip_generator = Icmp4EmbeddedHeadersGenerator;
+                    let embedded_ip = inner_ip_generator.generate(driver);
+                    Headers {
+                        eth: Some(eth),
+                        vlan: ArrayVec::default(),
+                        net: Some(Net::Ipv4(ipv4)),
+                        net_ext: ArrayVec::default(),
+                        transport: Some(Transport::Icmp4(icmp4)),
+                        udp_encap: None,
+                        embedded_ip,
+                    }
+                }
+                CommonEthType::Ipv6 => {
+                    let ipv6 = ipv6::GenWithNextHeader(NextHeader::ICMP).generate(driver)?;
+                    let error_msg_generator = Icmp6ErrorMsgGenerator;
+                    let icmp6 = error_msg_generator.generate(driver)?;
+                    let inner_ip_generator = Icmp6EmbeddedHeadersGenerator;
+                    let embedded_ip = inner_ip_generator.generate(driver);
+                    Headers {
+                        eth: Some(eth),
+                        vlan: ArrayVec::default(),
+                        net: Some(Net::Ipv6(ipv6)),
+                        net_ext: ArrayVec::default(),
+                        transport: Some(Transport::Icmp6(icmp6)),
+                        udp_encap: None,
+                        embedded_ip,
+                    }
+                }
+            };
+
+            // Generate payload size and ICMP extensions
+
+            let headers_size = headers.size().get() as usize;
+            let mut payload_size = 0;
+            let mut extensions = None;
+            if let Some(ref inner_ip) = headers.embedded_ip
+                && let Some(
+                    EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(_))
+                    | EmbeddedTransport::Udp(TruncatedUdp::FullHeader(_)),
+                ) = inner_ip.try_embedded_transport()
+            {
+                // The length of the resulting ICMP datagram cannot exceed 576 bytes (RFC 5508)
+                payload_size = driver.produce::<usize>()? % (576 - headers_size);
+                if payload_size > 0 {
+                    extensions = match &headers.transport {
+                        Some(Transport::Icmp4(icmp)) => {
+                            if icmp.supports_extensions() {
+                                driver
+                                    .produce::<Icmp4ExtensionStructures>()
+                                    .map(IcmpExtensionStructures::V4)
+                            } else {
+                                return None;
+                            }
+                        }
+                        Some(Transport::Icmp6(icmp)) => {
+                            if icmp.supports_extensions() {
+                                driver
+                                    .produce::<Icmp6ExtensionStructures>()
+                                    .map(IcmpExtensionStructures::V6)
+                            } else {
+                                return None;
+                            }
+                        }
+                        _ => unreachable!(),
+                    };
+                }
+            }
+
+            // Compute sizes
+
+            let extensions_size = extensions.as_ref().map_or(0, IcmpExtensionStructures::size);
+            let padding_size = match extensions {
+                Some(IcmpExtensionStructures::V4(_)) => {
+                    Icmp4ExtensionStructures::padding_size(payload_size)
+                }
+                Some(IcmpExtensionStructures::V6(_)) => {
+                    Icmp6ExtensionStructures::padding_size(payload_size)
+                }
+                None => 0,
+            };
+            // ICMP header size
+            let icmp_header_size = headers.try_transport()?.size().get() as usize;
+            // Total packet size
+            let total_size = headers_size + extensions_size + payload_size;
+            // Payload size for outer IP header
+            let outer_payload_size =
+                icmp_header_size + payload_size + padding_size + extensions_size;
+            // Payload size for inner IP header
+            let inner_network_header_size = headers
+                .embedded_ip
+                .as_ref()
+                .map_or(0, EmbeddedHeaders::net_headers_len)
+                as usize;
+            // Payload size for inner TCP/UDP header
+            let inner_transport_header_size = headers
+                .embedded_ip
+                .as_ref()
+                .map_or(0, EmbeddedHeaders::transport_headers_len)
+                as usize;
+            // Theoretical payload size for inner TCP/UDP (inner packet may be truncated)
+            let theoretical_inner_payload_size = if driver.produce::<bool>()? {
+                // Payload is full
+                payload_size
+            } else {
+                // Payload is truncated
+                payload_size - (driver.produce::<usize>()? % payload_size)
+            };
+            // Theoretical payload size for inner IP header (inner packet may be truncated)
+            let theoretical_inner_net_payload_size =
+                theoretical_inner_payload_size + inner_transport_header_size;
+            // Offset of ICMP header in packet
+            let icmp_header_offset = headers_size
+                - headers
+                    .eth
+                    .as_ref()
+                    .map_or(0, |eth| eth.size().get() as usize)
+                - headers
+                    .net
+                    .as_ref()
+                    .map_or(0, |net| net.size().get() as usize);
+            // Payload size for ICMP header, only used in conjunction with ICMP extensions
+            let icmp_payload_size = inner_network_header_size
+                + inner_transport_header_size
+                + payload_size
+                + padding_size;
+            // Offset of extensions in packet, or 0 if no extensions are in use
+            let extensions_offset =
+                total_size - extensions.as_ref().map_or(0, IcmpExtensionStructures::size);
+
+            // Update headers
+
+            // Set outer IP payload/total length
+            match headers.net {
+                Some(Net::Ipv4(ref mut ipv4)) => {
+                    #[allow(clippy::cast_possible_truncation)] // bounded size
+                    ipv4.set_payload_len(outer_payload_size as u16).ok()?;
+                }
+                Some(Net::Ipv6(ref mut ipv6)) => {
+                    #[allow(clippy::cast_possible_truncation)] // bounded size
+                    ipv6.set_payload_length(outer_payload_size as u16);
+                }
+                None => {}
+            }
+            // Set inner IP payload/total length
+            #[allow(clippy::cast_possible_truncation)] // bounded size
+            headers.embedded_ip.as_mut().map(|embedded_ip| {
+                embedded_ip.set_network_payload_length(theoretical_inner_net_payload_size as u16)
+            });
+            // Set inner transport length
+            #[allow(clippy::cast_possible_truncation)] // bounded size
+            headers.embedded_ip.as_mut().map(|embedded_ip| {
+                embedded_ip.set_transport_payload_length(theoretical_inner_payload_size as u16)
+            });
+
+            // Write packet contents to buffer
+
+            let mut data = vec![0; total_size];
+
+            // Write headers
+            #[allow(clippy::unwrap_used)]
+            headers.deparse(data.as_mut()).unwrap();
+
+            // Write payload
+            if payload_size > 0 {
+                data[headers.size().get() as usize..headers.size().get() as usize + payload_size]
+                    .fill(driver.produce()?);
+            }
+
+            match extensions {
+                Some(IcmpExtensionStructures::V4(ext)) => {
+                    // Set padding
+                    data[extensions_offset - padding_size..extensions_offset].fill(0);
+                    // Write extensions
+                    #[allow(clippy::unwrap_used)]
+                    ext.deparse(&mut data[extensions_offset..]).unwrap();
+                }
+                Some(IcmpExtensionStructures::V6(ext)) => {
+                    // Set padding
+                    data[extensions_offset - padding_size..extensions_offset].fill(0);
+                    // Write extensions
+                    #[allow(clippy::unwrap_used)]
+                    ext.deparse(&mut data[extensions_offset..]).unwrap();
+                }
+                None => {}
+            }
+
+            // Set ICMP payload length, if relevant (if we use ICMP extensions). See RFC 4884.
+            // FIXME: We don't have header fields to do that without writing directly to the buffer.
+            if extensions_size > 0 {
+                #[allow(clippy::cast_possible_truncation)] // bounded sizes
+                match headers.transport {
+                    Some(Transport::Icmp4(_)) => {
+                        data[icmp_header_offset + 5] = (icmp_payload_size / 4) as u8;
+                    }
+                    Some(Transport::Icmp6(_)) => {
+                        data[icmp_header_offset + 4] = (icmp_payload_size / 8) as u8;
+                    }
+                    _ => {}
+                }
+            }
+
+            Packet::new(TestBuffer::from_raw_data(&data)).ok()
         }
     }
 }

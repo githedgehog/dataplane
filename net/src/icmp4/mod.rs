@@ -130,17 +130,23 @@ impl Icmp4 {
         })
     }
 
-    fn payload_length(&self, buf: &[u8]) -> usize {
+    #[must_use]
+    pub(crate) fn supports_extensions(&self) -> bool {
         // See RFC 4884. Icmpv4Type::Redirect does not get an optional length field.
-        match self.icmp_type() {
+        matches!(
+            self.icmp_type(),
             Icmpv4Type::DestinationUnreachable(_)
-            | Icmpv4Type::TimeExceeded(_)
-            | Icmpv4Type::ParameterProblem(_) => {
-                let payload_length = buf[5];
-                payload_length as usize * 4
-            }
-            _ => 0,
+                | Icmpv4Type::TimeExceeded(_)
+                | Icmpv4Type::ParameterProblem(_)
+        )
+    }
+
+    fn payload_length(&self, buf: &[u8]) -> usize {
+        if !self.supports_extensions() {
+            return 0;
         }
+        let payload_length = buf[5];
+        payload_length as usize * 4
     }
 
     pub(crate) fn parse_payload(&self, cursor: &mut Reader) -> Option<EmbeddedHeaders> {

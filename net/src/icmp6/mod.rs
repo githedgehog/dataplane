@@ -65,17 +65,24 @@ impl Icmp6 {
         })
     }
 
+    #[must_use]
+    pub(crate) fn supports_extensions(&self) -> bool {
+        // See RFC 4884.
+        matches!(
+            self.icmp_type(),
+            Icmpv6Type::DestinationUnreachable(_)
+                | Icmpv6Type::TimeExceeded(_)
+                | Icmpv6Type::ParameterProblem(_)
+        )
+    }
+
     fn payload_length(&self, buf: &[u8]) -> usize {
         // See RFC 4884.
-        match self.icmp_type() {
-            Icmpv6Type::DestinationUnreachable(_)
-            | Icmpv6Type::TimeExceeded(_)
-            | Icmpv6Type::ParameterProblem(_) => {
-                let payload_length = buf[4];
-                payload_length as usize * 8
-            }
-            _ => 0,
+        if !self.supports_extensions() {
+            return 0;
         }
+        let payload_length = buf[4];
+        payload_length as usize * 8
     }
 
     pub(crate) fn parse_payload(&self, cursor: &mut Reader) -> Option<EmbeddedHeaders> {

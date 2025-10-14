@@ -13,6 +13,8 @@ use crate::parse::{
     ParseHeader, ParseWith, Reader, Writer,
 };
 use crate::tcp::{TcpChecksum, TcpPort, TruncatedTcp};
+#[cfg(any(test, feature = "bolero"))]
+use crate::udp::Udp;
 use crate::udp::{TruncatedUdp, UdpChecksum, UdpPort};
 use arrayvec::ArrayVec;
 use core::fmt::Debug;
@@ -57,11 +59,42 @@ impl EmbeddedHeaders {
         }
     }
 
-    fn net_headers_len(&self) -> u16 {
+    #[cfg(any(test, feature = "bolero"))]
+    pub fn set_network_payload_length(&mut self, payload_length: u16) -> Option<()> {
+        match self.net {
+            Some(Net::Ipv4(ref mut ipv4)) => ipv4.set_payload_len(payload_length).ok(),
+            Some(Net::Ipv6(ref mut ipv6)) => {
+                ipv6.set_payload_length(payload_length);
+                Some(())
+            }
+            None => None,
+        }
+    }
+
+    #[cfg(any(test, feature = "bolero"))]
+    pub fn set_transport_payload_length(&mut self, payload_length: u16) -> Option<()> {
+        match self.transport {
+            Some(EmbeddedTransport::Udp(TruncatedUdp::FullHeader(ref mut udp))) => {
+                #[allow(unsafe_code)] // We use a safe value >= Udp::MIN_LENGTH
+                unsafe {
+                    udp.set_length(
+                        Udp::MIN_LENGTH
+                            .get()
+                            .checked_add(payload_length)
+                            .and_then(NonZero::new)?,
+                    );
+                }
+                Some(())
+            }
+            _ => None,
+        }
+    }
+
+    pub fn net_headers_len(&self) -> u16 {
         self.net.as_ref().map(|net| net.size().get()).unwrap_or(0)
     }
 
-    fn transport_headers_len(&self) -> u16 {
+    pub fn transport_headers_len(&self) -> u16 {
         self.transport
             .as_ref()
             .map(|transport| transport.size().get())
