@@ -148,9 +148,19 @@ impl DeParse for Icmp6 {
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
+    use crate::headers::{EmbeddedHeaders, EmbeddedTransport, Net};
     use crate::icmp6::Icmp6;
+    use crate::ip::NextHeader;
+    use crate::ipv6::GenWithNextHeader;
     use crate::parse::Parse;
-    use bolero::{Driver, TypeGenerator};
+    use crate::tcp::TruncatedTcp;
+    use crate::udp::TruncatedUdp;
+    use arrayvec::ArrayVec;
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
+    use etherparse::icmpv6::{
+        DestUnreachableCode, ParameterProblemCode, ParameterProblemHeader, TimeExceededCode,
+    };
+    use etherparse::{Icmpv6Header, Icmpv6Type};
 
     /// The number of bytes to use in parsing arbitrary test values for [`Icmp6`]
     pub const BYTE_SLICE_SIZE: usize = 128;
@@ -163,6 +173,119 @@ mod contract {
                 Err(e) => unreachable!("{e:?}", e = e),
             };
             Some(header)
+        }
+    }
+
+    struct Icmp6DestUnreachableGenerator;
+    impl ValueGenerator for Icmp6DestUnreachableGenerator {
+        type Output = Icmp6;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv6Header {
+                icmp_type: Icmpv6Type::DestinationUnreachable(DestUnreachableCode::from_u8(
+                    driver.produce::<u8>()? % 7,
+                )?),
+                checksum: driver.produce()?,
+            };
+            Some(Icmp6(icmp_header))
+        }
+    }
+
+    struct Icmp6PacketTooBigGenerator;
+    impl ValueGenerator for Icmp6PacketTooBigGenerator {
+        type Output = Icmp6;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv6Header {
+                icmp_type: Icmpv6Type::PacketTooBig {
+                    mtu: driver.produce()?,
+                },
+                checksum: driver.produce()?,
+            };
+            Some(Icmp6(icmp_header))
+        }
+    }
+
+    struct Icmp6TimeExceededGenerator;
+    impl ValueGenerator for Icmp6TimeExceededGenerator {
+        type Output = Icmp6;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv6Header {
+                icmp_type: Icmpv6Type::TimeExceeded(TimeExceededCode::from_u8(
+                    driver.produce::<u8>()? % 2,
+                )?),
+                checksum: driver.produce()?,
+            };
+            Some(Icmp6(icmp_header))
+        }
+    }
+
+    struct Icmp6ParameterProblemGenerator;
+    impl ValueGenerator for Icmp6ParameterProblemGenerator {
+        type Output = Icmp6;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv6Header {
+                icmp_type: Icmpv6Type::ParameterProblem(ParameterProblemHeader {
+                    code: ParameterProblemCode::from_u8(driver.produce::<u8>()? % 11)?,
+                    pointer: driver.produce()?,
+                }),
+                checksum: driver.produce()?,
+            };
+            Some(Icmp6(icmp_header))
+        }
+    }
+
+    /// Generator for `ICMPv6` Error message headers.
+    pub struct Icmp6ErrorMsgGenerator;
+    impl ValueGenerator for Icmp6ErrorMsgGenerator {
+        type Output = Icmp6;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            match driver.produce::<u32>()? % 4 {
+                0 => Icmp6DestUnreachableGenerator.generate(driver),
+                1 => Icmp6PacketTooBigGenerator.generate(driver),
+                2 => Icmp6TimeExceededGenerator.generate(driver),
+                _ => Icmp6ParameterProblemGenerator.generate(driver),
+            }
+        }
+    }
+
+    /// Generator for `ICMPv6` Error message embedded IP headers.
+    pub struct Icmp6EmbeddedHeadersGenerator;
+    impl ValueGenerator for Icmp6EmbeddedHeadersGenerator {
+        type Output = EmbeddedHeaders;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let transport = match driver.produce::<u32>()? % 9 {
+                0..=3 => Some(EmbeddedTransport::Tcp(driver.produce::<TruncatedTcp>()?)),
+                4..=7 => Some(EmbeddedTransport::Udp(driver.produce::<TruncatedUdp>()?)),
+                _ => None,
+            };
+            let net = match transport {
+                Some(EmbeddedTransport::Tcp(_)) => {
+                    let net_gen = GenWithNextHeader(NextHeader::TCP);
+                    Some(Net::Ipv6(net_gen.generate(driver)?))
+                }
+                Some(EmbeddedTransport::Udp(_)) => {
+                    let net_gen = GenWithNextHeader(NextHeader::UDP);
+                    Some(Net::Ipv6(net_gen.generate(driver)?))
+                }
+                None => match driver.produce::<u32>()? % 3 {
+                    0 => {
+                        let net_gen = GenWithNextHeader(NextHeader::TCP);
+                        Some(Net::Ipv6(net_gen.generate(driver)?))
+                    }
+                    1 => {
+                        let net_gen = GenWithNextHeader(NextHeader::UDP);
+                        Some(Net::Ipv6(net_gen.generate(driver)?))
+                    }
+                    _ => None,
+                },
+            };
+            let headers = EmbeddedHeaders::new(net, transport, ArrayVec::default(), None);
+            Some(headers)
         }
     }
 }

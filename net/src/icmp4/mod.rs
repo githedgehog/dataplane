@@ -213,9 +213,20 @@ impl DeParse for Icmp4 {
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
+    use crate::headers::{EmbeddedHeaders, EmbeddedTransport, Net};
     use crate::icmp4::Icmp4;
+    use crate::ip::NextHeader;
+    use crate::ipv4::GenWithNextHeader;
     use crate::parse::{Parse, ParseError};
-    use bolero::{Driver, TypeGenerator};
+    use crate::tcp::TruncatedTcp;
+    use crate::udp::TruncatedUdp;
+    use arrayvec::ArrayVec;
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
+    use etherparse::icmpv4::{
+        DestUnreachableHeader, ParameterProblemHeader, RedirectCode, RedirectHeader,
+        TimeExceededCode,
+    };
+    use etherparse::{Icmpv4Header, Icmpv4Type};
 
     impl TypeGenerator for Icmp4 {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
@@ -231,6 +242,121 @@ mod contract {
                 }
             };
             Some(icmp4)
+        }
+    }
+
+    struct Icmp4DestUnreachableGenerator;
+    impl ValueGenerator for Icmp4DestUnreachableGenerator {
+        type Output = Icmp4;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv4Header {
+                icmp_type: Icmpv4Type::DestinationUnreachable(DestUnreachableHeader::from_values(
+                    driver.produce()?,
+                    driver.produce()?,
+                )?),
+                checksum: driver.produce()?,
+            };
+            Some(Icmp4(icmp_header))
+        }
+    }
+
+    struct Icmp4RedirectGenerator;
+    impl ValueGenerator for Icmp4RedirectGenerator {
+        type Output = Icmp4;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv4Header {
+                icmp_type: Icmpv4Type::Redirect(RedirectHeader {
+                    code: RedirectCode::from_u8(driver.produce::<u8>()? % 4)?,
+                    gateway_internet_address: driver.produce()?,
+                }),
+                checksum: driver.produce()?,
+            };
+            Some(Icmp4(icmp_header))
+        }
+    }
+
+    struct Icmp4TimeExceededGenerator;
+    impl ValueGenerator for Icmp4TimeExceededGenerator {
+        type Output = Icmp4;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv4Header {
+                icmp_type: Icmpv4Type::TimeExceeded(TimeExceededCode::from_u8(
+                    driver.produce::<u8>()? % 2,
+                )?),
+                checksum: driver.produce()?,
+            };
+            Some(Icmp4(icmp_header))
+        }
+    }
+
+    struct Icmp4ParameterProblemGenerator;
+    impl ValueGenerator for Icmp4ParameterProblemGenerator {
+        type Output = Icmp4;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv4Header {
+                icmp_type: Icmpv4Type::ParameterProblem(ParameterProblemHeader::from_values(
+                    driver.produce::<u8>()? % 3,
+                    driver.produce()?,
+                )?),
+                checksum: driver.produce()?,
+            };
+            Some(Icmp4(icmp_header))
+        }
+    }
+
+    /// Generator for `ICMPv4` Error message headers.
+    pub struct Icmp4ErrorMsgGenerator;
+    impl ValueGenerator for Icmp4ErrorMsgGenerator {
+        type Output = Icmp4;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            match driver.produce::<u32>()? % 4 {
+                0 => Icmp4DestUnreachableGenerator.generate(driver),
+                1 => Icmp4RedirectGenerator.generate(driver),
+                2 => Icmp4TimeExceededGenerator.generate(driver),
+                _ => Icmp4ParameterProblemGenerator.generate(driver),
+            }
+        }
+    }
+
+    /// Generator for `ICMPv4` Error message embedded IP headers.
+    pub struct Icmp4EmbeddedHeadersGenerator;
+    impl ValueGenerator for Icmp4EmbeddedHeadersGenerator {
+        type Output = EmbeddedHeaders;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let transport = match driver.produce::<u32>()? % 9 {
+                0..=3 => Some(EmbeddedTransport::Tcp(driver.produce::<TruncatedTcp>()?)),
+                4..=7 => Some(EmbeddedTransport::Udp(driver.produce::<TruncatedUdp>()?)),
+                _ => None,
+            };
+            let net = match transport {
+                Some(EmbeddedTransport::Tcp(_)) => {
+                    let net_gen = GenWithNextHeader(NextHeader::TCP);
+                    Some(Net::Ipv4(net_gen.generate(driver)?))
+                }
+                Some(EmbeddedTransport::Udp(_)) => {
+                    let net_gen = GenWithNextHeader(NextHeader::UDP);
+                    Some(Net::Ipv4(net_gen.generate(driver)?))
+                }
+                None => match driver.produce::<u32>()? % 3 {
+                    0 => {
+                        let net_gen = GenWithNextHeader(NextHeader::TCP);
+                        Some(Net::Ipv4(net_gen.generate(driver)?))
+                    }
+                    1 => {
+                        let net_gen = GenWithNextHeader(NextHeader::UDP);
+                        Some(Net::Ipv4(net_gen.generate(driver)?))
+                    }
+                    _ => None,
+                },
+            };
+            let headers = EmbeddedHeaders::new(net, transport, ArrayVec::default(), None);
+            Some(headers)
         }
     }
 }

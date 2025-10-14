@@ -42,6 +42,21 @@ pub struct EmbeddedHeaders {
 }
 
 impl EmbeddedHeaders {
+    #[cfg(any(test, feature = "bolero"))]
+    pub fn new(
+        net: Option<Net>,
+        transport: Option<EmbeddedTransport>,
+        net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
+        full_payload_length: Option<u16>,
+    ) -> Self {
+        Self {
+            net,
+            transport,
+            net_ext,
+            full_payload_length,
+        }
+    }
+
     fn net_headers_len(&self) -> u16 {
         self.net.as_ref().map(|net| net.size().get()).unwrap_or(0)
     }
