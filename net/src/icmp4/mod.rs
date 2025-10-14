@@ -217,7 +217,7 @@ mod contract {
     use crate::icmp4::Icmp4;
     use crate::ip::NextHeader;
     use crate::ipv4::GenWithNextHeader;
-    use crate::parse::{Parse, ParseError};
+    use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError};
     use crate::tcp::TruncatedTcp;
     use crate::udp::TruncatedUdp;
     use arrayvec::ArrayVec;
@@ -227,6 +227,7 @@ mod contract {
         TimeExceededCode,
     };
     use etherparse::{Icmpv4Header, Icmpv4Type};
+    use std::num::NonZero;
 
     impl TypeGenerator for Icmp4 {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
@@ -357,6 +358,86 @@ mod contract {
             };
             let headers = EmbeddedHeaders::new(net, transport, ArrayVec::default(), None);
             Some(headers)
+        }
+    }
+
+    /// See RFC 4884: Extended ICMP to Support Multi-Part Messages
+    #[derive(bolero::TypeGenerator)]
+    pub struct Icmp4ExtensionStructure([u8; Self::LENGTH]);
+
+    impl Icmp4ExtensionStructure {
+        /// The length of an Extension Structure for `ICMPv4`
+        pub const LENGTH: usize = 4;
+    }
+
+    /// An array of [`Icmp4ExtensionStructure`]
+    pub struct Icmp4ExtensionStructures(ArrayVec<Icmp4ExtensionStructure, 8>);
+
+    impl Icmp4ExtensionStructures {
+        /// Return the size of the padding area to be filled with zeroes between an ICMP Error
+        /// message inner IP packet's payload and `ICMPv4` Extension Structure objects.
+        // RFC 4884:
+        //
+        //     When the ICMP Extension Structure is appended to an ICMP message and that ICMP
+        //     message contains an "original datagram" field, the "original datagram" field MUST
+        //     contain at least 128 octets.
+        //
+        //     When the ICMP Extension Structure is appended to an ICMPv4 message and that ICMPv4
+        //     message contains an "original datagram" field, the "original datagram" field MUST be
+        //     zero padded to the nearest 32-bit boundary.
+        #[must_use]
+        pub fn padding_size(payload_size: usize) -> usize {
+            if payload_size < 128 {
+                128 - payload_size
+            } else if payload_size.is_multiple_of(Icmp4ExtensionStructure::LENGTH) {
+                0
+            } else {
+                Icmp4ExtensionStructure::LENGTH - payload_size % Icmp4ExtensionStructure::LENGTH
+            }
+        }
+    }
+
+    impl DeParse for Icmp4ExtensionStructures {
+        type Error = ();
+
+        // PANICS IF EMPTY!
+        // FIXME: Change error handling if using ICMP Extension Structures outside of tests
+        fn size(&self) -> NonZero<u16> {
+            #[allow(clippy::cast_possible_truncation)] // header length bounded
+            NonZero::new((self.0.len() * Icmp4ExtensionStructure::LENGTH) as u16)
+                .unwrap_or_else(|| unreachable!())
+        }
+
+        fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
+            let len = buf.len();
+            if len < self.size().into_non_zero_usize().get() {
+                return Err(DeParseError::Length(LengthError {
+                    expected: self.size().into_non_zero_usize(),
+                    actual: len,
+                }));
+            }
+            let s_len = Icmp4ExtensionStructure::LENGTH;
+            for (i, s) in self.0.iter().enumerate() {
+                buf[i * s_len..(i + 1) * s_len].copy_from_slice(&s.0);
+            }
+            Ok(self.size())
+        }
+    }
+
+    impl TypeGenerator for Icmp4ExtensionStructures {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let mut extensions = ArrayVec::new();
+            while driver.produce::<bool>()? {
+                if extensions.len() >= 8 {
+                    break;
+                }
+                extensions.push(driver.produce()?);
+            }
+            if extensions.is_empty() {
+                None
+            } else {
+                Some(Icmp4ExtensionStructures(extensions))
+            }
         }
     }
 }

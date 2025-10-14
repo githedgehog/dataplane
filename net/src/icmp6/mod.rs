@@ -152,7 +152,7 @@ mod contract {
     use crate::icmp6::Icmp6;
     use crate::ip::NextHeader;
     use crate::ipv6::GenWithNextHeader;
-    use crate::parse::Parse;
+    use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse};
     use crate::tcp::TruncatedTcp;
     use crate::udp::TruncatedUdp;
     use arrayvec::ArrayVec;
@@ -161,6 +161,7 @@ mod contract {
         DestUnreachableCode, ParameterProblemCode, ParameterProblemHeader, TimeExceededCode,
     };
     use etherparse::{Icmpv6Header, Icmpv6Type};
+    use std::num::NonZero;
 
     /// The number of bytes to use in parsing arbitrary test values for [`Icmp6`]
     pub const BYTE_SLICE_SIZE: usize = 128;
@@ -286,6 +287,78 @@ mod contract {
             };
             let headers = EmbeddedHeaders::new(net, transport, ArrayVec::default(), None);
             Some(headers)
+        }
+    }
+
+    /// Extension Structure for `ICMPv6`
+    #[derive(bolero::TypeGenerator)]
+    pub struct Icmp6ExtensionStructure([u8; Self::LENGTH]);
+
+    impl Icmp6ExtensionStructure {
+        /// The length of an Extension Structure for `ICMPv6`
+        pub const LENGTH: usize = 8;
+    }
+
+    /// An array of [`Icmp6ExtensionStructure`]
+    pub struct Icmp6ExtensionStructures(ArrayVec<Icmp6ExtensionStructure, 8>);
+
+    impl Icmp6ExtensionStructures {
+        /// Return the size of the padding area to be filled with zeroes between an ICMP Error
+        /// message inner IP packet's payload and `ICMPv6` Extension Structure objects.
+        #[must_use]
+        pub fn padding_size(payload_size: usize) -> usize {
+            if payload_size < 128 {
+                128 - payload_size
+            } else if payload_size.is_multiple_of(Icmp6ExtensionStructure::LENGTH) {
+                0
+            } else {
+                Icmp6ExtensionStructure::LENGTH - payload_size % Icmp6ExtensionStructure::LENGTH
+            }
+        }
+    }
+
+    impl DeParse for Icmp6ExtensionStructures {
+        type Error = ();
+
+        // PANICS IF EMPTY!
+        // FIXME: Change error handling if using ICMP Extension Structures outside of tests
+        fn size(&self) -> NonZero<u16> {
+            #[allow(clippy::cast_possible_truncation)] // header length bounded
+            NonZero::new((self.0.len() * Icmp6ExtensionStructure::LENGTH) as u16)
+                .unwrap_or_else(|| unreachable!())
+        }
+
+        fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
+            let len = buf.len();
+            if len < self.size().into_non_zero_usize().get() {
+                return Err(DeParseError::Length(LengthError {
+                    expected: self.size().into_non_zero_usize(),
+                    actual: len,
+                }));
+            }
+            let mut offset = 0;
+            for s in &self.0 {
+                buf[offset..offset + Icmp6ExtensionStructure::LENGTH].copy_from_slice(&s.0);
+                offset += Icmp6ExtensionStructure::LENGTH;
+            }
+            Ok(self.size())
+        }
+    }
+
+    impl TypeGenerator for Icmp6ExtensionStructures {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let mut extensions = ArrayVec::new();
+            while driver.produce::<bool>()? {
+                if extensions.len() >= 8 {
+                    break;
+                }
+                extensions.push(driver.produce()?);
+            }
+            if extensions.is_empty() {
+                None
+            } else {
+                Some(Icmp6ExtensionStructures(extensions))
+            }
         }
     }
 }
