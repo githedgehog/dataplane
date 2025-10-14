@@ -71,7 +71,7 @@ impl Icmp6 {
             Icmpv6Type::DestinationUnreachable(_)
             | Icmpv6Type::TimeExceeded(_)
             | Icmpv6Type::ParameterProblem(_) => {
-                let payload_length = buf[3];
+                let payload_length = buf[4];
                 payload_length as usize * 8
             }
             _ => 0,

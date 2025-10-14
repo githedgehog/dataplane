@@ -136,7 +136,7 @@ impl Icmp4 {
             Icmpv4Type::DestinationUnreachable(_)
             | Icmpv4Type::TimeExceeded(_)
             | Icmpv4Type::ParameterProblem(_) => {
-                let payload_length = buf[4];
+                let payload_length = buf[5];
                 payload_length as usize * 4
             }
             _ => 0,
