@@ -11,6 +11,7 @@ use left_right_tlcache::Identity;
 use std::cell::Ref;
 use std::hash::Hash;
 use std::net::IpAddr;
+use std::rc::Rc;
 
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
@@ -399,6 +400,17 @@ impl FibReader {
     pub fn enter(&self) -> Option<ReadGuard<'_, Fib>> {
         self.0.enter()
     }
+    #[inline(always)]
+    /// Convert Rc<ReadHandle<Fib>> -> FibReader
+    /// We need this conversion because the cache of read-handles stores ReadHandle<T>,
+    /// but the FibTable provides FibReader.
+    pub(crate) fn rc_from_rc_rhandle(rc: Rc<ReadHandle<Fib>>) -> Rc<Self> {
+        unsafe {
+            // the conversion is safe because FibReader is a transparent wrapper of ReadHandle<Fib>
+            let ptr = Rc::into_raw(rc) as *const Self;
+            Rc::from_raw(ptr)
+        }
+    }
     pub fn get_id(&self) -> Option<FibKey> {
         self.0.enter().map(|fib| fib.get_id())
     }
@@ -416,7 +428,6 @@ impl AsRef<FibReader> for ReadHandle<Fib> {
         unsafe { &*(self as *const ReadHandle<Fib> as *const FibReader) }
     }
 }
-
 #[derive(Debug, Clone)]
 #[repr(transparent)]
 pub struct FibReaderFactory(pub(crate) ReadHandleFactory<Fib>);
