@@ -27,6 +27,8 @@ trace_target!("stateless-nat", LevelFilter::INFO, &["nat", "pipeline"]);
 
 #[derive(Error, Debug, PartialEq)]
 enum NatError {
+    #[error("No IP header")]
+    NoIpHeader,
     #[error("Unsupported NAT translation")]
     UnsupportedTranslation,
     #[error("Invalid address {0}")]
@@ -196,15 +198,24 @@ impl StatelessNat {
     /// # Errors
     /// This method may fail if `translate_src` or `translate_dst` fail, which can happen if
     /// addresses are invalid or an unsupported translation is required (e.g. IPv4 -> IPv6).
-    fn translate(
+    fn translate<Buf: PacketBufferMut>(
         &self,
         nat_tables: &NatTables,
-        net: &mut Net,
+        packet: &mut Packet<Buf>,
         src_vni: Vni,
         dst_vni: Vni,
     ) -> Result<bool, NatError> {
+        let nfi = self.name();
+
+        // Get IP header
+        let Some(net) = packet.headers_mut().try_ip_mut() else {
+            error!("{nfi}: Failed to get IP headers!");
+            return Err(NatError::NoIpHeader);
+        };
+
+        // Get NAT tables
         let Some(table) = nat_tables.get_table(src_vni) else {
-            error!("Can't find NAT tables for VNI {src_vni}");
+            error!("{nfi}: Can't find NAT tables for VNI {src_vni}");
             return Err(NatError::MissingTable(src_vni));
         };
 
@@ -247,15 +258,8 @@ impl StatelessNat {
             return;
         };
 
-        /* get IP header */
-        let Some(net) = packet.headers_mut().try_ip_mut() else {
-            error!("{nfi}: Failed to get IP headers!");
-            packet.done(DoneReason::InternalFailure);
-            return;
-        };
-
         /* do the translations needed according to the NAT tables */
-        match self.translate(nat_tables, net, src_vni, dst_vni) {
+        match self.translate(nat_tables, packet, src_vni, dst_vni) {
             Err(e) => {
                 error!("{nfi}: {e}");
                 packet.done(DoneReason::NatFailure);
