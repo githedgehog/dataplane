@@ -3,15 +3,19 @@
 
 //! The Fib table, which allows accessing all FIBs
 
-use crate::fib::fibtype::{FibKey, FibReader, FibReaderFactory, FibWriter};
 use crate::rib::vrf::VrfId;
+use crate::{
+    RouterError,
+    fib::fibtype::{FibKey, FibReader, FibReaderFactory, FibWriter},
+};
 
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 use net::vxlan::Vni;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::Arc;
 #[allow(unused)]
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug)]
 struct FibTableEntry {
@@ -205,5 +209,20 @@ impl ReadHandleProvider for FibTable {
     }
     fn get_identity(&self, key: &Self::Key) -> Option<Self::Key> {
         self.get_entry(key).map(|entry| entry.id)
+    }
+}
+
+impl FibTableReader {
+    /// Main method for threads to get a reference to a FibReader from their thread-local cache.
+    /// Note 1: the cache stores `ReadHandle<Fib>`'s. This method returns `FibReader` for convenience. This is zero cost
+    /// Note 2: we make this a method of [`FibTableReader`], as each thread is assumed to have its own read handle to the `FibTable`.
+    /// Note 3: we map ReadHandleCacheError to RouterError
+    pub fn get_fib_reader(&self, id: FibKey) -> Result<Rc<FibReader>, RouterError> {
+        let Some(fibtable) = self.enter() else {
+            warn!("Unable to access fib table!");
+            return Err(RouterError::FibTableError);
+        };
+        let rhandle = ReadHandleCache::get_reader(&FIBTABLE_CACHE, id, &*fibtable)?;
+        Ok(FibReader::rc_from_rc_rhandle(rhandle))
     }
 }
