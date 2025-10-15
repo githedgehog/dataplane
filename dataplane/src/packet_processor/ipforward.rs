@@ -14,7 +14,6 @@ use std::net::IpAddr;
 use tracing::{debug, error, trace, warn};
 
 use routing::fib::fibobjects::{EgressObject, FibEntry, PktInstruction};
-use routing::fib::fibtable::FibTable;
 use routing::fib::fibtable::FibTableReader;
 use routing::fib::fibtype::FibKey;
 
@@ -71,30 +70,18 @@ impl IpForwarder {
         };
         debug!("{nfi}: processing packet to {dst} with vrf {vrfid}");
 
-        /* Get the fib to use: this lookup could be avoided since
-           we know the interface the packet came from and it has to be
-           attached to a certain fib if the vrf metadata value was set.
-           This extra lookup is a side effect of splitting into stages.
-        */
-
-        /* Read-only access to the fib table */
-        let Some(fibtr) = self.fibtr.enter() else {
-            error!("{nfi}: Unable to lookup fib for vrf {vrfid}");
+        /* access fib, by fetching FibReader from cache */
+        let Ok(fibr) = &self.fibtr.get_fib_reader(fibkey) else {
+            warn!("{nfi}: Unable to read fib. Key={fibkey}");
             packet.done(DoneReason::InternalFailure);
             return;
         };
-        /* Lookup the fib which needs to be consulted */
-        let Some(fibr) = fibtr.get_fib(&fibkey) else {
-            warn!("{nfi}: Unable to find fib with id {fibkey} for vrf {vrfid}");
-            packet.done(DoneReason::InternalFailure);
-            return;
-        };
-        /* Read-only access to fib */
         let Some(fib) = fibr.enter() else {
-            warn!("{nfi}: Unable to read from fib {fibkey}");
+            warn!("{nfi}: Unable to read from fib. Key={fibkey}");
             packet.done(DoneReason::InternalFailure);
             return;
         };
+
         /* Perform lookup in the fib */
         let (prefix, fibentry) = fib.lpm_entry_prefix(packet);
         if let Some(fibentry) = &fibentry {
@@ -110,7 +97,7 @@ impl IpForwarder {
                 }
             }
             /* execute instructions according to FIB */
-            self.packet_exec_instructions(&fibtr, packet, fibentry, fib.get_vtep());
+            self.packet_exec_instructions(packet, fibentry, fib.get_vtep());
         } else {
             debug!("Could not get fib group for {prefix}. Will drop packet...");
             packet.done(DoneReason::InternalFailure);
@@ -121,7 +108,6 @@ impl IpForwarder {
     fn packet_exec_instruction_local<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
-        fibtable: &FibTable,
         _ifindex: InterfaceIndex, /* we get it from metadata */
     ) {
         let nfi = &self.name;
@@ -134,14 +120,18 @@ impl IpForwarder {
                 let vni = vxlan.vni();
                 debug!("{nfi}: DECAPSULATED vxlan packet:\n {packet}");
                 debug!("{nfi}: Packet comes with vni {vni}");
-                let fibid = FibKey::from_vni(vni);
-                let Some(fib) = fibtable.get_fib(&fibid) else {
-                    error!("{nfi}: Failed to find fib {fibid} associated to vni {vni}");
+
+                // access fib for Vni vni
+                let fibkey = FibKey::from_vni(vni);
+                let Ok(fibr) = self.fibtr.get_fib_reader(fibkey) else {
+                    error!("{nfi}: Failed to find fib associated to vni {vni}. Fib key = {fibkey}");
                     packet.done(DoneReason::Unroutable);
                     return;
                 };
-                let Some(next_vrf) = fib.get_id().map(|id| id.as_u32()) else {
-                    debug!("{nfi}: Failed to access fib {fibid} to determine vrf");
+                let Some(next_vrf) = fibr.get_id().map(|id| id.as_u32()) else {
+                    debug!(
+                        "{nfi}: Failed to access fib {fibkey} to determine vrf. Fib Key={fibkey}"
+                    );
                     packet.done(DoneReason::InternalFailure);
                     return;
                 };
@@ -331,7 +321,6 @@ impl IpForwarder {
     /// Execute a [`PktInstruction`] on the packet
     fn packet_exec_instruction<Buf: PacketBufferMut>(
         &self,
-        fibtable: &FibTable,
         vtep: &Vtep,
         packet: &mut Packet<Buf>,
         instruction: &PktInstruction,
@@ -339,7 +328,7 @@ impl IpForwarder {
         match instruction {
             PktInstruction::Drop => self.packet_exec_instruction_drop(packet),
             PktInstruction::Local(ifindex) => {
-                self.packet_exec_instruction_local(packet, fibtable, *ifindex);
+                self.packet_exec_instruction_local(packet, *ifindex);
             }
             PktInstruction::Encap(encap) => self.packet_exec_instruction_encap(packet, encap, vtep),
             PktInstruction::Egress(egress) => self.packet_exec_instruction_egress(packet, egress),
@@ -349,13 +338,12 @@ impl IpForwarder {
     /// Execute all of the [`PktInstruction`]s indicated by the given [`FibEntry`] on the packet
     fn packet_exec_instructions<Buf: PacketBufferMut>(
         &self,
-        fibtable: &FibTable,
         packet: &mut Packet<Buf>,
         fibentry: &FibEntry,
         vtep: &Vtep,
     ) {
         for inst in fibentry.iter() {
-            self.packet_exec_instruction(fibtable, vtep, packet, inst);
+            self.packet_exec_instruction(vtep, packet, inst);
             if packet.is_done() {
                 return;
             }
