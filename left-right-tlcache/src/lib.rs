@@ -60,6 +60,16 @@ pub trait ReadHandleProvider: Sync {
     /// Get version. Provider should promise to provide a distinct value (e.g. monotonically increasing)
     /// anytime there's a change in the collection of read handles / factories it owns.
     fn get_version(&self) -> u64;
+
+    /// Method for a provider to produce an iterator over the read handles (factories)
+    /// This returns (version, iterator<Key, factory, Id>)
+    #[allow(clippy::type_complexity)]
+    fn get_iter(
+        &self,
+    ) -> (
+        u64,
+        impl Iterator<Item = (Self::Key, &ReadHandleFactory<Self::Data>, Self::Key)>,
+    );
 }
 
 /// Trait to determine the real identity of a `T` wrapped in left-right. That is,
@@ -182,6 +192,71 @@ where
         thread_local.with(|local| {
             local.handles.borrow_mut().clear();
         });
+    }
+
+    // Do a full refresh of the cache
+    pub fn refresh(
+        thread_local: &'static LocalKey<Self>,
+        provider: &impl ReadHandleProvider<Data = T, Key = K>,
+    ) {
+        // get all readers (factories) from the provider
+        let (version, iterator) = provider.get_iter();
+
+        // filter out all unusable readers
+        let iterator = iterator.filter(|(_key, factory, _id)| {
+            let rhandle = factory.handle();
+            !rhandle.was_dropped()
+        });
+
+        // update local cache, consuming the iterator
+        thread_local.with(|local| {
+            let mut handles = local.handles.borrow_mut();
+
+            // purge all unusable readers
+            handles.retain(|_key, entry| !entry.rhandle.was_dropped());
+
+            // update cache from iterator if: 1) cache does not have them or 2) version changed
+            // FIXME: here aliases store an extra handle instead of reusing the one for key == identity
+            // Will fix that later.
+            for (key, factory, id) in iterator {
+                handles
+                    .entry(key.clone())
+                    .and_modify(|e| {
+                        if e.version != version {
+                            *e =
+                                ReadHandleEntry::new(id.clone(), Rc::new(factory.handle()), version)
+                        }
+                    })
+                    .or_insert_with(|| {
+                        ReadHandleEntry::new(id.clone(), Rc::new(factory.handle()), version)
+                    });
+            }
+        });
+    }
+
+    /// Get an iterator of read handles from the cache. If refresh is true, the cache will be refreshed first.
+    /// This function is mostly useful if we want to iterate over the objects that the cache represents, optionally
+    /// refreshing it first. This is useful when caller does not know _what_ objects are there.
+    /// Since `ReadHandleProvider`s must be Sync, threads could simply call `ReadHandleProvider::get_iter()`
+    /// directly. However, that would not refresh the cache and would create a new reader for every item returned
+    /// by the provider, on each call.
+    pub fn iter(
+        thread_local: &'static LocalKey<Self>,
+        provider: &impl ReadHandleProvider<Data = T, Key = K>,
+        refresh: bool,
+    ) -> impl Iterator<Item = (K, Rc<ReadHandle<T>>)> {
+        if refresh {
+            ReadHandleCache::refresh(thread_local, provider);
+        }
+        thread_local.with(|local| {
+            let vector: Vec<(K, Rc<ReadHandle<T>>)> = local
+                .handles
+                .borrow()
+                .iter()
+                .map(|(key, e)| (key.clone(), Rc::clone(&e.rhandle)))
+                .collect();
+            vector.into_iter()
+        })
     }
 }
 
@@ -345,6 +420,19 @@ mod tests {
         }
         fn get_identity(&self, key: &Self::Key) -> Option<Self::Key> {
             self.data.get(key).map(|entry| entry.id)
+        }
+        fn get_iter(
+            &self,
+        ) -> (
+            u64,
+            impl Iterator<Item = (Self::Key, &ReadHandleFactory<Self::Data>, Self::Key)>,
+        ) {
+            let iterator = self
+                .data
+                .iter()
+                .map(|(key, entry)| (*key, &entry.factory, entry.id));
+
+            (self.version, iterator)
         }
     }
 
@@ -572,5 +660,48 @@ mod tests {
 
         // all handles from cache should have been removed as we looked up them all
         TEST_CACHE.with(|cache| assert!(cache.handles.borrow().is_empty()));
+    }
+
+    #[serial]
+    #[test]
+    fn test_readhandle_cache_iter() {
+        // start fresh
+        ReadHandleCache::purge(&TEST_CACHE);
+
+        // build provider and populate it
+        const NUM_HANDLES: u64 = 20;
+        let mut provider = TestProvider::new();
+        for id in 1..=NUM_HANDLES {
+            let alias = NUM_HANDLES + id;
+            provider.add_object(id, id);
+            provider.mod_object(id, format!("object-{id}").as_ref());
+            provider.add_object(alias, id);
+        }
+
+        // should be empty
+        TEST_CACHE.with(|cache| assert!(cache.handles.borrow().is_empty()));
+
+        // request iterator without refresh. Nothing should be returned since cache is empty.
+        let iterator = ReadHandleCache::iter(&TEST_CACHE, &provider, false);
+        assert_eq!(iterator.count(), 0);
+
+        // request iterator with refresh
+        let iterator = ReadHandleCache::iter(&TEST_CACHE, &provider, true);
+
+        // consume it
+        let mut count = 0;
+        for (_key, rhandle) in iterator {
+            count += 1;
+            let _guard = rhandle.enter().unwrap();
+        }
+
+        // we got all
+        assert_eq!(count, NUM_HANDLES * 2);
+
+        // test that refresh/iter filters out invalid handles (need refresh) 2 should have been invalidated
+        provider.drop_writer(1);
+        let iterator = ReadHandleCache::iter(&TEST_CACHE, &provider, true);
+        let vec: Vec<(u64, Rc<ReadHandle<TestStruct>>)> = iterator.collect();
+        assert_eq!(vec.len() as u64, (NUM_HANDLES - 1) * 2);
     }
 }
