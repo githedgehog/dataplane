@@ -25,24 +25,29 @@ impl FibTableEntry {
 }
 
 #[derive(Default, Debug)]
-pub struct FibTable(BTreeMap<FibKey, Arc<FibTableEntry>>);
+pub struct FibTable {
+    version: u64,
+    entries: BTreeMap<FibKey, Arc<FibTableEntry>>,
+}
 
 impl FibTable {
     /// Register a `Fib` by adding a `FibReaderFactory` for it
     fn add_fib(&mut self, id: FibKey, factory: FibReaderFactory) {
         info!("Registering Fib with id {id} in the FibTable");
-        self.0.insert(id, Arc::new(FibTableEntry::new(id, factory)));
+        self.entries
+            .insert(id, Arc::new(FibTableEntry::new(id, factory)));
     }
     /// Delete a `Fib`, by unregistering a `FibReaderFactory` for it
     fn del_fib(&mut self, id: &FibKey) {
         info!("Unregistering Fib id {id} from the FibTable");
-        self.0.remove(id);
+        self.entries.remove(id);
     }
     /// Register an existing `Fib` with a given [`Vni`].
     /// This allows looking up a Fib (`FibReaderFactory`) from a [`Vni`]
     fn register_by_vni(&mut self, id: &FibKey, vni: Vni) {
         if let Some(entry) = self.get_entry(id) {
-            self.0.insert(FibKey::from_vni(vni), Arc::clone(entry));
+            self.entries
+                .insert(FibKey::from_vni(vni), Arc::clone(entry));
             info!("Registering Fib with id {id} with new vni {vni} in FibTable");
         } else {
             error!("Failed to register Fib {id} with vni {vni}: no fib with id {id} found");
@@ -52,13 +57,13 @@ impl FibTable {
     fn unregister_vni(&mut self, vni: Vni) {
         let key = FibKey::from_vni(vni);
         info!("Unregistered Fib with vni {vni} from the FibTable");
-        self.0.remove(&key);
+        self.entries.remove(&key);
     }
 
     /// Get the entry for the fib with the given [`FibKey`]
     #[must_use]
     fn get_entry(&self, key: &FibKey) -> Option<&Arc<FibTableEntry>> {
-        self.0.get(key)
+        self.entries.get(key)
     }
     /// Get a [`FibReader`] for the fib with the given [`FibKey`]. The call of this
     /// method to handle packets is ===TEMPORARY=== as it creates a new `FibReader` every time.
@@ -69,17 +74,21 @@ impl FibTable {
 
     #[must_use]
     pub(crate) fn len(&self) -> usize {
-        self.0.len()
+        self.entries.len()
     }
     /// Tell if fib table is empty
     #[must_use]
     #[allow(unused)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.entries.is_empty()
     }
     /// Provide an iterator of [`FibReaderFactory`]s
     pub(crate) fn values(&self) -> impl Iterator<Item = &FibReaderFactory> {
-        self.0.values().map(|e| &e.factory)
+        self.entries.values().map(|e| &e.factory)
+    }
+    /// Tell version of this [`FibTable`]
+    pub(crate) fn version(&self) -> u64 {
+        self.version
     }
 }
 
@@ -92,6 +101,7 @@ enum FibTableChange {
 
 impl Absorb<FibTableChange> for FibTable {
     fn absorb_first(&mut self, change: &mut FibTableChange, _: &Self) {
+        self.version = self.version.wrapping_add(1);
         match change {
             FibTableChange::Add((id, factory)) => self.add_fib(*id, factory.clone()),
             FibTableChange::Del(id) => self.del_fib(id),

@@ -725,7 +725,12 @@ impl Display for Fib {
 }
 impl Display for FibTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        Heading(format!(" Fib Table ({} fibs)", self.len())).fmt(f)?;
+        Heading(format!(
+            " Fib Table ({} fibs, version: {})",
+            self.len(),
+            self.version()
+        ))
+        .fmt(f)?;
         for fibr in self.values().map(|f| f.handle()) {
             if let Some(fib) = fibr.enter() {
                 write!(f, "{}", *fib)?;
