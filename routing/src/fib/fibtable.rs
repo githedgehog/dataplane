@@ -178,3 +178,32 @@ impl FibTableReader {
 
 #[allow(unsafe_code)]
 unsafe impl Send for FibTableWriter {}
+
+/*
+ * Thread-local cache or readhandles for the fibtable
+ */
+
+// declare thread-local cache for fibtable
+use crate::fib::fibtype::Fib;
+use left_right_tlcache::make_thread_local_readhandle_cache;
+use left_right_tlcache::{ReadHandleCache, ReadHandleProvider};
+make_thread_local_readhandle_cache!(FIBTABLE_CACHE, FibKey, Fib);
+
+impl ReadHandleProvider for FibTable {
+    type Data = Fib;
+    type Key = FibKey;
+    fn get_factory(
+        &self,
+        key: &Self::Key,
+    ) -> Option<(&ReadHandleFactory<Self::Data>, Self::Key, u64)> {
+        let entry = self.get_entry(key)?.as_ref();
+        let factory = entry.factory.as_ref();
+        Some((factory, entry.id, self.version))
+    }
+    fn get_version(&self) -> u64 {
+        self.version
+    }
+    fn get_identity(&self, key: &Self::Key) -> Option<Self::Key> {
+        self.get_entry(key).map(|entry| entry.id)
+    }
+}
