@@ -3,6 +3,7 @@
 
 //! The error results used by this library.
 
+use crate::fib::fibtype::FibKey;
 use net::interface::InterfaceIndex;
 use thiserror::Error;
 
@@ -40,4 +41,10 @@ pub enum RouterError {
 
     #[error("Invalid configuration: {0}")]
     InvalidConfig(&'static str),
+
+    #[error("Fibtable is not accessible")]
+    FibTableError,
+
+    #[error("Fib error: {0}")]
+    FibError(#[from] left_right_tlcache::ReadHandleCacheError<FibKey>),
 }
