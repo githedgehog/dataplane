@@ -417,7 +417,16 @@ impl AsRef<FibReader> for ReadHandle<Fib> {
 }
 
 #[derive(Debug, Clone)]
+#[repr(transparent)]
 pub struct FibReaderFactory(pub(crate) ReadHandleFactory<Fib>);
+
+// make FibReaderFactory a zero-cost wrap of ReadHandleFactory<Fib>
+impl AsRef<ReadHandleFactory<Fib>> for FibReaderFactory {
+    #[inline]
+    fn as_ref(&self) -> &ReadHandleFactory<Fib> {
+        unsafe { &*(self as *const FibReaderFactory as *const ReadHandleFactory<Fib>) }
+    }
+}
 
 impl FibReaderFactory {
     #[must_use]
