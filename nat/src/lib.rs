@@ -31,7 +31,7 @@ pub use stateful::StatefulNat;
 pub use stateless::StatelessNat;
 use std::net::IpAddr;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct NatTranslationData {
     src_addr: Option<IpAddr>,
     dst_addr: Option<IpAddr>,

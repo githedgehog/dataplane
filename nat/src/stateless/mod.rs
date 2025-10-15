@@ -7,9 +7,13 @@ pub mod natrw;
 pub mod setup;
 mod test;
 
+use crate::NatTranslationData;
+use crate::icmp_error_msg::{
+    IcmpErrorMsgError, stateful_translate_icmp_inner, validate_checksums_icmp,
+};
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
 use net::buffer::PacketBufferMut;
-use net::headers::{Net, TryHeadersMut, TryIpMut};
+use net::headers::{Net, TryHeadersMut, TryInnerIp, TryIpMut};
 use net::ipv4::UnicastIpv4Addr;
 use net::ipv6::UnicastIpv6Addr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -40,6 +44,8 @@ enum NatError {
     MappingOffsetError(u128),
     #[error("Can't find NAT tables for VNI {0}")]
     MissingTable(Vni),
+    #[error("Failed to translate ICMP inner packet: {0}")]
+    IcmpErrorMsg(IcmpErrorMsgError),
 }
 
 fn addr_offset_in_range(range_start: &IpAddr, addr: &IpAddr) -> Result<u128, NatError> {
@@ -194,6 +200,46 @@ impl StatelessNat {
         }
     }
 
+    fn find_translation_icmp_inner<Buf: PacketBufferMut>(
+        &self,
+        table: &PerVniTable,
+        packet: &Packet<Buf>,
+        dst_vni: Vni,
+    ) -> Option<NatTranslationData> {
+        let net = packet.try_inner_ip()?;
+        // Note how we swap addresses to find NAT ranges: we're sending the inner packet back
+        // without swapping source and destination in the header, so we need to swap the ranges we
+        // get from the tables lookup.
+        let (dst_ranges, src_ranges) =
+            table.find_nat_ranges(net.dst_addr(), net.src_addr(), dst_vni);
+
+        let src_addr = src_ranges.and_then(|r| map_ip_nat(self.name(), &r, &net.src_addr()).ok());
+        let dst_addr = dst_ranges.and_then(|r| map_ip_nat(self.name(), &r, &net.dst_addr()).ok());
+        Some(NatTranslationData {
+            src_addr,
+            dst_addr,
+            ..Default::default()
+        })
+    }
+
+    fn translate_icmp_inner_packet_if_any<Buf: PacketBufferMut>(
+        &self,
+        table: &PerVniTable,
+        packet: &mut Packet<Buf>,
+        dst_vni: Vni,
+    ) -> Result<(), NatError> {
+        match validate_checksums_icmp(packet) {
+            Err(e) => return Err(NatError::IcmpErrorMsg(e)), // Error, drop packet
+            Ok(false) => return Ok(()),                      // No translation needed
+            Ok(true) => {}                                   // Translation needed, carry on
+        }
+
+        let Some(state) = self.find_translation_icmp_inner(table, packet, dst_vni) else {
+            return Err(NatError::UnsupportedTranslation);
+        };
+        stateful_translate_icmp_inner::<Buf>(packet, &state).map_err(NatError::IcmpErrorMsg)
+    }
+
     /// Applies network address translation to a packet, knowing the current and target ranges.
     /// # Errors
     /// This method may fail if `translate_src` or `translate_dst` fail, which can happen if
@@ -231,6 +277,14 @@ impl StatelessNat {
         if let Some(ranges_dst) = dst_ranges {
             modified |= self.translate_dst(net, &ranges_dst)?;
         }
+
+        // If we modified the outer header of the packet, check whether this is an ICMP Error
+        // message that requires additional processing
+        if !modified {
+            return Ok(false);
+        }
+        self.translate_icmp_inner_packet_if_any(table, packet, dst_vni)?;
+
         Ok(modified)
     }
 
