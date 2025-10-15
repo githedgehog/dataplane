@@ -134,49 +134,33 @@ impl VrfTable {
     /// a [`Vni`] configured or it does but the internal state is not the expected.
     ///////////////////////////////////////////////////////////////////////////////////
     pub fn check_vni(&self, vrfid: VrfId) -> Result<(), RouterError> {
-        // lookup vrf
+        // lookup vrf: should be found
         let vrf = self.get_vrf(vrfid)?;
 
-        // Vrf must have a vni configured
+        // Vrf must have a vni configured: should succeed
         let Some(vni) = &vrf.vni else {
             return Err(RouterError::Internal("No vni found"));
         };
 
-        // must be able to look it up by vni
+        // must be able to look up [`Vrf`] by vni and we must find a [`Vrf`] with same [`VrfId`]
         let found = self.get_vrfid_by_vni(*vni)?;
         if found != vrfid {
             error!("Vni {vni} refers to vrfid {found} and not {vrfid}");
             return Err(RouterError::Internal("Inconsistent vni mapping"));
         }
 
-        // access fib fibtable
-        let fibtable = self
-            .fibtablew
-            .enter()
-            .ok_or(RouterError::Internal("Failed to access fib table"))?;
+        // access fib table: it should always be possible for us to enter the fib table since
+        // the vrf table owns the `FibTableWriter`. Also, as a reader, we should be able to see the latest
+        // changes since we published and would otherwise got blocked. To test for correctness, we check
+        // the two keys via which this vrf should be accessible and from our thread-local cache.
+        let fibtabler = self.fibtablew.as_fibtable_reader();
+        fibtabler.get_fib_reader(FibKey::from_vrfid(vrfid))?;
 
-        // lookup fib from vni must succeed
-        let fibr = fibtable
-            .get_fib(&FibKey::Vni(*vni))
-            .ok_or(RouterError::Internal("No fib for vni found"))?;
-
-        // access the fib
-        let fib = fibr
-            .enter()
-            .ok_or(RouterError::Internal("Unable to read fib"))?;
-
-        let found_fibid = fib.get_id();
-
-        if let Some(fibw) = &vrf.fibw {
-            let fib = fibw
-                .enter()
-                .ok_or(RouterError::Internal("Unable to access Fib for vrf"))?;
-
-            let fibid = fib.get_id();
-            if fibid != found_fibid {
-                error!("Expected: {found_fibid} found: {fibid}");
-                return Err(RouterError::Internal("Inconsistent fib id found!"));
-            }
+        let fibid = FibKey::from_vrfid(vrfid); // The id it should have
+        if let Some(key) = fibtabler.get_fib_reader(FibKey::from_vni(*vni))?.get_id()
+            && key != fibid
+        {
+            return Err(RouterError::Internal("Inconsistent fib id found!"));
         }
         Ok(())
     }

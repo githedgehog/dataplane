@@ -69,9 +69,11 @@ impl FibTable {
     fn get_entry(&self, key: &FibKey) -> Option<&Arc<FibTableEntry>> {
         self.entries.get(key)
     }
-    /// Get a [`FibReader`] for the fib with the given [`FibKey`]. The call of this
-    /// method to handle packets is ===TEMPORARY=== as it creates a new `FibReader` every time.
+
+    /// Get a [`FibReader`] for the fib with the given [`FibKey`]. This method should only
+    /// be called in the existing tests, as it creates a new `FibReader` on every call.
     #[must_use]
+    #[cfg(test)]
     pub fn get_fib(&self, key: &FibKey) -> Option<FibReader> {
         self.get_entry(key).map(|entry| entry.factory.handle())
     }
@@ -126,6 +128,10 @@ impl FibTableWriter {
     }
     pub fn enter(&self) -> Option<ReadGuard<'_, FibTable>> {
         self.0.enter()
+    }
+    #[must_use]
+    pub fn as_fibtable_reader(&self) -> FibTableReader {
+        FibTableReader(self.0.clone())
     }
     #[allow(clippy::arc_with_non_send_sync)]
     #[must_use]
