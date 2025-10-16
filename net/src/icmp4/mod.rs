@@ -153,8 +153,11 @@ impl Icmp4 {
         if !self.is_error_message() {
             return None;
         }
-        let (mut headers, consumed) =
-            EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, cursor.inner).ok()?;
+        let (mut headers, consumed) = EmbeddedHeaders::parse_with(
+            EmbeddedIpVersion::Ipv4,
+            &cursor.inner[cursor.inner.len() - cursor.remaining as usize..],
+        )
+        .ok()?;
         cursor.consume(consumed).ok()?;
 
         // Mark whether the payload of the embedded IP packet is full
