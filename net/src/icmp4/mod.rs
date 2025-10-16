@@ -365,17 +365,15 @@ mod contract {
                     let net_gen = GenWithNextHeader(NextHeader::UDP);
                     Some(Net::Ipv4(net_gen.generate(driver)?))
                 }
-                None => match driver.produce::<u32>()? % 3 {
-                    0 => {
+                None => {
+                    if driver.produce::<bool>()? {
                         let net_gen = GenWithNextHeader(NextHeader::TCP);
                         Some(Net::Ipv4(net_gen.generate(driver)?))
-                    }
-                    1 => {
+                    } else {
                         let net_gen = GenWithNextHeader(NextHeader::UDP);
                         Some(Net::Ipv4(net_gen.generate(driver)?))
                     }
-                    _ => None,
-                },
+                }
             };
             let headers = EmbeddedHeaders::new(net, transport, ArrayVec::default(), None);
             Some(headers)
