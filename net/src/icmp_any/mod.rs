@@ -3,7 +3,7 @@
 
 //! Common logic for `ICMPv4` and `ICMPv6`
 
-use crate::headers::Transport;
+use crate::headers::{AbstractEmbeddedHeaders, Transport};
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
 
@@ -47,6 +47,19 @@ impl IcmpAny<'_> {
             IcmpAny::V6(icmp6) => icmp6.is_error_message(),
         }
     }
+
+    /// Returns the payload for checksum computation.
+    #[must_use]
+    pub fn get_payload_for_checksum(
+        &self,
+        embedded_headers: Option<&impl AbstractEmbeddedHeaders>,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        match self {
+            IcmpAny::V4(icmp4) => icmp4.get_payload_for_checksum(embedded_headers, payload),
+            IcmpAny::V6(icmp6) => icmp6.get_payload_for_checksum(embedded_headers, payload),
+        }
+    }
 }
 
 /// Enum representing a mutable [`Icmp4`] or [`Icmp6`].
@@ -64,17 +77,6 @@ impl<'a> TryFrom<&'a mut Transport> for IcmpAnyMut<'a> {
             Transport::Icmp4(icmp4) => Ok(IcmpAnyMut::V4(icmp4)),
             Transport::Icmp6(icmp6) => Ok(IcmpAnyMut::V6(icmp6)),
             _ => Err(IcmpAnyError::NotIcmp),
-        }
-    }
-}
-
-impl IcmpAnyMut<'_> {
-    /// Returns `true` if this is an ICMP Error message, `false` otherwise.
-    #[must_use]
-    pub fn is_error_message(&self) -> bool {
-        match self {
-            IcmpAnyMut::V4(icmp4) => icmp4.is_error_message(),
-            IcmpAnyMut::V6(icmp6) => icmp6.is_error_message(),
         }
     }
 }

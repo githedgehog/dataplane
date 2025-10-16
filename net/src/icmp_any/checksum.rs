@@ -5,9 +5,10 @@
 
 use super::{IcmpAny, IcmpAnyMut};
 use crate::checksum::Checksum;
-use crate::headers::Net;
+use crate::headers::{AbstractEmbeddedHeaders, Net};
 use crate::icmp4::Icmp4Checksum;
 use crate::icmp6::{Icmp6Checksum, Icmp6ChecksumPayload};
+use crate::parse::DeParse;
 use core::fmt::{Display, Formatter};
 use std::fmt::Debug;
 
@@ -220,4 +221,41 @@ impl Checksum for IcmpAnyMut<'_> {
         }
         Ok(self)
     }
+}
+
+pub(crate) fn get_payload_for_checksum(
+    embedded_headers: Option<&impl AbstractEmbeddedHeaders>,
+    payload: &[u8],
+) -> Vec<u8> {
+    let Some(embedded_headers) = embedded_headers else {
+        return payload.to_vec();
+    };
+    let Some(embedded_ip_header) = embedded_headers.try_inner_ip() else {
+        return payload.to_vec();
+    };
+    let embedded_transport_header = embedded_headers.try_embedded_transport();
+
+    let inner_ip_header_length = embedded_ip_header.size().get() as usize;
+    let inner_transport_header_length =
+        embedded_transport_header.map_or(0, |header| header.size().get() as usize);
+
+    let mut offset = 0;
+    let mut icmp_payload =
+        vec![0; payload.len() + inner_ip_header_length + inner_transport_header_length];
+    // Write inner IP header
+    offset += embedded_ip_header
+        .deparse(&mut icmp_payload[offset..])
+        .unwrap_or_else(|_| unreachable!())
+        .get() as usize;
+    // Write inner transport header
+    if let Some(transport) = embedded_transport_header {
+        offset += transport
+            .deparse(&mut icmp_payload[offset..])
+            .unwrap_or_else(|_| unreachable!())
+            .get() as usize;
+    }
+    // Write payload (including ICMP padding/extensions, if any)
+    icmp_payload[offset..].copy_from_slice(payload);
+
+    icmp_payload
 }

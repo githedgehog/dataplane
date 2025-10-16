@@ -166,7 +166,12 @@ impl Net {
 }
 
 impl Transport {
-    pub(crate) fn update_checksum(&mut self, net: &Net, payload: impl AsRef<[u8]>) {
+    pub(crate) fn update_checksum(
+        &mut self,
+        net: &Net,
+        embedded_headers: Option<&EmbeddedHeaders>,
+        payload: impl AsRef<[u8]>,
+    ) {
         match (net, self) {
             (net, Transport::Tcp(tcp)) => {
                 tcp.update_checksum(&TcpChecksumPayload::new(net, payload.as_ref()))
@@ -177,18 +182,38 @@ impl Transport {
                     .unwrap_or_else(|()| unreachable!()); // Updating UDP checksum never fails
             }
             (Net::Ipv4(_), Transport::Icmp4(icmp4)) => {
-                icmp4
-                    .update_checksum(payload.as_ref())
-                    .unwrap_or_else(|()| unreachable!()); // Updating ICMPv4 checksum never fails
+                if icmp4.is_error_message() && embedded_headers.is_some() {
+                    let checksum_payload =
+                        icmp4.get_payload_for_checksum(embedded_headers, payload.as_ref());
+                    icmp4
+                        .update_checksum(checksum_payload.as_ref())
+                        .unwrap_or_else(|()| unreachable!()); // Updating ICMPv4 checksum never fails
+                } else {
+                    icmp4
+                        .update_checksum(payload.as_ref())
+                        .unwrap_or_else(|()| unreachable!()); // Updating ICMPv4 checksum never fails
+                };
             }
-            (Net::Ipv6(ip), Transport::Icmp6(icmpv6)) => {
-                icmpv6
-                    .update_checksum(&Icmp6ChecksumPayload::new(
-                        ip.source().inner(),
-                        ip.destination(),
-                        payload.as_ref(),
-                    ))
-                    .unwrap_or_else(|()| unreachable!()); // Updating ICMPv6 checksum never fails
+            (Net::Ipv6(ip), Transport::Icmp6(icmp6)) => {
+                if icmp6.is_error_message() && embedded_headers.is_some() {
+                    let checksum_payload =
+                        icmp6.get_payload_for_checksum(embedded_headers, payload.as_ref());
+                    icmp6
+                        .update_checksum(&Icmp6ChecksumPayload::new(
+                            ip.source().inner(),
+                            ip.destination(),
+                            checksum_payload.as_ref(),
+                        ))
+                        .unwrap_or_else(|()| unreachable!()); // Updating ICMPv6 checksum never fails
+                } else {
+                    icmp6
+                        .update_checksum(&Icmp6ChecksumPayload::new(
+                            ip.source().inner(),
+                            ip.destination(),
+                            payload.as_ref(),
+                        ))
+                        .unwrap_or_else(|()| unreachable!()); // Updating ICMPv6 checksum never fails
+                }
             }
             // TODO: statically ensure that this is unreachable
             (Net::Ipv6(_), Transport::Icmp4(_)) => debug!("illegal: icmpv4 in ipv6"),

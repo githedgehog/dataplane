@@ -94,7 +94,7 @@ pub fn build_test_ipv4_packet_with_transport(
     let net = Net::Ipv4(ipv4);
 
     if let Some(transport) = transport.as_mut() {
-        transport.update_checksum(&net, []);
+        transport.update_checksum(&net, None, []);
     }
 
     headers.net(Some(net));

@@ -7,7 +7,8 @@ mod checksum;
 
 pub use checksum::*;
 
-use crate::headers::{EmbeddedHeaders, EmbeddedIpVersion};
+use crate::headers::{AbstractEmbeddedHeaders, EmbeddedHeaders, EmbeddedIpVersion};
+use crate::icmp_any::get_payload_for_checksum;
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParseWith, Reader,
 };
@@ -105,6 +106,19 @@ impl Icmp6 {
         );
 
         Some(headers)
+    }
+
+    /// Generate the payload for checksum calculation
+    #[must_use]
+    pub fn get_payload_for_checksum(
+        &self,
+        embedded_headers: Option<&impl AbstractEmbeddedHeaders>,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        if !self.is_error_message() {
+            return payload.to_vec();
+        }
+        get_payload_for_checksum(embedded_headers, payload)
     }
 }
 
