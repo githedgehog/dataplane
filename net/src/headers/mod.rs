@@ -482,29 +482,22 @@ impl DeParse for Headers {
             }
         }
 
-        match self.udp_encap {
-            None => {
-                #[allow(clippy::cast_possible_truncation)] // length bounded on cursor creation
-                return Ok(
-                    NonZero::new((cursor.inner.len() - cursor.remaining as usize) as u16)
-                        .unwrap_or_else(|| unreachable!()),
-                );
-            }
-            Some(UdpEncap::Vxlan(ref vxlan)) => {
+        if let Some(UdpEncap::Vxlan(ref vxlan)) = self.udp_encap {
+            if matches!(self.transport, Some(Transport::Udp(_))) {
                 cursor.write(vxlan)?;
+            } else {
+                return Err(DeParseError::Invalid(()));
             }
         }
 
-        match self.embedded_ip {
-            None => {
-                #[allow(clippy::cast_possible_truncation)] // length bounded on cursor creation
-                return Ok(
-                    NonZero::new((cursor.inner.len() - cursor.remaining as usize) as u16)
-                        .unwrap_or_else(|| unreachable!()),
-                );
-            }
-            Some(ref embedded_ip) => {
+        if let Some(ref embedded_ip) = self.embedded_ip {
+            if matches!(
+                self.transport,
+                Some(Transport::Icmp4(_) | Transport::Icmp6(_))
+            ) {
                 cursor.write(embedded_ip)?;
+            } else {
+                return Err(DeParseError::Invalid(()));
             }
         }
 
