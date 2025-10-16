@@ -19,6 +19,7 @@ pub enum NatPortError {
 // TODO: We may change this in the future. One suggestion was to use a regular u16, and encode the
 // "None" case with value 0 wherever we need to deal with Option(NatPort), to reduce the size in
 // memory from 3 to 2 bytes.
+#[cfg_attr(test, derive(bolero::TypeGenerator))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NatPort(NonZero<u16>);
 
