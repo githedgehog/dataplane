@@ -617,24 +617,27 @@ impl Headers {
             return;
         }
 
-        let Some(transport) = self.transport.as_mut() else {
-            trace!("no transport header: can't update checksum");
-            return;
-        };
-        transport.update_checksum(net, payload.as_ref());
-
-        if let Some(embedded_ip) = self.embedded_ip.as_mut() {
-            let Some(inner_net) = embedded_ip.try_inner_ip_mut() else {
-                trace!("no inner network header in ICMP: can't update checksum");
-                return;
-            };
-            inner_net.update_checksum();
+        // Update inner IP header checksum, if any, before updating transport checksum.
+        // This is because the inner headers are part of transport header's payload, so updating
+        // them later would invalidate transport's payload.
+        if let Some(inner_ip) = self
+            .embedded_ip
+            .as_mut()
+            .and_then(|ip| ip.try_inner_ip_mut())
+        {
+            inner_ip.update_checksum();
 
             // WARNING: We do NOT update ICMP Error message inner transport checksum here!
             // This is because we're not sure the transport header and payload are full, so we want
             // incremental checksum updates that require knowledge of the previous values, if we've
             // changed them (for example: NAT). Leave this to (for example) the NAT code.
         }
+
+        let Some(transport) = self.transport.as_mut() else {
+            trace!("no transport header: can't update checksum");
+            return;
+        };
+        transport.update_checksum(net, self.embedded_ip.as_ref(), payload.as_ref());
     }
 }
 
