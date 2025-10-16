@@ -530,7 +530,7 @@ pub mod contract {
                                     .produce::<Icmp4ExtensionStructures>()
                                     .map(IcmpExtensionStructures::V4)
                             } else {
-                                return None;
+                                None
                             }
                         }
                         Some(Transport::Icmp6(icmp)) => {
@@ -539,7 +539,7 @@ pub mod contract {
                                     .produce::<Icmp6ExtensionStructures>()
                                     .map(IcmpExtensionStructures::V6)
                             } else {
-                                return None;
+                                None
                             }
                         }
                         _ => unreachable!(),
