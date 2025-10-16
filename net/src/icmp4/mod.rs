@@ -261,7 +261,7 @@ mod contract {
             let icmp_header = Icmpv4Header {
                 icmp_type: Icmpv4Type::DestinationUnreachable(
                     DestUnreachableHeader::from_values(
-                        driver.produce()?,
+                        driver.produce::<u8>()? % 16,
                         driver.produce()?,
                     )
                     .unwrap(),
