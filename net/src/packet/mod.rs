@@ -579,12 +579,14 @@ pub mod contract {
                 .map_or(0, EmbeddedHeaders::transport_headers_len)
                 as usize;
             // Theoretical payload size for inner TCP/UDP (inner packet may be truncated)
-            let theoretical_inner_payload_size = if driver.produce::<bool>()? {
+            let theoretical_inner_payload_size = if payload_size == 0 {
+                0
+            } else if driver.produce::<bool>()? {
                 // Payload is full
                 payload_size
             } else {
-                // Payload is truncated
-                payload_size - (driver.produce::<usize>()? % payload_size)
+                // Payload is truncated: return a bigger theoretical payload size value
+                1000 - (driver.produce::<usize>()? % 1000) + payload_size
             };
             // Theoretical payload size for inner IP header (inner packet may be truncated)
             let theoretical_inner_net_payload_size =
