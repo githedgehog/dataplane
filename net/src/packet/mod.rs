@@ -462,19 +462,23 @@ pub mod contract {
 
         // Note: We intentionally don't set checksums. Call the relevant functions on headers of the
         // generated packet if desired.
-        #[allow(clippy::too_many_lines)]
+        #[allow(clippy::too_many_lines, clippy::unwrap_used)]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             // Generate headers
 
-            let common_eth_type: CommonEthType = driver.produce()?;
-            let eth = GenWithEthType(common_eth_type.into()).generate(driver)?;
+            let common_eth_type: CommonEthType = driver.produce().unwrap();
+            let eth = GenWithEthType(common_eth_type.into())
+                .generate(driver)
+                .unwrap();
             let mut headers = match common_eth_type {
                 CommonEthType::Ipv4 => {
-                    let ipv4 = ipv4::GenWithNextHeader(NextHeader::ICMP).generate(driver)?;
+                    let ipv4 = ipv4::GenWithNextHeader(NextHeader::ICMP)
+                        .generate(driver)
+                        .unwrap();
                     let error_msg_generator = Icmp4ErrorMsgGenerator;
-                    let icmp4 = error_msg_generator.generate(driver)?;
+                    let icmp4 = error_msg_generator.generate(driver).unwrap();
                     let inner_ip_generator = Icmp4EmbeddedHeadersGenerator;
-                    let embedded_ip = inner_ip_generator.generate(driver);
+                    let embedded_ip = inner_ip_generator.generate(driver).unwrap();
                     Headers {
                         eth: Some(eth),
                         vlan: ArrayVec::default(),
@@ -482,15 +486,17 @@ pub mod contract {
                         net_ext: ArrayVec::default(),
                         transport: Some(Transport::Icmp4(icmp4)),
                         udp_encap: None,
-                        embedded_ip,
+                        embedded_ip: Some(embedded_ip),
                     }
                 }
                 CommonEthType::Ipv6 => {
-                    let ipv6 = ipv6::GenWithNextHeader(NextHeader::ICMP).generate(driver)?;
+                    let ipv6 = ipv6::GenWithNextHeader(NextHeader::ICMP6)
+                        .generate(driver)
+                        .unwrap();
                     let error_msg_generator = Icmp6ErrorMsgGenerator;
-                    let icmp6 = error_msg_generator.generate(driver)?;
+                    let icmp6 = error_msg_generator.generate(driver).unwrap();
                     let inner_ip_generator = Icmp6EmbeddedHeadersGenerator;
-                    let embedded_ip = inner_ip_generator.generate(driver);
+                    let embedded_ip = inner_ip_generator.generate(driver).unwrap();
                     Headers {
                         eth: Some(eth),
                         vlan: ArrayVec::default(),
@@ -498,7 +504,7 @@ pub mod contract {
                         net_ext: ArrayVec::default(),
                         transport: Some(Transport::Icmp6(icmp6)),
                         udp_encap: None,
-                        embedded_ip,
+                        embedded_ip: Some(embedded_ip),
                     }
                 }
             };
@@ -554,7 +560,7 @@ pub mod contract {
                 None => 0,
             };
             // ICMP header size
-            let icmp_header_size = headers.try_transport()?.size().get() as usize;
+            let icmp_header_size = headers.try_transport().unwrap().size().get() as usize;
             // Total packet size
             let total_size = headers_size + extensions_size + payload_size;
             // Payload size for outer IP header
@@ -608,7 +614,7 @@ pub mod contract {
             match headers.net {
                 Some(Net::Ipv4(ref mut ipv4)) => {
                     #[allow(clippy::cast_possible_truncation)] // bounded size
-                    ipv4.set_payload_len(outer_payload_size as u16).ok()?;
+                    ipv4.set_payload_len(outer_payload_size as u16).unwrap();
                 }
                 Some(Net::Ipv6(ref mut ipv6)) => {
                     #[allow(clippy::cast_possible_truncation)] // bounded size
@@ -632,13 +638,12 @@ pub mod contract {
             let mut data = vec![0; total_size];
 
             // Write headers
-            #[allow(clippy::unwrap_used)]
             headers.deparse(data.as_mut()).unwrap();
 
             // Write payload
             if payload_size > 0 {
                 data[headers.size().get() as usize..headers.size().get() as usize + payload_size]
-                    .fill(driver.produce()?);
+                    .fill(driver.produce().unwrap());
             }
 
             match extensions {
@@ -646,14 +651,12 @@ pub mod contract {
                     // Set padding
                     data[extensions_offset - padding_size..extensions_offset].fill(0);
                     // Write extensions
-                    #[allow(clippy::unwrap_used)]
                     ext.deparse(&mut data[extensions_offset..]).unwrap();
                 }
                 Some(IcmpExtensionStructures::V6(ext)) => {
                     // Set padding
                     data[extensions_offset - padding_size..extensions_offset].fill(0);
                     // Write extensions
-                    #[allow(clippy::unwrap_used)]
                     ext.deparse(&mut data[extensions_offset..]).unwrap();
                 }
                 None => {}

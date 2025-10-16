@@ -256,12 +256,16 @@ mod contract {
     impl ValueGenerator for Icmp4DestUnreachableGenerator {
         type Output = Icmp4;
 
+        #[allow(clippy::unwrap_used)]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let icmp_header = Icmpv4Header {
-                icmp_type: Icmpv4Type::DestinationUnreachable(DestUnreachableHeader::from_values(
-                    driver.produce()?,
-                    driver.produce()?,
-                )?),
+                icmp_type: Icmpv4Type::DestinationUnreachable(
+                    DestUnreachableHeader::from_values(
+                        driver.produce()?,
+                        driver.produce()?,
+                    )
+                    .unwrap(),
+                ),
                 checksum: driver.produce()?,
             };
             Some(Icmp4(icmp_header))
@@ -272,10 +276,11 @@ mod contract {
     impl ValueGenerator for Icmp4RedirectGenerator {
         type Output = Icmp4;
 
+        #[allow(clippy::unwrap_used)]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let icmp_header = Icmpv4Header {
                 icmp_type: Icmpv4Type::Redirect(RedirectHeader {
-                    code: RedirectCode::from_u8(driver.produce::<u8>()? % 4)?,
+                    code: RedirectCode::from_u8(driver.produce::<u8>()? % 4).unwrap(),
                     gateway_internet_address: driver.produce()?,
                 }),
                 checksum: driver.produce()?,
@@ -288,11 +293,12 @@ mod contract {
     impl ValueGenerator for Icmp4TimeExceededGenerator {
         type Output = Icmp4;
 
+        #[allow(clippy::unwrap_used)]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let icmp_header = Icmpv4Header {
-                icmp_type: Icmpv4Type::TimeExceeded(TimeExceededCode::from_u8(
-                    driver.produce::<u8>()? % 2,
-                )?),
+                icmp_type: Icmpv4Type::TimeExceeded(
+                    TimeExceededCode::from_u8(driver.produce::<u8>()? % 2).unwrap(),
+                ),
                 checksum: driver.produce()?,
             };
             Some(Icmp4(icmp_header))
@@ -303,12 +309,16 @@ mod contract {
     impl ValueGenerator for Icmp4ParameterProblemGenerator {
         type Output = Icmp4;
 
+        #[allow(clippy::unwrap_used)]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let icmp_header = Icmpv4Header {
-                icmp_type: Icmpv4Type::ParameterProblem(ParameterProblemHeader::from_values(
-                    driver.produce::<u8>()? % 3,
-                    driver.produce()?,
-                )?),
+                icmp_type: Icmpv4Type::ParameterProblem(
+                    ParameterProblemHeader::from_values(
+                        driver.produce::<u8>()? % 3,
+                        driver.produce()?,
+                    )
+                    .unwrap(),
+                ),
                 checksum: driver.produce()?,
             };
             Some(Icmp4(icmp_header))
@@ -335,10 +345,15 @@ mod contract {
     impl ValueGenerator for Icmp4EmbeddedHeadersGenerator {
         type Output = EmbeddedHeaders;
 
+        #[allow(clippy::unwrap_used)]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let transport = match driver.produce::<u32>()? % 9 {
-                0..=3 => Some(EmbeddedTransport::Tcp(driver.produce::<TruncatedTcp>()?)),
-                4..=7 => Some(EmbeddedTransport::Udp(driver.produce::<TruncatedUdp>()?)),
+                0..=3 => Some(EmbeddedTransport::Tcp(
+                    driver.produce::<TruncatedTcp>().unwrap(),
+                )),
+                4..=7 => Some(EmbeddedTransport::Udp(
+                    driver.produce::<TruncatedUdp>().unwrap(),
+                )),
                 _ => None,
             };
             let net = match transport {

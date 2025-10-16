@@ -188,11 +188,12 @@ mod contract {
     impl ValueGenerator for Icmp6DestUnreachableGenerator {
         type Output = Icmp6;
 
+        #[allow(clippy::unwrap_used)]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let icmp_header = Icmpv6Header {
-                icmp_type: Icmpv6Type::DestinationUnreachable(DestUnreachableCode::from_u8(
-                    driver.produce::<u8>()? % 7,
-                )?),
+                icmp_type: Icmpv6Type::DestinationUnreachable(
+                    DestUnreachableCode::from_u8(driver.produce::<u8>()? % 7).unwrap(),
+                ),
                 checksum: driver.produce()?,
             };
             Some(Icmp6(icmp_header))
@@ -218,11 +219,12 @@ mod contract {
     impl ValueGenerator for Icmp6TimeExceededGenerator {
         type Output = Icmp6;
 
+        #[allow(clippy::unwrap_used)]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let icmp_header = Icmpv6Header {
-                icmp_type: Icmpv6Type::TimeExceeded(TimeExceededCode::from_u8(
-                    driver.produce::<u8>()? % 2,
-                )?),
+                icmp_type: Icmpv6Type::TimeExceeded(
+                    TimeExceededCode::from_u8(driver.produce::<u8>()? % 2).unwrap(),
+                ),
                 checksum: driver.produce()?,
             };
             Some(Icmp6(icmp_header))
@@ -233,10 +235,11 @@ mod contract {
     impl ValueGenerator for Icmp6ParameterProblemGenerator {
         type Output = Icmp6;
 
+        #[allow(clippy::unwrap_used)]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let icmp_header = Icmpv6Header {
                 icmp_type: Icmpv6Type::ParameterProblem(ParameterProblemHeader {
-                    code: ParameterProblemCode::from_u8(driver.produce::<u8>()? % 11)?,
+                    code: ParameterProblemCode::from_u8(driver.produce::<u8>()? % 11).unwrap(),
                     pointer: driver.produce()?,
                 }),
                 checksum: driver.produce()?,
