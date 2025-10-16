@@ -216,6 +216,18 @@ impl ReadHandleProvider for FibTable {
     fn get_identity(&self, key: &Self::Key) -> Option<Self::Key> {
         self.get_entry(key).map(|entry| entry.id)
     }
+    fn get_iter(
+        &self,
+    ) -> (
+        u64,
+        impl Iterator<Item = (FibKey, &ReadHandleFactory<Fib>, FibKey)>,
+    ) {
+        let iter = self
+            .entries
+            .iter()
+            .map(|(key, entry)| (*key, &*entry.factory.as_ref(), entry.as_ref().id));
+        (self.version, iter)
+    }
 }
 
 impl FibTableReader {
