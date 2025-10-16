@@ -562,7 +562,7 @@ pub mod contract {
             // ICMP header size
             let icmp_header_size = headers.try_transport().unwrap().size().get() as usize;
             // Total packet size
-            let total_size = headers_size + extensions_size + payload_size;
+            let total_size = headers_size + payload_size + padding_size + extensions_size;
             // Payload size for outer IP header
             let outer_payload_size =
                 icmp_header_size + payload_size + padding_size + extensions_size;
