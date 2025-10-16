@@ -128,6 +128,7 @@ impl<T: Identity<K>, K: PartialEq> ReadHandleEntry<T, K> {
 
 pub struct ReadHandleCache<K: Hash + Eq + Clone, T> {
     handles: RefCell<HashMap<K, ReadHandleEntry<T, K>, RandomState>>,
+    refresh_version: RefCell<u64>, // version when last refresh mas made
 }
 impl<K, T> ReadHandleCache<K, T>
 where
@@ -138,6 +139,7 @@ where
     pub fn new() -> Self {
         Self {
             handles: RefCell::new(HashMap::with_hasher(RandomState::with_seed(0))),
+            refresh_version: RefCell::new(0),
         }
     }
     pub fn get_reader(
@@ -191,6 +193,15 @@ where
     pub fn purge(thread_local: &'static LocalKey<Self>) {
         thread_local.with(|local| {
             local.handles.borrow_mut().clear();
+            *local.refresh_version.borrow_mut() = 0;
+        });
+    }
+
+    #[allow(unused)]
+    fn purge_unreadable(thread_local: &'static LocalKey<Self>) {
+        thread_local.with(|local| {
+            let mut handles = local.handles.borrow_mut();
+            handles.retain(|_, e| !e.rhandle.was_dropped());
         });
     }
 
@@ -199,8 +210,24 @@ where
         thread_local: &'static LocalKey<Self>,
         provider: &impl ReadHandleProvider<Data = T, Key = K>,
     ) {
+        // skip refresh if the version has not changed
+        let cache_refresh_version = thread_local.with(|local| *local.refresh_version.borrow());
+        let provider_version = provider.get_version();
+        if cache_refresh_version == provider_version {
+            // this should not be needed
+            Self::purge_unreadable(thread_local);
+            return;
+        }
+
         // get all readers (factories) from the provider
         let (version, iterator) = provider.get_iter();
+
+        // theoretically, it could happen that while we call get_version() and get_iter(), the underlying collection
+        // has changed and both differ
+        if version != provider_version {
+            Self::refresh(thread_local, provider);
+            return;
+        }
 
         // filter out all unusable readers
         let iterator = iterator.filter(|(_key, factory, _id)| {
@@ -231,12 +258,13 @@ where
                         ReadHandleEntry::new(id.clone(), Rc::new(factory.handle()), version)
                     });
             }
+            *local.refresh_version.borrow_mut() = version;
         });
     }
 
     /// Get an iterator of read handles from the cache. If refresh is true, the cache will be refreshed first.
     /// This function is mostly useful if we want to iterate over the objects that the cache represents, optionally
-    /// refreshing it first. This is useful when caller does not know _what_ objects are there.
+    /// refreshing it first. This is useful when the caller does not know _what_ objects are there.
     /// Since `ReadHandleProvider`s must be Sync, threads could simply call `ReadHandleProvider::get_iter()`
     /// directly. However, that would not refresh the cache and would create a new reader for every item returned
     /// by the provider, on each call.
@@ -697,6 +725,28 @@ mod tests {
 
         // we got all
         assert_eq!(count, NUM_HANDLES * 2);
+
+        // test that if the version of the provider does not change, then the cache is not unnecessarily refreshed.
+        // Our test provider does not change version unless we add/drop elements and we don't now.
+        {
+            // empty cache for testing purposes. Since this will reset iter_version, we save it first
+            let saved_iter_version = TEST_CACHE.with(|local| *local.refresh_version.borrow());
+            ReadHandleCache::purge(&TEST_CACHE);
+            TEST_CACHE.with(|local| *local.refresh_version.borrow_mut() = saved_iter_version);
+        }
+        // since version did not change, we should not get anything after iterating.
+        let iterator = ReadHandleCache::iter(&TEST_CACHE, &provider, true);
+        assert_eq!(iterator.count(), 0);
+        assert_eq!(TEST_CACHE.with(|local| local.handles.borrow().len()), 0);
+
+        // if we reset the version, then the iterator should refresh the cache.
+        TEST_CACHE.with(|local| *local.refresh_version.borrow_mut() = 0);
+        let iterator = ReadHandleCache::iter(&TEST_CACHE, &provider, true);
+        assert_eq!(iterator.count() as u64, 2 * NUM_HANDLES);
+        assert_eq!(
+            TEST_CACHE.with(|local| local.handles.borrow().len() as u64),
+            2 * NUM_HANDLES
+        );
 
         // test that refresh/iter filters out invalid handles (need refresh) 2 should have been invalidated
         provider.drop_writer(1);
