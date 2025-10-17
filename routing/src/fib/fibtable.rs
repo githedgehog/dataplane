@@ -78,23 +78,11 @@ impl FibTable {
         self.get_entry(key).map(|entry| entry.factory.handle())
     }
 
+    /// Number of entries in this table
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
-    }
-    /// Tell if fib table is empty
-    #[must_use]
-    #[allow(unused)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-    /// Provide an iterator of [`FibReaderFactory`]s
-    pub(crate) fn values(&self) -> impl Iterator<Item = &FibReaderFactory> {
-        self.entries.values().map(|e| &e.factory)
-    }
-    /// Tell version of this [`FibTable`]
-    pub(crate) fn version(&self) -> u64 {
-        self.version
     }
 }
 
