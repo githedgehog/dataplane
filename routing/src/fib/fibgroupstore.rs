@@ -9,21 +9,21 @@
 //! Fibgroups when routing changes occur for all the affected routes without needing to explicitly
 //! change any of the routes. This allows, upon routing changes, updating the FIB in O(Nh) instead
 //! of O(Routes), potentially reducing the number of updates by several orders of magnitude.
-//! This is achieved by means of an `RefCell`, which allows us to mutate fibgroups.
+//! This is achieved by means of an `UnsafeCell`, which allows us to mutate fibgroups.
 //! This data structure is, therefore, NOT thread-safe. Thread-safety is achieved by wrapping
 //! this structure in left-right.
 //!
-//! Any modification of the FibGroupStore or the `Rc<RefCell<FibGroup>>`s it contains
+//! Any modification of the FibGroupStore or the `Rc<UnsafeCell<FibGroup>>`s it contains
 //! must be done while holding a `left_right::WriteGuard` to the `Fib` that owns it.
 //!
-//! Any use of the `FibGroupStore` or the `Rc<RefCell<FibGroup>>`s it contains
+//! Any use of the `FibGroupStore` or the `Rc<UnsafeCell<FibGroup>>`s it contains
 //! must be done while holding a `left_right::ReadGuard` or `left_right::WriteGuard` to
 //! the `Fib` that owns it.
 
 use crate::fib::fibobjects::{FibEntry, FibGroup};
 use crate::rib::nexthop::NhopKey;
 use ahash::RandomState;
-use std::cell::{Ref, RefCell};
+use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use thiserror::Error;
@@ -38,7 +38,7 @@ pub enum FibError {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct FibGroupStore(HashMap<NhopKey, Rc<RefCell<FibGroup>>, RandomState>);
+pub(crate) struct FibGroupStore(HashMap<NhopKey, Rc<UnsafeCell<FibGroup>>, RandomState>);
 
 impl FibGroupStore {
     #[must_use]
@@ -46,7 +46,7 @@ impl FibGroupStore {
         let mut store = Self(HashMap::with_hasher(RandomState::with_seed(0)));
         unsafe {
             // This is safe because we have exclusive access to the store we just created
-            // so no one else can have a reference to any Rc's it contains
+            // so no one else can see it.
             store.add_mod_group(&NhopKey::with_drop(), FibGroup::drop_fibgroup());
         }
         store
@@ -58,7 +58,7 @@ impl FibGroupStore {
     }
     #[must_use]
     /// get an Rc for the drop `Fibgroup`. The drop fibgroup is unique.
-    pub fn get_drop_fibgroup_ref(&self) -> Rc<RefCell<FibGroup>> {
+    pub fn get_drop_fibgroup_ref(&self) -> Rc<UnsafeCell<FibGroup>> {
         self.get_ref(&NhopKey::with_drop())
             .unwrap_or_else(|| unreachable!())
     }
@@ -73,15 +73,17 @@ impl FibGroupStore {
     ///
     /// In our actual usage, this is the case because we call this function
     /// when everything is protected by the `left_right::WriteGuard` of the `Fib`
-    /// Any use of the `Rc<RefCell<FibGroup>>` entries in the `Fib` is protected by
+    /// Any use of the `Rc<UnsafeCell<FibGroup>>` entries in the `Fib` is protected by
     /// `left_right::ReadGuard` or `left_right::WriteGuard` to the `Fib` that owns it.
     ///
     ////////////////////////////////////////////////////////////////////////////////
     pub(super) unsafe fn add_mod_group(&mut self, key: &NhopKey, fibgroup: FibGroup) {
         if let Some(group) = self.0.get(key) {
-            *group.borrow_mut() = fibgroup;
+            unsafe {
+                *group.get() = fibgroup;
+            }
         } else {
-            let fg = Rc::new(RefCell::new(fibgroup));
+            let fg = Rc::new(UnsafeCell::new(fibgroup));
             self.0.insert(key.clone(), fg);
         }
     }
@@ -90,14 +92,16 @@ impl FibGroupStore {
     /// used by `FibRoutes` to point to the current `FibGroups`.
     ////////////////////////////////////////////////////////////////////////////////
     #[must_use]
-    fn get_ref(&self, key: &NhopKey) -> Option<Rc<RefCell<FibGroup>>> {
+    fn get_ref(&self, key: &NhopKey) -> Option<Rc<UnsafeCell<FibGroup>>> {
         self.0.get(key).map(|group| Rc::clone(group))
     }
+
     #[cfg(test)]
     #[must_use]
-    pub(crate) fn get(&self, key: &NhopKey) -> Option<Ref<'_, FibGroup>> {
-        self.0.get(key).map(|group| group.borrow())
+    pub(crate) fn get(&self, key: &NhopKey) -> Option<&FibGroup> {
+        self.0.get(key).map(|group| unsafe { &*group.get() })
     }
+
     pub(crate) fn del(&mut self, key: &NhopKey) {
         if key == &NhopKey::with_drop() {
             return;
@@ -133,34 +137,34 @@ impl FibGroupStore {
     ////////////////////////////////////////////////////////////////////////////////////////////////////
     /// Iterate over the `FibGroups` in the store
     ////////////////////////////////////////////////////////////////////////////////////////////////////
-    pub(crate) fn values(&self) -> impl Iterator<Item = Ref<'_, FibGroup>> {
-        self.0.values().map(|group| group.borrow())
+    pub(crate) fn values(&self) -> impl Iterator<Item = &FibGroup> {
+        unsafe { self.0.values().map(|group| &*group.get()) }
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////
     /// Iterate over the `FibGroups` in the store
     ////////////////////////////////////////////////////////////////////////////////////////////////////
     #[cfg(test)]
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&NhopKey, Ref<'_, FibGroup>)> {
-        self.0.iter().map(|(key, group)| (key, group.borrow()))
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&NhopKey, &FibGroup)> {
+        unsafe { self.0.iter().map(|(key, group)| (key, &*group.get())) }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct FibRoute(Vec<Rc<RefCell<FibGroup>>>);
+pub struct FibRoute(Vec<Rc<UnsafeCell<FibGroup>>>);
 impl FibRoute {
     #[must_use]
     pub(crate) fn new() -> Self {
         Self(vec![])
     }
     #[must_use]
-    pub fn with_fibgroup(fg_ref: Rc<RefCell<FibGroup>>) -> Self {
+    pub fn with_fibgroup(fg_ref: Rc<UnsafeCell<FibGroup>>) -> Self {
         Self(vec![fg_ref])
     }
 
     #[cfg(test)]
     /// Add a reference to a `FibGroup` to a `FibRoute`
-    pub(crate) fn add_fibgroup_ref(&mut self, fg_ref: Rc<RefCell<FibGroup>>) {
+    pub(crate) fn add_fibgroup_ref(&mut self, fg_ref: Rc<UnsafeCell<FibGroup>>) {
         self.0.push(fg_ref);
     }
 
@@ -169,7 +173,9 @@ impl FibRoute {
     /////////////////////////////////////////////////////////////////////////////////////////////////
     #[must_use]
     pub(crate) fn len(&self) -> usize {
-        self.0.iter().fold(0, |val, g| val + g.borrow().len())
+        self.0
+            .iter()
+            .fold(0, |val, g| unsafe { val + (&*g.get()).len() })
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -198,12 +204,12 @@ impl FibRoute {
     /// 0 1 2 3 4 | 0 1 2 | 0 1 | 0  1  2  | real    entry indices within each group.
     ////////////////////////////////////////////////////////////////////////////////////////////////
     #[must_use]
-    pub(crate) fn get_fibentry(&self, index: usize) -> Option<Ref<'_, FibEntry>> {
+    pub(crate) fn get_fibentry(&self, index: usize) -> Option<&FibEntry> {
         let mut index = index;
         for g in self.0.iter() {
-            let group = g.borrow();
+            let group = unsafe { &*g.get() };
             if index < group.len() {
-                return Some(Ref::map(group, |g| &g.entries[index]));
+                return Some(&group.entries[index]);
             }
             index -= group.len();
         }
@@ -213,8 +219,8 @@ impl FibRoute {
     ////////////////////////////////////////////////////////////////////////////////////////////////
     /// Provide iterator over the `FibGroups` that a `Fibroute` refers to
     ////////////////////////////////////////////////////////////////////////////////////////////////
-    pub(crate) fn iter(&self) -> impl Iterator<Item = Ref<'_, FibGroup>> {
-        self.0.iter().map(|group| group.borrow())
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &FibGroup> {
+        unsafe { self.0.iter().map(|group| &*group.get()) }
     }
 }
 
@@ -241,10 +247,7 @@ pub mod tests {
     use net::interface::InterfaceIndex;
 
     use crate::fib::fibgroupstore::{FibError, FibGroupStore, FibRoute};
-    use crate::fib::fibobjects::EgressObject;
-    use crate::fib::fibobjects::FibEntry;
-    use crate::fib::fibobjects::FibGroup;
-    use crate::fib::fibobjects::PktInstruction;
+    use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
     use crate::rib::nexthop::NhopKey;
 
     use std::net::IpAddr;
@@ -452,10 +455,11 @@ pub mod tests {
         .unwrap();
 
         assert_eq!(fibroute.0.len(), 4);
-        assert_eq!(*fibroute.0[0].borrow(), *store.get(&key1).unwrap());
-        assert_eq!(*fibroute.0[1].borrow(), *store.get(&key2).unwrap());
-        assert_eq!(*fibroute.0[2].borrow(), *store.get(&key3).unwrap());
-        assert_eq!(*fibroute.0[3].borrow(), *store.get(&key4).unwrap());
+        assert_eq!(unsafe { &*fibroute.0[0].get() }, store.get(&key1).unwrap());
+        assert_eq!(unsafe { &*fibroute.0[1].get() }, store.get(&key2).unwrap());
+        assert_eq!(unsafe { &*fibroute.0[2].get() }, store.get(&key3).unwrap());
+        assert_eq!(unsafe { &*fibroute.0[3].get() }, store.get(&key4).unwrap());
+
         println!("{fibroute:#?}");
 
         // Attempt to create a Fibroute with a key for which no fibgroup exists: should fail
