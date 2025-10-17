@@ -4,7 +4,7 @@
 //! ICMP (v4/v6) checksum type and methods
 
 use super::{IcmpAny, IcmpAnyMut};
-use crate::checksum::Checksum;
+use crate::checksum::{Checksum, ChecksumError};
 use crate::headers::{AbstractEmbeddedHeaders, Net};
 use crate::icmp4::Icmp4Checksum;
 use crate::icmp6::{Icmp6Checksum, Icmp6ChecksumPayload};
@@ -92,7 +92,7 @@ impl<'a> IcmpAnyChecksumPayload<'a> {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IcmpAnyError {
     #[error("object is immutable")]
     Immutable,
@@ -258,4 +258,49 @@ pub(crate) fn get_payload_for_checksum(
     icmp_payload[offset..].copy_from_slice(payload);
 
     icmp_payload
+}
+
+/// A placeholder type for passing checksum errors, without a lifetime.
+/// Do not use, other than for converting the `ChecksumError` generic parameters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IcmpAnyChecksumErrorPlaceholder {}
+
+impl Checksum for IcmpAnyChecksumErrorPlaceholder {
+    type Error = IcmpAnyError;
+    type Payload<'a>
+        = IcmpAnyChecksumPayload<'a>
+    where
+        Self: 'a;
+    type Checksum = IcmpAnyChecksum;
+
+    fn checksum(&self) -> Option<IcmpAnyChecksum> {
+        unreachable!(
+            "IcmpAnyChecksumErrorPlaceholder does not have a checksum. Do not call this method."
+        )
+    }
+    fn compute_checksum(
+        &self,
+        _: &IcmpAnyChecksumPayload<'_>,
+    ) -> Result<IcmpAnyChecksum, IcmpAnyError> {
+        unreachable!(
+            "IcmpAnyChecksumErrorPlaceholder does not have a checksum. Do not call this method."
+        )
+    }
+    fn set_checksum(&mut self, _: IcmpAnyChecksum) -> Result<&mut Self, IcmpAnyError> {
+        unreachable!(
+            "IcmpAnyChecksumErrorPlaceholder does not have a checksum. Do not call this method."
+        )
+    }
+}
+
+impl From<ChecksumError<IcmpAny<'_>>> for ChecksumError<IcmpAnyChecksumErrorPlaceholder> {
+    fn from(value: ChecksumError<IcmpAny<'_>>) -> Self {
+        match value {
+            ChecksumError::Compute { error } => ChecksumError::Compute { error },
+            ChecksumError::Mismatch { expected, actual } => {
+                ChecksumError::Mismatch { expected, actual }
+            }
+            ChecksumError::NotPresent => ChecksumError::NotPresent,
+        }
+    }
 }
