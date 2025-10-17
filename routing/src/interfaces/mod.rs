@@ -10,7 +10,7 @@ pub mod interface;
 #[cfg(test)]
 pub mod tests {
     use crate::RouterError;
-    use crate::fib::fibtype::{FibId, FibWriter};
+    use crate::fib::fibtype::{FibKey, FibWriter};
     use crate::interfaces::iftable::IfTable;
     use crate::interfaces::iftablerw::{IfTableReader, IfTableWriter};
     use crate::interfaces::interface::{
@@ -113,7 +113,7 @@ pub mod tests {
         let mut iftable = build_test_iftable();
 
         /* Create a fib for the vrf created next */
-        let (fibw, _fibr) = FibWriter::new(FibId::Id(0));
+        let (fibw, _fibr) = FibWriter::new(FibKey::Id(0));
 
         /* Create a VRF for that fib */
         let vrf_cfg = RouterVrfConfig::new(0, "default");

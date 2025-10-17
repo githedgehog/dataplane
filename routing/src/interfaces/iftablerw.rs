@@ -4,7 +4,7 @@
 //! Interface to the interfaces module
 
 use crate::errors::RouterError;
-use crate::fib::fibtype::FibId;
+use crate::fib::fibtype::FibKey;
 use crate::fib::fibtype::FibReader;
 use crate::interfaces::iftable::IfTable;
 use crate::interfaces::interface::{IfAddress, IfState, RouterInterfaceConfig};
@@ -14,13 +14,15 @@ use left_right::ReadHandleFactory;
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
 use net::interface::InterfaceIndex;
 
+use tracing::debug;
+
 enum IfTableChange {
     Add(RouterInterfaceConfig),
     Mod(RouterInterfaceConfig),
     Del(InterfaceIndex),
     Attach((InterfaceIndex, FibReader)),
     Detach(InterfaceIndex),
-    DetachFromVrf(FibId),
+    DetachFromVrf(FibKey),
     AddIpAddress((InterfaceIndex, IfAddress)),
     DelIpAddress((InterfaceIndex, IfAddress)),
     UpdateOpState((InterfaceIndex, IfState)),
@@ -168,8 +170,10 @@ impl IfTableWriter {
         self.0.append(IfTableChange::Detach(ifindex));
         self.0.publish();
     }
-    pub fn detach_interfaces_from_vrf(&mut self, fibid: FibId) {
-        self.0.append(IfTableChange::DetachFromVrf(fibid));
+    pub fn detach_interfaces_from_vrf(&mut self, vrfid: VrfId) {
+        debug!("Scheduling detach of interfaces from vrf {vrfid}");
+        self.0
+            .append(IfTableChange::DetachFromVrf(FibKey::Id(vrfid)));
         self.0.publish();
     }
 }

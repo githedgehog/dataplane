@@ -2,13 +2,21 @@
 // Copyright Open Network Fabric Authors
 
 //! Module that implements Display for routing objects
-
+//!
+//! Note: most of the objects for which Display is implemented here belong to
+//! the routing database which is fully and only owned by the routing thread.
+//! This includes the Fib contents since fibs belong to vrfs.
+//! So:
+///    - it is Okay to call any of this from the routing thread (cli)
+///    - other threads may not be able to call Display's for routing objects.
+///    - Display for Fib objects visible from dataplane workers can be safely called.
+///    - Cli thread does not need a read handle cache to inspect Fib contents
+///    - Still, FIXME(fredi): make that distinction clearer
 use crate::atable::adjacency::{Adjacency, AdjacencyTable};
 use crate::cpi::{CpiStats, CpiStatus, StatsRow};
 use crate::fib::fibgroupstore::FibRoute;
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
-use crate::fib::fibtable::FibTable;
-use crate::fib::fibtype::{Fib, FibId};
+use crate::fib::fibtype::{Fib, FibKey};
 use crate::frr::frrmi::{FrrAppliedConfig, Frrmi, FrrmiStats};
 
 use crate::rib::VrfTable;
@@ -638,12 +646,12 @@ impl Display for AdjacencyTable {
 }
 
 //========================= Fib ================================//
-impl Display for FibId {
+impl Display for FibKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
-            FibId::Id(vrfid) => write!(f, "vrfid: {vrfid}")?,
-            FibId::Vni(vni) => write!(f, "vni: {vni:?}")?,
-            FibId::Unset => write!(f, "Unset!")?,
+            FibKey::Id(vrfid) => write!(f, "vrfid: {vrfid}")?,
+            FibKey::Vni(vni) => write!(f, "vni: {vni:?}")?,
+            FibKey::Unset => write!(f, "Unset!")?,
         }
         Ok(())
     }
@@ -700,7 +708,7 @@ impl Display for FibRoute {
 
 fn fmt_fib_trie<P: IpPrefix, F: Fn(&(&P, &FibRoute)) -> bool>(
     f: &mut std::fmt::Formatter<'_>,
-    fibid: FibId,
+    fibid: FibKey,
     show_string: &str,
     trie: &PrefixMapTrie<P, FibRoute>,
     group_filter: F,
@@ -720,17 +728,6 @@ impl Display for Fib {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         fmt_fib_trie(f, self.get_id(), "Ipv4", self.get_v4_trie(), |_| true)?;
         fmt_fib_trie(f, self.get_id(), "Ipv6", self.get_v6_trie(), |_| true)?;
-        Ok(())
-    }
-}
-impl Display for FibTable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        Heading(format!(" Fib Table ({} fibs)", self.len())).fmt(f)?;
-        for (_fibid, fibr) in self.iter() {
-            if let Some(fib) = fibr.enter() {
-                write!(f, "{}", *fib)?;
-            }
-        }
         Ok(())
     }
 }

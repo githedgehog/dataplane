@@ -15,7 +15,7 @@ use crate::pretty_utils::Frame;
 
 use super::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::evpn::{RmacStore, Vtep};
-use crate::fib::fibtype::{FibId, FibReader, FibWriter};
+use crate::fib::fibtype::{FibKey, FibReader, FibWriter};
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
 use net::route::RouteTableId;
@@ -256,9 +256,9 @@ impl Vrf {
     }
 
     ////////////////////////////////////////////////////////////////////////
-    /// Get the `FibId` of the Fib associated to this [`Vrf`]
+    /// Get the id (`FibKey`) of the Fib associated to this [`Vrf`]
     /////////////////////////////////////////////////////////////////////////
-    pub fn get_vrf_fibid(&self) -> Option<FibId> {
+    pub fn get_vrf_fibid(&self) -> Option<FibKey> {
         self.get_vrf_fibr()?.get_id()
     }
 
@@ -267,7 +267,7 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     pub fn set_vni(&mut self, vni: Vni) {
         self.vni = Some(vni);
-        debug!("Associated vni {vni} to Vrf '{}'", self.name);
+        debug!("Set vni {vni} to Vrf {} ({})", self.vrfid, self.name);
     }
 
     /////////////////////////////////////////////////////////////////////////

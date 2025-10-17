@@ -4,7 +4,7 @@
 //! A table of interfaces
 
 use crate::errors::RouterError;
-use crate::fib::fibtype::{FibId, FibReader};
+use crate::fib::fibtype::{FibKey, FibReader};
 use crate::interfaces::interface::{IfAddress, IfState, Interface, RouterInterfaceConfig};
 use ahash::RandomState;
 use std::collections::HashMap;
@@ -151,9 +151,9 @@ impl IfTable {
     }
 
     //////////////////////////////////////////////////////////////////////
-    /// Detach all interfaces attached to the Vrf whose fib has id `FibId`
+    /// Detach all interfaces attached to the Vrf whose fib has the given Id
     //////////////////////////////////////////////////////////////////////
-    pub fn detach_interfaces_from_vrf(&mut self, fibid: FibId) {
+    pub fn detach_interfaces_from_vrf(&mut self, fibid: FibKey) {
         for iface in self.by_index.values_mut() {
             iface.detach_from_fib(fibid);
         }

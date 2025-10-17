@@ -3,120 +3,148 @@
 
 //! The Fib table, which allows accessing all FIBs
 
-use crate::fib::fibtype::{FibId, FibReader, FibWriter};
+use crate::rib::vrf::VrfId;
+use crate::{
+    RouterError,
+    fib::fibtype::{FibKey, FibReader, FibReaderFactory, FibWriter},
+};
+
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 use net::vxlan::Vni;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::Arc;
-use tracing::{debug, error};
+#[allow(unused)]
+use tracing::{debug, error, info, warn};
 
-#[derive(Clone, Default, Debug)]
-pub struct FibTable(BTreeMap<FibId, Arc<FibReader>>);
+#[derive(Debug)]
+struct FibTableEntry {
+    id: FibKey,
+    factory: FibReaderFactory,
+}
+impl FibTableEntry {
+    const fn new(id: FibKey, factory: FibReaderFactory) -> Self {
+        Self { id, factory }
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct FibTable {
+    version: u64,
+    entries: BTreeMap<FibKey, Arc<FibTableEntry>>,
+}
 
 impl FibTable {
-    /// Add a new Fib ([`FibReader`])
-    pub fn add_fib(&mut self, id: FibId, fibr: Arc<FibReader>) {
-        debug!("Creating FIB with id {id}");
-        self.0.insert(id, fibr);
+    /// Register a `Fib` by adding a `FibReaderFactory` for it
+    fn add_fib(&mut self, id: FibKey, factory: FibReaderFactory) {
+        info!("Registering Fib with id {id} in the FibTable");
+        self.entries
+            .insert(id, Arc::new(FibTableEntry::new(id, factory)));
     }
-    /// Del a Fib ([`FibReader`])
-    pub fn del_fib(&mut self, id: &FibId) {
-        debug!("Deleting FIB reference with id {id}");
-        self.0.remove(id);
+    /// Delete a `Fib`, by unregistering a `FibReaderFactory` for it
+    fn del_fib(&mut self, id: &FibKey) {
+        info!("Unregistering Fib with id {id} from the FibTable");
+        self.entries.remove(id);
     }
-    /// Register a Fib ([`FibReader`]) with a given [`Vni`]
-    /// This allows finding the Fib from the [`Vni`]
-    pub fn register_by_vni(&mut self, id: &FibId, vni: &Vni) {
-        if let Some(fibr) = self.get_fib(id) {
-            self.0.insert(FibId::Vni(*vni), fibr.clone());
-            debug!("Registered Fib {id} with vni {vni}");
+    /// Register an existing `Fib` with a given [`Vni`].
+    /// This allows looking up a Fib (`FibReaderFactory`) from a [`Vni`]
+    fn register_by_vni(&mut self, id: &FibKey, vni: Vni) {
+        if let Some(entry) = self.get_entry(id) {
+            self.entries
+                .insert(FibKey::from_vni(vni), Arc::clone(entry));
+            info!("Registering Fib with id {id} in the FibTable with vni {vni}");
         } else {
-            error!("Failed to register Fib {id} with vni {vni}: no fib");
+            error!("Failed to register Fib {id} with vni {vni}: no fib with id {id} found");
         }
     }
-
-    /// Remove any entry referring to the given Vni
-    pub fn unregister_vni(&mut self, vni: &Vni) {
-        let id = FibId::Vni(*vni);
-        debug!("Deleting FIB reference with id {id}");
-        self.0.remove(&id);
+    /// Remove any entry keyed by a [`Vni`]
+    fn unregister_vni(&mut self, vni: Vni) {
+        let key = FibKey::from_vni(vni);
+        info!("Unregistered key = {key} from the FibTable");
+        self.entries.remove(&key);
     }
 
-    /// Get the [`FibReader`] for the fib with the given [`FibId`]
+    /// Get the entry for the fib with the given [`FibKey`]
     #[must_use]
-    pub fn get_fib(&self, id: &FibId) -> Option<&Arc<FibReader>> {
-        self.0.get(id)
+    fn get_entry(&self, key: &FibKey) -> Option<&Arc<FibTableEntry>> {
+        self.entries.get(key)
     }
-    /// Number of [`FibReader`]s in the fib table
+
+    /// Get a [`FibReader`] for the fib with the given [`FibKey`]. This method should only
+    /// be called in the existing tests, as it creates a new `FibReader` on every call.
     #[must_use]
-    pub fn len(&self) -> usize {
-        self.0.len()
+    #[cfg(test)]
+    pub fn get_fib(&self, key: &FibKey) -> Option<FibReader> {
+        self.get_entry(key).map(|entry| entry.factory.handle())
     }
-    /// Tell if fib table is empty
+
+    /// Number of entries in this table
     #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-    /// Provide iterator
-    pub fn iter(&self) -> impl Iterator<Item = (&FibId, &Arc<FibReader>)> {
-        self.0.iter()
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
     }
 }
 
 enum FibTableChange {
-    Add((FibId, Arc<FibReader>)),
-    Del(FibId),
-    RegisterByVni((FibId, Vni)),
+    Add((FibKey, FibReaderFactory)),
+    Del(FibKey),
+    RegisterByVni((FibKey, Vni)),
     UnRegisterVni(Vni),
 }
 
 impl Absorb<FibTableChange> for FibTable {
     fn absorb_first(&mut self, change: &mut FibTableChange, _: &Self) {
+        self.version = self.version.wrapping_add(1);
         match change {
-            FibTableChange::Add((id, fibr)) => self.add_fib(*id, fibr.clone()),
+            FibTableChange::Add((id, factory)) => self.add_fib(*id, factory.clone()),
             FibTableChange::Del(id) => self.del_fib(id),
-            FibTableChange::RegisterByVni((id, vni)) => self.register_by_vni(id, vni),
-            FibTableChange::UnRegisterVni(vni) => self.unregister_vni(vni),
+            FibTableChange::RegisterByVni((id, vni)) => self.register_by_vni(id, *vni),
+            FibTableChange::UnRegisterVni(vni) => self.unregister_vni(*vni),
         }
     }
-    fn drop_first(self: Box<Self>) {}
-    fn sync_with(&mut self, first: &Self) {
-        *self = first.clone();
-    }
+    fn sync_with(&mut self, _first: &Self) {}
 }
 
 pub struct FibTableWriter(WriteHandle<FibTable, FibTableChange>);
 impl FibTableWriter {
     #[must_use]
     pub fn new() -> (FibTableWriter, FibTableReader) {
-        let (write, read) = left_right::new::<FibTable, FibTableChange>();
+        let (mut write, read) = left_right::new::<FibTable, FibTableChange>();
+        write.publish(); /* avoid needing to impl sync_with() so that no need to impl Clone */
         (FibTableWriter(write), FibTableReader(read))
     }
     pub fn enter(&self) -> Option<ReadGuard<'_, FibTable>> {
         self.0.enter()
     }
+    #[must_use]
+    pub fn as_fibtable_reader(&self) -> FibTableReader {
+        FibTableReader(self.0.clone())
+    }
     #[allow(clippy::arc_with_non_send_sync)]
     #[must_use]
-    pub fn add_fib(&mut self, id: FibId, vni: Option<Vni>) -> (FibWriter, Arc<FibReader>) {
-        let (fibw, fibr) = FibWriter::new(id);
-        let fibr_arc = Arc::new(fibr);
-        self.0.append(FibTableChange::Add((id, fibr_arc.clone())));
+    pub fn add_fib(&mut self, vrfid: VrfId, vni: Option<Vni>) -> FibWriter {
+        let fibid = FibKey::from_vrfid(vrfid);
+        let (fibw, fibr) = FibWriter::new(fibid);
+        self.0.append(FibTableChange::Add((fibid, fibr.factory())));
         if let Some(vni) = vni {
-            self.0.append(FibTableChange::RegisterByVni((id, vni)));
+            self.0.append(FibTableChange::RegisterByVni((fibid, vni)));
         }
         self.0.publish();
-        (fibw, fibr_arc)
+        fibw
     }
-    pub fn register_fib_by_vni(&mut self, id: FibId, vni: Vni) {
-        self.0.append(FibTableChange::RegisterByVni((id, vni)));
+    pub fn register_fib_by_vni(&mut self, vrfid: VrfId, vni: Vni) {
+        let fibid = FibKey::from_vrfid(vrfid);
+        self.0.append(FibTableChange::RegisterByVni((fibid, vni)));
         self.0.publish();
     }
     pub fn unregister_vni(&mut self, vni: Vni) {
         self.0.append(FibTableChange::UnRegisterVni(vni));
         self.0.publish();
     }
-    pub fn del_fib(&mut self, id: &FibId, vni: Option<Vni>) {
-        self.0.append(FibTableChange::Del(*id));
+    pub fn del_fib(&mut self, vrfid: VrfId, vni: Option<Vni>) {
+        let fibid = FibKey::from_vrfid(vrfid);
+        self.0.append(FibTableChange::Del(fibid));
         if let Some(vni) = vni {
             self.0.append(FibTableChange::UnRegisterVni(vni));
         }
@@ -136,10 +164,11 @@ impl FibTableReaderFactory {
 #[derive(Clone, Debug)]
 pub struct FibTableReader(ReadHandle<FibTable>);
 impl FibTableReader {
-    /// Access the fib table from its reader
+    #[must_use]
     pub fn enter(&self) -> Option<ReadGuard<'_, FibTable>> {
         self.0.enter()
     }
+    #[must_use]
     pub fn factory(&self) -> FibTableReaderFactory {
         FibTableReaderFactory(self.0.factory())
     }
@@ -147,3 +176,59 @@ impl FibTableReader {
 
 #[allow(unsafe_code)]
 unsafe impl Send for FibTableWriter {}
+
+/*
+ * Thread-local cache or readhandles for the fibtable
+ */
+
+// declare thread-local cache for fibtable
+use crate::fib::fibtype::Fib;
+use left_right_tlcache::make_thread_local_readhandle_cache;
+use left_right_tlcache::{ReadHandleCache, ReadHandleProvider};
+make_thread_local_readhandle_cache!(FIBTABLE_CACHE, FibKey, Fib);
+
+impl ReadHandleProvider for FibTable {
+    type Data = Fib;
+    type Key = FibKey;
+    fn get_factory(
+        &self,
+        key: &Self::Key,
+    ) -> Option<(&ReadHandleFactory<Self::Data>, Self::Key, u64)> {
+        let entry = self.get_entry(key)?.as_ref();
+        let factory = entry.factory.as_ref();
+        Some((factory, entry.id, self.version))
+    }
+    fn get_version(&self) -> u64 {
+        self.version
+    }
+    fn get_identity(&self, key: &Self::Key) -> Option<Self::Key> {
+        self.get_entry(key).map(|entry| entry.id)
+    }
+    fn get_iter(
+        &self,
+    ) -> (
+        u64,
+        impl Iterator<Item = (FibKey, &ReadHandleFactory<Fib>, FibKey)>,
+    ) {
+        let iter = self
+            .entries
+            .iter()
+            .map(|(key, entry)| (*key, &*entry.factory.as_ref(), entry.as_ref().id));
+        (self.version, iter)
+    }
+}
+
+impl FibTableReader {
+    /// Main method for threads to get a reference to a FibReader from their thread-local cache.
+    /// Note 1: the cache stores `ReadHandle<Fib>`'s. This method returns `FibReader` for convenience. This is zero cost
+    /// Note 2: we make this a method of [`FibTableReader`], as each thread is assumed to have its own read handle to the `FibTable`.
+    /// Note 3: we map ReadHandleCacheError to RouterError
+    pub fn get_fib_reader(&self, id: FibKey) -> Result<Rc<FibReader>, RouterError> {
+        let Some(fibtable) = self.enter() else {
+            warn!("Unable to access fib table!");
+            return Err(RouterError::FibTableError);
+        };
+        let rhandle = ReadHandleCache::get_reader(&FIBTABLE_CACHE, id, &*fibtable)?;
+        Ok(FibReader::rc_from_rc_rhandle(rhandle))
+    }
+}

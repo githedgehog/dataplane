@@ -5,9 +5,13 @@
 
 #![allow(clippy::collapsible_if)]
 
-use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
+use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
+use left_right_tlcache::Identity;
+
 use std::cell::Ref;
+use std::hash::Hash;
 use std::net::IpAddr;
+use std::rc::Rc;
 
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
@@ -24,44 +28,58 @@ use crate::rib::vrf::VrfId;
 #[allow(unused)]
 use tracing::{debug, error, info, warn};
 
-#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
-/// An id we use to idenfify a FIB
-pub enum FibId {
+#[derive(Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
+/// A type used to access a [`Fib`] or to identify it.
+/// As an identifier, only the variant `FibKey::Id` is allowed.
+pub enum FibKey {
     Unset,
     Id(VrfId),
     Vni(Vni),
 }
-impl FibId {
+impl FibKey {
     #[must_use]
     pub fn from_vrfid(vrfid: VrfId) -> Self {
-        FibId::Id(vrfid)
+        FibKey::Id(vrfid)
     }
     #[must_use]
     pub fn from_vni(vni: Vni) -> Self {
-        FibId::Vni(vni)
+        FibKey::Vni(vni)
     }
     #[must_use]
     pub fn as_u32(&self) -> u32 {
         match self {
-            FibId::Id(value) => *value,
-            FibId::Vni(value) => value.as_u32(),
-            FibId::Unset => unreachable!(),
+            FibKey::Id(value) => *value,
+            FibKey::Vni(value) => value.as_u32(),
+            FibKey::Unset => unreachable!(),
         }
     }
 }
 
 pub struct Fib {
-    id: FibId,
+    id: FibKey,
     routesv4: PrefixMapTrie<Ipv4Prefix, FibRoute>,
     routesv6: PrefixMapTrie<Ipv6Prefix, FibRoute>,
     groupstore: FibGroupStore,
     vtep: Vtep,
 }
-
+impl Hash for Fib {
+    // We implement explicitly `std::hash::Hash` for `Fib` instead of deriving it because:
+    //  - this avoids the need to implement/derive it for all internal components
+    //  - it is actually not possible to do so since some types are defined externally (prefixes)
+    //  - the Id suffices to identify them and the implementation is possibly faster.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+impl Identity<FibKey> for Fib {
+    fn identity(&self) -> FibKey {
+        self.get_id()
+    }
+}
 impl Default for Fib {
     fn default() -> Self {
         let mut fib = Self {
-            id: FibId::Unset,
+            id: FibKey::Unset,
             routesv4: PrefixMapTrie::create(),
             routesv6: PrefixMapTrie::create(),
             groupstore: FibGroupStore::new(),
@@ -79,16 +97,20 @@ pub type FibRouteV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &FibRoute)) -> bool>;
 pub type FibRouteV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &FibRoute)) -> bool>;
 
 impl Fib {
-    /// Set the [`FibId`] for this [`Fib`]
-    fn set_id(&mut self, id: FibId) {
+    /// Set the id for this [`Fib`]
+    fn set_id(&mut self, id: FibKey) {
+        if !matches!(id, FibKey::Id(_)) {
+            panic!("Attempting to set invalid Id of {} to fib", id);
+        }
         self.id = id;
     }
 
     #[must_use]
-    /// Get the [`FibId`] for this [`Fib`]
-    pub fn get_id(&self) -> FibId {
-        if self.id == FibId::Unset {
-            panic!("Hit fib with unset FibId!!");
+    /// Get the id for this [`Fib`]
+    pub fn get_id(&self) -> FibKey {
+        if !matches!(self.id, FibKey::Id(_)) {
+            error!("Hit fib with invalid Id {}", self.id);
+            unreachable!()
         }
         self.id
     }
@@ -294,9 +316,8 @@ impl Absorb<FibChange> for Fib {
             FibChange::SetVtep(vtep) => self.set_vtep(vtep),
         }
     }
-    fn drop_first(self: Box<Self>) {}
     fn sync_with(&mut self, first: &Self) {
-        assert!(self.id != FibId::Unset);
+        assert!(self.id != FibKey::Unset);
         assert_eq!(self.id, first.id);
         debug!("Internal LR state for fib {} is now synced", self.id);
     }
@@ -306,9 +327,9 @@ pub struct FibWriter(WriteHandle<Fib, FibChange>);
 impl FibWriter {
     /// create a fib, providing a writer and a reader
     #[must_use]
-    pub fn new(id: FibId) -> (FibWriter, FibReader) {
+    pub fn new(id: FibKey) -> (FibWriter, FibReader) {
         let (mut w, r) = left_right::new::<Fib, FibChange>();
-        // Set the FibId in the read and write copies, created Fib::default() that sets it to FibId::Unset.
+        // Set the Id in the read and write copies, created Fib::default() that sets it to FibKey::Unset.
         unsafe {
             // It is safe to call raw_handle() and raw_write_handle() here
             let fib_rcopy = r.raw_handle().unwrap_or_else(|| unreachable!()).as_mut();
@@ -318,13 +339,14 @@ impl FibWriter {
             // this is needed to avoid needing to clone the fib
             w.publish();
         }
+        info!("Created Fib with id {id}");
         (FibWriter(w), FibReader(r))
     }
     pub fn enter(&self) -> Option<ReadGuard<'_, Fib>> {
         self.0.enter()
     }
     #[must_use]
-    pub fn get_id(&self) -> Option<FibId> {
+    pub fn get_id(&self) -> Option<FibKey> {
         self.0.enter().map(|fib| fib.get_id())
     }
     pub fn register_fibgroup(&mut self, key: &NhopKey, fibgroup: &FibGroup, publish: bool) {
@@ -368,6 +390,7 @@ impl FibWriter {
 }
 
 #[derive(Clone, Debug)]
+#[repr(transparent)]
 pub struct FibReader(ReadHandle<Fib>);
 impl FibReader {
     #[must_use]
@@ -377,7 +400,44 @@ impl FibReader {
     pub fn enter(&self) -> Option<ReadGuard<'_, Fib>> {
         self.0.enter()
     }
-    pub fn get_id(&self) -> Option<FibId> {
+    #[inline(always)]
+    pub(crate) fn rc_from_rc_rhandle(rc: Rc<ReadHandle<Fib>>) -> Rc<Self> {
+        unsafe {
+            let ptr = Rc::into_raw(rc) as *const Self;
+            Rc::from_raw(ptr)
+        }
+    }
+    pub fn get_id(&self) -> Option<FibKey> {
         self.0.enter().map(|fib| fib.get_id())
+    }
+    #[must_use]
+    pub fn factory(&self) -> FibReaderFactory {
+        FibReaderFactory(self.0.factory())
+    }
+}
+
+// make FibReader a zero-cost wrap of ReadHandle<Fib>
+impl AsRef<FibReader> for ReadHandle<Fib> {
+    #[inline]
+    fn as_ref(&self) -> &FibReader {
+        unsafe { &*(self as *const ReadHandle<Fib> as *const FibReader) }
+    }
+}
+#[derive(Debug, Clone)]
+#[repr(transparent)]
+pub struct FibReaderFactory(pub(crate) ReadHandleFactory<Fib>);
+
+// make FibReaderFactory a zero-cost wrap of ReadHandleFactory<Fib>
+impl AsRef<ReadHandleFactory<Fib>> for FibReaderFactory {
+    #[inline]
+    fn as_ref(&self) -> &ReadHandleFactory<Fib> {
+        unsafe { &*(self as *const FibReaderFactory as *const ReadHandleFactory<Fib>) }
+    }
+}
+
+impl FibReaderFactory {
+    #[must_use]
+    pub fn handle(&self) -> FibReader {
+        FibReader(self.0.handle())
     }
 }
