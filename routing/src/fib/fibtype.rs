@@ -7,8 +7,6 @@
 
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 use left_right_tlcache::Identity;
-
-use std::cell::Ref;
 use std::hash::Hash;
 use std::net::IpAddr;
 use std::rc::Rc;
@@ -214,7 +212,7 @@ impl Fib {
     }
 
     /// Iterate over [`FibGroup`]s
-    pub fn group_iter(&self) -> impl Iterator<Item = Ref<'_, FibGroup>> {
+    pub fn group_iter(&self) -> impl Iterator<Item = &FibGroup> {
         self.groupstore.values()
     }
 
@@ -258,10 +256,7 @@ impl Fib {
     /// computing a hash on the invariant header fields of the IP and L4 headers.
     #[must_use]
     #[allow(clippy::cast_possible_truncation)]
-    pub fn lpm_entry<Buf: PacketBufferMut>(
-        &self,
-        packet: &Packet<Buf>,
-    ) -> Option<Ref<'_, FibEntry>> {
+    pub fn lpm_entry<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> Option<&FibEntry> {
         let (_, entry) = self.lpm_entry_prefix(packet);
         entry
     }
@@ -271,7 +266,7 @@ impl Fib {
     pub fn lpm_entry_prefix<Buf: PacketBufferMut>(
         &self,
         packet: &Packet<Buf>,
-    ) -> (Prefix, Option<Ref<'_, FibEntry>>) {
+    ) -> (Prefix, Option<&FibEntry>) {
         if let Some(destination) = packet.ip_destination() {
             let (prefix, route) = self.lpm_with_prefix(&destination);
             match route.len() {
