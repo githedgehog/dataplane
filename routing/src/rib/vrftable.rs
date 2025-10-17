@@ -95,19 +95,20 @@ impl VrfTable {
             return Ok(()); /* vrf already has that vni */
         }
         // No vrf has the requested vni, including the vrf with id vrfId.
-        // However the vrf with id VrfId may have another vni associated,
-
-        /* remove vni from vrf if it has one */
+        // However the vrf with id VrfId may have another vni associated.
+        // So, unset any vni that the vrf may have associated first.
         self.unset_vni(vrfid)?;
 
-        /* set the vni to the vrf */
+        /* lookup vrf */
         let vrf = self.get_vrf_mut(vrfid)?;
+
+        /* set the vni to the vrf */
         vrf.set_vni(vni);
 
-        /* register vni */
+        /* register vni as key for vrf vrfid in the vrf table */
         self.by_vni.insert(vni, vrfid);
 
-        /* make fib accessible from vni */
+        /* make fib accessible from vni in the fib table */
         self.fibtablew.register_fib_by_vni(vrfid, vni);
         Ok(())
     }
@@ -117,13 +118,18 @@ impl VrfTable {
     /// removes it from the `by_vni` map. It also unindexes the vrf's FIB by the vni.
     ///////////////////////////////////////////////////////////////////////////////////
     pub fn unset_vni(&mut self, vrfid: VrfId) -> Result<(), RouterError> {
+        debug!("Unsetting any vni configuration for vrf {vrfid}..");
         let vrf = self.get_vrf_mut(vrfid)?;
+
+        // check if vrf has vni configured
         if let Some(vni) = vrf.vni {
-            debug!("Removing vni {vni} from vrf {vrfid}...");
+            debug!("Vrf {vrfid} has vni {vni} associated. Removing...");
             vrf.vni.take();
             self.by_vni.remove(&vni);
             self.fibtablew.unregister_vni(vni);
-            debug!("Vrf with Id {vrfid} no longer has a VNI associated");
+            debug!("Vrf with Id {vrfid} no longer has a vni {vni} associated");
+        } else {
+            debug!("Vrf {vrfid} has no vni configured");
         }
         Ok(())
     }
@@ -173,14 +179,15 @@ impl VrfTable {
         vrfid: VrfId,
         iftablew: &mut IfTableWriter,
     ) -> Result<(), RouterError> {
-        debug!("Removing VRF with vrfid {vrfid}...");
+        // remove the vrf from the vrf table
+        debug!("Removing VRF {vrfid}...");
         let Some(vrf) = self.by_id.remove(&vrfid) else {
             error!("No vrf with id {vrfid} exists");
             return Err(RouterError::NoSuchVrf);
         };
         // delete the corresponding fib
         if vrf.fibw.is_some() {
-            debug!("Requesting deletion of vrf {vrfid} FIB");
+            debug!("Deleting Fib for vrf {vrfid} from the FibTable");
             self.fibtablew.del_fib(vrfid, vrf.vni);
             iftablew.detach_interfaces_from_vrf(vrfid);
         }
@@ -190,6 +197,7 @@ impl VrfTable {
             debug!("Unregistering vni {vni}");
             self.by_vni.remove(&vni);
         }
+        debug!("Vrf {vrfid} has been removed");
         Ok(())
     }
 
@@ -216,6 +224,7 @@ impl VrfTable {
     /// Remove all of the VRFs with status `Deleted`
     //////////////////////////////////////////////////////////////////
     pub fn remove_deleted_vrfs(&mut self, iftablew: &mut IfTableWriter) {
+        debug!("Removing deletable vrfs...");
         self.remove_vrfs(Vrf::can_be_deleted, iftablew);
     }
 
@@ -223,6 +232,7 @@ impl VrfTable {
     /// Remove all of the VRFs with status `Deleting`
     //////////////////////////////////////////////////////////////////
     pub fn remove_deleting_vrfs(&mut self, iftablew: &mut IfTableWriter) {
+        debug!("Removing vrfs with deleting status...");
         self.remove_vrfs(Vrf::is_deleting, iftablew);
     }
 
@@ -657,11 +667,10 @@ mod tests {
             .expect("Should find vrfid by vni");
         assert_eq!(id, vrfid);
         debug!("\n{vrftable}");
+
         if let Some(fibtable) = fibtr.enter() {
-            let fib = fibtable.get_fib(&FibKey::from_vrfid(vrfid));
-            assert!(fib.is_some());
-            let fib = fibtable.get_fib(&FibKey::from_vni(vni));
-            assert!(fib.is_some());
+            assert!(fibtable.get_fib(&FibKey::from_vrfid(vrfid)).is_some());
+            assert!(fibtable.get_fib(&FibKey::from_vni(vni)).is_some());
         }
 
         debug!("━━━━Test: Unset vni {vni} from the vrf");
@@ -674,36 +683,72 @@ mod tests {
         assert!((id.is_err_and(|e| e == RouterError::NoSuchVrf)));
         debug!("\n{vrftable}");
         if let Some(fibtable) = fibtr.enter() {
-            let fib = fibtable.get_fib(&FibKey::from_vrfid(vrfid));
-            assert!(fib.is_some());
-            let fib = fibtable.get_fib(&FibKey::from_vni(vni));
-            assert!(fib.is_none());
+            assert!(fibtable.get_fib(&FibKey::from_vrfid(vrfid)).is_some());
+            assert!(fibtable.get_fib(&FibKey::from_vni(vni)).is_none());
         }
     }
 
     #[traced_test]
     #[test]
     fn vrf_table_deletions() {
+        debug!("━━━━Test: Create testing interface table");
+        let (mut iftw, iftr) = build_test_iftable_left_right();
+
         debug!("━━━━Test: Create vrf table");
         let (fibtw, fibtr) = FibTableWriter::new();
-        let (mut iftw, iftr) = build_test_iftable_left_right();
         let mut vrftable = VrfTable::new(fibtw);
+
+        debug!("━━━━Test: Check fib access for vrf default");
+        if let Some(fibtable) = fibtr.enter() {
+            let fibkey = FibKey::from_vrfid(0);
+            let fibr = fibtable.get_fib(&fibkey).unwrap();
+            let fib = fibr.enter().unwrap();
+            assert_eq!(fib.as_ref().get_id(), fibkey);
+        }
 
         let vrfid = 999;
         let vni = mk_vni(3000);
 
-        debug!("━━━━Test: Add a VRF without Vni");
+        debug!("━━━━Test: Add a VRF with id {vrfid} but no Vni");
         let vrf_cfg = RouterVrfConfig::new(vrfid, "VPC-1");
         vrftable.add_vrf(&vrf_cfg).expect("Should be created");
-
-        debug!("━━━━Test: Associate VNI {vni}");
-        vrftable.set_vni(vrfid, vni).expect("Should succeed");
         assert_eq!(vrftable.len(), 2); // default is always there
         debug!("\n{vrftable}");
+
+        debug!("━━━━Test: Check fib access for vrf {vrfid}");
+        if let Some(fibtable) = fibtr.enter() {
+            // check that fib is accessible from vrfid
+            let fibkey = FibKey::from_vrfid(vrfid);
+            let fibr = fibtable.get_fib(&fibkey).unwrap();
+            let fib = fibr.enter().unwrap();
+            assert_eq!(fib.as_ref().get_id(), fibkey);
+            assert_eq!(fibtable.as_ref().len(), 2);
+        }
+
+        debug!("━━━━Test: Associate vni {vni} to vrf {vrfid}");
+        vrftable.set_vni(vrfid, vni).expect("Should succeed");
+        debug!("\n{vrftable}");
+
+        debug!("━━━━Test: Check fib access for vrf {vrfid} and vni {vni}");
+        if let Some(fibtable) = fibtr.enter() {
+            // check that fib continues to be accessible via vrfid
+            let fibkey = FibKey::from_vrfid(vrfid);
+            let fibr = fibtable.get_fib(&fibkey).unwrap();
+            let fib = fibr.enter().unwrap();
+            assert_eq!(fib.as_ref().get_id(), fibkey);
+
+            // check that fib is accessible from vni
+            let fibkey = FibKey::from_vni(vni);
+            let fibr = fibtable.get_fib(&fibkey).unwrap();
+            let fib = fibr.enter().unwrap();
+            assert_eq!(fib.as_ref().get_id(), FibKey::from_vrfid(vrfid));
+        }
 
         debug!("━━━━Test: deleting removed VRFs: nothing should be removed");
         vrftable.remove_deleted_vrfs(&mut iftw);
         assert_eq!(vrftable.len(), 2); // default is always there
+        assert_eq!(fibtr.enter().unwrap().len(), 3);
+        debug!("\n{vrftable}");
 
         debug!("━━━━Test: Get interface from iftable");
         let idx = InterfaceIndex::try_new(2).unwrap();
@@ -713,7 +758,7 @@ mod tests {
             debug!("\n{}", *iftable);
         }
 
-        debug!("━━━━Test: Attach interface to vrf");
+        debug!("━━━━Test: Attach interface to vrf {vrfid}");
         iftw.attach_interface_to_vrf(idx, vrfid, &vrftable)
             .expect("Should succeed");
         if let Some(iftable) = iftr.enter() {
@@ -727,18 +772,22 @@ mod tests {
         vrf.set_status(VrfStatus::Deleted);
         debug!("\n{vrftable}");
 
-        debug!("━━━━Test: remove vrfs marked as deleted again - VPC-1 vrf should be gone");
+        debug!("━━━━Test: remove vrfs marked as deleted: VPC-1 vrf should be gone");
         vrftable.remove_deleted_vrfs(&mut iftw);
         assert_eq!(vrftable.len(), 1, "should be gone");
+        assert_eq!(
+            fibtr.enter().unwrap().len(),
+            1,
+            "only default fib should remain"
+        );
 
-        // check fib table
+        debug!("━━━━Test: Check that no fib is accessible vrfid:{vrfid} nor vni:{vni}");
         if let Some(fibtable) = fibtr.enter() {
-            let fib = fibtable.get_fib(&FibKey::from_vrfid(vrfid));
-            assert!(fib.is_none());
-            let fib = fibtable.get_fib(&FibKey::from_vni(vni));
-            assert!(fib.is_none());
-            assert_eq!(fibtable.len(), 1);
+            assert!(fibtable.get_fib(&FibKey::from_vrfid(vrfid)).is_none());
+            assert!(fibtable.get_fib(&FibKey::from_vni(vni)).is_none());
+            assert!(fibtable.get_fib(&FibKey::from_vrfid(0)).is_some());
         }
+        debug!("━━━━Test: Interface {idx} should no longer be attached");
         if let Some(iftable) = iftr.enter() {
             let iface = iftable.get_interface(idx).expect("Should be there");
             assert!(iface.attachment.is_none(), "Should have been detached");
