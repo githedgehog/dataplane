@@ -9,48 +9,43 @@
 //! Fibgroups when routing changes occur for all the affected routes without needing to explicitly
 //! change any of the routes. This allows, upon routing changes, updating the FIB in O(Nh) instead
 //! of O(Routes), potentially reducing the number of updates by several orders of magnitude.
-//! This is achieved by means of an `RefCell`, which allows us to mutate fibgroups.
-//! This data structure is, therefore, NOT thread-safe. Thread-safety is achieved by wrapping
-//! this structure in left-right.
+//! This is achieved by means of an `UnsafeCell`, which allows us to mutate fibgroups.
+//! This data structure is, therefore, **NOT** thread-safe.
 //!
-//! Any modification of the FibGroupStore or the `Rc<RefCell<FibGroup>>`s it contains
-//! must be done while holding a `left_right::WriteGuard` to the `Fib` that owns it.
+//! Safety is achieved by wrapping th structure in left-right. Safety for readers is granted
+//! by the fact that the fib will not be modifed as long as readers have a read guard to it.
+//! It is also guaranteed despite the use of Rc because readers never get to see those Rc's
+//! (they are internally) and only the left-right writer deals with cloning them.
+//! An implementation without the protection given by left-right would require, instead,
+//! something like `Arc<AtomicPtr<FibGroup>>`.
 //!
-//! Any use of the `FibGroupStore` or the `Rc<RefCell<FibGroup>>`s it contains
-//! must be done while holding a `left_right::ReadGuard` or `left_right::WriteGuard` to
-//! the `Fib` that owns it.
-
-#![allow(unused)]
+//! **NOTE**: Throughout the documentation it is assumed that the structure is wrapped in left-right.
 
 use crate::fib::fibobjects::{FibEntry, FibGroup};
 use crate::rib::nexthop::NhopKey;
 use ahash::RandomState;
-use std::cell::{Ref, RefCell};
+use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use thiserror::Error;
 
 #[allow(unused)]
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 #[derive(Error, Debug, PartialEq)]
 pub enum FibError {
-    #[error("Failed to find fibgroup for nh {0}")]
+    #[error("Failed to find fibgroup for nh key {0:?}")]
     NoFibGroup(NhopKey),
 }
 
-#[derive(Default, Debug)]
-pub(crate) struct FibGroupStore(HashMap<NhopKey, Rc<RefCell<FibGroup>>, RandomState>);
+#[derive(Debug, Default)]
+pub(crate) struct FibGroupStore(HashMap<NhopKey, Rc<UnsafeCell<FibGroup>>, RandomState>);
 
 impl FibGroupStore {
     #[must_use]
     pub(crate) fn new() -> Self {
         let mut store = Self(HashMap::with_hasher(RandomState::with_seed(0)));
-        unsafe {
-            // This is safe because we have exclusive access to the store we just created
-            // so no one else can have a reference to any Rc's it contains
-            store.add_mod_group(&NhopKey::with_drop(), Self::drop_fibgroup());
-        }
+        store.add_mod_group(&NhopKey::with_drop(), FibGroup::drop_fibgroup());
         store
     }
     #[must_use]
@@ -59,50 +54,52 @@ impl FibGroupStore {
         self.0.len()
     }
     #[must_use]
-    fn drop_fibgroup() -> FibGroup {
-        FibGroup::with_entry(FibEntry::drop_fibentry())
-    }
-    #[must_use]
     /// get an Rc for the drop `Fibgroup`. The drop fibgroup is unique.
-    pub fn get_drop_fibgroup_ref(&self) -> Rc<RefCell<FibGroup>> {
+    pub fn get_drop_fibgroup_ref(&self) -> Rc<UnsafeCell<FibGroup>> {
         self.get_ref(&NhopKey::with_drop())
             .unwrap_or_else(|| unreachable!())
     }
 
     ////////////////////////////////////////////////////////////////////////////////
     /// Add a `FibGroup` for a given `NhopKey` or replace it if it exists.
-    ///
-    /// Safety:
-    ///
-    /// This function is only safe if there are no references to the `Rc<FibGroup>`
-    /// indexed by `key`, as returned by `get_ref`.
-    ///
-    /// In our actual usage, this is the case because we call this function
-    /// when everything is protected by the `left_right::WriteGuard` of the `Fib`
-    /// Any use of the `Rc<RefCell<FibGroup>>` entries in the `Fib` is protected by
-    /// `left_right::ReadGuard` or `left_right::WriteGuard` to the `Fib` that owns it.
-    ///
+    /// Safety: Only the left-right writer should use this method.
     ////////////////////////////////////////////////////////////////////////////////
-    pub(super) unsafe fn add_mod_group(&mut self, key: &NhopKey, fibgroup: FibGroup) {
+    pub(super) fn add_mod_group(&mut self, key: &NhopKey, fibgroup: FibGroup) {
+        if fibgroup.is_empty() {
+            error!("Refusing to add fibgroup without entries for key {key:?}");
+            return;
+        }
         if let Some(group) = self.0.get(key) {
-            *group.borrow_mut() = fibgroup;
+            unsafe {
+                *group.get() = fibgroup;
+            }
         } else {
-            let fg = Rc::new(RefCell::new(fibgroup));
+            let fg = Rc::new(UnsafeCell::new(fibgroup));
             self.0.insert(key.clone(), fg);
         }
     }
     ////////////////////////////////////////////////////////////////////////////////
     /// Get a refcounted reference to the `Fibgroup` for a given `NhopKey`. This is
     /// used by `FibRoutes` to point to the current `FibGroups`.
+    ///
+    /// Safety: Only the left-right writer should use this method.
     ////////////////////////////////////////////////////////////////////////////////
     #[must_use]
-    fn get_ref(&self, key: &NhopKey) -> Option<Rc<RefCell<FibGroup>>> {
+    fn get_ref(&self, key: &NhopKey) -> Option<Rc<UnsafeCell<FibGroup>>> {
         self.0.get(key).map(|group| Rc::clone(group))
     }
+
+    #[cfg(test)]
     #[must_use]
-    pub(crate) fn get(&self, key: &NhopKey) -> Option<Ref<'_, FibGroup>> {
-        self.0.get(key).map(|group| group.borrow())
+    pub(crate) fn get(&self, key: &NhopKey) -> Option<&FibGroup> {
+        self.0.get(key).map(|group| unsafe { &*group.get() })
     }
+
+    ////////////////////////////////////////////////////////////////////////////////
+    /// Remove the fibgroup with the provided key.
+    ///
+    /// Safety: Only the left-right writer should use this method.
+    ////////////////////////////////////////////////////////////////////////////////
     pub(crate) fn del(&mut self, key: &NhopKey) {
         if key == &NhopKey::with_drop() {
             return;
@@ -122,13 +119,16 @@ impl FibGroupStore {
     /// Remove unused `FibGroup`s. This should not be needed, but we may use it to expedite N deletions
     /// in batch, as it avoids lookups (at the expense of traversal).
     /// Returns the number of groups removed.
+    ///
+    /// Safety: Only the left-right writer should use this method.
     ////////////////////////////////////////////////////////////////////////////////////////////////////
     pub fn purge(&mut self) -> usize {
         let len = self.len();
         self.0.retain(|key, group| {
             let keep = Rc::strong_count(group) > 1 || key == &NhopKey::with_drop();
             if !keep {
-                debug!("Will purge fibgroup for nhop '{key}'");
+                #[cfg(not(test))]
+                debug!("Purging fibgroup for nhop '{key}'");
             }
             keep
         });
@@ -138,41 +138,35 @@ impl FibGroupStore {
     ////////////////////////////////////////////////////////////////////////////////////////////////////
     /// Iterate over the `FibGroups` in the store
     ////////////////////////////////////////////////////////////////////////////////////////////////////
-    pub(crate) fn values(&self) -> impl Iterator<Item = Ref<'_, FibGroup>> {
-        self.0.values().map(|group| group.borrow())
+    pub(crate) fn values(&self) -> impl Iterator<Item = &FibGroup> {
+        unsafe { self.0.values().map(|group| &*group.get()) }
     }
+
     ////////////////////////////////////////////////////////////////////////////////////////////////////
     /// Iterate over the `FibGroups` in the store
     ////////////////////////////////////////////////////////////////////////////////////////////////////
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&NhopKey, Ref<'_, FibGroup>)> {
-        self.0.iter().map(|(key, group)| (key, group.borrow()))
+    #[cfg(test)]
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&NhopKey, &FibGroup)> {
+        unsafe { self.0.iter().map(|(key, group)| (key, &*group.get())) }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct FibRoute(Vec<Rc<RefCell<FibGroup>>>);
+pub struct FibRoute(Vec<Rc<UnsafeCell<FibGroup>>>);
 impl FibRoute {
     #[must_use]
     pub(crate) fn new() -> Self {
         Self(vec![])
     }
     #[must_use]
-    pub fn with_fibgroup(fg_ref: Rc<RefCell<FibGroup>>) -> Self {
+    pub fn with_fibgroup(fg_ref: Rc<UnsafeCell<FibGroup>>) -> Self {
         Self(vec![fg_ref])
     }
-    /// Add a reference to a `FibGroup` to a `FibRoute`
-    pub(crate) fn add_fibgroup_ref(&mut self, fg_ref: Rc<RefCell<FibGroup>>) {
-        self.0.push(fg_ref);
-    }
-    #[must_use]
+
     #[cfg(test)]
-    /// Get a reference to the `FibGroup` at the group-level index. This is only for testing.
-    pub(crate) fn get_fibgroup(&self, index: usize) -> Option<Ref<'_, FibGroup>> {
-        if index < self.len() {
-            unsafe { Some(self.0[index].borrow()) }
-        } else {
-            None
-        }
+    /// Add a reference to a `FibGroup` to a `FibRoute`
+    pub(crate) fn add_fibgroup_ref(&mut self, fg_ref: Rc<UnsafeCell<FibGroup>>) {
+        self.0.push(fg_ref);
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -180,7 +174,16 @@ impl FibRoute {
     /////////////////////////////////////////////////////////////////////////////////////////////////
     #[must_use]
     pub(crate) fn len(&self) -> usize {
-        self.0.iter().fold(0, |val, g| val + g.borrow().len())
+        self.0
+            .iter()
+            .fold(0, |val, g| unsafe { val + (&*g.get()).len() })
+    }
+
+    #[allow(unused)]
+    #[must_use]
+    pub(crate) fn has_entries(&self) -> bool {
+        // empty vector returns false
+        self.0.iter().any(|g| unsafe { !(&*g.get()).is_empty() })
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -207,25 +210,32 @@ impl FibRoute {
     /// to a real one, in the corresponding fibgroup, as shown in the next example for 4 groups.
     /// 0 1 2 3 4 | 5 6 7 | 8 9 | 10 11 12 | virtual entry indices
     /// 0 1 2 3 4 | 0 1 2 | 0 1 | 0  1  2  | real    entry indices within each group.
+    ///
+    /// Panics:
+    ///   This method will panic if index is >= FibRoute::len(). This is so to keep this method
+    /// infallible, which simplifies its use in several cases.
     ////////////////////////////////////////////////////////////////////////////////////////////////
     #[must_use]
-    pub(crate) fn get_fibentry(&self, index: usize) -> Option<Ref<'_, FibEntry>> {
+    pub(crate) fn get_fibentry(&self, index: usize) -> &FibEntry {
         let mut index = index;
         for g in self.0.iter() {
-            let group = g.borrow();
+            let group = unsafe { &*g.get() };
             if index < group.len() {
-                return Some(Ref::map(group, |g| &g.entries[index]));
+                return &group.entries[index];
             }
             index -= group.len();
         }
-        None
+        // There cannot exist a route without fib groups.
+        // Fibgroups must have at least one entry.
+        // Developer error: did not check FibRoute::len()
+        unreachable!()
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////
     /// Provide iterator over the `FibGroups` that a `Fibroute` refers to
     ////////////////////////////////////////////////////////////////////////////////////////////////
-    pub(crate) fn iter(&self) -> impl Iterator<Item = Ref<'_, FibGroup>> {
-        self.0.iter().map(|group| group.borrow())
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &FibGroup> {
+        unsafe { self.0.iter().map(|group| &*group.get()) }
     }
 }
 
@@ -252,17 +262,14 @@ pub mod tests {
     use net::interface::InterfaceIndex;
 
     use crate::fib::fibgroupstore::{FibError, FibGroupStore, FibRoute};
-    use crate::fib::fibobjects::EgressObject;
-    use crate::fib::fibobjects::FibEntry;
-    use crate::fib::fibobjects::FibGroup;
-    use crate::fib::fibobjects::PktInstruction;
+    use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
     use crate::rib::nexthop::NhopKey;
 
     use std::net::IpAddr;
     use std::str::FromStr;
 
     // builds fib entry with single egress instruction
-    fn build_fib_entry_egress(ifindex: u32, address: &str, ifname: &str) -> FibEntry {
+    pub(crate) fn build_fib_entry_egress(ifindex: u32, address: &str, ifname: &str) -> FibEntry {
         let addr = Some(IpAddr::from_str(address).unwrap());
         let ifname = Some(ifname.to_string());
         let inst = PktInstruction::Egress(EgressObject::new(
@@ -272,8 +279,8 @@ pub mod tests {
         ));
         FibEntry::with_inst(inst)
     }
-    // builds fibgroup with a single entry
-    fn build_fibgroup(entries: &[FibEntry]) -> FibGroup {
+    // builds a fibgroup with several entries
+    pub(crate) fn build_fibgroup(entries: &[FibEntry]) -> FibGroup {
         let mut fibgroup = FibGroup::new();
         fibgroup.entries.extend_from_slice(entries);
         fibgroup
@@ -292,17 +299,16 @@ pub mod tests {
         let nhkey = NhopKey::with_address(&IpAddr::from_str("7.0.0.1").unwrap());
 
         // store the fibgroup
-        unsafe {
-            store.add_mod_group(&nhkey, fibgroup);
-        }
+        store.add_mod_group(&nhkey, fibgroup);
 
         {
             // retrieve the fibgrop from the store from its key
+            // (scoped since we mutate the store later on)
             let stored = store.get(&nhkey).unwrap();
             assert_eq!(stored.len(), 1);
             assert_eq!(stored.entries[0].len(), 1);
             assert_eq!(stored.entries[0], entry);
-            println!("{stored:#?}");
+            println!("{stored}");
         }
 
         // create fibroute to have a shared ref to that fibgroup
@@ -311,26 +317,26 @@ pub mod tests {
         assert_eq!(fibroute.0.len(), 1);
         assert_eq!(fibroute.len(), 1);
 
+        // create a second fibroute object sharing the same fibgroup
         let mut fibroute2 = FibRoute::new();
         fibroute2.add_fibgroup_ref(store.get_ref(&nhkey).unwrap());
 
         // mutate/replace fibgroup, without modifying fibroute
         let entry2 = build_fib_entry_egress(100, "10.0.2.2", "eth1");
         let fibgroup = FibGroup::with_entry(entry2.clone());
-        unsafe {
-            store.add_mod_group(&nhkey, fibgroup);
-        }
+        store.add_mod_group(&nhkey, fibgroup);
 
         // check that the fibroute has been internally modified
-        let found1 = fibroute.get_fibentry(0).unwrap();
-        let found2 = fibroute2.get_fibentry(0).unwrap();
+        let found1 = fibroute.get_fibentry(0);
+        let found2 = fibroute2.get_fibentry(0);
         assert_eq!(*found1, *found2);
         assert_eq!(*found1, entry2);
-        println!("hit:\n{found1}");
+
+        println!("updated fibgroup entry:\n{found1}");
     }
 
     #[test]
-    fn test_multi_fibgroup_route_entry_selection() {
+    fn test_fibgroup_multigroup_route_entry_selection() {
         // create multiple fib entries
         let e1 = build_fib_entry_egress(1, "10.0.1.1", "eth1");
         let e2 = build_fib_entry_egress(2, "10.0.2.1", "eth2");
@@ -347,7 +353,7 @@ pub mod tests {
         let g3 = build_fibgroup(&[e7.clone()]);
         let g4 = build_fibgroup(&[e8.clone()]);
 
-        // create a dummy nhop key whose contents do not matter other than for storing each fibgroup
+        // create dummy nhop keys whose contents do not matter other than for storing each fibgroup
         let key1 = NhopKey::with_address(&IpAddr::from_str("8.0.0.1").unwrap());
         let key2 = NhopKey::with_address(&IpAddr::from_str("8.0.0.2").unwrap());
         let key3 = NhopKey::with_address(&IpAddr::from_str("8.0.0.3").unwrap());
@@ -355,12 +361,11 @@ pub mod tests {
 
         // create a fibgroup store and store the fibgroups with the respective nhop keys
         let mut store = FibGroupStore::new();
-        unsafe {
-            store.add_mod_group(&key1, g1.clone());
-            store.add_mod_group(&key2, g2.clone());
-            store.add_mod_group(&key3, g3.clone());
-            store.add_mod_group(&key4, g4.clone());
-        }
+        store.add_mod_group(&key1, g1.clone());
+        store.add_mod_group(&key2, g2.clone());
+        store.add_mod_group(&key3, g3.clone());
+        store.add_mod_group(&key4, g4.clone());
+
         assert_eq!(store.len(), 4 + 1); // +1 is for drop group
         println!("{store:#?}");
 
@@ -379,15 +384,16 @@ pub mod tests {
         assert_eq!(fibroute.len(), g1.len() + g2.len() + g3.len() + g4.len());
 
         // select one entry in the fibroute by index and check that it is correct
-        assert_eq!(fibroute.get_fibentry(0).map(|e| e.clone()), Some(e1));
-        assert_eq!(fibroute.get_fibentry(1).map(|e| e.clone()), Some(e2));
-        assert_eq!(fibroute.get_fibentry(2).map(|e| e.clone()), Some(e3));
-        assert_eq!(fibroute.get_fibentry(3).map(|e| e.clone()), Some(e4));
-        assert_eq!(fibroute.get_fibentry(4).map(|e| e.clone()), Some(e5));
-        assert_eq!(fibroute.get_fibentry(5).map(|e| e.clone()), Some(e6));
-        assert_eq!(fibroute.get_fibentry(6).map(|e| e.clone()), Some(e7));
-        assert_eq!(fibroute.get_fibentry(7).map(|e| e.clone()), Some(e8));
-        assert!(fibroute.get_fibentry(8).is_none());
+        // this route has all of the fibgroups
+        assert_eq!(&*fibroute.get_fibentry(0), &e1);
+        assert_eq!(&*fibroute.get_fibentry(0), &e1);
+        assert_eq!(&*fibroute.get_fibentry(1), &e2);
+        assert_eq!(&*fibroute.get_fibentry(2), &e3);
+        assert_eq!(&*fibroute.get_fibentry(3), &e4);
+        assert_eq!(&*fibroute.get_fibentry(4), &e5);
+        assert_eq!(&*fibroute.get_fibentry(5), &e6);
+        assert_eq!(&*fibroute.get_fibentry(6), &e7);
+        assert_eq!(&*fibroute.get_fibentry(7), &e8);
 
         // attempt to remove fibgroups: none should be removed from the store
         store.del(&key1);
@@ -442,12 +448,10 @@ pub mod tests {
 
         // create a fibgroup store and store the fibgroups with the respective nhop keys
         let mut store = FibGroupStore::new();
-        unsafe {
-            store.add_mod_group(&key1, g1.clone());
-            store.add_mod_group(&key2, g2.clone());
-            store.add_mod_group(&key3, g3.clone());
-            store.add_mod_group(&key4, g4.clone());
-        }
+        store.add_mod_group(&key1, g1.clone());
+        store.add_mod_group(&key2, g2.clone());
+        store.add_mod_group(&key3, g3.clone());
+        store.add_mod_group(&key4, g4.clone());
         assert_eq!(store.len(), 4 + 1); // +1 is for drop group
 
         // create a FibRoute from the keys
@@ -458,16 +462,18 @@ pub mod tests {
         .unwrap();
 
         assert_eq!(fibroute.0.len(), 4);
-        assert_eq!(*fibroute.0[0].borrow(), *store.get(&key1).unwrap());
-        assert_eq!(*fibroute.0[1].borrow(), *store.get(&key2).unwrap());
-        assert_eq!(*fibroute.0[2].borrow(), *store.get(&key3).unwrap());
-        assert_eq!(*fibroute.0[3].borrow(), *store.get(&key4).unwrap());
+        assert_eq!(unsafe { &*fibroute.0[0].get() }, store.get(&key1).unwrap());
+        assert_eq!(unsafe { &*fibroute.0[1].get() }, store.get(&key2).unwrap());
+        assert_eq!(unsafe { &*fibroute.0[2].get() }, store.get(&key3).unwrap());
+        assert_eq!(unsafe { &*fibroute.0[3].get() }, store.get(&key4).unwrap());
+
         println!("{fibroute:#?}");
 
         // Attempt to create a Fibroute with a key for which no fibgroup exists: should fail
         let key = NhopKey::with_address(&IpAddr::from_str("9.0.0.1").unwrap());
-        let fibroute = FibRoute::from_nhopkeys(&store, &[key1, key2, key]);
-        assert!(matches!(fibroute, Err(FibError::NoFibGroup(ref key))));
+        println!("Creating fibroute from non-registered nhop key {key}...");
+        let fibroute = FibRoute::from_nhopkeys(&store, &[key1, key2, key.clone()]);
         println!("{fibroute:#?}");
+        assert!(fibroute.is_err_and(|e| e == FibError::NoFibGroup(key)));
     }
 }

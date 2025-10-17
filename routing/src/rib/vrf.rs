@@ -438,9 +438,9 @@ impl Vrf {
         if let Some(fibw) = &mut self.fibw {
             let mut count = 0;
             for nhop in changed {
-                let fibgroup = &*nhop.fibgroup.borrow();
+                let fibgroup = &nhop.fibgroup.borrow();
                 debug!("Updating fib group for nhop {}...", nhop.key);
-                fibw.register_fibgroup(&nhop.as_ref().key, fibgroup, false);
+                fibw.register_fibgroup(&nhop.key, fibgroup, false);
                 count += 1;
             }
             if count > 0 {

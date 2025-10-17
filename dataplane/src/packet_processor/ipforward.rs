@@ -82,26 +82,21 @@ impl IpForwarder {
             return;
         };
 
-        /* Perform lookup in the fib */
+        /* Perform lookup in the fib. This always returns a FibEntry */
         let (prefix, fibentry) = fib.lpm_entry_prefix(packet);
-        if let Some(fibentry) = &fibentry {
-            debug!("{nfi}: Packet hits prefix {prefix} in fib {fibkey}");
-            debug!("{nfi}: Entry is:\n{fibentry}");
+        debug!("{nfi}: Packet hits prefix {prefix} in fib {fibkey}");
+        debug!("{nfi}: Entry is:\n{fibentry}");
 
-            /* decrement packet TTL, unless the packet is for us */
-            if !fibentry.is_iplocal() {
-                Self::decrement_ttl(packet, dst);
-                if packet.is_done() {
-                    debug!("TTL/Hop-count limit exceeded!");
-                    return;
-                }
+        /* decrement packet TTL, unless the packet is for us */
+        if !fibentry.is_iplocal() {
+            Self::decrement_ttl(packet, dst);
+            if packet.is_done() {
+                debug!("TTL/Hop-count limit exceeded!");
+                return;
             }
-            /* execute instructions according to FIB */
-            self.packet_exec_instructions(packet, fibentry, fib.get_vtep());
-        } else {
-            debug!("Could not get fib group for {prefix}. Will drop packet...");
-            packet.done(DoneReason::InternalFailure);
         }
+        /* execute instructions according to FIB */
+        self.packet_exec_instructions(packet, fibentry, fib.get_vtep());
     }
 
     /// Execute a local packet instruction
