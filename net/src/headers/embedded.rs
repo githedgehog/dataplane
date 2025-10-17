@@ -18,6 +18,7 @@ use crate::udp::Udp;
 use crate::udp::{TruncatedUdp, UdpChecksum, UdpPort};
 use arrayvec::ArrayVec;
 use core::fmt::Debug;
+use derive_builder::Builder;
 use std::num::NonZero;
 use tracing::debug;
 
@@ -35,7 +36,8 @@ pub enum EmbeddedIpVersion {
 // bits of the IP payload. Section 4.3.2.3 of RFC 1812 recommends an ICMP Error originator include
 // as much of the original packet as possible in the payload, as long as the length of the resulting
 // ICMP datagram does not exceed 576 bytes.
-#[derive(Debug, PartialEq, Eq, Clone, Default)]
+#[derive(Debug, PartialEq, Eq, Clone, Default, Builder)]
+#[builder(default)]
 pub struct EmbeddedHeaders {
     net: Option<Net>,
     net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,

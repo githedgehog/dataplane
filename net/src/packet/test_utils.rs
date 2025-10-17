@@ -12,10 +12,12 @@
 #![allow(missing_docs)]
 
 use crate::buffer::TestBuffer;
+use crate::checksum::Checksum;
 use crate::eth::Eth;
 use crate::eth::ethtype::EthType;
 use crate::eth::mac::{DestinationMac, Mac, SourceMac};
-use crate::headers::{HeadersBuilder, Net, Transport};
+use crate::headers::{EmbeddedHeadersBuilder, EmbeddedTransport, HeadersBuilder, Net, Transport};
+use crate::icmp4::Icmp4;
 use crate::ip::NextHeader;
 use crate::ipv4::Ipv4;
 use crate::ipv4::addr::UnicastIpv4Addr;
@@ -23,11 +25,14 @@ use crate::ipv6::Ipv6;
 use crate::ipv6::addr::UnicastIpv6Addr;
 use crate::packet::{InvalidPacket, Packet};
 use crate::parse::DeParse;
-use crate::tcp::Tcp;
+use crate::tcp::{Tcp, TcpChecksumPayload, TruncatedTcp};
 use crate::udp::Udp;
 use crate::udp::port::UdpPort;
+use etherparse::icmpv4::DestUnreachableHeader;
+use etherparse::{Icmpv4Header, Icmpv4Type};
 use std::default::Default;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::num::NonZero;
 use std::str::FromStr;
 
 #[must_use]
@@ -198,6 +203,95 @@ pub fn build_test_ipv6_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPack
 
     let headers = headers.build().unwrap();
     let mut buffer: TestBuffer = TestBuffer::new();
+    headers.deparse(buffer.as_mut()).unwrap();
+    Packet::new(buffer)
+}
+
+#[must_use]
+/// Builds a test `ICMPv4` Destination Unreachable packet with embedded headers.
+///
+/// The outer packet is an IPv4 packet with the specified source and destination addresses.
+/// The Ethernet source and destination MAC addresses are `0x02:00:00:00:00:01` and `0x02:00:00:00:00:02`,
+/// respectively.
+///
+/// The embedded (inner) packet is a TCP packet with the specified source and destination IP addresses
+/// and ports. The inner TCP packet has a full (not-truncated) header, but an empty payload.
+pub fn build_test_icmpv4_destination_unreachable_packet(
+    outer_src_ip: Ipv4Addr,
+    outer_dst_ip: Ipv4Addr,
+    inner_src_ip: Ipv4Addr,
+    inner_dst_ip: Ipv4Addr,
+    inner_src_port: NonZero<u16>,
+    inner_dst_port: NonZero<u16>,
+) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+    let mut headers = HeadersBuilder::default();
+
+    // Ethernet
+    headers.eth(Some(Eth::new(
+        SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
+        DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
+        EthType::IPV4,
+    )));
+
+    // Inner transport
+    let mut inner_transport = EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(Tcp::default()));
+    inner_transport.set_source(inner_src_port);
+    inner_transport.set_destination(inner_dst_port);
+
+    // Inner IPv4
+    let mut inner_ipv4 = Ipv4::default();
+    inner_ipv4.set_source(UnicastIpv4Addr::new(inner_src_ip).unwrap());
+    inner_ipv4.set_destination(inner_dst_ip);
+    inner_ipv4.set_ttl(4);
+    inner_ipv4.set_next_header(NextHeader::TCP);
+    inner_ipv4
+        .set_payload_len(inner_transport.size().get())
+        .unwrap();
+    inner_ipv4.update_checksum(&()).unwrap();
+
+    // ICMP
+    let icmp = Icmp4(Icmpv4Header::new(Icmpv4Type::DestinationUnreachable(
+        DestUnreachableHeader::Network,
+    )));
+
+    // Outer IPv4
+    let mut outer_ipv4 = Ipv4::default();
+    outer_ipv4.set_source(UnicastIpv4Addr::new(outer_src_ip).unwrap());
+    outer_ipv4.set_destination(outer_dst_ip);
+    outer_ipv4.set_ttl(8);
+    outer_ipv4.set_next_header(NextHeader::ICMP);
+    outer_ipv4
+        .set_payload_len(icmp.size().get() + inner_ipv4.size().get() + inner_transport.size().get())
+        .unwrap();
+    outer_ipv4.update_checksum(&()).unwrap();
+    let outer_net = Net::Ipv4(outer_ipv4);
+
+    // Adjustments
+    let inner_net = Net::Ipv4(inner_ipv4);
+    if let EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(ref mut tcp)) = inner_transport {
+        tcp.update_checksum(&TcpChecksumPayload::new(&inner_net, &[]))
+            .unwrap();
+    }
+
+    // Embedded headers
+    let mut embedded_headers = EmbeddedHeadersBuilder::default();
+    embedded_headers.net(Some(inner_net));
+    embedded_headers.transport(Some(inner_transport));
+    let embedded_headers = embedded_headers.build().unwrap();
+
+    // More adjustments
+    let mut icmp_transport = Transport::Icmp4(icmp);
+    icmp_transport.update_checksum(&outer_net, Some(&embedded_headers), []);
+
+    // Headers
+    headers.net(Some(outer_net));
+    headers.transport(Some(icmp_transport));
+    headers.embedded_ip(Some(embedded_headers));
+    let headers = headers.build().unwrap();
+
+    // Packet
+    let data = vec![0u8; headers.size().get() as usize];
+    let mut buffer = TestBuffer::from_raw_data(&data);
     headers.deparse(buffer.as_mut()).unwrap();
     Packet::new(buffer)
 }

@@ -26,12 +26,15 @@ mod tests {
 
     use net::buffer::PacketBufferMut;
     use net::eth::mac::Mac;
-    use net::headers::{TryHeaders, TryHeadersMut, TryIpv4, TryIpv4Mut};
-    use net::packet::test_utils::build_test_ipv4_packet;
+    use net::headers::{TryHeaders, TryHeadersMut, TryInnerIpv4, TryIpv4, TryIpv4Mut};
+    use net::packet::test_utils::{
+        build_test_icmpv4_destination_unreachable_packet, build_test_ipv4_packet,
+    };
     use net::packet::{Packet, VpcDiscriminant};
     use net::vxlan::Vni;
     use pipeline::NetworkFunction;
     use std::net::Ipv4Addr;
+    use std::num::NonZero;
     use std::str::FromStr;
     use tracing_test::traced_test;
 
@@ -253,6 +256,45 @@ mod tests {
         println!("L3 header: {hdr_out_reply:?}");
         assert_eq!(hdr_out_reply.source().inner(), orig_dst_ip);
         assert_eq!(hdr_out_reply.destination(), orig_src_ip);
+    }
+
+    #[test]
+    fn test_nat_icmp_error_msg_stateless_44() {
+        let nat_tables = build_context();
+        let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
+        tablesw.update_nat_tables(nat_tables);
+
+        // Imaginary request was:
+        // (1.1.0.1 -> 5.5.0.1) translated as (2.1.0.1 -> 10.0.0.1)
+        //
+        // Reply (this packet):
+        // - Destination unreachable contains inner packet with (2.1.0.1 -> 10.0.0.1)
+        // - Outer IP header: (10.0.0.1 -> 2.1.0.1) should be translated as (5.5.0.1 -> 1.1.0.1)
+        // - Inner IP header should be translated back to (1.1.0.1 -> 5.5.0.1)
+
+        let mut packet = build_test_icmpv4_destination_unreachable_packet(
+            addr_v4("10.0.0.1"),
+            addr_v4("2.1.0.1"),
+            addr_v4("2.1.0.1"),
+            addr_v4("10.0.0.1"),
+            NonZero::new(1234).unwrap(),
+            NonZero::new(5678).unwrap(),
+        )
+        .unwrap();
+
+        packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(200)));
+        packet.get_meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(vni(100)));
+        packet.get_meta_mut().set_nat(true);
+
+        let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+        assert_eq!(packets_out.len(), 1);
+
+        let outer_ip = packets_out[0].try_ipv4().unwrap();
+        assert_eq!(outer_ip.source().inner(), addr_v4("5.5.0.1"));
+        assert_eq!(outer_ip.destination(), addr_v4("1.1.0.1"));
+        let inner_ip = packets_out[0].try_inner_ipv4().unwrap();
+        assert_eq!(inner_ip.source().inner(), addr_v4("1.1.0.1"));
+        assert_eq!(inner_ip.destination(), addr_v4("5.5.0.1"));
     }
 
     #[allow(clippy::too_many_lines)]
