@@ -229,11 +229,14 @@ where
             return;
         }
 
-        // filter out all unusable readers
+        // filter out all unusable readers from iterator
         let iterator = iterator.filter(|(_key, factory, _id)| {
             let rhandle = factory.handle();
             !rhandle.was_dropped()
         });
+
+        // split the iterator in two: primaries and aliases
+        let (primaries, aliases): (Vec<_>, Vec<_>) = iterator.partition(|(key, _, id)| key == id);
 
         // update local cache, consuming the iterator
         thread_local.with(|local| {
@@ -242,22 +245,41 @@ where
             // purge all unusable readers
             handles.retain(|_key, entry| !entry.rhandle.was_dropped());
 
-            // update cache from iterator if: 1) cache does not have them or 2) version changed
-            // FIXME: here aliases store an extra handle instead of reusing the one for key == identity
-            // Will fix that later.
-            for (key, factory, id) in iterator {
+            // update primaries first and store an Rc of the latest rhandles in a temporary map
+            let mut temporary = HashMap::new();
+            for (key, factory, id) in primaries {
                 handles
                     .entry(key.clone())
                     .and_modify(|e| {
                         if e.version != version {
-                            *e =
-                                ReadHandleEntry::new(id.clone(), Rc::new(factory.handle()), version)
+                            *e = ReadHandleEntry::new(
+                                id.clone(),
+                                Rc::new(factory.handle()),
+                                version,
+                            );
                         }
+                        temporary.insert(id.clone(), Rc::clone(&e.rhandle));
                     })
                     .or_insert_with(|| {
-                        ReadHandleEntry::new(id.clone(), Rc::new(factory.handle()), version)
+                        let rhandle = Rc::new(factory.handle());
+                        temporary.insert(key, Rc::clone(&rhandle));
+                        ReadHandleEntry::new(id, rhandle, version)
                     });
             }
+            // update entries for aliases to reuse primaries' handles, using the temporary map
+            for (key, _factory, id) in aliases {
+                if let Some(rhandle) = temporary.get(&id) {
+                    handles.insert(
+                        key.clone(),
+                        ReadHandleEntry::new(id, Rc::clone(rhandle), version),
+                    );
+                } else {
+                    // we should only get here if we got a key (alias) and could not find
+                    // the primary object. This would be a provider bug.
+                    // TODO: determine what to do here
+                }
+            }
+
             *local.refresh_version.borrow_mut() = version;
         });
     }
