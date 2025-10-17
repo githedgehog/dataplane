@@ -43,7 +43,7 @@ impl FibTable {
     }
     /// Delete a `Fib`, by unregistering a `FibReaderFactory` for it
     fn del_fib(&mut self, id: &FibKey) {
-        info!("Unregistering Fib id {id} from the FibTable");
+        info!("Unregistering Fib with id {id} from the FibTable");
         self.entries.remove(id);
     }
     /// Register an existing `Fib` with a given [`Vni`].
@@ -52,7 +52,7 @@ impl FibTable {
         if let Some(entry) = self.get_entry(id) {
             self.entries
                 .insert(FibKey::from_vni(vni), Arc::clone(entry));
-            info!("Registering Fib with id {id} with new vni {vni} in FibTable");
+            info!("Registering Fib with id {id} in the FibTable with vni {vni}");
         } else {
             error!("Failed to register Fib {id} with vni {vni}: no fib with id {id} found");
         }
@@ -60,7 +60,7 @@ impl FibTable {
     /// Remove any entry keyed by a [`Vni`]
     fn unregister_vni(&mut self, vni: Vni) {
         let key = FibKey::from_vni(vni);
-        info!("Unregistered Fib with vni {vni} from the FibTable");
+        info!("Unregistered key = {key} from the FibTable");
         self.entries.remove(&key);
     }
 

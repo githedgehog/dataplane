@@ -267,7 +267,7 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     pub fn set_vni(&mut self, vni: Vni) {
         self.vni = Some(vni);
-        debug!("Associated vni {vni} to Vrf '{}'", self.name);
+        debug!("Set vni {vni} to Vrf {} ({})", self.vrfid, self.name);
     }
 
     /////////////////////////////////////////////////////////////////////////

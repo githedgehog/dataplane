@@ -14,6 +14,8 @@ use left_right::ReadHandleFactory;
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
 use net::interface::InterfaceIndex;
 
+use tracing::debug;
+
 enum IfTableChange {
     Add(RouterInterfaceConfig),
     Mod(RouterInterfaceConfig),
@@ -169,6 +171,7 @@ impl IfTableWriter {
         self.0.publish();
     }
     pub fn detach_interfaces_from_vrf(&mut self, vrfid: VrfId) {
+        debug!("Scheduling detach of interfaces from vrf {vrfid}");
         self.0
             .append(IfTableChange::DetachFromVrf(FibKey::Id(vrfid)));
         self.0.publish();
