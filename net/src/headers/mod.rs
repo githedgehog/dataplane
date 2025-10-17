@@ -7,6 +7,7 @@
 use crate::checksum::Checksum;
 use crate::eth::ethtype::EthType;
 use crate::eth::{Eth, EthError};
+use crate::icmp_any::{IcmpAny, IcmpAnyMut};
 use crate::icmp4::Icmp4;
 use crate::icmp6::{Icmp6, Icmp6ChecksumPayload};
 use crate::impl_from_for_enum;
@@ -853,6 +854,36 @@ impl TryIcmp6Mut for Headers {
     }
 }
 
+// ICMP version-agnostic traits
+
+pub trait TryIcmpAny {
+    fn try_icmp_any(&self) -> Option<IcmpAny<'_>>;
+}
+
+pub trait TryIcmpAnyMut {
+    fn try_icmp_any_mut(&mut self) -> Option<IcmpAnyMut<'_>>;
+}
+
+impl TryIcmpAny for Headers {
+    fn try_icmp_any(&self) -> Option<IcmpAny<'_>> {
+        match &self.transport {
+            Some(Transport::Icmp4(header)) => Some(IcmpAny::V4(header)),
+            Some(Transport::Icmp6(header)) => Some(IcmpAny::V6(header)),
+            _ => None,
+        }
+    }
+}
+
+impl TryIcmpAnyMut for Headers {
+    fn try_icmp_any_mut(&mut self) -> Option<IcmpAnyMut<'_>> {
+        match &mut self.transport {
+            Some(Transport::Icmp4(header)) => Some(IcmpAnyMut::V4(header)),
+            Some(Transport::Icmp6(header)) => Some(IcmpAnyMut::V6(header)),
+            _ => None,
+        }
+    }
+}
+
 // Generic Transport traits
 
 pub trait TryTransport {
@@ -955,6 +986,7 @@ pub trait AbstractHeaders:
     + TryUdp
     + TryIcmp4
     + TryIcmp6
+    + TryIcmpAny
     + TryTransport
     + TryVxlan
     + DeParse
@@ -971,6 +1003,7 @@ impl<T> AbstractHeaders for T where
         + TryUdp
         + TryIcmp4
         + TryIcmp6
+        + TryIcmpAny
         + TryTransport
         + TryVxlan
         + DeParse
@@ -987,6 +1020,7 @@ pub trait AbstractHeadersMut:
     + TryUdpMut
     + TryIcmp4Mut
     + TryIcmp6Mut
+    + TryIcmpAnyMut
     + TryTransportMut
     + TryVxlanMut
 {
@@ -1002,6 +1036,7 @@ impl<T> AbstractHeadersMut for T where
         + TryUdpMut
         + TryIcmp4Mut
         + TryIcmp6Mut
+        + TryIcmpAnyMut
         + TryTransportMut
         + TryVxlanMut
 {
@@ -1174,6 +1209,24 @@ where
 {
     fn try_icmp6_mut(&mut self) -> Option<&mut Icmp6> {
         self.headers_mut().try_icmp6_mut()
+    }
+}
+
+impl<T> TryIcmpAny for T
+where
+    T: TryHeaders,
+{
+    fn try_icmp_any(&self) -> Option<IcmpAny<'_>> {
+        self.headers().try_icmp_any()
+    }
+}
+
+impl<T> TryIcmpAnyMut for T
+where
+    T: TryHeadersMut,
+{
+    fn try_icmp_any_mut(&mut self) -> Option<IcmpAnyMut<'_>> {
+        self.headers_mut().try_icmp_any_mut()
     }
 }
 
