@@ -3,29 +3,35 @@
 
 //! Fib module tests
 
-#[cfg(test)]
-pub mod tests {
+#![cfg(test)]
+use concurrency::concurrency_mode;
+
+#[concurrency_mode(std)]
+mod tests {
     use crate::fib::fibobjects::FibEntry;
     use crate::fib::fibobjects::FibGroup;
     use crate::fib::fibobjects::PktInstruction;
+    use crate::fib::fibtable::FibTableWriter;
+    use crate::fib::fibtype::FibKey;
+    use crate::fib::fibtype::FibWriter;
+    use crate::rib::nexthop::NhopKey;
+
     use net::ip::NextHeader;
     use net::packet::Packet;
     use net::packet::test_utils::build_test_ipv4_packet_with_transport;
     use net::udp::UdpPort;
     use net::{buffer::TestBuffer, interface::InterfaceIndex};
 
-    use crate::fib::fibtype::FibKey;
-    use crate::fib::fibtype::FibWriter;
-    use crate::rib::nexthop::NhopKey;
-    use lpm::prefix::IpAddr;
-    use lpm::prefix::Prefix;
+    use lpm::prefix::{IpAddr, Prefix};
 
     use rand::Rng;
     use rand::rngs::ThreadRng;
     use std::str::FromStr;
     use std::sync::Arc;
     use std::sync::atomic::AtomicU16;
+    use std::thread;
     use std::thread::Builder;
+    use std::time::{Duration, Instant};
     use std::{collections::HashMap, collections::HashSet, sync::atomic::Ordering};
 
     use crate::fib::fibgroupstore::tests::build_fib_entry_egress;
@@ -102,6 +108,7 @@ pub mod tests {
     // Test the concurrency of a SINGLE fib. NUM_WORKERS workers perform LPM lookups on a single FIB for
     // a test packet while another thread fuzzes the route to forward the packet, by removing the route
     // or aggressively changing the fibgroup (and fib entries) used for the prefix of that route.
+
     #[test]
     fn test_concurrency_fib() {
         const NUM_PACKETS: u64 = 1000_00;
@@ -206,7 +213,6 @@ pub mod tests {
 
             // every 10 loops replace route and fibgroup
             if updates % 10 == 0 {
-                //fibw.unregister_fibgroup(&nhkey.clone(), false);
                 fibw.register_fibgroup(&nhkey, fibgroup, false);
                 fibw.add_fibroute(prefix, vec![nhkey.clone()], false);
                 route_replaces += 1;
@@ -221,7 +227,7 @@ pub mod tests {
             // iterations
             updates += 1;
 
-            // stop when all worker are done
+            // stop when all workers are done
             if done.load(Ordering::Relaxed) == NUM_WORKERS {
                 println!("All workers finished!");
                 break;
@@ -232,6 +238,132 @@ pub mod tests {
         println!("route adds:      {route_adds}");
         println!("route replaces:  {route_replaces}");
         println!("route deletions: {route_deletions}");
+    }
+
+    // Test the concurrency of a SINGLE fib within a FIBTABLE. NUM_WORKERS workers perform LPM lookups
+    // on a single FIB for a test packet while another thread fuzzes the route to forward the packet, by removing the route
+    // or aggressively changing the fibgroup (and fib entries) used for the prefix of that route. The fuzzer in this
+    // test also removes the FIB and adds it again. The workers use a thread-local cache to access the FIB.
+    #[test]
+    fn test_concurrency_fibtable() {
+        // number of threads looking up fibtable
+        const NUM_WORKERS: u16 = 7;
+        const NUM_PACKETS: u64 = 1_000_000;
+        const TENTH: u64 = NUM_PACKETS / 10;
+
+        // create fibtable (empty, without any fib)
+        let (mut fibtw, fibtr) = FibTableWriter::new();
+        let fibtrfactory = fibtr.factory();
+
+        // prefix to be hit by packets
+        let prefix = Prefix::from("192.168.1.0/24");
+
+        // shared counter of workers that finished
+        let done = Arc::new(AtomicU16::new(0));
+
+        let vrfid = 1;
+
+        /* Spawn workers: each has its own reader for the fibtable */
+        for n in 1..=NUM_WORKERS {
+            let fibtr = fibtrfactory.handle();
+            let worker_done = done.clone();
+
+            Builder::new()
+                .name(format!("WORKER-{n}"))
+                .spawn(move || {
+                    let mut rng = rand::rng();
+                    let mut packet = test_packet();
+                    let mut prefix_hits: u64 = 0;
+                    let mut other_hits: u64 = 0;
+                    let mut nofibs: u64 = 0;
+                    let mut nofib_enter: u64 = 0;
+                    loop {
+                        mutate_packet(&mut rng, &mut packet);
+                        if let Ok(fib) = fibtr.get_fib_reader(FibKey::Id(vrfid)) {
+                            if let Some(fib) = fib.enter() {
+                                let (hit, _fibentry) = fib.lpm_entry_prefix(&packet);
+                                if hit == prefix {
+                                    prefix_hits += 1;
+                                    if prefix_hits % TENTH == 0 {
+                                        println!("Worker {n} is {} % done", prefix_hits * 100 / NUM_PACKETS);
+                                    }
+
+                                    if prefix_hits >= NUM_PACKETS {
+                                        println!("=== Worker {n} finished ====");
+                                        println!("Stats:");
+                                        println!("  {prefix_hits:>8} packets hit {prefix}");
+                                        println!("  {other_hits:>8} packets hit other prefix (0.0.0.0/0)");
+                                        println!("  {nofibs:>8} packets found no fib");
+                                        println!("  {nofib_enter:>8} packets found fib but could not enter");
+                                        worker_done.fetch_add(1, Ordering::Relaxed);
+                                        break;
+                                    }
+                                } else {
+                                    other_hits += 1;
+                                }
+                            } else {
+                                nofib_enter += 1;
+                            }
+                        } else {
+                            nofibs += 1;
+                        }
+                    }
+                })
+                .unwrap();
+        }
+
+        /*****************************************************************/
+        /* main thread (fuzzer): adds / deletes route / fibgroup and fib */
+        /*****************************************************************/
+        let nhkey = NhopKey::with_address(&IpAddr::from_str("7.0.0.1").unwrap());
+        let mut rng = rand::rng();
+        let randomrouter = RandomRouter::load();
+        let mut updates = 0u64;
+
+        let mut fibw = Some(fibtw.add_fib(vrfid, None));
+        let fibgroup = randomrouter.random_pick_fibgroup(&mut rng);
+        if let Some(fibw) = &mut fibw {
+            fibw.register_fibgroup(&nhkey, fibgroup, true);
+            fibw.add_fibroute(prefix, vec![nhkey.clone()], true);
+        }
+        let start = Instant::now();
+        loop {
+            if fibw.is_none() {
+                fibw = Some(fibtw.add_fib(vrfid, None));
+            }
+            if let Some(fibw) = &mut fibw {
+                if updates % 100 == 0 {
+                    let fibgroup = randomrouter.random_pick_fibgroup(&mut rng);
+                    fibw.register_fibgroup(&nhkey, fibgroup, true);
+                    fibw.add_fibroute(prefix, vec![nhkey.clone()], true);
+                }
+                if updates % 150 == 0 {
+                    fibw.del_fibroute(prefix);
+                    fibw.publish();
+                }
+            }
+
+            if updates % 50 == 0 && fibw.is_some() {
+                fibtw.del_fib(1, None);
+                thread::sleep(Duration::from_millis(15));
+                if true {
+                    // fib gets deleted here
+                    let fib = fibw.take();
+                    fib.unwrap().destroy();
+                }
+            }
+
+            // iterations
+            updates += 1;
+
+            // stop when all workers are done
+            if done.load(Ordering::Relaxed) == NUM_WORKERS {
+                println!("All workers finished!");
+                break;
+            }
+        }
+        let duration = start.elapsed();
+        println!("Test duration: {:?}", duration);
     }
 
     // Tests fib reader utilities returning guards
