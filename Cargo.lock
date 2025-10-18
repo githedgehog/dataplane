@@ -1094,6 +1094,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-left-right-tlcache"
+version = "0.1.0"
+dependencies = [
+ "ahash 0.8.10",
+ "left-right",
+ "serial_test",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "dataplane-lpm"
 version = "0.1.0"
 dependencies = [
