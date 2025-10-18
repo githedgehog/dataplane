@@ -1263,6 +1263,7 @@ dependencies = [
  "bytes",
  "chrono",
  "dataplane-cli",
+ "dataplane-concurrency",
  "dataplane-config",
  "dataplane-left-right-tlcache",
  "dataplane-lpm",
