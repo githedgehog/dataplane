@@ -7,9 +7,9 @@
 
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 use left_right_tlcache::Identity;
-use std::hash::Hash;
 use std::net::IpAddr;
 use std::rc::Rc;
+use std::{hash::Hash, sync::atomic::AtomicBool};
 
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
@@ -59,6 +59,7 @@ pub struct Fib {
     routesv6: PrefixMapTrie<Ipv6Prefix, FibRoute>,
     groupstore: FibGroupStore,
     vtep: Vtep,
+    valid: AtomicBool,
 }
 impl Hash for Fib {
     // We implement explicitly `std::hash::Hash` for `Fib` instead of deriving it because:
@@ -82,6 +83,7 @@ impl Default for Fib {
             routesv6: PrefixMapTrie::create(),
             groupstore: FibGroupStore::new(),
             vtep: Vtep::new(),
+            valid: AtomicBool::new(true),
         };
         // default route
         let route = FibRoute::with_fibgroup(fib.groupstore.get_drop_fibgroup_ref());
@@ -292,6 +294,7 @@ enum FibChange {
     AddFibRoute((Prefix, Vec<NhopKey>)),
     DelFibRoute(Prefix),
     SetVtep(Vtep),
+    Invalidate,
 }
 
 impl Absorb<FibChange> for Fib {
@@ -306,6 +309,9 @@ impl Absorb<FibChange> for Fib {
             FibChange::AddFibRoute((prefix, keys)) => self.build_add_fibroute(*prefix, keys),
             FibChange::DelFibRoute(prefix) => self.del_fibroute(*prefix),
             FibChange::SetVtep(vtep) => self.set_vtep(vtep),
+            FibChange::Invalidate => {
+                self.valid.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
         }
     }
     fn sync_with(&mut self, first: &Self) {
@@ -336,10 +342,6 @@ impl FibWriter {
     }
     pub fn enter(&self) -> Option<ReadGuard<'_, Fib>> {
         self.0.enter()
-    }
-    #[must_use]
-    pub fn get_id(&self) -> Option<FibKey> {
-        self.0.enter().map(|fib| fib.get_id())
     }
     pub fn register_fibgroup(&mut self, key: &NhopKey, fibgroup: &FibGroup, publish: bool) {
         self.0
@@ -383,6 +385,12 @@ impl FibWriter {
     pub fn as_fibreader(&self) -> FibReader {
         FibReader::new(self.0.clone())
     }
+    pub fn destroy(mut self) {
+        self.0.append(FibChange::Invalidate);
+        self.publish();
+        // this is sanity and should not be needed
+        while self.as_fibreader().enter().is_some() {}
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -393,8 +401,22 @@ impl FibReader {
     pub fn new(rhandle: ReadHandle<Fib>) -> Self {
         FibReader(rhandle)
     }
+    #[must_use]
+    #[inline]
+    pub fn is_valid(&self) -> bool {
+        match self.0.enter() {
+            Some(fib) => fib.valid.load(std::sync::atomic::Ordering::Acquire),
+            None => false,
+        }
+    }
     pub fn enter(&self) -> Option<ReadGuard<'_, Fib>> {
-        self.0.enter()
+        self.0.enter().map(|fib| {
+            if fib.valid.load(std::sync::atomic::Ordering::Acquire) {
+                Some(fib)
+            } else {
+                None
+            }
+        })?
     }
     #[inline(always)]
     /// Convert Rc<ReadHandle<Fib>> -> FibReader
@@ -408,7 +430,7 @@ impl FibReader {
         }
     }
     pub fn get_id(&self) -> Option<FibKey> {
-        self.0.enter().map(|fib| fib.get_id())
+        self.enter().map(|fib| fib.get_id())
     }
     #[must_use]
     pub fn factory(&self) -> FibReaderFactory {
@@ -451,7 +473,7 @@ impl FibReader {
         packet: &Packet<Buf>,
     ) -> Option<(Prefix, ReadGuard<'_, FibEntry>)> {
         let mut prefix = Prefix::root_v4();
-        let guarded_entry = self.0.enter().map(|guard| {
+        let guarded_entry = self.enter().map(|guard| {
             ReadGuard::map(guard, |fib| {
                 let (hit, entry) = fib.lpm_entry_prefix(packet);
                 prefix = hit;
