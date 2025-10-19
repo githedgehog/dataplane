@@ -181,15 +181,19 @@ impl VrfTable {
     ) -> Result<(), RouterError> {
         // remove the vrf from the vrf table
         debug!("Removing VRF {vrfid}...");
-        let Some(vrf) = self.by_id.remove(&vrfid) else {
+        let Some(mut vrf) = self.by_id.remove(&vrfid) else {
             error!("No vrf with id {vrfid} exists");
             return Err(RouterError::NoSuchVrf);
         };
+
+        // detach interfaces
+        iftablew.detach_interfaces_from_vrf(vrfid);
+
         // delete the corresponding fib
-        if vrf.fibw.is_some() {
+        if let Some(fibw) = vrf.fibw.take() {
             debug!("Deleting Fib for vrf {vrfid} from the FibTable");
             self.fibtablew.del_fib(vrfid, vrf.vni);
-            iftablew.detach_interfaces_from_vrf(vrfid);
+            fibw.destroy();
         }
 
         // if the VRF had a vni assigned, unregister it
