@@ -15,9 +15,9 @@ use concurrency::sync::Arc;
 use pkt_meta::dst_vpcd_lookup::{DstVpcdLookup, VpcDiscTablesWriter};
 use pkt_meta::flow_table::{ExpirationsNF, FlowTable, LookupNF};
 
-use nat::StatelessNat;
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
+use nat::{StatefulNat, StatelessNat};
 
 use net::buffer::PacketBufferMut;
 use pipeline::DynPipeline;
@@ -46,6 +46,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     params: RouterParams,
 ) -> Result<InternalSetup<Buf>, RouterError> {
     let nattablew = NatTablesWriter::new();
+    let natallocatorw = NatAllocatorWriter::new();
     let vpcdtablesw = VpcDiscTablesWriter::new();
     let router = Router::new(params)?;
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
@@ -57,6 +58,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let vpcdtablesr_factory = vpcdtablesw.get_reader_factory();
     let atabler_factory = router.get_atabler_factory();
     let nattabler_factory = nattablew.get_reader_factory();
+    let natallocator_factory = natallocatorw.get_reader_factory();
 
     let pipeline_builder = move || {
         // Build network functions
@@ -66,6 +68,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         let iprouter1 = IpForwarder::new("IP-Forward-1", fibtr_factory.handle());
         let iprouter2 = IpForwarder::new("IP-Forward-2", fibtr_factory.handle());
         let stateless_nat = StatelessNat::with_reader("stateless-NAT", nattabler_factory.handle());
+        let stateful_nat = StatefulNat::with_reader("stateful-NAT", natallocator_factory.handle());
         let dumper1 = PacketDumper::new("pre-ingress", true, Some(PacketDumper::vxlan_or_icmp()));
         let dumper2 = PacketDumper::new("post-egress", true, Some(PacketDumper::vxlan_or_icmp()));
         let stats_stage = Stats::new("stats", writer.clone());
@@ -82,6 +85,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             .add_stage(dst_vpcd_lookup)
             .add_stage(flow_lookup_nf)
             .add_stage(stateless_nat)
+            .add_stage(stateful_nat)
             .add_stage(iprouter2)
             .add_stage(stage_egress)
             .add_stage(dumper2)
@@ -94,7 +98,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         pipeline: Arc::new(pipeline_builder),
         vpcmapw,
         nattablew: Some(nattablew),
-        natallocatorw: None, // Not instanciated, current pipeline does not use stateful NAT
+        natallocatorw: Some(natallocatorw),
         vpcdtablesw,
         stats,
     })
