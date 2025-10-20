@@ -4,11 +4,15 @@
 #[cfg(test)]
 mod test {
     use crate::nf::PktIo;
+    use crossbeam::queue::ArrayQueue;
     use net::headers::TryIpv4;
     use net::packet::test_utils::build_test_ipv4_packet;
     use net::{buffer::TestBuffer, packet::DoneReason};
     use pipeline::sample_nfs::DecrementTtl;
     use pipeline::{DynPipeline, NetworkFunction};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
     use std::{thread, time::Duration};
     use tracing_test::traced_test;
 
@@ -174,5 +178,126 @@ mod test {
         // pipeline should output packet since it should not be punted
         let output: Vec<_> = pipeline.process(input).collect();
         assert_eq!(output.len(), 1);
+    }
+
+    use net::buffer::PacketBufferMut;
+    use net::packet::Packet;
+    struct HeavyProcessing;
+    impl<Buf: PacketBufferMut> NetworkFunction<Buf> for HeavyProcessing {
+        fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
+            &'a mut self,
+            input: Input,
+        ) -> impl Iterator<Item = Packet<Buf>> + 'a {
+            input.inspect(|_packet| {
+                println!("Starting heavy packet processing...");
+                thread::sleep(Duration::from_secs(3));
+                println!("Heavy processing done");
+            })
+        }
+    }
+
+    #[test]
+    #[traced_test]
+    fn test_pkt_sidecar_pipeline() {
+        /*
+         *  Test a secondary, parallel pipeline, by letting pkt-io's in distinct pipelines share the
+         *  same queues. This may be useful to pull costly operations out of the main pipeline, or to
+         *  have more than one worker per "flow". This is just a proof of concept. A better way to
+         *  implement this would probably require modifying the pipeline trait/types.
+         *                                                                                          ┌────────────────────┐
+         * ┌──────────────────────┐                                                                 │                    │
+         * │                      │                                                                 │                    │
+         * │                     │││┌─┐         secondary pipeline                              │ │┌┼┐                   │
+         * │            ┌────────┤▼││ ├─────────────────────────────────────────────────────────┤ ││ ├────────────┐      │
+         * │            │   ┌────┤ ││ ├──────┐    ┌───────────────┐  ┌───────────────┐     ┌────┤ ││ ├──────┐     │      │
+         * │            │   │    │ ││ │      │    │               │  │               │     │    │ ││ │      │     │      │
+         * │            │   │    └─┘│ │      │    │               │  │               │     │    └─┘│ │      │     │      │
+         * │            │   │                │    │   heavy       │  │   decrement   │     │                │     │      │
+         * │    ────────►   │                ┼────►   processing  ┼──►     TTL       ┼─────┼►               ┼─────┼─►    │
+         * │            │   │                │    │               │  │               │     │                │     │      │
+         * │            │   │    pkt-io      │    │               │  │               │     │    pkt-io      │     │      │
+         * │            │   └────────────────┘    └───────────────┘  └───────────────┘     └────────────────┘     │      │
+         * │            └─────────────────────────────────────────────────────────────────────────────────────────┘      │
+         * │                                                                                                             │
+         * │                                                                                                             │
+         * └─────────────────────────┐                                                                                   │
+         *                           │                                                                                   │
+         *                        ┌──┼───────────────────────────────────────────────────────────────────────────────────┘
+         *                        │  │
+         *                        │  │
+         *                       │▼│┌┼┐
+         *              ┌────────┤ ││ ├───────────────────────────────┐
+         *              │   ┌────┤ ││ ├──────┐    ┌───────────────┐   │
+         *              │   │    │ ││ │      │    │               │   │
+         *              │   │    └─┘│ │      │    │               │   │
+         *              │   │                │    │               │   │
+         *      ────────►   │              ─►┼────►   decrement   ┼───┼───►
+         *              │   │                │    │      TTL      │   │
+         *              │   │    pkt-io      │    │               │   │
+         *              │   └────────────────┘    └───────────────┘   │
+         *              └─────────────────────────────────────────────┘
+         *                              primary pipeline
+         */
+
+        // to stop thread
+        let done = Arc::new(AtomicBool::new(false));
+
+        // create 3 queueless pktio
+        let mut pktio1 = PktIo::<TestBuffer>::new(0, 0);
+        let mut pktio2 = PktIo::<TestBuffer>::new(0, 0);
+        let mut pktio3 = PktIo::<TestBuffer>::new(0, 0);
+
+        // create two queues
+        let queue1 = Arc::new(ArrayQueue::new(100));
+        let queue2 = Arc::new(ArrayQueue::new(100));
+
+        // do the inter-pipeline wiring
+        pktio2.set_injectq(queue1.clone());
+        pktio1.set_puntq(queue1);
+        pktio1.set_injectq(queue2.clone());
+        pktio3.set_puntq(queue2);
+
+        // create primary pipeline: 1 stage only
+        let mut primary = DynPipeline::new().add_stage(pktio1);
+
+        // thread that processes secondary pipeline
+        let finish_secondary = done.clone();
+        let handle = thread::spawn(move || {
+            let mut secondary = DynPipeline::new()
+                .add_stage(pktio2)
+                .add_stage(HeavyProcessing)
+                .add_stage(DecrementTtl)
+                .add_stage(pktio3);
+
+            // loop invoking process() until told to finish
+            while !finish_secondary.load(Ordering::Relaxed) {
+                let empty = vec![].into_iter();
+                let _: Vec<_> = secondary.process(empty).collect();
+            }
+        });
+
+        // feed the pipeline with a single packet marked as local and ttl 128
+        let ttl = 128;
+        let mut packet = build_test_ipv4_packet(ttl).unwrap();
+        packet.get_meta_mut().set_local(true);
+        let input = vec![packet].into_iter();
+        let mut output: Vec<_> = primary.process(input).collect();
+        loop {
+            if !output.is_empty() {
+                println!("Got packet");
+                assert_eq!(output.len(), 1);
+                let pkt = &output[0];
+                assert_eq!(pkt.try_ipv4().unwrap().ttl(), ttl - 1);
+                break;
+            }
+            // keep on stimulating pipeline with zero packets
+            let empty = vec![].into_iter();
+            output = primary.process(empty).collect();
+        }
+
+        // stop auxiliary pipeline
+        done.store(true, Ordering::Relaxed);
+
+        handle.join().unwrap();
     }
 }
