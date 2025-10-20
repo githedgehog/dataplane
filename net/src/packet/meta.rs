@@ -113,7 +113,6 @@ pub enum DoneReason {
     MissingEtherType,     /* can't determine ethertype to use */
     Unroutable,           /* we don't have state to forward the packet */
     NatFailure,           /* It was not possible to NAT the packet */
-    Local,                /* the packet has to be locally consumed by kernel */
     Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
 }
 
@@ -125,6 +124,7 @@ bitflags! {
         const NAT         = 0b0000_0100; /* if true, NAT stage should attempt to NAT the packet */
         const REFR_CHKSUM = 0b0000_1000; /* if true, an indication that packet checksums need to be refreshed */
         const KEEP        = 0b0001_0000; /* Keep the Packet even if it should be dropped */
+        const LOCAL       = 0b0010_0000; /* Packet is to be locally consumed */
     }
 }
 
@@ -199,6 +199,17 @@ impl PacketMeta {
             self.flags.insert(MetaFlags::KEEP);
         } else {
             self.flags.remove(MetaFlags::KEEP);
+        }
+    }
+    #[must_use]
+    pub fn local(&self) -> bool {
+        self.flags.contains(MetaFlags::LOCAL)
+    }
+    pub fn set_local(&mut self, value: bool) {
+        if value {
+            self.flags.insert(MetaFlags::LOCAL);
+        } else {
+            self.flags.remove(MetaFlags::LOCAL);
         }
     }
 }
