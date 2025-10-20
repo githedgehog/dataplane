@@ -94,7 +94,7 @@ hyper = { version = "1.7.0", default-features = false, features = ["http1", "ser
 hyper-util = { version = "0.1.17", features = ["tokio"] }
 ipnet = { version = "2.11.0", default-features = false, features = [] }
 kanal = { version = "0.1.1", default-features = false, features = [] }
-left-right = { version = "0.11.5" }
+left-right = { version = "0.11.6" }
 libc = { version = "1.0.0-alpha.1", default-features = false, features = [] }
 linkme = { version = "0.3.35", default-features = false, features = [] }
 linux-raw-sys = { version = "0.11.0", default-features = false, features = [] }
