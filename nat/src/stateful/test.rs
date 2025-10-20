@@ -99,56 +99,84 @@ mod tests {
 
         // VPC1 <-> VPC2
         let expose121 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("1.1.0.0/16".into())
             .as_range("10.12.0.0/16".into());
         let expose122 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("1.2.0.0/16".into())
             .as_range("10.98.128.0/17".into())
             .as_range("10.99.0.0/17".into());
         let expose123 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("1.3.0.0/24".into())
             .as_range("10.100.0.0/24".into());
         let expose211 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("1.2.2.0/24".into())
             .as_range("10.201.201.0/24".into());
         let expose212 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("1.2.3.0/24".into())
             .as_range("10.201.202.0/24".into());
         let expose213 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("2.0.0.0/24".into())
             .as_range("10.201.203.0/24".into());
         let expose214 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("2.0.1.0/28".into())
             .as_range("10.201.204.192/28".into());
 
         // VPC1 <-> VPC3
         let expose131 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("1.1.0.0/16".into())
             .as_range("3.3.0.0/16".into());
         let expose132 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("1.2.0.0/16".into())
             .as_range("3.1.0.0/16".into())
             .not_as("3.1.128.0/17".into())
             .as_range("3.2.0.0/17".into());
         let expose311 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("192.168.128.0/24".into())
             .as_range("3.3.3.0/24".into());
 
         // VPC1 <-> VPC4
         let expose141 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("1.1.0.0/16".into())
             .as_range("4.4.0.0/16".into());
         let expose411 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("1.1.0.0/16".into())
             .as_range("4.5.0.0/16".into());
 
         // VPC2 <-> VPC4
         let expose241 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("2.4.0.0/16".into())
             .not("2.4.1.0/24".into())
             .as_range("44.0.0.0/16".into())
             .not_as("44.0.200.0/24".into());
         let expose421 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("4.4.0.0/16".into())
             .not("4.4.128.0/18".into())
             .as_range("44.4.0.0/16".into())
@@ -156,9 +184,14 @@ mod tests {
 
         // VPC3 <-> VPC4
         let expose341 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("192.168.100.0/24".into())
             .as_range("34.34.34.0/24".into());
-        let expose431 = VpcExpose::empty().ip("4.4.0.0/24".into());
+        let expose431 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
+            .ip("4.4.0.0/24".into());
 
         // VPC1 <-> VPC2
         let mut manifest12 = VpcManifest::new("VPC-1");
@@ -222,9 +255,13 @@ mod tests {
         let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
 
         let expose121 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("1.1.0.0/16".into())
             .as_range("2.2.0.0/16".into());
         let expose211 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("1.2.2.0/24".into())
             .as_range("3.3.3.0/24".into());
 

@@ -68,6 +68,59 @@ impl VpcExpose {
         self
     }
 
+    // Make the [`VpcExpose`] use stateless NAT.
+    //
+    // # Errors
+    //
+    // Returns an error if the [`VpcExpose`] is in stateful mode.
+    pub fn make_stateless_nat(mut self) -> Result<Self, ConfigError> {
+        match self.nat.as_mut() {
+            Some(nat) if nat.is_stateless() => Ok(self),
+            Some(_) => Err(ConfigError::Invalid(format!(
+                "refusing to overwrite stateful NAT mode with stateless NAT mode for VpcExpose {self}"
+            ))),
+            None => {
+                self.nat = Some(VpcExposeNat {
+                    config: VpcExposeNatConfig::Stateless(VpcExposeStatelessNat {}),
+                    ..VpcExposeNat::default()
+                });
+                Ok(self)
+            }
+        }
+    }
+
+    // Make the [`VpcExpose`] use stateful NAT, with the given idle timeout, if provided.
+    // If the [`VpcExpose`] is already in stateful mode, the idle timeout is overwritten.
+    //
+    // # Errors
+    //
+    // Returns an error if the [`VpcExpose`] is in stateless mode.
+    pub fn make_stateful_nat(
+        mut self,
+        idle_timeout: Option<Duration>,
+    ) -> Result<Self, ConfigError> {
+        match self.nat.as_mut() {
+            Some(nat) if nat.is_stateful() => {
+                nat.config = VpcExposeNatConfig::Stateful(VpcExposeStatefulNat {
+                    idle_timeout: idle_timeout.unwrap_or_default(),
+                });
+                Ok(self)
+            }
+            Some(_) => Err(ConfigError::Invalid(format!(
+                "refusing to overwrite stateless NAT mode with stateful NAT mode for VpcExpose {self}"
+            ))),
+            None => {
+                self.nat = Some(VpcExposeNat {
+                    config: VpcExposeNatConfig::Stateful(VpcExposeStatefulNat {
+                        idle_timeout: idle_timeout.unwrap_or_default(),
+                    }),
+                    ..VpcExposeNat::default()
+                });
+                Ok(self)
+            }
+        }
+    }
+
     #[must_use]
     pub fn as_range_or_empty(&self) -> &BTreeSet<Prefix> {
         self.nat

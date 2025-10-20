@@ -100,12 +100,16 @@ mod context {
     fn build_context() -> VpcTable {
         // Exposes and manifests
         let expose1 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("1.1.0.0/16".into())
             .ip("1.2.0.0/16".into())
             .ip("1.3.0.0/16".into())
             .as_range("10.1.0.0/30".into())
             .not_as("10.1.0.3/32".into());
         let expose2 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("2.0.0.0/16".into())
             .as_range("10.2.0.0/29".into());
 
@@ -115,10 +119,14 @@ mod context {
         };
 
         let expose3 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("3.0.0.0/24".into())
             .ip("3.0.1.0/24".into())
             .as_range("10.3.0.0/30".into());
         let expose4 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
             .ip("4.0.0.0/16".into())
             .as_range("10.4.0.0/31".into())
             .as_range("10.4.1.0/30".into());
