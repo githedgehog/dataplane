@@ -63,32 +63,38 @@ impl PerVniTable {
             ConfigUtilError::SplitPrefixError(prefix) => NatPeeringError::SplitPrefixError(prefix),
         })?;
 
-        new_peering.local.exposes.iter().try_for_each(|expose| {
-            if expose.as_range_or_empty().is_empty() {
-                // Nothing to do for source NAT, get out of here
-                return Ok(());
-            }
+        new_peering
+            .local
+            .stateless_nat_exposes()
+            .try_for_each(|expose| {
+                if expose.as_range_or_empty().is_empty() {
+                    // Nothing to do for source NAT, get out of here
+                    return Ok(());
+                }
 
-            // If we don't have a NAT rules table for this destination VPC already, create it
-            let peering_table = self.src_nat.entry(dst_vni).or_default();
+                // If we don't have a NAT rules table for this destination VPC already, create it
+                let peering_table = self.src_nat.entry(dst_vni).or_default();
 
-            // For each private prefix, add an entry containing the set of public prefixes
-            generate_public_values(expose).try_for_each(|value| {
-                peering_table
-                    .insert(&value?)
-                    .map_err(|_| NatPeeringError::EntryExists)
-            })
-        })?;
+                // For each private prefix, add an entry containing the set of public prefixes
+                generate_public_values(expose).try_for_each(|value| {
+                    peering_table
+                        .insert(&value?)
+                        .map_err(|_| NatPeeringError::EntryExists)
+                })
+            })?;
 
         // Update table for destination NAT
-        new_peering.remote.exposes.iter().try_for_each(|expose| {
-            // For each public prefix, add an entry containing the set of private prefixes
-            generate_private_values(expose).try_for_each(|value| {
-                self.dst_nat
-                    .insert(&value?)
-                    .map_err(|_| NatPeeringError::EntryExists)
-            })
-        })?;
+        new_peering
+            .remote
+            .stateless_nat_exposes()
+            .try_for_each(|expose| {
+                // For each public prefix, add an entry containing the set of private prefixes
+                generate_private_values(expose).try_for_each(|value| {
+                    self.dst_nat
+                        .insert(&value?)
+                        .map_err(|_| NatPeeringError::EntryExists)
+                })
+            })?;
 
         Ok(())
     }
@@ -114,7 +120,7 @@ pub fn validate_nat_configuration(vpc_table: &VpcTable) -> ConfigResult {
     for vpc in vpc_table.values() {
         for peering in &vpc.peerings {
             for manifest in [&peering.local, &peering.remote] {
-                for expose in &manifest.exposes {
+                for expose in manifest.stateless_nat_exposes() {
                     validate_nat_expose(expose)?;
                 }
             }

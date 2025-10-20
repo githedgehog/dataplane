@@ -46,6 +46,18 @@ pub struct VpcExposeNat {
     pub config: VpcExposeNatConfig,
 }
 
+impl VpcExposeNat {
+    #[must_use]
+    pub fn is_stateful(&self) -> bool {
+        matches!(self.config, VpcExposeNatConfig::Stateful(_))
+    }
+
+    #[must_use]
+    pub fn is_stateless(&self) -> bool {
+        matches!(self.config, VpcExposeNatConfig::Stateless(_))
+    }
+}
+
 fn empty_btreeset() -> &'static BTreeSet<Prefix> {
     static EMPTY_SET: std::sync::LazyLock<BTreeSet<Prefix>> =
         std::sync::LazyLock::new(BTreeSet::new);
@@ -198,11 +210,18 @@ impl VpcExpose {
         }
     }
     #[must_use]
-    pub fn is_natted(&self) -> bool {
-        let Some(nat) = self.nat.as_ref() else {
-            return false;
-        };
-        !nat.as_range.is_empty()
+    pub fn has_nat(&self) -> bool {
+        self.nat
+            .as_ref()
+            .is_some_and(|nat| !nat.as_range.is_empty())
+    }
+
+    pub fn has_stateful_nat(&self) -> bool {
+        self.nat.as_ref().is_some_and(VpcExposeNat::is_stateful)
+    }
+
+    pub fn has_stateless_nat(&self) -> bool {
+        self.nat.as_ref().is_some_and(VpcExposeNat::is_stateless)
     }
 
     /// Validate the [`VpcExpose`]:
@@ -350,7 +369,7 @@ impl VpcManifest {
                 // - expose_left.ips      / expose_right.as_range
                 // - expose_left.as_range / expose_right.ips
                 // (along with the respective exclusion prefixes).
-                if expose_left.is_natted() || expose_right.is_natted() {
+                if expose_left.has_nat() || expose_right.has_nat() {
                     validate_overlapping(
                         expose_left.public_ips(),
                         expose_left.public_excludes(),
@@ -375,6 +394,11 @@ impl VpcManifest {
         }
         self.validate_expose_collisions()?;
         Ok(())
+    }
+    pub fn stateless_nat_exposes(&self) -> impl Iterator<Item = &VpcExpose> {
+        self.exposes
+            .iter()
+            .filter(|expose| expose.has_stateless_nat())
     }
 }
 
