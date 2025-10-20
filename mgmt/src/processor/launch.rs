@@ -171,8 +171,8 @@ pub enum GrpcAddress {
 pub fn start_mgmt(
     grpc_addr: GrpcAddress,
     router_ctl: RouterCtlSender,
-    nattablew: Option<NatTablesWriter>,
-    natallocatorw: Option<NatAllocatorWriter>,
+    nattablew: NatTablesWriter,
+    natallocatorw: NatAllocatorWriter,
     vpcdtablesw: VpcDiscTablesWriter,
     vpcmapw: VpcMapWriter<VpcMapName>,
 ) -> Result<std::thread::JoinHandle<()>, Error> {

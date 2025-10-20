@@ -83,8 +83,8 @@ pub(crate) struct ConfigProcessor {
     router_ctl: RouterCtlSender,
     vpc_mgr: VpcManager<RequiredInformationBase>,
     vpcmapw: VpcMapWriter<VpcMapName>,
-    nattablew: Option<NatTablesWriter>,
-    natallocatorw: Option<NatAllocatorWriter>,
+    nattablew: NatTablesWriter,
+    natallocatorw: NatAllocatorWriter,
     vnitablesw: VpcDiscTablesWriter,
 }
 
@@ -98,8 +98,8 @@ impl ConfigProcessor {
     pub(crate) fn new(
         router_ctl: RouterCtlSender,
         vpcmapw: VpcMapWriter<VpcMapName>,
-        nattablew: Option<NatTablesWriter>,
-        natallocatorw: Option<NatAllocatorWriter>,
+        nattablew: NatTablesWriter,
+        natallocatorw: NatAllocatorWriter,
         vnitablesw: VpcDiscTablesWriter,
     ) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
@@ -175,8 +175,8 @@ impl ConfigProcessor {
             current.as_deref(),
             &mut self.router_ctl,
             &mut self.vpcmapw,
-            self.nattablew.as_mut(),
-            self.natallocatorw.as_mut(),
+            &mut self.nattablew,
+            &mut self.natallocatorw,
             &mut self.vnitablesw,
         )
         .await?;
@@ -204,8 +204,8 @@ impl ConfigProcessor {
                 None,
                 &mut self.router_ctl,
                 &mut self.vpcmapw,
-                self.nattablew.as_mut(),
-                self.natallocatorw.as_mut(),
+                &mut self.nattablew,
+                &mut self.natallocatorw,
                 &mut self.vnitablesw,
             )
             .await;
@@ -441,8 +441,8 @@ async fn apply_gw_config(
     _current: Option<&GwConfig>,
     router_ctl: &mut RouterCtlSender,
     vpcmapw: &mut VpcMapWriter<VpcMapName>,
-    nattablesw_opt: Option<&mut NatTablesWriter>,
-    natallocatorw_opt: Option<&mut NatAllocatorWriter>,
+    nattablesw: &mut NatTablesWriter,
+    natallocatorw: &mut NatAllocatorWriter,
     vpcdtablesw: &mut VpcDiscTablesWriter,
 ) -> ConfigResult {
     let genid = config.genid();
@@ -479,14 +479,10 @@ async fn apply_gw_config(
     let kernel_vrfs = vpc_mgr.get_kernel_vrfs().await?;
 
     /* apply stateless NAT config */
-    if let Some(nattablesw) = nattablesw_opt {
-        apply_stateless_nat_config(&config.external.overlay.vpc_table, nattablesw)?;
-    }
+    apply_stateless_nat_config(&config.external.overlay.vpc_table, nattablesw)?;
 
     /* apply stateful NAT config */
-    if let Some(natallocatorw) = natallocatorw_opt {
-        apply_stateful_nat_config(&config.external.overlay.vpc_table, natallocatorw)?;
-    }
+    apply_stateful_nat_config(&config.external.overlay.vpc_table, natallocatorw)?;
 
     /* apply dst_vpcd_lookup config */
     apply_dst_vpcd_lookup_config(&config.external.overlay, vpcdtablesw)?;

@@ -35,8 +35,8 @@ where
     pub router: Router,
     pub pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
     pub vpcmapw: VpcMapWriter<VpcMapName>,
-    pub nattablew: Option<NatTablesWriter>,
-    pub natallocatorw: Option<NatAllocatorWriter>,
+    pub nattablew: NatTablesWriter,
+    pub natallocatorw: NatAllocatorWriter,
     pub vpcdtablesw: VpcDiscTablesWriter,
     pub stats: StatsCollector,
 }
@@ -97,8 +97,8 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         router,
         pipeline: Arc::new(pipeline_builder),
         vpcmapw,
-        nattablew: Some(nattablew),
-        natallocatorw: Some(natallocatorw),
+        nattablew,
+        natallocatorw,
         vpcdtablesw,
         stats,
     })
