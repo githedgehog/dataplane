@@ -4,21 +4,22 @@
 //! Fib module tests
 
 #[cfg(test)]
-pub mod tests {
+mod tests {
     use crate::fib::fibobjects::FibEntry;
     use crate::fib::fibobjects::FibGroup;
     use crate::fib::fibobjects::PktInstruction;
+    use crate::fib::fibtable::FibTableWriter;
+    use crate::fib::fibtype::FibKey;
+    use crate::fib::fibtype::FibWriter;
+    use crate::rib::nexthop::NhopKey;
+
     use net::ip::NextHeader;
     use net::packet::Packet;
     use net::packet::test_utils::build_test_ipv4_packet_with_transport;
     use net::udp::UdpPort;
     use net::{buffer::TestBuffer, interface::InterfaceIndex};
 
-    use crate::fib::fibtype::FibKey;
-    use crate::fib::fibtype::FibWriter;
-    use crate::rib::nexthop::NhopKey;
-    use lpm::prefix::IpAddr;
-    use lpm::prefix::Prefix;
+    use lpm::prefix::{IpAddr, Prefix};
 
     use rand::Rng;
     use rand::rngs::ThreadRng;
@@ -27,8 +28,7 @@ pub mod tests {
     use std::sync::atomic::AtomicU16;
     use std::thread;
     use std::thread::Builder;
-    use std::time::Duration;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
     use std::{collections::HashMap, collections::HashSet, sync::atomic::Ordering};
 
     use crate::fib::fibgroupstore::tests::build_fib_entry_egress;
@@ -105,8 +105,8 @@ pub mod tests {
     // Test the concurrency of a SINGLE fib. NUM_WORKERS workers perform LPM lookups on a single FIB for
     // a test packet while another thread fuzzes the route to forward the packet, by removing the route
     // or aggressively changing the fibgroup (and fib entries) used for the prefix of that route.
-    #[test]
-    fn test_concurrency_fib() {
+
+    pub(crate) fn test_concurrency_fib() {
         const NUM_PACKETS: u64 = 1000_00;
         const NUM_WORKERS: u16 = 4;
 
@@ -236,10 +236,11 @@ pub mod tests {
         println!("route deletions: {route_deletions}");
     }
 
-    use crate::fib::fibtable::FibTableWriter;
-
-    #[test]
-    fn test_concurrency_fibtable() {
+    // Test the concurrency of a SINGLE fib within a FIBTABLE. NUM_WORKERS workers perform LPM lookups
+    // on a single FIB for a test packet while another thread fuzzes the route to forward the packet, by removing the route
+    // or aggressively changing the fibgroup (and fib entries) used for the prefix of that route. The fuzzer in this
+    // test also removes the FIB and adds it again. The workers use a thread-local cache to access the FIB.
+    pub(crate) fn test_concurrency_fibtable() {
         // number of threads looking up fibtable
         const NUM_WORKERS: u16 = 7;
         const NUM_PACKETS: u64 = 1_000_000;
@@ -361,8 +362,7 @@ pub mod tests {
     }
 
     // Tests fib reader utilities returning guards
-    #[test]
-    fn test_fib_guards() {
+    pub(crate) fn test_fib_guards() {
         // create fib
         let (mut fibw, fibr) = FibWriter::new(FibKey::Id(0));
 
@@ -405,5 +405,46 @@ pub mod tests {
 
         // Additional queries while holding the guards would cause the writer to block.
         // We can't test this here since there's a single thread and it would block forever.
+    }
+}
+
+#[cfg(test)]
+use concurrency::concurrency_mode;
+
+#[cfg(test)]
+#[concurrency_mode(std)]
+mod std_tests {
+    use crate::fib::test::tests;
+
+    #[test]
+    fn test_concurrency_fib() {
+        tests::test_concurrency_fib();
+    }
+    #[test]
+    fn test_concurrency_fibtable() {
+        tests::test_concurrency_fibtable();
+    }
+    #[test]
+    fn test_fib_guards() {
+        tests::test_fib_guards();
+    }
+}
+
+#[cfg(test)]
+#[concurrency_mode(shuttle)]
+mod shuttle_tests {
+    use crate::fib::test::tests;
+
+    #[test]
+    fn test_concurrency_fib() {
+        tests::test_concurrency_fib();
+    }
+    #[test]
+    fn test_concurrency_fibtable() {
+        tests::test_concurrency_fibtable();
+    }
+    #[test]
+    fn test_fib_guards() {
+        tests::test_fib_guards();
     }
 }
