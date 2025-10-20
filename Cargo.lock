@@ -1378,6 +1378,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-pkt-io"
+version = "0.1.0"
+dependencies = [
+ "crossbeam",
+ "dataplane-net",
+ "dataplane-pipeline",
+ "dataplane-tracectl",
+ "linkme",
+ "tracing",
+ "tracing-test",
+]
+
+[[package]]
 name = "dataplane-pkt-meta"
 version = "0.1.0"
 dependencies = [
