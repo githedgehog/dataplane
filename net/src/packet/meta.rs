@@ -114,7 +114,7 @@ pub enum DoneReason {
     InvalidChecksum,      /* the validation of a checksum for this packet failed */
     IcmpErrorIncomplete,  /* the packet is an ICMP error but it does not contain data it should */
     InternalDrop,         /* the packet was dropped internally due to a queue being full */
-    Local,                /* the packet has to be locally consumed by kernel */
+    Local,                /* the packet has been handed to the system for local consumption */
     Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
     DeparseError, /* the packet was processed and delivered to driver, but not be sent due to serialization issue */
     NoHeadRoom, /* the packet was processed and delivered to driver, but not serialized due lack of headroom */
@@ -134,6 +134,7 @@ bitflags! {
         const REQ_PORT_FORWARDING = 0b0001_0000_0000; /* Packet requires port forwarding */
         const REQ_STATIC_NAT_SRC  = 0b0010_0000_0000;      /* Packet requires static NAT (source) */
         const REQ_STATIC_NAT_DST  = 0b0100_0000_0000;      /* Packet requires static NAT (destination) */
+        const LOCAL       = 0b1000_0000_0000; /* Packet is to be locally consumed */
     }
 }
 
@@ -293,6 +294,15 @@ impl PacketMeta {
             flags |= FlowInfoFlags::REQ_STATIC_NAT_SRC;
         }
         flags
+    }
+
+    pub fn set_local(&mut self, value: bool) {
+        self.set_flag(MetaFlags::LOCAL, value);
+    }
+
+    #[must_use]
+    pub fn is_local(&self) -> bool {
+        self.flags.contains(MetaFlags::LOCAL)
     }
 }
 impl Drop for PacketMeta {
