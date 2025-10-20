@@ -365,6 +365,9 @@ fn fmt_metadata_flags(meta: &PacketMeta, f: &mut Formatter<'_>) -> std::fmt::Res
     if meta.is_l2bcast() {
         write!(f, " bcast")?;
     }
+    if meta.is_local() {
+        write!(f, " local")?;
+    }
     if meta.requires_masquerade() {
         write!(f, " req-masquerade")?;
     }
