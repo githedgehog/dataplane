@@ -66,31 +66,37 @@ impl NatDefaultAllocator {
         src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<(), AllocatorError> {
-        filter_v4_exposes(&peering.local.exposes).try_for_each(|expose| {
-            let tcp_ip_allocator = ip_allocator_for_prefixes(expose.as_range_or_empty())?;
-            let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
-            build_src_nat_pool_generic(
-                &mut self.pools_src44,
-                expose,
-                src_vpc_id,
-                dst_vpc_id,
-                &tcp_ip_allocator,
-                &udp_ip_allocator,
-            )
-        })?;
+        peering
+            .local
+            .stateful_nat_exposes_44()
+            .try_for_each(|expose| {
+                let tcp_ip_allocator = ip_allocator_for_prefixes(expose.as_range_or_empty())?;
+                let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
+                build_src_nat_pool_generic(
+                    &mut self.pools_src44,
+                    expose,
+                    src_vpc_id,
+                    dst_vpc_id,
+                    &tcp_ip_allocator,
+                    &udp_ip_allocator,
+                )
+            })?;
 
-        filter_v6_exposes(&peering.local.exposes).try_for_each(|expose| {
-            let tcp_ip_allocator = ip_allocator_for_prefixes(expose.as_range_or_empty())?;
-            let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
-            build_src_nat_pool_generic(
-                &mut self.pools_src66,
-                expose,
-                src_vpc_id,
-                dst_vpc_id,
-                &tcp_ip_allocator,
-                &udp_ip_allocator,
-            )
-        })?;
+        peering
+            .local
+            .stateful_nat_exposes_66()
+            .try_for_each(|expose| {
+                let tcp_ip_allocator = ip_allocator_for_prefixes(expose.as_range_or_empty())?;
+                let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
+                build_src_nat_pool_generic(
+                    &mut self.pools_src66,
+                    expose,
+                    src_vpc_id,
+                    dst_vpc_id,
+                    &tcp_ip_allocator,
+                    &udp_ip_allocator,
+                )
+            })?;
 
         Ok(())
     }
@@ -101,52 +107,40 @@ impl NatDefaultAllocator {
         src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<(), AllocatorError> {
-        filter_v4_exposes(&peering.remote.exposes).try_for_each(|expose| {
-            let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.ips)?;
-            let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
-            build_dst_nat_pool_generic(
-                &mut self.pools_dst44,
-                expose,
-                src_vpc_id,
-                dst_vpc_id,
-                &tcp_ip_allocator,
-                &udp_ip_allocator,
-            )
-        })?;
+        peering
+            .remote
+            .stateful_nat_exposes_44()
+            .try_for_each(|expose| {
+                let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.ips)?;
+                let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
+                build_dst_nat_pool_generic(
+                    &mut self.pools_dst44,
+                    expose,
+                    src_vpc_id,
+                    dst_vpc_id,
+                    &tcp_ip_allocator,
+                    &udp_ip_allocator,
+                )
+            })?;
 
-        filter_v6_exposes(&peering.remote.exposes).try_for_each(|expose| {
-            let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.ips)?;
-            let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
-            build_dst_nat_pool_generic(
-                &mut self.pools_dst66,
-                expose,
-                src_vpc_id,
-                dst_vpc_id,
-                &tcp_ip_allocator,
-                &udp_ip_allocator,
-            )
-        })?;
+        peering
+            .remote
+            .stateful_nat_exposes_66()
+            .try_for_each(|expose| {
+                let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.ips)?;
+                let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
+                build_dst_nat_pool_generic(
+                    &mut self.pools_dst66,
+                    expose,
+                    src_vpc_id,
+                    dst_vpc_id,
+                    &tcp_ip_allocator,
+                    &udp_ip_allocator,
+                )
+            })?;
 
         Ok(())
     }
-}
-
-fn filter_v4_exposes(exposes: &[VpcExpose]) -> impl Iterator<Item = &VpcExpose> {
-    exposes.iter().filter(|e| {
-        matches!(
-            (e.ips.first(), e.as_range_or_empty().first()),
-            (Some(Prefix::IPV4(_)), Some(Prefix::IPV4(_)))
-        )
-    })
-}
-
-fn filter_v6_exposes(exposes: &[VpcExpose]) -> impl Iterator<Item = &VpcExpose> {
-    exposes.iter().filter(|e| {
-        matches!(
-            (e.ips.first(), e.as_range_or_empty().first()),
-            (Some(Prefix::IPV6(_)), Some(Prefix::IPV6(_)))
-        )
-    })
 }
 
 fn build_src_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(

@@ -209,6 +209,24 @@ impl VpcExpose {
             &nat.not_as
         }
     }
+    // This method assumes that all prefixes in each list are of the same IP version. It does not
+    // validate the list for consistency.
+    #[must_use]
+    pub fn is_44(&self) -> bool {
+        matches!(
+            (self.ips.first(), self.as_range_or_empty().first()),
+            (Some(Prefix::IPV4(_)), Some(Prefix::IPV4(_)))
+        )
+    }
+    // This method assumes that all prefixes in each list are of the same IP version. It does not
+    // validate the list for consistency.
+    #[must_use]
+    pub fn is_66(&self) -> bool {
+        matches!(
+            (self.ips.first(), self.as_range_or_empty().first()),
+            (Some(Prefix::IPV6(_)), Some(Prefix::IPV6(_)))
+        )
+    }
     #[must_use]
     pub fn has_nat(&self) -> bool {
         self.nat
@@ -399,6 +417,18 @@ impl VpcManifest {
         self.exposes
             .iter()
             .filter(|expose| expose.has_stateless_nat())
+    }
+    pub fn stateful_nat_exposes_44(&self) -> impl Iterator<Item = &VpcExpose> {
+        self.exposes
+            .iter()
+            .filter(|expose| expose.has_stateful_nat())
+            .filter(|expose| expose.is_44())
+    }
+    pub fn stateful_nat_exposes_66(&self) -> impl Iterator<Item = &VpcExpose> {
+        self.exposes
+            .iter()
+            .filter(|expose| expose.has_stateful_nat())
+            .filter(|expose| expose.is_66())
     }
 }
 
