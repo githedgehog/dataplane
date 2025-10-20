@@ -28,6 +28,7 @@ trace_target!(PKT_IO, LevelFilter::TRACE, &["pipeline"]);
 // For the same reason, the two queues are optional to accommodate for the case that only injection
 // or punting are used.
 pub struct PktIo<Buf: PacketBufferMut> {
+    name: String,
     injectq: Option<Arc<ArrayQueue<Box<Packet<Buf>>>>>,
     puntq: Option<Arc<ArrayQueue<Box<Packet<Buf>>>>>,
 }
@@ -43,9 +44,14 @@ impl<Buf: PacketBufferMut> PktIo<Buf> {
     #[must_use]
     pub fn new(inject_capacity: usize, punt_capacity: usize) -> Self {
         Self {
+            name: "".to_string(),
             injectq: Self::create_queue(inject_capacity),
             puntq: Self::create_queue(punt_capacity),
         }
+    }
+    pub fn set_name(mut self, name: &str) -> Self {
+        self.name = name.to_owned();
+        self
     }
     pub fn set_injectq(&mut self, queue: Arc<ArrayQueue<Box<Packet<Buf>>>>) {
         self.injectq = Some(queue)
