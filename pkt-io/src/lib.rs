@@ -4,3 +4,6 @@
 //! Local packet I/O for gateway
 
 mod nf;
+mod tests;
+
+pub use nf::PktIo;
