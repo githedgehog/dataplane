@@ -133,7 +133,7 @@ strum = { version = "0.27.2", default-features = false, features = ["derive"] }
 strum_macros = { version = "0.27.2", default-features = false, features = [] }
 thiserror = { version = "2.0.17", default-features = false, features = [] }
 thread_local = { version = "1.1.9", default-features = false, features = [] }
-tokio = { version = "1.47.1", default-features = false, features = [] }
+tokio = { version = "1.48.0", default-features = false, features = [] }
 tokio-stream = { version = "0.1.17", default-features = false, features = [] }
 tonic = { version = "0.14.2", default-features = false, features = ["transport", "codegen"] }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] } # attribute feature is so commonly used that we should just leave it on globally
