@@ -1,23 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-#![allow(unused)]
-
-pub(crate) use clap::Parser;
+pub use clap::Parser;
 use mgmt::processor::launch::GrpcAddress;
 use routing::rio::DEFAULT_DP_UX_PATH;
 use routing::rio::DEFAULT_DP_UX_PATH_CLI;
 use routing::rio::DEFAULT_FRR_AGENT_PATH;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use tracing::{debug, error};
+use tracing::debug;
 
 #[derive(Parser)]
 #[command(name = "Hedgehog Fabric Gateway dataplane")]
 #[command(version = "1.0")] // FIXME
 #[command(about = "A next-gen dataplane for next-gen fabric gateway", long_about = None)]
 #[allow(clippy::struct_excessive_bools)]
-pub(crate) struct CmdArgs {
+pub struct CmdArgs {
     #[arg(long, value_name = "core-id used as main", default_value_t = 2)]
     main_lcore: u8,
     #[arg(long, value_name = "map lcore set to cpu set")]

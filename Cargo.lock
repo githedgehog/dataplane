@@ -892,8 +892,8 @@ dependencies = [
  "arrayvec",
  "axum",
  "axum-server",
- "clap",
  "ctrlc",
+ "dataplane-args",
  "dataplane-concurrency",
  "dataplane-dpdk",
  "dataplane-id",
@@ -919,6 +919,20 @@ dependencies = [
  "ordermap",
  "parking_lot",
  "serde",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "dataplane-args"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "dataplane-mgmt",
+ "dataplane-net",
+ "dataplane-routing",
+ "rkyv",
  "tokio",
  "tracing",
  "tracing-subscriber",

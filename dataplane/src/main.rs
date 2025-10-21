@@ -5,14 +5,13 @@
 #![deny(rustdoc::all)]
 #![allow(rustdoc::missing_crate_level_docs)]
 
-mod args;
 mod drivers;
 mod packet_processor;
 mod statistics;
 
-use crate::args::{CmdArgs, Parser};
 use crate::packet_processor::start_router;
 use crate::statistics::MetricsServer;
+use args::{CmdArgs, Parser};
 
 use drivers::dpdk::DriverDpdk;
 use drivers::kernel::DriverKernel;

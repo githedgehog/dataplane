@@ -1,6 +1,7 @@
 [workspace]
 
 members = [
+    "args",
     "cli",
     "concurrency",
     "concurrency-macros",
@@ -34,6 +35,7 @@ resolver = "3"
 [workspace.dependencies]
 
 # Internal
+args = { path = "./args", package = "dataplane-args", features = [] }
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
 concurrency = { path = "./concurrency", package = "dataplane-concurrency" }
 concurrency-macros = { path = "./concurrency-macros", package = "dataplane-concurrency-macros" }
