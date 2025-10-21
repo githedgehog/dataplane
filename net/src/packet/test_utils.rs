@@ -37,6 +37,67 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::num::NonZero;
 use std::str::FromStr;
 
+#[derive(Debug)]
+struct TestUdp {
+    sport: u16,
+    dport: u16,
+}
+impl TestUdp {
+    pub fn sport(&mut self, value: u16) -> &mut Self {
+        self.sport = value;
+        self
+    }
+    pub fn dport(&mut self, value: u16) -> &mut Self {
+        self.dport = value;
+        self
+    }
+}
+impl Default for TestUdp {
+    fn default() -> Self {
+        Self {
+            sport: 123,
+            dport: 456,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TestTcp {
+    sport: u16,
+    dport: u16,
+}
+impl Default for TestTcp {
+    fn default() -> Self {
+        Self {
+            sport: 123,
+            dport: 456,
+        }
+    }
+}
+impl TestTcp {
+    pub fn sport(&mut self, value: u16) -> &mut Self {
+        self.sport = value;
+        self
+    }
+    pub fn dport(&mut self, value: u16) -> &mut Self {
+        self.dport = value;
+        self
+    }
+}
+
+#[derive(Debug)]
+struct TestIcmp {
+    //todo
+}
+impl Default for TestIcmp {
+    fn default() -> Self {
+        Self {
+            // todo
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct TestPacket {
     ttl: u8,
     vlanids: ArrayVec<u16, MAX_VLANS>,
@@ -45,6 +106,10 @@ pub struct TestPacket {
     src_ip: String,
     dst_ip: String,
     proto: u8,
+    udp: Option<TestUdp>,
+    tcp: Option<TestTcp>,
+    icmp: Option<TestIcmp>,
+
     sport: u16, /* source port: ignored if transport is not UDP/TCP */
     dport: u16, /* dest port: ignored if transport is not UDP/TCP */
     data: Vec<u8>,
@@ -57,8 +122,11 @@ impl Default for TestPacket {
             src_mac: "02:00:00:00:00:01".to_string(),
             dst_mac: "02:00:00:00:00:02".to_string(),
             src_ip: "1.2.3.4".to_string(),
-            dst_ip: "5,6,7,8".to_string(),
+            dst_ip: "5.6.7.8".to_string(),
             proto: 17,
+            udp: None,
+            tcp: None,
+            icmp: None,
             sport: 123,
             dport: 456,
             data: vec![],
@@ -99,6 +167,24 @@ impl TestPacket {
     pub fn proto(mut self, value: u8) -> Self {
         self.proto = value;
         self
+    }
+    pub fn udp(&mut self) -> &mut TestUdp {
+        if self.udp.is_none() {
+            self.udp = Some(TestUdp::default())
+        }
+        self.udp.as_mut().unwrap()
+    }
+    pub fn tcp(&mut self) -> &mut TestTcp {
+        if self.tcp.is_none() {
+            self.tcp = Some(TestTcp::default())
+        }
+        self.tcp.as_mut().unwrap()
+    }
+    pub fn icmp(&mut self) -> &mut TestIcmp {
+        if self.icmp.is_none() {
+            self.icmp = Some(TestIcmp::default())
+        }
+        self.icmp.as_mut().unwrap()
     }
     pub fn sport(mut self, value: u16) -> Self {
         self.sport = value;
@@ -228,8 +314,7 @@ pub mod playground {
             let value = (n & u8::MAX as usize) as u8;
             data.push(value);
         }
-        println!("{data:?}");
-
+/* 
         let packet = TestPacket::new()
             .ttl(64)
             .vlan(100)
@@ -240,6 +325,16 @@ pub mod playground {
             .set_data(data.as_slice())
             .build()
             .unwrap();
+  */
+
+
+        let mut packet = TestPacket::new();
+        packet.udp().sport(555).dport(666);
+        packet.tcp().sport(987).dport(777);
+        packet.icmp();
+        println!("{packet:#?}");
+        let packet = packet.build().unwrap();
+
 
         println!("{packet}");
     }
