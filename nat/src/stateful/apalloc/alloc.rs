@@ -18,6 +18,7 @@ use lpm::prefix::{IpPrefix, Prefix};
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, VecDeque};
 use std::net::Ipv6Addr;
+use std::time::Duration;
 
 ///////////////////////////////////////////////////////////////////////////////
 // IpAllocator
@@ -37,6 +38,10 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         Self {
             pool: Arc::new(RwLock::new(pool)),
         }
+    }
+
+    pub(crate) fn idle_timeout(&self) -> Option<Duration> {
+        Some(self.pool.read().ok()?.idle_timeout())
     }
 
     pub(crate) fn deep_clone(&self) -> Result<IpAllocator<I>, AllocatorError> {
@@ -192,6 +197,7 @@ pub(crate) struct NatPool<I: NatIpWithBitmap> {
     bitmap_mapping: BTreeMap<u32, u128>,
     reverse_bitmap_mapping: BTreeMap<u128, u32>,
     in_use: VecDeque<Weak<AllocatedIp<I>>>,
+    idle_timeout: Duration,
 }
 
 impl<I: NatIpWithBitmap> NatPool<I> {
@@ -199,12 +205,14 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         bitmap: PoolBitmap,
         bitmap_mapping: BTreeMap<u32, u128>,
         reverse_bitmap_mapping: BTreeMap<u128, u32>,
+        idle_timeout: Duration,
     ) -> Self {
         Self {
             bitmap,
             bitmap_mapping,
             reverse_bitmap_mapping,
             in_use: VecDeque::new(),
+            idle_timeout,
         }
     }
 
@@ -214,6 +222,10 @@ impl<I: NatIpWithBitmap> NatPool<I> {
 
     fn cleanup(&mut self) {
         self.in_use.retain(|ip| ip.upgrade().is_some());
+    }
+
+    fn idle_timeout(&self) -> Duration {
+        self.idle_timeout
     }
 
     fn ips_in_use(&self) -> impl Iterator<Item = &Weak<AllocatedIp<I>>> {

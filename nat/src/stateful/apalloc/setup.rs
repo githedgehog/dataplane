@@ -15,6 +15,7 @@ use lpm::prefix::{IpPrefix, Prefix};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 impl NatDefaultAllocator {
     /// Build a [`NatDefaultAllocator`] from information collected from a [`VpcTable`] object. This
@@ -70,7 +71,10 @@ impl NatDefaultAllocator {
             .local
             .stateful_nat_exposes_44()
             .try_for_each(|expose| {
-                let tcp_ip_allocator = ip_allocator_for_prefixes(expose.as_range_or_empty())?;
+                // We should always have an idle timeout if we process this expose for stateful NAT.
+                let idle_timeout = expose.idle_timeout().unwrap_or_else(|| unreachable!());
+                let tcp_ip_allocator =
+                    ip_allocator_for_prefixes(expose.as_range_or_empty(), idle_timeout)?;
                 let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
                 build_src_nat_pool_generic(
                     &mut self.pools_src44,
@@ -86,7 +90,10 @@ impl NatDefaultAllocator {
             .local
             .stateful_nat_exposes_66()
             .try_for_each(|expose| {
-                let tcp_ip_allocator = ip_allocator_for_prefixes(expose.as_range_or_empty())?;
+                // We should always have an idle timeout if we process this expose for stateful NAT.
+                let idle_timeout = expose.idle_timeout().unwrap_or_else(|| unreachable!());
+                let tcp_ip_allocator =
+                    ip_allocator_for_prefixes(expose.as_range_or_empty(), idle_timeout)?;
                 let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
                 build_src_nat_pool_generic(
                     &mut self.pools_src66,
@@ -111,7 +118,9 @@ impl NatDefaultAllocator {
             .remote
             .stateful_nat_exposes_44()
             .try_for_each(|expose| {
-                let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.ips)?;
+                // We should always have an idle timeout if we process this expose for stateful NAT.
+                let idle_timeout = expose.idle_timeout().unwrap_or_else(|| unreachable!());
+                let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.ips, idle_timeout)?;
                 let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
                 build_dst_nat_pool_generic(
                     &mut self.pools_dst44,
@@ -127,7 +136,9 @@ impl NatDefaultAllocator {
             .remote
             .stateful_nat_exposes_66()
             .try_for_each(|expose| {
-                let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.ips)?;
+                // We should always have an idle timeout if we process this expose for stateful NAT.
+                let idle_timeout = expose.idle_timeout().unwrap_or_else(|| unreachable!());
+                let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.ips, idle_timeout)?;
                 let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
                 build_dst_nat_pool_generic(
                     &mut self.pools_dst66,
@@ -215,14 +226,16 @@ fn insert_per_proto_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
 
 fn ip_allocator_for_prefixes<J: NatIpWithBitmap>(
     prefixes: &BTreeSet<Prefix>,
+    idle_timeout: Duration,
 ) -> Result<IpAllocator<J>, AllocatorError> {
-    let pool = create_natpool(prefixes)?;
+    let pool = create_natpool(prefixes, idle_timeout)?;
     let allocator = IpAllocator::new(pool);
     Ok(allocator)
 }
 
 fn create_natpool<J: NatIpWithBitmap>(
     prefixes: &BTreeSet<Prefix>,
+    idle_timeout: Duration,
 ) -> Result<NatPool<J>, AllocatorError> {
     // Build mappings for IPv6 <-> u32 bitmap translation
     let (bitmap_mapping, reverse_bitmap_mapping) = create_ipv6_bitmap_mappings(prefixes)?;
@@ -233,7 +246,12 @@ fn create_natpool<J: NatIpWithBitmap>(
         .iter()
         .try_for_each(|prefix| bitmap.add_prefix(prefix, &reverse_bitmap_mapping))?;
 
-    Ok(NatPool::new(bitmap, bitmap_mapping, reverse_bitmap_mapping))
+    Ok(NatPool::new(
+        bitmap,
+        bitmap_mapping,
+        reverse_bitmap_mapping,
+        idle_timeout,
+    ))
 }
 
 fn pool_table_key_for_expose<I: NatIp>(

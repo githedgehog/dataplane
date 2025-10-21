@@ -7,6 +7,7 @@ use crate::port::NatPortError;
 use net::ip::NextHeader;
 use pkt_meta::flow_table::FlowKey;
 use std::fmt::Debug;
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum AllocatorError {
@@ -45,6 +46,32 @@ pub struct AllocationResult<T: Debug> {
     pub dst: Option<T>,
     pub return_src: Option<T>,
     pub return_dst: Option<T>,
+    pub src_flow_idle_timeout: Option<Duration>,
+    pub dst_flow_idle_timeout: Option<Duration>,
+}
+
+impl<T: Debug> AllocationResult<T> {
+    /// Returns the idle timeout for the flow.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(Duration)` if at least one of `src_flow_idle_timeout` or `dst_flow_idle_timeout` is set.
+    /// * `None` if both `src_flow_idle_timeout` and `dst_flow_idle_timeout` are `None`.
+    #[must_use]
+    pub fn idle_timeout(&self) -> Option<Duration> {
+        // Use the minimum of the two timeouts (source/destination).
+        //
+        // FIXME: We shouldn't use just one of the two timeouts, but doing otherwise will require
+        //        uncoupling entry creation for source and destination NAT.
+        match (self.src_flow_idle_timeout, self.dst_flow_idle_timeout) {
+            (Some(src), Some(dst)) => Some(src.min(dst)),
+            (Some(src), None) => Some(src),
+            (None, Some(dst)) => Some(dst),
+            // Given that at least one of alloc.src or alloc.dst is set, we should always have at
+            // least one timeout set.
+            (None, None) => None,
+        }
+    }
 }
 
 /// `NatAllocator` is a trait to allocate IP addresses and ports for stateful NAT. The trait avoids

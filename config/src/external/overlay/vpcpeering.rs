@@ -134,6 +134,17 @@ impl VpcExpose {
     }
 
     #[must_use]
+    pub fn idle_timeout(&self) -> Option<Duration> {
+        self.nat.as_ref().and_then(|nat| {
+            if let VpcExposeNatConfig::Stateful(config) = &nat.config {
+                Some(config.idle_timeout)
+            } else {
+                None
+            }
+        })
+    }
+
+    #[must_use]
     pub fn as_range_or_empty(&self) -> &BTreeSet<Prefix> {
         self.nat
             .as_ref()

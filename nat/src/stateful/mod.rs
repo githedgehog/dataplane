@@ -56,16 +56,11 @@ pub enum StatefulNatError {
     IcmpErrorMsg(IcmpErrorMsgError),
 }
 
-const SESSION_TIMEOUT: Duration = Duration::from_secs(60 * 60); // one hour
-
-fn session_timeout_time() -> Instant {
-    Instant::now() + SESSION_TIMEOUT
-}
-
 #[derive(Debug)]
 struct NatFlowState<I: NatIpWithBitmap> {
     src_alloc: Option<AllocatedIpPort<I>>,
     dst_alloc: Option<AllocatedIpPort<I>>,
+    idle_timeout: Duration,
 }
 
 /// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`StatefulNat`] processes
@@ -135,13 +130,22 @@ impl StatefulNat {
         let flow_info = packet.get_meta_mut().flow_info.as_mut()?;
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
-        flow_info.extend_expiry(SESSION_TIMEOUT).ok()?;
+        flow_info.extend_expiry(state.idle_timeout).ok()?;
         let translation_data = Self::get_translation_info(&state.src_alloc, &state.dst_alloc);
         Some(translation_data)
     }
 
-    fn create_session<I: NatIpWithBitmap>(&mut self, flow_key: &FlowKey, state: NatFlowState<I>) {
-        let flow_info = FlowInfo::new(session_timeout_time());
+    fn create_session<I: NatIpWithBitmap>(
+        &mut self,
+        flow_key: &FlowKey,
+        state: NatFlowState<I>,
+        idle_timeout: Duration,
+    ) {
+        fn session_timeout_time(timeout: Duration) -> Instant {
+            Instant::now() + timeout
+        }
+
+        let flow_info = FlowInfo::new(session_timeout_time(idle_timeout));
         flow_info.locked.write().unwrap().nat_state = Some(Box::new(state));
 
         self.sessions.insert(*flow_key, flow_info);
@@ -205,14 +209,17 @@ impl StatefulNat {
 
     fn new_states_from_alloc<I: NatIpWithBitmap>(
         alloc: AllocationResult<AllocatedIpPort<I>>,
+        idle_timeout: Duration,
     ) -> (NatFlowState<I>, NatFlowState<I>) {
         let forward_state = NatFlowState {
             src_alloc: alloc.src,
             dst_alloc: alloc.dst,
+            idle_timeout,
         };
         let reverse_state = NatFlowState {
             src_alloc: alloc.return_src,
             dst_alloc: alloc.return_dst,
+            idle_timeout,
         };
         (forward_state, reverse_state)
     }
@@ -367,15 +374,18 @@ impl StatefulNat {
             // No NAT for this tuple, leave the packet unchanged - Do not drop it
             return Ok(false);
         }
+        // Given that at least one of alloc.src or alloc.dst is set, we should always have at
+        // least one timeout set.
+        let idle_timeout = alloc.idle_timeout().unwrap_or_else(|| unreachable!());
 
         self.translate_icmp_inner_packet_if_any::<Buf, I>(packet, flow_key)?;
 
         let translation_info = Self::get_translation_info(&alloc.src, &alloc.dst);
         let reverse_flow_key = Self::new_reverse_session(flow_key, &alloc, src_vpc_id, dst_vpc_id)?;
-        let (forward_state, reverse_state) = Self::new_states_from_alloc(alloc);
+        let (forward_state, reverse_state) = Self::new_states_from_alloc(alloc, idle_timeout);
 
-        self.create_session(flow_key, forward_state);
-        self.create_session(&reverse_flow_key, reverse_state);
+        self.create_session(flow_key, forward_state, idle_timeout);
+        self.create_session(&reverse_flow_key, reverse_state, idle_timeout);
 
         Self::stateful_translate::<Buf>(packet, &translation_info).and(Ok(true))
     }

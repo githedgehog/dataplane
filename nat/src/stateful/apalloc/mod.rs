@@ -58,8 +58,8 @@
 //! [`AllocatedPortBlock`](port_alloc::AllocatedPortBlock), to deallocate the ports when the
 //! [`AllocatedPort`](port_alloc::AllocatedPort) is dropped;
 //! [`AllocatedPortBlock`](port_alloc::AllocatedPortBlock) has a back reference to
-//! [`AllocatedIp`](alloc::AllocatedIp), and then the [`IpAllocator`](alloc::IpAllocator), to
-//! deallocate the IP address when they are dropped.
+//! [`AllocatedIp`](alloc::AllocatedIp), and then the [`IpAllocator`], to deallocate the IP address
+//! when they are dropped.
 
 #![allow(clippy::ip_constant)]
 #![allow(rustdoc::private_intra_doc_links)]
@@ -67,6 +67,7 @@
 use super::allocator::{AllocationResult, AllocatorError};
 use super::{NatAllocator, NatIp};
 use crate::port::NatPort;
+use crate::stateful::apalloc::alloc::IpAllocator;
 pub use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
@@ -278,6 +279,8 @@ impl NatDefaultAllocator {
             dst: dst_mapping,
             return_src: reverse_src_mapping,
             return_dst: reverse_dst_mapping,
+            src_flow_idle_timeout: pool_src_opt.and_then(IpAllocator::idle_timeout),
+            dst_flow_idle_timeout: pool_dst_opt.and_then(IpAllocator::idle_timeout),
         })
     }
 
