@@ -5,6 +5,7 @@ use axum::{Router, response::Response, routing::get};
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 use stats::StatsCollector;
 use std::thread::JoinHandle;
+use std::time::Duration;
 use tracing::{error, info};
 
 use tracectl::trace_target;
@@ -77,6 +78,18 @@ impl MetricsServer {
     #[tracing::instrument(level = "info", skip(stats))]
     async fn run(addr: std::net::SocketAddr, stats: StatsCollector) {
         let PrometheusHandler { handle } = PrometheusHandler::new();
+
+        let upkeep_handle = handle.clone();
+        tokio::spawn(async move {
+            // avgerage prometheus scraper is between 15 and 60 secs,
+            // so run upkeep every 30 secs is a reasonable default
+            let mut ticker = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                ticker.tick().await;
+                // run_upkeep is synchronous; call it periodically.
+                upkeep_handle.run_upkeep();
+            }
+        });
         tokio::spawn(stats.run());
         let app = Router::new()
             .route("/metrics", get(metrics_handler))
