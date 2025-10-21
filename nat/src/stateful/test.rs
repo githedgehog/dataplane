@@ -17,6 +17,7 @@ mod tests {
     use config::internal::interfaces::interface::{IfVtepConfig, InterfaceType};
     use config::internal::routing::bgp::BgpConfig;
     use config::internal::routing::vrf::VrfConfig;
+    use net::udp::UdpPort;
 
     use crate::StatefulNat;
 
@@ -28,10 +29,14 @@ mod tests {
     use net::vxlan::Vni;
     use pipeline::NetworkFunction;
     use pkt_meta::flow_table::flow_key::Uni;
-    use pkt_meta::flow_table::{FlowKey, FlowTable};
-    use std::net::Ipv4Addr;
+    use pkt_meta::flow_table::{FlowKey, FlowTable, IpProtoKey, UdpProtoKey};
+    use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
+    use std::time::Duration;
     use tracing_test::traced_test;
+
+    const FIVE_MINUTES: Duration = Duration::from_secs(5 * 60);
+    const ONE_MINUTE: Duration = Duration::from_secs(60);
 
     fn addr_v4(addr: &str) -> Ipv4Addr {
         Ipv4Addr::from_str(addr).expect("Failed to create IPv4 address")
@@ -99,7 +104,7 @@ mod tests {
 
         // VPC1 <-> VPC2
         let expose121 = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_stateful_nat(Some(FIVE_MINUTES))
             .unwrap()
             .ip("1.1.0.0/16".into())
             .as_range("10.12.0.0/16".into());
@@ -115,7 +120,7 @@ mod tests {
             .ip("1.3.0.0/24".into())
             .as_range("10.100.0.0/24".into());
         let expose211 = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_stateful_nat(Some(ONE_MINUTE))
             .unwrap()
             .ip("1.2.2.0/24".into())
             .as_range("10.201.201.0/24".into());
@@ -369,6 +374,36 @@ mod tests {
         assert_eq!(return_output_dst, addr_v4(orig_src));
         assert_eq!(return_output_src_port, 443);
         assert_eq!(return_output_dst_port, 9998);
+
+        // Get corresponding session table entries and check idle timeout
+        let Some((_, idle_timeout)) = nat.get_session::<Ipv4Addr>(
+            VpcDiscriminant::VNI(vni(100)),
+            IpAddr::from_str(orig_src).unwrap(),
+            VpcDiscriminant::VNI(vni(200)),
+            IpAddr::from_str(orig_dst).unwrap(),
+            IpProtoKey::Udp(UdpProtoKey {
+                src_port: UdpPort::new_checked(9998).unwrap(),
+                dst_port: UdpPort::new_checked(443).unwrap(),
+            }),
+        ) else {
+            unreachable!()
+        };
+        // We expect to find the minimum (non-empty) value between the two VPCs involved
+        assert_eq!(idle_timeout, ONE_MINUTE);
+        // Reverse path
+        let Some((_, idle_timeout)) = nat.get_session::<Ipv4Addr>(
+            VpcDiscriminant::VNI(vni(200)),
+            IpAddr::from_str(target_dst).unwrap(),
+            VpcDiscriminant::VNI(vni(100)),
+            IpAddr::from_str(target_src).unwrap(),
+            IpProtoKey::Udp(UdpProtoKey {
+                src_port: UdpPort::new_checked(output_dst_port).unwrap(),
+                dst_port: UdpPort::new_checked(output_src_port).unwrap(),
+            }),
+        ) else {
+            unreachable!()
+        };
+        assert_eq!(idle_timeout, ONE_MINUTE);
 
         // Update config and allocator
         let mut new_config = build_sample_config(build_overlay_2vpcs());

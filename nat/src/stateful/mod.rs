@@ -124,6 +124,8 @@ impl StatefulNat {
         FlowKey::try_from(Uni(packet)).ok()
     }
 
+    // Look up for a session for a packet, based on attached flow key.
+    // On success, update session timeout.
     fn lookup_session<I: NatIpWithBitmap, Buf: PacketBufferMut>(
         packet: &mut Packet<Buf>,
     ) -> Option<NatTranslationData> {
@@ -133,6 +135,33 @@ impl StatefulNat {
         flow_info.extend_expiry(state.idle_timeout).ok()?;
         let translation_data = Self::get_translation_info(&state.src_alloc, &state.dst_alloc);
         Some(translation_data)
+    }
+
+    // Look up for a session by passing the parameters that make up a flow key.
+    // Do NOT update session timeout.
+    //
+    // Used for tests only at the moment.
+    #[cfg(test)]
+    pub(crate) fn get_session<I: NatIpWithBitmap>(
+        &self,
+        src_vpcd: VpcDiscriminant,
+        src_ip: IpAddr,
+        dst_vpcd: VpcDiscriminant,
+        dst_ip: IpAddr,
+        proto_key_info: IpProtoKey,
+    ) -> Option<(NatTranslationData, Duration)> {
+        let flow_key = FlowKey::uni(
+            Some(src_vpcd),
+            src_ip,
+            Some(dst_vpcd),
+            dst_ip,
+            proto_key_info,
+        );
+        let flow_info = self.sessions.lookup(&flow_key)?;
+        let value = flow_info.locked.read().unwrap();
+        let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
+        let translation_data = Self::get_translation_info(&state.src_alloc, &state.dst_alloc);
+        Some((translation_data, state.idle_timeout))
     }
 
     fn create_session<I: NatIpWithBitmap>(
