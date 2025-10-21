@@ -9,7 +9,7 @@ use crate::stateful::allocator_writer::StatefulNatConfig;
 use crate::stateful::{NatAllocator, NatIp};
 use config::ConfigError;
 use config::external::overlay::vpc::Peering;
-use config::external::overlay::vpcpeering::VpcExpose;
+use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
 use config::utils::collapse_prefixes_peering;
 use lpm::prefix::{IpPrefix, Prefix};
 use net::ip::NextHeader;
@@ -67,45 +67,25 @@ impl NatDefaultAllocator {
         src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<(), AllocatorError> {
-        peering
-            .local
-            .stateful_nat_exposes_44()
-            .try_for_each(|expose| {
-                // We should always have an idle timeout if we process this expose for stateful NAT.
-                let idle_timeout = expose.idle_timeout().unwrap_or_else(|| unreachable!());
-                let tcp_ip_allocator =
-                    ip_allocator_for_prefixes(expose.as_range_or_empty(), idle_timeout)?;
-                let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
-                build_src_nat_pool_generic(
-                    &mut self.pools_src44,
-                    expose,
-                    src_vpc_id,
-                    dst_vpc_id,
-                    &tcp_ip_allocator,
-                    &udp_ip_allocator,
-                )
-            })?;
+        build_nat_pool_generic(
+            &peering.local,
+            src_vpc_id,
+            dst_vpc_id,
+            VpcManifest::stateful_nat_exposes_44,
+            VpcExpose::as_range_or_empty,
+            |expose| &expose.ips,
+            &mut self.pools_src44,
+        )?;
 
-        peering
-            .local
-            .stateful_nat_exposes_66()
-            .try_for_each(|expose| {
-                // We should always have an idle timeout if we process this expose for stateful NAT.
-                let idle_timeout = expose.idle_timeout().unwrap_or_else(|| unreachable!());
-                let tcp_ip_allocator =
-                    ip_allocator_for_prefixes(expose.as_range_or_empty(), idle_timeout)?;
-                let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
-                build_src_nat_pool_generic(
-                    &mut self.pools_src66,
-                    expose,
-                    src_vpc_id,
-                    dst_vpc_id,
-                    &tcp_ip_allocator,
-                    &udp_ip_allocator,
-                )
-            })?;
-
-        Ok(())
+        build_nat_pool_generic(
+            &peering.local,
+            src_vpc_id,
+            dst_vpc_id,
+            VpcManifest::stateful_nat_exposes_66,
+            VpcExpose::as_range_or_empty,
+            |expose| &expose.ips,
+            &mut self.pools_src66,
+        )
     }
 
     fn build_dst_nat_pool_for_expose(
@@ -114,80 +94,61 @@ impl NatDefaultAllocator {
         src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<(), AllocatorError> {
-        peering
-            .remote
-            .stateful_nat_exposes_44()
-            .try_for_each(|expose| {
-                // We should always have an idle timeout if we process this expose for stateful NAT.
-                let idle_timeout = expose.idle_timeout().unwrap_or_else(|| unreachable!());
-                let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.ips, idle_timeout)?;
-                let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
-                build_dst_nat_pool_generic(
-                    &mut self.pools_dst44,
-                    expose,
-                    src_vpc_id,
-                    dst_vpc_id,
-                    &tcp_ip_allocator,
-                    &udp_ip_allocator,
-                )
-            })?;
+        build_nat_pool_generic(
+            &peering.remote,
+            src_vpc_id,
+            dst_vpc_id,
+            VpcManifest::stateful_nat_exposes_44,
+            |expose| &expose.ips,
+            VpcExpose::as_range_or_empty,
+            &mut self.pools_dst44,
+        )?;
 
-        peering
-            .remote
-            .stateful_nat_exposes_66()
-            .try_for_each(|expose| {
-                // We should always have an idle timeout if we process this expose for stateful NAT.
-                let idle_timeout = expose.idle_timeout().unwrap_or_else(|| unreachable!());
-                let tcp_ip_allocator = ip_allocator_for_prefixes(&expose.ips, idle_timeout)?;
-                let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
-                build_dst_nat_pool_generic(
-                    &mut self.pools_dst66,
-                    expose,
-                    src_vpc_id,
-                    dst_vpc_id,
-                    &tcp_ip_allocator,
-                    &udp_ip_allocator,
-                )
-            })?;
-
-        Ok(())
+        build_nat_pool_generic(
+            &peering.remote,
+            src_vpc_id,
+            dst_vpc_id,
+            VpcManifest::stateful_nat_exposes_66,
+            |expose| &expose.ips,
+            VpcExpose::as_range_or_empty,
+            &mut self.pools_dst66,
+        )
     }
 }
 
-fn build_src_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(
-    table: &mut PoolTable<I, J>,
-    expose: &VpcExpose,
+fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, Iter, G, H>(
+    manifest: &'a VpcManifest,
     src_vpc_id: VpcDiscriminant,
     dst_vpc_id: VpcDiscriminant,
-    tcp_allocator: &IpAllocator<J>,
-    udp_allocator: &IpAllocator<J>,
-) -> Result<(), AllocatorError> {
-    add_pool_entries(
-        table,
-        &expose.ips,
-        src_vpc_id,
-        dst_vpc_id,
-        tcp_allocator,
-        udp_allocator,
-    )
-}
-
-fn build_dst_nat_pool_generic<I: NatIpWithBitmap, J: NatIpWithBitmap>(
+    // A filter to select relevant exposes: those with stateful NAT, for the relevant IP version
+    exposes_filter: F,
+    // A function to get the list of prefixes to translate into
+    original_prefixes_from_expose: G,
+    // A function to get the list of prefixes to translate from
+    target_prefixes_from_expose: H,
     table: &mut PoolTable<I, J>,
-    expose: &VpcExpose,
-    src_vpc_id: VpcDiscriminant,
-    dst_vpc_id: VpcDiscriminant,
-    tcp_allocator: &IpAllocator<J>,
-    udp_allocator: &IpAllocator<J>,
-) -> Result<(), AllocatorError> {
-    add_pool_entries(
-        table,
-        expose.as_range_or_empty(),
-        src_vpc_id,
-        dst_vpc_id,
-        tcp_allocator,
-        udp_allocator,
-    )
+) -> Result<(), AllocatorError>
+where
+    F: FnOnce(&'a VpcManifest) -> Iter,
+    Iter: Iterator<Item = &'a VpcExpose>,
+    G: Fn(&'a VpcExpose) -> &'a BTreeSet<Prefix>,
+    H: Fn(&'a VpcExpose) -> &'a BTreeSet<Prefix>,
+{
+    exposes_filter(manifest).try_for_each(|expose| {
+        // We should always have an idle timeout if we process this expose for stateful NAT.
+        let idle_timeout = expose.idle_timeout().unwrap_or_else(|| unreachable!());
+        let tcp_ip_allocator =
+            ip_allocator_for_prefixes(original_prefixes_from_expose(expose), idle_timeout)?;
+        let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
+        add_pool_entries(
+            table,
+            target_prefixes_from_expose(expose),
+            src_vpc_id,
+            dst_vpc_id,
+            &tcp_ip_allocator,
+            &udp_ip_allocator,
+        )
+    })
 }
 
 fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
