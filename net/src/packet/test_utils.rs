@@ -314,19 +314,18 @@ pub mod playground {
             let value = (n & u8::MAX as usize) as u8;
             data.push(value);
         }
-/* 
-        let packet = TestPacket::new()
-            .ttl(64)
-            .vlan(100)
-            .src_ip("4.4.4.4")
-            .dst_ip("8.8.8.8")
-            .proto(17)
-            .dport(53)
-            .set_data(data.as_slice())
-            .build()
-            .unwrap();
-  */
-
+        /*
+              let packet = TestPacket::new()
+                  .ttl(64)
+                  .vlan(100)
+                  .src_ip("4.4.4.4")
+                  .dst_ip("8.8.8.8")
+                  .proto(17)
+                  .dport(53)
+                  .set_data(data.as_slice())
+                  .build()
+                  .unwrap();
+        */
 
         let mut packet = TestPacket::new();
         packet.udp().sport(555).dport(666);
@@ -334,7 +333,6 @@ pub mod playground {
         packet.icmp();
         println!("{packet:#?}");
         let packet = packet.build().unwrap();
-
 
         println!("{packet}");
     }

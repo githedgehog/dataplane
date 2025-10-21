@@ -13,6 +13,9 @@ pub use contract::*;
 #[cfg(any(doc, test, feature = "test_buffer"))]
 pub mod test_utils;
 
+#[cfg(any(doc, test, feature = "test_buffer"))]
+pub mod testpkt;
+
 use crate::buffer::{Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart};
 use crate::eth::Eth;
 use crate::eth::EthError;
