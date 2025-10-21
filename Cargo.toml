@@ -23,6 +23,7 @@ members = [
     "rekon",
     "routing",
     "stats",
+    "sysfs",
     "test-utils",
     "tracectl",
     "vpcmap",
@@ -57,6 +58,7 @@ pkt-meta = { path = "./pkt-meta", package = "dataplane-pkt-meta" }
 rekon = { path = "./rekon", package = "dataplane-rekon" }
 routing = { path = "./routing", package = "dataplane-routing" }
 stats = { path = "./stats", package = "dataplane-stats" }
+sysfs = { path = "./sysfs", package = "dataplane-sysfs" }
 test-utils = { path = "./test-utils", package = "dataplane-test-utils" }
 tracectl = { path = "./tracectl", package = "dataplane-tracectl" }
 vpcmap = { path = "./vpcmap", package = "dataplane-vpcmap" }

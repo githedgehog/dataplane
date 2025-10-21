@@ -1,5 +1,5 @@
 [package]
-name = "dataplane-init"
+name = "dataplane-sysfs"
 version = "0.1.0"
 edition = "2024"
 publish = false
@@ -7,9 +7,7 @@ license = "Apache-2.0"
 
 [dependencies]
 # internal
-hardware = { workspace = true, features = ["serde", "scan"] }
 id = { workspace = true }
-sysfs = { workspace = true }
 
 # external
 nix = { workspace = true, features = ["mount", "fs"] }
@@ -22,6 +20,7 @@ tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [dev-dependencies]
 # internal
+n-vm = { workspace = true }
 
 # external
 

@@ -4,19 +4,73 @@
 //! [sysfs] manipulation utilities.
 //!
 //! Basically, this is a module full of minor guard rails to discourage mistakes when manipulating system impacting
-//! kernel functionality as privileged process.
+//! kernel functionality as a privileged process.
 //!
 //! [sysfs]: https://www.kernel.org/doc/Documentation/filesystems/sysfs.txt
 
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
-use crate::InitErr;
+use tracing::{error, info};
+
+/// Errors which might occur when accessing sysfs directories
+#[derive(Debug, thiserror::Error)]
+pub enum SysfsErr {
+    /// The path is not under a mounted sysfs and therefore does not qualify as a [`SysfsPath`].
+    #[error("path {0:?} is not under sysfs")]
+    PathNotUnderSysfs(PathBuf),
+    /// Some [`std::io::Error`] error occurred
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
+    /// Invalid UTF-8 in a path under sysfs is an absolutely wild error case we expect to
+    /// never see.
+    ///
+    /// The kernel just uses ascii byte strings for sysfs, so you should never see this
+    /// error under healthy conditions.
+    /// In the event of illegal UTF-8, something is likely deeply wrong with the kernel;
+    /// likely memory corruption or some other security impacting issue.
+    ///
+    /// As such, the [`SysfsErr::SysfsPathIsNotValidUtf8`] branch deliberately does not include
+    /// any information about the offending string name or any derivative, even for logging
+    /// or error reporting.
+    /// At best you will just end up mangling the log with unknown/unprintable bytes.
+    /// At worst, injecting arbitrary bytes into a system log may be what an attacker needs
+    /// for lateral compromise of some other system.
+    ///
+    /// You should likely `panic!` if you reach this error case as there is no plausible
+    /// recovery from this type of low level operating system malfunction.
+    #[error("path under sysfs is not a valid UTF-8 string")]
+    SysfsPathIsNotValidUtf8,
+}
 
 /// We manipulate paths under sysfs, but, for the sake of safety, we also determine where sysfs is
 /// actually mounted before we start messing with directories.
-pub(crate) static SYSFS: OnceLock<SysfsPath> = OnceLock::new();
+pub fn sysfs_root() -> &'static SysfsPath {
+    static SYSFS: LazyLock<SysfsPath> = LazyLock::new(|| {
+        let sysfs_mounts: Vec<_> = procfs::mounts()
+            .unwrap() // acceptable panic: if we can't find /sys then this process will never work
+            .into_iter()
+            .filter(|mount| mount.fs_vfstype == "sysfs")
+            .collect();
+        let sysfs_path = if sysfs_mounts.is_empty() {
+            panic!("sysfs is not mounted: unable to initialize dataplane");
+        } else if sysfs_mounts.len() > 1 {
+            const MSG_PREFIX: &str =
+                "suspicious configuration found: sysfs is mounted at more than one location.";
+            let message = format!("{MSG_PREFIX}. Filesystems found at {sysfs_mounts:#?}");
+            error!("{message}");
+            panic!("{message}");
+        } else {
+            sysfs_mounts[0].fs_file.clone()
+        };
+        #[allow(clippy::unwrap_used)] // failure to find here is completely fatal
+        let sysfs_root = SysfsPath::new(&sysfs_path).unwrap();
+        info!("found sysfs filesystem at {sysfs_root}");
+        sysfs_root
+    });
+    &SYSFS
+}
 
 /// Path which is promised to
 ///
@@ -24,7 +78,7 @@ pub(crate) static SYSFS: OnceLock<SysfsPath> = OnceLock::new();
 /// 2. be both absolute and canonical,
 /// 3. be both safely and correctly represented as a valid UTF-8 string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct SysfsPath(PathBuf);
+pub struct SysfsPath(PathBuf);
 
 impl SysfsPath {
     /// Create a new `SysfsPath` from a path.
@@ -42,24 +96,24 @@ impl SysfsPath {
     /// - If the canonicalized path is not under sysfs, an error is returned.
     /// - If the path is under sysfs but is (somehow) not a valid UTF-8 string, an error is returned.
     /// - io errors (such as permission denied) can also occur
-    pub fn new(path: impl AsRef<Path>) -> Result<SysfsPath, InitErr> {
+    pub fn new(path: impl AsRef<Path>) -> Result<SysfsPath, SysfsErr> {
         let path = path.as_ref();
         if path.as_os_str().to_str().is_none() {
-            return Err(InitErr::SysfsPathIsNotValidUtf8);
+            return Err(SysfsErr::SysfsPathIsNotValidUtf8);
         }
         let path = std::fs::canonicalize(path)?;
         if path.as_os_str().to_str().is_none() {
-            return Err(InitErr::SysfsPathIsNotValidUtf8);
+            return Err(SysfsErr::SysfsPathIsNotValidUtf8);
         }
         match nix::sys::statfs::statfs(&path) {
             Ok(stats) => {
                 if stats.filesystem_type() == nix::sys::statfs::SYSFS_MAGIC {
                     Ok(SysfsPath(path))
                 } else {
-                    Err(InitErr::PathNotUnderSysfs(path))
+                    Err(SysfsErr::PathNotUnderSysfs(path))
                 }
             }
-            Err(errno) => Err(InitErr::IoError(errno.into())),
+            Err(errno) => Err(SysfsErr::IoError(errno.into())),
         }
     }
 
@@ -72,7 +126,7 @@ impl SysfsPath {
     ///
     /// # Errors
     ///
-    /// [`InitErr`] will occur if
+    /// [`SysfsErr`] will occur if
     ///
     /// 1. the child path does not exist
     /// 2. the child path does not resolve to a path in sysfs (e.g. something is bind mounted under sysfs)
@@ -88,7 +142,7 @@ impl SysfsPath {
     ///
     /// In all cases, the returned path will be canonicalized.
     /// </div>
-    pub fn relative(&self, path: impl AsRef<Path>) -> Result<SysfsPath, InitErr> {
+    pub fn relative(&self, path: impl AsRef<Path>) -> Result<SysfsPath, SysfsErr> {
         let path = path.as_ref();
         let mut child_path = self.inner().clone();
         child_path.push(path);
@@ -169,18 +223,18 @@ impl SysfsFile {
     ///
     /// - If the path leads out of the sysfs mount
     /// - On permissions errors or otherwise invalid file access
-    pub fn open(path: impl AsRef<Path>, options: &std::fs::OpenOptions) -> Result<Self, InitErr> {
+    pub fn open(path: impl AsRef<Path>, options: &std::fs::OpenOptions) -> Result<Self, SysfsErr> {
         let path = SysfsPath::new(path.as_ref())?;
-        let file = options.open(path.inner()).map_err(InitErr::IoError)?;
+        let file = options.open(path.inner()).map_err(SysfsErr::IoError)?;
         match nix::sys::statfs::fstatfs(file.as_fd()) {
             Ok(stat) => {
                 if stat.filesystem_type() == nix::sys::statfs::SYSFS_MAGIC {
                     Ok(SysfsFile(file))
                 } else {
-                    Err(InitErr::PathNotUnderSysfs(path.inner().clone()))
+                    Err(SysfsErr::PathNotUnderSysfs(path.inner().clone()))
                 }
             }
-            Err(e) => Err(InitErr::IoError(e.into())),
+            Err(e) => Err(SysfsErr::IoError(e.into())),
         }
     }
 }
