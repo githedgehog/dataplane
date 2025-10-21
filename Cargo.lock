@@ -1031,6 +1031,7 @@ dependencies = [
  "capctl",
  "dataplane-dpdk-sysroot-helper",
  "dataplane-id",
+ "dataplane-sysfs",
  "dataplane-test-utils",
  "fixin",
  "hwlocality",

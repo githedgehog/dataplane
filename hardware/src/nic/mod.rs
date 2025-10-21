@@ -1,26 +1,34 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! network card initialization logic and utilities.
+//! network card initialization, detection, and manipulation utilities.
 
 use std::{
     io::{ErrorKind, Write},
     str::FromStr,
 };
 
+use sysfs::{SysfsErr, SysfsFile, SysfsPath, sysfs_root};
 use tracing::{error, info, warn};
 
-use crate::{
-    InitErr,
-    sysfs::{SYSFS, SysfsFile, SysfsPath},
-};
+use crate::pci::address::PciAddress;
+
+#[derive(Debug, thiserror::Error)]
+pub enum DriverErr {
+    #[error(transparent)]
+    Sysfs(SysfsErr),
+    #[error("unable to find driver {0}")]
+    MissingDriver(PciDriver),
+    #[error("driver {driver_name} is not supported")]
+    NotSupported { driver_name: String },
+}
 
 /// Structure to represent a network interface card using a PCI address.
 ///
 /// Note that the NIC may or may not be visible to the OS, depending on the state of
 /// the system.
 pub struct PciNic {
-    address: hardware::pci::address::PciAddress,
+    address: PciAddress,
 }
 
 impl PciNic {
@@ -28,8 +36,8 @@ impl PciNic {
     ///
     /// # Errors
     ///
-    /// [`InitErr`] - If the device does not exist or is not accessible.
-    pub fn new(address: hardware::pci::address::PciAddress) -> Result<PciNic, InitErr> {
+    /// [`SysfsErr`] - If the device does not exist or is not accessible.
+    pub fn new(address: PciAddress) -> Result<PciNic, SysfsErr> {
         let nominal = PciNic { address };
         // check to see if device actually exists
         nominal.device_path()?;
@@ -47,12 +55,12 @@ impl PciNic {
     /// - Panics if the device path is not under the sysfs directory (most likely a broken kernel)
     /// - Panics if the device path is not valid UTF-8 (very likely a broken kernel)
     /// - Panics if called before setup function
-    fn device_path(&self) -> Result<SysfsPath, InitErr> {
-        let sysfs = SYSFS.get().unwrap(); // this should be unreachable if setup was successful
+    fn device_path(&self) -> Result<SysfsPath, SysfsErr> {
+        let sysfs = sysfs_root();
         sysfs.relative(format!("bus/pci/devices/{self}"))
     }
 
-    fn override_file(&self) -> Result<SysfsFile, InitErr> {
+    fn override_file(&self) -> Result<SysfsFile, SysfsErr> {
         let override_path = self.device_path()?.relative("driver_override")?;
         let mut options = std::fs::OpenOptions::new();
         options.write(true);
@@ -61,21 +69,20 @@ impl PciNic {
 }
 
 impl GetDriver for PciNic {
-    fn driver(&self) -> Result<Option<PciDriver>, InitErr> {
-        let device_path = self.device_path()?;
+    fn driver(&self) -> Result<Option<PciDriver>, DriverErr> {
+        let device_path = self.device_path().map_err(DriverErr::Sysfs)?;
         info!("found device {self} under device path {:?}", device_path);
-        let driver_path = device_path.relative("driver")?;
+        let driver_path = device_path.relative("driver").map_err(DriverErr::Sysfs)?;
         info!("{self} is using driver path {driver_path:?}");
         match driver_path.inner().file_name() {
             Some(os_str) => match os_str.to_str() {
                 Some(driver_name) => match PciDriver::from_str(driver_name) {
                     Ok(driver) => Ok(Some(driver)),
-                    Err(_) => Err(InitErr::IoError(std::io::Error::new(
-                        ErrorKind::Unsupported,
-                        format!("driver {driver_name} is not supported"),
-                    ))),
+                    Err(_) => Err(DriverErr::NotSupported {
+                        driver_name: driver_name.to_string(),
+                    }),
                 },
-                None => Err(InitErr::SysfsPathIsNotValidUtf8),
+                None => Err(DriverErr::Sysfs(SysfsErr::SysfsPathIsNotValidUtf8)),
             },
             None => unreachable!("sysfs path has no components?"),
         }
@@ -120,42 +127,38 @@ impl PciDriver {
     /// - Panics if the driver path is not under sysfs.
     /// - Panics if the driver path is not valid UTF-8.
     /// - Panics if this function is called before calling setup
-    fn driver_path(self) -> Result<SysfsPath, InitErr> {
-        match SYSFS
-            .get()
-            .unwrap() // unreachable if setup was successful
-            .relative(format!("bus/pci/drivers/{self}"))
-        {
+    fn driver_path(self) -> Result<SysfsPath, DriverErr> {
+        match sysfs_root().relative(format!("bus/pci/drivers/{self}")) {
             Ok(path) => Ok(path),
-            Err(InitErr::IoError(e)) => match e.kind() {
+            Err(SysfsErr::IoError(e)) => match e.kind() {
                 std::io::ErrorKind::NotFound => {
                     warn!(
                         "driver {self} does not seem to be available.  You may need to modprobe {self}"
                     );
-                    Err(InitErr::DriverMissing(self))
+                    Err(DriverErr::MissingDriver(self))
                 }
-                _ => Err(InitErr::IoError(e)),
+                _ => Err(DriverErr::Sysfs(SysfsErr::IoError(e))),
             },
-            Err(e) => Err(e),
+            Err(e) => Err(DriverErr::Sysfs(e)),
         }
     }
 
-    fn bind_file(self) -> Result<SysfsFile, InitErr> {
+    fn bind_file(self) -> Result<SysfsFile, DriverErr> {
         let driver_path = self.driver_path()?;
         let path = format!("{driver_path}/bind");
         info!("opening bind file {path}");
         let mut options = std::fs::OpenOptions::new();
         options.write(true);
-        SysfsFile::open(path, &options)
+        SysfsFile::open(path, &options).map_err(DriverErr::Sysfs)
     }
 
-    fn unbind_file(self) -> Result<SysfsFile, InitErr> {
+    fn unbind_file(self) -> Result<SysfsFile, DriverErr> {
         let driver_path = self.driver_path()?;
         let path = format!("{driver_path}/unbind");
         info!("opening unbind file {path}");
         let mut options = std::fs::OpenOptions::new();
         options.write(true);
-        SysfsFile::open(path, &options)
+        SysfsFile::open(path, &options).map_err(DriverErr::Sysfs)
     }
 }
 
@@ -185,7 +188,7 @@ trait GetDriver {
     ///
     /// This function should not panic under normal circumstances.
     /// The only deliberate panics address wildly broken invariants or compromised kernel memory.
-    fn driver(&self) -> Result<Option<PciDriver>, InitErr>;
+    fn driver(&self) -> Result<Option<PciDriver>, DriverErr>;
 }
 
 /// Trait for pci devices which may be unbound from their linux driver.
@@ -224,8 +227,8 @@ trait OverridePciDriver {
 }
 
 impl UnbindPciDriver for PciNic {
-    type Error = InitErr;
-    fn unbind(&mut self) -> Result<(), InitErr> {
+    type Error = DriverErr;
+    fn unbind(&mut self) -> Result<(), DriverErr> {
         let Some(driver) = self.driver()? else {
             info!("no driver bound to {self}");
             return Ok(());
@@ -233,18 +236,20 @@ impl UnbindPciDriver for PciNic {
         driver
             .unbind_file()?
             .write_all(format!("{self}").as_bytes())
-            .map_err(InitErr::IoError)
+            .map_err(|e| DriverErr::Sysfs(SysfsErr::IoError(e)))
     }
 }
 
 impl OverridePciDriver for PciNic {
-    type Error = InitErr;
+    type Error = DriverErr;
 
-    fn override_driver(&mut self, driver: PciDriver) -> Result<(), InitErr> {
+    fn override_driver(&mut self, driver: PciDriver) -> Result<(), DriverErr> {
         info!("overriding driver for {self} to {driver}");
-        self.override_file()?
+        self.override_file()
+            .map_err(DriverErr::Sysfs)?
             .write_all(driver.to_string().as_bytes())
-            .map_err(InitErr::IoError)
+            .map_err(SysfsErr::IoError)
+            .map_err(DriverErr::Sysfs)
     }
 }
 
@@ -263,15 +268,15 @@ trait BindPciDriver {
 }
 
 impl BindPciDriver for PciNic {
-    type Error = InitErr;
+    type Error = DriverErr;
 
-    fn bind(&mut self, driver: PciDriver) -> Result<(), InitErr> {
+    fn bind(&mut self, driver: PciDriver) -> Result<(), DriverErr> {
         let driver_name: &'static str = driver.into();
         info!("binding device {self} to {driver_name}");
         driver
             .bind_file()?
             .write_all(format!("{self}").as_bytes())
-            .map_err(InitErr::IoError)
+            .map_err(|e| DriverErr::Sysfs(SysfsErr::IoError(e)))
     }
 }
 
@@ -288,9 +293,9 @@ pub trait BindToVfioPci {
 }
 
 impl BindToVfioPci for PciNic {
-    type Error = InitErr;
+    type Error = DriverErr;
 
-    fn bind_to_vfio_pci(&mut self) -> Result<(), InitErr> {
+    fn bind_to_vfio_pci(&mut self) -> Result<(), DriverErr> {
         match self.driver() {
             Ok(Some(known_driver)) => {
                 if known_driver == PciDriver::VfioPci {
@@ -309,10 +314,10 @@ impl BindToVfioPci for PciNic {
                     "device {self} is unknown to the operating system.  You may need to load (modprobe) a driver"
                 );
                 error!("{msg}");
-                return Err(InitErr::IoError(std::io::Error::new(
+                return Err(DriverErr::Sysfs(SysfsErr::IoError(std::io::Error::new(
                     ErrorKind::Unsupported,
                     msg,
-                )));
+                ))));
             }
             Err(err) => {
                 error!("failed to get device driver: {:?}", err);

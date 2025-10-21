@@ -17,6 +17,7 @@ use crate::pci::bridge::BridgeAttributes;
 
 pub mod group;
 pub mod mem;
+pub mod nic;
 pub mod os;
 pub mod pci;
 

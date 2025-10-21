@@ -18,6 +18,7 @@ serde = ["dep:serde", "id/serde"]
 [dependencies]
 # internal
 id = { workspace = true, features = ["rkyv"] }
+sysfs = { workspace = true }
 
 # external
 bolero = { workspace = true, optional = true, features = ["alloc"] }
