@@ -12,6 +12,7 @@ mod gateway_config;
 mod interface;
 mod overlay;
 mod peering;
+mod status;
 mod tracecfg;
 mod underlay;
 mod vpc;
@@ -30,6 +31,8 @@ pub use overlay::*;
 #[allow(unused)] // Remove if we do anything but implement traits
 pub use peering::*;
 #[allow(unused)] // Remove if we do anything but implement traits
+pub use status::*;
+#[allow(unused)] // Remove if we do anything but implement traits
 pub use tracecfg::*;
 #[allow(unused)] // Remove if we do anything but implement traits
 pub use underlay::*;
@@ -45,6 +48,9 @@ mod test {
     use pretty_assertions::assert_eq;
 
     use crate::converters::grpc::convert_gateway_config_from_grpc_with_defaults;
+    use crate::converters::grpc::{
+        convert_dataplane_status_from_grpc, convert_dataplane_status_to_grpc,
+    };
     use crate::internal::device::DeviceConfig;
     use crate::internal::interfaces::interface::InterfaceConfig;
 
@@ -316,7 +322,6 @@ mod test {
         // Create test data
         let grpc_config = create_test_gateway_config();
         // Call the conversion function (gRPC -> ExternalConfig)
-        // Using standalone function instead of manager method
         let result = convert_gateway_config_from_grpc_with_defaults(&grpc_config);
 
         // Verify result
@@ -327,11 +332,8 @@ mod test {
         );
         let external_config = result.unwrap();
 
-        // Call the conversion function (ExternalConfig -> gRPC)
-        // Using standalone function instead of manager method
+        // ExternalConfig -> gRPC
         let result = gateway_config::GatewayConfig::try_from(&external_config);
-
-        // Verify result
         assert!(
             result.is_ok(),
             "Conversion to gRPC failed: {:?}",
@@ -367,50 +369,209 @@ mod test {
             mtu: Some(9000),
         };
 
-        // Test DeviceConfig TryFrom
+        // DeviceConfig TryFrom
         let device_config_result = DeviceConfig::try_from(&device);
         assert!(
             device_config_result.is_ok(),
             "TryFrom for DeviceConfig failed"
         );
         let device_config = device_config_result.unwrap();
-
-        // Verify conversion result
         assert_eq!(device_config.settings.hostname, "test-device");
 
-        // Convert back using TryFrom
+        // Back to gRPC
         let device_back_result = gateway_config::Device::try_from(&device_config);
         assert!(device_back_result.is_ok(), "TryFrom back to Device failed");
         let device_back = device_back_result.unwrap();
-
-        // Verify round trip conversion
         assert_eq!(device_back.hostname, device.hostname);
         assert_eq!(device_back.driver, device.driver);
         assert_eq!(device_back.tracing.as_ref().unwrap(), &tracing);
 
-        // Test InterfaceConfig TryFrom
+        // InterfaceConfig TryFrom
         let interface_config_result = InterfaceConfig::try_from(&interface);
         assert!(
             interface_config_result.is_ok(),
             "TryFrom for InterfaceConfig failed"
         );
         let interface_config = interface_config_result.unwrap();
-
-        // Verify conversion result
         assert_eq!(interface_config.name, "eth0");
         assert!(!interface_config.addresses.is_empty());
 
-        // Convert back using TryFrom
+        // Back to gRPC
         let interface_back_result = gateway_config::Interface::try_from(&interface_config);
         assert!(
             interface_back_result.is_ok(),
             "TryFrom back to Interface failed"
         );
         let interface_back = interface_back_result.unwrap();
-
-        // Verify round trip conversion
         assert_eq!(interface_back.name, interface.name);
         assert_eq!(interface_back.r#type, interface.r#type);
         assert!(!interface_back.ipaddrs.is_empty());
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn create_test_status() -> gateway_config::GetDataplaneStatusResponse {
+        // interface_statuses
+        let interface_statuses = vec![
+            gateway_config::InterfaceStatus {
+                ifname: "eth0".into(),
+                oper_status: gateway_config::InterfaceOperStatusType::InterfaceStatusOperUp as i32,
+                admin_status: gateway_config::InterfaceAdminStatusType::InterfaceAdminStatusUp
+                    as i32,
+            },
+            gateway_config::InterfaceStatus {
+                ifname: "eth1".into(),
+                oper_status: gateway_config::InterfaceOperStatusType::InterfaceStatusOperDown
+                    as i32,
+                admin_status: gateway_config::InterfaceAdminStatusType::InterfaceAdminStatusDown
+                    as i32,
+            },
+        ];
+
+        // FRR
+        let frr_status = Some(gateway_config::FrrStatus {
+            zebra_status: gateway_config::ZebraStatusType::ZebraStatusConnected as i32,
+            frr_agent_status: gateway_config::FrrAgentStatusType::FrrAgentStatusConnected as i32,
+            applied_config_gen: 42,
+            restarts: 1,
+            applied_configs: 10,
+            failed_configs: 0,
+        });
+
+        // Dataplane overall
+        let dataplane_status = Some(gateway_config::DataplaneStatusInfo {
+            status: gateway_config::DataplaneStatusType::DataplaneStatusHealthy as i32,
+        });
+
+        // interface_runtime
+        let mut interface_runtime = std::collections::HashMap::new();
+        interface_runtime.insert(
+            "eth0".to_string(),
+            gateway_config::InterfaceRuntimeStatus {
+                admin_status: gateway_config::InterfaceAdminStatusType::InterfaceAdminStatusUp
+                    as i32,
+                oper_status: gateway_config::InterfaceOperStatusType::InterfaceStatusOperUp as i32,
+                mac: "00:11:22:33:44:55".into(),
+                mtu: 1500,
+                counters: Some(gateway_config::InterfaceCounters {
+                    tx_bits: 1_000_000,
+                    tx_bps: 1000.0,
+                    tx_errors: 1,
+                    rx_bits: 2_000_000,
+                    rx_bps: 2000.0,
+                    rx_errors: 2,
+                }),
+            },
+        );
+
+        // BGP runtime
+        let bgp_msgs = Some(gateway_config::BgpMessages {
+            received: Some(gateway_config::BgpMessageCounters {
+                capability: 1,
+                keepalive: 10,
+                notification: 0,
+                open: 1,
+                route_refresh: 0,
+                update: 42,
+            }),
+            sent: Some(gateway_config::BgpMessageCounters {
+                capability: 1,
+                keepalive: 11,
+                notification: 0,
+                open: 1,
+                route_refresh: 0,
+                update: 40,
+            }),
+        });
+        let v4pfx = Some(gateway_config::BgpNeighborPrefixes {
+            received: 100,
+            received_pre_policy: 120,
+            sent: 90,
+        });
+
+        let mut neighbors = std::collections::HashMap::new();
+        neighbors.insert(
+            "192.0.2.1".to_string(),
+            gateway_config::BgpNeighborStatus {
+                enabled: true,
+                local_as: 65001,
+                peer_as: 65002,
+                peer_port: 179,
+                peer_group: "spines".into(),
+                remote_router_id: "10.0.0.2".into(),
+                session_state: gateway_config::BgpNeighborSessionState::BgpStateEstablished as i32,
+                connections_dropped: 0,
+                established_transitions: 3,
+                last_reset_reason: String::new(),
+                messages: bgp_msgs,
+                ipv4_unicast_prefixes: v4pfx,
+                ipv6_unicast_prefixes: None,
+                l2vpn_evpn_prefixes: None,
+            },
+        );
+        let mut vrfs = std::collections::HashMap::new();
+        vrfs.insert("default".into(), gateway_config::BgpVrfStatus { neighbors });
+        let bgp = Some(gateway_config::BgpStatus { vrfs });
+
+        // VPCs + VPC peering counters
+        let mut vpc_ifaces = std::collections::HashMap::new();
+        vpc_ifaces.insert(
+            "veth0".into(),
+            gateway_config::VpcInterfaceStatus {
+                ifname: "veth0".into(),
+                admin_status: gateway_config::InterfaceAdminStatusType::InterfaceAdminStatusUp
+                    as i32,
+                oper_status: gateway_config::InterfaceOperStatusType::InterfaceStatusOperUp as i32,
+            },
+        );
+        let mut vpcs = std::collections::HashMap::new();
+        vpcs.insert(
+            "vpc-1".into(),
+            gateway_config::VpcStatus {
+                id: "0x202".into(),
+                name: "vpc-1".into(),
+                vni: 1001,
+                route_count: 17,
+                interfaces: vpc_ifaces,
+            },
+        );
+
+        let mut vpc_peering_counters = std::collections::HashMap::new();
+        vpc_peering_counters.insert(
+            "peering-1".into(),
+            gateway_config::VpcPeeringCounters {
+                name: "peering-1".into(),
+                src_vpc: "vpc-1".into(),
+                dst_vpc: "vpc-2".into(),
+                packets: 12345,
+                bytes: 987_654,
+                drops: 12,
+                pps: 321.0,
+            },
+        );
+
+        gateway_config::GetDataplaneStatusResponse {
+            interface_statuses,
+            frr_status,
+            dataplane_status,
+            interface_runtime,
+            bgp,
+            vpcs,
+            vpc_peering_counters,
+        }
+    }
+
+    #[test]
+    fn test_convert_to_from_grpc_status() {
+        let grpc_status = create_test_status();
+
+        // gRPC -> internal
+        let internal = convert_dataplane_status_from_grpc(&grpc_status)
+            .expect("conversion from gRPC status failed");
+
+        // internal -> gRPC
+        let back =
+            convert_dataplane_status_to_grpc(&internal).expect("conversion to gRPC status failed");
+
+        assert_eq!(grpc_status, back);
     }
 }
