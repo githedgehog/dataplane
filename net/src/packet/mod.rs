@@ -272,6 +272,15 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
         Ok(self.payload)
     }
+
+    /// Consume the packet, returning its buffer.
+    ///
+    /// This may be used as part of processing packets destined to the gateway.
+    /// A pipeline may punt `Packet`s to be sent over a tap device, which expects `Buf`'s.
+    /// Note: this method does not perform any trimming.
+    pub fn extract(self) -> Buf {
+        self.payload
+    }
 }
 
 impl<Buf: PacketBufferMut> TryHeaders for Packet<Buf> {
