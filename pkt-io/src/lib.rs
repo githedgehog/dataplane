@@ -7,3 +7,4 @@ mod nf;
 mod tests;
 
 pub use nf::PktIo;
+pub use nf::PktQueue;
