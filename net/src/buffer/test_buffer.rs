@@ -7,8 +7,8 @@
 pub use contract::*;
 
 use crate::buffer::{
-    Append, Headroom, MemoryBufferNotLongEnough, NotEnoughHeadRoom, NotEnoughTailRoom, Prepend,
-    Tailroom, TrimFromEnd, TrimFromStart,
+    Append, Create, Headroom, MemoryBufferNotLongEnough, NotEnoughHeadRoom, NotEnoughTailRoom,
+    Prepend, Tailroom, TrimFromEnd, TrimFromStart,
 };
 use tracing::trace;
 
@@ -100,6 +100,13 @@ impl AsMut<[u8]> for TestBuffer {
         let start = self.headroom as usize;
         let end = self.buffer.len() - self.tailroom as usize;
         &mut self.buffer.as_mut_slice()[start..end]
+    }
+}
+
+impl Create for TestBuffer {
+    type PoolType = ();
+    fn create(_: &mut Self::PoolType) -> Result<Self, ()> {
+        Ok(Self::new())
     }
 }
 

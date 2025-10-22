@@ -901,6 +901,7 @@ dependencies = [
  "dataplane-nat",
  "dataplane-net",
  "dataplane-pipeline",
+ "dataplane-pkt-io",
  "dataplane-pkt-meta",
  "dataplane-routing",
  "dataplane-stats",
@@ -1212,6 +1213,19 @@ dependencies = [
  "ordermap",
  "thiserror 2.0.17",
  "tracing",
+]
+
+[[package]]
+name = "dataplane-pkt-io"
+version = "0.1.0"
+dependencies = [
+ "crossbeam",
+ "dataplane-net",
+ "dataplane-pipeline",
+ "dataplane-tracectl",
+ "linkme",
+ "tracing",
+ "tracing-test",
 ]
 
 [[package]]

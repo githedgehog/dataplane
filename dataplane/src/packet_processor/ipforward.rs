@@ -165,7 +165,7 @@ impl IpForwarder {
                 We can't re-inject packet on ingress, so let's disable this to avoid churn
                 packet.get_meta_mut().oif = Some(packet.get_meta().iif);
                  */
-                packet.done(DoneReason::Local);
+                packet.done(DoneReason::Unhandled);
             }
         }
     }

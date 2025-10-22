@@ -12,6 +12,7 @@ use super::packet_processor::ipforward::IpForwarder;
 
 use concurrency::sync::Arc;
 
+use pkt_io::PktIo;
 use pkt_meta::dst_vpcd_lookup::{DstVpcdLookup, VpcDiscTablesWriter};
 use pkt_meta::flow_table::{ExpirationsNF, FlowTable, LookupNF};
 
@@ -63,6 +64,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let pipeline_builder = move || {
         // Build network functions
         let stage_ingress = Ingress::new("Ingress", iftr_factory.handle());
+        let pktio1 = PktIo::new(10_000usize, 100).set_name("pkt-io");
         let stage_egress = Egress::new("Egress", iftr_factory.handle(), atabler_factory.handle());
         let dst_vpcd_lookup = DstVpcdLookup::new("dst-vni-lookup", vpcdtablesr_factory.handle());
         let iprouter1 = IpForwarder::new("IP-Forward-1", fibtr_factory.handle());
@@ -87,6 +89,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             .add_stage(stateless_nat)
             .add_stage(stateful_nat)
             .add_stage(iprouter2)
+            .add_stage(pktio1)
             .add_stage(stage_egress)
             .add_stage(dumper2)
             .add_stage(flow_expirations_nf)
