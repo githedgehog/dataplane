@@ -28,7 +28,25 @@ trace_target!(PKT_IO, LevelFilter::TRACE, &["pipeline"]);
 // For the same reason, the two queues are optional to accommodate for the case that only injection
 // or punting are used.
 
-pub type PktQueue<Buf> = Arc<ArrayQueue<Box<Packet<Buf>>>>;
+#[repr(transparent)]
+pub struct PktQueue<Buf: PacketBufferMut>(Arc<ArrayQueue<Box<Packet<Buf>>>>);
+impl<Buf: PacketBufferMut> Clone for PktQueue<Buf> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<Buf: PacketBufferMut> PktQueue<Buf> {
+    pub fn new(capacity: usize) -> Self {
+        Self(Arc::new(ArrayQueue::new(capacity)))
+    }
+    pub fn pop(&self) -> Option<Box<Packet<Buf>>> {
+        self.0.pop()
+    }
+    pub fn push(&self, packet: Box<Packet<Buf>>) -> Result<(), Box<Packet<Buf>>> {
+        self.0.push(packet)
+    }
+}
 
 pub struct PktIo<Buf: PacketBufferMut> {
     name: String,
@@ -41,7 +59,7 @@ impl<Buf: PacketBufferMut> PktIo<Buf> {
     fn create_queue(capacity: usize) -> Option<PktQueue<Buf>> {
         match capacity {
             0 => None,
-            n => Some(Arc::new(ArrayQueue::new(n))),
+            n => Some(PktQueue::new(n)),
         }
     }
     #[must_use]
@@ -64,11 +82,11 @@ impl<Buf: PacketBufferMut> PktIo<Buf> {
     }
     #[must_use]
     pub fn get_injectq(&self) -> Option<PktQueue<Buf>> {
-        self.injectq.as_ref().map(Arc::clone)
+        self.injectq.as_ref().map(|q| PktQueue(Arc::clone(&q.0)))
     }
     #[must_use]
     pub fn get_puntq(&self) -> Option<PktQueue<Buf>> {
-        self.puntq.as_ref().map(Arc::clone)
+        self.puntq.as_ref().map(|q| PktQueue(Arc::clone(&q.0)))
     }
 }
 
