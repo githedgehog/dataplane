@@ -26,7 +26,7 @@ use dpdk_sys::{
     rte_pktmbuf_tailroom, rte_pktmbuf_trim,
 };
 // unfortunately, we need the standard library to swap allocators
-use net::buffer::{Append, Headroom, Prepend, Tailroom, TrimFromEnd, TrimFromStart};
+use net::buffer::{Append, Create, Headroom, Prepend, Tailroom, TrimFromEnd, TrimFromStart};
 use std::alloc::System;
 use std::ffi::CString;
 
@@ -422,7 +422,18 @@ impl AsMut<[u8]> for Mbuf {
         self.raw_data_mut()
     }
 }
-
+impl Create for Mbuf {
+    type PoolType = Pool;
+    fn create(pool: &mut Self::PoolType) -> Result<Self, ()> {
+        unsafe {
+            let raw = dpdk_sys::rte_pktmbuf_alloc(pool.inner().as_mut_ptr());
+            Ok(Self {
+                raw: NonNull::new(raw).ok_or_else(|| error!("Mbuf allocation failure"))?,
+                marker: PhantomData,
+            })
+        }
+    }
+}
 impl Headroom for Mbuf {
     fn headroom(&self) -> u16 {
         unsafe { rte_pktmbuf_headroom(self.raw.as_ptr()) }
