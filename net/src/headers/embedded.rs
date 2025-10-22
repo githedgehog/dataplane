@@ -4,6 +4,8 @@
 use crate::checksum::Checksum;
 use crate::eth::EthError;
 use crate::headers::{MAX_NET_EXTENSIONS, Net, NetExt};
+use crate::icmp4::{Icmp4Checksum, TruncatedIcmp4};
+use crate::icmp6::{Icmp6Checksum, TruncatedIcmp6};
 use crate::impl_from_for_enum;
 use crate::ip_auth::IpAuth;
 use crate::ipv4::Ipv4;
@@ -123,13 +125,17 @@ impl EmbeddedHeaders {
         match &mut self.transport {
             None
             | Some(EmbeddedTransport::Tcp(TruncatedTcp::PartialHeader(_)))
-            | Some(EmbeddedTransport::Udp(TruncatedUdp::PartialHeader(_))) => {
+            | Some(EmbeddedTransport::Udp(TruncatedUdp::PartialHeader(_)))
+            | Some(EmbeddedTransport::Icmp4(TruncatedIcmp4::PartialHeader(_)))
+            | Some(EmbeddedTransport::Icmp6(TruncatedIcmp6::PartialHeader(_))) => {
                 // We couldn't parse the full transport header, of course we don't have the full,
                 // valid payload
                 return;
             }
             Some(EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(_)))
-            | Some(EmbeddedTransport::Udp(TruncatedUdp::FullHeader(_))) => {
+            | Some(EmbeddedTransport::Udp(TruncatedUdp::FullHeader(_)))
+            | Some(EmbeddedTransport::Icmp4(TruncatedIcmp4::FullHeader(_)))
+            | Some(EmbeddedTransport::Icmp6(TruncatedIcmp6::FullHeader(_))) => {
                 // There's a chance payload is full, keep going
             }
         }
@@ -423,46 +429,62 @@ impl_from_for_enum![
     IpV6Ext(Ipv6Ext)
 ];
 
+#[derive(Debug, thiserror::Error)]
+pub enum EmbeddedHeaderError {
+    #[error("No ports used by embedded transport header")]
+    NoPorts,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EmbeddedTransport {
     Tcp(TruncatedTcp),
     Udp(TruncatedUdp),
+    Icmp4(TruncatedIcmp4),
+    Icmp6(TruncatedIcmp6),
 }
 
 impl EmbeddedTransport {
-    pub fn source(&self) -> NonZero<u16> {
+    pub fn source(&self) -> Option<NonZero<u16>> {
         match self {
-            EmbeddedTransport::Tcp(tcp) => tcp.source().into(),
-            EmbeddedTransport::Udp(udp) => udp.source().into(),
+            EmbeddedTransport::Tcp(tcp) => Some(tcp.source().into()),
+            EmbeddedTransport::Udp(udp) => Some(udp.source().into()),
+            _ => None,
         }
     }
 
-    pub fn destination(&self) -> NonZero<u16> {
+    pub fn destination(&self) -> Option<NonZero<u16>> {
         match self {
-            EmbeddedTransport::Tcp(tcp) => tcp.destination().into(),
-            EmbeddedTransport::Udp(udp) => udp.destination().into(),
+            EmbeddedTransport::Tcp(tcp) => Some(tcp.destination().into()),
+            EmbeddedTransport::Udp(udp) => Some(udp.destination().into()),
+            _ => None,
         }
     }
 
-    pub fn set_source(&mut self, port: NonZero<u16>) {
+    pub fn set_source(&mut self, port: NonZero<u16>) -> Result<(), EmbeddedHeaderError> {
         match self {
             EmbeddedTransport::Tcp(tcp) => {
                 tcp.set_source(TcpPort::new(port));
+                Ok(())
             }
             EmbeddedTransport::Udp(udp) => {
                 udp.set_source(UdpPort::new(port));
+                Ok(())
             }
+            _ => Err(EmbeddedHeaderError::NoPorts),
         }
     }
 
-    pub fn set_destination(&mut self, port: NonZero<u16>) {
+    pub fn set_destination(&mut self, port: NonZero<u16>) -> Result<(), EmbeddedHeaderError> {
         match self {
             EmbeddedTransport::Tcp(tcp) => {
                 tcp.set_destination(TcpPort::new(port));
+                Ok(())
             }
             EmbeddedTransport::Udp(udp) => {
                 udp.set_destination(UdpPort::new(port));
+                Ok(())
             }
+            _ => Err(EmbeddedHeaderError::NoPorts),
         }
     }
 
@@ -470,6 +492,8 @@ impl EmbeddedTransport {
         match self {
             EmbeddedTransport::Tcp(tcp) => tcp.checksum().map(u16::from),
             EmbeddedTransport::Udp(udp) => udp.checksum().map(u16::from),
+            EmbeddedTransport::Icmp4(icmp) => icmp.checksum().map(u16::from),
+            EmbeddedTransport::Icmp6(icmp) => icmp.checksum().map(u16::from),
         }
     }
 
@@ -491,6 +515,22 @@ impl EmbeddedTransport {
                     new_value,
                 );
             }
+            EmbeddedTransport::Icmp4(icmp) => {
+                // Silently ignore errors if transport header is truncated
+                let _ = icmp.increment_update_checksum(
+                    Icmp4Checksum::new(current_checksum),
+                    old_value,
+                    new_value,
+                );
+            }
+            EmbeddedTransport::Icmp6(icmp) => {
+                // Silently ignore errors if transport header is truncated
+                let _ = icmp.increment_update_checksum(
+                    Icmp6Checksum::new(current_checksum),
+                    old_value,
+                    new_value,
+                );
+            }
         }
     }
 }
@@ -502,6 +542,8 @@ impl DeParse for EmbeddedTransport {
         match self {
             EmbeddedTransport::Tcp(tcp) => tcp.size(),
             EmbeddedTransport::Udp(udp) => udp.size(),
+            EmbeddedTransport::Icmp4(icmp) => icmp.size(),
+            EmbeddedTransport::Icmp6(icmp) => icmp.size(),
         }
     }
 
@@ -509,6 +551,8 @@ impl DeParse for EmbeddedTransport {
         match self {
             EmbeddedTransport::Tcp(tcp) => tcp.deparse(buf),
             EmbeddedTransport::Udp(udp) => udp.deparse(buf),
+            EmbeddedTransport::Icmp4(icmp) => icmp.deparse(buf),
+            EmbeddedTransport::Icmp6(icmp) => icmp.deparse(buf),
         }
     }
 }
@@ -649,6 +693,62 @@ impl TryTruncatedUdpMut for EmbeddedHeaders {
     }
 }
 
+// ICMPv4 traits
+
+pub trait TryTruncatedIcmp4 {
+    fn try_truncated_icmp4(&self) -> Option<&TruncatedIcmp4>;
+}
+
+pub trait TryTruncatedIcmp4Mut {
+    fn try_truncated_icmp4_mut(&mut self) -> Option<&mut TruncatedIcmp4>;
+}
+
+impl TryTruncatedIcmp4 for EmbeddedHeaders {
+    fn try_truncated_icmp4(&self) -> Option<&TruncatedIcmp4> {
+        match &self.transport {
+            Some(EmbeddedTransport::Icmp4(header)) => Some(header),
+            _ => None,
+        }
+    }
+}
+
+impl TryTruncatedIcmp4Mut for EmbeddedHeaders {
+    fn try_truncated_icmp4_mut(&mut self) -> Option<&mut TruncatedIcmp4> {
+        match &mut self.transport {
+            Some(EmbeddedTransport::Icmp4(header)) => Some(header),
+            _ => None,
+        }
+    }
+}
+
+// ICMPv6 traits
+
+pub trait TryTruncatedIcmp6 {
+    fn try_truncated_icmp6(&self) -> Option<&TruncatedIcmp6>;
+}
+
+pub trait TryTruncatedIcmp6Mut {
+    fn try_truncated_icmp6_mut(&mut self) -> Option<&mut TruncatedIcmp6>;
+}
+
+impl TryTruncatedIcmp6 for EmbeddedHeaders {
+    fn try_truncated_icmp6(&self) -> Option<&TruncatedIcmp6> {
+        match &self.transport {
+            Some(EmbeddedTransport::Icmp6(header)) => Some(header),
+            _ => None,
+        }
+    }
+}
+
+impl TryTruncatedIcmp6Mut for EmbeddedHeaders {
+    fn try_truncated_icmp6_mut(&mut self) -> Option<&mut TruncatedIcmp6> {
+        match &mut self.transport {
+            Some(EmbeddedTransport::Icmp6(header)) => Some(header),
+            _ => None,
+        }
+    }
+}
+
 // Generic Transport traits
 
 pub trait TryEmbeddedTransport {
@@ -678,6 +778,8 @@ pub trait AbstractEmbeddedHeaders:
     + TryInnerIp
     + TryTruncatedTcp
     + TryTruncatedUdp
+    + TryTruncatedIcmp4
+    + TryTruncatedIcmp6
     + TryEmbeddedTransport
     + DeParse
 {
@@ -690,6 +792,8 @@ impl<T> AbstractEmbeddedHeaders for T where
         + TryInnerIp
         + TryTruncatedTcp
         + TryTruncatedUdp
+        + TryTruncatedIcmp4
+        + TryTruncatedIcmp6
         + TryEmbeddedTransport
         + DeParse
 {
@@ -702,6 +806,8 @@ pub trait AbstractEmbeddedHeadersMut:
     + TryInnerIpMut
     + TryTruncatedTcpMut
     + TryTruncatedUdpMut
+    + TryTruncatedIcmp4Mut
+    + TryTruncatedIcmp6Mut
     + TryEmbeddedTransportMut
 {
 }
@@ -713,6 +819,8 @@ impl<T> AbstractEmbeddedHeadersMut for T where
         + TryInnerIpMut
         + TryTruncatedTcpMut
         + TryTruncatedUdpMut
+        + TryTruncatedIcmp4Mut
+        + TryTruncatedIcmp6Mut
         + TryEmbeddedTransportMut
 {
 }
@@ -770,6 +878,24 @@ where
     }
 }
 
+impl<T> TryTruncatedIcmp4 for T
+where
+    T: TryEmbeddedHeaders,
+{
+    fn try_truncated_icmp4(&self) -> Option<&TruncatedIcmp4> {
+        self.embedded_headers()?.try_truncated_icmp4()
+    }
+}
+
+impl<T> TryTruncatedIcmp6 for T
+where
+    T: TryEmbeddedHeaders,
+{
+    fn try_truncated_icmp6(&self) -> Option<&TruncatedIcmp6> {
+        self.embedded_headers()?.try_truncated_icmp6()
+    }
+}
+
 impl<T> TryEmbeddedTransport for T
 where
     T: TryEmbeddedHeaders,
@@ -821,6 +947,24 @@ where
 {
     fn try_truncated_udp_mut(&mut self) -> Option<&mut TruncatedUdp> {
         self.embedded_headers_mut()?.try_truncated_udp_mut()
+    }
+}
+
+impl<T> TryTruncatedIcmp4Mut for T
+where
+    T: TryEmbeddedHeadersMut,
+{
+    fn try_truncated_icmp4_mut(&mut self) -> Option<&mut TruncatedIcmp4> {
+        self.embedded_headers_mut()?.try_truncated_icmp4_mut()
+    }
+}
+
+impl<T> TryTruncatedIcmp6Mut for T
+where
+    T: TryEmbeddedHeadersMut,
+{
+    fn try_truncated_icmp6_mut(&mut self) -> Option<&mut TruncatedIcmp6> {
+        self.embedded_headers_mut()?.try_truncated_icmp6_mut()
     }
 }
 

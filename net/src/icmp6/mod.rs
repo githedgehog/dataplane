@@ -4,8 +4,10 @@
 //! `Icmp6` header type and logic.
 
 mod checksum;
+mod truncated;
 
 pub use checksum::*;
+pub use truncated::*;
 
 use crate::headers::{AbstractEmbeddedHeaders, EmbeddedHeaders, EmbeddedIpVersion};
 use crate::icmp_any::get_payload_for_checksum;
@@ -173,7 +175,7 @@ impl DeParse for Icmp6 {
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::headers::{EmbeddedHeaders, EmbeddedTransport, Net};
-    use crate::icmp6::Icmp6;
+    use crate::icmp6::{Icmp6, TruncatedIcmp6};
     use crate::ip::NextHeader;
     use crate::ipv6::GenWithNextHeader;
     use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse};
@@ -285,10 +287,18 @@ mod contract {
     impl ValueGenerator for Icmp6EmbeddedHeadersGenerator {
         type Output = EmbeddedHeaders;
 
+        #[allow(clippy::unwrap_used)]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
-            let transport = match driver.produce::<u32>()? % 9 {
-                0..=3 => Some(EmbeddedTransport::Tcp(driver.produce::<TruncatedTcp>()?)),
-                4..=7 => Some(EmbeddedTransport::Udp(driver.produce::<TruncatedUdp>()?)),
+            let transport = match driver.produce::<u32>()? % 11 {
+                0..=3 => Some(EmbeddedTransport::Tcp(
+                    driver.produce::<TruncatedTcp>().unwrap(),
+                )),
+                4..=7 => Some(EmbeddedTransport::Udp(
+                    driver.produce::<TruncatedUdp>().unwrap(),
+                )),
+                8..=9 => Some(EmbeddedTransport::Icmp6(
+                    driver.produce::<TruncatedIcmp6>().unwrap(),
+                )),
                 _ => None,
             };
             let net = match transport {
@@ -298,6 +308,14 @@ mod contract {
                 }
                 Some(EmbeddedTransport::Udp(_)) => {
                     let net_gen = GenWithNextHeader(NextHeader::UDP);
+                    Some(Net::Ipv6(net_gen.generate(driver)?))
+                }
+                Some(EmbeddedTransport::Icmp4(_)) => {
+                    // We never produce ICMPv4 headers to embed inside ICMPv6 Error messages
+                    unreachable!()
+                }
+                Some(EmbeddedTransport::Icmp6(_)) => {
+                    let net_gen = GenWithNextHeader(NextHeader::ICMP);
                     Some(Net::Ipv6(net_gen.generate(driver)?))
                 }
                 None => {

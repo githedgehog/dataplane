@@ -4,7 +4,7 @@
 //! `ICMPv6` checksum type and methods
 
 use crate::checksum::Checksum;
-use crate::icmp6::Icmp6;
+use crate::icmp6::{Icmp6, TruncatedIcmp6};
 use core::fmt::{Display, Formatter};
 use etherparse::Icmpv6Header;
 use std::fmt::Debug;
@@ -133,5 +133,76 @@ impl Checksum for Icmp6 {
     fn set_checksum(&mut self, checksum: Icmp6Checksum) -> Result<&mut Self, Self::Error> {
         self.0.checksum = checksum.0;
         Ok(self)
+    }
+}
+
+/// Errors which can occur when attempting to compute a `ICMPv6` checksum for a truncated `ICMPv6` header.
+#[derive(Debug, thiserror::Error)]
+pub enum TruncatedIcmp6ChecksumError {
+    /// The header is truncated, checksum operations are not available.
+    #[error("header is truncated")]
+    Truncated,
+}
+
+impl Checksum for TruncatedIcmp6 {
+    type Error = TruncatedIcmp6ChecksumError;
+    type Payload<'a> = Icmp6ChecksumPayload<'a>;
+    type Checksum = Icmp6Checksum;
+
+    /// Get the [`Icmp6`] checksum of the header
+    ///
+    /// # Returns
+    ///
+    /// * `Some` if the header is a full header. The `ICMPv6` payload may be truncated, so it may be
+    ///   impossible to compute the checksum.
+    /// * `None` if the header is a truncated header. Note that the checksum may be present in the
+    ///   truncated header, but given that the header is truncated, it is irrelevant because there
+    ///   is no way to validate it, so we return `None` in that case.
+    fn checksum(&self) -> Option<Self::Checksum> {
+        match self {
+            TruncatedIcmp6::FullHeader(icmp) => icmp.checksum(),
+            TruncatedIcmp6::PartialHeader(_) => None,
+        }
+    }
+
+    /// Compute the `ICMPv6` header's checksum based on the supplied payload.
+    ///
+    /// This method _does not_ update the checksum field.
+    ///
+    /// # Errors
+    ///
+    /// * [`TruncatedIcmp6ChecksumError::Truncated`] if the header is a truncated header
+    ///
+    /// <div class="warning">
+    /// If the header is full, we perform the computation although there is no guarantee that the
+    /// `ICMPv6` _payload_ is full. It is the responsibility of the caller to ensure that the `ICMPv6`
+    /// payload is full, _and_ that the payload passed as an argument is exempt from ICMP Extension
+    /// Structures and padding.
+    /// </div>
+    fn compute_checksum(&self, payload: &Self::Payload<'_>) -> Result<Self::Checksum, Self::Error> {
+        match self {
+            TruncatedIcmp6::FullHeader(icmp) => Ok(icmp
+                .compute_checksum(payload)
+                .unwrap_or_else(|()| unreachable!())), // ICMPv6 checksum computation never fails
+            TruncatedIcmp6::PartialHeader(_) => Err(TruncatedIcmp6ChecksumError::Truncated),
+        }
+    }
+
+    /// Set the checksum field of the header.
+    ///
+    /// The validity of the checksum is not checked.
+    ///
+    /// # Errors
+    ///
+    /// * [`TruncatedIcmp6ChecksumError::Truncated`] if the header is a truncated header
+    fn set_checksum(&mut self, checksum: Self::Checksum) -> Result<&mut Self, Self::Error> {
+        match self {
+            TruncatedIcmp6::FullHeader(icmp) => {
+                icmp.set_checksum(checksum)
+                    .unwrap_or_else(|()| unreachable!()); // Setting the ICMPv6 checksum never fails
+                Ok(self)
+            }
+            TruncatedIcmp6::PartialHeader(_) => Err(TruncatedIcmp6ChecksumError::Truncated),
+        }
     }
 }

@@ -4,8 +4,10 @@
 //! `ICMPv4` header type and logic.
 
 mod checksum;
+mod truncated;
 
 pub use checksum::*;
+pub use truncated::*;
 
 use crate::headers::{AbstractEmbeddedHeaders, EmbeddedHeaders, EmbeddedIpVersion};
 use crate::icmp_any::get_payload_for_checksum;
@@ -237,7 +239,7 @@ impl DeParse for Icmp4 {
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::headers::{EmbeddedHeaders, EmbeddedTransport, Net};
-    use crate::icmp4::Icmp4;
+    use crate::icmp4::{Icmp4, TruncatedIcmp4};
     use crate::ip::NextHeader;
     use crate::ipv4::GenWithNextHeader;
     use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError};
@@ -364,12 +366,15 @@ mod contract {
 
         #[allow(clippy::unwrap_used)]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
-            let transport = match driver.produce::<u32>()? % 9 {
+            let transport = match driver.produce::<u32>()? % 11 {
                 0..=3 => Some(EmbeddedTransport::Tcp(
                     driver.produce::<TruncatedTcp>().unwrap(),
                 )),
                 4..=7 => Some(EmbeddedTransport::Udp(
                     driver.produce::<TruncatedUdp>().unwrap(),
+                )),
+                8..=9 => Some(EmbeddedTransport::Icmp4(
+                    driver.produce::<TruncatedIcmp4>().unwrap(),
                 )),
                 _ => None,
             };
@@ -381,6 +386,14 @@ mod contract {
                 Some(EmbeddedTransport::Udp(_)) => {
                     let net_gen = GenWithNextHeader(NextHeader::UDP);
                     Some(Net::Ipv4(net_gen.generate(driver)?))
+                }
+                Some(EmbeddedTransport::Icmp4(_)) => {
+                    let net_gen = GenWithNextHeader(NextHeader::ICMP);
+                    Some(Net::Ipv4(net_gen.generate(driver)?))
+                }
+                Some(EmbeddedTransport::Icmp6(_)) => {
+                    // We never produce ICMPv6 headers to embed inside ICMPv4 Error messages
+                    unreachable!()
                 }
                 None => {
                     if driver.produce::<bool>()? {

@@ -233,7 +233,7 @@ impl DeParse for TruncatedTcp {
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
-    use super::{Tcp, TruncatedTcp};
+    use super::{Tcp, TruncatedTcp, TruncatedTcpHeader};
     use crate::parse::{DeParse, Parse};
     use bolero::{Driver, TypeGenerator};
 
@@ -254,10 +254,7 @@ mod contract {
                 let size = driver.produce::<u8>()? % 16 + 4;
                 let truncated_buffer = &buffer[..size as usize];
                 #[allow(clippy::unwrap_used)] // We want to catch errors when parsing, if any
-                let tcp = crate::tcp::TruncatedTcpHeader::parse(truncated_buffer)
-                    .ok()
-                    .unwrap()
-                    .0;
+                let tcp = TruncatedTcpHeader::parse(truncated_buffer).ok().unwrap().0;
 
                 Some(TruncatedTcp::PartialHeader(tcp))
             }

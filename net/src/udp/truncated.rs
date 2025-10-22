@@ -233,7 +233,7 @@ impl DeParse for TruncatedUdp {
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
-    use super::{TruncatedUdp, Udp};
+    use super::{TruncatedUdp, TruncatedUdpHeader, Udp};
     use crate::parse::{DeParse, Parse};
     use bolero::{Driver, TypeGenerator};
 
@@ -254,10 +254,7 @@ mod contract {
                 let size = driver.produce::<u8>()? % 4 + 4;
                 let truncated_buffer = &buffer[..size as usize];
                 #[allow(clippy::unwrap_used)] // We want to catch errors when parsing, if any
-                let udp = crate::udp::TruncatedUdpHeader::parse(truncated_buffer)
-                    .ok()
-                    .unwrap()
-                    .0;
+                let udp = TruncatedUdpHeader::parse(truncated_buffer).ok().unwrap().0;
 
                 Some(TruncatedUdp::PartialHeader(udp))
             }

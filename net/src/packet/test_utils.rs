@@ -235,8 +235,8 @@ pub fn build_test_icmpv4_destination_unreachable_packet(
 
     // Inner transport
     let mut inner_transport = EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(Tcp::default()));
-    inner_transport.set_source(inner_src_port);
-    inner_transport.set_destination(inner_dst_port);
+    inner_transport.set_source(inner_src_port).unwrap();
+    inner_transport.set_destination(inner_dst_port).unwrap();
 
     // Inner IPv4
     let mut inner_ipv4 = Ipv4::default();

@@ -8,8 +8,8 @@ use super::NatTranslationData;
 use net::buffer::PacketBufferMut;
 use net::checksum::{Checksum, ChecksumError};
 use net::headers::{
-    TryEmbeddedHeaders, TryEmbeddedHeadersMut, TryEmbeddedTransportMut, TryHeaders, TryInnerIpMut,
-    TryInnerIpv4, TryIp, TryTransport,
+    EmbeddedTransport, TryEmbeddedHeaders, TryEmbeddedHeadersMut, TryEmbeddedTransportMut,
+    TryHeaders, TryInnerIpMut, TryInnerIpv4, TryIp, TryTransport,
 };
 use net::icmp_any::{IcmpAny, IcmpAnyChecksumErrorPlaceholder, IcmpAnyChecksumPayload};
 use net::ipv4::Ipv4;
@@ -135,10 +135,26 @@ pub(crate) fn stateful_translate_icmp_inner<Buf: PacketBufferMut>(
         // TODO: Log trace anyway?
         return Ok(());
     };
-    let (old_src_port, old_dst_port) = (transport.source().into(), transport.destination().into());
+    if matches!(
+        transport,
+        EmbeddedTransport::Icmp4(_) | EmbeddedTransport::Icmp6(_)
+    ) {
+        // FIXME: We don't support ICMP identifier's translation yet. We're done (for now).
+        return Ok(());
+    }
+    // We returned early for ICMP, so we have TCP or UDP, and always source and destination ports
+    let (old_src_port, old_dst_port) = (
+        transport.source().unwrap_or_else(|| unreachable!()).into(),
+        transport
+            .destination()
+            .unwrap_or_else(|| unreachable!())
+            .into(),
+    );
 
     if let Some(target_src_port) = target_src_port {
-        transport.set_source(target_src_port.into());
+        transport
+            .set_source(target_src_port.into())
+            .unwrap_or_else(|_| unreachable!());
         // We don't know whether the header and payload are full: the easiest way to deal with
         // transport checksum update is to do an unconditional, incremental update here. Note
         // that this checksum will not be updated again when deparsing the packet.
@@ -147,7 +163,9 @@ pub(crate) fn stateful_translate_icmp_inner<Buf: PacketBufferMut>(
         }
     }
     if let Some(target_dst_port) = target_dst_port {
-        transport.set_destination(target_dst_port.into());
+        transport
+            .set_destination(target_dst_port.into())
+            .unwrap_or_else(|_| unreachable!());
         if let Some(current_checksum) = transport.checksum() {
             transport.update_checksum(current_checksum, old_dst_port, target_dst_port.as_u16());
         }
@@ -357,7 +375,7 @@ mod bolero_tests {
     fn get_inner_ports(packet: &Packet<TestBuffer>) -> Option<(NonZero<u16>, NonZero<u16>)> {
         packet
             .try_embedded_transport()
-            .map(|tcp| (tcp.source(), tcp.destination()))
+            .and_then(|transport| transport.source().zip(transport.destination()))
     }
 
     #[test]
