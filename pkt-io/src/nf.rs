@@ -27,18 +27,42 @@ trace_target!(PKT_IO, LevelFilter::TRACE, &["pipeline"]);
 // to hold Box<Packet>'s so that setting large capacities does not consume a large amount of memory.
 // For the same reason, the two queues are optional to accommodate for the case that only injection
 // or punting are used.
+
+#[repr(transparent)]
+pub struct PktQueue<Buf: PacketBufferMut>(Arc<ArrayQueue<Box<Packet<Buf>>>>);
+impl<Buf: PacketBufferMut> Clone for PktQueue<Buf> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<Buf: PacketBufferMut> PktQueue<Buf> {
+    pub fn new(capacity: usize) -> Self {
+        Self(Arc::new(ArrayQueue::new(capacity)))
+    }
+    pub fn pop(&self) -> Option<Box<Packet<Buf>>> {
+        self.0.pop()
+    }
+    pub fn push(&self, packet: Box<Packet<Buf>>) -> Result<(), Box<Packet<Buf>>> {
+        self.0.push(packet)
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 pub struct PktIo<Buf: PacketBufferMut> {
     name: String,
-    injectq: Option<Arc<ArrayQueue<Box<Packet<Buf>>>>>,
-    puntq: Option<Arc<ArrayQueue<Box<Packet<Buf>>>>>,
+    injectq: Option<PktQueue<Buf>>,
+    puntq: Option<PktQueue<Buf>>,
 }
 
 impl<Buf: PacketBufferMut> PktIo<Buf> {
     #[must_use]
-    fn create_queue(capacity: usize) -> Option<Arc<ArrayQueue<Box<Packet<Buf>>>>> {
+    pub fn create_queue(capacity: usize) -> Option<PktQueue<Buf>> {
         match capacity {
             0 => None,
-            n => Some(Arc::new(ArrayQueue::new(n))),
+            n => Some(PktQueue::new(n)),
         }
     }
     #[must_use]
@@ -53,19 +77,19 @@ impl<Buf: PacketBufferMut> PktIo<Buf> {
         self.name = name.to_owned();
         self
     }
-    pub fn set_injectq(&mut self, queue: Arc<ArrayQueue<Box<Packet<Buf>>>>) {
+    pub fn set_injectq(&mut self, queue: PktQueue<Buf>) {
         self.injectq = Some(queue)
     }
-    pub fn set_puntq(&mut self, queue: Arc<ArrayQueue<Box<Packet<Buf>>>>) {
+    pub fn set_puntq(&mut self, queue: PktQueue<Buf>) {
         self.puntq = Some(queue)
     }
     #[must_use]
-    pub fn get_injectq(&self) -> Option<Arc<ArrayQueue<Box<Packet<Buf>>>>> {
-        self.injectq.as_ref().map(Arc::clone)
+    pub fn get_injectq(&self) -> Option<PktQueue<Buf>> {
+        self.injectq.as_ref().map(|q| PktQueue(Arc::clone(&q.0)))
     }
     #[must_use]
-    pub fn get_puntq(&self) -> Option<Arc<ArrayQueue<Box<Packet<Buf>>>>> {
-        self.puntq.as_ref().map(Arc::clone)
+    pub fn get_puntq(&self) -> Option<PktQueue<Buf>> {
+        self.puntq.as_ref().map(|q| PktQueue(Arc::clone(&q.0)))
     }
 }
 

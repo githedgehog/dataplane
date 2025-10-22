@@ -3,8 +3,8 @@
 
 #[cfg(test)]
 mod test {
-    use crate::nf::PktIo;
-    use crossbeam::queue::ArrayQueue;
+    use crate::PktIo;
+    use crate::PktQueue;
     use net::headers::TryIpv4;
     use net::packet::test_utils::build_test_ipv4_packet;
     use net::{buffer::TestBuffer, packet::DoneReason};
@@ -248,8 +248,8 @@ mod test {
         let mut pktio3 = PktIo::<TestBuffer>::new(0, 0);
 
         // create two queues
-        let queue1 = Arc::new(ArrayQueue::new(100));
-        let queue2 = Arc::new(ArrayQueue::new(100));
+        let queue1 = PktQueue::new(100);
+        let queue2 = PktQueue::new(100);
 
         // do the inter-pipeline wiring
         pktio2.set_injectq(queue1.clone());
