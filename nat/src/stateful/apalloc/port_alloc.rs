@@ -377,7 +377,7 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
             .allocate_port_from_bitmap()
             .map_err(|()| AllocatorError::NoFreePort(self.base_port_idx))?;
 
-        NatPort::new_checked(self.base_port_idx + bitmap_offset)
+        NatPort::new_port_checked(self.base_port_idx + bitmap_offset)
             .map_err(AllocatorError::PortAllocationFailed)
             .map(|port| AllocatedPort::new(port, self.clone()))
     }

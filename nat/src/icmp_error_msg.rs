@@ -24,6 +24,8 @@ pub enum IcmpErrorMsgError {
     BadChecksumIcmp(ChecksumError<IcmpAnyChecksumErrorPlaceholder>),
     #[error("failed to validate ICMP inner IP checksum")]
     BadChecksumInnerIpv4(ChecksumError<Ipv4>),
+    #[error("invalid transport-layer port {0}")]
+    InvalidPort(u16),
     #[error("invalid IP version")]
     InvalidIpVersion,
     #[error("IP address {0} is not unicast")]
@@ -153,7 +155,11 @@ pub(crate) fn stateful_translate_icmp_inner<Buf: PacketBufferMut>(
 
     if let Some(target_src_port) = target_src_port {
         transport
-            .set_source(target_src_port.into())
+            .set_source(
+                target_src_port
+                    .try_into()
+                    .map_err(|_| IcmpErrorMsgError::InvalidPort(target_src_port.as_u16()))?,
+            )
             .unwrap_or_else(|_| unreachable!());
         // We don't know whether the header and payload are full: the easiest way to deal with
         // transport checksum update is to do an unconditional, incremental update here. Note
@@ -164,7 +170,11 @@ pub(crate) fn stateful_translate_icmp_inner<Buf: PacketBufferMut>(
     }
     if let Some(target_dst_port) = target_dst_port {
         transport
-            .set_destination(target_dst_port.into())
+            .set_destination(
+                target_dst_port
+                    .try_into()
+                    .map_err(|_| IcmpErrorMsgError::InvalidPort(target_dst_port.as_u16()))?,
+            )
             .unwrap_or_else(|_| unreachable!());
         if let Some(current_checksum) = transport.checksum() {
             transport.update_checksum(current_checksum, old_dst_port, target_dst_port.as_u16());
@@ -415,8 +425,12 @@ mod bolero_tests {
                     stateful_translate_icmp_inner(&mut icmp_error_msg_clone, &tr_data).unwrap();
 
                     let (translation_src_port, translation_dst_port) = (
-                        tr_data.src_port.map(NonZero::<u16>::from),
-                        tr_data.dst_port.map(NonZero::<u16>::from),
+                        tr_data
+                            .src_port
+                            .map(|p| NonZero::<u16>::try_from(p.as_u16()).unwrap()),
+                        tr_data
+                            .dst_port
+                            .map(|p| NonZero::<u16>::try_from(p.as_u16()).unwrap()),
                     );
                     let new_outer_addresses = get_outer_addresses(&icmp_error_msg_clone).unwrap();
                     let new_inner_addresses = get_inner_addresses(&icmp_error_msg_clone).unwrap();

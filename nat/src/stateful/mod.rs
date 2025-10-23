@@ -205,7 +205,11 @@ impl StatefulNat {
             headers
                 .try_transport_mut()
                 .ok_or(StatefulNatError::BadTransportHeader)?
-                .try_set_source(target_src_port.into())
+                .try_set_source(
+                    target_src_port
+                        .try_into()
+                        .map_err(|_| StatefulNatError::InvalidPort(target_src_port.as_u16()))?,
+                )
                 .map_err(|_| StatefulNatError::BadTransportHeader)?;
         }
 
@@ -217,7 +221,11 @@ impl StatefulNat {
             headers
                 .try_transport_mut()
                 .ok_or(StatefulNatError::BadTransportHeader)?
-                .try_set_destination(target_dst_port.into())
+                .try_set_destination(
+                    target_dst_port
+                        .try_into()
+                        .map_err(|_| StatefulNatError::InvalidPort(target_dst_port.as_u16()))?,
+                )
                 .map_err(|_| StatefulNatError::BadTransportHeader)?;
         }
         Ok(())
@@ -292,13 +300,21 @@ impl StatefulNat {
         // ... but adjust ports as necessary (use allocated ports for the reverse session)
         if let Some(src_port) = allocated_src_port_to_use {
             reverse_proto_key
-                .try_set_src_port(src_port.into())
-                .map_err(|_| StatefulNatError::InvalidPort(src_port.as_u16()))?;
+                .try_set_src_port(
+                    src_port
+                        .try_into()
+                        .map_err(|_| StatefulNatError::InvalidPort(src_port.as_u16()))?,
+                )
+                .map_err(|_| StatefulNatError::BadTransportHeader)?;
         }
         if let Some(dst_port) = allocated_dst_port_to_use {
             reverse_proto_key
-                .try_set_dst_port(dst_port.into())
-                .map_err(|_| StatefulNatError::InvalidPort(dst_port.as_u16()))?;
+                .try_set_dst_port(
+                    dst_port
+                        .try_into()
+                        .map_err(|_| StatefulNatError::InvalidPort(dst_port.as_u16()))?,
+                )
+                .map_err(|_| StatefulNatError::BadTransportHeader)?;
         }
 
         Ok(FlowKey::uni(
@@ -554,15 +570,19 @@ mod tests {
                 .set_destination(TcpPort::try_from(443).expect("Invalid port"))
                 .clone(),
         );
-        let target_port = NatPort::new_checked(1234).expect("Invalid port");
+        let target_port = NatPort::new_port_checked(1234).expect("Invalid port");
 
-        transport.try_set_source(target_port.into()).unwrap();
+        transport
+            .try_set_source(target_port.try_into().unwrap())
+            .unwrap();
         let Transport::Tcp(ref mut tcp) = transport else {
             unreachable!()
         };
         assert_eq!(tcp.source(), TcpPort::try_from(1234).unwrap());
 
-        transport.try_set_destination(target_port.into()).unwrap();
+        transport
+            .try_set_destination(target_port.try_into().unwrap())
+            .unwrap();
         let Transport::Tcp(ref mut tcp) = transport else {
             unreachable!()
         };
@@ -577,15 +597,19 @@ mod tests {
                 .set_destination(UdpPort::try_from(443).expect("Invalid port"))
                 .clone(),
         );
-        let target_port = NatPort::new_checked(1234).expect("Invalid port");
+        let target_port = NatPort::new_port_checked(1234).expect("Invalid port");
 
-        transport.try_set_source(target_port.into()).unwrap();
+        transport
+            .try_set_source(target_port.try_into().unwrap())
+            .unwrap();
         let Transport::Udp(ref mut udp) = transport else {
             unreachable!()
         };
         assert_eq!(udp.source(), UdpPort::try_from(1234).unwrap());
 
-        transport.try_set_destination(target_port.into()).unwrap();
+        transport
+            .try_set_destination(target_port.try_into().unwrap())
+            .unwrap();
         let Transport::Udp(ref mut udp) = transport else {
             unreachable!()
         };

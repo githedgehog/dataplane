@@ -66,7 +66,6 @@
 
 use super::allocator::{AllocationResult, AllocatorError};
 use super::{NatAllocator, NatIp};
-use crate::port::NatPort;
 use crate::stateful::apalloc::alloc::IpAllocator;
 pub use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
 use net::ip::NextHeader;
@@ -343,15 +342,11 @@ impl NatDefaultAllocator {
     ) -> Result<AllocationMapping<I>, AllocatorError> {
         let reverse_src_mapping = match reverse_pool_src_opt {
             Some(pool_src) => {
-                let reverse_src_port_number = match flow_key.data().proto_key_info() {
+                let reservation_src_port_number = match flow_key.data().proto_key_info() {
                     IpProtoKey::Tcp(tcp) => tcp.dst_port.into(),
                     IpProtoKey::Udp(udp) => udp.dst_port.into(),
                     IpProtoKey::Icmp(_) => return Err(AllocatorError::PortNotFound),
                 };
-                let reserve_src_port_number = NatPort::new_checked(reverse_src_port_number)
-                    .map_err(|_| {
-                        AllocatorError::InternalIssue("Invalid source port number".to_string())
-                    })?;
 
                 Some(pool_src.reserve(
                     NatIp::try_from_addr(*flow_key.data().dst_ip()).map_err(|()| {
@@ -359,7 +354,7 @@ impl NatDefaultAllocator {
                             "Failed to convert IP address to Ipv4Addr".to_string(),
                         )
                     })?,
-                    reserve_src_port_number,
+                    reservation_src_port_number,
                 )?)
             }
             None => None,
@@ -367,15 +362,11 @@ impl NatDefaultAllocator {
 
         let reverse_dst_mapping = match reverse_pool_dst_opt {
             Some(pool_dst) => {
-                let reverse_dst_port_number = match flow_key.data().proto_key_info() {
+                let reservation_dst_port_number = match flow_key.data().proto_key_info() {
                     IpProtoKey::Tcp(tcp) => tcp.src_port.into(),
                     IpProtoKey::Udp(udp) => udp.src_port.into(),
                     IpProtoKey::Icmp(_) => return Err(AllocatorError::PortNotFound),
                 };
-                let reserve_dst_port_number = NatPort::new_checked(reverse_dst_port_number)
-                    .map_err(|_| {
-                        AllocatorError::InternalIssue("Invalid destination port number".to_string())
-                    })?;
 
                 Some(pool_dst.reserve(
                     NatIp::try_from_addr(*flow_key.data().src_ip()).map_err(|()| {
@@ -383,7 +374,7 @@ impl NatDefaultAllocator {
                             "Failed to convert IP address to Ipv4Addr".to_string(),
                         )
                     })?,
-                    reserve_dst_port_number,
+                    reservation_dst_port_number,
                 )?)
             }
             None => None,
