@@ -221,8 +221,10 @@ impl IcmpProtoKey {
 
 #[derive(Debug, Clone, Eq, PartialEq, PartialOrd, Ord, thiserror::Error)]
 pub enum IpProtoKeyError {
-    #[error("Type does not use ports")]
+    #[error("Variant does not use ports (e.g. ICMP)")]
     NoPortsForType,
+    #[error("Variant, or variant's value, does not use identifier (e.g. TCP, ICMP Error message)")]
+    NoIdentifierForType,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
@@ -270,6 +272,20 @@ impl IpProtoKey {
             IpProtoKey::Icmp(_) => return Err(IpProtoKeyError::NoPortsForType),
         }
         Ok(())
+    }
+
+    /// Sets the ICMP Query identifier of the flow key, if possible
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IpProtoKeyError::NoIdentifierForType`] if the [`IpProtoKey`] enum value does not
+    /// have an identifier.
+    pub fn try_set_identifier(&mut self, identifier: u16) -> Result<(), IpProtoKeyError> {
+        if let IpProtoKey::Icmp(IcmpProtoKey::QueryMsgData(_)) = self {
+            *self = IpProtoKey::Icmp(IcmpProtoKey::QueryMsgData(identifier));
+            return Ok(());
+        }
+        Err(IpProtoKeyError::NoIdentifierForType)
     }
 }
 

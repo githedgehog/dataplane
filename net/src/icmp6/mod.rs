@@ -20,6 +20,14 @@ use std::num::NonZero;
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
+/// Errors which may occur when using ICMP v6 methods
+#[derive(Debug, thiserror::Error)]
+pub enum Icmp6Error {
+    /// The ICMP type does not allow setting an identifier.
+    #[error("Invalid ICMP type")]
+    InvalidIcmpType,
+}
+
 /// An `Icmp6` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Icmp6(pub(crate) Icmpv6Header);
@@ -63,6 +71,21 @@ impl Icmp6 {
         match self.icmp_type() {
             Icmpv6Type::EchoRequest(msg) | Icmpv6Type::EchoReply(msg) => Some(msg.id),
             _ => None,
+        }
+    }
+
+    /// Set the identifier field value
+    ///
+    /// # Errors
+    ///
+    /// This method returns [`Icmp6Error::InvalidIcmpType`] if the ICMP type does not allow setting an identifier.
+    pub fn try_set_identifier(&mut self, id: u16) -> Result<(), Icmp6Error> {
+        match self.icmp_type_mut() {
+            Icmpv6Type::EchoRequest(msg) | Icmpv6Type::EchoReply(msg) => {
+                msg.id = id;
+                Ok(())
+            }
+            _ => Err(Icmp6Error::InvalidIcmpType),
         }
     }
 

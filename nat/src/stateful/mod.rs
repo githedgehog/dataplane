@@ -20,7 +20,9 @@ pub use allocator_writer::NatAllocatorWriter;
 use concurrency::sync::Arc;
 use flow_info::{ExtractRef, FlowInfo};
 use net::buffer::PacketBufferMut;
-use net::headers::{Net, TryHeaders, TryHeadersMut, TryInnerIp, TryIp, TryIpMut, TryTransportMut};
+use net::headers::{
+    Net, Transport, TryHeaders, TryHeadersMut, TryInnerIp, TryIp, TryIpMut, TryTransportMut,
+};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::NetworkFunction;
 use pkt_meta::flow_table::flow_key::{IcmpProtoKey, Uni};
@@ -54,6 +56,8 @@ pub enum StatefulNatError {
     NoSession,
     #[error("failed to translate ICMP inner packet: {0}")]
     IcmpErrorMsg(IcmpErrorMsgError),
+    #[error("unexpected IP protocol key variant")]
+    UnexpectedKeyVariant,
 }
 
 #[derive(Debug)]
@@ -202,15 +206,25 @@ impl StatefulNat {
             )
             .map_err(|_| StatefulNatError::InvalidIpVersion)?;
 
-            headers
+            let transport = headers
                 .try_transport_mut()
-                .ok_or(StatefulNatError::BadTransportHeader)?
-                .try_set_source(
-                    target_src_port
-                        .try_into()
-                        .map_err(|_| StatefulNatError::InvalidPort(target_src_port.as_u16()))?,
-                )
-                .map_err(|_| StatefulNatError::BadTransportHeader)?;
+                .ok_or(StatefulNatError::BadTransportHeader)?;
+            match transport {
+                Transport::Tcp(_) | Transport::Udp(_) => {
+                    transport
+                        .try_set_source(
+                            target_src_port.try_into().map_err(|_| {
+                                StatefulNatError::InvalidPort(target_src_port.as_u16())
+                            })?,
+                        )
+                        .map_err(|_| StatefulNatError::BadTransportHeader)?;
+                }
+                Transport::Icmp4(_) | Transport::Icmp6(_) => {
+                    transport
+                        .try_set_identifier(target_src_port.as_u16())
+                        .map_err(|_| StatefulNatError::BadTransportHeader)?;
+                }
+            }
         }
 
         let net = headers.try_ip_mut().ok_or(StatefulNatError::BadIpHeader)?;
@@ -227,6 +241,9 @@ impl StatefulNat {
                         .map_err(|_| StatefulNatError::InvalidPort(target_dst_port.as_u16()))?,
                 )
                 .map_err(|_| StatefulNatError::BadTransportHeader)?;
+
+            // No need to set the identifier for ICMP Echo messages, we already did it above using
+            // target_src_port.
         }
         Ok(())
     }
@@ -299,22 +316,45 @@ impl StatefulNat {
         let mut reverse_proto_key = flow_key.data().proto_key_info().reverse();
         // ... but adjust ports as necessary (use allocated ports for the reverse session)
         if let Some(src_port) = allocated_src_port_to_use {
-            reverse_proto_key
-                .try_set_src_port(
-                    src_port
-                        .try_into()
-                        .map_err(|_| StatefulNatError::InvalidPort(src_port.as_u16()))?,
-                )
-                .map_err(|_| StatefulNatError::BadTransportHeader)?;
+            match reverse_proto_key {
+                IpProtoKey::Tcp(_) | IpProtoKey::Udp(_) => {
+                    reverse_proto_key
+                        .try_set_src_port(
+                            src_port
+                                .try_into()
+                                .map_err(|_| StatefulNatError::InvalidPort(src_port.as_u16()))?,
+                        )
+                        .map_err(|_| StatefulNatError::BadTransportHeader)?;
+                }
+                IpProtoKey::Icmp(IcmpProtoKey::QueryMsgData(_)) => {
+                    // Nothing to do here: we reverse the identifier using "dst_port" below, and one
+                    // identifier is enough for ICMP.
+                }
+                IpProtoKey::Icmp(_) => {
+                    return Err(StatefulNatError::UnexpectedKeyVariant);
+                }
+            }
         }
         if let Some(dst_port) = allocated_dst_port_to_use {
-            reverse_proto_key
-                .try_set_dst_port(
-                    dst_port
-                        .try_into()
-                        .map_err(|_| StatefulNatError::InvalidPort(dst_port.as_u16()))?,
-                )
-                .map_err(|_| StatefulNatError::BadTransportHeader)?;
+            match reverse_proto_key {
+                IpProtoKey::Tcp(_) | IpProtoKey::Udp(_) => {
+                    reverse_proto_key
+                        .try_set_dst_port(
+                            dst_port
+                                .try_into()
+                                .map_err(|_| StatefulNatError::InvalidPort(dst_port.as_u16()))?,
+                        )
+                        .map_err(|_| StatefulNatError::BadTransportHeader)?;
+                }
+                IpProtoKey::Icmp(IcmpProtoKey::QueryMsgData(_)) => {
+                    reverse_proto_key
+                        .try_set_identifier(dst_port.as_u16())
+                        .map_err(|_| StatefulNatError::BadTransportHeader)?;
+                }
+                IpProtoKey::Icmp(_) => {
+                    return Err(StatefulNatError::UnexpectedKeyVariant);
+                }
+            }
         }
 
         Ok(FlowKey::uni(

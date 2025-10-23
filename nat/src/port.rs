@@ -89,3 +89,9 @@ impl TryFrom<NatPort> for NonZero<u16> {
             .map_err(|_| NatPortError::InvalidPort(port.as_u16()))
     }
 }
+
+impl From<NatPort> for u16 {
+    fn from(port: NatPort) -> Self {
+        port.as_u16()
+    }
+}

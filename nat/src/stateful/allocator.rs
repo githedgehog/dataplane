@@ -21,6 +21,8 @@ pub enum AllocatorError {
     PortAllocationFailed(NatPortError),
     #[error("unsupported protocol: {0:?}")]
     UnsupportedProtocol(NextHeader),
+    #[error("unsupported ICMP message category")]
+    UnsupportedIcmpCategory,
     #[error("no port present for flow: NAT currently unsupported")]
     PortNotFound,
     #[error("missing VPC discriminant")]
