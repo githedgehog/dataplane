@@ -20,7 +20,7 @@ pub use allocator_writer::NatAllocatorWriter;
 use concurrency::sync::Arc;
 use flow_info::{ExtractRef, FlowInfo};
 use net::buffer::PacketBufferMut;
-use net::headers::{Net, TryHeaders, TryHeadersMut, TryIp, TryIpMut, TryTransportMut};
+use net::headers::{Net, TryHeaders, TryHeadersMut, TryInnerIp, TryIp, TryIpMut, TryTransportMut};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::NetworkFunction;
 use pkt_meta::flow_table::flow_key::{IcmpProtoKey, Uni};
@@ -347,31 +347,82 @@ impl StatefulNat {
         Some(translation_data)
     }
 
-    fn translate_icmp_inner_packet_if_any<Buf: PacketBufferMut, I: NatIpWithBitmap>(
+    fn deal_with_icmp_error_msg<Buf: PacketBufferMut, I: NatIpWithBitmap>(
         &self,
         packet: &mut Packet<Buf>,
         flow_key: &FlowKey,
-    ) -> Result<(), StatefulNatError> {
+    ) -> Result<bool, StatefulNatError> {
         match validate_checksums_icmp(packet) {
             Err(e) => return Err(StatefulNatError::IcmpErrorMsg(e)), // Error, drop packet
-            Ok(false) => return Ok(()),                              // No translation needed
+            Ok(false) => return Ok(false),                           // No translation needed
             Ok(true) => {}                                           // Translation needed, carry on
         }
 
+        // From RFC 5508, "NAT Behavioral Requirements for ICMP":
+        //
+        // REQ-4:
+        //
+        //    If a NAT device receives an ICMP Error packet from an external realm, and the NAT
+        //    device does not have an active mapping for the embedded payload, the NAT SHOULD
+        //    silently drop the ICMP Error packet. If the NAT has active mapping for the embedded
+        //    payload, then the NAT MUST do the following prior to forwarding the packet, unless
+        //    explicitly overridden by local policy:
+        //
+        //    a) Revert the IP and transport headers of the embedded IP packet to their original
+        //       form, using the matching mapping; and
+        //    b) Leave the ICMP Error type and code unchanged; and
+        //    c) Modify the destination IP address of the outer IP header to be the same as the
+        //       source IP address of the embedded packet after translation.
+        //
+        // REQ-5:
+        //
+        //    If a NAT device receives an ICMP Error packet from the private realm, and the NAT does
+        //    not have an active mapping for the embedded payload, the NAT SHOULD silently drop the
+        //    ICMP Error packet. If the NAT has active mapping for the embedded payload, then the
+        //    NAT MUST do the following prior to forwarding the packet, unless explicitly overridden
+        //    by local policy:
+        //
+        //    a) Revert the IP and transport headers of the embedded IP packet to their original form,
+        //       using the matching mapping; and
+        //    b) Leave the ICMP Error type and code unchanged; and
+        //    c) If the NAT enforces Basic NAT function, and the NAT has active mapping for the IP
+        //       address that sent the ICMP Error, translate the source IP address of the ICMP Error
+        //       packet with the public IP address in the mapping. In all other cases, translate the
+        //       source IP address of the ICMP Error packet with its own public IP address.
+
         let Some(state) = self.lookup_session_icmp_inner::<I>(flow_key) else {
-            // From REQ-4 and REQ-5 from RFC 5508, "NAT Behavioral Requirements for ICMP":
-            //
-            //    If a NAT device receives an ICMP Error packet from an external realm, and the NAT
-            //    device does not have an active mapping for the embedded payload, the NAT SHOULD
-            //    silently drop the ICMP Error packet.
-            //
-            //    If a NAT device receives an ICMP Error packet from the private realm, and the NAT
-            //    does not have an active mapping for the embedded payload, the NAT SHOULD silently
-            //    drop the ICMP Error packet.
+            // No active mapping for the embedded payload, silently drop the packet.
             return Err(StatefulNatError::NoSession);
         };
 
-        stateful_translate_icmp_inner::<Buf>(packet, &state).map_err(StatefulNatError::IcmpErrorMsg)
+        // Revert the IP and transport headers of the embedded IP packet to their original form,
+        // using the matching mapping
+        stateful_translate_icmp_inner::<Buf>(packet, &state)
+            .map_err(StatefulNatError::IcmpErrorMsg)?;
+
+        // Leave the ICMP Error type and code unchanged
+        {}
+
+        // [Assume packet was received from an external realm]
+        //
+        // Modify the destination IP address of the outer IP header to be the same as the source IP
+        // of the embedded packet after translation.
+        //
+        // Leave the source IP address of the outer IP header unchanged, this is where the network
+        // error comes from.
+        //
+        // TODO: Implement the check and case where packet was received from the private realm
+        let inner_src_addr = packet
+            .try_inner_ip()
+            .ok_or(StatefulNatError::BadIpHeader)
+            .map(Net::src_addr)?;
+        packet
+            .try_ip_mut()
+            .ok_or(StatefulNatError::BadIpHeader)?
+            .try_set_destination(inner_src_addr)
+            .map_err(|_| StatefulNatError::InvalidIpVersion)?;
+
+        Ok(true)
     }
 
     fn translate_packet<Buf: PacketBufferMut, I: NatIpWithBitmap>(
@@ -383,8 +434,13 @@ impl StatefulNat {
     ) -> Result<bool, StatefulNatError> {
         // Hot path: if we have a session, directly translate the address already
         if let Some(state) = Self::lookup_session::<I, Buf>(packet) {
-            self.translate_icmp_inner_packet_if_any::<Buf, I>(packet, flow_key)?;
             return Self::stateful_translate::<Buf>(packet, &state).and(Ok(true));
+        }
+
+        match self.deal_with_icmp_error_msg::<Buf, I>(packet, flow_key) {
+            Err(e) => return Err(e),     // Something wrong happened
+            Ok(true) => return Ok(true), // ICMP Error message, and we completed translation
+            Ok(false) => {}              // Not a translated ICMP Error message, just keeps going
         }
 
         let Some(allocator) = self.allocator.get() else {
@@ -406,8 +462,6 @@ impl StatefulNat {
         // Given that at least one of alloc.src or alloc.dst is set, we should always have at
         // least one timeout set.
         let idle_timeout = alloc.idle_timeout().unwrap_or_else(|| unreachable!());
-
-        self.translate_icmp_inner_packet_if_any::<Buf, I>(packet, flow_key)?;
 
         let translation_info = Self::get_translation_info(&alloc.src, &alloc.dst);
         let reverse_flow_key = Self::new_reverse_session(flow_key, &alloc, src_vpc_id, dst_vpc_id)?;
