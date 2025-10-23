@@ -75,6 +75,7 @@ impl NatDefaultAllocator {
             VpcExpose::as_range_or_empty,
             |expose| &expose.ips,
             &mut self.pools_src44,
+            NextHeader::ICMP,
         )?;
 
         build_nat_pool_generic(
@@ -85,6 +86,7 @@ impl NatDefaultAllocator {
             VpcExpose::as_range_or_empty,
             |expose| &expose.ips,
             &mut self.pools_src66,
+            NextHeader::ICMP6,
         )
     }
 
@@ -102,6 +104,7 @@ impl NatDefaultAllocator {
             |expose| &expose.ips,
             VpcExpose::as_range_or_empty,
             &mut self.pools_dst44,
+            NextHeader::ICMP,
         )?;
 
         build_nat_pool_generic(
@@ -112,10 +115,12 @@ impl NatDefaultAllocator {
             |expose| &expose.ips,
             VpcExpose::as_range_or_empty,
             &mut self.pools_dst66,
+            NextHeader::ICMP6,
         )
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, Iter, G, H>(
     manifest: &'a VpcManifest,
     src_vpc_id: VpcDiscriminant,
@@ -127,6 +132,7 @@ fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, Iter, G
     // A function to get the list of prefixes to translate from
     target_prefixes_from_expose: H,
     table: &mut PoolTable<I, J>,
+    icmp_proto: NextHeader,
 ) -> Result<(), AllocatorError>
 where
     F: FnOnce(&'a VpcManifest) -> Iter,
@@ -137,9 +143,12 @@ where
     exposes_filter(manifest).try_for_each(|expose| {
         // We should always have an idle timeout if we process this expose for stateful NAT.
         let idle_timeout = expose.idle_timeout().unwrap_or_else(|| unreachable!());
+
         let tcp_ip_allocator =
             ip_allocator_for_prefixes(original_prefixes_from_expose(expose), idle_timeout)?;
         let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
+        let icmp_ip_allocator = tcp_ip_allocator.deep_clone()?;
+
         add_pool_entries(
             table,
             target_prefixes_from_expose(expose),
@@ -147,10 +156,13 @@ where
             dst_vpc_id,
             &tcp_ip_allocator,
             &udp_ip_allocator,
+            &icmp_ip_allocator,
+            icmp_proto,
         )
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     table: &mut PoolTable<I, J>,
     prefixes: &BTreeSet<Prefix>,
@@ -158,10 +170,19 @@ fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     dst_vpc_id: VpcDiscriminant,
     tcp_allocator: &IpAllocator<J>,
     udp_allocator: &IpAllocator<J>,
+    icmp_allocator: &IpAllocator<J>,
+    icmp_proto: NextHeader,
 ) -> Result<(), AllocatorError> {
     for prefix in prefixes {
         let key = pool_table_key_for_expose(prefix, src_vpc_id, dst_vpc_id)?;
-        insert_per_proto_entries(table, key, tcp_allocator, udp_allocator);
+        insert_per_proto_entries(
+            table,
+            key,
+            tcp_allocator,
+            udp_allocator,
+            icmp_allocator,
+            icmp_proto,
+        );
     }
     Ok(())
 }
@@ -171,18 +192,25 @@ fn insert_per_proto_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     key: PoolTableKey<I>,
     tcp_allocator: &IpAllocator<J>,
     udp_allocator: &IpAllocator<J>,
+    icmp_allocator: &IpAllocator<J>,
+    icmp_proto: NextHeader,
 ) {
-    // We insert twice the entry, once for TCP and once for UDP. Allocations for TCP do not affect
-    // allocations for UDP, the space defined by the combination of IP addresses and L4 ports is
-    // distinct for each protocol.
+    // We insert three times the entry, once for TCP, once for UDP and once for ICMP (v4 or v6
+    // depending on the case). Allocations for TCP, for example, do not affect allocations for UDP
+    // or for ICMP, the space defined by the combination of IP addresses and L4 ports/id is distinct
+    // for each protocol.
 
     let mut tcp_key = key.clone();
     tcp_key.protocol = NextHeader::TCP;
     table.add_entry(tcp_key, tcp_allocator.clone());
 
-    let mut udp_key = key;
+    let mut udp_key = key.clone();
     udp_key.protocol = NextHeader::UDP;
     table.add_entry(udp_key, udp_allocator.clone());
+
+    let mut icmp_key = key;
+    icmp_key.protocol = icmp_proto;
+    table.add_entry(icmp_key, icmp_allocator.clone());
 }
 
 fn ip_allocator_for_prefixes<J: NatIpWithBitmap>(
