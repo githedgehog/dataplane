@@ -124,7 +124,7 @@ mod helper {
             Self { name, request }
         }
 
-        pub async fn create(self) -> Result<(), std::io::Error> {
+        pub async fn create(self) -> Result<tokio::fs::File, std::io::Error> {
             let name = self.name;
             trace!("opening /dev/net/tun");
             let tap_file = tokio::fs::OpenOptions::new()
@@ -152,7 +152,7 @@ mod helper {
                 return Err(err);
             }
             info!("persisted tap device: {name}");
-            Ok(())
+            Ok(tap_file)
         }
     }
 
@@ -227,8 +227,9 @@ impl TapDevice {
     /// If the tap device cannot be opened or created, an `io::Error` is returned.
     #[cold]
     #[tracing::instrument(level = "info")]
-    pub async fn open(name: &InterfaceName) -> Result<(), std::io::Error> {
-        helper::InterfaceRequest::new(name.clone()).create().await
+    pub async fn open(name: &InterfaceName) -> Result<Self, std::io::Error> {
+        let file = helper::InterfaceRequest::new(name.clone()).create().await?;
+        Ok(TapDevice { file })
     }
 
     /// Read a packet from the tap, filling out the provided buffer with the contents of the packet.
