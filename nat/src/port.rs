@@ -9,8 +9,8 @@ use std::num::NonZero;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum NatPortError {
-    #[error("reserved port ({0})")]
-    ReservedPort(u16),
+    #[error("invalid port ({0})")]
+    InvalidPort(u16),
 }
 
 /// `NatPort` is a type to represent L4 ports usable in stateful NAT. In fact, it is just a wrapper
@@ -21,26 +21,40 @@ pub enum NatPortError {
 // memory from 3 to 2 bytes.
 #[cfg_attr(test, derive(bolero::TypeGenerator))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NatPort(NonZero<u16>);
+pub enum NatPort {
+    Port(NonZero<u16>),
+    Identifier(u16),
+}
 
 impl NatPort {
-    pub fn new_checked(port: u16) -> Result<NatPort, NatPortError> {
-        NonZero::new(port).map_or(Err(NatPortError::ReservedPort(port)), |port| {
-            Ok(NatPort(port))
+    #[must_use]
+    pub fn new_port(port: NonZero<u16>) -> NatPort {
+        NatPort::Port(port)
+    }
+
+    pub fn new_port_checked(port: u16) -> Result<NatPort, NatPortError> {
+        NonZero::new(port).map_or(Err(NatPortError::InvalidPort(port)), |port| {
+            Ok(NatPort::Port(port))
         })
     }
 
     #[must_use]
+    pub fn new_identifier(port: u16) -> NatPort {
+        NatPort::Identifier(port)
+    }
+
+    #[must_use]
     pub fn as_u16(self) -> u16 {
-        self.0.into()
+        match self {
+            NatPort::Port(port) => port.into(),
+            NatPort::Identifier(port) => port,
+        }
     }
 }
 
-impl TryFrom<TcpPort> for NatPort {
-    type Error = NatPortError;
-
-    fn try_from(port: TcpPort) -> Result<Self, Self::Error> {
-        Self::new_checked(port.as_u16())
+impl From<TcpPort> for NatPort {
+    fn from(port: TcpPort) -> Self {
+        Self::new_port(port.into())
     }
 }
 
@@ -52,11 +66,9 @@ impl TryFrom<NatPort> for TcpPort {
     }
 }
 
-impl TryFrom<UdpPort> for NatPort {
-    type Error = NatPortError;
-
-    fn try_from(port: UdpPort) -> Result<Self, Self::Error> {
-        Self::new_checked(port.as_u16())
+impl From<UdpPort> for NatPort {
+    fn from(port: UdpPort) -> Self {
+        Self::new_port(port.into())
     }
 }
 
@@ -68,8 +80,12 @@ impl TryFrom<NatPort> for UdpPort {
     }
 }
 
-impl From<NatPort> for NonZero<u16> {
-    fn from(port: NatPort) -> Self {
-        port.0
+impl TryFrom<NatPort> for NonZero<u16> {
+    type Error = NatPortError;
+
+    fn try_from(port: NatPort) -> Result<Self, Self::Error> {
+        port.as_u16()
+            .try_into()
+            .map_err(|_| NatPortError::InvalidPort(port.as_u16()))
     }
 }
