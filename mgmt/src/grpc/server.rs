@@ -8,14 +8,19 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use tracing::debug;
 
-use crate::processor::proc::{ConfigRequest, ConfigResponse};
-use config::converters::grpc::convert_gateway_config_from_grpc_with_defaults;
+use crate::processor::proc::{ConfigChannelRequest, ConfigRequest, ConfigResponse};
+use config::converters::grpc::{
+    convert_dataplane_status_to_grpc, convert_gateway_config_from_grpc_with_defaults,
+};
+use config::internal::status::DataplaneStatus;
 use config::{GenId, GwConfig};
+use tokio::sync::mpsc::Sender;
 
 // Import proto-generated types
 use gateway_config::{
     ConfigService, ConfigServiceServer, Error, GatewayConfig, GetConfigGenerationRequest,
-    GetConfigGenerationResponse, GetConfigRequest, UpdateConfigRequest, UpdateConfigResponse,
+    GetConfigGenerationResponse, GetConfigRequest, GetDataplaneStatusRequest,
+    GetDataplaneStatusResponse, UpdateConfigRequest, UpdateConfigResponse,
 };
 
 /// Trait for configuration management
@@ -24,6 +29,7 @@ pub trait ConfigManager: Send + Sync {
     async fn get_current_config(&self) -> Result<GatewayConfig, String>;
     async fn get_generation(&self) -> Result<i64, String>;
     async fn apply_config(&self, config: GatewayConfig) -> Result<(), String>;
+    async fn get_dataplane_status(&self) -> Result<DataplaneStatus, String>;
 }
 
 /// Implementation of the gRPC server
@@ -86,6 +92,22 @@ impl ConfigService for ConfigServiceImpl {
                 message: format!("Failed to apply configuration: {e}"),
             })),
         }
+    }
+
+    async fn get_dataplane_status(
+        &self,
+        _request: Request<GetDataplaneStatusRequest>,
+    ) -> Result<Response<GetDataplaneStatusResponse>, Status> {
+        let internal = self
+            .config_manager
+            .get_dataplane_status()
+            .await
+            .map_err(|e| Status::internal(format!("Failed to get dataplane status: {e}")))?;
+
+        let grpc = convert_dataplane_status_to_grpc(&internal)
+            .map_err(|e| Status::internal(format!("Failed to encode status: {e}")))?;
+
+        Ok(Response::new(grpc))
     }
 }
 
@@ -171,10 +193,26 @@ impl ConfigManager for BasicConfigManager {
             _ => unreachable!(),
         }
     }
-}
 
-use crate::processor::proc::ConfigChannelRequest;
-use tokio::sync::mpsc::Sender;
+    async fn get_dataplane_status(&self) -> Result<DataplaneStatus, String> {
+        debug!("Received request to get dataplane status");
+
+        // build a request to the config processor, send it and get the response
+        let (req, rx) = ConfigChannelRequest::new(ConfigRequest::GetDataplaneStatus);
+        self.channel_tx
+            .send(req)
+            .await
+            .map_err(|_| "Failure relaying request".to_string())?;
+        let response = rx
+            .await
+            .map_err(|_| "Failure receiving from config processor".to_string())?;
+
+        match response {
+            ConfigResponse::GetDataplaneStatus(status) => Ok(*status),
+            _ => unreachable!(),
+        }
+    }
+}
 
 /// Function to create the gRPC service
 pub fn create_config_service(

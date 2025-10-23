@@ -1774,8 +1774,8 @@ dependencies = [
 
 [[package]]
 name = "gateway_config"
-version = "0.15.0"
-source = "git+https://github.com/githedgehog/gateway-proto?tag=v0.15.0#e2b4480ebf91a44f744447de9fe3432118ec3893"
+version = "0.15.1"
+source = "git+https://github.com/githedgehog/gateway-proto?tag=v0.15.1#7cb03f5ff9776ffac2b62a43ac4cbf8547115fc1"
 dependencies = [
  "async-trait",
  "bolero",
