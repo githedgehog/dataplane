@@ -518,6 +518,97 @@ mod tests {
         assert_eq!(done_reason, None);
     }
 
+    fn build_overlay_2vpcs_unidirectional_nat() -> Overlay {
+        fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
+            manifest.add_expose(expose).expect("Failed to add expose");
+        }
+
+        let mut vpc_table = VpcTable::new();
+        let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
+        let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
+
+        let expose121 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
+            .ip("1.1.0.0/16".into())
+            .as_range("2.2.0.0/16".into());
+        let expose211 = VpcExpose::empty();
+
+        let mut manifest12 = VpcManifest::new("VPC-1");
+        add_expose(&mut manifest12, expose121);
+        let mut manifest21 = VpcManifest::new("VPC-2");
+        add_expose(&mut manifest21, expose211);
+
+        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21);
+
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table.add(peering12).expect("Failed to add peering");
+
+        Overlay::new(vpc_table, peering_table)
+    }
+
+    #[test]
+    #[traced_test]
+    fn test_full_config_unidirectional_nat() {
+        let mut config = build_sample_config(build_overlay_2vpcs_unidirectional_nat());
+        config.validate().unwrap();
+
+        // Check that we can validate the allocator
+        let (mut nat, mut allocator) = StatefulNat::new("test-nat");
+        allocator
+            .update_allocator(&config.external.overlay.vpc_table)
+            .unwrap();
+
+        // No NAT
+        let (orig_src, orig_dst) = ("8.8.8.8", "9.9.9.9");
+        let (output_src, output_dst, output_src_port, output_dst_port, done_reason) =
+            check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst, 9998, 443);
+        assert_eq!(output_src, addr_v4(orig_src));
+        assert_eq!(output_dst, addr_v4(orig_dst));
+        assert_eq!(output_src_port, 9998);
+        assert_eq!(output_dst_port, 443);
+        assert_eq!(done_reason, Some(DoneReason::NatFailure));
+
+        // NAT: expose121 <-> expose211 (valid source NAT, no destination NAT)
+        let (orig_src, orig_dst) = ("1.1.2.3", "5.0.0.5");
+        let (target_src, target_dst) = ("2.2.0.0", "5.0.0.5");
+        let (output_src, output_dst, output_src_port, output_dst_port, done_reason) =
+            check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst, 9998, 443);
+        assert_eq!(output_src, addr_v4(target_src));
+        assert_eq!(output_dst, addr_v4(target_dst));
+        assert_eq!(done_reason, None);
+        // Reverse path
+        let (
+            return_output_src,
+            return_output_dst,
+            return_output_src_port,
+            return_output_dst_port,
+            done_reason,
+        ) = check_packet(
+            &mut nat,
+            vni(200),
+            vni(100),
+            target_dst,
+            target_src,
+            output_dst_port,
+            output_src_port,
+        );
+        assert_eq!(return_output_src, addr_v4(orig_dst));
+        assert_eq!(return_output_dst, addr_v4(orig_src));
+        assert_eq!(return_output_src_port, 443);
+        assert_eq!(return_output_dst_port, 9998);
+        assert_eq!(done_reason, None);
+
+        // NAT: expose211 <-> expose121 (no source NAT)
+        let (orig_src, orig_dst) = ("5.0.0.5", "2.2.0.2");
+        let (target_src, target_dst) = ("5.0.0.5", "2.2.0.2");
+        let (output_src, output_dst, _, _, done_reason) =
+            check_packet(&mut nat, vni(200), vni(100), orig_src, orig_dst, 9090, 8080);
+        assert_eq!(output_src, addr_v4(target_src));
+        assert_eq!(output_dst, addr_v4(target_dst));
+        assert_eq!(done_reason, Some(DoneReason::NatFailure));
+    }
+
     fn check_packet_icmp(
         nat: &mut StatefulNat,
         src_vni: Vni,
