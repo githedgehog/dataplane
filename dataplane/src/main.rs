@@ -55,6 +55,9 @@ fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
 }
 
 fn process_tracing_cmds(args: &CmdArgs) {
+    get_trace_ctl().setup_from_string("all=debug").unwrap();
+    info!("{}", get_trace_ctl().as_string().unwrap());
+
     if let Some(tracing) = args.tracing()
         && let Err(e) = get_trace_ctl().setup_from_string(tracing)
     {
