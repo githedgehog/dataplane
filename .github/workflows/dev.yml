@@ -28,6 +28,21 @@ on:
         description: "enable to see debug statements from just recipes"
         required: false
         default: false
+      run_vlab_tests:
+        type: "boolean"
+        description: "Run VLAB tests"
+        required: false
+        default: false
+      run_hlab_tests:
+        type: "boolean"
+        description: "Run hybrid HLAB tests"
+        required: false
+        default: false
+      enable_release_tests:
+        type: "boolean"
+        description: "Enable release tests for VLAB/HLAB tests"
+        required: false
+        default: false
 
 concurrency:
   group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.event.after || github.event.merge_group && github.run_id }}"
@@ -306,7 +321,7 @@ jobs:
 
     uses: githedgehog/fabricator/.github/workflows/run-vlab.yaml@master
     with:
-      skip: ${{ matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+hlab') || !matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+vlab') }}
+      skip: ${{ matrix.hybrid && !(inputs.run_hlab_tests == true || contains(github.event.pull_request.labels.*.name, 'ci:+hlab')) || !matrix.hybrid && !(inputs.run_vlab_tests == true || contains(github.event.pull_request.labels.*.name, 'ci:+vlab')) }}
       fabricatorref: master
       prebuild: "just bump dataplane HEAD.x86_64-unknown-linux-gnu.debug.${{ github.sha }}"
       fabricmode: ${{ matrix.fabricmode }}
@@ -314,7 +329,7 @@ jobs:
       includeonie: ${{ matrix.includeonie }}
       buildmode: ${{ matrix.buildmode }}
       vpcmode: ${{ matrix.vpcmode }}
-      releasetest: ${{ contains(github.event.pull_request.labels.*.name, 'ci:+release') }}
+      releasetest: ${{ inputs.run_release_tests == true || contains(github.event.pull_request.labels.*.name, 'ci:+release') }}
       hybrid: ${{ matrix.hybrid }}
 
     strategy:
