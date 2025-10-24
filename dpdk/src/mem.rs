@@ -19,6 +19,7 @@ use core::ptr::null;
 use core::ptr::null_mut;
 use core::slice::from_raw_parts_mut;
 use errno::Errno;
+use net::buffer::PacketBufferPool;
 use tracing::{error, info, warn};
 
 use dpdk_sys::{
@@ -85,6 +86,14 @@ impl Eq for PoolInner {}
 impl Display for Pool {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(f, "Pool({})", self.name())
+    }
+}
+
+impl PacketBufferPool for Pool {
+    type Buffer = Mbuf;
+    type Error = String;
+    fn new_buffer(&self) -> Result<Self::Buffer, Self::Error> {
+        todo!()
     }
 }
 
