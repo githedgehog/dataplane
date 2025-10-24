@@ -23,8 +23,10 @@ mod tests {
 
     use net::buffer::{PacketBufferMut, TestBuffer};
     use net::eth::mac::Mac;
-    use net::headers::{TryIpv4, TryUdp};
-    use net::packet::test_utils::build_test_udp_ipv4_frame;
+    use net::headers::{TryIcmp4, TryIpv4, TryUdp};
+    use net::packet::test_utils::{
+        IcmpEchoDirection, build_test_icmp4_echo, build_test_udp_ipv4_frame,
+    };
     use net::packet::{Packet, VpcDiscriminant};
     use net::vxlan::Vni;
     use pipeline::NetworkFunction;
@@ -484,5 +486,125 @@ mod tests {
         assert_eq!(return_output_dst, addr_v4(orig_src));
         assert_eq!(return_output_src_port, 80);
         assert_eq!(return_output_dst_port, 9998);
+    }
+
+    fn check_packet_icmp(
+        nat: &mut StatefulNat,
+        src_vni: Vni,
+        dst_vni: Vni,
+        src_ip: Ipv4Addr,
+        dst_ip: Ipv4Addr,
+        direction: IcmpEchoDirection,
+        identifier: u16,
+    ) -> (Ipv4Addr, Ipv4Addr, u16) {
+        let mut packet: Packet<TestBuffer> =
+            build_test_icmp4_echo(src_ip, dst_ip, identifier, direction).unwrap();
+        packet.get_meta_mut().set_nat(true);
+        packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+        packet.get_meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
+
+        flow_lookup(nat.sessions(), &mut packet);
+
+        let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+        let hdr_out = packets_out[0].try_ipv4().unwrap();
+        let icmp_out = packets_out[0].try_icmp4().unwrap();
+
+        (
+            hdr_out.source().inner(),
+            hdr_out.destination(),
+            icmp_out.identifier().unwrap(),
+        )
+    }
+
+    #[test]
+    #[traced_test]
+    fn test_icmp_nat() {
+        let mut config = build_sample_config(build_overlay_2vpcs());
+        config.validate().unwrap();
+
+        // Check that we can validate the allocator
+        let (mut nat, mut allocator) = StatefulNat::new("test-nat");
+        allocator
+            .update_allocator(&config.external.overlay.vpc_table)
+            .unwrap();
+
+        // No NAT
+        let (orig_src, orig_dst, orig_identifier) = (addr_v4("8.8.8.8"), addr_v4("9.9.9.9"), 1337);
+        let (output_src, output_dst, output_identifier) = check_packet_icmp(
+            &mut nat,
+            vni(100),
+            vni(200),
+            orig_src,
+            orig_dst,
+            IcmpEchoDirection::Request,
+            orig_identifier,
+        );
+        assert_eq!(output_src, orig_src);
+        assert_eq!(output_dst, orig_dst);
+        assert_eq!(output_identifier, orig_identifier);
+
+        // NAT: expose121 <-> expose211
+        let (orig_src, orig_dst, orig_identifier) = (addr_v4("1.1.2.3"), addr_v4("3.3.3.3"), 1337);
+        let (target_src, target_dst) = (addr_v4("2.2.0.0"), addr_v4("1.2.2.0"));
+        let (output_src, output_dst, output_identifier_1) = check_packet_icmp(
+            &mut nat,
+            vni(100),
+            vni(200),
+            orig_src,
+            orig_dst,
+            IcmpEchoDirection::Request,
+            orig_identifier,
+        );
+
+        assert_eq!(output_src, target_src);
+        assert_eq!(output_dst, target_dst);
+        assert!(output_identifier_1.is_multiple_of(256)); // First port of a 256-port "port block" from allocator
+
+        // Reverse path
+        let (return_output_src, return_output_dst, return_output_identifier) = check_packet_icmp(
+            &mut nat,
+            vni(200),
+            vni(100),
+            target_dst,
+            target_src,
+            IcmpEchoDirection::Reply,
+            output_identifier_1,
+        );
+        assert_eq!(return_output_src, orig_dst);
+        assert_eq!(return_output_dst, orig_src);
+        assert_eq!(return_output_identifier, orig_identifier);
+
+        // Second request with same identifier: no reallocation
+        let (orig_src, orig_dst) = (addr_v4("1.1.2.3"), addr_v4("3.3.3.3"));
+        let (target_src, target_dst) = (addr_v4("2.2.0.0"), addr_v4("1.2.2.0"));
+        let (output_src, output_dst, output_identifier_2) = check_packet_icmp(
+            &mut nat,
+            vni(100),
+            vni(200),
+            orig_src,
+            orig_dst,
+            IcmpEchoDirection::Request,
+            orig_identifier,
+        );
+        assert_eq!(output_src, target_src);
+        assert_eq!(output_dst, target_dst);
+        assert_eq!(output_identifier_2, output_identifier_1);
+
+        // NAT: expose121 <-> expose211 again, but with identifier 0 (corner case)
+        let (orig_src, orig_dst, orig_identifier) = (addr_v4("1.1.2.3"), addr_v4("3.3.3.3"), 0);
+        let (target_src, target_dst) = (addr_v4("2.2.0.0"), addr_v4("1.2.2.0"));
+        let (output_src, output_dst, output_identifier_3) = check_packet_icmp(
+            &mut nat,
+            vni(100),
+            vni(200),
+            orig_src,
+            orig_dst,
+            IcmpEchoDirection::Request,
+            orig_identifier,
+        );
+
+        assert_eq!(output_src, target_src);
+        assert_eq!(output_dst, target_dst);
+        assert_eq!(output_identifier_3, output_identifier_1 + 1); // Second port of the same 256-port "port block" from allocator
     }
 }
