@@ -29,7 +29,7 @@ use crate::tcp::{Tcp, TcpChecksumPayload, TruncatedTcp};
 use crate::udp::Udp;
 use crate::udp::port::UdpPort;
 use etherparse::icmpv4::DestUnreachableHeader;
-use etherparse::{Icmpv4Header, Icmpv4Type};
+use etherparse::{IcmpEchoHeader, Icmpv4Header, Icmpv4Type};
 use std::default::Default;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::num::NonZero;
@@ -292,6 +292,72 @@ pub fn build_test_icmpv4_destination_unreachable_packet(
     // Packet
     let data = vec![0u8; headers.size().get() as usize];
     let mut buffer = TestBuffer::from_raw_data(&data);
+    headers.deparse(buffer.as_mut()).unwrap();
+    Packet::new(buffer)
+}
+
+/// Direction for ICMP Echo packets
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IcmpEchoDirection {
+    /// Echo Request
+    Request,
+    /// Echo Reply
+    Reply,
+}
+
+#[must_use]
+/// Builds a test `ICMPv4` Echo Request or Reply packet.
+///
+/// The packet is an IPv4 packet with the specified source and destination addresses.
+/// The Ethernet source and destination MAC addresses are `0x02:00:00:00:00:01` and `0x02:00:00:00:00:02`,
+/// respectively.
+pub fn build_test_icmp4_echo(
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+    identifier: u16,
+    direction: IcmpEchoDirection,
+) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+    let mut headers = HeadersBuilder::default();
+
+    // Ethernet
+    headers.eth(Some(Eth::new(
+        SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
+        DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
+        EthType::IPV4,
+    )));
+
+    // ICMP Echo header
+    let echo_header = IcmpEchoHeader {
+        id: identifier,
+        seq: 0,
+    };
+    let icmp_type = match direction {
+        IcmpEchoDirection::Request => Icmpv4Type::EchoRequest(echo_header),
+        IcmpEchoDirection::Reply => Icmpv4Type::EchoReply(echo_header),
+    };
+    let icmp = Icmp4(Icmpv4Header::new(icmp_type));
+
+    // IPv4
+    let mut ipv4 = Ipv4::default();
+    ipv4.set_source(UnicastIpv4Addr::new(src_ip).unwrap());
+    ipv4.set_destination(dst_ip);
+    ipv4.set_ttl(8);
+    ipv4.set_next_header(NextHeader::ICMP);
+    ipv4.set_payload_len(icmp.size().get()).unwrap();
+    ipv4.update_checksum(&()).unwrap();
+    let net = Net::Ipv4(ipv4);
+
+    // Update ICMP checksum
+    let mut icmp_transport = Transport::Icmp4(icmp);
+    icmp_transport.update_checksum(&net, None, []);
+
+    // Build headers
+    headers.net(Some(net));
+    headers.transport(Some(icmp_transport));
+    let headers = headers.build().unwrap();
+
+    // Create packet
+    let mut buffer: TestBuffer = TestBuffer::new();
     headers.deparse(buffer.as_mut()).unwrap();
     Packet::new(buffer)
 }
