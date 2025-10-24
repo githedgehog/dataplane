@@ -228,7 +228,6 @@ impl NatDefaultAllocator {
         pools_dst: &PoolTable<I, I>,
     ) -> Result<AllocationResult<AllocatedIpPort<I>>, AllocatorError> {
         let next_header = Self::get_next_header(flow_key);
-        Self::check_proto(next_header)?;
         let (src_vpc_id, dst_vpc_id) = Self::check_and_get_discriminants(flow_key)?;
 
         // Get address pools for source and destination
@@ -284,13 +283,6 @@ impl NatDefaultAllocator {
             src_flow_idle_timeout: pool_src_opt.and_then(IpAllocator::idle_timeout),
             dst_flow_idle_timeout: pool_dst_opt.and_then(IpAllocator::idle_timeout),
         })
-    }
-
-    fn check_proto(next_header: NextHeader) -> Result<(), AllocatorError> {
-        match next_header {
-            NextHeader::TCP | NextHeader::UDP => Ok(()),
-            _ => Err(AllocatorError::UnsupportedProtocol(next_header)),
-        }
     }
 
     fn get_next_header(flow_key: &FlowKey) -> NextHeader {
