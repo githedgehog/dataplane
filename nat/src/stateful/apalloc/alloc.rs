@@ -56,7 +56,10 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         self.pool.write().unwrap().deallocate_from_pool(ip);
     }
 
-    fn reuse_allocated_ip(&self) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
+    fn reuse_allocated_ip(
+        &self,
+        allow_null: bool,
+    ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
         let allocated_ips = self.pool.read().unwrap();
         for ip_weak in allocated_ips.ips_in_use() {
             let Some(ip) = ip_weak.upgrade() else {
@@ -65,7 +68,7 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
             if !ip.has_free_ports() {
                 continue;
             }
-            match ip.allocate_port_for_ip() {
+            match ip.allocate_port_for_ip(allow_null) {
                 Ok(port) => return Ok(port),
                 // If there is no free port left, loop again to try another IP address
                 Err(AllocatorError::NoFreePort(_)) => {}
@@ -83,9 +86,12 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         Ok(arc_ip)
     }
 
-    fn allocate_from_new_ip(&self) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
+    fn allocate_from_new_ip(
+        &self,
+        allow_null: bool,
+    ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
         self.allocate_new_ip_from_pool()
-            .and_then(AllocatedIp::allocate_port_for_ip)
+            .and_then(|ip| ip.allocate_port_for_ip(allow_null))
     }
 
     fn cleanup_used_ips(&self) {
@@ -93,15 +99,18 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         allocated_ips.cleanup();
     }
 
-    pub(crate) fn allocate(&self) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
+    pub(crate) fn allocate(
+        &self,
+        allow_null: bool,
+    ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
         // FIXME: Should we clean up every time??
         self.cleanup_used_ips();
 
-        if let Ok(port) = self.reuse_allocated_ip() {
+        if let Ok(port) = self.reuse_allocated_ip(allow_null) {
             return Ok(port);
         }
 
-        self.allocate_from_new_ip()
+        self.allocate_from_new_ip(allow_null)
     }
 
     fn get_allocated_ip(&self, ip: I) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
@@ -166,8 +175,9 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
 
     fn allocate_port_for_ip(
         self: Arc<Self>,
+        allow_null: bool,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
-        self.port_allocator.allocate_port(self.clone())
+        self.port_allocator.allocate_port(self.clone(), allow_null)
     }
 
     fn reserve_port_for_ip(
