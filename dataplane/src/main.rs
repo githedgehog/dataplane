@@ -89,7 +89,7 @@ fn main() {
     let args = CmdArgs::parse();
     process_tracing_cmds(&args);
 
-    info!("Starting gateway process...");
+    info!("Starting gateway process now...");
 
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
     ctrlc::set_handler(move || stop_tx.send(()).expect("Error sending SIGINT signal"))
