@@ -319,6 +319,9 @@ impl StatelessNat {
                 packet.done(DoneReason::NatFailure);
             }
             Ok(modified) => {
+                // we have already natted the packet. Prevent stateful from doing so.
+                // This is a temporary hack.
+                packet.get_meta_mut().set_nat(false);
                 if modified {
                     packet.get_meta_mut().set_checksum_refresh(true);
                     debug!("{nfi}: Packet was NAT'ed");
