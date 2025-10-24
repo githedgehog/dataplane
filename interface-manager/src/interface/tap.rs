@@ -7,7 +7,9 @@ use net::buffer::{PacketBuffer, PacketBufferMut};
 use net::interface::InterfaceName;
 use serde::{Deserialize, Serialize};
 use std::num::NonZero;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::os::fd::AsFd;
+use tokio::io::unix::AsyncFd;
+#[allow(unused)]
 use tracing::error;
 
 /// The planned properties of a dummy interface.
@@ -29,9 +31,9 @@ use tracing::error;
 pub struct TapDevicePropertiesSpec {}
 
 #[derive(Debug)]
-#[repr(transparent)]
 pub struct TapDevice {
-    file: tokio::fs::File,
+    name: InterfaceName,
+    async_fd: AsyncFd<std::fs::File>,
 }
 
 mod helper {
@@ -73,9 +75,12 @@ mod helper {
     unsafe impl Send for InterfaceRequest {}
 
     use net::interface::InterfaceName;
+    use nix::fcntl::{FcntlArg, OFlag, fcntl};
     use nix::libc;
-    use std::os::fd::AsRawFd;
+    use std::fs::File;
+    use std::os::fd::{AsFd, AsRawFd};
     use std::pin::Pin;
+    use tokio::io::unix::AsyncFd;
     use tracing::{info, trace, warn};
 
     nix::ioctl_write_ptr_bad!(
@@ -124,19 +129,33 @@ mod helper {
             Self { name, request }
         }
 
-        pub async fn create(self) -> Result<tokio::fs::File, std::io::Error> {
+        fn set_nonblocking(file: &File) -> Result<(), std::io::Error> {
+            let fd = file.as_fd();
+            let flags = OFlag::from_bits_truncate(
+                fcntl(fd, FcntlArg::F_GETFL)
+                    .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?,
+            );
+            fcntl(fd, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))
+                .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
+            Ok(())
+        }
+
+        pub fn create(self) -> Result<AsyncFd<std::fs::File>, std::io::Error> {
             let name = self.name;
             trace!("opening /dev/net/tun");
-            let tap_file = tokio::fs::OpenOptions::new()
+            let tap_file = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(false)
                 .truncate(false)
-                .open("/dev/net/tun")
-                .await?;
+                .open("/dev/net/tun")?;
+
+            let fd = tap_file.as_raw_fd();
+            Self::set_nonblocking(&tap_file)?;
+
             trace!("attempting to create tap device {name}");
             #[allow(unsafe_code, clippy::borrow_as_ptr)] // well-checked constraints
-            let ret = unsafe { make_tap_device(tap_file.as_raw_fd(), &*self.request)? };
+            let ret = unsafe { make_tap_device(fd, &*self.request)? };
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
                 warn!("failed to create tap device {name}: {err}");
@@ -145,14 +164,14 @@ mod helper {
             info!("created tap device {name}");
             trace!("attempting to persist tap device");
             #[allow(unsafe_code, clippy::borrow_as_ptr)] // well-checked constraints
-            let ret = unsafe { persist_tap_device(tap_file.as_raw_fd(), &*self.request)? };
+            let ret = unsafe { persist_tap_device(fd, &*self.request)? };
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
                 warn!("failed to persist tap device: {err}");
                 return Err(err);
             }
             info!("persisted tap device: {name}");
-            Ok(tap_file)
+            AsyncFd::new(tap_file)
         }
     }
 
@@ -228,8 +247,75 @@ impl TapDevice {
     #[cold]
     #[tracing::instrument(level = "info")]
     pub async fn open(name: &InterfaceName) -> Result<Self, std::io::Error> {
-        let file = helper::InterfaceRequest::new(name.clone()).create().await?;
-        Ok(TapDevice { file })
+        let async_fd = helper::InterfaceRequest::new(name.clone()).create()?;
+        Ok(TapDevice {
+            name: name.clone(),
+            async_fd,
+        })
+    }
+
+    /// Get a reference to the name of a `TapDevice
+    pub fn name(&self) -> &InterfaceName {
+        &self.name
+    }
+
+    /// Get a reference to the name of a `TapDevice`
+    #[must_use]
+    pub fn ifindex(&self) -> InterfaceIndex {
+        self.ifindex
+    }
+
+    /// Read a packet from the tap and store it in the provided buffer. In principle, a single read
+    /// operation should suffice to get an entire packet. This method will not return until that
+    /// happens or an error occurs.
+    ///
+    /// # Errors
+    ///
+    /// If the file descriptor of the tap device cannot be read, a [`tokio::io::Error`] is returned.
+    async fn do_read<Buf: PacketBufferMut>(&self, buf: &mut Buf) -> tokio::io::Result<usize> {
+        let fd = self.async_fd.as_fd();
+        loop {
+            let mut guard = self.async_fd.readable().await?;
+            match nix::unistd::read(fd, buf.as_mut()) {
+                Ok(n) => return Ok(n),
+                Err(nix::errno::Errno::EINTR) => {}
+                Err(nix::errno::Errno::EWOULDBLOCK) => guard.clear_ready(),
+                Err(e) => {
+                    error!("Error reading from tap {}: {e:?}", self.name);
+                    return Err(e.into());
+                }
+            }
+        }
+    }
+
+    /// Write the provided buffer to the tap. In principle, a single write operation should suffice to
+    /// write a buffer. This method will not return until that happens or an error occurs.
+    ///
+    /// # Errors
+    ///
+    /// If the file descriptor of the tap device cannot be written to, a [`tokio::io::Error`] is returned.
+    async fn do_write<Buf: PacketBuffer>(&self, buf: Buf) -> tokio::io::Result<usize> {
+        let fd = self.async_fd.as_fd();
+        let data = buf.as_ref();
+        let len = data.len();
+        let mut w = 0;
+        loop {
+            let mut guard = self.async_fd.writable().await?;
+            match nix::unistd::write(fd, &data[w..]) {
+                Ok(n) => {
+                    w += n;
+                    if w == len {
+                        return Ok(w);
+                    }
+                }
+                Err(nix::errno::Errno::EINTR) => {}
+                Err(nix::errno::Errno::EWOULDBLOCK) => guard.clear_ready(),
+                Err(e) => {
+                    error!("Error writing to tap {}: {e:?}", self.name);
+                    return Err(e.into());
+                }
+            }
+        }
     }
 
     /// Read a packet from the tap, filling out the provided buffer with the contents of the packet.
@@ -243,10 +329,10 @@ impl TapDevice {
     /// This method should not panic assuming that all types involved uphold required invariants.
     #[tracing::instrument(level = "trace")]
     pub async fn read<Buf: PacketBufferMut>(
-        &mut self,
+        &self,
         buf: &mut Buf,
     ) -> Result<NonZero<u16>, tokio::io::Error> {
-        let bytes_read = self.file.read(buf.as_mut()).await?;
+        let bytes_read = self.do_read(buf).await?;
         let bytes_read = match u16::try_from(bytes_read) {
             Ok(bytes_read) => bytes_read,
             Err(err) => {
@@ -286,7 +372,10 @@ impl TapDevice {
     ///
     /// If the tap device cannot be written to, a [`tokio::io::Error`] is returned.
     #[tracing::instrument(level = "trace")]
-    pub async fn write<Buf: PacketBuffer>(&mut self, buf: Buf) -> Result<(), tokio::io::Error> {
-        self.file.write_all(buf.as_ref()).await
+    pub async fn write<Buf: PacketBuffer>(&self, buf: Buf) -> Result<(), tokio::io::Error> {
+        let len = buf.as_ref().len();
+        let written = self.do_write(buf).await?;
+        debug_assert!(written == len);
+        Ok(())
     }
 }
