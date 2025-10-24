@@ -254,7 +254,8 @@ impl NatDefaultAllocator {
         );
 
         // Allocate IP and ports from pools, for source and destination NAT
-        let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt)?;
+        let allow_null = matches!(flow_key.data().proto_key_info(), IpProtoKey::Icmp(_));
+        let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt, allow_null)?;
 
         // Now based on the previous allocation, we need to "reserve" IP and ports for the reverse
         // path for the flow. First retrieve the relevant address pools.
@@ -323,6 +324,7 @@ impl NatDefaultAllocator {
     fn get_mapping<I: NatIpWithBitmap>(
         pool_src_opt: Option<&alloc::IpAllocator<I>>,
         pool_dst_opt: Option<&alloc::IpAllocator<I>>,
+        allow_null: bool,
     ) -> Result<AllocationMapping<I>, AllocatorError> {
         // Allocate IP and ports for source and destination NAT.
         //
@@ -336,12 +338,12 @@ impl NatDefaultAllocator {
         // port/identifier value for the src_mapping, even though we'll never use it. (This does not
         // apply to TCP or UDP, for which we need and use both ports).
         let src_mapping = match pool_src_opt {
-            Some(pool_src) => Some(pool_src.allocate()?),
+            Some(pool_src) => Some(pool_src.allocate(allow_null)?),
             None => None,
         };
 
         let dst_mapping = match pool_dst_opt {
-            Some(pool_dst) => Some(pool_dst.allocate()?),
+            Some(pool_dst) => Some(pool_dst.allocate(allow_null)?),
             None => None,
         };
 

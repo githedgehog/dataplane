@@ -175,6 +175,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
     fn allocate_block(
         &self,
         ip: Arc<AllocatedIp<I>>,
+        allow_null: bool,
     ) -> Result<AllocatedPortBlock<I>, AllocatorError> {
         // Pick an available block to allocate ports from. This is thread-safe because we atomically
         // compare and exchange the block status. We can then update the other items
@@ -189,12 +190,13 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         self.usable_blocks
             .fetch_sub(1, concurrency::sync::atomic::Ordering::Relaxed);
 
-        AllocatedPortBlock::new(ip, index, base_port_index)
+        AllocatedPortBlock::new(ip, index, base_port_index, allow_null)
     }
 
     pub(crate) fn allocate_port(
         &self,
         ip: Arc<AllocatedIp<I>>,
+        allow_null: bool,
     ) -> Result<AllocatedPort<I>, AllocatorError> {
         let thread_block_index = self.thread_blocks.get();
 
@@ -203,14 +205,14 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
             && let Some(current_block) = self.allocated_blocks.get(index)
             && !current_block.is_full()
         {
-            return current_block.allocate_port_from_block();
+            return current_block.allocate_port_from_block(allow_null);
         }
 
         // If we didn't find a port, allocate and use a new block
-        let block = Arc::new(self.allocate_block(ip)?);
+        let block = Arc::new(self.allocate_block(ip, allow_null)?);
         self.allocated_blocks
             .insert(block.index, Arc::downgrade(&block));
-        block.allocate_port_from_block()
+        block.allocate_port_from_block(allow_null)
     }
 
     fn try_to_reserve_block(&self, port: NatPort) -> Result<(bool, usize), AllocatorError> {
@@ -243,6 +245,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         ip: Arc<AllocatedIp<I>>,
         index: usize,
         port: NatPort,
+        allow_null: bool,
     ) -> Result<Arc<AllocatedPortBlock<I>>, AllocatorError> {
         self.usable_blocks
             .fetch_sub(1, concurrency::sync::atomic::Ordering::Relaxed);
@@ -250,6 +253,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
             ip,
             index,
             (port.as_u16() / 256) * 256, // port block base index, discard offset within block
+            allow_null,
         )?);
         self.allocated_blocks
             .insert(block.index, Arc::downgrade(&block));
@@ -262,8 +266,9 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         port: NatPort,
     ) -> Result<Arc<AllocatedPortBlock<I>>, AllocatorError> {
         let (block_was_free, index) = self.try_to_reserve_block(port)?;
+        let allow_null = matches!(port, NatPort::Identifier(_));
         if block_was_free {
-            return self.allocate_block_for_reservation(ip, index, port);
+            return self.allocate_block_for_reservation(ip, index, port, allow_null);
         }
         self.allocated_blocks
             .search_for_block(port)
@@ -313,6 +318,7 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
         ip: Arc<AllocatedIp<I>>,
         index: usize,
         base_port_idx: u16,
+        allow_null: bool,
     ) -> Result<Self, AllocatorError> {
         let block = Self {
             ip,
@@ -320,8 +326,8 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
             index,
             usage_bitmap: Mutex::new(Bitmap256::new()),
         };
-        // Port 0 is reserved, we don't want to use it. Mark as not free.
-        if block.base_port_idx == 0 {
+        // Port 0 may be reserved, in which case we don't want to use it, so we mark it as not free.
+        if !allow_null && block.base_port_idx == 0 {
             block
                 .usage_bitmap
                 .lock()
@@ -369,7 +375,10 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
             .map_err(|()| AllocatorError::InternalIssue("Failed to deallocate port".to_string()))
     }
 
-    fn allocate_port_from_block(self: Arc<Self>) -> Result<AllocatedPort<I>, AllocatorError> {
+    fn allocate_port_from_block(
+        self: Arc<Self>,
+        allow_null: bool,
+    ) -> Result<AllocatedPort<I>, AllocatorError> {
         let bitmap_offset = self
             .usage_bitmap
             .lock()
@@ -377,9 +386,18 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
             .allocate_port_from_bitmap()
             .map_err(|()| AllocatorError::NoFreePort(self.base_port_idx))?;
 
-        NatPort::new_port_checked(self.base_port_idx + bitmap_offset)
-            .map_err(AllocatorError::PortAllocationFailed)
-            .map(|port| AllocatedPort::new(port, self.clone()))
+        if allow_null {
+            Ok(AllocatedPort::new(
+                NatPort::Identifier(self.base_port_idx + bitmap_offset),
+                self.clone(),
+            ))
+        } else {
+            // We can't have picked 0 in first port block because we marked port 0 as used in the
+            // bitmap at bitmap creation time.
+            NatPort::new_port_checked(self.base_port_idx + bitmap_offset)
+                .map_err(AllocatorError::PortAllocationFailed)
+                .map(|port| AllocatedPort::new(port, self.clone()))
+        }
     }
 
     fn reserve_port_from_block(
