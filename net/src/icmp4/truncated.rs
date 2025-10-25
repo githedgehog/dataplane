@@ -58,6 +58,18 @@ impl TruncatedIcmp4Header {
             self.everything_else[3],
         ]))
     }
+
+    fn try_set_identifier(&mut self, identifier: u16) -> Result<(), TruncatedIcmp4Error> {
+        if !self.is_query_message() {
+            return Err(TruncatedIcmp4Error::NoIdentifier);
+        }
+        if self.everything_else.len() < 4 {
+            return Err(TruncatedIcmp4Error::NoIdentifier);
+        }
+        self.everything_else[2] = identifier.to_be_bytes()[0];
+        self.everything_else[3] = identifier.to_be_bytes()[1];
+        Ok(())
+    }
 }
 
 impl Parse for TruncatedIcmp4Header {
@@ -138,6 +150,23 @@ impl TruncatedIcmp4 {
             TruncatedIcmp4::PartialHeader(header) => header.identifier(),
         }
     }
+
+    /// Set the identifier of the ICMP message, if relevant and if doable
+    ///
+    /// # Errors
+    ///
+    /// This method returns [`TruncatedIcmp4Error::NoIdentifier`] if the ICMP type does not allow setting
+    /// an identifier, or is not long enough.
+    pub fn try_set_identifier(&mut self, identifier: u16) -> Result<(), TruncatedIcmp4Error> {
+        match self {
+            TruncatedIcmp4::FullHeader(icmp) => icmp
+                .try_set_identifier(identifier)
+                .map_err(|_| TruncatedIcmp4Error::NoIdentifier),
+            TruncatedIcmp4::PartialHeader(header) => header
+                .try_set_identifier(identifier)
+                .map_err(|_| TruncatedIcmp4Error::NoIdentifier),
+        }
+    }
 }
 
 /// Errors which can occur when attempting to parse arbitrary bytes into a `TruncatedIcmp4` header.
@@ -146,6 +175,9 @@ pub enum TruncatedIcmp4Error {
     /// A transparent error from [`Icmp4::parse`].
     #[error("transparent")]
     Icmp4ParseError(LengthError),
+    /// The ICMP header does not allow setting an identifier.
+    #[error("no identifier to set for ICMP packet (wrong type or truncated header)")]
+    NoIdentifier,
 }
 
 impl Parse for TruncatedIcmp4 {
