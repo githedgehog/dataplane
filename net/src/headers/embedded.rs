@@ -183,7 +183,19 @@ impl EmbeddedHeaders {
         let transport_header_length = match &mut self.transport {
             Some(EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(tcp))) => tcp.header_len().get(),
             Some(EmbeddedTransport::Udp(TruncatedUdp::FullHeader(_))) => 8,
-            _ => unreachable!(), // Checked at the beginning of the function
+            Some(EmbeddedTransport::Icmp4(TruncatedIcmp4::FullHeader(icmp))) => {
+                icmp.size().get() as usize
+            }
+            Some(EmbeddedTransport::Icmp6(TruncatedIcmp6::FullHeader(icmp))) => {
+                icmp.size().get() as usize
+            }
+            None
+            | Some(
+                EmbeddedTransport::Tcp(TruncatedTcp::PartialHeader(_))
+                | EmbeddedTransport::Udp(TruncatedUdp::PartialHeader(_))
+                | EmbeddedTransport::Icmp4(TruncatedIcmp4::PartialHeader(_))
+                | EmbeddedTransport::Icmp6(TruncatedIcmp6::PartialHeader(_)),
+            ) => unreachable!(), // Checked at the beginning of the function
         };
 
         // Compute the size of the IP headers
@@ -308,6 +320,12 @@ impl ParseWith for EmbeddedHeaders {
                 EmbeddedHeader::Udp(udp) => {
                     this.transport = Some(EmbeddedTransport::Udp(udp));
                 }
+                EmbeddedHeader::Icmp4(icmp4) => {
+                    this.transport = Some(EmbeddedTransport::Icmp4(icmp4));
+                }
+                EmbeddedHeader::Icmp6(icmp6) => {
+                    this.transport = Some(EmbeddedTransport::Icmp6(icmp6));
+                }
             }
             match header {
                 None => {
@@ -388,13 +406,15 @@ pub(crate) enum EmbeddedHeader {
     Ipv6(Ipv6),
     Tcp(TruncatedTcp),
     Udp(TruncatedUdp),
+    Icmp4(TruncatedIcmp4),
+    Icmp6(TruncatedIcmp6),
     IpAuth(IpAuth),
     IpV6Ext(Ipv6Ext), // TODO: break out nested enum.  Nesting is counter productive here
 }
 
 impl EmbeddedHeader {
     fn parse_payload(&self, cursor: &mut Reader) -> Option<EmbeddedHeader> {
-        use EmbeddedHeader::{IpAuth, IpV6Ext, Ipv4, Ipv6, Tcp, Udp};
+        use EmbeddedHeader::{Icmp4, Icmp6, IpAuth, IpV6Ext, Ipv4, Ipv6, Tcp, Udp};
         match self {
             Ipv4(ipv4) => ipv4
                 .parse_embedded_payload(cursor)
@@ -414,7 +434,7 @@ impl EmbeddedHeader {
                     None
                 }
             }
-            Tcp(_) | Udp(_) => None,
+            Tcp(_) | Udp(_) | Icmp4(_) | Icmp6(_) => None,
         }
     }
 }
@@ -425,6 +445,8 @@ impl_from_for_enum![
     Ipv6(Ipv6),
     Udp(TruncatedUdp),
     Tcp(TruncatedTcp),
+    Icmp4(TruncatedIcmp4),
+    Icmp6(TruncatedIcmp6),
     IpAuth(IpAuth),
     IpV6Ext(Ipv6Ext)
 ];

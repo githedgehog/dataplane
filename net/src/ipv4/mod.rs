@@ -4,7 +4,7 @@
 //! Ipv4 Address type and manipulation
 
 use crate::headers::{EmbeddedHeader, Header};
-use crate::icmp4::Icmp4;
+use crate::icmp4::{Icmp4, TruncatedIcmp4};
 use crate::impl_from_for_enum;
 use crate::ip::NextHeader;
 use crate::ip_auth::IpAuth;
@@ -318,6 +318,7 @@ impl Ipv4 {
         match self.0.protocol {
             IpNumber::TCP => cursor.parse_header::<TruncatedTcp, EmbeddedIpv4Next>(),
             IpNumber::UDP => cursor.parse_header::<TruncatedUdp, EmbeddedIpv4Next>(),
+            IpNumber::ICMP => cursor.parse_header::<TruncatedIcmp4, EmbeddedIpv4Next>(),
             IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<IpAuth, EmbeddedIpv4Next>(),
             _ => {
                 trace!("unsupported protocol: {:?}", self.0.protocol);
@@ -415,6 +416,7 @@ impl From<Ipv4Next> for Header {
 pub(crate) enum EmbeddedIpv4Next {
     Tcp(TruncatedTcp),
     Udp(TruncatedUdp),
+    Icmp4(TruncatedIcmp4),
     IpAuth(IpAuth),
 }
 
@@ -422,7 +424,8 @@ impl_from_for_enum![
     EmbeddedIpv4Next,
     Tcp(TruncatedTcp),
     Udp(TruncatedUdp),
-    IpAuth(IpAuth)
+    Icmp4(TruncatedIcmp4),
+    IpAuth(IpAuth),
 ];
 
 impl From<EmbeddedIpv4Next> for EmbeddedHeader {
@@ -430,6 +433,7 @@ impl From<EmbeddedIpv4Next> for EmbeddedHeader {
         match value {
             EmbeddedIpv4Next::Tcp(x) => EmbeddedHeader::Tcp(x),
             EmbeddedIpv4Next::Udp(x) => EmbeddedHeader::Udp(x),
+            EmbeddedIpv4Next::Icmp4(x) => EmbeddedHeader::Icmp4(x),
             EmbeddedIpv4Next::IpAuth(x) => EmbeddedHeader::IpAuth(x),
         }
     }
