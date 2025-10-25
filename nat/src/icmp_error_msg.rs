@@ -322,7 +322,11 @@ mod bolero_tests {
     use net::ipv6::UnicastIpv6Addr;
     use net::packet::IcmpErrorMsg;
     use std::net::{Ipv4Addr, Ipv6Addr};
-    use std::num::NonZero;
+
+    enum TransportFields {
+        Ports(u16, u16),
+        Identifier(u16),
+    }
 
     fn erase_checksums(packet: &mut Packet<TestBuffer>) {
         let _ = packet
@@ -382,10 +386,26 @@ mod bolero_tests {
             .map(|ip| (ip.src_addr(), ip.dst_addr()))
     }
 
-    fn get_inner_ports(packet: &Packet<TestBuffer>) -> Option<(NonZero<u16>, NonZero<u16>)> {
-        packet
-            .try_embedded_transport()
-            .and_then(|transport| transport.source().zip(transport.destination()))
+    fn get_inner_ports(packet: &Packet<TestBuffer>) -> Option<TransportFields> {
+        match packet.try_embedded_transport() {
+            Some(EmbeddedTransport::Tcp(tcp)) => Some(TransportFields::Ports(
+                tcp.source().into(),
+                tcp.destination().into(),
+            )),
+            Some(EmbeddedTransport::Udp(udp)) => Some(TransportFields::Ports(
+                udp.source().into(),
+                udp.destination().into(),
+            )),
+            Some(EmbeddedTransport::Icmp4(icmp)) => {
+                let identifier = icmp.identifier()?;
+                Some(TransportFields::Identifier(identifier))
+            }
+            Some(EmbeddedTransport::Icmp6(icmp)) => {
+                let identifier = icmp.identifier()?;
+                Some(TransportFields::Identifier(identifier))
+            }
+            None => None,
+        }
     }
 
     #[test]
@@ -422,15 +442,28 @@ mod bolero_tests {
 
                     // Translate inner IP addresses, and possibly inner ports
                     let mut icmp_error_msg_clone = icmp_error_msg.clone();
-                    stateful_translate_icmp_inner(&mut icmp_error_msg_clone, &tr_data).unwrap();
+                    let inner_translation_result =
+                        stateful_translate_icmp_inner(&mut icmp_error_msg_clone, &tr_data);
+                    if *src_port == Some(NatPort::Identifier(0))
+                        || *dst_port == Some(NatPort::Identifier(0))
+                    {
+                        match icmp_error_msg_clone.try_embedded_transport_mut() {
+                            Some(EmbeddedTransport::Tcp(_) | EmbeddedTransport::Udp(_)) => {
+                                assert_eq!(
+                                    inner_translation_result,
+                                    Err(IcmpErrorMsgError::InvalidPort(0))
+                                );
+                                return;
+                            }
+                            _ => {
+                                assert!(inner_translation_result.is_ok());
+                            }
+                        }
+                    }
 
                     let (translation_src_port, translation_dst_port) = (
-                        tr_data
-                            .src_port
-                            .map(|p| NonZero::<u16>::try_from(p.as_u16()).unwrap()),
-                        tr_data
-                            .dst_port
-                            .map(|p| NonZero::<u16>::try_from(p.as_u16()).unwrap()),
+                        tr_data.src_port.map(NatPort::as_u16),
+                        tr_data.dst_port.map(NatPort::as_u16),
                     );
                     let new_outer_addresses = get_outer_addresses(&icmp_error_msg_clone).unwrap();
                     let new_inner_addresses = get_inner_addresses(&icmp_error_msg_clone).unwrap();
@@ -445,16 +478,26 @@ mod bolero_tests {
 
                     // Check inner ports have been updated
                     match (initial_ports, new_ports) {
-                        (Some(initial_ports), Some(new_ports)) => {
+                        (
+                            Some(TransportFields::Ports(initial_src, initial_dst)),
+                            Some(TransportFields::Ports(new_src, new_dst)),
+                        ) => {
                             match translation_src_port {
-                                Some(tr_src) => assert_eq!(new_ports.0, tr_src),
-                                None => assert_eq!(new_ports.0, initial_ports.0),
+                                Some(tr_src) => assert_eq!(new_src, tr_src),
+                                None => assert_eq!(new_src, initial_src),
                             }
                             match translation_dst_port {
-                                Some(tr_dst) => assert_eq!(new_ports.1, tr_dst),
-                                None => assert_eq!(new_ports.1, initial_ports.1),
+                                Some(tr_dst) => assert_eq!(new_dst, tr_dst),
+                                None => assert_eq!(new_dst, initial_dst),
                             }
                         }
+                        (
+                            Some(TransportFields::Identifier(initial)),
+                            Some(TransportFields::Identifier(new)),
+                        ) => match translation_src_port {
+                            Some(tr_src) => assert_eq!(new, tr_src),
+                            None => assert_eq!(new, initial),
+                        },
                         (None, None) => {}
                         _ => unreachable!(),
                     }
