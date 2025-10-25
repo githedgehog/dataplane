@@ -80,6 +80,16 @@ impl Icmp4 {
         }
     }
 
+    /// Returns the identifier field value if the ICMP type allows it.
+    #[must_use]
+    pub fn identifier(&self) -> Option<u16> {
+        match self.icmp_type() {
+            Icmpv4Type::EchoRequest(msg) | Icmpv4Type::EchoReply(msg) => Some(msg.id),
+            Icmpv4Type::TimestampReply(msg) | Icmpv4Type::TimestampRequest(msg) => Some(msg.id),
+            _ => None,
+        }
+    }
+
     /// Set the identifier field value
     ///
     /// # Errors

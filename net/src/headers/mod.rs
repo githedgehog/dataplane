@@ -145,6 +145,8 @@ pub enum NetExt {
 pub enum TransportError {
     #[error("transport protocol does not use ports")]
     UnsupportedPort,
+    #[error("transport protocol does not use identifier")]
+    UnsupportedIdentifier,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,6 +271,18 @@ impl Transport {
             }
         }
         Ok(())
+    }
+
+    pub fn try_set_identifier(&mut self, identifier: u16) -> Result<(), TransportError> {
+        match self {
+            Transport::Icmp4(icmp4) => icmp4
+                .try_set_identifier(identifier)
+                .map_err(|_| TransportError::UnsupportedIdentifier),
+            Transport::Icmp6(icmp6) => icmp6
+                .try_set_identifier(identifier)
+                .map_err(|_| TransportError::UnsupportedIdentifier),
+            _ => Err(TransportError::UnsupportedIdentifier),
+        }
     }
 }
 

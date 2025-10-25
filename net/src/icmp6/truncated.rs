@@ -38,6 +38,38 @@ impl TruncatedIcmp6Header {
         let len = self.everything_else.len() + Self::MIN_HEADER_LEN;
         NonZero::new(len).unwrap_or_else(|| unreachable!())
     }
+
+    fn is_query_message(&self) -> bool {
+        match self.icmp_type {
+            128 | 129 => true, // Echo Request, Echo Reply
+            _ => false,
+        }
+    }
+
+    fn identifier(&self) -> Option<u16> {
+        if !self.is_query_message() {
+            return None;
+        }
+        if self.everything_else.len() < 4 {
+            return None;
+        }
+        Some(u16::from_be_bytes([
+            self.everything_else[2],
+            self.everything_else[3],
+        ]))
+    }
+
+    fn try_set_identifier(&mut self, identifier: u16) -> Result<(), TruncatedIcmp6Error> {
+        if !self.is_query_message() {
+            return Err(TruncatedIcmp6Error::NoIdentifier);
+        }
+        if self.everything_else.len() < 4 {
+            return Err(TruncatedIcmp6Error::NoIdentifier);
+        }
+        self.everything_else[2] = identifier.to_be_bytes()[0];
+        self.everything_else[3] = identifier.to_be_bytes()[1];
+        Ok(())
+    }
 }
 
 impl Parse for TruncatedIcmp6Header {
@@ -104,12 +136,48 @@ pub enum TruncatedIcmp6 {
     PartialHeader(TruncatedIcmp6Header),
 }
 
+impl TruncatedIcmp6 {
+    /// Get the identifier of the ICMP message, if relevant and if doable
+    ///
+    /// # Returns
+    ///
+    /// * `Some(u16)` for ICMP messages that have an identifier and if the identifier is available
+    /// * `None` otherwise
+    #[must_use]
+    pub fn identifier(&self) -> Option<u16> {
+        match self {
+            TruncatedIcmp6::FullHeader(icmp) => icmp.identifier(),
+            TruncatedIcmp6::PartialHeader(header) => header.identifier(),
+        }
+    }
+
+    /// Set the identifier of the ICMP message, if relevant and if doable
+    ///
+    /// # Errors
+    ///
+    /// This method returns [`TruncatedIcmp6Error::NoIdentifier`] if the ICMP type does not allow setting
+    /// an identifier, or is not long enough.
+    pub fn try_set_identifier(&mut self, identifier: u16) -> Result<(), TruncatedIcmp6Error> {
+        match self {
+            TruncatedIcmp6::FullHeader(icmp) => icmp
+                .try_set_identifier(identifier)
+                .map_err(|_| TruncatedIcmp6Error::NoIdentifier),
+            TruncatedIcmp6::PartialHeader(header) => header
+                .try_set_identifier(identifier)
+                .map_err(|_| TruncatedIcmp6Error::NoIdentifier),
+        }
+    }
+}
+
 /// Errors which can occur when attempting to parse arbitrary bytes into a `TruncatedIcmp6` header.
 #[derive(Debug, thiserror::Error)]
 pub enum TruncatedIcmp6Error {
     /// A transparent error from [`Icmp6::parse`].
     #[error("transparent")]
     Icmp6ParseError(LengthError),
+    /// The ICMP header does not allow setting an identifier.
+    #[error("no identifier to set for ICMP packet (wrong type or truncated header)")]
+    NoIdentifier,
 }
 
 impl Parse for TruncatedIcmp6 {

@@ -66,13 +66,14 @@
 
 use super::allocator::{AllocationResult, AllocatorError};
 use super::{NatAllocator, NatIp};
-use crate::port::NatPort;
+use crate::NatPort;
 use crate::stateful::apalloc::alloc::IpAllocator;
 pub use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use pkt_meta::flow_table::FlowKey;
 use pkt_meta::flow_table::IpProtoKey;
+use pkt_meta::flow_table::flow_key::IcmpProtoKey;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -227,7 +228,6 @@ impl NatDefaultAllocator {
         pools_dst: &PoolTable<I, I>,
     ) -> Result<AllocationResult<AllocatedIpPort<I>>, AllocatorError> {
         let next_header = Self::get_next_header(flow_key);
-        Self::check_proto(next_header)?;
         let (src_vpc_id, dst_vpc_id) = Self::check_and_get_discriminants(flow_key)?;
 
         // Get address pools for source and destination
@@ -253,7 +253,8 @@ impl NatDefaultAllocator {
         );
 
         // Allocate IP and ports from pools, for source and destination NAT
-        let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt)?;
+        let allow_null = matches!(flow_key.data().proto_key_info(), IpProtoKey::Icmp(_));
+        let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt, allow_null)?;
 
         // Now based on the previous allocation, we need to "reserve" IP and ports for the reverse
         // path for the flow. First retrieve the relevant address pools.
@@ -282,13 +283,6 @@ impl NatDefaultAllocator {
             src_flow_idle_timeout: pool_src_opt.and_then(IpAllocator::idle_timeout),
             dst_flow_idle_timeout: pool_dst_opt.and_then(IpAllocator::idle_timeout),
         })
-    }
-
-    fn check_proto(next_header: NextHeader) -> Result<(), AllocatorError> {
-        match next_header {
-            NextHeader::TCP | NextHeader::UDP => Ok(()),
-            _ => Err(AllocatorError::UnsupportedProtocol(next_header)),
-        }
     }
 
     fn get_next_header(flow_key: &FlowKey) -> NextHeader {
@@ -322,14 +316,23 @@ impl NatDefaultAllocator {
     fn get_mapping<I: NatIpWithBitmap>(
         pool_src_opt: Option<&alloc::IpAllocator<I>>,
         pool_dst_opt: Option<&alloc::IpAllocator<I>>,
+        allow_null: bool,
     ) -> Result<AllocationMapping<I>, AllocatorError> {
+        // FIXME: In the case of ICMP, we're only interested in the IP allocated here, not the port.
+        // We need to translate a single value (the identifier), but both source and destination IP
+        // need to come with a port with the current architecture of the allocator.
+        // a "port" (or an ID for ICMP) we can't reserve an IP, given the current
+        // achitecture of the allocator. The port allocated here will be overwritten by the port
+        // allocated for the destination IP.
+        //
+        // This comment does not apply to TCP or UDP.
         let src_mapping = match pool_src_opt {
-            Some(pool_src) => Some(pool_src.allocate()?),
+            Some(pool_src) => Some(pool_src.allocate(allow_null)?),
             None => None,
         };
 
         let dst_mapping = match pool_dst_opt {
-            Some(pool_dst) => Some(pool_dst.allocate()?),
+            Some(pool_dst) => Some(pool_dst.allocate(allow_null)?),
             None => None,
         };
 
@@ -343,15 +346,15 @@ impl NatDefaultAllocator {
     ) -> Result<AllocationMapping<I>, AllocatorError> {
         let reverse_src_mapping = match reverse_pool_src_opt {
             Some(pool_src) => {
-                let reverse_src_port_number = match flow_key.data().proto_key_info() {
+                let reservation_src_port_number = match flow_key.data().proto_key_info() {
                     IpProtoKey::Tcp(tcp) => tcp.dst_port.into(),
                     IpProtoKey::Udp(udp) => udp.dst_port.into(),
-                    IpProtoKey::Icmp(_) => return Err(AllocatorError::PortNotFound),
+                    // FIXME: We're doing a useless port reservation here, but without reserving a
+                    // "port" (or an ID for ICMP) we can't reserve an IP, given the current
+                    // architecture of the allocator. The id will be overwritten by the ID for the
+                    // destination mapping.
+                    IpProtoKey::Icmp(icmp) => NatPort::Identifier(Self::get_icmp_query_id(icmp)?),
                 };
-                let reserve_src_port_number = NatPort::new_checked(reverse_src_port_number)
-                    .map_err(|_| {
-                        AllocatorError::InternalIssue("Invalid source port number".to_string())
-                    })?;
 
                 Some(pool_src.reserve(
                     NatIp::try_from_addr(*flow_key.data().dst_ip()).map_err(|()| {
@@ -359,7 +362,7 @@ impl NatDefaultAllocator {
                             "Failed to convert IP address to Ipv4Addr".to_string(),
                         )
                     })?,
-                    reserve_src_port_number,
+                    reservation_src_port_number,
                 )?)
             }
             None => None,
@@ -367,15 +370,11 @@ impl NatDefaultAllocator {
 
         let reverse_dst_mapping = match reverse_pool_dst_opt {
             Some(pool_dst) => {
-                let reverse_dst_port_number = match flow_key.data().proto_key_info() {
+                let reservation_dst_port_number = match flow_key.data().proto_key_info() {
                     IpProtoKey::Tcp(tcp) => tcp.src_port.into(),
                     IpProtoKey::Udp(udp) => udp.src_port.into(),
-                    IpProtoKey::Icmp(_) => return Err(AllocatorError::PortNotFound),
+                    IpProtoKey::Icmp(icmp) => NatPort::Identifier(Self::get_icmp_query_id(icmp)?),
                 };
-                let reserve_dst_port_number = NatPort::new_checked(reverse_dst_port_number)
-                    .map_err(|_| {
-                        AllocatorError::InternalIssue("Invalid destination port number".to_string())
-                    })?;
 
                 Some(pool_dst.reserve(
                     NatIp::try_from_addr(*flow_key.data().src_ip()).map_err(|()| {
@@ -383,13 +382,24 @@ impl NatDefaultAllocator {
                             "Failed to convert IP address to Ipv4Addr".to_string(),
                         )
                     })?,
-                    reserve_dst_port_number,
+                    reservation_dst_port_number,
                 )?)
             }
             None => None,
         };
 
         Ok((reverse_src_mapping, reverse_dst_mapping))
+    }
+
+    fn get_icmp_query_id(key: &IcmpProtoKey) -> Result<u16, AllocatorError> {
+        match key {
+            IcmpProtoKey::QueryMsgData(id) => Ok(*id),
+            IcmpProtoKey::ErrorMsgData(_) => Err(AllocatorError::InternalIssue(
+                "ICMP Error message should have been processed without allocating new mappings"
+                    .to_string(),
+            )),
+            IcmpProtoKey::Unsupported => Err(AllocatorError::UnsupportedIcmpCategory),
+        }
     }
 }
 

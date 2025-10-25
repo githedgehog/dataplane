@@ -5,6 +5,7 @@
 //! stateless and stateful NAT modes
 
 use super::NatTranslationData;
+use crate::NatPort;
 use net::buffer::PacketBufferMut;
 use net::checksum::{Checksum, ChecksumError};
 use net::headers::{
@@ -12,6 +13,8 @@ use net::headers::{
     TryHeaders, TryInnerIpMut, TryInnerIpv4, TryIp, TryTransport,
 };
 use net::icmp_any::{IcmpAny, IcmpAnyChecksumErrorPlaceholder, IcmpAnyChecksumPayload};
+use net::icmp4::{Icmp4Checksum, TruncatedIcmp4};
+use net::icmp6::{Icmp6Checksum, TruncatedIcmp6};
 use net::ipv4::Ipv4;
 use net::packet::Packet;
 use std::net::IpAddr;
@@ -24,10 +27,14 @@ pub enum IcmpErrorMsgError {
     BadChecksumIcmp(ChecksumError<IcmpAnyChecksumErrorPlaceholder>),
     #[error("failed to validate ICMP inner IP checksum")]
     BadChecksumInnerIpv4(ChecksumError<Ipv4>),
+    #[error("invalid transport-layer port {0}")]
+    InvalidPort(u16),
     #[error("invalid IP version")]
     InvalidIpVersion,
     #[error("IP address {0} is not unicast")]
     NotUnicast(IpAddr),
+    #[error("no allocated identifier found for translation")]
+    NoIdentifier,
 }
 
 // # Return
@@ -135,14 +142,77 @@ pub(crate) fn stateful_translate_icmp_inner<Buf: PacketBufferMut>(
         // TODO: Log trace anyway?
         return Ok(());
     };
-    if matches!(
-        transport,
-        EmbeddedTransport::Icmp4(_) | EmbeddedTransport::Icmp6(_)
-    ) {
-        // FIXME: We don't support ICMP identifier's translation yet. We're done (for now).
-        return Ok(());
+
+    match transport {
+        EmbeddedTransport::Tcp(_) | EmbeddedTransport::Udp(_) => {
+            translate_inner_tcp_udp(transport, target_src_port, target_dst_port)
+        }
+        EmbeddedTransport::Icmp4(icmp4) => translate_inner_icmp4(icmp4, target_src_port),
+        EmbeddedTransport::Icmp6(icmp6) => translate_inner_icmp6(icmp6, target_src_port),
     }
-    // We returned early for ICMP, so we have TCP or UDP, and always source and destination ports
+}
+
+fn translate_inner_icmp4(
+    icmp: &mut TruncatedIcmp4,
+    target_identifier: Option<NatPort>,
+) -> Result<(), IcmpErrorMsgError> {
+    let Some(old_identifier) = icmp.identifier() else {
+        // No identifier to translate, we're done
+        return Ok(());
+    };
+    let Some(new_identifier) = target_identifier.map(NatPort::as_u16) else {
+        // We really should have received a target identifier, something went wrong
+        return Err(IcmpErrorMsgError::NoIdentifier);
+    };
+    icmp.try_set_identifier(new_identifier)
+        .unwrap_or_else(|_| unreachable!()); // We found an old identifier, we can set a new one
+
+    let Some(current_checksum) = icmp.checksum().map(u16::from) else {
+        // No checksum to update, we're done
+        return Ok(());
+    };
+    let _ = icmp.increment_update_checksum(
+        Icmp4Checksum::new(current_checksum),
+        old_identifier,
+        new_identifier,
+    );
+    Ok(())
+}
+
+// TODO: Refactor with translate_inner_icmp4()
+fn translate_inner_icmp6(
+    icmp: &mut TruncatedIcmp6,
+    target_identifier: Option<NatPort>,
+) -> Result<(), IcmpErrorMsgError> {
+    let Some(old_identifier) = icmp.identifier() else {
+        // No identifier to translate, we're done
+        return Ok(());
+    };
+    let Some(new_identifier) = target_identifier.map(NatPort::as_u16) else {
+        // We really should have received a target identifier, something went wrong
+        return Err(IcmpErrorMsgError::NoIdentifier);
+    };
+    icmp.try_set_identifier(new_identifier)
+        .unwrap_or_else(|_| unreachable!()); // We found an old identifier, we can set a new one
+
+    let Some(current_checksum) = icmp.checksum().map(u16::from) else {
+        // No checksum to update, we're done
+        return Ok(());
+    };
+    let _ = icmp.increment_update_checksum(
+        Icmp6Checksum::new(current_checksum),
+        old_identifier,
+        new_identifier,
+    );
+    Ok(())
+}
+
+fn translate_inner_tcp_udp(
+    transport: &mut EmbeddedTransport,
+    target_src_port: Option<NatPort>,
+    target_dst_port: Option<NatPort>,
+) -> Result<(), IcmpErrorMsgError> {
+    // Assume we have TCP or UDP, with source and destination ports always present
     let (old_src_port, old_dst_port) = (
         transport.source().unwrap_or_else(|| unreachable!()).into(),
         transport
@@ -153,7 +223,11 @@ pub(crate) fn stateful_translate_icmp_inner<Buf: PacketBufferMut>(
 
     if let Some(target_src_port) = target_src_port {
         transport
-            .set_source(target_src_port.into())
+            .set_source(
+                target_src_port
+                    .try_into()
+                    .map_err(|_| IcmpErrorMsgError::InvalidPort(target_src_port.as_u16()))?,
+            )
             .unwrap_or_else(|_| unreachable!());
         // We don't know whether the header and payload are full: the easiest way to deal with
         // transport checksum update is to do an unconditional, incremental update here. Note
@@ -164,7 +238,11 @@ pub(crate) fn stateful_translate_icmp_inner<Buf: PacketBufferMut>(
     }
     if let Some(target_dst_port) = target_dst_port {
         transport
-            .set_destination(target_dst_port.into())
+            .set_destination(
+                target_dst_port
+                    .try_into()
+                    .map_err(|_| IcmpErrorMsgError::InvalidPort(target_dst_port.as_u16()))?,
+            )
             .unwrap_or_else(|_| unreachable!());
         if let Some(current_checksum) = transport.checksum() {
             transport.update_checksum(current_checksum, old_dst_port, target_dst_port.as_u16());
@@ -312,7 +390,11 @@ mod bolero_tests {
     use net::ipv6::UnicastIpv6Addr;
     use net::packet::IcmpErrorMsg;
     use std::net::{Ipv4Addr, Ipv6Addr};
-    use std::num::NonZero;
+
+    enum TransportFields {
+        Ports(u16, u16),
+        Identifier(u16),
+    }
 
     fn erase_checksums(packet: &mut Packet<TestBuffer>) {
         let _ = packet
@@ -372,10 +454,26 @@ mod bolero_tests {
             .map(|ip| (ip.src_addr(), ip.dst_addr()))
     }
 
-    fn get_inner_ports(packet: &Packet<TestBuffer>) -> Option<(NonZero<u16>, NonZero<u16>)> {
-        packet
-            .try_embedded_transport()
-            .and_then(|transport| transport.source().zip(transport.destination()))
+    fn get_inner_ports(packet: &Packet<TestBuffer>) -> Option<TransportFields> {
+        match packet.try_embedded_transport() {
+            Some(EmbeddedTransport::Tcp(tcp)) => Some(TransportFields::Ports(
+                tcp.source().into(),
+                tcp.destination().into(),
+            )),
+            Some(EmbeddedTransport::Udp(udp)) => Some(TransportFields::Ports(
+                udp.source().into(),
+                udp.destination().into(),
+            )),
+            Some(EmbeddedTransport::Icmp4(icmp)) => {
+                let identifier = icmp.identifier()?;
+                Some(TransportFields::Identifier(identifier))
+            }
+            Some(EmbeddedTransport::Icmp6(icmp)) => {
+                let identifier = icmp.identifier()?;
+                Some(TransportFields::Identifier(identifier))
+            }
+            None => None,
+        }
     }
 
     #[test]
@@ -412,11 +510,28 @@ mod bolero_tests {
 
                     // Translate inner IP addresses, and possibly inner ports
                     let mut icmp_error_msg_clone = icmp_error_msg.clone();
-                    stateful_translate_icmp_inner(&mut icmp_error_msg_clone, &tr_data).unwrap();
+                    let inner_translation_result =
+                        stateful_translate_icmp_inner(&mut icmp_error_msg_clone, &tr_data);
+                    if *src_port == Some(NatPort::Identifier(0))
+                        || *dst_port == Some(NatPort::Identifier(0))
+                    {
+                        match icmp_error_msg_clone.try_embedded_transport_mut() {
+                            Some(EmbeddedTransport::Tcp(_) | EmbeddedTransport::Udp(_)) => {
+                                assert_eq!(
+                                    inner_translation_result,
+                                    Err(IcmpErrorMsgError::InvalidPort(0))
+                                );
+                                return;
+                            }
+                            _ => {
+                                assert!(inner_translation_result.is_ok());
+                            }
+                        }
+                    }
 
                     let (translation_src_port, translation_dst_port) = (
-                        tr_data.src_port.map(NonZero::<u16>::from),
-                        tr_data.dst_port.map(NonZero::<u16>::from),
+                        tr_data.src_port.map(NatPort::as_u16),
+                        tr_data.dst_port.map(NatPort::as_u16),
                     );
                     let new_outer_addresses = get_outer_addresses(&icmp_error_msg_clone).unwrap();
                     let new_inner_addresses = get_inner_addresses(&icmp_error_msg_clone).unwrap();
@@ -431,16 +546,26 @@ mod bolero_tests {
 
                     // Check inner ports have been updated
                     match (initial_ports, new_ports) {
-                        (Some(initial_ports), Some(new_ports)) => {
+                        (
+                            Some(TransportFields::Ports(initial_src, initial_dst)),
+                            Some(TransportFields::Ports(new_src, new_dst)),
+                        ) => {
                             match translation_src_port {
-                                Some(tr_src) => assert_eq!(new_ports.0, tr_src),
-                                None => assert_eq!(new_ports.0, initial_ports.0),
+                                Some(tr_src) => assert_eq!(new_src, tr_src),
+                                None => assert_eq!(new_src, initial_src),
                             }
                             match translation_dst_port {
-                                Some(tr_dst) => assert_eq!(new_ports.1, tr_dst),
-                                None => assert_eq!(new_ports.1, initial_ports.1),
+                                Some(tr_dst) => assert_eq!(new_dst, tr_dst),
+                                None => assert_eq!(new_dst, initial_dst),
                             }
                         }
+                        (
+                            Some(TransportFields::Identifier(initial)),
+                            Some(TransportFields::Identifier(new)),
+                        ) => match translation_src_port {
+                            Some(tr_src) => assert_eq!(new, tr_src),
+                            None => assert_eq!(new, initial),
+                        },
                         (None, None) => {}
                         _ => unreachable!(),
                     }
