@@ -5,6 +5,7 @@
 //! stateless and stateful NAT modes
 
 use super::NatTranslationData;
+use crate::NatPort;
 use net::buffer::PacketBufferMut;
 use net::checksum::{Checksum, ChecksumError};
 use net::headers::{
@@ -12,6 +13,8 @@ use net::headers::{
     TryHeaders, TryInnerIpMut, TryInnerIpv4, TryIp, TryTransport,
 };
 use net::icmp_any::{IcmpAny, IcmpAnyChecksumErrorPlaceholder, IcmpAnyChecksumPayload};
+use net::icmp4::{Icmp4Checksum, TruncatedIcmp4};
+use net::icmp6::{Icmp6Checksum, TruncatedIcmp6};
 use net::ipv4::Ipv4;
 use net::packet::Packet;
 use std::net::IpAddr;
@@ -30,6 +33,8 @@ pub enum IcmpErrorMsgError {
     InvalidIpVersion,
     #[error("IP address {0} is not unicast")]
     NotUnicast(IpAddr),
+    #[error("no allocated identifier found for translation")]
+    NoIdentifier,
 }
 
 // # Return
@@ -137,14 +142,77 @@ pub(crate) fn stateful_translate_icmp_inner<Buf: PacketBufferMut>(
         // TODO: Log trace anyway?
         return Ok(());
     };
-    if matches!(
-        transport,
-        EmbeddedTransport::Icmp4(_) | EmbeddedTransport::Icmp6(_)
-    ) {
-        // FIXME: We don't support ICMP identifier's translation yet. We're done (for now).
-        return Ok(());
+
+    match transport {
+        EmbeddedTransport::Tcp(_) | EmbeddedTransport::Udp(_) => {
+            translate_inner_tcp_udp(transport, target_src_port, target_dst_port)
+        }
+        EmbeddedTransport::Icmp4(icmp4) => translate_inner_icmp4(icmp4, target_src_port),
+        EmbeddedTransport::Icmp6(icmp6) => translate_inner_icmp6(icmp6, target_src_port),
     }
-    // We returned early for ICMP, so we have TCP or UDP, and always source and destination ports
+}
+
+fn translate_inner_icmp4(
+    icmp: &mut TruncatedIcmp4,
+    target_identifier: Option<NatPort>,
+) -> Result<(), IcmpErrorMsgError> {
+    let Some(old_identifier) = icmp.identifier() else {
+        // No identifier to translate, we're done
+        return Ok(());
+    };
+    let Some(new_identifier) = target_identifier.map(NatPort::as_u16) else {
+        // We really should have received a target identifier, something went wrong
+        return Err(IcmpErrorMsgError::NoIdentifier);
+    };
+    icmp.try_set_identifier(new_identifier)
+        .unwrap_or_else(|_| unreachable!()); // We found an old identifier, we can set a new one
+
+    let Some(current_checksum) = icmp.checksum().map(u16::from) else {
+        // No checksum to update, we're done
+        return Ok(());
+    };
+    let _ = icmp.increment_update_checksum(
+        Icmp4Checksum::new(current_checksum),
+        old_identifier,
+        new_identifier,
+    );
+    Ok(())
+}
+
+// TODO: Refactor with translate_inner_icmp4()
+fn translate_inner_icmp6(
+    icmp: &mut TruncatedIcmp6,
+    target_identifier: Option<NatPort>,
+) -> Result<(), IcmpErrorMsgError> {
+    let Some(old_identifier) = icmp.identifier() else {
+        // No identifier to translate, we're done
+        return Ok(());
+    };
+    let Some(new_identifier) = target_identifier.map(NatPort::as_u16) else {
+        // We really should have received a target identifier, something went wrong
+        return Err(IcmpErrorMsgError::NoIdentifier);
+    };
+    icmp.try_set_identifier(new_identifier)
+        .unwrap_or_else(|_| unreachable!()); // We found an old identifier, we can set a new one
+
+    let Some(current_checksum) = icmp.checksum().map(u16::from) else {
+        // No checksum to update, we're done
+        return Ok(());
+    };
+    let _ = icmp.increment_update_checksum(
+        Icmp6Checksum::new(current_checksum),
+        old_identifier,
+        new_identifier,
+    );
+    Ok(())
+}
+
+fn translate_inner_tcp_udp(
+    transport: &mut EmbeddedTransport,
+    target_src_port: Option<NatPort>,
+    target_dst_port: Option<NatPort>,
+) -> Result<(), IcmpErrorMsgError> {
+    // Assume we have TCP or UDP, with source and destination ports always present
     let (old_src_port, old_dst_port) = (
         transport.source().unwrap_or_else(|| unreachable!()).into(),
         transport
