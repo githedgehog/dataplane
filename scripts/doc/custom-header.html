@@ -28,6 +28,25 @@ automatically generated file, do not edit!
             });
         });
     };
+    const mermaidStuff = () => {
+        document.addEventListener("DOMContentLoaded", () => {
+            const theme = document.documentElement.getAttribute("data-theme");
+            if (theme == "light") {
+                mermaid.initialize({
+                    theme: "base",
+                });
+            } else {
+                mermaid.initialize({
+                    theme: "dark",
+                });
+            }
+            for (const code of document.querySelectorAll("pre.language-mermaid > code")) {
+                const pre = code.parentNode;
+                pre.classList.add("mermaid");
+                pre.innerHTML = code.innerText;
+            }
+        });
+    };
 </script>
 
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.25/dist/katex.min.css" integrity="sha384-WcoG4HRXMzYzfCgiyfrySxx90XSl2rxY5mnVY5TwtWE6KLrArNKn0T/mOgNL0Mmi" crossorigin="anonymous" />
@@ -54,4 +73,10 @@ Fix with padding
     }
 </style>
 
-<script defer src="https://cdn.jsdelivr.net/npm/mermaid@11.12.0/dist/mermaid.min.js" integrity="sha384-o+g/BxPwhi0C3RK7oQBxQuNimeafQ3GE/ST4iT2BxVI4Wzt60SH4pq9iXVYujjaS" crossorigin="anonymous"></script>
+<script
+    defer
+    src="https://cdn.jsdelivr.net/npm/mermaid@11.12.0/dist/mermaid.min.js"
+    integrity="sha384-o+g/BxPwhi0C3RK7oQBxQuNimeafQ3GE/ST4iT2BxVI4Wzt60SH4pq9iXVYujjaS"
+    crossorigin="anonymous"
+    onload="mermaidStuff();"
+></script>
