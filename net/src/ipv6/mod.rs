@@ -4,7 +4,7 @@
 //! Ipv6 Address type and manipulation
 
 use crate::headers::{EmbeddedHeader, Header};
-use crate::icmp6::Icmp6;
+use crate::icmp6::{Icmp6, TruncatedIcmp6};
 use crate::impl_from_for_enum;
 use crate::ip::NextHeader;
 use crate::ip_auth::IpAuth;
@@ -221,6 +221,7 @@ impl Ipv6 {
         match self.0.next_header {
             IpNumber::TCP => cursor.parse_header::<TruncatedTcp, EmbeddedIpv6Next>(),
             IpNumber::UDP => cursor.parse_header::<TruncatedUdp, EmbeddedIpv6Next>(),
+            IpNumber::IPV6_ICMP => cursor.parse_header::<TruncatedIcmp6, EmbeddedIpv6Next>(),
             IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<IpAuth, EmbeddedIpv6Next>(),
             IpNumber::IPV6_HEADER_HOP_BY_HOP
             | IpNumber::IPV6_ROUTE_HEADER
@@ -324,6 +325,7 @@ impl_from_for_enum![
 pub(crate) enum EmbeddedIpv6Next {
     Tcp(TruncatedTcp),
     Udp(TruncatedUdp),
+    Icmp6(TruncatedIcmp6),
     IpAuth(IpAuth),
     Ipv6Ext(Ipv6Ext),
 }
@@ -332,6 +334,7 @@ impl_from_for_enum![
     EmbeddedIpv6Next,
     Tcp(TruncatedTcp),
     Udp(TruncatedUdp),
+    Icmp6(TruncatedIcmp6),
     IpAuth(IpAuth),
     Ipv6Ext(Ipv6Ext)
 ];
@@ -426,7 +429,7 @@ impl Ipv6Ext {
     ) -> Option<EmbeddedIpv6ExtNext> {
         use etherparse::ip_number::{
             AUTHENTICATION_HEADER, IPV6_DESTINATION_OPTIONS, IPV6_FRAGMENTATION_HEADER,
-            IPV6_HEADER_HOP_BY_HOP, IPV6_ROUTE_HEADER, TCP, UDP,
+            IPV6_HEADER_HOP_BY_HOP, IPV6_ICMP, IPV6_ROUTE_HEADER, TCP, UDP,
         };
         let next_header = self
             .inner
@@ -436,6 +439,7 @@ impl Ipv6Ext {
         match next_header {
             TCP => cursor.parse_header::<TruncatedTcp, EmbeddedIpv6ExtNext>(),
             UDP => cursor.parse_header::<TruncatedUdp, EmbeddedIpv6ExtNext>(),
+            IPV6_ICMP => cursor.parse_header::<TruncatedIcmp6, EmbeddedIpv6ExtNext>(),
             AUTHENTICATION_HEADER => {
                 debug!("nested ip auth header");
                 cursor.parse_header::<IpAuth, EmbeddedIpv6ExtNext>()
@@ -498,6 +502,7 @@ impl From<Ipv6ExtNext> for Header {
 pub(crate) enum EmbeddedIpv6ExtNext {
     Tcp(TruncatedTcp),
     Udp(TruncatedUdp),
+    Icmp6(TruncatedIcmp6),
     IpAuth(IpAuth),
     Ipv6Ext(Ipv6Ext),
 }
@@ -506,6 +511,7 @@ impl_from_for_enum![
     EmbeddedIpv6ExtNext,
     Tcp(TruncatedTcp),
     Udp(TruncatedUdp),
+    Icmp6(TruncatedIcmp6),
     IpAuth(IpAuth),
     Ipv6Ext(Ipv6Ext)
 ];
@@ -515,6 +521,7 @@ impl From<EmbeddedIpv6Next> for EmbeddedHeader {
         match value {
             EmbeddedIpv6Next::Tcp(x) => EmbeddedHeader::Tcp(x),
             EmbeddedIpv6Next::Udp(x) => EmbeddedHeader::Udp(x),
+            EmbeddedIpv6Next::Icmp6(x) => EmbeddedHeader::Icmp6(x),
             EmbeddedIpv6Next::IpAuth(x) => EmbeddedHeader::IpAuth(x),
             EmbeddedIpv6Next::Ipv6Ext(x) => EmbeddedHeader::IpV6Ext(x),
         }
@@ -526,6 +533,7 @@ impl From<EmbeddedIpv6ExtNext> for EmbeddedHeader {
         match value {
             EmbeddedIpv6ExtNext::Tcp(x) => EmbeddedHeader::Tcp(x),
             EmbeddedIpv6ExtNext::Udp(x) => EmbeddedHeader::Udp(x),
+            EmbeddedIpv6ExtNext::Icmp6(x) => EmbeddedHeader::Icmp6(x),
             EmbeddedIpv6ExtNext::IpAuth(x) => EmbeddedHeader::IpAuth(x),
             EmbeddedIpv6ExtNext::Ipv6Ext(x) => EmbeddedHeader::IpV6Ext(x),
         }
