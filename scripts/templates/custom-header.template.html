@@ -4,7 +4,7 @@
   -->
 
 <!--
-automatically generated file, do not edit!
+${EDIT_WARNING}
 -->
 
 <script>
@@ -30,16 +30,16 @@ automatically generated file, do not edit!
     };
 </script>
 
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.25/dist/katex.min.css" integrity="sha384-WcoG4HRXMzYzfCgiyfrySxx90XSl2rxY5mnVY5TwtWE6KLrArNKn0T/mOgNL0Mmi" crossorigin="anonymous" />
+<link rel="stylesheet" href="${KATEX_CSS_URL}" integrity="${KATEX_CSS_INTEGRITY}" crossorigin="anonymous" />
 
 <!-- The loading of KaTeX is deferred to speed up page rendering -->
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.25/dist/katex.min.js" integrity="sha384-J+9dG2KMoiR9hqcFao0IBLwxt6zpcyN68IgwzsCSkbreXUjmNVRhPFTssqdSGjwQ" crossorigin="anonymous"></script>
+<script defer src="${KATEX_JS_URL}" integrity="${KATEX_JS_INTEGRITY}" crossorigin="anonymous"></script>
 
 <!-- To automatically render math in text elements, include the auto-render extension: -->
 <script
     defer
-    src="https://cdn.jsdelivr.net/npm/katex@0.16.25/dist/contrib/auto-render.min.js"
-    integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh"
+    src="${KATEX_AUTO_RENDER_URL}"
+    integrity="${KATEX_AUTO_RENDER_INTEGRITY}"
     crossorigin="anonymous"
     onload="katexStuff();"
 ></script>
@@ -54,4 +54,4 @@ Fix with padding
     }
 </style>
 
-<script defer src="https://cdn.jsdelivr.net/npm/mermaid@11.12.0/dist/mermaid.min.js" integrity="sha384-o+g/BxPwhi0C3RK7oQBxQuNimeafQ3GE/ST4iT2BxVI4Wzt60SH4pq9iXVYujjaS" crossorigin="anonymous"></script>
+<script defer src="${MERMAID_JS_URL}" integrity="${MERMAID_INTEGRITY}" crossorigin="anonymous"></script>
