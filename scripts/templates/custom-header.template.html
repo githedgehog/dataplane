@@ -28,6 +28,25 @@ ${EDIT_WARNING}
             });
         });
     };
+    const mermaidStuff = () => {
+        document.addEventListener("DOMContentLoaded", () => {
+            const theme = document.documentElement.getAttribute("data-theme");
+            if (theme == "light") {
+                mermaid.initialize({
+                    theme: "base",
+                });
+            } else {
+                mermaid.initialize({
+                    theme: "dark",
+                });
+            }
+            for (const code of document.querySelectorAll("pre.language-mermaid > code")) {
+                const pre = code.parentNode;
+                pre.classList.add("mermaid");
+                pre.innerHTML = code.innerText;
+            }
+        });
+    };
 </script>
 
 <link rel="stylesheet" href="${KATEX_CSS_URL}" integrity="${KATEX_CSS_INTEGRITY}" crossorigin="anonymous" />
@@ -54,4 +73,10 @@ Fix with padding
     }
 </style>
 
-<script defer src="${MERMAID_JS_URL}" integrity="${MERMAID_INTEGRITY}" crossorigin="anonymous"></script>
+<script
+    defer
+    src="${MERMAID_JS_URL}"
+    integrity="${MERMAID_INTEGRITY}"
+    crossorigin="anonymous"
+    onload="mermaidStuff();"
+></script>
