@@ -38,6 +38,26 @@ impl TruncatedIcmp4Header {
         let len = self.everything_else.len() + Self::MIN_HEADER_LEN;
         NonZero::new(len).unwrap_or_else(|| unreachable!())
     }
+
+    fn is_query_message(&self) -> bool {
+        match self.icmp_type {
+            0 | 8 | 13 | 14 => true, // Echo Request, Echo Reply, Timestamp Request, Timestamp Reply
+            _ => false,
+        }
+    }
+
+    fn identifier(&self) -> Option<u16> {
+        if !self.is_query_message() {
+            return None;
+        }
+        if self.everything_else.len() < 4 {
+            return None;
+        }
+        Some(u16::from_be_bytes([
+            self.everything_else[2],
+            self.everything_else[3],
+        ]))
+    }
 }
 
 impl Parse for TruncatedIcmp4Header {
@@ -102,6 +122,22 @@ pub enum TruncatedIcmp4 {
     FullHeader(Icmp4),
     /// A truncated `ICMPv4` header
     PartialHeader(TruncatedIcmp4Header),
+}
+
+impl TruncatedIcmp4 {
+    /// Get the identifier of the ICMP message, if relevant and if doable
+    ///
+    /// # Returns
+    ///
+    /// * `Some(u16)` for ICMP messages that have an identifier and if the identifier is available
+    /// * `None` otherwise
+    #[must_use]
+    pub fn identifier(&self) -> Option<u16> {
+        match self {
+            TruncatedIcmp4::FullHeader(icmp) => icmp.identifier(),
+            TruncatedIcmp4::PartialHeader(header) => header.identifier(),
+        }
+    }
 }
 
 /// Errors which can occur when attempting to parse arbitrary bytes into a `TruncatedIcmp4` header.

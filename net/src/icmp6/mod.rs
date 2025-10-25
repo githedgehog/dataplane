@@ -57,6 +57,15 @@ impl Icmp6 {
         }
     }
 
+    /// Returns the identifier field value if the ICMP type allows it.
+    #[must_use]
+    pub fn identifier(&self) -> Option<u16> {
+        match self.icmp_type() {
+            Icmpv6Type::EchoRequest(msg) | Icmpv6Type::EchoReply(msg) => Some(msg.id),
+            _ => None,
+        }
+    }
+
     /// Creates a new `Icmp6` with the given type.
     ///
     /// The checksum will be set to zero.
