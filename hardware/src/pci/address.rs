@@ -445,7 +445,7 @@ mod scan {
                     let device_id = value.device_id();
                     PciDeviceDescription {
                         // NOTE: this method is only called at dataplane startup where panic is still acceptable.
-                        // Attempting to start the dataplane afeter we have been given expressly illegal values
+                        // Attempting to start the dataplane after we have been given expressly illegal values
                         // regarding the hardware layout is much more unwise than crashing.
                         //
                         // For example, we have no idea what will happen if we start unbinding devices from kernel
@@ -468,7 +468,7 @@ mod scan {
                     let device_id = value.subdevice_id();
                     PciDeviceDescription {
                         // NOTE: this method is only called at dataplane startup where panic is still acceptable.
-                        // Attempting to start the dataplane afeter we have been given expressly illegal values
+                        // Attempting to start the dataplane after we have been given expressly illegal values
                         // regarding the hardware layout is much more unwise than crashing.
                         //
                         // For example, we have no idea what will happen if we start unbinding devices from kernel
