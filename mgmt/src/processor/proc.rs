@@ -14,6 +14,7 @@ use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver;
 
 use config::external::overlay::vpc::VpcTable;
+use config::internal::status::DataplaneStatus;
 use config::{ConfigError, ConfigResult, stringify};
 use config::{DeviceConfig, ExternalConfig, GenId, GwConfig, InternalConfig};
 use config::{external::overlay::Overlay, internal::device::tracecfg::TracingConfig};
@@ -48,6 +49,7 @@ pub enum ConfigRequest {
     ApplyConfig(Box<GwConfig>),
     GetCurrentConfig,
     GetGeneration,
+    GetDataplaneStatus,
 }
 
 /// A response from the `ConfigProcessor`
@@ -56,6 +58,7 @@ pub enum ConfigResponse {
     ApplyConfig(ConfigResult),
     GetCurrentConfig(Box<Option<GwConfig>>),
     GetGeneration(Option<GenId>),
+    GetDataplaneStatus(Box<DataplaneStatus>),
 }
 type ConfigResponseChannel = oneshot::Sender<ConfigResponse>;
 
@@ -237,6 +240,12 @@ impl ConfigProcessor {
         ConfigResponse::GetCurrentConfig(cfg)
     }
 
+    /// TODO: Real status collection here, this time - placeholder
+    fn handle_get_dataplane_status(&self) -> ConfigResponse {
+        let status = DataplaneStatus::default();
+        ConfigResponse::GetDataplaneStatus(Box::new(status))
+    }
+
     /// Run the configuration processor
     #[allow(unreachable_code)]
     pub async fn run(mut self) {
@@ -251,6 +260,7 @@ impl ConfigProcessor {
                         }
                         ConfigRequest::GetCurrentConfig => self.handle_get_config(),
                         ConfigRequest::GetGeneration => self.handle_get_generation(),
+                        ConfigRequest::GetDataplaneStatus => self.handle_get_dataplane_status(),
                     };
                     if req.reply_tx.send(response).is_err() {
                         warn!("Failed to send reply from config processor: receiver dropped?");

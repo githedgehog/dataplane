@@ -11,6 +11,7 @@
 pub mod device;
 pub mod interfaces;
 pub mod routing;
+pub mod status;
 
 use derive_builder::Builder;
 
