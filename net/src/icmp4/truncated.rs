@@ -5,6 +5,7 @@
 
 use std::num::NonZero;
 
+use crate::icmp_any::TruncatedIcmpAny;
 use crate::icmp4::Icmp4;
 use crate::parse::{DeParse, DeParseError, LengthError, Parse, ParseError};
 
@@ -136,15 +137,16 @@ pub enum TruncatedIcmp4 {
     PartialHeader(TruncatedIcmp4Header),
 }
 
-impl TruncatedIcmp4 {
+impl TruncatedIcmpAny for TruncatedIcmp4 {
+    type Error = TruncatedIcmp4Error;
+
     /// Get the identifier of the ICMP message, if relevant and if doable
     ///
     /// # Returns
     ///
     /// * `Some(u16)` for ICMP messages that have an identifier and if the identifier is available
     /// * `None` otherwise
-    #[must_use]
-    pub fn identifier(&self) -> Option<u16> {
+    fn identifier(&self) -> Option<u16> {
         match self {
             TruncatedIcmp4::FullHeader(icmp) => icmp.identifier(),
             TruncatedIcmp4::PartialHeader(header) => header.identifier(),
@@ -157,7 +159,7 @@ impl TruncatedIcmp4 {
     ///
     /// This method returns [`TruncatedIcmp4Error::NoIdentifier`] if the ICMP type does not allow setting
     /// an identifier, or is not long enough.
-    pub fn try_set_identifier(&mut self, identifier: u16) -> Result<(), TruncatedIcmp4Error> {
+    fn try_set_identifier(&mut self, identifier: u16) -> Result<(), TruncatedIcmp4Error> {
         match self {
             TruncatedIcmp4::FullHeader(icmp) => icmp
                 .try_set_identifier(identifier)

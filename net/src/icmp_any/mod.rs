@@ -8,8 +8,10 @@ use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
 
 mod checksum;
+mod truncated;
 
 pub use checksum::*;
+pub use truncated::*;
 
 /// Error type for [`IcmpAny`] and [`IcmpAnyMut`]
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]

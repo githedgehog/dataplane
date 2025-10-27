@@ -12,9 +12,8 @@ use net::headers::{
     EmbeddedTransport, TryEmbeddedHeaders, TryEmbeddedHeadersMut, TryEmbeddedTransportMut,
     TryHeaders, TryInnerIpMut, TryInnerIpv4, TryIp, TryTransport,
 };
+use net::icmp_any::TruncatedIcmpAny;
 use net::icmp_any::{IcmpAny, IcmpAnyChecksumErrorPlaceholder, IcmpAnyChecksumPayload};
-use net::icmp4::{Icmp4Checksum, TruncatedIcmp4};
-use net::icmp6::{Icmp6Checksum, TruncatedIcmp6};
 use net::ipv4::Ipv4;
 use net::packet::Packet;
 use std::net::IpAddr;
@@ -147,15 +146,19 @@ pub(crate) fn stateful_translate_icmp_inner<Buf: PacketBufferMut>(
         EmbeddedTransport::Tcp(_) | EmbeddedTransport::Udp(_) => {
             translate_inner_tcp_udp(transport, target_src_port, target_dst_port)
         }
-        EmbeddedTransport::Icmp4(icmp4) => translate_inner_icmp4(icmp4, target_src_port),
-        EmbeddedTransport::Icmp6(icmp6) => translate_inner_icmp6(icmp6, target_src_port),
+        EmbeddedTransport::Icmp4(icmp4) => translate_inner_icmp(icmp4, target_src_port),
+        EmbeddedTransport::Icmp6(icmp6) => translate_inner_icmp(icmp6, target_src_port),
     }
 }
 
-fn translate_inner_icmp4(
-    icmp: &mut TruncatedIcmp4,
+fn translate_inner_icmp<T>(
+    icmp: &mut T,
     target_identifier: Option<NatPort>,
-) -> Result<(), IcmpErrorMsgError> {
+) -> Result<(), IcmpErrorMsgError>
+where
+    T: TruncatedIcmpAny + Checksum,
+    u16: std::convert::From<<T as Checksum>::Checksum>,
+{
     let Some(old_identifier) = icmp.identifier() else {
         // No identifier to translate, we're done
         return Ok(());
@@ -172,35 +175,7 @@ fn translate_inner_icmp4(
         return Ok(());
     };
     let _ = icmp.increment_update_checksum(
-        Icmp4Checksum::new(current_checksum),
-        old_identifier,
-        new_identifier,
-    );
-    Ok(())
-}
-
-// TODO: Refactor with translate_inner_icmp4()
-fn translate_inner_icmp6(
-    icmp: &mut TruncatedIcmp6,
-    target_identifier: Option<NatPort>,
-) -> Result<(), IcmpErrorMsgError> {
-    let Some(old_identifier) = icmp.identifier() else {
-        // No identifier to translate, we're done
-        return Ok(());
-    };
-    let Some(new_identifier) = target_identifier.map(NatPort::as_u16) else {
-        // We really should have received a target identifier, something went wrong
-        return Err(IcmpErrorMsgError::NoIdentifier);
-    };
-    icmp.try_set_identifier(new_identifier)
-        .unwrap_or_else(|_| unreachable!()); // We found an old identifier, we can set a new one
-
-    let Some(current_checksum) = icmp.checksum().map(u16::from) else {
-        // No checksum to update, we're done
-        return Ok(());
-    };
-    let _ = icmp.increment_update_checksum(
-        Icmp6Checksum::new(current_checksum),
+        T::Checksum::from(current_checksum),
         old_identifier,
         new_identifier,
     );
