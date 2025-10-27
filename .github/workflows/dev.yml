@@ -345,7 +345,7 @@ jobs:
           && matrix.hybrid
         }}
       fabricatorref: master
-      prebuild: "just bump dataplane HEAD.x86_64-unknown-linux-gnu.debug.${{ github.sha }}"
+      prebuild: "just bump dataplane x86_64-unknown-linux-gnu.debug.${{ github.sha }}"
       fabricmode: ${{ matrix.fabricmode }}
       gateway: ${{ matrix.gateway }}
       includeonie: ${{ matrix.includeonie }}

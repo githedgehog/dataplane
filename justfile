@@ -107,6 +107,11 @@ _clean := ```
 [private]
 _slug := (if _clean == "clean" { "" } else { "dirty." }) + _branch
 
+# Some branch names could be too long for docker tags, e.g. merge queue one
+
+[private]
+_dirty_prefix := (if _clean == "clean" { "" } else { "dirty" })
+
 # Define a function to truncate long lines to the limit for containers tags
 
 [private]
@@ -399,7 +404,7 @@ build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile
     declare build_time_epoch
     build_time_epoch="$(date --utc '+%s' --date="{{ _build_time }}")"
     declare -r build_time_epoch
-    declare -r TAG="{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")"
+    declare -r TAG="{{ _container_repo }}:$(truncate128 "${build_date}.{{ _dirty_prefix }}{{ target }}.{{ profile }}.{{ _commit }}")"
     sudo -E docker build \
       --label "git.commit={{ _commit }}" \
       --label "git.branch={{ _branch }}" \
@@ -415,10 +420,7 @@ build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile
 
     sudo -E docker tag \
       "${TAG}" \
-      "{{ _container_repo }}:$(truncate128 "{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")"
-    sudo -E docker tag \
-      "${TAG}" \
-      "{{ _container_repo }}:$(truncate128 "{{ _slug }}.{{ target }}.{{ profile }}")"
+      "{{ _container_repo }}:$(truncate128 "{{ _dirty_prefix }}{{ target }}.{{ profile }}.{{ _commit }}")"
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ]; then
       sudo -E docker tag \
         "${TAG}" \
@@ -441,7 +443,7 @@ build-container-quick: (compile-env "cargo" "--locked" "build" ("--target=" + ta
     declare build_date
     build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
     declare -r build_date
-    declare -r TAG="{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")"
+    declare -r TAG="{{ _container_repo }}:$(truncate128 "${build_date}.{{ _dirty_prefix }}{{ target }}.{{ profile }}.{{ _commit }}")"
     sudo -E docker build \
       --label "git.commit={{ _commit }}" \
       --label "git.branch={{ _branch }}" \
@@ -463,8 +465,8 @@ push-container: build-container
     declare build_date
     build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
     declare -r build_date
-    sudo -E docker push "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")"
-    sudo -E docker push "{{ _container_repo }}:$(truncate128 "{{ _slug }}.{{ target }}.{{ profile }}.{{ _commit }}")"
+    sudo -E docker push "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _dirty_prefix }}{{ target }}.{{ profile }}.{{ _commit }}")"
+    sudo -E docker push "{{ _container_repo }}:$(truncate128 "{{ _dirty_prefix }}{{ target }}.{{ profile }}.{{ _commit }}")"
     if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ]; then
       sudo -E docker push "{{ _container_repo }}:$(truncate128 "{{ _slug }}.{{ profile }}")"
     fi
