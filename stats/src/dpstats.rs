@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use vpcmap::VpcDiscriminant;
 use vpcmap::map::VpcMapReader;
 
+use crate::vpc_stats::VpcStatsStore;
 use crate::{RegisteredVpcMetrics, Specification, VpcMetricsSpec};
 use net::buffer::PacketBufferMut;
 use rand::RngCore;
@@ -62,14 +63,32 @@ pub struct StatsCollector {
     vpcmap_r: VpcMapReader<VpcMapName>,
     /// A MPSC channel receiver for collecting stats from other threads.
     updates: PacketStatsReader,
+    vpc_store: std::sync::Arc<VpcStatsStore>,
 }
 
 impl StatsCollector {
     const DEFAULT_CHANNEL_CAPACITY: usize = 256;
     const TIME_TICK: Duration = Duration::from_secs(1);
 
+    /// Backward-compatible constructor; returns (collector, writer).
     #[tracing::instrument(level = "info")]
     pub fn new(vpcmap_r: VpcMapReader<VpcMapName>) -> (StatsCollector, PacketStatsWriter) {
+        let store = VpcStatsStore::new();
+        let (collector, writer, _store) = Self::new_with_store(vpcmap_r, store);
+        (collector, writer)
+    }
+
+    /// Preferred constructor if you also want to hold the store elsewhere.
+    /// Returns (collector, writer, store).
+    #[tracing::instrument(level = "info")]
+    pub fn new_with_store(
+        vpcmap_r: VpcMapReader<VpcMapName>,
+        vpc_store: std::sync::Arc<VpcStatsStore>,
+    ) -> (
+        StatsCollector,
+        PacketStatsWriter,
+        std::sync::Arc<VpcStatsStore>,
+    ) {
         let (s, r) = kanal::bounded(Self::DEFAULT_CHANNEL_CAPACITY);
         let vpc_data = {
             let guard = vpcmap_r.enter().unwrap();
@@ -96,15 +115,19 @@ impl StatsCollector {
                 |prior, _| Some(BatchSummary::new(prior.planned_end + Self::TIME_TICK)),
             )
             .collect();
+
+        let store_clone = std::sync::Arc::clone(&vpc_store);
+
         let stats = StatsCollector {
             metrics,
             outstanding,
             submitted: SavitzkyGolayFilter::new(Self::TIME_TICK),
             vpcmap_r,
             updates,
+            vpc_store,
         };
         let writer = PacketStatsWriter(s);
-        (stats, writer)
+        (stats, writer, store_clone)
     }
 
     /// Update the list of VPCs known to the stats collector.
@@ -125,8 +148,7 @@ impl StatsCollector {
         spec.into_iter().map(|(disc, spec)| (disc, spec.build()))
     }
 
-    /// Run the collector.  This method does not create a thread and will not return if
-    /// awaited.
+    /// Run the collector (async).  Does not return if awaited.
     #[tracing::instrument(level = "info", skip(self))]
     pub async fn run(mut self) {
         info!("started stats update receiver");
@@ -135,13 +157,13 @@ impl StatsCollector {
             tokio::select! {
                 () = tokio::time::sleep(Self::TIME_TICK) => {
                     trace!("no stats received in window");
-                    self.update(None);
+                    self.update(None).await;
                 }
                 delta = self.updates.0.as_async().recv() => {
                     match delta {
                         Ok(delta) => {
                             trace!("received stats update: {delta:#?}");
-                            self.update(Some(delta));
+                            self.update(Some(delta)).await;
                         },
                         Err(err) => {
                             match err {
@@ -163,7 +185,7 @@ impl StatsCollector {
 
     /// Calculate updated stats and submit any expired entries to the SG filter.
     #[tracing::instrument(level = "trace")]
-    fn update(&mut self, update: Option<MetricsUpdate>) {
+    async fn update(&mut self, update: Option<MetricsUpdate>) {
         if let Some(update) = update {
             // find outstanding changes which line up with batch
             self.metrics = self.refresh().collect();
@@ -274,13 +296,13 @@ impl StatsCollector {
                 .pop_front()
                 .unwrap_or_else(|| unreachable!());
             expired -= 1;
-            self.submit_expired(concluded);
+            self.submit_expired(concluded).await;
         }
     }
 
     /// Submit a concluded set of stats for inclusion in smoothing calculations
     #[tracing::instrument(level = "trace")]
-    fn submit_expired(&mut self, concluded: BatchSummary<u64>) {
+    async fn submit_expired(&mut self, concluded: BatchSummary<u64>) {
         const CAPACITY_PADDING: usize = 16;
         let capacity = self.vpcmap_r.enter().unwrap().0.len() + CAPACITY_PADDING;
         let start = self
@@ -318,9 +340,31 @@ impl StatsCollector {
                 });
         });
 
+        for (&src, tx_summary) in &concluded.vpc {
+            let mut total_pkts = 0u64;
+            let mut total_bytes = 0u64;
+
+            for (&dst, &stats) in tx_summary.dst.iter() {
+                // pair counters
+                self.vpc_store
+                    .add_pair_counts(src, dst, stats.packets, stats.bytes)
+                    .await;
+
+                total_pkts = total_pkts.saturating_add(stats.packets);
+                total_bytes = total_bytes.saturating_add(stats.bytes);
+            }
+
+            // per-VPC totals (by src)
+            if total_pkts != 0 || total_bytes != 0 {
+                self.vpc_store
+                    .add_vpc_counts(src, total_pkts, total_bytes)
+                    .await;
+            }
+        }
+
         // Push this *apportioned per-batch* snapshot into the SG window.
         // With TIME_TICK=1s, smoothing these counts ≈ smoothing pps/Bps directly.
-        self.submitted.push(concluded.vpc);
+        self.submitted.push(concluded.vpc.clone());
 
         // Build per-source filters and smooth.
         let filters_by_src: hashbrown::HashMap<
@@ -329,28 +373,39 @@ impl StatsCollector {
         > = (&self.submitted).into();
 
         if let Ok(smoothed_by_src) = filters_by_src.smooth() {
-            smoothed_by_src.iter().for_each(|(&src, tx_summary)| {
-                let metrics = match self.metrics.get(&src) {
-                    None => {
-                        warn!("lost metrics for src {src}");
-                        return;
+            for (&src, tx_summary) in smoothed_by_src.iter() {
+                let mut total_pps = 0.0f64;
+                let mut total_bps = 0.0f64;
+
+                if let Some(metrics) = self.metrics.get(&src) {
+                    for (dst, rate) in tx_summary.dst.iter() {
+                        if let Some(action) = metrics.peering.get(dst) {
+                            // Smoothed packets-per-second / bytes-per-second (since tick=1s)
+                            action.tx.packet.rate.metric.set(rate.packets);
+                            action.tx.byte.rate.metric.set(rate.bytes);
+                            trace!(
+                                "smoothed rate src={:?} dst={:?}: pps={:.3} Bps={:.3}",
+                                src, dst, rate.packets, rate.bytes
+                            );
+                        } else {
+                            warn!("lost metrics for src {src} to dst {dst}");
+                        }
+
+                        self.vpc_store
+                            .set_pair_rates(src, *dst, rate.packets, rate.bytes)
+                            .await;
+
+                        total_pps += rate.packets;
+                        total_bps += rate.bytes;
                     }
-                    Some(metrics) => metrics,
-                };
-                tx_summary.dst.iter().for_each(|(dst, rate)| {
-                    if let Some(action) = metrics.peering.get(dst) {
-                        // Smoothed packets-per-second / bytes-per-second (since tick=1s)
-                        action.tx.packet.rate.metric.set(rate.packets);
-                        action.tx.byte.rate.metric.set(rate.bytes);
-                        trace!(
-                            "smoothed rate src={:?} dst={:?}: pps={:.3} Bps={:.3}",
-                            src, dst, rate.packets, rate.bytes
-                        );
-                    } else {
-                        warn!("lost metrics for src {src} to dst {dst}");
-                    }
-                });
-            });
+                } else {
+                    warn!("lost metrics for src {src}");
+                }
+
+                self.vpc_store
+                    .set_vpc_rates(src, total_pps, total_bps)
+                    .await;
+            }
         } else {
             trace!("Not enough samples yet for smoothing");
         }
@@ -436,7 +491,7 @@ pub struct BatchSummary<T> {
     /// This is the time at which the batch should be concluded.
     /// Note that precise control over this time is not guaranteed.
     pub planned_end: Instant,
-    vpc: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<T>>,
+    pub(crate) vpc: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<T>>,
 }
 
 /// A `MetricsUpdate` is basically just a `BatchSummary` with a more precise duration associated
