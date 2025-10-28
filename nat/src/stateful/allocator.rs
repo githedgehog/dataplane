@@ -33,6 +33,8 @@ pub enum AllocatorError {
     // We hit an implementation bug.
     #[error("internal issue: {0}")]
     InternalIssue(String),
+    #[error("new NAT session creation denied")]
+    Denied,
 }
 
 /// `AllocationResult` is a struct to represent the result of an allocation.

@@ -231,7 +231,7 @@ impl NatDefaultAllocator {
         Self::check_proto(next_header)?;
         let (src_vpc_id, dst_vpc_id) = Self::check_and_get_discriminants(flow_key)?;
 
-        // Get address pools for source and destination
+        // Get address pools for source
         let pool_src_opt = pools_src.get_entry(
             next_header,
             src_vpc_id,
@@ -242,6 +242,16 @@ impl NatDefaultAllocator {
                 )
             })?,
         );
+
+        // If we could not find an address pool for the source address, this means that the user has
+        // not exposed and configured NAT for the source address currently in use. In this case, we
+        // do not want to create a new session, even if destination NAT for that packet were valid:
+        // we need to drop the packet instead.
+        if pool_src_opt.is_none() {
+            return Err(AllocatorError::Denied);
+        }
+
+        // Get address pools for destination
         let pool_dst_opt = pools_dst.get_entry(
             next_header,
             src_vpc_id,
