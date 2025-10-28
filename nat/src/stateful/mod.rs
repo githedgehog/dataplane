@@ -11,7 +11,7 @@ use super::NatTranslationData;
 use crate::icmp_error_msg::{
     IcmpErrorMsgError, stateful_translate_icmp_inner, validate_checksums_icmp,
 };
-use crate::stateful::allocator::{AllocationResult, NatAllocator};
+use crate::stateful::allocator::{AllocationResult, AllocatorError, NatAllocator};
 use crate::stateful::allocator_writer::NatAllocatorReader;
 use crate::stateful::apalloc::AllocatedIpPort;
 use crate::stateful::apalloc::{NatDefaultAllocator, NatIpWithBitmap};
@@ -44,8 +44,8 @@ pub enum StatefulNatError {
     TupleParseError,
     #[error("no allocator available")]
     NoAllocator,
-    #[error("allocation failed")]
-    AllocationFailure,
+    #[error("allocation failed: {0}")]
+    AllocationFailure(AllocatorError),
     #[error("invalid IP version")]
     InvalidIpVersion,
     #[error("IP address {0} is not unicast")]
@@ -506,10 +506,8 @@ impl StatefulNat {
         };
 
         // Else, if we need NAT for this packet, create a new session and translate the address
-        let Ok(alloc) = I::allocate(allocator, flow_key) else {
-            // NAT allocation failed for some reason
-            return Err(StatefulNatError::AllocationFailure);
-        };
+        let alloc =
+            I::allocate(allocator, flow_key).map_err(StatefulNatError::AllocationFailure)?;
 
         if alloc.src.is_none() && alloc.dst.is_none() {
             // No NAT for this tuple, leave the packet unchanged - Do not drop it
