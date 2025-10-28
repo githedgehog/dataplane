@@ -288,7 +288,7 @@ impl NatDefaultAllocator {
 
     fn check_proto(next_header: NextHeader) -> Result<(), AllocatorError> {
         match next_header {
-            NextHeader::TCP | NextHeader::UDP => Ok(()),
+            NextHeader::TCP | NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6 => Ok(()),
             _ => Err(AllocatorError::UnsupportedProtocol(next_header)),
         }
     }
