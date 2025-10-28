@@ -232,18 +232,24 @@ impl StatefulNat {
             net.try_set_destination(target_dst_ip)
                 .map_err(|_| StatefulNatError::InvalidIpVersion)?;
 
-            headers
+            let transport = headers
                 .try_transport_mut()
-                .ok_or(StatefulNatError::BadTransportHeader)?
-                .try_set_destination(
-                    target_dst_port
-                        .try_into()
-                        .map_err(|_| StatefulNatError::InvalidPort(target_dst_port.as_u16()))?,
-                )
-                .map_err(|_| StatefulNatError::BadTransportHeader)?;
-
-            // No need to set the identifier for ICMP Echo messages, we already did it above using
-            // target_src_port.
+                .ok_or(StatefulNatError::BadTransportHeader)?;
+            match transport {
+                Transport::Tcp(_) | Transport::Udp(_) => {
+                    transport
+                        .try_set_destination(
+                            target_dst_port.try_into().map_err(|_| {
+                                StatefulNatError::InvalidPort(target_dst_port.as_u16())
+                            })?,
+                        )
+                        .map_err(|_| StatefulNatError::BadTransportHeader)?;
+                }
+                Transport::Icmp4(_) | Transport::Icmp6(_) => {
+                    // No need to set the identifier for ICMP Echo messages, we already did it above
+                    // using target_src_port.
+                }
+            }
         }
         Ok(())
     }
