@@ -27,7 +27,7 @@ mod tests {
     use net::packet::test_utils::{
         IcmpEchoDirection, build_test_icmp4_echo, build_test_udp_ipv4_frame,
     };
-    use net::packet::{Packet, VpcDiscriminant};
+    use net::packet::{DoneReason, Packet, VpcDiscriminant};
     use net::vxlan::Vni;
     use pipeline::NetworkFunction;
     use pkt_meta::flow_table::flow_key::Uni;
@@ -293,7 +293,7 @@ mod tests {
         dst_ip: &str,
         sport: u16,
         dport: u16,
-    ) -> (Ipv4Addr, Ipv4Addr, u16, u16) {
+    ) -> (Ipv4Addr, Ipv4Addr, u16, u16, Option<DoneReason>) {
         let mut packet: Packet<TestBuffer> = build_test_udp_ipv4_frame(
             Mac([0x2, 0, 0, 0, 0, 1]),
             Mac([0x2, 0, 0, 0, 0, 2]),
@@ -311,12 +311,14 @@ mod tests {
         let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
         let hdr_out = packets_out[0].try_ipv4().unwrap();
         let udp_out = packets_out[0].try_udp().unwrap();
+        let done_reason = packets_out[0].get_done();
 
         (
             hdr_out.source().inner(),
             hdr_out.destination(),
             udp_out.source().into(),
             udp_out.destination().into(),
+            done_reason,
         )
     }
 
@@ -346,36 +348,44 @@ mod tests {
 
         // No NAT
         let (orig_src, orig_dst) = ("8.8.8.8", "9.9.9.9");
-        let (output_src, output_dst, output_src_port, output_dst_port) =
+        let (output_src, output_dst, output_src_port, output_dst_port, done_reason) =
             check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst, 9998, 443);
         assert_eq!(output_src, addr_v4(orig_src));
         assert_eq!(output_dst, addr_v4(orig_dst));
         assert_eq!(output_src_port, 9998);
         assert_eq!(output_dst_port, 443);
+        assert_eq!(done_reason, Some(DoneReason::NatFailure));
 
         // NAT: expose121 <-> expose211
         let (orig_src, orig_dst) = ("1.1.2.3", "10.201.201.18");
         let (target_src, target_dst) = ("10.12.0.0", "1.2.2.0");
-        let (output_src, output_dst, output_src_port, output_dst_port) =
+        let (output_src, output_dst, output_src_port, output_dst_port, done_reason) =
             check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst, 9998, 443);
+        assert_eq!(done_reason, None);
 
         assert_eq!(output_src, addr_v4(target_src));
         assert_eq!(output_dst, addr_v4(target_dst));
         // Reverse path
-        let (return_output_src, return_output_dst, return_output_src_port, return_output_dst_port) =
-            check_packet(
-                &mut nat,
-                vni(200),
-                vni(100),
-                target_dst,
-                target_src,
-                output_dst_port,
-                output_src_port,
-            );
+        let (
+            return_output_src,
+            return_output_dst,
+            return_output_src_port,
+            return_output_dst_port,
+            done_reason,
+        ) = check_packet(
+            &mut nat,
+            vni(200),
+            vni(100),
+            target_dst,
+            target_src,
+            output_dst_port,
+            output_src_port,
+        );
         assert_eq!(return_output_src, addr_v4(orig_dst));
         assert_eq!(return_output_dst, addr_v4(orig_src));
         assert_eq!(return_output_src_port, 443);
         assert_eq!(return_output_dst_port, 9998);
+        assert_eq!(done_reason, None);
 
         // Get corresponding session table entries and check idle timeout
         let Some((_, idle_timeout)) = nat.get_session::<Ipv4Addr>(
@@ -419,73 +429,93 @@ mod tests {
         // result these steps should fail
         let (orig_src, orig_dst) = ("1.1.2.3", "10.201.201.18");
         let (target_src, target_dst) = ("10.12.0.0", "1.2.2.0");
-        let (output_src, output_dst, output_src_port, output_dst_port) =
+        let (output_src, output_dst, output_src_port, output_dst_port, done_reason) =
             check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst, 9998, 443);
-
         assert_eq!(output_src, addr_v4(target_src));
         assert_eq!(output_dst, addr_v4(target_dst));
+        assert_eq!(done_reason, None);
         // Reverse path
-        let (return_output_src, return_output_dst, return_output_src_port, return_output_dst_port) =
-            check_packet(
-                &mut nat,
-                vni(200),
-                vni(100),
-                target_dst,
-                target_src,
-                output_dst_port,
-                output_src_port,
-            );
+        let (
+            return_output_src,
+            return_output_dst,
+            return_output_src_port,
+            return_output_dst_port,
+            done_reason,
+        ) = check_packet(
+            &mut nat,
+            vni(200),
+            vni(100),
+            target_dst,
+            target_src,
+            output_dst_port,
+            output_src_port,
+        );
         assert_eq!(return_output_src, addr_v4(orig_dst));
         assert_eq!(return_output_dst, addr_v4(orig_src));
         assert_eq!(return_output_src_port, 443);
         assert_eq!(return_output_dst_port, 9998);
+        assert_eq!(done_reason, None);
 
         // Check new connection: valid source NAT but invalid destination NAT
         let (orig_src, orig_dst) = ("1.1.2.3", "10.201.201.17");
         let target_src = "2.2.0.0";
-        let (output_src, output_dst, output_src_port, output_dst_port) =
+        let (output_src, output_dst, output_src_port, output_dst_port, done_reason) =
             check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst, 9998, 80);
         assert_eq!(output_src, addr_v4(target_src));
         assert_eq!(output_dst, addr_v4(orig_dst));
         assert_eq!(output_dst_port, 80);
+        assert_eq!(done_reason, None);
         // Reverse path
-        let (return_output_src, return_output_dst, return_output_src_port, return_output_dst_port) =
-            check_packet(
-                &mut nat,
-                vni(200),
-                vni(100),
-                orig_dst,
-                target_src,
-                output_dst_port,
-                output_src_port,
-            );
+        let (
+            return_output_src,
+            return_output_dst,
+            return_output_src_port,
+            return_output_dst_port,
+            done_reason,
+        ) = check_packet(
+            &mut nat,
+            vni(200),
+            vni(100),
+            orig_dst,
+            target_src,
+            output_dst_port,
+            output_src_port,
+        );
         assert_eq!(return_output_src, addr_v4(orig_dst));
         assert_eq!(return_output_dst, addr_v4(orig_src));
         assert_eq!(return_output_src_port, 80);
         assert_eq!(return_output_dst_port, 9998);
+        assert_eq!(done_reason, None);
 
         // Check new valid connection
         let (orig_src, orig_dst) = ("1.1.2.3", "3.3.3.3");
         let (target_src, target_dst) = ("2.2.0.0", "1.2.2.0");
-        let (output_src, output_dst, output_src_port, output_dst_port) =
+        let (output_src, output_dst, output_src_port, output_dst_port, done_reason) =
             check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst, 9998, 80);
         assert_eq!(output_src, addr_v4(target_src));
         assert_eq!(output_dst, addr_v4(target_dst));
+        assert_eq!(done_reason, None);
         // Reverse path
-        let (return_output_src, return_output_dst, return_output_src_port, return_output_dst_port) =
-            check_packet(
-                &mut nat,
-                vni(200),
-                vni(100),
-                target_dst,
-                target_src,
-                output_dst_port,
-                output_src_port,
-            );
+        let (
+            return_output_src,
+            return_output_dst,
+            return_output_src_port,
+            return_output_dst_port,
+            done_reason,
+        ) = check_packet(
+            &mut nat,
+            vni(200),
+            vni(100),
+            target_dst,
+            target_src,
+            output_dst_port,
+            output_src_port,
+        );
         assert_eq!(return_output_src, addr_v4(orig_dst));
         assert_eq!(return_output_dst, addr_v4(orig_src));
         assert_eq!(return_output_src_port, 80);
         assert_eq!(return_output_dst_port, 9998);
+        assert_eq!(done_reason, None);
     }
 
     fn check_packet_icmp(
@@ -496,7 +526,7 @@ mod tests {
         dst_ip: Ipv4Addr,
         direction: IcmpEchoDirection,
         identifier: u16,
-    ) -> (Ipv4Addr, Ipv4Addr, u16) {
+    ) -> (Ipv4Addr, Ipv4Addr, u16, Option<DoneReason>) {
         let mut packet: Packet<TestBuffer> =
             build_test_icmp4_echo(src_ip, dst_ip, identifier, direction).unwrap();
         packet.get_meta_mut().set_nat(true);
@@ -508,11 +538,13 @@ mod tests {
         let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
         let hdr_out = packets_out[0].try_ipv4().unwrap();
         let icmp_out = packets_out[0].try_icmp4().unwrap();
+        let done_reason = packets_out[0].get_done();
 
         (
             hdr_out.source().inner(),
             hdr_out.destination(),
             icmp_out.identifier().unwrap(),
+            done_reason,
         )
     }
 
@@ -530,7 +562,7 @@ mod tests {
 
         // No NAT
         let (orig_src, orig_dst, orig_identifier) = (addr_v4("8.8.8.8"), addr_v4("9.9.9.9"), 1337);
-        let (output_src, output_dst, output_identifier) = check_packet_icmp(
+        let (output_src, output_dst, output_identifier, done_reason) = check_packet_icmp(
             &mut nat,
             vni(100),
             vni(200),
@@ -542,11 +574,12 @@ mod tests {
         assert_eq!(output_src, orig_src);
         assert_eq!(output_dst, orig_dst);
         assert_eq!(output_identifier, orig_identifier);
+        assert_eq!(done_reason, Some(DoneReason::NatFailure));
 
         // NAT: expose121 <-> expose211
         let (orig_src, orig_dst, orig_identifier) = (addr_v4("1.1.2.3"), addr_v4("3.3.3.3"), 1337);
         let (target_src, target_dst) = (addr_v4("2.2.0.0"), addr_v4("1.2.2.0"));
-        let (output_src, output_dst, output_identifier_1) = check_packet_icmp(
+        let (output_src, output_dst, output_identifier_1, done_reason) = check_packet_icmp(
             &mut nat,
             vni(100),
             vni(200),
@@ -555,29 +588,31 @@ mod tests {
             IcmpEchoDirection::Request,
             orig_identifier,
         );
-
         assert_eq!(output_src, target_src);
         assert_eq!(output_dst, target_dst);
         assert!(output_identifier_1.is_multiple_of(256)); // First port of a 256-port "port block" from allocator
+        assert_eq!(done_reason, None);
 
         // Reverse path
-        let (return_output_src, return_output_dst, return_output_identifier) = check_packet_icmp(
-            &mut nat,
-            vni(200),
-            vni(100),
-            target_dst,
-            target_src,
-            IcmpEchoDirection::Reply,
-            output_identifier_1,
-        );
+        let (return_output_src, return_output_dst, return_output_identifier, done_reason) =
+            check_packet_icmp(
+                &mut nat,
+                vni(200),
+                vni(100),
+                target_dst,
+                target_src,
+                IcmpEchoDirection::Reply,
+                output_identifier_1,
+            );
         assert_eq!(return_output_src, orig_dst);
         assert_eq!(return_output_dst, orig_src);
         assert_eq!(return_output_identifier, orig_identifier);
+        assert_eq!(done_reason, None);
 
         // Second request with same identifier: no reallocation
         let (orig_src, orig_dst) = (addr_v4("1.1.2.3"), addr_v4("3.3.3.3"));
         let (target_src, target_dst) = (addr_v4("2.2.0.0"), addr_v4("1.2.2.0"));
-        let (output_src, output_dst, output_identifier_2) = check_packet_icmp(
+        let (output_src, output_dst, output_identifier_2, done_reason) = check_packet_icmp(
             &mut nat,
             vni(100),
             vni(200),
@@ -588,12 +623,13 @@ mod tests {
         );
         assert_eq!(output_src, target_src);
         assert_eq!(output_dst, target_dst);
-        assert_eq!(output_identifier_2, output_identifier_1);
+        assert_eq!(output_identifier_2, output_identifier_1); // Same identifier as before
+        assert_eq!(done_reason, None);
 
         // NAT: expose121 <-> expose211 again, but with identifier 0 (corner case)
         let (orig_src, orig_dst, orig_identifier) = (addr_v4("1.1.2.3"), addr_v4("3.3.3.3"), 0);
         let (target_src, target_dst) = (addr_v4("2.2.0.0"), addr_v4("1.2.2.0"));
-        let (output_src, output_dst, output_identifier_3) = check_packet_icmp(
+        let (output_src, output_dst, output_identifier_3, done_reason) = check_packet_icmp(
             &mut nat,
             vni(100),
             vni(200),
@@ -606,5 +642,6 @@ mod tests {
         assert_eq!(output_src, target_src);
         assert_eq!(output_dst, target_dst);
         assert_eq!(output_identifier_3, output_identifier_1 + 1); // Second port of the same 256-port "port block" from allocator
+        assert_eq!(done_reason, None);
     }
 }
