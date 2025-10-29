@@ -95,6 +95,7 @@ pub enum DoneReason {
     InternalFailure,      /* catch-all for internal issues */
     NotEthernet,          /* could not get eth header */
     NotIp,                /* could not get IP header - maybe it's not ip */
+    UnsupportedTransport, /* unsupported transport layer */
     MacNotForUs,          /* frame is not broadcast nor for us */
     InterfaceDetached,    /* interface has not been attached to any VRF */
     InterfaceAdmDown,     /* interface is admin down */

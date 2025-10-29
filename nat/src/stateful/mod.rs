@@ -571,14 +571,59 @@ impl StatefulNat {
         // TODO: Check whether we need protocol-aware processing
 
         match self.nat_packet(packet, src_vpc_id, dst_vpc_id) {
-            Err(_e) => {
-                packet.done(DoneReason::NatFailure);
+            Err(error) => {
+                packet.done(translate_error(&error));
             }
             Ok(true) => {
                 packet.get_meta_mut().set_checksum_refresh(true);
             }
             Ok(false) => {}
         }
+    }
+}
+
+fn translate_error(error: &StatefulNatError) -> DoneReason {
+    match error {
+        StatefulNatError::BadIpHeader
+        | StatefulNatError::IcmpErrorMsg(IcmpErrorMsgError::BadIpHeader) => DoneReason::NotIp,
+
+        StatefulNatError::BadTransportHeader
+        | StatefulNatError::AllocationFailure(AllocatorError::UnsupportedProtocol(_)) => {
+            DoneReason::UnsupportedTransport
+        }
+
+        StatefulNatError::TupleParseError
+        | StatefulNatError::InvalidPort(_)
+        | StatefulNatError::IcmpErrorMsg(IcmpErrorMsgError::InvalidPort(_)) => {
+            DoneReason::Malformed
+        }
+
+        StatefulNatError::AllocationFailure(
+            AllocatorError::NoFreeIp | AllocatorError::NoPortBlock | AllocatorError::NoFreePort(_),
+        ) => DoneReason::NatOutOfResources,
+
+        StatefulNatError::NoAllocator
+        | StatefulNatError::UnexpectedKeyVariant
+        | StatefulNatError::NotUnicast(_)
+        | StatefulNatError::IcmpErrorMsg(IcmpErrorMsgError::NotUnicast(_))
+        | StatefulNatError::AllocationFailure(
+            AllocatorError::PortAllocationFailed(_)
+            | AllocatorError::UnsupportedIcmpCategory
+            | AllocatorError::MissingDiscriminant
+            | AllocatorError::UnsupportedDiscriminant,
+        ) => DoneReason::NatFailure,
+
+        StatefulNatError::InvalidIpVersion
+        | StatefulNatError::AllocationFailure(AllocatorError::InternalIssue(_))
+        | StatefulNatError::IcmpErrorMsg(
+            IcmpErrorMsgError::InvalidIpVersion | IcmpErrorMsgError::NoIdentifier,
+        ) => DoneReason::InternalFailure,
+
+        StatefulNatError::NoSession
+        | StatefulNatError::AllocationFailure(AllocatorError::Denied)
+        | StatefulNatError::IcmpErrorMsg(
+            IcmpErrorMsgError::BadChecksumInnerIpv4(_) | IcmpErrorMsgError::BadChecksumIcmp(_),
+        ) => DoneReason::Filtered,
     }
 }
 

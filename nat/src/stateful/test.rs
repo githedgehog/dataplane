@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(output_dst, addr_v4(orig_dst));
         assert_eq!(output_src_port, 9998);
         assert_eq!(output_dst_port, 443);
-        assert_eq!(done_reason, Some(DoneReason::NatFailure));
+        assert_eq!(done_reason, Some(DoneReason::Filtered));
 
         // NAT: expose121 <-> expose211
         let (orig_src, orig_dst) = ("1.1.2.3", "10.201.201.18");
@@ -567,7 +567,7 @@ mod tests {
         assert_eq!(output_dst, addr_v4(orig_dst));
         assert_eq!(output_src_port, 9998);
         assert_eq!(output_dst_port, 443);
-        assert_eq!(done_reason, Some(DoneReason::NatFailure));
+        assert_eq!(done_reason, Some(DoneReason::Filtered));
 
         // NAT: expose121 <-> expose211 (valid source NAT, no destination NAT)
         let (orig_src, orig_dst) = ("1.1.2.3", "5.0.0.5");
@@ -606,7 +606,7 @@ mod tests {
             check_packet(&mut nat, vni(200), vni(100), orig_src, orig_dst, 9090, 8080);
         assert_eq!(output_src, addr_v4(target_src));
         assert_eq!(output_dst, addr_v4(target_dst));
-        assert_eq!(done_reason, Some(DoneReason::NatFailure));
+        assert_eq!(done_reason, Some(DoneReason::Filtered));
     }
 
     fn check_packet_icmp(
@@ -665,7 +665,7 @@ mod tests {
         assert_eq!(output_src, orig_src);
         assert_eq!(output_dst, orig_dst);
         assert_eq!(output_identifier, orig_identifier);
-        assert_eq!(done_reason, Some(DoneReason::NatFailure));
+        assert_eq!(done_reason, Some(DoneReason::Filtered));
 
         // NAT: expose121 <-> expose211
         let (orig_src, orig_dst, orig_identifier) = (addr_v4("1.1.2.3"), addr_v4("3.3.3.3"), 1337);

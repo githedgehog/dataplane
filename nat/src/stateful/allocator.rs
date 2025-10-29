@@ -23,8 +23,6 @@ pub enum AllocatorError {
     UnsupportedProtocol(NextHeader),
     #[error("unsupported ICMP message category")]
     UnsupportedIcmpCategory,
-    #[error("no port present for flow: NAT currently unsupported")]
-    PortNotFound,
     #[error("missing VPC discriminant")]
     MissingDiscriminant,
     #[error("unsupported VPC discriminant type")]
