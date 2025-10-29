@@ -13,12 +13,8 @@ pub enum NatPortError {
     InvalidPort(u16),
 }
 
-/// `NatPort` is a type to represent L4 ports usable in stateful NAT. In fact, it is just a wrapper
-/// around a non-zero `u16`.
-//
-// TODO: We may change this in the future. One suggestion was to use a regular u16, and encode the
-// "None" case with value 0 wherever we need to deal with Option(NatPort), to reduce the size in
-// memory from 3 to 2 bytes.
+/// `NatPort` is a type to represent L4 ports (TCP/UDP) or identifier (ICMP v4, v6) usable in
+/// stateful NAT.
 #[cfg_attr(test, derive(bolero::TypeGenerator))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NatPort {
