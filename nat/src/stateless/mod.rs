@@ -318,9 +318,8 @@ impl StatelessNat {
 
         /* do the translations needed according to the NAT tables */
         match self.translate(nat_tables, packet, src_vni, dst_vni) {
-            Err(e) => {
-                error!("{nfi}: {e}");
-                packet.done(DoneReason::NatFailure);
+            Err(error) => {
+                packet.done(translate_error(&error));
             }
             Ok(modified) => {
                 // we have already natted the packet. Prevent stateful from doing so.
@@ -334,6 +333,34 @@ impl StatelessNat {
                 }
             }
         }
+    }
+}
+
+fn translate_error(error: &StatelessNatError) -> DoneReason {
+    match error {
+        StatelessNatError::NoIpHeader
+        | StatelessNatError::IcmpErrorMsg(IcmpErrorMsgError::BadIpHeader) => DoneReason::NotIp,
+
+        StatelessNatError::UnsupportedTranslation => DoneReason::UnsupportedTransport,
+
+        StatelessNatError::MissingTable(_) => DoneReason::Unroutable,
+
+        StatelessNatError::IcmpErrorMsg(IcmpErrorMsgError::InvalidPort(_)) => DoneReason::Malformed,
+
+        StatelessNatError::InvalidAddress(_)
+        | StatelessNatError::MappingError(_)
+        | StatelessNatError::MappingOffsetError(_)
+        | StatelessNatError::IcmpErrorMsg(IcmpErrorMsgError::NotUnicast(_)) => {
+            DoneReason::NatFailure
+        }
+
+        StatelessNatError::IcmpErrorMsg(
+            IcmpErrorMsgError::InvalidIpVersion | IcmpErrorMsgError::NoIdentifier,
+        ) => DoneReason::InternalFailure,
+
+        StatelessNatError::IcmpErrorMsg(
+            IcmpErrorMsgError::BadChecksumIcmp(_) | IcmpErrorMsgError::BadChecksumInnerIpv4(_),
+        ) => DoneReason::Filtered,
     }
 }
 
