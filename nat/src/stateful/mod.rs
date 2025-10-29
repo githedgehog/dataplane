@@ -27,9 +27,12 @@ use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::NetworkFunction;
 use pkt_meta::flow_table::flow_key::{IcmpProtoKey, Uni};
 use pkt_meta::flow_table::{FlowKey, FlowKeyData, FlowTable, IpProtoKey};
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
+
+#[allow(unused)]
+use tracing::{debug, error, warn};
 
 use tracectl::trace_target;
 trace_target!("stateful-nat", LevelFilter::INFO, &["nat", "pipeline"]);
@@ -65,6 +68,22 @@ struct NatFlowState<I: NatIpWithBitmap> {
     src_alloc: Option<AllocatedIpPort<I>>,
     dst_alloc: Option<AllocatedIpPort<I>>,
     idle_timeout: Duration,
+}
+
+impl<I: NatIpWithBitmap> Display for NatFlowState<I> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "({} {})[{}s]",
+            self.src_alloc
+                .as_ref()
+                .map_or(String::new(), |a| a.ip().to_string()),
+            self.dst_alloc
+                .as_ref()
+                .map_or(String::new(), |a| a.ip().to_string()),
+            self.idle_timeout.as_secs()
+        )
+    }
 }
 
 /// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`StatefulNat`] processes
@@ -177,6 +196,13 @@ impl StatefulNat {
         fn session_timeout_time(timeout: Duration) -> Instant {
             Instant::now() + timeout
         }
+
+        debug!(
+            "{}: Creating new flow session entry: {} -> {}",
+            self.name(),
+            flow_key.data(),
+            state
+        );
 
         let flow_info = FlowInfo::new(session_timeout_time(idle_timeout));
         flow_info.locked.write().unwrap().nat_state = Some(Box::new(state));

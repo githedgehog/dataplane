@@ -75,6 +75,7 @@ use pkt_meta::flow_table::FlowKey;
 use pkt_meta::flow_table::IpProtoKey;
 use pkt_meta::flow_table::flow_key::IcmpProtoKey;
 use std::collections::BTreeMap;
+use std::fmt::Display;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 mod alloc;
@@ -181,6 +182,16 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
 /// [`AllocatedIpPort`] is the public type for the object returned by our allocator.
 pub type AllocatedIpPort<I> = port_alloc::AllocatedPort<I>;
 type AllocationMapping<I> = (Option<AllocatedIpPort<I>>, Option<AllocatedIpPort<I>>);
+
+impl<I: NatIpWithBitmap> Display for AllocatedIpPort<I> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (port_str, icmp_data_str) = match self.port() {
+            NatPort::Port(port) => (format!(":{}", port.get()), String::new()),
+            NatPort::Identifier(id) => (String::new(), format!("<id:{id}>")),
+        };
+        write!(f, "{}{}{}", self.ip(), port_str, icmp_data_str)
+    }
+}
 
 /// [`NatDefaultAllocator`] is our default IP addresses and ports allocator for stateful NAT,
 /// implementing the [`NatAllocator`] trait.
