@@ -10,8 +10,11 @@ use net::packet::Packet;
 use net::{buffer::PacketBufferMut, packet::DoneReason};
 use pipeline::NetworkFunction;
 use std::sync::Arc;
+use tokio::sync::Notify;
+use tokio::sync::futures::Notified;
 use tracectl::trace_target;
-use tracing::trace;
+#[allow(unused)]
+use tracing::{debug, trace};
 
 const PKT_IO: &str = "pkt-io";
 trace_target!(PKT_IO, LevelFilter::TRACE, &["pipeline"]);
@@ -28,26 +31,44 @@ trace_target!(PKT_IO, LevelFilter::TRACE, &["pipeline"]);
 // For the same reason, the two queues are optional to accommodate for the case that only injection
 // or punting are used.
 
-#[repr(transparent)]
-pub struct PktQueue<Buf: PacketBufferMut>(Arc<ArrayQueue<Box<Packet<Buf>>>>);
+pub struct PktQueue<Buf: PacketBufferMut> {
+    queue: Arc<ArrayQueue<Box<Packet<Buf>>>>,
+    notify: Arc<Notify>,
+}
 impl<Buf: PacketBufferMut> Clone for PktQueue<Buf> {
     fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
+        Self {
+            queue: Arc::clone(&self.queue),
+            notify: Arc::clone(&self.notify),
+        }
     }
 }
 
 impl<Buf: PacketBufferMut> PktQueue<Buf> {
     pub fn new(capacity: usize) -> Self {
-        Self(Arc::new(ArrayQueue::new(capacity)))
+        let notify = Arc::new(Notify::new());
+        Self {
+            queue: Arc::new(ArrayQueue::new(capacity)),
+            notify: Arc::new(Notify::new()),
+        }
     }
     pub fn pop(&self) -> Option<Box<Packet<Buf>>> {
-        self.0.pop()
+        self.queue.pop()
     }
     pub fn push(&self, packet: Box<Packet<Buf>>) -> Result<(), Box<Packet<Buf>>> {
-        self.0.push(packet)
+        self.queue.push(packet)
     }
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.queue.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+    pub fn notify(&self) {
+        self.notify.notify_one();
+    }
+    pub fn notified(&self) -> Notified<'_> {
+        self.notify.notified()
     }
 }
 
@@ -83,13 +104,15 @@ impl<Buf: PacketBufferMut> PktIo<Buf> {
     pub fn set_puntq(&mut self, queue: PktQueue<Buf>) {
         self.puntq = Some(queue)
     }
+
     #[must_use]
     pub fn get_injectq(&self) -> Option<PktQueue<Buf>> {
-        self.injectq.as_ref().map(|q| PktQueue(Arc::clone(&q.0)))
+        self.injectq.clone()
     }
+
     #[must_use]
     pub fn get_puntq(&self) -> Option<PktQueue<Buf>> {
-        self.puntq.as_ref().map(|q| PktQueue(Arc::clone(&q.0)))
+        self.puntq.clone()
     }
 }
 
@@ -123,6 +146,11 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PktIo<Buf> {
                 }
             }
         });
+
+        if let Some(puntq) = &self.puntq {
+            // Todo(fredi): only notify if we actually punted packets
+            puntq.notify();
+        }
 
         // injection path: fetch packets from injection queue (if there) and add them to the input iterator
         let mut accum = vec![];

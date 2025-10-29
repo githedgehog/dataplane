@@ -14,6 +14,7 @@ tracectl = { workspace = true }
 # external
 crossbeam = { workspace = true }
 linkme = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]

@@ -1386,6 +1386,7 @@ dependencies = [
  "dataplane-pipeline",
  "dataplane-tracectl",
  "linkme",
+ "tokio",
  "tracing",
  "tracing-test",
 ]
