@@ -45,27 +45,26 @@ impl Ingress {
         packet: &mut Packet<Buf>,
     ) {
         let nfi = self.name();
-        if packet.try_ip().is_some() {
-            match &interface.attachment {
-                Some(Attachment::VRF(fibr)) => {
-                    let Some(vrfid) = fibr.get_id().map(|x| x.as_u32()) else {
-                        /* we may occasionally not be able to enter a fib on reconfigs */
-                        warn!("Failed to access fib on ingress!");
-                        packet.done(DoneReason::Unroutable);
-                        return;
-                    };
-                    debug!("{nfi}: Packet is for VRF {vrfid}");
-                    packet.get_meta_mut().vrf = Some(vrfid);
+        let ifname = &interface.name;
+        match &interface.attachment {
+            Some(Attachment::VRF(fibkey)) => {
+                if packet.try_ip().is_none() {
+                    warn!("{nfi}: Processing of non-ip traffic on {ifname} is not supported");
+                    packet.done(DoneReason::NotIp);
+                    return;
                 }
-                Some(Attachment::BD) => unimplemented!(),
-                None => {
-                    warn!("{nfi}: Interface {} is detached", interface.name);
-                    packet.done(DoneReason::InterfaceDetached);
-                }
+                let vrfid = fibkey.as_u32();
+                debug!("{nfi}: Packet is for VRF {vrfid}");
+                packet.get_meta_mut().vrf = Some(vrfid);
             }
-        } else {
-            warn!("{nfi}: Processing of non-ip traffic is not supported");
-            packet.done(DoneReason::NotIp);
+            Some(Attachment::BD) => {
+                warn!("{nfi}: Bridge domains are not supported");
+                packet.done(DoneReason::InterfaceUnsupported);
+            }
+            None => {
+                warn!("{nfi}: Interface {ifname} is not attached");
+                packet.done(DoneReason::InterfaceDetached);
+            }
         }
     }
 

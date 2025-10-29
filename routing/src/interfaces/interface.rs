@@ -5,7 +5,7 @@
 
 #![allow(clippy::collapsible_if)]
 
-use crate::fib::fibtype::{FibKey, FibReader};
+use crate::fib::fibtype::FibKey;
 use crate::rib::vrf::VrfId;
 use net::eth::mac::Mac;
 use net::interface::{InterfaceIndex, Mtu};
@@ -67,9 +67,9 @@ pub enum IfState {
     Up = 2,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Attachment {
-    VRF(FibReader),
+    VRF(FibKey),
     BD,
 }
 
@@ -192,18 +192,16 @@ impl Interface {
     /// Detach an [`Interface`], unconditionally
     //////////////////////////////////////////////////////////////////
     pub fn detach(&mut self) {
-        if self.attachment.is_some() {
-            if let Some(attachment) = self.attachment.take() {
-                debug!("Detached interface {} from {attachment}", self.name);
-            }
+        if let Some(attachment) = self.attachment.take() {
+            debug!("Detached interface {} from {attachment}", self.name);
         }
     }
 
     //////////////////////////////////////////////////////////////////
     /// Attach an [`Interface`] to the fib corresponding to a [`crate::rib::vrf::Vrf`]
     //////////////////////////////////////////////////////////////////
-    pub fn attach_vrf(&mut self, fibr: FibReader) {
-        self.attachment = Some(Attachment::VRF(fibr));
+    pub fn attach_vrf(&mut self, fibkey: FibKey) {
+        self.attachment = Some(Attachment::VRF(fibkey));
     }
 
     //////////////////////////////////////////////////////////////////
@@ -211,29 +209,10 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     #[must_use]
     pub fn is_attached_to_fib(&self, fibid: FibKey) -> bool {
-        if let Some(Attachment::VRF(fibr)) = &self.attachment {
-            fibr.get_id() == Some(fibid)
-        } else {
-            false
+        match &self.attachment {
+            Some(Attachment::VRF(key)) => *key == fibid,
+            _ => false,
         }
-    }
-
-    //////////////////////////////////////////////////////////////////
-    /// Detach an [`Interface`] from VRF if the associated fib has the given id
-    //////////////////////////////////////////////////////////////////
-    pub fn detach_from_fib(&mut self, fibid: FibKey) {
-        self.attachment.take_if(|attachment| {
-            if let Attachment::VRF(fibr) = &attachment {
-                if fibr.get_id() == Some(fibid) {
-                    debug!("Will detach interface {} from fib {fibid}", self.name);
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        });
     }
 
     //////////////////////////////////////////////////////////////////

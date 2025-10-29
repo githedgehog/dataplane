@@ -417,16 +417,9 @@ impl Display for VrfTable {
 impl Display for Attachment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Attachment::BD => write!(f, "BD")?,
-            Attachment::VRF(fibr) => {
-                if let Some(id) = fibr.get_id() {
-                    write!(f, "VRF: {id}")?;
-                } else {
-                    write!(f, "missing fib id!")?;
-                }
-            }
+            Attachment::BD => write!(f, "BD"),
+            Attachment::VRF(fibkey) => write!(f, "VRF: {fibkey}"),
         }
-        Ok(())
     }
 }
 

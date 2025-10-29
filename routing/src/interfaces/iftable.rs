@@ -4,14 +4,14 @@
 //! A table of interfaces
 
 use crate::errors::RouterError;
-use crate::fib::fibtype::{FibKey, FibReader};
+use crate::fib::fibtype::FibKey;
 use crate::interfaces::interface::{IfAddress, IfState, Interface, RouterInterfaceConfig};
 use ahash::RandomState;
 use std::collections::HashMap;
 
 use net::interface::InterfaceIndex;
 #[allow(unused)]
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 #[derive(Clone)]
 /// A table of network interface objects, keyed by some ifindex (u32)
@@ -153,18 +153,23 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////////
     /// Detach all interfaces attached to the Vrf whose fib has the given Id
     //////////////////////////////////////////////////////////////////////
-    pub fn detach_interfaces_from_vrf(&mut self, fibid: FibKey) {
-        for iface in self.by_index.values_mut() {
-            iface.detach_from_fib(fibid);
+    pub(crate) fn detach_interfaces_from_vrf(&mut self, fibid: FibKey) {
+        for iface in self
+            .by_index
+            .values_mut()
+            .filter(|iface| iface.is_attached_to_fib(fibid))
+        {
+            iface.attachment.take();
+            info!("Detached interface {} from {fibid}", iface.name);
         }
     }
 
     //////////////////////////////////////////////////////////////////////
-    /// Attach [`Interface`] to the provided [`FibReader`]
+    /// Attach [`Interface`] to the fib with the indicated  [`FibKey`]
     //////////////////////////////////////////////////////////////////////
-    pub fn attach_interface_to_vrf(&mut self, ifindex: InterfaceIndex, fibr: FibReader) {
+    pub(crate) fn attach_interface_to_vrf(&mut self, ifindex: InterfaceIndex, fibkey: FibKey) {
         if let Some(iface) = self.get_interface_mut(ifindex) {
-            iface.attach_vrf(fibr);
+            iface.attach_vrf(fibkey);
         } else {
             error!("Failed to attach interface with ifindex {ifindex}: not found");
         }
