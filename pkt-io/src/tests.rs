@@ -14,7 +14,9 @@ mod test {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
     use std::{thread, time::Duration};
+    use tracing::info;
     use tracing_test::traced_test;
+
 
     #[test]
     #[traced_test]
@@ -298,6 +300,47 @@ mod test {
         // stop auxiliary pipeline
         done.store(true, Ordering::Relaxed);
 
+        handle.join().unwrap();
+    }
+
+    #[test]
+    #[traced_test]
+    fn test_async_queue_notifications() {
+        let pktio = PktIo::<TestBuffer>::new(0, 10);
+        let puntq = pktio.get_puntq().unwrap();
+        let mut pipeline = DynPipeline::new().add_stage(pktio).add_stage(DecrementTtl);
+
+        // some thread loops until it steals a packet from the pipeline
+        // thread uses tokio runtime and gets notified.
+        let handle = thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .enable_time()
+                .build()
+                .expect("Tokio runtime creation failed");
+
+            rt.block_on(async {
+                loop {
+                    info!("Waiting for packets...");
+                    puntq.notified().await;
+                    if let Some(packet) = puntq.pop() {
+                        info!("Got punted packet:\n{packet}");
+                        break;
+                    } else {
+                        info!("The queue is empty");
+                        puntq.notified().await;
+                    }
+                }
+            })
+        });
+
+        // wait 3 seconds and feed the pipeline with a packet marked as local
+        let mut packet = build_test_ipv4_packet(64).unwrap();
+        packet.get_meta_mut().set_local(true);
+        let input = vec![packet].into_iter();
+        info!("Injecting packet....");
+        let output: Vec<_> = pipeline.process(input).collect();
+        assert!(output.is_empty(), "Packet should have been punted");
         handle.join().unwrap();
     }
 }
