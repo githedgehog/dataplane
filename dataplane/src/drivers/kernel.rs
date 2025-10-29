@@ -35,6 +35,7 @@ use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet};
 use netdev::Interface;
 use pipeline::{DynPipeline, NetworkFunction};
+#[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
 
 // Flow-key based symmetric hashing
@@ -343,14 +344,14 @@ impl DriverKernel {
                     if let Some(outgoing) = kiftable.get_mut_by_index(oif_id) {
                         match pkt.serialize() {
                             Ok(out) => {
+                                let len = out.as_ref().len();
                                 if let Err(e) = outgoing.sock.write_all(out.as_ref()) {
-                                    error!("TX failed on '{}': {e}", &outgoing.name);
-                                } else {
-                                    debug!(
-                                        "TX {} bytes on interface {}",
-                                        out.as_ref().len(),
+                                    error!(
+                                        "TX failed for pkt ({len} octets) on '{}': {e}",
                                         &outgoing.name
                                     );
+                                } else {
+                                    trace!("TX {len} bytes on interface {}", &outgoing.name);
                                 }
                             }
                             Err(e) => error!("Serialize failed: {e:?}"),
