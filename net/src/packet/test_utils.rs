@@ -216,7 +216,7 @@ pub fn build_test_ipv6_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPack
 ///
 /// The embedded (inner) packet is a TCP packet with the specified source and destination IP addresses
 /// and ports. The inner TCP packet has a full (not-truncated) header, but an empty payload.
-pub fn build_test_icmpv4_destination_unreachable_packet(
+pub fn build_test_icmp4_destination_unreachable_packet(
     outer_src_ip: Ipv4Addr,
     outer_dst_ip: Ipv4Addr,
     inner_src_ip: Ipv4Addr,

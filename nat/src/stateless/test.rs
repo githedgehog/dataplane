@@ -28,7 +28,7 @@ mod tests {
     use net::eth::mac::Mac;
     use net::headers::{TryHeaders, TryHeadersMut, TryInnerIpv4, TryIpv4, TryIpv4Mut};
     use net::packet::test_utils::{
-        build_test_icmpv4_destination_unreachable_packet, build_test_ipv4_packet,
+        build_test_icmp4_destination_unreachable_packet, build_test_ipv4_packet,
     };
     use net::packet::{DoneReason, Packet, VpcDiscriminant};
     use net::vxlan::Vni;
@@ -282,7 +282,7 @@ mod tests {
         // - Outer IP header: (10.0.0.1 -> 2.1.0.1) should be translated as (5.5.0.1 -> 1.1.0.1)
         // - Inner IP header should be translated back to (1.1.0.1 -> 5.5.0.1)
 
-        let mut packet = build_test_icmpv4_destination_unreachable_packet(
+        let mut packet = build_test_icmp4_destination_unreachable_packet(
             addr_v4("10.0.0.1"),
             addr_v4("2.1.0.1"),
             addr_v4("2.1.0.1"),
