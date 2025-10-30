@@ -15,7 +15,6 @@ use crate::udp::{Udp, UdpEncap};
 use crate::buffer::PacketBufferMut;
 use crate::checksum::Checksum;
 #[allow(deprecated)]
-use crate::packet::InterfaceId;
 use crate::packet::{BridgeDomain, DoneReason, InvalidPacket, Packet, PacketMeta};
 use std::fmt::{Display, Formatter};
 
@@ -223,12 +222,6 @@ fn fmt_opt<T: Display>(
         }
     }
 }
-#[allow(deprecated)]
-impl Display for InterfaceId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.get_id())
-    }
-}
 impl Display for BridgeDomain {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.get_id())
@@ -237,15 +230,11 @@ impl Display for BridgeDomain {
 impl Display for PacketMeta {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "  metadata:")?;
-        match self.iif {
-            None => {
-                write!(f, "    iif: None")?;
-            }
-            Some(iif) => {
-                write!(f, "    iif: {iif}")?;
-            }
-        }
-        fmt_opt(f, " oif", self.oif, true)?;
+        write!(f, "   ")?;
+        fmt_opt(f, " iport", self.iport, false)?;
+        fmt_opt(f, " iif", self.iif, false)?;
+        fmt_opt(f, " oif", self.oif, false)?;
+        fmt_opt(f, " oport", self.oport, true)?;
 
         writeln!(f, "    bcast: {}", self.is_l2bcast())?;
         fmt_opt(f, "    src-vpcd", self.src_vpcd, false)?;
