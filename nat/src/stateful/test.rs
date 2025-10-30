@@ -17,15 +17,22 @@ mod tests {
     use config::internal::interfaces::interface::{IfVtepConfig, InterfaceType};
     use config::internal::routing::bgp::BgpConfig;
     use config::internal::routing::vrf::VrfConfig;
-    use net::udp::UdpPort;
+    use etherparse::Icmpv4Type;
+    use net::icmp4::TruncatedIcmp4;
+    use net::ip::NextHeader;
+    use net::tcp::TruncatedTcp;
+    use net::udp::{TruncatedUdp, UdpPort};
 
     use crate::StatefulNat;
 
     use net::buffer::{PacketBufferMut, TestBuffer};
     use net::eth::mac::Mac;
-    use net::headers::{TryIcmp4, TryIpv4, TryUdp};
+    use net::headers::{
+        EmbeddedTransport, TryEmbeddedTransport as _, TryIcmp4, TryInnerIpv4, TryIpv4, TryUdp,
+    };
     use net::packet::test_utils::{
-        IcmpEchoDirection, build_test_icmp4_echo, build_test_udp_ipv4_frame,
+        IcmpEchoDirection, build_test_icmp4_destination_unreachable_packet, build_test_icmp4_echo,
+        build_test_udp_ipv4_frame,
     };
     use net::packet::{DoneReason, Packet, VpcDiscriminant};
     use net::vxlan::Vni;
@@ -733,6 +740,199 @@ mod tests {
         assert_eq!(output_src, target_src);
         assert_eq!(output_dst, target_dst);
         assert_eq!(output_identifier_3, output_identifier_1 + 1); // Second port of the same 256-port "port block" from allocator
+        assert_eq!(done_reason, None);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn check_packet_icmp_error(
+        nat: &mut StatefulNat,
+        src_vni: Vni,
+        dst_vni: Vni,
+        outer_src_ip: Ipv4Addr,
+        outer_dst_ip: Ipv4Addr,
+        inner_src_ip: Ipv4Addr,
+        inner_dst_ip: Ipv4Addr,
+        next_header: NextHeader,
+        inner_param_1: u16,
+        inner_param_2: u16,
+    ) -> (
+        Ipv4Addr,
+        Ipv4Addr,
+        Ipv4Addr,
+        Ipv4Addr,
+        u16,
+        u16,
+        Option<DoneReason>,
+    ) {
+        let mut packet: Packet<TestBuffer> = build_test_icmp4_destination_unreachable_packet(
+            outer_src_ip,
+            outer_dst_ip,
+            inner_src_ip,
+            inner_dst_ip,
+            next_header,
+            inner_param_1,
+            inner_param_2,
+        )
+        .unwrap();
+        packet.get_meta_mut().set_nat(true);
+        packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+        packet.get_meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
+
+        flow_lookup(nat.sessions(), &mut packet);
+
+        let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+        let hdr_out = packets_out[0].try_ipv4().unwrap();
+        let inner_ip_out = packets_out[0].try_inner_ipv4().unwrap();
+        let inner_transport_out = packets_out[0].try_embedded_transport().unwrap();
+        let (out_inner_param_1, out_inner_param_2) = match inner_transport_out {
+            EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(tcp)) => {
+                (tcp.source().into(), tcp.destination().into())
+            }
+            EmbeddedTransport::Udp(TruncatedUdp::FullHeader(udp)) => {
+                (udp.source().into(), udp.destination().into())
+            }
+            EmbeddedTransport::Icmp4(TruncatedIcmp4::FullHeader(icmp)) => {
+                let Icmpv4Type::EchoRequest(echo_header) = icmp.icmp_type() else {
+                    unreachable!();
+                };
+                (echo_header.id, echo_header.seq)
+            }
+            _ => unreachable!(),
+        };
+        let done_reason = packets_out[0].get_done();
+
+        (
+            hdr_out.source().inner(),
+            hdr_out.destination(),
+            inner_ip_out.source().inner(),
+            inner_ip_out.destination(),
+            out_inner_param_1,
+            out_inner_param_2,
+            done_reason,
+        )
+    }
+
+    #[test]
+    #[traced_test]
+    fn test_icmp_error_nat() {
+        let mut config = build_sample_config(build_overlay_2vpcs());
+        config.validate().unwrap();
+
+        // Check that we can validate the allocator
+        let (mut nat, mut allocator) = StatefulNat::new("test-nat");
+        allocator
+            .update_allocator(&config.external.overlay.vpc_table)
+            .unwrap();
+
+        // ICMP Error msg: expose211 -> expose121, no previous session for inner packet
+        let (
+            router_src,
+            orig_outer_dst,
+            orig_inner_src,
+            orig_inner_dst,
+            orig_echo_identifier,
+            orig_echo_seq_number,
+        ) = (
+            // Host 1.1.2.3 in VPC1 sent imaginary ICMP Echo packet to 3.3.3.3 in VPC2,
+            // which imaginarily got translated as 2.2.0.0 -> 1.2.2.0.
+            // Router 1.2.2.18 from VPC2 returns Destination Unreachable to 2.2.0.0 with initial
+            // datagram embedded in it
+            addr_v4("1.2.2.18"),
+            addr_v4("2.2.0.0"),
+            addr_v4("2.2.0.0"),
+            addr_v4("1.2.2.0"),
+            1337,
+            0,
+        );
+        let (
+            output_outer_src,
+            output_outer_dst,
+            output_inner_src,
+            output_inner_dst,
+            output_inner_identifier,
+            output_inner_seq_number,
+            done_reason,
+        ) = check_packet_icmp_error(
+            &mut nat,
+            vni(200),
+            vni(100),
+            router_src,
+            orig_outer_dst,
+            orig_inner_src,
+            orig_inner_dst,
+            NextHeader::ICMP,
+            orig_echo_identifier,
+            orig_echo_seq_number,
+        );
+        assert_eq!(output_outer_src, router_src);
+        assert_eq!(output_outer_dst, orig_outer_dst);
+        assert_eq!(output_inner_src, orig_inner_src);
+        assert_eq!(output_inner_dst, orig_inner_dst);
+        assert_eq!(output_inner_identifier, orig_echo_identifier);
+        assert_eq!(output_inner_seq_number, orig_echo_seq_number);
+        assert_eq!(done_reason, Some(DoneReason::Filtered));
+
+        // ICMP Echo Request expose121 -> expose211
+        let (orig_echo_src, orig_echo_dst, target_echo_src, target_echo_dst) = (
+            addr_v4("1.1.2.3"),
+            addr_v4("3.3.3.3"),
+            addr_v4("2.2.0.0"),
+            addr_v4("1.2.2.0"),
+        );
+        let (output_echo_src, output_echo_dst, output_echo_identifier, done_reason) =
+            check_packet_icmp_echo(
+                &mut nat,
+                vni(100),
+                vni(200),
+                orig_echo_src,
+                orig_echo_dst,
+                IcmpEchoDirection::Request,
+                orig_echo_identifier,
+            );
+        assert_eq!(output_echo_src, target_echo_src);
+        assert_eq!(output_echo_dst, target_echo_dst);
+        assert!(output_echo_identifier.is_multiple_of(256)); // First port of a 256-port "port block" from allocator
+        assert_eq!(done_reason, None);
+
+        // ICMP Error message: expose211 -> expose121, after establishing session for inner packet
+        //
+        // Same IPs as before, this time we've actually sent the ICMP Echo Request from 1.1.2.3 to
+        // 3.3.3.3 and we have a session for the inner packet
+        //
+        // Output packet received by Echo Request emitter should be:
+        // - Outer source IP: 3.3.3.3 (original destination for Echo Request)
+        // - Outer destination IP: 1.1.2.3 (original emitter of Echo Request)
+        // - Inner source IP: 1.1.2.3 (original emitter of Echo Request)
+        // - Inner destination IP: 3.3.3.3 (original destination for Echo Request)
+        // - Inner identifier: original identifier from Echo Request
+        // - Inner sequence number: always unchanged
+        let (
+            output_outer_src,
+            output_outer_dst,
+            output_inner_src,
+            output_inner_dst,
+            output_inner_identifier,
+            output_inner_seq_number,
+            done_reason,
+        ) = check_packet_icmp_error(
+            &mut nat,
+            vni(200),
+            vni(100),
+            router_src,
+            target_echo_src,
+            target_echo_src,
+            target_echo_dst,
+            NextHeader::ICMP,
+            output_echo_identifier,
+            orig_echo_seq_number,
+        );
+        // Outer source remains unchanged, see comments in deal_with_icmp_error_msg()
+        assert_eq!(output_outer_src, router_src);
+        assert_eq!(output_outer_dst, orig_echo_src);
+        assert_eq!(output_inner_src, orig_echo_src);
+        assert_eq!(output_inner_dst, orig_echo_dst);
+        assert_eq!(output_inner_identifier, orig_echo_identifier);
+        assert_eq!(output_inner_seq_number, orig_echo_seq_number);
         assert_eq!(done_reason, None);
     }
 }
