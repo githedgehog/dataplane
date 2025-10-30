@@ -4,6 +4,7 @@
 //! Packet higher-level methods to allow for code reuse
 
 use std::net::IpAddr;
+use std::num::NonZero;
 
 use crate::eth::Eth;
 use crate::eth::ethtype::EthType;
@@ -12,9 +13,10 @@ use crate::eth::mac::{
 };
 use crate::headers::Net::{Ipv4, Ipv6};
 use crate::headers::{
-    Transport, TryEth, TryEthMut, TryIp, TryIpMut, TryTcp, TryTransport, TryTransportMut, TryUdp,
+    EmbeddedTransport, Transport, TryEmbeddedTransportMut, TryEth, TryEthMut, TryInnerIpMut, TryIp,
+    TryIpMut, TryTcp, TryTransport, TryTransportMut, TryUdp,
 };
-use crate::icmp4::Icmp4;
+use crate::icmp_any::TruncatedIcmpAny;
 use crate::ip::{NextHeader, UnicastIpAddr};
 use crate::packet::{Packet, PacketBufferMut};
 use crate::tcp::{Tcp, TcpPort};
@@ -26,12 +28,18 @@ pub enum PacketUtilError<'a> {
     #[error("invalid transport: {0}")]
     /// This error is returned when the utility method is called with an incompatible transport header
     InvalidTransport(&'a Transport),
+    #[error("invalid embedded transport: {0:?}")]
+    /// This error is returned when the utility method is called with an incompatible embedded transport header
+    InvalidEmbeddedTransport(&'a EmbeddedTransport),
     #[error("no ip")]
     /// This error is returned when the utility method is called with a packet that does not have an IP header
     NoIp,
     #[error("no transport")]
     /// This error is returned when the utility method is called with a packet that does not have a transport header
     NoTransport,
+    #[error("no embedded headers")]
+    /// This error is returned when the utility method is called with a packet that does not have embedded headers
+    NoEmbeddedHeaders,
     #[error("ip address version mismatch for address {0}")]
     /// This error is returned when the utility method is called with an incompatible ip address type
     IpVersionMismatch(IpAddr),
@@ -50,13 +58,6 @@ fn extract_tcp(transport: &mut Transport) -> Result<&mut Tcp, PacketUtilError<'_
 fn extract_udp(transport: &mut Transport) -> Result<&mut Udp, PacketUtilError<'_>> {
     match transport {
         Transport::Udp(udp) => Ok(udp),
-        _ => Err(PacketUtilError::InvalidTransport(transport)),
-    }
-}
-
-fn extract_icmp_v4(transport: &mut Transport) -> Result<&mut Icmp4, PacketUtilError<'_>> {
-    match transport {
-        Transport::Icmp4(icmp) => Ok(icmp),
         _ => Err(PacketUtilError::InvalidTransport(transport)),
     }
 }
@@ -268,36 +269,119 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         })
     }
 
-    /// Set identifier for ICMP v4 Query Message
+    /// Set identifier for ICMP Query message
     ///
     /// # Errors
     ///
-    /// * [`PacketUtilError::InvalidTransport`]: if the packet does not have an ICMP header
-    /// * [`PacketUtilError::InvalidIcmpType`]: if the header is not for an ICMP Query Message
-    pub fn set_icmp_v4_query_identifier(&'_ mut self, id: u16) -> Result<(), PacketUtilError<'_>> {
-        self.modify_transport(extract_icmp_v4, |icmp| {
-            icmp.try_set_identifier(id)
-                .map_err(|_| PacketUtilError::InvalidIcmpType)
-        })
+    /// * [`PacketUtilError::NoTransport`]: if the packet does not have a transport header
+    /// * [`PacketUtilError::InvalidIcmpType`]: if the header is not for an ICMP Query message
+    pub fn set_icmp_query_identifier(&'_ mut self, id: u16) -> Result<(), PacketUtilError<'_>> {
+        let transport = self
+            .try_transport_mut()
+            .ok_or(PacketUtilError::NoTransport)?;
+        match transport {
+            Transport::Icmp4(icmp) => icmp
+                .try_set_identifier(id)
+                .map_err(|_| PacketUtilError::InvalidIcmpType),
+            Transport::Icmp6(icmp) => icmp
+                .try_set_identifier(id)
+                .map_err(|_| PacketUtilError::InvalidIcmpType),
+            _ => Err(PacketUtilError::InvalidTransport(transport)),
+        }
     }
 
-    /// Set embedded packet data for ICMP v4 Error Message
+    /// Set identifier for an inner ICMP Query message
     ///
     /// # Errors
     ///
-    /// * [`PacketUtilError::InvalidTransport`]: if the packet does not have an ICMP header
-    /// * [`PacketUtilError::InvalidIcmpType`]: if the header is not for an ICMP Error Message
-    pub fn set_icmp_v4_error_message_data(
+    /// * [`PacketUtilError::NoEmbeddedHeaders`]: if the packet does not have an embedded transport header
+    /// * [`PacketUtilError::InvalidIcmpType`]: if the header is not for an ICMP Query message
+    /// * [`PacketUtilError::InvalidEmbeddedTransport`]: if the embedded transport is not an ICMP header
+    pub fn set_inner_icmp_query_identifier(
+        &'_ mut self,
+        id: u16,
+    ) -> Result<(), PacketUtilError<'_>> {
+        let transport = self
+            .try_embedded_transport_mut()
+            .ok_or(PacketUtilError::NoEmbeddedHeaders)?;
+        match transport {
+            EmbeddedTransport::Icmp4(icmp) => icmp
+                .try_set_identifier(id)
+                .map_err(|_| PacketUtilError::InvalidIcmpType),
+            EmbeddedTransport::Icmp6(icmp) => icmp
+                .try_set_identifier(id)
+                .map_err(|_| PacketUtilError::InvalidIcmpType),
+            _ => Err(PacketUtilError::InvalidEmbeddedTransport(transport)),
+        }
+    }
+
+    /// Set embedded packet data for ICMP Error message, with an inner transport layer header using
+    /// two ports
+    ///
+    /// # Errors
+    ///
+    /// * [`PacketUtilError::NoEmbeddedHeaders`]: if the packet does not have an embedded IP header
+    /// * [`PacketUtilError::InvalidEmbeddedTransport`]: if the embedded transport is not a TCP or
+    ///   UDP header
+    pub fn set_icmp_error_message_data_with_ports(
         &'_ mut self,
         src_addr: &IpAddr,
         dst_addr: &IpAddr,
-        src_port: u16,
-        dst_port: u16,
+        src_port: NonZero<u16>,
+        dst_port: NonZero<u16>,
     ) -> Result<(), PacketUtilError<'_>> {
-        self.modify_transport(extract_icmp_v4, |icmp| {
-            icmp.try_set_inner_packet_data(src_addr, dst_addr, src_port, dst_port)
-                .map_err(|_| PacketUtilError::InvalidIcmpType)
-        })
+        let ip = self
+            .try_inner_ip_mut()
+            .ok_or(PacketUtilError::NoEmbeddedHeaders)?;
+        ip.try_set_source(
+            UnicastIpAddr::try_from(*src_addr).map_err(|_| PacketUtilError::NoEmbeddedHeaders)?,
+        )
+        .map_err(|_| PacketUtilError::NoEmbeddedHeaders)?;
+        ip.try_set_destination(*dst_addr)
+            .map_err(|_| PacketUtilError::NoEmbeddedHeaders)?;
+
+        let transport = self
+            .try_embedded_transport_mut()
+            .ok_or(PacketUtilError::NoEmbeddedHeaders)?;
+        match transport {
+            EmbeddedTransport::Tcp(tcp) => {
+                tcp.set_source(TcpPort::new(src_port));
+                tcp.set_destination(TcpPort::new(dst_port));
+            }
+            EmbeddedTransport::Udp(udp) => {
+                udp.set_source(UdpPort::new(src_port));
+                udp.set_destination(UdpPort::new(dst_port));
+            }
+            _ => return Err(PacketUtilError::InvalidEmbeddedTransport(transport)),
+        }
+        Ok(())
+    }
+
+    /// Set embedded packet data for ICMP Error message, with an inner transport layer header using
+    /// an identifier
+    ///
+    /// # Errors
+    ///
+    /// * [`PacketUtilError::NoEmbeddedHeaders`]: if the packet does not have an embedded IP header
+    /// * [`PacketUtilError::InvalidEmbeddedTransport`]: if the embedded transport is not an ICMP
+    ///   Query message
+    pub fn set_icmp_error_message_data_with_identifier(
+        &'_ mut self,
+        src_addr: &IpAddr,
+        dst_addr: &IpAddr,
+        id: u16,
+    ) -> Result<(), PacketUtilError<'_>> {
+        let ip = self
+            .try_inner_ip_mut()
+            .ok_or(PacketUtilError::NoEmbeddedHeaders)?;
+        ip.try_set_source(
+            UnicastIpAddr::try_from(*src_addr).map_err(|_| PacketUtilError::NoEmbeddedHeaders)?,
+        )
+        .map_err(|_| PacketUtilError::NoEmbeddedHeaders)?;
+        ip.try_set_destination(*dst_addr)
+            .map_err(|_| PacketUtilError::NoEmbeddedHeaders)?;
+
+        self.set_inner_icmp_query_identifier(id)
     }
 }
 

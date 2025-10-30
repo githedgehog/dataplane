@@ -137,6 +137,17 @@ pub enum TruncatedIcmp4 {
     PartialHeader(TruncatedIcmp4Header),
 }
 
+impl TruncatedIcmp4 {
+    /// Returns true if the ICMP type is a query message
+    #[must_use]
+    pub fn is_query_message(&self) -> bool {
+        match self {
+            TruncatedIcmp4::FullHeader(icmp) => icmp.is_query_message(),
+            TruncatedIcmp4::PartialHeader(header) => header.is_query_message(),
+        }
+    }
+}
+
 impl TruncatedIcmpAny for TruncatedIcmp4 {
     type Error = TruncatedIcmp4Error;
 

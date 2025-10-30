@@ -45,6 +45,25 @@ impl Icmp6 {
         &mut self.0.icmp_type
     }
 
+    /// Returns true if the ICMP type is a query message
+    #[must_use]
+    pub fn is_query_message(&self) -> bool {
+        // List all types to make it sure we catch any new addition to the enum
+        match self.icmp_type() {
+            Icmpv6Type::EchoRequest(_) | Icmpv6Type::EchoReply(_) => true,
+            Icmpv6Type::Unknown { .. }
+            | Icmpv6Type::DestinationUnreachable(_)
+            | Icmpv6Type::PacketTooBig { .. }
+            | Icmpv6Type::TimeExceeded(_)
+            | Icmpv6Type::ParameterProblem(_)
+            | Icmpv6Type::RouterSolicitation
+            | Icmpv6Type::RouterAdvertisement(_)
+            | Icmpv6Type::NeighborSolicitation
+            | Icmpv6Type::NeighborAdvertisement(_)
+            | Icmpv6Type::Redirect => false,
+        }
+    }
+
     /// Returns true if the ICMP type is an error message
     #[must_use]
     pub fn is_error_message(&self) -> bool {

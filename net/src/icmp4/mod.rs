@@ -15,7 +15,7 @@ use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParseWith, Reader,
 };
 use etherparse::{Icmpv4Header, Icmpv4Type};
-use std::{net::IpAddr, num::NonZero};
+use std::num::NonZero;
 
 #[allow(unused_imports)] // re-export
 #[cfg(any(test, feature = "bolero"))]
@@ -104,30 +104,6 @@ impl Icmp4 {
             Icmpv4Type::TimestampReply(msg) | Icmpv4Type::TimestampRequest(msg) => {
                 msg.id = id;
                 Ok(())
-            }
-            _ => Err(Icmp4Error::InvalidIcmpType),
-        }
-    }
-
-    /// Set the inner packet data for ICMP v4 Error Message
-    ///
-    /// # Errors
-    ///
-    /// * [`Icmp4Error::InvalidIcmpType`]: if the ICMP type does not allow setting an inner packet
-    ///   data
-    pub fn try_set_inner_packet_data(
-        &mut self,
-        _src_addr: &IpAddr,
-        _dst_addr: &IpAddr,
-        _src_port: u16,
-        _dst_port: u16,
-    ) -> Result<(), Icmp4Error> {
-        match self.icmp_type_mut() {
-            Icmpv4Type::DestinationUnreachable(_)
-            | Icmpv4Type::Redirect(_)
-            | Icmpv4Type::TimeExceeded(_)
-            | Icmpv4Type::ParameterProblem(_) => {
-                todo!()
             }
             _ => Err(Icmp4Error::InvalidIcmpType),
         }

@@ -5,11 +5,15 @@ use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::num::NonZero;
 
-use etherparse::Icmpv4Type;
+use etherparse::{Icmpv4Type, Icmpv6Type};
 use net::buffer::PacketBufferMut;
-use net::headers::{Transport, TryHeaders, TryIp, TryTransport};
-use net::icmp4::Icmp4;
-use net::icmp6::Icmp6;
+use net::headers::{
+    EmbeddedTransport, Transport, TryEmbeddedHeaders, TryEmbeddedTransport, TryHeaders, TryInnerIp,
+    TryIp, TryTransport,
+};
+use net::icmp_any::TruncatedIcmpAny;
+use net::icmp4::{Icmp4, TruncatedIcmp4};
+use net::icmp6::{Icmp6, TruncatedIcmp6};
 use net::packet::Packet;
 use net::packet::VpcDiscriminant;
 use net::tcp::TcpPort;
@@ -121,9 +125,38 @@ impl PartialEq for UdpProtoKey {
 type IcmpIdentifier = u16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum InnerIcmpProtoKey {
+    QueryMsgData(IcmpIdentifier),
+    Unsupported,
+}
+
+impl InnerIcmpProtoKey {
+    fn new_icmp_v4(icmp: &TruncatedIcmp4) -> Self {
+        if icmp.is_query_message()
+            && let Some(id) = icmp.identifier()
+        {
+            InnerIcmpProtoKey::QueryMsgData(id)
+        } else {
+            InnerIcmpProtoKey::Unsupported
+        }
+    }
+
+    fn new_icmp_v6(icmp: &TruncatedIcmp6) -> Self {
+        if icmp.is_query_message()
+            && let Some(id) = icmp.identifier()
+        {
+            InnerIcmpProtoKey::QueryMsgData(id)
+        } else {
+            InnerIcmpProtoKey::Unsupported
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InnerIpProtoKey {
     Tcp(TcpProtoKey),
     Udp(UdpProtoKey),
+    Icmp(InnerIcmpProtoKey),
 }
 
 impl InnerIpProtoKey {
@@ -132,6 +165,7 @@ impl InnerIpProtoKey {
         match self {
             InnerIpProtoKey::Tcp(tcp) => InnerIpProtoKey::Tcp(tcp.reverse()),
             InnerIpProtoKey::Udp(udp) => InnerIpProtoKey::Udp(udp.reverse()),
+            InnerIpProtoKey::Icmp(_) => *self,
         }
     }
 }
@@ -141,6 +175,12 @@ impl From<InnerIpProtoKey> for IpProtoKey {
         match value {
             InnerIpProtoKey::Tcp(tcp) => IpProtoKey::Tcp(tcp),
             InnerIpProtoKey::Udp(udp) => IpProtoKey::Udp(udp),
+            InnerIpProtoKey::Icmp(icmp) => match icmp {
+                InnerIcmpProtoKey::QueryMsgData(id) => {
+                    IpProtoKey::Icmp(IcmpProtoKey::QueryMsgData(id))
+                }
+                InnerIcmpProtoKey::Unsupported => IpProtoKey::Icmp(IcmpProtoKey::Unsupported),
+            },
         }
     }
 }
@@ -153,8 +193,35 @@ pub struct EmbeddedPacketData {
 }
 
 impl EmbeddedPacketData {
-    pub fn from_packet<Buf: PacketBufferMut>(_packet: &Packet<Buf>) -> Self {
-        todo!()
+    pub fn try_from_packet<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<Self> {
+        let headers = packet.embedded_headers()?;
+
+        let ip = headers.try_inner_ip()?;
+        let src_ip = ip.src_addr();
+        let dst_ip = ip.dst_addr();
+
+        let transport = headers.try_embedded_transport()?;
+        let proto_key_info = match transport {
+            EmbeddedTransport::Tcp(tcp) => InnerIpProtoKey::Tcp(TcpProtoKey {
+                src_port: tcp.source(),
+                dst_port: tcp.destination(),
+            }),
+            EmbeddedTransport::Udp(udp) => InnerIpProtoKey::Udp(UdpProtoKey {
+                src_port: udp.source(),
+                dst_port: udp.destination(),
+            }),
+            EmbeddedTransport::Icmp4(icmp) => {
+                InnerIpProtoKey::Icmp(InnerIcmpProtoKey::new_icmp_v4(icmp))
+            }
+            EmbeddedTransport::Icmp6(icmp) => {
+                InnerIpProtoKey::Icmp(InnerIcmpProtoKey::new_icmp_v6(icmp))
+            }
+        };
+        Some(Self {
+            src_ip,
+            dst_ip,
+            proto_key_info,
+        })
     }
     #[must_use]
     pub fn src_ip(&self) -> &IpAddr {
@@ -186,23 +253,27 @@ pub enum IcmpProtoKey {
 }
 
 impl IcmpProtoKey {
-    pub fn new_icmp_v4<Buf: PacketBufferMut>(_packet: &Packet<Buf>, icmp: &Icmp4) -> Self {
+    fn new_icmp_v4<Buf: PacketBufferMut>(packet: &Packet<Buf>, icmp: &Icmp4) -> Self {
         match icmp.icmp_type() {
             Icmpv4Type::EchoRequest(echo_header) | Icmpv4Type::EchoReply(echo_header) => {
                 IcmpProtoKey::QueryMsgData(echo_header.id)
             }
             Icmpv4Type::TimeExceeded(_) | Icmpv4Type::DestinationUnreachable(_) => {
-                // IcmpProtoKey::ErrorMsgData(Some(EmbeddedPacketData::from_packet(packet)))
-                IcmpProtoKey::ErrorMsgData(None) // FIXME - from_packet() is not implemented yet
+                IcmpProtoKey::ErrorMsgData(EmbeddedPacketData::try_from_packet(packet))
             }
             _ => IcmpProtoKey::Unsupported,
         }
     }
 
-    pub fn new_icmp_v6<Buf: PacketBufferMut>(_packet: &Packet<Buf>, icmp: &Icmp6) -> Self {
+    fn new_icmp_v6<Buf: PacketBufferMut>(packet: &Packet<Buf>, icmp: &Icmp6) -> Self {
         #[allow(clippy::match_single_binding)]
         match icmp.icmp_type() {
-            // FIXME - Add basic support for ICMPv6
+            Icmpv6Type::EchoRequest(echo_header) | Icmpv6Type::EchoReply(echo_header) => {
+                IcmpProtoKey::QueryMsgData(echo_header.id)
+            }
+            Icmpv6Type::TimeExceeded(_) | Icmpv6Type::DestinationUnreachable(_) => {
+                IcmpProtoKey::ErrorMsgData(EmbeddedPacketData::try_from_packet(packet))
+            }
             _ => IcmpProtoKey::Unsupported,
         }
     }
@@ -645,8 +716,8 @@ impl<Buf: PacketBufferMut> TryFrom<Bidi<&Packet<Buf>>> for FlowKey {
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use super::{
-        EmbeddedPacketData, FlowKey, FlowKeyData, IcmpProtoKey, InnerIpProtoKey, IpProtoKey,
-        TcpProtoKey, UdpProtoKey,
+        EmbeddedPacketData, FlowKey, FlowKeyData, IcmpProtoKey, InnerIcmpProtoKey, InnerIpProtoKey,
+        IpProtoKey, TcpProtoKey, UdpProtoKey,
     };
     use bolero::{Driver, TypeGenerator};
     use net::ip::UnicastIpAddr;
@@ -669,15 +740,33 @@ mod contract {
         }
     }
 
+    impl TypeGenerator for InnerIcmpProtoKey {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            // More weight to QueryMsgData
+            if driver.produce::<u8>()? % 8 == 0 {
+                Some(InnerIcmpProtoKey::Unsupported)
+            } else {
+                let id = driver.produce()?;
+                Some(InnerIcmpProtoKey::QueryMsgData(id))
+            }
+        }
+    }
+
     impl TypeGenerator for InnerIpProtoKey {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            let variant = driver.produce::<u8>()?;
-            if variant % 2 == 0 {
-                let tcp = TcpProtoKey::generate(driver)?;
-                Some(InnerIpProtoKey::Tcp(tcp))
-            } else {
-                let udp = UdpProtoKey::generate(driver)?;
-                Some(InnerIpProtoKey::Udp(udp))
+            match driver.produce::<u8>()? % 3 {
+                0 => {
+                    let tcp = TcpProtoKey::generate(driver)?;
+                    Some(InnerIpProtoKey::Tcp(tcp))
+                }
+                1 => {
+                    let udp = UdpProtoKey::generate(driver)?;
+                    Some(InnerIpProtoKey::Udp(udp))
+                }
+                _ => {
+                    let icmp = InnerIcmpProtoKey::generate(driver)?;
+                    Some(InnerIpProtoKey::Icmp(icmp))
+                }
             }
         }
     }
@@ -1005,25 +1094,47 @@ mod tests {
             }
             IpProtoKey::Icmp(icmp) => match icmp {
                 IcmpProtoKey::QueryMsgData(id) => {
-                    packet.set_icmp_v4_query_identifier(id).unwrap();
+                    packet.set_icmp_query_identifier(id).unwrap();
                 }
                 IcmpProtoKey::ErrorMsgData(Some(data)) => {
-                    let (src_port, dst_port) = match data.proto_key_info() {
+                    // FIXME: This code is never exercised.
+                    // This is because we never produce packets with non-empty embedded headers from
+                    // the packet generator. As a result, we never have embedded headers to pass to
+                    // the IcmpProtoKey::ErrorMsgData().
+                    match data.proto_key_info() {
                         InnerIpProtoKey::Tcp(tcp) => {
-                            (tcp.src_port().as_u16(), tcp.dst_port().as_u16())
+                            packet
+                                .set_icmp_error_message_data_with_ports(
+                                    data.src_ip(),
+                                    data.dst_ip(),
+                                    (*tcp.src_port()).into(),
+                                    (*tcp.dst_port()).into(),
+                                )
+                                .unwrap();
                         }
                         InnerIpProtoKey::Udp(udp) => {
-                            (udp.src_port().as_u16(), udp.dst_port().as_u16())
+                            packet
+                                .set_icmp_error_message_data_with_ports(
+                                    data.src_ip(),
+                                    data.dst_ip(),
+                                    (*udp.src_port()).into(),
+                                    (*udp.dst_port()).into(),
+                                )
+                                .unwrap();
                         }
-                    };
-                    packet
-                        .set_icmp_v4_error_message_data(
-                            data.src_ip(),
-                            data.dst_ip(),
-                            src_port,
-                            dst_port,
-                        )
-                        .unwrap();
+                        InnerIpProtoKey::Icmp(icmp) => match icmp {
+                            InnerIcmpProtoKey::QueryMsgData(id) => {
+                                packet
+                                    .set_icmp_error_message_data_with_identifier(
+                                        data.src_ip(),
+                                        data.dst_ip(),
+                                        *id,
+                                    )
+                                    .unwrap();
+                            }
+                            InnerIcmpProtoKey::Unsupported => {}
+                        },
+                    }
                 }
                 IcmpProtoKey::ErrorMsgData(None) | IcmpProtoKey::Unsupported => {}
             },
@@ -1062,7 +1173,26 @@ mod tests {
                     src_port: driver.produce()?,
                     dst_port: driver.produce()?,
                 })),
-                _ => return None,
+                // To keep in sync with IcmpProtoKey::new_icmp_v4()
+                Transport::Icmp4(icmp) => match icmp.icmp_type() {
+                    Icmpv4Type::EchoRequest(_) | Icmpv4Type::EchoReply(_) => Some(
+                        IpProtoKey::Icmp(IcmpProtoKey::QueryMsgData(driver.produce()?)),
+                    ),
+                    Icmpv4Type::DestinationUnreachable(_) | Icmpv4Type::TimeExceeded(_) => {
+                        Some(IpProtoKey::Icmp(IcmpProtoKey::ErrorMsgData(None)))
+                    }
+                    _ => Some(IpProtoKey::Icmp(IcmpProtoKey::Unsupported)),
+                },
+                // To keep in sync with IcmpProtoKey::new_icmp_v6()
+                Transport::Icmp6(icmp) => match icmp.icmp_type() {
+                    Icmpv6Type::EchoRequest(_) | Icmpv6Type::EchoReply(_) => Some(
+                        IpProtoKey::Icmp(IcmpProtoKey::QueryMsgData(driver.produce()?)),
+                    ),
+                    Icmpv6Type::DestinationUnreachable(_) | Icmpv6Type::TimeExceeded(_) => {
+                        Some(IpProtoKey::Icmp(IcmpProtoKey::ErrorMsgData(None)))
+                    }
+                    _ => Some(IpProtoKey::Icmp(IcmpProtoKey::Unsupported)),
+                },
             };
             if let Some(proto) = proto {
                 let (flow_key, mut packet) = if bidi {
