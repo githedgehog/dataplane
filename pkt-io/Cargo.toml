@@ -7,12 +7,16 @@ license = "Apache-2.0"
 
 [dependencies]
 # internal
+interface-manager = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
 tracectl = { workspace = true }
 
 # external
+ahash = { workspace = true }
 crossbeam = { workspace = true }
+futures = { workspace = true }
+left-right = { workspace = true }
 linkme = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing = { workspace = true }
