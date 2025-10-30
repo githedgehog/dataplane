@@ -418,7 +418,7 @@ impl StatefulNat {
         // 3. Some router on the path, after the NAT we've done, generates an ICMP Error message and
         //    embeds a copy of the IP packet at that time: A -> b (VPC2 -> VPC1)
         // 4. Session table lookup: we have no entry matching A -> b (VPC2 -> VPC1),
-        //    we need to look for b -> A (VPC2 -> VPC2)
+        //    we need to look for b -> A (VPC2 -> VPC1)
         //
         // So we do need to swap source and destination.
         let inner_flow_key = FlowKey::Unidirectional(FlowKeyData::new(
