@@ -102,6 +102,7 @@ source "${script_dir}/dpdk-sys.env"
 declare -ra WRAPPED_TEST_SUITES=(
   "dataplane-interface-manager"
   "dataplane-mgmt"
+  "dataplane-pkt-io"
 )
 
 declare -i SHOULD_WRAP=0

@@ -17,7 +17,6 @@ mod test {
     use tracing::info;
     use tracing_test::traced_test;
 
-
     #[test]
     #[traced_test]
     fn test_pkt_injection() {
