@@ -1381,7 +1381,7 @@ dependencies = [
 name = "dataplane-pkt-io"
 version = "0.1.0"
 dependencies = [
- "ahash 0.8.10",
+ "ahash",
  "crossbeam",
  "dataplane-interface-manager",
  "dataplane-net",
@@ -1390,6 +1390,9 @@ dependencies = [
  "futures",
  "left-right",
  "linkme",
+ "netdev",
+ "rand 0.9.2",
+ "rtnetlink",
  "tokio",
  "tracing",
  "tracing-test",

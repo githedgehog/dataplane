@@ -18,8 +18,11 @@ crossbeam = { workspace = true }
 futures = { workspace = true }
 left-right = { workspace = true }
 linkme = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+rtnetlink = { workspace = true, features = ["default", "tokio"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+netdev = { workspace = true }
+rand = { workspace = true }
 tracing-test = { workspace = true }
