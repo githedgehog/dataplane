@@ -411,18 +411,20 @@ impl StatefulNat {
 
         // Do we need to swap source and destination when building the FlowKey?
         //
-        // 1. Original IP packet is sent: a -> B.
-        // 2. Original IP packet is NAT-ed: A -> b.
-        //    This creates a session table entry matching a -> B, and the reverse entry matching b -> A.
+        // 1. Original IP packet is sent: a -> B (VPC1 -> VPC2).
+        // 2. Original IP packet is NAT-ed: A -> b (VPC1 -> VPC2).
+        //    This creates a session table entry matching a -> B (VPC1 -> VPC2),
+        //    and the reverse entry matching b -> A (VPC2 -> VPC1).
         // 3. Some router on the path, after the NAT we've done, generates an ICMP Error message and
-        //    embeds a copy of the IP packet at that time: A -> b
-        // 4. Session table lookup: we have no entry matching A -> b, we need to look for b -> A
+        //    embeds a copy of the IP packet at that time: A -> b (VPC2 -> VPC1)
+        // 4. Session table lookup: we have no entry matching A -> b (VPC2 -> VPC1),
+        //    we need to look for b -> A (VPC2 -> VPC2)
         //
-        // So we do need to swap source and destination. Same applies to VPC discriminants.
+        // So we do need to swap source and destination.
         let inner_flow_key = FlowKey::Unidirectional(FlowKeyData::new(
-            flow_key.data().dst_vpcd(),     // Source VPC discriminant
+            flow_key.data().src_vpcd(),     // Source VPC discriminant
             *embedded_packet_data.dst_ip(), // Source IP address: embedded destination IP address
-            flow_key.data().src_vpcd(),     // Destination VPC discriminant
+            flow_key.data().dst_vpcd(),     // Destination VPC discriminant
             *embedded_packet_data.src_ip(), // Destination IP address: embedded source IP address
             (*embedded_packet_data.proto_key_info()).into(),
         ));
@@ -431,7 +433,8 @@ impl StatefulNat {
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
 
-        let translation_data = Self::get_translation_info(&state.src_alloc, &state.dst_alloc);
+        // Swap back source and destination for the inner packet
+        let translation_data = Self::get_translation_info(&state.dst_alloc, &state.src_alloc);
         Some(translation_data)
     }
 
