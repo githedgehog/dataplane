@@ -1381,10 +1381,14 @@ dependencies = [
 name = "dataplane-pkt-io"
 version = "0.1.0"
 dependencies = [
+ "ahash 0.8.10",
  "crossbeam",
+ "dataplane-interface-manager",
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-tracectl",
+ "futures",
+ "left-right",
  "linkme",
  "tokio",
  "tracing",
