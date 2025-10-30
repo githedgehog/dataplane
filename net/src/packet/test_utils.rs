@@ -17,7 +17,7 @@ use crate::eth::Eth;
 use crate::eth::ethtype::EthType;
 use crate::eth::mac::{DestinationMac, Mac, SourceMac};
 use crate::headers::{EmbeddedHeadersBuilder, EmbeddedTransport, HeadersBuilder, Net, Transport};
-use crate::icmp4::Icmp4;
+use crate::icmp4::{Icmp4, TruncatedIcmp4};
 use crate::ip::NextHeader;
 use crate::ipv4::Ipv4;
 use crate::ipv4::addr::UnicastIpv4Addr;
@@ -26,13 +26,12 @@ use crate::ipv6::addr::UnicastIpv6Addr;
 use crate::packet::{InvalidPacket, Packet};
 use crate::parse::DeParse;
 use crate::tcp::{Tcp, TcpChecksumPayload, TruncatedTcp};
-use crate::udp::Udp;
 use crate::udp::port::UdpPort;
+use crate::udp::{TruncatedUdp, Udp, UdpChecksumPayload};
 use etherparse::icmpv4::DestUnreachableHeader;
 use etherparse::{IcmpEchoHeader, Icmpv4Header, Icmpv4Type};
 use std::default::Default;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::num::NonZero;
 use std::str::FromStr;
 
 #[must_use]
@@ -214,15 +213,27 @@ pub fn build_test_ipv6_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPack
 /// The Ethernet source and destination MAC addresses are `0x02:00:00:00:00:01` and `0x02:00:00:00:00:02`,
 /// respectively.
 ///
-/// The embedded (inner) packet is a TCP packet with the specified source and destination IP addresses
-/// and ports. The inner TCP packet has a full (not-truncated) header, but an empty payload.
+/// The embedded (inner) packet is a TCP/UDP/ICMP packet with the specified source and destination
+/// IP addresses and ports or identifier. The inner TCP/UDP/ICMP packet has a full (not-truncated)
+/// header, but an empty payload.
+///
+/// # Arguments
+///
+/// * `outer_src_ip` - The source IP address of the outer packet.
+/// * `outer_dst_ip` - The destination IP address of the outer packet.
+/// * `inner_src_ip` - The source IP address of the inner packet.
+/// * `inner_dst_ip` - The destination IP address of the inner packet.
+/// * `next_header` - The transport type of the inner packet.
+/// * `inner_param_1` - The first parameter of the inner packet: source port, or identifier for ICMP echo.
+/// * `inner_param_2` - The second parameter of the inner packet: destination port, or sequence number for ICMP echo.
 pub fn build_test_icmp4_destination_unreachable_packet(
     outer_src_ip: Ipv4Addr,
     outer_dst_ip: Ipv4Addr,
     inner_src_ip: Ipv4Addr,
     inner_dst_ip: Ipv4Addr,
-    inner_src_port: NonZero<u16>,
-    inner_dst_port: NonZero<u16>,
+    next_header: NextHeader,
+    inner_param_1: u16,
+    inner_param_2: u16,
 ) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
     let mut headers = HeadersBuilder::default();
 
@@ -234,16 +245,36 @@ pub fn build_test_icmp4_destination_unreachable_packet(
     )));
 
     // Inner transport
-    let mut inner_transport = EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(Tcp::default()));
-    inner_transport.set_source(inner_src_port).unwrap();
-    inner_transport.set_destination(inner_dst_port).unwrap();
+    let mut inner_transport;
+    match next_header {
+        NextHeader::TCP => {
+            let mut tcp = Tcp::default();
+            tcp.set_source(inner_param_1.try_into().unwrap());
+            tcp.set_destination(inner_param_2.try_into().unwrap());
+            inner_transport = EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(tcp));
+        }
+        NextHeader::UDP => {
+            let mut udp = Udp::default();
+            udp.set_source(inner_param_1.try_into().unwrap());
+            udp.set_destination(inner_param_2.try_into().unwrap());
+            inner_transport = EmbeddedTransport::Udp(TruncatedUdp::FullHeader(udp));
+        }
+        NextHeader::ICMP => {
+            let icmp = Icmp4(Icmpv4Header::new(Icmpv4Type::EchoRequest(IcmpEchoHeader {
+                id: inner_param_1,
+                seq: inner_param_2,
+            })));
+            inner_transport = EmbeddedTransport::Icmp4(TruncatedIcmp4::FullHeader(icmp));
+        }
+        _ => panic!("Unsupported next header: {next_header:?}"),
+    }
 
     // Inner IPv4
     let mut inner_ipv4 = Ipv4::default();
     inner_ipv4.set_source(UnicastIpv4Addr::new(inner_src_ip).unwrap());
     inner_ipv4.set_destination(inner_dst_ip);
     inner_ipv4.set_ttl(4);
-    inner_ipv4.set_next_header(NextHeader::TCP);
+    inner_ipv4.set_next_header(next_header);
     inner_ipv4
         .set_payload_len(inner_transport.size().get())
         .unwrap();
@@ -268,9 +299,19 @@ pub fn build_test_icmp4_destination_unreachable_packet(
 
     // Adjustments
     let inner_net = Net::Ipv4(inner_ipv4);
-    if let EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(ref mut tcp)) = inner_transport {
-        tcp.update_checksum(&TcpChecksumPayload::new(&inner_net, &[]))
-            .unwrap();
+    match &mut inner_transport {
+        EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(tcp)) => {
+            tcp.update_checksum(&TcpChecksumPayload::new(&inner_net, &[]))
+                .unwrap();
+        }
+        EmbeddedTransport::Udp(TruncatedUdp::FullHeader(udp)) => {
+            udp.update_checksum(&UdpChecksumPayload::new(&inner_net, &[]))
+                .unwrap();
+        }
+        EmbeddedTransport::Icmp4(TruncatedIcmp4::FullHeader(icmp)) => {
+            icmp.update_checksum(&[]).unwrap();
+        }
+        _ => {}
     }
 
     // Embedded headers

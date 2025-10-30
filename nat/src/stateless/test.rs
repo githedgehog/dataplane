@@ -27,6 +27,7 @@ mod tests {
     use net::buffer::PacketBufferMut;
     use net::eth::mac::Mac;
     use net::headers::{TryHeaders, TryHeadersMut, TryInnerIpv4, TryIpv4, TryIpv4Mut};
+    use net::ip::NextHeader;
     use net::packet::test_utils::{
         build_test_icmp4_destination_unreachable_packet, build_test_ipv4_packet,
     };
@@ -34,7 +35,6 @@ mod tests {
     use net::vxlan::Vni;
     use pipeline::NetworkFunction;
     use std::net::Ipv4Addr;
-    use std::num::NonZero;
     use std::str::FromStr;
     use tracing_test::traced_test;
 
@@ -287,8 +287,9 @@ mod tests {
             addr_v4("2.1.0.1"),
             addr_v4("2.1.0.1"),
             addr_v4("10.0.0.1"),
-            NonZero::new(1234).unwrap(),
-            NonZero::new(5678).unwrap(),
+            NextHeader::TCP,
+            1234,
+            5678,
         )
         .unwrap();
 
