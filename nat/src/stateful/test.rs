@@ -609,7 +609,7 @@ mod tests {
         assert_eq!(done_reason, Some(DoneReason::Filtered));
     }
 
-    fn check_packet_icmp(
+    fn check_packet_icmp_echo(
         nat: &mut StatefulNat,
         src_vni: Vni,
         dst_vni: Vni,
@@ -641,7 +641,7 @@ mod tests {
 
     #[test]
     #[traced_test]
-    fn test_icmp_nat() {
+    fn test_icmp_echo_nat() {
         let mut config = build_sample_config(build_overlay_2vpcs());
         config.validate().unwrap();
 
@@ -653,7 +653,7 @@ mod tests {
 
         // No NAT
         let (orig_src, orig_dst, orig_identifier) = (addr_v4("8.8.8.8"), addr_v4("9.9.9.9"), 1337);
-        let (output_src, output_dst, output_identifier, done_reason) = check_packet_icmp(
+        let (output_src, output_dst, output_identifier, done_reason) = check_packet_icmp_echo(
             &mut nat,
             vni(100),
             vni(200),
@@ -670,7 +670,7 @@ mod tests {
         // NAT: expose121 <-> expose211
         let (orig_src, orig_dst, orig_identifier) = (addr_v4("1.1.2.3"), addr_v4("3.3.3.3"), 1337);
         let (target_src, target_dst) = (addr_v4("2.2.0.0"), addr_v4("1.2.2.0"));
-        let (output_src, output_dst, output_identifier_1, done_reason) = check_packet_icmp(
+        let (output_src, output_dst, output_identifier_1, done_reason) = check_packet_icmp_echo(
             &mut nat,
             vni(100),
             vni(200),
@@ -686,7 +686,7 @@ mod tests {
 
         // Reverse path
         let (return_output_src, return_output_dst, return_output_identifier, done_reason) =
-            check_packet_icmp(
+            check_packet_icmp_echo(
                 &mut nat,
                 vni(200),
                 vni(100),
@@ -703,7 +703,7 @@ mod tests {
         // Second request with same identifier: no reallocation
         let (orig_src, orig_dst) = (addr_v4("1.1.2.3"), addr_v4("3.3.3.3"));
         let (target_src, target_dst) = (addr_v4("2.2.0.0"), addr_v4("1.2.2.0"));
-        let (output_src, output_dst, output_identifier_2, done_reason) = check_packet_icmp(
+        let (output_src, output_dst, output_identifier_2, done_reason) = check_packet_icmp_echo(
             &mut nat,
             vni(100),
             vni(200),
@@ -720,7 +720,7 @@ mod tests {
         // NAT: expose121 <-> expose211 again, but with identifier 0 (corner case)
         let (orig_src, orig_dst, orig_identifier) = (addr_v4("1.1.2.3"), addr_v4("3.3.3.3"), 0);
         let (target_src, target_dst) = (addr_v4("2.2.0.0"), addr_v4("1.2.2.0"));
-        let (output_src, output_dst, output_identifier_3, done_reason) = check_packet_icmp(
+        let (output_src, output_dst, output_identifier_3, done_reason) = check_packet_icmp_echo(
             &mut nat,
             vni(100),
             vni(200),
