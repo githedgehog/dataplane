@@ -6,7 +6,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use futures::TryFutureExt;
 use tokio::spawn;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
@@ -14,7 +13,7 @@ use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver;
 
 use config::external::overlay::vpc::VpcTable;
-use config::internal::status::DataplaneStatus;
+use config::internal::status::{DataplaneStatus, FrrStatus, VpcPeeringCounters, VpcStatus};
 use config::{ConfigError, ConfigResult, stringify};
 use config::{DeviceConfig, ExternalConfig, GenId, GwConfig, InternalConfig};
 use config::{external::overlay::Overlay, internal::device::tracecfg::TracingConfig};
@@ -41,6 +40,7 @@ use net::interface::{Interface, InterfaceName};
 use routing::ctl::RouterCtlSender;
 
 use stats::VpcMapName;
+use stats::VpcStatsStore;
 use vpcmap::VpcDiscriminant;
 use vpcmap::map::{VpcMap, VpcMapWriter};
 
@@ -90,6 +90,20 @@ pub(crate) struct ConfigProcessor {
     nattablew: NatTablesWriter,
     natallocatorw: NatAllocatorWriter,
     vnitablesw: VpcDiscTablesWriter,
+    vpc_stats_store: Arc<VpcStatsStore>,
+}
+/// Populate FRR status into the dataplane status structure
+pub async fn populate_status_with_frr(
+    status: &mut DataplaneStatus,
+    router_ctl: &mut RouterCtlSender,
+) {
+    let mut frr = FrrStatus::new();
+
+    if let Ok(Some(FrrAppliedConfig { genid, .. })) = router_ctl.get_frr_applied_config().await {
+        frr = frr.set_applied_config_gen(genid);
+    }
+
+    status.set_frr_status(frr);
 }
 
 impl ConfigProcessor {
@@ -105,6 +119,7 @@ impl ConfigProcessor {
         nattablew: NatTablesWriter,
         natallocatorw: NatAllocatorWriter,
         vnitablesw: VpcDiscTablesWriter,
+        vpc_stats_store: Arc<stats::VpcStatsStore>,
     ) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
         let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
@@ -126,6 +141,7 @@ impl ConfigProcessor {
             nattablew,
             natallocatorw,
             vnitablesw,
+            vpc_stats_store,
         };
         (processor, tx)
     }
@@ -241,9 +257,88 @@ impl ConfigProcessor {
         ConfigResponse::GetCurrentConfig(cfg)
     }
 
-    /// TODO: Real status collection here, this time - placeholder
-    fn handle_get_dataplane_status(&self) -> ConfigResponse {
-        let status = DataplaneStatus::default();
+    /// RPC handler: get dataplane status
+    async fn handle_get_dataplane_status(&mut self) -> ConfigResponse {
+        let mut status = DataplaneStatus::new();
+
+        let names = self.vpc_stats_store.snapshot_names().await;
+        let pair_snap = self.vpc_stats_store.snapshot_pairs().await;
+        let vpc_snap = self.vpc_stats_store.snapshot_vpcs().await;
+
+        // Build name/id/vni maps. Name map starts from store, then we ensure coverage.
+        let mut name_of: HashMap<VpcDiscriminant, String> = names;
+        let mut id_of: HashMap<VpcDiscriminant, String> = HashMap::new();
+        let mut vni_of: HashMap<VpcDiscriminant, u32> = HashMap::new();
+
+        // Ensure we have names for anything seen only in stats.
+        for (disc, _) in &vpc_snap {
+            name_of.entry(*disc).or_insert_with(|| format!("{disc:?}"));
+        }
+        for ((s, d), _) in &pair_snap {
+            name_of.entry(*s).or_insert_with(|| format!("{s:?}"));
+            name_of.entry(*d).or_insert_with(|| format!("{d:?}"));
+        }
+
+        // Build id_of and vni_of using only the discriminant
+        for disc in name_of.keys().copied() {
+            id_of.insert(disc, format!("{disc:?}"));
+            let vni = match disc {
+                vpcmap::VpcDiscriminant::VNI(v) => v.as_u32(),
+            };
+            vni_of.insert(disc, vni);
+        }
+
+        // Per-VPC section
+        for (disc, _) in vpc_snap {
+            let name = name_of
+                .get(&disc)
+                .cloned()
+                .unwrap_or_else(|| format!("{disc:?}"));
+            let id = id_of
+                .get(&disc)
+                .cloned()
+                .unwrap_or_else(|| format!("{disc:?}"));
+            let vni = *vni_of.get(&disc).unwrap_or(&0);
+
+            let v = VpcStatus {
+                id,
+                name: name.clone(),
+                vni,
+                route_count: 0,
+                interfaces: Default::default(),
+            };
+            status.add_vpc(name, v);
+        }
+
+        // VPC-to-VPC peering counters
+        for ((src, dst), fs) in pair_snap {
+            let src_name = name_of
+                .get(&src)
+                .cloned()
+                .unwrap_or_else(|| format!("{src:?}"));
+            let dst_name = name_of
+                .get(&dst)
+                .cloned()
+                .unwrap_or_else(|| format!("{dst:?}"));
+            let key = format!("{src_name}->{dst_name}");
+
+            status.add_peering(
+                key.clone(),
+                VpcPeeringCounters {
+                    name: key,
+                    src_vpc: src_name,
+                    dst_vpc: dst_name,
+                    packets: fs.ctr.packets,
+                    bytes: fs.ctr.bytes,
+                    drops: 0,
+                    pps: fs.rate.pps,
+                },
+            );
+        }
+
+        // FRR minimal info
+        populate_status_with_frr(&mut status, &mut self.router_ctl).await;
+
         ConfigResponse::GetDataplaneStatus(Box::new(status))
     }
 
@@ -261,7 +356,9 @@ impl ConfigProcessor {
                         }
                         ConfigRequest::GetCurrentConfig => self.handle_get_config(),
                         ConfigRequest::GetGeneration => self.handle_get_generation(),
-                        ConfigRequest::GetDataplaneStatus => self.handle_get_dataplane_status(),
+                        ConfigRequest::GetDataplaneStatus => {
+                            self.handle_get_dataplane_status().await
+                        }
                     };
                     if req.reply_tx.send(response).is_err() {
                         warn!("Failed to send reply from config processor: receiver dropped?");
@@ -352,8 +449,8 @@ async fn apply_router_config(
     // request router to apply it
     router_ctl
         .configure(router_config)
-        .map_err(|e| ConfigError::InternalFailure(format!("Router config error: {e}")))
-        .await?;
+        .await
+        .map_err(|e| ConfigError::InternalFailure(format!("Router config error: {e}")))?;
 
     info!(
         "Router config for gen {} was successfully applied",
@@ -363,20 +460,29 @@ async fn apply_router_config(
 }
 
 /// refresh mappings for per vpc statistics
-fn update_stats_vpc_mappings(config: &GwConfig, vpcmapw: &mut VpcMapWriter<VpcMapName>) {
-    // create a mapping table frome the vpc table in the config
+///
+/// Returns the list of `(VpcDiscriminant, name)` so the caller can seed the stats store.
+fn update_stats_vpc_mappings(
+    config: &GwConfig,
+    vpcmapw: &mut VpcMapWriter<VpcMapName>,
+) -> Vec<(VpcDiscriminant, String)> {
+    // create a mapping table from the vpc table in the config
     // FIXME(fredi): visibility
     // FIXME(fredi): generalize the vpcmapName table
     let vpc_table = &config.external.overlay.vpc_table;
     let mut vpcmap = VpcMap::<VpcMapName>::new();
+    let mut pairs: Vec<(VpcDiscriminant, String)> = Vec::with_capacity(vpc_table.len());
+
     for vpc in vpc_table.values() {
         let disc = VpcDiscriminant::VNI(vpc.vni);
-        let map = VpcMapName::new(disc, &vpc.name);
-        vpcmap
-            .add(VpcDiscriminant::VNI(vpc.vni), map)
-            .unwrap_or_else(|_| unreachable!());
+        let name = vpc.name.clone();
+        let map = VpcMapName::new(disc, &name);
+        vpcmap.add(disc, map).unwrap_or_else(|_| unreachable!());
+        pairs.push((disc, name));
     }
+
     vpcmapw.set_map(vpcmap);
+    pairs
 }
 
 /// Update the Nat tables for stateless NAT
@@ -425,8 +531,6 @@ fn apply_dst_vpcd_lookup_config(
 
 fn apply_tracing_config(tracing: &Option<TracingConfig>) -> ConfigResult {
     // Apply tracing config if provided. Otherwise, apply an empty/default config.
-    // The trace controller will map reset the configuration to the preset one and apply no change.
-    // This is needed to allow empty configurations (e.g. tracing config removals)
     let default = TracingConfig::default();
     let tracing = tracing.as_ref().unwrap_or(&default);
     get_trace_ctl().reconfigure(
@@ -476,12 +580,11 @@ async fn apply_gw_config(
         return Ok(());
     }
 
-    /* lock the CPI to prevent updates on the routing db. No explicit unlocking is
-    required. The CPI will be automatically unlocked when this guard goes out of scope */
+    /* lock the CPI to prevent updates on the routing db */
     let _guard = router_ctl
         .lock()
-        .map_err(|_| ConfigError::InternalFailure("Could not lock the CPI".to_string()))
-        .await?;
+        .await
+        .map_err(|_| ConfigError::InternalFailure("Could not lock the CPI".to_string()))?;
 
     /* apply config with VPC manager */
     vpc_mgr.apply_config(internal, genid).await?;
@@ -498,8 +601,9 @@ async fn apply_gw_config(
     /* apply dst_vpcd_lookup config */
     apply_dst_vpcd_lookup_config(&config.external.overlay, vpcdtablesw)?;
 
-    /* update stats mappings */
-    update_stats_vpc_mappings(config, vpcmapw);
+    /* update stats mappings and seed names to the stats store */
+    let pairs = update_stats_vpc_mappings(config, vpcmapw);
+    drop(pairs); // pairs used by caller
 
     /* apply config in router */
     apply_router_config(&kernel_vrfs, config, router_ctl).await?;
