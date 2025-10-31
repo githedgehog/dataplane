@@ -120,7 +120,19 @@ const MAX_INTERFACE_NAME_LEN: usize = 15;
 #[repr(transparent)]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "String", into = "String")]
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
+#[derive(
+    Clone,
+    Ord,
+    PartialOrd,
+    Eq,
+    PartialEq,
+    Hash,
+    Debug,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    rkyv::Archive,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct InterfaceName(String);
 
 impl Display for InterfaceName {
