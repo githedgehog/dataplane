@@ -27,6 +27,7 @@ pub enum DriverErr {
 ///
 /// Note that the NIC may or may not be visible to the OS, depending on the state of
 /// the system.
+#[derive(Debug)]
 pub struct PciNic {
     address: PciAddress,
 }
