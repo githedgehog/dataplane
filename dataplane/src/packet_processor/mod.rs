@@ -10,7 +10,8 @@ use super::packet_processor::egress::Egress;
 use super::packet_processor::ingress::Ingress;
 use super::packet_processor::ipforward::IpForwarder;
 
-use concurrency::sync::Arc;
+use concurrency::sync::Arc; // for pipeline
+use std::sync::Arc as StdArc; // standard Arc for the stats store
 
 use pkt_meta::dst_vpcd_lookup::{DstVpcdLookup, VpcDiscTablesWriter};
 use pkt_meta::flow_table::{ExpirationsNF, FlowTable, LookupNF};
@@ -27,7 +28,8 @@ use routing::{Router, RouterError, RouterParams};
 
 use vpcmap::map::VpcMapWriter;
 
-use stats::{Stats, StatsCollector, VpcMapName};
+use stats::{Stats, StatsCollector, VpcMapName, VpcStatsStore};
+
 pub(crate) struct InternalSetup<Buf>
 where
     Buf: PacketBufferMut,
@@ -39,6 +41,7 @@ where
     pub natallocatorw: NatAllocatorWriter,
     pub vpcdtablesw: VpcDiscTablesWriter,
     pub stats: StatsCollector,
+    pub vpc_stats_store: StdArc<VpcStatsStore>,
 }
 
 /// Start a router and provide the associated pipeline
@@ -50,7 +53,15 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let vpcdtablesw = VpcDiscTablesWriter::new();
     let router = Router::new(params)?;
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
-    let (stats, writer) = StatsCollector::new(vpcmapw.get_reader());
+
+    // Allocate the shared VPC stats store (returns Arc<VpcStatsStore>)
+    let vpc_stats_store: StdArc<VpcStatsStore> = VpcStatsStore::new();
+
+    // Build stats collector + writer, wiring the same store instance in
+    // Also returns stats store handle for gRPC server access
+    let (stats, writer, vpc_stats_store) =
+        StatsCollector::new_with_store(vpcmapw.get_reader(), vpc_stats_store.clone());
+
     let flow_table = Arc::new(FlowTable::default());
 
     let iftr_factory = router.get_iftabler_factory();
@@ -77,7 +88,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
 
         // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
         // hard-coded. In any pipeline, the Stats and ExpirationsNF stages should go last
-
         DynPipeline::new()
             .add_stage(dumper1)
             .add_stage(stage_ingress)
@@ -101,5 +111,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         natallocatorw,
         vpcdtablesw,
         stats,
+        vpc_stats_store,
     })
 }

@@ -46,6 +46,18 @@ fn overlap_nanos(a_start: Instant, a_end: Instant, b_start: Instant, b_end: Inst
     end.duration_since(start).as_nanos()
 }
 
+/// Take a synchronous snapshot of `(disc, name)` pairs from the VPC map reader.
+fn snapshot_vpc_pairs(reader: &VpcMapReader<VpcMapName>) -> Vec<(VpcDiscriminant, String)> {
+    let guard = reader
+        .enter()
+        .expect("vpcmap reader guard acquisition failed");
+    guard
+        .0
+        .values()
+        .map(|VpcMapName { disc, name }| (*disc, name.clone()))
+        .collect()
+}
+
 /// A `StatsCollector` is responsible for collecting and aggregating packet statistics for a
 /// collection of workers running packet processing pipelines on various threads.
 #[derive(Debug)]
@@ -63,6 +75,7 @@ pub struct StatsCollector {
     vpcmap_r: VpcMapReader<VpcMapName>,
     /// A MPSC channel receiver for collecting stats from other threads.
     updates: PacketStatsReader,
+    /// Shared store for snapshots/rates usable by gRPC, CLI, etc.
     vpc_store: std::sync::Arc<VpcStatsStore>,
 }
 
@@ -70,15 +83,14 @@ impl StatsCollector {
     const DEFAULT_CHANNEL_CAPACITY: usize = 256;
     const TIME_TICK: Duration = Duration::from_secs(1);
 
-    /// Backward-compatible constructor; returns (collector, writer).
     #[tracing::instrument(level = "info")]
     pub fn new(vpcmap_r: VpcMapReader<VpcMapName>) -> (StatsCollector, PacketStatsWriter) {
+        // Allocate a store for this collector; keep it internal in this overload.
         let store = VpcStatsStore::new();
         let (collector, writer, _store) = Self::new_with_store(vpcmap_r, store);
         (collector, writer)
     }
 
-    /// Preferred constructor if you also want to hold the store elsewhere.
     /// Returns (collector, writer, store).
     #[tracing::instrument(level = "info")]
     pub fn new_with_store(
@@ -90,8 +102,12 @@ impl StatsCollector {
         std::sync::Arc<VpcStatsStore>,
     ) {
         let (s, r) = kanal::bounded(Self::DEFAULT_CHANNEL_CAPACITY);
+
+        // Snapshot current VPC names from the reader to seed metric registrations
         let vpc_data = {
-            let guard = vpcmap_r.enter().unwrap();
+            let guard = vpcmap_r
+                .enter()
+                .expect("vpcmap reader guard acquisition failed");
             guard
                 .0
                 .values()
@@ -102,12 +118,17 @@ impl StatsCollector {
                         vec![("from".to_string(), name.clone())],
                     )
                 })
-                .collect()
+                .collect::<Vec<_>>()
         };
+
+        let name_pairs = snapshot_vpc_pairs(&vpcmap_r);
+        vpc_store.set_many_vpc_names_sync(name_pairs);
+
         let metrics = VpcMetricsSpec::new(vpc_data)
             .into_iter()
             .map(|(disc, spec)| (disc, spec.build()))
             .collect();
+
         let updates = PacketStatsReader(r);
         let outstanding: VecDeque<_> = (0..10)
             .scan(
@@ -130,22 +151,21 @@ impl StatsCollector {
         (stats, writer, store_clone)
     }
 
-    /// Update the list of VPCs known to the stats collector.
-    ///
-    /// TODO: in a future version the update should be automatic based on some kind of channel
-    /// model.
+    /// Update the list of VPCs known to the stats collector (sync snapshot; no awaits).
     #[tracing::instrument(level = "debug")]
     fn refresh(&mut self) -> impl Iterator<Item = (VpcDiscriminant, RegisteredVpcMetrics)> {
-        let spec = {
-            let guard = self.vpcmap_r.enter().unwrap();
-            let vpc_data: Vec<_> = guard
-                .0
-                .values()
-                .map(|VpcMapName { disc, name }| (*disc, name.clone(), vec![]))
-                .collect();
-            VpcMetricsSpec::new(vpc_data)
-        };
-        spec.into_iter().map(|(disc, spec)| (disc, spec.build()))
+        let pairs = snapshot_vpc_pairs(&self.vpcmap_r); // Vec<(disc, name)>
+        // persist names for gRPC/others (no await)
+        self.vpc_store.set_many_vpc_names_sync(pairs.clone());
+
+        let vpc_data = pairs
+            .into_iter()
+            .map(|(disc, name)| (disc, name, vec![]))
+            .collect::<Vec<_>>();
+
+        VpcMetricsSpec::new(vpc_data)
+            .into_iter()
+            .map(|(disc, spec)| (disc, spec.build()))
     }
 
     /// Run the collector (async).  Does not return if awaited.
@@ -187,8 +207,10 @@ impl StatsCollector {
     #[tracing::instrument(level = "trace")]
     async fn update(&mut self, update: Option<MetricsUpdate>) {
         if let Some(update) = update {
-            // find outstanding changes which line up with batch
+            // Refresh Prometheus registrations based on the current VPC snapshot.
             self.metrics = self.refresh().collect();
+
+            // Find outstanding changes which line up with batch
             let mut slices: Vec<_> = self
                 .outstanding
                 .iter_mut()
@@ -564,7 +586,7 @@ impl Stats {
     // maximum number of milliseconds to randomly offset the "due date" for a stats batch
     const MAX_HERD_OFFSET: u64 = 256;
 
-    // minimum number of milliseconds seconds between batch updates
+    // minimum number of milliseconds between batch updates
     const MINIMUM_DURATION: u64 = 1024;
 
     #[tracing::instrument(level = "trace")]
