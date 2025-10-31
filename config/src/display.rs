@@ -216,38 +216,3 @@ impl Display for VpcPeeringTable {
         Ok(())
     }
 }
-
-/*
-// TODO(fredi)
-impl Display for GwConfigMeta {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // TODO
-        Ok(())
-    }
-}
-// TODO(fredi)
-impl Display for ExternalConfig {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // TODO
-        Ok(())
-    }
-}
-// TODO(fredi)
-impl Display for InternalConfig {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // TODO
-        Ok(())
-    }
-}
-// TODO(fredi)
-impl Display for GwConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.meta.fmt(f)?;
-        self.external.fmt(f)?;
-        if let Some(internal) = &self.internal {
-            internal.fmt(f)?;
-        }
-        Ok(())
-    }
-}
-*/
