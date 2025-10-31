@@ -1152,6 +1152,7 @@ dependencies = [
  "bytes",
  "caps",
  "chrono",
+ "dataplane-concurrency",
  "dataplane-config",
  "dataplane-id",
  "dataplane-interface-manager",
@@ -1317,6 +1318,7 @@ version = "0.1.0"
 dependencies = [
  "arrayvec",
  "bolero",
+ "dataplane-concurrency",
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-tracectl",

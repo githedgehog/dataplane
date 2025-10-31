@@ -49,14 +49,17 @@ fn overlap_nanos(a_start: Instant, a_end: Instant, b_start: Instant, b_end: Inst
 
 /// Take a synchronous snapshot of `(disc, name)` pairs from the VPC map reader.
 fn snapshot_vpc_pairs(reader: &VpcMapReader<VpcMapName>) -> Vec<(VpcDiscriminant, String)> {
-    let guard = reader
-        .enter()
-        .expect("vpcmap reader guard acquisition failed");
-    guard
-        .0
-        .values()
-        .map(|VpcMapName { disc, name }| (*disc, name.clone()))
-        .collect()
+    match reader.enter() {
+        Some(guard) => guard
+            .0
+            .values()
+            .map(|VpcMapName { disc, name }| (*disc, name.clone()))
+            .collect(),
+        None => {
+            warn!("vpcmap reader guard acquisition failed; proceeding with empty snapshot");
+            Vec::new()
+        }
+    }
 }
 
 /// A `StatsCollector` is responsible for collecting and aggregating packet statistics for a
@@ -101,11 +104,8 @@ impl StatsCollector {
         let (s, r) = kanal::bounded(Self::DEFAULT_CHANNEL_CAPACITY);
 
         // Snapshot current VPC names from the reader to seed metric registrations
-        let vpc_data = {
-            let guard = vpcmap_r
-                .enter()
-                .expect("vpcmap reader guard acquisition failed");
-            guard
+        let vpc_data = match vpcmap_r.enter() {
+            Some(guard) => guard
                 .0
                 .values()
                 .map(|VpcMapName { disc, name }| {
@@ -115,7 +115,13 @@ impl StatsCollector {
                         vec![("from".to_string(), name.clone())],
                     )
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            None => {
+                warn!(
+                    "vpcmap reader guard acquisition failed during initialization; seeding empty metrics"
+                );
+                Vec::new()
+            }
         };
 
         let name_pairs = snapshot_vpc_pairs(&vpcmap_r);
@@ -323,7 +329,11 @@ impl StatsCollector {
     #[tracing::instrument(level = "trace")]
     async fn submit_expired(&mut self, concluded: BatchSummary<u64>) {
         const CAPACITY_PADDING: usize = 16;
-        let capacity = self.vpcmap_r.enter().unwrap().0.len() + CAPACITY_PADDING;
+        let capacity = self
+            .vpcmap_r
+            .enter()
+            .map(|g| g.0.len() + CAPACITY_PADDING)
+            .unwrap_or(CAPACITY_PADDING);
         let start = self
             .outstanding
             .iter()
