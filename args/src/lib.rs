@@ -141,8 +141,8 @@ impl FromStr for InterfaceArg {
     type Err = String;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         if let Some((first, second)) = input.split_once('=') {
-            let interface = InterfaceName::try_from(first)
-                .map_err(|e| format!("Bad interface name: {e}"))?;
+            let interface =
+                InterfaceName::try_from(first).map_err(|e| format!("Bad interface name: {e}"))?;
 
             let port = PortArg::from_str(second)?;
             Ok(InterfaceArg {
@@ -150,8 +150,8 @@ impl FromStr for InterfaceArg {
                 port: Some(port),
             })
         } else {
-            let interface = InterfaceName::try_from(input)
-                .map_err(|e| format!("Bad interface name: {e}"))?;
+            let interface =
+                InterfaceName::try_from(input).map_err(|e| format!("Bad interface name: {e}"))?;
             Ok(InterfaceArg {
                 interface,
                 port: None,

@@ -1021,6 +1021,7 @@ dependencies = [
  "once_cell",
  "ordermap",
  "parking_lot",
+ "rkyv",
  "serde",
  "tokio",
  "tracing",
