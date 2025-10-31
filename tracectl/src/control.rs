@@ -298,9 +298,13 @@ impl TracingControl {
         if let Err(e) = tracing_subscriber::registry()
             .with(filter)
             .with(fmt_layer)
+            .with(tracing_error::ErrorLayer::default())
             .try_init()
         {
-            println!("Failed to set global tracing subscriber: {e} !!");
+            eprintln!("Failed to set global tracing subscriber: {e} !!");
+        }
+        if let Err(e) = color_eyre::install() {
+            eprintln!("Failed to initialize color_eyre:\n{e}")
         }
         Self {
             db: Arc::new(Mutex::new(db)),
