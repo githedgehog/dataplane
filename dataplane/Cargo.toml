@@ -31,6 +31,7 @@ ordermap = { workspace = true, features = ["std"] }
 parking_lot = { workspace = true }
 pipeline = { workspace = true }
 pkt-meta = { workspace = true }
+rkyv = { workspace = true, features = [] }
 routing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 stats = { workspace = true }
