@@ -17,14 +17,15 @@ bolero = ["dep:bolero", "interface-manager/bolero", "id/bolero", "net/bolero"]
 
 [dependencies]
 # internal
+args = { workspace = true }
 config = { workspace = true }
 concurrency = { workspace = true }
 gateway_config = { workspace = true }
 id = { workspace = true }
 interface-manager = { workspace = true }
 lpm = { workspace = true }
-net = { workspace = true }
 nat = { workspace = true }
+net = { workspace = true }
 pkt-meta = { workspace = true }
 rekon = { workspace = true }
 routing = { workspace = true }
