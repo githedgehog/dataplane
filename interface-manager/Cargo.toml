@@ -22,7 +22,7 @@ derive_builder = { workspace = true, default-features = false, features = ["defa
 futures = { workspace = true, features = ["default"] }
 libc = { workspace = true, features = [] }
 multi_index_map = { workspace = true, features = ["serde"] }
-nix = { workspace = true, default-features = false, features = ["ioctl"] }
+nix = { workspace = true, default-features = false, features = ["ioctl", "net"] }
 rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["std"] }
 static_assertions = { workspace = true, features = [] }
