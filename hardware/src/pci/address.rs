@@ -88,13 +88,13 @@ pub use self::scan::*;
 )]
 pub struct PciAddress {
     /// PCI domain (segment) number.
-    pub domain: Domain,
+    domain: Domain,
     /// PCI bus number.
-    pub bus: Bus,
+    bus: Bus,
     /// Device number on the bus.
-    pub device: Device,
+    device: Device,
     /// Function number within the device.
-    pub function: Function,
+    function: Function,
 }
 
 impl PciAddress {
