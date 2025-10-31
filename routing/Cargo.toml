@@ -10,6 +10,7 @@ testing = []
 
 [dependencies]
 # internal
+args = { workspace = true }
 cli = { workspace = true }
 config = { workspace = true }
 dplane-rpc = { workspace = true }

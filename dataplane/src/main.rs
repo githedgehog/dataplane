@@ -94,7 +94,7 @@ fn main() {
     ctrlc::set_handler(move || stop_tx.send(()).expect("Error sending SIGINT signal"))
         .expect("failed to set SIGINT handler");
 
-    let grpc_addr = match args.get_grpc_address() {
+    let grpc_addr = match args.grpc_address() {
         Ok(addr) => addr,
         Err(e) => {
             error!("Invalid gRPC address configuration: {e}");
@@ -135,10 +135,10 @@ fn main() {
     .expect("Failed to start gRPC server");
 
     /* start driver with the provided pipeline builder */
-    match args.get_driver_name() {
+    match args.driver_name() {
         "dpdk" => {
             info!("Using driver DPDK...");
-            DriverDpdk::start(args.eal_params(), &setup_pipeline);
+            todo!();
         }
         "kernel" => {
             info!("Using driver kernel...");
