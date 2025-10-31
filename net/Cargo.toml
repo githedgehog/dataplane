@@ -17,19 +17,21 @@ ahash = { workspace = true }
 arrayvec = { workspace = true, features = ["serde", "std"] }
 bitflags = { workspace = true }
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional = true }
+bytecheck = { workspace = true }
 concurrency = { workspace = true }
 derive_builder = { workspace = true, features = ["alloc"] }
 etherparse = { workspace = true, features = ["std"] }
 flow-info = { workspace = true }
+id = { workspace = true }
 linkme = { workspace = true }
 linux-raw-sys = { workspace = true, features = ["std", "if_ether"] }
 multi_index_map = { workspace = true, default-features = false, features = ["serde"] }
 ordermap = { workspace = true, features = ["std"] }
+rkyv = { workspace = true, features = ["alloc", "bytecheck"]}
 serde = { workspace = true, features = ["derive", "std"] }
 thiserror = { workspace = true }
 tracectl = { workspace = true }
 tracing = { workspace = true }
-id = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"] }
