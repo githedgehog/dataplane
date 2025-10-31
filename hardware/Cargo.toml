@@ -38,6 +38,7 @@ tracing = { workspace = true, features = ["std"] }
 # internal
 fixin = { workspace = true, features = [] }
 id = { workspace = true, features = ["serde", "rkyv"] }
+n-vm = { workspace = true }
 test-utils = { workspace = true, features = [] }
 
 # external
@@ -46,6 +47,8 @@ hwlocality = { workspace = true, features = ["hwloc-latest"] }
 pci-ids = { workspace = true, features = [] }
 serde = { workspace = true, features = ["std"] }
 serde_yaml_ng = { workspace = true, features = [] }
+tokio = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [build-dependencies]
 dpdk-sysroot-helper = { workspace = true }
