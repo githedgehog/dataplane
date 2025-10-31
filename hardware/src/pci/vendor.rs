@@ -87,7 +87,7 @@ impl VendorId {
     /// let vendor = VendorId::new(0x1022).unwrap();  // AMD
     /// assert_eq!(vendor.value(), 0x1022);
     /// ```
-    pub fn new(id: u16) -> Result<Self, InvalidVendorId> {
+    pub const fn new(id: u16) -> Result<Self, InvalidVendorId> {
         if id == u16::MAX {
             Err(InvalidVendorId)
         } else {
