@@ -5,9 +5,9 @@
 //! Maintains per-VPC and per-VPC-pair counters and rates.
 //! Iteratable for gRPC exposure.
 
+use concurrency::sync::Arc;
+use concurrency::sync::RwLock as StdRwLock;
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::RwLock as StdRwLock;
 use tokio::sync::RwLock;
 use vpcmap::VpcDiscriminant;
 

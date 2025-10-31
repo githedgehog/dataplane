@@ -3,8 +3,8 @@
 
 // !Configuration processor
 
+use concurrency::sync::Arc;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use tokio::spawn;
 use tokio::sync::mpsc;

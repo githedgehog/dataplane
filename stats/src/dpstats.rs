@@ -8,6 +8,7 @@ use crate::rate::{HashMapSmoothing, SavitzkyGolayFilter};
 use net::packet::Packet;
 use pipeline::NetworkFunction;
 
+use concurrency::sync::Arc;
 use kanal::ReceiveError;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -76,7 +77,7 @@ pub struct StatsCollector {
     /// A MPSC channel receiver for collecting stats from other threads.
     updates: PacketStatsReader,
     /// Shared store for snapshots/rates usable by gRPC, CLI, etc.
-    vpc_store: std::sync::Arc<VpcStatsStore>,
+    vpc_store: Arc<VpcStatsStore>,
 }
 
 impl StatsCollector {
@@ -95,12 +96,8 @@ impl StatsCollector {
     #[tracing::instrument(level = "info")]
     pub fn new_with_store(
         vpcmap_r: VpcMapReader<VpcMapName>,
-        vpc_store: std::sync::Arc<VpcStatsStore>,
-    ) -> (
-        StatsCollector,
-        PacketStatsWriter,
-        std::sync::Arc<VpcStatsStore>,
-    ) {
+        vpc_store: Arc<VpcStatsStore>,
+    ) -> (StatsCollector, PacketStatsWriter, Arc<VpcStatsStore>) {
         let (s, r) = kanal::bounded(Self::DEFAULT_CHANNEL_CAPACITY);
 
         // Snapshot current VPC names from the reader to seed metric registrations
@@ -137,7 +134,7 @@ impl StatsCollector {
             )
             .collect();
 
-        let store_clone = std::sync::Arc::clone(&vpc_store);
+        let store_clone = Arc::clone(&vpc_store);
 
         let stats = StatsCollector {
             metrics,
