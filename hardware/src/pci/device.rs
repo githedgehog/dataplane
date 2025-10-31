@@ -135,6 +135,7 @@ impl TryFrom<String> for DeviceId {
     Ord,
     PartialEq,
     PartialOrd,
+    bytecheck::CheckBytes,
     num_derive::ToPrimitive,
     rkyv::Archive,
     rkyv::Deserialize,
@@ -146,6 +147,7 @@ impl TryFrom<String> for DeviceId {
     serde(transparent)
 )]
 #[repr(transparent)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct Device(u8);
 
 impl Device {

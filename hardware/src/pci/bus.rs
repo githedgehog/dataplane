@@ -38,6 +38,7 @@
     Ord,
     PartialEq,
     PartialOrd,
+    bytecheck::CheckBytes,
     num_derive::FromPrimitive,
     num_derive::ToPrimitive,
     rkyv::Archive,
@@ -51,6 +52,7 @@
 )]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 #[repr(transparent)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct Bus(u8);
 
 impl Bus {

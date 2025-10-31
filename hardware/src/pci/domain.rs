@@ -38,6 +38,7 @@
     Ord,
     PartialEq,
     PartialOrd,
+    bytecheck::CheckBytes,
     num_derive::FromPrimitive,
     num_derive::ToPrimitive,
     rkyv::Archive,
@@ -51,6 +52,7 @@
     serde(transparent)
 )]
 #[repr(transparent)]
+#[rkyv(attr(derive(Debug, PartialEq, Eq)))]
 pub struct Domain(u16);
 
 impl Domain {
