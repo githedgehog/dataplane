@@ -80,12 +80,14 @@ pub use self::scan::*;
     rkyv::Archive,
     rkyv::Deserialize,
     rkyv::Serialize,
+    bytecheck::CheckBytes,
 )]
 #[cfg_attr(
     any(test, feature = "serde"),
     derive(serde::Serialize, serde::Deserialize),
     serde(try_from = "&str", into = "String")
 )]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct PciAddress {
     /// PCI domain (segment) number.
     domain: Domain,

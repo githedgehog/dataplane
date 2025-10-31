@@ -22,6 +22,7 @@ sysfs = { workspace = true }
 
 # external
 bolero = { workspace = true, optional = true, features = ["alloc"] }
+bytecheck = { workspace = true }
 capctl = { workspace = true, features = [] }
 hwlocality = { workspace = true, optional = true, features = ["hwloc-latest"] }
 num-derive = { workspace = true, features = [] }
