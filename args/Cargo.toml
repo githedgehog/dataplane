@@ -2,25 +2,37 @@
 name = "dataplane-args"
 version = "0.1.0"
 edition = "2024"
-publish = false
 license = "Apache-2.0"
+publish = false
 
 [dependencies]
-clap = { workspace = true, features = ["std", "derive", "usage"] }
-mgmt = { workspace = true  }
-rkyv = { workspace = true, features = ["alloc", "bytecheck"] }
-routing = { workspace = true }
-tracing = { workspace = true }
+# internal
+hardware = { workspace = true, features = ["serde"] }
+id = { workspace = true }
+net = { workspace = true }
+
+# external
+bytecheck = { workspace = true, features = [] }
+clap = { workspace = true, features = ["derive", "std", "usage"] }
+memmap2 = { workspace = true }
+miette = { workspace = true, features = ["derive", "fancy"] }
+nix = { workspace = true, features = ["fs"] }
+rkyv = { workspace = true, features = ["alloc", "bytecheck", "std"] }
+serde = { workspace = true, features = ["derive"] }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true, features = ["std"] }
+uuid = { workspace = true }
 
 [dev-dependencies]
 # internal
+hardware = { workspace = true, features = ["serde"] }
 net = { workspace = true, features = ["test_buffer"] }
-routing = { workspace = true, features = ["testing"] }
-
 # external
+serde_yaml_ng = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["ansi"] }
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(none)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(none)"] }
