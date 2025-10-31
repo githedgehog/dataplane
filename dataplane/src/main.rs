@@ -130,6 +130,7 @@ fn main() {
         setup.natallocatorw,
         setup.vpcdtablesw,
         setup.vpcmapw,
+        setup.vpc_stats_store,
     )
     .expect("Failed to start gRPC server");
 
