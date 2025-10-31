@@ -24,25 +24,14 @@ use pipeline::{self, DynPipeline, NetworkFunction};
 static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();
  */
 
-fn init_eal(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
-    let rte = eal::init(args);
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .with_target(true)
-        .with_thread_ids(true)
-        .with_line_number(true)
-        .with_thread_names(true)
-        .init();
-    rte
-}
-
 fn init_devices(eal: &Eal) -> Vec<Dev> {
+    // TODO: pipe in number of workers to compute correct number of queues
     eal.dev
         .iter()
         .map(|dev| {
             let config = dev::DevConfig {
-                num_rx_queues: 2,
-                num_tx_queues: 2,
+                num_rx_queues: 2, // TODO: set to number of worker threads
+                num_tx_queues: 2, // TODO: set to number of worker threads + 1 (for packet injection)
                 num_hairpin_queues: 0,
                 rx_offloads: None,
                 tx_offloads: Some(TxOffloadConfig::default()),
