@@ -33,6 +33,7 @@ pipeline = { workspace = true }
 pkt-meta = { workspace = true }
 pyroscope = { workspace = true }
 pyroscope_pprofrs = { workspace = true }
+rkyv = { workspace = true, features = [] }
 routing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 stats = { workspace = true }

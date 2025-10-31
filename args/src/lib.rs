@@ -141,8 +141,8 @@ impl FromStr for InterfaceArg {
     type Err = String;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         if let Some((first, second)) = input.split_once('=') {
-            let interface = InterfaceName::try_from(first)
-                .map_err(|e| format!("Bad interface name: {e}"))?;
+            let interface =
+                InterfaceName::try_from(first).map_err(|e| format!("Bad interface name: {e}"))?;
 
             let port = PortArg::from_str(second)?;
             Ok(InterfaceArg {
@@ -150,8 +150,8 @@ impl FromStr for InterfaceArg {
                 port: Some(port),
             })
         } else {
-            let interface = InterfaceName::try_from(input)
-                .map_err(|e| format!("Bad interface name: {e}"))?;
+            let interface =
+                InterfaceName::try_from(input).map_err(|e| format!("Bad interface name: {e}"))?;
             Ok(InterfaceArg {
                 interface,
                 port: None,
@@ -744,6 +744,32 @@ pub struct LaunchConfiguration {
     pub tracing: TracingConfigSection,
     /// Metrics collection configuration
     pub metrics: MetricsConfigSection,
+    /// Profileing collection configuration
+    pub profiling: ProfilingConfigSection,
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
+pub struct ProfilingConfigSection {
+    /// The URL of the pryroscope url
+    pub pyroscope_url: Option<String>,
+    /// Frequency with which we collect stack traces
+    pub frequency: u32,
+}
+
+impl ProfilingConfigSection {
+    pub const DEFAULT_FREQUENCY: u32 = 100;
+}
+
+impl Default for ProfilingConfigSection {
+    fn default() -> Self {
+        Self {
+            pyroscope_url: None,
+            frequency: Self::DEFAULT_FREQUENCY,
+        }
+    }
 }
 
 impl LaunchConfiguration {
@@ -1271,6 +1297,10 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             metrics: MetricsConfigSection {
                 address: value.metrics_address(),
             },
+            profiling: ProfilingConfigSection {
+                pyroscope_url: value.pyroscope_url().map(std::string::ToString::to_string),
+                frequency: ProfilingConfigSection::DEFAULT_FREQUENCY,
+            },
         })
     }
 }
@@ -1561,6 +1591,7 @@ impl CmdArgs {
         self.metrics_address
     }
 
+    #[must_use]
     pub fn pyroscope_url(&self) -> Option<&url::Url> {
         self.pyroscope_url.as_ref()
     }

@@ -1036,6 +1036,7 @@ dependencies = [
  "parking_lot",
  "pyroscope",
  "pyroscope_pprofrs",
+ "rkyv",
  "serde",
  "tokio",
  "tracing",
