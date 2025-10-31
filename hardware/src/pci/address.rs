@@ -15,6 +15,17 @@
 //! - **Device**: 5-bit value (0x00-0x1F), represented as 8-bit
 //! - **Function**: 3-bit value (0x0-0x7), represented as 8-bit
 //!
+//! ```mermaid
+//! ---
+//! title: PCI address format
+//! ---
+//! packet
+//! +16: "domain"
+//! +8: "bus"
+//! +5: "device"
+//! +3: "function"
+//! ```
+//!
 //! # Examples
 //!
 //! ```
