@@ -100,20 +100,26 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub enum PortArg {
-    PCI(PciAddress),       // DPDK driver
-    KERNEL(InterfaceName), // kernel driver
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(
+    CheckBytes,
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+    serde::Deserialize,
+    serde::Serialize,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 #[allow(unused)]
 pub struct InterfaceArg {
     pub interface: InterfaceName,
-    pub port: Option<PortArg>,
+    pub port: NetworkDeviceDescription,
 }
 
-impl FromStr for PortArg {
+impl FromStr for NetworkDeviceDescription {
     type Err = String;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         let (disc, value) = input
@@ -123,12 +129,12 @@ impl FromStr for PortArg {
         match disc {
             "pci" => {
                 let pciaddr = PciAddress::try_from(value).map_err(|e| e.to_string())?;
-                Ok(PortArg::PCI(pciaddr))
+                Ok(NetworkDeviceDescription::Pci(pciaddr))
             }
             "kernel" => {
                 let kernelif = InterfaceName::try_from(value)
                     .map_err(|e| format!("Bad kernel interface name: {e}"))?;
-                Ok(PortArg::KERNEL(kernelif))
+                Ok(NetworkDeviceDescription::Kernel(kernelif))
             }
             _ => Err(format!(
                 "Unknown discriminant '{disc}': allowed values are pci|kernel"
@@ -141,21 +147,12 @@ impl FromStr for InterfaceArg {
     type Err = String;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         if let Some((first, second)) = input.split_once('=') {
-            let interface = InterfaceName::try_from(first)
-                .map_err(|e| format!("Bad interface name: {e}"))?;
-
-            let port = PortArg::from_str(second)?;
-            Ok(InterfaceArg {
-                interface,
-                port: Some(port),
-            })
+            let interface =
+                InterfaceName::try_from(first).map_err(|e| format!("Bad interface name: {e}"))?;
+            let port = NetworkDeviceDescription::from_str(second)?;
+            Ok(InterfaceArg { interface, port })
         } else {
-            let interface = InterfaceName::try_from(input)
-                .map_err(|e| format!("Bad interface name: {e}"))?;
-            Ok(InterfaceArg {
-                interface,
-                port: None,
-            })
+            Err(format!("invalid interface argument: {input}"))
         }
     }
 }
@@ -503,7 +500,7 @@ impl Display for NetworkDeviceDescription {
 #[rkyv(attr(derive(Debug, PartialEq, Eq)))]
 pub struct DpdkDriverConfigSection {
     /// Network devices to use with DPDK (identified by PCI address)
-    pub use_nics: Vec<NetworkDeviceDescription>,
+    pub interfaces: Vec<InterfaceArg>,
     /// DPDK EAL (Environment Abstraction Layer) initialization arguments
     pub eal_args: Vec<String>,
 }
@@ -545,7 +542,7 @@ pub struct DpdkDriverConfigSection {
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct KernelDriverConfigSection {
     /// Kernel network interfaces to manage
-    pub interfaces: Vec<InterfaceName>,
+    pub interfaces: Vec<InterfaceArg>,
 }
 
 /// Configuration for the dataplane's command-line interface (CLI).
@@ -734,6 +731,8 @@ pub struct ConfigServerSection {
 pub struct LaunchConfiguration {
     /// Dynamic configuration server settings
     pub config_server: ConfigServerSection,
+    /// Number of dataplane worker threads / cores
+    pub dataplane_workers: usize,
     /// Packet processing driver configuration
     pub driver: DriverConfigSection,
     /// CLI server configuration
@@ -744,6 +743,32 @@ pub struct LaunchConfiguration {
     pub tracing: TracingConfigSection,
     /// Metrics collection configuration
     pub metrics: MetricsConfigSection,
+    /// Profileing collection configuration
+    pub profiling: ProfilingConfigSection,
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
+pub struct ProfilingConfigSection {
+    /// The URL of the pryroscope url
+    pub pyroscope_url: Option<String>,
+    /// Frequency with which we collect stack traces
+    pub frequency: u32,
+}
+
+impl ProfilingConfigSection {
+    pub const DEFAULT_FREQUENCY: u32 = 100;
+}
+
+impl Default for ProfilingConfigSection {
+    fn default() -> Self {
+        Self {
+            pyroscope_url: None,
+            frequency: Self::DEFAULT_FREQUENCY,
+        }
+    }
 }
 
 impl LaunchConfiguration {
@@ -1191,26 +1216,19 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
     type Error = InvalidCmdArguments;
 
     fn try_from(value: CmdArgs) -> Result<Self, InvalidCmdArguments> {
-        let use_nics: Vec<_> = value
-            .interfaces()
-            .map(|x| match x.port {
-                Some(PortArg::KERNEL(name)) => NetworkDeviceDescription::Kernel(name),
-                Some(PortArg::PCI(address)) => NetworkDeviceDescription::Pci(address),
-                None => todo!(), // I am not clear what this case means
-            })
-            .collect();
         Ok(LaunchConfiguration {
             config_server: ConfigServerSection {
                 address: value
                     .grpc_address()
                     .map_err(InvalidCmdArguments::InvalidGrpcAddress)?,
             },
+            dataplane_workers: value.num_workers.into(),
             driver: match &value.driver {
                 Some(driver) if driver == "dpdk" => {
                     // TODO: adjust command line to specify lcore usage more flexibly in next PR
-                    let eal_args = use_nics
-                        .iter()
-                        .map(|nic| match nic {
+                    let eal_args = value
+                        .interfaces()
+                        .map(|nic| match nic.port {
                             NetworkDeviceDescription::Pci(pci_address) => {
                                 Ok(["--allow".to_string(), format!("{pci_address}")])
                             }
@@ -1224,23 +1242,15 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                         .into_iter()
                         .flatten()
                         .collect();
-                    DriverConfigSection::Dpdk(DpdkDriverConfigSection { use_nics, eal_args })
+
+                    DriverConfigSection::Dpdk(DpdkDriverConfigSection {
+                        interfaces: value.interfaces().collect(),
+                        eal_args,
+                    })
                 }
                 Some(driver) if driver == "kernel" => {
                     DriverConfigSection::Kernel(KernelDriverConfigSection {
-                        interfaces: use_nics
-                            .iter()
-                            .map(|nic| match nic {
-                                NetworkDeviceDescription::Pci(address) => {
-                                    Err(InvalidCmdArguments::UnsupportedByDriver(
-                                        UnsupportedByDriver::Kernel(*address),
-                                    ))
-                                }
-                                NetworkDeviceDescription::Kernel(interface) => {
-                                    Ok(interface.clone())
-                                }
-                            })
-                            .collect::<Result<_, _>>()?,
+                        interfaces: value.interfaces().collect(),
                     })
                 }
                 Some(other) => Err(InvalidCmdArguments::InvalidDriver(other.clone()))?,
@@ -1270,6 +1280,10 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             },
             metrics: MetricsConfigSection {
                 address: value.metrics_address(),
+            },
+            profiling: ProfilingConfigSection {
+                pyroscope_url: value.pyroscope_url().map(std::string::ToString::to_string),
+                frequency: ProfilingConfigSection::DEFAULT_FREQUENCY,
             },
         })
     }
@@ -1561,6 +1575,7 @@ impl CmdArgs {
         self.metrics_address
     }
 
+    #[must_use]
     pub fn pyroscope_url(&self) -> Option<&url::Url> {
         self.pyroscope_url.as_ref()
     }
@@ -1575,7 +1590,7 @@ mod tests {
     use hardware::pci::function::Function;
     use net::interface::InterfaceName;
 
-    use crate::{InterfaceArg, PortArg};
+    use crate::{InterfaceArg, NetworkDeviceDescription};
     use std::str::FromStr;
 
     #[test]
@@ -1585,12 +1600,12 @@ mod tests {
         assert_eq!(spec.interface.as_ref(), "GbEth1.9000");
         assert_eq!(
             spec.port,
-            Some(PortArg::PCI(PciAddress::new(
+            NetworkDeviceDescription::Pci(PciAddress::new(
                 Domain::from(0),
                 Bus::new(2),
                 Device::try_from(1).unwrap(),
                 Function::try_from(7).unwrap()
-            )))
+            ))
         );
 
         // interface + port as kernel interface
@@ -1598,15 +1613,8 @@ mod tests {
         assert_eq!(spec.interface.as_ref(), "GbEth1.9000");
         assert_eq!(
             spec.port,
-            Some(PortArg::KERNEL(
-                InterfaceName::try_from("enp2s1.100").unwrap()
-            ))
+            NetworkDeviceDescription::Kernel(InterfaceName::try_from("enp2s1.100").unwrap())
         );
-
-        // interface only (backwards compatibility)
-        let spec = InterfaceArg::from_str("GbEth1.9000").unwrap();
-        assert_eq!(spec.interface.as_ref(), "GbEth1.9000");
-        assert!(spec.port.is_none());
 
         // bad pci address
         assert!(InterfaceArg::from_str("GbEth1.9000=pci@0000:02:01").is_err());
