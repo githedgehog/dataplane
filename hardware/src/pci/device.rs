@@ -71,7 +71,7 @@ pub struct DeviceId(u16);
 impl DeviceId {
     /// Creates a new device ID.
     #[must_use]
-    pub fn new(id: u16) -> Self {
+    pub const fn new(id: u16) -> Self {
         Self(id)
     }
 

@@ -20,6 +20,7 @@ pub mod mem;
 pub mod nic;
 pub mod os;
 pub mod pci;
+pub mod support;
 
 #[cfg(any(test, feature = "scan"))]
 pub mod scan;
@@ -250,64 +251,5 @@ impl Node {
     #[must_use]
     pub fn children(&self) -> &[Node] {
         &self.children
-    }
-}
-
-/// Hardware topology scanning support.
-///
-/// This module provides integration with the `hwlocality` crate for
-/// discovering system hardware topology at runtime.
-#[cfg(any(test, feature = "scan"))]
-mod scan {
-    #[allow(clippy::wildcard_imports)] // transparently re-exported above
-    use super::*;
-    use hwlocality::object::{TopologyObject, attributes::ObjectAttributes};
-    use tracing::error;
-
-    impl TryFrom<ObjectAttributes<'_>> for NodeAttributes {
-        type Error = ();
-
-        fn try_from(value: ObjectAttributes) -> Result<Self, ()> {
-            Ok(match value {
-                ObjectAttributes::NUMANode(&x) => Self::NumaNode(x.into()),
-                ObjectAttributes::Cache(&x) => Self::Cache(x.try_into().map_err(|err| {
-                    error!("failed to convert cache attributes: {err}");
-                })?),
-                ObjectAttributes::Group(&x) => Self::Group(x.into()),
-                ObjectAttributes::PCIDevice(&x) => Self::Pci(x.into()),
-                ObjectAttributes::Bridge(&x) => Self::Bridge(x.try_into().map_err(|()| {
-                    error!("failed to convert bridge attributes");
-                })?),
-                ObjectAttributes::OSDevice(&x) => Self::OsDevice(x.try_into().map_err(|()| {
-                    error!("failed to convert os device attributes");
-                })?),
-            })
-        }
-    }
-
-    impl<'a> From<&'a TopologyObject> for Node {
-        fn from(value: &'a TopologyObject) -> Self {
-            Node {
-                id: Id::from(value.global_persistent_index()),
-                os_index: value.os_index(),
-                name: value.name().map(|x| x.to_string_lossy().to_string()),
-                type_: value.object_type().to_string(),
-                subtype: value.subtype().map(|x| x.to_string_lossy().to_string()),
-                properties: value
-                    .infos()
-                    .iter()
-                    .map(|x| {
-                        (
-                            x.name().to_string_lossy().to_string(),
-                            x.value().to_string_lossy().to_string(),
-                        )
-                    })
-                    .collect(),
-                attributes: value
-                    .attributes()
-                    .and_then(|x| NodeAttributes::try_from(x).ok()),
-                children: value.all_children().map(Node::from).collect(),
-            }
-        }
     }
 }

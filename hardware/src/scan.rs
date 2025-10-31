@@ -175,7 +175,7 @@ impl Node {
     ///
     /// ## Visibility
     ///
-    /// This method deliberately (does not attemtp to) side step cgroup / isolcpu type restrictions regarding
+    /// This method deliberately (does not attempt to) side step cgroup / isolcpu type restrictions regarding
     /// nic / core / memory visibility.
     ///
     /// The intent is to scan the hardware, rather than to report the configuration used by the current
