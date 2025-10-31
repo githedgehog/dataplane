@@ -26,6 +26,7 @@ use nat::stateless::NatTablesWriter;
 use nat::stateless::setup::{build_nat_configuration, validate_nat_configuration};
 use pkt_meta::dst_vpcd_lookup::VpcDiscTablesWriter;
 use pkt_meta::dst_vpcd_lookup::setup::build_dst_vni_lookup_configuration;
+use routing::frr::FrrAppliedConfig;
 
 use crate::processor::display::GwConfigDatabaseSummary;
 use crate::processor::gwconfigdb::GwConfigDatabase;
