@@ -10,8 +10,7 @@ use super::packet_processor::egress::Egress;
 use super::packet_processor::ingress::Ingress;
 use super::packet_processor::ipforward::IpForwarder;
 
-use concurrency::sync::Arc; // for pipeline
-use std::sync::Arc as StdArc; // standard Arc for the stats store
+use concurrency::sync::Arc;
 
 use pkt_meta::dst_vpcd_lookup::{DstVpcdLookup, VpcDiscTablesWriter};
 use pkt_meta::flow_table::{ExpirationsNF, FlowTable, LookupNF};
@@ -41,7 +40,7 @@ where
     pub natallocatorw: NatAllocatorWriter,
     pub vpcdtablesw: VpcDiscTablesWriter,
     pub stats: StatsCollector,
-    pub vpc_stats_store: StdArc<VpcStatsStore>,
+    pub vpc_stats_store: Arc<VpcStatsStore>,
 }
 
 /// Start a router and provide the associated pipeline
@@ -55,7 +54,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
 
     // Allocate the shared VPC stats store (returns Arc<VpcStatsStore>)
-    let vpc_stats_store: StdArc<VpcStatsStore> = VpcStatsStore::new();
+    let vpc_stats_store: Arc<VpcStatsStore> = VpcStatsStore::new();
 
     // Build stats collector + writer, wiring the same store instance in
     // Also returns stats store handle for gRPC server access
