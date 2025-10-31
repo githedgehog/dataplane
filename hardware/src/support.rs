@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
+//! Tools for identifying supported hardware.
+
+use crate::pci::{device::DeviceId, vendor::VendorId};
 
 #[derive(
     Debug,
