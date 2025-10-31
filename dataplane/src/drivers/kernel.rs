@@ -13,7 +13,7 @@
 )]
 
 use afpacket::sync::RawPacketStream;
-use args::{InterfaceArg, PortArg};
+use args::{InterfaceArg, NetworkDeviceDescription};
 use concurrency::sync::Arc;
 use concurrency::thread;
 
@@ -312,11 +312,11 @@ impl DriverKernel {
         // populate the kernel interface table with the desired interfaces
         for ifarg in args {
             match ifarg.port {
-                Some(PortArg::PCI(_)) => {
+                NetworkDeviceDescription::Pci(_) => {
                     error!("kernel driver does not support PCI ports");
                     return Err("kernel driver does not support PCI ports".to_string());
                 }
-                Some(PortArg::KERNEL(name)) => {
+                NetworkDeviceDescription::Kernel(name) => {
                     let Some(ifindex) = get_interface_ifindex(&inventory_kern_ifs, name.as_ref())
                     else {
                         return Err(format!("Could not find kernel interface {name}"));
@@ -325,11 +325,6 @@ impl DriverKernel {
                         error!("Could not add kernel interface '{name}': {e}");
                         return Err(e);
                     }
-                }
-                _ => {
-                    // TODO: remove Option<> from PortArg as it will need to be mandatory
-                    // after the integration
-                    return Err("Port specification is mandatory".to_string());
                 }
             }
         }
