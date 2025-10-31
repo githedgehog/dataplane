@@ -79,6 +79,7 @@ fn main() {
         "dpdk_wrapper",
         "rte_net_virtio",
         "rte_net_vhost",
+        "rte_net_i40e",
         "rte_vhost",
         "rte_net_mlx5",
         "rte_common_mlx5",
