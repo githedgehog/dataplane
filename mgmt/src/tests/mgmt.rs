@@ -47,6 +47,7 @@ pub mod test {
     use tracing::debug;
 
     use stats::VpcMapName;
+    use stats::VpcStatsStore; // <-- added
     use vpcmap::map::VpcMapWriter;
 
     /* OVERLAY config sample builders */
@@ -390,10 +391,19 @@ pub mod test {
         /* crate VniTables for dst_vni_lookup */
         let vnitablesw = VpcDiscTablesWriter::new();
 
+        /* NEW: VPC stats store (Arc) */
+        let vpc_stats_store = VpcStatsStore::new();
+
         /* build config processor to test the processing of a config. The processor embeds the config database
         and has the frrmi. In this test, we don't use any channel to communicate the config. */
-        let (mut processor, _sender) =
-            ConfigProcessor::new(ctl, vpcmapw, nattablesw, natallocatorw, vnitablesw);
+        let (mut processor, _sender) = ConfigProcessor::new(
+            ctl,
+            vpcmapw,
+            nattablesw,
+            natallocatorw,
+            vnitablesw,
+            vpc_stats_store, // <-- pass the Arc here
+        );
 
         /* let the processor process the config */
         match processor.process_incoming_config(config).await {
