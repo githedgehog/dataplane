@@ -5,6 +5,9 @@ use derive_builder::Builder;
 use multi_index_map::MultiIndexMap;
 use net::buffer::{PacketBuffer, PacketBufferMut};
 use net::interface::InterfaceName;
+
+use net::interface::InterfaceIndex;
+use nix::net::if_::if_nametoindex;
 use serde::{Deserialize, Serialize};
 use std::num::NonZero;
 use std::os::fd::AsFd;
@@ -34,6 +37,7 @@ pub struct TapDevicePropertiesSpec {}
 pub struct TapDevice {
     name: InterfaceName,
     async_fd: AsyncFd<std::fs::File>,
+    ifindex: InterfaceIndex,
 }
 
 mod helper {
@@ -248,13 +252,17 @@ impl TapDevice {
     #[tracing::instrument(level = "info")]
     pub async fn open(name: &InterfaceName) -> Result<Self, std::io::Error> {
         let async_fd = helper::InterfaceRequest::new(name.clone()).create()?;
+        let ifindex = if_nametoindex(name.as_ref())?;
+        let ifindex = InterfaceIndex::try_new(ifindex).unwrap_or_else(|_| unreachable!());
         Ok(TapDevice {
             name: name.clone(),
             async_fd,
+            ifindex,
         })
     }
 
-    /// Get a reference to the name of a `TapDevice
+    /// Get a reference to the name of a `TapDevice`
+    #[must_use]
     pub fn name(&self) -> &InterfaceName {
         &self.name
     }
