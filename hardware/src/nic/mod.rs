@@ -102,6 +102,9 @@ pub enum PciDriver {
     /// Intel's i40e driver.
     #[strum(serialize = "i40e")]
     I40e,
+    /// Intel's iavf driver.
+    #[strum(serialize = "iavf")]
+    Iavf,
     /// NVIDIA/Mellanox's mlx5 driver
     #[strum(serialize = "mlx5_core")]
     Mlx5Core,
