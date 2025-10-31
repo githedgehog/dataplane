@@ -17,9 +17,9 @@ use crate::fib::fibtable::{FibTableReader, FibTableReaderFactory, FibTableWriter
 use crate::interfaces::iftablerw::{IfTableReader, IfTableReaderFactory, IfTableWriter};
 use crate::rio::{RioConf, RioHandle, start_rio};
 
-use crate::rio::DEFAULT_DP_UX_PATH;
-use crate::rio::DEFAULT_DP_UX_PATH_CLI;
-use crate::rio::DEFAULT_FRR_AGENT_PATH;
+use args::DEFAULT_DP_UX_PATH;
+use args::DEFAULT_DP_UX_PATH_CLI;
+use args::DEFAULT_FRR_AGENT_PATH;
 
 /// Struct to configure router object. N.B we derive a builder type `RouterConfig`
 /// and provide defaults for each field.

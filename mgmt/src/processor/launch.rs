@@ -11,9 +11,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use tokio::io;
 use tokio::net::UnixListener;
 use tokio::sync::mpsc::Sender;
-use tokio::{io, spawn};
 use tokio_stream::Stream;
 
 use nat::stateful::NatAllocatorWriter;
@@ -151,6 +151,7 @@ enum ServerAddress {
     Tcp(SocketAddr),
     Unix(PathBuf),
 }
+
 impl Display for ServerAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -160,16 +161,9 @@ impl Display for ServerAddress {
     }
 }
 
-/// Enum to represent either a TCP socket address or a UNIX socket path
-#[derive(Debug, Clone)]
-pub enum GrpcAddress {
-    Tcp(SocketAddr),
-    UnixSocket(PathBuf),
-}
-
 /// Start the mgmt service with either type of socket
 pub fn start_mgmt(
-    grpc_addr: GrpcAddress,
+    grpc_addr: args::GrpcAddress,
     router_ctl: RouterCtlSender,
     nattablew: NatTablesWriter,
     natallocatorw: NatAllocatorWriter,
@@ -179,8 +173,8 @@ pub fn start_mgmt(
 ) -> Result<std::thread::JoinHandle<()>, Error> {
     /* build server address from provided grpc address */
     let server_address = match grpc_addr {
-        GrpcAddress::Tcp(addr) => ServerAddress::Tcp(addr),
-        GrpcAddress::UnixSocket(path) => ServerAddress::Unix(path.to_path_buf()),
+        args::GrpcAddress::Tcp(addr) => ServerAddress::Tcp(addr),
+        args::GrpcAddress::UnixSocket(path) => ServerAddress::Unix(path.into()),
     };
     debug!("Will start gRPC listening on {server_address}");
 
@@ -206,7 +200,7 @@ pub fn start_mgmt(
                     vpcdtablesw,
                     vps_stats_store,
                 );
-                spawn(async { processor.run().await });
+                tokio::task::spawn(async { processor.run().await });
 
                 // Start the appropriate server based on address type
                 let result = match server_address {
