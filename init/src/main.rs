@@ -355,7 +355,7 @@ fn main() {
 
     match &launch_config.driver {
         args::DriverConfigSection::Dpdk(dpdk_section) => {
-            let search = DeviceSearch::new(dpdk_section.use_nics.iter());
+            let search = DeviceSearch::new(dpdk_section.interfaces.iter().map(|it| &it.port));
             let report = search.report();
             let report_yml = serde_yaml_ng::to_string(&report)
                 .into_diagnostic()
