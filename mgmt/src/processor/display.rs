@@ -6,6 +6,7 @@ use routing::pretty_utils::Heading;
 use std::fmt::Display;
 
 use crate::processor::gwconfigdb::GwConfigDatabase;
+
 #[allow(unused)]
 use config::{ExternalConfig, GenId, GwConfig, GwConfigMeta, InternalConfig};
 
@@ -14,6 +15,7 @@ macro_rules! CONFIGDB_TBL_FMT {
         " {:>6} {:<25} {:<25} {:<25} {:>6} {:<10}"
     };
 }
+
 fn fmt_configdb_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     writeln!(
         f,
@@ -24,6 +26,7 @@ fn fmt_configdb_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Re
         )
     )
 }
+
 fn fmt_gwconfig_summary(
     meta: &GwConfigMeta,
     genid: GenId,
@@ -59,6 +62,7 @@ fn fmt_gwconfig_summary(
 }
 
 pub struct GwConfigDatabaseSummary<'a>(pub &'a GwConfigDatabase);
+
 impl Display for GwConfigDatabaseSummary<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading(format!(
@@ -78,12 +82,3 @@ impl Display for GwConfigDatabaseSummary<'_> {
         Ok(())
     }
 }
-
-/*
-// TODO(fredi)
-impl Display for GwConfigDatabase {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Ok(())
-    }
-}
- */

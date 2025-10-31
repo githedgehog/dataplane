@@ -7,9 +7,8 @@ use config::{ConfigError, ConfigResult, ExternalConfig, GenId, GwConfig};
 use std::collections::BTreeMap;
 use tracing::{debug, error, info};
 
-#[derive(Default)]
-#[allow(unused)]
 /// Configuration database, keeps a set of [`GwConfig`]s keyed by generation id [`GenId`]
+#[derive(Default)]
 pub struct GwConfigDatabase {
     configs: BTreeMap<GenId, GwConfig>, /* collection of configs */
     current: Option<GenId>,             /* [`GenId`] of currently applied config */
@@ -23,6 +22,7 @@ impl GwConfigDatabase {
         configdb.add(GwConfig::blank());
         configdb
     }
+
     pub fn add(&mut self, config: GwConfig) {
         debug!("Storing config '{}' in config db...", config.genid());
         self.configs.insert(config.external.genid, config);
@@ -33,19 +33,26 @@ impl GwConfigDatabase {
     pub fn len(&self) -> usize {
         self.configs.len()
     }
+
     pub fn iter(&self) -> impl Iterator<Item = (&GenId, &GwConfig)> {
         self.configs.iter()
     }
+
     #[must_use]
     pub fn get(&self, genid: GenId) -> Option<&GwConfig> {
         self.configs.get(&genid)
     }
+
+    #[must_use]
     pub fn contains(&self, genid: GenId) -> bool {
         self.configs.contains_key(&genid)
     }
+
+    #[must_use]
     pub fn get_mut(&mut self, generation: GenId) -> Option<&mut GwConfig> {
         self.configs.get_mut(&generation)
     }
+
     pub fn remove(&mut self, genid: GenId) -> ConfigResult {
         if genid == ExternalConfig::BLANK_GENID {
             debug!("Will not remove config {genid} as it is protected");
@@ -78,6 +85,7 @@ impl GwConfigDatabase {
     pub fn get_current_gen(&self) -> Option<GenId> {
         self.current
     }
+
     /// Get a reference to the config currently applied, if any.
     #[must_use]
     pub fn get_current_config(&self) -> Option<&GwConfig> {
