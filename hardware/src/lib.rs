@@ -21,6 +21,9 @@ pub mod nic;
 pub mod os;
 pub mod pci;
 
+#[cfg(any(test, feature = "scan"))]
+pub mod scan;
+
 /// A non-zero byte count used throughout the crate for memory sizes.
 ///
 /// Using `NonZero` ensures that zero-byte sizes are not representable,
