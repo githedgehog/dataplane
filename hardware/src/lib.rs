@@ -20,6 +20,7 @@ pub mod mem;
 pub mod nic;
 pub mod os;
 pub mod pci;
+pub mod support;
 
 #[cfg(any(test, feature = "scan"))]
 pub mod scan;
