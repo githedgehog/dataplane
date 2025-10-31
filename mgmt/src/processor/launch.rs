@@ -198,7 +198,7 @@ pub fn start_mgmt(
                     natallocatorw,
                     vpcdtablesw,
                 );
-                spawn(async { processor.run().await });
+                tokio::task::spawn(async { processor.run().await });
 
                 // Start the appropriate server based on address type
                 let result = match server_address {
