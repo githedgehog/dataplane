@@ -175,6 +175,7 @@ pub fn start_mgmt(
     natallocatorw: NatAllocatorWriter,
     vpcdtablesw: VpcDiscTablesWriter,
     vpcmapw: VpcMapWriter<VpcMapName>,
+    vps_stats_store: std::sync::Arc<stats::VpcStatsStore>,
 ) -> Result<std::thread::JoinHandle<()>, Error> {
     /* build server address from provided grpc address */
     let server_address = match grpc_addr {
@@ -203,6 +204,7 @@ pub fn start_mgmt(
                     nattablew,
                     natallocatorw,
                     vpcdtablesw,
+                    vps_stats_store,
                 );
                 spawn(async { processor.run().await });
 
