@@ -45,6 +45,7 @@
     Ord,
     PartialEq,
     PartialOrd,
+    bytecheck::CheckBytes,
     num_derive::ToPrimitive,
     rkyv::Archive,
     rkyv::Deserialize,
@@ -56,6 +57,7 @@
     serde(transparent)
 )]
 #[repr(transparent)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct Function(u8);
 
 impl Function {
