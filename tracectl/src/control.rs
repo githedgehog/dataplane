@@ -5,7 +5,7 @@
 
 use ordermap::OrderMap;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::{collections::HashSet, sync::MutexGuard};
 use thiserror::Error;
 #[allow(unused)]
@@ -338,16 +338,10 @@ impl TracingControl {
 }
 
 /// Get a reference to a static [`TracingControl`], initializing it if needed
-static INIT: Once = Once::new();
-static mut TRACING_CTL: Option<TracingControl> = None;
+static TRACING_CTL: LazyLock<TracingControl> = LazyLock::new(TracingControl::new);
 pub fn get_trace_ctl() -> &'static TracingControl {
-    INIT.call_once(|| unsafe {
-        TRACING_CTL = Some(TracingControl::new());
-    });
-    #[allow(static_mut_refs)]
-    unsafe {
-        TRACING_CTL.as_ref().unwrap()
-    }
+    #[allow(clippy::explicit_auto_deref)] // needed by mechanics of lazy lock
+    &*TRACING_CTL
 }
 
 // public methods for TracingControl
