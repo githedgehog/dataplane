@@ -6,10 +6,12 @@ publish = false
 license = "Apache-2.0"
 
 [dependencies]
+color-eyre = { workspace = true , features = [ "capture-spantrace", "color-spantrace", "tracing-error", "track-caller" ] }
 linkme = { workspace = true }
 ordermap = { workspace = true, features = ["std"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+tracing-error = { workspace = true, features = ["traced-error"] }
 tracing-subscriber = { workspace = true, features = ["registry", "std", "env-filter", "fmt"] }
 
 [dev-dependencies]
