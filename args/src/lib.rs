@@ -1,6 +1,90 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+//! Argument parsing and configuration management for the Hedgehog dataplane.
+//!
+//! This crate provides the infrastructure for safely passing configuration from the
+//! `dataplane-init` process to the `dataplane` worker process using Linux memory file
+//! descriptors (memfd). This approach enables zero-copy deserialization while maintaining
+//! strong security guarantees through file sealing mechanisms.
+//!
+//! # Architecture
+//!
+//! The configuration flow follows this pattern:
+//!
+//! 1. **Parent Process (dataplane-init)**:
+//!    - Parses command-line arguments using [`CmdArgs`]
+//!    - Converts arguments into a [`LaunchConfiguration`]
+//!    - Serializes the configuration using `rkyv` for zero-copy deserialization
+//!    - Writes serialized data to a [`MemFile`] and finalizes it into a [`FinalizedMemFile`]
+//!    - Computes an [`IntegrityCheck`] (SHA-384 hash) of the configuration
+//!    - Passes both file descriptors to the child process at known FD numbers
+//!
+//! 2. **Child Process (dataplane)**:
+//!    - Inherits the configuration via [`LaunchConfiguration::inherit()`]
+//!    - Validates the integrity check matches the configuration
+//!    - Memory-maps the sealed memfd for zero-copy access
+//!    - Accesses the configuration through the rkyv archive format
+//!
+//! # Key Types
+//!
+//! - [`CmdArgs`]: Command-line argument parser using clap
+//! - [`LaunchConfiguration`]: Complete dataplane configuration (driver, routing, metrics, etc.)
+//! - [`MemFile`]: Mutable memfd wrapper for building configuration
+//! - [`FinalizedMemFile`]: Immutable, sealed memfd for safe inter-process sharing
+//! - [`IntegrityCheck`]: SHA-384-based validation for configuration authenticity
+//!
+//! # `FinalizedMemFile` Integrity
+//!
+//! [`FinalizedMemFile`] provides multiple layers of protection:
+//!
+//! - **Read-only mode**: File permissions are set to 0o400 (owner read-only)
+//! - **Sealed against modification**: `F_SEAL_WRITE`, `F_SEAL_GROW`, `F_SEAL_SHRINK` prevent changes
+//! - **Sealed seals**: `F_SEAL_SEAL` prevents removing the seals
+//! - **Integrity checking**: SHA-384 hash validates the configuration hasn't been tampered with or corrupted.
+//! - (optional) **Close-on-exec**: we have the ability to mark `MemFd` as close-on-exec to prevent accidental leaking
+//!   to subprocesses.
+//!   This can't be done in the parent process, but should be done by the child process as soon as the file descriptor
+//!   is identified.
+//!
+//! # Example Usage
+//!
+//! ## Parent Process (init)
+//!
+//! ```no_run
+//! use dataplane_args::{CmdArgs, LaunchConfiguration, Parser, AsFinalizedMemFile};
+//!
+//! // Parse command-line arguments
+//! let args = CmdArgs::parse();
+//!
+//! // Convert to launch configuration
+//! let config: LaunchConfiguration = args.try_into()
+//!     .expect("invalid configuration");
+//!
+//! // Serialize and finalize
+//! let config_memfd = config.finalize();
+//! let mut config_memfd_mut = config_memfd;
+//! let integrity_check = config_memfd_mut.integrity_check();
+//! let check_memfd = integrity_check.finalize();
+//!
+//! // ... pass to child process ...
+//! ```
+//!
+//! ## Child Process (dataplane)
+//!
+//! ```no_run
+//! use dataplane_args::LaunchConfiguration;
+//!
+//! // Inherit configuration from parent
+//! let config = LaunchConfiguration::inherit();
+//!
+//! // Configuration is now available with zero-copy access
+//! println!("Using driver: {:?}", config.driver);
+//! ```
+
+#![deny(unsafe_code, clippy::pedantic)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 pub use clap::Parser;
 use hardware::pci::address::InvalidPciAddress;
 use hardware::pci::address::PciAddress;
@@ -12,7 +96,6 @@ use std::borrow::Borrow;
 use std::fmt::Display;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::SocketAddr;
-use std::num::NonZero;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -57,26 +140,22 @@ impl FromStr for PortArg {
 impl FromStr for InterfaceArg {
     type Err = String;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        match input.split_once('=') {
-            Some((first, second)) => {
-                let interface = InterfaceName::try_from(first)
-                    .map_err(|e| format!("Bad interface name: {e}"))?;
+        if let Some((first, second)) = input.split_once('=') {
+            let interface = InterfaceName::try_from(first)
+                .map_err(|e| format!("Bad interface name: {e}"))?;
 
-                let port = PortArg::from_str(second)?;
-                Ok(InterfaceArg {
-                    interface,
-                    port: Some(port),
-                })
-            }
-            // this branch will go away
-            None => {
-                let interface = InterfaceName::try_from(input)
-                    .map_err(|e| format!("Bad interface name: {e}"))?;
-                Ok(InterfaceArg {
-                    interface,
-                    port: None,
-                })
-            }
+            let port = PortArg::from_str(second)?;
+            Ok(InterfaceArg {
+                interface,
+                port: Some(port),
+            })
+        } else {
+            let interface = InterfaceName::try_from(input)
+                .map_err(|e| format!("Bad interface name: {e}"))?;
+            Ok(InterfaceArg {
+                interface,
+                port: None,
+            })
         }
     }
 }
@@ -87,40 +166,50 @@ use bytecheck::CheckBytes;
 use nix::fcntl::{FcntlArg, FdFlag};
 use nix::{fcntl::SealFlag, sys::memfd::MFdFlags};
 
+/// Default path to the dataplane's control plane unix socket.
+///
+/// This socket is used by FRR to send route update messages to the dataplane process.
 pub const DEFAULT_DP_UX_PATH: &str = "/var/run/frr/hh/dataplane.sock";
+
+/// Default path to the dataplane's CLI socket.
+///
+/// This socket is used to accept connections from the dataplane CLI tool for
+/// runtime inspection and control.
 pub const DEFAULT_DP_UX_PATH_CLI: &str = "/var/run/dataplane/cli.sock";
+
+/// Default path to the FRR agent socket.
+///
+/// This socket is used to connect to the FRR agent that controls FRR
+/// configuration reloads.
 pub const DEFAULT_FRR_AGENT_PATH: &str = "/var/run/frr/frr-agent.sock";
 
 /// A type wrapper around [`std::fs::File`] which is reserved to describe linux [memfd] files.
 ///
-/// Our main use case for these files is passing ephemeral, launch-time configuration data to
-/// the dataplane process from the dataplane-init process.
+/// Memory file descriptors are anonymous, file-like objects that exist only in memory
+/// and are not backed by any filesystem. They are particularly useful for passing
+/// ephemeral configuration data between processes.
 ///
-/// # Note
+/// # Mutability
 ///
-/// [`MemFile`] is intended for mutation.  Use the [`MemFile::finalize`] method to create a [`FinalizedMemFile`] to pass
-/// to child processes.
-///
-/// [memfd]: https://man7.org/linux/man-pages/man2/memfd_create.2.html
+/// [`MemFile`] is intended for mutation during construction. Once you've written your
+/// data, use [`MemFile::finalize`] to create a [`FinalizedMemFile`] which provides
+/// strong immutability guarantees suitable for inter-process sharing.
 #[derive(Debug)]
 pub struct MemFile(std::fs::File);
 
-/// A type wrapper around [`MemFile`] for memfd files which are emphatically NOT intended for any kind of data mutation
-/// ever again.
+/// An immutable, sealed memory file descriptor that cannot be modified.
 ///
 /// Multiple protections are in place to deny all attempts to mutate the memory contents of these files.
 /// These protections make this type of file suitable for as-safe-as-practical zero-copy deserialization of data
 /// structure serialized by one process and given to a different process.
 ///
-/// Protections include both basic linux DAC read only mode, as well as write, truncation, and extension sealing, as well
-/// as sealing the seals in place to prevent their removal.
+/// # Integrity Properties
 ///
-/// # Note
+/// Multiple protections are enforced to prevent any data mutation:
 ///
 /// If these files contain secrets (or even if they don't), it is usually best to mark the file as close-on-exec to
 /// further mitigate opportunities for the data to be corrupted / mutated.
 /// This task, by its nature, can not be done by the parent process (or the child would not get the file descriptor).
-///
 /// As a consequence, this marking step should be taken as soon as the file is received by the child process.
 /// The (unsafe) method [`FinalizedMemFile::from_fd`] takes this action automatically, and is the recommended way to
 /// receive and read the file from child processes.
@@ -128,6 +217,11 @@ pub struct FinalizedMemFile(MemFile);
 
 impl MemFile {
     /// Create a new, blank [`MemFile`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the operating system is unable to allocate an in-memory file descriptor.
+    #[must_use]
     pub fn new() -> MemFile {
         let id: id::Id<MemFile> = id::Id::new();
         let descriptor =
@@ -151,13 +245,14 @@ impl MemFile {
     ///
     /// # Panics
     ///
-    /// This method is intended for use only during early process initialization and make no attempt to recover from
+    /// This method is intended for use only during early process initialization and makes no attempt to recover from
     /// errors.
     ///
     /// This method will panic if
     ///
     /// 1. The file can not be modified to exclude write operations (basically chmod 400)
     /// 2. if the file can not be sealed against extension, truncation, mutation, and any attempt to remove the seals.
+    #[must_use]
     pub fn finalize(self) -> FinalizedMemFile {
         let mut this = self;
         // mark the file as read only
@@ -259,11 +354,41 @@ impl From<MemFile> for FinalizedMemFile {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub enum GrpcAddress {
+    /// TCP socket address (IP address and port)
     Tcp(SocketAddr),
+    /// Unix domain socket path
     UnixSocket(String),
 }
 
-/// Configuration for the driver used by the dataplane to process packets.
+/// Configuration for the packet processing driver used by the dataplane.
+///
+/// The dataplane supports two packet processing backends:
+///
+/// - **DPDK (Data Plane Development Kit)**: High-performance userspace driver for
+///   specialized network hardware. Provides kernel-bypass networking with direct access
+///   to NIC hardware via PCI.
+///
+/// - **Kernel**: Standard Linux kernel networking stack. Uses traditional network
+///   interfaces and kernel packet processing.
+///
+/// # Choosing a Driver
+///
+/// - Use **DPDK** for maximum performance on supported hardware, typically in production
+///   environments with dedicated NICs.
+/// - Use **Kernel** for development, testing, or environments without DPDK-compatible
+///   hardware.
+///
+/// # Example
+///
+/// ```
+/// use dataplane_args::{DriverConfigSection, KernelDriverConfigSection};
+/// use net::interface::InterfaceName;
+///
+/// // Kernel driver configuration
+/// let kernel_config = DriverConfigSection::Kernel(KernelDriverConfigSection {
+///     interfaces: vec![],
+/// });
+/// ```
 #[derive(
     Debug,
     PartialEq,
@@ -278,10 +403,28 @@ pub enum GrpcAddress {
 #[serde(rename_all = "snake_case")]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub enum DriverConfigSection {
+    /// DPDK userspace driver configuration
     Dpdk(DpdkDriverConfigSection),
+    /// Linux kernel driver configuration
     Kernel(KernelDriverConfigSection),
 }
 
+/// Description of a network device by its bus address.
+///
+/// Currently supports PCI-addressed devices, which is the standard addressing
+/// scheme for NICs in modern systems.
+///
+/// # Example
+///
+/// ```
+/// use dataplane_args::NetworkDeviceDescription;
+/// use hardware::pci::address::PciAddress;
+///
+/// // PCI device at bus 0000:01:00.0
+/// let device = NetworkDeviceDescription::Pci(
+///     PciAddress::try_from("0000:01:00.0").unwrap()
+/// );
+/// ```
 #[derive(
     Debug,
     Ord,
@@ -298,6 +441,7 @@ pub enum DriverConfigSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub enum NetworkDeviceDescription {
+    /// PCI-addressed network device
     Pci(hardware::pci::address::PciAddress),
     Kernel(InterfaceName),
 }
@@ -315,23 +459,36 @@ impl Display for NetworkDeviceDescription {
     }
 }
 
-pub type KiB = NonZero<u64>;
-
-#[derive(
-    Debug,
-    Default,
-    serde::Serialize,
-    serde::Deserialize,
-    rkyv::Serialize,
-    rkyv::Deserialize,
-    rkyv::Archive,
-)]
-pub enum WorkerStackSize {
-    #[default]
-    Default,
-    Size(KiB),
-}
-
+/// Configuration for the DPDK (Data Plane Development Kit) driver.
+///
+/// DPDK provides kernel-bypass networking for high-performance packet processing.
+/// This configuration specifies which NICs to use and how to initialize the DPDK
+/// Environment Abstraction Layer (EAL).
+///
+/// # Fields
+///
+/// - `use_nics`: List of network devices (by PCI address) to bind to DPDK
+/// - `eal_args`: Arguments passed to DPDK's EAL initialization (e.g., core masks,
+///   memory configuration, device allowlists)
+///
+/// # Example
+///
+/// ```
+/// use dataplane_args::{DpdkDriverConfigSection, NetworkDeviceDescription};
+/// use hardware::pci::address::PciAddress;
+///
+/// let config = DpdkDriverConfigSection {
+///     use_nics: vec![
+///         NetworkDeviceDescription::Pci(
+///             PciAddress::try_from("0000:01:00.0").unwrap()
+///         )
+///     ],
+///     eal_args: vec![
+///         "--main-lcore".to_string(),
+///         "2".to_string(),
+///     ],
+/// };
+/// ```
 #[derive(
     Debug,
     PartialEq,
@@ -345,10 +502,35 @@ pub enum WorkerStackSize {
 )]
 #[rkyv(attr(derive(Debug, PartialEq, Eq)))]
 pub struct DpdkDriverConfigSection {
+    /// Network devices to use with DPDK (identified by PCI address)
     pub use_nics: Vec<NetworkDeviceDescription>,
+    /// DPDK EAL (Environment Abstraction Layer) initialization arguments
     pub eal_args: Vec<String>,
 }
 
+/// Configuration for the Linux kernel networking driver.
+///
+/// Uses the standard Linux kernel network stack for packet processing.
+/// This is suitable for development, testing, or environments without
+/// DPDK-compatible hardware.
+///
+/// # Fields
+///
+/// - `interfaces`: List of kernel network interface names to manage
+///   (e.g., `eth0`, `ens3`)
+///
+/// # Example
+///
+/// ```
+/// use dataplane_args::KernelDriverConfigSection;
+/// use net::interface::InterfaceName;
+///
+/// let config = KernelDriverConfigSection {
+///     interfaces: vec![
+///         InterfaceName::try_from("eth0").unwrap(),
+///     ],
+/// };
+/// ```
 #[derive(
     Debug,
     PartialEq,
@@ -362,10 +544,14 @@ pub struct DpdkDriverConfigSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct KernelDriverConfigSection {
+    /// Kernel network interfaces to manage
     pub interfaces: Vec<InterfaceName>,
 }
 
-/// Configuration for the command line interface of the dataplane
+/// Configuration for the dataplane's command-line interface (CLI).
+///
+/// Specifies where the CLI server listens for connections from CLI clients
+/// that want to inspect or control the running dataplane.
 #[derive(
     Debug,
     PartialEq,
@@ -379,10 +565,15 @@ pub struct KernelDriverConfigSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct CliConfigSection {
+    /// Unix socket path for CLI connections
     pub cli_sock_path: String,
 }
 
-/// Configuration which defines how metrics are collected from the dataplane.
+/// Configuration for metrics collection and export.
+///
+/// Defines the HTTP endpoint where Prometheus-compatible metrics are exposed.
+/// Metrics include packet counters, latency statistics, and other operational
+/// telemetry.
 #[derive(
     Debug,
     PartialEq,
@@ -396,6 +587,7 @@ pub struct CliConfigSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct MetricsConfigSection {
+    /// Socket address (IP and port) where metrics HTTP endpoint listens
     pub address: SocketAddr,
 }
 
@@ -413,10 +605,15 @@ pub struct MetricsConfigSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct TracingConfigSection {
+    /// Display options for trace output
     pub show: TracingShowSection,
+    /// Tracing configuration string (e.g., "default=info,nat=debug")
     pub config: Option<String>, // TODO: stronger typing on this config?
 }
 
+/// Display option for trace metadata elements.
+///
+/// Controls whether specific metadata is shown in trace output.
 #[derive(
     Debug,
     Default,
@@ -433,11 +630,16 @@ pub struct TracingConfigSection {
 #[serde(rename_all = "snake_case")]
 #[repr(u8)]
 pub enum TracingDisplayOption {
+    /// Hide this metadata element
     #[default]
     Hide,
+    /// Show this metadata element
     Show,
 }
 
+/// Display configuration for trace metadata.
+///
+/// Controls which metadata elements are included in trace output.
 #[derive(
     Debug,
     Default,
@@ -452,11 +654,16 @@ pub enum TracingDisplayOption {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct TracingShowSection {
+    /// Whether to display span/event tags
     pub tags: TracingDisplayOption,
+    /// Whether to display target module paths
     pub targets: TracingDisplayOption,
 }
 
-/// Configuration which defines the interaction between the dataplane and the routing control plane.
+/// Configuration for routing control plane integration.
+///
+/// Defines how the dataplane communicates with FRR (Free Range Routing) and
+/// related routing components.
 #[derive(
     Debug,
     PartialEq,
@@ -469,12 +676,16 @@ pub struct TracingShowSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct RoutingConfigSection {
+    /// Unix socket path for receiving route updates from FRR
     pub control_plane_socket: String,
+    /// Unix socket path for FRR agent communication
     pub frr_agent_socket: String,
 }
 
-/// Configuration section for the parameters of the dynamic configuration server which supplies
-/// updated configuration to the dataplane at runtime.
+/// Configuration for the dynamic configuration server.
+///
+/// The configuration server provides runtime configuration updates to the dataplane
+/// via gRPC. This allows modifying dataplane behavior without restarting the process.
 #[derive(
     Debug,
     PartialEq,
@@ -488,19 +699,32 @@ pub struct RoutingConfigSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct ConfigServerSection {
+    /// gRPC server address (TCP or Unix socket)
     pub address: GrpcAddress,
 }
 
-/// The configuration of the dataplane.
+/// Complete dataplane launch configuration.
 ///
-/// This structure should be computed from the command line arguments supplied to the dataplane-init.
+/// This structure contains all configuration parameters needed to initialize and run
+/// the dataplane process. It is typically constructed from command-line arguments in
+/// the `dataplane-init` process, then serialized and passed to the `dataplane` worker
+/// process via sealed memory file descriptors.
+///
+/// # Architecture
+///
+/// The configuration flow:
+///
+/// 1. **Init Process**: Parses [`CmdArgs`] and converts to [`LaunchConfiguration`]
+/// 2. **Serialization**: Configuration is serialized using `rkyv` for zero-copy access
+/// 3. **Transfer**: Passed via sealed memfd to the worker process
+/// 4. **Worker Process**: Calls [`LaunchConfiguration::inherit()`] to access the config
+///
 // TODO: implement bytecheck::Validate in addition to CheckBytes on all components of the launch config.
 #[derive(
     Debug,
     PartialEq,
     Eq,
     serde::Serialize,
-    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -508,26 +732,61 @@ pub struct ConfigServerSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct LaunchConfiguration {
+    /// Dynamic configuration server settings
     pub config_server: ConfigServerSection,
+    /// Packet processing driver configuration
     pub driver: DriverConfigSection,
+    /// CLI server configuration
     pub cli: CliConfigSection,
+    /// Routing control plane integration
     pub routing: RoutingConfigSection,
+    /// Logging and tracing configuration
     pub tracing: TracingConfigSection,
+    /// Metrics collection configuration
     pub metrics: MetricsConfigSection,
 }
 
 impl LaunchConfiguration {
+    /// Standard file descriptor number for the integrity check memfd.
+    ///
+    /// The parent process must pass the integrity check (SHA-384 hash) file at this
+    /// file descriptor number.
     pub const STANDARD_INTEGRITY_CHECK_FD: RawFd = 30;
+
+    /// Standard file descriptor number for the configuration memfd.
+    ///
+    /// The parent process must pass the serialized configuration file at this
+    /// file descriptor number.
     pub const STANDARD_CONFIG_FD: RawFd = 40;
 
-    /// Inherit a launch configuration from your parent process (assuming it correctly specified one).
+    /// Inherit the launch configuration from the parent process.
     ///
-    /// This method assumes that agreed upon file descriptor numbers are assigned by the parent.
+    /// This method is called by the dataplane worker process to receive its configuration
+    /// from the init process. It expects two sealed memory file descriptors at the standard
+    /// FD numbers ([`STANDARD_INTEGRITY_CHECK_FD`](Self::STANDARD_INTEGRITY_CHECK_FD) and
+    /// [`STANDARD_CONFIG_FD`](Self::STANDARD_CONFIG_FD)).
+    ///
+    /// # Process
+    ///
+    /// 1. Receives integrity check and configuration file descriptors
+    /// 2. Validates the SHA-384 hash matches the configuration
+    /// 3. Memory-maps the configuration for zero-copy access
+    /// 4. Validates the archived data structure (alignment, bounds, enum variants)
+    /// 5. Deserializes the configuration
     ///
     /// # Panics
     ///
-    /// This method is intended for use at system startup and makes little attempt to recover from errors.
-    /// This method will panic if the configuration is missing, invalid, or otherwise impossible to manipulate.
+    /// This method is designed for early process initialization and will panic if:
+    ///
+    /// - File descriptors are missing or invalid
+    /// - Integrity check validation fails (hash mismatch)
+    /// - Memory mapping fails
+    /// - Archived data is misaligned or has invalid size
+    /// - Deserialization fails (corrupt or invalid data)
+    ///
+    /// These panics are intentional as the dataplane cannot start without valid configuration.
+    #[must_use]
+    #[allow(unsafe_code)] // no-escape from unsafety in this function as it involves constraints the compiler can't see
     pub fn inherit() -> LaunchConfiguration {
         let integrity_check_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_INTEGRITY_CHECK_FD) };
         let launch_configuration_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_CONFIG_FD) };
@@ -546,28 +805,23 @@ impl LaunchConfiguration {
             .wrap_err("failed to memory map launch configuration")
             .unwrap();
 
-        {
-            // VERY IMPORTANT: we must check for unaligned pointer here or risk undefined behavior.
-            // There is absolutely no reason to keep this pointer alive past this scope.
-            // Don't let it escape the scope (even if it is aligned).
-            const EXPECTED_ALIGNMENT: usize = std::mem::align_of::<ArchivedLaunchConfiguration>();
-            const {
-                if !EXPECTED_ALIGNMENT.is_power_of_two() {
-                    panic!("nonsense alignment computed for ArchivedLaunchConfiguration");
-                }
-            }
-            let potentially_invalid_pointer =
-                launch_config_memmap.as_ptr() as *const ArchivedLaunchConfiguration;
-            if !potentially_invalid_pointer.is_aligned() {
-                panic!(
-                    "invalid alignment for ArchivedLaunchConfiguration found in inherited memfd"
-                );
-            }
-        }
+        // VERY IMPORTANT: we must check for unaligned pointer here or risk undefined behavior.
 
-        if launch_config_memmap.as_ref().len() < size_of::<ArchivedLaunchConfiguration>() {
-            panic!("invalid size for inherited memfd");
-        }
+        // deactivate the lint because checking for alignment is _exactly_ what we are doing here
+        #[allow(clippy::cast_ptr_alignment)]
+        let is_aligned = launch_config_memmap
+            .as_ptr()
+            .cast::<ArchivedLaunchConfiguration>()
+            .is_aligned();
+        assert!(
+            is_aligned,
+            "invalid alignment for ArchivedLaunchConfiguration found in inherited memfd"
+        );
+
+        assert!(
+            launch_config_memmap.as_ref().len() >= size_of::<ArchivedLaunchConfiguration>(),
+            "invalid size for inherited memfd"
+        );
 
         // we slightly abuse the access method here just to get byte level validation.
         // The actual objective here is to ensure all enums are valid and that all pointers point within the
@@ -602,14 +856,20 @@ impl AsFinalizedMemFile for LaunchConfiguration {
             .into_diagnostic()
             .wrap_err("failed to write dataplane configuration to memfd")
             .unwrap();
-        // seal the memfd
         memfd.finalize()
     }
 }
 
-/// Trait for data which may be "frozen" into a [`FinalizedMemFile`]
+/// Trait for data that can be serialized into a sealed memory file descriptor.
+///
+/// Types implementing this trait can be converted into a [`FinalizedMemFile`],
+/// which provides strong immutability guarantees suitable for inter-process
+/// communication.
 pub trait AsFinalizedMemFile {
-    /// Consume self and convert it into a [`FinalizedMemFile`]
+    /// Serialize and seal this data into a [`FinalizedMemFile`].
+    ///
+    /// The returned file is immutable and suitable for zero-copy deserialization
+    /// in other processes.
     fn finalize(&self) -> FinalizedMemFile;
 }
 
@@ -640,6 +900,7 @@ impl FinalizedMemFile {
     ///
     /// You should generally only call this method as when you are about to hand the file to a child process which is
     /// expecting such a file descriptor.
+    #[must_use]
     pub fn to_owned_fd(self) -> OwnedFd {
         OwnedFd::from(self.0.0)
     }
@@ -666,6 +927,7 @@ impl FinalizedMemFile {
     /// 7. panics if the provided memfd can not be `seek`ed to the start of the file (very unlikely)
     /// 8. panics if the provided memfd can not be marked as close-on-exec (very unlikely)
     #[instrument(level = "debug", skip(fd))]
+    #[allow(unsafe_code)] // external contract documented and checked as well as I can for now
     pub unsafe fn from_fd(fd: OwnedFd) -> FinalizedMemFile {
         // TODO: is procfs actually mounted at /proc?  Are we reading the correct file.  Annoying to fix this properly.
         let os_str =
@@ -678,19 +940,21 @@ impl FinalizedMemFile {
             .map_err(|_| std::io::Error::other("file descriptor readlink returned invalid unicode"))
             .into_diagnostic()
             .unwrap();
-        if !readlink_result.starts_with("/memfd:") {
-            panic!("supplied file descriptor is not a memfd: {readlink_result}");
-        }
+        assert!(
+            readlink_result.starts_with("/memfd:"),
+            "supplied file descriptor is not a memfd: {readlink_result}"
+        );
         let stat = nix::sys::stat::fstat(fd.as_fd())
             .into_diagnostic()
             .wrap_err("failed to stat memfd")
             .unwrap();
-        if stat.st_mode != 0o100400 {
-            panic!(
-                "finalized memfd not in read only mode: given mode is {:o}",
-                stat.st_mode
-            );
-        }
+        const EXPECTED_PERMISSIONS: u32 = 0o10_400; // expect read only + sticky bit
+        assert!(
+            stat.st_mode == EXPECTED_PERMISSIONS,
+            "finalized memfd not in read only mode: given mode is {:o}, expected {EXPECTED_PERMISSIONS:o}",
+            stat.st_mode
+        );
+
         let Some(seals) = SealFlag::from_bits(
             nix::fcntl::fcntl(fd.as_fd(), FcntlArg::F_GET_SEALS)
                 .into_diagnostic()
@@ -703,11 +967,10 @@ impl FinalizedMemFile {
             | SealFlag::F_SEAL_SHRINK
             | SealFlag::F_SEAL_WRITE
             | SealFlag::F_SEAL_SEAL;
-        if !seals.contains(expected_bits) {
-            panic!(
-                "missing seal bits on finalized memfd: bits set {seals:?}, bits expected: {expected_bits:?}"
-            );
-        }
+        assert!(
+            seals.contains(expected_bits),
+            "missing seal bits on finalized memfd: bits set {seals:?}, bits expected: {expected_bits:?}"
+        );
         let mut file = std::fs::File::from(fd);
         file.seek(SeekFrom::Start(0))
             .into_diagnostic()
@@ -721,7 +984,14 @@ impl FinalizedMemFile {
         FinalizedMemFile(MemFile(file))
     }
 
-    /// Validate this file using an [`IntegrityCheck`] serialized into the provided check_file
+    /// Validate this file using an [`IntegrityCheck`] serialized into the provided `check_file`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if
+    ///
+    /// 1. unable to read the integrity check file
+    /// 2. invalid file (checksum mismatch)
     pub fn validate(&mut self, check_file: FinalizedMemFile) -> Result<(), miette::Report> {
         let mut check_file = check_file;
         check_file
@@ -750,31 +1020,59 @@ impl FinalizedMemFile {
     }
 }
 
+/// Errors that can occur during integrity check validation.
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum IntegrityCheckError {
+    /// The integrity check file has an incorrect size.
+    ///
+    /// This typically indicates file corruption or an attempt to use an incompatible
+    /// hash algorithm. The expected size is [`SHA384_BYTE_LEN`] (48 bytes).
     #[error(
         "wrong check file length for hash type; received {0} bytes, expected {SHA384_BYTE_LEN} bytes"
     )]
     WrongCheckFileLength(u64),
 }
 
+/// Size of SHA-384 hash in bytes (384 bits / 8 = 48 bytes).
 const SHA384_BYTE_LEN: usize = 384 / 8;
+
+/// Current size of integrity check in bytes (currently SHA-384).
 const INTEGRITY_CHECK_BYTE_LEN: usize = SHA384_BYTE_LEN;
 
+/// Internal representation of SHA-384 hash bytes.
 #[repr(transparent)]
 #[derive(Debug, PartialEq, Eq)]
 struct Sha384Bytes([u8; SHA384_BYTE_LEN]);
 
-/// An integrity check for a file.
+/// Cryptographic integrity check for validating file contents.
 ///
-/// Currently implemented as SHA384, but without any contractual requirement to continue using that hash in the future.
+/// Currently implemented using SHA-384, providing a cryptographically secure hash
+/// that can detect any tampering or corruption of the file contents. The hash
+/// implementation may change in future versions without API changes.
+///
+/// # Use Cases
+///
+/// - Validating configuration files passed between processes
+/// - Detecting corruption in sealed memory file descriptors
+/// - Ensuring data integrity during process handoff
+///
+/// # Security Properties
+///
+/// SHA-384 is a member of the SHA-2 family and provides:
+///
+/// - 384-bit (48-byte) hash output
+/// - Cryptographic collision resistance
+/// - Pre-image resistance (cannot reverse the hash to find the original data)
 #[must_use]
 #[derive(Debug, PartialEq, Eq)]
 pub struct IntegrityCheck {
     sha384: Sha384Bytes,
 }
 
-/// A byte array which may hold an [`IntegrityCheck`]
+/// Byte array representation of an [`IntegrityCheck`].
+///
+/// This type can hold the serialized form of an integrity check (currently 48 bytes
+/// for SHA-384).
 pub type IntegrityCheckBytes = [u8; INTEGRITY_CHECK_BYTE_LEN];
 
 impl IntegrityCheck {
@@ -841,12 +1139,31 @@ impl AsFinalizedMemFile for IntegrityCheck {
     }
 }
 
+/// Errors that can occur when parsing or validating command-line arguments.
+///
+/// These errors occur during the conversion from [`CmdArgs`] to [`LaunchConfiguration`]
+/// when argument values are invalid or inconsistent.
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum InvalidCmdArguments {
+    /// Invalid gRPC address specification.
+    ///
+    /// This occurs when:
+    /// - TCP address cannot be parsed as `IP:PORT`
+    /// - Unix socket path is not absolute when `--grpc-unix-socket` is set
     #[error("Illegal grpc address: {0}")]
     InvalidGrpcAddress(String), // TODO: this should have a stronger error type
+
+    /// Invalid PCI device address format.
+    ///
+    /// PCI addresses must follow the format: `domain:bus:device.function`
+    /// (e.g., `0000:01:00.0`)
     #[error(transparent)]
     InvalidPciAddress(#[from] InvalidPciAddress),
+
+    /// Invalid network interface name.
+    ///
+    /// Interface names must be valid Linux network interface names
+    /// (e.g., `eth0`, `ens3`)
     #[error(transparent)]
     InvalidInterfaceName(#[from] IllegalInterfaceName),
     #[error("\"{0}\" is not a valid driver.  Must be dpdk or kernel")]
@@ -938,13 +1255,15 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             },
             tracing: TracingConfigSection {
                 show: TracingShowSection {
-                    tags: match value.show_tracing_tags() {
-                        true => TracingDisplayOption::Show,
-                        false => TracingDisplayOption::Hide,
+                    tags: if value.show_tracing_tags() {
+                        TracingDisplayOption::Show
+                    } else {
+                        TracingDisplayOption::Hide
                     },
-                    targets: match value.show_tracing_targets() {
-                        true => TracingDisplayOption::Show,
-                        false => TracingDisplayOption::Hide,
+                    targets: if value.show_tracing_targets() {
+                        TracingDisplayOption::Show
+                    } else {
+                        TracingDisplayOption::Hide
                     },
                 },
                 config: value.tracing.clone(),
@@ -1063,6 +1382,11 @@ E.g. default=error,all=info,nat=debug will set the default target to error, and 
 }
 
 impl CmdArgs {
+    /// Get the configured driver name.
+    ///
+    /// Returns `"dpdk"` if no driver was explicitly specified (the default),
+    /// otherwise returns the specified driver name (`"dpdk"` or `"kernel"`).
+    #[must_use]
     pub fn driver_name(&self) -> &str {
         match &self.driver {
             None => "dpdk",
@@ -1070,23 +1394,86 @@ impl CmdArgs {
         }
     }
 
+    /// Check if the `--show-tracing-tags` flag was set.
+    ///
+    /// When true, the application should display available tracing tags and exit.
+    ///
+    /// # Returns
+    ///
+    /// `true` if `--show-tracing-tags` was passed, `false` otherwise.
+    #[must_use]
     pub fn show_tracing_tags(&self) -> bool {
         self.show_tracing_tags
     }
+
+    /// Check if the `--show-tracing-targets` flag was set.
+    ///
+    /// When true, the application should display configurable tracing targets and exit.
+    ///
+    /// # Returns
+    ///
+    /// `true` if `--show-tracing-targets` was passed, `false` otherwise.
+    #[must_use]
     pub fn show_tracing_targets(&self) -> bool {
         self.show_tracing_targets
     }
+
+    /// Check if the `--tracing-config-generate` flag was set.
+    ///
+    /// When true, the application should generate a tracing configuration string
+    /// as output and exit.
+    ///
+    /// # Returns
+    ///
+    /// `true` if `--tracing-config-generate` was passed, `false` otherwise.
+    #[must_use]
     pub fn tracing_config_generate(&self) -> bool {
         self.tracing_config_generate
     }
+
+    /// Get the tracing configuration string, if provided.
+    ///
+    /// Returns the value of the `--tracing` argument, which specifies log levels
+    /// for different components in the format `target1=level1,target2=level2`.
+    ///
+    /// # Returns
+    ///
+    /// `Some(&String)` if a tracing configuration was provided, `None` otherwise.
+    #[must_use]
     pub fn tracing(&self) -> Option<&String> {
         self.tracing.as_ref()
     }
 
+    /// Get the number of worker threads for the kernel driver.
+    ///
+    /// This value comes from the `--num-workers` argument (default: 1, range: 1-64).
+    ///
+    /// # Returns
+    ///
+    /// The number of worker threads as a `usize`.
+    ///
+    /// # Note
+    ///
+    /// This value is only relevant when using the kernel driver. The DPDK driver
+    /// uses its own threading model configured via EAL arguments.
+    #[must_use]
     pub fn kernel_num_workers(&self) -> usize {
         self.num_workers.into()
     }
-    // backwards-compatible, to deprecate
+
+    /// Get the list of kernel network interfaces to use.
+    ///
+    /// Returns the interfaces specified via `--interface` arguments.
+    ///
+    /// # Returns
+    ///
+    /// A vector of interface name strings (e.g., `vec!["eth0", "eth1"]`).
+    ///
+    /// # Note
+    ///
+    /// This is only used with the kernel driver. For DPDK, use [`Self::allow`] to
+    /// specify PCI devices instead.
+    #[must_use]
     pub fn kernel_interfaces(&self) -> Vec<String> {
         self.interface
             .iter()
@@ -1099,7 +1486,16 @@ impl CmdArgs {
         self.interface.iter().cloned()
     }
 
-    /// Get the gRPC server address configuration
+    /// Parse and validate the gRPC server address configuration.
+    ///
+    /// This method interprets the `--grpc-address` and `--grpc-unix-socket` arguments
+    /// to determine the appropriate gRPC listening address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Unix socket path is not absolute when `--grpc-unix-socket` is set
+    /// - TCP address cannot be parsed as a valid `IP:PORT` combination
     pub fn grpc_address(&self) -> Result<GrpcAddress, String> {
         // If UNIX socket flag is set, treat the address as a UNIX socket path
         if self.grpc_unix_socket {
@@ -1124,19 +1520,35 @@ impl CmdArgs {
         }
     }
 
+    /// Get the control plane interface socket path.
+    ///
+    /// Returns the path where FRR (Free Range Routing) sends route updates to the dataplane.
+    #[must_use]
     pub fn cpi_sock_path(&self) -> String {
         self.cpi_sock_path.clone()
     }
 
+    /// Get the CLI socket path.
+    ///
+    /// Returns the path where the dataplane CLI server listens for client connections.
+    #[must_use]
     pub fn cli_sock_path(&self) -> String {
         self.cli_sock_path.clone()
     }
 
+    /// Get the FRR agent socket path.
+    ///
+    /// Returns the path to connect to the FRR agent that controls FRR configuration reloads.
+    #[must_use]
     pub fn frr_agent_path(&self) -> String {
         self.frr_agent_path.clone()
     }
 
-    /// Get the metrics bind address, returns None if metrics are disabled
+    /// Get the Prometheus metrics HTTP endpoint address.
+    ///
+    /// Returns the socket address (IP and port) where the dataplane exposes
+    /// Prometheus-compatible metrics for scraping.
+    #[must_use]
     pub fn metrics_address(&self) -> SocketAddr {
         self.metrics_address
     }
