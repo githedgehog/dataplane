@@ -146,7 +146,7 @@ impl Iterator for SocketIdIterator {
 ///
 /// A socket index is a zero-based index into the list of sockets on the [`Eal`][crate::eal::Eal].
 /// For example, if the [`SocketId`]s on the [`Eal`][crate::eal::Eal] are `[2, 3, 5]`, then index
-/// `1` would refer to [`SocketId(3)`].
+/// `1` would refer to `SocketId(3)`.
 /// It needs to work this way because there is no rule stating that we have a contiguous,
 /// zero-indexed list of sockets in the [`Eal`][crate::eal::Eal].
 ///
