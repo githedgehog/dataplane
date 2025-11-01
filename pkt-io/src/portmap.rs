@@ -6,6 +6,14 @@
 //! while interface identifiers by type [`InterfaceIndex`].
 
 #![allow(unused)]
+#![deny(
+    unsafe_code,
+    clippy::all,
+    clippy::pedantic,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 use ahash::RandomState;
 use left_right::ReadHandleFactory;
@@ -15,6 +23,7 @@ use net::packet::PortIndex;
 use net::vlan::Vid;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::info;
 
 /// Type to describe a port. This definition is temporary
 pub type NetworkDeviceDescription = String;
@@ -46,14 +55,14 @@ pub struct PortMap {
 impl PortMap {
     const fn new(
         pdesc: NetworkDeviceDescription,
-        ifname: InterfaceName,
         pindex: PortIndex,
+        ifname: InterfaceName,
         ifindex: InterfaceIndex,
     ) -> Self {
         Self {
             pdesc,
-            ifname,
             pindex,
+            ifname,
             ifindex,
         }
     }
@@ -70,6 +79,7 @@ impl PortMap {
 #[derive(Clone, Debug)]
 struct PortMapTable(HashMap<PortMapKey, Arc<PortMap>, RandomState>);
 impl PortMapTable {
+    #[must_use]
     fn new() -> Self {
         Self(HashMap::with_hasher(RandomState::with_seed(0)))
     }
@@ -108,7 +118,7 @@ impl PortMapTable {
 
     #[inline]
     fn get(&self, key: PortMapKey) -> Option<&PortMap> {
-        self.0.get(&key).map(|pmap| pmap.as_ref())
+        self.0.get(&key).map(std::convert::AsRef::as_ref)
     }
     #[inline]
     pub(crate) fn get_by_port(&self, pindex: PortIndex) -> Option<&PortMap> {
@@ -138,6 +148,8 @@ impl Absorb<PortMapChange> for PortMapTable {
 
 pub struct PortMapWriter(WriteHandle<PortMapTable, PortMapChange>);
 impl PortMapWriter {
+    #[must_use]
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let (writer, _) =
             left_right::new_from_empty::<PortMapTable, PortMapChange>(PortMapTable::new());
@@ -150,7 +162,7 @@ impl PortMapWriter {
         pindex: PortIndex,
         ifindex: InterfaceIndex,
     ) {
-        let pmap = PortMap::new(pdesc, ifname, pindex, ifindex);
+        let pmap = PortMap::new(pdesc, pindex, ifname, ifindex);
         self.0.append(PortMapChange::AddReplace(pmap));
         self.0.publish();
     }
@@ -166,6 +178,10 @@ impl PortMapWriter {
     }
     pub fn factory(&self) -> PortMapReaderFactory {
         PortMapReaderFactory(self.0.clone().factory())
+    }
+    pub fn log_pmap_table(&self) {
+        let table = &*self.0.enter().unwrap_or_else(|| unreachable!());
+        info!("{table}",);
     }
 }
 
@@ -213,18 +229,83 @@ impl PortMapReaderFactory {
     }
 }
 
+use std::fmt::Display;
+
+macro_rules! PORTMAP_FMT {
+    () => {
+        "   {:<8} {:<20} {:<8} {:<16} {:<8}"
+    };
+}
+fn fmt_portmap_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    writeln!(
+        f,
+        "{}",
+        format_args!(
+            PORTMAP_FMT!(),
+            "key", "Device", "portid", "interface", "ifindex"
+        )
+    )
+}
+
+impl Display for PortMapKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PortMapKey::Iface(ifindex) => write!(f, "{ifindex}"),
+            PortMapKey::Port(pindex) => write!(f, "{pindex}"),
+        }
+    }
+}
+
+fn fmt_pmap_with_key(
+    f: &mut std::fmt::Formatter<'_>,
+    pmap: &PortMap,
+    key: PortMapKey,
+) -> std::fmt::Result {
+    writeln!(
+        f,
+        "{}",
+        format_args!(
+            PORTMAP_FMT!(),
+            key.to_string(),
+            pmap.pdesc.to_string(),
+            pmap.pindex.to_string(),
+            pmap.ifname.to_string(),
+            pmap.ifindex
+        )
+    )
+}
+
+impl Display for PortMapTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━ PortMap table ━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )?;
+        fmt_portmap_heading(f)?;
+        for (key, pmap) in &self.0 {
+            fmt_pmap_with_key(f, pmap, *key)?;
+        }
+        writeln!(
+            f,
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::portmap::{NetworkDeviceDescription, PortMap, PortMapTable, PortMapWriter};
     use net::interface::{InterfaceIndex, InterfaceName};
     use net::packet::PortIndex;
+    use tracing_test::traced_test;
 
     fn build_portmap(pdesc: &str, ifname: &str, pindex: u16, ifindex: u32) -> PortMap {
         let pdesc = pdesc.to_string();
         let ifname = InterfaceName::try_from(ifname).unwrap();
         let pindex = PortIndex::new(pindex);
         let ifindex = InterfaceIndex::try_new(ifindex).unwrap();
-        PortMap::new(pdesc, ifname, pindex, ifindex)
+        PortMap::new(pdesc, pindex, ifname, ifindex)
     }
 
     #[test]
@@ -315,6 +396,7 @@ mod tests {
         }
     }
 
+    #[traced_test]
     #[test]
     fn test_portmap_table() {
         let mut writer = PortMapWriter::new();
@@ -328,6 +410,7 @@ mod tests {
             pmap.pindex,
             pmap.ifindex,
         );
+        writer.log_pmap_table();
 
         // check reader sees it
         let found = reader.get_by_iface(pmap.ifindex).unwrap();
