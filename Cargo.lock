@@ -1017,6 +1017,7 @@ dependencies = [
  "dataplane-nat",
  "dataplane-net",
  "dataplane-pipeline",
+ "dataplane-pkt-io",
  "dataplane-pkt-meta",
  "dataplane-routing",
  "dataplane-stats",
