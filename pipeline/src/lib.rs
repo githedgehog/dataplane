@@ -2,8 +2,14 @@
 // Copyright Open Network Fabric Authors
 
 #![allow(rustdoc::private_doc_tests)]
-#![deny(clippy::all)]
-#![deny(clippy::pedantic)]
+#![deny(
+    unsafe_code,
+    missing_docs,
+    clippy::pedantic,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 //! # Pipeline Building Blocks
 //!
@@ -97,16 +103,6 @@
 //! It is always possible to then dynamically chain the statically chained stages as shown in the
 //! example.
 //!
-
-#![deny(
-    unsafe_code,
-    missing_docs,
-    clippy::all,
-    clippy::pedantic,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
 
 mod dyn_nf;
 mod pipeline;

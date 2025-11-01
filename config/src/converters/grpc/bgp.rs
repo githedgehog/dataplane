@@ -226,7 +226,7 @@ impl TryFrom<&Option<BgpUpdateSource>> for OptGRPCBgpNeighborUpdateSource {
                 gateway_config::BgpNeighborUpdateSource {
                     source: Some(
                         gateway_config::bgp_neighbor_update_source::Source::Interface(
-                            iface.to_string(),
+                            iface.clone(),
                         ),
                     ),
                 },
