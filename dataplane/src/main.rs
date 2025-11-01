@@ -17,8 +17,17 @@ use drivers::kernel::DriverKernel;
 
 use mgmt::processor::launch::start_mgmt;
 
+
 use pyroscope::PyroscopeAgent;
 use pyroscope_pprofrs::{PprofConfig, pprof_backend};
+
+use net::buffer::PacketBufferMut;
+use net::packet::Packet;
+
+use pipeline::DynPipeline;
+use pipeline::sample_nfs::PacketDumper;
+use pkt_io::PortMapWriter;
+
 
 use routing::RouterParamsBuilder;
 use tracectl::{custom_target, get_trace_ctl, trace_target};
@@ -137,8 +146,9 @@ fn main() {
     )
     .expect("Failed to start gRPC server");
 
-    /* start driver with the provided pipeline builder */
-    match args.driver_name() {
+    // Start driver with the provided pipeline builder. Driver should create a portmap table,
+    // populate it with [`PortSpec`]s and return the writer
+    let _pmap_w = match args.driver_name() {
         "dpdk" => {
             info!("Using driver DPDK...");
             todo!();
@@ -149,13 +159,13 @@ fn main() {
                 args.kernel_interfaces(),
                 args.kernel_num_workers(),
                 &pipeline_factory,
-            );
+            )
         }
         other => {
             error!("Unknown driver '{other}'. Aborting...");
             panic!("Packet processing pipeline failed to start. Aborting...");
         }
-    }
+    };
 
     stop_rx.recv().expect("failed to receive stop signal");
     info!("Shutting down dataplane");
