@@ -77,6 +77,15 @@ pub struct PktIo<Buf: PacketBufferMut> {
     injectq: Option<PktQueue<Buf>>,
     puntq: Option<PktQueue<Buf>>,
 }
+impl<Buf: PacketBufferMut> Clone for PktIo<Buf> {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.to_owned(),
+            injectq: self.injectq.clone(),
+            puntq: self.puntq.clone(),
+        }
+    }
+}
 
 impl<Buf: PacketBufferMut> PktIo<Buf> {
     #[must_use]
