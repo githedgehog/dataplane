@@ -7,3 +7,5 @@
 pub(crate) mod frrmi;
 pub mod renderer;
 mod test;
+
+pub use frrmi::FrrAppliedConfig;

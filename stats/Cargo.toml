@@ -11,6 +11,7 @@ bolero = ["dep:bolero", "vpcmap/bolero", "net/bolero"]
 
 [dependencies]
 # internal
+concurrency = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
 vpcmap = { workspace = true }
