@@ -13,11 +13,12 @@
 )]
 
 use afpacket::sync::RawPacketStream;
-
+use args::{InterfaceArg, PortArg};
 use concurrency::sync::Arc;
 use concurrency::thread;
 
 use tokio::sync::mpsc as chan;
+use tokio::time::timeout;
 
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
@@ -28,23 +29,26 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::time::Duration;
 
 use std::collections::hash_map::DefaultHasher;
+use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 
 use net::buffer::test_buffer::TestBuffer;
-use net::interface::InterfaceIndex;
-use net::packet::{DoneReason, Packet};
+use net::interface::{InterfaceIndex, InterfaceName};
+use net::packet::{DoneReason, Packet, PortIndex};
 use netdev::Interface;
 use pipeline::{DynPipeline, NetworkFunction};
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
 
+use pkt_io::{PortMapWriter, PortSpec, build_portmap};
+
 // Flow-key based symmetric hashing
 use pkt_meta::flow_table::flow_key::{Bidi, FlowKey};
 
-use tracectl::trace_target;
-
 use crate::drivers::tokio_util::run_in_tokio_runtime;
-trace_target!("kernel-driver", LevelFilter::ERROR, &["driver"]);
+
+use tracectl::trace_target;
+trace_target!("kernel-driver", LevelFilter::INFO, &["driver"]);
 
 type WorkerTx = chan::Sender<Box<Packet<TestBuffer>>>;
 type WorkerRx = chan::Receiver<Box<Packet<TestBuffer>>>;
@@ -52,32 +56,45 @@ type WorkerChans = (Vec<WorkerTx>, WorkerRx);
 
 /// Simple representation of a kernel interface.
 pub struct Kif {
-    ifindex: InterfaceIndex, /* ifindex of interface */
-    token: Token,            /* token for polling */
-    name: String,            /* name of interface */
-    sock: RawPacketStream,   /* packet socket */
-    raw_fd: RawFd,           /* raw desc of packet socket */
+    name: InterfaceName,     // name of PORT interface
+    ifindex: InterfaceIndex, // ifindex of PORT interface
+    token: Token,            // token for polling
+    sock: RawPacketStream,   // packet socket
+    raw_fd: RawFd,           // raw desc of packet socket
+    pindex: PortIndex, // port index. This is how the kernel interface is externally identified
+
+    tapname: InterfaceName,             // name of tap interface
+    tapifindex: Option<InterfaceIndex>, // tap ifindex
 }
 
 impl Kif {
     /// Create a kernel interface entry. Each interface gets a [`Token`] assigned
     /// and a packet socket opened, which gets registered in a poller to detect
     /// activity.
-    fn new(ifindex: InterfaceIndex, name: &str, token: Token) -> io::Result<Self> {
-        let mut sock = RawPacketStream::new().map_err(|e| {
-            error!("Failed to open raw sock for interface {name}: {e}");
-            e
-        })?;
+    fn new(
+        ifindex: InterfaceIndex,
+        name: &InterfaceName,
+        token: Token,
+        tapname: &InterfaceName,
+    ) -> Result<Self, String> {
+        let mut sock = RawPacketStream::new()
+            .map_err(|e| format!("Failed to open raw sock for interface {name}: {e}"))?;
         sock.set_non_blocking();
-        sock.bind(name)
-            .inspect_err(|e| error!("Failed to open raw sock for interface {name}: {e}"))?;
+        sock.bind(name.as_ref())
+            .map_err(|e| format!("Failed to open raw sock for interface {name}: {e}"))?;
+
         let raw_fd = sock.as_raw_fd();
+        #[allow(clippy::cast_possible_truncation)]
+        let pindex = PortIndex::new(ifindex.to_u32() as u16);
         let iface = Self {
             ifindex,
             token,
-            name: name.to_owned(),
+            name: name.clone(),
             sock,
             raw_fd,
+            pindex,
+            tapname: tapname.clone(),
+            tapifindex: None,
         };
         debug!("Successfully created interface '{name}'");
         Ok(iface)
@@ -93,8 +110,8 @@ pub struct KifTable {
 
 impl KifTable {
     /// Create kernel interface table
-    pub fn new() -> io::Result<Self> {
-        let poll = Poll::new()?;
+    pub fn new() -> Result<Self, String> {
+        let poll = Poll::new().map_err(|e| format!("Failed to create kif poller: {e}"))?;
         Ok(Self {
             poll,
             next_token: 1,
@@ -103,17 +120,20 @@ impl KifTable {
     }
     /// Add a kernel interface 'representor' to this table. For each interface, a packet socket
     /// is created and a poller [`Token`] assigned.
-    pub fn add(&mut self, ifindex: InterfaceIndex, name: &str) -> io::Result<()> {
+    pub fn add(
+        &mut self,
+        ifindex: InterfaceIndex,
+        name: &InterfaceName,
+        tapname: &InterfaceName,
+    ) -> Result<(), String> {
         debug!("Adding interface '{name}'...");
         let token = Token(self.next_token);
-        let interface = Kif::new(ifindex, name, token)?;
+        let interface = Kif::new(ifindex, name, token, tapname)?;
         let mut source = SourceFd(&interface.raw_fd);
         self.poll
             .registry()
             .register(&mut source, token, Interest::READABLE)
-            .inspect_err(|e| {
-                error!("Failed to register interface '{name}': {e}");
-            })?;
+            .map_err(|e| format!("Failed to register interface '{name}': {e}"))?;
         self.by_token.insert(token, interface);
         self.next_token += 1;
         debug!("Successfully registered interface '{name}' with token {token:?}");
@@ -124,70 +144,68 @@ impl KifTable {
         self.by_token.get_mut(&token)
     }
 
-    /// Get a mutable reference to the [`Kif`] with the indicated ifindex
-    /// Todo: replace this linear search with a hash lookup
-    pub fn get_mut_by_index(&mut self, ifindex: InterfaceIndex) -> Option<&mut Kif> {
+    /// Get a mutable reference to the [`Kif`] with the given tapifindex
+    pub fn get_mut_by_tap_index(&mut self, tapifindex: InterfaceIndex) -> Option<&mut Kif> {
         self.by_token
             .values_mut()
-            .find(|kif| kif.ifindex == ifindex)
+            .find(|kif| kif.tapifindex == Some(tapifindex))
     }
 }
 
-/// Get the ifindex of the interface with the given name.
+macro_rules! KIF_FMT {
+    () => {
+        "   {:<16} {:<11} {:<6} {:<16} {:<8}"
+    };
+}
+fn fmt_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    writeln!(
+        f,
+        KIF_FMT!(),
+        "Port", "Portifindex", "pindex", "interface", "ifindex"
+    )
+}
+
+impl Display for Kif {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let tapifindex = if let Some(i) = self.tapifindex {
+            i.to_string()
+        } else {
+            "--".to_string()
+        };
+        writeln!(
+            f,
+            KIF_FMT!(),
+            self.name.to_string(),
+            self.ifindex.to_string(),
+            self.pindex.to_string(),
+            self.tapname.to_string(),
+            tapifindex
+        )
+    }
+}
+impl Display for KifTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━ kernel driver  ━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )?;
+        fmt_heading(f)?;
+        for kif in self.by_token.values() {
+            kif.fmt(f)?;
+        }
+        writeln!(
+            f,
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+    }
+}
+
+/// Get the ifindex of the kernel interface with the given name.
 fn get_interface_ifindex(interfaces: &[Interface], name: &str) -> Option<InterfaceIndex> {
     interfaces
         .iter()
         .position(|interface| interface.name == name)
         .and_then(|pos| InterfaceIndex::try_new(interfaces[pos].index).ok())
-}
-
-/// Build a table of kernel interfaces to receive packets from (or send to).
-/// Interfaces of interest are indicated by --interface INTERFACE in the command line.
-/// Argument --interface ANY|any instructs the driver to capture on all interfaces.
-fn build_kif_table(args: impl IntoIterator<Item = impl AsRef<str>>) -> io::Result<KifTable> {
-    /* learn about existing kernel network interfaces. We need these to know their ifindex  */
-    let interfaces = netdev::get_interfaces();
-
-    /* build kiftable */
-    let mut kiftable = KifTable::new()?;
-
-    /* check what interfaces we're interested in from args */
-    let ifnames: Vec<String> = args.into_iter().map(|x| x.as_ref().to_owned()).collect();
-    if ifnames.is_empty() {
-        warn!("No interfaces have been specified. No packet will be processed!");
-        warn!("Consider specifying them with --interface. ANY captures over all interfaces.");
-        return Ok(kiftable);
-    }
-
-    if ifnames.len() == 1 && ifnames[0].eq_ignore_ascii_case("ANY") {
-        /* use all interfaces */
-        for interface in &interfaces {
-            let if_index = match InterfaceIndex::try_new(interface.index) {
-                Ok(if_index) => if_index,
-                Err(e) => match e {
-                    net::interface::InterfaceIndexError::Zero => {
-                        return Err(io::Error::new(io::ErrorKind::InvalidData, e));
-                    }
-                },
-            };
-            if let Err(e) = kiftable.add(if_index, &interface.name) {
-                error!("Skipping interface '{}': {e}", interface.name);
-            }
-        }
-    } else {
-        /* use only the interfaces specified in args */
-        for name in &ifnames {
-            if let Some(ifindex) = get_interface_ifindex(&interfaces, name) {
-                if let Err(e) = kiftable.add(ifindex, name) {
-                    error!("Skipping interface '{name}': {e}");
-                }
-            } else {
-                warn!("Could not find ifindex of interface '{name}'");
-            }
-        }
-    }
-
-    Ok(kiftable)
 }
 
 /// Main structure representing the kernel driver.
@@ -211,27 +229,19 @@ fn single_worker(
         let mut pipeline = setup();
         run_in_tokio_runtime(async || {
             loop {
-                tracing::debug!(
-                    worker = id,
-                    thread = %thread::current().name().unwrap_or("unnamed"),
-                    "awaiting packets"
-                );
-
+                // receive packets from IO thread. If we don't, check pipeline anyway since there may be pkts to send.
+                // This is done every 20ms at the moment.
                 let mut packets_vec = Vec::new();
-                let pkt_count = rx_from_control.recv_many(&mut packets_vec, 1024).await;
-                if (pkt_count == 0) {
+                if let Ok(0) = timeout(Duration::from_millis(20), rx_from_control.recv_many(&mut packets_vec, 1024)).await {
                     trace!(worker = id, thread = %thread::current().name().unwrap_or("unnamed"), "sender closed, exiting");
-                    return; // The sender closed so no more packets can ever be received
+                    return;
                 }
-
-                // Try to receive everything else that is in the buffer
                 let packets = packets_vec.into_iter();
-
                 let mut count = 0;
                 for out_pkt in pipeline.process(packets.map(|pkt| *pkt)) {
                     // backpressure via bounded channel
                     if tx_to_control.send(Box::new(out_pkt)).await.is_err() {
-                        // dispatcher gone; exit the thread
+                        warn!("Kernel IO channel closed. IO thread may be gone. Stopping...");
                         return;
                     }
                     count += 1;
@@ -291,11 +301,70 @@ impl DriverKernel {
         (to_workers, rx_from_workers)
     }
 
-    /// Init devices depending on command line
-    fn init_devices(
-        args: impl IntoIterator<Item = impl AsRef<str> + Clone>,
-    ) -> io::Result<KifTable> {
-        build_kif_table(args)
+    /// Init devices depending on command line. This creates a `KifTable` for local representation of kernel interfaces.
+    fn init_devices(args: impl Iterator<Item = InterfaceArg>) -> Result<KifTable, String> {
+        // get all kernel interfaces
+        let inventory_kern_ifs = netdev::get_interfaces();
+
+        // create empty kernel interface table
+        let mut kiftable = KifTable::new()?;
+
+        // populate the kernel interface table with the desired interfaces
+        for ifarg in args {
+            match ifarg.port {
+                Some(PortArg::PCI(_)) => {
+                    error!("kernel driver does not support PCI ports");
+                    return Err("kernel driver does not support PCI ports".to_string());
+                }
+                Some(PortArg::KERNEL(name)) => {
+                    let Some(ifindex) = get_interface_ifindex(&inventory_kern_ifs, name.as_ref())
+                    else {
+                        return Err(format!("Could not find kernel interface {name}"));
+                    };
+                    if let Err(e) = kiftable.add(ifindex, &name, &ifarg.interface) {
+                        error!("Could not add kernel interface '{name}': {e}");
+                        return Err(e);
+                    }
+                }
+                _ => {
+                    // TODO: remove Option<> from PortArg as it will need to be mandatory
+                    // after the integration
+                    return Err("Port specification is mandatory".to_string());
+                }
+            }
+        }
+        // we allow starting the dataplane without any kernel interface.
+        // this is mostly for testing features that don't require packet handling.
+        if kiftable.by_token.is_empty() {
+            warn!(">>>>> Did not register any kernel interface: no packets will be received <<<<<");
+        }
+        Ok(kiftable)
+    }
+
+    /// Register devices in the port map and return back the writer and factory
+    fn register_devices(kiftable: &mut KifTable) -> PortMapWriter {
+        // build port specs from the kifs to populate portmap
+        let pspecs: Vec<_> = kiftable
+            .by_token
+            .values()
+            .map(|kif| PortSpec::new(kif.name.to_string(), kif.pindex, kif.tapname.clone()))
+            .collect();
+
+        // populate port-map
+        let mapw = build_portmap(pspecs.into_iter());
+
+        // burn the tap ifindex in the kif so that we need not look it up
+        let rh = mapw.factory().handle();
+        kiftable.by_token.values_mut().for_each(|kif| {
+            kif.tapifindex = Some(
+                rh.get_by_pdesc(&kif.name.to_string())
+                    .unwrap_or_else(|| unreachable!())
+                    .ifindex,
+            );
+        });
+
+        // give ownership of portmap writer
+        mapw
     }
 
     /// Start the kernel IO thread for rx/tx
@@ -304,35 +373,37 @@ impl DriverKernel {
         mut from_workers: WorkerRx,
         mut kiftable: KifTable,
     ) {
+        // IO thread takes ownership of kiftable
         let io = move || {
             let num_worker_chans = to_workers.len();
             let poll_timeout = Some(Duration::from_millis(2));
+
+            info!("Kernel interface configuration is:\n{kiftable}");
 
             // Dispatcher loop: drain processed packets, poll RX, parse+shard, TX results.
             let mut events = Events::with_capacity(256);
             loop {
                 // 1) Drain processed packets coming back from workers, serialize + TX
                 while let Ok(mut pkt) = from_workers.try_recv() {
-                    // choose outgoing interface from meta
-                    let oif_id_opt = pkt.get_meta().oif;
-                    if let Some(oif_id) = oif_id_opt {
-                        if let Some(outgoing) = kiftable.get_mut_by_index(oif_id) {
+                    // choose outgoing port interface from pkt metadata
+                    if let Some(oif_id) = pkt.get_meta().oif {
+                        if let Some(okif) = kiftable.get_mut_by_tap_index(oif_id) {
                             match pkt.serialize() {
                                 Ok(out) => {
                                     let len = out.as_ref().len();
-                                    if let Err(e) = outgoing.sock.write_all(out.as_ref()) {
+                                    if let Err(e) = okif.sock.write_all(out.as_ref()) {
                                         error!(
                                             "TX failed for pkt ({len} octets) on '{}': {e}",
-                                            &outgoing.name
+                                            &okif.name
                                         );
                                     } else {
-                                        trace!("TX {len} bytes on interface {}", &outgoing.name);
+                                        trace!("TX {len} bytes on port {}", &okif.name);
                                     }
                                 }
                                 Err(e) => error!("Serialize failed: {e:?}"),
                             }
                         } else {
-                            warn!("TX drop: unknown oif {}", oif_id);
+                            warn!("TX drop: unknown outgoing port {}", oif_id);
                         }
                     } else {
                         // No oif set -> inspect DoneReason via enforce()
@@ -395,22 +466,29 @@ impl DriverKernel {
     /// - `args`: kernel driver CLI parameters (e.g., `--interface` list)
     /// - `workers`: number of worker threads / pipelines
     /// - `setup_pipeline`: factory returning a **fresh** `DynPipeline<TestBuffer>` per worker
+    #[allow(clippy::panic, clippy::missing_panics_doc)]
     pub fn start(
-        args: impl IntoIterator<Item = impl AsRef<str> + Clone>,
+        interfaces: impl Iterator<Item = InterfaceArg>,
         num_workers: usize,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
-    ) {
-        // init devices
-        let Ok(mut kiftable) = Self::init_devices(args) else {
-            error!("Failed to initialize kernel interface table");
-            return;
+    ) -> PortMapWriter {
+        // init port devices
+        let mut kiftable = match Self::init_devices(interfaces) {
+            Ok(kiftable) => kiftable,
+            Err(e) => {
+                error!("{e}");
+                panic!("{e}");
+            }
         };
+
+        // register port devices
+        let mapt_w = Self::register_devices(&mut kiftable);
 
         // Spawn pipeline workers
         let (to_workers, from_workers) = Self::spawn_workers(num_workers, setup_pipeline);
         if to_workers.len() != num_workers {
             warn!(
-                "Could spawn only {} of the {} workers",
+                "Could spawn only {} of {} workers",
                 to_workers.len(),
                 num_workers
             );
@@ -422,6 +500,9 @@ impl DriverKernel {
 
         // Spawn io thread
         Self::start_kernel_io_thread(to_workers, from_workers, kiftable);
+
+        // return maptable writer
+        mapt_w
     }
 
     fn recv_packets(
@@ -439,31 +520,33 @@ impl DriverKernel {
     /// Tries to receive frames from the indicated interface and builds `Packet`s
     /// out of them. Returns a vector of [`Packet`]s.
     #[allow(clippy::vec_box)] // We want to avoid Packet moves, so allow Vec<Box<_>> to be sure
-    fn packet_recv(interface: &mut Kif) -> Vec<Box<Packet<TestBuffer>>> {
+    fn packet_recv(kif: &mut Kif) -> Vec<Box<Packet<TestBuffer>>> {
         let mut raw = [0u8; 2048];
         let mut pkts = Vec::with_capacity(32);
         loop {
-            match interface.sock.read(&mut raw) {
+            match kif.sock.read(&mut raw) {
                 Ok(0) => break, // no more
                 Ok(bytes) => {
                     // build TestBuffer and parse
                     let buf = TestBuffer::from_raw_data(&raw[..bytes]);
                     match Packet::new(buf) {
                         Ok(mut incoming) => {
-                            incoming.get_meta_mut().iif = Some(interface.ifindex);
+                            // we'll probably ditch iport, but for the time being....
+                            incoming.get_meta_mut().iport = Some(kif.pindex);
+                            incoming.get_meta_mut().iif = kif.tapifindex;
                             pkts.push(Box::new(incoming));
                         }
                         Err(e) => {
                             // Parsing errors happen; avoid logspam for loopback
-                            if interface.name != "lo" {
-                                error!("Failed to parse packet on '{}': {e}", interface.name);
+                            if kif.name.as_ref() != "lo" {
+                                error!("Failed to parse packet on '{}': {e}", kif.name);
                             }
                         }
                     }
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) => {
-                    error!("Read error on '{}': {e}", interface.name);
+                    error!("Read error on '{}': {e}", kif.name);
                     break;
                 }
             }
