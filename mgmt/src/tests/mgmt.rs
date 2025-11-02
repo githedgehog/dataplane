@@ -50,6 +50,9 @@ pub mod test {
     use stats::VpcStatsStore; // <-- added
     use vpcmap::map::VpcMapWriter;
 
+    use net::buffer::TestBufferPool;
+    use pkt_io::{PktQueue, PortMapWriter, start_io};
+
     /* OVERLAY config sample builders */
     fn sample_vpc_table() -> VpcTable {
         let mut vpc_table = VpcTable::new();
@@ -394,6 +397,14 @@ pub mod test {
         /* NEW: VPC stats store (Arc) */
         let vpc_stats_store = VpcStatsStore::new();
 
+        /* create Io manager: we need to create the queues */
+        let puntq = PktQueue::new(1);
+        let injectq = PktQueue::new(1);
+        let (iom_handle, mut iom_ctl) = start_io(puntq, injectq, TestBufferPool).unwrap();
+
+        /* create portmap */
+        let pmapw = PortMapWriter::new();
+
         /* build configuration of mgmt config processor */
         let processor_config = ConfigProcessorParams {
             router_ctl,
@@ -402,6 +413,8 @@ pub mod test {
             natallocatorw,
             vpcdtablesw,
             vpc_stats_store,
+            iom_ctl: iom_ctl.clone(), // we pass a clone to keep one to stop IOM in test
+            pmapw,
         };
 
         /* start config processor to test the processing of a config. The processor embeds the config database
@@ -420,5 +433,7 @@ pub mod test {
         /* stop the router */
         debug!("Stopping the router...");
         router.stop();
+        iom_ctl.stop().await.unwrap();
+        iom_handle.join().unwrap();
     }
 }
