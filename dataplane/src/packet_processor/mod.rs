@@ -36,7 +36,7 @@ where
     pub router: Router,
     pub pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
     pub vpcmapw: VpcMapWriter<VpcMapName>,
-    pub nattablew: NatTablesWriter,
+    pub nattablesw: NatTablesWriter,
     pub natallocatorw: NatAllocatorWriter,
     pub vpcdtablesw: VpcDiscTablesWriter,
     pub stats: StatsCollector,
@@ -49,7 +49,7 @@ where
 pub(crate) fn start_router<Buf: PacketBufferMut>(
     params: RouterParams,
 ) -> Result<InternalSetup<Buf>, RouterError> {
-    let nattablew = NatTablesWriter::new();
+    let nattablesw = NatTablesWriter::new();
     let natallocatorw = NatAllocatorWriter::new();
     let vpcdtablesw = VpcDiscTablesWriter::new();
     let router = Router::new(params)?;
@@ -69,7 +69,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let fibtr_factory = router.get_fibtr_factory();
     let vpcdtablesr_factory = vpcdtablesw.get_reader_factory();
     let atabler_factory = router.get_atabler_factory();
-    let nattabler_factory = nattablew.get_reader_factory();
+    let nattabler_factory = nattablesw.get_reader_factory();
     let natallocator_factory = natallocatorw.get_reader_factory();
 
     // build pkt io stages
@@ -120,7 +120,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         router,
         pipeline: Arc::new(pipeline_builder),
         vpcmapw,
-        nattablew,
+        nattablesw,
         natallocatorw,
         vpcdtablesw,
         stats,
