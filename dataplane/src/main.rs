@@ -9,7 +9,8 @@ mod drivers;
 mod packet_processor;
 mod statistics;
 
-use crate::packet_processor::start_router;
+use crate::drivers::{Start, Stop};
+use crate::{drivers::dpdk::Dataplane, packet_processor::start_router};
 use crate::statistics::MetricsServer;
 use args::{LaunchConfiguration, TracingConfigSection};
 
@@ -77,6 +78,7 @@ fn process_tracing_cmds(cfg: &TracingConfigSection) {
         println!("{out}");
         std::process::exit(0);
     }
+    // TODO: Temporary feature regression
     // if args.tracing_config_generate() {
     //     let out = get_trace_ctl()
     //         .as_config_string()
@@ -97,58 +99,11 @@ fn main() {
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
     ctrlc::set_handler(move || stop_tx.send(()).expect("Error sending SIGINT signal"))
         .expect("failed to set SIGINT handler");
+    let dataplane = Dataplane::new(launch_config);
+    dataplane.start();
 
-    let grpc_addr = launch_config.config_server.address;
-
-    /* router parameters */
-    let config = match RouterParamsBuilder::default()
-        .metrics_addr(launch_config.metrics.address)
-        .cli_sock_path(launch_config.cli.cli_sock_path)
-        .cpi_sock_path(launch_config.routing.control_plane_socket)
-        .frr_agent_path(launch_config.routing.frr_agent_socket)
-        .build()
-    {
-        Ok(config) => config,
-        Err(e) => {
-            error!("error building router parameters: {e}");
-            panic!("error building router parameters: {e}");
-        }
-    };
-
-    // start the router; returns control-plane handles and a pipeline factory (Arc<... Fn() -> DynPipeline<_> >)
-    let setup = start_router(config).expect("failed to start router");
-
-    let _metrics_server = MetricsServer::new(launch_config.metrics.address, setup.stats);
-
-    /* pipeline builder */
-    let pipeline_factory = setup.pipeline;
-
-    /* start management */
-    start_mgmt(
-        grpc_addr,
-        setup.router.get_ctl_tx(),
-        setup.nattablew,
-        setup.natallocatorw,
-        setup.vpcdtablesw,
-        setup.vpcmapw,
-    )
-    .expect("Failed to start gRPC server");
-
-    /* start driver with the provided pipeline builder */
-    let _keep = match &launch_config.driver {
-        args::DriverConfigSection::Dpdk(dpdk_driver_config) => {
-            let (eal, devices) =
-                DriverDpdk::start(dpdk_driver_config.eal_args.clone(), &setup_pipeline);
-            info!("Now using driver DPDK...");
-            Some((eal, devices))
-        }
-        args::DriverConfigSection::Kernel(kernel_driver_config) => {
-            DriverKernel::start(&kernel_driver_config.interfaces, 2, &pipeline_factory);
-            info!("Now using driver kernel...");
-            None
-        }
-    };
     stop_rx.recv().expect("failed to receive stop signal");
+    dataplane.stop();
     info!("Shutting down dataplane");
     std::process::exit(0);
 }
