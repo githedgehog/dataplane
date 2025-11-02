@@ -8,18 +8,28 @@ pub mod dpdk;
 pub mod kernel;
 mod tokio_util;
 
-use mgmt::processor::launch::start_mgmt;
-use routing::{RouterParams, RouterParamsBuilder};
-use tracing::error;
-
-use crate::{packet_processor::start_router, statistics::MetricsServer};
-
 pub trait Start {
-    fn start(&self);
+    type Started;
+    fn start(self) -> Self::Started;
 }
 
 pub trait Stop {
-    fn stop(self);
+    type Stopped;
+    fn stop(self) -> Self::Stopped;
 }
 
-pub trait Driver: Start + Stop {}
+#[non_exhaustive]
+pub struct Started;
+#[non_exhaustive]
+pub struct Stopped;
+
+pub(crate) trait State {}
+
+impl State for Started {}
+impl State for Stopped {}
+
+pub trait Cleanup {
+    fn cleanup(self);
+}
+
+pub trait Driver {}
