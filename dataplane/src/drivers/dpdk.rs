@@ -5,6 +5,8 @@
 
 #![allow(unused)]
 
+use std::convert::Infallible;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use args::LaunchConfiguration;
@@ -25,7 +27,7 @@ use pipeline::sample_nfs::Passthrough;
 use pipeline::{self, DynPipeline, NetworkFunction};
 
 use crate::drivers::kernel::DriverKernel;
-use crate::drivers::{Driver, Start, Stop};
+use crate::drivers::{Driver, Start, Started, State, Stop, Stopped};
 use crate::packet_processor::start_router;
 use crate::statistics::MetricsServer;
 
@@ -34,14 +36,12 @@ use crate::statistics::MetricsServer;
 static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();
 */
 
-pub struct Dataplane {
-    driver: Box<dyn Driver>,
+pub struct Dataplane<D: Driver> {
+    driver: D,
 }
 
-impl Driver for DriverDpdk {}
-
-impl Dataplane {
-    pub(crate) fn new(launch_config: LaunchConfiguration) -> Dataplane {
+impl Dataplane<DriverDpdk<Stopped>> {
+    pub(crate) fn new(launch_config: LaunchConfiguration) -> Dataplane<DriverDpdk<Stopped>> {
         /* router parameters */
         let config = match RouterParamsBuilder::default()
             .metrics_addr(launch_config.metrics.address)
@@ -77,51 +77,53 @@ impl Dataplane {
         )
         .expect("Failed to start gRPC server");
 
-        let driver: Box<dyn Driver> = match &launch_config.driver {
+        let driver = match &launch_config.driver {
             args::DriverConfigSection::Dpdk(dpdk_driver_config) => {
                 info!("setting up DPDK driver");
-                Box::new(DriverDpdk::new(
-                    dpdk_driver_config.eal_args.iter(),
-                    pipeline_factory,
-                )) as _
+                DriverDpdk::new(dpdk_driver_config.eal_args.iter(), pipeline_factory)
             }
             args::DriverConfigSection::Kernel(kernel_driver_config) => {
-                info!("setting up kernel driver");
-                Box::new(DriverKernel::new(
-                    &kernel_driver_config.interfaces,
-                    2,
-                    todo!(), // need Fredi pr and don't want to replicate his work
-                )) as _
+                unreachable!() // refactor flow to zap this branch
             }
         };
         Self { driver }
     }
 }
 
-impl Start for DriverDpdk {
-    fn start(&self)
-    where
-        Self: Sized,
-    {
+impl Start for DriverDpdk<Stopped> {
+    type Started = DriverDpdk<Started>;
+    fn start(self) -> DriverDpdk<Started> {
         self.start_rte_workers(&self.setup_pipeline);
+        DriverDpdk {
+            eal: self.eal,
+            devices: self.devices,
+            setup_pipeline: self.setup_pipeline,
+            state: Started,
+        }
     }
 }
 
-impl Start for Dataplane {
-    fn start(&self) {
-        self.driver.start();
+impl Stop for Dataplane<DriverDpdk<Started>> {
+    type Stopped = ();
+    fn stop(self) -> () {
+        self.driver.stop();
     }
 }
 
-impl Stop for Dataplane {
-    fn stop(self) {
-        todo!();
-    }
-}
-
-impl Stop for DriverDpdk {
-    fn stop(self) {
+impl Stop for DriverDpdk<Started> {
+    type Stopped = ();
+    fn stop(self) -> Self::Stopped {
         todo!()
+    }
+}
+
+impl Start for Dataplane<DriverDpdk<Stopped>> {
+    type Started = Dataplane<DriverDpdk<Started>>;
+
+    fn start(self) -> Self::Started {
+        Self::Started {
+            driver: self.driver.start(),
+        }
     }
 }
 
@@ -180,13 +182,17 @@ fn init_devices(eal: &Eal) -> Vec<Dev> {
         .collect()
 }
 
-pub struct DriverDpdk {
+pub struct DriverDpdk<S: State> {
     eal: Eal,
     devices: Vec<Dev>,
     setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Mbuf>>,
+    state: S,
 }
 
-impl DriverDpdk {
+impl Driver for DriverDpdk<Stopped> {}
+impl Driver for DriverDpdk<Started> {}
+
+impl DriverDpdk<Stopped> {
     pub(crate) fn new(
         args: impl IntoIterator<Item = impl AsRef<str>>,
         setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Mbuf>>,
@@ -198,6 +204,7 @@ impl DriverDpdk {
             eal,
             devices,
             setup_pipeline,
+            state: Stopped,
         }
     }
 

@@ -17,6 +17,7 @@ use afpacket::sync::RawPacketStream;
 use concurrency::sync::Arc;
 use concurrency::thread;
 
+use net::buffer::{PacketBufferMut, TestBuffer};
 use tokio::sync::mpsc as chan;
 
 use mio::unix::SourceFd;
@@ -30,7 +31,6 @@ use std::time::Duration;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use net::buffer::test_buffer::TestBuffer;
 use net::interface::InterfaceIndex;
 use net::packet::Packet;
 use netdev::Interface;
@@ -44,11 +44,12 @@ use pkt_meta::flow_table::flow_key::{Bidi, FlowKey};
 use tracectl::trace_target;
 
 use crate::drivers::tokio_util::run_in_tokio_runtime;
+use crate::drivers::{Started, State, Stopped};
 trace_target!("kernel-driver", LevelFilter::ERROR, &["driver"]);
 
-type WorkerTx = chan::Sender<Box<Packet<TestBuffer>>>;
-type WorkerRx = chan::Receiver<Box<Packet<TestBuffer>>>;
-type WorkerChans = (Vec<WorkerTx>, WorkerRx);
+type WorkerTx<Buf> = chan::Sender<Box<Packet<Buf>>>;
+type WorkerRx<Buf> = chan::Receiver<Box<Packet<Buf>>>;
+type WorkerChans<Buf> = (Vec<WorkerTx<Buf>>, WorkerRx<Buf>);
 
 /// Simple representation of a kernel interface.
 pub struct Kif {
@@ -197,19 +198,20 @@ fn build_kif_table(args: impl IntoIterator<Item = impl AsRef<str>>) -> io::Resul
 ///  * workers run independent pipelines and send processed packets back
 ///  * dispatcher serializes & transmits on the chosen outgoing interface
 #[non_exhaustive]
-pub struct DriverKernel {
+pub struct DriverKernel<S: State, Buf: PacketBufferMut> {
     args: Vec<String>,
     num_workers: usize,
-    setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
+    setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
+    state: S,
 }
 
-fn single_worker(
+fn single_worker<Buf: PacketBufferMut>(
     id: usize,
     thread_builder: thread::Builder,
-    tx_to_control: WorkerTx,
-    setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
-) -> Result<WorkerTx, std::io::Error> {
-    let (tx_to_worker, mut rx_from_control) = chan::channel::<Box<Packet<TestBuffer>>>(4096);
+    tx_to_control: WorkerTx<Buf>,
+    setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
+) -> Result<WorkerTx<Buf>, std::io::Error> {
+    let (tx_to_worker, mut rx_from_control) = chan::channel::<Box<Packet<Buf>>>(4096);
     let setup = setup_pipeline.clone();
 
     let _handle_res = thread_builder.spawn(move || {
@@ -254,10 +256,10 @@ fn single_worker(
 }
 
 #[allow(clippy::cast_possible_truncation)]
-impl DriverKernel {
+impl<Buf: PacketBufferMut> DriverKernel<Stopped, Buf> {
     /// Compute a **symmetric** worker index for a parsed `Packet` using a bidirectional flow key.
     #[must_use]
-    pub fn compute_worker_idx(pkt: &Packet<TestBuffer>, workers: usize) -> usize {
+    pub fn compute_worker_idx(pkt: &Packet<Buf>, workers: usize) -> usize {
         let n = workers.max(1);
 
         // Prefer symmetric flow-key hash (A<->B go to the same bucket)
@@ -277,16 +279,15 @@ impl DriverKernel {
     ///   - `Vec<Sender<Packet<TestBuffer>>>` one sender per worker (dispatcher -> worker)
     ///   - `Receiver<Packet<TestBuffer>>` a single queue for processed packets (worker -> dispatcher)
     fn spawn_workers(
-        num_workers: usize,
-        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
-    ) -> io::Result<WorkerChans> {
-        let (tx_to_control, rx_from_workers) = chan::channel::<Box<Packet<TestBuffer>>>(4096);
-        let mut to_workers = Vec::with_capacity(num_workers);
-        info!("Spawning {num_workers} workers");
-        for wid in 0..num_workers {
+        &self,
+    ) -> io::Result<WorkerChans<Buf>> {
+        let (tx_to_control, rx_from_workers) = chan::channel::<Box<Packet<Buf>>>(4096);
+        let mut to_workers = Vec::with_capacity(self.num_workers);
+        info!("Spawning {num_workers} workers", num_workers = self.num_workers);
+        for wid in 0..self.num_workers {
             let builder = thread::Builder::new().name(format!("dp-worker-{wid}"));
             let tx_to_worker =
-                match single_worker(wid, builder, tx_to_control.clone(), setup_pipeline) {
+                match single_worker(wid, builder, tx_to_control.clone(), &self.setup_pipeline) {
                     Ok(tx_to_worker) => tx_to_worker,
                     Err(e) => {
                         error!("Failed to spawn worker {wid}: {e}");
@@ -304,22 +305,23 @@ impl DriverKernel {
     /// - `args`: kernel driver CLI parameters (e.g., `--interface` list)
     /// - `workers`: number of worker threads / pipelines
     /// - `setup_pipeline`: factory returning a **fresh** `DynPipeline<TestBuffer>` per worker
-    pub fn new(
+    pub fn new<B: PacketBufferMut>(
         args: impl IntoIterator<Item = impl AsRef<str> + Clone>,
         num_workers: usize,
-        setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
-    ) -> Self {
-        Self {
+        setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<B>>,
+    ) -> DriverKernel<Stopped, B> {
+        DriverKernel {
             args: args.into_iter().map(|x| x.as_ref().into()).collect(),
             num_workers,
             setup_pipeline,
+            state: Stopped,
         }
     }
 
     pub fn recv_packets(
         kiftable: &mut KifTable,
         events: &mio::Events,
-    ) -> impl Iterator<Item = Box<Packet<TestBuffer>>> {
+    ) -> impl Iterator<Item = Box<Packet<Buf>>> {
         events
             .iter()
             .filter(|e| e.is_readable())
@@ -331,7 +333,7 @@ impl DriverKernel {
     /// Tries to receive frames from the indicated interface and builds `Packet`s
     /// out of them. Returns a vector of [`Packet`]s.
     #[allow(clippy::vec_box)] // We want to avoid Packet moves, so allow Vec<Box<_>> to be sure
-    pub fn packet_recv(interface: &mut Kif) -> Vec<Box<Packet<TestBuffer>>> {
+    pub fn packet_recv(interface: &mut Kif) -> Vec<Box<Packet<Buf>>> {
         let mut raw = [0u8; 2048];
         let mut pkts = Vec::with_capacity(32);
         loop {
@@ -339,19 +341,20 @@ impl DriverKernel {
                 Ok(0) => break, // no more
                 Ok(bytes) => {
                     // build TestBuffer and parse
-                    let buf = TestBuffer::from_raw_data(&raw[..bytes]);
-                    match Packet::new(buf) {
-                        Ok(mut incoming) => {
-                            incoming.get_meta_mut().iif = Some(interface.ifindex);
-                            pkts.push(Box::new(incoming));
-                        }
-                        Err(e) => {
-                            // Parsing errors happen; avoid logspam for loopback
-                            if interface.name != "lo" {
-                                error!("Failed to parse packet on '{}': {e}", interface.name);
-                            }
-                        }
-                    }
+                    todo!(); // need Fredi work
+                    // let buf = Buf::from_raw_data(&raw[..bytes]);
+                    // match Packet::new(buf) {
+                    //     Ok(mut incoming) => {
+                    //         incoming.get_meta_mut().iif = Some(interface.ifindex);
+                    //         pkts.push(Box::new(incoming));
+                    //     }
+                    //     Err(e) => {
+                    //         // Parsing errors happen; avoid logspam for loopback
+                    //         if interface.name != "lo" {
+                    //             error!("Failed to parse packet on '{}': {e}", interface.name);
+                    //         }
+                    //     }
+                    // }
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) => {
@@ -364,12 +367,10 @@ impl DriverKernel {
     }
 }
 
-impl crate::drivers::Start for DriverKernel {
+impl<B: PacketBufferMut> crate::drivers::Start for DriverKernel<Stopped, B> {
+    type Started = DriverKernel<Started, B>;
     #[allow(clippy::panic, clippy::unwrap_used)] // inability to start the driver is fatal
-    fn start(&self)
-    where
-        Self: Sized,
-    {
+    fn start(self) -> Self::Started {
         // Prepare interfaces/poller
         let mut kiftable = match build_kif_table(self.args.iter()) {
             Ok(t) => t,
@@ -381,7 +382,7 @@ impl crate::drivers::Start for DriverKernel {
 
         // Spawn workers
         let (to_workers, mut from_workers) =
-            match Self::spawn_workers(self.num_workers, &self.setup_pipeline) {
+            match self.spawn_workers() {
                 Ok(chans) => chans,
                 Err(e) => {
                     error!("failed to start workers: {e}");
@@ -473,13 +474,12 @@ impl crate::drivers::Start for DriverKernel {
                         });
                     }
                 }).unwrap();
+        DriverKernel {
+            args: self.args,
+            num_workers: self.num_workers,
+            setup_pipeline: self.setup_pipeline,
+            state: Started,
+        }
     }
-}
 
-impl crate::drivers::Stop for DriverKernel {
-    fn stop(self) {
-        todo!()
-    }
 }
-
-impl crate::drivers::Driver for DriverKernel {}

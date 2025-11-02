@@ -100,8 +100,7 @@ fn main() {
     ctrlc::set_handler(move || stop_tx.send(()).expect("Error sending SIGINT signal"))
         .expect("failed to set SIGINT handler");
     let dataplane = Dataplane::new(launch_config);
-    dataplane.start();
-
+    let dataplane = dataplane.start();
     stop_rx.recv().expect("failed to receive stop signal");
     dataplane.stop();
     info!("Shutting down dataplane");
