@@ -199,16 +199,11 @@ impl ConfigProcessor {
             debug!("The current config is {}", current.genid());
         }
 
-        // FIXME(fredi): pass &mut self.params
         apply_gw_config(
             &self.vpc_mgr,
             &mut config,
             current.as_deref(),
-            &mut self.proc_params.router_ctl,
-            &mut self.proc_params.vpcmapw,
-            &mut self.proc_params.nattablesw,
-            &mut self.proc_params.natallocatorw,
-            &mut self.proc_params.vpcdtablesw,
+            &mut self.proc_params,
         )
         .await?;
 
@@ -229,18 +224,7 @@ impl ConfigProcessor {
         let rollback_cfg = current.unwrap_or(ExternalConfig::BLANK_GENID);
         info!("Rolling back to config '{rollback_cfg}'...");
         if let Some(prior) = self.config_db.get_mut(rollback_cfg) {
-            // FIXME(fredi): pass &mut self.params
-            let _ = apply_gw_config(
-                &self.vpc_mgr,
-                prior,
-                None,
-                &mut self.proc_params.router_ctl,
-                &mut self.proc_params.vpcmapw,
-                &mut self.proc_params.nattablesw,
-                &mut self.proc_params.natallocatorw,
-                &mut self.proc_params.vpcdtablesw,
-            )
-            .await;
+            let _ = apply_gw_config(&self.vpc_mgr, prior, None, &mut self.proc_params).await;
         }
     }
 
@@ -578,18 +562,17 @@ fn apply_device_config(device: &DeviceConfig) -> ConfigResult {
 
 #[allow(clippy::too_many_arguments)]
 /// Main function to apply a config
-// FIXME(fredi): receive &mut self.params
 async fn apply_gw_config(
     vpc_mgr: &VpcManager<RequiredInformationBase>,
     config: &mut GwConfig,
     _current: Option<&GwConfig>,
-    router_ctl: &mut RouterCtlSender,
-    vpcmapw: &mut VpcMapWriter<VpcMapName>,
-    nattablesw: &mut NatTablesWriter,
-    natallocatorw: &mut NatAllocatorWriter,
-    vpcdtablesw: &mut VpcDiscTablesWriter,
+    params: &mut ConfigProcessorParams,
 ) -> ConfigResult {
     let genid = config.genid();
+
+    /* external config we get has device and overlay */
+    let external = &config.external;
+    let overlay = &external.overlay;
 
     /* make sure we built internal config */
     let Some(internal) = &config.internal else {
@@ -600,7 +583,7 @@ async fn apply_gw_config(
     };
 
     /* apply device config */
-    apply_device_config(&config.external.device)?;
+    apply_device_config(&external.device)?;
 
     if genid == ExternalConfig::BLANK_GENID {
         /* apply config with VPC manager */
@@ -610,7 +593,8 @@ async fn apply_gw_config(
     }
 
     /* lock the CPI to prevent updates on the routing db */
-    let _guard = router_ctl
+    let _guard = params
+        .router_ctl
         .lock()
         .await
         .map_err(|_| ConfigError::InternalFailure("Could not lock the CPI".to_string()))?;
@@ -622,20 +606,20 @@ async fn apply_gw_config(
     let kernel_vrfs = vpc_mgr.get_kernel_vrfs().await?;
 
     /* apply stateless NAT config */
-    apply_stateless_nat_config(&config.external.overlay.vpc_table, nattablesw)?;
+    apply_stateless_nat_config(&overlay.vpc_table, &mut params.nattablesw)?;
 
     /* apply stateful NAT config */
-    apply_stateful_nat_config(&config.external.overlay.vpc_table, natallocatorw)?;
+    apply_stateful_nat_config(&overlay.vpc_table, &mut params.natallocatorw)?;
 
     /* apply dst_vpcd_lookup config */
-    apply_dst_vpcd_lookup_config(&config.external.overlay, vpcdtablesw)?;
+    apply_dst_vpcd_lookup_config(overlay, &mut params.vpcdtablesw)?;
 
     /* update stats mappings and seed names to the stats store */
-    let pairs = update_stats_vpc_mappings(config, vpcmapw);
+    let pairs = update_stats_vpc_mappings(config, &mut params.vpcmapw);
     drop(pairs); // pairs used by caller
 
     /* apply config in router */
-    apply_router_config(&kernel_vrfs, config, router_ctl).await?;
+    apply_router_config(&kernel_vrfs, config, &mut params.router_ctl).await?;
 
     info!("Successfully applied config for genid {genid}");
     Ok(())
