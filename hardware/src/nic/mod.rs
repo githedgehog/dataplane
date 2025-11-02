@@ -27,6 +27,7 @@ pub enum DriverErr {
 ///
 /// Note that the NIC may or may not be visible to the OS, depending on the state of
 /// the system.
+#[derive(Debug)]
 pub struct PciNic {
     address: PciAddress,
 }
@@ -101,6 +102,9 @@ pub enum PciDriver {
     /// Intel's i40e driver.
     #[strum(serialize = "i40e")]
     I40e,
+    /// Intel's iavf driver.
+    #[strum(serialize = "iavf")]
+    Iavf,
     /// NVIDIA/Mellanox's mlx5 driver
     #[strum(serialize = "mlx5_core")]
     Mlx5Core,
@@ -111,8 +115,12 @@ pub enum PciDriver {
     #[strum(serialize = "vfio-pci")]
     VfioPci,
     /// The virtio-net driver.
-    #[strum(serialize = "virtio-net")]
+    // NOTE: inconsistent use of _ vs - is deliberate.  Linux is not consistent
+    #[strum(serialize = "virtio_net")]
     VirtioNet,
+    /// The virtio-pci driver (sometimes assigned to virtio net devices)
+    #[strum(serialize = "virtio-pci")]
+    VirtioPci,
 }
 
 impl PciDriver {

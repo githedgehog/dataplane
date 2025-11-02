@@ -15,6 +15,17 @@
 //! - **Device**: 5-bit value (0x00-0x1F), represented as 8-bit
 //! - **Function**: 3-bit value (0x0-0x7), represented as 8-bit
 //!
+//! ```mermaid
+//! ---
+//! title: PCI address format
+//! ---
+//! packet
+//! +16: "domain"
+//! +8: "bus"
+//! +5: "device"
+//! +3: "function"
+//! ```
+//!
 //! # Examples
 //!
 //! ```
@@ -80,21 +91,23 @@ pub use self::scan::*;
     rkyv::Archive,
     rkyv::Deserialize,
     rkyv::Serialize,
+    bytecheck::CheckBytes,
 )]
 #[cfg_attr(
     any(test, feature = "serde"),
     derive(serde::Serialize, serde::Deserialize),
     serde(try_from = "&str", into = "String")
 )]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct PciAddress {
     /// PCI domain (segment) number.
-    pub domain: Domain,
+    domain: Domain,
     /// PCI bus number.
-    pub bus: Bus,
+    bus: Bus,
     /// Device number on the bus.
-    pub device: Device,
+    device: Device,
     /// Function number within the device.
-    pub function: Function,
+    function: Function,
 }
 
 impl PciAddress {
@@ -559,71 +572,6 @@ mod test {
                     }
                 }
             });
-    }
-
-    #[cfg(false)] // test currently skipped, only here to show intent for next PR
-    #[test]
-    fn print_children_test() {
-        use hwlocality::Topology;
-        use hwlocality::object::types::ObjectType;
-        use hwlocality::topology::builder::{BuildFlags, TypeFilter};
-        use std::io::Write;
-
-        use crate::Node;
-        let topology = Topology::builder()
-            .with_type_filter(ObjectType::Bridge, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::PCIDevice, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::OSDevice, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::Machine, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::Core, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::Die, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::L1Cache, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::L2Cache, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::L3Cache, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::L4Cache, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::L5Cache, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::MemCache, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::Misc, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::NUMANode, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::PU, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::Package, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::L1ICache, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::L2ICache, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::L3ICache, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::L4Cache, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::L5Cache, TypeFilter::KeepAll)
-            .unwrap()
-            .with_type_filter(ObjectType::Group, TypeFilter::KeepStructure)
-            .unwrap()
-            .with_flags(BuildFlags::INCLUDE_DISALLOWED)
-            .unwrap()
-            .build()
-            .unwrap();
-        let system = Node::from(topology.root_object());
-        let mut hardware_file = std::fs::File::create("hardware.yml").unwrap();
-        hardware_file
-            .write_all(serde_yaml_ng::to_string(&system).unwrap().as_bytes())
-            .unwrap();
     }
 
     #[test]

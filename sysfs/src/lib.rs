@@ -23,8 +23,8 @@ pub enum SysfsErr {
     /// Some [`std::io::Error`] error occurred
     #[error(transparent)]
     IoError(#[from] std::io::Error),
-    /// Invalid UTF-8 in a path under sysfs is an absolutely wild error case we expect to
-    /// never see.
+    /// Invalid UTF-8 in a path under sysfs is an absolutely wild error case we expect never
+    /// to see.
     ///
     /// The kernel just uses ascii byte strings for sysfs, so you should never see this
     /// error under healthy conditions.

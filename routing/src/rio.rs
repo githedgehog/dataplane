@@ -69,10 +69,6 @@ impl RioHandle {
     }
 }
 
-pub const DEFAULT_DP_UX_PATH: &str = "/var/run/frr/hh/dataplane.sock";
-pub const DEFAULT_DP_UX_PATH_CLI: &str = "/var/run/dataplane/cli.sock";
-pub const DEFAULT_FRR_AGENT_PATH: &str = "/var/run/frr/frr-agent.sock";
-
 pub struct RioConf {
     pub cpi_sock_path: Option<String>,
     pub cli_sock_path: Option<String>,
@@ -81,9 +77,9 @@ pub struct RioConf {
 impl Default for RioConf {
     fn default() -> Self {
         Self {
-            cpi_sock_path: Some(DEFAULT_DP_UX_PATH.to_string()),
-            cli_sock_path: Some(DEFAULT_DP_UX_PATH_CLI.to_string()),
-            frrmi_sock_path: Some(DEFAULT_FRR_AGENT_PATH.to_string()),
+            cpi_sock_path: Some(args::DEFAULT_DP_UX_PATH.to_string()),
+            cli_sock_path: Some(args::DEFAULT_DP_UX_PATH_CLI.to_string()),
+            frrmi_sock_path: Some(args::DEFAULT_FRR_AGENT_PATH.to_string()),
         }
     }
 }
@@ -123,19 +119,19 @@ impl Rio {
     fn new(conf: &RioConf) -> Result<Rio, RouterError> {
         /* path to bind to for routing function */
         let cp_sock_path = conf.cpi_sock_path.as_ref().map_or_else(
-            || DEFAULT_DP_UX_PATH.to_owned(),
+            || args::DEFAULT_DP_UX_PATH.to_owned(),
             std::borrow::ToOwned::to_owned,
         );
 
         /* path to bind to for cli */
         let cli_sock_path = conf.cli_sock_path.as_ref().map_or_else(
-            || DEFAULT_DP_UX_PATH_CLI.to_owned(),
+            || args::DEFAULT_DP_UX_PATH_CLI.to_owned(),
             std::borrow::ToOwned::to_owned,
         );
 
         /* path of frr-agent */
         let frrmi_sock_path = conf.frrmi_sock_path.as_ref().map_or_else(
-            || DEFAULT_FRR_AGENT_PATH.to_owned(),
+            || args::DEFAULT_FRR_AGENT_PATH.to_owned(),
             std::borrow::ToOwned::to_owned,
         );
 
