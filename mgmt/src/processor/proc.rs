@@ -23,6 +23,7 @@ use crate::processor::confbuild::router::generate_router_config;
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
 use nat::stateless::setup::{build_nat_configuration, validate_nat_configuration};
+use pkt_io::{IoManagerCtl, PortMapWriter};
 use pkt_meta::dst_vpcd_lookup::VpcDiscTablesWriter;
 use pkt_meta::dst_vpcd_lookup::setup::build_dst_vni_lookup_configuration;
 use routing::frr::FrrAppliedConfig;
@@ -119,6 +120,12 @@ pub struct ConfigProcessorParams {
 
     // store for vpc stats
     pub vpc_stats_store: Arc<VpcStatsStore>,
+
+    // IO manager control
+    pub iom_ctl: IoManagerCtl,
+
+    // writer for portmap table
+    pub pmapw: PortMapWriter,
 }
 
 impl ConfigProcessor {

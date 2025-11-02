@@ -19,13 +19,8 @@ use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
 use pyroscope::PyroscopeAgent;
 use pyroscope_pprofrs::{PprofConfig, pprof_backend};
 
-use net::buffer::PacketBufferMut;
-use net::buffer::{PacketBufferMut, TestBuffer, TestBufferPool};
-use net::packet::Packet;
-
-use pipeline::DynPipeline;
-use pipeline::sample_nfs::PacketDumper;
-use pkt_io::{PortMapWriter, start_io};
+use net::buffer::{TestBuffer, TestBufferPool};
+use pkt_io::start_io;
 
 use routing::RouterParamsBuilder;
 use tracectl::{custom_target, get_trace_ctl, trace_target};
@@ -134,7 +129,7 @@ fn main() {
 
     // Start driver with the provided pipeline builder. Driver should create a portmap table,
     // populate it with [`PortSpec`]s and return the writer
-    let _pmap_w = match args.driver_name() {
+    let pmapw = match args.driver_name() {
         "dpdk" => {
             info!("Using driver DPDK...");
             todo!();
@@ -142,7 +137,7 @@ fn main() {
         "kernel" => {
             info!("Using driver kernel...");
             DriverKernel::start(
-                args.kernel_interfaces(),
+                args.interfaces(),
                 args.kernel_num_workers(),
                 &pipeline_factory,
             )
@@ -154,10 +149,10 @@ fn main() {
     };
 
     // always log port mappings
-    pmap_w.log_pmap_table();
+    pmapw.log_pmap_table();
 
     // start IO service
-    let (_handle, _io_ctl) = match args.driver_name() {
+    let (_handle, iom_ctl) = match args.driver_name() {
         /*
                "dpdk" => {
                    let pool_cfg =
@@ -183,6 +178,8 @@ fn main() {
             vpcdtablesw: setup.vpcdtablesw,
             vpcmapw: setup.vpcmapw,
             vpc_stats_store: setup.vpc_stats_store,
+            iom_ctl,
+            pmapw,
         },
     };
     // start mgmt
