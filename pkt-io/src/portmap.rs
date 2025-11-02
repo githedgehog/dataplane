@@ -47,10 +47,10 @@ impl PortMapKey {
 /// A (port+vlan)-to-interface mapping entry.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PortMap {
-    pdesc: NetworkDeviceDescription,
+    pub pdesc: NetworkDeviceDescription,
     pindex: PortIndex,
-    ifname: InterfaceName,
-    ifindex: InterfaceIndex,
+    pub ifname: InterfaceName,
+    pub ifindex: InterfaceIndex,
 }
 impl PortMap {
     const fn new(
@@ -116,17 +116,20 @@ impl PortMapTable {
         debug_assert!(self.0.len().is_multiple_of(2));
     }
 
-    #[inline]
     fn get(&self, key: PortMapKey) -> Option<&PortMap> {
         self.0.get(&key).map(std::convert::AsRef::as_ref)
     }
-    #[inline]
-    pub(crate) fn get_by_port(&self, pindex: PortIndex) -> Option<&PortMap> {
+    pub(crate) fn get_by_pindex(&self, pindex: PortIndex) -> Option<&PortMap> {
         self.get(PortMapKey::from_port(pindex))
     }
-    #[inline]
-    pub(crate) fn get_by_iface(&self, ifindex: InterfaceIndex) -> Option<&PortMap> {
+    pub(crate) fn get_by_ifindex(&self, ifindex: InterfaceIndex) -> Option<&PortMap> {
         self.get(PortMapKey::from_iface(ifindex))
+    }
+    pub(crate) fn get_by_pdesc(&self, pdesc: &NetworkDeviceDescription) -> Option<&PortMap> {
+        self.0
+            .values()
+            .find(|pmap| &pmap.pdesc == pdesc)
+            .map(|v| &**v)
     }
 }
 
@@ -188,35 +191,43 @@ impl PortMapWriter {
 pub struct PortMapReader(ReadHandle<PortMapTable>);
 impl PortMapReader {
     #[cfg(test)]
-    fn get_by_port(&self, pindex: PortIndex) -> Option<ReadGuard<'_, PortMap>> {
-        if let Some(g) = self.0.enter() {
-            g.get_by_port(pindex)?; // FIXME
-            Some(ReadGuard::map(g, |table| {
-                table.get_by_port(pindex).unwrap()
-            }))
-        } else {
-            None
-        }
+    fn get_by_pindex(&self, pindex: PortIndex) -> Option<ReadGuard<'_, PortMap>> {
+        let g = self.0.enter()?;
+        g.get_by_pindex(pindex)?;
+        Some(ReadGuard::map(g, |table| {
+            table
+                .get_by_pindex(pindex)
+                .unwrap_or_else(|| unreachable!())
+        }))
     }
     #[cfg(test)]
-    fn get_by_iface(&self, ifindex: InterfaceIndex) -> Option<ReadGuard<'_, PortMap>> {
-        if let Some(g) = self.0.enter() {
-            g.get_by_iface(ifindex)?; // FIXME
-            Some(ReadGuard::map(g, |table| {
-                table.get_by_iface(ifindex).unwrap()
-            }))
-        } else {
-            None
-        }
+    fn get_by_ifindex(&self, ifindex: InterfaceIndex) -> Option<ReadGuard<'_, PortMap>> {
+        let g = self.0.enter()?;
+        g.get_by_ifindex(ifindex)?;
+        Some(ReadGuard::map(g, |table| {
+            table
+                .get_by_ifindex(ifindex)
+                .unwrap_or_else(|| unreachable!())
+        }))
     }
 
-    pub fn lookup_iface_by_port(&self, pindex: PortIndex) -> Option<InterfaceIndex> {
-        self.0.enter()?.get_by_port(pindex).map(|pmap| pmap.ifindex)
+    pub fn get_by_pdesc(&self, pdesc: &NetworkDeviceDescription) -> Option<ReadGuard<'_, PortMap>> {
+        let g = self.0.enter()?;
+        g.get_by_pdesc(pdesc)?; // This is ugly
+        Some(ReadGuard::map(g, |table| {
+            table.get_by_pdesc(pdesc).unwrap_or_else(|| unreachable!())
+        }))
     }
-    pub fn lookup_port_by_iface(&self, ifindex: InterfaceIndex) -> Option<PortIndex> {
+    pub fn lookup_iface_by_pindex(&self, pindex: PortIndex) -> Option<InterfaceIndex> {
         self.0
             .enter()?
-            .get_by_iface(ifindex)
+            .get_by_pindex(pindex)
+            .map(|pmap| pmap.ifindex)
+    }
+    pub fn lookup_port_by_ifindex(&self, ifindex: InterfaceIndex) -> Option<PortIndex> {
+        self.0
+            .enter()?
+            .get_by_ifindex(ifindex)
             .map(|pmap| pmap.pindex)
     }
 }
@@ -267,7 +278,7 @@ fn fmt_pmap_with_key(
         format_args!(
             PORTMAP_FMT!(),
             key.to_string(),
-            pmap.pdesc.to_string(),
+            pmap.pdesc.clone(),
             pmap.pindex.to_string(),
             pmap.ifname.to_string(),
             pmap.ifindex
@@ -317,8 +328,8 @@ mod tests {
             let pmap = build_portmap("0000:03:02.1", "eth1", 1, 800);
             pmap_t.add_replace(pmap.clone());
 
-            let lookup1 = pmap_t.get_by_iface(pmap.ifindex).unwrap();
-            let lookup2 = pmap_t.get_by_port(pmap.pindex).unwrap();
+            let lookup1 = pmap_t.get_by_ifindex(pmap.ifindex).unwrap();
+            let lookup2 = pmap_t.get_by_pindex(pmap.pindex).unwrap();
             assert_eq!(lookup1, &pmap);
             assert_eq!(lookup2, &pmap);
             assert_eq!(pmap_t.0.len(), 2);
@@ -329,8 +340,8 @@ mod tests {
             let pmap = build_portmap("0000:03:02.1", "eth1", 1, 800);
             pmap_t.add_replace(pmap.clone());
 
-            let lookup1 = pmap_t.get_by_iface(pmap.ifindex).unwrap();
-            let lookup2 = pmap_t.get_by_port(pmap.pindex).unwrap();
+            let lookup1 = pmap_t.get_by_ifindex(pmap.ifindex).unwrap();
+            let lookup2 = pmap_t.get_by_pindex(pmap.pindex).unwrap();
             assert_eq!(lookup1, &pmap);
             assert_eq!(lookup2, &pmap);
             assert_eq!(pmap_t.0.len(), 2);
@@ -341,8 +352,8 @@ mod tests {
             let pmap = build_portmap("0000:03:02.7", "ethFoo", 1, 800);
             pmap_t.add_replace(pmap.clone());
 
-            let lookup1 = pmap_t.get_by_iface(pmap.ifindex).unwrap();
-            let lookup2 = pmap_t.get_by_port(pmap.pindex).unwrap();
+            let lookup1 = pmap_t.get_by_ifindex(pmap.ifindex).unwrap();
+            let lookup2 = pmap_t.get_by_pindex(pmap.pindex).unwrap();
             assert_eq!(lookup1, &pmap);
             assert_eq!(lookup2, &pmap);
             assert_eq!(pmap_t.0.len(), 2);
@@ -353,8 +364,8 @@ mod tests {
             let pmap = build_portmap("0000:03:02.1", "eth1", 2, 800);
             pmap_t.add_replace(pmap.clone());
 
-            let lookup1 = pmap_t.get_by_iface(pmap.ifindex).unwrap();
-            let lookup2 = pmap_t.get_by_port(pmap.pindex).unwrap();
+            let lookup1 = pmap_t.get_by_ifindex(pmap.ifindex).unwrap();
+            let lookup2 = pmap_t.get_by_pindex(pmap.pindex).unwrap();
             assert_eq!(lookup1, &pmap);
             assert_eq!(lookup2, &pmap);
             assert_eq!(pmap_t.0.len(), 2);
@@ -365,8 +376,8 @@ mod tests {
             let pmap = build_portmap("0000:03:02.1", "eth1", 2, 900);
             pmap_t.add_replace(pmap.clone());
 
-            let lookup1 = pmap_t.get_by_iface(pmap.ifindex).unwrap();
-            let lookup2 = pmap_t.get_by_port(pmap.pindex).unwrap();
+            let lookup1 = pmap_t.get_by_ifindex(pmap.ifindex).unwrap();
+            let lookup2 = pmap_t.get_by_pindex(pmap.pindex).unwrap();
             assert_eq!(lookup1, &pmap);
             assert_eq!(lookup2, &pmap);
             assert_eq!(pmap_t.0.len(), 2);
@@ -378,8 +389,8 @@ mod tests {
             let ifindex = InterfaceIndex::try_new(900).unwrap();
             pmap_t.del_by_port(pindex);
 
-            assert!(pmap_t.get_by_iface(ifindex).is_none());
-            assert!(pmap_t.get_by_port(pindex).is_none());
+            assert!(pmap_t.get_by_ifindex(ifindex).is_none());
+            assert!(pmap_t.get_by_pindex(pindex).is_none());
             assert!(pmap_t.0.is_empty());
         }
 
@@ -390,8 +401,8 @@ mod tests {
             assert_eq!(pmap_t.0.len(), 2);
 
             pmap_t.del_by_interface(pmap.ifindex);
-            assert!(pmap_t.get_by_iface(pmap.ifindex).is_none());
-            assert!(pmap_t.get_by_port(pmap.pindex).is_none());
+            assert!(pmap_t.get_by_ifindex(pmap.ifindex).is_none());
+            assert!(pmap_t.get_by_pindex(pmap.pindex).is_none());
             assert!(pmap_t.0.is_empty());
         }
     }
@@ -413,16 +424,16 @@ mod tests {
         writer.log_pmap_table();
 
         // check reader sees it
-        let found = reader.get_by_iface(pmap.ifindex).unwrap();
+        let found = reader.get_by_ifindex(pmap.ifindex).unwrap();
         assert_eq!(&pmap, found.as_ref());
         drop(found);
 
         // lookups
         assert_eq!(
-            reader.lookup_iface_by_port(pmap.pindex).unwrap(),
+            reader.lookup_iface_by_pindex(pmap.pindex).unwrap(),
             pmap.ifindex
         );
-        let pindex = reader.lookup_port_by_iface(pmap.ifindex).unwrap();
+        let pindex = reader.lookup_port_by_ifindex(pmap.ifindex).unwrap();
         assert_eq!(pindex, pmap.pindex);
 
         // update a port map: same port, distinct interface and vlan
@@ -433,26 +444,26 @@ mod tests {
             pmap.pindex,
             pmap.ifindex,
         );
-        let found = reader.get_by_iface(pmap.ifindex).unwrap();
+        let found = reader.get_by_ifindex(pmap.ifindex).unwrap();
         assert_eq!(&pmap, found.as_ref());
         drop(found);
 
         // lookups
         assert_eq!(
-            reader.lookup_iface_by_port(pmap.pindex).unwrap(),
+            reader.lookup_iface_by_pindex(pmap.pindex).unwrap(),
             pmap.ifindex
         );
-        let pindex = reader.lookup_port_by_iface(pmap.ifindex).unwrap();
+        let pindex = reader.lookup_port_by_ifindex(pmap.ifindex).unwrap();
         assert_eq!(pindex, pmap.pindex);
 
         // Remove port map
         let pmap = build_portmap("0000:03:02.1", "eth2", 1, 102);
         writer.del_by_port(pmap.pindex);
-        assert!(reader.get_by_iface(pmap.ifindex).is_none());
-        assert!(reader.get_by_port(pmap.pindex).is_none());
+        assert!(reader.get_by_ifindex(pmap.ifindex).is_none());
+        assert!(reader.get_by_pindex(pmap.pindex).is_none());
 
         // lookups
-        assert!(reader.lookup_iface_by_port(pmap.pindex).is_none());
-        assert!(reader.lookup_port_by_iface(pmap.ifindex).is_none());
+        assert!(reader.lookup_iface_by_pindex(pmap.pindex).is_none());
+        assert!(reader.lookup_port_by_ifindex(pmap.ifindex).is_none());
     }
 }
