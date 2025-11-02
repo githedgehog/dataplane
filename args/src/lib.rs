@@ -23,7 +23,7 @@ pub const DEFAULT_DP_UX_PATH: &str = "/var/run/frr/hh/dataplane.sock";
 pub const DEFAULT_DP_UX_PATH_CLI: &str = "/var/run/dataplane/cli.sock";
 pub const DEFAULT_FRR_AGENT_PATH: &str = "/var/run/frr/frr-agent.sock";
 
-/// A type wrapper around [`std:fs::File`] which is reserved to describe linux [memfd] files.
+/// A type wrapper around [`std::fs::File`] which is reserved to describe linux [memfd] files.
 ///
 /// Our main use case for these files is passing ephemeral, launch-time configuration data to
 /// child the dataplane from the dataplane-init process.
