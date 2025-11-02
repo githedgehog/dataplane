@@ -135,9 +135,17 @@ impl ServiceThread<'_> {
     }
 }
 
-#[allow(unused)]
+#[derive(Debug)]
 pub struct WorkerThread {
     lcore_id: LCoreId,
+}
+
+impl From<LCoreId> for WorkerThread {
+    fn from(value: LCoreId) -> Self {
+        Self {
+            lcore_id: value
+        }
+    }
 }
 
 #[repr(i32)]
@@ -155,6 +163,7 @@ pub enum WorkerThreadLaunchError {
 }
 
 impl WorkerThread {
+    /// This can only run on the main lcore
     #[allow(clippy::expect_used)] // this is only called at system launch where crash is still ok
     pub fn launch<T: Send + FnOnce()>(lcore: LCoreId, f: T) -> Result<(), WorkerThreadLaunchError> {
         unsafe extern "C" fn _launch<Task: Send + FnOnce()>(arg: *mut c_void) -> c_int {
@@ -180,6 +189,16 @@ impl WorkerThread {
             errno::NEG_EPIPE => Err(WorkerThreadLaunchError::Pipe),
             other => Err(WorkerThreadLaunchError::Unexpected(ErrorCode::parse(other)))
         }
+    }
+
+    /// main lcore only.
+    #[tracing::instrument(level = "info", skip(self))]
+    pub fn join(&self) {
+        info!("joining WorkerThread with rte lcore id {thread_id:?}", thread_id = self.lcore_id);
+        EalErrno::assert(unsafe {
+            dpdk_sys::rte_eal_wait_lcore(self.lcore_id.0)
+        });
+        info!("joined WorkerThread with rte lcore id {thread_id:?}", thread_id = self.lcore_id);
     }
 }
 

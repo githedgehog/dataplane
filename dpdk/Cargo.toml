@@ -15,6 +15,7 @@ dpdk-sys = { workspace = true }
 errno = { workspace = true }
 net = { workspace = true }
 
+ctrlc = { workspace = true, features = ["termination"] }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }

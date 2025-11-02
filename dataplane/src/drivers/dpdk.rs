@@ -8,9 +8,10 @@
 use std::convert::Infallible;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use args::LaunchConfiguration;
-use dpdk::dev::{Dev, TxOffloadConfig};
+use dpdk::dev::{Dev, RxOffload, TxOffloadConfig};
 use dpdk::eal::Eal;
 use dpdk::lcore::{LCoreId, WorkerThread};
 use dpdk::mem::{Mbuf, Pool, PoolConfig, PoolParams, RteAllocator};
@@ -79,7 +80,11 @@ impl Dataplane<DriverDpdk<Stopped>> {
         let driver = match &launch_config.driver {
             args::DriverConfigSection::Dpdk(dpdk_driver_config) => {
                 info!("setting up DPDK driver");
-                DriverDpdk::new(dpdk_driver_config.eal_args.iter(), pipeline_factory)
+                DriverDpdk::new(
+                    dpdk_driver_config.eal_args.iter(),
+                    launch_config.workers.num_workers,
+                    pipeline_factory,
+                )
             }
             args::DriverConfigSection::Kernel(kernel_driver_config) => {
                 unreachable!() // refactor flow to zap this branch
@@ -91,8 +96,8 @@ impl Dataplane<DriverDpdk<Stopped>> {
 
 impl Start for DriverDpdk<Stopped> {
     type Started = DriverDpdk<Started>;
-    fn start(self) -> DriverDpdk<Started> {
-        self.start_rte_workers(&self.setup_pipeline);
+    fn start(mut self) -> DriverDpdk<Started> {
+        self.start_rte_workers();
         DriverDpdk {
             eal: self.eal,
             devices: self.devices,
@@ -104,15 +109,8 @@ impl Start for DriverDpdk<Stopped> {
 
 impl Stop for Dataplane<DriverDpdk<Started>> {
     type Stopped = ();
-    fn stop(self) -> () {
+    fn stop(self) {
         self.driver.stop();
-    }
-}
-
-impl Stop for DriverDpdk<Started> {
-    type Stopped = ();
-    fn stop(self) -> Self::Stopped {
-        todo!()
     }
 }
 
@@ -126,14 +124,22 @@ impl Start for Dataplane<DriverDpdk<Stopped>> {
     }
 }
 
-fn init_devices(eal: &Eal) -> Vec<Dev> {
+impl Stop for DriverDpdk<Started> {
+    type Stopped = ();
+    #[tracing::instrument(level = "info", skip(self))]
+    fn stop(mut self) -> Self::Stopped {
+        // self.stop_rte_workers();
+    }
+}
+
+fn init_devices(eal: &Eal, num_workers: u16) -> Vec<Dev> {
     // TODO: pipe in number of workers to compute correct number of queues
     eal.dev
         .iter()
         .map(|dev| {
             let config = dev::DevConfig {
-                num_rx_queues: 2, // TODO: set to number of worker threads
-                num_tx_queues: 2, // TODO: set to number of worker threads + 1 (for packet injection)
+                num_rx_queues: num_workers,
+                num_tx_queues: num_workers,
                 num_hairpin_queues: 0,
                 rx_offloads: None,
                 tx_offloads: Some(TxOffloadConfig::default()),
@@ -194,11 +200,11 @@ impl Driver for DriverDpdk<Started> {}
 impl DriverDpdk<Stopped> {
     pub(crate) fn new(
         args: impl IntoIterator<Item = impl AsRef<str>>,
+        num_workers: u16,
         setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Mbuf>>,
     ) -> Self {
         let eal = eal::init(args);
-        let devices = init_devices(&eal);
-        // this.start_rte_workers(setup_pipeline);
+        let devices = init_devices(&eal, num_workers);
         DriverDpdk {
             eal,
             devices,
@@ -207,10 +213,10 @@ impl DriverDpdk<Stopped> {
         }
     }
 
-    fn start_rte_workers(&self, setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<Mbuf>>) {
+    fn start_rte_workers(&self) {
         LCoreId::iter().enumerate().for_each(|(i, lcore_id)| {
             info!("Starting RTE Worker on {lcore_id:?}");
-            let setup = setup_pipeline.clone();
+            let setup = self.setup_pipeline.clone();
             WorkerThread::launch(lcore_id, move || {
                 let mut pipeline = setup();
                 let queues: Vec<_> = self
@@ -254,5 +260,12 @@ impl DriverDpdk<Stopped> {
             })
             .unwrap();
         });
+        // LCoreId::iter().map(WorkerThread::from).collect()
     }
+}
+
+impl DriverDpdk<Started> {
+    // fn stop_rte_workers(&mut self) {
+        // self.shutdown.store(true, Ordering::Relaxed);
+    // }
 }

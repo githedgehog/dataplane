@@ -1108,6 +1108,7 @@ dependencies = [
 name = "dataplane-dpdk"
 version = "0.1.0"
 dependencies = [
+ "ctrlc",
  "dataplane-dpdk-sys",
  "dataplane-dpdk-sysroot-helper",
  "dataplane-errno",
