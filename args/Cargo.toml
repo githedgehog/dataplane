@@ -7,6 +7,8 @@ license = "Apache-2.0"
 
 [dependencies]
 clap = { workspace = true, features = ["std", "derive", "usage"] }
+hardware = { workspace = true  }
+net = { workspace = true }
 mgmt = { workspace = true  }
 rkyv = { workspace = true, features = ["alloc", "bytecheck"] }
 routing = { workspace = true }

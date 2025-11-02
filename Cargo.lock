@@ -938,6 +938,7 @@ name = "dataplane-args"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "dataplane-hardware",
  "dataplane-mgmt",
  "dataplane-net",
  "dataplane-routing",

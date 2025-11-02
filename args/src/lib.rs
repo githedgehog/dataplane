@@ -2,13 +2,94 @@
 // Copyright Open Network Fabric Authors
 
 pub use clap::Parser;
+use hardware::pci::address::PciAddress;
 use mgmt::processor::launch::GrpcAddress;
+use net::interface::InterfaceName;
 use routing::rio::DEFAULT_DP_UX_PATH;
 use routing::rio::DEFAULT_DP_UX_PATH_CLI;
 use routing::rio::DEFAULT_FRR_AGENT_PATH;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::str::FromStr;
 use tracing::debug;
+
+#[derive(Debug, Clone)]
+#[allow(unused)]
+pub struct InterfaceArg {
+    interface: InterfaceName,
+    pciaddr: Option<PciAddress>,
+}
+impl FromStr for InterfaceArg {
+    type Err = String;
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        match input.split_once('=') {
+            Some((ifname, optional)) => {
+                let interface = InterfaceName::try_from(ifname)
+                    .map_err(|e| format!("Bad interface name: {e}"))?;
+                let pciaddr = if optional.is_empty() {
+                    None
+                } else {
+                    let pciaddr = PciAddress::try_from(optional)
+                        .map_err(|e| format!("Invalid PCI address: {e}"))?;
+                    Some(pciaddr)
+                };
+                Ok(InterfaceArg { interface, pciaddr })
+            }
+            None => {
+                let interface = InterfaceName::try_from(input)
+                    .map_err(|e| format!("Bad interface name: {e}"))?;
+                Ok(InterfaceArg {
+                    interface,
+                    pciaddr: None,
+                })
+            }
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use hardware::pci::address::PciAddress;
+    use hardware::pci::bus::Bus;
+    use hardware::pci::device::Device;
+    use hardware::pci::domain::Domain;
+    use hardware::pci::function::Function;
+
+    use crate::InterfaceArg;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_parse_interface() {
+        // interface + port desc
+        let spec = InterfaceArg::from_str("GbEth1.9000=0000:02:01.7").unwrap();
+        assert_eq!(spec.interface.as_ref(), "GbEth1.9000");
+
+        assert_eq!(
+            spec.pciaddr,
+            Some(PciAddress::new(
+                Domain::from(0),
+                Bus::new(2),
+                Device::try_from(1).unwrap(),
+                Function::try_from(7).unwrap()
+            ))
+        );
+
+        // interface only
+        let spec = InterfaceArg::from_str("GbEth1.9000").unwrap();
+        assert_eq!(spec.interface.as_ref(), "GbEth1.9000");
+        assert_eq!(spec.pciaddr, None);
+
+        // interface= we treat it as none
+        let spec = InterfaceArg::from_str("GbEth1.9000=").unwrap();
+        assert_eq!(spec.interface.as_ref(), "GbEth1.9000");
+        assert_eq!(spec.pciaddr, None);
+
+        // bad interface name
+        assert!(InterfaceArg::from_str("Blah-blah-blah-blah").is_err());
+
+        // bad pci address
+        assert!(InterfaceArg::from_str("GbEth1.9000=0000:02:01").is_err());
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "Hedgehog Fabric Gateway dataplane")]
@@ -33,8 +114,16 @@ pub struct CmdArgs {
     // Non-eal params
     #[arg(long, value_name = "packet driver to use: kernel or dpdk")]
     driver: Option<String>,
-    #[arg(long, value_name = "name of kernel interface")]
-    interface: Vec<String>,
+    #[arg(
+        long,
+        value_name = "interface name",
+        value_parser=InterfaceArg::from_str,
+        value_delimiter=',',
+        help = "Interface name (kernel naming restrictions apply), with optional PCI address in the format INTERFACE[=PCIaddress].
+E.g. --interface eth1 --interface eth0=0000:02:01.0. Note that multiple interfaces can be specified, comma-separated.
+E.g. --interface eth1,eth0=0000:02:01.0"
+    )]
+    interface: Vec<InterfaceArg>,
 
     /// Number of worker threads for the kernel driver.
     #[arg(
@@ -144,8 +233,17 @@ impl CmdArgs {
     pub fn kernel_num_workers(&self) -> usize {
         self.num_workers.into()
     }
+    // backwards-compatible, to deprecate
     pub fn kernel_interfaces(&self) -> Vec<String> {
-        self.interface.clone()
+        self.interface
+            .iter()
+            .map(|spec| spec.interface.to_string())
+            .collect()
+    }
+
+    // interface getter. This should be used by all drivers
+    pub fn interfaces(&self) -> impl Iterator<Item = &InterfaceArg> {
+        self.interface.iter()
     }
 
     pub fn eal_params(&self) -> Vec<String> {
