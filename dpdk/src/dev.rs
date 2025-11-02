@@ -8,6 +8,8 @@ use alloc::vec::Vec;
 use core::ffi::{CStr, c_uint};
 use core::fmt::{Debug, Display, Formatter};
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
+use dpdk_sys::rte_eth_hash_function::{RTE_ETH_HASH_FUNCTION_DEFAULT, RTE_ETH_HASH_FUNCTION_MAX, RTE_ETH_HASH_FUNCTION_SIMPLE_XOR, RTE_ETH_HASH_FUNCTION_SYMMETRIC_TOEPLITZ_SORT, RTE_ETH_HASH_FUNCTION_TOEPLITZ};
+use std::ptr::null_mut;
 use tracing::{debug, error, info, trace};
 
 use crate::eal::Eal;
@@ -252,6 +254,17 @@ impl DevConfig {
                     let requested = self.rx_offloads.unwrap_or(RxOffload(ANY_SUPPORTED));
                     let supported = dev.rx_offload_caps();
                     requested.0 & supported.0
+                },
+                ..Default::default()
+            },
+            rx_adv_conf: rte_eth_conf__bindgen_ty_1 {
+                rss_conf: rte_eth_rss_conf {
+                    rss_key: null_mut(),
+                    rss_key_len: 4,
+                    // rss_hf: 0xf00000000803afbc,
+                    rss_hf: dev.inner.flow_type_rss_offloads,
+                    // algorithm: RTE_ETH_HASH_FUNCTION_DEFAULT,
+                    algorithm: RTE_ETH_HASH_FUNCTION_DEFAULT,
                 },
                 ..Default::default()
             },
@@ -598,7 +611,6 @@ impl Iterator for DevIterator {
 
     fn next(&mut self) -> Option<DevInfo> {
         let cursor = self.cursor;
-
 
         let port_id =
             unsafe { rte_eth_find_next_owned_by(cursor.as_u16(), u64::from(RTE_ETH_DEV_NO_OWNER)) };

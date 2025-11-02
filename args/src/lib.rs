@@ -440,6 +440,23 @@ pub struct LaunchConfiguration {
     pub routing: RoutingConfigSection,
     pub tracing: TracingConfigSection,
     pub metrics: MetricsConfigSection,
+    pub workers: WorkerConfigSection,
+}
+
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    rkyv::Archive,
+    CheckBytes,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
+pub struct WorkerConfigSection {
+    pub num_workers: u16,
 }
 
 impl LaunchConfiguration {
@@ -802,7 +819,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                         "--main-lcore".into(),
                         "2".into(),
                         "--lcores".into(),
-                        "2-4".into(),
+                        format!("2-{n}", n = value.num_workers + 2),
                         "--in-memory".into(),
                     ]
                     .into_iter()
@@ -849,6 +866,9 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             },
             metrics: MetricsConfigSection {
                 address: value.metrics_address(),
+            },
+            workers: WorkerConfigSection {
+                num_workers: value.num_workers,
             },
         })
     }

@@ -443,6 +443,7 @@ fn main() {
     .wrap_err("failed to set file descriptor mapping for child process")
     .unwrap()
     .env_clear()
+    .env("RUST_BACKTRACE", "full")
     .exec();
 
     // if we got here then we failed to exec somehow
