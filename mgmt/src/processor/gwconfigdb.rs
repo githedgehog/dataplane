@@ -9,7 +9,7 @@ use tracing::{debug, error, info};
 
 /// Configuration database, keeps a set of [`GwConfig`]s keyed by generation id [`GenId`]
 #[derive(Default)]
-pub struct GwConfigDatabase {
+pub(crate) struct GwConfigDatabase {
     configs: BTreeMap<GenId, GwConfig>, /* collection of configs */
     current: Option<GenId>,             /* [`GenId`] of currently applied config */
 }
@@ -52,7 +52,7 @@ impl GwConfigDatabase {
     pub fn get_mut(&mut self, generation: GenId) -> Option<&mut GwConfig> {
         self.configs.get_mut(&generation)
     }
-
+    #[allow(unused)]
     pub fn remove(&mut self, genid: GenId) -> ConfigResult {
         if genid == ExternalConfig::BLANK_GENID {
             debug!("Will not remove config {genid} as it is protected");

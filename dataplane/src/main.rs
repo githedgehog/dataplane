@@ -14,8 +14,7 @@ use crate::statistics::MetricsServer;
 use args::{CmdArgs, Parser};
 
 use drivers::kernel::DriverKernel;
-use mgmt::processor::launch::start_mgmt;
-
+use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
 
 use pyroscope::PyroscopeAgent;
 use pyroscope_pprofrs::{PprofConfig, pprof_backend};
@@ -27,7 +26,6 @@ use net::packet::Packet;
 use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
 use pkt_io::{PortMapWriter, start_io};
-
 
 use routing::RouterParamsBuilder;
 use tracectl::{custom_target, get_trace_ctl, trace_target};
@@ -160,14 +158,14 @@ fn main() {
 
     // start IO service
     let (_handle, _io_ctl) = match args.driver_name() {
-/*
-        "dpdk" => {
-            let pool_cfg =
-                PoolConfig::new("fixme", PoolParams::default()).expect("Bad pool config");
-            let pool = Pool::new_pkt_pool(pool_cfg).expect("Failed to create DPDK buffer pool");
-            start_io::<Mbuf, Pool>(setup.puntq, setup.injectq, pool)
-        }
- */
+        /*
+               "dpdk" => {
+                   let pool_cfg =
+                       PoolConfig::new("fixme", PoolParams::default()).expect("Bad pool config");
+                   let pool = Pool::new_pkt_pool(pool_cfg).expect("Failed to create DPDK buffer pool");
+                   start_io::<Mbuf, Pool>(setup.puntq, setup.injectq, pool)
+               }
+        */
         "kernel" => {
             start_io::<TestBuffer, TestBufferPool>(setup.puntq, setup.injectq, TestBufferPool)
         }
@@ -175,17 +173,20 @@ fn main() {
     }
     .expect("Failed to start IO manager");
 
-    // start management interface
-    start_mgmt(
+    // prepare parameters for mgmt
+    let mgmt_params = MgmtParams {
         grpc_addr,
-        setup.router.get_ctl_tx(),
-        setup.nattablew,
-        setup.natallocatorw,
-        setup.vpcdtablesw,
-        setup.vpcmapw,
-        setup.vpc_stats_store,
-    )
-    .expect("Failed to start gRPC server");
+        processor_params: ConfigProcessorParams {
+            router_ctl: setup.router.get_ctl_tx(),
+            nattablesw: setup.nattablesw,
+            natallocatorw: setup.natallocatorw,
+            vpcdtablesw: setup.vpcdtablesw,
+            vpcmapw: setup.vpcmapw,
+            vpc_stats_store: setup.vpc_stats_store,
+        },
+    };
+    // start mgmt
+    start_mgmt(mgmt_params).expect("Failed to start gRPC server");
 
     stop_rx.recv().expect("failed to receive stop signal");
     info!("Shutting down dataplane");
