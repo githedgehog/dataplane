@@ -16,8 +16,8 @@ use tracing::debug;
 #[derive(Debug, Clone)]
 #[allow(unused)]
 pub struct InterfaceArg {
-    interface: InterfaceName,
-    pciaddr: Option<PciAddress>,
+    pub interface: InterfaceName,
+    pub pciaddr: Option<PciAddress>,
 }
 impl FromStr for InterfaceArg {
     type Err = String;
@@ -242,8 +242,8 @@ impl CmdArgs {
     }
 
     // interface getter. This should be used by all drivers
-    pub fn interfaces(&self) -> impl Iterator<Item = &InterfaceArg> {
-        self.interface.iter()
+    pub fn interfaces(&self) -> impl Iterator<Item = InterfaceArg> {
+        self.interface.iter().cloned()
     }
 
     pub fn eal_params(&self) -> Vec<String> {
