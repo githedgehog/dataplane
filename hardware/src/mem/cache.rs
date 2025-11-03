@@ -34,7 +34,7 @@ pub use scan::*;
 )]
 #[cfg_attr(
     any(test, feature = "serde"),
-    derive(serde::Serialize, serde::Deserialize),
+    derive(serde::Serialize, serde::Deserialize)
 )]
 #[strum(serialize_all = "lowercase")]
 pub enum CacheType {
