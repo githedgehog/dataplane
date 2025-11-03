@@ -23,7 +23,7 @@ use crate::processor::confbuild::router::generate_router_config;
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
 use nat::stateless::setup::{build_nat_configuration, validate_nat_configuration};
-use pkt_io::{IoManagerCtl, PortMapWriter};
+use pkt_io::{IoManagerCtl, PortMapReader, PortMapWriter};
 use pkt_meta::dst_vpcd_lookup::VpcDiscTablesWriter;
 use pkt_meta::dst_vpcd_lookup::setup::build_dst_vni_lookup_configuration;
 use routing::frr::FrrAppliedConfig;
@@ -449,6 +449,27 @@ impl VpcManager<RequiredInformationBase> {
     }
 }
 
+async fn config_io_manager(
+    internal: &InternalConfig,
+    iom_ctl: &mut IoManagerCtl,
+    _pmapr: PortMapReader,
+) {
+    iom_ctl.clear();
+    for vrfconfig in internal.vrfs.all_vrfs() {
+        for iface in vrfconfig.interfaces.values().filter(|ifcfg| ifcfg.is_eth()) {
+            match InterfaceName::try_from(iface.name.as_ref()) {
+                Ok(ifname) => iom_ctl.add(ifname),
+                Err(e) => error!("Illegal interface name '{}':{e}", iface.name),
+            }
+        }
+    }
+    if let Err(e) = iom_ctl.commit().await {
+        error!("Failed to reconfigure IO manager: {e}");
+    } else {
+        info!("Reconfiguring IO manager...");
+    }
+}
+
 /// Build router config and apply it over the router control channel
 async fn apply_router_config(
     kernel_vrfs: &HashMap<InterfaceName, Interface>,
@@ -620,6 +641,14 @@ async fn apply_gw_config(
 
     /* apply config in router */
     apply_router_config(&kernel_vrfs, config, &mut params.router_ctl).await?;
+
+    /* reconfigure IO manager */
+    config_io_manager(
+        internal,
+        &mut params.iom_ctl,
+        params.pmapw.factory().handle(),
+    )
+    .await;
 
     info!("Successfully applied config for genid {genid}");
     Ok(())
