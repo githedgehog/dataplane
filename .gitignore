@@ -10,3 +10,4 @@
 /dev-env-template/**
 /dpdk-sys/.macro_eval.c
 /dpdk-sys/dpdk_wrapper-precompile.h*
+*.pch
