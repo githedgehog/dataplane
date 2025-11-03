@@ -16,6 +16,7 @@ use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
+use tracing::debug;
 
 impl NatDefaultAllocator {
     /// Build a [`NatDefaultAllocator`] from information collected from a [`VpcTable`] object. This
@@ -30,6 +31,10 @@ impl NatDefaultAllocator {
     ///
     /// [`ConfigError::FailureApply`] if adding a peering fails.
     pub(crate) fn build_nat_allocator(config: &StatefulNatConfig) -> Result<Self, ConfigError> {
+        debug!(
+            "Building allocator for stateful NAT, from config: {:?}",
+            config
+        );
         let mut allocator = NatDefaultAllocator::new();
         for peering_data in config.iter() {
             allocator
