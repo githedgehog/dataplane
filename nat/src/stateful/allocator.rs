@@ -6,7 +6,7 @@
 use crate::port::NatPortError;
 use net::ip::NextHeader;
 use pkt_meta::flow_table::FlowKey;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
@@ -73,6 +73,25 @@ impl<T: Debug> AllocationResult<T> {
             // least one timeout set.
             (None, None) => None,
         }
+    }
+}
+
+impl<T: Debug + Display> Display for AllocationResult<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "src: {}, dst: {}, return_src: {}, return_dst: {}, src_flow_idle_timeout: {:?}, dst_flow_idle_timeout: {:?}",
+            self.src.as_ref().map_or("None".to_string(), T::to_string),
+            self.dst.as_ref().map_or("None".to_string(), T::to_string),
+            self.return_src
+                .as_ref()
+                .map_or("None".to_string(), T::to_string),
+            self.return_dst
+                .as_ref()
+                .map_or("None".to_string(), T::to_string),
+            self.src_flow_idle_timeout,
+            self.dst_flow_idle_timeout
+        )
     }
 }
 
