@@ -4,7 +4,7 @@
 // !Configuration processor
 
 use concurrency::sync::Arc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tokio::spawn;
 use tokio::sync::mpsc;
@@ -265,40 +265,54 @@ impl ConfigProcessor {
         let pair_snap = self.vpc_stats_store.snapshot_pairs().await;
         let vpc_snap = self.vpc_stats_store.snapshot_vpcs().await;
 
-        // Build name/id/vni maps. Name map starts from store, then we ensure coverage.
-        let mut name_of: HashMap<VpcDiscriminant, String> = names;
-        let mut id_of: HashMap<VpcDiscriminant, String> = HashMap::new();
-        let mut vni_of: HashMap<VpcDiscriminant, u32> = HashMap::new();
+        // Helper to check if a flow stats has any traffic
+        #[inline]
+        fn has_traffic(fs: &stats::FlowStats) -> bool {
+            fs.ctr.packets > 0 || fs.ctr.bytes > 0 || fs.rate.pps > 0.0 || fs.rate.bps > 0.0
+        }
 
-        // Ensure we have names for anything seen only in stats.
-        for (disc, _) in &vpc_snap {
+        // Keep only pairs with traffic
+        let pairs_with_traffic: Vec<_> = pair_snap
+            .into_iter()
+            .filter(|(_, fs)| has_traffic(fs))
+            .collect();
+
+        let mut all_vpcs: HashSet<VpcDiscriminant> = names.keys().copied().collect();
+        for (disc, _fs) in &vpc_snap {
+            all_vpcs.insert(*disc);
+        }
+        for ((src, dst), _fs) in &pairs_with_traffic {
+            all_vpcs.insert(*src);
+            all_vpcs.insert(*dst);
+        }
+
+        // Build name/id/vni maps, ensuring every VPC in all_vpcs has entries
+        let mut name_of: HashMap<VpcDiscriminant, String> = names;
+        for disc in &all_vpcs {
             name_of.entry(*disc).or_insert_with(|| format!("{disc:?}"));
         }
-        for ((s, d), _) in &pair_snap {
-            name_of.entry(*s).or_insert_with(|| format!("{s:?}"));
-            name_of.entry(*d).or_insert_with(|| format!("{d:?}"));
-        }
 
-        // Build id_of and vni_of using only the discriminant
-        for disc in name_of.keys().copied() {
-            id_of.insert(disc, format!("{disc:?}"));
+        let mut id_of: HashMap<VpcDiscriminant, String> = HashMap::new();
+        let mut vni_of: HashMap<VpcDiscriminant, u32> = HashMap::new();
+        for disc in &all_vpcs {
+            id_of.insert(*disc, format!("{disc:?}"));
             let vni = match disc {
                 vpcmap::VpcDiscriminant::VNI(v) => v.as_u32(),
             };
-            vni_of.insert(disc, vni);
+            vni_of.insert(*disc, vni);
         }
 
-        // Per-VPC section
-        for (disc, _) in vpc_snap {
+        // Emit all VPCs
+        for disc in &all_vpcs {
             let name = name_of
-                .get(&disc)
+                .get(disc)
                 .cloned()
                 .unwrap_or_else(|| format!("{disc:?}"));
             let id = id_of
-                .get(&disc)
+                .get(disc)
                 .cloned()
                 .unwrap_or_else(|| format!("{disc:?}"));
-            let vni = *vni_of.get(&disc).unwrap_or(&0);
+            let vni = *vni_of.get(disc).unwrap_or(&0);
 
             let v = VpcStatus {
                 id,
@@ -310,8 +324,8 @@ impl ConfigProcessor {
             status.add_vpc(name, v);
         }
 
-        // VPC-to-VPC peering counters
-        for ((src, dst), fs) in pair_snap {
+        // Emit only pair counters with traffic
+        for ((src, dst), fs) in pairs_with_traffic {
             let src_name = name_of
                 .get(&src)
                 .cloned()

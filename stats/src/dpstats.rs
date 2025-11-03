@@ -327,6 +327,8 @@ impl StatsCollector {
 
     /// Submit a concluded set of stats for inclusion in smoothing calculations
     #[tracing::instrument(level = "trace")]
+    /// Submit a concluded set of stats for inclusion in smoothing calculations
+    #[tracing::instrument(level = "trace")]
     async fn submit_expired(&mut self, concluded: BatchSummary<u64>) {
         const CAPACITY_PADDING: usize = 16;
         let capacity = self
@@ -369,12 +371,12 @@ impl StatsCollector {
                 });
         });
 
+        // Mirror counters into the store (monotonic)
         for (&src, tx_summary) in &concluded.vpc {
             let mut total_pkts = 0u64;
             let mut total_bytes = 0u64;
 
             for (&dst, &stats) in tx_summary.dst.iter() {
-                // pair counters
                 self.vpc_store
                     .add_pair_counts(src, dst, stats.packets, stats.bytes)
                     .await;
@@ -383,7 +385,6 @@ impl StatsCollector {
                 total_bytes = total_bytes.saturating_add(stats.bytes);
             }
 
-            // per-VPC totals (by src)
             if total_pkts != 0 || total_bytes != 0 {
                 self.vpc_store
                     .add_vpc_counts(src, total_pkts, total_bytes)
@@ -392,7 +393,6 @@ impl StatsCollector {
         }
 
         // Push this *apportioned per-batch* snapshot into the SG window.
-        // With TIME_TICK=1s, smoothing these counts ≈ smoothing pps/Bps directly.
         self.submitted.push(concluded.vpc.clone());
 
         // Build per-source filters and smooth.
@@ -402,33 +402,37 @@ impl StatsCollector {
         > = (&self.submitted).into();
 
         if let Ok(smoothed_by_src) = filters_by_src.smooth() {
-            for (&src, tx_summary) in smoothed_by_src.iter() {
+            // drive zeros for any (src,dst) that didn't appear in the smoothed window.
+            for (&src, metrics) in self.metrics.iter() {
                 let mut total_pps = 0.0f64;
                 let mut total_bps = 0.0f64;
 
-                if let Some(metrics) = self.metrics.get(&src) {
-                    for (dst, rate) in tx_summary.dst.iter() {
-                        if let Some(action) = metrics.peering.get(dst) {
-                            // Smoothed packets-per-second / bytes-per-second (since tick=1s)
-                            action.tx.packet.rate.metric.set(rate.packets);
-                            action.tx.byte.rate.metric.set(rate.bytes);
-                            trace!(
-                                "smoothed rate src={:?} dst={:?}: pps={:.3} Bps={:.3}",
-                                src, dst, rate.packets, rate.bytes
-                            );
+                // Smoothed entry for this src (if any)
+                let maybe_tx = smoothed_by_src.get(&src);
+
+                // For every known dst under this src, either set smoothed rate or zero.
+                for (&dst, action) in metrics.peering.iter() {
+                    let (pps, bps) = if let Some(tx_summary) = maybe_tx {
+                        if let Some(rate) = tx_summary.dst.get(&dst) {
+                            (rate.packets, rate.bytes)
                         } else {
-                            warn!("lost metrics for src {src} to dst {dst}");
+                            // zero if pair absent in window
+                            (0.0, 0.0)
                         }
+                    } else {
+                        // here as well
+                        (0.0, 0.0)
+                    };
 
-                        self.vpc_store
-                            .set_pair_rates(src, *dst, rate.packets, rate.bytes)
-                            .await;
+                    // Export to Prometheus gauges
+                    action.tx.packet.rate.metric.set(pps);
+                    action.tx.byte.rate.metric.set(bps);
 
-                        total_pps += rate.packets;
-                        total_bps += rate.bytes;
-                    }
-                } else {
-                    warn!("lost metrics for src {src}");
+                    // Mirror to the store (instantaneous rates)
+                    self.vpc_store.set_pair_rates(src, dst, pps, bps).await;
+
+                    total_pps += pps;
+                    total_bps += bps;
                 }
 
                 self.vpc_store
