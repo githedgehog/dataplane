@@ -985,6 +985,7 @@ version = "0.1.0"
 dependencies = [
  "bolero",
  "caps",
+ "dataplane-hardware",
  "dataplane-lpm",
  "dataplane-net",
  "dataplane-pipeline",
@@ -1835,8 +1836,8 @@ dependencies = [
 
 [[package]]
 name = "gateway_config"
-version = "0.15.1"
-source = "git+https://github.com/githedgehog/gateway-proto?tag=v0.15.1#7cb03f5ff9776ffac2b62a43ac4cbf8547115fc1"
+version = "0.16.0"
+source = "git+https://github.com/githedgehog/gateway-proto?tag=v0.16.0#d9f63fe5f886f1d4cd4b5a611d45baffeecea449"
 dependencies = [
  "async-trait",
  "bolero",

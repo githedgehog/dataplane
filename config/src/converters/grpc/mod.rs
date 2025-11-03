@@ -146,6 +146,7 @@ mod test {
             system_name: None,
             ospf: None,
             mtu: Some(1500),
+            pci: Some("0000:02:00.1".to_string()),
         };
 
         let lo0 = gateway_config::Interface {
@@ -158,6 +159,7 @@ mod test {
             system_name: None,
             ospf: None,
             mtu: None,
+            pci: None,
         };
 
         // Create BGP neighbor
@@ -213,6 +215,7 @@ mod test {
             system_name: None,
             ospf: None,
             mtu: None,
+            pci: Some("0000:02:00.1".to_string()),
         };
 
         let vpc2_if1 = gateway_config::Interface {
@@ -225,6 +228,7 @@ mod test {
             system_name: None,
             ospf: None,
             mtu: None,
+            pci: Some("0000:02:00.1".to_string()),
         };
 
         // Create VPCs
@@ -367,6 +371,7 @@ mod test {
             system_name: None,
             ospf: None,
             mtu: Some(9000),
+            pci: Some("0000:02:00.1".to_string()),
         };
 
         // DeviceConfig TryFrom

@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use gateway_config::config as gateway_config;
+use hardware::pci::address::PciAddress;
 use std::net::{IpAddr, Ipv4Addr};
 
 use crate::internal::interfaces::interface::{
@@ -82,6 +83,7 @@ impl TryFrom<&gateway_config::Interface> for InterfaceConfig {
             ),
             None => None,
         };
+
         let iftype = match grpc_if_type {
             gateway_config::IfType::Ethernet => InterfaceType::Ethernet(IfEthConfig {
                 mac: mac.map(SourceMac::inner),
@@ -161,9 +163,17 @@ impl TryFrom<&gateway_config::Interface> for InterfaceConfig {
             interface_config = interface_config.set_ospf(ospf_interface);
         }
 
+        // Set MTU if specified
         if let Some(iface_mtu) = iface.mtu {
             let mtu = Mtu::try_from(iface_mtu).map_err(|e| format!("Invalid MTU: {e}"))?;
             interface_config = interface_config.set_mtu(mtu);
+        }
+
+        // Set PCI address if specified
+        if let Some(pci) = &iface.pci {
+            let pci = PciAddress::try_from(pci.as_str())
+                .map_err(|e| format!("Invalid PCI address: {e}"))?;
+            interface_config = interface_config.set_pci(pci);
         }
 
         Ok(interface_config)
@@ -237,7 +247,11 @@ impl TryFrom<&InterfaceConfig> for gateway_config::Interface {
             .transpose()
             .map_err(|e| format!("Failed to convert OSPF interface: {e}"))?;
 
+        // Convert MTU
         let mtu = interface.mtu.map(|mtu| mtu.to_u32());
+
+        // Convert PCI address
+        let pci = interface.pci.map(|v| v.to_string());
 
         // Create the gRPC interface
         Ok(gateway_config::Interface {
@@ -250,6 +264,7 @@ impl TryFrom<&InterfaceConfig> for gateway_config::Interface {
             role: gateway_config::IfRole::Fabric.into(), // Default to Fabric
             ospf,
             mtu,
+            pci,
         })
     }
 }

@@ -3,6 +3,7 @@
 
 //! Dataplane configuration model: interfaces
 
+use hardware::pci::address::PciAddress;
 use net::eth::ethtype::EthType;
 use net::eth::mac::{Mac, SourceMac};
 use net::interface::Mtu;
@@ -62,6 +63,7 @@ pub struct InterfaceConfig {
     pub mtu: Option<Mtu>,
     pub internal: bool, /* true if automatically created */
     pub ospf: Option<OspfInterface>,
+    pub pci: Option<PciAddress>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -115,6 +117,7 @@ impl InterfaceConfig {
             mtu: None,
             internal,
             ospf: None,
+            pci: None,
         }
     }
     #[must_use]
@@ -144,9 +147,15 @@ impl InterfaceConfig {
         self
     }
     #[must_use]
+    pub fn set_pci(mut self, pci: PciAddress) -> Self {
+        self.pci = Some(pci);
+        self
+    }
+    #[must_use]
     pub fn is_vtep(&self) -> bool {
         matches!(self.iftype, InterfaceType::Vtep(_))
     }
+
     pub fn validate(&self) -> ConfigResult {
         // name is mandatory
         if self.name.is_empty() {

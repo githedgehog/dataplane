@@ -8,6 +8,7 @@ license = "Apache-2.0"
 [dependencies]
 # internal
 gateway_config = { workspace = true }
+hardware = { workspace = true }
 net = { workspace = true }
 lpm = { workspace = true }
 tracectl = { workspace = true }
