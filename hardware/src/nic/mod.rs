@@ -112,8 +112,12 @@ pub enum PciDriver {
     #[strum(serialize = "vfio-pci")]
     VfioPci,
     /// The virtio-net driver.
-    #[strum(serialize = "virtio-net")]
+    // NOTE: inconsistent use of _ vs - is deliberate.  Linux is not consistent
+    #[strum(serialize = "virtio_net")]
     VirtioNet,
+    /// The virtio-pci driver (sometimes assigned to virtio net devices)
+    #[strum(serialize = "virtio-pci")]
+    VirtioPci,
 }
 
 impl PciDriver {

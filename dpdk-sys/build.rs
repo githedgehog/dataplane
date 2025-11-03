@@ -77,9 +77,15 @@ fn main() {
     // It is just more work for the LTO later on I suppose ¯\_(ツ)_/¯
     let depends = [
         "dpdk_wrapper",
+        "rte_net_virtio",
+        "rte_net_vhost",
+        "rte_vhost",
         "rte_net_mlx5",
         "rte_common_mlx5",
         "rte_ethdev",
+        "rte_cryptodev",
+        "rte_bus_vdev",
+        "rte_dmadev",
         "rte_bus_auxiliary",
         "rte_net",
         "rte_bus_pci",
