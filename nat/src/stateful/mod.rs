@@ -20,9 +20,7 @@ pub use allocator_writer::NatAllocatorWriter;
 use concurrency::sync::Arc;
 use flow_info::{ExtractRef, FlowInfo};
 use net::buffer::PacketBufferMut;
-use net::headers::{
-    Net, Transport, TryHeaders, TryHeadersMut, TryInnerIp, TryIp, TryIpMut, TryTransportMut,
-};
+use net::headers::{Net, Transport, TryInnerIp, TryIp, TryIpMut, TryTransportMut};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::NetworkFunction;
 use pkt_meta::flow_table::flow_key::{IcmpProtoKey, Uni};
@@ -221,9 +219,8 @@ impl StatefulNat {
             state.src_port,
             state.dst_port,
         );
-        let headers = packet.headers_mut();
 
-        let net = headers.try_ip_mut().ok_or(StatefulNatError::BadIpHeader)?;
+        let net = packet.try_ip_mut().ok_or(StatefulNatError::BadIpHeader)?;
         if let (Some(target_src_ip), Some(target_src_port)) = (target_src_addr, target_src_port) {
             net.try_set_source(
                 target_src_ip
@@ -232,7 +229,7 @@ impl StatefulNat {
             )
             .map_err(|_| StatefulNatError::InvalidIpVersion)?;
 
-            let transport = headers
+            let transport = packet
                 .try_transport_mut()
                 .ok_or(StatefulNatError::BadTransportHeader)?;
             match transport {
@@ -253,12 +250,12 @@ impl StatefulNat {
             }
         }
 
-        let net = headers.try_ip_mut().ok_or(StatefulNatError::BadIpHeader)?;
+        let net = packet.try_ip_mut().ok_or(StatefulNatError::BadIpHeader)?;
         if let (Some(target_dst_ip), Some(target_dst_port)) = (target_dst_addr, target_dst_port) {
             net.try_set_destination(target_dst_ip)
                 .map_err(|_| StatefulNatError::InvalidIpVersion)?;
 
-            let transport = headers
+            let transport = packet
                 .try_transport_mut()
                 .ok_or(StatefulNatError::BadTransportHeader)?;
             match transport {
@@ -568,7 +565,7 @@ impl StatefulNat {
         src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<bool, StatefulNatError> {
-        let Some(net) = packet.headers().try_ip() else {
+        let Some(net) = packet.try_ip() else {
             return Err(StatefulNatError::BadIpHeader);
         };
 
