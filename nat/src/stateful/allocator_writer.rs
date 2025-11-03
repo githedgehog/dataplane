@@ -8,6 +8,7 @@ use config::external::overlay::vpc::Peering;
 use config::external::overlay::vpc::VpcTable;
 use net::packet::VpcDiscriminant;
 use std::sync::Arc;
+use tracing::debug;
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct StatefulNatPeering {
@@ -86,6 +87,7 @@ impl NatAllocatorWriter {
         // Swap allocators; the old one is dropped.
         self.allocator.store(Some(Arc::new(new_allocator)));
         self.config = new_config;
+        debug!("Updated allocator for stateful NAT");
         Ok(())
     }
 

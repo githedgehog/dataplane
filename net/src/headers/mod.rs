@@ -233,6 +233,48 @@ impl Transport {
         }
     }
 
+    /// Returns the source port of the transport header.
+    ///
+    /// # Returns
+    ///
+    /// Returns `None` if the transport protocol does not use ports.
+    #[must_use]
+    pub fn src_port(&self) -> Option<NonZero<u16>> {
+        match self {
+            Transport::Tcp(tcp) => Some(tcp.source().into()),
+            Transport::Udp(udp) => Some(udp.source().into()),
+            _ => None,
+        }
+    }
+
+    /// Returns the destination port of the transport header.
+    ///
+    /// # Returns
+    ///
+    /// Returns `None` if the transport protocol does not use ports.
+    #[must_use]
+    pub fn dst_port(&self) -> Option<NonZero<u16>> {
+        match self {
+            Transport::Tcp(tcp) => Some(tcp.destination().into()),
+            Transport::Udp(udp) => Some(udp.destination().into()),
+            _ => None,
+        }
+    }
+
+    /// Returns the identifier of the transport header.
+    ///
+    /// # Returns
+    ///
+    /// Returns `None` if the transport protocol does not use identifiers.
+    #[must_use]
+    pub fn identifier(&self) -> Option<u16> {
+        match self {
+            Transport::Icmp4(icmp4) => icmp4.identifier(),
+            Transport::Icmp6(icmp6) => icmp6.identifier(),
+            _ => None,
+        }
+    }
+
     /// Sets the source port of the transport header.
     ///
     /// # Errors

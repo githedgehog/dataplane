@@ -27,6 +27,7 @@ use pkt_meta::flow_table::flow_key::{IcmpProtoKey, Uni};
 use pkt_meta::flow_table::{FlowKey, FlowKeyData, FlowTable, IpProtoKey};
 use std::fmt::{Debug, Display};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::num::NonZero;
 use std::time::{Duration, Instant};
 
 #[allow(unused)]
@@ -210,6 +211,7 @@ impl StatefulNat {
 
     #[allow(clippy::unnecessary_wraps)]
     fn stateful_translate<Buf: PacketBufferMut>(
+        nfi: &String,
         packet: &mut Packet<Buf>,
         state: &NatTranslationData,
     ) -> Result<(), StatefulNatError> {
@@ -221,6 +223,7 @@ impl StatefulNat {
         );
 
         let net = packet.try_ip_mut().ok_or(StatefulNatError::BadIpHeader)?;
+        let (old_src_ip, old_dst_ip) = (net.src_addr(), net.dst_addr());
         if let (Some(target_src_ip), Some(target_src_port)) = (target_src_addr, target_src_port) {
             net.try_set_source(
                 target_src_ip
@@ -234,6 +237,7 @@ impl StatefulNat {
                 .ok_or(StatefulNatError::BadTransportHeader)?;
             match transport {
                 Transport::Tcp(_) | Transport::Udp(_) => {
+                    let old_src_port = transport.src_port().map_or(0, NonZero::<u16>::get);
                     transport
                         .try_set_source(
                             target_src_port.try_into().map_err(|_| {
@@ -241,11 +245,18 @@ impl StatefulNat {
                             })?,
                         )
                         .map_err(|_| StatefulNatError::BadTransportHeader)?;
+                    debug!(
+                        "{nfi}: Source-NAT translated {old_src_ip}:{old_src_port:?} -> {target_src_ip}:{target_src_port:?}",
+                    );
                 }
                 Transport::Icmp4(_) | Transport::Icmp6(_) => {
+                    let old_identifier = transport.identifier();
                     transport
                         .try_set_identifier(target_src_port.as_u16())
                         .map_err(|_| StatefulNatError::BadTransportHeader)?;
+                    debug!(
+                        "{nfi}: Source-NAT translated {old_src_ip}:{old_identifier:?} -> {target_src_ip}:{target_src_port:?}",
+                    );
                 }
             }
         }
@@ -260,6 +271,7 @@ impl StatefulNat {
                 .ok_or(StatefulNatError::BadTransportHeader)?;
             match transport {
                 Transport::Tcp(_) | Transport::Udp(_) => {
+                    let old_dst_port = transport.dst_port().map_or(0, NonZero::<u16>::get);
                     transport
                         .try_set_destination(
                             target_dst_port.try_into().map_err(|_| {
@@ -267,10 +279,14 @@ impl StatefulNat {
                             })?,
                         )
                         .map_err(|_| StatefulNatError::BadTransportHeader)?;
+                    debug!(
+                        "{nfi}: Destination-NAT translated {old_dst_ip}:{old_dst_port:?} -> {target_dst_ip}:{target_dst_port:?}",
+                    );
                 }
                 Transport::Icmp4(_) | Transport::Icmp6(_) => {
                     // No need to set the identifier for ICMP Echo messages, we already did it above
                     // using target_src_port.
+                    debug!("{nfi}: Destination-NAT translated {old_dst_ip} -> {target_dst_ip}",);
                 }
             }
         }
@@ -425,10 +441,21 @@ impl StatefulNat {
             *embedded_packet_data.src_ip(), // Destination IP address: embedded source IP address
             (*embedded_packet_data.proto_key_info()).into(),
         ));
+        debug!(
+            "{}: Processing ICMP Error message, retrieved inner flow key (swapping src/dst): {}",
+            self.name(),
+            inner_flow_key.data()
+        );
 
         let flow_info = self.sessions.lookup(&inner_flow_key)?;
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
+
+        debug!(
+            "{}: Processing ICMP Error message, found corresponding state: {}",
+            self.name(),
+            state
+        );
 
         // Swap back source and destination for the inner packet
         let translation_data = Self::get_translation_info(&state.dst_alloc, &state.src_alloc);
@@ -522,7 +549,8 @@ impl StatefulNat {
     ) -> Result<bool, StatefulNatError> {
         // Hot path: if we have a session, directly translate the address already
         if let Some(state) = Self::lookup_session::<I, Buf>(packet) {
-            return Self::stateful_translate::<Buf>(packet, &state).and(Ok(true));
+            debug!("{}: Found session, translating packet", self.name());
+            return Self::stateful_translate(self.name(), packet, &state).and(Ok(true));
         }
 
         match self.deal_with_icmp_error_msg::<Buf, I>(packet, flow_key) {
@@ -545,6 +573,8 @@ impl StatefulNat {
             // No NAT for this tuple, leave the packet unchanged - Do not drop it
             return Ok(false);
         }
+        debug!("{}: Allocated translation data: {}", self.name(), alloc);
+
         // Given that at least one of alloc.src or alloc.dst is set, we should always have at
         // least one timeout set.
         let idle_timeout = alloc.idle_timeout().unwrap_or_else(|| unreachable!());
@@ -556,7 +586,7 @@ impl StatefulNat {
         self.create_session(flow_key, forward_state, idle_timeout);
         self.create_session(&reverse_flow_key, reverse_state, idle_timeout);
 
-        Self::stateful_translate::<Buf>(packet, &translation_info).and(Ok(true))
+        Self::stateful_translate::<Buf>(self.name(), packet, &translation_info).and(Ok(true))
     }
 
     fn nat_packet<Buf: PacketBufferMut>(
@@ -565,7 +595,10 @@ impl StatefulNat {
         src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<bool, StatefulNatError> {
+        let nfi = self.name();
+
         let Some(net) = packet.try_ip() else {
+            error!("{nfi}: Failed to get IP headers!");
             return Err(StatefulNatError::BadIpHeader);
         };
 
@@ -585,10 +618,18 @@ impl StatefulNat {
     fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
         // TODO: What if no VNI
         let Some(src_vpc_id) = Self::get_src_vpc_id(packet) else {
+            warn!(
+                "{}: Packet has no source VPC discriminant!. Will drop...",
+                self.name()
+            );
             packet.done(DoneReason::Unroutable);
             return;
         };
         let Some(dst_vpc_id) = Self::get_dst_vpc_id(packet) else {
+            warn!(
+                "{}: Packet has no destination VPC discriminant!. Will drop...",
+                self.name()
+            );
             packet.done(DoneReason::Unroutable);
             return;
         };
@@ -599,11 +640,15 @@ impl StatefulNat {
         match self.nat_packet(packet, src_vpc_id, dst_vpc_id) {
             Err(error) => {
                 packet.done(translate_error(&error));
+                error!("{}: Error processing packet: {}", self.name(), error);
             }
             Ok(true) => {
                 packet.get_meta_mut().set_checksum_refresh(true);
+                debug!("{}: Packet was NAT'ed", self.name());
             }
-            Ok(false) => {}
+            Ok(false) => {
+                debug!("{}: No NAT translation needed", self.name());
+            }
         }
     }
 }
