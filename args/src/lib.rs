@@ -13,34 +13,62 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use tracing::debug;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum PortArg {
+    PCI(PciAddress),       // DPDK driver
+    KERNEL(InterfaceName), // kernel driver
+}
 #[derive(Debug, Clone)]
 #[allow(unused)]
 pub struct InterfaceArg {
     pub interface: InterfaceName,
-    pub pciaddr: Option<PciAddress>,
+    pub port: Option<PortArg>,
 }
+impl FromStr for PortArg {
+    type Err = String;
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let (disc, value) = input
+            .split_once('@')
+            .ok_or("Bad syntax: missing @".to_string())?;
+
+        match disc {
+            "pci" => {
+                let pciaddr = PciAddress::try_from(value).map_err(|e| e.to_string())?;
+                Ok(PortArg::PCI(pciaddr))
+            }
+            "kernel" => {
+                let kernelif = InterfaceName::try_from(value)
+                    .map_err(|e| format!("Bad kernel interface name: {e}"))?;
+                Ok(PortArg::KERNEL(kernelif))
+            }
+            _ => Err(format!(
+                "Unknown discriminant '{disc}': allowed values are pci|kernel"
+            )),
+        }
+    }
+}
+
 impl FromStr for InterfaceArg {
     type Err = String;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         match input.split_once('=') {
-            Some((ifname, optional)) => {
-                let interface = InterfaceName::try_from(ifname)
+            Some((first, second)) => {
+                let interface = InterfaceName::try_from(first)
                     .map_err(|e| format!("Bad interface name: {e}"))?;
-                let pciaddr = if optional.is_empty() {
-                    None
-                } else {
-                    let pciaddr = PciAddress::try_from(optional)
-                        .map_err(|e| format!("Invalid PCI address: {e}"))?;
-                    Some(pciaddr)
-                };
-                Ok(InterfaceArg { interface, pciaddr })
+
+                let port = PortArg::from_str(second)?;
+                Ok(InterfaceArg {
+                    interface,
+                    port: Some(port),
+                })
             }
+            // this branch will go away
             None => {
                 let interface = InterfaceName::try_from(input)
                     .map_err(|e| format!("Bad interface name: {e}"))?;
                 Ok(InterfaceArg {
                     interface,
-                    pciaddr: None,
+                    port: None,
                 })
             }
         }
@@ -53,41 +81,49 @@ mod tests {
     use hardware::pci::device::Device;
     use hardware::pci::domain::Domain;
     use hardware::pci::function::Function;
+    use net::interface::InterfaceName;
 
-    use crate::InterfaceArg;
+    use crate::{InterfaceArg, PortArg};
     use std::str::FromStr;
 
     #[test]
     fn test_parse_interface() {
-        // interface + port desc
-        let spec = InterfaceArg::from_str("GbEth1.9000=0000:02:01.7").unwrap();
+        // interface + port as PCI address
+        let spec = InterfaceArg::from_str("GbEth1.9000=pci@0000:02:01.7").unwrap();
         assert_eq!(spec.interface.as_ref(), "GbEth1.9000");
-
         assert_eq!(
-            spec.pciaddr,
-            Some(PciAddress::new(
+            spec.port,
+            Some(PortArg::PCI(PciAddress::new(
                 Domain::from(0),
                 Bus::new(2),
                 Device::try_from(1).unwrap(),
                 Function::try_from(7).unwrap()
+            )))
+        );
+
+        // interface + port as kernel interface
+        let spec = InterfaceArg::from_str("GbEth1.9000=kernel@enp2s1.100").unwrap();
+        assert_eq!(spec.interface.as_ref(), "GbEth1.9000");
+        assert_eq!(
+            spec.port,
+            Some(PortArg::KERNEL(
+                InterfaceName::try_from("enp2s1.100").unwrap()
             ))
         );
 
-        // interface only
+        // interface only (backwards compatibiliy)
         let spec = InterfaceArg::from_str("GbEth1.9000").unwrap();
         assert_eq!(spec.interface.as_ref(), "GbEth1.9000");
-        assert_eq!(spec.pciaddr, None);
-
-        // interface= we treat it as none
-        let spec = InterfaceArg::from_str("GbEth1.9000=").unwrap();
-        assert_eq!(spec.interface.as_ref(), "GbEth1.9000");
-        assert_eq!(spec.pciaddr, None);
-
-        // bad interface name
-        assert!(InterfaceArg::from_str("Blah-blah-blah-blah").is_err());
+        assert!(spec.port.is_none());
 
         // bad pci address
-        assert!(InterfaceArg::from_str("GbEth1.9000=0000:02:01").is_err());
+        assert!(InterfaceArg::from_str("GbEth1.9000=pci@0000:02:01").is_err());
+
+        // bad kernel interface
+        assert!(InterfaceArg::from_str("GbEth1.9000=kernel@0000:02:01").is_err());
+
+        // bad discriminant
+        assert!(InterfaceArg::from_str("GbEth1.9000=foo@0000:02:01.7").is_err());
     }
 }
 
@@ -119,9 +155,12 @@ pub struct CmdArgs {
         value_name = "interface name",
         value_parser=InterfaceArg::from_str,
         value_delimiter=',',
-        help = "Interface name (kernel naming restrictions apply), with optional PCI address in the format INTERFACE[=PCIaddress].
-E.g. --interface eth1 --interface eth0=0000:02:01.0. Note that multiple interfaces can be specified, comma-separated.
-E.g. --interface eth1,eth0=0000:02:01.0"
+        help = "Interface name mapping, with syntax INTERFACE=DISCRIMINANT@{PCI,IFNAME}. Two discriminants are possible: pci and kernel.
+Pci should be followed by a PCI address. Kernel should be followed by a valid kernel interface name.
+Examples:
+   --interface eth0=pci@0000:02:01.0
+   --interface eth1=kernel@enp2s1
+Note: multiple interfaces can be specified separated by commas and no spaces"
     )]
     interface: Vec<InterfaceArg>,
 
