@@ -264,7 +264,7 @@ jobs:
             ${{ env.FLAKY_TESTS }}
 
       - name: "publish test report"
-        uses: "mikepenz/action-junit-report@v5"
+        uses: "mikepenz/action-junit-report@v6"
         if: "${{ always() }}"
         with:
           annotate_notice: "false"
