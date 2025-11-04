@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 #![doc = include_str!("../README.md")]
-// #![deny(clippy::pedantic, missing_docs)] // TEMP: don't merge till uncommented
+#![deny(clippy::pedantic)]
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -64,7 +64,7 @@ impl std::fmt::Display for DevicesNotFound {
         let devices_str = self
             .missing
             .iter()
-            .map(|elem| elem.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
         write!(f, "missing devices: {devices_str}")
@@ -144,6 +144,7 @@ impl DeviceSearch {
 
     /// Walk the full system hardware scan and collect the list of devices which are requested but which can not be
     /// found in the scan at all.
+    #[must_use]
     pub fn missing(&self) -> BTreeSet<NetworkDeviceDescription> {
         let matching: BTreeSet<_> = self.matching().keys().cloned().collect();
         self.requested.difference(&matching).cloned().collect()
@@ -200,6 +201,7 @@ impl DeviceSearch {
     }
 
     /// Walk the hardware scan and find the devices which are both supported and requested.
+    #[must_use]
     pub fn scheduled_for_use(&self) -> BTreeMap<NetworkDeviceDescription, &hardware::Node> {
         let matching: BTreeSet<_> = self.matching().keys().cloned().collect();
         let supportable = self.supportable();
@@ -217,6 +219,7 @@ impl DeviceSearch {
             .collect()
     }
 
+    #[must_use]
     pub fn requested_but_not_supported(&self) -> BTreeMap<String, &hardware::Node> {
         let matching = self.matching();
         let matching_keys: BTreeSet<_> = matching.keys().cloned().collect();
@@ -240,6 +243,7 @@ impl DeviceSearch {
             .collect()
     }
 
+    #[must_use]
     pub fn report(&self) -> NetworkDeviceSearchReport<'_> {
         NetworkDeviceSearchReport::new(self)
     }
@@ -252,7 +256,8 @@ pub struct NetworkDeviceSearchReport<'search> {
     missing: BTreeSet<NetworkDeviceDescription>,
     supportable: BTreeMap<String, &'search hardware::Node>,
     scheduled_for_use: BTreeMap<String, &'search hardware::Node>,
-    // TODO: I don't understand why this needs to be a string.  The requested_but_not_supported method crashes otherwise
+    // TODO: I don't understand why this key needs to be a string.
+    // The requested_but_not_supported method crashes otherwise when serializing.
     requested_but_not_supported: BTreeMap<String, &'search hardware::Node>,
 }
 
@@ -381,7 +386,7 @@ fn main() {
                     error!("dataplane failed to initialize");
                     panic!("dataplane failed to initialize");
                 }
-            };
+            }
             search
                 .scheduled_for_use()
                 .iter()
@@ -423,11 +428,11 @@ fn main() {
                             },
                         },
                         Err(_) => unreachable!(), // TODO: restructure to remove this branch
-                    };
+                    }
                 });
         }
         args::DriverConfigSection::Kernel(_kernel_section) => todo!(),
-    };
+    }
 
     let mut launch_config = launch_config.finalize();
     let integrity_check = launch_config.integrity_check().finalize().to_owned_fd();
@@ -435,7 +440,7 @@ fn main() {
     let launch_config = launch_config.to_owned_fd();
 
     let io_err = std::process::Command::new(
-        "/home/dnoland/code/githedgehog/dataplane/target/x86_64-unknown-linux-gnu/debug/dataplane",
+        "/bin/dataplane",
     )
     .fd_mappings(vec![
         FdMapping {
