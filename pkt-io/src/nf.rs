@@ -149,7 +149,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PktIo<Buf> {
             match &self.puntq {
                 None => Some(packet),
                 Some(puntq) => {
-                    if packet.get_meta().local() && !packet.is_done() {
+                    if packet.get_meta().local() {
                         match puntq.push(Box::new(packet)) {
                             Ok(()) => None, // punted!
                             Err(mut packet) => {
