@@ -1034,6 +1034,15 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
     )]
     metrics_address: SocketAddr,
 
+    /// Grafana Alloy (Pyroscope) server address for profiling uploads
+    #[arg(
+            long,
+            value_name = "ALLOY_ADDR:PORT",
+            default_value_t = SocketAddr::from(([127, 0, 0, 1], 4040)),
+            help = "Address of Grafana Alloy/Pyroscope server (e.g. 127.0.0.1:4040)"
+        )]
+    alloy_address: SocketAddr,
+
     #[arg(
         long,
         default_value_t = false,
@@ -1139,6 +1148,10 @@ impl CmdArgs {
     /// Get the metrics bind address, returns None if metrics are disabled
     pub fn metrics_address(&self) -> SocketAddr {
         self.metrics_address
+    }
+
+    pub fn alloy_address(&self) -> SocketAddr {
+        self.alloy_address
     }
 }
 
