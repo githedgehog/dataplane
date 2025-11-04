@@ -269,7 +269,7 @@ impl PacketMeta {
 }
 impl Drop for PacketMeta {
     fn drop(&mut self) {
-        if self.done.is_none() && self.is_initialized() {
+        if self.done.is_none() && self.is_initialized() && !self.sourced() {
             error!("Attempted to drop packet with unspecified verdict!");
         }
     }
