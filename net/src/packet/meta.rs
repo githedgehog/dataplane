@@ -153,6 +153,7 @@ bitflags! {
         const REFR_CHKSUM = 0b0000_1000; /* if true, an indication that packet checksums need to be refreshed */
         const KEEP        = 0b0001_0000; /* Keep the Packet even if it should be dropped */
         const LOCAL       = 0b0010_0000; /* Packet is to be locally consumed */
+        const SOURCED     = 0b0100_0000; /* Packet is locally originated */
     }
 }
 
@@ -240,6 +241,17 @@ impl PacketMeta {
             self.flags.insert(MetaFlags::LOCAL);
         } else {
             self.flags.remove(MetaFlags::LOCAL);
+        }
+    }
+    #[must_use]
+    pub fn sourced(&self) -> bool {
+        self.flags.contains(MetaFlags::SOURCED)
+    }
+    pub fn set_sourced(&mut self, value: bool) {
+        if value {
+            self.flags.insert(MetaFlags::SOURCED);
+        } else {
+            self.flags.remove(MetaFlags::SOURCED);
         }
     }
 }
