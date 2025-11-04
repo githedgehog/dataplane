@@ -66,10 +66,10 @@ fn process_tracing_cmds(args: &CmdArgs) {
 }
 
 fn main() {
+    init_logging();
     let args = CmdArgs::parse();
-    let alloy_endpoint = format!("http://{}", args.alloy_address());
-    let agent_running =
-        match PyroscopeAgent::builder(alloy_endpoint, "hedgehog-dataplane".to_string())
+    let agent_running = args.pyroscope_url().and_then(|url| {
+        match PyroscopeAgent::builder(url.as_str(), "hedgehog-dataplane")
             .backend(pprof_backend(
                 PprofConfig::new()
                     .sample_rate(100) // Hz
@@ -88,8 +88,8 @@ fn main() {
                 error!("Pyroscope build failed: {e}");
                 None
             }
-        };
-    init_logging();
+        }
+    });
     process_tracing_cmds(&args);
     info!("Starting gateway process...");
 
@@ -165,7 +165,6 @@ fn main() {
             Err(e) => error!("Pyroscope stop failed: {e}"),
         }
     }
-
     std::process::exit(0);
 }
 

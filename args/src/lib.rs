@@ -1034,14 +1034,13 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
     )]
     metrics_address: SocketAddr,
 
-    /// Grafana Alloy (Pyroscope) server address for profiling uploads
+    /// Pyroscope server address for profiling uploads
     #[arg(
-            long,
-            value_name = "ALLOY_ADDR:PORT",
-            default_value_t = SocketAddr::from(([127, 0, 0, 1], 4040)),
-            help = "Address of Grafana Alloy/Pyroscope server (e.g. 127.0.0.1:4040)"
-        )]
-    alloy_address: SocketAddr,
+        long,
+        value_name = "ALLOY_ADDR:PORT",
+        help = "Url of Pyroscope server (e.g. http://127.0.0.1:4040)"
+    )]
+    pyroscope_url: Option<url::Url>,
 
     #[arg(
         long,
@@ -1150,8 +1149,8 @@ impl CmdArgs {
         self.metrics_address
     }
 
-    pub fn alloy_address(&self) -> SocketAddr {
-        self.alloy_address
+    pub fn pyroscope_url(&self) -> Option<&url::Url> {
+        self.pyroscope_url.as_ref()
     }
 }
 
