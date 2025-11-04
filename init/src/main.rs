@@ -439,24 +439,22 @@ fn main() {
 
     let launch_config = launch_config.to_owned_fd();
 
-    let io_err = std::process::Command::new(
-        "/bin/dataplane",
-    )
-    .fd_mappings(vec![
-        FdMapping {
-            parent_fd: integrity_check,
-            child_fd: LaunchConfiguration::STANDARD_INTEGRITY_CHECK_FD,
-        },
-        FdMapping {
-            parent_fd: launch_config,
-            child_fd: LaunchConfiguration::STANDARD_CONFIG_FD,
-        },
-    ])
-    .into_diagnostic()
-    .wrap_err("failed to set file descriptor mapping for child process")
-    .unwrap()
-    .env_clear()
-    .exec();
+    let io_err = std::process::Command::new("/bin/dataplane")
+        .fd_mappings(vec![
+            FdMapping {
+                parent_fd: integrity_check,
+                child_fd: LaunchConfiguration::STANDARD_INTEGRITY_CHECK_FD,
+            },
+            FdMapping {
+                parent_fd: launch_config,
+                child_fd: LaunchConfiguration::STANDARD_CONFIG_FD,
+            },
+        ])
+        .into_diagnostic()
+        .wrap_err("failed to set file descriptor mapping for child process")
+        .unwrap()
+        .env_clear()
+        .exec();
 
     // if we got here then we failed to exec somehow
     Result::<(), _>::Err(io_err)
