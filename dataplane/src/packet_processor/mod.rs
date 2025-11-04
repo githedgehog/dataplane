@@ -73,12 +73,11 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let natallocator_factory = natallocatorw.get_reader_factory();
 
     // build pkt io stages
-    let pktio_ip: PktIo<Buf> = PktIo::new(0, 10_000usize).set_name("pkt-io-ip ");
-    let pktio_egress: PktIo<Buf> = PktIo::new(10_000usize, 0).set_name("pkt-io-egress");
+    let pktio: PktIo<Buf> = PktIo::new(10_000usize, 10_000usize).set_name("pkt-io-ip ");
 
     // queues to expose
-    let puntq = pktio_ip.get_puntq().unwrap_or_else(|| unreachable!());
-    let injectq = pktio_egress.get_injectq().unwrap_or_else(|| unreachable!());
+    let puntq = pktio.get_puntq().unwrap_or_else(|| unreachable!());
+    let injectq = pktio.get_injectq().unwrap_or_else(|| unreachable!());
 
     let pipeline_builder = move || {
         // Build network functions
@@ -94,8 +93,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         let stats_stage = Stats::new("stats", writer.clone());
         let flow_lookup_nf = LookupNF::new(flow_table.clone());
         let flow_expirations_nf = ExpirationsNF::new(flow_table.clone());
-        let pktio_ip_worker = pktio_ip.clone();
-        let pktio_egress_worker = pktio_egress.clone();
+        let pktio_worker = pktio.clone();
 
         // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
         // hard-coded. In any pipeline, the Stats and ExpirationsNF stages should go last
@@ -103,15 +101,14 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             .add_stage(dumper1)
             .add_stage(stage_ingress)
             .add_stage(iprouter1)
-            .add_stage(pktio_ip_worker)
             .add_stage(dst_vpcd_lookup)
             .add_stage(flow_lookup_nf)
             .add_stage(stateless_nat)
             .add_stage(stateful_nat)
             .add_stage(iprouter2)
-            .add_stage(pktio_egress_worker)
             .add_stage(stage_egress)
             .add_stage(dumper2)
+            .add_stage(pktio_worker)
             .add_stage(flow_expirations_nf)
             .add_stage(stats_stage)
     };

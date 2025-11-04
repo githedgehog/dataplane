@@ -144,13 +144,9 @@ impl IpForwarder {
                 packet.done(DoneReason::Malformed);
             }
             None => {
-                /* send to kernel, among other options */
                 debug!("Packet should be delivered to kernel...");
-                /*
-                We can't re-inject packet on ingress, so let's disable this to avoid churn
-                packet.get_meta_mut().oif = Some(packet.get_meta().iif);
-                 */
-                packet.done(DoneReason::Unhandled);
+                packet.get_meta_mut().set_local(true);
+                packet.done(DoneReason::Delivered);
             }
         }
     }
@@ -383,7 +379,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
                 let vrfid = packet.get_meta_mut().vrf.take();
                 if let Some(vrfid) = vrfid {
                     self.forward_packet(&mut packet, vrfid);
-                } else {
+                } else if !packet.get_meta().local() {
                     warn!("{}: missing information to handle packet", self.name);
                 }
             }

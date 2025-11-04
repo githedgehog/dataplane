@@ -4,15 +4,16 @@
 //! Implements an egress stage
 
 use std::net::IpAddr;
+#[allow(unused)]
 use tracing::{debug, error, trace, warn};
 
-use net::eth::Eth;
 use net::eth::ethtype::EthType;
 use net::eth::mac::{DestinationMac, SourceMac};
 use net::{
     buffer::PacketBufferMut,
     headers::{TryIpv4, TryIpv6},
 };
+use net::{eth::Eth, headers::TryIp};
 
 use net::headers::TryEthMut;
 use net::interface::InterfaceIndex;
@@ -131,10 +132,8 @@ impl Egress {
             /* do lookup on the adjacency table */
             let Some(adj) = atable.get_adjacency(addr, ifindex) else {
                 warn!("{nfi}: missing L2 info for {addr}");
-
-                /* Todo: Trigger ARP */
-
-                packet.done(DoneReason::MissL2resolution);
+                packet.get_meta_mut().set_need_arp_nd(true);
+                packet.done(DoneReason::MissL2resolution); // temporary until ARP/ND ready
                 return None;
             };
             /* get the mac from the adjacency */
@@ -152,25 +151,23 @@ impl Egress {
         }
     }
 
-    fn resolve_next_mac<Buf: PacketBufferMut>(
+    fn resolve_next_mac_ip<Buf: PacketBufferMut>(
         &self,
         ifindex: InterfaceIndex,
+        dst_ip: IpAddr,
         packet: &mut Packet<Buf>,
     ) -> Option<DestinationMac> {
-        let nfi = &self.name;
         // if packet was annotated with a next-hop address, try to resolve it using the
         // adjacency table. Otherwise, that means that the packet is directly connected
         // to us (on the same subnet). So, fetch the destination IP address and try to
         // resolve it with the adjacency table as well. If that fails, that's where the
         // ARP/ND would need to be triggered.
-        if let Some(nh_addr) = packet.get_meta().nh_addr {
-            self.get_adj_mac(packet, nh_addr, ifindex)
-        } else if let Some(destination) = packet.ip_destination() {
-            self.get_adj_mac(packet, destination, ifindex)
+        let target = if let Some(nh_addr) = packet.get_meta().nh_addr {
+            nh_addr
         } else {
-            warn!("{nfi}: could not determine packet destination IP address");
-            None
-        }
+            dst_ip
+        };
+        self.get_adj_mac(packet, target, ifindex)
     }
 
     #[inline]
@@ -180,11 +177,27 @@ impl Egress {
             packet.done(DoneReason::RouteFailure);
             return;
         };
+        let mut dst_mac = None;
 
-        /* resolve destination mac */
-        let Some(dst_mac) = self.resolve_next_mac(oif, packet) else {
-            // we could not figure out the destination MAC.
-            // resolve_next_mac() already calls packet.done()
+        /* if Ipv4/Ipv6, resolve destination mac. We can't rely on the current Eth mac since
+        we may have not overwritten it. FIXME(fredi): we should probably do that */
+        if packet.try_ip().is_some() {
+            let Some(dst_ip) = packet.ip_destination() else {
+                warn!("Failed to retrieve packet destination IP address");
+                packet.done(DoneReason::Malformed);
+                return;
+            };
+            /* resolve destination mac */
+            dst_mac = self.resolve_next_mac_ip(oif, dst_ip, packet);
+            if dst_mac.is_none() {
+                warn!("Failed to resolve mac for packet to {dst_ip}");
+                return;
+            }
+        }
+
+        /* if frame is non-ip and we don't know the dst mac, we drop the packet for the time being  */
+        let Some(dst_mac) = dst_mac else {
+            packet.done(DoneReason::MissL2resolution);
             return;
         };
 
