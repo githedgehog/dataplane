@@ -135,6 +135,7 @@ bitflags! {
         const REQ_STATIC_NAT_SRC  = 0b0010_0000_0000;      /* Packet requires static NAT (source) */
         const REQ_STATIC_NAT_DST  = 0b0100_0000_0000;      /* Packet requires static NAT (destination) */
         const LOCAL       = 0b1000_0000_0000; /* Packet is to be locally consumed */
+        const SOURCED     = 0b0001_0000_0000_0000; /* Packet is locally originated */
     }
 }
 
@@ -303,6 +304,18 @@ impl PacketMeta {
     #[must_use]
     pub fn is_local(&self) -> bool {
         self.flags.contains(MetaFlags::LOCAL)
+    }
+
+    #[must_use]
+    pub fn is_sourced(&self) -> bool {
+        self.flags.contains(MetaFlags::SOURCED)
+    }
+    pub fn set_sourced(&mut self, value: bool) {
+        if value {
+            self.flags.insert(MetaFlags::SOURCED);
+        } else {
+            self.flags.remove(MetaFlags::SOURCED);
+        }
     }
 }
 impl Drop for PacketMeta {

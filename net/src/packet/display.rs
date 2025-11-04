@@ -368,6 +368,9 @@ fn fmt_metadata_flags(meta: &PacketMeta, f: &mut Formatter<'_>) -> std::fmt::Res
     if meta.is_local() {
         write!(f, " local")?;
     }
+    if meta.is_sourced() {
+        write!(f, " sourced")?;
+    }
     if meta.requires_masquerade() {
         write!(f, " req-masquerade")?;
     }
