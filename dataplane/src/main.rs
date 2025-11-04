@@ -18,7 +18,7 @@ use drivers::kernel::DriverKernel;
 use mgmt::processor::launch::start_mgmt;
 
 use pyroscope::PyroscopeAgent;
-use pyroscope_pprofrs::{pprof_backend, PprofConfig};
+use pyroscope_pprofrs::{PprofConfig, pprof_backend};
 
 use routing::RouterParamsBuilder;
 use tracectl::{custom_target, get_trace_ctl, trace_target};
@@ -66,13 +66,17 @@ fn process_tracing_cmds(args: &CmdArgs) {
 }
 
 fn main() {
-    let agent_running = match PyroscopeAgent::builder("http://localhost:4040", "hedgehog-dataplane")
-        .backend(pprof_backend(
-            PprofConfig::new()
-                .sample_rate(100) // Hz
-                .report_thread_name(),
-        ))
-        .build()
+    let args = CmdArgs::parse();
+    let agent_running = match PyroscopeAgent::builder(
+        args.alloy_url().to_string(),
+        "hedgehog-dataplane".to_string(),
+    )
+    .backend(pprof_backend(
+        PprofConfig::new()
+            .sample_rate(100) // Hz
+            .report_thread_name(),
+    ))
+    .build()
     {
         Ok(agent) => match agent.start() {
             Ok(running) => Some(running),
@@ -87,9 +91,7 @@ fn main() {
         }
     };
     init_logging();
-    let args = CmdArgs::parse();
     process_tracing_cmds(&args);
-
     info!("Starting gateway process...");
 
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();

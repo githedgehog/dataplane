@@ -16,6 +16,7 @@ use std::num::NonZero;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::str::FromStr;
+use url::Url;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum PortArg {
@@ -1034,6 +1035,15 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
     )]
     metrics_address: SocketAddr,
 
+    /// Grafana Alloy (Pyroscope) server address for profiling uploads
+    #[arg(
+        long,
+        value_name = "URL for alloy push data collection",
+        default_value_t = Url::parse("http://localhost:4040/").unwrap(),
+        help = "Address of Grafana Alloy/Pyroscope server (e.g. 127.0.0.1:4040)"
+    )]
+    alloy_url: Url,
+
     #[arg(
         long,
         default_value_t = false,
@@ -1139,6 +1149,10 @@ impl CmdArgs {
     /// Get the metrics bind address, returns None if metrics are disabled
     pub fn metrics_address(&self) -> SocketAddr {
         self.metrics_address
+    }
+
+    pub fn alloy_url(&self) -> &Url {
+        &self.alloy_url
     }
 }
 
