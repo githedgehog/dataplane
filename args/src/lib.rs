@@ -744,6 +744,23 @@ pub struct LaunchConfiguration {
     pub tracing: TracingConfigSection,
     /// Metrics collection configuration
     pub metrics: MetricsConfigSection,
+    pub workers: WorkerConfigSection,
+}
+
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    rkyv::Archive,
+    CheckBytes,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
+pub struct WorkerConfigSection {
+    pub num_workers: u16,
 }
 
 impl LaunchConfiguration {
@@ -1270,6 +1287,9 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             },
             metrics: MetricsConfigSection {
                 address: value.metrics_address(),
+            },
+            workers: WorkerConfigSection {
+                num_workers: value.num_workers,
             },
         })
     }

@@ -22,6 +22,12 @@ pub trait PacketBufferMut:
     PacketBuffer + AsMut<[u8]> + Prepend + Send + TrimFromStart + TrimFromEnd + Headroom + Tailroom
 {
 }
+
+#[allow(missing_docs)]
+pub trait Pool<B> {
+    fn allocate(&mut self) -> B;
+}
+
 impl<T> PacketBufferMut for T where
     T: PacketBuffer
         + AsMut<[u8]>

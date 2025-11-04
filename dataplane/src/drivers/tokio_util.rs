@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::Builder;
 
 /// Executes a function inside a current-thread tokio runtime.
 /// The runtime will be torn down when the function returns.

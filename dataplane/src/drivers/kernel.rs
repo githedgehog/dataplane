@@ -17,6 +17,7 @@ use afpacket::sync::RawPacketStream;
 use concurrency::sync::Arc;
 use concurrency::thread;
 
+use net::buffer::PacketBufferMut;
 use tokio::sync::mpsc as chan;
 
 use mio::unix::SourceFd;
@@ -30,9 +31,8 @@ use std::time::Duration;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use net::buffer::test_buffer::TestBuffer;
 use net::interface::InterfaceIndex;
-use net::packet::{DoneReason, Packet};
+use net::packet::Packet;
 use netdev::Interface;
 use pipeline::{DynPipeline, NetworkFunction};
 #[allow(unused)]
@@ -44,11 +44,12 @@ use pkt_meta::flow_table::flow_key::{Bidi, FlowKey};
 use tracectl::trace_target;
 
 use crate::drivers::tokio_util::run_in_tokio_runtime;
+use crate::drivers::{Started, State, Stopped};
 trace_target!("kernel-driver", LevelFilter::ERROR, &["driver"]);
 
-type WorkerTx = chan::Sender<Box<Packet<TestBuffer>>>;
-type WorkerRx = chan::Receiver<Box<Packet<TestBuffer>>>;
-type WorkerChans = (Vec<WorkerTx>, WorkerRx);
+type WorkerTx<Buf> = chan::Sender<Box<Packet<Buf>>>;
+type WorkerRx<Buf> = chan::Receiver<Box<Packet<Buf>>>;
+type WorkerChans<Buf> = (Vec<WorkerTx<Buf>>, WorkerRx<Buf>);
 
 /// Simple representation of a kernel interface.
 pub struct Kif {
@@ -68,7 +69,7 @@ impl Kif {
             error!("Failed to open raw sock for interface {name}: {e}");
             e
         })?;
-        sock.set_non_blocking();
+        sock.set_non_blocking()?;
         sock.bind(name)
             .inspect_err(|e| error!("Failed to open raw sock for interface {name}: {e}"))?;
         let raw_fd = sock.as_raw_fd();
@@ -196,18 +197,24 @@ fn build_kif_table(args: impl IntoIterator<Item = impl AsRef<str>>) -> io::Resul
 ///  * selects a worker by symmetric flow hash
 ///  * workers run independent pipelines and send processed packets back
 ///  * dispatcher serializes & transmits on the chosen outgoing interface
-pub struct DriverKernel;
+#[non_exhaustive]
+pub struct DriverKernel<S: State, Buf: PacketBufferMut> {
+    args: Vec<String>,
+    num_workers: usize,
+    setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
+    state: S,
+}
 
-fn single_worker(
+fn single_worker<Buf: PacketBufferMut>(
     id: usize,
     thread_builder: thread::Builder,
-    tx_to_control: WorkerTx,
-    setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
-) -> Result<WorkerTx, std::io::Error> {
-    let (tx_to_worker, mut rx_from_control) = chan::channel::<Box<Packet<TestBuffer>>>(4096);
+    tx_to_control: WorkerTx<Buf>,
+    setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
+) -> Result<WorkerTx<Buf>, std::io::Error> {
+    let (tx_to_worker, mut rx_from_control) = chan::channel::<Box<Packet<Buf>>>(4096);
     let setup = setup_pipeline.clone();
 
-    let handle_res = thread_builder.spawn(move || {
+    let _handle_res = thread_builder.spawn(move || {
         let mut pipeline = setup();
         run_in_tokio_runtime(async || {
             loop {
@@ -219,7 +226,7 @@ fn single_worker(
 
                 let mut packets_vec = Vec::new();
                 let pkt_count = rx_from_control.recv_many(&mut packets_vec, 1024).await;
-                if (pkt_count == 0) {
+                if pkt_count == 0 {
                     trace!(worker = id, thread = %thread::current().name().unwrap_or("unnamed"), "sender closed, exiting");
                     return; // The sender closed so no more packets can ever be received
                 }
@@ -237,7 +244,7 @@ fn single_worker(
                     count += 1;
                 }
 
-                tracing::debug!(
+                debug!(
                     worker = id,
                     thread = %thread::current().name().unwrap_or("unnamed"),
                     "processed {count} packets"
@@ -249,10 +256,10 @@ fn single_worker(
 }
 
 #[allow(clippy::cast_possible_truncation)]
-impl DriverKernel {
+impl<Buf: PacketBufferMut> DriverKernel<Stopped, Buf> {
     /// Compute a **symmetric** worker index for a parsed `Packet` using a bidirectional flow key.
     #[must_use]
-    pub fn compute_worker_idx(pkt: &Packet<TestBuffer>, workers: usize) -> usize {
+    pub fn compute_worker_idx(pkt: &Packet<Buf>, workers: usize) -> usize {
         let n = workers.max(1);
 
         // Prefer symmetric flow-key hash (A<->B go to the same bucket)
@@ -271,17 +278,17 @@ impl DriverKernel {
     /// Returns:
     ///   - `Vec<Sender<Packet<TestBuffer>>>` one sender per worker (dispatcher -> worker)
     ///   - `Receiver<Packet<TestBuffer>>` a single queue for processed packets (worker -> dispatcher)
-    fn spawn_workers(
-        num_workers: usize,
-        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
-    ) -> io::Result<WorkerChans> {
-        let (tx_to_control, rx_from_workers) = chan::channel::<Box<Packet<TestBuffer>>>(4096);
-        let mut to_workers = Vec::with_capacity(num_workers);
-        info!("Spawning {num_workers} workers");
-        for wid in 0..num_workers {
+    fn spawn_workers(&self) -> io::Result<WorkerChans<Buf>> {
+        let (tx_to_control, rx_from_workers) = chan::channel::<Box<Packet<Buf>>>(4096);
+        let mut to_workers = Vec::with_capacity(self.num_workers);
+        info!(
+            "Spawning {num_workers} workers",
+            num_workers = self.num_workers
+        );
+        for wid in 0..self.num_workers {
             let builder = thread::Builder::new().name(format!("dp-worker-{wid}"));
             let tx_to_worker =
-                match single_worker(wid, builder, tx_to_control.clone(), setup_pipeline) {
+                match single_worker(wid, builder, tx_to_control.clone(), &self.setup_pipeline) {
                     Ok(tx_to_worker) => tx_to_worker,
                     Err(e) => {
                         error!("Failed to spawn worker {wid}: {e}");
@@ -299,116 +306,23 @@ impl DriverKernel {
     /// - `args`: kernel driver CLI parameters (e.g., `--interface` list)
     /// - `workers`: number of worker threads / pipelines
     /// - `setup_pipeline`: factory returning a **fresh** `DynPipeline<TestBuffer>` per worker
-    pub fn start(
+    pub fn new<B: PacketBufferMut>(
         args: impl IntoIterator<Item = impl AsRef<str> + Clone>,
         num_workers: usize,
-        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
-    ) {
-        // Prepare interfaces/poller
-        let mut kiftable = match build_kif_table(args) {
-            Ok(t) => t,
-            Err(e) => {
-                error!("Failed to initialize kernel interface table: {e}");
-                return;
-            }
-        };
-
-        // Spawn workers
-        let (to_workers, mut from_workers) = match Self::spawn_workers(num_workers, setup_pipeline)
-        {
-            Ok(chans) => chans,
-            Err(e) => {
-                error!("Failed to start workers: {e}");
-                return;
-            }
-        };
-
-        let num_worker_chans = to_workers.len();
-        assert!(num_worker_chans != 0, "No worker channels available!");
-        if num_worker_chans != num_workers {
-            warn!(
-                "Number of to_worker channels ({num_worker_chans}) does not match number of workers ({num_workers})"
-            );
-        }
-
-        let poll_timeout = Some(Duration::from_millis(2));
-
-        // Dispatcher loop: drain processed packets, poll RX, parse+shard, TX results.
-        let mut events = Events::with_capacity(256);
-        loop {
-            // 1) Drain processed packets coming back from workers, serialize + TX
-            while let Ok(mut pkt) = from_workers.try_recv() {
-                // choose outgoing interface from meta
-                let oif_id_opt = pkt.get_meta().oif;
-                if let Some(oif_id) = oif_id_opt {
-                    if let Some(outgoing) = kiftable.get_mut_by_index(oif_id) {
-                        match pkt.serialize() {
-                            Ok(out) => {
-                                let len = out.as_ref().len();
-                                if let Err(e) = outgoing.sock.write_all(out.as_ref()) {
-                                    error!(
-                                        "TX failed for pkt ({len} octets) on '{}': {e}",
-                                        &outgoing.name
-                                    );
-                                } else {
-                                    trace!("TX {len} bytes on interface {}", &outgoing.name);
-                                }
-                            }
-                            Err(e) => error!("Serialize failed: {e:?}"),
-                        }
-                    } else {
-                        warn!("TX drop: unknown oif {}", oif_id);
-                    }
-                } else {
-                    // No oif set -> inspect DoneReason via enforce()
-                    match pkt.enforce() {
-                        Some(_keep) => {
-                            // Packet is not marked for drop by the pipeline (Delivered/None/keep=true),
-                            // but we still can't TX without an oif; drop here.
-                            error!(
-                                "No oif in packet meta; enforce() => keep/Delivered; dropping here"
-                            );
-                        }
-                        None => {
-                            // Pipeline explicitly marked it to be dropped
-                            debug!("Packet marked for drop by pipeline (enforce() => None)");
-                        }
-                    }
-                }
-            }
-
-            // 2) Poll for new RX events
-            if let Err(e) = kiftable.poll.poll(&mut events, poll_timeout) {
-                warn!("Poll error: {e}");
-                continue;
-            }
-
-            // 3) For readable interfaces, pull frames, parse to Packet<TestBuffer>, shard to workers
-            Self::recv_packets(&mut kiftable, &events).for_each(|pkt| {
-                let target = Self::compute_worker_idx(&pkt, num_worker_chans);
-                if let Err(e) = to_workers[target].try_send(pkt) {
-                    match e {
-                        chan::error::TrySendError::Full(_) => {
-                            // queue full => soft drop
-                            // FIXME(mvachhar): this is bad, we need to increment drop stats here, but how?
-                            // FIXME(mvachhar): We need to backpressure the NIC without starving other workers, how do we do that?
-                            warn!("Worker {target} queue full: dropping packet");
-                        }
-                        chan::error::TrySendError::Closed(_) => {
-                            error!("Worker {target} channel closed: dropping packet");
-                        }
-                    }
-                } else {
-                    trace!(worker = target, "dispatched packet to worker");
-                }
-            });
+        setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<B>>,
+    ) -> DriverKernel<Stopped, B> {
+        DriverKernel {
+            args: args.into_iter().map(|x| x.as_ref().into()).collect(),
+            num_workers,
+            setup_pipeline,
+            state: Stopped,
         }
     }
 
     pub fn recv_packets(
         kiftable: &mut KifTable,
         events: &mio::Events,
-    ) -> impl Iterator<Item = Box<Packet<TestBuffer>>> {
+    ) -> impl Iterator<Item = Box<Packet<Buf>>> {
         events
             .iter()
             .filter(|e| e.is_readable())
@@ -420,7 +334,7 @@ impl DriverKernel {
     /// Tries to receive frames from the indicated interface and builds `Packet`s
     /// out of them. Returns a vector of [`Packet`]s.
     #[allow(clippy::vec_box)] // We want to avoid Packet moves, so allow Vec<Box<_>> to be sure
-    pub fn packet_recv(interface: &mut Kif) -> Vec<Box<Packet<TestBuffer>>> {
+    pub fn packet_recv(interface: &mut Kif) -> Vec<Box<Packet<Buf>>> {
         let mut raw = [0u8; 2048];
         let mut pkts = Vec::with_capacity(32);
         loop {
@@ -428,19 +342,20 @@ impl DriverKernel {
                 Ok(0) => break, // no more
                 Ok(bytes) => {
                     // build TestBuffer and parse
-                    let buf = TestBuffer::from_raw_data(&raw[..bytes]);
-                    match Packet::new(buf) {
-                        Ok(mut incoming) => {
-                            incoming.get_meta_mut().iif = Some(interface.ifindex);
-                            pkts.push(Box::new(incoming));
-                        }
-                        Err(e) => {
-                            // Parsing errors happen; avoid logspam for loopback
-                            if interface.name != "lo" {
-                                error!("Failed to parse packet on '{}': {e}", interface.name);
-                            }
-                        }
-                    }
+                    todo!(); // need Fredi work
+                    // let buf = Buf::from_raw_data(&raw[..bytes]);
+                    // match Packet::new(buf) {
+                    //     Ok(mut incoming) => {
+                    //         incoming.get_meta_mut().iif = Some(interface.ifindex);
+                    //         pkts.push(Box::new(incoming));
+                    //     }
+                    //     Err(e) => {
+                    //         // Parsing errors happen; avoid logspam for loopback
+                    //         if interface.name != "lo" {
+                    //             error!("Failed to parse packet on '{}': {e}", interface.name);
+                    //         }
+                    //     }
+                    // }
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) => {
@@ -450,5 +365,120 @@ impl DriverKernel {
             }
         }
         pkts
+    }
+}
+
+impl<B: PacketBufferMut> crate::drivers::Start for DriverKernel<Stopped, B> {
+    type Started = DriverKernel<Started, B>;
+    #[allow(clippy::panic, clippy::unwrap_used)] // inability to start the driver is fatal
+    fn start(self) -> Self::Started {
+        // Prepare interfaces/poller
+        let mut kiftable = match build_kif_table(self.args.iter()) {
+            Ok(t) => t,
+            Err(e) => {
+                error!("failed to initialize kernel interface table: {e}");
+                panic!("failed to initialize kernel interface table: {e}");
+            }
+        };
+
+        // Spawn workers
+        let (to_workers, mut from_workers) = match self.spawn_workers() {
+            Ok(chans) => chans,
+            Err(e) => {
+                error!("failed to start workers: {e}");
+                panic!("failed to start workers: {e}");
+            }
+        };
+
+        let num_worker_chans = to_workers.len();
+        assert!(num_worker_chans != 0, "No worker channels available!");
+        if num_worker_chans != self.num_workers {
+            warn!(
+                "Number of to_worker channels ({num_worker_chans}) does not match number of workers ({num_workers})",
+                num_workers = self.num_workers
+            );
+        }
+
+        let poll_timeout = Some(Duration::from_millis(2));
+
+        // Dispatcher loop: drain processed packets, poll RX, parse+shard, TX results.
+        let mut events = Events::with_capacity(256);
+        std::thread::Builder::new()
+                .spawn(move || {
+                    loop {
+                        // 1) Drain processed packets coming back from workers, serialize + TX
+                        while let Ok(pkt) = from_workers.try_recv() {
+                            // choose outgoing interface from meta
+                            let oif_id_opt = pkt.get_meta().oif;
+                            if let Some(oif_id) = oif_id_opt {
+                                if let Some(outgoing) = kiftable.get_mut_by_index(oif_id) {
+                                    match pkt.serialize() {
+                                        Ok(out) => {
+                                            let len = out.as_ref().len();
+                                            if let Err(e) = outgoing.sock.write_all(out.as_ref()) {
+                                                error!(
+                                                    "TX failed for pkt ({len} octets) on '{}': {e}",
+                                                    &outgoing.name
+                                                );
+                                            } else {
+                                                trace!("TX {len} bytes on interface {}", &outgoing.name);
+                                            }
+                                        }
+                                        Err(e) => error!("Serialize failed: {e:?}"),
+                                    }
+                                } else {
+                                    warn!("TX drop: unknown oif {}", oif_id);
+                                }
+                            } else {
+                                // No oif set -> inspect DoneReason via enforce()
+                                match pkt.enforce() {
+                                    Some(_keep) => {
+                                        // Packet is not marked for drop by the pipeline (Delivered/None/keep=true),
+                                        // but we still can't TX without an oif; drop here.
+                                        error!(
+                                            "No oif in packet meta; enforce() => keep/Delivered; dropping here"
+                                        );
+                                    }
+                                    None => {
+                                        // Pipeline explicitly marked it to be dropped
+                                        debug!("Packet marked for drop by pipeline (enforce() => None)");
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2) Poll for new RX events
+                        if let Err(e) = kiftable.poll.poll(&mut events, poll_timeout) {
+                            warn!("Poll error: {e}");
+                            continue;
+                        }
+
+                        // 3) For readable interfaces, pull frames, parse to Packet<TestBuffer>, shard to workers
+                        Self::recv_packets(&mut kiftable, &events).for_each(|pkt| {
+                            let target = Self::compute_worker_idx(&pkt, num_worker_chans);
+                            if let Err(e) = to_workers[target].try_send(pkt) {
+                                match e {
+                                    chan::error::TrySendError::Full(_) => {
+                                        // queue full => soft drop
+                                        // FIXME(mvachhar): this is bad, we need to increment drop stats here, but how?
+                                        // FIXME(mvachhar): We need to backpressure the NIC without starving other workers, how do we do that?
+                                        warn!("Worker {target} queue full: dropping packet");
+                                    }
+                                    chan::error::TrySendError::Closed(_) => {
+                                        error!("Worker {target} channel closed: dropping packet");
+                                    }
+                                }
+                            } else {
+                                trace!(worker = target, "dispatched packet to worker");
+                            }
+                        });
+                    }
+                }).unwrap();
+        DriverKernel {
+            args: self.args,
+            num_workers: self.num_workers,
+            setup_pipeline: self.setup_pipeline,
+            state: Started,
+        }
     }
 }

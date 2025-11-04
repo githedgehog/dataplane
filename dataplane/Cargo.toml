@@ -40,6 +40,7 @@ tracectl = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, default-features = true }
 vpcmap = { workspace = true }
+dpdk-sys = { workspace = true } # TODO: Banish this back to dpdk world
 
 [dev-dependencies]
 # internal

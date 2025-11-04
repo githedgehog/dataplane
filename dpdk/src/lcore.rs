@@ -2,9 +2,9 @@
 // Copyright Open Network Fabric Authors
 
 use crate::eal::{Eal, EalErrno};
-use crate::mem::RteAllocator;
 use core::ffi::{c_int, c_uint, c_void};
 use core::fmt::Debug;
+use errno::ErrorCode;
 use tracing::{info, warn};
 
 #[repr(transparent)]
@@ -133,18 +133,38 @@ impl ServiceThread<'_> {
     }
 }
 
-#[allow(unused)]
+#[derive(Debug)]
 pub struct WorkerThread {
     lcore_id: LCoreId,
 }
 
+impl From<LCoreId> for WorkerThread {
+    fn from(value: LCoreId) -> Self {
+        Self { lcore_id: value }
+    }
+}
+
+#[repr(i32)]
+#[derive(Debug, thiserror::Error)]
+pub enum WorkerThreadLaunchError {
+    /// Worker thread is not in the waiting state
+    #[error("attempt to launch function on worker thread which is not in the waiting state")]
+    Busy = -errno::EBUSY,
+    /// Unable to write to workerthread's pipe
+    #[error(
+        "unable to write to worker thread's pipe when attempting to launch function on that thread"
+    )]
+    Pipe = -errno::EPIPE,
+    /// Unexpected errno when launching worker thread
+    #[error("unexpected error when launching worker thread: {0}")]
+    Unexpected(ErrorCode),
+}
+
 impl WorkerThread {
+    /// This can only run on the main lcore
     #[allow(clippy::expect_used)] // this is only called at system launch where crash is still ok
-    pub fn launch<T: Send + FnOnce()>(lcore: LCoreId, f: T) {
-        RteAllocator::assert_initialized();
-        #[inline]
+    pub fn launch<T: Send + FnOnce()>(lcore: LCoreId, f: T) -> Result<(), WorkerThreadLaunchError> {
         unsafe extern "C" fn _launch<Task: Send + FnOnce()>(arg: *mut c_void) -> c_int {
-            RteAllocator::assert_initialized();
             let task = unsafe {
                 Box::from_raw(
                     arg.as_mut().expect("null argument in worker setup") as *mut _ as *mut Task,
@@ -154,13 +174,33 @@ impl WorkerThread {
             0
         }
         let task = Box::new(f);
-        EalErrno::assert(unsafe {
+        let res = unsafe {
             dpdk_sys::rte_eal_remote_launch(
                 Some(_launch::<T>),
                 Box::leak(task) as *mut _ as _,
                 lcore.0 as c_uint,
             )
-        });
+        };
+        match res {
+            0 => Ok(()),
+            errno::NEG_EBUSY => Err(WorkerThreadLaunchError::Busy),
+            errno::NEG_EPIPE => Err(WorkerThreadLaunchError::Pipe),
+            other => Err(WorkerThreadLaunchError::Unexpected(ErrorCode::parse(other))),
+        }
+    }
+
+    /// main lcore only.
+    #[tracing::instrument(level = "info", skip(self))]
+    pub fn join(&self) {
+        info!(
+            "joining WorkerThread with rte lcore id {thread_id:?}",
+            thread_id = self.lcore_id
+        );
+        EalErrno::assert(unsafe { dpdk_sys::rte_eal_wait_lcore(self.lcore_id.0) });
+        info!(
+            "joined WorkerThread with rte lcore id {thread_id:?}",
+            thread_id = self.lcore_id
+        );
     }
 }
 
