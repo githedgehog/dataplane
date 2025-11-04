@@ -13,16 +13,9 @@ use crate::packet_processor::start_router;
 use crate::statistics::MetricsServer;
 use args::{CmdArgs, Parser};
 
-use drivers::dpdk::DriverDpdk;
 use drivers::kernel::DriverKernel;
 
 use mgmt::processor::launch::start_mgmt;
-
-use net::buffer::PacketBufferMut;
-use net::packet::Packet;
-
-use pipeline::DynPipeline;
-use pipeline::sample_nfs::PacketDumper;
 
 use routing::RouterParamsBuilder;
 use tracectl::{custom_target, get_trace_ctl, trace_target};
@@ -37,20 +30,6 @@ fn init_logging() {
     let tctl = get_trace_ctl();
     tctl.set_default_level(LevelFilter::DEBUG)
         .expect("Setting default loglevel failed");
-}
-
-fn setup_pipeline<Buf: PacketBufferMut>() -> DynPipeline<Buf> {
-    let pipeline = DynPipeline::new();
-    if false {
-        let custom_filter = |_packet: &Packet<Buf>| -> bool { true };
-        pipeline.add_stage(PacketDumper::new(
-            "default",
-            true,
-            Some(Box::new(custom_filter)),
-        ))
-    } else {
-        pipeline.add_stage(PacketDumper::new("default", true, None))
-    }
 }
 
 fn process_tracing_cmds(args: &CmdArgs) {
