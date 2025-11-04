@@ -48,9 +48,10 @@ impl Ingress {
         let ifname = &interface.name;
         match &interface.attachment {
             Some(Attachment::VRF(fibkey)) => {
+                // we should actually drop this
                 if packet.try_ip().is_none() {
-                    warn!("{nfi}: Processing of non-ip traffic on {ifname} is not supported");
-                    packet.done(DoneReason::NotIp);
+                    packet.get_meta_mut().set_local(true);
+                    packet.done(DoneReason::Delivered);
                     return;
                 }
                 let vrfid = fibkey.as_u32();
@@ -86,18 +87,21 @@ impl Ingress {
     }
 
     #[tracing::instrument(level = "trace")]
-    fn interface_ingress_eth_bcast<Buf: PacketBufferMut>(
+    fn interface_ingress_eth_bcast_mcast<Buf: PacketBufferMut>(
         &self,
-        interface: &Interface,
+        _interface: &Interface,
         packet: &mut Packet<Buf>,
     ) {
-        let nfi = self.name();
         packet.get_meta_mut().set_l2bcast(true);
-        packet.done(DoneReason::Unhandled);
-        warn!(
-            "{nfi}: Processing of broadcast ethernet frames is not supported (interface {ifname})",
-            ifname = interface.name
-        );
+        packet.get_meta_mut().set_local(true);
+        if packet.try_ip().is_none()
+            || packet
+                .ip_destination()
+                .unwrap_or_else(|| unreachable!())
+                .is_multicast()
+        {
+            packet.done(DoneReason::Delivered);
+        }
     }
 
     #[tracing::instrument(level = "trace")]
@@ -116,8 +120,8 @@ impl Ingress {
                 None => packet.done(DoneReason::NotEthernet),
                 Some(eth) => {
                     let dmac = eth.destination().inner();
-                    if dmac.is_broadcast() {
-                        self.interface_ingress_eth_bcast(interface, packet);
+                    if dmac.is_broadcast() || dmac.is_multicast() {
+                        self.interface_ingress_eth_bcast_mcast(interface, packet);
                     } else if dmac == if_mac {
                         self.interface_ingress_eth_ucast_local(interface, packet);
                     } else {
@@ -126,7 +130,7 @@ impl Ingress {
                 }
             }
         } else {
-            unreachable!();
+            unreachable!("We should not get packet without mac");
         }
     }
 
@@ -164,9 +168,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Ingress {
             if !packet.is_done() {
                 if let Some(iftable) = self.iftr.enter() {
                     match packet.get_meta().iif {
-                        None => {
-                            warn!("no incoming interface for packet");
-                        }
+                        None => warn!("Packet has no iff"),
                         Some(iif) => match iftable.get_interface(iif) {
                             None => {
                                 warn!("{nfi}: unknown incoming interface {iif}");
@@ -177,6 +179,8 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Ingress {
                             }
                         },
                     }
+                } else {
+                    warn!("Unable to read interface table!");
                 }
             }
             packet.enforce()
