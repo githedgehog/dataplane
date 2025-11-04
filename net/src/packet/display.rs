@@ -248,20 +248,23 @@ impl Display for BridgeDomain {
 #[inline]
 fn fmt_metadata_flags(meta: &PacketMeta, f: &mut Formatter<'_>) -> std::fmt::Result {
     write!(f, "    Flags:")?;
+    if meta.local() {
+        write!(f, " local")?;
+    }
+    if meta.sourced() {
+        write!(f, " sourced")?;
+    }
     if meta.is_l2bcast() {
         write!(f, " bcast")?;
     }
     if meta.nat() {
         write!(f, " do-nat")?;
     }
-    if meta.local() {
-        write!(f, " local")?;
-    }
-    if meta.keep() {
-        write!(f, " keep")?;
-    }
     if meta.checksum_refresh() {
         write!(f, " refresh-chksum")?;
+    }
+    if meta.keep() {
+        write!(f, " (keep)")?;
     }
     writeln!(f)
 }
