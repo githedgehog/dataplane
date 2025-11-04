@@ -1034,6 +1034,14 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
     )]
     metrics_address: SocketAddr,
 
+    /// Pyroscope server address for profiling uploads
+    #[arg(
+        long,
+        value_name = "URL of pyroscope server",
+        help = "URL of Pyroscope server (e.g. http://127.0.0.1:4040)"
+    )]
+    pyroscope_url: Option<url::Url>,
+
     #[arg(
         long,
         default_value_t = false,
@@ -1139,6 +1147,10 @@ impl CmdArgs {
     /// Get the metrics bind address, returns None if metrics are disabled
     pub fn metrics_address(&self) -> SocketAddr {
         self.metrics_address
+    }
+
+    pub fn pyroscope_url(&self) -> Option<&url::Url> {
+        self.pyroscope_url.as_ref()
     }
 }
 
