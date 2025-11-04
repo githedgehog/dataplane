@@ -17,6 +17,9 @@ use drivers::kernel::DriverKernel;
 
 use mgmt::processor::launch::start_mgmt;
 
+use pyroscope::PyroscopeAgent;
+use pyroscope_pprofrs::{pprof_backend, PprofConfig};
+
 use routing::RouterParamsBuilder;
 use tracectl::{custom_target, get_trace_ctl, trace_target};
 
@@ -63,6 +66,26 @@ fn process_tracing_cmds(args: &CmdArgs) {
 }
 
 fn main() {
+    let agent_running = match PyroscopeAgent::builder("http://localhost:4040", "hedgehog-dataplane")
+        .backend(pprof_backend(
+            PprofConfig::new()
+                .sample_rate(100) // Hz
+                .report_thread_name(),
+        ))
+        .build()
+    {
+        Ok(agent) => match agent.start() {
+            Ok(running) => Some(running),
+            Err(e) => {
+                error!("Pyroscope start failed: {e}");
+                None
+            }
+        },
+        Err(e) => {
+            error!("Pyroscope build failed: {e}");
+            None
+        }
+    };
     init_logging();
     let args = CmdArgs::parse();
     process_tracing_cmds(&args);
@@ -135,6 +158,13 @@ fn main() {
 
     stop_rx.recv().expect("failed to receive stop signal");
     info!("Shutting down dataplane");
+    if let Some(running) = agent_running {
+        match running.stop() {
+            Ok(ready) => ready.shutdown(),
+            Err(e) => error!("Pyroscope stop failed: {e}"),
+        }
+    }
+
     std::process::exit(0);
 }
 
