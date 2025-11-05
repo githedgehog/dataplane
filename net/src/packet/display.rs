@@ -245,7 +245,6 @@ impl Display for BridgeDomain {
     }
 }
 
-#[inline]
 fn fmt_metadata_flags(meta: &PacketMeta, f: &mut Formatter<'_>) -> std::fmt::Result {
     write!(f, "    Flags:")?;
     if meta.local() {
