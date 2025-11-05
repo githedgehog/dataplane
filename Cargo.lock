@@ -28,17 +28,6 @@ dependencies = [
 
 [[package]]
 name = "ahash"
-version = "0.8.10"
-source = "git+https://github.com/tkaitchuck/aHash?branch=master#f89a9a4f259c1ca877f4b2e3ac2c8791c114cb1d"
-dependencies = [
- "cfg-if",
- "once_cell",
- "version_check",
- "zerocopy",
-]
-
-[[package]]
-name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
@@ -470,9 +459,9 @@ dependencies = [
 
 [[package]]
 name = "bollard"
-version = "0.19.3"
+version = "0.19.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec7646ee90964aa59e9f832a67182791396a19a5b1d76eb17599a8310a7e2e09"
+checksum = "87a52479c9237eb04047ddb94788c41ca0d26eaff8b697ecfbb4c32f7fdc3b1b"
 dependencies = [
  "base64 0.22.1",
  "bollard-stubs",
@@ -1229,7 +1218,7 @@ dependencies = [
 name = "dataplane-left-right-tlcache"
 version = "0.1.0"
 dependencies = [
- "ahash 0.8.10",
+ "ahash",
  "left-right",
  "serial_test",
  "thiserror 2.0.17",
@@ -1299,7 +1288,7 @@ dependencies = [
 name = "dataplane-nat"
 version = "0.1.0"
 dependencies = [
- "ahash 0.8.10",
+ "ahash",
  "arc-swap",
  "bolero",
  "dataplane-concurrency",
@@ -1325,7 +1314,7 @@ dependencies = [
 name = "dataplane-net"
 version = "0.0.1"
 dependencies = [
- "ahash 0.8.10",
+ "ahash",
  "arrayvec",
  "bitflags 2.10.0",
  "bolero",
@@ -1365,7 +1354,7 @@ dependencies = [
 name = "dataplane-pkt-meta"
 version = "0.1.0"
 dependencies = [
- "ahash 0.8.10",
+ "ahash",
  "bolero",
  "dashmap",
  "dataplane-concurrency",
@@ -1394,7 +1383,7 @@ version = "0.1.0"
 name = "dataplane-routing"
 version = "0.1.0"
 dependencies = [
- "ahash 0.8.10",
+ "ahash",
  "bitflags 2.10.0",
  "bolero",
  "bytes",
@@ -1494,7 +1483,7 @@ dependencies = [
 name = "dataplane-vpcmap"
 version = "0.1.0"
 dependencies = [
- "ahash 0.8.10",
+ "ahash",
  "bolero",
  "dataplane-net",
  "left-right",
@@ -2745,7 +2734,7 @@ version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25dea7ac8057892855ec285c440160265225438c3c45072613c25a4b26e98ef5"
 dependencies = [
- "ahash 0.8.12",
+ "ahash",
  "portable-atomic",
 ]
 
@@ -2964,7 +2953,7 @@ dependencies = [
 [[package]]
 name = "netlink-packet-route"
 version = "0.25.1"
-source = "git+https://github.com/githedgehog/netlink-packet-route.git?branch=pr%2Fdaniel-noland%2Fswing3#aa985a56f135b5d01aacd6618993b66894f79c51"
+source = "git+https://github.com/githedgehog/netlink-packet-route.git?branch=pr%2Fdaniel-noland%2Fswing4#09b8ffdf9b4e9bbc8780a3efb4ec3494ee7ee3fd"
 dependencies = [
  "bitflags 2.10.0",
  "libc 0.2.177",
@@ -3770,12 +3759,12 @@ checksum = "f08d6a905edb32d74a5d5737a0c9d7e950c312f3c46cb0ca0a2ca09ea11878a0"
 [[package]]
 name = "rtnetlink"
 version = "0.18.1"
-source = "git+https://github.com/githedgehog/rtnetlink.git?branch=hh%2Ftc-actions2#f593e6927044fcb7430e069fd9c1013ffbf9ebcc"
+source = "git+https://github.com/githedgehog/rtnetlink.git?branch=hh%2Ftc-actions3#acbd0329323d05240da8855c64e490ea725531e0"
 dependencies = [
  "futures",
  "log",
  "netlink-packet-core",
- "netlink-packet-route 0.25.1 (git+https://github.com/githedgehog/netlink-packet-route.git?branch=pr%2Fdaniel-noland%2Fswing3)",
+ "netlink-packet-route 0.25.1 (git+https://github.com/githedgehog/netlink-packet-route.git?branch=pr%2Fdaniel-noland%2Fswing4)",
  "netlink-packet-utils",
  "netlink-proto",
  "netlink-sys",
@@ -3817,9 +3806,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.34"
+version = "0.23.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a9586e9ee2b4f8fab52a0048ca7334d7024eef48e2cb9407e3497bb7cab7fa7"
+checksum = "533f54bc6a7d4f647e46ad909549eda97bf5afc1585190ef692b4286b198bd8f"
 dependencies = [
  "once_cell",
  "rustls-pki-types",
@@ -3940,9 +3929,9 @@ dependencies = [
 
 [[package]]
 name = "schemars"
-version = "1.0.4"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82d20c4491bc164fa2f6c5d44565947a52ad80b9505d8e36f8d54c27c739fcd0"
+checksum = "1317c3bf3e7df961da95b0a56a172a02abead31276215a0497241a7624b487ce"
 dependencies = [
  "dyn-clone",
  "ref-cast",
@@ -4078,7 +4067,7 @@ dependencies = [
  "indexmap 1.9.3",
  "indexmap 2.12.0",
  "schemars 0.9.0",
- "schemars 1.0.4",
+ "schemars 1.0.5",
  "serde_core",
  "serde_json",
  "time",
@@ -4620,9 +4609,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-util"
-version = "0.7.16"
+version = "0.7.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14307c986784f72ef81c89db7d9e28d6ac26d16213b109ea501696195e6e3ce5"
+checksum = "2efa149fe76073d6e8fd97ef4f4eca7b67f599660115591483572e406e165594"
 dependencies = [
  "bytes",
  "futures-core",
