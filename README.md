@@ -241,7 +241,7 @@ depend on `mgmt`.
 - The general rule is that a tier-n crate can only have as dependencies crates in tier-k, k<=n.
 - In other words, in a graphical representation as below, dependency arrows can never go upwards.
 
-```
+```text
      ┌─────────────────────────────────┐
      │           dataplane             │
      └┬───────────┬─────────┬──────────┘
