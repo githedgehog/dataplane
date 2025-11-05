@@ -386,6 +386,9 @@ fn fmt_metadata_flags(meta: &PacketMeta, f: &mut Formatter<'_>) -> std::fmt::Res
     if meta.checksum_refresh() {
         write!(f, " refresh-chksum")?;
     }
+    if meta.need_arp_nd() {
+        write!(f, " need-arp-nd")?;
+    }
     writeln!(f)
 }
 impl Display for PacketMeta {
