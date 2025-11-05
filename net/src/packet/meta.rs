@@ -116,7 +116,7 @@ pub enum DoneReason {
     MissingEtherType,     /* can't determine ethertype to use */
     Unroutable,           /* we don't have state to forward the packet */
     NatFailure,           /* It was not possible to NAT the packet */
-    InternalDrop, /* the packet is bydropped by dataplane (e.g. due to lack of resources like queue space) */
+    InternalDrop, /* the packet is dropped by the dataplane (e.g. due to lack of resources like queue space) */
     Delivered,    /* the packet buffer was delivered by the NF - e.g. for xmit */
 }
 
