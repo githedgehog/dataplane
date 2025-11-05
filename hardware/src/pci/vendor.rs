@@ -88,11 +88,12 @@ impl VendorId {
     /// assert_eq!(vendor.value(), 0x1022);
     /// ```
     pub const fn new(id: u16) -> Result<Self, InvalidVendorId> {
-        if id == u16::MAX {
-            Err(InvalidVendorId)
-        } else {
-            Ok(Self(id))
-        }
+        Ok(Self(id))
+        // if id == u16::MAX {
+        //     Err(InvalidVendorId)
+        // } else {
+        //     Ok(Self(id))
+        // }
     }
 
     /// Returns the raw vendor ID value.

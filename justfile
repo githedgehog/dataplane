@@ -169,12 +169,8 @@ cargo *args:
 compile-env *args:
     {{ _just_debuggable_ }}
     mkdir -p dev-env-template/etc
-    if [ -z "${UID:-}" ]; then
-      >&2 echo "ERROR: environment variable UID not set"
-    fi
-    declare -rxi UID
-    GID="$(id -g)"
-    declare -rxi GID
+    export UID
+    export GID
     declare -rx USER="${USER:-runner}"
     declare  DOCKER_GID
     DOCKER_GID="$(getent group docker | cut -d: -f3)"
@@ -392,7 +388,7 @@ sh *args:
 
 # Build containers in a sterile environment
 [script]
-build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target) "--package=dataplane" "--package=dataplane-cli")
+build-container:
     {{ _just_debuggable_ }}
     {{ _define_truncate128 }}
     mkdir -p "artifact/{{ target }}/{{ profile }}"
@@ -415,6 +411,7 @@ build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile
       --tag "${TAG}" \
       --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/dataplane" \
       --build-arg ARTIFACT_CLI="artifact/{{ target }}/{{ profile }}/dataplane-cli" \
+      --build-arg ARTIFACT_INIT="artifact/{{ target }}/{{ profile }}/dataplane-init" \
       --build-arg BASE="{{ _dataplane_base_container }}" \
       .
 

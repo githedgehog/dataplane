@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use tokio::runtime::{Builder, Runtime};
+use std::time::Duration;
+
+use tokio::runtime::Builder;
 
 /// Executes a function inside a current-thread tokio runtime.
 /// The runtime will be torn down when the function returns.
@@ -21,11 +23,15 @@ where
     );
 
     let rt = Builder::new_current_thread()
-        .enable_all()
+        .enable_io()
+        .enable_time()
+        .on_thread_stop(|| unsafe { dpdk::lcore::ServiceThread::unregister_current_thread() })
         .build()
         .expect("Failed to create current thread runtime");
 
-    rt.block_on(f())
+    let out = rt.block_on(f());
+    rt.shutdown_timeout(Duration::from_secs(1));
+    out
 }
 
 #[cfg(test)]

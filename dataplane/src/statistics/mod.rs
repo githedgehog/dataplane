@@ -6,6 +6,7 @@ use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 use stats::StatsCollector;
 use std::thread::JoinHandle;
 use std::time::Duration;
+use tokio_util::{future::FutureExt, sync::CancellationToken};
 use tracing::{error, info};
 
 use tracectl::trace_target;
@@ -47,8 +48,8 @@ async fn metrics_handler(
 
 #[derive(Debug)]
 pub struct MetricsServer {
-    #[allow(unused)] // temporary
-    handle: JoinHandle<()>,
+    handle: Option<JoinHandle<()>>,
+    cancel: CancellationToken,
 }
 
 impl MetricsServer {
@@ -56,22 +57,30 @@ impl MetricsServer {
     #[tracing::instrument(level = "info", skip(stats))]
     pub fn new(addr: std::net::SocketAddr, stats: StatsCollector) -> Self {
         MetricsServer {
-            handle: std::thread::Builder::new()
-                .name("metrics-server".to_string())
-                .spawn(move || {
-                    info!("Starting metrics server thread");
+            cancel: stats.cancel_token(),
+            handle: Some(
+                std::thread::Builder::new()
+                    .name("metrics-server".to_string())
+                    .spawn(move || {
+                        info!("Starting metrics server thread");
 
-                    // create tokio runtime
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_io()
-                        .enable_time()
-                        .build()
-                        .expect("runtime creation failed for metrics server");
+                        // create tokio runtime
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_io()
+                            .enable_time()
+                            .max_blocking_threads(32)
+                            .on_thread_stop(|| unsafe {
+                                dpdk::lcore::ServiceThread::unregister_current_thread();
+                            })
+                            .build()
+                            .expect("runtime creation failed for metrics server");
 
-                    // block thread to run metrics HTTP server
-                    rt.block_on(Self::run(addr, stats));
-                })
-                .unwrap(),
+                        // block thread to run metrics HTTP server
+                        rt.block_on(Self::run(addr, stats));
+                        rt.shutdown_timeout(Duration::from_secs(3));
+                    })
+                    .unwrap(),
+            ),
         }
     }
 
@@ -80,25 +89,57 @@ impl MetricsServer {
         let PrometheusHandler { handle } = PrometheusHandler::new();
 
         let upkeep_handle = handle.clone();
-        tokio::spawn(async move {
-            // avgerage prometheus scraper is between 15 and 60 secs,
-            // so run upkeep every 30 secs is a reasonable default
-            let mut ticker = tokio::time::interval(Duration::from_secs(30));
-            loop {
-                ticker.tick().await;
+        let tick = tokio::spawn({
+            let cancel_token = stats.cancel_token();
+            async move {
+                // average prometheus scraper is between 15 and 60 secs,
+                // so run upkeep every 30 secs is a reasonable default
+                let mut ticker = tokio::time::interval(Duration::from_secs(30));
                 // run_upkeep is synchronous; call it periodically.
+                loop {
+                    upkeep_handle.run_upkeep();
+                    tokio::select! {
+                        _ = ticker.tick() => {}
+                        () = cancel_token.cancelled() => break,
+                    }
+                }
                 upkeep_handle.run_upkeep();
             }
         });
-        tokio::spawn(stats.run());
         let app = Router::new()
             .route("/metrics", get(metrics_handler))
             .with_state(handle);
-
+        let server_cancel_token = stats.cancel_token();
+        let server = axum_server::bind(addr)
+            .serve(app.into_make_service())
+            .with_cancellation_token(&server_cancel_token);
         info!("metrics server listening on {}", addr);
 
-        if let Err(e) = axum_server::bind(addr).serve(app.into_make_service()).await {
-            error!("metrics server error: {}", e);
+        match tokio::join!(server, tick, stats.run()) {
+            (Some(Err(e)), _, ()) => {
+                error!("error in stats server shutdown: {e}");
+                panic!("error in stats server shutdown: {e}");
+            }
+            (_, Err(e), ()) => {
+                error!("error in stats tick server shutdown: {e}");
+                panic!("error in stats tick server shutdown: {e}");
+            }
+            (_, _, ()) => {
+                info!("stats task shutdown");
+            }
         }
+    }
+}
+
+impl Drop for MetricsServer {
+    fn drop(&mut self) {
+        info!("shutting down metrics server");
+        self.cancel.cancel();
+        self.handle
+            .take()
+            .map(std::thread::JoinHandle::join)
+            .unwrap()
+            .unwrap();
+        info!("metrics server shut down");
     }
 }

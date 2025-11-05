@@ -99,6 +99,9 @@ impl std::fmt::Display for PciNic {
 /// Enum describing supported PCI drivers.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, strum::EnumString, strum::IntoStaticStr)]
 pub enum PciDriver {
+    /// Intel's e1000 driver.
+    #[strum(serialize = "e1000")]
+    E1000,
     /// Intel's i40e driver.
     #[strum(serialize = "i40e")]
     I40e,

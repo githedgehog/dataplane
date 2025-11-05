@@ -49,6 +49,7 @@ pub async fn build_portmap_async(port_specs: impl Iterator<Item = PortSpec>) -> 
 
 #[must_use]
 pub fn build_portmap(port_specs: impl Iterator<Item = PortSpec>) -> PortMapWriter {
+    // TODO: this is pretty crazy
     Runtime::new()
         .expect("Tokio runtime creation failed!")
         .block_on(build_portmap_async(port_specs))

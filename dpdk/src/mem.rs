@@ -3,12 +3,11 @@
 
 //! DPDK memory management wrappers.
 
-use crate::eal::{Eal, EalErrno};
+use crate::eal::EalErrno;
 use crate::socket::SocketId;
 use alloc::format;
 use alloc::string::String;
 use core::alloc::{GlobalAlloc, Layout};
-use core::cell::Cell;
 use core::ffi::c_uint;
 use core::ffi::{CStr, c_int};
 use core::fmt::{Debug, Display};
@@ -19,7 +18,7 @@ use core::ptr::null;
 use core::ptr::null_mut;
 use core::slice::from_raw_parts_mut;
 use errno::Errno;
-use net::buffer::PacketBufferPool;
+use net::buffer::{BufferAllocationError, BufferPool, NewBufferPool};
 use tracing::{error, info, warn};
 
 use dpdk_sys::{
@@ -89,11 +88,20 @@ impl Display for Pool {
     }
 }
 
-impl PacketBufferPool for Pool {
+impl NewBufferPool for Pool {
+    type Config<'a> = PoolConfig;
+
+    type Error = InvalidMemPoolConfig;
+
+    fn new_pool(config: Self::Config<'_>) -> Result<Self, Self::Error> {
+        Pool::new_pkt_pool(config)
+    }
+}
+
+impl BufferPool for Pool {
     type Buffer = Mbuf;
-    type Error = String;
-    fn new_buffer(&self) -> Result<Self::Buffer, Self::Error> {
-        todo!()
+    fn new_buffer(&self) -> Result<Self::Buffer, BufferAllocationError> {
+        Ok(self.alloc())
     }
 }
 
@@ -150,6 +158,19 @@ impl Pool {
     #[must_use]
     pub fn config(&self) -> &PoolConfig {
         &self.0.config
+    }
+
+    pub fn alloc(&self) -> Mbuf {
+        let ptr = unsafe { dpdk_sys::rte_pktmbuf_alloc(self.0.as_mut_ptr()) };
+        let ptr = match NonNull::new(ptr) {
+            Some(ptr) => ptr,
+            None => {
+                EalErrno::assert(errno::NEG_ENOENT);
+                unreachable!()
+            } // TODO: this may be a little drastic
+        };
+        // TODO: add a safer new_from_raw impl to Mbuf
+        unsafe { Mbuf::new_from_raw_unchecked(ptr.as_ptr()) }
     }
 
     #[must_use]
@@ -246,9 +267,9 @@ impl Default for PoolParams {
     fn default() -> PoolParams {
         PoolParams {
             size: (1 << 15) - 1,
-            cache_size: 256,
-            private_size: 256,
-            data_size: 2048,
+            cache_size: 256,   // guess for best choice, adjust as profiling suggests
+            private_size: 512, // guess for most useful value, adjust as needed
+            data_size: 8192,   // guess for most useful value, adjust as needed
             socket_id: SocketId::current(),
         }
     }
@@ -262,28 +283,33 @@ pub struct PoolConfig {
 }
 
 /// Ways in which a memory pool name can be invalid.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, thiserror::Error)]
 pub enum InvalidMemPoolName {
     /// The name is not valid ASCII.
+    #[error("memory pool name is not valid ascii: {0}")]
     NotAscii(String),
     /// The name is too long.
+    #[error("{0}")]
     TooLong(String),
     /// The name is empty.
+    #[error("memory pool name is empty: {0}")]
     Empty(String),
     /// The name does not start with an ASCII letter.
+    #[error("{0}")]
     DoesNotStartWithAsciiLetter(String),
     /// Contains null bytes.
+    #[error("{0}")]
     ContainsNullBytes(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 /// Ways in which a memory pool config can be invalid.
 pub enum InvalidMemPoolConfig {
     /// The name of the pool is illegal.
+    #[error(transparent)]
     InvalidName(InvalidMemPoolName),
     /// The parameters of the pool are illegal.
-    ///
-    /// TODO: this should be a more detailed error.
+    #[error("the parameters of the memory pool are illegal ({0:?}): {1}")]
     InvalidParams(Errno, String),
 }
 
@@ -400,8 +426,19 @@ impl Drop for PoolInner {
 /// It can be "safely" transmuted _to_ an `*mut rte_mbuf` under the assumption that
 /// standard borrowing rules are observed.
 #[repr(transparent)]
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct Mbuf {
+    // In the future this should likely be a `Unique<...>` instead of a `NonNull<...>`,
+    // at which point we can drop the `PhantomData` marker, which is here to move this type from co-variance to
+    // invariance, and to inform the compiler that we functionally "own" this `dpdk_sys::rte_mbuf`.
+    // But `Unique` is not yet stabilized, and so we have a phantom data.
+    //
+    // One consequence of this design is that we must _never_ allow `Mbuf` to implement Copy (which it trivially could,
+    // since this is just a pointer).
+    //
+    // Fortunately, you can never `impl Copy` for any type which implements `Drop` so we are categorically safe from
+    // from that.
     pub(crate) raw: NonNull<dpdk_sys::rte_mbuf>,
     marker: PhantomData<dpdk_sys::rte_mbuf>,
 }
@@ -600,106 +637,86 @@ pub enum MbufManipulationError {
 /// A global memory allocator for DPDK
 #[non_exhaustive]
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone)]
 pub struct RteAllocator;
+
+pub enum SwitchingAllocator {
+    Rte,
+    System,
+}
 
 unsafe impl Sync for RteAllocator {}
 
 impl RteAllocator {
     /// Create a new, uninitialized [`RteAllocator`].
-    pub const fn new_uninitialized() -> Self {
-        RteAllocator
+    pub const fn new() -> Self {
+        Self
     }
 }
 
-#[repr(transparent)]
-struct RteInit(Cell<bool>);
-unsafe impl Sync for RteInit {}
-static RTE_INIT: RteInit = const { RteInit(Cell::new(false)) };
-
-thread_local! {
-    static RTE_SOCKET: Cell<SocketId> = const { Cell::new(SocketId::ANY) };
-    static SWITCHED: Cell<bool> = const { Cell::new(false) };
+impl Default for RteAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-impl RteAllocator {
-    pub(crate) fn mark_initialized() {
-        if RTE_INIT.0.get() {
-            Eal::fatal_error("RTE already initialized");
-        }
-        RTE_SOCKET.set(SocketId::current());
-        RTE_INIT.0.set(true);
-        SWITCHED.set(true);
-    }
-
-    pub fn assert_initialized() {
-        if !RTE_INIT.0.get() {
-            Eal::fatal_error("RTE not initialized");
-        }
-        RTE_SOCKET.set(SocketId::current());
-        SWITCHED.set(true);
-    }
+pub struct Dpdk<S> {
+    state: S,
 }
 
 unsafe impl GlobalAlloc for RteAllocator {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if SWITCHED.get() {
-            unsafe {
-                dpdk_sys::rte_malloc_socket(
-                    null(),
-                    layout.size(),
-                    layout.align() as _,
-                    RTE_SOCKET.get().0 as _,
-                ) as _
-            }
-        } else {
-            unsafe { System.alloc(layout) }
-        }
+        unsafe { dpdk_sys::rte_malloc(null(), layout.size(), layout.align() as _) as _ }
     }
 
     #[inline]
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if SWITCHED.get() {
-            unsafe {
-                dpdk_sys::rte_free(ptr as _);
-            }
-        } else {
-            unsafe {
-                System.dealloc(ptr, layout);
-            }
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+        unsafe {
+            dpdk_sys::rte_free(ptr as _);
         }
     }
 
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        if SWITCHED.get() {
-            unsafe {
-                dpdk_sys::rte_zmalloc_socket(
-                    null(),
-                    layout.size(),
-                    layout.align() as _,
-                    RTE_SOCKET.get().0 as _,
-                ) as _
-            }
-        } else {
-            unsafe { System.alloc_zeroed(layout) }
+        unsafe { dpdk_sys::rte_zmalloc(null(), layout.size(), layout.align() as _) as _ }
+    }
+
+    #[inline]
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        unsafe { dpdk_sys::rte_realloc(ptr as _, new_size, layout.align() as _) as _ }
+    }
+}
+
+unsafe impl GlobalAlloc for SwitchingAllocator {
+    #[inline]
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        match self {
+            SwitchingAllocator::Rte => unsafe { RteAllocator.alloc(layout) },
+            SwitchingAllocator::System => unsafe { System.alloc(layout) },
+        }
+    }
+
+    #[inline]
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        match self {
+            SwitchingAllocator::Rte => unsafe { RteAllocator.dealloc(ptr, layout) },
+            SwitchingAllocator::System => unsafe { System.dealloc(ptr, layout) },
+        }
+    }
+
+    #[inline]
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        match self {
+            SwitchingAllocator::Rte => unsafe { RteAllocator.alloc_zeroed(layout) },
+            SwitchingAllocator::System => unsafe { System.alloc_zeroed(layout) },
         }
     }
 
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if SWITCHED.get() {
-            unsafe {
-                dpdk_sys::rte_realloc_socket(
-                    ptr as _,
-                    new_size,
-                    layout.align() as _,
-                    RTE_SOCKET.get().0 as _,
-                ) as _
-            }
-        } else {
-            unsafe { System.realloc(ptr, layout, new_size) }
+        match self {
+            SwitchingAllocator::Rte => unsafe { RteAllocator.realloc(ptr, layout, new_size) },
+            SwitchingAllocator::System => unsafe { System.realloc(ptr, layout, new_size) },
         }
     }
 }

@@ -52,6 +52,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let nattablesw = NatTablesWriter::new();
     let natallocatorw = NatAllocatorWriter::new();
     let vpcdtablesw = VpcDiscTablesWriter::new();
+    let stats_collector_cancel = params.cancelation_token.child_token();
     let router = Router::new(params)?;
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
 
@@ -60,8 +61,11 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
 
     // Build stats collector + writer, wiring the same store instance in
     // Also returns stats store handle for gRPC server access
-    let (stats, writer, vpc_stats_store) =
-        StatsCollector::new_with_store(vpcmapw.get_reader(), vpc_stats_store.clone());
+    let (stats, writer, vpc_stats_store) = StatsCollector::new_with_store(
+        vpcmapw.get_reader(),
+        vpc_stats_store.clone(),
+        stats_collector_cancel,
+    );
 
     let flow_table = Arc::new(FlowTable::default());
 

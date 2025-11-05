@@ -3,12 +3,14 @@
 
 //! Toy implementation of [`PacketBuffer`] which is useful for testing.
 
+use std::convert::Infallible;
+
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
 use crate::buffer::{
-    Append, Headroom, MemoryBufferNotLongEnough, NotEnoughHeadRoom, NotEnoughTailRoom,
-    PacketBufferPool, Prepend, Tailroom, TrimFromEnd, TrimFromStart,
+    Append, BufferPool, Headroom, MemoryBufferNotLongEnough, NewBufferPool, NotEnoughHeadRoom,
+    NotEnoughTailRoom, Prepend, Tailroom, TrimFromEnd, TrimFromStart,
 };
 use tracing::trace;
 
@@ -171,10 +173,27 @@ impl TrimFromEnd for TestBuffer {
 /// A dummy pool of `TestBuffer`s
 pub struct TestBufferPool;
 
-impl PacketBufferPool for TestBufferPool {
+impl NewBufferPool for TestBufferPool {
+    type Config<'a> = ();
+
+    type Error = Infallible;
+
+    fn new_pool(_args: Self::Config<'_>) -> Result<Self, Self::Error> {
+        Ok(Self)
+    }
+}
+
+/// Errors which can occur when attempting to allocate a buffer from a pool.
+#[derive(Debug, thiserror::Error)]
+pub enum BufferAllocationError {
+    /// The pool is empty and we have no more buffers to spare.
+    #[error("no memory available in pool")]
+    PoolEmpty,
+}
+
+impl BufferPool for TestBufferPool {
     type Buffer = TestBuffer;
-    type Error = &'static str;
-    fn new_buffer(&self) -> Result<Self::Buffer, Self::Error> {
+    fn new_buffer(&self) -> Result<Self::Buffer, BufferAllocationError> {
         Ok(TestBuffer::new())
     }
 }

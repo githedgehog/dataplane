@@ -9,11 +9,13 @@ use net::interface::InterfaceName;
 use net::interface::InterfaceIndex;
 use nix::net::if_::if_nametoindex;
 use serde::{Deserialize, Serialize};
+use std::io::{Read, Write};
 use std::num::NonZero;
 use std::os::fd::AsFd;
 use tokio::io::unix::AsyncFd;
 #[allow(unused)]
 use tracing::error;
+use tracing::{debug, info};
 
 /// The planned properties of a dummy interface.
 #[derive(
@@ -35,9 +37,9 @@ pub struct TapDevicePropertiesSpec {}
 
 #[derive(Debug)]
 pub struct TapDevice {
+    ifindex: InterfaceIndex,
     name: InterfaceName,
     async_fd: AsyncFd<std::fs::File>,
-    ifindex: InterfaceIndex,
 }
 
 mod helper {
@@ -295,7 +297,6 @@ impl TapDevice {
             }
         }
     }
-
     /// Write the provided buffer to the tap. In principle, a single write operation should suffice to
     /// write a buffer. This method will not return until that happens or an error occurs.
     ///

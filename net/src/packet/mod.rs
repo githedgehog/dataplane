@@ -279,6 +279,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// A pipeline may punt `Packet`s to be sent over a tap device, which expects `Buf`'s.
     /// Note: this method does not perform any trimming.
     /// IMPORTANT: this method is not yet functional the way headroom/tailroom work
+    #[deprecated = "not yet functional"]
     pub fn extract(self) -> Buf {
         self.payload
     }

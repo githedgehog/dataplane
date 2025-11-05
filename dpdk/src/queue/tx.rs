@@ -141,8 +141,9 @@ impl TxQueue {
     pub(crate) const PKT_BURST_SIZE: usize = 64;
 
     #[tracing::instrument(level = "trace", skip(packets))]
-    pub fn transmit(&self, packets: impl IntoIterator<Item = Mbuf>) {
-        let mut packets: Vec<_> = packets.into_iter().collect();
+    pub fn transmit(&self, packets: &mut Vec<Mbuf>) {
+        let mut v = Vec::with_capacity(packets.len());
+        v.append(packets);
         let mut offset = 0;
         if packets.is_empty() {
             return;
@@ -157,7 +158,7 @@ impl TxQueue {
                 dpdk_sys::rte_eth_tx_burst(
                     self.dev.as_u16(),
                     self.config.queue_index.as_u16(),
-                    packets.as_mut_ptr().add(offset) as *mut _,
+                    (*packets).as_mut_ptr().add(offset) as *mut _,
                     min(Self::PKT_BURST_SIZE, packets.len() - offset) as u16,
                 )
             };

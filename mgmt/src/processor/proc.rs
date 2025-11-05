@@ -5,6 +5,7 @@
 
 use concurrency::sync::Arc;
 use std::collections::{HashMap, HashSet};
+use tokio_util::sync::CancellationToken;
 
 use tokio::spawn;
 use tokio::sync::mpsc;
@@ -23,7 +24,7 @@ use crate::processor::confbuild::router::generate_router_config;
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
 use nat::stateless::setup::{build_nat_configuration, validate_nat_configuration};
-use pkt_io::{IoManagerCtl, PortMapReader, PortMapWriter};
+use pkt_io::IoManagerCtl;
 use pkt_meta::dst_vpcd_lookup::VpcDiscTablesWriter;
 use pkt_meta::dst_vpcd_lookup::setup::build_dst_vni_lookup_configuration;
 use routing::frr::FrrAppliedConfig;
@@ -103,29 +104,29 @@ pub(crate) struct ConfigProcessor {
 }
 
 pub struct ConfigProcessorParams {
-    // channel to router
+    /// channel to router
     pub router_ctl: RouterCtlSender,
 
-    // writer for vpc mapping table
+    /// writer for vpc mapping table
     pub vpcmapw: VpcMapWriter<VpcMapName>,
 
-    // writer for stateless NAT tables
+    /// writer for stateless NAT tables
     pub nattablesw: NatTablesWriter,
 
-    // writer for stateful NAT allocator
+    /// writer for stateful NAT allocator
     pub natallocatorw: NatAllocatorWriter,
 
-    // writer for VPC routing table
+    /// writer for VPC routing table
     pub vpcdtablesw: VpcDiscTablesWriter,
 
-    // store for vpc stats
+    /// store for vpc stats
     pub vpc_stats_store: Arc<VpcStatsStore>,
 
-    // IO manager control
+    /// IO manager control
     pub iom_ctl: IoManagerCtl,
 
-    // writer for portmap table
-    pub pmapw: PortMapWriter,
+    /// cancel token for the config processor
+    pub  cancel_token: CancellationToken,
 }
 
 impl ConfigProcessor {
@@ -359,25 +360,33 @@ impl ConfigProcessor {
     pub async fn run(mut self) {
         info!("Starting config processor...");
         loop {
-            // receive config requests over channel from gRPC server
-            match self.rx.recv().await {
-                Some(req) => {
-                    let response = match req.request {
-                        ConfigRequest::ApplyConfig(config) => {
-                            self.handle_apply_config(*config).await
+            tokio::select! {
+                req = self.rx.recv() => {
+                    match req {
+                        Some(req) => {
+                            let response = match req.request {
+                                ConfigRequest::ApplyConfig(config) => {
+                                    self.handle_apply_config(*config).await
+                                }
+                                ConfigRequest::GetCurrentConfig => self.handle_get_config(),
+                                ConfigRequest::GetGeneration => self.handle_get_generation(),
+                                ConfigRequest::GetDataplaneStatus => {
+                                    self.handle_get_dataplane_status().await
+                                }
+                            };
+                            if req.reply_tx.send(response).is_err() {
+                                warn!("Failed to send reply from config processor: receiver dropped?");
+                            }
                         }
-                        ConfigRequest::GetCurrentConfig => self.handle_get_config(),
-                        ConfigRequest::GetGeneration => self.handle_get_generation(),
-                        ConfigRequest::GetDataplaneStatus => {
-                            self.handle_get_dataplane_status().await
+                        None => {
+                            warn!("Channel to config processor was closed!");
+                            break;
                         }
-                    };
-                    if req.reply_tx.send(response).is_err() {
-                        warn!("Failed to send reply from config processor: receiver dropped?");
                     }
                 }
-                None => {
-                    warn!("Channel to config processor was closed!");
+                () = self.proc_params.cancel_token.cancelled() => {
+                    info!("configuration processor canceled: shutting down");
+                    break;
                 }
             }
         }
@@ -449,11 +458,7 @@ impl VpcManager<RequiredInformationBase> {
     }
 }
 
-async fn config_io_manager(
-    internal: &InternalConfig,
-    iom_ctl: &mut IoManagerCtl,
-    _pmapr: PortMapReader,
-) {
+async fn config_io_manager(internal: &InternalConfig, iom_ctl: &mut IoManagerCtl) {
     iom_ctl.clear();
     for vrfconfig in internal.vrfs.all_vrfs() {
         for iface in vrfconfig.interfaces.values().filter(|ifcfg| ifcfg.is_eth()) {
@@ -643,12 +648,7 @@ async fn apply_gw_config(
     apply_router_config(&kernel_vrfs, config, &mut params.router_ctl).await?;
 
     /* reconfigure IO manager */
-    config_io_manager(
-        internal,
-        &mut params.iom_ctl,
-        params.pmapw.factory().handle(),
-    )
-    .await;
+    config_io_manager(internal, &mut params.iom_ctl).await;
 
     info!("Successfully applied config for genid {genid}");
     Ok(())

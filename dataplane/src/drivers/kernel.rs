@@ -13,10 +13,13 @@
 )]
 
 use afpacket::sync::RawPacketStream;
-use args::{InterfaceArg, PortArg};
+use args::{InterfaceArg, NetworkDeviceDescription};
 use concurrency::sync::Arc;
 use concurrency::thread;
 
+use hyper::body::Buf;
+use miette::{Context, IntoDiagnostic};
+use net::buffer::{BufferPool, NewBufferPool, PacketBufferMut};
 use tokio::sync::mpsc as chan;
 use tokio::time::timeout;
 
@@ -32,27 +35,25 @@ use std::collections::hash_map::DefaultHasher;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 
-use net::buffer::test_buffer::TestBuffer;
 use net::interface::{InterfaceIndex, InterfaceName};
-use net::packet::{DoneReason, Packet, PortIndex};
+use net::packet::{Packet, PortIndex};
 use netdev::Interface;
-use pipeline::{DynPipeline, NetworkFunction};
-#[allow(unused)]
-use tracing::{debug, error, info, trace, warn};
+use nix::net::if_::if_nametoindex;
 
-use pkt_io::{PortMapWriter, PortSpec, build_portmap};
+use pipeline::{DynPipeline, NetworkFunction};
+use tracing::{debug, error, info, trace, warn};
 
 // Flow-key based symmetric hashing
 use pkt_meta::flow_table::flow_key::{Bidi, FlowKey};
 
-use crate::drivers::tokio_util::run_in_tokio_runtime;
+use crate::drivers::async_utils::run_in_tokio_runtime;
 
 use tracectl::trace_target;
 trace_target!("kernel-driver", LevelFilter::INFO, &["driver"]);
 
-type WorkerTx = chan::Sender<Box<Packet<TestBuffer>>>;
-type WorkerRx = chan::Receiver<Box<Packet<TestBuffer>>>;
-type WorkerChans = (Vec<WorkerTx>, WorkerRx);
+type WorkerTx<Buf> = chan::Sender<Box<Packet<Buf>>>;
+type WorkerRx<Buf> = chan::Receiver<Box<Packet<Buf>>>;
+type WorkerChans<Buf> = (Vec<WorkerTx<Buf>>, WorkerRx<Buf>);
 
 /// Simple representation of a kernel interface.
 pub struct Kif {
@@ -63,8 +64,8 @@ pub struct Kif {
     raw_fd: RawFd,           // raw desc of packet socket
     pindex: PortIndex, // port index. This is how the kernel interface is externally identified
 
-    tapname: InterfaceName,             // name of tap interface
-    tapifindex: Option<InterfaceIndex>, // tap ifindex
+    tapname: InterfaceName,     // name of tap interface
+    tapifindex: InterfaceIndex, // tap ifindex
 }
 
 impl Kif {
@@ -76,10 +77,14 @@ impl Kif {
         name: &InterfaceName,
         token: Token,
         tapname: &InterfaceName,
+        tapifindex: InterfaceIndex,
     ) -> Result<Self, String> {
         let mut sock = RawPacketStream::new()
             .map_err(|e| format!("Failed to open raw sock for interface {name}: {e}"))?;
-        sock.set_non_blocking();
+        #[allow(clippy::expect_used)]
+        // This should have proper error handling, but may be fatal in any case.
+        sock.set_non_blocking()
+            .expect("unable to set socket to non blocking mode"); // TODO: real error handling
         sock.bind(name.as_ref())
             .map_err(|e| format!("Failed to open raw sock for interface {name}: {e}"))?;
 
@@ -94,7 +99,7 @@ impl Kif {
             raw_fd,
             pindex,
             tapname: tapname.clone(),
-            tapifindex: None,
+            tapifindex,
         };
         debug!("Successfully created interface '{name}'");
         Ok(iface)
@@ -128,13 +133,17 @@ impl KifTable {
     ) -> Result<(), String> {
         debug!("Adding interface '{name}'...");
         let token = Token(self.next_token);
-        let interface = Kif::new(ifindex, name, token, tapname)?;
-        let mut source = SourceFd(&interface.raw_fd);
+        let tapifindex = if_nametoindex(tapname.as_ref())
+            .map_err(|e| format!("Could not find ifindex for tap {tapname}: {e}"))?;
+        let tapifindex = InterfaceIndex::try_from(tapifindex).map_err(|e| e.to_string())?;
+
+        let kif = Kif::new(ifindex, name, token, tapname, tapifindex)?;
+        let mut source = SourceFd(&kif.raw_fd);
         self.poll
             .registry()
             .register(&mut source, token, Interest::READABLE)
             .map_err(|e| format!("Failed to register interface '{name}': {e}"))?;
-        self.by_token.insert(token, interface);
+        self.by_token.insert(token, kif);
         self.next_token += 1;
         debug!("Successfully registered interface '{name}' with token {token:?}");
         Ok(())
@@ -148,7 +157,7 @@ impl KifTable {
     pub fn get_mut_by_tap_index(&mut self, tapifindex: InterfaceIndex) -> Option<&mut Kif> {
         self.by_token
             .values_mut()
-            .find(|kif| kif.tapifindex == Some(tapifindex))
+            .find(|kif| kif.tapifindex == tapifindex)
     }
 }
 
@@ -167,11 +176,6 @@ fn fmt_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 
 impl Display for Kif {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let tapifindex = if let Some(i) = self.tapifindex {
-            i.to_string()
-        } else {
-            "--".to_string()
-        };
         writeln!(
             f,
             KIF_FMT!(),
@@ -179,7 +183,7 @@ impl Display for Kif {
             self.ifindex.to_string(),
             self.pindex.to_string(),
             self.tapname.to_string(),
-            tapifindex
+            self.tapifindex
         )
     }
 }
@@ -210,19 +214,21 @@ fn get_interface_ifindex(interfaces: &[Interface], name: &str) -> Option<Interfa
 
 /// Main structure representing the kernel driver.
 /// This driver:
-///  * receives raw frames via `AF_PACKET`, parses to `Packet<TestBuffer>`
+///  * receives raw frames via `AF_PACKET`, parses to `Packet<Buf>`
 ///  * selects a worker by symmetric flow hash
 ///  * workers run independent pipelines and send processed packets back
 ///  * dispatcher serializes & transmits on the chosen outgoing interface
-pub struct DriverKernel;
+pub struct DriverKernel<Pool: BufferPool> {
+    pool: Pool,
+}
 
-fn single_worker(
+fn single_worker<Buf: PacketBufferMut>(
     id: usize,
     thread_builder: thread::Builder,
-    tx_to_control: WorkerTx,
-    setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
-) -> Result<WorkerTx, std::io::Error> {
-    let (tx_to_worker, mut rx_from_control) = chan::channel::<Box<Packet<TestBuffer>>>(4096);
+    tx_to_control: WorkerTx<Buf>,
+    setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
+) -> Result<WorkerTx<Buf>, std::io::Error> {
+    let (tx_to_worker, mut rx_from_control) = chan::channel::<Box<Packet<Buf>>>(4096);
     let setup = setup_pipeline.clone();
 
     let handle_res = thread_builder.spawn(move || {
@@ -240,8 +246,8 @@ fn single_worker(
                 let mut count = 0;
                 for out_pkt in pipeline.process(packets.map(|pkt| *pkt)) {
                     // backpressure via bounded channel
-                    if tx_to_control.send(Box::new(out_pkt)).await.is_err() {
-                        warn!("Kernel IO channel closed. IO thread may be gone. Stopping...");
+                    if let Err(e) = tx_to_control.send(Box::new(out_pkt)).await {
+                        error!("Kernel IO channel unable to send. IO thread may be gone: {e}");
                         return;
                     }
                     count += 1;
@@ -259,10 +265,24 @@ fn single_worker(
 }
 
 #[allow(clippy::cast_possible_truncation)]
-impl DriverKernel {
+impl<Pool: BufferPool> DriverKernel<Pool> {
+    /// Construct a new kernel driver
+    ///
+    /// # Errors
+    ///
+    /// This method will forward any errors from buffer pool creation.
+    pub fn new(config: Pool::Config<'_>) -> Result<Self, Pool::Error>
+    where
+        Pool: NewBufferPool,
+    {
+        Ok(Self {
+            pool: Pool::new_pool(config)?,
+        })
+    }
+
     /// Compute a **symmetric** worker index for a parsed `Packet` using a bidirectional flow key.
     #[must_use]
-    fn compute_worker_idx(pkt: &Packet<TestBuffer>, workers: usize) -> usize {
+    fn compute_worker_idx(pkt: &Packet<Pool::Buffer>, workers: usize) -> usize {
         let n = workers.max(1);
 
         // Prefer symmetric flow-key hash (A<->B go to the same bucket)
@@ -279,19 +299,19 @@ impl DriverKernel {
     /// Spawn `workers` processing threads, each with its own pipeline instance.
     ///
     /// Returns:
-    ///   - `Vec<Sender<Packet<TestBuffer>>>` one sender per worker (dispatcher -> worker)
-    ///   - `Receiver<Packet<TestBuffer>>` a single queue for processed packets (worker -> dispatcher)
+    ///   - `Vec<Sender<Packet<Buf>>>` one sender per worker (dispatcher -> worker)
+    ///   - `Receiver<Packet<Buf>>` a single queue for processed packets (worker -> dispatcher)
     fn spawn_workers(
         num_workers: usize,
-        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
-    ) -> WorkerChans {
-        let (tx_to_control, rx_from_workers) = chan::channel::<Box<Packet<TestBuffer>>>(4096);
+        setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Pool::Buffer>>,
+    ) -> WorkerChans<Pool::Buffer> {
+        let (tx_to_control, rx_from_workers) = chan::channel(4096);
         let mut to_workers = Vec::with_capacity(num_workers);
         info!("Spawning {num_workers} workers");
         for wid in 0..num_workers {
             let builder = thread::Builder::new().name(format!("dp-worker-{wid}"));
             if let Ok(tx_to_worker) =
-                single_worker(wid, builder, tx_to_control.clone(), setup_pipeline)
+                single_worker(wid, builder, tx_to_control.clone(), setup_pipeline.clone())
             {
                 to_workers.push(tx_to_worker);
             } else {
@@ -312,11 +332,11 @@ impl DriverKernel {
         // populate the kernel interface table with the desired interfaces
         for ifarg in args {
             match ifarg.port {
-                Some(PortArg::PCI(_)) => {
+                NetworkDeviceDescription::Pci(_) => {
                     error!("kernel driver does not support PCI ports");
                     return Err("kernel driver does not support PCI ports".to_string());
                 }
-                Some(PortArg::KERNEL(name)) => {
+                NetworkDeviceDescription::Kernel(name) => {
                     let Some(ifindex) = get_interface_ifindex(&inventory_kern_ifs, name.as_ref())
                     else {
                         return Err(format!("Could not find kernel interface {name}"));
@@ -325,11 +345,6 @@ impl DriverKernel {
                         error!("Could not add kernel interface '{name}': {e}");
                         return Err(e);
                     }
-                }
-                _ => {
-                    // TODO: remove Option<> from PortArg as it will need to be mandatory
-                    // after the integration
-                    return Err("Port specification is mandatory".to_string());
                 }
             }
         }
@@ -341,40 +356,16 @@ impl DriverKernel {
         Ok(kiftable)
     }
 
-    /// Register devices in the port map and return back the writer and factory
-    fn register_devices(kiftable: &mut KifTable) -> PortMapWriter {
-        // build port specs from the kifs to populate portmap
-        let pspecs: Vec<_> = kiftable
-            .by_token
-            .values()
-            .map(|kif| PortSpec::new(kif.name.to_string(), kif.pindex, kif.tapname.clone()))
-            .collect();
-
-        // populate port-map
-        let mapw = build_portmap(pspecs.into_iter());
-
-        // burn the tap ifindex in the kif so that we need not look it up
-        let rh = mapw.factory().handle();
-        kiftable.by_token.values_mut().for_each(|kif| {
-            kif.tapifindex = Some(
-                rh.get_by_pdesc(&kif.name.to_string())
-                    .unwrap_or_else(|| unreachable!())
-                    .ifindex,
-            );
-        });
-
-        // give ownership of portmap writer
-        mapw
-    }
-
     /// Start the kernel IO thread for rx/tx
     fn start_kernel_io_thread(
-        to_workers: Vec<WorkerTx>,
-        mut from_workers: WorkerRx,
+        self,
+        to_workers: Vec<WorkerTx<Pool::Buffer>>,
+        mut from_workers: WorkerRx<Pool::Buffer>,
         mut kiftable: KifTable,
-    ) {
+    ) where Pool: 'static {
         // IO thread takes ownership of kiftable
         let io = move || {
+            let this = self;
             let num_worker_chans = to_workers.len();
             let poll_timeout = Some(Duration::from_millis(2));
 
@@ -384,7 +375,7 @@ impl DriverKernel {
             let mut events = Events::with_capacity(256);
             loop {
                 // 1) Drain processed packets coming back from workers, serialize + TX
-                while let Ok(mut pkt) = from_workers.try_recv() {
+                while let Ok(pkt) = from_workers.try_recv() {
                     // choose outgoing port interface from pkt metadata
                     if let Some(oif_id) = pkt.get_meta().oif {
                         if let Some(okif) = kiftable.get_mut_by_tap_index(oif_id) {
@@ -429,8 +420,8 @@ impl DriverKernel {
                     continue;
                 }
 
-                // 3) For readable interfaces, pull frames, parse to Packet<TestBuffer>, shard to workers
-                Self::recv_packets(&mut kiftable, &events).for_each(|pkt| {
+                // 3) For readable interfaces, pull frames, parse to Packet<Buf>, shard to workers
+                this.recv_packets(&mut kiftable, &events).for_each(|pkt| {
                     let target = Self::compute_worker_idx(&pkt, num_worker_chans);
                     if let Err(e) = to_workers[target].try_send(pkt) {
                         match e {
@@ -450,13 +441,15 @@ impl DriverKernel {
                 });
             }
         };
+        info!("starting kernel driver io");
 
-        // spawn
-        #[allow(clippy::expect_used)]
-        thread::Builder::new()
+        #[allow(clippy::unwrap_used)]
+        let driver = thread::Builder::new()
             .name("kernel-driver-io".to_string())
             .spawn(io)
-            .expect("Fatal: failed to spawn kernel driver IO thread");
+            .into_diagnostic()
+            .wrap_err("failed to spawn kernel driver IO thread")
+            .unwrap();
 
         info!("Kernel driver IO thread spawned");
     }
@@ -465,15 +458,16 @@ impl DriverKernel {
     ///
     /// - `args`: kernel driver CLI parameters (e.g., `--interface` list)
     /// - `workers`: number of worker threads / pipelines
-    /// - `setup_pipeline`: factory returning a **fresh** `DynPipeline<TestBuffer>` per worker
+    /// - `setup_pipeline`: factory returning a **fresh** `DynPipeline<Buf>` per worker
     #[allow(clippy::panic, clippy::missing_panics_doc)]
     pub fn start(
+        self,
         interfaces: impl Iterator<Item = InterfaceArg>,
-        num_workers: usize,
-        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
-    ) -> PortMapWriter {
+        num_workers: u16,
+        setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Pool::Buffer>>,
+    ) where Pool: 'static {
         // init port devices
-        let mut kiftable = match Self::init_devices(interfaces) {
+        let kiftable = match Self::init_devices(interfaces) {
             Ok(kiftable) => kiftable,
             Err(e) => {
                 error!("{e}");
@@ -481,12 +475,10 @@ impl DriverKernel {
             }
         };
 
-        // register port devices
-        let mapt_w = Self::register_devices(&mut kiftable);
-
         // Spawn pipeline workers
-        let (to_workers, from_workers) = Self::spawn_workers(num_workers, setup_pipeline);
-        if to_workers.len() != num_workers {
+        let (to_workers, from_workers) =
+            Self::spawn_workers(num_workers as usize, setup_pipeline);
+        if to_workers.len() != (num_workers as usize) {
             warn!(
                 "Could spawn only {} of {} workers",
                 to_workers.len(),
@@ -499,41 +491,45 @@ impl DriverKernel {
         );
 
         // Spawn io thread
-        Self::start_kernel_io_thread(to_workers, from_workers, kiftable);
-
-        // return maptable writer
-        mapt_w
+        self.start_kernel_io_thread(to_workers, from_workers, kiftable);
     }
 
     fn recv_packets(
+        &self,
         kiftable: &mut KifTable,
         events: &mio::Events,
-    ) -> impl Iterator<Item = Box<Packet<TestBuffer>>> {
+    ) -> impl Iterator<Item = Box<Packet<Pool::Buffer>>> {
         events
             .iter()
             .filter(|e| e.is_readable())
             .map(mio::event::Event::token)
-            .filter_map(|token| kiftable.get_mut(token).map(Self::packet_recv))
+            .filter_map(|token| kiftable.get_mut(token).map(|kif| self.packet_recv(kif)))
             .flatten()
     }
 
     /// Tries to receive frames from the indicated interface and builds `Packet`s
     /// out of them. Returns a vector of [`Packet`]s.
     #[allow(clippy::vec_box)] // We want to avoid Packet moves, so allow Vec<Box<_>> to be sure
-    fn packet_recv(kif: &mut Kif) -> Vec<Box<Packet<TestBuffer>>> {
-        let mut raw = [0u8; 2048];
-        let mut pkts = Vec::with_capacity(32);
+    fn packet_recv(&self, kif: &mut Kif) -> Vec<Box<Packet<Pool::Buffer>>> {
+        let mut pkts = Vec::with_capacity(64);
         loop {
-            match kif.sock.read(&mut raw) {
+            let mut buf = match self.pool.new_buffer() {
+                Ok(buf) => buf,
+                Err(err) => {
+                    warn!("driver out of memory buffers: {err}");
+                    break;
+                }
+            };
+            match kif.sock.read(buf.as_mut()) {
                 Ok(0) => break, // no more
                 Ok(bytes) => {
-                    // build TestBuffer and parse
-                    let buf = TestBuffer::from_raw_data(&raw[..bytes]);
+                    trace!("received {bytes} bytes from kernel interface");
+                    // build Buf and parse
                     match Packet::new(buf) {
                         Ok(mut incoming) => {
                             // we'll probably ditch iport, but for the time being....
                             incoming.get_meta_mut().iport = Some(kif.pindex);
-                            incoming.get_meta_mut().iif = kif.tapifindex;
+                            incoming.get_meta_mut().iif = Some(kif.tapifindex);
                             pkts.push(Box::new(incoming));
                         }
                         Err(e) => {

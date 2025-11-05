@@ -112,8 +112,39 @@ pub trait Checksum {
 
     /// Perform an incremental update of the checksum in the header, to account for the change of a
     /// 16-bit value in the header, without recomputing the whole checksum but using the algorithm
-    /// described in RFC 1624 "Computation of the Internet Checksum via Incremental Update"
-    //
+    /// described in
+    /// [RFC 1624 "Computation of the Internet Checksum via Incremental Update"](https://www.rfc-editor.org/rfc/rfc1624.html)
+    ///
+    /// # Details
+    ///
+    /// (Paraphrased from [RFC 1624 section 3](https://www.rfc-editor.org/rfc/rfc1624.html#section-3))
+    ///
+    /// > Given the following notation:
+    /// >
+    /// >    | Term        | Description                         |
+    /// >   |-------------|-------------------------------------|
+    /// >   | $HC$        | old checksum in header              |
+    /// >   | $C$         | one's complement sum of old header  |
+    /// >   | $HC^\prime$ | new checksum in header              |
+    /// >   | $C'$        | one's complement sum of new header  |
+    /// >   | $m$         | old value of a 16-bit field         |
+    /// >   | $m'$        | new value of a 16-bit field         |
+    /// >
+    /// > [...]
+    /// >
+    /// >  ```math
+    /// > \begin{aligned}
+    /// > HC^\prime &= \neg\left(C + \left(-m\right) + m^\prime\right) \\
+    /// >          &= \neg\left(\neg HC + \neg m + m^\prime \right)
+    /// > \end{aligned}
+    /// > ```
+    /// >
+    /// > [...] the two additional instructions can be eliminated by subtracting complements with
+    /// > borrow [...]:
+    /// >
+    /// > ```math
+    /// > HC^\prime = HC - \neg m - m^\prime
+    /// > ```
     // Implement this as a default method rather than relying on individual's Self::Checksum types
     // implementations, because etherparse currendly doesn't offer a way to compute incremental
     // updates for checksums.
@@ -123,26 +154,6 @@ pub trait Checksum {
         old_value: u16,
         new_value: u16,
     ) -> Self::Checksum {
-        // From RFC 1624:
-        //
-        // Given the following notation:
-        //
-        //     HC  - old checksum in header
-        //     C   - one's complement sum of old header
-        //     HC' - new checksum in header
-        //     C'  - one's complement sum of new header
-        //     m   - old value of a 16-bit field
-        //     m'  - new value of a 16-bit field
-        //
-        // [...]
-        //
-        //     HC' = ~(C + (-m) + m')    --    [Eqn. 3]
-        //         = ~(~HC + ~m + m')
-        //
-        // [...] the two additional instructions can be eliminated by subtracting complements with
-        // borrow [...]:
-        //
-        //     HC' = HC - ~m - m'    --    [Eqn. 4]
 
         // First subtraction: HC - ~m
         let (mut tmp, borrow) = current_checksum.into().overflowing_sub(!old_value);

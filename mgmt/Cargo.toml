@@ -18,16 +18,17 @@ bolero = ["dep:bolero", "interface-manager/bolero", "id/bolero", "net/bolero"]
 [dependencies]
 # internal
 args = { workspace = true }
-config = { workspace = true }
 concurrency = { workspace = true }
+config = { workspace = true }
+dpdk = { workspace = true }
 gateway_config = { workspace = true }
 id = { workspace = true }
 interface-manager = { workspace = true }
 lpm = { workspace = true }
 nat = { workspace = true }
 net = { workspace = true }
-pkt-meta = { workspace = true }
 pkt-io = { workspace = true }
+pkt-meta = { workspace = true }
 rekon = { workspace = true }
 routing = { workspace = true }
 stats = { workspace = true }
@@ -51,6 +52,7 @@ serde = { workspace = true, features = ["rc", "derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 tracing-test = { workspace = true }
