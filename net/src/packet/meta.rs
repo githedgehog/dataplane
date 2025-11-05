@@ -137,6 +137,7 @@ bitflags! {
         const FORCE_FLOW_TRACKING = 0b1000_0000_0000; /* We need to track this flow, e.g. to apply stateful user ACLs */
         const LOCAL               = 0b0001_0000_0000_0000; /* Packet is to be locally consumed */
         const SOURCED             = 0b0010_0000_0000_0000; /* Packet is locally originated */
+        const NEED_ARPND          = 0b0100_0000_0000_0000; /* Need ARP/ND resolution */
     }
 }
 
@@ -320,11 +321,14 @@ impl PacketMeta {
         self.flags.contains(MetaFlags::SOURCED)
     }
     pub fn set_sourced(&mut self, value: bool) {
-        if value {
-            self.flags.insert(MetaFlags::SOURCED);
-        } else {
-            self.flags.remove(MetaFlags::SOURCED);
-        }
+        self.set_flag(MetaFlags::SOURCED, value);
+    }
+    #[must_use]
+    pub fn need_arp_nd(&self) -> bool {
+        self.flags.contains(MetaFlags::NEED_ARPND)
+    }
+    pub fn set_need_arp_nd(&mut self, value: bool) {
+        self.set_flag(MetaFlags::NEED_ARPND, value);
     }
 }
 impl Drop for PacketMeta {
