@@ -3,6 +3,7 @@
 - **Mathematical expressions** - Are not needed very often in our code base, but they can be embedded into rustdoc or
   project markdown files.
   Both inline and block math expressions are supported.
+
   - Inline math: Place LaTeX between dollar signs (`$...$`)
   - Block math: Use code fences with `math` language annotation
 
