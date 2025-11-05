@@ -2,9 +2,9 @@
 
 [![FOSSA Status](https://app.fossa.com/api/projects/custom%2B43661%2Fgithub.com%2Fgithedgehog%2Fdataplane.svg?type=shield)](https://app.fossa.com/projects/custom%2B43661%2Fgithub.com%2Fgithedgehog%2Fdataplane?ref=badge_shield)
 
-This repository contains the Dataplane for [Hedgehog's Open Network
-Fabric][fabric-docs]. This component acts as a gateway between different VPCs
-managed by the Fabric, or to communicate with endpoints outside of the Fabric.
+This repository contains the Dataplane for [Hedgehog's Open Network Fabric][fabric-docs].
+This component acts as a gateway between different VPCs managed by the Fabric, or to communicate with endpoints outside
+of the Fabric.
 
 > [!WARNING]
 > This project is under development, and is not yet functional.
@@ -52,7 +52,8 @@ In the source directory, run
 just refresh-compile-env
 ```
 
-You should now have a directory called `compile-env` which contains the tools needed to build `dpdk-sys` such as `clang` and `lld`.
+You should now have a directory called `compile-env` which contains the tools needed to build `dpdk-sys` such as
+`clang` and `lld` .
 You should also have `./compile-env/sysroot` which contains the libraries that `dpdk-sys` needs to link against.
 Only the `x86_64-unknown-linux-gnu` target is currently supported.
 
@@ -60,14 +61,14 @@ Only the `x86_64-unknown-linux-gnu` target is currently supported.
 
 The sysroot is currently built using nix, but you don't need nix to build the project.
 The idea is to symlink `/nix` to `./compile-env/nix` so that the build scripts can find the libraries they need.
-This is a compromise between requiring the developer to understand nix (which can be non-trivial) and requiring the developer to have a bunch of libraries installed on their system.
+This is a compromise between requiring the developer to understand nix (which can be non-trivial) and requiring the
+developer to have a bunch of libraries installed on their system.
 
 > [!WARNING]
 > This is a hack!
 > It works fine but the plan won't work if you already have /nix.
 > If you already have /nix talk to me, and we will make it work.
-> It should be pretty easy (we will just need to export some stuff
-> from `dpdk-sys`)
+> It should be pretty easy (we will just need to export some stuff from `dpdk-sys`)
 
 ```bash
 just fake-nix
@@ -92,7 +93,8 @@ just cargo build --package="$package"
 
 to build workspace members which are not compiled by default (dataplane, dpdk, dpdk-sys).
 
-These members are not enabled by default to help developers which develop on ARM machines, and which can't run (or even compile) packages reliant on the sysroot.
+These members are not enabled by default to help developers which develop on ARM machines, and which can't run (or even
+compile) packages reliant on the sysroot.
 
 After running
 
@@ -129,13 +131,15 @@ just cargo test --profile=release
 >
 > `just` is computing the correct `RUSTFLAGS` for us depending on the profile.
 > After that it simply calls `cargo build`.
-> Normally we would include those kinds of setting in `Cargo.toml` but `cargo` can not currently express all the `RUSTFLAGS` we are using (thus the `just` wrapper).
+> Normally we would include those kinds of setting in `Cargo.toml` but `cargo` can not currently express all the
+> `RUSTFLAGS` we are using (thus the `just` wrapper).
 
 This covers basic testing and building of dataplane, but [there is more to testing dataplane](./testing.md).
 
 ## IDE Setup
 
-Because this repository uses a custom sysroot with custom libraries and binaries, you need to set up your environment accordingly.
+Because this repository uses a custom sysroot with custom libraries and binaries, you need to set up your environment
+accordingly.
 Here are the suggested configurations for various IDEs:
 
 ### VSCode Setup
@@ -162,7 +166,8 @@ To do this, add the following to your `.vscode/settings.json` file:
 
 > [!NOTE]
 > Please submit a PR if you have a way to avoid the absolute path.
-> `${workspaceRoot}` and `${workspaceFolder}` won't work since rust-analyzer has a custom function that implements env var substitution in `extraEnv`.
+> `${workspaceRoot}` and `${workspaceFolder}` won't work since rust-analyzer has a custom function that implements env
+> var substitution in `extraEnv`.
 > `${env:xxx}` susbstitutions only work if the variable is set in `extraEnv` itself.
 
 Finally, you want to format code using rust analyzer, and to format on save to make sure your code is always formatted.
@@ -207,20 +212,25 @@ Save the following to the `.zed/settings.json` file:
 
 ## Code organization
 
-The dataplane code is organized in a set of crates. All crates aren't equal (or they are but some are more equal than others).
-The `dataplane` crate contains the main binary and may include any other as a dependency. The crates developed within this project
-are aliased to `dataplane-NAME` and referred to as internal. Since Rust is not a good friend of circular dependencies, here come some guidelines to avoid those.
+The dataplane code is organized in a set of crates.
+All crates aren't equal (or they are but some are more equal than others).
+The `dataplane` crate contains the main binary and may include any other as a dependency.
+The crates developed within this project are aliased to `dataplane-NAME` and referred to as internal.
+Since Rust is not a good friend of circular dependencies, here come some guidelines to avoid those.
 
 ### Dependencies
 
-There is a set of low-level infrastructure crates (tier-1) with limited internal dependencies which many other crates may refer to.
-The tier-1 set of crates includes: `net`, `pipeline`, `lpm` or `config`. Note that some of those refer to the others (e.g. `net` is a dependency of `pipeline`).
+There is a set of low-level infrastructure crates (tier-1) with limited internal dependencies which many other crates
+may refer to.
+The tier-1 set of crates includes: `net`, `pipeline`, `lpm` or `config`.
+Note that some of those refer to the others (e.g. `net` is a dependency of `pipeline`).
 
-A second tier of crates use the prior set to add extended functionalities. These include `nat` or `routing`. These crates may have `config` as
-dependency, but not vice-versa. I.e. in general, tier-n can only have as dependencies, crates in tier-k, k<=n.
-Finally, crate `mgmt` (tier-3) may make use of any the internal crates (tier-1 and tier-2). No other crate (other than
-`dataplane`) (tier-4) should
-depend on `mgmt`.
+A second tier of crates use the prior set to add extended functionalities.
+These include `nat` or `routing`.
+These crates may have `config` as dependency, but not vice-versa.
+I.e. in general, tier-n can only have as dependencies, crates in tier-k, k<=n.
+Finally, crate `mgmt` (tier-3) may make use of any the internal crates (tier-1 and tier-2).
+No other crate (other than `dataplane`) (tier-4) should depend on `mgmt`.
 
 ### Dependency cheat-sheet
 
@@ -261,12 +271,11 @@ depend on `mgmt`.
 
 ![depgraph](./workspace-deps.svg)
 
-**Figure**: full workspace dependency graph. Note that tier-1 packages (like
-net) never depend on tier-2 packages (like nat).
+**Figure**: full workspace dependency graph.
+Note that tier-1 packages (like net) never depend on tier-2 packages (like nat).
 
 </figure>
 
 ## License
 
-The Dataplane of the Hedgehog Open Fabric Network is licensed under the
-[Apache License, Version 2.0](LICENSE).
+The Dataplane of the Hedgehog Open Fabric Network is licensed under the [Apache License, Version 2.0](LICENSE).

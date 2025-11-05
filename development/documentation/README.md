@@ -18,7 +18,7 @@ Design your documentation to be maintainable.
   Inline links are disruptive to humans reading or editing the documentation as raw text.
   It is also easier to maintain the links when external resources change.
 
-  **For example**
+  *Example*:
 
   ```markdown
   - This is an [inline markdown link example](https://www.markdownguide.org/basic-syntax/#links)

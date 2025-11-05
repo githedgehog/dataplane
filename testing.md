@@ -4,7 +4,8 @@
 
 The default test runner works fine, but it is notably slower and less featureful than [nextest].
 
-Fortunately, [nextest] ships with recent versions of the compile-env, so assuming you have already followed the instructions in the [README.md](./README.md), you should be able to run
+Fortunately, [nextest] ships with recent versions of the compile-env, so assuming you have already followed the
+instructions in the [README.md](./README.md), you should be able to run
 
 ```shell
 just cargo nextest run
@@ -21,7 +22,8 @@ just cargo nextest run --cargo-profile=release
 
 ## Code Coverage (llvm-cov)
 
-The compile-env also ships with [cargo llvm-cov] for collecting [code coverage](https://en.wikipedia.org/wiki/Code_coverage) information.
+The compile-env also ships with [cargo llvm-cov] for collecting
+[code coverage](https://en.wikipedia.org/wiki/Code_coverage) information.
 Assuming you have followed the [README.md](./README.md), you should be able to run
 
 ```shell
@@ -30,9 +32,10 @@ just coverage
 
 to get code coverage information.
 
-Code coverage reports from CI are uploaded to [our codecov page](https://app.codecov.io/gh/githedgehog/dataplane).
+Code coverage reports from CI are uploaded to
+[our codecov page](https://app.codecov.io/gh/githedgehog/dataplane).
 
-If you wish to study coverage data locally, you can run 
+If you wish to study coverage data locally, you can run
 
 ```shell
 just coverage
@@ -49,11 +52,12 @@ We use the [bolero] crate for our fuzz tests.
 
 Running the test suite via `just cargo test` or `just cargo nextest run` will run the fuzz tests.
 
-* The tests (even the fuzz tests) are only run briefly.
-* Coverage information and sanitizers are not enabled.
-* A full fuzzing engine is not set up, so evolutionary feedback is not provided when the tests are run this way,
+- The tests (even the fuzz tests) are only run briefly.
+- Coverage information and sanitizers are not enabled.
+- A full fuzzing engine is not set up, so evolutionary feedback is not provided when the tests are run this way,
 
-Using [libfuzzer](https://llvm.org/docs/LibFuzzer.html) or [afl](https://github.com/AFLplusplus/AFLplusplus) can change this.
+Using [libfuzzer](https://llvm.org/docs/LibFuzzer.html) or [afl](https://github.com/AFLplusplus/AFLplusplus) can change
+this.
 
 The major downside is that these are very computationally heavy processes and can take a long time to run.
 In fact, the [afl] fuzzer runs until you terminate it.
@@ -77,7 +81,8 @@ just _test_type=FUZZ fuzz vxlan::test::mutation_of_header_preserves_contract -T 
 ```
 
 > [!NOTE]
-> The fuzz tests are run with full optimizations and extensive debugging information, so expect a fairly long compile time.
+> The fuzz tests are run with full optimizations and extensive debugging information, so expect a fairly long compile
+> time.
 
 [bolero]: https://github.com/camshaft/bolero
 [cargo llvm-cov]: https://github.com/taiki-e/cargo-llvm-cov?tab=readme-ov-file#cargo-llvm-cov

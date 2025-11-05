@@ -18,7 +18,7 @@ that is useful for:
 
 ## Architecture
 
-The crate represents hardware topology as a tree of [`Node`]s, where each node has:
+The crate represents hardware topology as a tree of `Node`s, where each node has:
 
 - A unique identifier
 - A type and optional subtype
