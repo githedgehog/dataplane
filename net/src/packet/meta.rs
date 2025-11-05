@@ -94,30 +94,54 @@ impl Display for VpcDiscriminant {
 #[allow(unused)]
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub enum DoneReason {
-    InternalFailure,      /* catch-all for internal issues */
-    NotEthernet,          /* could not get eth header */
-    NotIp,                /* could not get IP header - maybe it's not ip */
-    UnsupportedTransport, /* unsupported transport layer */
-    MacNotForUs,          /* frame is not broadcast nor for us */
-    InterfaceDetached,    /* interface has not been attached to any VRF */
-    InterfaceAdmDown,     /* interface is admin down */
-    InterfaceOperDown,    /* interface is oper down : no link */
-    InterfaceUnknown,     /* the interface cannot be found */
-    InterfaceUnsupported, /* the operation is not supported on the interface */
-    NatOutOfResources,    /* can't do NAT due to lack of resources */
-    RouteFailure,         /* missing routing information */
-    RouteDrop,            /* routing explicitly requests pkts to be dropped */
-    HopLimitExceeded,     /* TTL / Hop count was exceeded */
-    Filtered,             /* The packet was administratively filtered */
-    Unhandled,            /* there exists no support to handle this type of packet */
-    MissL2resolution,     /* adjacency failure: we don't know mac of some ip next-hop */
-    InvalidDstMac,        /* dropped the packet since it had to have an invalid destination mac */
-    Malformed,            /* the packet does not conform / is malformed */
-    MissingEtherType,     /* can't determine ethertype to use */
-    Unroutable,           /* we don't have state to forward the packet */
-    NatFailure,           /* It was not possible to NAT the packet */
-    InternalDrop, /* the packet is dropped by the dataplane (e.g. due to lack of a resource like queue space) */
-    Delivered,    /* the packet buffer was delivered by the NF - e.g. for xmit */
+    /// catch-all for internal issues
+    InternalFailure,
+    /// could not get eth header
+    NotEthernet,
+    /// could not get IP header - maybe it's not ip
+    NotIp,
+    /// unsupported transport layer
+    UnsupportedTransport,
+    /// frame is not broadcast nor for us
+    MacNotForUs,
+    /// interface has not been attached to any VRF
+    InterfaceDetached,
+    /// interface is admin down
+    InterfaceAdmDown,
+    /// interface is oper down : no link
+    InterfaceOperDown,
+    /// the interface cannot be found
+    InterfaceUnknown,
+    /// the operation is not supported on the interface
+    InterfaceUnsupported,
+    /// can't do NAT due to lack of resources
+    NatOutOfResources,
+    /// missing routing information
+    RouteFailure,
+    /// routing explicitly requests pkts to be dropped
+    RouteDrop,
+    /// TTL / Hop count was exceeded
+    HopLimitExceeded,
+    /// The packet was administratively filtered
+    Filtered,
+    /// there exists no support to handle this type of packet
+    Unhandled,
+    /// adjacency failure: we don't know mac of some ip next-hop
+    MissL2resolution,
+    /// dropped the packet since it had to have an invalid destination mac
+    InvalidDstMac,
+    /// the packet does not conform / is malformed
+    Malformed,
+    /// can't determine ethertype to use
+    MissingEtherType,
+    /// we don't have state to forward the packet
+    Unroutable,
+    /// It was not possible to NAT the packet
+    NatFailure,
+    /// the packet is dropped by the dataplane (e.g. due to lack of a resource like queue space)
+    InternalDrop,
+    /// the packet buffer was delivered by the NF - e.g. for xmit
+    Delivered,
 }
 
 bitflags! {
