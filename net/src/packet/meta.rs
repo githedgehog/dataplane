@@ -137,6 +137,7 @@ bitflags! {
         const REQ_STATIC_NAT_SRC  = 1 << 6; /* Packet requires static NAT (source) */
         const REQ_STATIC_NAT_DST  = 1 << 7; /* Packet requires static NAT (destination) */
         const FORCE_FLOW_TRACKING = 1 << 8; /* We need to track this flow, e.g. to apply stateful user ACLs */
+        const NEED_ARPND          = 1 << 9; /* Need ARP/ND resolution */
     }
 }
 
@@ -293,6 +294,14 @@ impl PacketMeta {
             flags |= FlowInfoFlags::REQ_STATIC_NAT_SRC;
         }
         flags
+    }
+
+    #[must_use]
+    pub fn need_arp_nd(&self) -> bool {
+        self.flags.contains(MetaFlags::NEED_ARPND)
+    }
+    pub fn set_need_arp_nd(&mut self, value: bool) {
+        self.set_flag(MetaFlags::NEED_ARPND, value);
     }
 }
 impl Drop for PacketMeta {
