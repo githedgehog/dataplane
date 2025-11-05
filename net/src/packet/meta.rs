@@ -130,6 +130,7 @@ bitflags! {
         const KEEP        = 0b0001_0000; /* Keep the Packet even if it should be dropped */
         const LOCAL       = 0b0010_0000; /* Packet is to be locally consumed */
         const SOURCED     = 0b0100_0000; /* Packet is locally originated */
+        const NEED_ARPND  = 0b1000_0000; /* Need ARP resolution */
     }
 }
 
@@ -228,6 +229,17 @@ impl PacketMeta {
             self.flags.insert(MetaFlags::SOURCED);
         } else {
             self.flags.remove(MetaFlags::SOURCED);
+        }
+    }
+    #[must_use]
+    pub fn need_arp_nd(&self) -> bool {
+        self.flags.contains(MetaFlags::NEED_ARPND)
+    }
+    pub fn set_need_arp_nd(&mut self, value: bool) {
+        if value {
+            self.flags.insert(MetaFlags::NEED_ARPND);
+        } else {
+            self.flags.remove(MetaFlags::NEED_ARPND);
         }
     }
 }
