@@ -271,6 +271,7 @@ fn fmt_metadata_flags(meta: &PacketMeta, f: &mut Formatter<'_>) -> std::fmt::Res
     writeln!(f)
 }
 impl Display for PacketMeta {
+    #[cold]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "  metadata:")?;
         write!(f, "   ")?;
