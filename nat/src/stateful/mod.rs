@@ -284,9 +284,23 @@ impl StatefulNat {
                     );
                 }
                 Transport::Icmp4(_) | Transport::Icmp6(_) => {
-                    // No need to set the identifier for ICMP Echo messages, we already did it above
-                    // using target_src_port.
-                    debug!("{nfi}: Destination-NAT translated {old_dst_ip} -> {target_dst_ip}",);
+                    let old_identifier = transport.identifier();
+                    let new_identifier;
+                    // We may not need to set the identifier for ICMP Echo messages, as we may have
+                    // done it above using target_src_port. But if target_src_port is None, we need
+                    // to set it here using target_dst_port.
+                    if let Some(src_port) = target_src_port {
+                        new_identifier = src_port.as_u16();
+                    } else {
+                        // We haven't set the identifier yet.
+                        new_identifier = target_dst_port.as_u16();
+                        transport
+                            .try_set_identifier(new_identifier)
+                            .map_err(|_| StatefulNatError::BadTransportHeader)?;
+                    }
+                    debug!(
+                        "{nfi}: Destination-NAT translated {old_dst_ip}:{old_identifier:?} -> {target_dst_ip}:{new_identifier:?}",
+                    );
                 }
             }
         }
@@ -372,8 +386,13 @@ impl StatefulNat {
                         .map_err(|_| StatefulNatError::BadTransportHeader)?;
                 }
                 IpProtoKey::Icmp(IcmpProtoKey::QueryMsgData(_)) => {
-                    // Nothing to do here: we reverse the identifier using "dst_port" below, and one
-                    // identifier is enough for ICMP.
+                    // For ICMP, we only need to set the identifier once. Use the "dst_port" below if
+                    // available, otherwise, use the "src_port" here.
+                    if allocated_dst_port_to_use.is_none() {
+                        reverse_proto_key
+                            .try_set_identifier(src_port.as_u16())
+                            .map_err(|_| StatefulNatError::BadTransportHeader)?;
+                    }
                 }
                 IpProtoKey::Icmp(_) => {
                     return Err(StatefulNatError::UnexpectedKeyVariant);

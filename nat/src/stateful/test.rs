@@ -836,6 +836,85 @@ mod tests {
         assert_eq!(done_reason, None);
     }
 
+    #[test]
+    #[traced_test]
+    fn test_icmp_echo_unidirectional_nat() {
+        let mut config = build_sample_config(build_overlay_2vpcs_unidirectional_nat());
+        config.validate().unwrap();
+
+        // Check that we can validate the allocator
+        let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
+        allocator
+            .update_allocator(&config.external.overlay.vpc_table)
+            .unwrap();
+
+        // No NAT
+        let (orig_src, orig_dst, orig_identifier) = (addr_v4("8.8.8.8"), addr_v4("9.9.9.9"), 1337);
+        let (output_src, output_dst, output_identifier, done_reason) = check_packet_icmp_echo(
+            &mut nat,
+            vni(100),
+            vni(200),
+            orig_src,
+            orig_dst,
+            IcmpEchoDirection::Request,
+            orig_identifier,
+        );
+        assert_eq!(output_src, orig_src);
+        assert_eq!(output_dst, orig_dst);
+        assert_eq!(output_identifier, orig_identifier);
+        assert_eq!(done_reason, Some(DoneReason::Filtered));
+
+        // NAT: expose121 <-> expose211
+        let (orig_src, orig_dst, orig_identifier) = (addr_v4("1.1.2.3"), addr_v4("5.0.0.5"), 1337);
+        let (target_src, target_dst) = (addr_v4("2.2.0.0"), addr_v4("5.0.0.5"));
+        let (output_src, output_dst, output_identifier_1, done_reason) = check_packet_icmp_echo(
+            &mut nat,
+            vni(100),
+            vni(200),
+            orig_src,
+            orig_dst,
+            IcmpEchoDirection::Request,
+            orig_identifier,
+        );
+        assert_eq!(output_src, target_src);
+        assert_eq!(output_dst, target_dst);
+        assert!(output_identifier_1.is_multiple_of(256)); // First port of a 256-port "port block" from allocator
+        assert_eq!(done_reason, None);
+
+        // Reverse path
+        let (return_output_src, return_output_dst, return_output_identifier, done_reason) =
+            check_packet_icmp_echo(
+                &mut nat,
+                vni(200),
+                vni(100),
+                target_dst,
+                target_src,
+                IcmpEchoDirection::Reply,
+                output_identifier_1,
+            );
+        assert_eq!(return_output_src, orig_dst);
+        assert_eq!(return_output_dst, orig_src);
+        assert_eq!(return_output_identifier, orig_identifier);
+        assert_eq!(done_reason, None);
+
+        // Second request with same identifier: no reallocation
+        let (orig_src, orig_dst) = (addr_v4("1.1.2.3"), addr_v4("5.0.0.5"));
+        let (target_src, target_dst) = (addr_v4("2.2.0.0"), addr_v4("5.0.0.5"));
+        let (output_src, output_dst, output_identifier_2, done_reason) = check_packet_icmp_echo(
+            &mut nat,
+            vni(100),
+            vni(200),
+            orig_src,
+            orig_dst,
+            IcmpEchoDirection::Request,
+            orig_identifier,
+        );
+        assert_eq!(output_src, target_src);
+        assert_eq!(output_dst, target_dst);
+        assert_eq!(output_identifier_2, output_identifier_1); // Same identifier as before
+        assert_eq!(done_reason, None);
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn check_packet_icmp_error(
         nat: &mut StatefulNat,
