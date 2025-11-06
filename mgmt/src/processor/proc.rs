@@ -23,7 +23,7 @@ use crate::processor::confbuild::router::generate_router_config;
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
 use nat::stateless::setup::{build_nat_configuration, validate_nat_configuration};
-use pkt_io::{IoManagerCtl, PortMapReader, PortMapWriter};
+use pkt_io::IoManagerCtl;
 use pkt_meta::dst_vpcd_lookup::VpcDiscTablesWriter;
 use pkt_meta::dst_vpcd_lookup::setup::build_dst_vni_lookup_configuration;
 use routing::frr::FrrAppliedConfig;
@@ -123,9 +123,6 @@ pub struct ConfigProcessorParams {
 
     // IO manager control
     pub iom_ctl: IoManagerCtl,
-
-    // writer for portmap table
-    pub pmapw: PortMapWriter,
 }
 
 impl ConfigProcessor {
@@ -449,11 +446,7 @@ impl VpcManager<RequiredInformationBase> {
     }
 }
 
-async fn config_io_manager(
-    internal: &InternalConfig,
-    iom_ctl: &mut IoManagerCtl,
-    _pmapr: PortMapReader,
-) {
+async fn config_io_manager(internal: &InternalConfig, iom_ctl: &mut IoManagerCtl) {
     iom_ctl.clear();
     for vrfconfig in internal.vrfs.all_vrfs() {
         for iface in vrfconfig.interfaces.values().filter(|ifcfg| ifcfg.is_eth()) {
@@ -643,12 +636,7 @@ async fn apply_gw_config(
     apply_router_config(&kernel_vrfs, config, &mut params.router_ctl).await?;
 
     /* reconfigure IO manager */
-    config_io_manager(
-        internal,
-        &mut params.iom_ctl,
-        params.pmapw.factory().handle(),
-    )
-    .await;
+    config_io_manager(internal, &mut params.iom_ctl).await;
 
     info!("Successfully applied config for genid {genid}");
     Ok(())

@@ -25,6 +25,7 @@ mgmt = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
 nat = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
+nix = { workspace = true, default-features = false, features = ["ioctl", "net"] }
 netdev = { workspace = true }
 once_cell = { workspace = true }
 ordermap = { workspace = true, features = ["std"] }
@@ -34,6 +35,7 @@ pkt-io = { workspace = true }
 pkt-meta = { workspace = true }
 pyroscope = { workspace = true }
 pyroscope_pprofrs = { workspace = true }
+rkyv = { workspace = true, features = [] }
 routing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 stats = { workspace = true }

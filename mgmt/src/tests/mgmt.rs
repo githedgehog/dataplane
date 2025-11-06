@@ -402,9 +402,6 @@ pub mod test {
         let injectq = PktQueue::new(1);
         let (iom_handle, mut iom_ctl) = start_io(puntq, injectq, TestBufferPool).unwrap();
 
-        /* create portmap */
-        let pmapw = PortMapWriter::new();
-
         /* build configuration of mgmt config processor */
         let processor_config = ConfigProcessorParams {
             router_ctl,
@@ -414,7 +411,6 @@ pub mod test {
             vpcdtablesw,
             vpc_stats_store,
             iom_ctl: iom_ctl.clone(), // we pass a clone to keep one to stop IOM in test
-            pmapw,
         };
 
         /* start config processor to test the processing of a config. The processor embeds the config database

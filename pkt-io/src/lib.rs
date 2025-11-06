@@ -8,10 +8,8 @@
 
 mod ctl;
 mod io;
-
 mod nf;
-mod portmap;
-mod portmapper;
+mod tapinit;
 mod tests;
 
 // re-exports
@@ -19,5 +17,4 @@ pub use ctl::IoManagerCtl;
 pub use io::{IoManagerError, start_io};
 pub use nf::PktIo;
 pub use nf::PktQueue;
-pub use portmap::{PortMap, PortMapReader, PortMapReaderFactory, PortMapWriter};
-pub use portmapper::{PortSpec, build_portmap, build_portmap_async};
+pub use tapinit::{tap_init, tap_init_async};
