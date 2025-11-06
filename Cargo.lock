@@ -1012,6 +1012,8 @@ dependencies = [
  "dataplane-args",
  "dataplane-concurrency",
  "dataplane-dpdk",
+ "dataplane-dpdk-sys",
+ "dataplane-driver",
  "dataplane-id",
  "dataplane-mgmt",
  "dataplane-nat",
@@ -1023,12 +1025,14 @@ dependencies = [
  "dataplane-stats",
  "dataplane-tracectl",
  "dataplane-vpcmap",
+ "derive_builder 0.20.2",
  "dyn-iter",
  "hyper",
  "hyper-util",
  "linkme",
  "metrics",
  "metrics-exporter-prometheus",
+ "miette",
  "mio",
  "n-vm",
  "netdev",
@@ -1040,6 +1044,7 @@ dependencies = [
  "rkyv",
  "serde",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1126,10 +1131,12 @@ dependencies = [
 name = "dataplane-dpdk"
 version = "0.1.0"
 dependencies = [
+ "ctrlc",
  "dataplane-dpdk-sys",
  "dataplane-dpdk-sysroot-helper",
  "dataplane-errno",
  "dataplane-net",
+ "rkyv",
  "serde",
  "thiserror 2.0.17",
  "tracing",
@@ -1147,6 +1154,10 @@ dependencies = [
 [[package]]
 name = "dataplane-dpdk-sysroot-helper"
 version = "0.0.1"
+
+[[package]]
+name = "dataplane-driver"
+version = "0.1.0"
 
 [[package]]
 name = "dataplane-errno"

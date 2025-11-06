@@ -409,7 +409,7 @@ mod io_tests {
         sink_queue: PktQueue<Buf>,
         run: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
-        let sink = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("pkt-sink".to_string())
             .spawn(move || {
                 while run.load(Ordering::Relaxed) {
@@ -419,8 +419,7 @@ mod io_tests {
                     sleep(std::time::Duration::from_millis(500));
                 }
             })
-            .unwrap();
-        sink
+            .unwrap()
     }
 
     // a thread that punts packets after annotating them with the incoming interface
@@ -429,7 +428,7 @@ mod io_tests {
         run: Arc<AtomicBool>,
         pace: std::time::Duration,
     ) -> JoinHandle<()> {
-        let punt = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("pkt-punt".to_string())
             .spawn(move || {
                 // learn taps from kernel
@@ -451,8 +450,7 @@ mod io_tests {
                     }
                 }
             })
-            .unwrap();
-        punt
+            .unwrap()
     }
 
     fn learn_taps() -> HashMap<u32, String> {

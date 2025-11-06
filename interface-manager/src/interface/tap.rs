@@ -286,8 +286,8 @@ impl TapDevice {
             let mut guard = self.async_fd.readable().await?;
             match nix::unistd::read(fd, buf.as_mut()) {
                 Ok(n) => return Ok(n),
-                Err(e) if e == nix::errno::Errno::EINTR => continue,
-                Err(e) if e == nix::errno::Errno::EWOULDBLOCK => guard.clear_ready(),
+                Err(nix::errno::Errno::EINTR) => {},
+                Err(nix::errno::Errno::EWOULDBLOCK) => guard.clear_ready(),
                 Err(e) => {
                     error!("Error reading from tap {}: {e:?}", self.name);
                     return Err(e.into());
@@ -316,8 +316,8 @@ impl TapDevice {
                         return Ok(w);
                     }
                 }
-                Err(e) if e == nix::errno::Errno::EINTR => continue,
-                Err(e) if e == nix::errno::Errno::EWOULDBLOCK => guard.clear_ready(),
+                Err(nix::errno::Errno::EINTR) => {},
+                Err(nix::errno::Errno::EWOULDBLOCK) => guard.clear_ready(),
                 Err(e) => {
                     error!("Error writing to tap {}: {e:?}", self.name);
                     return Err(e.into());

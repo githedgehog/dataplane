@@ -89,7 +89,7 @@ impl Ingress {
     #[tracing::instrument(level = "trace")]
     fn interface_ingress_eth_bcast_mcast<Buf: PacketBufferMut>(
         &self,
-        _interface: &Interface,
+        interface: &Interface,
         packet: &mut Packet<Buf>,
     ) {
         packet.get_meta_mut().set_l2bcast(true);
