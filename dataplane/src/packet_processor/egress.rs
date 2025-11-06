@@ -216,12 +216,10 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Egress {
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        trace!("Stage '{}'...", self.name);
-
         // Ideally, we would enter the atable and iftable just once per burst.
         // However, this is problematic (see ingress).
 
-        input.filter_map(move |mut packet| {
+        input.filter_map(|mut packet| {
             if !packet.is_done() {
                 if let Some(iftable) = self.iftr.enter() {
                     self.egress_process(&mut packet, &iftable);

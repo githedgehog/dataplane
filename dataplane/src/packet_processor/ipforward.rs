@@ -11,6 +11,7 @@ use net::packet::{DoneReason, Packet};
 use net::{buffer::PacketBufferMut, checksum::Checksum};
 use pipeline::NetworkFunction;
 use std::net::IpAddr;
+#[allow(unused)]
 use tracing::{debug, error, trace, warn};
 
 use routing::fib::fibobjects::{EgressObject, FibEntry, PktInstruction};
@@ -372,8 +373,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        trace!("{}'", self.name);
-        input.filter_map(move |mut packet| {
+        input.filter_map(|mut packet| {
             if !packet.is_done() {
                 // strip off vrf id from metadata
                 let vrfid = packet.get_meta_mut().vrf.take();

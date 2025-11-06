@@ -163,7 +163,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Ingress {
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.filter_map(move |mut packet| {
+        input.filter_map(|mut packet| {
             let nfi = self.name();
             if !packet.is_done() {
                 if let Some(iftable) = self.iftr.enter() {
