@@ -78,7 +78,11 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         let iprouter1 = IpForwarder::new("IP-Forward-1", fibtr_factory.handle());
         let iprouter2 = IpForwarder::new("IP-Forward-2", fibtr_factory.handle());
         let stateless_nat = StatelessNat::with_reader("stateless-NAT", nattabler_factory.handle());
-        let stateful_nat = StatefulNat::with_reader("stateful-NAT", natallocator_factory.handle());
+        let stateful_nat = StatefulNat::new(
+            "stateful-NAT",
+            flow_table.clone(),
+            natallocator_factory.handle(),
+        );
         let dumper1 = PacketDumper::new("pre-ingress", true, None);
         let dumper2 = PacketDumper::new("post-egress", true, None);
         let stats_stage = Stats::new("stats", writer.clone());
