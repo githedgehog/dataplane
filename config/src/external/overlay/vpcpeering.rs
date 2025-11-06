@@ -220,6 +220,21 @@ impl VpcExpose {
             &nat.not_as
         }
     }
+    // This method returns true if the list of allowed prefixes is IPv4.
+    // This method assumes that all prefixes the list are of the same IP version. It does not
+    // validate the list for consistency.
+    #[must_use]
+    pub fn is_v4(&self) -> bool {
+        self.ips.first().is_some_and(Prefix::is_ipv4)
+    }
+    // This method returns true if the list of allowed prefixes is IPv6.
+    // This method assumes that all prefixes the list are of the same IP version. It does not
+    // validate the list for consistency.
+    #[must_use]
+    pub fn is_v6(&self) -> bool {
+        self.ips.first().is_some_and(Prefix::is_ipv6)
+    }
+    // This method returns true if both allowed and translated prefixes are IPv4.
     // This method assumes that all prefixes in each list are of the same IP version. It does not
     // validate the list for consistency.
     #[must_use]
@@ -229,6 +244,7 @@ impl VpcExpose {
             (Some(Prefix::IPV4(_)), Some(Prefix::IPV4(_)))
         )
     }
+    // This method returns true if both allowed and translated prefixes are IPv6.
     // This method assumes that all prefixes in each list are of the same IP version. It does not
     // validate the list for consistency.
     #[must_use]
@@ -440,6 +456,18 @@ impl VpcManifest {
             .iter()
             .filter(|expose| expose.has_stateful_nat())
             .filter(|expose| expose.is_66())
+    }
+    pub fn no_stateful_nat_exposes_v4(&self) -> impl Iterator<Item = &VpcExpose> {
+        self.exposes
+            .iter()
+            .filter(|expose| !expose.has_stateful_nat())
+            .filter(|expose| expose.is_v4())
+    }
+    pub fn no_stateful_nat_exposes_v6(&self) -> impl Iterator<Item = &VpcExpose> {
+        self.exposes
+            .iter()
+            .filter(|expose| !expose.has_stateful_nat())
+            .filter(|expose| expose.is_v6())
     }
 }
 
