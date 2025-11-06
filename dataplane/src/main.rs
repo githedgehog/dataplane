@@ -20,7 +20,7 @@ use pyroscope::PyroscopeAgent;
 use pyroscope_pprofrs::{PprofConfig, pprof_backend};
 
 use net::buffer::{TestBuffer, TestBufferPool};
-use pkt_io::start_io;
+use pkt_io::{start_io, tap_init};
 
 use routing::RouterParamsBuilder;
 use tracectl::{custom_target, get_trace_ctl, trace_target};
@@ -133,15 +133,18 @@ fn main() {
     // pipeline builder
     let pipeline_factory = setup.pipeline;
 
-    // Start driver with the provided pipeline builder. Driver should create a portmap table,
-    // populate it with [`PortSpec`]s and return the writer
+    // Start driver with the provided pipeline builder. Taps must have been created before this
+    // happens so that their ifindex is available when drivers initialize.
     let (_handle, iom_ctl) = {
         match &launch_config.driver {
-            args::DriverConfigSection::Dpdk(_section) => {
+            args::DriverConfigSection::Dpdk(section) => {
+                tap_init(&section.interfaces).expect("Tap initialization failed");
+
                 info!("Using driver DPDK...");
                 todo!();
             }
             args::DriverConfigSection::Kernel(section) => {
+                tap_init(&section.interfaces).expect("Tap initialization failed");
                 info!("Using driver kernel...");
                 DriverKernel::start(
                     section.interfaces.clone().into_iter(),
