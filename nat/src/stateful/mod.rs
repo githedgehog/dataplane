@@ -206,7 +206,8 @@ impl StatefulNat {
         let flow_info = FlowInfo::new(session_timeout_time(idle_timeout));
         flow_info.locked.write().unwrap().nat_state = Some(Box::new(state));
 
-        self.sessions.insert(*flow_key, flow_info);
+        // Woopsies! We forgot to actually insert the session
+        // self.sessions.insert(*flow_key, flow_info);
     }
 
     #[allow(clippy::unnecessary_wraps)]
