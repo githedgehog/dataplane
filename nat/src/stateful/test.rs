@@ -348,7 +348,7 @@ mod tests {
         config.validate().unwrap();
 
         // Check that we can validate the allocator
-        let (mut nat, mut allocator) = StatefulNat::new("test-nat");
+        let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
         allocator
             .update_allocator(&config.external.overlay.vpc_table)
             .unwrap();
@@ -561,7 +561,7 @@ mod tests {
         config.validate().unwrap();
 
         // Check that we can validate the allocator
-        let (mut nat, mut allocator) = StatefulNat::new("test-nat");
+        let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
         allocator
             .update_allocator(&config.external.overlay.vpc_table)
             .unwrap();
@@ -746,7 +746,7 @@ mod tests {
         config.validate().unwrap();
 
         // Check that we can validate the allocator
-        let (mut nat, mut allocator) = StatefulNat::new("test-nat");
+        let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
         allocator
             .update_allocator(&config.external.overlay.vpc_table)
             .unwrap();
@@ -912,7 +912,7 @@ mod tests {
         config.validate().unwrap();
 
         // Check that we can validate the allocator
-        let (mut nat, mut allocator) = StatefulNat::new("test-nat");
+        let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
         allocator
             .update_allocator(&config.external.overlay.vpc_table)
             .unwrap();

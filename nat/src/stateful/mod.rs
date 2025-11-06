@@ -94,31 +94,31 @@ pub struct StatefulNat {
     allocator: NatAllocatorReader,
 }
 
-#[allow(clippy::new_without_default)]
 impl StatefulNat {
-    /// Creates a new [`StatefulNat`] processor.
+    /// Creates a new [`StatefulNat`] processor from provided parameters.
     #[must_use]
-    pub fn new(name: &str) -> (Self, NatAllocatorWriter) {
+    pub fn new(name: &str, sessions: Arc<FlowTable>, allocator: NatAllocatorReader) -> Self {
+        Self {
+            name: name.to_string(),
+            sessions,
+            allocator,
+        }
+    }
+
+    /// Creates a new [`StatefulNat`] processor with empty allocator and session table, returning a
+    /// [`NatAllocatorWriter`] object.
+    #[must_use]
+    pub fn new_with_defaults() -> (Self, NatAllocatorWriter) {
         let allocator_writer = NatAllocatorWriter::new();
         let allocator_reader = allocator_writer.get_reader();
         (
-            Self {
-                name: name.to_string(),
-                sessions: Arc::new(FlowTable::default()),
-                allocator: allocator_reader,
-            },
+            Self::new(
+                "stateful-nat",
+                Arc::new(FlowTable::default()),
+                allocator_reader,
+            ),
             allocator_writer,
         )
-    }
-
-    /// Creates a new [`StatefulNat`] processor as `new()`, but uses the provided `NatAllocatorReader`.
-    #[must_use]
-    pub fn with_reader(name: &str, allocator: NatAllocatorReader) -> Self {
-        Self {
-            name: name.to_string(),
-            sessions: Arc::new(FlowTable::default()),
-            allocator,
-        }
     }
 
     /// Get the name of this instance
