@@ -40,8 +40,6 @@ use pipeline::{DynPipeline, NetworkFunction};
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
 
-use pkt_io::{PortMapWriter, PortSpec, build_portmap};
-
 // Flow-key based symmetric hashing
 use pkt_meta::flow_table::flow_key::{Bidi, FlowKey};
 
@@ -336,32 +334,6 @@ impl DriverKernel {
         Ok(kiftable)
     }
 
-    /// Register devices in the port map and return back the writer and factory
-    fn register_devices(kiftable: &mut KifTable) -> PortMapWriter {
-        // build port specs from the kifs to populate portmap
-        let pspecs: Vec<_> = kiftable
-            .by_token
-            .values()
-            .map(|kif| PortSpec::new(kif.name.to_string(), kif.pindex, kif.tapname.clone()))
-            .collect();
-
-        // populate port-map
-        let mapw = build_portmap(pspecs.into_iter());
-
-        // burn the tap ifindex in the kif so that we need not look it up
-        let rh = mapw.factory().handle();
-        kiftable.by_token.values_mut().for_each(|kif| {
-            kif.tapifindex = Some(
-                rh.get_by_pdesc(&kif.name.to_string())
-                    .unwrap_or_else(|| unreachable!())
-                    .ifindex,
-            );
-        });
-
-        // give ownership of portmap writer
-        mapw
-    }
-
     /// Start the kernel IO thread for rx/tx
     fn start_kernel_io_thread(
         to_workers: Vec<WorkerTx>,
@@ -466,7 +438,7 @@ impl DriverKernel {
         interfaces: impl Iterator<Item = InterfaceArg>,
         num_workers: usize,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
-    ) -> PortMapWriter {
+    ) {
         // init port devices
         let mut kiftable = match Self::init_devices(interfaces) {
             Ok(kiftable) => kiftable,
@@ -475,9 +447,6 @@ impl DriverKernel {
                 panic!("{e}");
             }
         };
-
-        // register port devices
-        let mapt_w = Self::register_devices(&mut kiftable);
 
         // Spawn pipeline workers
         let (to_workers, from_workers) = Self::spawn_workers(num_workers, setup_pipeline);
@@ -495,9 +464,6 @@ impl DriverKernel {
 
         // Spawn io thread
         Self::start_kernel_io_thread(to_workers, from_workers, kiftable);
-
-        // return maptable writer
-        mapt_w
     }
 
     fn recv_packets(

@@ -135,8 +135,8 @@ fn main() {
 
     // Start driver with the provided pipeline builder. Driver should create a portmap table,
     // populate it with [`PortSpec`]s and return the writer
-    let (pmapw, (_handle, iom_ctl)) = {
-        let pmapw = match &launch_config.driver {
+    let (_handle, iom_ctl) = {
+        match &launch_config.driver {
             args::DriverConfigSection::Dpdk(_section) => {
                 info!("Using driver DPDK...");
                 todo!();
@@ -150,14 +150,9 @@ fn main() {
                 )
             }
         };
-        let (_handle, iom_ctl) =
-            start_io::<TestBuffer, TestBufferPool>(setup.puntq, setup.injectq, TestBufferPool)
-                .unwrap();
-        (pmapw, (_handle, iom_ctl))
+        start_io::<TestBuffer, TestBufferPool>(setup.puntq, setup.injectq, TestBufferPool)
+            .expect("Failed to start IO manager")
     };
-
-    // always log port mappings
-    pmapw.log_pmap_table();
 
     // prepare parameters for mgmt
     let mgmt_params = MgmtParams {
@@ -170,7 +165,6 @@ fn main() {
             vpcmapw: setup.vpcmapw,
             vpc_stats_store: setup.vpc_stats_store,
             iom_ctl,
-            pmapw,
         },
     };
     // start mgmt
