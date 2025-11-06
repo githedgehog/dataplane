@@ -36,7 +36,7 @@ impl TapSet {
     }
 }
 
-/// The internal messages to control an `IoManager`.
+/// The internal messages to control an [`crate::io::IoManager`].
 pub enum IoManagerMsg {
     Enable(TapSet),
     Stop,
@@ -76,11 +76,22 @@ impl IoManagerCtl {
     pub fn clear(&mut self) {
         self.tapset.clear();
     }
+    /// Send a request to the IO manager with the taps in the local [`TapSet`].
+    ///
+    /// # Errors
+    ///
+    /// May fail if the channel has been closed
     pub async fn commit(&mut self) -> Result<(), SendError<IoManagerMsg>> {
         self.sender
             .send(IoManagerMsg::Enable(self.tapset.clone()))
             .await
     }
+
+    /// Request the IO manager to stop. This stops the IO manager service.
+    ///
+    /// # Errors
+    ///
+    /// May fail if the channel has been closed
     pub async fn stop(&mut self) -> Result<(), SendError<IoManagerMsg>> {
         self.sender.send(IoManagerMsg::Stop).await
     }
@@ -89,7 +100,7 @@ impl IoManagerCtl {
 impl Display for TapSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "━━━━ Interfaces to be active ━━━━")?;
-        for spec in self.0.iter() {
+        for spec in &self.0 {
             writeln!(f, "{spec}")?;
         }
         Ok(())

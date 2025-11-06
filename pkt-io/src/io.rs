@@ -21,6 +21,7 @@ use net::packet::Packet;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use thiserror::Error;
 
 use tracectl::trace_target;
 #[allow(unused)]
@@ -30,6 +31,14 @@ const PKT_IO_MGR: &str = "pkt-io-manager";
 trace_target!(PKT_IO_MGR, LevelFilter::INFO, &[]);
 
 use crate::ctl::{IoManagerCtl, IoManagerMsg};
+
+#[derive(Error, Debug)]
+pub enum IoManagerError {
+    #[error("Failed to create tokio runtime: {0}")]
+    TokioRuntimeFailure(#[from] std::io::Error),
+    #[error("Failed to spawn thread: {0}")]
+    ThreadError(std::io::Error),
+}
 
 #[derive(Debug)]
 
@@ -177,9 +186,10 @@ impl<Buf: PacketBufferMut, P: PacketBufferPool<Buffer = Buf> + 'static> IoManage
 
             // write packets concurrently over distinct taps
             while let Some(result) = multi_write.next().await {
-                match result {
-                    Err(e) => error!("Failed to write buffer to tap: {e}"),
-                    Ok(()) => trace!("Wrote packet to tap!"),
+                if let Err(e) = result {
+                    error!("Failed to write buffer to tap: {e}");
+                } else {
+                    trace!("Wrote packet to tap!");
                 }
             }
 
@@ -238,7 +248,7 @@ impl<Buf: PacketBufferMut, P: PacketBufferPool<Buffer = Buf> + 'static> IoManage
         warn!("Channel closed for packet punt control");
     }
 
-    fn start_punt_pkt_control(puntq: PktQueue<Buf>) -> (task::JoinHandle<()>, Sender<TapOp>) {
+    fn start_punt_pkt_control(puntq: &PktQueue<Buf>) -> (task::JoinHandle<()>, Sender<TapOp>) {
         let (sender, receiver) = channel::<TapOp>(100);
         let handle = tokio::spawn(Self::punt_pkt_control(puntq.clone(), receiver));
         (handle, sender)
@@ -255,7 +265,7 @@ impl<Buf: PacketBufferMut, P: PacketBufferPool<Buffer = Buf> + 'static> IoManage
         let mut taptable = TapTable::new();
 
         // spawn packet punt controller. A single task is used to punt packets to all taps from a queue
-        let (puntctl_handle, puntctl) = Self::start_punt_pkt_control(puntq.clone());
+        let (puntctl_handle, puntctl) = Self::start_punt_pkt_control(&puntq.clone());
 
         let h = tokio::spawn(async move {
             while let Some(msg) = receiver.recv().await {
@@ -325,28 +335,34 @@ impl<Buf: PacketBufferMut, P: PacketBufferPool<Buffer = Buf> + 'static> IoManage
     }
 }
 
+/// Start the [`IoManager`] on its own thread. On success, this function returns a [`IoManagerCtl`]
+/// that allows stopping the [`IoManager`]  or sending requests for it to handle rx/tx on a given tap.
+///
+/// # Errors
+/// On failure, this function returns [`IoManagerError`]
 pub fn start_io<Buf: PacketBufferMut, P: PacketBufferPool<Buffer = Buf> + 'static>(
     puntq: PktQueue<Buf>,
     injectq: PktQueue<Buf>,
     pool: P,
-) -> Result<(std::thread::JoinHandle<()>, IoManagerCtl), String> {
-    info!("Starting pkt-io-manager");
+) -> Result<(std::thread::JoinHandle<()>, IoManagerCtl), IoManagerError> {
+    info!("Starting packet IO manager");
 
     let (sender, receiver) = channel::<IoManagerMsg>(100);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(IoManagerError::TokioRuntimeFailure)?;
+
     let handle = std::thread::Builder::new()
         .name("pkt-io-mgr".to_string())
         .spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_io()
-                .enable_time()
-                .build()
-                .expect("Tokio runtime creation failed");
-
             let iom = IoManager::new(puntq, injectq, receiver, pool);
             rt.block_on(iom.run());
             info!("IO manager stopped!");
         })
-        .map_err(|e| format!("Failed to start io manager: {e}"))?;
+        .map_err(IoManagerError::TokioRuntimeFailure)?;
 
     let iom_ctl = IoManagerCtl::new(sender);
     Ok((handle, iom_ctl))
@@ -361,6 +377,7 @@ mod io_tests {
     use net::packet::Packet;
     use rtnetlink::LinkUnspec;
     use test_utils::with_caps;
+    use tracing::{error, info, warn};
 
     use crate::PktIo;
     use crate::{IoManagerCtl, PktQueue};
@@ -382,16 +399,16 @@ mod io_tests {
     async fn tap_read() {
         const TAPNAME: &str = "tapme";
         let tapname = InterfaceName::try_from(TAPNAME).unwrap();
-        println!("Creating tap {tapname}...");
+        info!("Creating tap {tapname}...");
         let tap = TapDevice::open(&tapname).await.unwrap();
         loop {
             let mut buf = TestBuffer::new();
             match tap.read(&mut buf).await {
                 Ok(len) => {
                     let packet = Packet::new(buf).unwrap();
-                    println!("got pkt w/ len {}:\n{packet}", len.get());
+                    info!("got pkt w/ len {}:\n{packet}", len.get());
                 }
-                Err(e) => println!("error: {e}"),
+                Err(e) => error!("error: {e}"),
             }
         }
     }
@@ -435,7 +452,7 @@ mod io_tests {
             .spawn(move || {
                 // learn taps from kernel
                 let taps = Arc::new(learn_taps());
-                println!("Available taps:{taps:#?}");
+                info!("Available taps:{taps:#?}");
 
                 let mut rng = rng();
                 while run.load(Ordering::Relaxed) {
@@ -446,7 +463,7 @@ mod io_tests {
                         packet.get_meta_mut().iif = Some(InterfaceIndex::try_new(*tapid).unwrap());
                     }
                     if let Err(_dropped) = puntq.push(Box::new(packet)) {
-                        println!("Queue is full!, dropping...");
+                        warn!("Queue is full!, dropping...");
                     } else {
                         puntq.notify();
                     }
@@ -480,7 +497,7 @@ mod io_tests {
             .execute()
             .await
             .expect("Failed to bring up tap");
-        println!("Brought tap up");
+        info!("Brought tap up");
     }
 
     async fn create_test_taps() {
@@ -524,38 +541,38 @@ mod io_tests {
         let wait_time = std::time::Duration::from_secs(2);
 
         tokio::time::sleep(wait_time).await;
-        println!("================ Registering tap0 =============================");
+        info!("================ Registering tap0 =============================");
         register_tap(&mut iom_ctl, "tap0");
         iom_ctl.commit().await.unwrap();
 
         tokio::time::sleep(wait_time).await;
-        println!("================ Registering tap1 & tap2 ======================");
+        info!("================ Registering tap1 & tap2 ======================");
         register_tap(&mut iom_ctl, "tap1");
         register_tap(&mut iom_ctl, "tap2");
         iom_ctl.commit().await.unwrap();
 
         tokio::time::sleep(wait_time).await;
-        println!("================ Unregistering tap0 ==========================");
+        info!("================ Unregistering tap0 ==========================");
         iom_ctl.del(&InterfaceName::try_from("tap0").unwrap());
         iom_ctl.commit().await.unwrap();
 
         tokio::time::sleep(wait_time).await;
-        println!("================ Flushing all ==========================");
+        info!("================ Flushing all ==========================");
         iom_ctl.clear();
         iom_ctl.commit().await.unwrap();
 
         tokio::time::sleep(wait_time).await;
-        println!("================ Adding tap0 back ==========================");
+        info!("================ Adding tap0 back ==========================");
         register_tap(&mut iom_ctl, "tap0");
         iom_ctl.commit().await.unwrap();
 
         tokio::time::sleep(wait_time).await;
-        println!("================ Stop IO ==========================");
+        info!("================ Stop IO ==========================");
         iom_ctl.stop().await.unwrap();
         io_handle.join().unwrap();
 
         // stop punt thread and sink thread
-        println!("================ Stop Test threads ==========================");
+        info!("================ Stop Test threads ==========================");
         tokio::time::sleep(wait_time).await;
         thread_run.store(false, Ordering::Relaxed);
         punt_handle.join().unwrap();

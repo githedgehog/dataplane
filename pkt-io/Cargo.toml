@@ -19,6 +19,7 @@ futures = { workspace = true }
 left-right = { workspace = true }
 linkme = { workspace = true }
 rtnetlink = { workspace = true, features = ["default", "tokio"] }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 tracing = { workspace = true }
 
