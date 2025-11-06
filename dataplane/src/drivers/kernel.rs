@@ -36,6 +36,8 @@ use net::buffer::test_buffer::TestBuffer;
 use net::interface::{InterfaceIndex, InterfaceName};
 use net::packet::{DoneReason, Packet, PortIndex};
 use netdev::Interface;
+use nix::net::if_::if_nametoindex;
+
 use pipeline::{DynPipeline, NetworkFunction};
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
@@ -61,8 +63,8 @@ pub struct Kif {
     raw_fd: RawFd,           // raw desc of packet socket
     pindex: PortIndex, // port index. This is how the kernel interface is externally identified
 
-    tapname: InterfaceName,             // name of tap interface
-    tapifindex: Option<InterfaceIndex>, // tap ifindex
+    tapname: InterfaceName,     // name of tap interface
+    tapifindex: InterfaceIndex, // tap ifindex
 }
 
 impl Kif {
@@ -74,6 +76,7 @@ impl Kif {
         name: &InterfaceName,
         token: Token,
         tapname: &InterfaceName,
+        tapifindex: InterfaceIndex,
     ) -> Result<Self, String> {
         let mut sock = RawPacketStream::new()
             .map_err(|e| format!("Failed to open raw sock for interface {name}: {e}"))?;
@@ -92,7 +95,7 @@ impl Kif {
             raw_fd,
             pindex,
             tapname: tapname.clone(),
-            tapifindex: None,
+            tapifindex,
         };
         debug!("Successfully created interface '{name}'");
         Ok(iface)
@@ -126,13 +129,17 @@ impl KifTable {
     ) -> Result<(), String> {
         debug!("Adding interface '{name}'...");
         let token = Token(self.next_token);
-        let interface = Kif::new(ifindex, name, token, tapname)?;
-        let mut source = SourceFd(&interface.raw_fd);
+        let tapifindex = if_nametoindex(tapname.as_ref())
+            .map_err(|e| format!("Could not find ifindex for tap {tapname}: {e}"))?;
+        let tapifindex = InterfaceIndex::try_from(tapifindex).map_err(|e| e.to_string())?;
+
+        let kif = Kif::new(ifindex, name, token, tapname, tapifindex)?;
+        let mut source = SourceFd(&kif.raw_fd);
         self.poll
             .registry()
             .register(&mut source, token, Interest::READABLE)
             .map_err(|e| format!("Failed to register interface '{name}': {e}"))?;
-        self.by_token.insert(token, interface);
+        self.by_token.insert(token, kif);
         self.next_token += 1;
         debug!("Successfully registered interface '{name}' with token {token:?}");
         Ok(())
@@ -146,7 +153,7 @@ impl KifTable {
     pub fn get_mut_by_tap_index(&mut self, tapifindex: InterfaceIndex) -> Option<&mut Kif> {
         self.by_token
             .values_mut()
-            .find(|kif| kif.tapifindex == Some(tapifindex))
+            .find(|kif| kif.tapifindex == tapifindex)
     }
 }
 
@@ -165,11 +172,6 @@ fn fmt_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 
 impl Display for Kif {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let tapifindex = if let Some(i) = self.tapifindex {
-            i.to_string()
-        } else {
-            "--".to_string()
-        };
         writeln!(
             f,
             KIF_FMT!(),
@@ -177,7 +179,7 @@ impl Display for Kif {
             self.ifindex.to_string(),
             self.pindex.to_string(),
             self.tapname.to_string(),
-            tapifindex
+            self.tapifindex
         )
     }
 }
@@ -494,7 +496,7 @@ impl DriverKernel {
                         Ok(mut incoming) => {
                             // we'll probably ditch iport, but for the time being....
                             incoming.get_meta_mut().iport = Some(kif.pindex);
-                            incoming.get_meta_mut().iif = kif.tapifindex;
+                            incoming.get_meta_mut().iif = Some(kif.tapifindex);
                             pkts.push(Box::new(incoming));
                         }
                         Err(e) => {
