@@ -547,6 +547,14 @@ impl StatefulNat {
         src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<bool, StatefulNatError> {
+        if let Some(allocator) = self.allocator.get()
+            && I::is_exempt(allocator, flow_key).map_err(StatefulNatError::AllocationFailure)?
+        {
+            // Packet is allowed to go through without NAT, leave it unchanged
+            debug!("{}: Packet exempt from NAT", self.name());
+            return Ok(false);
+        }
+
         // Hot path: if we have a session, directly translate the address already
         if let Some(state) = Self::lookup_session::<I, Buf>(packet) {
             debug!("{}: Found session, translating packet", self.name());
@@ -560,19 +568,18 @@ impl StatefulNat {
         }
 
         let Some(allocator) = self.allocator.get() else {
-            // No allocator set - We refuse to process this packet if we don't have a way to tell
-            // whether it should be NAT-ed or not
+            // No allocator set - We refuse to process this packet further, as we can't allocate a
+            // new session.
             return Err(StatefulNatError::NoAllocator);
         };
 
         // Else, if we need NAT for this packet, create a new session and translate the address
         let alloc =
             I::allocate(allocator, flow_key).map_err(StatefulNatError::AllocationFailure)?;
+        // If we didn't find source NAT translation information, we should deny the creation of a
+        // new session: we don't allow packets "from the outside" to create new sessions.
+        debug_assert!(alloc.src.is_some());
 
-        if alloc.src.is_none() && alloc.dst.is_none() {
-            // No NAT for this tuple, leave the packet unchanged - Do not drop it
-            return Ok(false);
-        }
         debug!("{}: Allocated translation data: {}", self.name(), alloc);
 
         // Given that at least one of alloc.src or alloc.dst is set, we should always have at

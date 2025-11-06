@@ -74,9 +74,9 @@ use net::packet::VpcDiscriminant;
 use pkt_meta::flow_table::FlowKey;
 use pkt_meta::flow_table::IpProtoKey;
 use pkt_meta::flow_table::flow_key::IcmpProtoKey;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Display;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 mod alloc;
 mod natip_with_bitmap;
@@ -153,25 +153,60 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
         dst_id: VpcDiscriminant,
         addr: I,
     ) -> Option<&alloc::IpAllocator<J>> {
-        let key = PoolTableKey::new(
-            protocol,
-            src_id,
-            dst_id,
-            addr,
-            // This field is not usually relevant for the lookup. The only case it's considered is
-            // when all other fields match exactly with the fields from a key in the PoolTable. To
-            // make sure we pick the entry in this case, we need to ensure the value is always
-            // greater or equal to the one of the key from the PoolTable. So we set it to the
-            // largest possible value.
-            I::try_from_bits(u128::MAX)
-                .or(I::try_from_bits(u32::MAX.into()))
-                .ok()?, // Cannot fail - IPv6 and IPv4 can always be built from u32::MAX
-        );
+        let key = PoolTableKey::new(protocol, src_id, dst_id, addr, max_range::<I>());
         self.get(&key)
     }
 
     fn add_entry(&mut self, key: PoolTableKey<I>, allocator: alloc::IpAllocator<J>) {
         self.0.insert(key, allocator);
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// ExemptTableKey
+///////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct ExemptTableKey<I: NatIp> {
+    src_id: VpcDiscriminant,
+    dst_id: VpcDiscriminant,
+    addr: I,
+    addr_range_end: I,
+}
+
+impl<I: NatIp> ExemptTableKey<I> {
+    fn new(src_id: VpcDiscriminant, dst_id: VpcDiscriminant, addr: I, addr_range_end: I) -> Self {
+        Self {
+            src_id,
+            dst_id,
+            addr,
+            addr_range_end,
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// ExemptTable
+///////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug)]
+struct ExemptTable<I: NatIp>(BTreeSet<ExemptTableKey<I>>);
+
+impl<I: NatIp> ExemptTable<I> {
+    fn new() -> Self {
+        Self(BTreeSet::new())
+    }
+
+    fn add(&mut self, key: ExemptTableKey<I>) {
+        self.0.insert(key);
+    }
+
+    fn contains(&self, src_id: VpcDiscriminant, dst_id: VpcDiscriminant, addr: I) -> bool {
+        let key = ExemptTableKey::new(src_id, dst_id, addr, max_range::<I>());
+        // See comment in PoolTable::get()
+        self.0.range(..=&key).next_back().is_some_and(|k| {
+            k.addr_range_end >= key.addr && k.src_id == key.src_id && k.dst_id == key.dst_id
+        })
     }
 }
 
@@ -205,6 +240,8 @@ pub struct NatDefaultAllocator {
     pools_dst44: PoolTable<Ipv4Addr, Ipv4Addr>,
     pools_src66: PoolTable<Ipv6Addr, Ipv6Addr>,
     pools_dst66: PoolTable<Ipv6Addr, Ipv6Addr>,
+    exempt4: ExemptTable<Ipv4Addr>,
+    exempt6: ExemptTable<Ipv6Addr>,
 }
 
 impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatDefaultAllocator {
@@ -214,6 +251,8 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
             pools_dst44: PoolTable::new(),
             pools_src66: PoolTable::new(),
             pools_dst66: PoolTable::new(),
+            exempt4: ExemptTable::new(),
+            exempt6: ExemptTable::new(),
         }
     }
 
@@ -229,6 +268,32 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
         flow_key: &FlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv6Addr>>, AllocatorError> {
         Self::allocate_from_tables(flow_key, &self.pools_src66, &self.pools_dst66)
+    }
+
+    fn is_exempt_v4(&self, flow_key: &FlowKey) -> Result<bool, AllocatorError> {
+        let data = flow_key.data();
+        let IpAddr::V4(src_addr) = data.src_ip() else {
+            return Err(AllocatorError::InternalIssue(
+                "Failed to convert IP address to Ipv4addr (exempt lookup)".to_string(),
+            ));
+        };
+        let (Some(src_id), Some(dst_id)) = (data.src_vpcd(), data.dst_vpcd()) else {
+            return Ok(false);
+        };
+        Ok(self.exempt4.contains(src_id, dst_id, *src_addr))
+    }
+
+    fn is_exempt_v6(&self, flow_key: &FlowKey) -> Result<bool, AllocatorError> {
+        let data = flow_key.data();
+        let IpAddr::V6(src_addr) = data.src_ip() else {
+            return Err(AllocatorError::InternalIssue(
+                "Failed to convert IP address to Ipv6addr (exempt lookup)".to_string(),
+            ));
+        };
+        let (Some(src_id), Some(dst_id)) = (data.src_vpcd(), data.dst_vpcd()) else {
+            return Ok(false);
+        };
+        Ok(self.exempt6.contains(src_id, dst_id, *src_addr))
     }
 }
 
@@ -435,6 +500,17 @@ impl NatDefaultAllocator {
             IcmpProtoKey::Unsupported => Err(AllocatorError::UnsupportedIcmpCategory),
         }
     }
+}
+
+// This method is for setting a range end field that is not usually relevant for table lookups, for
+// example for PoolTable or ExemptTable lookups. The only case the resulting field is considered is
+// when all other fields from the lookup key match exactly with the fields from a key in a table. To
+// make sure we pick the entry in this case, we need to ensure the value is always greater or equal
+// to the one of the key from the PoolTable/ExemptTable. So we set it to the largest possible value.
+fn max_range<I: NatIp>() -> I {
+    I::try_from_bits(u128::MAX)
+        .or(I::try_from_bits(u32::MAX.into()))
+        .unwrap_or_else(|()| unreachable!()) // IPv4/IPv6 can always be built from u32::MAX
 }
 
 ///////////////////////////////////////////////////////////////////////////////
