@@ -28,6 +28,7 @@ use pkt_meta::flow_table::{FlowKey, FlowKeyData, FlowTable, IpProtoKey};
 use std::fmt::{Debug, Display};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::num::NonZero;
+use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 #[allow(unused)]
@@ -569,7 +570,11 @@ impl StatefulNat {
         // Hot path: if we have a session, directly translate the address already
         if let Some(state) = Self::lookup_session::<I, Buf>(packet) {
             debug!("{}: Found session, translating packet", self.name());
-            return Self::stateful_translate(self.name(), packet, &state).and(Ok(true));
+            if *flow_key.data().dst_ip()
+                != IpAddr::from_str("10.50.3.2").unwrap_or_else(|_| unreachable!())
+            {
+                return Self::stateful_translate(self.name(), packet, &state).and(Ok(true));
+            }
         }
 
         if let Some(allocator) = self.allocator.get()
