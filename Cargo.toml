@@ -4,6 +4,7 @@ members = [
     "acl",
     "acl-filter",
     "args",
+    "arp",
     "cli",
     "clock",
     "common",
@@ -76,6 +77,7 @@ repository = "https://github.com/githedgehog/dataplane/"
 acl = { path = "./acl", package = "dataplane-acl", features = [] }
 acl-filter = { path = "./acl-filter", package = "dataplane-acl-filter", features = [] }
 args = { path = "./args", package = "dataplane-args", features = [] }
+arp = { path = "./arp", package = "dataplane-arp", features = [] }
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
 common = { path = "./common", package = "dataplane-common", features = [] }
 clock = { path = "./clock", package = "dataplane-clock", features = [] }
@@ -112,6 +114,7 @@ n-vm-protocol = { path = "./n-vm-protocol", package = "dataplane-n-vm-protocol",
 nat = { path = "./nat", package = "dataplane-nat", features = [] }
 net = { path = "./net", package = "dataplane-net", features = [] }
 pipeline = { path = "./pipeline", package = "dataplane-pipeline", features = [] }
+pkt-io = { path = "./pkt-io", package = "dataplane-pkt-io", features = [] }
 rekon = { path = "./rekon", package = "dataplane-rekon", features = [] }
 routing = { path = "./routing", package = "dataplane-routing", features = [] }
 stats = { path = "./stats", package = "dataplane-stats", features = [] }

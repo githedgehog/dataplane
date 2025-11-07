@@ -1486,6 +1486,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-arp"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "caps",
+ "dataplane-common",
+ "dataplane-interface-manager",
+ "dataplane-lifecycle",
+ "dataplane-n-vm",
+ "dataplane-net",
+ "dataplane-pipeline",
+ "dataplane-pkt-io",
+ "dataplane-test-utils",
+ "dataplane-tracectl",
+ "fixin",
+ "futures",
+ "left-right",
+ "linkme",
+ "netdev",
+ "nix",
+ "rtnetlink",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-test",
+]
+
+[[package]]
 name = "dataplane-cli"
 version = "0.29.0"
 dependencies = [
