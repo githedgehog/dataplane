@@ -38,7 +38,7 @@ on:
         description: "Run hybrid HLAB tests"
         required: false
         default: false
-      enable_release_tests:
+      run_release_tests:
         type: "boolean"
         description: "Enable release tests for VLAB/HLAB tests"
         required: false
