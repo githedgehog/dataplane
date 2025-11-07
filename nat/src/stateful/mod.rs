@@ -566,18 +566,18 @@ impl StatefulNat {
         src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<bool, StatefulNatError> {
+        // Hot path: if we have a session, directly translate the address already
+        if let Some(state) = Self::lookup_session::<I, Buf>(packet) {
+            debug!("{}: Found session, translating packet", self.name());
+            return Self::stateful_translate(self.name(), packet, &state).and(Ok(true));
+        }
+
         if let Some(allocator) = self.allocator.get()
             && I::is_exempt(allocator, flow_key).map_err(StatefulNatError::AllocationFailure)?
         {
             // Packet is allowed to go through without NAT, leave it unchanged
             debug!("{}: Packet exempt from NAT", self.name());
             return Ok(false);
-        }
-
-        // Hot path: if we have a session, directly translate the address already
-        if let Some(state) = Self::lookup_session::<I, Buf>(packet) {
-            debug!("{}: Found session, translating packet", self.name());
-            return Self::stateful_translate(self.name(), packet, &state).and(Ok(true));
         }
 
         match self.deal_with_icmp_error_msg::<Buf, I>(packet, flow_key) {
