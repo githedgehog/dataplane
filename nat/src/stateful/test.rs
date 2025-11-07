@@ -539,7 +539,7 @@ mod tests {
             .unwrap()
             .ip("1.1.0.0/16".into())
             .as_range("2.2.0.0/16".into());
-        let expose211 = VpcExpose::empty();
+        let expose211 = VpcExpose::empty().ip("5.0.0.0/8".into());
 
         let mut manifest12 = VpcManifest::new("VPC-1");
         add_expose(&mut manifest12, expose121);
@@ -606,14 +606,14 @@ mod tests {
         assert_eq!(return_output_dst_port, 9998);
         assert_eq!(done_reason, None);
 
-        // NAT: expose211 <-> expose121 (no source NAT)
+        // NAT: expose211 <-> expose121 (no source NAT - no NAT happens, packet will be dropped at routing stage)
         let (orig_src, orig_dst) = ("5.0.0.5", "2.2.0.2");
         let (target_src, target_dst) = ("5.0.0.5", "2.2.0.2");
         let (output_src, output_dst, _, _, done_reason) =
             check_packet(&mut nat, vni(200), vni(100), orig_src, orig_dst, 9090, 8080);
         assert_eq!(output_src, addr_v4(target_src));
         assert_eq!(output_dst, addr_v4(target_dst));
-        assert_eq!(done_reason, Some(DoneReason::Filtered));
+        assert_eq!(done_reason, None);
     }
 
     fn build_overlay_2vpcs_no_nat() -> Overlay {
