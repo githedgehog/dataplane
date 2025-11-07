@@ -325,6 +325,8 @@ impl StatelessNat {
                 if modified {
                     packet.get_meta_mut().set_checksum_refresh(true);
                     debug!("{nfi}: Packet was NAT'ed");
+                    // We don't support stateless + stateful NAT at the moment
+                    packet.get_meta_mut().set_nat(false);
                 } else {
                     debug!("{nfi}: No NAT translation needed");
                 }
