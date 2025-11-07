@@ -15,9 +15,6 @@ use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, socket};
 use tracing::warn;
 
-#[global_allocator]
-static GLOBAL_ALLOCATOR: RteAllocator = RteAllocator::new_uninitialized();
-
 #[allow(unused)] //TEMP
 fn init_devices(eal: &Eal, num_workers: u16) -> Vec<Dev> {
     eal.dev
@@ -77,7 +74,6 @@ fn init_devices(eal: &Eal, num_workers: u16) -> Vec<Dev> {
 #[non_exhaustive]
 pub struct Started {
     eal: Eal,
-    // devices: Vec<Dev>,
     workers: u16,
 }
 
@@ -98,7 +94,7 @@ impl<'config> driver::Configure for Dpdk<&'config rkyv::Archived<LaunchConfigura
     }
 }
 
-impl<'a> driver::Start for Dpdk<&'a rkyv::Archived<LaunchConfiguration>> {
+impl driver::Start for Dpdk<&rkyv::Archived<LaunchConfiguration>> {
     type Started = Dpdk<Started>;
     type Error = Infallible;
 
@@ -113,8 +109,9 @@ impl<'a> driver::Start for Dpdk<&'a rkyv::Archived<LaunchConfiguration>> {
             },
         };
         let eal = dpdk::eal::init(eal_args);
-        // memory allocation ok after this line
-        // let devices = init_devices(&eal, self.state.dataplane_workers.to_native());
+        // memory allocation ok now
+        dpdk::lcore::ServiceThread::register_thread_spawn_hook();
+        // thread creation ok now
         Ok(Self::Started {
             state: Started {
                 eal,

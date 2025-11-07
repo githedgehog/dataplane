@@ -5,7 +5,7 @@ use crate::eal::{Eal, EalErrno};
 use core::ffi::{c_int, c_uint, c_void};
 use core::fmt::Debug;
 use errno::ErrorCode;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[repr(transparent)]
 #[derive(Debug)]
@@ -125,6 +125,30 @@ impl ServiceThread<'_> {
             priority: LCorePriority::RealTime,
             handle,
         }
+    }
+
+    #[cold]
+    pub fn register_thread_spawn_hook() {
+        std::thread::add_spawn_hook(|t| {
+            match t.name() {
+                Some(name) => {
+                    warn!("registering thread \"{name}\" (id {id:?}) with the DPDK EAL", id = t.id());
+                },
+                None => {
+                    warn!("registering nameless thread wit id {:?} with the DPDK EAL", t.id());
+                },
+            }
+            move || {
+                warn!("Initializing RTE Lcore");
+                // TODO: determine if we need this for something more than thread locals
+                // let ret = unsafe { dpdk_sys::rte_thread_register() };
+                // if ret != 0 {
+                //     let errno = unsafe { dpdk_sys::rte_errno_get() };
+                //     let msg = format!("rte thread exited with code {ret}, errno: {errno}");
+                //     Eal::fatal_error(msg)
+                // }
+            }
+        })
     }
 
     #[tracing::instrument(level = "trace", skip(self))]

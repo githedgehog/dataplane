@@ -64,8 +64,8 @@ pub enum InitError {
 
 #[derive(Debug)]
 pub struct EalArgs {
-    argc: c_int,
-    argv: *mut *mut c_char,
+    pub argc: c_int,
+    pub argv: *mut *mut c_char,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -120,6 +120,7 @@ pub fn init(args: EalArgs) -> Eal {
     if ret < 0 {
         EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
     }
+    lcore::ServiceThread::register_thread_spawn_hook();
     Eal {
         mem: mem::Manager::init(),
         dev: dev::Manager::init(),

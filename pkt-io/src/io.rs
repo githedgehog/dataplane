@@ -335,14 +335,9 @@ impl<Buf: PacketBufferMut, P: PacketBufferPool<Buffer = Buf> + 'static> IoManage
     }
 }
 
-/// Start the [`IoManager`] on its own thread. On success, this function returns a [`IoManagerCtl`]
-/// that allows stopping the [`IoManager`]  or sending requests for it to handle rx/tx on a given tap.
-///
-/// # Errors
-/// On failure, this function returns [`IoManagerError`]
-pub fn start_io<Buf: PacketBufferMut, P: PacketBufferPool<Buffer = Buf> + 'static>(
-    puntq: PktQueue<Buf>,
-    injectq: PktQueue<Buf>,
+pub fn start_io<P: PacketBufferPool + 'static>(
+    puntq: PktQueue<P::Buffer>,
+    injectq: PktQueue<P::Buffer>,
     pool: P,
 ) -> Result<(std::thread::JoinHandle<()>, IoManagerCtl), IoManagerError> {
     info!("Starting packet IO manager");
@@ -515,8 +510,8 @@ mod io_tests {
     #[fixin::wrap(with_caps([CAP_NET_ADMIN]))]
     async fn test_io_manager() {
         // create queues
-        let puntq = PktIo::<TestBuffer>::create_queue(1000).unwrap();
-        let injectq = PktIo::<TestBuffer>::create_queue(100).unwrap();
+        let puntq = PktIo::create_queue(1000).unwrap();
+        let injectq = PktIo::create_queue(100).unwrap();
 
         // create test taps
         create_test_taps().await;
@@ -534,8 +529,7 @@ mod io_tests {
 
         // start IO manager
         let (io_handle, mut iom_ctl) =
-            start_io::<TestBuffer, TestBufferPool>(puntq.clone(), injectq.clone(), TestBufferPool)
-                .unwrap();
+            start_io(puntq.clone(), injectq.clone(), TestBufferPool).unwrap();
 
         // here we control the IO manager
         let wait_time = std::time::Duration::from_secs(2);

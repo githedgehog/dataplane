@@ -10,12 +10,12 @@ pub trait Driver {
 pub trait Configure: Sized {
     type Configuration;
     type Error;
-    fn configure(config: Self::Configuration) -> Result<Self, Self::Error>;
+    fn configure(configuration: Self::Configuration) -> Result<Self, <Self as Configure>::Error>;
 }
 
 pub trait Start {
-    type Error;
     type Started: Stop;
+    type Error;
     fn start(self) -> Result<Self::Started, Self::Error>;
 }
 

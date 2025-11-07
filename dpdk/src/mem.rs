@@ -3,10 +3,14 @@
 
 //! DPDK memory management wrappers.
 
-use crate::eal::{Eal, EalErrno};
-use crate::socket::SocketId;
+use crate::dev::Dev;
+use crate::eal::{self, Eal, EalArgs, EalErrno};
+use crate::{dev, lcore, mem};
+use crate::socket::{self, SocketId};
 use alloc::format;
 use alloc::string::String;
+use args::LaunchConfiguration;
+use driver::{Configure, Start};
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::Cell;
 use core::ffi::c_uint;
@@ -18,6 +22,9 @@ use core::ptr::NonNull;
 use core::ptr::null;
 use core::ptr::null_mut;
 use core::slice::from_raw_parts_mut;
+use std::convert::Infallible;
+use std::sync::atomic::AtomicBool;
+use std::sync::{LazyLock, OnceLock};
 use errno::Errno;
 use net::buffer::PacketBufferPool;
 use tracing::{error, info, warn};
@@ -275,28 +282,33 @@ pub struct PoolConfig {
 }
 
 /// Ways in which a memory pool name can be invalid.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, thiserror::Error)]
 pub enum InvalidMemPoolName {
     /// The name is not valid ASCII.
+    #[error("memory pool name is not valid ascii: {0}")]
     NotAscii(String),
     /// The name is too long.
+    #[error("{0}")]
     TooLong(String),
     /// The name is empty.
+    #[error("memory pool name is empty: {0}")]
     Empty(String),
     /// The name does not start with an ASCII letter.
+    #[error("{0}")]
     DoesNotStartWithAsciiLetter(String),
     /// Contains null bytes.
+    #[error("{0}")]
     ContainsNullBytes(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 /// Ways in which a memory pool config can be invalid.
 pub enum InvalidMemPoolConfig {
     /// The name of the pool is illegal.
+    #[error(transparent)]
     InvalidName(InvalidMemPoolName),
     /// The parameters of the pool are illegal.
-    ///
-    /// TODO: this should be a more detailed error.
+    #[error("the parameters of the memory pool are illegal ({0:?}): {1}")]
     InvalidParams(Errno, String),
 }
 
@@ -613,8 +625,10 @@ pub enum MbufManipulationError {
 /// A global memory allocator for DPDK
 #[non_exhaustive]
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone)]
 pub struct RteAllocator;
+
+#[repr(transparent)]
+pub struct RteAllocatorL(pub std::sync::LazyLock<RteAllocator>);
 
 unsafe impl Sync for RteAllocator {}
 
@@ -622,6 +636,80 @@ impl RteAllocator {
     /// Create a new, uninitialized [`RteAllocator`].
     pub const fn new_uninitialized() -> Self {
         RteAllocator
+    }
+}
+
+
+
+#[non_exhaustive]
+pub struct Started {
+    eal: Eal,
+    // devices: Vec<Dev>,
+    workers: u16,
+}
+
+#[non_exhaustive]
+pub struct Stopped;
+
+pub struct Dpdk<S> {
+    state: S,
+}
+
+impl driver::Configure for Eal {
+    type Configuration = EalArgs;
+    type Error = Infallible;
+
+    // memory allocation ok after this call if Ok
+    // thread creation ok after this call if Ok
+    fn configure(configuration: EalArgs) -> Result<Self, Self::Error> {
+        let ret = unsafe { dpdk_sys::rte_eal_init(configuration.argc, configuration.argv) };
+        if ret < 0 {
+            EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
+        }
+        lcore::ServiceThread::register_thread_spawn_hook();
+        Ok(Eal {
+            mem: mem::Manager::init(),
+            dev: dev::Manager::init(),
+            socket: socket::Manager::init(),
+            lcore: lcore::Manager::init(),
+        })
+    }
+
+}
+
+impl Start for Dpdk<&rkyv::Archived<LaunchConfiguration>> {
+    type Started = Dpdk<Started>;
+    type Error = Infallible;
+
+    /// Memory allocation ok if this function is successful
+    fn start(self) -> Result<Self::Started, Self::Error> {
+        let eal_args = match &self.state.driver {
+            args::ArchivedDriverConfigSection::Dpdk(section) => {
+                EalArgs::new(&section.eal_args)
+            },
+            args::ArchivedDriverConfigSection::Kernel(_) => {
+                unreachable!()
+            },
+        };
+        let eal = eal::init(eal_args);
+        // memory allocation ok after this line
+        lcore::ServiceThread::register_thread_spawn_hook();
+        // thread creation ok after this line
+        // let devices = init_devices(&eal, self.state.dataplane_workers.to_native());
+        Ok(Self::Started {
+            state: Started {
+                eal,
+                workers: self.state.dataplane_workers.to_native(),
+            },
+        })
+    }
+}
+
+impl driver::Stop for Dpdk<Started> {
+    type Outcome = ();
+
+    fn stop(self) -> Self::Outcome {
+        todo!()
     }
 }
 

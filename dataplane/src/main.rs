@@ -4,30 +4,30 @@
 #![deny(clippy::all, clippy::pedantic)]
 #![deny(rustdoc::all)]
 #![allow(rustdoc::missing_crate_level_docs)]
-#![feature(allocator_api)]
+#![feature(allocator_api, thread_spawn_hook)]
 
 mod drivers;
 mod packet_processor;
 mod statistics;
 
-use crate::statistics::MetricsServer;
-use crate::{drivers::dpdk::Dpdk, packet_processor::start_router};
+use crate::{drivers::{dpdk::Dpdk, kernel::DriverKernel}, packet_processor::start_router, statistics::MetricsServer};
 use args::{LaunchConfiguration, TracingConfigSection};
 
-use driver::{Configure, Start, Stop};
-use drivers::kernel::DriverKernel;
-use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
-
+use dpdk::mem::{PoolConfig, PoolParams};
+use driver::{Configure, Start};
+use miette::{Context, IntoDiagnostic};
+use net::buffer::{PacketBuffer, TestBufferPool};
 use pyroscope::PyroscopeAgent;
 use pyroscope_pprofrs::{PprofConfig, pprof_backend};
 
-use net::buffer::{TestBuffer, TestBufferPool};
 use pkt_io::{start_io, tap_init};
 
 use routing::RouterParamsBuilder;
 use tracectl::{custom_target, get_trace_ctl, trace_target};
-
 use tracing::{error, info, level_filters::LevelFilter};
+
+#[global_allocator]
+static GLOBAL_ALLOCATOR: dpdk::mem::RteAllocator = dpdk::mem::RteAllocator::new_uninitialized();
 
 trace_target!("dataplane", LevelFilter::DEBUG, &[]);
 custom_target!("tonic", LevelFilter::ERROR, &[]);
@@ -73,7 +73,7 @@ fn process_tracing_cmds(cfg: &TracingConfigSection) {
 }
 
 fn main() {
-    // memory allocation banned until EAL is started
+    // ----  memory allocation banned until EAL is started ----
     let launch_config_memmap = LaunchConfiguration::inherit();
     let launch_config = rkyv::access::<rkyv::Archived<LaunchConfiguration>, rkyv::rancor::Failure>(
         launch_config_memmap.as_ref(),
@@ -81,68 +81,71 @@ fn main() {
     .expect("failed to validate ArchivedLaunchConfiguration");
     let configured = Dpdk::configure(launch_config).unwrap();
     let started = configured.start().unwrap();
-    // memory allocation ok after this line
+    // ---- memory allocation and thread creation ok after this line ----
     init_logging();
-    // started.stop();
-    // let agent_running = launch_config
-    //     .profiling
-    //     .pyroscope_url
-    //     .as_ref()
-    //     .and_then(|url| {
-    //         match PyroscopeAgent::builder(url.as_str(), "hedgehog-dataplane")
-    //             .backend(pprof_backend(
-    //                 PprofConfig::new()
-    //                     .sample_rate(launch_config.profiling.frequency) // Hz
-    //                     .report_thread_name(),
-    //             ))
-    //             .build()
-    //         {
-    //             Ok(agent) => match agent.start() {
-    //                 Ok(running) => Some(running),
-    //                 Err(e) => {
-    //                     error!("Pyroscope start failed: {e}");
-    //                     None
-    //                 }
-    //             },
-    //             Err(e) => {
-    //                 error!("Pyroscope build failed: {e}");
-    //                 None
-    //             }
-    //         }
-    //     });
-    // info!("launch config: {launch_config:?}");
-    // process_tracing_cmds(&launch_config.tracing);
+    let launch_config = rkyv::from_bytes::<LaunchConfiguration, rkyv::rancor::Error>(launch_config_memmap.as_ref())
+        .into_diagnostic()
+        .wrap_err("failed to deserialize launch configuration")
+        .unwrap();
+    let agent_running = launch_config
+        .profiling
+        .pyroscope_url
+        .as_ref()
+        .and_then(|url| {
+            match PyroscopeAgent::builder(url.as_str(), "hedgehog-dataplane")
+                .backend(pprof_backend(
+                    PprofConfig::new()
+                        .sample_rate(launch_config.profiling.frequency) // Hz
+                        .report_thread_name(),
+                ))
+                .build()
+            {
+                Ok(agent) => match agent.start() {
+                    Ok(running) => Some(running),
+                    Err(e) => {
+                        error!("Pyroscope start failed: {e}");
+                        None
+                    }
+                },
+                Err(e) => {
+                    error!("Pyroscope build failed: {e}");
+                    None
+                }
+            }
+        });
+    info!("launch config: {launch_config:?}");
+    process_tracing_cmds(&launch_config.tracing);
 
-    // info!("Starting gateway process...");
+    info!("Starting gateway process...");
 
-    // let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-    // ctrlc::set_handler(move || stop_tx.send(()).expect("Error sending SIGINT signal"))
-    //     .expect("failed to set SIGINT handler");
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+    ctrlc::set_handler(move || stop_tx.send(()).expect("Error sending SIGINT signal"))
+        .expect("failed to set SIGINT handler");
 
-    // let grpc_addr = launch_config.config_server.address;
+    let grpc_addr = launch_config.config_server.address;
 
-    // /* router parameters */
-    // let config = match RouterParamsBuilder::default()
-    //     .metrics_addr(launch_config.metrics.address)
-    //     .cli_sock_path(launch_config.cli.cli_sock_path)
-    //     .cpi_sock_path(launch_config.routing.control_plane_socket)
-    //     .frr_agent_path(launch_config.routing.frr_agent_socket)
-    //     .build()
-    // {
-    //     Ok(config) => config,
-    //     Err(e) => {
-    //         error!("error building router parameters: {e}");
-    //         panic!("error building router parameters: {e}");
-    //     }
-    // };
+    /* router parameters */
+    let config = match RouterParamsBuilder::default()
+        .metrics_addr(launch_config.metrics.address)
+        .cli_sock_path(launch_config.cli.cli_sock_path)
+        .cpi_sock_path(launch_config.routing.control_plane_socket)
+        .frr_agent_path(launch_config.routing.frr_agent_socket)
+        .build()
+    {
+        Ok(config) => config,
+        Err(e) => {
+            error!("error building router parameters: {e}");
+            panic!("error building router parameters: {e}");
+        }
+    };
 
-    // // start the router; returns control-plane handles and a pipeline factory (Arc<... Fn() -> DynPipeline<_> >)
-    // let setup = start_router(config).expect("failed to start router");
+    // start the router; returns control-plane handles and a pipeline factory (Arc<... Fn() -> DynPipeline<_> >)
+    let setup = start_router::<dpdk::mem::Mbuf>(config).expect("failed to start router");
 
-    // let _metrics_server = MetricsServer::new(launch_config.metrics.address, setup.stats);
+    let _metrics_server = MetricsServer::new(launch_config.metrics.address, setup.stats);
 
-    // // pipeline builder
-    // let pipeline_factory = setup.pipeline;
+    // pipeline builder
+    let pipeline_factory = setup.pipeline;
 
     // Start driver with the provided pipeline builder. Taps must have been created before this
     // happens so that their ifindex is available when drivers initialize.
@@ -185,15 +188,15 @@ fn main() {
     // // start mgmt
     // start_mgmt(mgmt_params).expect("Failed to start gRPC server");
 
-    // stop_rx.recv().expect("failed to receive stop signal");
-    // info!("Shutting down dataplane");
-    // if let Some(running) = agent_running {
-    //     match running.stop() {
-    //         Ok(ready) => ready.shutdown(),
-    //         Err(e) => error!("Pyroscope stop failed: {e}"),
-    //     }
-    // }
-    std::process::exit(0);
+    stop_rx.recv().expect("failed to receive stop signal");
+    info!("Shutting down dataplane");
+    if let Some(running) = agent_running {
+        match running.stop() {
+            Ok(ready) => ready.shutdown(),
+            Err(e) => error!("Pyroscope stop failed: {e}"),
+        }
+    }
+    // std::process::exit(0);
 }
 
 #[cfg(test)]
