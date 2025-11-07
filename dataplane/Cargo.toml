@@ -13,7 +13,10 @@ axum = { workspace = true, features = ["http1", "tokio"] }
 axum-server = { workspace = true }
 concurrency = { workspace = true }
 ctrlc = { workspace = true, features = ["termination"] }
+derive_builder = { workspace = true, features = [] }
 dpdk = { workspace = true }
+dpdk-sys = { workspace = true } # TODO: Banish this back to dpdk world
+driver = { workspace = true }
 dyn-iter = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
@@ -22,6 +25,7 @@ linkme = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 mgmt = { workspace = true }
+miette = { workspace = true, features = ["derive", "fancy"] }
 mio = { workspace = true, features = ["os-ext", "net"] }
 nat = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
@@ -40,6 +44,7 @@ routing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 stats = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true, features = [] }
 tracectl = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, default-features = true }

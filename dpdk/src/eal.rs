@@ -2,16 +2,17 @@
 // Copyright Open Network Fabric Authors
 
 //! DPDK Environment Abstraction Layer (EAL)
-use crate::mem::RteAllocator;
+
 use crate::{dev, lcore, mem, socket};
 use alloc::ffi::CString;
 use alloc::format;
-use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::ffi::c_int;
 use core::fmt::{Debug, Display};
 use dpdk_sys;
+use std::alloc::{Allocator, Layout, System};
 use std::ffi::CStr;
+use std::os::raw::c_char;
 use tracing::{error, info, warn};
 
 /// Safe wrapper around the DPDK Environment Abstraction Layer (EAL).
@@ -61,9 +62,11 @@ pub enum InitError {
     UnknownError(i32),
 }
 
-#[repr(transparent)]
 #[derive(Debug)]
-struct ValidatedEalArgs(Vec<CString>);
+pub struct EalArgs {
+    argc: c_int,
+    argv: *mut *mut c_char,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum IllegalEalArguments {
@@ -75,31 +78,29 @@ pub enum IllegalEalArguments {
     NullByte,
 }
 
-impl ValidatedEalArgs {
+impl EalArgs {
     #[cold]
-    #[tracing::instrument(level = "info", skip(args), ret)]
-    fn new(
-        args: impl IntoIterator<Item = impl AsRef<str>>,
-    ) -> Result<ValidatedEalArgs, IllegalEalArguments> {
-        let args: Vec<_> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
-        let len = args.len();
-        if len > c_int::MAX as usize {
-            return Err(IllegalEalArguments::TooLong(len));
-        }
-        match args.iter().find(|s| !s.is_ascii()) {
-            None => {}
-            Some(_) => return Err(IllegalEalArguments::NonAscii),
-        }
-        let args_as_c_strings: Result<Vec<_>, _> =
-            args.iter().map(|s| CString::new(s.as_bytes())).collect();
+    pub fn new(args: &rkyv::Archived<Vec<CString>>) -> EalArgs {
+        let mut system_args: Vec<*mut i8, System> = Vec::with_capacity_in(args.len(), System);
+        for arg in args.iter() {
+            let bytes = arg.as_bytes_with_nul();
+            // args are over-aligned to (hopefully) make debug easier if we need to disect memory
+            const EAL_ARG_ALIGNMENT: usize = 64;
+            let layout = Layout::from_size_align(bytes.len(), EAL_ARG_ALIGNMENT)
+                .unwrap_or_else(|e| unreachable!("invalid layout: {e}"));
 
-        // Account for the possibility of an illegal null byte in the arguments.
-        let args_as_c_strings = match args_as_c_strings {
-            Ok(c_strs) => c_strs,
-            Err(_null_err) => return Err(IllegalEalArguments::NullByte),
-        };
-
-        Ok(ValidatedEalArgs(args_as_c_strings))
+            #[allow(clippy::expect_used)] // very unlikely and a fatal error in any case.
+            let mut x = System
+                .allocate_zeroed(layout)
+                .expect("unable to allocate memory for eal arguments");
+            unsafe { x.as_mut() }.copy_from_slice(bytes);
+            system_args
+                .push(Box::leak(unsafe { Box::from_raw_in(x.as_ptr(), System) }).as_mut_ptr() as *mut i8)
+        }
+        let boxed_slice = system_args.into_boxed_slice();
+        let argc = boxed_slice.len() as c_int;
+        let argv = Box::leak(boxed_slice).as_mut_ptr();
+        EalArgs { argc, argv }
     }
 }
 
@@ -114,34 +115,17 @@ impl ValidatedEalArgs {
 /// 3. The EAL initialization fails.
 /// 4. The EAL has already been initialized.
 #[cold]
-pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
-    // NOTE: We need to be careful about freeing memory here!
-    // After _init is called, we swap to another memory allocator (the dpdk allocator).
-    // We can't free memory from the system allocator using the DPDK allocator.
-    // The easiest way around this issue is
-    // to make sure the memory used for initialization is completely freed
-    // before swapping allocators.
-    // The easiest way I know how to do that is by bundling the pre-shift logic into its own scope.
-    // The system memory will be free by the time this scope closes.
-    let eal = {
-        let mut args = ValidatedEalArgs::new(args).unwrap_or_else(|e| {
-            Eal::fatal_error(e.to_string());
-        });
-        let mut c_args: Vec<_> = args.0.iter_mut().map(|s| s.as_ptr().cast_mut()).collect();
-        let ret = unsafe { dpdk_sys::rte_eal_init(c_args.len() as _, c_args.as_mut_ptr() as _) };
-        if ret < 0 {
-            EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
-        }
-        Eal {
-            mem: mem::Manager::init(),
-            dev: dev::Manager::init(),
-            socket: socket::Manager::init(),
-            lcore: lcore::Manager::init(),
-        }
-    };
-    // Shift to the DPDK allocator
-    RteAllocator::mark_initialized();
-    eal
+pub fn init(args: EalArgs) -> Eal {
+    let ret = unsafe { dpdk_sys::rte_eal_init(args.argc, args.argv) };
+    if ret < 0 {
+        EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
+    }
+    Eal {
+        mem: mem::Manager::init(),
+        dev: dev::Manager::init(),
+        socket: socket::Manager::init(),
+        lcore: lcore::Manager::init(),
+    }
 }
 
 impl Eal {

@@ -10,6 +10,7 @@ members = [
     "dpdk",
     "dpdk-sys",
     "dpdk-sysroot-helper",
+    "driver",
     "errno",
     "flow-info",
     "hardware",
@@ -46,6 +47,7 @@ dpdk = { path = "./dpdk", package = "dataplane-dpdk" }
 dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys" }
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpdk-sysroot-helper" }
 dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", rev = "e8fc33db10e1d00785f2a2b90cbadcad7900f200" }
+driver = { path = "./driver", package = "dataplane-driver" }
 errno = { path = "./errno", package = "dataplane-errno" }
 flow-info = { path = "./flow-info", package = "dataplane-flow-info" }
 gateway_config = { git = "https://github.com/githedgehog/gateway-proto", tag = "v0.16.0" }
@@ -89,8 +91,8 @@ chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
 clap = { version = "4.5.51", default-features = true, features = [] }
 color-eyre = { version = "0.6.5", default-features = false, features = [] }
 command-fds = { version = "0.3.2", default-features = false, features = [] }
-crossbeam-channel = { version = "0.5.15", default-features = false, features = [] }
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel", "crossbeam-deque", "crossbeam-queue"] }
+crossbeam-channel = { version = "0.5.15", default-features = false, features = [] }
 ctrlc = { version = "3.5.1", default-features = false, features = [] }
 dashmap = { version = "6.1.0", default-features = false, features = [] }
 derive_builder = { version = "0.20.2", default-features = false, features = ["default", "std"] }
@@ -152,6 +154,7 @@ thiserror = { version = "2.0.17", default-features = false, features = [] }
 thread_local = { version = "1.1.9", default-features = false, features = [] }
 tokio = { version = "1.48.0", default-features = false, features = [] }
 tokio-stream = { version = "0.1.17", default-features = false, features = [] }
+tokio-util = { version = "0.7.17", default-features = false, features = [] }
 tonic = { version = "0.14.2", default-features = false, features = ["transport", "codegen"] }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] } # attribute feature is so commonly used that we should just leave it on globally
 tracing-error = { version = "0.2.1", features = [] }

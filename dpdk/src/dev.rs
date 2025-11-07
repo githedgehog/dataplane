@@ -8,7 +8,8 @@ use alloc::vec::Vec;
 use core::ffi::{CStr, c_uint};
 use core::fmt::{Debug, Display, Formatter};
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
-use tracing::{debug, error, info};
+use dpdk_sys::rte_eth_hash_function::RTE_ETH_HASH_FUNCTION_DEFAULT;
+use tracing::{debug, error, info, trace};
 
 use crate::eal::Eal;
 use crate::queue;
@@ -88,55 +89,47 @@ impl DevIndex {
 
         let ret = unsafe { rte_eth_dev_info_get(self.0, &mut dev_info) };
 
-        if ret != 0 {
-            return match ret {
-                errno::NEG_ENOTSUP => {
-                    error!(
-                        "Device information not supported for port {index}",
-                        index = self.0
-                    );
-                    Err(DevInfoError::NotSupported)
-                }
-                errno::NEG_ENODEV => {
-                    error!(
-                        "Device information not available for port {index}",
-                        index = self.0
-                    );
-                    Err(DevInfoError::NotAvailable)
-                }
-                errno::NEG_EINVAL => {
-                    error!(
-                        "Invalid argument when getting device info for port {index}",
-                        index = self.0
-                    );
-                    Err(DevInfoError::InvalidArgument)
-                }
-                val => {
-                    let unknown = match StandardErrno::parse_i32(val) {
-                        Ok(standard) => {
-                            return Err(DevInfoError::UnknownStandard(standard));
-                        }
-                        Err(unknown) => unknown,
-                    };
-                    error!(
-                        "Unknown error when getting device info for port {index}: {val} (error code: {unknown:?})",
-                        index = self.0,
-                        val = val
-                    );
-                    Err(DevInfoError::Unknown(Errno(val)))
-                }
-            };
-            // error!(
-            //     "Failed to get device info for port {index}: {err}",
-            //     index = self.0
-            // );
-            // return Err(err);
+        return match ret {
+            0 => Ok(DevInfo {
+                index: DevIndex(self.0),
+                inner: dev_info,
+            }),
+            errno::NEG_ENOTSUP => {
+                error!(
+                    "Device information not supported for port {index}",
+                    index = self.0
+                );
+                Err(DevInfoError::NotSupported)
+            }
+            errno::NEG_ENODEV => {
+                error!(
+                    "Device information not available for port {index}",
+                    index = self.0
+                );
+                Err(DevInfoError::NotAvailable)
+            }
+            errno::NEG_EINVAL => {
+                error!(
+                    "Invalid argument when getting device info for port {index}",
+                    index = self.0
+                );
+                Err(DevInfoError::InvalidArgument)
+            }
+            val => {
+                let unknown = match StandardErrno::parse_i32(val) {
+                    Ok(standard) => {
+                        return Err(DevInfoError::UnknownStandard(standard));
+                    }
+                    Err(unknown) => unknown,
+                };
+                error!(
+                    "Unknown error when getting device info for port {index}: {val} (error code: {unknown:?})",
+                    index = self.0,
+                    val = val
+                );
+                Err(DevInfoError::Unknown(Errno(val)))
+            }
         }
-
-        Ok(DevInfo {
-            index: DevIndex(self.0),
-            inner: dev_info,
-        })
     }
 
     /// Get the [`SocketId`] of the device associated with this device index.
@@ -252,6 +245,14 @@ impl DevConfig {
                     let requested = self.rx_offloads.unwrap_or(RxOffload(ANY_SUPPORTED));
                     let supported = dev.rx_offload_caps();
                     requested.0 & supported.0
+                },
+                ..Default::default()
+            },
+            rx_adv_conf: rte_eth_conf__bindgen_ty_1 {
+                rss_conf: rte_eth_rss_conf {
+                    rss_hf: dev.inner.flow_type_rss_offloads,
+                    algorithm: RTE_ETH_HASH_FUNCTION_DEFAULT,
+                    ..Default::default()
                 },
                 ..Default::default()
             },
@@ -599,8 +600,6 @@ impl Iterator for DevIterator {
     fn next(&mut self) -> Option<DevInfo> {
         let cursor = self.cursor;
 
-        debug!("Checking port {cursor}");
-
         let port_id =
             unsafe { rte_eth_find_next_owned_by(cursor.as_u16(), u64::from(RTE_ETH_DEV_NO_OWNER)) };
 
@@ -608,6 +607,7 @@ impl Iterator for DevIterator {
         if port_id >= u64::from(RTE_MAX_ETHPORTS) {
             return None;
         }
+        trace!("checking port {cursor}");
 
         // For whatever reason, DPDK can't decide if port_id is `u16` or `u64`.
         self.cursor = DevIndex(port_id as u16 + 1);

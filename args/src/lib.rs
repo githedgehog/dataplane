@@ -93,6 +93,7 @@ use net::interface::IllegalInterfaceName;
 use net::interface::InterfaceName;
 use sha2::Digest;
 use std::borrow::Borrow;
+use std::ffi::CString;
 use std::fmt::Display;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::SocketAddr;
@@ -502,7 +503,7 @@ pub struct DpdkDriverConfigSection {
     /// Network devices to use with DPDK (identified by PCI address)
     pub interfaces: Vec<InterfaceArg>,
     /// DPDK EAL (Environment Abstraction Layer) initialization arguments
-    pub eal_args: Vec<String>,
+    pub eal_args: Vec<std::ffi::CString>,
 }
 
 /// Configuration for the Linux kernel networking driver.
@@ -732,7 +733,7 @@ pub struct LaunchConfiguration {
     /// Dynamic configuration server settings
     pub config_server: ConfigServerSection,
     /// Number of dataplane worker threads / cores
-    pub dataplane_workers: usize,
+    pub dataplane_workers: u16,
     /// Packet processing driver configuration
     pub driver: DriverConfigSection,
     /// CLI server configuration
@@ -812,7 +813,7 @@ impl LaunchConfiguration {
     /// These panics are intentional as the dataplane cannot start without valid configuration.
     #[must_use]
     #[allow(unsafe_code)] // no-escape from unsafety in this function as it involves constraints the compiler can't see
-    pub fn inherit() -> LaunchConfiguration {
+    pub fn inherit() -> memmap2::Mmap {
         let integrity_check_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_INTEGRITY_CHECK_FD) };
         let launch_configuration_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_CONFIG_FD) };
         let integrity_check_file = unsafe { FinalizedMemFile::from_fd(integrity_check_fd) };
@@ -822,6 +823,8 @@ impl LaunchConfiguration {
             .validate(integrity_check_file)
             .wrap_err("checksum validation failed for launch configuration")
             .unwrap();
+
+        let launch_configuration_file = std::mem::ManuallyDrop::new(launch_configuration_file);
 
         let mut mmap_options = memmap2::MmapOptions::new();
         let mmap_options = mmap_options.no_reserve_swap();
@@ -848,21 +851,7 @@ impl LaunchConfiguration {
             "invalid size for inherited memfd"
         );
 
-        // we slightly abuse the access method here just to get byte level validation.
-        // The actual objective here is to ensure all enums are valid and that all pointers point within the
-        // archive.
-        rkyv::access::<ArchivedLaunchConfiguration, rkyv::rancor::Failure>(
-            launch_config_memmap.as_ref(),
-        )
-        .into_diagnostic()
-        .wrap_err("failed to validate ArchivedLaunchConfiguration")
-        .unwrap();
-
-        // here we actually deserialize the data
-        rkyv::from_bytes::<LaunchConfiguration, rkyv::rancor::Error>(launch_config_memmap.as_ref())
-            .into_diagnostic()
-            .wrap_err("failed to deserialize launch configuration")
-            .unwrap()
+        launch_config_memmap
     }
 }
 
@@ -973,7 +962,7 @@ impl FinalizedMemFile {
             .into_diagnostic()
             .wrap_err("failed to stat memfd")
             .unwrap();
-        const EXPECTED_PERMISSIONS: u32 = 0o10_400; // expect read only + sticky bit
+        const EXPECTED_PERMISSIONS: u32 = 0o100_400; // expect read only + sticky bit
         assert!(
             stat.st_mode == EXPECTED_PERMISSIONS,
             "finalized memfd not in read only mode: given mode is {:o}, expected {EXPECTED_PERMISSIONS:o}",
@@ -1222,16 +1211,17 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                     .grpc_address()
                     .map_err(InvalidCmdArguments::InvalidGrpcAddress)?,
             },
-            dataplane_workers: value.num_workers.into(),
+            dataplane_workers: value.num_workers,
             driver: match &value.driver {
                 Some(driver) if driver == "dpdk" => {
                     // TODO: adjust command line to specify lcore usage more flexibly in next PR
                     let eal_args = value
                         .interfaces()
                         .map(|nic| match nic.port {
-                            NetworkDeviceDescription::Pci(pci_address) => {
-                                Ok(["--allow".to_string(), format!("{pci_address}")])
-                            }
+                            NetworkDeviceDescription::Pci(pci_address) => Ok([
+                                CString::from_str("--allow").unwrap(/* unreachable */),
+                                CString::from_str(format!("{pci_address}").as_str()).unwrap(/* unreachhable */),
+                            ]),
                             NetworkDeviceDescription::Kernel(interface_name) => {
                                 Err(InvalidCmdArguments::UnsupportedByDriver(
                                     UnsupportedByDriver::Dpdk(interface_name.clone()),

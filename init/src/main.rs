@@ -352,11 +352,11 @@ fn main() {
         .into_diagnostic()
         .wrap_err("invalid command line arguments given")
         .unwrap();
-    let launch_config_yaml = serde_yaml_ng::to_string(&launch_config)
-        .into_diagnostic()
-        .wrap_err("failed to serialize launch configuration as yaml")
-        .unwrap();
-    info!("interpreted requested lanunch configuration as\n---\n{launch_config_yaml}");
+    // let launch_config_yaml = serde_yaml_ng::to_string(&launch_config)
+    //     .into_diagnostic()
+    //     .wrap_err("failed to serialize launch configuration as yaml")
+    //     .unwrap();
+    // info!("interpreted requested lanunch configuration as\n---\n{launch_config_yaml}");
 
     match &launch_config.driver {
         args::DriverConfigSection::Dpdk(dpdk_section) => {
@@ -439,7 +439,7 @@ fn main() {
 
     let launch_config = launch_config.to_owned_fd();
 
-    let io_err = std::process::Command::new("/bin/dataplane")
+    let io_err = std::process::Command::new("/home/dnoland/code/githedgehog/dataplane/target/x86_64-unknown-linux-gnu/debug/dataplane")
         .fd_mappings(vec![
             FdMapping {
                 parent_fd: integrity_check,

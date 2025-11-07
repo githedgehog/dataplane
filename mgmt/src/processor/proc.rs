@@ -103,25 +103,25 @@ pub(crate) struct ConfigProcessor {
 }
 
 pub struct ConfigProcessorParams {
-    // channel to router
+    /// channel to router
     pub router_ctl: RouterCtlSender,
 
-    // writer for vpc mapping table
+    /// writer for vpc mapping table
     pub vpcmapw: VpcMapWriter<VpcMapName>,
 
-    // writer for stateless NAT tables
+    /// writer for stateless NAT tables
     pub nattablesw: NatTablesWriter,
 
-    // writer for stateful NAT allocator
+    /// writer for stateful NAT allocator
     pub natallocatorw: NatAllocatorWriter,
 
-    // writer for VPC routing table
+    /// writer for VPC routing table
     pub vpcdtablesw: VpcDiscTablesWriter,
 
-    // store for vpc stats
+    /// store for vpc stats
     pub vpc_stats_store: Arc<VpcStatsStore>,
 
-    // IO manager control
+    /// IO manager control
     pub iom_ctl: IoManagerCtl,
 }
 

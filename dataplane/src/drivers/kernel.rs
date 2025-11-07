@@ -34,18 +34,17 @@ use std::hash::{Hash, Hasher};
 
 use net::buffer::test_buffer::TestBuffer;
 use net::interface::{InterfaceIndex, InterfaceName};
-use net::packet::{DoneReason, Packet, PortIndex};
+use net::packet::{Packet, PortIndex};
 use netdev::Interface;
 use nix::net::if_::if_nametoindex;
 
 use pipeline::{DynPipeline, NetworkFunction};
-#[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
 
 // Flow-key based symmetric hashing
 use pkt_meta::flow_table::flow_key::{Bidi, FlowKey};
 
-use crate::drivers::tokio_util::run_in_tokio_runtime;
+use crate::drivers::async_utils::run_in_tokio_runtime;
 
 use tracectl::trace_target;
 trace_target!("kernel-driver", LevelFilter::INFO, &["driver"]);
@@ -80,7 +79,8 @@ impl Kif {
     ) -> Result<Self, String> {
         let mut sock = RawPacketStream::new()
             .map_err(|e| format!("Failed to open raw sock for interface {name}: {e}"))?;
-        sock.set_non_blocking();
+        #[allow(clippy::expect_used)] // This should have proper error handling, but may be fatal in any case.
+        sock.set_non_blocking().expect("unable to set socket to non blocking mode"); // TODO: real error handling
         sock.bind(name.as_ref())
             .map_err(|e| format!("Failed to open raw sock for interface {name}: {e}"))?;
 
@@ -353,7 +353,7 @@ impl DriverKernel {
             let mut events = Events::with_capacity(256);
             loop {
                 // 1) Drain processed packets coming back from workers, serialize + TX
-                while let Ok(mut pkt) = from_workers.try_recv() {
+                while let Ok(pkt) = from_workers.try_recv() {
                     // choose outgoing port interface from pkt metadata
                     if let Some(oif_id) = pkt.get_meta().oif {
                         if let Some(okif) = kiftable.get_mut_by_tap_index(oif_id) {
@@ -438,7 +438,7 @@ impl DriverKernel {
     #[allow(clippy::panic, clippy::missing_panics_doc)]
     pub fn start(
         interfaces: impl Iterator<Item = InterfaceArg>,
-        num_workers: usize,
+        num_workers: u16,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
     ) {
         // init port devices
@@ -451,8 +451,8 @@ impl DriverKernel {
         };
 
         // Spawn pipeline workers
-        let (to_workers, from_workers) = Self::spawn_workers(num_workers, setup_pipeline);
-        if to_workers.len() != num_workers {
+        let (to_workers, from_workers) = Self::spawn_workers(num_workers as usize, setup_pipeline);
+        if to_workers.len() != (num_workers as usize) {
             warn!(
                 "Could spawn only {} of {} workers",
                 to_workers.len(),
