@@ -1,0 +1,39 @@
+[package]
+name = "dataplane-arp"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[features]
+testing = []
+
+[dependencies]
+# internal
+common = { workspace = true }
+interface-manager = { workspace = true }
+lifecycle = { workspace = true }
+net = { workspace = true }
+pipeline = { workspace = true }
+pkt-io = { workspace = true }
+tracectl = { workspace = true }
+
+# external
+ahash = { workspace = true , features = ["std"]}
+futures = { workspace = true }
+left-right = { workspace = true }
+linkme = { workspace = true }
+nix = { workspace = true, default-features = false, features = ["ioctl", "net"] }
+rtnetlink = { workspace = true, features = ["default", "tokio"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+tracing = { workspace = true }
+
+
+[dev-dependencies]
+caps = { workspace = true }
+fixin = { workspace = true }
+netdev = { workspace = true }
+n-vm = { workspace = true }
+tracing-test = { workspace = true }
+test-utils = { workspace = true }
