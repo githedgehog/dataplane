@@ -351,7 +351,7 @@ jobs:
       includeonie: ${{ matrix.includeonie }}
       buildmode: ${{ matrix.buildmode }}
       vpcmode: ${{ matrix.vpcmode }}
-      releasetest: ${{ contains(github.event.pull_request.labels.*.name, 'ci:+release') || inputs.run_release_tests == true }}
+      releasetest: ${{ contains(github.event.pull_request.labels.*.name, 'ci:+release') || inputs.enable_release_tests == true }}
       hybrid: ${{ matrix.hybrid }}
 
     strategy:
