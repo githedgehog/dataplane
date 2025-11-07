@@ -319,7 +319,7 @@ jobs:
 
     name: "${{ matrix.hybrid && 'h' || 'v' }}-${{ matrix.upgradefrom && 'up' || '' }}${{ matrix.upgradefrom }}${{ matrix.upgradefrom && '-' || '' }}${{ matrix.mesh && 'mesh-' || '' }}${{ matrix.gateway && 'gw-' || '' }}${{ matrix.includeonie && 'onie-' || '' }}${{ matrix.buildmode }}-${{ matrix.vpcmode }}"
 
-    uses: githedgehog/fabricator/.github/workflows/run-vlab.yaml@master
+    uses: githedgehog/fabricator/.github/workflows/run-vlab.yaml@pau/gw_nat_test
     with:
       # ci:+hlab is required to enable hybrid lab tests on PR
       # ci:-vlab disables virtual lab tests on PR
