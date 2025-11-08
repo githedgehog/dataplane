@@ -207,7 +207,7 @@ impl StatsCollector {
                         Err(err) => {
                             match err {
                                 ReceiveError::Closed => {
-                                    error!("stats receiver closed!");
+                                    info!("stats receiver closed");
                                     return;
                                 }
                                 ReceiveError::SendClosed => {

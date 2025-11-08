@@ -10,15 +10,12 @@ mod drivers;
 mod packet_processor;
 mod statistics;
 
-use std::{io::Write, process::ExitCode, time::Duration};
+use std::{io::Write, time::Duration};
 
-use crate::{drivers::dpdk::Dpdk, packet_processor::start_router, statistics::MetricsServer};
+use crate::{packet_processor::start_router, statistics::MetricsServer};
 use args::{LaunchConfiguration, TracingConfigSection};
 
-use dpdk::{
-    eal::{Eal, EalArgs},
-    mem::{RteAllocator, SwitchingAllocator},
-};
+use dpdk::eal::{Eal, EalArgs};
 use driver::{Configure, Start, Stop};
 use miette::{Context, IntoDiagnostic};
 use nix::libc;
@@ -168,7 +165,7 @@ fn launch_dataplane<'a>(
         const EXITED_APPLICATION_UNCLEANLY: i32 = 2;
         const FAILED_TO_SYNC_STDOUT: i32 = 3;
         const FAILED_TO_SYNC_STDERR: i32 = 4;
-        eprintln!("fatal error: improper shutdown sequence");
+        eprintln!("\nfatal error: improper shutdown sequence\n");
         std::io::stdout().flush().unwrap_or_else(|_| unsafe {
             libc::_exit(FAILED_TO_SYNC_STDOUT);
         });

@@ -3,13 +3,11 @@
 
 //! DPDK dataplane driver
 
-use std::convert::Infallible;
 
-use args::LaunchConfiguration;
 use dpdk::dev::{Dev, TxOffloadConfig};
-use dpdk::eal::{self, Eal, EalArgs};
+use dpdk::eal::{self, Eal};
 use dpdk::lcore::LCoreId;
-use dpdk::mem::{Pool, PoolConfig, PoolParams, RteAllocator};
+use dpdk::mem::{Pool, PoolConfig, PoolParams};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, socket};

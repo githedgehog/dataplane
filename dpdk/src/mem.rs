@@ -20,8 +20,6 @@ use core::ptr::null_mut;
 use core::slice::from_raw_parts_mut;
 use errno::Errno;
 use net::buffer::PacketBufferPool;
-use std::sync::LazyLock;
-use std::sync::atomic::AtomicBool;
 use tracing::{error, info, warn};
 
 use dpdk_sys::{
@@ -636,6 +634,12 @@ impl RteAllocator {
     }
 }
 
+impl Default for RteAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct Dpdk<S> {
     state: S,
 }
@@ -666,50 +670,16 @@ pub struct Dpdk<S> {
 //     }
 // }
 
-#[repr(transparent)]
-struct RteInit(Cell<bool>);
-unsafe impl Sync for RteInit {}
-static RTE_INIT: RteInit = const { RteInit(Cell::new(false)) };
-
-thread_local! {
-    static RTE_SOCKET: Cell<SocketId> = const { Cell::new(SocketId::ANY) };
-    static SWITCHED: Cell<bool> = const { Cell::new(false) };
-}
-
-impl RteAllocator {
-    pub(crate) fn mark_initialized() {
-        if RTE_INIT.0.get() {
-            Eal::fatal_error("RTE already initialized");
-        }
-        RTE_SOCKET.set(SocketId::current());
-        RTE_INIT.0.set(true);
-        SWITCHED.set(true);
-    }
-
-    pub fn assert_initialized() {
-        if !RTE_INIT.0.get() {
-            Eal::fatal_error("RTE not initialized");
-        }
-        RTE_SOCKET.set(SocketId::current());
-        SWITCHED.set(true);
-    }
-}
-
 unsafe impl GlobalAlloc for RteAllocator {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         unsafe {
-            dpdk_sys::rte_malloc_socket(
-                null(),
-                layout.size(),
-                layout.align() as _,
-                RTE_SOCKET.get().0 as _,
-            ) as _
+            dpdk_sys::rte_malloc(null(), layout.size(), layout.align() as _) as _
         }
     }
 
     #[inline]
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
         unsafe {
             dpdk_sys::rte_free(ptr as _);
         }
@@ -718,11 +688,10 @@ unsafe impl GlobalAlloc for RteAllocator {
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         unsafe {
-            dpdk_sys::rte_zmalloc_socket(
+            dpdk_sys::rte_zmalloc(
                 null(),
                 layout.size(),
                 layout.align() as _,
-                RTE_SOCKET.get().0 as _,
             ) as _
         }
     }
@@ -730,11 +699,10 @@ unsafe impl GlobalAlloc for RteAllocator {
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         unsafe {
-            dpdk_sys::rte_realloc_socket(
+            dpdk_sys::rte_realloc(
                 ptr as _,
                 new_size,
                 layout.align() as _,
-                RTE_SOCKET.get().0 as _,
             ) as _
         }
     }

@@ -16,8 +16,6 @@ use std::io::Write;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::os::raw::c_char;
-use std::process::ExitCode;
-use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info};
 
@@ -74,8 +72,6 @@ pub struct Started<'a> {
     // TODO: flow
     _lifetime: PhantomData<&'a ()>,
 }
-
-struct Ghost<T>(ManuallyDrop<T>);
 
 #[non_exhaustive]
 pub struct Stopped<'a> {
@@ -324,8 +320,9 @@ impl<'a> driver::Stop for Eal<Started<'a>> {
             std::io::stdout().flush().unwrap();
             std::io::stderr().flush().unwrap();
             unsafe {
+                // _exit explicitly does not call exit handlers
                 libc::_exit(1);
-            } // never call exit handlers!
+            }
         }
         eprintln!("eal closed successfully: process exiting; bye bye");
         // This is the one and only successful exit condition for the program.
@@ -339,6 +336,7 @@ impl<'a> driver::Stop for Eal<Started<'a>> {
         // But all of that gets turned up to 11 when you have swapped memory allocators mid process (which is admittedly
         // a wild thing to do).
         unsafe {
+            // _exit explicitly does not call exit handlers
             libc::_exit(0);
         }
     }

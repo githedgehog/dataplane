@@ -187,7 +187,7 @@ pub fn start_mgmt(params: MgmtParams) -> Result<std::thread::JoinHandle<()>, Err
             /* block thread to run gRPC and configuration processor */
             rt.block_on(async {
                 let (processor, tx) = ConfigProcessor::new(params.processor_params);
-                let x = tokio::spawn(processor.run());
+                let processor = tokio::spawn(processor.run());
 
                 // Start the appropriate server based on address type
                 let result = match server_address {
@@ -197,6 +197,7 @@ pub fn start_mgmt(params: MgmtParams) -> Result<std::thread::JoinHandle<()>, Err
                 if let Err(e) = result {
                     error!("Failed to start gRPC server: {e}");
                 }
+                processor.await.unwrap();
             });
             rt.shutdown_timeout(Duration::from_secs(3));
         })

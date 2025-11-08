@@ -1220,19 +1220,20 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                         "--proc-type",
                         "primary",
                         "--lcores",
-                        "2-11",
+                        "2-11", // TODO: calculate based on number of workers
                         "-m",
+                        // TODO: calculate based on number of workers
                         "20480", // reserve 2 1GiB hugepaes for each of the 8 worker cores + 4 1GiB hugepages for extra service work
                         "--in-memory", // do not persist hugepage file descriptors in filesystem
                         "--huge-worker-stack",
-                        "8192", // main and worker lcores get 8MiB stacks allocated from their huge pages
+                        "8192", // main and worker lcores get 8MiB stacks allocated from huge pages
                         "--log-level",
                         "info", // The EAL should generally shut up but for initial launch we may want info logs
                         "--no-telemetry",
                         "--force-max-simd-bitwidth",
                         "512", // experimental: require avx-512
                         "--huge-dir",
-                        "/dev/hugepages",
+                        "/dev/hugepages", // TODO: make dynamic, mount hugetlbfs in init if needed
                     ];
                     // TODO: adjust command line to specify lcore usage more flexibly in next PR
                     let eal_args: Vec<_> = MANDATORY_EAL_ARGS
