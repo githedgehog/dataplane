@@ -320,24 +320,27 @@ impl<'a> driver::Stop for Eal<Started<'a>> {
         info!("waiting on EAL threads");
         unsafe { dpdk_sys::rte_eal_mp_wait_lcore() };
         if unsafe { dpdk_sys::rte_eal_cleanup() } != 0 {
-            unsafe { libc::_exit(1); } // never call exit handlers!
+            eprintln!("failed to clean up EAL");
+            std::io::stdout().flush().unwrap();
+            std::io::stderr().flush().unwrap();
+            unsafe {
+                libc::_exit(1);
+            } // never call exit handlers!
         }
-        eprintln!("bye bye");
-        std::io::stdout().flush().unwrap();
-        std::io::stderr().flush().unwrap();
-        unsafe { libc::_exit(0); } // never call exit handlers!
-        // extern "C" fn restore_global_allocator() {
-        //     unsafe {
-        //         GLOBAL_ALLOCATOR = crate::mem::SwitchingAllocator::System;
-        //     }
-        // }
-        // unsafe { libc::atexit(restore_global_allocator); }
-
-        // Ok(Eal {
-        //     state: Stopped::<'a> {
-        //         _ghost: ManuallyDrop::new(self),
-        //     },
-        // })
+        eprintln!("eal closed successfully: process exiting; bye bye");
+        // This is the one and only successful exit condition for the program.
+        // We very deliberately skip exit handlers because they are
+        //
+        // 1. unreliable,
+        // 2. un-necessary,
+        // 3. conceptually broken,
+        //
+        // on the best of days.
+        // But all of that gets turned up to 11 when you have swapped memory allocators mid process (which is admittedly
+        // a wild thing to do).
+        unsafe {
+            libc::_exit(0);
+        }
     }
 }
 

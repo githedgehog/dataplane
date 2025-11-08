@@ -10,7 +10,7 @@ mod drivers;
 mod packet_processor;
 mod statistics;
 
-use std::{process::ExitCode, time::Duration};
+use std::{io::Write, process::ExitCode, time::Duration};
 
 use crate::{drivers::dpdk::Dpdk, packet_processor::start_router, statistics::MetricsServer};
 use args::{LaunchConfiguration, TracingConfigSection};
@@ -21,6 +21,7 @@ use dpdk::{
 };
 use driver::{Configure, Start, Stop};
 use miette::{Context, IntoDiagnostic};
+use nix::libc;
 use pyroscope::PyroscopeAgent;
 use pyroscope_pprofrs::{PprofConfig, pprof_backend};
 
@@ -166,6 +167,26 @@ fn launch_dataplane<'a>(
         CancellationToken,
     ),
 ) {
+    // Look Mom, I fixed POSIX!
+    extern "C" fn skip_all_exit_handlers_and_fail() {
+        const EXITED_APPLICATION_UNCLEANLY: i32 = 2;
+        const FAILED_TO_SYNC_STDOUT: i32 = 3;
+        const FAILED_TO_SYNC_STDERR: i32 = 4;
+        eprintln!("fatal error: improper shutdown sequence");
+        std::io::stdout().flush().unwrap_or_else(|_| unsafe {
+            libc::_exit(FAILED_TO_SYNC_STDOUT);
+        });
+        std::io::stderr().flush().unwrap_or_else(|_| unsafe {
+            libc::_exit(FAILED_TO_SYNC_STDERR);
+        });
+        unsafe {
+            libc::_exit(EXITED_APPLICATION_UNCLEANLY);
+        }
+    }
+    unsafe {
+        libc::atexit(skip_all_exit_handlers_and_fail);
+    }
+
     let eal = {
         // memory allocation banned until EAL is started
         let launch_config_memmap = LaunchConfiguration::inherit();
@@ -268,14 +289,15 @@ fn launch_dataplane<'a>(
         info!("acync runtime stopped");
         eal
     };
+    // panic!("injecting failure to test abnormal shutdown");
     let _stopped = eal.stop().unwrap_or_else(|_| std::process::abort()); // abort case here should be unreachable
 }
 
 // NOTE: do not add _any_ other logic to this function.  The `launch_dataplane` call is the one and only line
 // which ever needs to be invoked in main.
 // If you wish to edit application logic put it in the dataplane fn.
-// If you wish to add application meta-logic (e.g. logic revolving around tracing, observability, performance, or low
-// level memory allocation configuration), then edit the `launch_dataplane` function.
+// If you wish to add application runtime configuration (e.g. logic revolving around tracing, observability,
+// performance, or low level memory allocation configuration), then edit the `launch_dataplane` function.
 //
 // Any deviation from this pattern is likely to result in a program which does not shut down correctly.
 fn main() {
