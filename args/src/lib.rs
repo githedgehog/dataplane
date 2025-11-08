@@ -1214,23 +1214,50 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             dataplane_workers: value.num_workers,
             driver: match &value.driver {
                 Some(driver) if driver == "dpdk" => {
+                    // TODO: lcore allocation (this needs to be much smarter)
+                    const MANDATORY_EAL_ARGS: [&str; 17] = [
+                        "dataplane",
+                        "--proc-type",
+                        "primary",
+                        "--lcores",
+                        "2-11",
+                        "-m",
+                        "20480", // reserve 2 1GiB hugepaes for each of the 8 worker cores + 4 1GiB hugepages for extra service work
+                        "--in-memory", // do not persist hugepage file descriptors in filesystem
+                        "--huge-worker-stack",
+                        "8192", // main and worker lcores get 8MiB stacks allocated from their huge pages
+                        "--log-level",
+                        "info", // The EAL should generally shut up but for initial launch we may want info logs
+                        "--no-telemetry",
+                        "--force-max-simd-bitwidth",
+                        "512", // experimental: require avx-512
+                        "--huge-dir",
+                        "/dev/hugepages",
+                    ];
                     // TODO: adjust command line to specify lcore usage more flexibly in next PR
-                    let eal_args = value
-                        .interfaces()
-                        .map(|nic| match nic.port {
-                            NetworkDeviceDescription::Pci(pci_address) => Ok([
-                                CString::from_str("--allow").unwrap(/* unreachable */),
-                                CString::from_str(format!("{pci_address}").as_str()).unwrap(/* unreachhable */),
-                            ]),
-                            NetworkDeviceDescription::Kernel(interface_name) => {
-                                Err(InvalidCmdArguments::UnsupportedByDriver(
-                                    UnsupportedByDriver::Dpdk(interface_name.clone()),
-                                ))
-                            }
-                        })
-                        .collect::<Result<Vec<_>, _>>()?
+                    let eal_args: Vec<_> = MANDATORY_EAL_ARGS
                         .into_iter()
-                        .flatten()
+                        .map(std::string::ToString::to_string)
+                        .chain(
+                            value
+                                .interfaces()
+                                .map(|nic| match nic.port {
+                                    NetworkDeviceDescription::Pci(pci_address) => {
+                                        Ok(["--allow".to_string(), format!("{pci_address}")])
+                                    }
+                                    NetworkDeviceDescription::Kernel(interface_name) => {
+                                        Err(InvalidCmdArguments::UnsupportedByDriver(
+                                            UnsupportedByDriver::Dpdk(interface_name.clone()),
+                                        ))
+                                    }
+                                })
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into_iter()
+                                .flatten(),
+                        )
+                        .map(|arg| {
+                            CString::new(arg).unwrap_or_else(|null_err| unreachable!("{null_err}"))
+                        })
                         .collect();
 
                     DriverConfigSection::Dpdk(DpdkDriverConfigSection {

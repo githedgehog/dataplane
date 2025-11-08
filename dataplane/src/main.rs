@@ -105,11 +105,7 @@ async fn dataplane(
     // pipeline builder
     let pipeline_factory = setup.pipeline;
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
-
-    cancel.cancel();
-    tokio::time::sleep(Duration::from_secs(1)).await;
-
+    tokio::time::sleep(Duration::from_secs(10)).await;
     // Start driver with the provided pipeline builder. Taps must have been created before this
     // happens so that their ifindex is available when drivers initialize.
 
@@ -259,14 +255,13 @@ fn launch_dataplane<'a>(
             // let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
             let cancel = CancellationToken::new();
             let _drop_guard = cancel.clone().drop_guard();
-            // ctrlc::set_handler({
-            //     let cancel = cancel.clone();
-            //     move || {
-            //         cancel.cancel();
-            //         // stop_tx.try_send(()).expect("Error sending shutdown signal");
-            //     }
-            // })
-            // .expect("failed to set SIGINT handler");
+            ctrlc::set_handler({
+                let cancel = cancel.clone();
+                move || {
+                    cancel.cancel();
+                }
+            })
+            .expect("failed to set SIGINT handler");
             let dataplane = dataplane_fn(&launch_config, &eal, cancel.child_token());
             tokio::select! {
                 () = cancel.cancelled() => {
