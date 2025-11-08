@@ -1139,6 +1139,7 @@ dependencies = [
  "dataplane-driver",
  "dataplane-errno",
  "dataplane-net",
+ "libc 1.0.0-alpha.1",
  "rkyv",
  "serde",
  "thiserror 2.0.17",
@@ -1303,6 +1304,7 @@ dependencies = [
  "dataplane-args",
  "dataplane-concurrency",
  "dataplane-config",
+ "dataplane-dpdk",
  "dataplane-id",
  "dataplane-interface-manager",
  "dataplane-lpm",
@@ -1331,6 +1333,7 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tonic",
  "tracing",
  "tracing-test",
@@ -1487,6 +1490,7 @@ dependencies = [
  "serde",
  "thiserror 2.0.17",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-test",
 ]
@@ -1513,6 +1517,7 @@ dependencies = [
  "small-map",
  "thiserror 2.0.17",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 

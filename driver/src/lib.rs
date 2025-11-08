@@ -9,17 +9,20 @@ pub trait Driver {
 
 pub trait Configure: Sized {
     type Configuration;
+    type Configured: Start;
     type Error;
-    fn configure(configuration: Self::Configuration) -> Result<Self, <Self as Configure>::Error>;
+    fn configure(configuration: Self::Configuration) -> Result<Self::Configured, Self::Error>;
 }
 
 pub trait Start {
-    type Started: Stop;
+    type Started<'a>: Stop;
     type Error;
-    fn start(self) -> Result<Self::Started, Self::Error>;
+    fn start<'a>(self) -> Result<Self::Started<'a>, Self::Error>;
 }
+
 
 pub trait Stop {
     type Outcome;
-    fn stop(self) -> Self::Outcome;
+    type Error;
+    fn stop(self) -> Result<Self::Outcome, Self::Error>;
 }

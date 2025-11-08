@@ -30,6 +30,7 @@ serde = { workspace = true, features = ["derive"] }
 small-map = { workspace = true, features = [] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time", "macros"] }
+tokio-util = { workspace = true }
 tracectl = { workspace = true }
 tracing = { workspace = true }
 

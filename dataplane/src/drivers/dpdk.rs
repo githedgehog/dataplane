@@ -7,7 +7,7 @@ use std::convert::Infallible;
 
 use args::LaunchConfiguration;
 use dpdk::dev::{Dev, TxOffloadConfig};
-use dpdk::eal::{Eal, EalArgs};
+use dpdk::eal::{self, Eal, EalArgs};
 use dpdk::lcore::LCoreId;
 use dpdk::mem::{Pool, PoolConfig, PoolParams, RteAllocator};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
@@ -16,8 +16,8 @@ use dpdk::{dev, socket};
 use tracing::warn;
 
 #[allow(unused)] //TEMP
-fn init_devices(eal: &Eal, num_workers: u16) -> Vec<Dev> {
-    eal.dev
+fn init_devices(eal: &Eal<eal::Started>, num_workers: u16) -> Vec<Dev> {
+    eal.state.dev
         .iter()
         .map(|dev| {
             let config = dev::DevConfig {
@@ -70,65 +70,63 @@ fn init_devices(eal: &Eal, num_workers: u16) -> Vec<Dev> {
         .collect()
 }
 
-
-#[non_exhaustive]
-pub struct Started {
-    eal: Eal,
+pub struct Configured<'a> {
+    eal: Eal<eal::Started<'a>>,
     workers: u16,
 }
 
+
 #[non_exhaustive]
-pub struct Stopped;
+pub struct Started<'a> {
+    eal: Eal<eal::Started<'a>>,
+    workers: u16,
+    devices: Vec<Dev>,
+}
+
+#[non_exhaustive]
+pub struct Stopped<'a> {
+    eal: Eal<eal::Started<'a>>,
+}
 
 pub struct Dpdk<S> {
     state: S,
 }
 
-impl<'config> driver::Configure for Dpdk<&'config rkyv::Archived<LaunchConfiguration>> {
-    type Configuration = &'config rkyv::Archived<LaunchConfiguration>;
+// impl driver::Start for Dpdk<&rkyv::Archived<LaunchConfiguration>> {
+//     type Started<'a> = Dpdk<Started<'a>>;
+//     type Error = Infallible;
 
-    type Error = Infallible;
+//     /// Memory allocation ok if this function is successful
+//     fn start<'a>(self) -> Result<Self::Started<'a>, Self::Error> {
+//         let eal_args = match &self.state.driver {
+//             args::ArchivedDriverConfigSection::Dpdk(section) => {
+//                 EalArgs::new(&section.eal_args)
+//             },
+//             args::ArchivedDriverConfigSection::Kernel(_) => {
+//                 unreachable!()
+//             },
+//         };
+//         let eal = dpdk::eal::init(eal_args);
+//         // memory allocation ok now
+//         dpdk::lcore::ServiceThread::register_thread_spawn_hook();
+//         // thread creation ok now
+//         Ok(Self::Started {
+//             state: Started {
+//                 eal,
+//                 // devices,
+//                 workers: self.state.dataplane_workers.to_native(),
+//             },
+//         })
+//     }
+// }
 
-    fn configure<'a>(config: Self::Configuration) -> Result<Self, Self::Error> {
-        Ok(Dpdk { state: config })
-    }
-}
+// impl driver::Stop for Dpdk<Started> {
+//     type Outcome = Eal<Started>;
 
-impl driver::Start for Dpdk<&rkyv::Archived<LaunchConfiguration>> {
-    type Started = Dpdk<Started>;
-    type Error = Infallible;
-
-    /// Memory allocation ok if this function is successful
-    fn start(self) -> Result<Self::Started, Self::Error> {
-        let eal_args = match &self.state.driver {
-            args::ArchivedDriverConfigSection::Dpdk(section) => {
-                EalArgs::new(&section.eal_args)
-            },
-            args::ArchivedDriverConfigSection::Kernel(_) => {
-                unreachable!()
-            },
-        };
-        let eal = dpdk::eal::init(eal_args);
-        // memory allocation ok now
-        dpdk::lcore::ServiceThread::register_thread_spawn_hook();
-        // thread creation ok now
-        Ok(Self::Started {
-            state: Started {
-                eal,
-                // devices,
-                workers: self.state.dataplane_workers.to_native(),
-            },
-        })
-    }
-}
-
-impl driver::Stop for Dpdk<Started> {
-    type Outcome = ();
-
-    fn stop(self) -> Self::Outcome {
-        todo!()
-    }
-}
+//     fn stop(self) -> Self::Outcome {
+//         todo!()
+//     }
+// }
 
 // mod private {
 //     pub(super) trait Sealed {}

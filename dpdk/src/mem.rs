@@ -3,14 +3,10 @@
 
 //! DPDK memory management wrappers.
 
-use crate::dev::Dev;
-use crate::eal::{self, Eal, EalArgs, EalErrno};
-use crate::{dev, lcore, mem};
-use crate::socket::{self, SocketId};
+use crate::eal::{Eal, EalErrno};
+use crate::socket::SocketId;
 use alloc::format;
 use alloc::string::String;
-use args::LaunchConfiguration;
-use driver::{Configure, Start};
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::Cell;
 use core::ffi::c_uint;
@@ -22,11 +18,10 @@ use core::ptr::NonNull;
 use core::ptr::null;
 use core::ptr::null_mut;
 use core::slice::from_raw_parts_mut;
-use std::convert::Infallible;
-use std::sync::atomic::AtomicBool;
-use std::sync::{LazyLock, OnceLock};
 use errno::Errno;
 use net::buffer::PacketBufferPool;
+use std::sync::LazyLock;
+use std::sync::atomic::AtomicBool;
 use tracing::{error, info, warn};
 
 use dpdk_sys::{
@@ -627,91 +622,49 @@ pub enum MbufManipulationError {
 #[repr(transparent)]
 pub struct RteAllocator;
 
-#[repr(transparent)]
-pub struct RteAllocatorL(pub std::sync::LazyLock<RteAllocator>);
+pub enum SwitchingAllocator {
+    Rte,
+    System,
+}
 
 unsafe impl Sync for RteAllocator {}
 
 impl RteAllocator {
     /// Create a new, uninitialized [`RteAllocator`].
-    pub const fn new_uninitialized() -> Self {
-        RteAllocator
+    pub const fn new() -> Self {
+        Self
     }
 }
-
-
-
-#[non_exhaustive]
-pub struct Started {
-    eal: Eal,
-    // devices: Vec<Dev>,
-    workers: u16,
-}
-
-#[non_exhaustive]
-pub struct Stopped;
 
 pub struct Dpdk<S> {
     state: S,
 }
 
-impl driver::Configure for Eal {
-    type Configuration = EalArgs;
-    type Error = Infallible;
+// impl Start for Dpdk<&rkyv::Archived<LaunchConfiguration>> {
+//     type Started = Dpdk<Started>;
+//     type Error = Infallible;
 
-    // memory allocation ok after this call if Ok
-    // thread creation ok after this call if Ok
-    fn configure(configuration: EalArgs) -> Result<Self, Self::Error> {
-        let ret = unsafe { dpdk_sys::rte_eal_init(configuration.argc, configuration.argv) };
-        if ret < 0 {
-            EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
-        }
-        lcore::ServiceThread::register_thread_spawn_hook();
-        Ok(Eal {
-            mem: mem::Manager::init(),
-            dev: dev::Manager::init(),
-            socket: socket::Manager::init(),
-            lcore: lcore::Manager::init(),
-        })
-    }
-
-}
-
-impl Start for Dpdk<&rkyv::Archived<LaunchConfiguration>> {
-    type Started = Dpdk<Started>;
-    type Error = Infallible;
-
-    /// Memory allocation ok if this function is successful
-    fn start(self) -> Result<Self::Started, Self::Error> {
-        let eal_args = match &self.state.driver {
-            args::ArchivedDriverConfigSection::Dpdk(section) => {
-                EalArgs::new(&section.eal_args)
-            },
-            args::ArchivedDriverConfigSection::Kernel(_) => {
-                unreachable!()
-            },
-        };
-        let eal = eal::init(eal_args);
-        // memory allocation ok after this line
-        lcore::ServiceThread::register_thread_spawn_hook();
-        // thread creation ok after this line
-        // let devices = init_devices(&eal, self.state.dataplane_workers.to_native());
-        Ok(Self::Started {
-            state: Started {
-                eal,
-                workers: self.state.dataplane_workers.to_native(),
-            },
-        })
-    }
-}
-
-impl driver::Stop for Dpdk<Started> {
-    type Outcome = ();
-
-    fn stop(self) -> Self::Outcome {
-        todo!()
-    }
-}
+//     /// Memory allocation ok if this function is successful
+//     fn start(self) -> Result<Self::Started, Self::Error> {
+//         let eal_args = match &self.state.driver {
+//             args::ArchivedDriverConfigSection::Dpdk(section) => EalArgs::new(&section.eal_args),
+//             args::ArchivedDriverConfigSection::Kernel(_) => {
+//                 unreachable!()
+//             }
+//         };
+//         let eal = eal::init(eal_args);
+//         // memory allocation ok after this line
+//         lcore::ServiceThread::register_thread_spawn_hook();
+//         // thread creation ok after this line
+//         // let devices = init_devices(&eal, self.state.dataplane_workers.to_native());
+//         Ok(Self::Started {
+//             state: Started {
+//                 eal,
+//                 workers: self.state.dataplane_workers.to_native(),
+//             },
+//         })
+//     }
+// }
 
 #[repr(transparent)]
 struct RteInit(Cell<bool>);
@@ -745,62 +698,78 @@ impl RteAllocator {
 unsafe impl GlobalAlloc for RteAllocator {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if SWITCHED.get() {
-            unsafe {
-                dpdk_sys::rte_malloc_socket(
-                    null(),
-                    layout.size(),
-                    layout.align() as _,
-                    RTE_SOCKET.get().0 as _,
-                ) as _
-            }
-        } else {
-            unsafe { System.alloc(layout) }
+        unsafe {
+            dpdk_sys::rte_malloc_socket(
+                null(),
+                layout.size(),
+                layout.align() as _,
+                RTE_SOCKET.get().0 as _,
+            ) as _
         }
     }
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if SWITCHED.get() {
-            unsafe {
-                dpdk_sys::rte_free(ptr as _);
-            }
-        } else {
-            unsafe {
-                System.dealloc(ptr, layout);
-            }
+        unsafe {
+            dpdk_sys::rte_free(ptr as _);
         }
     }
 
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        if SWITCHED.get() {
-            unsafe {
-                dpdk_sys::rte_zmalloc_socket(
-                    null(),
-                    layout.size(),
-                    layout.align() as _,
-                    RTE_SOCKET.get().0 as _,
-                ) as _
-            }
-        } else {
-            unsafe { System.alloc_zeroed(layout) }
+        unsafe {
+            dpdk_sys::rte_zmalloc_socket(
+                null(),
+                layout.size(),
+                layout.align() as _,
+                RTE_SOCKET.get().0 as _,
+            ) as _
         }
     }
 
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if SWITCHED.get() {
-            unsafe {
-                dpdk_sys::rte_realloc_socket(
-                    ptr as _,
-                    new_size,
-                    layout.align() as _,
-                    RTE_SOCKET.get().0 as _,
-                ) as _
-            }
-        } else {
-            unsafe { System.realloc(ptr, layout, new_size) }
+        unsafe {
+            dpdk_sys::rte_realloc_socket(
+                ptr as _,
+                new_size,
+                layout.align() as _,
+                RTE_SOCKET.get().0 as _,
+            ) as _
+        }
+    }
+}
+
+unsafe impl GlobalAlloc for SwitchingAllocator {
+    #[inline]
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        match self {
+            SwitchingAllocator::Rte => unsafe { RteAllocator.alloc(layout) },
+            SwitchingAllocator::System => unsafe { System.alloc(layout) },
+        }
+    }
+
+    #[inline]
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        match self {
+            SwitchingAllocator::Rte => unsafe { RteAllocator.dealloc(ptr, layout) },
+            SwitchingAllocator::System => unsafe { System.dealloc(ptr, layout) },
+        }
+    }
+
+    #[inline]
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        match self {
+            SwitchingAllocator::Rte => unsafe { RteAllocator.alloc_zeroed(layout) },
+            SwitchingAllocator::System => unsafe { System.alloc_zeroed(layout) },
+        }
+    }
+
+    #[inline]
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        match self {
+            SwitchingAllocator::Rte => unsafe { RteAllocator.realloc(ptr, layout, new_size) },
+            SwitchingAllocator::System => unsafe { System.realloc(ptr, layout, new_size) },
         }
     }
 }

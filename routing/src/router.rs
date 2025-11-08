@@ -4,6 +4,7 @@
 //! Module that implements a router instance
 
 use derive_builder::Builder;
+use tokio_util::sync::CancellationToken;
 use std::fmt::Display;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -39,6 +40,9 @@ pub struct RouterParams {
 
     #[builder(setter(into), default = DEFAULT_FRR_AGENT_PATH.to_string().into())]
     pub frr_agent_path: PathBuf,
+
+    // MUST NOT BE DEFAULTED by any means
+    pub cancelation_token: CancellationToken,
 }
 
 impl Display for RouterParams {

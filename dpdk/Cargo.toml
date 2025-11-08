@@ -22,6 +22,7 @@ rkyv = { workspace = true, features = [] }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
+libc = { workspace = true }
 
 [build-dependencies]
 dpdk-sysroot-helper = { workspace = true }

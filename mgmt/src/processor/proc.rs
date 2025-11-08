@@ -5,6 +5,7 @@
 
 use concurrency::sync::Arc;
 use std::collections::{HashMap, HashSet};
+use tokio_util::sync::CancellationToken;
 
 use tokio::spawn;
 use tokio::sync::mpsc;
@@ -123,6 +124,9 @@ pub struct ConfigProcessorParams {
 
     /// IO manager control
     pub iom_ctl: IoManagerCtl,
+
+    /// cancel token for the config processor
+    pub  cancel_token: CancellationToken,
 }
 
 impl ConfigProcessor {
@@ -356,25 +360,32 @@ impl ConfigProcessor {
     pub async fn run(mut self) {
         info!("Starting config processor...");
         loop {
-            // receive config requests over channel from gRPC server
-            match self.rx.recv().await {
-                Some(req) => {
-                    let response = match req.request {
-                        ConfigRequest::ApplyConfig(config) => {
-                            self.handle_apply_config(*config).await
+            tokio::select! {
+                req = self.rx.recv() => {
+                    match req {
+                        Some(req) => {
+                            let response = match req.request {
+                                ConfigRequest::ApplyConfig(config) => {
+                                    self.handle_apply_config(*config).await
+                                }
+                                ConfigRequest::GetCurrentConfig => self.handle_get_config(),
+                                ConfigRequest::GetGeneration => self.handle_get_generation(),
+                                ConfigRequest::GetDataplaneStatus => {
+                                    self.handle_get_dataplane_status().await
+                                }
+                            };
+                            if req.reply_tx.send(response).is_err() {
+                                warn!("Failed to send reply from config processor: receiver dropped?");
+                            }
                         }
-                        ConfigRequest::GetCurrentConfig => self.handle_get_config(),
-                        ConfigRequest::GetGeneration => self.handle_get_generation(),
-                        ConfigRequest::GetDataplaneStatus => {
-                            self.handle_get_dataplane_status().await
+                        None => {
+                            warn!("Channel to config processor was closed!");
+                            break;
                         }
-                    };
-                    if req.reply_tx.send(response).is_err() {
-                        warn!("Failed to send reply from config processor: receiver dropped?");
                     }
                 }
-                None => {
-                    warn!("Channel to config processor was closed!");
+                () = self.proc_params.cancel_token.cancelled() => {
+                    info!("configuration processor canceled: shutting down");
                 }
             }
         }

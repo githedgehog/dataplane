@@ -11,6 +11,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::io;
 use tokio::net::UnixListener;
 use tokio::sync::mpsc::Sender;
@@ -177,13 +178,16 @@ pub fn start_mgmt(params: MgmtParams) -> Result<std::thread::JoinHandle<()>, Err
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_io()
                 .enable_time()
+                .on_thread_stop(|| unsafe {
+                    dpdk::lcore::ServiceThread::unregister_current_thread();
+                })
                 .build()
                 .expect("Tokio runtime creation failed");
 
             /* block thread to run gRPC and configuration processor */
             rt.block_on(async {
                 let (processor, tx) = ConfigProcessor::new(params.processor_params);
-                tokio::spawn(async { processor.run().await });
+                let x = tokio::spawn(processor.run());
 
                 // Start the appropriate server based on address type
                 let result = match server_address {
@@ -194,5 +198,6 @@ pub fn start_mgmt(params: MgmtParams) -> Result<std::thread::JoinHandle<()>, Err
                     error!("Failed to start gRPC server: {e}");
                 }
             });
+            rt.shutdown_timeout(Duration::from_secs(3));
         })
 }
