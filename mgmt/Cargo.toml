@@ -27,6 +27,7 @@ lpm = { workspace = true }
 nat = { workspace = true }
 net = { workspace = true }
 pkt-meta = { workspace = true }
+pkt-io = { workspace = true }
 rekon = { workspace = true }
 routing = { workspace = true }
 stats = { workspace = true }

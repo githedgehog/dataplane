@@ -11,6 +11,7 @@ use net::packet::{DoneReason, Packet};
 use net::{buffer::PacketBufferMut, checksum::Checksum};
 use pipeline::NetworkFunction;
 use std::net::IpAddr;
+#[allow(unused)]
 use tracing::{debug, error, trace, warn};
 
 use routing::fib::fibobjects::{EgressObject, FibEntry, PktInstruction};
@@ -144,13 +145,9 @@ impl IpForwarder {
                 packet.done(DoneReason::Malformed);
             }
             None => {
-                /* send to kernel, among other options */
                 debug!("Packet should be delivered to kernel...");
-                /*
-                We can't re-inject packet on ingress, so let's disable this to avoid churn
-                packet.get_meta_mut().oif = Some(packet.get_meta().iif);
-                 */
-                packet.done(DoneReason::Local);
+                packet.get_meta_mut().set_local(true);
+                packet.done(DoneReason::Delivered);
             }
         }
     }
@@ -376,14 +373,13 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        trace!("{}'", self.name);
-        input.filter_map(move |mut packet| {
+        input.filter_map(|mut packet| {
             if !packet.is_done() {
                 // strip off vrf id from metadata
                 let vrfid = packet.get_meta_mut().vrf.take();
                 if let Some(vrfid) = vrfid {
                     self.forward_packet(&mut packet, vrfid);
-                } else {
+                } else if !packet.get_meta().local() {
                     warn!("{}: missing information to handle packet", self.name);
                 }
             }

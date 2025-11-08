@@ -22,7 +22,7 @@ use nat::{StatefulNat, StatelessNat};
 use net::buffer::PacketBufferMut;
 use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
-
+use pkt_io::{PktIo, PktQueue};
 use routing::{Router, RouterError, RouterParams};
 
 use vpcmap::map::VpcMapWriter;
@@ -36,18 +36,20 @@ where
     pub router: Router,
     pub pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
     pub vpcmapw: VpcMapWriter<VpcMapName>,
-    pub nattablew: NatTablesWriter,
+    pub nattablesw: NatTablesWriter,
     pub natallocatorw: NatAllocatorWriter,
     pub vpcdtablesw: VpcDiscTablesWriter,
     pub stats: StatsCollector,
     pub vpc_stats_store: Arc<VpcStatsStore>,
+    pub puntq: PktQueue<Buf>,
+    pub injectq: PktQueue<Buf>,
 }
 
 /// Start a router and provide the associated pipeline
 pub(crate) fn start_router<Buf: PacketBufferMut>(
     params: RouterParams,
 ) -> Result<InternalSetup<Buf>, RouterError> {
-    let nattablew = NatTablesWriter::new();
+    let nattablesw = NatTablesWriter::new();
     let natallocatorw = NatAllocatorWriter::new();
     let vpcdtablesw = VpcDiscTablesWriter::new();
     let router = Router::new(params)?;
@@ -67,8 +69,15 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let fibtr_factory = router.get_fibtr_factory();
     let vpcdtablesr_factory = vpcdtablesw.get_reader_factory();
     let atabler_factory = router.get_atabler_factory();
-    let nattabler_factory = nattablew.get_reader_factory();
+    let nattabler_factory = nattablesw.get_reader_factory();
     let natallocator_factory = natallocatorw.get_reader_factory();
+
+    // build pkt io stages
+    let pktio: PktIo<Buf> = PktIo::new(10_000usize, 10_000usize).set_name("pkt-io-ip ");
+
+    // queues to expose
+    let puntq = pktio.get_puntq().unwrap_or_else(|| unreachable!());
+    let injectq = pktio.get_injectq().unwrap_or_else(|| unreachable!());
 
     let pipeline_builder = move || {
         // Build network functions
@@ -88,6 +97,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         let stats_stage = Stats::new("stats", writer.clone());
         let flow_lookup_nf = LookupNF::new(flow_table.clone());
         let flow_expirations_nf = ExpirationsNF::new(flow_table.clone());
+        let pktio_worker = pktio.clone();
 
         // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
         // hard-coded. In any pipeline, the Stats and ExpirationsNF stages should go last
@@ -102,6 +112,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             .add_stage(iprouter2)
             .add_stage(stage_egress)
             .add_stage(dumper2)
+            .add_stage(pktio_worker)
             .add_stage(flow_expirations_nf)
             .add_stage(stats_stage)
     };
@@ -110,10 +121,12 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         router,
         pipeline: Arc::new(pipeline_builder),
         vpcmapw,
-        nattablew,
+        nattablesw,
         natallocatorw,
         vpcdtablesw,
         stats,
         vpc_stats_store,
+        puntq,
+        injectq,
     })
 }

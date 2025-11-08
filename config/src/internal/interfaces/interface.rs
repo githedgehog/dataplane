@@ -155,6 +155,10 @@ impl InterfaceConfig {
     pub fn is_vtep(&self) -> bool {
         matches!(self.iftype, InterfaceType::Vtep(_))
     }
+    #[must_use]
+    pub fn is_eth(&self) -> bool {
+        matches!(self.iftype, InterfaceType::Ethernet(_))
+    }
 
     pub fn validate(&self) -> ConfigResult {
         // name is mandatory

@@ -23,6 +23,7 @@ use crate::processor::confbuild::router::generate_router_config;
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
 use nat::stateless::setup::{build_nat_configuration, validate_nat_configuration};
+use pkt_io::{IoManagerCtl, PortMapReader, PortMapWriter};
 use pkt_meta::dst_vpcd_lookup::VpcDiscTablesWriter;
 use pkt_meta::dst_vpcd_lookup::setup::build_dst_vni_lookup_configuration;
 use routing::frr::FrrAppliedConfig;
@@ -78,20 +79,6 @@ impl ConfigChannelRequest {
     }
 }
 
-/// A configuration processor entity. This is the RPC-independent entity responsible for
-/// accepting/rejecting configurations, storing them in the configuration database and
-/// applying them.
-pub(crate) struct ConfigProcessor {
-    config_db: GwConfigDatabase,
-    rx: mpsc::Receiver<ConfigChannelRequest>,
-    router_ctl: RouterCtlSender,
-    vpc_mgr: VpcManager<RequiredInformationBase>,
-    vpcmapw: VpcMapWriter<VpcMapName>,
-    nattablew: NatTablesWriter,
-    natallocatorw: NatAllocatorWriter,
-    vnitablesw: VpcDiscTablesWriter,
-    vpc_stats_store: Arc<VpcStatsStore>,
-}
 /// Populate FRR status into the dataplane status structure
 pub async fn populate_status_with_frr(
     status: &mut DataplaneStatus,
@@ -102,8 +89,43 @@ pub async fn populate_status_with_frr(
     if let Ok(Some(FrrAppliedConfig { genid, .. })) = router_ctl.get_frr_applied_config().await {
         frr = frr.set_applied_config_gen(genid);
     }
-
     status.set_frr_status(frr);
+}
+
+/// A configuration processor entity. This is the RPC-independent entity responsible for
+/// accepting/rejecting configurations, storing them in the configuration database and
+/// applying them.
+pub(crate) struct ConfigProcessor {
+    config_db: GwConfigDatabase,
+    rx: mpsc::Receiver<ConfigChannelRequest>,
+    vpc_mgr: VpcManager<RequiredInformationBase>,
+    proc_params: ConfigProcessorParams,
+}
+
+pub struct ConfigProcessorParams {
+    // channel to router
+    pub router_ctl: RouterCtlSender,
+
+    // writer for vpc mapping table
+    pub vpcmapw: VpcMapWriter<VpcMapName>,
+
+    // writer for stateless NAT tables
+    pub nattablesw: NatTablesWriter,
+
+    // writer for stateful NAT allocator
+    pub natallocatorw: NatAllocatorWriter,
+
+    // writer for VPC routing table
+    pub vpcdtablesw: VpcDiscTablesWriter,
+
+    // store for vpc stats
+    pub vpc_stats_store: Arc<VpcStatsStore>,
+
+    // IO manager control
+    pub iom_ctl: IoManagerCtl,
+
+    // writer for portmap table
+    pub pmapw: PortMapWriter,
 }
 
 impl ConfigProcessor {
@@ -113,14 +135,7 @@ impl ConfigProcessor {
     /// Create a [`ConfigProcessor`]
     /////////////////////////////////////////////////////////////////////////////////
     #[must_use]
-    pub(crate) fn new(
-        router_ctl: RouterCtlSender,
-        vpcmapw: VpcMapWriter<VpcMapName>,
-        nattablew: NatTablesWriter,
-        natallocatorw: NatAllocatorWriter,
-        vnitablesw: VpcDiscTablesWriter,
-        vpc_stats_store: Arc<stats::VpcStatsStore>,
-    ) -> (Self, Sender<ConfigChannelRequest>) {
+    pub(crate) fn new(proc_params: ConfigProcessorParams) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
         let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
 
@@ -132,16 +147,11 @@ impl ConfigProcessor {
         let netlink = Arc::new(netlink);
         let vpc_mgr = VpcManager::<RequiredInformationBase>::new(netlink);
 
-        let processor = Self {
+        let processor = ConfigProcessor {
             config_db: GwConfigDatabase::new(),
             rx,
-            router_ctl,
             vpc_mgr,
-            vpcmapw,
-            nattablew,
-            natallocatorw,
-            vnitablesw,
-            vpc_stats_store,
+            proc_params,
         };
         (processor, tx)
     }
@@ -193,11 +203,7 @@ impl ConfigProcessor {
             &self.vpc_mgr,
             &mut config,
             current.as_deref(),
-            &mut self.router_ctl,
-            &mut self.vpcmapw,
-            &mut self.nattablew,
-            &mut self.natallocatorw,
-            &mut self.vnitablesw,
+            &mut self.proc_params,
         )
         .await?;
 
@@ -218,17 +224,7 @@ impl ConfigProcessor {
         let rollback_cfg = current.unwrap_or(ExternalConfig::BLANK_GENID);
         info!("Rolling back to config '{rollback_cfg}'...");
         if let Some(prior) = self.config_db.get_mut(rollback_cfg) {
-            let _ = apply_gw_config(
-                &self.vpc_mgr,
-                prior,
-                None,
-                &mut self.router_ctl,
-                &mut self.vpcmapw,
-                &mut self.nattablew,
-                &mut self.natallocatorw,
-                &mut self.vnitablesw,
-            )
-            .await;
+            let _ = apply_gw_config(&self.vpc_mgr, prior, None, &mut self.proc_params).await;
         }
     }
 
@@ -261,9 +257,11 @@ impl ConfigProcessor {
     async fn handle_get_dataplane_status(&mut self) -> ConfigResponse {
         let mut status = DataplaneStatus::new();
 
-        let names = self.vpc_stats_store.snapshot_names().await;
-        let pair_snap = self.vpc_stats_store.snapshot_pairs().await;
-        let vpc_snap = self.vpc_stats_store.snapshot_vpcs().await;
+        let stats_store = &self.proc_params.vpc_stats_store;
+
+        let names = stats_store.snapshot_names().await;
+        let pair_snap = stats_store.snapshot_pairs().await;
+        let vpc_snap = stats_store.snapshot_vpcs().await;
 
         // Helper to check if a flow stats has any traffic
         #[inline]
@@ -351,7 +349,7 @@ impl ConfigProcessor {
         }
 
         // FRR minimal info
-        populate_status_with_frr(&mut status, &mut self.router_ctl).await;
+        populate_status_with_frr(&mut status, &mut self.proc_params.router_ctl).await;
 
         ConfigResponse::GetDataplaneStatus(Box::new(status))
     }
@@ -448,6 +446,27 @@ impl VpcManager<RequiredInformationBase> {
             .collect();
 
         Ok(vrfs)
+    }
+}
+
+async fn config_io_manager(
+    internal: &InternalConfig,
+    iom_ctl: &mut IoManagerCtl,
+    _pmapr: PortMapReader,
+) {
+    iom_ctl.clear();
+    for vrfconfig in internal.vrfs.all_vrfs() {
+        for iface in vrfconfig.interfaces.values().filter(|ifcfg| ifcfg.is_eth()) {
+            match InterfaceName::try_from(iface.name.as_ref()) {
+                Ok(ifname) => iom_ctl.add(ifname),
+                Err(e) => error!("Illegal interface name '{}':{e}", iface.name),
+            }
+        }
+    }
+    if let Err(e) = iom_ctl.commit().await {
+        error!("Failed to reconfigure IO manager: {e}");
+    } else {
+        info!("Reconfiguring IO manager...");
     }
 }
 
@@ -568,13 +587,13 @@ async fn apply_gw_config(
     vpc_mgr: &VpcManager<RequiredInformationBase>,
     config: &mut GwConfig,
     _current: Option<&GwConfig>,
-    router_ctl: &mut RouterCtlSender,
-    vpcmapw: &mut VpcMapWriter<VpcMapName>,
-    nattablesw: &mut NatTablesWriter,
-    natallocatorw: &mut NatAllocatorWriter,
-    vpcdtablesw: &mut VpcDiscTablesWriter,
+    params: &mut ConfigProcessorParams,
 ) -> ConfigResult {
     let genid = config.genid();
+
+    /* external config we get has device and overlay */
+    let external = &config.external;
+    let overlay = &external.overlay;
 
     /* make sure we built internal config */
     let Some(internal) = &config.internal else {
@@ -585,7 +604,7 @@ async fn apply_gw_config(
     };
 
     /* apply device config */
-    apply_device_config(&config.external.device)?;
+    apply_device_config(&external.device)?;
 
     if genid == ExternalConfig::BLANK_GENID {
         /* apply config with VPC manager */
@@ -595,7 +614,8 @@ async fn apply_gw_config(
     }
 
     /* lock the CPI to prevent updates on the routing db */
-    let _guard = router_ctl
+    let _guard = params
+        .router_ctl
         .lock()
         .await
         .map_err(|_| ConfigError::InternalFailure("Could not lock the CPI".to_string()))?;
@@ -607,20 +627,28 @@ async fn apply_gw_config(
     let kernel_vrfs = vpc_mgr.get_kernel_vrfs().await?;
 
     /* apply stateless NAT config */
-    apply_stateless_nat_config(&config.external.overlay.vpc_table, nattablesw)?;
+    apply_stateless_nat_config(&overlay.vpc_table, &mut params.nattablesw)?;
 
     /* apply stateful NAT config */
-    apply_stateful_nat_config(&config.external.overlay.vpc_table, natallocatorw)?;
+    apply_stateful_nat_config(&overlay.vpc_table, &mut params.natallocatorw)?;
 
     /* apply dst_vpcd_lookup config */
-    apply_dst_vpcd_lookup_config(&config.external.overlay, vpcdtablesw)?;
+    apply_dst_vpcd_lookup_config(overlay, &mut params.vpcdtablesw)?;
 
     /* update stats mappings and seed names to the stats store */
-    let pairs = update_stats_vpc_mappings(config, vpcmapw);
+    let pairs = update_stats_vpc_mappings(config, &mut params.vpcmapw);
     drop(pairs); // pairs used by caller
 
     /* apply config in router */
-    apply_router_config(&kernel_vrfs, config, router_ctl).await?;
+    apply_router_config(&kernel_vrfs, config, &mut params.router_ctl).await?;
+
+    /* reconfigure IO manager */
+    config_io_manager(
+        internal,
+        &mut params.iom_ctl,
+        params.pmapw.factory().handle(),
+    )
+    .await;
 
     info!("Successfully applied config for genid {genid}");
     Ok(())

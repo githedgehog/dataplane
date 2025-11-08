@@ -116,8 +116,8 @@ pub enum DoneReason {
     MissingEtherType,     /* can't determine ethertype to use */
     Unroutable,           /* we don't have state to forward the packet */
     NatFailure,           /* It was not possible to NAT the packet */
-    Local,                /* the packet has to be locally consumed by kernel */
-    Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
+    InternalDrop, /* the packet is dropped by the dataplane (e.g. due to lack of resources like queue space) */
+    Delivered,    /* the packet buffer was delivered by the NF - e.g. for xmit */
 }
 
 bitflags! {
@@ -128,6 +128,9 @@ bitflags! {
         const NAT         = 0b0000_0100; /* if true, NAT stage should attempt to NAT the packet */
         const REFR_CHKSUM = 0b0000_1000; /* if true, an indication that packet checksums need to be refreshed */
         const KEEP        = 0b0001_0000; /* Keep the Packet even if it should be dropped */
+        const LOCAL       = 0b0010_0000; /* Packet is to be locally consumed */
+        const SOURCED     = 0b0100_0000; /* Packet is locally originated */
+        const NEED_ARPND  = 0b1000_0000; /* Need ARP resolution */
     }
 }
 
@@ -206,10 +209,43 @@ impl PacketMeta {
             self.flags.remove(MetaFlags::KEEP);
         }
     }
+    #[must_use]
+    pub fn local(&self) -> bool {
+        self.flags.contains(MetaFlags::LOCAL)
+    }
+    pub fn set_local(&mut self, value: bool) {
+        if value {
+            self.flags.insert(MetaFlags::LOCAL);
+        } else {
+            self.flags.remove(MetaFlags::LOCAL);
+        }
+    }
+    #[must_use]
+    pub fn sourced(&self) -> bool {
+        self.flags.contains(MetaFlags::SOURCED)
+    }
+    pub fn set_sourced(&mut self, value: bool) {
+        if value {
+            self.flags.insert(MetaFlags::SOURCED);
+        } else {
+            self.flags.remove(MetaFlags::SOURCED);
+        }
+    }
+    #[must_use]
+    pub fn need_arp_nd(&self) -> bool {
+        self.flags.contains(MetaFlags::NEED_ARPND)
+    }
+    pub fn set_need_arp_nd(&mut self, value: bool) {
+        if value {
+            self.flags.insert(MetaFlags::NEED_ARPND);
+        } else {
+            self.flags.remove(MetaFlags::NEED_ARPND);
+        }
+    }
 }
 impl Drop for PacketMeta {
     fn drop(&mut self) {
-        if self.done.is_none() && self.is_initialized() {
+        if self.done.is_none() && self.is_initialized() && !self.sourced() {
             error!("Attempted to drop packet with unspecified verdict!");
         }
     }

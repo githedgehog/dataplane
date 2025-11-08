@@ -30,6 +30,7 @@ once_cell = { workspace = true }
 ordermap = { workspace = true, features = ["std"] }
 parking_lot = { workspace = true }
 pipeline = { workspace = true }
+pkt-io = { workspace = true }
 pkt-meta = { workspace = true }
 pyroscope = { workspace = true }
 pyroscope_pprofrs = { workspace = true }

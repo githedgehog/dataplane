@@ -14,11 +14,13 @@ use crate::statistics::MetricsServer;
 use args::{CmdArgs, Parser};
 
 use drivers::kernel::DriverKernel;
-
-use mgmt::processor::launch::start_mgmt;
+use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
 
 use pyroscope::PyroscopeAgent;
 use pyroscope_pprofrs::{PprofConfig, pprof_backend};
+
+use net::buffer::{TestBuffer, TestBufferPool};
+use pkt_io::start_io;
 
 use routing::RouterParamsBuilder;
 use tracectl::{custom_target, get_trace_ctl, trace_target};
@@ -122,23 +124,12 @@ fn main() {
 
     MetricsServer::new(args.metrics_address(), setup.stats);
 
-    /* pipeline builder */
+    // pipeline builder
     let pipeline_factory = setup.pipeline;
 
-    /* start management */
-    start_mgmt(
-        grpc_addr,
-        setup.router.get_ctl_tx(),
-        setup.nattablew,
-        setup.natallocatorw,
-        setup.vpcdtablesw,
-        setup.vpcmapw,
-        setup.vpc_stats_store,
-    )
-    .expect("Failed to start gRPC server");
-
-    /* start driver with the provided pipeline builder */
-    match args.driver_name() {
+    // Start driver with the provided pipeline builder. Driver should create a portmap table,
+    // populate it with [`PortSpec`]s and return the writer
+    let pmapw = match args.driver_name() {
         "dpdk" => {
             info!("Using driver DPDK...");
             todo!();
@@ -146,16 +137,53 @@ fn main() {
         "kernel" => {
             info!("Using driver kernel...");
             DriverKernel::start(
-                args.kernel_interfaces(),
+                args.interfaces(),
                 args.kernel_num_workers(),
                 &pipeline_factory,
-            );
+            )
         }
         other => {
             error!("Unknown driver '{other}'. Aborting...");
             panic!("Packet processing pipeline failed to start. Aborting...");
         }
+    };
+
+    // always log port mappings
+    pmapw.log_pmap_table();
+
+    // start IO service
+    let (_handle, iom_ctl) = match args.driver_name() {
+        /*
+               "dpdk" => {
+                   let pool_cfg =
+                       PoolConfig::new("fixme", PoolParams::default()).expect("Bad pool config");
+                   let pool = Pool::new_pkt_pool(pool_cfg).expect("Failed to create DPDK buffer pool");
+                   start_io::<Mbuf, Pool>(setup.puntq, setup.injectq, pool)
+               }
+        */
+        "kernel" => {
+            start_io::<TestBuffer, TestBufferPool>(setup.puntq, setup.injectq, TestBufferPool)
+        }
+        &_ => todo!(),
     }
+    .expect("Failed to start IO manager");
+
+    // prepare parameters for mgmt
+    let mgmt_params = MgmtParams {
+        grpc_addr,
+        processor_params: ConfigProcessorParams {
+            router_ctl: setup.router.get_ctl_tx(),
+            nattablesw: setup.nattablesw,
+            natallocatorw: setup.natallocatorw,
+            vpcdtablesw: setup.vpcdtablesw,
+            vpcmapw: setup.vpcmapw,
+            vpc_stats_store: setup.vpc_stats_store,
+            iom_ctl,
+            pmapw,
+        },
+    };
+    // start mgmt
+    start_mgmt(mgmt_params).expect("Failed to start gRPC server");
 
     stop_rx.recv().expect("failed to receive stop signal");
     info!("Shutting down dataplane");

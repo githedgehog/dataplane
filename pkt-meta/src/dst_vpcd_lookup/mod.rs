@@ -193,17 +193,13 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DstVpcdLookup {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(|mut packet| {
-            if let Some(tablesr) = &self.tablesr.enter() {
-                if !packet.is_done() {
-                    // FIXME: ideally, we'd `enter` once for the whole batch. However,
-                    // this requires boxing the closures, which may be worse than
-                    // calling `enter` per packet? ... if not uglier
-
+            if !packet.get_meta().local() && !packet.is_done() && packet.try_ip().is_some() {
+                if let Some(tablesr) = &self.tablesr.enter() {
                     self.process_packet(tablesr, &mut packet);
+                } else {
+                    error!("{}: failed to read vpcd tables", self.name);
+                    packet.done(DoneReason::InternalFailure);
                 }
-            } else {
-                error!("{}: failed to read vpcd tables", self.name);
-                packet.done(DoneReason::InternalFailure);
             }
             packet.enforce()
         })

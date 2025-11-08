@@ -7,8 +7,8 @@
 pub use contract::*;
 
 use crate::buffer::{
-    Append, Headroom, MemoryBufferNotLongEnough, NotEnoughHeadRoom, NotEnoughTailRoom, Prepend,
-    Tailroom, TrimFromEnd, TrimFromStart,
+    Append, Headroom, MemoryBufferNotLongEnough, NotEnoughHeadRoom, NotEnoughTailRoom,
+    PacketBufferPool, Prepend, Tailroom, TrimFromEnd, TrimFromStart,
 };
 use tracing::trace;
 
@@ -164,6 +164,18 @@ impl TrimFromEnd for TestBuffer {
         }
         self.tailroom += len;
         Ok(self.as_mut())
+    }
+}
+
+#[allow(unused)]
+/// A dummy pool of `TestBuffer`s
+pub struct TestBufferPool;
+
+impl PacketBufferPool for TestBufferPool {
+    type Buffer = TestBuffer;
+    type Error = &'static str;
+    fn new_buffer(&self) -> Result<Self::Buffer, Self::Error> {
+        Ok(TestBuffer::new())
     }
 }
 
