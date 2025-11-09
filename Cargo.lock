@@ -1413,6 +1413,7 @@ dependencies = [
  "caps",
  "crossbeam",
  "dataplane-args",
+ "dataplane-dpdk",
  "dataplane-interface-manager",
  "dataplane-net",
  "dataplane-pipeline",

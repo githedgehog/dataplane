@@ -33,9 +33,6 @@ enum EalState {
 // sealed
 trait State {
     const STATE: EalState;
-    fn state(&self) -> EalState {
-        Self::STATE
-    }
 }
 
 /// Safe wrapper around the DPDK Environment Abstraction Layer (EAL).
@@ -44,9 +41,10 @@ trait State {
 /// properly initialized and cleaned up.
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct Eal<S: State> {
+pub struct Eal<'eal, S: State> {
     // todo: make private
     pub state: S,
+    lifetime: PhantomData<&'eal ()>,
 }
 
 #[non_exhaustive]
@@ -75,7 +73,7 @@ pub struct Started<'a> {
 
 #[non_exhaustive]
 pub struct Stopped<'a> {
-    _ghost: ManuallyDrop<Eal<Started<'a>>>,
+    _ghost: ManuallyDrop<Eal<'a, Started<'a>>>,
 }
 
 impl State for Configured {
@@ -88,7 +86,7 @@ impl<'a> State for Stopped<'a> {
     const STATE: EalState = EalState::Stopped;
 }
 
-unsafe impl<'a> Sync for Eal<Started<'a>> {}
+unsafe impl<'a> Sync for Eal<'a, Started<'a>> {}
 
 /// Error type for EAL initialization failures.
 #[derive(Debug, thiserror::Error)]
@@ -176,7 +174,7 @@ pub fn init<'a>(args: EalArgs) -> Started<'a> {
     }
 }
 
-impl<'a> Eal<Started<'a>> {
+impl<'a> Eal<'a, Started<'a>> {
     /// Returns `true` if the [`Eal`] is using the PCI bus.
     ///
     /// This is mostly a safe wrapper around [`dpdk_sys::rte_eal_has_pci`]
@@ -262,28 +260,29 @@ pub struct Configured {
     args: EalArgs,
 }
 
-impl driver::Configure for Eal<Configured> {
+impl<'eal> driver::Configure for Eal<'eal, Configured> {
     type Configuration = EalArgs;
-    type Configured = Eal<Configured>;
+    type Configured = Eal<'eal, Configured>;
     type Error = Infallible; // TODO: real error types
 
     // memory allocation ok after this call if Ok
     // thread creation ok after this call if Ok
-    fn configure(configuration: EalArgs) -> Result<Eal<Configured>, Self::Error> {
+    fn configure(configuration: EalArgs) -> Result<Eal<'eal, Configured>, Self::Error> {
         // TODO: proper validation of args or construct EalArgs from something more friendly
         Ok(Eal {
             state: Configured {
                 args: configuration,
             },
+            lifetime: PhantomData,
         })
     }
 }
 
-impl driver::Start for Eal<Configured> {
-    type Started<'a> = Eal<Started<'a>>;
+impl<'eal> driver::Start for Eal<'eal, Configured> {
+    type Started = Eal<'eal, Started<'eal>>;
     type Error = Infallible;
 
-    fn start<'a>(self) -> Result<Self::Started<'a>, Self::Error> {
+    fn start(self) -> Result<Self::Started, Self::Error> {
         let ret = unsafe { dpdk_sys::rte_eal_init(self.state.args.argc, self.state.args.argv) };
         if ret < 0 {
             EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
@@ -300,12 +299,13 @@ impl driver::Start for Eal<Configured> {
                 lcore: lcore::Manager::init(),
                 _lifetime: PhantomData,
             },
+            lifetime: PhantomData,
         })
     }
 }
 
-impl<'a> driver::Stop for Eal<Started<'a>> {
-    type Outcome = Eal<Stopped<'a>>;
+impl<'eal> driver::Stop for Eal<'eal, Started<'eal>> {
+    type Outcome = Eal<'eal, Stopped<'eal>>;
 
     type Error = Infallible;
 
@@ -342,7 +342,7 @@ impl<'a> driver::Stop for Eal<Started<'a>> {
     }
 }
 
-impl<S> Drop for Eal<S>
+impl<'eal, S> Drop for Eal<'eal, S>
 where
     S: State,
 {

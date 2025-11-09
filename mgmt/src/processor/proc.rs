@@ -386,6 +386,7 @@ impl ConfigProcessor {
                 }
                 () = self.proc_params.cancel_token.cancelled() => {
                     info!("configuration processor canceled: shutting down");
+                    break;
                 }
             }
         }

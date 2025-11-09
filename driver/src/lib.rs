@@ -15,9 +15,9 @@ pub trait Configure: Sized {
 }
 
 pub trait Start {
-    type Started<'a>: Stop;
+    type Started: Stop;
     type Error;
-    fn start<'a>(self) -> Result<Self::Started<'a>, Self::Error>;
+    fn start(self) -> Result<Self::Started, Self::Error>;
 }
 
 

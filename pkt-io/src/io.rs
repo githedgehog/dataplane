@@ -339,28 +339,13 @@ pub fn start_io<P: PacketBufferPool + 'static>(
     puntq: PktQueue<P::Buffer>,
     injectq: PktQueue<P::Buffer>,
     pool: P,
-) -> Result<(std::thread::JoinHandle<()>, IoManagerCtl), IoManagerError> {
+) -> (tokio::task::JoinHandle<()>, IoManagerCtl) {
     info!("Starting packet IO manager");
-
     let (sender, receiver) = channel::<IoManagerMsg>(100);
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .enable_time()
-        .build()
-        .map_err(IoManagerError::TokioRuntimeFailure)?;
-
-    let handle = std::thread::Builder::new()
-        .name("pkt-io-mgr".to_string())
-        .spawn(move || {
-            let iom = IoManager::new(puntq, injectq, receiver, pool);
-            rt.block_on(iom.run());
-            info!("IO manager stopped!");
-        })
-        .map_err(IoManagerError::TokioRuntimeFailure)?;
-
+    let iom = IoManager::new(puntq, injectq, receiver, pool);
     let iom_ctl = IoManagerCtl::new(sender);
-    Ok((handle, iom_ctl))
+    let task = tokio::spawn(iom.run());
+    (task, iom_ctl)
 }
 
 #[cfg(test)]
@@ -529,7 +514,7 @@ mod io_tests {
 
         // start IO manager
         let (io_handle, mut iom_ctl) =
-            start_io(puntq.clone(), injectq.clone(), TestBufferPool).unwrap();
+            start_io(puntq.clone(), injectq.clone(), TestBufferPool);
 
         // here we control the IO manager
         let wait_time = std::time::Duration::from_secs(2);
@@ -563,7 +548,7 @@ mod io_tests {
         tokio::time::sleep(wait_time).await;
         info!("================ Stop IO ==========================");
         iom_ctl.stop().await.unwrap();
-        io_handle.join().unwrap();
+        io_handle.await.unwrap();
 
         // stop punt thread and sink thread
         info!("================ Stop Test threads ==========================");

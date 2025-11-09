@@ -3,12 +3,11 @@
 
 //! DPDK memory management wrappers.
 
-use crate::eal::{Eal, EalErrno};
+use crate::eal::EalErrno;
 use crate::socket::SocketId;
 use alloc::format;
 use alloc::string::String;
 use core::alloc::{GlobalAlloc, Layout};
-use core::cell::Cell;
 use core::ffi::c_uint;
 use core::ffi::{CStr, c_int};
 use core::fmt::{Debug, Display};
@@ -673,9 +672,7 @@ pub struct Dpdk<S> {
 unsafe impl GlobalAlloc for RteAllocator {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        unsafe {
-            dpdk_sys::rte_malloc(null(), layout.size(), layout.align() as _) as _
-        }
+        unsafe { dpdk_sys::rte_malloc(null(), layout.size(), layout.align() as _) as _ }
     }
 
     #[inline]
@@ -687,24 +684,12 @@ unsafe impl GlobalAlloc for RteAllocator {
 
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        unsafe {
-            dpdk_sys::rte_zmalloc(
-                null(),
-                layout.size(),
-                layout.align() as _,
-            ) as _
-        }
+        unsafe { dpdk_sys::rte_zmalloc(null(), layout.size(), layout.align() as _) as _ }
     }
 
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        unsafe {
-            dpdk_sys::rte_realloc(
-                ptr as _,
-                new_size,
-                layout.align() as _,
-            ) as _
-        }
+        unsafe { dpdk_sys::rte_realloc(ptr as _, new_size, layout.align() as _) as _ }
     }
 }
 

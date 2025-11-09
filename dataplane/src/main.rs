@@ -12,13 +12,23 @@ mod statistics;
 
 use std::{io::Write, time::Duration};
 
-use crate::{packet_processor::start_router, statistics::MetricsServer};
+use crate::{
+    drivers::{
+        dpdk::{Configuration, Configured, Dpdk},
+        kernel::DriverKernel,
+    },
+    packet_processor::start_router,
+    statistics::MetricsServer,
+};
 use args::{LaunchConfiguration, TracingConfigSection};
 
 use dpdk::eal::{Eal, EalArgs};
 use driver::{Configure, Start, Stop};
+use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
 use miette::{Context, IntoDiagnostic};
+use net::buffer::TestBufferPool;
 use nix::libc;
+use pkt_io::{start_io, tap_init_async};
 use pyroscope::PyroscopeAgent;
 use pyroscope_pprofrs::{PprofConfig, pprof_backend};
 
@@ -72,7 +82,7 @@ fn process_tracing_cmds(cfg: &TracingConfigSection) {
 
 async fn dataplane(
     launch_config: &LaunchConfiguration,
-    _eal: &Eal<dpdk::eal::Started<'_>>,
+    eal: &Eal<'_, dpdk::eal::Started<'_>>,
     cancel: CancellationToken,
 ) {
     info!("starting gateway process...");
@@ -95,54 +105,63 @@ async fn dataplane(
     };
 
     // start the router; returns control-plane handles and a pipeline factory (Arc<... Fn() -> DynPipeline<_> >)
-    let setup = start_router::<dpdk::mem::Mbuf>(config).expect("failed to start router");
+    // let setup = start_router::<dpdk::mem::Mbuf>(config).expect("failed to start router");
+    let setup = start_router(config).expect("failed to start router");
 
     let _metrics_server = MetricsServer::new(launch_config.metrics.address, setup.stats);
 
     // pipeline builder
     let pipeline_factory = setup.pipeline;
 
-    tokio::time::sleep(Duration::from_secs(10)).await;
     // Start driver with the provided pipeline builder. Taps must have been created before this
     // happens so that their ifindex is available when drivers initialize.
 
-    // let (_handle, iom_ctl) = {
-    //     match &launch_config.driver {
-    //         args::DriverConfigSection::Dpdk(section) => {
-    //             tap_init(&section.interfaces).expect("Tap initialization failed");
+    let _driver = match &launch_config.driver {
+        args::DriverConfigSection::Dpdk(section) => {
+            tap_init_async(&section.interfaces)
+                .await
+                .expect("tap initialization failed");
+            info!("Using driver DPDK...");
+            let configured = Dpdk::<Configured<'_>>::configure(Configuration {
+                eal,
+                workers: 8, // TODO: make dynamic
+            }).unwrap();
+            configured.start().unwrap()
+        }
+        args::DriverConfigSection::Kernel(section) => {
+            tap_init_async(&section.interfaces)
+                .await
+                .expect("Tap initialization failed");
+            info!("Using driver kernel...");
+            todo!();
+            // DriverKernel::start(
+            //     section.interfaces.clone().into_iter(),
+            //     launch_config.dataplane_workers,
+            //     &pipeline_factory,
+            // );
+        }
+    };
+    tokio::time::sleep(Duration::from_secs(15)).await;
+    let (_handle, iom_ctl) = start_io::<TestBufferPool>(setup.puntq, setup.injectq, TestBufferPool);
 
-    //             info!("Using driver DPDK...");
-    //             todo!();
-    //         }
-    //         args::DriverConfigSection::Kernel(section) => {
-    //             tap_init(&section.interfaces).expect("Tap initialization failed");
-    //             info!("Using driver kernel...");
-    //             DriverKernel::start(
-    //                 section.interfaces.clone().into_iter(),
-    //                 launch_config.dataplane_workers,
-    //                 &pipeline_factory,
-    //             )
-    //         }
-    //     };
-    //     start_io::<TestBuffer, TestBufferPool>(setup.puntq, setup.injectq, TestBufferPool)
-    //         .expect("Failed to start IO manager")
-    // };
+    // prepare parameters for mgmt
+    let mgmt_params = MgmtParams {
+        grpc_addr: grpc_addr.clone(),
+        processor_params: ConfigProcessorParams {
+            router_ctl: setup.router.get_ctl_tx(),
+            nattablesw: setup.nattablesw,
+            natallocatorw: setup.natallocatorw,
+            vpcdtablesw: setup.vpcdtablesw,
+            vpcmapw: setup.vpcmapw,
+            vpc_stats_store: setup.vpc_stats_store,
+            iom_ctl,
+            cancel_token: cancel.child_token(),
+        },
+    };
+    // start mgmt
+    start_mgmt(mgmt_params).expect("Failed to start gRPC server");
 
-    // // prepare parameters for mgmt
-    // let mgmt_params = MgmtParams {
-    //     grpc_addr,
-    //     processor_params: ConfigProcessorParams {
-    //         router_ctl: setup.router.get_ctl_tx(),
-    //         nattablesw: setup.nattablesw,
-    //         natallocatorw: setup.natallocatorw,
-    //         vpcdtablesw: setup.vpcdtablesw,
-    //         vpcmapw: setup.vpcmapw,
-    //         vpc_stats_store: setup.vpc_stats_store,
-    //         iom_ctl,
-    //     },
-    // };
-    // // start mgmt
-    // start_mgmt(mgmt_params).expect("Failed to start gRPC server");
+    tokio::time::sleep(Duration::from_secs(15)).await;
 
     // std::process::exit(0);
 }

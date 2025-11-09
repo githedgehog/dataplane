@@ -442,7 +442,7 @@ impl DriverKernel {
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
     ) {
         // init port devices
-        let mut kiftable = match Self::init_devices(interfaces) {
+        let kiftable = match Self::init_devices(interfaces) {
             Ok(kiftable) => kiftable,
             Err(e) => {
                 error!("{e}");

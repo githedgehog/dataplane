@@ -71,7 +71,15 @@ impl Iterator for LCoreIdIterator {
             return None;
         }
         self.current = LCoreId(next);
-        Some(LCoreId(next))
+        if unsafe { dpdk_sys::rte_get_main_lcore() } == next {
+            return self.next();
+        }
+        if unsafe { dpdk_sys::rte_eal_lcore_role(next) } == dpdk_sys::rte_lcore_role_t::ROLE_NON_EAL
+        {
+            self.next()
+        } else {
+            Some(LCoreId(next))
+        }
     }
 }
 
@@ -110,7 +118,9 @@ impl ServiceThread<'_> {
                 let thread_id = unsafe { dpdk_sys::rte_thread_self() };
                 send.send(thread_id).expect("could not send thread id");
                 run();
-                unsafe { Self::unregister_current_thread(); };
+                unsafe {
+                    Self::unregister_current_thread();
+                };
             })
             .expect("could not create EalThread");
         let thread_id = RteThreadId(recv.recv().expect("could not receive thread id"));
@@ -149,11 +159,17 @@ impl ServiceThread<'_> {
         std::thread::add_spawn_hook(|t| {
             match t.name() {
                 Some(name) => {
-                    warn!("registering thread \"{name}\" (id {id:?}) with the DPDK EAL", id = t.id());
-                },
+                    warn!(
+                        "registering thread \"{name}\" (id {id:?}) with the DPDK EAL",
+                        id = t.id()
+                    );
+                }
                 None => {
-                    warn!("registering nameless thread wit id {:?} with the DPDK EAL", t.id());
-                },
+                    warn!(
+                        "registering nameless thread wit id {:?} with the DPDK EAL",
+                        t.id()
+                    );
+                }
             }
             Self::register_current_thread
         })

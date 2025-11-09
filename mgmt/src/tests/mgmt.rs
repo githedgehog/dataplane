@@ -400,7 +400,7 @@ pub mod test {
         /* create Io manager: we need to create the queues */
         let puntq = PktQueue::new(1);
         let injectq = PktQueue::new(1);
-        let (iom_handle, mut iom_ctl) = start_io(puntq, injectq, TestBufferPool).unwrap();
+        let (iom_handle, mut iom_ctl) = start_io(puntq, injectq, TestBufferPool);
 
         let cancel_token = tokio_util::sync::CancellationToken::new();
 
@@ -433,6 +433,6 @@ pub mod test {
         debug!("Stopping the router...");
         router.stop();
         iom_ctl.stop().await.unwrap();
-        iom_handle.join().unwrap();
+        iom_handle.await.unwrap();
     }
 }

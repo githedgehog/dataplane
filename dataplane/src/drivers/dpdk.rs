@@ -3,6 +3,7 @@
 
 //! DPDK dataplane driver
 
+use std::convert::Infallible;
 
 use dpdk::dev::{Dev, TxOffloadConfig};
 use dpdk::eal::{self, Eal};
@@ -11,11 +12,12 @@ use dpdk::mem::{Pool, PoolConfig, PoolParams};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, socket};
-use tracing::warn;
+use tracing::{info, warn};
 
 #[allow(unused)] //TEMP
 fn init_devices(eal: &Eal<eal::Started>, num_workers: u16) -> Vec<Dev> {
-    eal.state.dev
+    eal.state
+        .dev
         .iter()
         .map(|dev| {
             let config = dev::DevConfig {
@@ -53,6 +55,7 @@ fn init_devices(eal: &Eal<eal::Started>, num_workers: u16) -> Vec<Dev> {
                     )
                     .unwrap(),
                 };
+                info!("creating rx queue on lcore: {rx_queue_config:?}");
                 dev.new_rx_queue(rx_queue_config).unwrap();
                 let tx_queue_config = TxQueueConfig {
                     queue_index: TxQueueIndex(u16::try_from(i).unwrap()),
@@ -68,26 +71,76 @@ fn init_devices(eal: &Eal<eal::Started>, num_workers: u16) -> Vec<Dev> {
         .collect()
 }
 
-pub struct Configured<'a> {
-    eal: Eal<eal::Started<'a>>,
+#[non_exhaustive]
+pub struct Configuration<'driver> {
+    pub eal: &'driver Eal<'driver, eal::Started<'driver>>,
+    pub workers: u16,
+}
+
+#[non_exhaustive]
+pub struct Configured<'driver> {
+    eal: &'driver Eal<'driver, eal::Started<'driver>>,
     workers: u16,
 }
 
-
 #[non_exhaustive]
-pub struct Started<'a> {
-    eal: Eal<eal::Started<'a>>,
+pub struct Started<'driver> {
+    eal: &'driver Eal<'driver, eal::Started<'driver>>,
     workers: u16,
     devices: Vec<Dev>,
 }
 
 #[non_exhaustive]
-pub struct Stopped<'a> {
-    eal: Eal<eal::Started<'a>>,
+pub struct Stopped<'driver> {
+    eal: &'driver Eal<'driver, eal::Started<'driver>>,
 }
 
 pub struct Dpdk<S> {
-    state: S,
+    // TODO: absolutely must not be pub at release
+    pub state: S,
+}
+
+impl<'driver> driver::Configure for Dpdk<Configured<'driver>> {
+    type Configuration = Configuration<'driver>;
+    type Configured = Dpdk<Configured<'driver>>;
+    type Error = Infallible;
+
+    fn configure(configuration: Self::Configuration) -> Result<Self::Configured, Self::Error> {
+        Ok(Self::Configured {
+            state: Configured {
+                eal: configuration.eal,
+                workers: configuration.workers,
+            },
+        })
+    }
+}
+
+impl<'config> driver::Start for Dpdk<Configured<'config>> {
+    type Started = Dpdk<self::Started<'config>>;
+
+    type Error = Infallible;
+
+    fn start(self) -> Result<Self::Started, Self::Error> {
+        let Configured { eal, workers } = self.state;
+        let devices = init_devices(eal, workers);
+        Ok(Self::Started {
+            state: Started {
+                eal,
+                workers,
+                devices,
+            },
+        })
+    }
+}
+
+impl<'config> driver::Stop for Dpdk<Started<'config>> {
+    type Outcome = &'config Eal<'config, eal::Started<'config>>;
+
+    type Error= Infallible;
+
+    fn stop(self) -> Result<Self::Outcome, Self::Error> {
+        Ok(self.state.eal)
+    }
 }
 
 // impl driver::Start for Dpdk<&rkyv::Archived<LaunchConfiguration>> {

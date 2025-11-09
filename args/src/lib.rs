@@ -1219,8 +1219,10 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                         "dataplane",
                         "--proc-type",
                         "primary",
+                        "--main-lcore",
+                        "2",
                         "--lcores",
-                        "2-11", // TODO: calculate based on number of workers
+                        "2-10", // TODO: calculate based on number of workers
                         "-m",
                         // TODO: calculate based on number of workers
                         "20480", // reserve 2 1GiB hugepaes for each of the 8 worker cores + 4 1GiB hugepages for extra service work
@@ -1230,8 +1232,8 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                         "--log-level",
                         "info", // The EAL should generally shut up but for initial launch we may want info logs
                         "--no-telemetry",
-                        "--force-max-simd-bitwidth",
-                        "512", // experimental: require avx-512
+                        // "--force-max-simd-bitwidth",
+                        // "512", // experimental: require avx-512
                         "--huge-dir",
                         "/dev/hugepages", // TODO: make dynamic, mount hugetlbfs in init if needed
                     ];

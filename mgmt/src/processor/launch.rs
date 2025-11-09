@@ -178,6 +178,7 @@ pub fn start_mgmt(params: MgmtParams) -> Result<std::thread::JoinHandle<()>, Err
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_io()
                 .enable_time()
+                .max_blocking_threads(2)
                 .on_thread_stop(|| unsafe {
                     dpdk::lcore::ServiceThread::unregister_current_thread();
                 })
