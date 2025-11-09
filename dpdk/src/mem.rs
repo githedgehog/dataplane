@@ -92,7 +92,7 @@ impl PacketBufferPool for Pool {
     type Buffer = Mbuf;
     type Error = String;
     fn new_buffer(&self) -> Result<Self::Buffer, Self::Error> {
-        todo!()
+        Ok(self.alloc())
     }
 }
 

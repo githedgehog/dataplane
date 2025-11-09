@@ -18,6 +18,7 @@ use hardware::{
     support::SupportedDevice,
 };
 use miette::{Context, IntoDiagnostic};
+use nix::mount::{self, MsFlags};
 use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::layer::SubscriberExt;
 
@@ -357,6 +358,48 @@ fn main() {
     //     .wrap_err("failed to serialize launch configuration as yaml")
     //     .unwrap();
     // info!("interpreted requested lanunch configuration as\n---\n{launch_config_yaml}");
+    // Mount /tmp as tmpfs
+    debug!("checking for /dev/hugepages");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .create("/dev/hugepages")
+        .into_diagnostic()
+        .wrap_err("failed to ensure /dev/hugepages exits")
+        .unwrap();
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .create("/dev/hugepages/1G")
+        .into_diagnostic()
+        .wrap_err("failed to ensure /dev/hugepages/1G exits")
+        .unwrap();
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .create("/dev/hugepages/2M")
+        .into_diagnostic()
+        .wrap_err("failed to ensure /dev/hugepages/1G exits")
+        .unwrap();
+    debug!("mounting /dev/hugepages/1G");
+    nix::mount::mount(
+        Some("hugetlbfs"),
+        "/dev/hugepages/1G",
+        Some("hugetlbfs"),
+        MsFlags::empty(),
+        Some("pagesize=1G,size=20G,rw"),
+    )
+    .into_diagnostic()
+    .wrap_err("failed to mount hugetlbfs at /dev/hugepages")
+    .unwrap();
+    debug!("mounting /dev/hugepages/2M");
+    nix::mount::mount(
+        Some("hugetlbfs"),
+        "/dev/hugepages/2M",
+        Some("hugetlbfs"),
+        MsFlags::empty(),
+        Some("pagesize=2M,size=128M,rw"),
+    )
+    .into_diagnostic()
+    .wrap_err("failed to mount hugetlbfs at /dev/hugepages")
+    .unwrap();
 
     match &launch_config.driver {
         args::DriverConfigSection::Dpdk(dpdk_section) => {
@@ -439,25 +482,23 @@ fn main() {
 
     let launch_config = launch_config.to_owned_fd();
 
-    let io_err = std::process::Command::new(
-        "/home/dnoland/code/githedgehog/dataplane/target/x86_64-unknown-linux-gnu/debug/dataplane",
-    )
-    .fd_mappings(vec![
-        FdMapping {
-            parent_fd: integrity_check,
-            child_fd: LaunchConfiguration::STANDARD_INTEGRITY_CHECK_FD,
-        },
-        FdMapping {
-            parent_fd: launch_config,
-            child_fd: LaunchConfiguration::STANDARD_CONFIG_FD,
-        },
-    ])
-    .into_diagnostic()
-    .wrap_err("failed to set file descriptor mapping for child process")
-    .unwrap()
-    .env_clear()
-    .env("RUST_BACKTRACE", "full")
-    .exec();
+    let io_err = std::process::Command::new("/bin/dataplane")
+        .fd_mappings(vec![
+            FdMapping {
+                parent_fd: integrity_check,
+                child_fd: LaunchConfiguration::STANDARD_INTEGRITY_CHECK_FD,
+            },
+            FdMapping {
+                parent_fd: launch_config,
+                child_fd: LaunchConfiguration::STANDARD_CONFIG_FD,
+            },
+        ])
+        .into_diagnostic()
+        .wrap_err("failed to set file descriptor mapping for child process")
+        .unwrap()
+        .env_clear()
+        .env("RUST_BACKTRACE", "full")
+        .exec();
 
     // if we got here then we failed to exec somehow
     Result::<(), _>::Err(io_err)

@@ -125,9 +125,9 @@ async fn dataplane(
                 .await
                 .expect("tap initialization failed");
             info!("Using driver DPDK...");
-            let configured = Dpdk::<Configured<'_>>::configure(Configuration {
+            let configured = Dpdk::configure(Configuration {
                 eal,
-                workers: 8, // TODO: make dynamic
+                workers: 2, // TODO: make dynamic
                 setup_pipeline: pipeline_factory,
             })
             .unwrap();
@@ -146,8 +146,6 @@ async fn dataplane(
             // );
         }
     };
-    println!("sizeof packet: {}", std::mem::size_of::<Packet<Mbuf>>());
-    tokio::time::sleep(Duration::from_secs(15)).await;
     let injection_pool = dpdk::mem::Pool::new_pkt_pool(
         dpdk::mem::PoolConfig::new("injection-pool", dpdk::mem::PoolParams::default()).unwrap(),
     )
@@ -172,9 +170,7 @@ async fn dataplane(
     // start mgmt
     start_mgmt(mgmt_params).expect("Failed to start gRPC server");
 
-    tokio::time::sleep(Duration::from_secs(15)).await;
-
-    // std::process::exit(0);
+    tokio::time::sleep(Duration::from_secs(60)).await;
 }
 
 /// This method

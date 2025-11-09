@@ -17,7 +17,6 @@ use net::packet::Packet;
 use pipeline::{DynPipeline, NetworkFunction};
 use tracing::{debug, error, info, trace, warn};
 
-#[allow(unused)] //TEMP
 fn init_devices(eal: &Eal<eal::Started>, num_workers: u16) -> Vec<Dev> {
     eal.state
         .dev
