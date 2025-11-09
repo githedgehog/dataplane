@@ -18,7 +18,7 @@ use core::ptr::null;
 use core::ptr::null_mut;
 use core::slice::from_raw_parts_mut;
 use errno::Errno;
-use net::buffer::PacketBufferPool;
+use net::buffer::{BufferAllocationError, BufferPool, NewBufferPool};
 use tracing::{error, info, warn};
 
 use dpdk_sys::{
@@ -88,10 +88,19 @@ impl Display for Pool {
     }
 }
 
-impl PacketBufferPool for Pool {
+impl NewBufferPool for Pool {
+    type Config<'a> = PoolConfig;
+
+    type Error = InvalidMemPoolConfig;
+
+    fn new_pool(config: Self::Config<'_>) -> Result<Self, Self::Error> {
+        Pool::new_pkt_pool(config)
+    }
+}
+
+impl BufferPool for Pool {
     type Buffer = Mbuf;
-    type Error = String;
-    fn new_buffer(&self) -> Result<Self::Buffer, Self::Error> {
+    fn new_buffer(&self) -> Result<Self::Buffer, BufferAllocationError> {
         Ok(self.alloc())
     }
 }
@@ -258,9 +267,9 @@ impl Default for PoolParams {
     fn default() -> PoolParams {
         PoolParams {
             size: (1 << 15) - 1,
-            cache_size: 256, // guess for best choice, adjust as profiling suggests
+            cache_size: 256,   // guess for best choice, adjust as profiling suggests
             private_size: 512, // guess for most useful value, adjust as needed
-            data_size: 8192, // guess for most useful value, adjust as needed
+            data_size: 8192,   // guess for most useful value, adjust as needed
             socket_id: SocketId::current(),
         }
     }

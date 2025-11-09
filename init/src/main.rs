@@ -18,7 +18,7 @@ use hardware::{
     support::SupportedDevice,
 };
 use miette::{Context, IntoDiagnostic};
-use nix::mount::{self, MsFlags};
+use nix::mount::MsFlags;
 use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::layer::SubscriberExt;
 

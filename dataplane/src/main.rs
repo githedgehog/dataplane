@@ -24,7 +24,7 @@ use args::{LaunchConfiguration, TracingConfigSection};
 
 use dpdk::{
     eal::{Eal, EalArgs},
-    mem::Mbuf,
+    mem::{Mbuf, PoolConfig, PoolParams},
 };
 use driver::{Configure, Start, Stop};
 use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
@@ -83,7 +83,13 @@ fn process_tracing_cmds(cfg: &TracingConfigSection) {
     // }
 }
 
+enum DriverTypes<'driver> {
+    Dpdk(Dpdk<drivers::dpdk::Started<'driver>>),
+    Kernel(DriverKernel<dpdk::mem::Pool>),
+}
+
 async fn dataplane(
+    scope: &std::thread::Scope<'_, '_>,
     launch_config: &LaunchConfiguration,
     eal: &Eal<'_, dpdk::eal::Started<'_>>,
     cancel: CancellationToken,
@@ -119,6 +125,7 @@ async fn dataplane(
     // Start driver with the provided pipeline builder. Taps must have been created before this
     // happens so that their ifindex is available when drivers initialize.
 
+
     let _driver = match &launch_config.driver {
         args::DriverConfigSection::Dpdk(section) => {
             tap_init_async(&section.interfaces)
@@ -131,19 +138,26 @@ async fn dataplane(
                 setup_pipeline: pipeline_factory,
             })
             .unwrap();
-            configured.start().unwrap()
+            DriverTypes::Dpdk(configured.start().unwrap())
         }
         args::DriverConfigSection::Kernel(section) => {
             tap_init_async(&section.interfaces)
                 .await
                 .expect("Tap initialization failed");
             info!("Using driver kernel...");
-            todo!();
-            // DriverKernel::start(
+            let driver = DriverKernel::<dpdk::mem::Pool>::new(
+                PoolConfig::new("kernel-io-pool", PoolParams::default()).unwrap(),
+            )
+            .into_diagnostic()
+            .wrap_err("unable to start kernel driver")
+            .unwrap();
+            // driver.start(
+            //     scope,
             //     section.interfaces.clone().into_iter(),
             //     launch_config.dataplane_workers,
             //     &pipeline_factory,
             // );
+            DriverTypes::Kernel(driver)
         }
     };
     let injection_pool = dpdk::mem::Pool::new_pkt_pool(
@@ -179,10 +193,11 @@ async fn dataplane(
 /// 2. invokes the dataplane function in that environment.
 /// 3. cleans up that environment after it completes or panics
 #[allow(clippy::too_many_lines)]
-fn launch_dataplane<'a>(
+fn launch_dataplane(
     dataplane_fn: impl AsyncFnOnce(
+        &std::thread::Scope<'_, '_>,
         &LaunchConfiguration,
-        &Eal<dpdk::eal::Started<'a>>,
+        &Eal<dpdk::eal::Started<'_>>,
         CancellationToken,
     ),
 ) {
@@ -205,110 +220,112 @@ fn launch_dataplane<'a>(
     unsafe {
         libc::atexit(skip_all_exit_handlers_and_fail);
     }
-
-    let eal = {
-        // memory allocation banned until EAL is started
-        let launch_config_memmap = LaunchConfiguration::inherit();
-        let launch_config = rkyv::access::<
-            rkyv::Archived<LaunchConfiguration>,
-            rkyv::rancor::Failure,
-        >(launch_config_memmap.as_ref())
-        .expect("failed to validate ArchivedLaunchConfiguration");
-        // memory/thread allocation ok so long as you have an eal
-        let eal = match &launch_config.driver {
-            args::ArchivedDriverConfigSection::Dpdk(driver_config) => {
-                let eal_args = EalArgs::new(&driver_config.eal_args);
-                let configured = dpdk::eal::Eal::configure(eal_args).unwrap();
-                configured.start().unwrap()
-            }
-            args::ArchivedDriverConfigSection::Kernel(_driver_config) => {
-                todo!();
-            }
-        };
-        init_logging();
-        let launch_config = rkyv::from_bytes::<LaunchConfiguration, rkyv::rancor::Error>(
-            launch_config_memmap.as_ref(),
-        )
-        .into_diagnostic()
-        .wrap_err("failed to deserialize launch configuration")
-        .unwrap();
-        info!("launch config: {launch_config:?}");
-        process_tracing_cmds(&launch_config.tracing);
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .enable_time()
-            .max_blocking_threads(2) // deliberately very low for now
-            .on_thread_stop(|| {
-                // safe because of eal registration hook
-                unsafe {
-                    dpdk::lcore::ServiceThread::unregister_current_thread();
+    std::thread::scope(|scope| {
+        let eal = {
+            // memory allocation banned until EAL is started
+            let launch_config_memmap = LaunchConfiguration::inherit();
+            let launch_config = rkyv::access::<
+                rkyv::Archived<LaunchConfiguration>,
+                rkyv::rancor::Failure,
+            >(launch_config_memmap.as_ref())
+            .expect("failed to validate ArchivedLaunchConfiguration");
+            // memory/thread allocation ok so long as you have an eal
+            let eal = match &launch_config.driver {
+                args::ArchivedDriverConfigSection::Dpdk(driver_config) => {
+                    let eal_args = EalArgs::new(&driver_config.eal_args);
+                    let configured = dpdk::eal::Eal::configure(eal_args).unwrap();
+                    configured.start().unwrap()
                 }
-            })
-            .build()
+                args::ArchivedDriverConfigSection::Kernel(_driver_config) => {
+                    todo!();
+                }
+            };
+            init_logging();
+            let launch_config = rkyv::from_bytes::<LaunchConfiguration, rkyv::rancor::Error>(
+                launch_config_memmap.as_ref(),
+            )
+            .into_diagnostic()
+            .wrap_err("failed to deserialize launch configuration")
             .unwrap();
-        let _runtime_guard = runtime.enter();
-        let pyroscope_agent = launch_config
-            .profiling
-            .pyroscope_url
-            .as_ref()
-            .and_then(|url| {
-                match PyroscopeAgent::builder(url.as_str(), "hedgehog-dataplane")
-                    .backend(pprof_backend(
-                        PprofConfig::new()
-                            .sample_rate(launch_config.profiling.frequency) // Hz
-                            .report_thread_name(),
-                    ))
-                    .build()
-                {
-                    Ok(agent) => match agent.start() {
-                        Ok(running) => Some(running),
+            info!("launch config: {launch_config:?}");
+            process_tracing_cmds(&launch_config.tracing);
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .enable_time()
+                .max_blocking_threads(2) // deliberately very low for now
+                .on_thread_stop(|| {
+                    // safe because of eal registration hook
+                    unsafe {
+                        dpdk::lcore::ServiceThread::unregister_current_thread();
+                    }
+                })
+                .build()
+                .unwrap();
+            let _runtime_guard = runtime.enter();
+            let pyroscope_agent = launch_config
+                .profiling
+                .pyroscope_url
+                .as_ref()
+                .and_then(|url| {
+                    match PyroscopeAgent::builder(url.as_str(), "hedgehog-dataplane")
+                        .backend(pprof_backend(
+                            PprofConfig::new()
+                                .sample_rate(launch_config.profiling.frequency) // Hz
+                                .report_thread_name(),
+                        ))
+                        .build()
+                    {
+                        Ok(agent) => match agent.start() {
+                            Ok(running) => Some(running),
+                            Err(e) => {
+                                error!("Pyroscope start failed: {e}");
+                                None
+                            }
+                        },
                         Err(e) => {
-                            error!("Pyroscope start failed: {e}");
+                            error!("Pyroscope build failed: {e}");
                             None
                         }
-                    },
-                    Err(e) => {
-                        error!("Pyroscope build failed: {e}");
-                        None
+                    }
+                });
+            runtime.block_on(async {
+                // TODO: add stop signal / cancel token to the args of dataplane_fn
+                // let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
+                let cancel = CancellationToken::new();
+                let _drop_guard = cancel.clone().drop_guard();
+                ctrlc::set_handler({
+                    let cancel = cancel.clone();
+                    move || {
+                        cancel.cancel();
+                    }
+                })
+                .expect("failed to set SIGINT handler");
+                let dataplane = dataplane_fn(scope, &launch_config, &eal, cancel.child_token());
+                tokio::select! {
+                    () = cancel.cancelled() => {
+                        info!("shutdown requested: closing down dataplane");
+                    }
+                    () = dataplane => {
+                        info!("dataplane shutting down");
                     }
                 }
             });
-        runtime.block_on(async {
-            // TODO: add stop signal / cancel token to the args of dataplane_fn
-            // let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
-            let cancel = CancellationToken::new();
-            let _drop_guard = cancel.clone().drop_guard();
-            ctrlc::set_handler({
-                let cancel = cancel.clone();
-                move || {
-                    cancel.cancel();
-                }
-            })
-            .expect("failed to set SIGINT handler");
-            let dataplane = dataplane_fn(&launch_config, &eal, cancel.child_token());
-            tokio::select! {
-                () = cancel.cancelled() => {
-                    info!("shutdown requested: closing down dataplane");
-                }
-                () = dataplane => {
-                    info!("dataplane shutting down");
+            info!("cleaning up pyroscope");
+            if let Some(running) = pyroscope_agent {
+                match running.stop() {
+                    Ok(ready) => ready.shutdown(),
+                    Err(e) => error!("pyroscope stop failed: {e}"),
                 }
             }
-        });
-        info!("cleaning up pyroscope");
-        if let Some(running) = pyroscope_agent {
-            match running.stop() {
-                Ok(ready) => ready.shutdown(),
-                Err(e) => error!("pyroscope stop failed: {e}"),
-            }
-        }
-        info!("shutting down async runtime");
-        runtime.shutdown_timeout(Duration::from_secs(90)); // crazy long timeout to force bug hunt if we don't shut down
-        info!("acync runtime stopped");
-        eal
-    };
+            info!("shutting down async runtime");
+            runtime.shutdown_timeout(Duration::from_secs(90)); // crazy long timeout to force bug hunt if we don't shut down
+            info!("acync runtime stopped");
+            eal
+        };
+        let _stopped = eal.stop().unwrap_or_else(|_| std::process::abort()); // abort case here should be unreachable
+    });
+
     // panic!("injecting failure to test abnormal shutdown");
-    let _stopped = eal.stop().unwrap_or_else(|_| std::process::abort()); // abort case here should be unreachable
 }
 
 // NOTE: do not add _any_ other logic to this function.  The `launch_dataplane` call is the one and only line

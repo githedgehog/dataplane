@@ -17,6 +17,9 @@ use args::{InterfaceArg, NetworkDeviceDescription};
 use concurrency::sync::Arc;
 use concurrency::thread;
 
+use hyper::body::Buf;
+use miette::{Context, IntoDiagnostic};
+use net::buffer::{BufferPool, NewBufferPool, PacketBufferMut};
 use tokio::sync::mpsc as chan;
 use tokio::time::timeout;
 
@@ -32,7 +35,6 @@ use std::collections::hash_map::DefaultHasher;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 
-use net::buffer::test_buffer::TestBuffer;
 use net::interface::{InterfaceIndex, InterfaceName};
 use net::packet::{Packet, PortIndex};
 use netdev::Interface;
@@ -49,9 +51,9 @@ use crate::drivers::async_utils::run_in_tokio_runtime;
 use tracectl::trace_target;
 trace_target!("kernel-driver", LevelFilter::INFO, &["driver"]);
 
-type WorkerTx = chan::Sender<Box<Packet<TestBuffer>>>;
-type WorkerRx = chan::Receiver<Box<Packet<TestBuffer>>>;
-type WorkerChans = (Vec<WorkerTx>, WorkerRx);
+type WorkerTx<Buf> = chan::Sender<Box<Packet<Buf>>>;
+type WorkerRx<Buf> = chan::Receiver<Box<Packet<Buf>>>;
+type WorkerChans<Buf> = (Vec<WorkerTx<Buf>>, WorkerRx<Buf>);
 
 /// Simple representation of a kernel interface.
 pub struct Kif {
@@ -79,8 +81,10 @@ impl Kif {
     ) -> Result<Self, String> {
         let mut sock = RawPacketStream::new()
             .map_err(|e| format!("Failed to open raw sock for interface {name}: {e}"))?;
-        #[allow(clippy::expect_used)] // This should have proper error handling, but may be fatal in any case.
-        sock.set_non_blocking().expect("unable to set socket to non blocking mode"); // TODO: real error handling
+        #[allow(clippy::expect_used)]
+        // This should have proper error handling, but may be fatal in any case.
+        sock.set_non_blocking()
+            .expect("unable to set socket to non blocking mode"); // TODO: real error handling
         sock.bind(name.as_ref())
             .map_err(|e| format!("Failed to open raw sock for interface {name}: {e}"))?;
 
@@ -210,22 +214,25 @@ fn get_interface_ifindex(interfaces: &[Interface], name: &str) -> Option<Interfa
 
 /// Main structure representing the kernel driver.
 /// This driver:
-///  * receives raw frames via `AF_PACKET`, parses to `Packet<TestBuffer>`
+///  * receives raw frames via `AF_PACKET`, parses to `Packet<Buf>`
 ///  * selects a worker by symmetric flow hash
 ///  * workers run independent pipelines and send processed packets back
 ///  * dispatcher serializes & transmits on the chosen outgoing interface
-pub struct DriverKernel;
+pub struct DriverKernel<Pool: BufferPool> {
+    pool: Pool,
+}
 
-fn single_worker(
+fn single_worker<'scope, 'env, Buf: PacketBufferMut>(
+    scope: &'scope std::thread::Scope<'scope, 'env>,
     id: usize,
     thread_builder: thread::Builder,
-    tx_to_control: WorkerTx,
-    setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
-) -> Result<WorkerTx, std::io::Error> {
-    let (tx_to_worker, mut rx_from_control) = chan::channel::<Box<Packet<TestBuffer>>>(4096);
+    tx_to_control: WorkerTx<Buf>,
+    setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
+) -> Result<WorkerTx<Buf>, std::io::Error> {
+    let (tx_to_worker, mut rx_from_control) = chan::channel::<Box<Packet<Buf>>>(4096);
     let setup = setup_pipeline.clone();
 
-    let handle_res = thread_builder.spawn(move || {
+    let handle_res = thread_builder.spawn_scoped(scope, move || {
         let mut pipeline = setup();
         run_in_tokio_runtime(async || {
             loop {
@@ -240,8 +247,8 @@ fn single_worker(
                 let mut count = 0;
                 for out_pkt in pipeline.process(packets.map(|pkt| *pkt)) {
                     // backpressure via bounded channel
-                    if tx_to_control.send(Box::new(out_pkt)).await.is_err() {
-                        warn!("Kernel IO channel closed. IO thread may be gone. Stopping...");
+                    if let Err(e) = tx_to_control.send(Box::new(out_pkt)).await {
+                        error!("Kernel IO channel unable to send. IO thread may be gone: {e}");
                         return;
                     }
                     count += 1;
@@ -259,10 +266,24 @@ fn single_worker(
 }
 
 #[allow(clippy::cast_possible_truncation)]
-impl DriverKernel {
+impl<Pool: BufferPool> DriverKernel<Pool> {
+    /// Construct a new kernel driver
+    ///
+    /// # Errors
+    ///
+    /// This method will forward any errors from buffer pool creation.
+    pub fn new<'a>(config: Pool::Config<'a>) -> Result<Self, Pool::Error>
+    where
+        Pool: NewBufferPool,
+    {
+        Ok(Self {
+            pool: Pool::new_pool(config)?,
+        })
+    }
+
     /// Compute a **symmetric** worker index for a parsed `Packet` using a bidirectional flow key.
     #[must_use]
-    fn compute_worker_idx(pkt: &Packet<TestBuffer>, workers: usize) -> usize {
+    fn compute_worker_idx(pkt: &Packet<Pool::Buffer>, workers: usize) -> usize {
         let n = workers.max(1);
 
         // Prefer symmetric flow-key hash (A<->B go to the same bucket)
@@ -279,19 +300,20 @@ impl DriverKernel {
     /// Spawn `workers` processing threads, each with its own pipeline instance.
     ///
     /// Returns:
-    ///   - `Vec<Sender<Packet<TestBuffer>>>` one sender per worker (dispatcher -> worker)
-    ///   - `Receiver<Packet<TestBuffer>>` a single queue for processed packets (worker -> dispatcher)
-    fn spawn_workers(
+    ///   - `Vec<Sender<Packet<Buf>>>` one sender per worker (dispatcher -> worker)
+    ///   - `Receiver<Packet<Buf>>` a single queue for processed packets (worker -> dispatcher)
+    fn spawn_workers<'scope, 'env>(
+        scope: &'scope std::thread::Scope<'scope, 'env>,
         num_workers: usize,
-        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
-    ) -> WorkerChans {
-        let (tx_to_control, rx_from_workers) = chan::channel::<Box<Packet<TestBuffer>>>(4096);
+        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<Pool::Buffer>>,
+    ) -> WorkerChans<Pool::Buffer> {
+        let (tx_to_control, rx_from_workers) = chan::channel(4096);
         let mut to_workers = Vec::with_capacity(num_workers);
         info!("Spawning {num_workers} workers");
         for wid in 0..num_workers {
             let builder = thread::Builder::new().name(format!("dp-worker-{wid}"));
             if let Ok(tx_to_worker) =
-                single_worker(wid, builder, tx_to_control.clone(), setup_pipeline)
+                single_worker(scope, wid, builder, tx_to_control.clone(), setup_pipeline)
             {
                 to_workers.push(tx_to_worker);
             } else {
@@ -337,11 +359,13 @@ impl DriverKernel {
     }
 
     /// Start the kernel IO thread for rx/tx
-    fn start_kernel_io_thread(
-        to_workers: Vec<WorkerTx>,
-        mut from_workers: WorkerRx,
+    fn start_kernel_io_thread<'scope, 'env>(
+        &'env self,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+        to_workers: Vec<WorkerTx<Pool::Buffer>>,
+        mut from_workers: WorkerRx<Pool::Buffer>,
         mut kiftable: KifTable,
-    ) {
+    ) -> std::thread::ScopedJoinHandle<'scope, ()> where 'env: 'scope {
         // IO thread takes ownership of kiftable
         let io = move || {
             let num_worker_chans = to_workers.len();
@@ -398,8 +422,8 @@ impl DriverKernel {
                     continue;
                 }
 
-                // 3) For readable interfaces, pull frames, parse to Packet<TestBuffer>, shard to workers
-                Self::recv_packets(&mut kiftable, &events).for_each(|pkt| {
+                // 3) For readable interfaces, pull frames, parse to Packet<Buf>, shard to workers
+                self.recv_packets(&mut kiftable, &events).for_each(|pkt| {
                     let target = Self::compute_worker_idx(&pkt, num_worker_chans);
                     if let Err(e) = to_workers[target].try_send(pkt) {
                         match e {
@@ -419,28 +443,33 @@ impl DriverKernel {
                 });
             }
         };
+        info!("starting kernel driver io");
 
-        // spawn
         #[allow(clippy::expect_used)]
-        thread::Builder::new()
+        let driver: thread::ScopedJoinHandle<'scope, ()> = thread::Builder::new()
             .name("kernel-driver-io".to_string())
-            .spawn(io)
-            .expect("Fatal: failed to spawn kernel driver IO thread");
+            .spawn_scoped(scope, io)
+            .into_diagnostic()
+            .wrap_err("failed to spawn kernel driver IO thread")
+            .unwrap();
 
         info!("Kernel driver IO thread spawned");
+        driver
     }
 
     /// Starts the kernel driver, spawns worker threads, IO thread and runs the dispatcher loop.
     ///
     /// - `args`: kernel driver CLI parameters (e.g., `--interface` list)
     /// - `workers`: number of worker threads / pipelines
-    /// - `setup_pipeline`: factory returning a **fresh** `DynPipeline<TestBuffer>` per worker
+    /// - `setup_pipeline`: factory returning a **fresh** `DynPipeline<Buf>` per worker
     #[allow(clippy::panic, clippy::missing_panics_doc)]
-    pub fn start(
+    pub fn start<'this, 'env>(
+        &'this self,
+        scope: &'this std::thread::Scope<'this, 'env>,
         interfaces: impl Iterator<Item = InterfaceArg>,
         num_workers: u16,
-        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
-    ) {
+        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<Pool::Buffer>>,
+    ) where 'this: 'env {
         // init port devices
         let kiftable = match Self::init_devices(interfaces) {
             Ok(kiftable) => kiftable,
@@ -451,7 +480,7 @@ impl DriverKernel {
         };
 
         // Spawn pipeline workers
-        let (to_workers, from_workers) = Self::spawn_workers(num_workers as usize, setup_pipeline);
+        let (to_workers, from_workers) = Self::spawn_workers(scope, num_workers as usize, setup_pipeline);
         if to_workers.len() != (num_workers as usize) {
             warn!(
                 "Could spawn only {} of {} workers",
@@ -465,33 +494,40 @@ impl DriverKernel {
         );
 
         // Spawn io thread
-        Self::start_kernel_io_thread(to_workers, from_workers, kiftable);
+        self.start_kernel_io_thread(scope, to_workers, from_workers, kiftable);
     }
 
     fn recv_packets(
+        &self,
         kiftable: &mut KifTable,
         events: &mio::Events,
-    ) -> impl Iterator<Item = Box<Packet<TestBuffer>>> {
+    ) -> impl Iterator<Item = Box<Packet<Pool::Buffer>>> {
         events
             .iter()
             .filter(|e| e.is_readable())
             .map(mio::event::Event::token)
-            .filter_map(|token| kiftable.get_mut(token).map(Self::packet_recv))
+            .filter_map(|token| kiftable.get_mut(token).map(|kif| self.packet_recv(kif)))
             .flatten()
     }
 
     /// Tries to receive frames from the indicated interface and builds `Packet`s
     /// out of them. Returns a vector of [`Packet`]s.
     #[allow(clippy::vec_box)] // We want to avoid Packet moves, so allow Vec<Box<_>> to be sure
-    fn packet_recv(kif: &mut Kif) -> Vec<Box<Packet<TestBuffer>>> {
-        let mut raw = [0u8; 2048];
-        let mut pkts = Vec::with_capacity(32);
+    fn packet_recv(&self, kif: &mut Kif) -> Vec<Box<Packet<Pool::Buffer>>> {
+        let mut pkts = Vec::with_capacity(64);
         loop {
-            match kif.sock.read(&mut raw) {
+            let mut buf = match self.pool.new_buffer() {
+                Ok(buf) => buf,
+                Err(err) => {
+                    warn!("driver out of memory buffers: {err}");
+                    break;
+                }
+            };
+            match kif.sock.read(buf.as_mut()) {
                 Ok(0) => break, // no more
                 Ok(bytes) => {
-                    // build TestBuffer and parse
-                    let buf = TestBuffer::from_raw_data(&raw[..bytes]);
+                    trace!("received {bytes} bytes from kernel interface");
+                    // build Buf and parse
                     match Packet::new(buf) {
                         Ok(mut incoming) => {
                             // we'll probably ditch iport, but for the time being....

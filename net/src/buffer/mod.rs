@@ -40,20 +40,32 @@ impl<T> PacketBufferMut for T where
 {
 }
 
-/// Trait representing the ability to create packet buffers
-pub trait PacketBufferPool: Sync + Send {
+/// Trait representing the ability to create buffer pools
+pub trait BufferPool: Send + Sync {
     /// The type of the buffer provided by this type
     type Buffer: PacketBufferMut;
-
-    /// Error which may occur if a buffer cannot be provided
-    type Error: Debug;
 
     /// Provide a packet buffer
     ///
     /// # Errors
     ///
     /// Returns [`Self::Error`] if a buffer could not be provided
-    fn new_buffer(&self) -> Result<Self::Buffer, Self::Error>;
+    fn new_buffer(&self) -> Result<Self::Buffer, BufferAllocationError>;
+}
+
+/// Trait representing the ability to create a new [`BufferPool`]
+pub trait NewBufferPool: Sized {
+    /// Configuration required to create a buffer pool
+    type Config<'a>;
+    /// Errors which may occur when creating a buffer pool.
+    type Error: std::error::Error;
+    /// Create a buffer pool.
+    ///
+    /// # Errors
+    ///
+    /// Implementations are expected to return errors if a pool can not
+    /// be built to match the supplied configuration.
+    fn new_pool(args: Self::Config<'_>) -> Result<Self, Self::Error>;
 }
 
 /// Trait representing the ability to get the unused headroom in a packet buffer.

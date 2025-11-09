@@ -15,7 +15,7 @@ use tokio::task;
 use crate::PktQueue;
 use interface_manager::interface::TapDevice;
 use net::buffer::PacketBufferMut;
-use net::buffer::PacketBufferPool;
+use net::buffer::BufferPool;
 use net::interface::{InterfaceIndex, InterfaceName};
 use net::packet::Packet;
 
@@ -114,13 +114,13 @@ enum TapOp {
     Del(InterfaceIndex),
 }
 
-struct IoManager<Buf: PacketBufferMut, P: PacketBufferPool> {
+struct IoManager<Buf: PacketBufferMut, P: BufferPool> {
     puntq: PktQueue<Buf>,
     injectq: PktQueue<Buf>,
     pool: Arc<P>,
     receiver: Receiver<IoManagerMsg>,
 }
-impl<Buf: PacketBufferMut, P: PacketBufferPool<Buffer = Buf> + 'static> IoManager<Buf, P> {
+impl<Buf: PacketBufferMut, P: BufferPool<Buffer = Buf> + 'static> IoManager<Buf, P> {
     fn new(
         puntq: PktQueue<Buf>,
         injectq: PktQueue<Buf>,
@@ -320,7 +320,7 @@ impl<Buf: PacketBufferMut, P: PacketBufferPool<Buffer = Buf> + 'static> IoManage
                                 *g = Some(spawn(rx_task));
 
                                 match puntctl.send(TapOp::Add(m.clone())).await {
-                                    Ok(()) => debug!("Asked controller to punt to {tapname}"),
+                                    Ok(()) => trace!("Asked controller to punt to {tapname}"),
                                     Err(e) => warn!("Failed to request punting to {tapname}: {e}"),
                                 }
                             }
@@ -335,7 +335,7 @@ impl<Buf: PacketBufferMut, P: PacketBufferPool<Buffer = Buf> + 'static> IoManage
     }
 }
 
-pub fn start_io<P: PacketBufferPool + 'static>(
+pub fn start_io<P: BufferPool + 'static>(
     puntq: PktQueue<P::Buffer>,
     injectq: PktQueue<P::Buffer>,
     pool: P,
