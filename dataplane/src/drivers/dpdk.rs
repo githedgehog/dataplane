@@ -4,15 +4,18 @@
 //! DPDK dataplane driver
 
 use std::convert::Infallible;
+use std::sync::Arc;
 
 use dpdk::dev::{Dev, TxOffloadConfig};
 use dpdk::eal::{self, Eal};
-use dpdk::lcore::LCoreId;
-use dpdk::mem::{Pool, PoolConfig, PoolParams};
+use dpdk::lcore::{LCoreId, WorkerThread};
+use dpdk::mem::{Mbuf, Pool, PoolConfig, PoolParams};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, socket};
-use tracing::{info, warn};
+use net::packet::Packet;
+use pipeline::{DynPipeline, NetworkFunction};
+use tracing::{debug, error, info, trace, warn};
 
 #[allow(unused)] //TEMP
 fn init_devices(eal: &Eal<eal::Started>, num_workers: u16) -> Vec<Dev> {
@@ -75,19 +78,21 @@ fn init_devices(eal: &Eal<eal::Started>, num_workers: u16) -> Vec<Dev> {
 pub struct Configuration<'driver> {
     pub eal: &'driver Eal<'driver, eal::Started<'driver>>,
     pub workers: u16,
+    pub setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Mbuf>>,
 }
 
 #[non_exhaustive]
 pub struct Configured<'driver> {
     eal: &'driver Eal<'driver, eal::Started<'driver>>,
     workers: u16,
+    setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Mbuf>>,
 }
 
 #[non_exhaustive]
 pub struct Started<'driver> {
     eal: &'driver Eal<'driver, eal::Started<'driver>>,
-    workers: u16,
-    devices: Vec<Dev>,
+    devices: Box<Vec<Dev>>,
+    workers: Vec<LCoreId>,
 }
 
 #[non_exhaustive]
@@ -110,6 +115,7 @@ impl<'driver> driver::Configure for Dpdk<Configured<'driver>> {
             state: Configured {
                 eal: configuration.eal,
                 workers: configuration.workers,
+                setup_pipeline: configuration.setup_pipeline,
             },
         })
     }
@@ -121,13 +127,81 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
     type Error = Infallible;
 
     fn start(self) -> Result<Self::Started, Self::Error> {
-        let Configured { eal, workers } = self.state;
-        let devices = init_devices(eal, workers);
+        let Configured {
+            eal,
+            workers,
+            setup_pipeline,
+        } = self.state;
+        let devices = Box::new(init_devices(eal, workers));
+
+
+        let workers = LCoreId::iter()
+            .enumerate()
+            .map(|(i, lcore_id)| {
+                info!("starting RTE Worker on lcore {lcore_id:?}");
+                let setup = setup_pipeline.clone();
+                let devices = devices.as_ref();
+                WorkerThread::launch(lcore_id, move || {
+                    info!("starting worker thread runtime");
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_time()
+                        .max_blocking_threads(1) // deliberately very low.  No need for a lot of lcores here
+                        .on_thread_stop(|| unsafe {
+                            dpdk::lcore::ServiceThread::unregister_current_thread();
+                        })
+                        .build()
+                        .unwrap();
+                    let _guard = runtime.enter();
+                    runtime.block_on(async move {
+                        let mut pipeline = setup();
+                        let queues: Vec<_> = devices
+                            .iter()
+                            .map(|device| {
+                                let rx_queue = device
+                                    .rx_queue(RxQueueIndex(u16::try_from(i).unwrap()))
+                                    .unwrap();
+                                let tx_queue = device
+                                    .tx_queue(TxQueueIndex(u16::try_from(i).unwrap()))
+                                    .unwrap();
+                                (rx_queue, tx_queue)
+                            })
+                            .collect();
+                        loop {
+                            for (rx_queue, tx_queue) in &queues {
+                                let mbufs = rx_queue.receive();
+                                let pkts = mbufs.filter_map(|mbuf| match Packet::new(mbuf) {
+                                    Ok(pkt) => {
+                                        debug!("packet: {pkt:?}");
+                                        Some(pkt)
+                                    }
+                                    Err(e) => {
+                                        trace!("Failed to parse packet: {e:?}");
+                                        None
+                                    }
+                                });
+
+                                let pkts_out = pipeline.process(pkts);
+                                let buffers = pkts_out.filter_map(|pkt| match pkt.serialize() {
+                                    Ok(buf) => Some(buf),
+                                    Err(e) => {
+                                        error!("{e:?}");
+                                        None
+                                    }
+                                });
+                                tx_queue.transmit(buffers);
+                            }
+                        }
+                    });
+                })
+                .unwrap()
+            })
+            .collect();
+
         Ok(Self::Started {
             state: Started {
                 eal,
-                workers,
                 devices,
+                workers,
             },
         })
     }
@@ -136,58 +210,12 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
 impl<'config> driver::Stop for Dpdk<Started<'config>> {
     type Outcome = &'config Eal<'config, eal::Started<'config>>;
 
-    type Error= Infallible;
+    type Error = Infallible;
 
     fn stop(self) -> Result<Self::Outcome, Self::Error> {
         Ok(self.state.eal)
     }
 }
-
-// impl driver::Start for Dpdk<&rkyv::Archived<LaunchConfiguration>> {
-//     type Started<'a> = Dpdk<Started<'a>>;
-//     type Error = Infallible;
-
-//     /// Memory allocation ok if this function is successful
-//     fn start<'a>(self) -> Result<Self::Started<'a>, Self::Error> {
-//         let eal_args = match &self.state.driver {
-//             args::ArchivedDriverConfigSection::Dpdk(section) => {
-//                 EalArgs::new(&section.eal_args)
-//             },
-//             args::ArchivedDriverConfigSection::Kernel(_) => {
-//                 unreachable!()
-//             },
-//         };
-//         let eal = dpdk::eal::init(eal_args);
-//         // memory allocation ok now
-//         dpdk::lcore::ServiceThread::register_thread_spawn_hook();
-//         // thread creation ok now
-//         Ok(Self::Started {
-//             state: Started {
-//                 eal,
-//                 // devices,
-//                 workers: self.state.dataplane_workers.to_native(),
-//             },
-//         })
-//     }
-// }
-
-// impl driver::Stop for Dpdk<Started> {
-//     type Outcome = Eal<Started>;
-
-//     fn stop(self) -> Self::Outcome {
-//         todo!()
-//     }
-// }
-
-// mod private {
-//     pub(super) trait Sealed {}
-// }
-
-// pub enum Dataplane {
-//     Configured(DpdkDriver<Config>),
-//     Started(DpdkDriver<Started>),
-//     Stopped(DpdkDriver<Stopped>),
-// }
 
 // impl driver::Configure for DpdkDriver<Config> {
 //     type Configuration = &'static ArchivedLaunchConfiguration;
@@ -219,80 +247,4 @@ impl<'config> driver::Stop for Dpdk<Started<'config>> {
 
 // pub struct DpdkDriver<T> {
 //     state: T
-// }
-
-// impl driver::Start for DpdkDriver<Config> {
-//     type Started = DpdkDriver<Started>;
-
-//     type Error = Infallible;
-
-//     fn start(self) -> Result<Self::Started, Self::Error> {
-//         let eal = eal::init(args);
-//         let devices = init_devices(&eal, num_workers);
-//         LCoreId::iter().enumerate().for_each(|(i, lcore_id)| {
-//             info!("starting RTE Worker on lcore {lcore_id:?}");
-//             let setup = self.setup_pipeline.clone();
-//             WorkerThread::launch(lcore_id, move || {
-//                 info!("starting worker thread runtime");
-//                 let runtime = tokio::runtime::Builder::new_current_thread()
-//                     .max_blocking_threads(1)
-//                     .on_thread_start(|| {
-//                         // TODO: banish dpdk-sys back to  where it belongs
-//                         info!("initializing RTE runtime async worker thread");
-//                         let ret = unsafe { dpdk_sys::rte_thread_register() };
-//                         if ret != 0 {
-//                             let errno = unsafe { dpdk_sys::rte_errno_get() };
-//                             let msg = format!("rte thread exited with code {ret}, errno: {errno}");
-//                             Eal::fatal_error(msg)
-//                         }
-//                     })
-//                     .on_thread_stop(|| unsafe { dpdk_sys::rte_thread_unregister() })
-//                     .build()
-//                     .unwrap();
-//                 let _guard = runtime.enter();
-//                 runtime.block_on(async move {
-//                     let mut pipeline = setup();
-//                     let queues: Vec<_> = self
-//                         .devices
-//                         .iter()
-//                         .map(|device| {
-//                             let rx_queue = device
-//                                 .rx_queue(RxQueueIndex(u16::try_from(i).unwrap()))
-//                                 .unwrap();
-//                             let tx_queue = device
-//                                 .tx_queue(TxQueueIndex(u16::try_from(i).unwrap()))
-//                                 .unwrap();
-//                             (rx_queue, tx_queue)
-//                         })
-//                         .collect();
-//                     loop {
-//                         for (rx_queue, tx_queue) in &queues {
-//                             let mbufs = rx_queue.receive();
-//                             let pkts = mbufs.filter_map(|mbuf| match Packet::new(mbuf) {
-//                                 Ok(pkt) => {
-//                                     debug!("packet: {pkt:?}");
-//                                     Some(pkt)
-//                                 }
-//                                 Err(e) => {
-//                                     trace!("Failed to parse packet: {e:?}");
-//                                     None
-//                                 }
-//                             });
-
-//                             let pkts_out = pipeline.process(pkts);
-//                             let buffers = pkts_out.filter_map(|pkt| match pkt.serialize() {
-//                                 Ok(buf) => Some(buf),
-//                                 Err(e) => {
-//                                     error!("{e:?}");
-//                                     None
-//                                 }
-//                             });
-//                             tx_queue.transmit(buffers);
-//                         }
-//                     }
-//                 });
-//             })
-//             .unwrap();
-//         });
-//     }
 // }

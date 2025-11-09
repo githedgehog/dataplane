@@ -258,9 +258,9 @@ impl Default for PoolParams {
     fn default() -> PoolParams {
         PoolParams {
             size: (1 << 15) - 1,
-            cache_size: 256,
-            private_size: 256,
-            data_size: 2048,
+            cache_size: 256, // guess for best choice, adjust as profiling suggests
+            private_size: 512, // guess for most useful value, adjust as needed
+            data_size: 8192, // guess for most useful value, adjust as needed
             socket_id: SocketId::current(),
         }
     }
@@ -417,8 +417,19 @@ impl Drop for PoolInner {
 /// It can be "safely" transmuted _to_ an `*mut rte_mbuf` under the assumption that
 /// standard borrowing rules are observed.
 #[repr(transparent)]
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct Mbuf {
+    // In the future this should likely be a `Unique<...>` instead of a `NonNull<...>`,
+    // at which point we can drop the `PhantomData` marker, which is here to move this type from co-variance to
+    // invariance, and to inform the compiler that we functionally "own" this `dpdk_sys::rte_mbuf`.
+    // But `Unique` is not yet stabilized, and so we have a phantom data.
+    //
+    // One consequence of this design is that we must _never_ allow `Mbuf` to implement Copy (which it trivially could,
+    // since this is just a pointer).
+    //
+    // Fortunately, you can never `impl Copy` for any type which implements `Drop` so we are categorically safe from
+    // from that.
     pub(crate) raw: NonNull<dpdk_sys::rte_mbuf>,
     marker: PhantomData<dpdk_sys::rte_mbuf>,
 }
@@ -642,32 +653,6 @@ impl Default for RteAllocator {
 pub struct Dpdk<S> {
     state: S,
 }
-
-// impl Start for Dpdk<&rkyv::Archived<LaunchConfiguration>> {
-//     type Started = Dpdk<Started>;
-//     type Error = Infallible;
-
-//     /// Memory allocation ok if this function is successful
-//     fn start(self) -> Result<Self::Started, Self::Error> {
-//         let eal_args = match &self.state.driver {
-//             args::ArchivedDriverConfigSection::Dpdk(section) => EalArgs::new(&section.eal_args),
-//             args::ArchivedDriverConfigSection::Kernel(_) => {
-//                 unreachable!()
-//             }
-//         };
-//         let eal = eal::init(eal_args);
-//         // memory allocation ok after this line
-//         lcore::ServiceThread::register_thread_spawn_hook();
-//         // thread creation ok after this line
-//         // let devices = init_devices(&eal, self.state.dataplane_workers.to_native());
-//         Ok(Self::Started {
-//             state: Started {
-//                 eal,
-//                 workers: self.state.dataplane_workers.to_native(),
-//             },
-//         })
-//     }
-// }
 
 unsafe impl GlobalAlloc for RteAllocator {
     #[inline]

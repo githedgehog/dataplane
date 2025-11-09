@@ -1225,7 +1225,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                         "2-10", // TODO: calculate based on number of workers
                         "-m",
                         // TODO: calculate based on number of workers
-                        "20480", // reserve 2 1GiB hugepaes for each of the 8 worker cores + 4 1GiB hugepages for extra service work
+                        "20", // reserve 2 1GiB hugepaes for each of the 8 worker cores + 4 1GiB hugepages for extra service work
                         "--in-memory", // do not persist hugepage file descriptors in filesystem
                         "--huge-worker-stack",
                         "8192", // main and worker lcores get 8MiB stacks allocated from huge pages

@@ -211,7 +211,7 @@ pub enum WorkerThreadLaunchError {
 impl WorkerThread {
     /// This can only run on the main lcore
     #[allow(clippy::expect_used)] // this is only called at system launch where crash is still ok
-    pub fn launch<T: Send + FnOnce()>(lcore: LCoreId, f: T) -> Result<(), WorkerThreadLaunchError> {
+    pub fn launch<T: Send + FnOnce()>(lcore: LCoreId, f: T) -> Result<LCoreId, WorkerThreadLaunchError> {
         unsafe extern "C" fn _launch<Task: Send + FnOnce()>(arg: *mut c_void) -> c_int {
             let task = unsafe {
                 Box::from_raw(
@@ -230,7 +230,7 @@ impl WorkerThread {
             )
         };
         match res {
-            0 => Ok(()),
+            0 => Ok(lcore),
             errno::NEG_EBUSY => Err(WorkerThreadLaunchError::Busy),
             errno::NEG_EPIPE => Err(WorkerThreadLaunchError::Pipe),
             other => Err(WorkerThreadLaunchError::Unexpected(ErrorCode::parse(other))),

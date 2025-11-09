@@ -22,11 +22,14 @@ use crate::{
 };
 use args::{LaunchConfiguration, TracingConfigSection};
 
-use dpdk::eal::{Eal, EalArgs};
+use dpdk::{
+    eal::{Eal, EalArgs},
+    mem::Mbuf,
+};
 use driver::{Configure, Start, Stop};
 use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
 use miette::{Context, IntoDiagnostic};
-use net::buffer::TestBufferPool;
+use net::{buffer::TestBufferPool, packet::Packet};
 use nix::libc;
 use pkt_io::{start_io, tap_init_async};
 use pyroscope::PyroscopeAgent;
@@ -125,7 +128,9 @@ async fn dataplane(
             let configured = Dpdk::<Configured<'_>>::configure(Configuration {
                 eal,
                 workers: 8, // TODO: make dynamic
-            }).unwrap();
+                setup_pipeline: pipeline_factory,
+            })
+            .unwrap();
             configured.start().unwrap()
         }
         args::DriverConfigSection::Kernel(section) => {
@@ -141,8 +146,14 @@ async fn dataplane(
             // );
         }
     };
+    println!("sizeof packet: {}", std::mem::size_of::<Packet<Mbuf>>());
     tokio::time::sleep(Duration::from_secs(15)).await;
-    let (_handle, iom_ctl) = start_io::<TestBufferPool>(setup.puntq, setup.injectq, TestBufferPool);
+    let injection_pool = dpdk::mem::Pool::new_pkt_pool(
+        dpdk::mem::PoolConfig::new("injection-pool", dpdk::mem::PoolParams::default()).unwrap(),
+    )
+    .unwrap();
+    let (_handle, iom_ctl) =
+        start_io::<dpdk::mem::Pool>(setup.puntq, setup.injectq, injection_pool);
 
     // prepare parameters for mgmt
     let mgmt_params = MgmtParams {
@@ -292,11 +303,11 @@ fn launch_dataplane<'a>(
         if let Some(running) = pyroscope_agent {
             match running.stop() {
                 Ok(ready) => ready.shutdown(),
-                Err(e) => error!("Pyroscope stop failed: {e}"),
+                Err(e) => error!("pyroscope stop failed: {e}"),
             }
         }
         info!("shutting down async runtime");
-        runtime.shutdown_timeout(Duration::from_secs(90)); // crazy timeout to force bug hunt
+        runtime.shutdown_timeout(Duration::from_secs(90)); // crazy long timeout to force bug hunt if we don't shut down
         info!("acync runtime stopped");
         eal
     };
