@@ -159,7 +159,7 @@ async fn dataplane(
             pipeline_factory.clone(),
         );
         let injection_pool = TestBufferPool::new_pool(()).unwrap();
-        let (_handle, iom_ctl) =
+        let (io_manager, iom_ctl) =
             start_io(setup.puntq, setup.injectq, injection_pool);
         // prepare parameters for mgmt
         let mgmt_params = MgmtParams {
@@ -177,6 +177,7 @@ async fn dataplane(
         };
         // start mgmt
         start_mgmt(mgmt_params).expect("Failed to start gRPC server").join().unwrap();
+        io_manager.join().unwrap();
         DriverTypes::Kernel()
     };
 }

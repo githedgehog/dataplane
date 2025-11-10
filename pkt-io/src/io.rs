@@ -14,8 +14,8 @@ use tokio::task;
 
 use crate::PktQueue;
 use interface_manager::interface::TapDevice;
-use net::buffer::PacketBufferMut;
 use net::buffer::BufferPool;
+use net::buffer::PacketBufferMut;
 use net::interface::{InterfaceIndex, InterfaceName};
 use net::packet::Packet;
 
@@ -320,7 +320,8 @@ impl<Buf: PacketBufferMut, P: BufferPool<Buffer = Buf> + 'static> IoManager<Buf,
                 }
             }
             warn!("IO manager control channel closed!");
-        }.await;
+        }
+        .await;
         info!("IO manager loop stopped.");
     }
 }
@@ -329,13 +330,25 @@ pub fn start_io<P: BufferPool + 'static>(
     puntq: PktQueue<P::Buffer>,
     injectq: PktQueue<P::Buffer>,
     pool: P,
-) -> (tokio::task::JoinHandle<()>, IoManagerCtl) {
+) -> (std::thread::JoinHandle<()>, IoManagerCtl) {
     info!("Starting packet IO manager");
     let (sender, receiver) = channel::<IoManagerMsg>(100);
-    let iom = IoManager::new(puntq, injectq, receiver, pool);
     let iom_ctl = IoManagerCtl::new(sender);
-    let task = tokio::spawn(iom.run());
-    (task, iom_ctl)
+    let th = std::thread::Builder::new()
+        .name("io-manager".to_string())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .enable_time()
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                let iom = IoManager::new(puntq, injectq, receiver, pool);
+                let task = tokio::spawn(iom.run());
+            });
+        })
+        .unwrap();
+    (th, iom_ctl)
 }
 
 #[cfg(test)]
@@ -503,8 +516,7 @@ mod io_tests {
         let punt_handle = punt_thread(puntq.clone(), thread_run.clone(), pace);
 
         // start IO manager
-        let (io_handle, mut iom_ctl) =
-            start_io(puntq.clone(), injectq.clone(), TestBufferPool);
+        let (io_handle, mut iom_ctl) = start_io(puntq.clone(), injectq.clone(), TestBufferPool);
 
         // here we control the IO manager
         let wait_time = std::time::Duration::from_secs(2);
