@@ -110,7 +110,7 @@ pub struct Configured<'driver> {
 #[non_exhaustive]
 pub struct Started<'driver> {
     eal: &'driver Eal<'driver, eal::Started<'driver>>,
-    devices: Vec<Dev<'driver>>,
+    devices: Arc<Vec<Dev<'driver>>>,
     workers: Vec<LCoreId>,
 }
 
@@ -147,13 +147,13 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
     type Error = Infallible;
 
     fn start(self) -> Result<Self::Started, Self::Error> {
-        let devices = init_devices(&self.state);
+        let devices = Arc::new(init_devices(&self.state));
         let workers = LCoreId::iter()
             .enumerate()
             .map(|(i, lcore_id)| {
                 info!("starting RTE Worker on lcore {lcore_id:?}");
                 let setup = self.state.setup_pipeline.clone();
-                let devices = &devices;
+                let devices = devices.as_ref();
                 WorkerThread::launch(lcore_id, move || {
                     info!("starting worker thread runtime");
                     let runtime = tokio::runtime::Builder::new_current_thread()
