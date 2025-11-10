@@ -340,12 +340,11 @@ pub fn start_io<P: BufferPool + 'static>(
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_io()
                 .enable_time()
+                .on_thread_stop(|| unsafe { dpdk::lcore::ServiceThread::unregister_current_thread(); })
                 .build()
                 .unwrap();
             runtime.block_on(async move {
-                let iom = IoManager::new(puntq, injectq, receiver, pool);
-                let task = tokio::spawn(iom.run());
-                task.await;
+                IoManager::new(puntq, injectq, receiver, pool).run().await;
             });
         })
         .unwrap();
