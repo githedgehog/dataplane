@@ -475,67 +475,13 @@ fn main() {
                 });
         }
         args::DriverConfigSection::Kernel(kernel_section) => {
-            let search = DeviceSearch::new(kernel_section.interfaces.iter().map(|it| &it.port));
-            let report = search.report();
-            let report_yml = serde_yaml_ng::to_string(&report)
-                .into_diagnostic()
-                .wrap_err("failed to serialize hardware scan report")
-                .unwrap();
-            info!("hardware scan report:\n---\n{report_yml}");
-            match report.viability() {
-                StartupViability::Clean => {}
-                StartupViability::Warn(initialization_warnings) => {
-                    for wrn in initialization_warnings {
-                        let diagnostic = Result::<(), _>::Err(wrn).into_diagnostic().unwrap_err();
-                        warn!("{diagnostic}");
-                    }
-                }
-                StartupViability::Fail(initialization_errors) => {
-                    for err in initialization_errors {
-                        let diagnostic = Result::<(), _>::Err(err)
-                            .into_diagnostic()
-                            .wrap_err("fatal error in dataplane startup")
-                            .unwrap_err();
-                        error!("{diagnostic}");
-                    }
-                    error!("dataplane failed to initialize");
-                    panic!("dataplane failed to initialize");
-                }
-            }
-            search
-                        .scheduled_for_use()
-                        .iter()
-                        .for_each(|(desc, &node)| {
-                            let (pci_address, vendor_id, device_id) = match node.attributes() {
-                                Some(NodeAttributes::Pci(pci_attributes)) => {
-                                    (pci_attributes.address(), pci_attributes.vendor_id(), pci_attributes.device_id())
-                                }
-                                Some(_) | None => todo!(),
-                            };
-                            match SupportedDevice::try_from((vendor_id, device_id)) {
-                                Ok(supported) => match supported {
-                                    SupportedDevice::IntelE1000
-                                    | SupportedDevice::IntelX710
-                                    | SupportedDevice::IntelX710VirtualFunction
-                                    | SupportedDevice::VirtioNet => match desc {
-                                        NetworkDeviceDescription::Pci(pci_address) => {
-                                            info!("not unbinding {pci_address} the device because we are using the kernel driver");
-                                        }
-                                        NetworkDeviceDescription::Kernel(_) => {
-                                            // nothing to do here
-                                        },
-                                    },
-                                    SupportedDevice::MellanoxConnectX6DX
-                                    | SupportedDevice::MellanoxConnectX7
-                                    | SupportedDevice::MellanoxConnectX8
-                                    | SupportedDevice::MellanoxBlueField2
-                                    | SupportedDevice::MellanoxBlueField3 => {
-                                        info!("device {supported} ({pci_address}) uses bifurcated driver: not attempting to bind it to vfio");
-                                    },
-                                },
-                                Err(_) => unreachable!(), // TODO: restructure to remove this branch
-                            }
-                        });
+            // let search = DeviceSearch::new(kernel_section.interfaces.iter().map(|it| &it.port));
+            // let report = search.report();
+            // let report_yml = serde_yaml_ng::to_string(&report)
+            //     .into_diagnostic()
+            //     .wrap_err("failed to serialize hardware scan report")
+            //     .unwrap();
+            // info!("hardware scan report:\n---\n{report_yml}");
         }
     }
 
