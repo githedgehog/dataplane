@@ -345,6 +345,7 @@ pub fn start_io<P: BufferPool + 'static>(
             runtime.block_on(async move {
                 let iom = IoManager::new(puntq, injectq, receiver, pool);
                 let task = tokio::spawn(iom.run());
+                task.await;
             });
         })
         .unwrap();
