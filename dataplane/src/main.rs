@@ -176,13 +176,9 @@ async fn dataplane(
             },
         };
         // start mgmt
-        start_mgmt(mgmt_params).expect("Failed to start gRPC server");
+        start_mgmt(mgmt_params).expect("Failed to start gRPC server").join().unwrap();
         DriverTypes::Kernel()
     };
-
-
-
-    tokio::time::sleep(Duration::from_secs(60)).await;
 }
 
 /// This method
