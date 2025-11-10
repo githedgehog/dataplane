@@ -16,7 +16,6 @@ dpdk-sys = { workspace = true }
 driver = { workspace = true }
 errno = { workspace = true }
 hardware = { workspace = true }
-interface-manager = { workspace = true }
 net = { workspace = true }
 
 ctrlc = { workspace = true, features = ["termination"] }

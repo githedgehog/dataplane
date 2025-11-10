@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use args::InterfaceArg;
 use interface_manager::interface::TapDevice;
+use net::interface::InterfaceIndex;
 use tracing::{error, info};
 
 /// Creates a tap device for each of the [`InterfaceArg`]s provided.

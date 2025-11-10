@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use args::{InterfaceArg, NetworkDeviceDescription};
+use args::NetworkDeviceDescription;
 use dpdk::dev::{Dev, TxOffloadConfig};
 use dpdk::eal::{self, Eal};
 use dpdk::lcore::{LCoreId, WorkerThread};
@@ -15,12 +15,12 @@ use dpdk::mem::{Mbuf, Pool, PoolConfig, PoolParams};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, socket};
-use interface_manager::interface::TapDevice;
+use net::interface::InterfaceIndex;
 use net::packet::Packet;
 use pipeline::{DynPipeline, NetworkFunction};
 use tracing::{debug, error, info, trace, warn};
 
-fn init_devices<'driver>(config: &Configured<'driver>) -> Vec<Dev<'driver>> {
+fn init_devices(config: &Configured<'_>) -> Vec<Dev> {
     config
         .eal
         .state
@@ -34,7 +34,7 @@ fn init_devices<'driver>(config: &Configured<'driver>) -> Vec<Dev<'driver>> {
                     return None;
                 }
             };
-            let Some(tap) = config.interfaces.get(&description) else {
+            let Some(&tap) = config.interfaces.get(&description) else {
                 error!("no tap device found for {description}");
                 return None;
             };
@@ -93,7 +93,7 @@ fn init_devices<'driver>(config: &Configured<'driver>) -> Vec<Dev<'driver>> {
 
 #[non_exhaustive]
 pub struct Configuration<'driver> {
-    pub interfaces: HashMap<NetworkDeviceDescription, &'driver TapDevice>,
+    pub interfaces: HashMap<NetworkDeviceDescription, InterfaceIndex>,
     pub eal: &'driver Eal<'driver, eal::Started<'driver>>,
     pub workers: u16,
     pub setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Mbuf>>,
@@ -101,7 +101,7 @@ pub struct Configuration<'driver> {
 
 #[non_exhaustive]
 pub struct Configured<'driver> {
-    interfaces: HashMap<NetworkDeviceDescription, &'driver TapDevice>,
+    interfaces: HashMap<NetworkDeviceDescription, InterfaceIndex>,
     eal: &'driver Eal<'driver, eal::Started<'driver>>,
     workers: u16,
     setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Mbuf>>,
@@ -110,7 +110,7 @@ pub struct Configured<'driver> {
 #[non_exhaustive]
 pub struct Started<'driver> {
     eal: &'driver Eal<'driver, eal::Started<'driver>>,
-    devices: Arc<Vec<Dev<'driver>>>,
+    devices: Arc<Vec<Dev>>,
     workers: Vec<LCoreId>,
 }
 
@@ -176,11 +176,9 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
                             let tx_queue = device
                                 .tx_queue(TxQueueIndex(u16::try_from(i).unwrap()))
                                 .unwrap();
-                            rx_queues.insert(device.config.tap.ifindex(), rx_queue);
-                            tx_queues.insert(
-                                device.config.tap.ifindex(),
-                                (Vec::with_capacity(512), tx_queue),
-                            );
+                            rx_queues.insert(device.config.tap, rx_queue);
+                            tx_queues
+                                .insert(device.config.tap, (Vec::with_capacity(512), tx_queue));
                         }
                         loop {
                             for (&iif, rx_queue) in &rx_queues {

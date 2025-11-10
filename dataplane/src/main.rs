@@ -29,7 +29,6 @@ use dpdk::{
 use driver::{Configure, Start, Stop};
 use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
 use miette::{Context, IntoDiagnostic};
-use net::{buffer::TestBufferPool, packet::Packet};
 use nix::libc;
 use pkt_io::{start_io, tap_init_async};
 use pyroscope::PyroscopeAgent;
@@ -137,7 +136,10 @@ async fn dataplane(
         args::DriverConfigSection::Dpdk(_) => {
             info!("Using driver DPDK...");
             let configured = Dpdk::configure(Configuration {
-                interfaces: tap_table.iter().map(|(k, v)| (k.port.clone(), v)).collect(),
+                interfaces: tap_table
+                    .iter()
+                    .map(|(k, v)| (k.port.clone(), v.ifindex()))
+                    .collect(),
                 eal,
                 workers: launch_config.dataplane_workers,
                 setup_pipeline: pipeline_factory,

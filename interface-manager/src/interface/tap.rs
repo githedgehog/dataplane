@@ -9,6 +9,7 @@ use net::interface::InterfaceName;
 use net::interface::InterfaceIndex;
 use nix::net::if_::if_nametoindex;
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::num::NonZero;
 use std::os::fd::AsFd;
 use tokio::io::unix::AsyncFd;
@@ -281,17 +282,10 @@ impl TapDevice {
     ///
     /// If the file descriptor of the tap device cannot be read, a [`tokio::io::Error`] is returned.
     async fn do_read<Buf: PacketBufferMut>(&self, buf: &mut Buf) -> tokio::io::Result<usize> {
-        let fd = self.async_fd.as_fd();
         loop {
             let mut guard = self.async_fd.readable().await?;
-            match nix::unistd::read(fd, buf.as_mut()) {
-                Ok(n) => return Ok(n),
-                Err(nix::errno::Errno::EINTR) => {}
-                Err(nix::errno::Errno::EWOULDBLOCK) => guard.clear_ready(),
-                Err(e) => {
-                    error!("Error reading from tap {}: {e:?}", self.name);
-                    return Err(e.into());
-                }
+            if let Ok(res) = guard.try_io(|inner| inner.get_ref().read(buf.as_mut())) {
+                return res;
             }
         }
     }

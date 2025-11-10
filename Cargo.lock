@@ -1142,7 +1142,6 @@ dependencies = [
  "dataplane-driver",
  "dataplane-errno",
  "dataplane-hardware",
- "dataplane-interface-manager",
  "dataplane-net",
  "libc 1.0.0-alpha.1",
  "nix 0.30.1",

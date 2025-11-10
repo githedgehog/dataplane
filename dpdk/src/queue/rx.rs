@@ -8,7 +8,6 @@ use crate::mem::Mbuf;
 use crate::socket::SocketId;
 use crate::{dev, mem, socket};
 use errno::Errno;
-use net::interface::InterfaceIndex;
 use std::ffi::c_int;
 use std::ptr::null_mut;
 use tracing::{trace, warn};

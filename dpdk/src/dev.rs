@@ -11,8 +11,7 @@ use core::fmt::{Debug, Display, Formatter};
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 use dpdk_sys::rte_eth_hash_function::RTE_ETH_HASH_FUNCTION_DEFAULT;
 use hardware::pci::address::{InvalidPciAddress, PciAddress};
-use interface_manager::interface::TapDevice;
-use net::interface::{IllegalInterfaceName, InterfaceName};
+use net::interface::{IllegalInterfaceName, InterfaceIndex, InterfaceName};
 use std::str;
 use tracing::{debug, error, info, trace};
 
@@ -195,9 +194,9 @@ impl From<DevIndex> for u16 {
 
 #[derive(Debug)]
 /// TODO: add `rx_offloads` support
-pub struct DevConfig<'description> {
+pub struct DevConfig {
     pub description: NetworkDeviceDescription,
-    pub tap: &'description TapDevice,
+    pub tap: InterfaceIndex,
     /// The number of receive queues to be made available after device initialization.
     pub num_rx_queues: u16,
     /// The number of transmit queues to be made available after device initialization.
@@ -225,9 +224,9 @@ pub enum DevConfigError {
     DriverSpecificError(&'static str),
 }
 
-impl<'arg> DevConfig<'arg> {
+impl DevConfig {
     /// Apply the configuration to the device.
-    pub fn apply(self, dev: DevInfo) -> Result<Dev<'arg>, DevConfigError> {
+    pub fn apply(self, dev: DevInfo) -> Result<Dev, DevConfigError> {
         const ANY_SUPPORTED: u64 = u64::MAX;
         let eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
@@ -768,17 +767,17 @@ impl DevInfo {
 
 #[derive(Debug)]
 /// A DPDK ethernet device.
-pub struct Dev<'driver> {
+pub struct Dev {
     /// The device info
     pub info: DevInfo,
     /// The configuration of the device.
-    pub config: DevConfig<'driver>,
+    pub config: DevConfig,
     pub(crate) rx_queues: Vec<RxQueue>,
     pub(crate) tx_queues: Vec<TxQueue>,
     pub(crate) hairpin_queues: Vec<HairpinQueue>,
 }
 
-impl<'driver> Dev<'driver> {
+impl<'driver> Dev {
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`RxQueue`]
     pub fn new_rx_queue(&mut self, config: RxQueueConfig) -> Result<(), queue::rx::ConfigFailure> {
@@ -898,7 +897,7 @@ pub enum State {
     Started,
 }
 
-impl<'driver> Drop for Dev<'driver> {
+impl Drop for Dev {
     fn drop(&mut self) {
         info!(
             "Closing DPDK ethernet device {port}",

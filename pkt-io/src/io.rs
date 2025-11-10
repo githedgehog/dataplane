@@ -21,7 +21,6 @@ use net::packet::Packet;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use thiserror::Error;
 
 use tracectl::trace_target;
 #[allow(unused)]
