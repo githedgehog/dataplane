@@ -29,6 +29,7 @@ use dpdk::{
 use driver::{Configure, Start, Stop};
 use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
 use miette::{Context, IntoDiagnostic};
+use net::buffer::{NewBufferPool, TestBuffer, TestBufferPool};
 use nix::libc;
 use pkt_io::{start_io, tap_init_async};
 use pyroscope::PyroscopeAgent;
@@ -134,56 +135,52 @@ async fn dataplane(
 
     let driver = if let Some(eal) = eal {
         info!("Using driver DPDK...");
-        let configured = Dpdk::configure(Configuration {
-            interfaces: tap_table
-                .iter()
-                .map(|(k, &v)| (k.port.clone(), v))
-                .collect(),
-            eal,
-            workers: launch_config.dataplane_workers,
-            setup_pipeline: pipeline_factory,
-        })
-        .unwrap();
-        DriverTypes::Dpdk(configured.start().unwrap())
+        // let configured = Dpdk::configure(Configuration {
+        //     interfaces: tap_table
+        //         .iter()
+        //         .map(|(k, &v)| (k.port.clone(), v))
+        //         .collect(),
+        //     eal,
+        //     workers: launch_config.dataplane_workers,
+        //     setup_pipeline: pipeline_factory,
+        // })
+        // .unwrap();
+        // DriverTypes::Dpdk(configured.start().unwrap());
+        todo!()
     } else {
         info!("Using driver kernel...");
-        let driver = DriverKernel::<dpdk::mem::Pool>::new(
-            PoolConfig::new("kernel-io-pool", PoolParams::default()).unwrap(),
-        )
-        .into_diagnostic()
-        .wrap_err("unable to start kernel driver")
-        .unwrap();
+        let driver = DriverKernel::<TestBufferPool>::new(())
+            .into_diagnostic()
+            .wrap_err("unable to start kernel driver")
+            .unwrap();
         driver.start(
             tap_table.keys().cloned(),
             launch_config.dataplane_workers,
             pipeline_factory.clone(),
         );
+        let injection_pool = TestBufferPool::new_pool(()).unwrap();
+        let (_handle, iom_ctl) =
+            start_io(setup.puntq, setup.injectq, injection_pool);
+        // prepare parameters for mgmt
+        let mgmt_params = MgmtParams {
+            grpc_addr: grpc_addr.clone(),
+            processor_params: ConfigProcessorParams {
+                router_ctl: setup.router.get_ctl_tx(),
+                nattablesw: setup.nattablesw,
+                natallocatorw: setup.natallocatorw,
+                vpcdtablesw: setup.vpcdtablesw,
+                vpcmapw: setup.vpcmapw,
+                vpc_stats_store: setup.vpc_stats_store,
+                iom_ctl,
+                cancel_token: cancel.child_token(),
+            },
+        };
+        // start mgmt
+        start_mgmt(mgmt_params).expect("Failed to start gRPC server");
         DriverTypes::Kernel()
     };
 
-    let injection_pool = dpdk::mem::Pool::new_pkt_pool(
-        dpdk::mem::PoolConfig::new("injection-pool", dpdk::mem::PoolParams::default()).unwrap(),
-    )
-    .unwrap();
-    let (_handle, iom_ctl) =
-        start_io::<dpdk::mem::Pool>(setup.puntq, setup.injectq, injection_pool);
 
-    // prepare parameters for mgmt
-    let mgmt_params = MgmtParams {
-        grpc_addr: grpc_addr.clone(),
-        processor_params: ConfigProcessorParams {
-            router_ctl: setup.router.get_ctl_tx(),
-            nattablesw: setup.nattablesw,
-            natallocatorw: setup.natallocatorw,
-            vpcdtablesw: setup.vpcdtablesw,
-            vpcmapw: setup.vpcmapw,
-            vpc_stats_store: setup.vpc_stats_store,
-            iom_ctl,
-            cancel_token: cancel.child_token(),
-        },
-    };
-    // start mgmt
-    start_mgmt(mgmt_params).expect("Failed to start gRPC server");
 
     tokio::time::sleep(Duration::from_secs(60)).await;
 }
@@ -237,9 +234,7 @@ fn launch_dataplane(
                     let configured = dpdk::eal::Eal::configure(eal_args).unwrap();
                     Some(configured.start().unwrap())
                 }
-                args::ArchivedDriverConfigSection::Kernel(_driver_config) => {
-                    None
-                }
+                args::ArchivedDriverConfigSection::Kernel(_driver_config) => None,
             };
             init_logging();
             let launch_config = rkyv::from_bytes::<LaunchConfiguration, rkyv::rancor::Error>(
@@ -301,7 +296,8 @@ fn launch_dataplane(
                     }
                 })
                 .expect("failed to set SIGINT handler");
-                let dataplane = dataplane_fn(scope, &launch_config, eal.as_ref(), cancel.child_token());
+                let dataplane =
+                    dataplane_fn(scope, &launch_config, eal.as_ref(), cancel.child_token());
                 tokio::select! {
                     () = cancel.cancelled() => {
                         info!("shutdown requested: closing down dataplane");
