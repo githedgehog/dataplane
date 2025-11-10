@@ -257,21 +257,21 @@ impl MemFile {
     pub fn finalize(self) -> FinalizedMemFile {
         let mut this = self;
         // mark the file as read only
-        nix::sys::stat::fchmod(&this, nix::sys::stat::Mode::S_IRUSR)
-            .into_diagnostic()
-            .wrap_err("failed to set dataplane configuration memfd to readonly mode")
-            .unwrap();
-        this.seal(
-            SealFlag::F_SEAL_WRITE
-                | SealFlag::F_SEAL_GROW
-                | SealFlag::F_SEAL_SHRINK
-                | SealFlag::F_SEAL_SEAL,
-        );
-        this.0
-            .seek(SeekFrom::Start(0))
-            .into_diagnostic()
-            .wrap_err("unable to seek finalized file to start")
-            .unwrap();
+        // nix::sys::stat::fchmod(&this, nix::sys::stat::Mode::S_IRUSR)
+        //     .into_diagnostic()
+        //     .wrap_err("failed to set dataplane configuration memfd to readonly mode")
+        //     .unwrap();
+        // this.seal(
+        //     SealFlag::F_SEAL_WRITE
+        //         | SealFlag::F_SEAL_GROW
+        //         | SealFlag::F_SEAL_SHRINK
+        //         | SealFlag::F_SEAL_SEAL,
+        // );
+        // this.0
+        //     .seek(SeekFrom::Start(0))
+        //     .into_diagnostic()
+        //     .wrap_err("unable to seek finalized file to start")
+        //     .unwrap();
         FinalizedMemFile(this)
     }
 
