@@ -9,13 +9,13 @@ use net::interface::InterfaceName;
 use net::interface::InterfaceIndex;
 use nix::net::if_::if_nametoindex;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
 use std::io::{Read, Write};
 use std::num::NonZero;
 use std::os::fd::AsFd;
 use tokio::io::unix::AsyncFd;
 #[allow(unused)]
 use tracing::error;
+use tracing::{debug, info};
 
 /// The planned properties of a dummy interface.
 #[derive(
@@ -283,27 +283,20 @@ impl TapDevice {
     ///
     /// If the file descriptor of the tap device cannot be read, a [`tokio::io::Error`] is returned.
     async fn do_read<Buf: PacketBufferMut>(&self, buf: &mut Buf) -> tokio::io::Result<usize> {
+        let fd = self.async_fd.as_fd();
         loop {
-            // debug!("at top of do_read loop");
             let mut guard = self.async_fd.readable().await?;
-            // debug!("got readable guard from tokio");
-            if let Ok(res) = guard.try_io(|inner| inner.get_ref().read(buf.as_mut())) {
-                match res {
-                    Ok(res) => {
-                        if res != 0 {
-                            return Ok(res);
-                        }
-                        // error!("read 0 (?) bytes from the tap device");
-                    }
-                    Err(e) => {
-                        // error!("Error reading from tap {}: {e:?}", self.name());
-                        return Err(e);
-                    }
+            match nix::unistd::read(fd, buf.as_mut()) {
+                Ok(n) => return Ok(n),
+                Err(nix::errno::Errno::EINTR) => {}
+                Err(nix::errno::Errno::EWOULDBLOCK) => guard.clear_ready(),
+                Err(e) => {
+                    error!("Error reading from tap {}: {e:?}", self.name);
+                    return Err(e.into());
                 }
             }
         }
     }
-
     /// Write the provided buffer to the tap. In principle, a single write operation should suffice to
     /// write a buffer. This method will not return until that happens or an error occurs.
     ///
@@ -311,23 +304,24 @@ impl TapDevice {
     ///
     /// If the file descriptor of the tap device cannot be written to, a [`tokio::io::Error`] is returned.
     async fn do_write<Buf: PacketBuffer>(&self, buf: Buf) -> tokio::io::Result<usize> {
+        let fd = self.async_fd.as_fd();
         let data = buf.as_ref();
+        let len = data.len();
+        let mut w = 0;
         loop {
-            // debug!("at top of do_write loop");
             let mut guard = self.async_fd.writable().await?;
-            // debug!("got writable guard from tokio");
-            if let Ok(res) = guard.try_io(|inner| inner.get_ref().write(data)) {
-                match res {
-                    Ok(res) => {
-                        if res != 0 {
-                            return Ok(res);
-                        }
-                        // error!("wrote 0 (?) bytes to the tap device");
+            match nix::unistd::write(fd, &data[w..]) {
+                Ok(n) => {
+                    w += n;
+                    if w == len {
+                        return Ok(w);
                     }
-                    Err(e) => {
-                        // error!("Error writing to tap {}: {e:?}", self.name());
-                        return Err(e);
-                    }
+                }
+                Err(nix::errno::Errno::EINTR) => {}
+                Err(nix::errno::Errno::EWOULDBLOCK) => guard.clear_ready(),
+                Err(e) => {
+                    error!("Error writing to tap {}: {e:?}", self.name);
+                    return Err(e.into());
                 }
             }
         }

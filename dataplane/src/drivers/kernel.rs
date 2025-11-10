@@ -222,17 +222,16 @@ pub struct DriverKernel<Pool: BufferPool> {
     pool: Pool,
 }
 
-fn single_worker<'scope, Buf: PacketBufferMut>(
-    scope: &'scope std::thread::Scope<'scope, '_>,
+fn single_worker<Buf: PacketBufferMut>(
     id: usize,
     thread_builder: thread::Builder,
     tx_to_control: WorkerTx<Buf>,
-    setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
+    setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
 ) -> Result<WorkerTx<Buf>, std::io::Error> {
     let (tx_to_worker, mut rx_from_control) = chan::channel::<Box<Packet<Buf>>>(4096);
     let setup = setup_pipeline.clone();
 
-    let handle_res = thread_builder.spawn_scoped(scope, move || {
+    let handle_res = thread_builder.spawn(move || {
         let mut pipeline = setup();
         run_in_tokio_runtime(async || {
             loop {
@@ -302,10 +301,9 @@ impl<Pool: BufferPool> DriverKernel<Pool> {
     /// Returns:
     ///   - `Vec<Sender<Packet<Buf>>>` one sender per worker (dispatcher -> worker)
     ///   - `Receiver<Packet<Buf>>` a single queue for processed packets (worker -> dispatcher)
-    fn spawn_workers<'scope>(
-        scope: &'scope std::thread::Scope<'scope, '_>,
+    fn spawn_workers(
         num_workers: usize,
-        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<Pool::Buffer>>,
+        setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Pool::Buffer>>,
     ) -> WorkerChans<Pool::Buffer> {
         let (tx_to_control, rx_from_workers) = chan::channel(4096);
         let mut to_workers = Vec::with_capacity(num_workers);
@@ -313,7 +311,7 @@ impl<Pool: BufferPool> DriverKernel<Pool> {
         for wid in 0..num_workers {
             let builder = thread::Builder::new().name(format!("dp-worker-{wid}"));
             if let Ok(tx_to_worker) =
-                single_worker(scope, wid, builder, tx_to_control.clone(), setup_pipeline)
+                single_worker(wid, builder, tx_to_control.clone(), setup_pipeline.clone())
             {
                 to_workers.push(tx_to_worker);
             } else {
@@ -359,18 +357,15 @@ impl<Pool: BufferPool> DriverKernel<Pool> {
     }
 
     /// Start the kernel IO thread for rx/tx
-    fn start_kernel_io_thread<'scope, 'env>(
-        &'env self,
-        scope: &'scope std::thread::Scope<'scope, 'env>,
+    fn start_kernel_io_thread(
+        self,
         to_workers: Vec<WorkerTx<Pool::Buffer>>,
         mut from_workers: WorkerRx<Pool::Buffer>,
         mut kiftable: KifTable,
-    ) -> std::thread::ScopedJoinHandle<'scope, ()>
-    where
-        'env: 'scope,
-    {
+    ) where Pool: 'static {
         // IO thread takes ownership of kiftable
         let io = move || {
+            let this = self;
             let num_worker_chans = to_workers.len();
             let poll_timeout = Some(Duration::from_millis(2));
 
@@ -426,7 +421,7 @@ impl<Pool: BufferPool> DriverKernel<Pool> {
                 }
 
                 // 3) For readable interfaces, pull frames, parse to Packet<Buf>, shard to workers
-                self.recv_packets(&mut kiftable, &events).for_each(|pkt| {
+                this.recv_packets(&mut kiftable, &events).for_each(|pkt| {
                     let target = Self::compute_worker_idx(&pkt, num_worker_chans);
                     if let Err(e) = to_workers[target].try_send(pkt) {
                         match e {
@@ -449,15 +444,14 @@ impl<Pool: BufferPool> DriverKernel<Pool> {
         info!("starting kernel driver io");
 
         #[allow(clippy::unwrap_used)]
-        let driver: thread::ScopedJoinHandle<'scope, ()> = thread::Builder::new()
+        let driver = thread::Builder::new()
             .name("kernel-driver-io".to_string())
-            .spawn_scoped(scope, io)
+            .spawn(io)
             .into_diagnostic()
             .wrap_err("failed to spawn kernel driver IO thread")
             .unwrap();
 
         info!("Kernel driver IO thread spawned");
-        driver
     }
 
     /// Starts the kernel driver, spawns worker threads, IO thread and runs the dispatcher loop.
@@ -466,15 +460,12 @@ impl<Pool: BufferPool> DriverKernel<Pool> {
     /// - `workers`: number of worker threads / pipelines
     /// - `setup_pipeline`: factory returning a **fresh** `DynPipeline<Buf>` per worker
     #[allow(clippy::panic, clippy::missing_panics_doc)]
-    pub fn start<'this, 'env>(
-        &'this self,
-        scope: &'this std::thread::Scope<'this, 'env>,
+    pub fn start(
+        self,
         interfaces: impl Iterator<Item = InterfaceArg>,
         num_workers: u16,
-        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<Pool::Buffer>>,
-    ) where
-        'this: 'env,
-    {
+        setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Pool::Buffer>>,
+    ) where Pool: 'static {
         // init port devices
         let kiftable = match Self::init_devices(interfaces) {
             Ok(kiftable) => kiftable,
@@ -486,7 +477,7 @@ impl<Pool: BufferPool> DriverKernel<Pool> {
 
         // Spawn pipeline workers
         let (to_workers, from_workers) =
-            Self::spawn_workers(scope, num_workers as usize, setup_pipeline);
+            Self::spawn_workers(num_workers as usize, setup_pipeline);
         if to_workers.len() != (num_workers as usize) {
             warn!(
                 "Could spawn only {} of {} workers",
@@ -500,7 +491,7 @@ impl<Pool: BufferPool> DriverKernel<Pool> {
         );
 
         // Spawn io thread
-        self.start_kernel_io_thread(scope, to_workers, from_workers, kiftable);
+        self.start_kernel_io_thread(to_workers, from_workers, kiftable);
     }
 
     fn recv_packets(

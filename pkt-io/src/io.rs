@@ -304,7 +304,7 @@ impl<Buf: PacketBufferMut, P: BufferPool<Buffer = Buf> + 'static> IoManager<Buf,
                             if g.is_none() {
                                 let tapname = m.device.name();
 
-                                error!("Spawning rx task for tap {tapname}");
+                                info!("spawning rx task for tap {tapname}");
                                 let rx_task =
                                     Self::tap_out_loop(pool.clone(), injectq.clone(), m.clone());
 

@@ -82,9 +82,9 @@ fn process_tracing_cmds(cfg: &TracingConfigSection) {
     // }
 }
 
-enum DriverTypes<'driver> {
+pub enum DriverTypes<'driver> {
     Dpdk(Dpdk<drivers::dpdk::Started<'driver>>),
-    Kernel(DriverKernel<dpdk::mem::Pool>),
+    Kernel(),
 }
 
 async fn dataplane(
@@ -147,7 +147,7 @@ async fn dataplane(
             .unwrap();
             DriverTypes::Dpdk(configured.start().unwrap())
         }
-        args::DriverConfigSection::Kernel(_) => {
+        args::DriverConfigSection::Kernel(section) => {
             info!("Using driver kernel...");
             let driver = DriverKernel::<dpdk::mem::Pool>::new(
                 PoolConfig::new("kernel-io-pool", PoolParams::default()).unwrap(),
@@ -155,13 +155,12 @@ async fn dataplane(
             .into_diagnostic()
             .wrap_err("unable to start kernel driver")
             .unwrap();
-            // driver.start(
-            //     scope,
-            //     section.interfaces.clone().into_iter(),
-            //     launch_config.dataplane_workers,
-            //     &pipeline_factory,
-            // );
-            DriverTypes::Kernel(driver)
+            driver.start(
+                section.interfaces.clone().into_iter(),
+                launch_config.dataplane_workers,
+                pipeline_factory.clone(),
+            );
+            DriverTypes::Kernel()
         }
     };
     let injection_pool = dpdk::mem::Pool::new_pkt_pool(

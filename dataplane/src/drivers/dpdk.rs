@@ -218,9 +218,10 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
                                 });
                             }
                             for (_, (schedule, tx_queue)) in &mut tx_queues {
-                                if !schedule.is_empty() {
-                                    info!("scheduling transmit of {} packets", schedule.len());
+                                if schedule.is_empty() {
+                                    continue;
                                 }
+                                info!("scheduling transmit of {} packets", schedule.len());
                                 tx_queue.transmit(schedule);
                             }
                         }
