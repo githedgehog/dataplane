@@ -22,6 +22,8 @@ mod tests {
     use net::ip::NextHeader;
     use net::tcp::TruncatedTcp;
     use net::udp::{TruncatedUdp, UdpPort};
+    use pkt_meta::dst_vpcd_lookup::setup::build_dst_vni_lookup_configuration;
+    use pkt_meta::dst_vpcd_lookup::{DstVpcdLookup, VpcDiscTablesWriter};
 
     use crate::StatefulNat;
 
@@ -1106,5 +1108,176 @@ mod tests {
         assert_eq!(output_inner_identifier, orig_echo_identifier);
         assert_eq!(output_inner_seq_number, orig_echo_seq_number);
         assert_eq!(done_reason, None);
+    }
+
+    fn build_overlay_3vpcs_unidirectional_nat_overlapping_addr() -> Overlay {
+        fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
+            manifest.add_expose(expose).expect("Failed to add expose");
+        }
+
+        let mut vpc_table = VpcTable::new();
+        let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).unwrap());
+        let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).unwrap());
+        let _ = vpc_table.add(Vpc::new("VPC-3", "CCCCC", 300).unwrap());
+
+        // VPC-1 <-> VPC-2 <-> VPC-3; No connection between VPC-1 and VPC-3
+
+        // VPC-1 (NAT) <-> VPC-2 (no NAT)
+        let expose12 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
+            .ip("1.0.0.0/24".into())
+            .as_range("2.0.0.0/24".into());
+        let expose21 = VpcExpose::empty().ip("5.0.0.0/24".into());
+
+        let mut manifest12 = VpcManifest::new("VPC-1");
+        add_expose(&mut manifest12, expose12);
+        let mut manifest21 = VpcManifest::new("VPC-2");
+        add_expose(&mut manifest21, expose21);
+
+        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21);
+
+        // VPC-2 (no NAT) <-> VPC-3 (NAT)
+        let expose32 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
+            .ip("3.0.0.0/24".into())
+            .as_range("2.0.0.0/24".into());
+        let expose23 = VpcExpose::empty().ip("5.0.0.0/24".into());
+
+        let mut manifest23 = VpcManifest::new("VPC-2");
+        add_expose(&mut manifest23, expose23);
+        let mut manifest32 = VpcManifest::new("VPC-3");
+        add_expose(&mut manifest32, expose32);
+
+        let peering23 = VpcPeering::new("VPC-2--VPC-3", manifest23, manifest32);
+
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table.add(peering12).unwrap();
+        peering_table.add(peering23).unwrap();
+
+        Overlay::new(vpc_table, peering_table)
+    }
+
+    fn get_vpcd_lookup(overlay: &Overlay) -> (DstVpcdLookup, VpcDiscTablesWriter) {
+        let mut vpcdtablesw = VpcDiscTablesWriter::new();
+        let vpcd_tables = build_dst_vni_lookup_configuration(overlay).unwrap();
+        vpcdtablesw.update_vpcd_tables(vpcd_tables);
+        (
+            DstVpcdLookup::new("vpcd-lookup", vpcdtablesw.get_reader()),
+            vpcdtablesw,
+        )
+    }
+
+    fn check_packet_with_vpcd_lookup(
+        nat: &mut StatefulNat,
+        vpcdlookup: &mut DstVpcdLookup,
+        src_vni: Vni,
+        src_ip: &str,
+        dst_ip: &str,
+        sport: u16,
+        dport: u16,
+    ) -> (
+        Option<VpcDiscriminant>,
+        Ipv4Addr,
+        Ipv4Addr,
+        u16,
+        u16,
+        Option<DoneReason>,
+    ) {
+        let mut packet: Packet<TestBuffer> = build_test_udp_ipv4_frame(
+            Mac([0x2, 0, 0, 0, 0, 1]),
+            Mac([0x2, 0, 0, 0, 0, 2]),
+            src_ip,
+            dst_ip,
+            sport,
+            dport,
+        );
+        packet.get_meta_mut().set_nat(true);
+        packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+
+        // VPC discriminant lookup
+        let packets_with_dst_vpcd: Vec<_> = vpcdlookup
+            .process::<std::vec::IntoIter<Packet<TestBuffer>>>(vec![packet].into_iter())
+            .collect();
+        let mut packet = packets_with_dst_vpcd[0].clone();
+        flow_lookup(nat.sessions(), &mut packet);
+
+        // NAT
+        let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+
+        let dst_vpcd = packets_out[0].get_meta().dst_vpcd;
+        let hdr_out = packets_out[0].try_ipv4().unwrap();
+        let udp_out = packets_out[0].try_udp().unwrap();
+        let done_reason = packets_out[0].get_done();
+
+        (
+            dst_vpcd,
+            hdr_out.source().inner(),
+            hdr_out.destination(),
+            udp_out.source().into(),
+            udp_out.destination().into(),
+            done_reason,
+        )
+    }
+
+    #[test]
+    #[traced_test]
+    fn test_full_config_unidirectional_nat_overlapping_destination() {
+        let mut config =
+            build_sample_config(build_overlay_3vpcs_unidirectional_nat_overlapping_addr());
+        config.validate().unwrap();
+
+        // Build VPC discriminant lookup stage
+        let (mut vpcdlookup, _vpcdtablesw) = get_vpcd_lookup(&config.external.overlay);
+
+        // Check that we can validate the allocator
+        let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
+        allocator
+            .update_allocator(&config.external.overlay.vpc_table)
+            .unwrap();
+
+        // NAT: expose12 <-> expose21
+        let (orig_src, orig_dst, orig_src_port, orig_dst_port) = ("1.0.0.18", "5.0.0.5", 9998, 443);
+        let target_src = "2.0.0.0";
+        let (dst_vpcd, output_src, output_dst, output_src_port, output_dst_port, done_reason) =
+            check_packet_with_vpcd_lookup(
+                &mut nat,
+                &mut vpcdlookup,
+                vni(100),
+                orig_src,
+                orig_dst,
+                orig_src_port,
+                orig_dst_port,
+            );
+        assert_eq!(dst_vpcd, Some(VpcDiscriminant::VNI(vni(200))));
+        assert_eq!(output_src, addr_v4(target_src));
+        assert_eq!(output_dst, addr_v4(orig_dst));
+        assert!(output_src_port.is_multiple_of(256));
+        assert_eq!(output_dst_port, orig_dst_port);
+        assert_eq!(done_reason, None);
+        // Reverse path - 5.0.0.5 -> 2.0.0.0, destination is ambiguous (could be VPC-1 or VPC-3)
+        let (
+            return_vpcd,
+            return_output_src,
+            return_output_dst,
+            return_output_src_port,
+            return_output_dst_port,
+            return_done_reason,
+        ) = check_packet_with_vpcd_lookup(
+            &mut nat,
+            &mut vpcdlookup,
+            vni(200),
+            orig_dst,
+            target_src,
+            output_dst_port,
+            output_src_port,
+        );
+        assert_eq!(return_vpcd, None);
+        assert_eq!(return_output_src, addr_v4(orig_dst));
+        assert_eq!(return_output_dst, addr_v4(target_src));
+        assert_eq!(return_output_src_port, output_dst_port);
+        assert_eq!(return_output_dst_port, output_src_port);
+        assert_eq!(return_done_reason, Some(DoneReason::Unroutable));
     }
 }
