@@ -181,7 +181,7 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
                                 .insert(device.config.tap, (Vec::with_capacity(512), tx_queue));
                         }
                         loop {
-                            for (&iif, rx_queue) in &rx_queues {
+                            for (&iif, &rx_queue) in &rx_queues {
                                 let mbufs = rx_queue.receive();
                                 let pkts = mbufs.filter_map(|mbuf| match Packet::new(mbuf) {
                                     Ok(mut pkt) => {

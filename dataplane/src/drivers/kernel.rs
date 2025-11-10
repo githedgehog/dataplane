@@ -226,12 +226,11 @@ fn single_worker<Buf: PacketBufferMut>(
     id: usize,
     thread_builder: thread::Builder,
     tx_to_control: WorkerTx<Buf>,
-    setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
+    setup: Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
 ) -> Result<WorkerTx<Buf>, std::io::Error> {
     let (tx_to_worker, mut rx_from_control) = chan::channel::<Box<Packet<Buf>>>(4096);
-    let setup = setup_pipeline.clone();
 
-    let handle_res = thread_builder.spawn(move || {
+    let _handle_res = thread_builder.spawn(move || {
         let mut pipeline = setup();
         run_in_tokio_runtime(async || {
             loop {
@@ -303,15 +302,16 @@ impl<Pool: BufferPool> DriverKernel<Pool> {
     ///   - `Receiver<Packet<Buf>>` a single queue for processed packets (worker -> dispatcher)
     fn spawn_workers(
         num_workers: usize,
-        setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Pool::Buffer>>,
+        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<Pool::Buffer>>,
     ) -> WorkerChans<Pool::Buffer> {
         let (tx_to_control, rx_from_workers) = chan::channel(4096);
         let mut to_workers = Vec::with_capacity(num_workers);
         info!("Spawning {num_workers} workers");
         for wid in 0..num_workers {
+            let setup = setup_pipeline.clone();
             let builder = thread::Builder::new().name(format!("dp-worker-{wid}"));
             if let Ok(tx_to_worker) =
-                single_worker(wid, builder, tx_to_control.clone(), setup_pipeline.clone())
+                single_worker(wid, builder, tx_to_control.clone(), setup)
             {
                 to_workers.push(tx_to_worker);
             } else {
@@ -464,7 +464,7 @@ impl<Pool: BufferPool> DriverKernel<Pool> {
         self,
         interfaces: impl Iterator<Item = InterfaceArg>,
         num_workers: u16,
-        setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Pool::Buffer>>,
+        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<Pool::Buffer>>,
     ) where Pool: 'static {
         // init port devices
         let kiftable = match Self::init_devices(interfaces) {

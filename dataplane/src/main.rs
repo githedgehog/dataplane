@@ -22,14 +22,13 @@ use crate::{
 };
 use args::{LaunchConfiguration, TracingConfigSection};
 
-use dpdk::{
-    eal::{Eal, EalArgs},
-    mem::{PoolConfig, PoolParams},
-};
+use dpdk::
+    eal::{Eal, EalArgs}
+;
 use driver::{Configure, Start, Stop};
 use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
 use miette::{Context, IntoDiagnostic};
-use net::buffer::{NewBufferPool, TestBuffer, TestBufferPool};
+use net::buffer::{NewBufferPool, TestBufferPool};
 use nix::libc;
 use pkt_io::{start_io, tap_init_async};
 use pyroscope::PyroscopeAgent;
@@ -113,42 +112,59 @@ async fn dataplane(
         }
     };
 
-    // start the router; returns control-plane handles and a pipeline factory (Arc<... Fn() -> DynPipeline<_> >)
-    // let setup = start_router::<dpdk::mem::Mbuf>(config).expect("failed to start router");
-    let setup = start_router(config).expect("failed to start router");
-
-    let _metrics_server = MetricsServer::new(launch_config.metrics.address, setup.stats);
-
-    // pipeline builder
-    let pipeline_factory = setup.pipeline;
-
-    // Start driver with the provided pipeline builder. Taps must have been created before this
-    // happens so that their ifindex is available when drivers initialize.
-    let tap_table = match &launch_config.driver {
-        args::DriverConfigSection::Dpdk(section) => tap_init_async(&section.interfaces)
-            .await
-            .expect("tap initialization failed"),
-        args::DriverConfigSection::Kernel(section) => tap_init_async(&section.interfaces)
-            .await
-            .expect("tap initialization failed"),
-    };
-
     let driver = if let Some(eal) = eal {
+        // start the router; returns control-plane handles and a pipeline factory (Arc<... Fn() -> DynPipeline<_> >)
+        // let setup = start_router::<dpdk::mem::Mbuf>(config).expect("failed to start router");
+        let setup = start_router(config).expect("failed to start router");
+
+        let _metrics_server = MetricsServer::new(launch_config.metrics.address, setup.stats);
+
+        // pipeline builder
+        let pipeline_factory = setup.pipeline;
+
+        // Start driver with the provided pipeline builder. Taps must have been created before this
+        // happens so that their ifindex is available when drivers initialize.
+        let tap_table = match &launch_config.driver {
+            args::DriverConfigSection::Dpdk(section) => tap_init_async(&section.interfaces)
+                .await
+                .expect("tap initialization failed"),
+            args::DriverConfigSection::Kernel(section) => tap_init_async(&section.interfaces)
+                .await
+                .expect("tap initialization failed"),
+        };
         info!("Using driver DPDK...");
-        // let configured = Dpdk::configure(Configuration {
-        //     interfaces: tap_table
-        //         .iter()
-        //         .map(|(k, &v)| (k.port.clone(), v))
-        //         .collect(),
-        //     eal,
-        //     workers: launch_config.dataplane_workers,
-        //     setup_pipeline: pipeline_factory,
-        // })
-        // .unwrap();
-        // DriverTypes::Dpdk(configured.start().unwrap());
-        todo!()
+        let configured = Dpdk::configure(Configuration {
+            interfaces: tap_table
+                .iter()
+                .map(|(k, &v)| (k.port.clone(), v))
+                .collect(),
+            eal,
+            workers: launch_config.dataplane_workers,
+            setup_pipeline: pipeline_factory,
+        })
+        .unwrap();
+        DriverTypes::Dpdk(configured.start().unwrap())
     } else {
-        info!("Using driver kernel...");
+        // start the router; returns control-plane handles and a pipeline factory (Arc<... Fn() -> DynPipeline<_> >)
+        // let setup = start_router::<dpdk::mem::Mbuf>(config).expect("failed to start router");
+        let setup = start_router(config).expect("failed to start router");
+
+        let _metrics_server = MetricsServer::new(launch_config.metrics.address, setup.stats);
+
+        // pipeline builder
+        let pipeline_factory = setup.pipeline;
+
+        // Start driver with the provided pipeline builder. Taps must have been created before this
+        // happens so that their ifindex is available when drivers initialize.
+        let tap_table = match &launch_config.driver {
+            args::DriverConfigSection::Dpdk(section) => tap_init_async(&section.interfaces)
+                .await
+                .expect("tap initialization failed"),
+            args::DriverConfigSection::Kernel(section) => tap_init_async(&section.interfaces)
+                .await
+                .expect("tap initialization failed"),
+        };
+        info!("Using driver Kernel...");
         let driver = DriverKernel::<TestBufferPool>::new(())
             .into_diagnostic()
             .wrap_err("unable to start kernel driver")
@@ -156,11 +172,10 @@ async fn dataplane(
         driver.start(
             tap_table.keys().cloned(),
             launch_config.dataplane_workers,
-            pipeline_factory.clone(),
+            &pipeline_factory,
         );
         let injection_pool = TestBufferPool::new_pool(()).unwrap();
-        let (io_manager, iom_ctl) =
-            start_io(setup.puntq, setup.injectq, injection_pool);
+        let (io_manager, iom_ctl) = start_io(setup.puntq, setup.injectq, injection_pool);
         // prepare parameters for mgmt
         let mgmt_params = MgmtParams {
             grpc_addr: grpc_addr.clone(),
@@ -176,7 +191,10 @@ async fn dataplane(
             },
         };
         // start mgmt
-        start_mgmt(mgmt_params).expect("Failed to start gRPC server").join().unwrap();
+        start_mgmt(mgmt_params)
+            .expect("Failed to start gRPC server")
+            .join()
+            .unwrap();
         io_manager.join().unwrap();
         DriverTypes::Kernel()
     };
