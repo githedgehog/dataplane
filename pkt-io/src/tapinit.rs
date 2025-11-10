@@ -17,14 +17,14 @@ use tracing::{error, info};
 /// This function fails if any of the taps cannot be created.
 pub async fn tap_init_async(
     ifargs: &[InterfaceArg],
-) -> std::io::Result<HashMap<InterfaceArg, TapDevice>> {
+) -> std::io::Result<HashMap<InterfaceArg, InterfaceIndex>> {
     info!("Creating tap devices");
     let mut out = HashMap::with_capacity(ifargs.len());
     for interface in ifargs {
         let response = TapDevice::open(&interface.interface).await;
         match response {
             Ok(tap) => {
-                out.insert(interface.clone(), tap);
+                out.insert(interface.clone(), tap.ifindex());
             }
             Err(e) => {
                 error!("Failed to create tap '{}': {e}", interface.interface);

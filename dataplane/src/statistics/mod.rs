@@ -68,7 +68,7 @@ impl MetricsServer {
                         let rt = tokio::runtime::Builder::new_current_thread()
                             .enable_io()
                             .enable_time()
-                            .max_blocking_threads(1)
+                            .max_blocking_threads(32)
                             .on_thread_stop(|| unsafe {
                                 dpdk::lcore::ServiceThread::unregister_current_thread();
                             })

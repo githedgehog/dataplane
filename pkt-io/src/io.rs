@@ -209,7 +209,7 @@ impl<Buf: PacketBufferMut, P: BufferPool<Buffer = Buf> + 'static> IoManager<Buf,
                     Ok(mut packet) => {
                         packet.get_meta_mut().oif = Some(tapid);
                         packet.get_meta_mut().set_sourced(true);
-                        trace!("Read {size} octets from tap {tapname}. Packet is:\n{packet}");
+                        info!("Read {size} octets from tap {tapname}. Packet is:\n{packet}");
                         if let Err(_drop) = injectq.push(Box::new(packet)) {
                             warn!("Could not inject packet (queue len:{})", injectq.len());
                         }
@@ -258,7 +258,7 @@ impl<Buf: PacketBufferMut, P: BufferPool<Buffer = Buf> + 'static> IoManager<Buf,
         // spawn packet punt controller. A single task is used to punt packets to all taps from a queue
         let (puntctl_handle, puntctl) = Self::start_punt_pkt_control(&puntq.clone());
 
-        let h = tokio::spawn(async move {
+        async move {
             while let Some(msg) = receiver.recv().await {
                 match msg {
                     IoManagerMsg::Stop => {
@@ -304,7 +304,7 @@ impl<Buf: PacketBufferMut, P: BufferPool<Buffer = Buf> + 'static> IoManager<Buf,
                             if g.is_none() {
                                 let tapname = m.device.name();
 
-                                debug!("Spawning rx task for tap {tapname}");
+                                error!("Spawning rx task for tap {tapname}");
                                 let rx_task =
                                     Self::tap_out_loop(pool.clone(), injectq.clone(), m.clone());
 
@@ -320,8 +320,7 @@ impl<Buf: PacketBufferMut, P: BufferPool<Buffer = Buf> + 'static> IoManager<Buf,
                 }
             }
             warn!("IO manager control channel closed!");
-        });
-        let _ = join!(h);
+        }.await;
         info!("IO manager loop stopped.");
     }
 }

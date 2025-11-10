@@ -138,7 +138,7 @@ async fn dataplane(
             let configured = Dpdk::configure(Configuration {
                 interfaces: tap_table
                     .iter()
-                    .map(|(k, v)| (k.port.clone(), v.ifindex()))
+                    .map(|(k, &v)| (k.port.clone(), v))
                     .collect(),
                 eal,
                 workers: launch_config.dataplane_workers,
@@ -256,7 +256,7 @@ fn launch_dataplane(
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_io()
                 .enable_time()
-                .max_blocking_threads(2) // deliberately very low for now
+                .max_blocking_threads(32) // deliberately very low for now
                 .on_thread_stop(|| {
                     // safe because of eal registration hook
                     unsafe {

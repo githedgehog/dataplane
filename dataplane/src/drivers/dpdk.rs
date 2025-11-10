@@ -158,7 +158,7 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
                     info!("starting worker thread runtime");
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_time()
-                        .max_blocking_threads(1) // deliberately very low.  No need for a lot of lcores here
+                        .max_blocking_threads(32) // deliberately very low.  No need for a lot of lcores here
                         .on_thread_stop(|| unsafe {
                             dpdk::lcore::ServiceThread::unregister_current_thread();
                         })
@@ -186,7 +186,7 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
                                 let pkts = mbufs.filter_map(|mbuf| match Packet::new(mbuf) {
                                     Ok(mut pkt) => {
                                         pkt.get_meta_mut().iif = Some(iif);
-                                        tracing::debug!("packet: {pkt:?}");
+                                        info!("received packet: {pkt:?}");
                                         Some(pkt)
                                     }
                                     Err(e) => {
@@ -197,14 +197,14 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
 
                                 pipeline.process(pkts).for_each(|pkt| {
                                     let Some(oif) = pkt.meta.oif else {
-                                        debug!("no output interface available for packet {pkt:?}");
+                                        warn!("no output interface available for packet {pkt:?}");
                                         return;
                                     };
                                     match pkt.serialize() {
                                         Ok(buf) => {
                                             let Some((schedule, _)) = tx_queues.get_mut(&oif)
                                             else {
-                                                debug!(
+                                                warn!(
                                                     "unknown output index {oif}, dropping packet"
                                                 );
                                                 return;
@@ -212,14 +212,16 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
                                             schedule.push(buf);
                                         }
                                         Err(err) => {
-                                            trace!("unable to serialize packet: {err}");
+                                            warn!("unable to serialize packet: {err}");
                                         }
                                     }
                                 });
                             }
                             for (_, (schedule, tx_queue)) in &mut tx_queues {
+                                if !schedule.is_empty() {
+                                    info!("scheduling transmit of {} packets", schedule.len());
+                                }
                                 tx_queue.transmit(schedule);
-                                schedule.clear();
                             }
                         }
                     });
