@@ -124,26 +124,28 @@ async fn dataplane(
 
     // Start driver with the provided pipeline builder. Taps must have been created before this
     // happens so that their ifindex is available when drivers initialize.
-
+    let tap_table = match &launch_config.driver {
+        args::DriverConfigSection::Dpdk(section) => tap_init_async(&section.interfaces)
+            .await
+            .expect("tap initialization failed"),
+        args::DriverConfigSection::Kernel(section) => tap_init_async(&section.interfaces)
+            .await
+            .expect("tap initialization failed"),
+    };
 
     let _driver = match &launch_config.driver {
-        args::DriverConfigSection::Dpdk(section) => {
-            tap_init_async(&section.interfaces)
-                .await
-                .expect("tap initialization failed");
+        args::DriverConfigSection::Dpdk(_) => {
             info!("Using driver DPDK...");
             let configured = Dpdk::configure(Configuration {
+                interfaces: tap_table.iter().map(|(k, v)| (k.port.clone(), v)).collect(),
                 eal,
-                workers: 2, // TODO: make dynamic
+                workers: launch_config.dataplane_workers,
                 setup_pipeline: pipeline_factory,
             })
             .unwrap();
             DriverTypes::Dpdk(configured.start().unwrap())
         }
-        args::DriverConfigSection::Kernel(section) => {
-            tap_init_async(&section.interfaces)
-                .await
-                .expect("Tap initialization failed");
+        args::DriverConfigSection::Kernel(_) => {
             info!("Using driver kernel...");
             let driver = DriverKernel::<dpdk::mem::Pool>::new(
                 PoolConfig::new("kernel-io-pool", PoolParams::default()).unwrap(),

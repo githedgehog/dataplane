@@ -482,7 +482,7 @@ fn main() {
 
     let launch_config = launch_config.to_owned_fd();
 
-    let io_err = std::process::Command::new("/bin/dataplane")
+    let io_err = std::process::Command::new("/home/dnoland/code/githedgehog/dataplane/target/x86_64-unknown-linux-gnu/debug/dataplane")
         .fd_mappings(vec![
             FdMapping {
                 parent_fd: integrity_check,

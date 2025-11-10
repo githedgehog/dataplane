@@ -1015,6 +1015,7 @@ dependencies = [
  "dataplane-dpdk-sys",
  "dataplane-driver",
  "dataplane-id",
+ "dataplane-interface-manager",
  "dataplane-mgmt",
  "dataplane-nat",
  "dataplane-net",
@@ -1044,10 +1045,12 @@ dependencies = [
  "pyroscope_pprofrs",
  "rkyv",
  "serde",
+ "small-map",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "vector-map",
 ]
 
 [[package]]
@@ -1138,8 +1141,11 @@ dependencies = [
  "dataplane-dpdk-sysroot-helper",
  "dataplane-driver",
  "dataplane-errno",
+ "dataplane-hardware",
+ "dataplane-interface-manager",
  "dataplane-net",
  "libc 1.0.0-alpha.1",
+ "nix 0.30.1",
  "rkyv",
  "serde",
  "thiserror 2.0.17",
@@ -5280,6 +5286,12 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
+
+[[package]]
+name = "vector-map"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03b34e878e32c750bb4253be124adb9da1dc93ca5d98c210787badf1e1ccdca7"
 
 [[package]]
 name = "version_check"

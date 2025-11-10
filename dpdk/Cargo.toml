@@ -15,14 +15,17 @@ args = { workspace = true }
 dpdk-sys = { workspace = true }
 driver = { workspace = true }
 errno = { workspace = true }
+hardware = { workspace = true }
+interface-manager = { workspace = true }
 net = { workspace = true }
 
 ctrlc = { workspace = true, features = ["termination"] }
+libc = { workspace = true }
+nix = { workspace = true }
 rkyv = { workspace = true, features = [] }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
-libc = { workspace = true }
 
 [build-dependencies]
 dpdk-sysroot-helper = { workspace = true }

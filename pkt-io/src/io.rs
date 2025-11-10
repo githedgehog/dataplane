@@ -32,14 +32,6 @@ trace_target!(PKT_IO_MGR, LevelFilter::INFO, &[]);
 
 use crate::ctl::{IoManagerCtl, IoManagerMsg};
 
-#[derive(Error, Debug)]
-pub enum IoManagerError {
-    #[error("Failed to create tokio runtime: {0}")]
-    TokioRuntimeFailure(#[from] std::io::Error),
-    #[error("Failed to spawn thread: {0}")]
-    ThreadError(std::io::Error),
-}
-
 #[derive(Debug)]
 
 struct Tap {
@@ -67,7 +59,6 @@ impl Tap {
 }
 
 #[derive(Debug)]
-#[allow(unused)]
 struct TapTable(HashMap<InterfaceIndex, Arc<Tap>, RandomState>);
 impl TapTable {
     fn new() -> Self {
@@ -98,6 +89,7 @@ impl TapTable {
         self.0.values().any(|tap| tap.device.name() == tapname)
     }
 }
+// TODO: why manually impl clone?
 impl Clone for TapTable {
     fn clone(&self) -> Self {
         let mut new = TapTable::new();

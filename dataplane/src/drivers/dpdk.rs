@@ -3,9 +3,11 @@
 
 //! DPDK dataplane driver
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use args::{InterfaceArg, NetworkDeviceDescription};
 use dpdk::dev::{Dev, TxOffloadConfig};
 use dpdk::eal::{self, Eal};
 use dpdk::lcore::{LCoreId, WorkerThread};
@@ -13,18 +15,34 @@ use dpdk::mem::{Mbuf, Pool, PoolConfig, PoolParams};
 use dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, socket};
+use interface_manager::interface::TapDevice;
 use net::packet::Packet;
 use pipeline::{DynPipeline, NetworkFunction};
 use tracing::{debug, error, info, trace, warn};
 
-fn init_devices(eal: &Eal<eal::Started>, num_workers: u16) -> Vec<Dev> {
-    eal.state
+fn init_devices<'driver>(config: &Configured<'driver>) -> Vec<Dev<'driver>> {
+    config
+        .eal
+        .state
         .dev
         .iter()
-        .map(|dev| {
+        .filter_map(|dev| {
+            let description = match dev.description() {
+                Ok(description) => description,
+                Err(err) => {
+                    error!("unable to interpret discovered DPDK device description: {err}");
+                    return None;
+                }
+            };
+            let Some(tap) = config.interfaces.get(&description) else {
+                error!("no tap device found for {description}");
+                return None;
+            };
             let config = dev::DevConfig {
-                num_rx_queues: num_workers,
-                num_tx_queues: num_workers,
+                description,
+                tap,
+                num_rx_queues: config.workers,
+                num_tx_queues: config.workers,
                 num_hairpin_queues: 0,
                 rx_offloads: None,
                 tx_offloads: Some(TxOffloadConfig::default()),
@@ -68,13 +86,14 @@ fn init_devices(eal: &Eal<eal::Started>, num_workers: u16) -> Vec<Dev> {
                 dev.new_tx_queue(tx_queue_config).unwrap();
             });
             dev.start().unwrap();
-            dev
+            Some(dev)
         })
         .collect()
 }
 
 #[non_exhaustive]
 pub struct Configuration<'driver> {
+    pub interfaces: HashMap<NetworkDeviceDescription, &'driver TapDevice>,
     pub eal: &'driver Eal<'driver, eal::Started<'driver>>,
     pub workers: u16,
     pub setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Mbuf>>,
@@ -82,6 +101,7 @@ pub struct Configuration<'driver> {
 
 #[non_exhaustive]
 pub struct Configured<'driver> {
+    interfaces: HashMap<NetworkDeviceDescription, &'driver TapDevice>,
     eal: &'driver Eal<'driver, eal::Started<'driver>>,
     workers: u16,
     setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Mbuf>>,
@@ -90,7 +110,7 @@ pub struct Configured<'driver> {
 #[non_exhaustive]
 pub struct Started<'driver> {
     eal: &'driver Eal<'driver, eal::Started<'driver>>,
-    devices: Box<Vec<Dev>>,
+    devices: Vec<Dev<'driver>>,
     workers: Vec<LCoreId>,
 }
 
@@ -112,6 +132,7 @@ impl<'driver> driver::Configure for Dpdk<Configured<'driver>> {
     fn configure(configuration: Self::Configuration) -> Result<Self::Configured, Self::Error> {
         Ok(Self::Configured {
             state: Configured {
+                interfaces: configuration.interfaces,
                 eal: configuration.eal,
                 workers: configuration.workers,
                 setup_pipeline: configuration.setup_pipeline,
@@ -126,20 +147,13 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
     type Error = Infallible;
 
     fn start(self) -> Result<Self::Started, Self::Error> {
-        let Configured {
-            eal,
-            workers,
-            setup_pipeline,
-        } = self.state;
-        let devices = Box::new(init_devices(eal, workers));
-
-
+        let devices = init_devices(&self.state);
         let workers = LCoreId::iter()
             .enumerate()
             .map(|(i, lcore_id)| {
                 info!("starting RTE Worker on lcore {lcore_id:?}");
-                let setup = setup_pipeline.clone();
-                let devices = devices.as_ref();
+                let setup = self.state.setup_pipeline.clone();
+                let devices = &devices;
                 WorkerThread::launch(lcore_id, move || {
                     info!("starting worker thread runtime");
                     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -153,24 +167,28 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
                     let _guard = runtime.enter();
                     runtime.block_on(async move {
                         let mut pipeline = setup();
-                        let queues: Vec<_> = devices
-                            .iter()
-                            .map(|device| {
-                                let rx_queue = device
-                                    .rx_queue(RxQueueIndex(u16::try_from(i).unwrap()))
-                                    .unwrap();
-                                let tx_queue = device
-                                    .tx_queue(TxQueueIndex(u16::try_from(i).unwrap()))
-                                    .unwrap();
-                                (rx_queue, tx_queue)
-                            })
-                            .collect();
+                        let mut rx_queues = vector_map::VecMap::with_capacity(devices.len());
+                        let mut tx_queues = vector_map::VecMap::with_capacity(devices.len());
+                        for device in devices {
+                            let rx_queue = device
+                                .rx_queue(RxQueueIndex(u16::try_from(i).unwrap()))
+                                .unwrap();
+                            let tx_queue = device
+                                .tx_queue(TxQueueIndex(u16::try_from(i).unwrap()))
+                                .unwrap();
+                            rx_queues.insert(device.config.tap.ifindex(), rx_queue);
+                            tx_queues.insert(
+                                device.config.tap.ifindex(),
+                                (Vec::with_capacity(512), tx_queue),
+                            );
+                        }
                         loop {
-                            for (rx_queue, tx_queue) in &queues {
+                            for (&iif, rx_queue) in &rx_queues {
                                 let mbufs = rx_queue.receive();
                                 let pkts = mbufs.filter_map(|mbuf| match Packet::new(mbuf) {
-                                    Ok(pkt) => {
-                                        debug!("packet: {pkt:?}");
+                                    Ok(mut pkt) => {
+                                        pkt.get_meta_mut().iif = Some(iif);
+                                        tracing::debug!("packet: {pkt:?}");
                                         Some(pkt)
                                     }
                                     Err(e) => {
@@ -179,15 +197,31 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
                                     }
                                 });
 
-                                let pkts_out = pipeline.process(pkts);
-                                let buffers = pkts_out.filter_map(|pkt| match pkt.serialize() {
-                                    Ok(buf) => Some(buf),
-                                    Err(e) => {
-                                        error!("{e:?}");
-                                        None
+                                pipeline.process(pkts).for_each(|pkt| {
+                                    let Some(oif) = pkt.meta.oif else {
+                                        debug!("no output interface available for packet {pkt:?}");
+                                        return;
+                                    };
+                                    match pkt.serialize() {
+                                        Ok(buf) => {
+                                            let Some((schedule, _)) = tx_queues.get_mut(&oif)
+                                            else {
+                                                debug!(
+                                                    "unknown output index {oif}, dropping packet"
+                                                );
+                                                return;
+                                            };
+                                            schedule.push(buf);
+                                        }
+                                        Err(err) => {
+                                            trace!("unable to serialize packet: {err}");
+                                        }
                                     }
                                 });
-                                tx_queue.transmit(buffers);
+                            }
+                            for (_, (schedule, tx_queue)) in &mut tx_queues {
+                                tx_queue.transmit(schedule);
+                                schedule.clear();
                             }
                         }
                     });
@@ -198,7 +232,7 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
 
         Ok(Self::Started {
             state: Started {
-                eal,
+                eal: self.state.eal,
                 devices,
                 workers,
             },

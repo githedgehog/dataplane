@@ -3,9 +3,10 @@
 
 //! Tap initialization
 
+use std::collections::HashMap;
+
 use args::InterfaceArg;
 use interface_manager::interface::TapDevice;
-use tokio::runtime::Runtime;
 use tracing::{error, info};
 
 /// Creates a tap device for each of the [`InterfaceArg`]s provided.
@@ -13,27 +14,22 @@ use tracing::{error, info};
 /// # Errors
 ///
 /// This function fails if any of the taps cannot be created.
-pub async fn tap_init_async(ifargs: &[InterfaceArg]) -> std::io::Result<()> {
+pub async fn tap_init_async(
+    ifargs: &[InterfaceArg],
+) -> std::io::Result<HashMap<InterfaceArg, TapDevice>> {
     info!("Creating tap devices");
-    for ifarg in ifargs.iter() {
-        if let Err(e) = TapDevice::open(&ifarg.interface).await {
-            error!("Failed to create tap '{}':{e}", ifarg.interface);
-            return Err(e);
-        } else {
-            info!("Created tap device '{}'", ifarg.interface);
+    let mut out = HashMap::with_capacity(ifargs.len());
+    for interface in ifargs {
+        let response = TapDevice::open(&interface.interface).await;
+        match response {
+            Ok(tap) => {
+                out.insert(interface.clone(), tap);
+            }
+            Err(e) => {
+                error!("Failed to create tap '{}': {e}", interface.interface);
+                return Err(e);
+            }
         }
     }
-    Ok(())
-}
-
-/// Creates a tap device for each of the [`InterfaceArg`]s provided.
-/// This is a sync wrapper to `tap_init_async`.
-///
-/// # Errors
-///
-/// This function fails if any of the taps cannot be created.
-pub fn tap_init(port_specs: &[InterfaceArg]) -> std::io::Result<()> {
-    Runtime::new()
-        .expect("Tokio runtime creation failed!")
-        .block_on(tap_init_async(port_specs))
+    Ok(out)
 }

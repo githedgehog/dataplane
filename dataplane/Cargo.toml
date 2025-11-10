@@ -21,6 +21,7 @@ dyn-iter = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 id = { workspace = true }
+interface-manager = { workspace = true }
 linkme = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
@@ -29,8 +30,8 @@ miette = { workspace = true, features = ["derive", "fancy"] }
 mio = { workspace = true, features = ["os-ext", "net"] }
 nat = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
-nix = { workspace = true, default-features = false, features = ["ioctl", "net"] }
 netdev = { workspace = true }
+nix = { workspace = true, default-features = false, features = ["ioctl", "net"] }
 once_cell = { workspace = true }
 ordermap = { workspace = true, features = ["std"] }
 parking_lot = { workspace = true }
@@ -42,12 +43,14 @@ pyroscope_pprofrs = { workspace = true }
 rkyv = { workspace = true, features = [] }
 routing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+small-map = { workspace = true, features = [] }
 stats = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true, features = [] }
 tracectl = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, default-features = true }
+vector-map = { version = "1.0.2", default-features = false, features = [] }
 vpcmap = { workspace = true }
 
 [dev-dependencies]

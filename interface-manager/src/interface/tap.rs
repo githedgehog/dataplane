@@ -35,9 +35,9 @@ pub struct TapDevicePropertiesSpec {}
 
 #[derive(Debug)]
 pub struct TapDevice {
+    ifindex: InterfaceIndex,
     name: InterfaceName,
     async_fd: AsyncFd<std::fs::File>,
-    ifindex: InterfaceIndex,
 }
 
 mod helper {
