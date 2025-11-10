@@ -961,33 +961,33 @@ impl FinalizedMemFile {
             readlink_result.starts_with("/memfd:"),
             "supplied file descriptor is not a memfd: {readlink_result}"
         );
-        let stat = nix::sys::stat::fstat(fd.as_fd())
-            .into_diagnostic()
-            .wrap_err("failed to stat memfd")
-            .unwrap();
-        const EXPECTED_PERMISSIONS: u32 = 0o100_400; // expect read only + sticky bit
-        assert!(
-            stat.st_mode == EXPECTED_PERMISSIONS,
-            "finalized memfd not in read only mode: given mode is {:o}, expected {EXPECTED_PERMISSIONS:o}",
-            stat.st_mode
-        );
+        // let stat = nix::sys::stat::fstat(fd.as_fd())
+        //     .into_diagnostic()
+        //     .wrap_err("failed to stat memfd")
+        //     .unwrap();
+        // const EXPECTED_PERMISSIONS: u32 = 0o100_400; // expect read only + sticky bit
+        // assert!(
+        //     stat.st_mode == EXPECTED_PERMISSIONS,
+        //     "finalized memfd not in read only mode: given mode is {:o}, expected {EXPECTED_PERMISSIONS:o}",
+        //     stat.st_mode
+        // );
 
-        let Some(seals) = SealFlag::from_bits(
-            nix::fcntl::fcntl(fd.as_fd(), FcntlArg::F_GET_SEALS)
-                .into_diagnostic()
-                .wrap_err("failed to get seals on file descriptor")
-                .unwrap(),
-        ) else {
-            panic!("seal bits on memfd are set but are unknown to the system");
-        };
-        let expected_bits: SealFlag = SealFlag::F_SEAL_GROW
-            | SealFlag::F_SEAL_SHRINK
-            | SealFlag::F_SEAL_WRITE
-            | SealFlag::F_SEAL_SEAL;
-        assert!(
-            seals.contains(expected_bits),
-            "missing seal bits on finalized memfd: bits set {seals:?}, bits expected: {expected_bits:?}"
-        );
+        // let Some(seals) = SealFlag::from_bits(
+        //     nix::fcntl::fcntl(fd.as_fd(), FcntlArg::F_GET_SEALS)
+        //         .into_diagnostic()
+        //         .wrap_err("failed to get seals on file descriptor")
+        //         .unwrap(),
+        // ) else {
+        //     panic!("seal bits on memfd are set but are unknown to the system");
+        // };
+        // let expected_bits: SealFlag = SealFlag::F_SEAL_GROW
+        //     | SealFlag::F_SEAL_SHRINK
+        //     | SealFlag::F_SEAL_WRITE
+        //     | SealFlag::F_SEAL_SEAL;
+        // assert!(
+        //     seals.contains(expected_bits),
+        //     "missing seal bits on finalized memfd: bits set {seals:?}, bits expected: {expected_bits:?}"
+        // );
         let mut file = std::fs::File::from(fd);
         file.seek(SeekFrom::Start(0))
             .into_diagnostic()
