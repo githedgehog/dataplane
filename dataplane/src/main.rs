@@ -14,7 +14,7 @@ use std::{io::Write, time::Duration};
 
 use crate::{
     drivers::{
-        dpdk::{Configuration, Configured, Dpdk},
+        dpdk::{Configuration, Dpdk},
         kernel::DriverKernel,
     },
     packet_processor::start_router,
@@ -24,7 +24,7 @@ use args::{LaunchConfiguration, TracingConfigSection};
 
 use dpdk::{
     eal::{Eal, EalArgs},
-    mem::{Mbuf, PoolConfig, PoolParams},
+    mem::{PoolConfig, PoolParams},
 };
 use driver::{Configure, Start, Stop};
 use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
@@ -90,7 +90,7 @@ pub enum DriverTypes<'driver> {
 async fn dataplane(
     scope: &std::thread::Scope<'_, '_>,
     launch_config: &LaunchConfiguration,
-    eal: &Eal<'_, dpdk::eal::Started<'_>>,
+    eal: Option<&Eal<'_, dpdk::eal::Started<'_>>>,
     cancel: CancellationToken,
 ) {
     info!("starting gateway process...");
@@ -132,37 +132,35 @@ async fn dataplane(
             .expect("tap initialization failed"),
     };
 
-    let _driver = match &launch_config.driver {
-        args::DriverConfigSection::Dpdk(_) => {
-            info!("Using driver DPDK...");
-            let configured = Dpdk::configure(Configuration {
-                interfaces: tap_table
-                    .iter()
-                    .map(|(k, &v)| (k.port.clone(), v))
-                    .collect(),
-                eal,
-                workers: launch_config.dataplane_workers,
-                setup_pipeline: pipeline_factory,
-            })
-            .unwrap();
-            DriverTypes::Dpdk(configured.start().unwrap())
-        }
-        args::DriverConfigSection::Kernel(section) => {
-            info!("Using driver kernel...");
-            let driver = DriverKernel::<dpdk::mem::Pool>::new(
-                PoolConfig::new("kernel-io-pool", PoolParams::default()).unwrap(),
-            )
-            .into_diagnostic()
-            .wrap_err("unable to start kernel driver")
-            .unwrap();
-            driver.start(
-                section.interfaces.clone().into_iter(),
-                launch_config.dataplane_workers,
-                pipeline_factory.clone(),
-            );
-            DriverTypes::Kernel()
-        }
+    let driver = if let Some(eal) = eal {
+        info!("Using driver DPDK...");
+        let configured = Dpdk::configure(Configuration {
+            interfaces: tap_table
+                .iter()
+                .map(|(k, &v)| (k.port.clone(), v))
+                .collect(),
+            eal,
+            workers: launch_config.dataplane_workers,
+            setup_pipeline: pipeline_factory,
+        })
+        .unwrap();
+        DriverTypes::Dpdk(configured.start().unwrap())
+    } else {
+        info!("Using driver kernel...");
+        let driver = DriverKernel::<dpdk::mem::Pool>::new(
+            PoolConfig::new("kernel-io-pool", PoolParams::default()).unwrap(),
+        )
+        .into_diagnostic()
+        .wrap_err("unable to start kernel driver")
+        .unwrap();
+        driver.start(
+            tap_table.keys().cloned(),
+            launch_config.dataplane_workers,
+            pipeline_factory.clone(),
+        );
+        DriverTypes::Kernel()
     };
+
     let injection_pool = dpdk::mem::Pool::new_pkt_pool(
         dpdk::mem::PoolConfig::new("injection-pool", dpdk::mem::PoolParams::default()).unwrap(),
     )
@@ -200,7 +198,7 @@ fn launch_dataplane(
     dataplane_fn: impl AsyncFnOnce(
         &std::thread::Scope<'_, '_>,
         &LaunchConfiguration,
-        &Eal<dpdk::eal::Started<'_>>,
+        Option<&Eal<dpdk::eal::Started<'_>>>,
         CancellationToken,
     ),
 ) {
@@ -237,10 +235,10 @@ fn launch_dataplane(
                 args::ArchivedDriverConfigSection::Dpdk(driver_config) => {
                     let eal_args = EalArgs::new(&driver_config.eal_args);
                     let configured = dpdk::eal::Eal::configure(eal_args).unwrap();
-                    configured.start().unwrap()
+                    Some(configured.start().unwrap())
                 }
                 args::ArchivedDriverConfigSection::Kernel(_driver_config) => {
-                    todo!();
+                    None
                 }
             };
             init_logging();
@@ -303,7 +301,7 @@ fn launch_dataplane(
                     }
                 })
                 .expect("failed to set SIGINT handler");
-                let dataplane = dataplane_fn(scope, &launch_config, &eal, cancel.child_token());
+                let dataplane = dataplane_fn(scope, &launch_config, eal.as_ref(), cancel.child_token());
                 tokio::select! {
                     () = cancel.cancelled() => {
                         info!("shutdown requested: closing down dataplane");
@@ -325,7 +323,7 @@ fn launch_dataplane(
             info!("acync runtime stopped");
             eal
         };
-        let _stopped = eal.stop().unwrap_or_else(|_| std::process::abort()); // abort case here should be unreachable
+        let _stopped = eal.map(|eal| eal.stop().unwrap_or_else(|_| std::process::abort())); // abort case here should be unreachable
     });
 
     // panic!("injecting failure to test abnormal shutdown");
