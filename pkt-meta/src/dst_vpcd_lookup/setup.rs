@@ -68,6 +68,23 @@ mod tests {
     use net::vxlan::Vni;
     use std::net::IpAddr;
 
+    fn dst_vpcd_lookup(
+        vpcd_tables: &'_ VpcDiscriminantTables,
+        vpcd: VpcDiscriminant,
+        ip: IpAddr,
+    ) -> Option<(Prefix, &'_ Option<VpcDiscriminant>)> {
+        vpcd_tables
+            .tables_by_discriminant
+            .get(&vpcd)
+            .unwrap()
+            .dst_vpcds
+            .lookup(ip)
+    }
+
+    fn addr(addr: &str) -> IpAddr {
+        addr.parse::<IpAddr>().unwrap()
+    }
+
     fn build_overlay() -> (Vni, Vni, Overlay) {
         // Build VpcExpose objects
         //
@@ -187,6 +204,7 @@ mod tests {
     #[test]
     fn test_setup() {
         let (vni1, vni2, overlay) = build_overlay();
+        let (vpcd1, vpcd2) = (VpcDiscriminant::VNI(vni1), VpcDiscriminant::VNI(vni2));
         let result = build_dst_vni_lookup_configuration(&overlay);
         assert!(
             result.is_ok(),
@@ -200,7 +218,7 @@ mod tests {
             "vni_tables: {:?}",
             vpcd_tables
                 .tables_by_discriminant
-                .get(&VpcDiscriminant::VNI(vni1))
+                .get(&vpcd1)
                 .unwrap()
                 .dst_vpcds
         );
@@ -208,56 +226,25 @@ mod tests {
         //////////////////////
         // table for vni 1 (uses second expose block, ensures we look at them all)
         assert_eq!(
-            vpcd_tables
-                .tables_by_discriminant
-                .get(&VpcDiscriminant::VNI(vni1))
-                .unwrap()
-                .dst_vpcds
-                .lookup("5.5.5.1".parse::<IpAddr>().unwrap()),
-            Some((Prefix::from("5.5.0.0/17"), &VpcDiscriminant::VNI(vni2)))
+            dst_vpcd_lookup(&vpcd_tables, vpcd1, addr("5.5.5.1")),
+            Some((Prefix::from("5.5.0.0/17"), &vpcd2))
         );
 
-        assert_eq!(
-            vpcd_tables
-                .tables_by_discriminant
-                .get(&VpcDiscriminant::VNI(vni1))
-                .unwrap()
-                .dst_vpcds
-                .lookup("5.6.0.1".parse::<IpAddr>().unwrap()),
-            None
-        );
+        assert_eq!(dst_vpcd_lookup(&vpcd_tables, vpcd1, addr("5.6.0.1")), None);
 
         // Make sure dst VNI lookup for non-NAT stuff works
         assert_eq!(
-            vpcd_tables
-                .tables_by_discriminant
-                .get(&VpcDiscriminant::VNI(vni1))
-                .unwrap()
-                .dst_vpcds
-                .lookup("8.0.1.1".parse::<IpAddr>().unwrap()),
-            Some((Prefix::from("8.0.1.0/24"), &VpcDiscriminant::VNI(vni2)))
+            dst_vpcd_lookup(&vpcd_tables, vpcd1, addr("8.0.1.1")),
+            Some((Prefix::from("8.0.1.0/24"), &vpcd2))
         );
 
         //////////////////////
         // table for vni 2 (uses first expose block, ensures we look at them all)
         assert_eq!(
-            vpcd_tables
-                .tables_by_discriminant
-                .get(&VpcDiscriminant::VNI(vni2))
-                .unwrap()
-                .dst_vpcds
-                .lookup("2.2.0.1".parse::<IpAddr>().unwrap()),
-            Some((Prefix::from("2.2.0.0/24"), &VpcDiscriminant::VNI(vni1)))
+            dst_vpcd_lookup(&vpcd_tables, vpcd2, addr("2.2.0.1")),
+            Some((Prefix::from("2.2.0.0/24"), &vpcd1))
         );
 
-        assert_eq!(
-            vpcd_tables
-                .tables_by_discriminant
-                .get(&VpcDiscriminant::VNI(vni2))
-                .unwrap()
-                .dst_vpcds
-                .lookup("2.2.2.1".parse::<IpAddr>().unwrap()),
-            None
-        );
+        assert_eq!(dst_vpcd_lookup(&vpcd_tables, vpcd2, addr("2.2.2.1")), None);
     }
 }
