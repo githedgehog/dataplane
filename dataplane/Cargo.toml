@@ -15,6 +15,7 @@ concurrency = { workspace = true }
 ctrlc = { workspace = true, features = ["termination"] }
 dpdk = { workspace = true }
 dyn-iter = { workspace = true }
+futures = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 id = { workspace = true }
@@ -25,6 +26,7 @@ mgmt = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
 nat = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
+nix = { workspace = true }
 netdev = { workspace = true }
 once_cell = { workspace = true }
 ordermap = { workspace = true, features = ["std"] }

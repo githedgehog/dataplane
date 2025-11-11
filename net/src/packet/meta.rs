@@ -118,6 +118,7 @@ pub enum DoneReason {
     NatFailure,           /* It was not possible to NAT the packet */
     Local,                /* the packet has to be locally consumed by kernel */
     Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
+    InternalDrop,         /* the packet was dropped internally due to a queue being full */
 }
 
 bitflags! {
