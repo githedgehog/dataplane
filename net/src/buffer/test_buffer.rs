@@ -53,12 +53,11 @@ impl TestBuffer {
         let mut buffer = Vec::with_capacity(TestBuffer::CAPACITY as usize);
         let headroom = TestBuffer::HEADROOM;
         let tailroom = TestBuffer::TAILROOM;
-        // fill the test buffer with a simple pattern of bytes to help debug any memory access
-        // errors
-        for i in 0..buffer.capacity() {
-            #[allow(clippy::cast_possible_truncation)] // sound due to bitwise and
-            buffer.push((i & u8::MAX as usize) as u8);
-        }
+        buffer.extend_from_slice(&[0; TestBuffer::HEADROOM as usize]);
+        buffer.extend_from_slice(
+            &[0; (TestBuffer::CAPACITY - (TestBuffer::HEADROOM + TestBuffer::TAILROOM)) as usize],
+        );
+        buffer.extend_from_slice(&[0; TestBuffer::TAILROOM as usize]);
         TestBuffer {
             buffer,
             headroom,
