@@ -55,6 +55,22 @@ impl Eth {
         })
     }
 
+    /// Create an incomplete [Eth] header, with zero destination MAC
+    #[must_use]
+    pub fn new_incomplete(source: SourceMac, ether_type: EthType) -> Eth {
+        Eth(Ethernet2Header {
+            source: source.inner().0,
+            destination: Mac::ZERO.0,
+            ether_type: ether_type.0,
+        })
+    }
+
+    /// Tell if the destination MAC of an [Eth] header is zero.
+    #[must_use]
+    pub fn has_zero_dst_mac(&self) -> bool {
+        self.0.destination == Mac::ZERO.0
+    }
+
     /// Get the source [`Mac`] of the header.
     #[must_use]
     pub fn source(&self) -> SourceMac {
