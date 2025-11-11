@@ -30,7 +30,7 @@ use std::time::Duration;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use net::buffer::test_buffer::TestBuffer;
+use net::buffer::{TrimFromEnd, test_buffer::TestBuffer};
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet};
 use netdev::Interface;
@@ -421,14 +421,25 @@ impl DriverKernel {
     /// out of them. Returns a vector of [`Packet`]s.
     #[allow(clippy::vec_box)] // We want to avoid Packet moves, so allow Vec<Box<_>> to be sure
     pub fn packet_recv(interface: &mut Kif) -> Vec<Box<Packet<TestBuffer>>> {
-        let mut raw = [0u8; 2048];
         let mut pkts = Vec::with_capacity(32);
         loop {
-            match interface.sock.read(&mut raw) {
+            // this should come from pool
+            let mut buf = TestBuffer::new();
+            match interface.sock.read(buf.as_mut()) {
                 Ok(0) => break, // no more
                 Ok(bytes) => {
-                    // build TestBuffer and parse
-                    let buf = TestBuffer::from_raw_data(&raw[..bytes]);
+                    let Ok(trim) = (buf.as_ref().len() - bytes).try_into() else {
+                        error!(
+                            "Bad trim value. Buflen:{} bytes:{}",
+                            buf.as_ref().len(),
+                            bytes
+                        );
+                        continue;
+                    };
+                    if let Err(e) = buf.trim_from_end(trim) {
+                        error!("Failed to trim buffer from end: {e}");
+                        continue;
+                    }
                     match Packet::new(buf) {
                         Ok(mut incoming) => {
                             incoming.get_meta_mut().iif = Some(interface.ifindex);
