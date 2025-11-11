@@ -70,6 +70,10 @@ pub trait IpPrefixCovering<Other> {
     fn covers(&self, other: &Other) -> bool;
 }
 
+pub trait IpPrefixColliding<Other> {
+    fn collides_with(&self, other: &Other) -> bool;
+}
+
 ////////////////////////////////////////////////////////////
 // IPv4 Prefix
 ////////////////////////////////////////////////////////////
@@ -153,6 +157,12 @@ impl IpPrefixCovering<Ipv4Addr> for Ipv4Prefix {
 impl IpPrefixCovering<Ipv4Prefix> for Ipv4Prefix {
     fn covers(&self, other: &Ipv4Prefix) -> bool {
         self.0.contains(&other.0)
+    }
+}
+
+impl IpPrefixColliding<Ipv4Prefix> for Ipv4Prefix {
+    fn collides_with(&self, other: &Ipv4Prefix) -> bool {
+        self.covers(other) || other.covers(self)
     }
 }
 
@@ -280,6 +290,12 @@ impl IpPrefixCovering<Ipv6Addr> for Ipv6Prefix {
 impl IpPrefixCovering<Ipv6Prefix> for Ipv6Prefix {
     fn covers(&self, other: &Ipv6Prefix) -> bool {
         self.0.contains(&other.0)
+    }
+}
+
+impl IpPrefixColliding<Ipv6Prefix> for Ipv6Prefix {
+    fn collides_with(&self, other: &Ipv6Prefix) -> bool {
+        self.covers(other) || other.covers(self)
     }
 }
 
