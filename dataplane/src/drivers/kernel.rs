@@ -37,8 +37,10 @@ use std::hash::{Hash, Hasher};
 
 use net::interface::{InterfaceIndex, InterfaceName};
 use net::packet::{Packet, PortIndex};
+use net::buffer::TrimFromEnd;
 use netdev::Interface;
 use nix::net::if_::if_nametoindex;
+use nix::sys::socket::MsgFlags;
 
 use pipeline::{DynPipeline, NetworkFunction};
 use tracing::{debug, error, info, trace, warn};
@@ -520,11 +522,13 @@ impl<Pool: BufferPool> DriverKernel<Pool> {
                     break;
                 }
             };
+
             match kif.sock.read(buf.as_mut()) {
                 Ok(0) => break, // no more
                 Ok(bytes) => {
                     trace!("received {bytes} bytes from kernel interface");
                     // build Buf and parse
+                    buf.trim_from_end((buf.as_ref().len() - bytes).try_into().unwrap()).unwrap(); // FIXME
                     match Packet::new(buf) {
                         Ok(mut incoming) => {
                             // we'll probably ditch iport, but for the time being....
