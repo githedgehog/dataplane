@@ -3,7 +3,7 @@
 
 // !Configuration processor
 
-use concurrency::sync::Arc;
+use concurrency::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet};
 
 use tokio::spawn;
@@ -89,7 +89,7 @@ pub(crate) struct ConfigProcessor {
     vpcmapw: VpcMapWriter<VpcMapName>,
     nattablew: NatTablesWriter,
     natallocatorw: NatAllocatorWriter,
-    vnitablesw: VpcDiscTablesWriter,
+    vnitablesw: Arc<Mutex<VpcDiscTablesWriter>>,
     vpc_stats_store: Arc<VpcStatsStore>,
 }
 /// Populate FRR status into the dataplane status structure
@@ -118,7 +118,7 @@ impl ConfigProcessor {
         vpcmapw: VpcMapWriter<VpcMapName>,
         nattablew: NatTablesWriter,
         natallocatorw: NatAllocatorWriter,
-        vnitablesw: VpcDiscTablesWriter,
+        vnitablesw: Arc<Mutex<VpcDiscTablesWriter>>,
         vpc_stats_store: Arc<stats::VpcStatsStore>,
     ) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
@@ -197,7 +197,7 @@ impl ConfigProcessor {
             &mut self.vpcmapw,
             &mut self.nattablew,
             &mut self.natallocatorw,
-            &mut self.vnitablesw,
+            &self.vnitablesw,
         )
         .await?;
 
@@ -226,7 +226,7 @@ impl ConfigProcessor {
                 &mut self.vpcmapw,
                 &mut self.nattablew,
                 &mut self.natallocatorw,
-                &mut self.vnitablesw,
+                &self.vnitablesw,
             )
             .await;
         }
@@ -536,10 +536,10 @@ fn apply_stateful_nat_config(
 /// Update the VNI tables for dst_vni_lookup
 fn apply_dst_vpcd_lookup_config(
     overlay: &Overlay,
-    vpcdtablesw: &mut VpcDiscTablesWriter,
+    vpcdtablesw: &Arc<Mutex<VpcDiscTablesWriter>>,
 ) -> ConfigResult {
     let vpcd_tables = build_dst_vni_lookup_configuration(overlay)?;
-    vpcdtablesw.update_vpcd_tables(vpcd_tables);
+    vpcdtablesw.lock().unwrap().update_vpcd_tables(vpcd_tables);
     Ok(())
 }
 
@@ -572,7 +572,7 @@ async fn apply_gw_config(
     vpcmapw: &mut VpcMapWriter<VpcMapName>,
     nattablesw: &mut NatTablesWriter,
     natallocatorw: &mut NatAllocatorWriter,
-    vpcdtablesw: &mut VpcDiscTablesWriter,
+    vpcdtablesw: &Arc<Mutex<VpcDiscTablesWriter>>,
 ) -> ConfigResult {
     let genid = config.genid();
 

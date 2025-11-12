@@ -131,7 +131,7 @@ fn main() {
         setup.router.get_ctl_tx(),
         setup.nattablew,
         setup.natallocatorw,
-        setup.vpcdtablesw,
+        setup.vpcdtables_wrapper,
         setup.vpcmapw,
         setup.vpc_stats_store,
     )

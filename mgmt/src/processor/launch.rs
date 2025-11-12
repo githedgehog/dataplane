@@ -16,6 +16,7 @@ use tokio::net::UnixListener;
 use tokio::sync::mpsc::Sender;
 use tokio_stream::Stream;
 
+use concurrency::sync::{Arc, Mutex};
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
 use pkt_meta::dst_vpcd_lookup::VpcDiscTablesWriter;
@@ -167,7 +168,7 @@ pub fn start_mgmt(
     router_ctl: RouterCtlSender,
     nattablew: NatTablesWriter,
     natallocatorw: NatAllocatorWriter,
-    vpcdtablesw: VpcDiscTablesWriter,
+    vpcdtables_wrapper: Arc<Mutex<VpcDiscTablesWriter>>,
     vpcmapw: VpcMapWriter<VpcMapName>,
     vps_stats_store: std::sync::Arc<stats::VpcStatsStore>,
 ) -> Result<std::thread::JoinHandle<()>, Error> {
@@ -197,7 +198,7 @@ pub fn start_mgmt(
                     vpcmapw,
                     nattablew,
                     natallocatorw,
-                    vpcdtablesw,
+                    vpcdtables_wrapper,
                     vps_stats_store,
                 );
                 tokio::task::spawn(async { processor.run().await });

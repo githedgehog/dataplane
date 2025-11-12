@@ -17,12 +17,13 @@ use crate::stateful::apalloc::AllocatedIpPort;
 use crate::stateful::apalloc::{NatDefaultAllocator, NatIpWithBitmap};
 use crate::stateful::natip::NatIp;
 pub use allocator_writer::NatAllocatorWriter;
-use concurrency::sync::Arc;
+use concurrency::sync::{Arc, Mutex};
 use flow_info::{ExtractRef, FlowInfo};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, Transport, TryInnerIp, TryIp, TryIpMut, TryTransportMut};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::NetworkFunction;
+use pkt_meta::dst_vpcd_lookup::VpcDiscTablesWriter;
 use pkt_meta::flow_table::flow_key::{IcmpProtoKey, Uni};
 use pkt_meta::flow_table::{FlowKey, FlowKeyData, FlowTable, IpProtoKey};
 use std::fmt::{Debug, Display};
@@ -92,16 +93,23 @@ pub struct StatefulNat {
     name: String,
     sessions: Arc<FlowTable>,
     allocator: NatAllocatorReader,
+    vpcd_tables: Arc<Mutex<VpcDiscTablesWriter>>,
 }
 
 impl StatefulNat {
     /// Creates a new [`StatefulNat`] processor from provided parameters.
     #[must_use]
-    pub fn new(name: &str, sessions: Arc<FlowTable>, allocator: NatAllocatorReader) -> Self {
+    pub fn new(
+        name: &str,
+        sessions: Arc<FlowTable>,
+        allocator: NatAllocatorReader,
+        vpcd_tables: Arc<Mutex<VpcDiscTablesWriter>>,
+    ) -> Self {
         Self {
             name: name.to_string(),
             sessions,
             allocator,
+            vpcd_tables,
         }
     }
 
@@ -116,6 +124,7 @@ impl StatefulNat {
                 "stateful-nat",
                 Arc::new(FlowTable::default()),
                 allocator_reader,
+                Arc::new(Mutex::new(VpcDiscTablesWriter::new())),
             ),
             allocator_writer,
         )

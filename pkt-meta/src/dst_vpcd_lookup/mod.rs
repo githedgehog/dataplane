@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle, new_from_empty};
+use lpm::prefix::Prefix;
 use std::collections::HashMap;
 use tracing::{debug, error, warn};
 
@@ -45,6 +46,7 @@ impl Default for VpcDiscriminantTables {
 #[derive(Debug)]
 enum VpcDiscriminantTablesChange {
     UpdateVpcDiscTables(VpcDiscriminantTables),
+    InsertInVpcDiscTable(VpcDiscriminant, Prefix, Option<VpcDiscriminant>),
 }
 
 impl Absorb<VpcDiscriminantTablesChange> for VpcDiscriminantTables {
@@ -52,6 +54,13 @@ impl Absorb<VpcDiscriminantTablesChange> for VpcDiscriminantTables {
         match change {
             VpcDiscriminantTablesChange::UpdateVpcDiscTables(vpcd_tables) => {
                 *self = vpcd_tables.clone();
+            }
+            VpcDiscriminantTablesChange::InsertInVpcDiscTable(vpcd, prefix, dst_vpcd) => {
+                self.tables_by_discriminant
+                    .entry(*vpcd)
+                    .or_default()
+                    .dst_vpcds
+                    .insert(*prefix, *dst_vpcd);
             }
         }
     }
@@ -110,6 +119,19 @@ impl VpcDiscTablesWriter {
             ));
         self.0.publish();
         debug!("Updated tables for Destination vpcd Lookup");
+    }
+
+    pub fn insert(
+        &mut self,
+        vpcd: VpcDiscriminant,
+        prefix: Prefix,
+        dst_vpcd: Option<VpcDiscriminant>,
+    ) {
+        self.0
+            .append(VpcDiscriminantTablesChange::InsertInVpcDiscTable(
+                vpcd, prefix, dst_vpcd,
+            ));
+        self.0.publish();
     }
 }
 
