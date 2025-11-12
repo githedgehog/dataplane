@@ -206,8 +206,14 @@ impl<Buf: PacketBufferMut, P: BufferPool<Buffer = Buf> + 'static> IoManager<Buf,
                 continue;
             };
             if buffer.as_ref().len() < 1560 {
-                warn!("Got to small of a buffer {}. This is a bug in the buffer pool", buffer.as_ref().len());
-                panic!("Got to small of a buffer {}. This is a bug in the buffer pool", buffer.as_ref().len());
+                warn!(
+                    "Got to small of a buffer {}. This is a bug in the buffer pool",
+                    buffer.as_ref().len()
+                );
+                panic!(
+                    "Got to small of a buffer {}. This is a bug in the buffer pool",
+                    buffer.as_ref().len()
+                );
                 // panic so that we don't enter an endless loop if the next buffer is
                 // also smallish
             }
@@ -381,10 +387,10 @@ mod io_tests {
     use crate::{IoManagerCtl, PktQueue};
 
     use crate::io::start_io;
-    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread::{JoinHandle, sleep};
+    use std::{collections::HashMap, time::Duration};
 
     use net::packet::test_utils::build_test_ipv4_packet;
     use tracing_test::traced_test;
@@ -565,7 +571,6 @@ mod io_tests {
         tokio::time::sleep(wait_time).await;
         info!("================ Stop IO ==========================");
         iom_ctl.stop().await.unwrap();
-        io_handle.await.unwrap();
 
         // stop punt thread and sink thread
         info!("================ Stop Test threads ==========================");
@@ -574,4 +579,56 @@ mod io_tests {
         punt_handle.join().unwrap();
         sink_handle.join().unwrap();
     }
+
+    //     use pipeline::DynPipeline;
+    //     use pipeline::NetworkFunction;
+    //     #[tokio::test]
+    //     #[traced_test]
+    //     async fn test_async_pipeline() {
+    //         let tapname = format!("tap0");
+    //         let tapname = InterfaceName::try_from(tapname).unwrap();
+    //         let tap = TapDevice::open(&tapname).await.unwrap();
+    //         let ifindex = tap.ifindex();
+    //         bring_tap_up(ifindex.to_u32()).await;
+    //         drop(tap);
+
+    //         let pktio = PktIo::<TestBuffer>::new(1000, 1000);
+    //         let puntq = pktio.get_puntq().unwrap();
+    //         let injectq = pktio.get_injectq().unwrap();
+
+    //         // start IO manager
+    //         let (io_handle, mut iom_ctl) = start_io(puntq.clone(), injectq.clone(), TestBufferPool);
+
+    //         // some thread loops until it steals a packet from the pipeline
+    //         // thread uses tokio runtime and gets notified.
+    //         let handle = std::thread::spawn(move || {
+    //             let rt = tokio::runtime::Builder::new_current_thread()
+    // //                .enable_io()
+    //                 .enable_time()
+    //                 .build()
+    //                 .expect("Tokio runtime creation failed");
+    //             let mut pipeline = DynPipeline::new().add_stage(pktio);
+
+    //             rt.block_on(async move {
+    //                 loop {
+
+    // 	                let mut packet = build_test_ipv4_packet(64).unwrap();
+    //                     packet.get_meta_mut().set_local(true);
+    //                     packet.get_meta_mut().iif = Some(ifindex);
+    //                     let input = vec![packet].into_iter();
+    //                     let output: Vec<_> = pipeline.process(input).collect();
+
+    //                     for pkt in output {
+    //                         println!("Got packet out");
+    //                     }
+    //                     tokio::time::sleep(Duration::from_secs(10)).await;
+    //                 }
+    //             })
+    //         });
+
+    //         register_tap(&mut iom_ctl, "tap0");
+    //         iom_ctl.commit().await.unwrap();
+
+    //         handle.join().unwrap();
+    //     }
 }
