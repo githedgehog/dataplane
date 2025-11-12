@@ -9,6 +9,7 @@
 mod ctl;
 mod io;
 mod nf;
+mod nfc;
 mod tapinit;
 mod tests;
 
