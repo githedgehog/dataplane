@@ -35,6 +35,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 
+use net::buffer::TrimFromEnd;
 use net::interface::{InterfaceIndex, InterfaceName};
 use net::packet::{Packet, PortIndex};
 use netdev::Interface;
@@ -524,7 +525,18 @@ impl<Pool: BufferPool> DriverKernel<Pool> {
                 Ok(0) => break, // no more
                 Ok(bytes) => {
                     trace!("received {bytes} bytes from kernel interface");
-                    // build Buf and parse
+                    let Ok(trim) = (buf.as_ref().len() - bytes).try_into() else {
+                        error!(
+                            "Bad trim value. Buflen:{} bytes:{}",
+                            buf.as_ref().len(),
+                            bytes
+                        );
+                        continue;
+                    };
+                    if let Err(e) = buf.trim_from_end(trim) {
+                        error!("Failed to trim buffer from end: {e:?}");
+                        continue;
+                    }
                     match Packet::new(buf) {
                         Ok(mut incoming) => {
                             // we'll probably ditch iport, but for the time being....

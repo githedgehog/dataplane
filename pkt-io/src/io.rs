@@ -205,16 +205,16 @@ impl<Buf: PacketBufferMut, P: BufferPool<Buffer = Buf> + 'static> IoManager<Buf,
                 warn!("Packet buffer allocation failed!");
                 continue;
             };
-            match buffer.append(8192 - buffer.headroom()) {
-                Ok(_) => {}
-                Err(err) => {
-                    error!("error appending to buffer: {err:?}");
-                    panic!("error appending to buffer: {err:?}");
-                }
-            };
-            info!("buffer size: {}", buffer.as_ref().len());
-            info!("headroom size: {}", buffer.headroom());
-            info!("tailroom size: {}", buffer.tailroom());
+//            match buffer.append(2048 - buffer.headroom()) {
+//                Ok(_) => {}
+//                Err(err) => {
+//                    error!("error appending to buffer: {err:?}");
+//                    panic!("error appending to buffer: {err:?}");
+//                }
+//            };
+//            info!("buffer size: {}", buffer.as_ref().len());
+//            info!("headroom size: {}", buffer.headroom());
+//            info!("tailroom size: {}", buffer.tailroom());
             let ret = device.read(&mut buffer).await;
             info!("buffer {:?} and ret {:?}", buffer.as_ref(), ret);
             match ret {
