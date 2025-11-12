@@ -208,7 +208,7 @@ async fn dataplane(
             &pipeline_factory,
         );
         let injection_pool = TestBufferPool::new_pool(()).unwrap();
-        let (io_manager, iom_ctl) = start_io(setup.puntq, setup.injectq, injection_pool);
+        let (io_manager, mut iom_ctl) = start_io(setup.puntq, setup.injectq, injection_pool);
         // prepare parameters for mgmt
         let mgmt_params = MgmtParams {
             grpc_addr: grpc_addr.clone(),
