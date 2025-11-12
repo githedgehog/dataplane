@@ -19,7 +19,7 @@ use core::ptr::null_mut;
 use core::slice::from_raw_parts_mut;
 use errno::Errno;
 use net::buffer::{BufferAllocationError, BufferPool, NewBufferPool};
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 
 use dpdk_sys::{
     rte_pktmbuf_adj, rte_pktmbuf_append, rte_pktmbuf_headroom, rte_pktmbuf_prepend,
@@ -170,7 +170,31 @@ impl Pool {
             } // TODO: this may be a little drastic
         };
         // TODO: add a safer new_from_raw impl to Mbuf
-        unsafe { Mbuf::new_from_raw_unchecked(ptr.as_ptr()) }
+        let mut mbuf = unsafe { Mbuf::new_from_raw_unchecked(ptr.as_ptr()) };
+        trace!(
+            "Pulled new mbuf from DPDK pool. len:{}, headroom:{} tailroom:{}",
+            mbuf.as_ref().len(),
+            mbuf.headroom(),
+            mbuf.tailroom()
+        );
+        if mbuf.as_ref().len() == 0 {
+            // FIXME, this only works for default
+            match mbuf.append(PoolParams::DPDK_BUFFER_SIZE - mbuf.headroom()) {
+                Ok(_) => {}
+                Err(err) => {
+                    error!("error appending to buffer: {err:?}");
+                    panic!("error appending to buffer: {err:?}");
+                }
+            }
+        }
+        trace!(
+            "Handing off mbuf from pool. len:{}, headroom:{} tailroom:{}",
+            mbuf.as_ref().len(),
+            mbuf.headroom(),
+            mbuf.tailroom()
+        );
+
+        mbuf
     }
 
     #[must_use]
@@ -261,6 +285,10 @@ pub struct PoolParams {
     /// The `SocketId` on which to allocate the pool.
     pub socket_id: SocketId,
 }
+impl PoolParams {
+    // defaults
+    const DPDK_BUFFER_SIZE: u16 = 8192;
+}
 
 impl Default for PoolParams {
     // TODO: not sure if these defaults are sensible.
@@ -269,7 +297,7 @@ impl Default for PoolParams {
             size: (1 << 15) - 1,
             cache_size: 256,   // guess for best choice, adjust as profiling suggests
             private_size: 512, // guess for most useful value, adjust as needed
-            data_size: 8192,   // guess for most useful value, adjust as needed
+            data_size: Self::DPDK_BUFFER_SIZE, // guess for most useful value, adjust as needed
             socket_id: SocketId::current(),
         }
     }

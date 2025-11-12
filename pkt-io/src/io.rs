@@ -205,16 +205,12 @@ impl<Buf: PacketBufferMut, P: BufferPool<Buffer = Buf> + 'static> IoManager<Buf,
                 warn!("Packet buffer allocation failed!");
                 continue;
             };
-//            match buffer.append(2048 - buffer.headroom()) {
-//                Ok(_) => {}
-//                Err(err) => {
-//                    error!("error appending to buffer: {err:?}");
-//                    panic!("error appending to buffer: {err:?}");
-//                }
-//            };
-//            info!("buffer size: {}", buffer.as_ref().len());
-//            info!("headroom size: {}", buffer.headroom());
-//            info!("tailroom size: {}", buffer.tailroom());
+            if buffer.as_ref().len() < 1560 {
+                warn!("Got to small of a buffer {}. This is a bug in the buffer pool", buffer.as_ref().len());
+                panic!("Got to small of a buffer {}. This is a bug in the buffer pool", buffer.as_ref().len());
+                // panic so that we don't enter an endless loop if the next buffer is
+                // also smallish
+            }
             let ret = device.read(&mut buffer).await;
             info!("buffer {:?} and ret {:?}", buffer.as_ref(), ret);
             match ret {
