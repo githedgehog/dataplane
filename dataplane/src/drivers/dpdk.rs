@@ -47,6 +47,7 @@ fn init_devices(config: &Configured<'_>) -> Vec<Dev> {
                 num_hairpin_queues: 0,
                 rx_offloads: None,
                 tx_offloads: Some(TxOffloadConfig::default()),
+                promiscuous: true,
             };
             let mut dev = match config.apply(dev) {
                 Ok(stopped_dev) => {

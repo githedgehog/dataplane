@@ -12,8 +12,9 @@ use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 use dpdk_sys::rte_eth_hash_function::RTE_ETH_HASH_FUNCTION_DEFAULT;
 use hardware::pci::address::{InvalidPciAddress, PciAddress};
 use net::interface::{IllegalInterfaceName, InterfaceIndex, InterfaceName};
+use net::eth::mac::Mac;
 use std::str;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, warn, trace};
 
 use crate::eal::Eal;
 use crate::queue;
@@ -215,6 +216,8 @@ pub struct DevConfig {
     pub tx_offloads: Option<TxOffloadConfig>,
     // TODO: more reasonable type for [`RxOffload`] here (similar to [`TxOffloadConfig`])
     pub rx_offloads: Option<RxOffload>,
+    /// Whether to enable / disable promiscuous mode
+    pub promiscuous: bool,
 }
 
 #[derive(Debug)]
@@ -222,6 +225,20 @@ pub struct DevConfig {
 pub enum DevConfigError {
     /// A driver-specific error occurred when configuring the ethernet device.
     DriverSpecificError(&'static str),
+}
+impl From<i32> for DevConfigError {
+    //@Daniel: it appears that in some cases we use errno::Errno, but not everywhere
+    //I'm coding this here because I saw the following comment:
+
+    // NOTE: it is not clear from the docs if `ret` is going to be a valid errno value.
+    // I am assuming it is for now.
+    // TODO: see if we can determine if `ret` is a valid errno value.
+    fn from(value: i32) -> Self {
+        let rte_error = unsafe { CStr::from_ptr(rte_strerror(value)) }
+            .to_str()
+            .unwrap_or("Unknown error");
+        DevConfigError::DriverSpecificError(rte_error)
+    }
 }
 
 impl DevConfig {
@@ -276,15 +293,50 @@ impl DevConfig {
                 port = dev.index(),
                 code = ret
             );
-
-            // NOTE: it is not clear from the docs if `ret` is going to be a valid errno value.
-            // I am assuming it is for now.
-            // TODO: see if we can determine if `ret` is a valid errno value.
-            let rte_error = unsafe { CStr::from_ptr(rte_strerror(ret)) }
-                .to_str()
-                .unwrap_or("Unknown error");
-            return Err(DevConfigError::DriverSpecificError(rte_error));
+            return Err(DevConfigError::from(ret));
         }
+
+        let mut rte_mac = rte_ether_addr::default();
+        let p: *mut rte_ether_addr = &mut rte_mac as *mut rte_ether_addr;
+        let ret = unsafe {
+            rte_eth_macaddr_get(dev.index().as_u16(), p)
+        };
+        match ret {
+            0 => {
+                let mac = Mac::from(rte_mac.addr_bytes);
+                info!("Mac of device {} is: {mac}", dev.index());
+            },
+            _ => { // expected ENODEV(-19) or EINVAL (-22)
+                error!("Can't get MAC of port {}: {:?}", dev.index(), DevConfigError::from(ret));
+                return Err(DevConfigError::from(ret));
+            }
+        }
+
+
+        // enable promiscuous mode
+        if self.promiscuous {
+            let ret = unsafe {
+                info!("Enabling promiscuous mode in device {}...", dev.index().as_u16());
+                rte_eth_promiscuous_enable(dev.index().as_u16())
+            };
+            match ret {
+                0 => {
+                    info!("Promiscuous mode successfully enabled. Checking...");
+                    let enabled = unsafe { rte_eth_promiscuous_get(dev.index().as_u16())} == 1;
+                    if enabled {
+                        info!("Promiscuous mode was confirmed by device {}", dev.index());
+                    } else {
+                        warn!("Promiscuous mode was NOT confirmed by device {}", dev.index());
+                    }
+                },
+                _ => { // ENOTSUP(-95) ENODEV(-19)
+                    error!("Failed to set promiscuous mode in device {} : {:?}",
+                        dev.index(), DevConfigError::from(ret));
+                    return Err(DevConfigError::from(ret));
+                }
+            }
+        }
+
         Ok(Dev {
             info: dev,
             rx_queues: Vec::with_capacity(self.num_rx_queues.into()),
