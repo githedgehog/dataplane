@@ -55,12 +55,6 @@ impl<Buf: PacketBufferMut> PktIo<Buf> {
         self.name = name.to_string();
         self
     }
-    pub async fn punt_async(&self, packet: Box<Packet<Buf>>) -> Result<(), SendError<Box<Packet<Buf>>>> {
-        self.punt_tx.send(packet).await
-    }
-    pub async fn inject_rx_async(&mut self) -> Option<Box<Packet<Buf>>> {
-        self.inject_rx.recv().await
-    }
     pub fn punt(&self, packet: Box<Packet<Buf>>) -> Result<(), SendError<Box<Packet<Buf>>>> {
         self.punt_tx.blocking_send(packet)
     }
@@ -75,12 +69,13 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PktIo<Buf> {
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        // punt path: pull packets out of the input iterator, based on some criteria.
-        // Here we assume that packets to be pulled off have been marked as local, but other
-        // criteria may work. QUESTION: do we need/want this to be configurable?, or should this
-        // stage remain simple and the preceding stages keep the knowledge of what needs to be
-        // punted and set the local flag?
+        // injection path: fetch packets from injection queue (if there) and add them to the input iterator
+        let mut accum = vec![];
+        while let Some(pkt) = self.inject_rx() {
+            accum.push(pkt);
+        }
 
+        // pint path
         let input = input.filter_map(|packet| {
             if packet.get_meta().local() {
                 match self.punt(Box::new(packet)) {
@@ -97,11 +92,6 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PktIo<Buf> {
             }
         });
 
-        // injection path: fetch packets from injection queue (if there) and add them to the input iterator
-        let mut accum = vec![];
-        while let Some(pkt) = self.inject_rx() {
-            accum.push(pkt);
-        }
         input.chain(accum.into_iter().map(|boxed| *boxed))
     }
 }

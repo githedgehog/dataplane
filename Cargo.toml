@@ -94,6 +94,7 @@ color-eyre = { version = "0.6.5", default-features = false, features = [] }
 command-fds = { version = "0.3.2", default-features = false, features = [] }
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel", "crossbeam-deque", "crossbeam-queue"] }
 crossbeam-channel = { version = "0.5.15", default-features = false, features = [] }
+crossfire = { version = "2.1.7", default-features = false, features = [] }
 ctrlc = { version = "3.5.1", default-features = false, features = [] }
 dashmap = { version = "6.1.0", default-features = false, features = [] }
 derive_builder = { version = "0.20.2", default-features = false, features = ["default", "std"] }
