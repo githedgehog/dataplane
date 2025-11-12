@@ -3,6 +3,9 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::StatefulNat;
+    use crate::stateful::NatAllocatorWriter;
+    use concurrency::sync::{Arc, Mutex};
     use config::GwConfig;
     use config::external::ExternalConfigBuilder;
     use config::external::overlay::Overlay;
@@ -13,32 +16,28 @@ mod tests {
     use config::external::underlay::Underlay;
     use config::internal::device::DeviceConfig;
     use config::internal::device::settings::DeviceSettings;
-    use config::internal::interfaces::interface::InterfaceConfig;
-    use config::internal::interfaces::interface::{IfVtepConfig, InterfaceType};
+    use config::internal::interfaces::interface::{IfVtepConfig, InterfaceConfig, InterfaceType};
     use config::internal::routing::bgp::BgpConfig;
     use config::internal::routing::vrf::VrfConfig;
     use etherparse::Icmpv4Type;
-    use net::icmp4::TruncatedIcmp4;
-    use net::ip::NextHeader;
-    use net::tcp::TruncatedTcp;
-    use net::udp::{TruncatedUdp, UdpPort};
-    use pkt_meta::dst_vpcd_lookup::setup::build_dst_vni_lookup_configuration;
-    use pkt_meta::dst_vpcd_lookup::{DstVpcdLookup, VpcDiscTablesWriter};
-
-    use crate::StatefulNat;
-
     use net::buffer::{PacketBufferMut, TestBuffer};
     use net::eth::mac::Mac;
     use net::headers::{
         EmbeddedTransport, TryEmbeddedTransport as _, TryIcmp4, TryInnerIpv4, TryIpv4, TryUdp,
     };
+    use net::icmp4::TruncatedIcmp4;
+    use net::ip::NextHeader;
     use net::packet::test_utils::{
         IcmpEchoDirection, build_test_icmp4_destination_unreachable_packet, build_test_icmp4_echo,
         build_test_udp_ipv4_frame,
     };
     use net::packet::{DoneReason, Packet, VpcDiscriminant};
+    use net::tcp::TruncatedTcp;
+    use net::udp::{TruncatedUdp, UdpPort};
     use net::vxlan::Vni;
     use pipeline::NetworkFunction;
+    use pkt_meta::dst_vpcd_lookup::setup::build_dst_vni_lookup_configuration;
+    use pkt_meta::dst_vpcd_lookup::{DstVpcdLookup, VpcDiscTablesWriter};
     use pkt_meta::flow_table::flow_key::Uni;
     use pkt_meta::flow_table::{FlowKey, FlowTable, IpProtoKey, UdpProtoKey};
     use std::net::{IpAddr, Ipv4Addr};
@@ -1223,16 +1222,23 @@ mod tests {
 
     #[test]
     #[traced_test]
+    #[allow(clippy::too_many_lines)]
     fn test_full_config_unidirectional_nat_overlapping_destination() {
         let mut config =
             build_sample_config(build_overlay_3vpcs_unidirectional_nat_overlapping_addr());
         config.validate().unwrap();
 
         // Build VPC discriminant lookup stage
-        let (mut vpcdlookup, _vpcdtablesw) = get_vpcd_lookup(&config.external.overlay);
+        let (mut vpcdlookup, vpcdtablesw) = get_vpcd_lookup(&config.external.overlay);
+
+        /////////////////////////////////////////////////////////////////
+        // First NAT stage: We do not update the VPC discriminant lookup table.
+        // We expect return packets to fail to find a destination VPC ID, and to be dropped.
+
+        // Build NAT stage
+        let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
 
         // Check that we can validate the allocator
-        let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
         allocator
             .update_allocator(&config.external.overlay.vpc_table)
             .unwrap();
@@ -1256,6 +1262,7 @@ mod tests {
         assert!(output_src_port.is_multiple_of(256));
         assert_eq!(output_dst_port, orig_dst_port);
         assert_eq!(done_reason, None);
+
         // Reverse path - 5.0.0.5 -> 2.0.0.0, destination is ambiguous (could be VPC-1 or VPC-3)
         let (
             return_vpcd,
@@ -1279,5 +1286,149 @@ mod tests {
         assert_eq!(return_output_src_port, output_dst_port);
         assert_eq!(return_output_dst_port, output_src_port);
         assert_eq!(return_done_reason, Some(DoneReason::Unroutable));
+
+        /////////////////////////////////////////////////////////////////
+        // Second NAT stage: We update the VPC discriminant lookup table.
+        // Check that we can NAT and route the return packet.
+
+        // Build NAT stage
+        let mut allocator = NatAllocatorWriter::new();
+        let mut nat = StatefulNat::new(
+            "stateful-nat",
+            Arc::new(FlowTable::default()),
+            allocator.get_reader(),
+            Arc::new(Mutex::new(vpcdtablesw)),
+        );
+
+        // Check that we can validate the allocator
+        allocator
+            .update_allocator(&config.external.overlay.vpc_table)
+            .unwrap();
+
+        // NAT: expose12 <-> expose21
+        let (orig_src, orig_dst, orig_src_port, orig_dst_port) = ("1.0.0.18", "5.0.0.5", 9998, 443);
+        let target_src = "2.0.0.0";
+        let (dst_vpcd, output_src, output_dst, output_src_port, output_dst_port, done_reason) =
+            check_packet_with_vpcd_lookup(
+                &mut nat,
+                &mut vpcdlookup,
+                vni(100),
+                orig_src,
+                orig_dst,
+                orig_src_port,
+                orig_dst_port,
+            );
+        assert_eq!(dst_vpcd, Some(VpcDiscriminant::VNI(vni(200))));
+        assert_eq!(output_src, addr_v4(target_src));
+        assert_eq!(output_dst, addr_v4(orig_dst));
+        assert!(output_src_port.is_multiple_of(256));
+        assert_eq!(output_dst_port, orig_dst_port);
+        assert_eq!(done_reason, None);
+
+        // Reverse path - 5.0.0.5 -> 2.0.0.0, destination is ambiguous (could be VPC-1 or VPC-3)
+        let (
+            return_vpcd,
+            return_output_src,
+            return_output_dst,
+            return_output_src_port,
+            return_output_dst_port,
+            return_done_reason,
+        ) = check_packet_with_vpcd_lookup(
+            &mut nat,
+            &mut vpcdlookup,
+            vni(200),
+            orig_dst,
+            target_src,
+            output_dst_port,
+            output_src_port,
+        );
+        assert_eq!(return_vpcd, Some(VpcDiscriminant::VNI(vni(100))));
+        assert_eq!(return_output_src, addr_v4(orig_dst));
+        assert_eq!(return_output_dst, addr_v4(orig_src));
+        assert_eq!(return_output_src_port, orig_dst_port);
+        assert_eq!(return_output_dst_port, orig_src_port);
+        assert_eq!(return_done_reason, None);
+
+        /////////////////////////////////////////////////////////////////
+        // Still with the second NAT stage, send a packet to create a conflicting update for the
+        // vpcd table. Check that we fail to NAT.
+
+        // Reverse path from previous connection: 5.0.0.5 -> 2.0.0.0, session is still valid
+        let (
+            return_vpcd,
+            return_output_src,
+            return_output_dst,
+            return_output_src_port,
+            return_output_dst_port,
+            return_done_reason,
+        ) = check_packet_with_vpcd_lookup(
+            &mut nat,
+            &mut vpcdlookup,
+            vni(200),
+            orig_dst,
+            target_src,
+            output_dst_port,
+            output_src_port,
+        );
+        assert_eq!(return_vpcd, Some(VpcDiscriminant::VNI(vni(100))));
+        assert_eq!(return_output_src, addr_v4(orig_dst));
+        assert_eq!(return_output_dst, addr_v4(orig_src));
+        assert_eq!(return_output_src_port, orig_dst_port);
+        assert_eq!(return_output_dst_port, orig_src_port);
+        assert_eq!(return_done_reason, None);
+
+        // NAT: expose32 <-> expose23 - Connection from VPC-3 to VPC-2
+        let (orig_src_32, orig_dst_32, orig_src_port_32, orig_dst_port_32) =
+            ("3.0.0.4", "5.0.0.12", 8887, 800);
+        let target_src_32 = "2.0.0.0";
+        let (
+            dst_vpcd_32,
+            output_src_32,
+            output_dst_32,
+            output_src_port_32,
+            output_dst_port_32,
+            done_reason_32,
+        ) = check_packet_with_vpcd_lookup(
+            &mut nat,
+            &mut vpcdlookup,
+            vni(300), // from VPC-3
+            orig_src_32,
+            orig_dst_32,
+            orig_src_port_32,
+            orig_dst_port_32,
+        );
+        assert_eq!(dst_vpcd_32, Some(VpcDiscriminant::VNI(vni(200))));
+        assert_eq!(output_src_32, addr_v4(target_src_32));
+        assert_eq!(output_dst_32, addr_v4(orig_dst_32));
+        assert!(output_src_port_32.is_multiple_of(256));
+        assert_eq!(output_dst_port_32, orig_dst_port_32);
+        assert_eq!(done_reason_32, None);
+
+        // Back to 5.0.0.5 -> 2.0.0.0 from VPC-2 to VPC-1
+        let (
+            return_vpcd,
+            return_output_src,
+            return_output_dst,
+            return_output_src_port,
+            return_output_dst_port,
+            return_done_reason,
+        ) = check_packet_with_vpcd_lookup(
+            &mut nat,
+            &mut vpcdlookup,
+            vni(200), // from VPC-2 again
+            orig_dst,
+            target_src,
+            output_dst_port,
+            output_src_port,
+        );
+        // Existing session between VPC-2 and VPC-1 got DoS-ed!
+        // The packet comes from valid exposed IP, so it is considered exempt from NAT and not
+        // marked as dropped (but it is not NAT-ed!)
+        assert_eq!(return_vpcd, Some(VpcDiscriminant::VNI(vni(300)))); // Oh no, it's changed!!
+        assert_eq!(return_output_src, addr_v4(orig_dst));
+        assert_eq!(return_output_dst, addr_v4(target_src));
+        assert_eq!(return_output_src_port, output_dst_port);
+        assert_eq!(return_output_dst_port, output_src_port);
+        assert_eq!(return_done_reason, None);
     }
 }

@@ -19,6 +19,7 @@ use crate::stateful::natip::NatIp;
 pub use allocator_writer::NatAllocatorWriter;
 use concurrency::sync::{Arc, Mutex};
 use flow_info::{ExtractRef, FlowInfo};
+use lpm::prefix::Prefix;
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, Transport, TryInnerIp, TryIp, TryIpMut, TryTransportMut};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -216,6 +217,25 @@ impl StatefulNat {
         flow_info.locked.write().unwrap().nat_state = Some(Box::new(state));
 
         self.sessions.insert(*flow_key, flow_info);
+    }
+
+    fn update_vpcd_tables(&self, flow_key: &FlowKey) {
+        let data = flow_key.data();
+        let prefix = Prefix::from(*data.dst_ip());
+        let dst_vpcd = data.dst_vpcd();
+        let Some(src_vpcd) = data.src_vpcd() else {
+            unreachable!() // We should never reach the point where we call this function if src_vpcd is None
+        };
+
+        debug!(
+            "{}: Updating vpcd table for discriminant {src_vpcd}: {prefix} -> {dst_vpcd:?}",
+            self.name()
+        );
+
+        self.vpcd_tables
+            .lock()
+            .unwrap()
+            .insert(src_vpcd, prefix, dst_vpcd);
     }
 
     #[allow(clippy::unnecessary_wraps)]
@@ -620,6 +640,7 @@ impl StatefulNat {
 
         self.create_session(flow_key, forward_state, idle_timeout);
         self.create_session(&reverse_flow_key, reverse_state, idle_timeout);
+        self.update_vpcd_tables(&reverse_flow_key);
 
         Self::stateful_translate::<Buf>(self.name(), packet, &translation_info).and(Ok(true))
     }
