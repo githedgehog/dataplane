@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Duration;
 
 use args::NetworkDeviceDescription;
 use dpdk::dev::{Dev, TxOffloadConfig};
@@ -159,9 +160,9 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_time()
                         .max_blocking_threads(32) // deliberately very low.  No need for a lot of lcores here
-                        .on_thread_stop(|| unsafe {
-                            dpdk::lcore::ServiceThread::unregister_current_thread();
-                        })
+                        // .on_thread_stop(|| unsafe {
+                        //     dpdk::lcore::ServiceThread::unregister_current_thread();
+                        // })
                         .build()
                         .unwrap();
                     let _guard = runtime.enter();
@@ -186,16 +187,19 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
                                 let pkts = mbufs.filter_map(|mbuf| match Packet::new(mbuf) {
                                     Ok(mut pkt) => {
                                         pkt.get_meta_mut().iif = Some(iif);
-                                        info!("received packet: {pkt:?}");
+                                        trace!("received packet: {pkt:?}");
                                         Some(pkt)
                                     }
                                     Err(e) => {
-                                        trace!("Failed to parse packet: {e:?}");
+                                        error!("Failed to parse packet: {e:?}");
                                         None
                                     }
                                 });
+                                error!("about to sleep in busy loop");
+                                tokio::time::sleep(Duration::from_millis(100)).await;
 
                                 pipeline.process(pkts).for_each(|pkt| {
+                                    trace!("to transmit by pipeline {pkt:?}");
                                     let Some(oif) = pkt.meta.oif else {
                                         warn!("no output interface available for packet {pkt:?}");
                                         return;
@@ -223,6 +227,7 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
                                 }
                                 info!("scheduling transmit of {} packets", schedule.len());
                                 tx_queue.transmit(schedule);
+                                schedule.clear();
                             }
                         }
                     });

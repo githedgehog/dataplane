@@ -168,13 +168,13 @@ impl Create for Manager<Interface> {
                 return Err(rtnetlink::Error::RequestFailed);
             }
             InterfacePropertiesSpec::Tap => {
-                // can drop _tap here? Kernel device will be persisted...
-                let _tap = TapDevice::open(&requirement.name)
-                    .map_err(|err| {
-                        warn!("failed to create tap device: {err:?}");
-                        rtnetlink::Error::RequestFailed
-                    })
-                    .await?;
+                // // can drop _tap here? Kernel device will be persisted...
+                // let _tap = TapDevice::open(&requirement.name)
+                //     .map_err(|err| {
+                //         warn!("failed to create tap device: {err:?}");
+                //         rtnetlink::Error::RequestFailed
+                //     })
+                //     .await?;
                 return Ok(());
             }
         };

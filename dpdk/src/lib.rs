@@ -31,6 +31,11 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![deny(rustdoc::all)]
 #![allow(private_bounds)]
+
+use tracectl::trace_target;
+const DPDK: &str = "dpdk";
+trace_target!(DPDK, LevelFilter::INFO, &["drivers"]);
+
 extern crate alloc;
 extern crate core;
 

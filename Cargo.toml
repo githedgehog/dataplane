@@ -18,11 +18,11 @@ members = [
     "init",
     "interface-manager",
     "left-right-tlcache",
-    "pkt-io",
     "mgmt",
     "nat",
     "net",
     "pipeline",
+    "pkt-io",
     "pkt-meta",
     "rekon",
     "routing",
@@ -69,6 +69,7 @@ stats = { path = "./stats", package = "dataplane-stats" }
 sysfs = { path = "./sysfs", package = "dataplane-sysfs" }
 test-utils = { path = "./test-utils", package = "dataplane-test-utils" }
 tracectl = { path = "./tracectl", package = "dataplane-tracectl" }
+trap = { path = "./trap", package = "dataplane-trap" }
 vpcmap = { path = "./vpcmap", package = "dataplane-vpcmap" }
 
 # External

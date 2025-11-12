@@ -22,14 +22,18 @@ use crate::{
 };
 use args::{LaunchConfiguration, TracingConfigSection};
 
-use dpdk::
-    eal::{Eal, EalArgs}
-;
+use dpdk::{
+    eal::{Eal, EalArgs},
+    mem::{PoolConfig, PoolParams},
+};
 use driver::{Configure, Start, Stop};
 use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
 use miette::{Context, IntoDiagnostic};
 use net::buffer::{NewBufferPool, TestBufferPool};
-use nix::libc;
+use nix::{
+    libc,
+    sys::socket::{recv, recvfrom},
+};
 use pkt_io::{start_io, tap_init_async};
 use pyroscope::PyroscopeAgent;
 use pyroscope_pprofrs::{PprofConfig, pprof_backend};
@@ -47,6 +51,8 @@ fn init_logging() {
     let tctl = get_trace_ctl();
     tctl.set_default_level(LevelFilter::DEBUG)
         .expect("Setting default loglevel failed");
+    custom_target!("tonic", LevelFilter::OFF, &[]);
+    custom_target!("h2", LevelFilter::OFF, &[]);
 }
 
 fn process_tracing_cmds(cfg: &TracingConfigSection) {
@@ -87,6 +93,7 @@ pub enum DriverTypes<'driver> {
     Kernel(),
 }
 
+#[allow(clippy::too_many_lines)] // complete nonsense impl, don't merge
 async fn dataplane(
     scope: &std::thread::Scope<'_, '_>,
     launch_config: &LaunchConfiguration,
@@ -143,7 +150,33 @@ async fn dataplane(
             setup_pipeline: pipeline_factory,
         })
         .unwrap();
-        DriverTypes::Dpdk(configured.start().unwrap())
+        let injection_pool = dpdk::mem::Pool::new_pkt_pool(
+            PoolConfig::new("injection-pool", PoolParams::default()).unwrap(),
+        )
+        .unwrap();
+        let (io_manager, iom_ctl) = start_io(setup.puntq, setup.injectq, injection_pool);
+        // prepare parameters for mgmt
+        let mgmt_params = MgmtParams {
+            grpc_addr: grpc_addr.clone(),
+            processor_params: ConfigProcessorParams {
+                router_ctl: setup.router.get_ctl_tx(),
+                nattablesw: setup.nattablesw,
+                natallocatorw: setup.natallocatorw,
+                vpcdtablesw: setup.vpcdtablesw,
+                vpcmapw: setup.vpcmapw,
+                vpc_stats_store: setup.vpc_stats_store,
+                iom_ctl,
+                cancel_token: cancel.child_token(),
+            },
+        };
+        let driver = DriverTypes::Dpdk(configured.start().unwrap());
+        // start mgmt
+        start_mgmt(mgmt_params)
+            .expect("Failed to start gRPC server")
+            .join()
+            .unwrap();
+        io_manager.join().unwrap();
+        driver
     } else {
         // start the router; returns control-plane handles and a pipeline factory (Arc<... Fn() -> DynPipeline<_> >)
         // let setup = start_router::<dpdk::mem::Mbuf>(config).expect("failed to start router");
@@ -264,12 +297,12 @@ fn launch_dataplane(
                 .enable_io()
                 .enable_time()
                 .max_blocking_threads(32) // deliberately very low for now
-                .on_thread_stop(|| {
+                // .on_thread_stop(|| {
                     // safe because of eal registration hook
-                    unsafe {
-                        dpdk::lcore::ServiceThread::unregister_current_thread();
-                    }
-                })
+                    // unsafe {
+                    //     dpdk::lcore::ServiceThread::unregister_current_thread();
+                    // }
+                // })
                 .build()
                 .unwrap();
             let _runtime_guard = runtime.enter();

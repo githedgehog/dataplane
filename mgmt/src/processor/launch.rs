@@ -179,9 +179,9 @@ pub fn start_mgmt(params: MgmtParams) -> Result<std::thread::JoinHandle<()>, Err
                 .enable_io()
                 .enable_time()
                 .max_blocking_threads(32)
-                .on_thread_stop(|| unsafe {
-                    dpdk::lcore::ServiceThread::unregister_current_thread();
-                })
+                // .on_thread_stop(|| unsafe {
+                //     dpdk::lcore::ServiceThread::unregister_current_thread();
+                // })
                 .build()
                 .expect("Tokio runtime creation failed");
 

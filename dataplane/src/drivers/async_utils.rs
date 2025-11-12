@@ -25,7 +25,7 @@ where
     let rt = Builder::new_current_thread()
         .enable_io()
         .enable_time()
-        .on_thread_stop(|| unsafe { dpdk::lcore::ServiceThread::unregister_current_thread() })
+        // .on_thread_stop(|| unsafe { dpdk::lcore::ServiceThread::unregister_current_thread() })
         .build()
         .expect("Failed to create current thread runtime");
 

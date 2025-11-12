@@ -6,6 +6,8 @@
 use ahash::RandomState;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
+use net::buffer::TrimFromEnd;
+use net::buffer::TrimFromStart;
 use tokio::join;
 use tokio::spawn;
 use tokio::sync::Mutex;
@@ -203,9 +205,23 @@ impl<Buf: PacketBufferMut, P: BufferPool<Buffer = Buf> + 'static> IoManager<Buf,
                 warn!("Packet buffer allocation failed!");
                 continue;
             };
-            match device.read(&mut buffer).await {
+            match buffer.append(8192 - buffer.headroom()) {
+                Ok(_) => {}
+                Err(err) => {
+                    error!("error appending to buffer: {err:?}");
+                    panic!("error appending to buffer: {err:?}");
+                }
+            };
+            info!("buffer size: {}", buffer.as_ref().len());
+            info!("headroom size: {}", buffer.headroom());
+            info!("tailroom size: {}", buffer.tailroom());
+            let ret = device.read(&mut buffer).await;
+            info!("buffer {:?} and ret {:?}", buffer.as_ref(), ret);
+            match ret {
                 Ok(size) => match Packet::new(buffer) {
-                    Err(e) => error!("Failed to build packet from buffer: {e}"),
+                    Err(e) => {
+                        error!("Failed to build packet from buffer: {e}");
+                    }
                     Ok(mut packet) => {
                         packet.get_meta_mut().oif = Some(tapid);
                         packet.get_meta_mut().set_sourced(true);
@@ -216,6 +232,7 @@ impl<Buf: PacketBufferMut, P: BufferPool<Buffer = Buf> + 'static> IoManager<Buf,
                     }
                 },
                 Err(e) => {
+                    info!("buffer size in error case: {}", buffer.as_ref().len());
                     error!("Failure reading packet from tap {tapname}: {e}");
                     break;
                 }
@@ -340,7 +357,9 @@ pub fn start_io<P: BufferPool + 'static>(
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_io()
                 .enable_time()
-                .on_thread_stop(|| unsafe { dpdk::lcore::ServiceThread::unregister_current_thread(); })
+                // .on_thread_stop(|| unsafe {
+                //     dpdk::lcore::ServiceThread::unregister_current_thread();
+                // })
                 .build()
                 .unwrap();
             runtime.block_on(async move {

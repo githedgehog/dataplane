@@ -243,6 +243,7 @@ impl DevConfig {
             rxmode: rte_eth_rxmode {
                 mtu: rx_queue_defaults::RX_MTU,
                 mq_mode: RTE_ETH_MQ_RX_RSS,
+                // mq_mode: 0,
                 max_lro_pkt_size: rx_queue_defaults::MAX_LRO,
                 offloads: {
                     let requested = self.rx_offloads.unwrap_or(RxOffload(ANY_SUPPORTED));
@@ -251,14 +252,14 @@ impl DevConfig {
                 },
                 ..Default::default()
             },
-            rx_adv_conf: rte_eth_conf__bindgen_ty_1 {
-                rss_conf: rte_eth_rss_conf {
-                    rss_hf: dev.inner.flow_type_rss_offloads,
-                    algorithm: RTE_ETH_HASH_FUNCTION_DEFAULT,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
+            // rx_adv_conf: rte_eth_conf__bindgen_ty_1 {
+            //     rss_conf: rte_eth_rss_conf {
+            //         rss_hf: dev.inner.flow_type_rss_offloads,
+            //         algorithm: RTE_ETH_HASH_FUNCTION_DEFAULT,
+            //         ..Default::default()
+            //     },
+            //     ..Default::default()
+            // },
             ..Default::default()
         };
 

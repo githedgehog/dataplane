@@ -9,11 +9,12 @@ mod meta;
 
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
+use tracing::info;
 
 #[cfg(any(doc, test, feature = "test_buffer"))]
 pub mod test_utils;
 
-use crate::buffer::{Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart};
+use crate::buffer::{Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromEnd, TrimFromStart};
 use crate::eth::Eth;
 use crate::eth::EthError;
 use crate::headers::{
@@ -62,6 +63,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         let (headers, consumed) = match Headers::parse(mbuf.as_ref()) {
             Ok((headers, consumed)) => (headers, consumed),
             Err(error) => {
+                info!("invalid packet: {error:?}");
                 return Err(InvalidPacket { mbuf, error });
             }
         };
@@ -314,6 +316,14 @@ impl<Buf: PacketBufferMut> TrimFromStart for Packet<Buf> {
 
     fn trim_from_start(&mut self, len: u16) -> Result<&mut [u8], Self::Error> {
         self.payload.trim_from_start(len)
+    }
+}
+
+impl<Buf: PacketBufferMut> TrimFromEnd for Packet<Buf> {
+    type Error = <Buf as TrimFromEnd>::Error;
+
+    fn trim_from_end(&mut self, len: u16) -> Result<&mut [u8], Self::Error> {
+        self.payload.trim_from_end(len)
     }
 }
 

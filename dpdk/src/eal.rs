@@ -287,7 +287,7 @@ impl<'eal> driver::Start for Eal<'eal, Configured> {
         if ret < 0 {
             EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
         }
-        lcore::ServiceThread::register_thread_spawn_hook();
+        // lcore::ServiceThread::register_thread_spawn_hook();
         unsafe {
             GLOBAL_ALLOCATOR = SwitchingAllocator::Rte;
         };
