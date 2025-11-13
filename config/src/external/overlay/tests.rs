@@ -94,46 +94,46 @@ pub mod test {
     #[test]
     fn test_expose_validate() {
         let expose = VpcExpose::empty();
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         let expose = VpcExpose::empty().ip("10.0.0.0/16".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         // Empty ips but non-empty nots - Currently not supported
         /*
         let expose = VpcExpose::empty().not("10.0.1.0/24".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
         */
 
         // Empty as_range but non-empty not_as - Currently not supported
         /*
         let expose = VpcExpose::empty().not_as("2.0.1.0/24".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
         */
 
         let expose = VpcExpose::empty()
             .ip("10.0.0.0/16".into())
             .as_range("2.0.0.0/16".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         let expose = VpcExpose::empty()
             .ip("10.0.0.0/16".into())
             .not("10.0.0.0/24".into())
             .as_range("2.0.0.0/16".into())
             .not_as("2.0.0.0/24".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         let expose = VpcExpose::empty()
             .ip("1::/64".into())
             .as_range("2::/64".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         // Empty ips/as_range but non-empty nots/not_as - Currently not supported
         /*
         let expose = VpcExpose::empty()
             .not("10.0.0.0/16".into())
             .not_as("2.0.0.0/16".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
         */
 
         // Incorrect: mixed IP versions
@@ -143,7 +143,7 @@ pub mod test {
             .as_range("2.0.0.0/16".into())
             .as_range("2::/64".into());
         assert_eq!(
-            expose.validate(),
+            expose.clone().validate(),
             Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
         );
 
@@ -152,7 +152,7 @@ pub mod test {
             .ip("10.0.0.0/16".into())
             .as_range("1::/112".into());
         assert_eq!(
-            expose.validate(),
+            expose.clone().validate(),
             Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
         );
 
@@ -163,7 +163,7 @@ pub mod test {
             .as_range("2.0.0.0/16".into())
             .not_as("2::/120".into());
         assert_eq!(
-            expose.validate(),
+            expose.clone().validate(),
             Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
         );
 
@@ -201,7 +201,7 @@ pub mod test {
             .not_as("2.0.0.0/17".into())
             .not_as("2.0.128.0/17".into());
         assert_eq!(
-            expose.validate(),
+            expose.clone().validate(),
             Err(ConfigError::ExcludedAllPrefixes(Box::new(expose.clone())))
         );
     }
@@ -233,7 +233,7 @@ pub mod test {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(expose1).expect("Should succeed");
         manifest.add_expose(expose2).expect("Should succeed");
-        assert_eq!(manifest.validate(), Ok(()));
+        assert!(manifest.clone().validate().is_ok());
 
         // Overlap between a manifest's exposes prefixes is not allowed
         let mut invalid_manifest = manifest.clone();
@@ -293,9 +293,10 @@ pub mod test {
 
         /* build overlay object and validate it */
         let mut overlay = Overlay::new(vpc_table, peering_table);
-        assert_eq!(
-            overlay.validate(),
-            Err(ConfigError::NoSuchVpc("VPC-2".to_owned()))
+        assert!(
+            overlay
+                .validate()
+                .is_err_and(|e| e == ConfigError::NoSuchVpc("VPC-2".to_owned()))
         );
     }
 
@@ -317,8 +318,8 @@ pub mod test {
 
         let name1 = peering1.name.clone();
 
-        assert_eq!(peering1.validate(), Ok(()));
-        assert_eq!(peering2.validate(), Ok(()));
+        assert!(peering1.validate().is_ok());
+        assert!(peering2.validate().is_ok());
 
         /* build peering table */
         let mut peering_table = VpcPeeringTable::new();
@@ -327,9 +328,10 @@ pub mod test {
 
         /* build overlay object and validate it */
         let mut overlay = Overlay::new(vpc_table, peering_table);
-        assert_eq!(
-            overlay.validate(),
-            Err(ConfigError::DuplicateVpcPeerings(name1))
+        assert!(
+            overlay
+                .validate()
+                .is_err_and(|e| e == ConfigError::DuplicateVpcPeerings(name1))
         );
     }
 
@@ -355,7 +357,7 @@ pub mod test {
 
         /* build overlay object and validate it */
         let mut overlay = Overlay::new(vpc_table, peering_table);
-        assert_eq!(overlay.validate(), Ok(()));
+        assert!(overlay.validate().is_ok());
     }
 
     #[test]

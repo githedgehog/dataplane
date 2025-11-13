@@ -7,10 +7,8 @@ pub mod tests;
 pub mod vpc;
 pub mod vpcpeering;
 
-use crate::external::overlay::vpc::VpcIdMap;
-use crate::external::overlay::vpc::VpcTable;
-use crate::external::overlay::vpcpeering::VpcManifest;
-use crate::external::overlay::vpcpeering::VpcPeeringTable;
+use crate::external::overlay::vpc::{ValidatedVpcTable, VpcIdMap, VpcTable};
+use crate::external::overlay::vpcpeering::{VpcManifest, VpcPeeringTable};
 use crate::{ConfigError, ConfigResult};
 use tracing::{debug, error};
 
@@ -35,7 +33,7 @@ impl Overlay {
         }
         Ok(())
     }
-    pub fn validate(&mut self) -> ConfigResult {
+    pub fn validate(&mut self) -> Result<ValidatedOverlay, ConfigError> {
         debug!("Validating overlay configuration...");
 
         /* validate peerings and check if referred VPCs exist */
@@ -55,7 +53,7 @@ impl Overlay {
         /* collect peerings of every VPC */
         self.vpc_table
             .collect_peerings(&self.peering_table, &id_map);
-        self.vpc_table.validate()?;
+        let validated_vpc_table = self.vpc_table.clone().validate()?;
 
         debug!(
             "Overlay configuration is VALID and looks as:\n{}\n{}",
@@ -69,6 +67,13 @@ impl Overlay {
         /* empty collections used for validation */
         self.vpc_table.clear_vnis();
 
-        Ok(())
+        Ok(ValidatedOverlay {
+            vpc_table: validated_vpc_table,
+        })
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ValidatedOverlay {
+    pub vpc_table: ValidatedVpcTable,
 }

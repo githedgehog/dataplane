@@ -203,7 +203,7 @@ impl VpcTable {
         self.vnis.clear();
     }
     /// Validate the [`VpcTable`]
-    pub fn validate(&self) -> ConfigResult {
+    pub fn validate(self) -> Result<ValidatedVpcTable, ConfigError> {
         for vpc in self.values() {
             let mut peers = BTreeSet::new();
             // For each VPC, loop over all peerings
@@ -217,6 +217,9 @@ impl VpcTable {
             }
             peers.clear();
         }
-        Ok(())
+        Ok(ValidatedVpcTable(self))
     }
 }
+
+#[derive(Clone, Debug, Default)]
+pub struct ValidatedVpcTable(pub VpcTable);
