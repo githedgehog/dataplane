@@ -22,7 +22,7 @@ use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
-use nat::stateless::setup::{build_nat_configuration, validate_nat_configuration};
+use nat::stateless::setup::build_nat_configuration;
 use pkt_meta::dst_vpcd_lookup::VpcDiscTablesWriter;
 use pkt_meta::dst_vpcd_lookup::setup::build_dst_vni_lookup_configuration;
 use routing::frr::FrrAppliedConfig;
@@ -504,7 +504,6 @@ fn apply_stateless_nat_config(
     vpc_table: &VpcTable,
     nattablesw: &mut NatTablesWriter,
 ) -> ConfigResult {
-    validate_nat_configuration(vpc_table)?;
     let nat_table = build_nat_configuration(vpc_table)?;
     nattablesw.update_nat_tables(nat_table);
     Ok(())
