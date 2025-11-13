@@ -3,8 +3,8 @@
 
 //! Top-level configuration object for the dataplane
 
-use crate::errors::ConfigResult;
-use crate::external::{ExternalConfig, GenId};
+use crate::ConfigError;
+use crate::external::{ExternalConfig, GenId, ValidatedExternalConfig};
 use crate::internal::InternalConfig;
 use std::time::SystemTime;
 use tracing::debug;
@@ -99,8 +99,20 @@ impl GwConfig {
     //////////////////////////////////////////////////////////////////
     /// Validate a [`GwConfig`]. We only validate the external.
     //////////////////////////////////////////////////////////////////
-    pub fn validate(&mut self) -> ConfigResult {
+    pub fn validate(&mut self) -> Result<ValidatedGwConfig, ConfigError> {
         debug!("Validating external config with genid {} ..", self.genid());
-        self.external.validate()
+        let validated_external = self.external.validate()?;
+        Ok(ValidatedGwConfig {
+            meta: self.meta.clone(),
+            external: validated_external,
+            internal: self.internal.clone(),
+        })
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct ValidatedGwConfig {
+    pub meta: GwConfigMeta,                /* config metadata */
+    pub external: ValidatedExternalConfig, /* external config: received */
+    pub internal: Option<InternalConfig>,  /* internal config: built by gw from internal */
 }
