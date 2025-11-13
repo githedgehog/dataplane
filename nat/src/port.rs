@@ -3,14 +3,16 @@
 
 //! NAT port: a type to represent L4 ports usable in stateful NAT.
 
-use net::tcp::port::{TcpPort, TcpPortError};
-use net::udp::port::{UdpPort, UdpPortError};
+use net::tcp::port::TcpPort;
+use net::udp::port::UdpPort;
 use std::num::NonZero;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum NatPortError {
     #[error("invalid port ({0})")]
     InvalidPort(u16),
+    #[error("wrong type (port/identfier {0})")]
+    WrongType(u16),
 }
 
 /// `NatPort` is a type to represent L4 ports (TCP/UDP) or identifier (ICMP v4, v6) usable in
@@ -55,10 +57,13 @@ impl From<TcpPort> for NatPort {
 }
 
 impl TryFrom<NatPort> for TcpPort {
-    type Error = TcpPortError;
+    type Error = NatPortError;
 
     fn try_from(port: NatPort) -> Result<Self, Self::Error> {
-        TcpPort::new_checked(port.as_u16())
+        match port {
+            NatPort::Port(port) => Ok(TcpPort::new(port)),
+            NatPort::Identifier(id) => Err(NatPortError::WrongType(id)),
+        }
     }
 }
 
@@ -69,10 +74,13 @@ impl From<UdpPort> for NatPort {
 }
 
 impl TryFrom<NatPort> for UdpPort {
-    type Error = UdpPortError;
+    type Error = NatPortError;
 
     fn try_from(port: NatPort) -> Result<Self, Self::Error> {
-        UdpPort::new_checked(port.as_u16())
+        match port {
+            NatPort::Port(port) => Ok(UdpPort::new(port)),
+            NatPort::Identifier(id) => Err(NatPortError::WrongType(id)),
+        }
     }
 }
 
