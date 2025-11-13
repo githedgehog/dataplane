@@ -282,7 +282,7 @@ impl VpcExpose {
     ///    associated prefixes list.
     /// 5. Make sure we have the same number of addresses available on each side (public/private),
     ///    taking exclusion prefixes into account.
-    pub fn validate(&self) -> ConfigResult {
+    pub fn validate(self) -> Result<ValidatedVpcExpose, ConfigError> {
         // 1. Static NAT: Check that all prefixes in a list are of the same IP version, as we don't
         // support NAT46 or NAT64 at the moment.
         //
@@ -370,9 +370,12 @@ impl VpcExpose {
                 "Empty 'as_range' with non-empty 'not_as' is currently not supported",
             ));
         }
-        Ok(())
+        Ok(ValidatedVpcExpose(self))
     }
 }
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ValidatedVpcExpose(VpcExpose);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcManifest {
@@ -430,15 +433,19 @@ impl VpcManifest {
         self.exposes.push(expose);
         Ok(())
     }
-    pub fn validate(&self) -> ConfigResult {
+    pub fn validate(self) -> Result<ValidatedVpcManifest, ConfigError> {
         if self.name.is_empty() {
             return Err(ConfigError::MissingIdentifier("Manifest name"));
         }
+        let mut valid_exposes = vec![];
         for expose in &self.exposes {
-            expose.validate()?;
+            valid_exposes.push(expose.clone().validate()?);
         }
         self.validate_expose_collisions()?;
-        Ok(())
+        Ok(ValidatedVpcManifest {
+            name: self.name.clone(),
+            exposes: valid_exposes,
+        })
     }
     pub fn stateless_nat_exposes(&self) -> impl Iterator<Item = &VpcExpose> {
         self.exposes
@@ -471,6 +478,12 @@ impl VpcManifest {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ValidatedVpcManifest {
+    pub name: String, /* key: name of vpc */
+    pub exposes: Vec<ValidatedVpcExpose>,
+}
+
 #[derive(Clone, Debug)]
 pub struct VpcPeering {
     pub name: String,       /* name of peering (key in table) */
@@ -486,11 +499,15 @@ impl VpcPeering {
             right,
         }
     }
-    pub fn validate(&self) -> ConfigResult {
+    pub fn validate(&self) -> Result<ValidatedVpcPeering, ConfigError> {
         debug!("Validating VPC peering '{}'...", &self.name);
-        self.left.validate()?;
-        self.right.validate()?;
-        Ok(())
+        let left = self.left.clone().validate()?;
+        let right = self.right.clone().validate()?;
+        Ok(ValidatedVpcPeering {
+            name: self.name.clone(),
+            left,
+            right,
+        })
     }
     /// Given a peering fetch the manifests, orderly depending on the provided vpc name
     #[must_use]
@@ -501,6 +518,13 @@ impl VpcPeering {
             (&self.right, &self.left)
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct ValidatedVpcPeering {
+    pub name: String,                /* name of peering (key in table) */
+    pub left: ValidatedVpcManifest,  /* manifest for one side of the peering */
+    pub right: ValidatedVpcManifest, /* manifest for the other side */
 }
 
 #[derive(Clone, Debug, Default)]
