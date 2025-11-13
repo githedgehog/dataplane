@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use tokio::runtime::{Builder, Runtime};
+use std::ops::{Deref, DerefMut};
+use tokio::runtime::Builder;
 
 /// Executes a function inside a current-thread tokio runtime.
 /// The runtime will be torn down when the function returns.
@@ -26,6 +27,47 @@ where
         .expect("Failed to create current thread runtime");
 
     rt.block_on(f())
+}
+
+#[repr(transparent)]
+pub struct ForceSend<T>(T);
+
+#[allow(unsafe_code)]
+unsafe impl<T> Send for ForceSend<T> {}
+
+impl<T> ForceSend<T> {
+    #[allow(unused)]
+    pub fn take(mut self) -> T {
+        self.0
+    }
+}
+
+impl<T> Deref for ForceSend<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for ForceSend<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// Forces a value to be Send
+///
+/// The intended use case is when you want to use a non-Send value across an await or in a [`tokio::spawn`] in a `current_thread` runtime.
+/// In this case, we know the value won't actually be sent.
+///
+/// Safety:
+///
+/// This function is unsafe because it allows you to send a non-Send value across an await.
+/// However, in a `current_thread` runtime, the value will never actually be sent.
+/// Do not use this function in a multi-threaded tokio runtime or inside a [`tokio::task::spawn_blocking`] as doing so will actually send the value across threads.
+pub unsafe fn force_send<T>(value: T) -> ForceSend<T> {
+    ForceSend(value)
 }
 
 #[cfg(test)]
