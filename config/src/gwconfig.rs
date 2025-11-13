@@ -116,3 +116,13 @@ pub struct ValidatedGwConfig {
     pub external: ValidatedExternalConfig, /* external config: received */
     pub internal: Option<InternalConfig>,  /* internal config: built by gw from internal */
 }
+
+impl ValidatedGwConfig {
+    //////////////////////////////////////////////////////////////////
+    /// Return the [`GenId`] of a [`GwConfig`] object.
+    //////////////////////////////////////////////////////////////////
+    #[must_use]
+    pub fn genid(&self) -> GenId {
+        self.external.genid
+    }
+}

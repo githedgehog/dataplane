@@ -18,7 +18,9 @@ use config::{ConfigError, ConfigResult, stringify};
 use config::{DeviceConfig, ExternalConfig, GenId, GwConfig, InternalConfig};
 use config::{external::overlay::Overlay, internal::device::tracecfg::TracingConfig};
 
-use crate::processor::confbuild::internal::build_internal_config;
+use crate::processor::confbuild::internal::{
+    build_internal_config_from_unvalidated, build_internal_config_from_validated,
+};
 use crate::processor::confbuild::router::generate_router_config;
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
@@ -154,8 +156,8 @@ impl ConfigProcessor {
             error!("Rejecting config request: a config with id {genid} exists");
             return Err(ConfigError::ConfigAlreadyExists(genid));
         }
-        config.validate()?;
-        let internal = build_internal_config(&config)?;
+        let validated_config = config.validate()?;
+        let internal = build_internal_config_from_validated(&validated_config)?;
         config.set_internal_config(internal);
         let e = match self.apply(config).await {
             Ok(()) => Ok(()),
@@ -174,7 +176,7 @@ impl ConfigProcessor {
     #[allow(unused)]
     async fn apply_blank_config(&mut self) -> ConfigResult {
         let mut blank = GwConfig::blank();
-        let internal = build_internal_config(&blank)?;
+        let internal = build_internal_config_from_unvalidated(&blank)?;
         blank.set_internal_config(internal);
         self.apply(blank).await
     }

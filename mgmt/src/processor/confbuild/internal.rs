@@ -6,10 +6,10 @@
 #[allow(unused)]
 use tracing::{debug, error, warn};
 
-use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Peering, Vpc};
 use config::external::overlay::vpcpeering::VpcManifest;
-use config::{ConfigError, ConfigResult};
+use config::external::overlay::{Overlay, ValidatedOverlay};
+use config::{ConfigError, ConfigResult, GwConfig};
 
 use lpm::prefix::Prefix;
 use net::route::RouteTableId;
@@ -17,6 +17,7 @@ use std::net::Ipv4Addr;
 
 use crate::processor::confbuild::namegen::{VpcConfigNames, VpcInterfacesNames};
 
+use config::gwconfig::ValidatedGwConfig;
 use config::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
 use config::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
 use config::internal::routing::prefixlist::{
@@ -25,7 +26,7 @@ use config::internal::routing::prefixlist::{
 use config::internal::routing::routemap::{MatchingPolicy, RouteMap, RouteMapEntry, RouteMapMatch};
 use config::internal::routing::statics::StaticRoute;
 use config::internal::routing::vrf::VrfConfig;
-use config::{ExternalConfig, GwConfig, InternalConfig};
+use config::{ExternalConfig, InternalConfig};
 
 /// Build a drop route
 #[must_use]
@@ -249,48 +250,76 @@ fn build_vpc_internal_config(
     Ok(())
 }
 
-fn build_internal_overlay_config(
-    overlay: &Overlay,
-    asn: u32,
-    router_id: Option<Ipv4Addr>,
-    internal: &mut InternalConfig,
-) -> ConfigResult {
-    debug!("Building overlay config ({} VPCs)", overlay.vpc_table.len());
+/// Macro to generate the pair of functions for building internal overlay config
+/// and the top-level internal config builder
+macro_rules! impl_build_internal_config {
+    ($overlay_fn:ident, $config_fn:ident, $overlay_ty:ty, $config_ty:ty) => {
+        fn $overlay_fn(
+            overlay: &$overlay_ty,
+            asn: u32,
+            router_id: Option<Ipv4Addr>,
+            internal: &mut InternalConfig,
+        ) -> ConfigResult {
+            debug!("Building overlay config ({} VPCs)", overlay.vpc_table.len());
 
-    /* Vpcs and peerings */
-    for vpc in overlay.vpc_table.values() {
-        build_vpc_internal_config(vpc, asn, router_id, internal)?;
-    }
-    Ok(())
-}
-
-/// Top-level function to build internal config from external config
-pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, ConfigError> {
-    let genid = config.genid();
-    debug!("Building internal config for gen {genid}");
-    let external = &config.external;
-
-    /* Build internal config: device and underlay configs are copied as received */
-    let mut internal = InternalConfig::new(external.device.clone());
-    internal.add_vrf_config(external.underlay.vrf.clone())?;
-    internal.set_vtep(external.underlay.vtep.clone());
-
-    /* Build overlay config */
-    if let Some(bgp) = &external.underlay.vrf.bgp {
-        let asn = bgp.asn;
-        let router_id = bgp.router_id;
-        if !external.overlay.vpc_table.is_empty() {
-            build_internal_overlay_config(&external.overlay, asn, router_id, &mut internal)?;
-        } else {
-            debug!("The configuration does not specify any VPCs...");
+            /* Vpcs and peerings */
+            for vpc in overlay.vpc_table.values() {
+                build_vpc_internal_config(vpc, asn, router_id, internal)?;
+            }
+            Ok(())
         }
-    } else if config.genid() != ExternalConfig::BLANK_GENID {
-        warn!("Config has no BGP configuration");
-    }
-    /* done */
-    debug!("Successfully built internal config for genid {genid}");
-    if genid != ExternalConfig::BLANK_GENID {
-        debug!("Internal config is:\n{internal:#?}");
-    }
-    Ok(internal)
+
+        pub fn $config_fn(
+            config: &$config_ty,
+        ) -> Result<InternalConfig, ConfigError> {
+            let genid = config.genid();
+            debug!("Building internal config for gen {genid}");
+            let external = &config.external;
+
+            /* Build internal config: device and underlay configs are copied as received */
+            let mut internal = InternalConfig::new(external.device.clone());
+            internal.add_vrf_config(external.underlay.vrf.clone())?;
+            internal.set_vtep(external.underlay.vtep.clone());
+
+            /* Build overlay config */
+            if let Some(bgp) = &external.underlay.vrf.bgp {
+                let asn = bgp.asn;
+                let router_id = bgp.router_id;
+                if !external.overlay.vpc_table.is_empty() {
+                    $overlay_fn(
+                        &external.overlay,
+                        asn,
+                        router_id,
+                        &mut internal,
+                    )?;
+                } else {
+                    debug!("The configuration does not specify any VPCs...");
+                }
+            } else if config.genid() != ExternalConfig::BLANK_GENID {
+                warn!("Config has no BGP configuration");
+            }
+            /* done */
+            debug!("Successfully built internal config for genid {genid}");
+            if genid != ExternalConfig::BLANK_GENID {
+                debug!("Internal config is:\n{internal:#?}");
+            }
+            Ok(internal)
+        }
+    };
 }
+
+// Generate the validated version
+impl_build_internal_config!(
+    build_internal_overlay_config_from_validated,
+    build_internal_config_from_validated,
+    ValidatedOverlay,
+    ValidatedGwConfig
+);
+
+// Generate the unvalidated version
+impl_build_internal_config!(
+    build_internal_overlay_config_from_unvalidated,
+    build_internal_config_from_unvalidated,
+    Overlay,
+    GwConfig
+);

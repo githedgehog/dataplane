@@ -230,4 +230,15 @@ impl ValidatedVpcTable {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// Number of [`Vpc`]s in [`ValidatedVpcTable`]
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Iterate over [`Vpc`]s in a [`ValidatedVpcTable`]
+    pub fn values(&self) -> impl Iterator<Item = &Vpc> {
+        self.0.values()
+    }
 }

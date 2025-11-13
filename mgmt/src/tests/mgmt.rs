@@ -41,7 +41,7 @@ pub mod test {
 
     use routing::frr::renderer::builder::Render;
 
-    use crate::processor::confbuild::internal::build_internal_config;
+    use crate::processor::confbuild::internal::build_internal_config_from_validated;
     use crate::processor::proc::ConfigProcessor;
     use routing::{Router, RouterParamsBuilder};
     use tracing::debug;
@@ -339,13 +339,13 @@ pub mod test {
         /* Not really a test but a tool to check generated FRR configs given a gateway config */
         let external = sample_external_config();
         let mut config = GwConfig::new(external);
-        config.validate().expect("Config validation failed");
+        let validated_config = config.validate().expect("Config validation failed");
         if false {
             let vpc_table = &config.external.overlay.vpc_table;
             let peering_table = &config.external.overlay.peering_table;
             println!("\n{vpc_table}\n{peering_table}");
         }
-        let internal = build_internal_config(&config).expect("Should succeed");
+        let internal = build_internal_config_from_validated(&validated_config).expect("Should succeed");
         let rendered = internal.render(&config.genid());
         println!("{rendered}");
     }
