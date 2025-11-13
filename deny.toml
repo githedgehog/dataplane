@@ -16,6 +16,8 @@ ignore = [
     # this relates to the use of abandoned "safemem" crate in cloud-hypervisor.
     # Since cloud-hypervisor is only a dev-dependency, we can safely ignore this.
     "RUSTSEC-2023-0081",
+    # instant is unmaintained but is needed by afpacket with the tokio feature, remove when we stop using this crate in favor of our own
+    "RUSTSEC-2024-0384",
 ]
 
 [licenses]
